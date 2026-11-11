@@ -2226,7 +2226,8 @@ mod tests {
     fn once_the_pool_has_begun_only_a_jobs_hand_off_packs() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
-        std::fs::create_dir_all(root.join(crate::out::TERMS)).unwrap();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join(crate::records::lead::LEAD), b"{}").unwrap();
         put(&dir, "12/2048/1365.png", &png(), 120);
         assert!(pack_local(
             &dir,

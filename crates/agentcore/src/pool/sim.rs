@@ -18,12 +18,14 @@
 //! turn is next, puts the Mac to sleep there or not, and brings the owner's changes: a newer app on
 //! a Mac (a restart: its memory gone but what its driver saved), or a development build or a
 //! rollback (`Cfg::downgrade`); a member may leave for good (`Cfg::leave`). Mac 0 is the declared
-//! lead (task #881): no other Mac may make a term. The Macs play the agent's part around the driver
-//! (`Mac`): its jobs' hand-offs, its coordinator's grants (while the driver lets it), the listings
-//! the driver asks for, off its step, its heartbeat, stamped as it's written, a job reading the
-//! records. Once the faults stop every Mac stays awake for a while; then the last term must be the
-//! declared lead's, leading it alone, its records must name every entry ever written, and no term
-//! may have been made in the run's last ten minutes.
+//! lead (task #881): no other Mac may lead. The Macs play the agent's part around the driver
+//! (`Mac`): its jobs' hand-offs, its coordinator's grants (while the driver lets it) and its store's
+//! epoch (bumped at each restart, raised past a take-up's records: docs/coordination.md step 8c),
+//! the listings the driver asks for, off its step, its heartbeat, stamped as it's written, a job
+//! reading the records. Once the faults stop every Mac stays awake for a while; then the declared
+//! lead must lead, alone, its records at the one path must name every entry ever written, and no
+//! take-up may have been made in the run's last ten minutes. Every entry a lead acknowledged is in
+//! every snapshot of a later epoch.
 
 mod place;
 
@@ -32,8 +34,7 @@ use super::driver::{self, Driver, Event, Heard, Io, Listed, Out};
 use super::journal::{self, Entry, LeaseId};
 use super::nas::{Created, Nas};
 use super::records::{self, Records};
-use super::term::{self, Term};
-use super::Member;
+use super::{lead, Member};
 use anyhow::{anyhow, bail, Result};
 use buildstore::handoff::Handoff;
 use std::collections::{BTreeMap, BTreeSet};
@@ -86,9 +87,9 @@ const P_JOB: f64 = 0.35;
 const P_READ: f64 = 0.2;
 const P_GRANT: f64 = 0.3;
 const P_SWEEP: f64 = 0.01;
-/// How long the run's end must have seen no new term (s).
+/// How long the run's end must have seen no take-up (s).
 const QUIET_S: u64 = 600;
-/// At most how long a run goes on past its end while its last term's lead still merges what the
+/// At most how long a run goes on past its end while its lead still merges what the
 /// faults left, or isn't caught up yet (s): a share taking seconds an operation, a lead's minute of
 /// reads a loop merges a dozen entries, and hours of faults with the lead asleep leave hundreds; a listing
 /// its agent lost as the faults end is asked for again two hours on, and an entry never whole that
@@ -100,8 +101,8 @@ const MERGING_S: u64 = driver::OVERDUE_S + driver::UNREADABLE_S + 3600;
 struct Cfg {
     /// The faults stop this long into the run (s); every Mac then stays awake.
     faults: u64,
-    /// The run ends this long into it, or goes on (`World::goes_on`) while its last term's lead
-    /// still merges what the faults left.
+    /// The run ends this long into it, or goes on (`World::goes_on`) while its lead still merges
+    /// what the faults left.
     end: u64,
     /// The longest a Mac keeps what it read, stat'ed or listed (s).
     stale: u64,
@@ -109,7 +110,7 @@ struct Cfg {
     list_s: (u64, u64),
     /// A member leaves for good (never wakes) partway through.
     leave: bool,
-    /// Earlier days in the journal (a week's), an entry each that term 1's records lack.
+    /// Earlier days in the journal (a week's), an entry each that today's records lack.
     old_days: u64,
     /// The clocks' skew, up to this either way (s); 0: up to one second.
     skew: u64,
@@ -230,7 +231,6 @@ struct Msg {
 
 /// A Mac as the world sees it.
 struct MacW {
-    id: String,
     app: u64,
     skew: i64,
     asleep_until: u64,
@@ -242,11 +242,12 @@ struct MacW {
     /// Its next loop (it waits between loops).
     ready_at: u64,
     inbox: Vec<Msg>,
-    /// What it says it believes, checked: the highest term it knows, the term it leads, the
-    /// highest term it led.
-    view: u64,
+    /// What it says it leads, checked: the epoch it leads in, the highest it led in.
     leads: Option<u64>,
     led: u64,
+    /// Its store's epoch (its coordinator's: driver::Io::epoch), kept across restarts, one more at
+    /// each.
+    store: u64,
     /// Left for good: it never wakes.
     gone: bool,
     /// Its last sleep (from, to); when it last woke from one its driver sees as a sleep.
@@ -283,7 +284,7 @@ struct Cache {
 }
 
 /// What a journal entry is to the checks: one the lead's check takes, one it refuses (a step that
-/// doesn't exist), or one the lead of an odd term refuses (a check that depends on the lead).
+/// doesn't exist), or one the lead of an odd epoch refuses (a check that depends on the lead).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Taken,
@@ -319,22 +320,23 @@ struct World {
     done: bool,
     drained: bool,
     /// When the run ends, gone on past its config's end while the lead merges; and how many
-    /// entries the last term's records lacked when it last went on.
+    /// entries the one path's records lacked when it last went on.
     end: u64,
     behind: Option<usize>,
-    /// The terms made, by their maker, and when; the term each Mac led.
-    made: BTreeMap<u64, (usize, u64)>,
+    /// The take-ups, by epoch: by which Mac, and when; the Mac that led each epoch.
+    took: BTreeMap<u64, (usize, u64)>,
     leaders: BTreeMap<u64, usize>,
-    /// Each term's last snapshot landed: its number, and the entries it names.
+    /// Each epoch's last snapshot landed at the one path: its number, and the entries it names.
     landed: BTreeMap<u64, (u64, BTreeSet<String>)>,
-    /// Every entry whose bytes landed whole, what it is, and when; those a lead acknowledged.
+    /// Every entry whose bytes landed whole, what it is, and when; those a lead acknowledged, in
+    /// which epoch.
     written: BTreeMap<String, Kind>,
     written_at: BTreeMap<String, u64>,
     writers: BTreeMap<String, usize>,
-    acked: BTreeSet<String>,
-    /// The leases granted in each term (the lead grants in order: the coordinator isn't modelled).
+    acked: BTreeMap<String, u64>,
+    /// The leases granted in each epoch (the lead grants in order: the coordinator isn't modelled).
     leases: BTreeMap<u64, u64>,
-    /// The terms whose lead was seen caught up, and by the listing begun when (its clock).
+    /// The epochs whose lead was seen caught up, and by the listing begun when (its clock).
     caught: BTreeSet<(u64, u64)>,
     /// The entries refused as never read whole.
     unreadable: BTreeSet<String>,
@@ -371,14 +373,6 @@ fn content(t: &str, k: &str) -> String {
     format!("sim/{t}.{k}.x")
 }
 
-fn term_of(path: &str) -> Option<u64> {
-    path.strip_prefix("state/build/terms/")?.strip_suffix(".json")?.parse().ok()
-}
-
-fn records_of(path: &str) -> Option<u64> {
-    path.strip_prefix("state/build/term/")?.strip_suffix("/records.json")?.parse().ok()
-}
-
 fn entry_of(path: &str) -> Option<String> {
     let k = path.strip_prefix("state/journal/")?.strip_suffix(".json")?;
     (!k.starts_with("rejected/")).then(|| k.to_string())
@@ -409,7 +403,7 @@ fn consistent(r: &Records) -> std::result::Result<(), String> {
 }
 
 /// The simulator's steps' outputs (crate::agent::steps::writes' stand-in): a unit job, and the
-/// lead of an odd term's stand-in, write a unit's file, a prune removes one; another step changes
+/// lead of an odd epoch's stand-in, write a unit's file, a prune removes one; another step changes
 /// nothing.
 fn writes(step: &str, l: &str, removal: bool) -> Option<bool> {
     match step {
@@ -420,7 +414,7 @@ fn writes(step: &str, l: &str, removal: bool) -> Option<bool> {
 }
 
 /// The lead's check of an entry: every change within its step's outputs, by the merge's own check
-/// (crate::agent::steps::outside_by, refused by every lead); and one the lead of an odd term
+/// (crate::agent::steps::outside_by, refused by every lead); and one the lead of an odd epoch
 /// refuses (a stand-in for a check by the lead's state: its leases), so one a lead refused may be
 /// taken by the next.
 fn check(e: &Entry, r: &Records) -> std::result::Result<(), String> {
@@ -428,7 +422,7 @@ fn check(e: &Entry, r: &Records) -> std::result::Result<(), String> {
         return Err(why);
     }
     match e.step.as_str() {
-        "flaky" if r.term % 2 == 1 => Err(format!("refused by term {}'s lead", r.term)),
+        "flaky" if r.epoch % 2 == 1 => Err(format!("refused by epoch {}'s lead", r.epoch)),
         _ => Ok(()),
     }
 }
@@ -437,14 +431,13 @@ impl World {
     fn new(seed: u64, macs: usize, cfg: Cfg, tracing: bool) -> World {
         let mut rng = Rng(seed);
         let macs: Vec<MacW> = (0..macs)
-            .map(|k| {
+            .map(|_| {
                 let skew = if cfg.skew > 0 {
                     rng.below(2 * cfg.skew + 1) as i64 - cfg.skew as i64
                 } else {
                     rng.below(3) as i64 - 1
                 };
                 MacW {
-                    id: id(k),
                     app: 0,
                     skew,
                     asleep_until: 0,
@@ -452,9 +445,9 @@ impl World {
                     busy_until: 0,
                     ready_at: 0,
                     inbox: Vec::new(),
-                    view: 0,
                     leads: None,
                     led: 0,
+                    store: 0,
                     gone: false,
                     sleep: (0, 0),
                     woke: 0,
@@ -467,8 +460,8 @@ impl World {
         let mut files = BTreeMap::new();
         // Mac 0 the declared lead.
         files.insert(
-            term::LEAD.to_string(),
-            serde_json::to_vec(&term::Declared { member: id(0), host: "mac0".into(), since: T0 }).unwrap(),
+            lead::LEAD.to_string(),
+            serde_json::to_vec(&lead::Declared { member: id(0), host: "mac0".into(), since: T0 }).unwrap(),
         );
         // Today's records: one unit built.
         files.insert(
@@ -480,7 +473,7 @@ impl World {
             format!("{{\"unit\": {{\"{}\": \"k0\"}}}}", TARGETS[0]).into_bytes(),
         );
         let mut written = BTreeMap::new();
-        // A week of the journal's earlier days, an entry each that term 1's records lack.
+        // A week of the journal's earlier days, an entry each that today's records lack.
         for d in 1..=cfg.old_days {
             let t = TARGETS[(d as usize) % TARGETS.len()];
             let k = format!("old{d}");
@@ -491,7 +484,7 @@ impl World {
             };
             let e = Entry {
                 member: id(0),
-                lease: LeaseId { term: 0, n: d },
+                lease: LeaseId { epoch: 0, n: d },
                 step: "unit".into(),
                 handoff: h,
                 at: T0 - d * 86_400,
@@ -517,13 +510,13 @@ impl World {
             drained: false,
             end: cfg.end,
             behind: None,
-            made: BTreeMap::new(),
+            took: BTreeMap::new(),
             leaders: BTreeMap::new(),
             landed: BTreeMap::new(),
             written,
             written_at: BTreeMap::new(),
             writers: BTreeMap::new(),
-            acked: BTreeSet::new(),
+            acked: BTreeMap::new(),
             leases: BTreeMap::new(),
             caught: BTreeSet::new(),
             unreadable: BTreeSet::new(),
@@ -610,16 +603,16 @@ impl World {
         }
     }
 
-    /// At the run's end: whether it goes on ten minutes more, its last term's lead still merging
-    /// what the faults left (that term's records lack entries, fewer than when it last went on,
-    /// the first time any), or not caught up yet (an entry never whole is refused only after an
-    /// hour of its reads; a listing its agent lost is asked for again two hours on); for
-    /// `MERGING_S` at most. (A share taking seconds an operation merges hours of entries slowly, at
-    /// a minute of reads a loop. The checks at the end are the same, the terms' too: none may be
-    /// made after the config's end's last ten minutes.)
+    /// At the run's end: whether it goes on ten minutes more, its lead still merging what the
+    /// faults left (the one path's records lack entries, fewer than when it last went on, the
+    /// first time any), or not caught up yet (an entry never whole is refused only after an hour of
+    /// its reads; a listing its agent lost is asked for again two hours on); for `MERGING_S` at
+    /// most. (A share taking seconds an operation merges hours of entries slowly, at a minute of
+    /// reads a loop. The checks at the end are the same, the take-ups' too: none may be made after
+    /// the config's end's last ten minutes.)
     fn goes_on(&mut self) -> bool {
-        let Some(&h) = self.made.keys().next_back() else { return false };
-        let r = self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok());
+        let Some(&h) = self.took.keys().next_back() else { return false };
+        let r = self.files.get(records::ONE).and_then(|b| serde_json::from_slice::<Records>(b).ok());
         // (Its records not saved yet: nothing to go on for.)
         let lack = r.as_ref().map_or(0, |r| self.written.iter().filter(|&(k, &kind)| !names(r, k, kind)).count());
         // (Or its lead not caught up yet: an entry never whole, refused only after an hour of its
@@ -633,10 +626,10 @@ impl World {
         self.end = self.t + QUIET_S;
         if merging {
             self.count("ten minutes more, the lead merging");
-            self.note(|| format!("the run goes on: term {h}'s records lack {lack} entries"));
+            self.note(|| format!("the run goes on: the records lack {lack} entries"));
         } else {
             self.count("ten minutes more, the lead not caught up");
-            self.note(|| format!("the run goes on: term {h}'s lead isn't caught up"));
+            self.note(|| format!("the run goes on: epoch {h}'s lead isn't caught up"));
         }
         true
     }
@@ -813,16 +806,8 @@ impl World {
         self.open.entry(path.to_string()).or_default().insert(me, u64::MAX);
         self.midway = true;
         self.see(me, path, Some(Vec::new()));
-        if let Some(e) = term_of(path) {
-            if me != 0 {
-                self.wrong(format!("mac{me}, a member, made term {e}: only the declared lead makes terms"));
-            }
-            let want = self.made.keys().max().map_or(1, |m| m + 1);
-            if e != want {
-                self.wrong(format!("mac{me} made term {e} when the next was {want}"));
-            }
-            self.made.insert(e, (me, self.t));
-            self.note(|| format!("mac{me} makes term {e}"));
+        if path.contains("/terms/") || path.contains("/term/") {
+            self.wrong(format!("mac{me} made {path}: no term is made since docs/coordination.md step 8c"));
         }
         true
     }
@@ -879,10 +864,6 @@ impl World {
         // again, an earlier finish's answer lost: no change.)
         let mine = self.writes.get(path).map(|w| w.0) == Some(me);
         let finishing = mine && self.files.get(path).is_some_and(|x| x.is_empty());
-        if mine && term_of(path).is_some() && self.files.get(path) == Some(&b) {
-            self.see(me, path, Some(b));
-            return true;
-        }
         if let Some(&(who, at)) = self.writes.get(path) {
             if who != me && at > since {
                 self.count("late renames over another's write");
@@ -909,7 +890,7 @@ impl World {
     }
 
     fn remove(&mut self, me: usize, path: &str) {
-        if term_of(path).is_some() || records_of(path).is_some() || path == records::FIRST || path == records::ONE {
+        if path == lead::LEAD || path == records::ONE || path == records::ONE_BRIEF {
             self.wrong(format!("mac{me} removed {path}"));
         }
         if let Some(key) = entry_of(path) {
@@ -922,37 +903,26 @@ impl World {
     /// A file's bytes landed: checked by what it is. `made`: by its create (or its maker finishing
     /// it).
     fn landed(&mut self, me: usize, path: &str, b: &[u8], made: bool) {
-        if let Some(e) = term_of(path) {
-            if !made {
-                return self.wrong(format!("mac{me} wrote over term {e}'s file"));
-            }
-            let Ok(t) = serde_json::from_slice::<Term>(b) else {
-                return self.wrong(format!("term {e}'s file isn't a term"));
-            };
-            if t.term != e || t.member != id(0) {
-                return self.wrong(format!("term {e}'s file names term {} and {}", t.term, t.member));
-            }
-            if t.how.contains("saved state lost") {
-                self.count("re-assertions with a saved state lost");
-            }
-            let kind = ["re-asserted", "restarted", "the first Mac in the pool"]
-                .into_iter()
-                .find(|k| t.how.starts_with(k))
-                .unwrap_or("other");
-            *self.counts.entry(kind).or_default() += 1;
-            self.note(|| format!("term {e}: {} ({})", t.member, t.how));
-        } else if let Some(e) = records_of(path) {
+        if path == lead::LEAD && !made {
+            self.wrong(format!("mac{me} wrote over the lead's declaration"));
+        } else if path == records::ONE {
+            // The one path (docs/coordination.md steps 8b, 8c): the declared lead's snapshots alone,
+            // in the epoch it leads, consistent; within an epoch never going back nor losing an
+            // entry; and none of an epoch at or after one a lead acknowledged an entry in lacks it.
             let r = match serde_json::from_slice::<Records>(b) {
                 Ok(r) => r,
-                Err(err) => return self.wrong(format!("term {e}'s records can't be parsed: {err}")),
+                Err(err) => return self.wrong(format!("the one path's records can't be parsed: {err}")),
             };
+            let e = r.epoch;
             if let Err(why) = consistent(&r) {
-                self.wrong(format!("term {e}'s records at {} aren't consistent: {why}", r.seq));
+                self.wrong(format!("epoch {e}'s records at {} aren't consistent: {why}", r.seq));
             }
-            let lead =
-                self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
-            if r.term != e || lead.as_deref() != Some(self.macs[me].id.as_str()) {
-                self.wrong(format!("mac{me} wrote term {e}'s records (of term {}); term {e} names {lead:?}", r.term));
+            if me != 0 || self.leaders.get(&e).is_some_and(|&o| o != me) || e > self.macs[me].store {
+                self.wrong(format!(
+                    "mac{me} wrote epoch {e}'s records (its store's epoch {}, led by {:?})",
+                    self.macs[me].store,
+                    self.leaders.get(&e)
+                ));
             }
             let handled: BTreeSet<String> = r.reflected.iter().chain(r.rejected.keys()).cloned().collect();
             // Refused as never read whole: only what never was, as its lead's reads could see.
@@ -963,56 +933,32 @@ impl World {
                 self.count("entries refused, never read whole");
                 if let Some(&w) = self.written_at.get(k).filter(|&&w| w + self.cfg.stale + self.cfg.lag + 600 < self.t)
                 {
-                    self.wrong(format!("term {e}'s records refuse {k} ({why}), whole on the share since {w} s"));
+                    self.wrong(format!("epoch {e}'s records refuse {k} ({why}), whole on the share since {w} s"));
                 }
             }
             if let Some((seq, was)) = self.landed.get(&e) {
-                let back = (r.seq <= *seq).then(|| format!("term {e}'s records went from {seq} to {}", r.seq));
-                let lost = was.difference(&handled).next().map(|k| format!("term {e}'s records at {} lost {k}", r.seq));
+                let back = (r.seq <= *seq).then(|| format!("epoch {e}'s records went from {seq} to {}", r.seq));
+                let lost =
+                    was.difference(&handled).next().map(|k| format!("epoch {e}'s records at {} lost {k}", r.seq));
                 for w in back.into_iter().chain(lost) {
                     self.wrong(w);
                 }
             }
-            if self.made.contains_key(&(e + 1)) {
-                // (A stale lead's, where no one reads: invariant 5.)
-                self.count("records saved after a later term began");
+            if self.landed.keys().next_back().is_some_and(|&last| last > e) {
+                self.count("the one path's records landed late");
             }
-            self.note(|| format!("mac{me} saves term {e}'s records at {} ({} entries)", r.seq, handled.len()));
+            let lost: Vec<String> =
+                self.acked.iter().filter(|&(k, &at)| at <= e && !handled.contains(k)).map(|(k, _)| k.clone()).collect();
+            if let Some(k) = lost.first() {
+                self.wrong(format!(
+                    "epoch {e}'s records at {} lack {k}, acknowledged in epoch {} ({} in all)",
+                    r.seq,
+                    self.acked[k],
+                    lost.len()
+                ));
+            }
+            self.note(|| format!("mac{me} saves epoch {e}'s records at {} ({} entries)", r.seq, handled.len()));
             self.landed.insert(e, (r.seq, handled));
-        } else if path == records::ONE {
-            // The one path (docs/coordination.md step 8b): any term's lead's snapshot, consistent;
-            // a late one may land over a later (read until the lead's next save).
-            match serde_json::from_slice::<Records>(b) {
-                Ok(r) => {
-                    if let Err(why) = consistent(&r) {
-                        self.wrong(format!("the one path's records at {} aren't consistent: {why}", r.seq));
-                    }
-                    let lead = self.files.get(&term::path(r.term)).and_then(|b| serde_json::from_slice::<Term>(b).ok());
-                    if lead.is_none_or(|t| t.member != self.macs[me].id) {
-                        self.wrong(format!("mac{me} wrote term {}'s records at the one path, not its lead", r.term));
-                    }
-                    if self.landed.get(&r.term).is_some_and(|(seq, _)| *seq > r.seq) {
-                        self.count("the one path's records landed late");
-                    }
-                }
-                Err(err) => self.wrong(format!("the one path's records can't be parsed: {err}")),
-            }
-        } else if path == records::FIRST {
-            // Term 1's first snapshot: made with create-new before term 1 is, its bytes landing
-            // when its maker gets to them (late at times, read by none once term 1's lead has
-            // saved), and written by none other.
-            if !made {
-                return self.wrong(format!("mac{me} wrote over term 1's first snapshot"));
-            }
-            match serde_json::from_slice::<Records>(b) {
-                Ok(r) if r.term == 1 && r.seq == 1 => {
-                    if let Err(why) = consistent(&r) {
-                        self.wrong(format!("term 1's first snapshot isn't consistent: {why}"));
-                    }
-                }
-                Ok(r) => self.wrong(format!("term 1's first snapshot is term {}'s at {}", r.term, r.seq)),
-                Err(err) => self.wrong(format!("term 1's first snapshot can't be parsed: {err}")),
-            }
         } else if let Some(key) = entry_of(path).filter(|_| !self.erroring.contains(path)) {
             if let Ok(en) = serde_json::from_slice::<Entry>(b) {
                 let kind = match en.step.as_str() {
@@ -1037,58 +983,49 @@ impl World {
 
     // What the Macs say they believe and do.
 
-    fn view(&mut self, me: usize, e: u64) {
-        if e < self.macs[me].view {
-            self.wrong(format!("mac{me}'s term went back from {} to {e}", self.macs[me].view));
-        }
-        self.macs[me].view = e;
-    }
-
     fn leads(&mut self, me: usize, e: Option<u64>) {
         if let Some(e) = e {
-            let named =
-                self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
-            if named.as_deref() != Some(self.macs[me].id.as_str()) {
-                self.wrong(format!("mac{me} leads term {e}, which names {named:?}"));
+            if me != 0 {
+                self.wrong(format!("mac{me}, a member, leads epoch {e}: only the declared lead leads"));
             }
             if let Some(&other) = self.leaders.get(&e).filter(|&&o| o != me) {
-                self.wrong(format!("mac{me} leads term {e}, which mac{other} led"));
+                self.wrong(format!("mac{me} leads epoch {e}, which mac{other} led"));
             }
             if e <= self.macs[me].led {
-                self.wrong(format!("mac{me} leads term {e} after term {}", self.macs[me].led));
+                self.wrong(format!("mac{me} leads epoch {e} after epoch {}", self.macs[me].led));
+            }
+            if let Some(&last) = self.landed.keys().filter(|&&k| k != e).next_back().filter(|&&k| k >= e) {
+                self.wrong(format!("mac{me} leads epoch {e}, not past the records' epoch {last}"));
             }
             self.leaders.insert(e, me);
+            self.took.insert(e, (me, self.t));
             self.macs[me].led = e;
             self.count("take-ups");
-            self.note(|| format!("mac{me} leads term {e}"));
+            self.note(|| format!("mac{me} leads epoch {e}"));
         } else if let Some(was) = self.macs[me].leads {
-            self.note(|| format!("mac{me} no longer leads term {was}"));
+            self.note(|| format!("mac{me} no longer leads epoch {was}"));
         }
         self.macs[me].leads = e;
     }
 
-    fn ack(&mut self, me: usize, term: u64, keys: &[String]) {
-        if self.made.contains_key(&(term + 1)) {
-            self.count("acknowledgements after a later term began");
-        }
+    fn ack(&mut self, me: usize, epoch: u64, keys: &[String]) {
         for key in keys {
-            self.acked.insert(key.clone());
-            if !self.landed.get(&term).is_some_and(|(_, h)| h.contains(key)) {
-                self.wrong(format!("mac{me} acknowledged {key} as term {term}'s before a snapshot of it named it"));
+            self.acked.entry(key.clone()).or_insert(epoch);
+            if !self.landed.get(&epoch).is_some_and(|(_, h)| h.contains(key)) {
+                self.wrong(format!("mac{me} acknowledged {key} as epoch {epoch}'s before a snapshot of it named it"));
             }
         }
     }
 
-    /// Mac `me`, leading term `e`, says its records reflect the journal as the listing of every day
+    /// Mac `me`, leading epoch `e`, says its records reflect the journal as the listing of every day
     /// it asked for at `listed` (its clock) found it (review N2; re-review F3, F4). That listing
     /// began less than a day before (`driver::RELIST_S`); after its Mac last woke from a sleep
-    /// (what its members told it meanwhile was lost); and after its term began, but for a
-    /// re-assertion that kept what its lead knew (before a sweep, or after a long step it didn't
-    /// sleep in). And its term's last snapshot names every entry written before it (a listing is
-    /// stale up to `Cfg::stale`). Called first after its step: as of its step's last operation.
+    /// (what its members told it meanwhile was lost); and after its take-up. And its epoch's last
+    /// snapshot names every entry written before it (a listing is stale up to `Cfg::stale`).
+    /// Called first after its step: as of its step's last operation.
     fn caught_up(&mut self, me: usize, e: u64, listed: Option<u64>) {
         let Some(at) = listed else {
-            return self.wrong(format!("mac{me} says term {e}'s records are caught up, and listed none"));
+            return self.wrong(format!("mac{me} says epoch {e}'s records are caught up, and listed none"));
         };
         if !self.caught.insert((e, at)) {
             return;
@@ -1096,23 +1033,15 @@ impl World {
         self.count("leads caught up");
         let (began, said) = ((at as i64 - T0 as i64 - self.macs[me].skew).max(0) as u64, self.macs[me].op_at);
         if said.saturating_sub(began) >= driver::RELIST_S {
-            self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing {} s old", said - began));
+            self.wrong(format!("mac{me} says epoch {e}'s records are caught up by a listing {} s old", said - began));
         }
         let woke = self.macs[me].woke(said);
         if began < woke {
-            self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing begun at {began} s, before it woke at {woke} s"));
+            self.wrong(format!("mac{me} says epoch {e}'s records are caught up by a listing begun at {began} s, before it woke at {woke} s"));
         }
-        let how = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.how);
-        // (A re-assertion after a long while unstepped keeps it too: no sleep, and its members tell
-        // it their entries again until acknowledged.)
-        let kept = how.as_deref().is_some_and(|h| {
-            h == "re-asserted before a sweep"
-                || h == "re-asserted after a long step"
-                || h == "re-asserted after a long while unstepped"
-        });
-        if let Some(&(_, made)) = self.made.get(&e).filter(|_| !kept) {
-            if began < made {
-                self.wrong(format!("mac{me} says term {e}'s records are caught up by a listing begun at {began} s, before the term was made at {made} s ({how:?})"));
+        if let Some(&(_, took)) = self.took.get(&e) {
+            if began + 1 < took {
+                self.wrong(format!("mac{me} says epoch {e}'s records are caught up by a listing begun at {began} s, before its take-up at {took} s"));
             }
         }
         let named = self.landed.get(&e).map(|(_, h)| h.clone()).unwrap_or_default();
@@ -1124,7 +1053,7 @@ impl World {
             .collect();
         if let Some(k) = missing.first() {
             self.wrong(format!(
-                "mac{me} says term {e}'s records are caught up; they lack {k}, written before its listing ({} in all)",
+                "mac{me} says epoch {e}'s records are caught up; they lack {k}, written before its listing ({} in all)",
                 missing.len()
             ));
         }
@@ -1138,36 +1067,32 @@ impl World {
         }
     }
 
-    /// The checks at the end of a run: one Mac leads the last term, made before its config's end's
-    /// last ten minutes (a run gone on while the lead merges makes none), and its records name
-    /// every entry ever written.
+    /// The checks at the end of a run: the declared lead (mac 0) leads, alone, caught up, its last
+    /// take-up before its config's end's last ten minutes (a run gone on while the lead merges makes
+    /// none), and the one path's records name every entry ever written.
     fn finish(&mut self) {
-        let Some((&h, &(_, at))) = self.made.iter().next_back() else { return self.wrong("no term was made".into()) };
-        let Some(t) = self.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()) else {
-            return self.wrong(format!("term {h}'s file isn't whole at the end"));
-        };
-        let named = t.member.clone();
+        let Some((&h, &(_, at))) = self.took.iter().next_back() else { return self.wrong("no take-up".into()) };
         if at + QUIET_S > self.cfg.end {
             self.wrong(format!(
-                "term {h} was made at {at} s, in the run's last ten minutes (of {} s) or after: the terms don't settle",
+                "epoch {h} was taken up at {at} s, in the run's last ten minutes (of {} s) or after: the take-ups don't settle",
                 self.cfg.end
             ));
         }
         for k in 0..self.macs.len() {
-            let (is, leads) = (self.macs[k].id == named, self.macs[k].leads);
-            if is && leads != Some(h) {
-                self.wrong(format!("term {h} names mac{k}, which leads {leads:?} at the end"));
+            let leads = self.macs[k].leads;
+            if k == 0 && leads != Some(h) {
+                self.wrong(format!("the declared lead mac0 leads {leads:?} at the end, its last epoch {h}"));
             }
-            if is && leads == Some(h) && !self.macs[k].caught {
-                self.wrong(format!("term {h}'s lead mac{k} isn't caught up at the end"));
+            if k == 0 && leads == Some(h) && !self.macs[k].caught {
+                self.wrong(format!("the lead mac0 isn't caught up at the end"));
             }
-            if !is && leads.is_some() && !self.macs[k].gone {
-                self.wrong(format!("mac{k} still leads term {leads:?} at the end, after term {h}"));
+            if k != 0 && leads.is_some() {
+                self.wrong(format!("mac{k} leads {leads:?} at the end"));
             }
         }
-        match self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok()) {
-            Some(r) => self.lost(&r, &format!("term {h}'s last records")),
-            None => self.wrong(format!("term {h} has no records at the end")),
+        match self.files.get(records::ONE).and_then(|b| serde_json::from_slice::<Records>(b).ok()) {
+            Some(r) => self.lost(&r, &format!("epoch {}'s last records", r.epoch)),
+            None => self.wrong("no records at the one path at the end".into()),
         }
     }
 
@@ -1273,21 +1198,19 @@ impl Sim {
         self.op(|w, _| w.t < w.cfg.faults)
     }
 
-    /// A job's lease in term `e`: the next granted in it.
-    fn lease(&self, e: u64) -> Result<LeaseId> {
+    /// A job's lease: the next granted in the epoch the declared lead leads (the last it led while
+    /// it leads none).
+    fn lease(&self) -> Result<LeaseId> {
         self.op(|w, _| {
+            let e = w.macs[0].leads.unwrap_or(w.macs[0].led);
             let n = w.leases.entry(e).or_default();
             *n += 1;
-            LeaseId { term: e, n: *n }
+            LeaseId { epoch: e, n: *n }
         })
     }
 
     fn send(&self, to: usize, m: Msg) -> Result<()> {
         self.op(|w, _| w.deliver(to, m))
-    }
-
-    fn view(&self, e: u64) -> Result<()> {
-        self.op(|w, me| w.view(me, e))
     }
 
     fn leads(&self, e: Option<u64>) -> Result<()> {
@@ -1426,6 +1349,16 @@ impl Io for Sim {
         self.quiet(|w| w.macs[me].local = Some(records.to_vec()));
         Ok(())
     }
+
+    fn epoch(&self, past: u64) -> Result<u64> {
+        let (me, mut e) = (self.me, 0);
+        self.quiet(|w| {
+            let m = &mut w.macs[me];
+            m.store = m.store.max(past + 1);
+            e = m.store;
+        });
+        Ok(e)
+    }
 }
 
 /// A simulated Mac: the agent's part around the pool's driver, as the agent will play it.
@@ -1436,15 +1369,13 @@ struct Mac {
     me: Member,
     driver: Driver,
     jobs: u64,
-    /// The current term as its driver said last (its jobs' leases are of it).
-    term: u64,
-    /// The term it leads, as the world was told.
+    /// The epoch it leads in, as the world was told.
     leads: Option<u64>,
     /// A listing its driver asked for, made after its step, for its next; those not made yet, the
     /// oldest first (one that failed made again after the next step).
     listed: Option<Listed>,
     listings: std::collections::VecDeque<driver::Listing>,
-    /// Its coordinator's state: the term it's of, and the jobs granted.
+    /// Its coordinator's state: the epoch it grants in, and the jobs granted.
     coord: (u64, u64),
 }
 
@@ -1453,19 +1384,7 @@ impl Mac {
         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
         let driver = Driver::unlocked(me.clone(), driver::Saved::default());
-        Mac {
-            sim,
-            k,
-            rng,
-            me,
-            driver,
-            jobs: 0,
-            term: 0,
-            leads: None,
-            listed: None,
-            listings: Default::default(),
-            coord: (0, 0),
-        }
+        Mac { sim, k, rng, me, driver, jobs: 0, leads: None, listed: None, listings: Default::default(), coord: (0, 0) }
     }
 
     fn run(mut self) {
@@ -1492,12 +1411,13 @@ impl Mac {
             if self.sim.op(|w, me| {
                 let lost = w.cfg.lose && w.rng.chance(0.3);
                 if lost {
-                    // (Its memory, its saved state and the records it kept all gone: what it
-                    // believed starts again.)
-                    w.macs[me].view = 0;
+                    // (Its memory, its saved state and the records it kept all gone; its store
+                    // kept, in its own folder.)
                     w.macs[me].local = None;
                     w.count("saved states lost");
                 }
+                // (Its store opens again: its epoch one more.)
+                w.macs[me].store += 1;
                 lost
             })? {
                 saved = driver::Saved::default();
@@ -1516,17 +1436,16 @@ impl Mac {
             heard.msgs.push((id(m.from), m.msg));
         }
         if faulting && self.rng.chance(P_JOB) {
-            let lease = self.sim.lease(self.term)?;
+            let lease = self.sim.lease()?;
             let now = Io::now(&self.sim);
             heard.entries.push(self.job(lease, now));
         }
-        heard.reassert = faulting && self.leads.is_some() && self.rng.chance(P_SWEEP);
-        let sweep = heard.reassert;
+        let sweep = faulting && self.leads.is_some() && self.rng.chance(P_SWEEP);
         let out = self.driver.step(&self.sim, heard, &check);
         self.after(out, faulting, sweep)
     }
 
-    /// What its driver's step came to, done (`sweep`: the step was asked to re-assert, for one).
+    /// What its driver's step came to, done (`sweep`: its agent would sweep, were it let).
     fn after(&mut self, out: Out, faulting: bool, sweep: bool) -> Result<()> {
         // (First: as of its step's end, a sleep since not counted.)
         let (k, caught) = (self.k, out.leads.is_some() && out.caught_up);
@@ -1535,8 +1454,6 @@ impl Mac {
             let listed = out.listed_at;
             self.sim.op(|w, me| w.caught_up(me, e, listed))?;
         }
-        self.term = out.term;
-        self.sim.view(out.term)?;
         for ev in &out.events {
             self.event(ev)?;
         }
@@ -1544,8 +1461,9 @@ impl Mac {
             self.sim.leads(out.leads)?;
             self.leads = out.leads;
         }
-        // (A sweep needs both: its step re-asserted, and its records reflect the journal.)
-        if sweep && out.fresh && out.caught_up {
+        // (A sweep needs both: its step's read of the declaration found it the lead, and its
+        // records reflect the journal.)
+        if sweep && out.vouched && out.caught_up {
             self.sim.count("sweeps a lead could make");
         }
         // Its coordinator: grants while its lead may.
@@ -1553,8 +1471,8 @@ impl Mac {
             self.coord.1 += 1;
         }
         for (to, m) in out.send {
-            if let driver::Msg::Ack { term, keys, .. } = &m {
-                self.sim.op(|w, me| w.ack(me, *term, keys))?;
+            if let driver::Msg::Ack { epoch, keys, .. } = &m {
+                self.sim.op(|w, me| w.ack(me, *epoch, keys))?;
             }
             self.sim.send(mac_of(&to), Msg { from: self.k, msg: m })?;
         }
@@ -1563,14 +1481,12 @@ impl Mac {
                 return Err(e);
             }
         }
-        // A job reading the records: the one path's, else the terms' (today's files left out: the
-        // stale reads of them are term 1's take-up's to wait out).
-        if out.term > 0 && self.rng.chance(P_READ) {
-            let one = buildstore::records::load_one::<Records>(&self.sim);
-            if let Ok(Some(r)) = one.and_then(|o| buildstore::records::newest_over(&self.sim, out.term, o, false)) {
+        // A job reading the records: the one path's.
+        if self.rng.chance(P_READ) {
+            if let Ok(Some(r)) = records::load_one(&self.sim) {
                 if let Err(why) = consistent(&r) {
                     self.sim.op(|w, me| {
-                        w.wrong(format!("mac{me} read term {}'s records at {}, not consistent: {why}", r.term, r.seq))
+                        w.wrong(format!("mac{me} read epoch {}'s records at {}, not consistent: {why}", r.epoch, r.seq))
                     })?;
                 }
             }
@@ -1603,11 +1519,19 @@ impl Mac {
     fn event(&mut self, ev: &Event) -> Result<()> {
         let k = self.k;
         match ev {
-            Event::TookUp { term, .. } => self.coord = (*term, 0),
+            Event::TookUp { epoch, how } => {
+                self.coord = (*epoch, 0);
+                let kind = match how.as_str() {
+                    "its own records" => "take-ups from its own records",
+                    h if h.starts_with("the one path's") => "take-ups from the one path's records",
+                    _ => "take-ups from today's files",
+                };
+                self.sim.count(kind);
+            }
             Event::Merged { applied, overtaken, listed, .. } => {
                 self.sim.quiet(|w| w.merged(applied, *overtaken, *listed))
             }
-            Event::Waits { what: "take up", .. } => self.sim.count("take-ups tried again"),
+            Event::Waits { what: "take up the records", .. } => self.sim.count("take-ups tried again"),
             Event::Waits { what: "have a listing back", .. } => self.sim.count("listings overdue, asked for again"),
             Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
             _ => {}
@@ -1618,7 +1542,7 @@ impl Mac {
 
     /// A job's hand-off, of lease `lease`: a unit built with a new key, now and then a prune, one
     /// that writes outside its step's outputs too (refused by every lead), or one the lead of an
-    /// odd term refuses.
+    /// odd epoch refuses.
     fn job(&mut self, lease: LeaseId, now: u64) -> Entry {
         self.jobs += 1;
         let t = TARGETS[self.rng.below(TARGETS.len() as u64) as usize];
@@ -1751,12 +1675,12 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
     counts
 }
 
-/// Each kind of term and fault, and what the knobs bring, that the default runs must see at least
-/// three times (a simulator that never got there would pass too).
-const KINDS: [&str; 27] = [
+/// Each kind of take-up and fault, and what the knobs bring, that the default runs must see at
+/// least three times (a simulator that never got there would pass too).
+const KINDS: [&str; 26] = [
     "entries outside their step's outputs, refused by every lead",
-    "re-asserted",
-    "restarted",
+    "take-ups from its own records",
+    "take-ups from the one path's records",
     "sleeps",
     "busy renames",
     "take-ups tried again",
@@ -1770,7 +1694,6 @@ const KINDS: [&str; 27] = [
     "entries passed over for a later lease's",
     "operation seconds",
     "saved states lost",
-    "re-assertions with a saved state lost",
     "leads caught up",
     "sweeps a lead could make",
     "entry reads lagging",
@@ -1817,11 +1740,11 @@ fn a_run_goes_on_only_while_its_lead_merges() {
     // merges none is wrong at the end, as before.)
     let mut w = World::new(0, 4, Cfg::pool(), false);
     let (k1, k2) = ("2026-10-06/1-1".to_string(), "2026-10-06/1-2".to_string());
-    w.made.insert(1, (0, 0));
+    w.took.insert(1, (0, 0));
     w.written.insert(k1.clone(), Kind::Taken);
     w.written.insert(k2.clone(), Kind::Taken);
-    let mut r = Records { term: 1, seq: 1, ..Default::default() };
-    let save = |w: &mut World, r: &Records| w.files.insert(records::path(1), serde_json::to_vec(r).unwrap());
+    let mut r = Records { epoch: 1, seq: 1, ..Default::default() };
+    let save = |w: &mut World, r: &Records| w.files.insert(records::ONE.to_string(), serde_json::to_vec(r).unwrap());
     save(&mut w, &r);
     w.t = w.cfg.end;
     assert!(w.goes_on(), "two entries lacking: ten minutes more");
@@ -1840,18 +1763,18 @@ fn a_run_goes_on_only_while_its_lead_merges() {
 #[test]
 fn a_lead_keeps_leading_over_slow_listings_and_a_week_of_journal() {
     // Listings of 3 to 33 s a folder, and a week of the journal's days to list. (Review H1: a
-    // take-up listed the journal in its loop, the loop ran past a minute, and the next re-asserted
-    // and took up again, for ever.)
+    // take-up listed the journal in its loop, the loop ran past a minute, and the next took up
+    // again, for ever.)
     let counts = check_all(0..300, |_| Cfg { list_s: (3, 33), old_days: 7, ..Cfg::pool() });
-    for what in ["re-asserted", "entries found by a listing"] {
+    for what in ["take-ups from its own records", "entries found by a listing"] {
         assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {:?}", counts.get(what));
     }
 }
 
 #[test]
 fn a_development_build_or_a_rollback_leaves_a_lead() {
-    // (Review H2: a lead restarted into an older app had its re-assertion refused, and stopped
-    // there every loop. Since #881 there's no app rule: the declared lead leads whatever app.)
+    // (Review H2: a lead restarted into an older app had its take-up refused, and stopped there
+    // every loop. Since #881 there's no app rule: the declared lead leads whatever app.)
     let counts = check_all(0..1000, |_| Cfg { downgrade: true, leave: true, ..Cfg::pool() });
     assert!(counts.get("restarts").is_some_and(|&n| n >= 3), "{counts:?}");
 }
@@ -1866,11 +1789,11 @@ fn a_lead_lists_every_day_again_daily() {
 }
 
 #[test]
-fn term_ones_first_snapshot_cut_short_then_stale_reads() {
-    // Seed 3090226 of the four-hour runs (re-review 2, H1): term 1's first snapshot's create cut
-    // short, term 1 made all the same, its lead's saves and today's files after them read stale:
-    // a later term's first snapshot paired a manifest of one version with keys of another
-    // (invariant 4).
+fn cut_creates_lost_states_and_stale_reads_pair_no_versions() {
+    // Seed 3090226 of the four-hour runs (re-review 2, H1, with terms): cut creates, saved states
+    // lost and reads stale up to three minutes: no snapshot pairs a manifest of one version with
+    // keys of another (invariant 4), and none taken up from a stale one loses an acknowledged
+    // entry.
     let cfg = Cfg { faults: 14_400, end: 15_900, stale: 184, list_s: (3, 33), cuts: true, lose: true, ..Cfg::pool() };
     let r = run(3_090_226, cfg, false);
     assert!(r.wrong.is_empty(), "{:?}", r.wrong.iter().take(3).collect::<Vec<_>>());
@@ -1954,10 +1877,10 @@ fn the_knobs_one_at_a_time() {
         let (bad, c) = run_all(0..n, |_| cfg);
         let get = |k: &str| c.get(k).copied().unwrap_or(0);
         eprintln!(
-            "{name}: {} of {n} wrong; re-asserted {}, restarted {}, refused never read whole {}{}",
+            "{name}: {} of {n} wrong; take-ups from its own records {}, from the one path's {}, refused never read whole {}{}",
             bad.len(),
-            get("re-asserted"),
-            get("restarted"),
+            get("take-ups from its own records"),
+            get("take-ups from the one path's records"),
             get("entries refused, never read whole"),
             bad.first().map(|(s, w)| format!("; seed {s}: {}", w[0])).unwrap_or_default()
         );

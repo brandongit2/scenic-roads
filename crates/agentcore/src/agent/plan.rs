@@ -1009,14 +1009,9 @@ impl Planner {
             let m = p.metadata().ok();
             m.as_ref().map(|m| (m.len(), m.modified().ok())).hash(h);
         };
-        // (The records: the one path's snapshot, which the lead rewrites whole with each save, and
-        // the current term's while the gate writes it (docs/coordination.md step 8b: a lead on an
-        // older app writes that alone); today's files before the pool.)
+        // (The records: the one path's snapshot, which the lead rewrites whole with each save
+        // (docs/coordination.md steps 8b, 8c); today's files before the pool.)
         stat(&mut h, (&root.join(crate::pool::records::ONE)).into());
-        let term = self.inp.pool_seen.as_ref().map_or(0, |p| p.gates.term);
-        if term > 0 {
-            stat(&mut h, (&root.join(crate::pool::records::path(term))).into());
-        }
         for f in ["state/build/manifest.json", "state/build/jobs.json"] {
             stat(&mut h, (&root.join(f)).into());
         }

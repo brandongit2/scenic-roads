@@ -112,7 +112,6 @@ impl ToLead {
             beats::ASKS,
             beats::HANDOFF,
             beats::BUDGETS,
-            beats::RECORDS,
             beats::ROOT,
             beats::BY_LEAD,
         ]

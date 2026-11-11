@@ -2560,8 +2560,8 @@ mod tests {
         let root = &d.path().join("nas");
         let nas = &root.join("sources");
         // (The pool begun: the records are its lead's, and this Mac packs no raw tiles itself.)
-        std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join(crate::pool::lead::LEAD), b"{}").unwrap();
         // A canopy square the NAS lacks, an empty marker, a copy of a recorded file and of an
         // archive, a raw tile the NAS has loose and one it lacks; and caches only a clear empties.
         let square = whole(&c.join("chm10/a.tif"), 60);
@@ -2974,7 +2974,8 @@ mod tests {
     /// A member's NAS (the pool begun: the records its lead's): its project folder and `sources/`.
     fn helpers_nas(d: &Path) -> (PathBuf, PathBuf) {
         let root = d.join("nas");
-        std::fs::create_dir_all(root.join(crate::pool::term::DIR)).unwrap();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join(crate::pool::lead::LEAD), b"{}").unwrap();
         (root.clone(), root.join("sources"))
     }
 

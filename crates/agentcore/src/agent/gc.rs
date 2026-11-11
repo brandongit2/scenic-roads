@@ -491,8 +491,8 @@ fn nas_ssh() -> Vec<String> {
 }
 
 /// What the pool's records and journal name beyond today's manifest (docs/pool.md §7.3, §7.7): the
-/// newest records' manifest and pending uploads (today's files are term 1's: a later term's lead
-/// doesn't write them), and every journal entry those records don't reflect yet, refused ones
+/// newest records' manifest and pending uploads (today's files are the pool's start's: no lead
+/// writes them), and every journal entry those records don't reflect yet, refused ones
 /// aside: a hand-off not merged yet (its member away for weeks, its entry written but untold) keeps
 /// what it names, its changes and
 /// its uploads (the gate's copies an index of it lists: `inputs_kept`). Empty with the pool never
@@ -500,8 +500,8 @@ fn nas_ssh() -> Vec<String> {
 /// doesn't read whole (short, damaged, or not there as listed: a read cut short says nothing of the
 /// entry): the inputs sweep then sweeps nothing that pass (said: `inputs_walk`), until the lead has
 /// refused the entry (one unreadable for `driver::UNREADABLE_S` awake), which the records
-/// then name. With no term led (the pool switched off, or its term not readable whole), no one
-/// refuses: an entry unreadable whose day is `PASS_OVER_S` past is passed over, said as a warning,
+/// then name. With no lead declared (crate::pool::lead::declared: the pool not begun, or its
+/// declaration not readable whole), no one refuses: an entry unreadable whose day is `PASS_OVER_S` past is passed over, said as a warning,
 /// so the hold is bounded either way.
 #[derive(Debug, Default)]
 pub struct Unmerged {
@@ -510,19 +510,18 @@ pub struct Unmerged {
     /// The (logical, content) names of those entries' changes, for the sweeps that read what a
     /// file names (the gate's indexes).
     pub changes: Vec<(String, String)>,
-    /// The newest records' manifest (logical, content): today's file is term 1's.
+    /// The newest records' manifest (logical, content): the one path's (today's file before the pool).
     pub records: Vec<(String, String)>,
     /// How many entries weren't merged.
     pub entries: usize,
-    /// The entries passed over, unreadable with no term led (`PASS_OVER_S`), said.
+    /// The entries passed over, unreadable with no lead declared (`PASS_OVER_S`), said.
     pub warnings: Vec<String>,
 }
 
-/// How long an entry stays unreadable, no term led, before GC passes over it: three days. An entry
-/// is written whole in seconds (by a temporary name), and a lead refuses one its reads find not
-/// whole for `driver::UNREADABLE_S` (an hour) awake; three days is that hour with a margin for the
-/// pool switched off as a lead's Mac slept, a term handed over, or a share answering stale reads a
-/// while. Passing over isn't removing: the entry's files go only by GC's own rules, as any file
+/// How long an entry stays unreadable, no lead declared, before GC passes over it: three days. An
+/// entry is written whole in seconds (by a temporary name), and a lead refuses one its reads find
+/// not whole for `driver::UNREADABLE_S` (an hour) awake; three days is that hour with a margin for
+/// the lead's Mac asleep, the lead moved, or a share answering stale reads a while. Passing over isn't removing: the entry's files go only by GC's own rules, as any file
 /// the map, manifest or records don't name.
 pub const PASS_OVER_S: u64 = 3 * 86400;
 const _: () = assert!(PASS_OVER_S >= crate::pool::driver::UNREADABLE_S + 2 * 86400);
@@ -530,7 +529,7 @@ const _: () = assert!(PASS_OVER_S >= crate::pool::driver::UNREADABLE_S + 2 * 864
 /// `now`: unix seconds, which `PASS_OVER_S` is counted to (by the entry's day, its key's: one
 /// whose day is before `now - PASS_OVER_S`'s was written longer ago than that).
 pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
-    use crate::pool::{journal, records::Records, term};
+    use crate::pool::{journal, lead, records::Records};
     let mut u = Unmerged::default();
     match root.join(journal::DIR).metadata() {
         Ok(_) => {}
@@ -538,10 +537,9 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
         Err(e) => return Err(e).context("the journal"),
     }
     let nas = root.clone();
-    let cur = term::current(&nas).context("the current term")?;
+    // (Led: a lead declared; only then does anyone refuse.)
+    let led = lead::declared(&nas).context("the lead's declaration")?.is_some();
     let r = Records::now(&nas).context("the newest records")?;
-    // (Led: a term readable whole; only then does anyone refuse.)
-    let led = cur.lead.is_some();
     let cutoff = journal::day(now.saturating_sub(PASS_OVER_S)).unwrap_or_default();
     u.files.extend(r.manifest.values().cloned());
     u.records = r.manifest.iter().map(|(l, c)| (l.clone(), c.clone())).collect();
@@ -562,7 +560,7 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
                 }
             }
             // (The lead decides an entry is lost: it refuses one it can't read whole for an hour
-            // awake, and the records then name it. No term led, one `PASS_OVER_S` old is passed.)
+            // awake, and the records then name it. No lead declared, one `PASS_OVER_S` old is passed.)
             unreadable => {
                 let what = match unreadable {
                     journal::Read::Short => "doesn't read whole".to_string(),
@@ -572,7 +570,7 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
                 let day = key.split('/').next().unwrap_or_default();
                 if !led && !cutoff.is_empty() && day < cutoff.as_str() {
                     u.warnings.push(format!(
-                        "journal entry {key} {what}, no term led to refuse it, for over {} days: passed over",
+                        "journal entry {key} {what}, no lead declared to refuse it, for over {} days: passed over",
                         PASS_OVER_S / 86400
                     ));
                     continue;
@@ -585,7 +583,8 @@ pub fn unmerged(root: &store::nasfs::NasRoot, now: u64) -> Result<Unmerged> {
 }
 
 /// What GC keeps of `sources/inputs/` (docs/inputs.md §4.9): what the records name (`manifest`,
-/// today's file, and with the pool on the newest records' own manifest (today's is term 1's):
+/// today's file, and with the pool on the newest records' own manifest (today's is the pool's
+/// start's):
 /// the units' accepted indexes, listings and held reports), the files each such index lists, the
 /// same of every journal entry the newest records don't reflect yet (pool.md §7.3: an entry not
 /// merged may name a version the records will), the files listed by every index whose time is
@@ -1562,9 +1561,9 @@ mod tests {
     }
 
     /// The newest lease the in-process lead marks with.
-    const NEWEST: Lease = Lease { term: 2, n: 9 };
+    const NEWEST: Lease = Lease { epoch: 2, n: 9 };
     /// A lease granted before every mark.
-    const OLDER: Lease = Lease { term: 1, n: 1 };
+    const OLDER: Lease = Lease { epoch: 1, n: 1 };
 
     /// GC's queue `q` asked in process as the lead's coordinator answers it (no client, no live
     /// lease), its clock `now` (unix s).
@@ -2060,7 +2059,7 @@ mod tests {
         // A journal entry the records don't reflect, naming the newer index.
         let entry = crate::pool::journal::Entry {
             member: "m-0000000000000001".into(),
-            lease: crate::pool::journal::LeaseId { term: 1, n: 7 },
+            lease: crate::pool::journal::LeaseId { epoch: 1, n: 7 },
             step: "inputs".into(),
             handoff: buildstore::handoff::Handoff {
                 changes: [(format!("{u}/@index"), Some(format!("{u}/@index.6666666666666666.json")))].into(),
@@ -2149,7 +2148,7 @@ mod tests {
     /// The journal's entries the newest records don't reflect yet (`unmerged`, what keeps the
     /// gate's copies an entry's index lists): counted with their files, however old; none once
     /// merged (or refused); one not whole yet an error (the inputs sweep sweeps nothing), until
-    /// refused, or with no term led, `PASS_OVER_S` old.
+    /// refused, or with no lead declared, `PASS_OVER_S` old.
     #[test]
     fn an_unmerged_entry_keeps_its_files() {
         use crate::pool::journal::{self, Entry, LeaseId};
@@ -2165,7 +2164,7 @@ mod tests {
         h.pending.insert(b.into(), "0".repeat(64));
         let e = Entry {
             member: "m-0000000000000002".into(),
-            lease: LeaseId { term: 1, n: 4 },
+            lease: LeaseId { epoch: 1, n: 4 },
             step: "pack".into(),
             handoff: h,
             at: 1_791_500_000,
@@ -2175,17 +2174,16 @@ mod tests {
         let u = unmerged(&nas, now).unwrap();
         assert_eq!(u.entries, 1);
         assert!(u.files.contains(a) && u.files.contains(b), "{:?}", u.files);
-        // Merged (term 1's records reflect it): nothing of its own.
+        // Merged (the lead's records reflect it): nothing of its own.
         let me = crate::pool::Member { id: "m-0000000000000001".into(), host: "a".into(), app: "development".into() };
-        fs::write(root.join("state/build/jobs.json"), "{}").unwrap();
-        fs::write(root.join("state/build/pending.json"), "{}").unwrap();
-        crate::pool::term::bootstrap(&nas, &me, 1_791_500_000).unwrap().unwrap();
-        let mut rec = crate::pool::records::Records { term: 1, ..Default::default() };
+        crate::pool::lead::declare(&nas, &me, 1_791_500_000).unwrap().unwrap();
+        let mut rec = crate::pool::records::Records { epoch: 1, ..Default::default() };
         rec.reflected.insert(e.key().unwrap());
-        rec.save(&nas, &|_| Ok(()), true).unwrap();
+        rec.save(&nas, &|_| Ok(())).unwrap();
         let u = unmerged(&nas, now).unwrap();
         assert!(u.entries == 0 && !u.files.contains(a));
-        // A term led: an entry that doesn't read whole, or reads damaged, is an error until refused.
+        // A lead declared: an entry that doesn't read whole, or reads damaged, is an error until
+        // refused.
         let entry_at = |key: &str, bytes: &[u8]| {
             let p = root.join(journal::DIR).join(format!("{key}.json"));
             fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -2198,14 +2196,14 @@ mod tests {
         let damaged_key = format!("{}/1-6", journal::day(now).unwrap());
         entry_at(&damaged_key, b"{\"not\": \"an entry\"}");
         rec.rejected.insert(short_key, "never whole".into());
-        rec.save(&nas, &|_| Ok(()), true).unwrap();
+        rec.save(&nas, &|_| Ok(())).unwrap();
         assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("damaged"));
         rec.rejected.insert(damaged_key, "damaged".into());
-        rec.save(&nas, &|_| Ok(()), true).unwrap();
+        rec.save(&nas, &|_| Ok(())).unwrap();
         assert!(unmerged(&nas, now).unwrap().warnings.is_empty());
-        // No term led (its term not readable whole): no one refuses. An entry unreadable from today
-        // is an error; one whose day is over `PASS_OVER_S` past is passed over, said.
-        fs::write(root.join(crate::pool::term::DIR).join("1.json"), b"{\"term\": ").unwrap();
+        // No lead declared (its declaration not readable whole): no one refuses. An entry unreadable
+        // from today is an error; one whose day is over `PASS_OVER_S` past is passed over, said.
+        fs::write(root.join(crate::pool::lead::LEAD), b"{\"member\": ").unwrap();
         let young = entry_at(&format!("{}/1-8", journal::day(now).unwrap()), b"{\"member\": ");
         assert!(format!("{:#}", unmerged(&nas, now).unwrap_err()).contains("1-8"));
         fs::remove_file(&young).unwrap();

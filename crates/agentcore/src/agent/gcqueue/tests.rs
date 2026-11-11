@@ -25,7 +25,7 @@ fn to(m: &Map, files: &[(&str, &str)], seq: u64) -> (Batch, Map) {
 
 fn records(seq: u64, manifest: &[(&str, &str)]) -> Records {
     Records {
-        term: 2,
+        epoch: 2,
         seq,
         manifest: manifest.iter().map(|(l, c)| (l.to_string(), c.to_string())).collect(),
         ..Default::default()
@@ -120,7 +120,7 @@ fn entry(n: u64, content: &str) -> Entry {
     };
     Entry {
         member: "m-000000000000000b".into(),
-        lease: LeaseId { term: 2, n },
+        lease: LeaseId { epoch: 2, n },
         step: "unit".into(),
         handoff: h,
         at: T0 + n,
@@ -140,11 +140,11 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     // (Told and removed while leases up to 2-7 were granted.)
     let none = BTreeMap::new();
     let h = Holders { cursors: &none, oldest_lease: None, now: T0 + 100 };
-    let at = lease(LeaseId { term: 2, n: 7 });
+    let at = lease(LeaseId { epoch: 2, n: 7 });
     assert!(q.removing(&[name.to_string()], &h, at).unwrap().is_empty());
     q.gone(&[name.to_string()], &[], T0 + 100, at).unwrap();
     let nas = Mem::default();
-    let mut r = Records { term: 2, ..Default::default() };
+    let mut r = Records { epoch: 2, ..Default::default() };
     let check = |e: &Entry, _: &Records| refusal(&q, e, T0 + 150).map_or(Ok(()), Err);
     let reused = journal::write(&nas, &entry(5, name)).unwrap();
     let m = records::merge(&nas, &mut r, &[reused.clone()], &check);
@@ -183,7 +183,7 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
     let none = BTreeMap::new();
     let past = T0 + GRACE_S;
     let h = Holders { cursors: &none, oldest_lease: None, now: past };
-    let told = store::map::gc::Lease { term: 2, n: 5 };
+    let told = store::map::gc::Lease { epoch: 2, n: 5 };
     // (A hand-off brings c, reused: held from the chunk, which takes a and b.)
     let reuse = |n: u64, names: &[&str]| Entry {
         handoff: Handoff { reused: names.iter().map(|s| s.to_string()).collect(), ..Default::default() },
@@ -192,12 +192,12 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
     assert!(refusal(&q, &reuse(9, &["c.1.pack"]), past).is_none());
     assert_eq!(q.chunk(&h, told, 10, &|_| true).unwrap(), ["a.1.pack", "b.1.pack"]);
     // Being removed: refused, however new its lease.
-    let newer = Entry { lease: LeaseId { term: 3, n: 1 }, ..reuse(1, &["a.1.pack"]) };
+    let newer = Entry { lease: LeaseId { epoch: 3, n: 1 }, ..reuse(1, &["a.1.pack"]) };
     assert!(refusal(&q, &newer, past).is_some_and(|w| w.contains("being removed")), "while it goes");
     // Gone, its mark's lease the newest then (3-4): a lease up to it refused, one after not.
-    q.gone(&["a.1.pack".into()], &["b.1.pack".into()], past, store::map::gc::Lease { term: 3, n: 4 }).unwrap();
+    q.gone(&["a.1.pack".into()], &["b.1.pack".into()], past, store::map::gc::Lease { epoch: 3, n: 4 }).unwrap();
     assert!(refusal(&q, &newer, past).is_some());
-    assert!(refusal(&q, &Entry { lease: LeaseId { term: 3, n: 5 }, ..newer.clone() }, past).is_none());
+    assert!(refusal(&q, &Entry { lease: LeaseId { epoch: 3, n: 5 }, ..newer.clone() }, past).is_none());
     // Let go (yielded on): b queued again as it was, unmarked; a hand-off bringing it merges.
     assert_eq!(q.queued("b.1.pack"), Some(Queued { seq: 2, at: T0 }));
     assert!(refusal(&q, &reuse(2, &["b.1.pack"]), past).is_none());
@@ -232,9 +232,9 @@ fn an_older_member_s_hand_off_without_reused_is_refused_by_its_changes() {
     let e = Entry { handoff: old, ..entry(5, name) };
     let none = BTreeMap::new();
     let h = Holders { cursors: &none, oldest_lease: None, now: T0 + 100 };
-    assert!(q.removing(&[name.to_string()], &h, lease(LeaseId { term: 2, n: 7 })).unwrap().is_empty());
+    assert!(q.removing(&[name.to_string()], &h, lease(LeaseId { epoch: 2, n: 7 })).unwrap().is_empty());
     assert!(refusal(&q, &e, T0 + 100).is_some_and(|w| w.contains("being removed")));
-    q.gone(&[name.to_string()], &[], T0 + 100, lease(LeaseId { term: 2, n: 7 })).unwrap();
+    q.gone(&[name.to_string()], &[], T0 + 100, lease(LeaseId { epoch: 2, n: 7 })).unwrap();
     assert!(refusal(&q, &e, T0 + 100).is_some_and(|w| w.contains("removed from the NAS")));
 }
 
@@ -254,7 +254,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     q.batch(&b2, T0);
     let none = BTreeMap::new();
     let h = Holders { cursors: &none, oldest_lease: None, now: T0 + GRACE_S };
-    let (l1, l2) = (store::map::gc::Lease { term: 2, n: 1 }, store::map::gc::Lease { term: 2, n: 8 });
+    let (l1, l2) = (store::map::gc::Lease { epoch: 2, n: 1 }, store::map::gc::Lease { epoch: 2, n: 8 });
     assert_eq!(q.chunk(&h, l1, 3, &|_| true).unwrap(), ["a.1.pack", "b.1.pack", "c.1.pack"]);
     // (Killed; the lead restarts, its records naming b now.)
     let back = GcQueue::default();
@@ -272,7 +272,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     again.open(d.path(), &m2).unwrap();
     assert!(again.deleted_under([&b].into_iter(), l1).is_some() && !again.removing_now().contains(&b));
     assert!(
-        back.deleted_under([&"a.1.pack".to_string()].into_iter(), store::map::gc::Lease { term: 2, n: 8 }).is_some(),
+        back.deleted_under([&"a.1.pack".to_string()].into_iter(), store::map::gc::Lease { epoch: 2, n: 8 }).is_some(),
         "marked again, newer"
     );
     // Yielding at once on it: e (told the first time) let go unmarked; a and c, which the killed
@@ -317,11 +317,11 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     std::fs::create_dir_all(d.path().join("maplog")).unwrap();
     let q = std::sync::Arc::new(GcQueue::default());
     q.open(&d.path().join("maplog"), &map(1, &[])).unwrap();
-    c.set_term(3);
+    c.set_epoch(3);
     c.set_maplog(store::map::feed::Feed::new(), q.clone());
     // (The records not seen yet, a holder unknown: nothing marked, the job told so.)
     assert!(lead().removing(&[name.to_string()]).is_err());
-    assert!(q.deleted_under([name.to_string()].iter(), lease(LeaseId { term: 0, n: 0 })).is_none());
+    assert!(q.deleted_under([name.to_string()].iter(), lease(LeaseId { epoch: 0, n: 0 })).is_none());
     super::records(&q, &records(1, &[]), T0);
     assert_eq!(lead().removing(&[name.to_string()]).unwrap(), Vec::<String>::new());
     // (Being removed: refused, whatever its lease; said gone, a lease of term 2, granted before:
@@ -330,7 +330,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     assert!(refusal(&q, &reused, T0).is_some_and(|why| why.contains(name)));
     lead().gone(&[name.to_string()], &[]).unwrap();
     assert!(refusal(&q, &reused, T0).is_some_and(|why| why.contains(name)));
-    let redo = Entry { lease: LeaseId { term: 4, n: 1 }, ..entry(8, name) };
+    let redo = Entry { lease: LeaseId { epoch: 4, n: 1 }, ..entry(8, name) };
     assert!(refusal(&q, &redo, T0).is_none());
     let back = GcQueue::default();
     back.open(&d.path().join("maplog"), &map(1, &[])).unwrap();
@@ -358,7 +358,7 @@ fn the_lead_holds_back_what_is_held_as_gc_tells_it() {
     q.batch(&b2, T0);
     assert!(q.queued("b.1.pack").is_some());
     let names: Vec<String> = ["a.1.pack", "r.1.pack", "b.1.pack", "x.1.pack"].map(String::from).to_vec();
-    let newest = store::map::gc::Lease { term: 2, n: 9 };
+    let newest = store::map::gc::Lease { epoch: 2, n: 9 };
     let at = |now: u64, cursors: &BTreeMap<String, Cursor>, oldest_lease| {
         q.removing(&names, &Holders { cursors, oldest_lease, now }, newest).unwrap()
     };
@@ -375,7 +375,7 @@ fn the_lead_holds_back_what_is_held_as_gc_tells_it() {
     // records' stay.
     assert_eq!(at(past, &none, Some(past)), ["a.1.pack", "r.1.pack"]);
     assert!(q.queued("b.1.pack").is_some() && q.removing_now().contains(&"b.1.pack".to_string()));
-    let older = store::map::gc::Lease { term: 2, n: 5 };
+    let older = store::map::gc::Lease { epoch: 2, n: 5 };
     assert!(q.deleted_under([&"b.1.pack".to_string()].into_iter(), older).is_some());
     assert!(q.deleted_under([&"x.1.pack".to_string()].into_iter(), older).is_some(), "named by nothing: marked");
     assert!(q.deleted_under([&"a.1.pack".to_string()].into_iter(), older).is_none(), "kept: not marked");
@@ -426,7 +426,7 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     std::fs::create_dir_all(&dir).unwrap();
     let q = std::sync::Arc::new(GcQueue::default());
     q.open(&dir, &map(1, &[])).unwrap();
-    c.set_term(3);
+    c.set_epoch(3);
     c.set_maplog(store::map::feed::Feed::new(), q.clone());
     super::records(&q, &records(1, &[]), T0);
     let beat = |m: &str, held: &[u64], handoffs: &[String]| held::Beat {
@@ -467,7 +467,7 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     // 10 days on, m4 back: its hand-off (reusing `name`) refused, its targets done again.
     let ten = T0 + 10 * 86400;
     let reused = Entry {
-        lease: LeaseId { term: 3, n: id },
+        lease: LeaseId { epoch: 3, n: id },
         handoff: Handoff { reused: vec![name.to_string()], ..Default::default() },
         ..entry(5, "base/6-1-1.k5.base")
     };
@@ -475,7 +475,7 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     c.member_beat(&beat("m4", &[], std::slice::from_ref(&key)));
     let why = refusal(&q, &reused, ten).expect("refused");
     assert!(why.contains(name), "{why}");
-    let redo = Entry { lease: LeaseId { term: 3, n: grant("m2") }, ..reused.clone() };
+    let redo = Entry { lease: LeaseId { epoch: 3, n: grant("m2") }, ..reused.clone() };
     assert!(refusal(&q, &redo, ten).is_none(), "the redo merges");
     assert_eq!(q.deletions_kept(), 1, "m4 still lists its hand-off");
     // Its hand-off answered, m4 lists nothing: no lease as old as the deletion is owed, let go.

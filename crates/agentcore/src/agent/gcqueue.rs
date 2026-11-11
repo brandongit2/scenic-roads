@@ -28,12 +28,12 @@ pub use store::map::gc::{GcQueue, Holders, Queued, Refused, CURSOR_TTL_S, FILE, 
 
 /// A lease's id as the queue keeps it.
 pub fn lease(l: LeaseId) -> store::map::gc::Lease {
-    store::map::gc::Lease { term: l.term, n: l.n }
+    store::map::gc::Lease { epoch: l.epoch, n: l.n }
 }
 
 /// The queue told of records `r` as saved (at `now`).
 pub fn records(q: &GcQueue, r: &Records, now: u64) {
-    q.records((r.term, r.seq), r.manifest.values().chain(r.pending.keys()), now);
+    q.records((r.epoch, r.seq), r.manifest.values().chain(r.pending.keys()), now);
 }
 
 /// Why the merge refuses journal entry `e` (at `now`): a content name it brings (a change, an

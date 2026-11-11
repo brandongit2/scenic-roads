@@ -57,11 +57,6 @@ pub const HANDOFF: &str = "handoff";
 /// resume progress in its beat.
 pub const BUDGETS: &str = "budgets";
 
-/// What a member's beat says it reads: the build's records at their one path
-/// (buildstore::records::ONE, docs/coordination.md step 8b), not the term's own brief. The lead's
-/// saves write that beside while a member heard doesn't say it (`per_term`).
-pub const RECORDS: &str = "records";
-
 /// What a member's beat says: its agent's proxy takes the Wikimedia budget from the lead
 /// (jobrt::budget::Budget::set_lead). Said for a lead on the app before, which gives batches only
 /// while every member heard says it.
@@ -151,9 +146,9 @@ struct Inner {
     /// (`keep_lead_view`: `LEAD_VIEW` in the agent's folder).
     lead_view: LeadView,
     lead_view_at: Option<std::path::PathBuf>,
-    /// On a member: the term its lead's last answer said it leads (`Answer::term`), and when that
+    /// On a member: the lead its lead's last answer said leads (`Answer::leading`), and when that
     /// answer came (unix s): its driver's step takes it while fresh (`lead_says`).
-    lead_term: Option<(crate::pool::term::Term, u64)>,
+    leading: Option<(crate::pool::Member, u64)>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -182,7 +177,7 @@ impl Default for Beats {
                 threads: Vec::new(),
                 lead_answered: None,
                 lead_root: false,
-                lead_term: None,
+                leading: None,
                 lead_asks: false,
                 from_lead: Vec::new(),
                 took: 0,
@@ -252,7 +247,7 @@ impl Beats {
         g.lead_takes = takes;
         g.lead_answered = Some((now, a.speaks.iter().any(|w| w == PAGE)));
         g.lead_root = a.speaks.iter().any(|w| w == ROOT);
-        g.lead_term = a.term.clone().map(|t| (t, now));
+        g.leading = a.leading.clone().map(|m| (m, now));
         if takes {
             let before = std::mem::take(&mut g.heard);
             for h in &a.members {
@@ -352,13 +347,6 @@ impl Beats {
         self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == HANDOFF))
     }
 
-    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `RECORDS`: its
-    /// readers read the term's own brief, which the lead's saves write beside the one path (the
-    /// rollout gate of docs/coordination.md step 8b).
-    pub fn per_term(&self, now: u64) -> bool {
-        self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == RECORDS))
-    }
-
     /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `ROOT`: it may ask
     /// the build page's old addresses (crate::coord::oldpage).
     pub fn old_page(&self, now: u64) -> bool {
@@ -400,15 +388,15 @@ impl Beats {
         self.inner.lock().unwrap().lead_answered.is_some_and(|(at, _)| now.saturating_sub(at) < PAGE_AWAY_S)
     }
 
-    /// On a member: the term its lead's last answer said it leads, that answer within `PAGE_AWAY_S`
-    /// of `now` (docs/coordination.md step 8a): its driver learns its lead and term from it, and
-    /// reads the NAS's declaration and terms only while there's none (an older lead's answers, a
-    /// lead not leading or its step hung, or none answering lately: the owner may have moved it).
-    /// An answer timed after `now` (this Mac's clock set back since) counts as none: else it would
-    /// stay fresh for as long as the clock was set back, the lead gone meanwhile.
-    pub fn lead_says(&self, now: u64) -> Option<crate::pool::term::Term> {
+    /// On a member: the lead its lead's last answer said leads, that answer within `PAGE_AWAY_S` of
+    /// `now` (docs/coordination.md steps 8a, 8c): its driver learns its lead from it, and reads the
+    /// NAS's declaration only while there's none (an older lead's answers, a lead not leading or its
+    /// step hung, or none answering lately: the owner may have moved it). An answer timed after
+    /// `now` (this Mac's clock set back since) counts as none: else it would stay fresh for as long
+    /// as the clock was set back, the lead gone meanwhile.
+    pub fn lead_says(&self, now: u64) -> Option<crate::pool::Member> {
         let g = self.inner.lock().unwrap();
-        g.lead_term.as_ref().filter(|(_, at)| *at <= now && now - at < PAGE_AWAY_S).map(|(t, _)| t.clone())
+        g.leading.as_ref().filter(|(_, at)| *at <= now && now - at < PAGE_AWAY_S).map(|(m, _)| m.clone())
     }
 
     /// The lead's messages to this member as its last answer carried them, after those taken.
@@ -530,7 +518,7 @@ impl Beats {
         g.lead_takes = false;
         g.lead_answered = None;
         g.lead_root = false;
-        g.lead_term = None;
+        g.leading = None;
         g.lead_asks = false;
         g.lead_handoffs = Some(false);
         g.threads.clear();
@@ -607,24 +595,6 @@ mod tests {
         assert!(b.get("m-a", 100 + FORGET_S).is_none());
     }
 
-    /// docs/coordination.md step 8b's gate: the lead writes the term's own brief beside the
-    /// one path while a member heard within `FORGET_S` doesn't say `RECORDS`; once every member
-    /// heard says it, no more; a member on an older app heard again opens it again.
-    #[test]
-    fn the_terms_own_records_go_on_while_a_member_heard_reads_them() {
-        let b = Beats::default();
-        assert!(!b.per_term(100), "no member heard");
-        let all = || [SPEAKS, HANDOFF, RECORDS].map(str::to_string).to_vec();
-        b.heard(hb("m-a", 100), all(), None, 100);
-        b.heard(hb("m-b", 100), [SPEAKS, HANDOFF].map(str::to_string).to_vec(), None, 100);
-        assert!(b.per_term(110), "m-b reads the term's own");
-        b.heard(hb("m-b", 120), all(), None, 120);
-        assert!(!b.per_term(130));
-        b.heard(hb("m-c", 2000), vec![SPEAKS.into()], None, 2000);
-        assert!(b.per_term(2000), "an older member back");
-        assert!(!b.per_term(2000 + FORGET_S), "forgotten");
-    }
-
     /// A member takes the others' heartbeats from a lead that takes the beat, and its releases
     /// from any answer.
     #[test]
@@ -638,30 +608,28 @@ mod tests {
         assert!(b.get("m-b", 10).is_some());
     }
 
-    /// docs/coordination.md step 8a: a member takes its lead's term from the lead's answer while
-    /// that answer is fresh (`PAGE_AWAY_S`); an answer without one (an older lead, or one not
-    /// leading), none lately (or timed after its clock, set back), or an older lead's 404, and its
-    /// driver reads the NAS.
+    /// docs/coordination.md steps 8a, 8c: a member takes its lead from the lead's answer while that
+    /// answer is fresh (`PAGE_AWAY_S`); an answer without one (an older lead, or one not leading),
+    /// none lately (or timed after its clock, set back), or an older lead's 404, and its driver
+    /// reads the declaration.
     #[test]
-    fn a_member_takes_its_lead_s_term_from_a_fresh_answer_alone() {
+    fn a_member_takes_its_lead_from_a_fresh_answer_alone() {
         let b = Beats::default();
-        let t = crate::pool::term::Term {
-            term: 7,
-            member: "m-lead".into(),
-            host: "mini".into(),
-            app: "x".into(),
-            since: 1,
-            how: "re-asserted".into(),
-            from: 6,
-        };
+        let m = crate::pool::Member { id: "m-lead".into(), host: "mini".into(), app: "x".into() };
         assert_eq!(b.lead_says(10), None, "no answer yet");
-        b.answered(&Answer { speaks: vec![SPEAKS.into()], term: Some(t.clone()), ..Default::default() }, 10);
-        assert_eq!(b.lead_says(10 + PAGE_AWAY_S - 1), Some(t.clone()));
+        b.answered(&Answer { speaks: vec![SPEAKS.into()], leading: Some(m.clone()), ..Default::default() }, 10);
+        assert_eq!(b.lead_says(10 + PAGE_AWAY_S - 1), Some(m.clone()));
         assert_eq!(b.lead_says(10 + PAGE_AWAY_S), None, "the lead not answering lately");
         assert_eq!(b.lead_says(9), None, "this Mac's clock set back past the answer");
         b.answered(&Answer { speaks: vec![SPEAKS.into()], ..Default::default() }, 20);
-        assert_eq!(b.lead_says(20), None, "an answer saying no term");
-        b.answered(&Answer { speaks: vec![SPEAKS.into()], term: Some(t), ..Default::default() }, 30);
+        assert_eq!(b.lead_says(20), None, "an answer saying no lead");
+        let old: Answer = serde_json::from_str(
+            r#"{"epoch": 3, "speaks": ["beat"], "term": {"term": 840, "member": "m-lead", "host": "mini", "app": "x", "since": 1, "how": "re-asserted", "from": 839}}"#,
+        )
+        .unwrap();
+        b.answered(&old, 25);
+        assert_eq!(b.lead_says(25), None, "a lead before step 8c: its term read past");
+        b.answered(&Answer { speaks: vec![SPEAKS.into()], leading: Some(m), ..Default::default() }, 30);
         b.lead_older(31);
         assert_eq!(b.lead_says(31), None, "an older lead's 404");
     }

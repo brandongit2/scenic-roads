@@ -9,7 +9,7 @@
 //!   while the loop stays busy. A tick does what's the pool's alone: the driver's step (its
 //!   heartbeat, mail and listings with it), the history, the view (`VIEW`), whether the
 //!   coordinator grants. What's the agent's (its jobs, its coordinator's start and stop, the state a
-//!   term taken up loads: `Run::pending_took_up`) waits for its loop's next step. One step at a
+//!   take-up loads: `Run::pending_took_up`) waits for its loop's next step. One step at a
 //!   time, each file of the pool's written by the run alone.
 //! - **One process per member** (`Side::open`): the member's id (crate::pool::member_id, in the
 //!   agent's folder), its lock in the app's folder (crate::pool::MemberLock), and the driver made
@@ -33,7 +33,7 @@
 //! - **The merge's checks** (`check`): what phase 1 checks of an entry.
 //!
 //! The pool is always on (§12 phase 4's thirteenth batch): every agent with the NAS leads or works
-//! as a member: the declared lead (crate::pool::term::declared, the Mac mini) leads, every other
+//! as a member: the declared lead (crate::pool::lead::declared, the Mac mini) leads, every other
 //! Mac is a member (task #881). (`state/pool/enabled`, the switch of before, is no longer read; an
 //! older app reads it, so it stays on the NAS until none runs.)
 
@@ -91,8 +91,13 @@ pub fn read_view(home: &Path) -> Option<PoolFile> {
 /// A NAS the driver's steps and the listings' thread share.
 pub type SharedNas = Arc<dyn Nas + Send + Sync>;
 
+/// Its coordinator's store's epoch, raised past a take-up's records first (crate::pool::driver::
+/// Io::epoch): the lead's agent's (`Run::step`, through `epochs`).
+pub type Epochs = Arc<dyn Fn(u64) -> Result<u64> + Send + Sync>;
+
 /// The driver's world: a NAS, this process's clocks (the awake one, `Instant`, stops while the
-/// Mac sleeps), and the agent's pool folder `dir`, where it keeps the records it leads (`RECORDS`).
+/// Mac sleeps), the agent's pool folder `dir`, where it keeps the records it leads (`RECORDS`), and
+/// its coordinator's store's epoch (`epochs`; None: no coordinator's store, not the lead's process).
 struct Clocked<'a> {
     nas: &'a dyn Nas,
     clock: &'a dyn store::clock::Clock,
@@ -100,6 +105,7 @@ struct Clocked<'a> {
     /// Both clocks moved on this far (s): the tests' way of letting time pass.
     ahead: u64,
     dir: &'a Path,
+    epochs: Option<&'a Epochs>,
 }
 
 impl Nas for Clocked<'_> {
@@ -147,6 +153,39 @@ impl Io for Clocked<'_> {
         // would start from without reading the NAS.)
         store::seglog::write_durable(&self.dir.join(RECORDS), records)
     }
+    fn epoch(&self, past: u64) -> Result<u64> {
+        self.epochs.context("no coordinator's store in this process")?(past)
+    }
+}
+
+/// No coordinator's store in a real process until its coordinator starts (`Run::step` gives its
+/// `epochs`); a unit test's side, which runs none, numbers its own, in memory, past a take-up's
+/// records as a store's are.
+fn own_epochs() -> Option<Epochs> {
+    if !cfg!(test) {
+        return None;
+    }
+    let n = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    Some(Arc::new(move |past: u64| Ok(n.fetch_max(past + 1, std::sync::atomic::Ordering::SeqCst).max(past + 1))))
+}
+
+/// `Epochs` from coordinator `c`, on the NAS `nas`, of the Mac `host`: its store's epoch raised past
+/// `past`, and past the store's backup on the NAS by `RESTORE_EPOCHS` when another Mac wrote it (the
+/// owner moved the lead here: its leases, which `took_up` loads, were granted in epochs up to the
+/// backup's and a restart or more after it, as a restored store's are, docs/coordination.md §4.4).
+/// A backup that can't be read is said, and passed over.
+pub fn epochs(c: Arc<crate::coord::Coordinator>, nas: SharedNas, host: String) -> Epochs {
+    Arc::new(move |past: u64| {
+        let past = match crate::pool::store::read_backup(&*nas) {
+            Ok(Some(b)) if b.member != host => past.max(b.epoch + crate::pool::store::RESTORE_EPOCHS),
+            Ok(_) => past,
+            Err(e) => {
+                eprintln!("pool: the lead's store's backup, for its epoch: {e:#}");
+                past
+            }
+        };
+        c.raise_epoch(past)
+    })
 }
 
 /// The messages after number `last` (from its posts, crate::coord::inbox, or its lead's answers), in
@@ -251,8 +290,6 @@ pub struct Give {
     /// Its jobs' hand-offs that ended, each with the folder (or file) holding it, removed once a
     /// saved state holding the entry is on disk.
     pub entries: Vec<(Entry, Option<PathBuf>)>,
-    /// Re-assert first (before a GC sweep).
-    pub reassert: bool,
     /// Its build page's asks.
     pub asks: Vec<driver::Ask>,
     /// Its Mac's conditions, for its heartbeat (None: left out).
@@ -296,7 +333,7 @@ pub struct Side {
     members: BTreeSet<String>,
     /// The members not heard by their beats, since when (`FORGET_AFTER`).
     missed: BTreeMap<String, Instant>,
-    /// The members forgotten: not known again from a message or a term until their beat is heard.
+    /// The members forgotten: not known again from a message or as the lead until their beat is heard.
     forgotten: BTreeSet<String>,
     /// The listings asked for and not made yet, the one being made, those made and not handed back,
     /// and when one last failed.
@@ -324,6 +361,8 @@ pub struct Side {
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
     clock: Arc<dyn store::clock::Clock>,
+    /// Its coordinator's store's epoch (`Epochs`): the lead's process's, set each step (`Run::step`).
+    pub epochs: Option<Epochs>,
 }
 
 impl Side {
@@ -335,19 +374,7 @@ impl Side {
         let Some(lock) = MemberLock::take(locks, &id)? else { return Ok(None) };
         std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
         let me = Member { id: id.clone(), host: store::sys::host_name(), app: app.to_string() };
-        let (mut saved, written) = load_saved(&dir.join("saved.json"));
-        // (A state from an earlier time the pool was on, its terms since moved aside: it names a term
-        // no longer there, and would hold this member's view above the terms. Counted as lost: its
-        // jobs' hand-offs not written yet alone kept, as the driver keeps another member's. A stat
-        // of that term's file, never a listing of the terms: no term file is ever removed, and the
-        // folder holds one a re-assertion, 794 on 7 Nov, a listing of 3 to 33 s under load. The
-        // records it kept leading then go: their terms are that time's.)
-        if saved.term > 0 && nas.exists(&crate::pool::term::path(saved.term)).is_ok_and(|there| !there) {
-            eprintln!("pool: the NAS has no term {}: this member's saved state is from an earlier time the pool was on; set aside", saved.term);
-            std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
-            std::fs::remove_file(dir.join(RECORDS)).ok();
-            saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };
-        }
+        let (saved, written) = load_saved(&dir.join("saved.json"));
         let mail: Mail =
             std::fs::read(dir.join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let known: Vec<String> = std::fs::read(dir.join("members.json"))
@@ -400,6 +427,7 @@ impl Side {
             all_check_map: false,
             ahead: 0,
             clock: store::clock::real(),
+            epochs: own_epochs(),
         }))
     }
 
@@ -408,7 +436,7 @@ impl Side {
         &self.me
     }
 
-    /// The driver (the current term, the declared lead, the records).
+    /// The driver (the declared lead, the records it leads).
     pub fn driver(&self) -> &Driver {
         self.driver.as_ref().expect("a driver")
     }
@@ -451,7 +479,7 @@ impl Side {
         }
     }
 
-    /// Knows member `m` from a message or a term, unless it was forgotten (its beat not heard).
+    /// Knows member `m` from a message or as the lead, unless it was forgotten (its beat not heard).
     fn heard_of(&mut self, m: &str) {
         if !self.forgotten.contains(m) {
             self.members.insert(m.to_string());
@@ -516,7 +544,14 @@ impl Side {
     }
 
     fn io(&self) -> Clocked<'_> {
-        Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead, dir: &self.dir }
+        Clocked {
+            nas: &*self.nas,
+            clock: &*self.clock,
+            start: self.start,
+            ahead: self.ahead,
+            dir: &self.dir,
+            epochs: self.epochs.as_ref(),
+        }
     }
 
     /// The listings asked for and not handed back yet (asked, being made, made).
@@ -575,17 +610,22 @@ impl Side {
             asks: give.asks,
             entries,
             listed: self.made.pop_front(),
-            reassert: give.reassert,
             named_raw: give.named_raw,
             handed: self.handoffs.taken(),
             merged: self.http.take_merged(),
             route: self.http.handoff_route(),
             http_only: !self.http.journal_on(now),
-            one_only: !self.http.per_term(now),
             lead_says: self.http.lead_says(now),
         };
         self.conds = give.conds;
-        let io = Clocked { nas: &*self.nas, clock: &*self.clock, start: self.start, ahead: self.ahead, dir: &self.dir };
+        let io = Clocked {
+            nas: &*self.nas,
+            clock: &*self.clock,
+            start: self.start,
+            ahead: self.ahead,
+            dir: &self.dir,
+            epochs: self.epochs.as_ref(),
+        };
         let Some(driver) = self.driver.as_mut() else {
             return Out { stop: self.stopped.clone(), ..Default::default() };
         };
@@ -600,7 +640,7 @@ impl Side {
         }
         if let Err(e) = kept {
             out.events.push(Event::Failed { what: "save the member's state", why: format!("{e:#}") });
-            (out.duties, out.caught_up, out.fresh) = (false, false, false);
+            (out.duties, out.caught_up, out.vouched) = (false, false, false);
             out.send.clear();
             // (Its listings are made all the same: the driver counts them asked.)
             self.asked.extend(out.list.clone());
@@ -610,8 +650,8 @@ impl Side {
         // saved, acknowledged: both only now that the state saying so is on disk.)
         self.http.set_handoffs(self.driver().mine().unwritten_entries().cloned().collect());
         self.handoffs.merged(&out.merged);
-        if let Some(t) = self.driver().current().lead.clone() {
-            self.heard_of(&t.member);
+        if let Some(l) = self.driver().declared().map(str::to_string) {
+            self.heard_of(&l);
         }
         for (to, m) in std::mem::take(&mut out.send) {
             self.post(&to, m.clone());
@@ -645,7 +685,7 @@ impl Side {
 
     /// The lead's member, as its driver has it.
     fn lead(&self) -> Option<String> {
-        self.driver.as_ref().and_then(|d| d.current().lead.as_ref().map(|t| t.member.clone()))
+        self.driver.as_ref().and_then(|d| d.declared().map(str::to_string))
     }
 
     /// The messages its members sent it since it last read, each once by its number: what they
@@ -938,18 +978,14 @@ pub fn check(the_plan: &dyn crate::agent::seam::Plan, e: &Entry, _r: &Records) -
     Ok(())
 }
 
-/// A redo's entry (crate::agent::redo: it forgets records) from the lead of its lease's term alone,
-/// as `lead_of` reads it (None: not read now, the entry held): one written by any other member, a
-/// forged or copied one, is refused.
-pub fn by_its_lead(e: &Entry, lead_of: &dyn Fn(u64) -> Option<String>) -> std::result::Result<(), String> {
-    if e.step != crate::agent::redo::STEP {
+/// A redo's entry (crate::agent::redo: it forgets records) from the lead merging it (`lead`, its
+/// member: a redo is the lead's own job) alone: one written by any other member, a forged or copied
+/// one, or a lead's before the owner moved the lead (its redo asked again), is refused.
+pub fn by_its_lead(e: &Entry, lead: &str) -> std::result::Result<(), String> {
+    if e.step != crate::agent::redo::STEP || e.member == lead {
         return Ok(());
     }
-    match lead_of(e.lease.term) {
-        Some(m) if m == e.member => Ok(()),
-        Some(m) => Err(format!("a redo is the lead's: {} didn't lead term {} ({m} did)", e.member, e.lease.term)),
-        None => Err(format!("{}a redo's: term {}'s lead can't be read now", crate::pool::records::HOLD, e.lease.term)),
-    }
+    Err(format!("a redo is the lead's: {} isn't the lead ({lead} is)", e.member))
 }
 
 /// `check`, by a lead on app `lead_app`, members' apps as `app_of` reads them (their heartbeats;
@@ -969,7 +1005,7 @@ pub fn check_from(
 ) -> std::result::Result<(), String> {
     match check(the_plan, e, r) {
         Err(why) if the_plan.outside(e).as_deref() == Some(why.as_str()) => match app_of(&e.member) {
-            Some(app) if app == lead_app || crate::pool::term::app_at_least(lead_app, &app) => Err(why),
+            Some(app) if app == lead_app || crate::pool::lead::app_at_least(lead_app, &app) => Err(why),
             Some(app) => Err(format!(
                 "{}{why}; its member runs app {app}, newer than this lead's ({lead_app}): held until the lead runs it",
                 crate::pool::records::HOLD
@@ -983,9 +1019,8 @@ pub fn check_from(
 /// An event in words, for the log.
 pub fn said(e: &Event) -> String {
     match e {
-        Event::Made { term, how } => format!("made term {term} ({how})"),
-        Event::TookUp { term, how } => format!("took up term {term} ({how})"),
-        Event::SteppedDown { term, why } => format!("no longer leads term {term}: {why}"),
+        Event::TookUp { epoch, how } => format!("took up the records in epoch {epoch}, from {how}"),
+        Event::SteppedDown { epoch, why } => format!("no longer leads (epoch {epoch}): {why}"),
         Event::Merged { applied, overtaken, refused, listed, .. } => format!(
             "merged {} entr{} ({overtaken} passed over, {refused} refused){}",
             applied.len(),
@@ -997,9 +1032,9 @@ pub fn said(e: &Event) -> String {
     }
 }
 
-/// What a process of the agent is in the pool while it's on: decided as it starts, by the terms
-/// and the lead's declaration (`Run::open`), and kept for its life. A process whose member takes up a term, or stops leading
-/// one, restarts into its new part once its first job's slot is free (phase 1: the lead's jobs run
+/// What a process of the agent is in the pool while it's on: decided as it starts, by the lead's
+/// declaration (`Run::open`), and kept for its life. A process whose member takes the records up,
+/// or stops leading, restarts into its new part once its first job's slot is free (phase 1: the lead's jobs run
 /// in its own process; phase 2 moves them into its slots).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1014,16 +1049,17 @@ pub enum Role {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Gates {
-    pub term: u64,
+    /// The epoch it leads in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leads: Option<u64>,
     /// Leading: grant jobs and plan.
     pub duties: bool,
     /// Leading: its records reflect the journal (a catalogue may go out).
     pub caught_up: bool,
-    /// Leading: it re-asserted this step (a sweep may run, caught up).
+    /// Leading: its step's own read of the declaration found it the lead (a sweep may run, caught
+    /// up).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub fresh: bool,
+    pub vouched: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listed_at: Option<u64>,
     /// Leading: the entries it holds, with why (`check_from`: from a member on a newer app,
@@ -1035,11 +1071,10 @@ pub struct Gates {
 impl Gates {
     fn of(o: &Out) -> Gates {
         Gates {
-            term: o.term,
             leads: o.leads,
             duties: o.duties,
             caught_up: o.caught_up,
-            fresh: o.fresh,
+            vouched: o.vouched,
             listed_at: o.listed_at,
             held: o.held.clone(),
         }
@@ -1050,18 +1085,19 @@ impl Gates {
         self.duties && self.caught_up
     }
 
-    /// A sweep (GC) may run now: on a step that re-asserted, caught up.
+    /// A sweep (GC) may run now: on a step whose read of the declaration found it the lead, caught
+    /// up.
     pub fn sweep(&self) -> bool {
-        self.duties && self.caught_up && self.fresh
+        self.duties && self.caught_up && self.vouched
     }
 }
 
-/// The steps that are sweeps (GC: the lead's, once fresh and caught up).
+/// The steps that are sweeps (GC: the lead's, once vouched for and caught up).
 pub const SWEEPS: [&str; 1] = ["gc"];
 /// The steps that publish (a catalogue: the lead's, once caught up).
 pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
 /// Lease numbers at and above this are hand-offs a lead's coordinator journaled on its disk, drained
-/// into the pool's journal by its member (`Run::drain`; term 0: before any term). Below it, a job
+/// into the pool's journal by its member (`Run::drain`; epoch 0: no lead's). Below it, a job
 /// run out of the pool keeps the lease the lead's coordinator gave it (`Run::drain_outbox`).
 pub const DRAINED: u64 = 1 << 62;
 
@@ -1073,10 +1109,8 @@ pub struct Run {
     pub gates: Gates,
     /// Its jobs' hand-offs for the next step, with the folders or files holding them.
     pub entries: Vec<(Entry, Option<PathBuf>)>,
-    /// Re-assert at the next step (a sweep waits for it).
-    pub reassert: bool,
     /// Why it restarts once its first slot is free (it left the pool, or its coordinator didn't
-    /// start as it took up a term).
+    /// start as it took the records up).
     pub restart: Option<String>,
     /// What it drained already in this process (handed, not yet removed), and the drained hand-offs'
     /// last number.
@@ -1099,9 +1133,9 @@ pub struct Run {
     /// The members in touch at the lead's last read of their heartbeats (its time; their ids and
     /// hosts), for the history's joins and leaves (crate::agent::lead::membership).
     pub in_touch: Option<(u64, BTreeMap<String, String>)>,
-    /// The terms this process led (a take-up of the next one after them keeps its coordinator's
-    /// state; one after a restart loads the term before's).
-    pub led: BTreeSet<u64>,
+    /// This process led before (a take-up after it, its member declared again, keeps its
+    /// coordinator's state; its first loads another Mac's: `took_up`).
+    pub led: bool,
     /// The build page's asks for the next step, and this Mac's conditions for its heartbeat.
     pub asks: Vec<driver::Ask>,
     pub conds: Option<Conds>,
@@ -1118,8 +1152,8 @@ pub struct Run {
     /// The awake time (its driver's clock, s) of its last step, and of the agent's loop's last.
     last_step: Option<u64>,
     last_full: Option<u64>,
-    /// Terms a tick took up whose coordinator's part is the agent's (`took_up`: the term before's
-    /// state loaded, its own host's leases from before dropped), at its loop's next step.
+    /// Take-ups a tick made whose coordinator's part is the agent's (`took_up`: another Mac's state
+    /// loaded, its own host's leases from before dropped), at its loop's next step.
     pub pending_took_up: Vec<Event>,
     /// Tasks brokered by every member: when the members' brokers were last read from their
     /// heartbeats, and this Mac's last given to its own (`tend_brokers`).
@@ -1129,9 +1163,9 @@ pub struct Run {
     pub ticking: Ticking,
     /// The members' coordinators tried (crate::pool::reachable).
     pub prober: Prober,
-    /// The current term, and when this Mac first saw it (its own clock): a request that failed
-    /// before then was another lead's.
-    term_seen: Option<(u64, u64)>,
+    /// The lead's member, and when this Mac first saw it lead (its own clock): a request that
+    /// failed before then was another lead's.
+    lead_seen: Option<(String, u64)>,
 }
 
 /// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
@@ -1188,7 +1222,7 @@ pub struct Cx {
     /// The agent's folder.
     pub home: PathBuf,
     /// This process's coordinator (the lead's), for what the lead's step asks of it: whether it
-    /// grants (`set_moving`), its term.
+    /// grants (`set_moving`), its epoch.
     pub coord: Option<Arc<crate::coord::Coordinator>>,
     /// When this Mac last had an answer from the lead's coordinator (its clock, unix s): a member's
     /// client's (crate::coord::client::Client::answered).
@@ -1323,24 +1357,22 @@ impl Drop for Ticker {
     }
 }
 
-/// When the current term's lead's coordinator last answered this Mac (`answered`, its client's): only
-/// an answer saying it's that term's, from that member (crate::coord::POOL_TERM, POOL_MEMBER); one
-/// from another coordinator (an earlier lead's not yet stopped, an older app's) says nothing of it.
-pub fn lead_answered(
-    answered: Option<&crate::coord::client::Answered>,
-    cur: Option<&crate::pool::term::Term>,
-) -> Option<u64> {
-    let (a, t) = (answered?, cur?);
-    (a.term == Some(t.term) && a.member.as_deref() == Some(t.member.as_str())).then_some(a.at)
+/// When the declared lead's coordinator last answered this Mac (`answered`, its client's): only an
+/// answer saying it leads (an epoch, from that member: crate::coord::POOL_EPOCH, POOL_MEMBER); one
+/// from another coordinator (a member's broker, an earlier lead's not yet stopped) says nothing of
+/// it.
+pub fn lead_answered(answered: Option<&crate::coord::client::Answered>, lead: Option<&str>) -> Option<u64> {
+    let (a, l) = (answered?, lead?);
+    (a.epoch.is_some_and(|e| e > 0) && a.member.as_deref() == Some(l)).then_some(a.at)
 }
 
-/// What the coordinator answers asks for jobs with, by the gates (None: it grants): its term being
-/// taken up (`pending`: its state not loaded yet), its view not fresh, or no longer leading.
+/// What the coordinator answers asks for jobs with, by the gates (None: it grants): its take-up's
+/// state not loaded yet (`pending`), its member's lock not known held, or no longer leading.
 pub fn moving(g: &Gates, pending: bool) -> Option<String> {
     match () {
-        _ if g.leads.is_some() && pending => Some("taking up its term".into()),
+        _ if g.leads.is_some() && pending => Some("taking the records up".into()),
         _ if g.leads.is_some() && g.duties => None,
-        _ if g.leads.is_some() => Some("re-asserting its term".into()),
+        _ if g.leads.is_some() => Some("its member's lock not known held".into()),
         _ => Some("no longer leads".into()),
     }
 }
@@ -1354,7 +1386,6 @@ impl Run {
             role,
             gates,
             entries: Vec::new(),
-            reassert: false,
             restart: None,
             drained: BTreeSet::new(),
             drain_n: 0,
@@ -1365,7 +1396,7 @@ impl Run {
             regions_handed: None,
             history_seq: 0,
             in_touch: None,
-            led: BTreeSet::new(),
+            led: false,
             asks: Vec::new(),
             gc: None,
             conds: None,
@@ -1379,7 +1410,7 @@ impl Run {
             brokers_read: None,
             broker_told: None,
             prober: Prober::default(),
-            term_seen: None,
+            lead_seen: None,
         }
     }
 
@@ -1404,10 +1435,10 @@ impl Run {
 
     /// A step of the pool's own thread (`Ticker`), the agent's loop busy: what the loop's step does
     /// that's the pool's alone. The build page's asks taken; the driver's step, its heartbeat and
-    /// mail with it; the history and the view; the coordinator told whether it grants. A term it
-    /// takes up that isn't its own re-asserted in this process is left to the loop's next step for
-    /// the coordinator's part (`pending_took_up`: the term before's state, its leases), the coordinator
-    /// granting nothing until then; a change of this process's part is the loop's too (its next
+    /// mail with it; the history and the view; the coordinator told whether it grants. Its first
+    /// take-up in this process is left to the loop's next step for the coordinator's part
+    /// (`pending_took_up`: another Mac's state, its leases), the coordinator granting nothing until
+    /// then; a change of this process's part is the loop's too (its next
     /// step's `change_part`). None when there was nothing to step (no NAS).
     pub fn tick(&mut self) -> Option<Out> {
         let root = self.cx.root.clone()?;
@@ -1419,14 +1450,14 @@ impl Run {
         // (When its checks ran: the coordinator's grants count from then, not from the tell.)
         let checked = crate::coord::wall_now();
         for e in &out.events {
-            let Event::TookUp { term, .. } = e else { continue };
+            let Event::TookUp { epoch, .. } = e else { continue };
             match &coord {
-                Some(c) if self.led.contains(&(term - 1)) => c.set_term(*term),
+                Some(c) if self.led => c.set_epoch(*epoch),
                 _ => self.pending_took_up.push(e.clone()),
             }
         }
         if let (Some(c), Some(e), true) = (&coord, out.leads, self.pending_took_up.is_empty()) {
-            c.set_term(e);
+            c.set_epoch(e);
         }
         super::lead::after(self, &out, &root, &home, coord.as_deref());
         if let Some(co) = &coord {
@@ -1466,7 +1497,7 @@ impl Run {
         if brokers::stale(self.brokers_read, now, brokers::EVERY) {
             let side = &self.side;
             let me = side.member().clone();
-            let lead = side.driver().current().lead.as_ref().map(|t| t.member.clone());
+            let lead = side.driver().declared().map(str::to_string);
             let mut ids: Vec<String> = side.members().iter().cloned().collect();
             if let Some(l) = lead.as_ref().filter(|l| !ids.contains(l)) {
                 ids.push(l.clone());
@@ -1484,7 +1515,7 @@ impl Run {
 
     /// Whom this Mac reaches (docs/pool.md §6.8, crate::pool::reachable), in each of its steps,
     /// before its heartbeat is written: the outcome of its client's requests to the lead's
-    /// coordinator counted (an answer from it, as the current term's: `Cx::lead_answered`; a
+    /// coordinator counted (an answer from it, as the declared lead's: `Cx::lead_answered`; a
     /// request that reached none of its addresses: `Cx::lead_failed`), and every `PROBE_S` a round
     /// of tries, off the loop, of the current lead's coordinator (its broker's addresses in its
     /// heartbeat, else the contact's) and the other members' brokers in touch; the round before's
@@ -1493,18 +1524,16 @@ impl Run {
         use crate::pool::reachable::PROBE_S;
         let now = self.side.now();
         let me = self.side.member().id.clone();
-        let cur = self.side.driver().current().lead.clone().filter(|t| t.member != me);
-        let lead = cur.as_ref().map(|t| t.member.clone());
-        let term = self.side.driver().current().term;
-        if self.term_seen.is_none_or(|(t, _)| t != term) {
-            self.term_seen = Some((term, now));
+        let lead = self.side.driver().declared().filter(|l| *l != me).map(str::to_string);
+        if self.lead_seen.as_ref().map(|(l, _)| l) != lead.as_ref() {
+            self.lead_seen = lead.clone().map(|l| (l, now));
         }
-        let seen = self.term_seen.map_or(now, |(_, at)| at);
+        let seen = self.lead_seen.as_ref().map_or(now, |(_, at)| *at);
         if let Some(l) = &lead {
             if let Some(a) = self.cx.lead_answered {
                 self.prober.tracker.seen(l, "coordinator", Ok(()), a);
             }
-            // (A failure since this Mac first saw its term: one before was another lead's.)
+            // (A failure since this Mac first saw it lead: one before was another lead's.)
             if let Some((at, why)) = self.cx.lead_failed.as_ref().filter(|(at, _)| *at >= seen) {
                 let cause = crate::pool::reachable::cause_of(why);
                 self.prober.tracker.seen(l, "coordinator", Err((cause, why.clone())), *at);
@@ -1624,6 +1653,7 @@ impl Run {
             co.set_inbox(Some(self.side.inbox()));
             co.set_beats(Some(self.side.http_beats()));
             co.set_handoffs(Some(self.side.handoffs()));
+            self.side.epochs = Some(epochs(co.clone(), self.side.shared_nas(), self.side.member().host.clone()));
         }
         // (The members heard by HTTP known at once: their mail read, their messages sent.)
         for h in self.side.http.fresh(self.side.now()) {
@@ -1632,7 +1662,6 @@ impl Run {
         self.side.lead_contact = (self.cx.lead_urls.clone(), self.cx.lead_token.clone());
         let give = Give {
             entries: std::mem::take(&mut self.entries),
-            reassert: self.reassert,
             asks: std::mem::take(&mut self.asks),
             conds: self.conds,
             named_raw: self.named_raw.iter().cloned().collect(),
@@ -1640,8 +1669,7 @@ impl Run {
         let marks = std::mem::take(&mut self.marks);
         // (The merge's checks, an entry outside its step's write-set from a member on a newer app
         // held: `check_from`. Its member's app read from its heartbeat, only for such an entry.)
-        let (nas, lead_app, me) =
-            (self.side.nas.clone(), self.side.member().app.clone(), self.side.member().id.clone());
+        let (lead_app, me) = (self.side.member().app.clone(), self.side.member().id.clone());
         let (beats, now) = (self.side.http_beats(), self.side.now());
         let app_of = |m: &str| -> Option<String> {
             if m == me {
@@ -1649,12 +1677,9 @@ impl Run {
             }
             beats.get(m, now).map(|h| h.pool.app)
         };
-        let lead_of = |term: u64| -> Option<String> {
-            crate::pool::term::read(nas.as_ref(), term).ok().flatten().map(|t| t.member)
-        };
         let gc = self.gc.clone();
         let checked = |e: &Entry, r: &Records| {
-            by_its_lead(e, &lead_of)?;
+            by_its_lead(e, &me)?;
             check_from(self.the_plan, e, r, &lead_app, &app_of)?;
             // (Last: one it lets merge holds its names from GC's chunks, docs/maplog.md §7.4.)
             match gc.as_deref().and_then(|q| super::gcqueue::refusal(q, e, crate::coord::wall_now())) {
@@ -1694,12 +1719,6 @@ impl Run {
             self.restart.get_or_insert_with(|| format!("this process left the pool: {why}"));
         }
         self.gates = Gates::of(&out);
-        if out.fresh {
-            self.reassert = false;
-        }
-        if let Some(e) = out.leads {
-            self.led.insert(e);
-        }
         for e in &out.events {
             eprintln!("pool: {}", said(e));
             // (The hand-offs merged, by their entries' keys, in the build's history: publishing's
@@ -1728,7 +1747,7 @@ impl Run {
     fn next_drained(&mut self) -> journal::LeaseId {
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         self.drain_n = (self.drain_n + 1).max(ms);
-        journal::LeaseId { term: 0, n: DRAINED + self.drain_n }
+        journal::LeaseId { epoch: 0, n: DRAINED + self.drain_n }
     }
 
     /// The hand-offs a lead's coordinator journaled on its disk (`journal`), drained into this
@@ -1781,14 +1800,15 @@ impl Run {
     }
 }
 
-/// A term taken up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
-/// grants from now in that term; the newest state a term before has (its own before a restart: its
-/// leases, so every job out goes on renewing), loaded; its own host's leases from before dropped
-/// (its jobs ended with the process that ran them), but those of the jobs this process runs
-/// (`keep`).
+/// A take-up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
+/// grants from now in that epoch; at this process's first, another Mac's state, when the store's
+/// backup on the NAS is another Mac's (the owner moved the lead here: its leases, so every job out
+/// goes on renewing), loaded, and its own host's leases from before dropped (its jobs ended with
+/// the process that ran them), but those of the jobs this process runs (`keep`). A take-up after
+/// one in this process (its member declared again) keeps what it has: it's newer than the files.
 ///
-/// `events`: a step's, with those a tick left it (`Run::pending_took_up`); `leads`: the term the
-/// last step says this member leads.
+/// `events`: a step's, with those a tick left it (`Run::pending_took_up`); `leads`: the epoch the
+/// last step says this member leads in.
 pub fn took_up(
     run: &mut Run,
     coord: Option<&crate::coord::Coordinator>,
@@ -1799,10 +1819,9 @@ pub fn took_up(
 ) {
     let Some(c) = coord else { return };
     for e in events {
-        let Event::TookUp { term, .. } = e else { continue };
-        c.set_term(*term);
-        // (A take-up after a term this process led keeps what it has: it's newer than the files.)
-        if run.led.contains(&(term - 1)) {
+        let Event::TookUp { epoch, .. } = e else { continue };
+        c.set_epoch(*epoch);
+        if std::mem::replace(&mut run.led, true) {
             continue;
         }
         // (Its own store holds its state (crate::coord::kept); another Mac's lead before it, the lead
@@ -1818,11 +1837,11 @@ pub fn took_up(
             let st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
             match c.load_pool_state(&st) {
                 Ok(n) => eprintln!(
-                    "pool: term {term}'s coordinator took up {n} lease{} from {}'s store",
+                    "pool: epoch {epoch}'s coordinator took up {n} lease{} from {}'s store",
                     if n == 1 { "" } else { "s" },
                     b.member
                 ),
-                Err(e) => eprintln!("pool: the coordinator's state for term {term}: {e:#}"),
+                Err(e) => eprintln!("pool: the coordinator's state for epoch {epoch}: {e:#}"),
             }
         }
         for l in c.drop_workers(&crate::agent::slot_workers(host), keep) {
@@ -1830,12 +1849,12 @@ pub fn took_up(
         }
     }
     if let Some(e) = leads {
-        c.set_term(e);
+        c.set_epoch(e);
     }
 }
 
 /// Where a job of lease `lease` keeps its hand-off while it runs (`SCENIC_HANDOFF`), its work and
-/// done marks: `<home>/pool/jobs/<term>-<n>/`.
+/// done marks: `<home>/pool/jobs/<epoch>-<n>/`.
 pub fn job_dir(home: &Path, lease: journal::LeaseId) -> PathBuf {
     home.join("pool/jobs").join(lease.to_string())
 }
@@ -1920,7 +1939,7 @@ pub fn left_jobs(
 
 /// A job folder in this member's outbox, run out of the pool (`Run::drain_outbox`): its hand-off as
 /// its end would have told it (its saves and done record, or what it noted done when it stopped), as
-/// an entry of this member under its lease from the lead's coordinator (term 0). A task's folder (no
+/// an entry of this member under its lease from the lead's coordinator (epoch 0). A task's folder (no
 /// `work.json`: its outputs went to its broker) is left to the outbox's own sending; a job that
 /// handed off nothing, or whose saves are damaged, is removed (its work is done again), or this
 /// member would never ask for a task again.
@@ -1952,7 +1971,7 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
             the_plan,
             &d,
             member,
-            journal::LeaseId { term: 0, n: lease },
+            journal::LeaseId { epoch: 0, n: lease },
             &w.step,
             &done,
             crate::agent::jobs::now_s(),
@@ -2032,28 +2051,22 @@ fn statuses(root: &store::nasfs::NasRoot) -> Vec<(String, super::Status)> {
         .collect()
 }
 
-/// `scenic pool status`: the terms, the agents as their statuses say.
+/// `scenic pool status`: the declared lead, the agents as their statuses say.
 pub fn status(root: &store::nasfs::NasRoot) -> String {
     let mut out = Vec::new();
     let nas = root.clone();
-    match crate::pool::term::current(&nas) {
-        Ok(c) if c.term > 0 => out.push(match &c.lead {
-            Some(t) => {
-                format!("term {}: {} ({}), app {}, since {} ({})", t.term, t.host, t.member, t.app, t.since, t.how)
-            }
-            None => format!("term {}: can't be read whole", c.term),
-        }),
-        Ok(_) => out.push("no terms".to_string()),
-        Err(e) => out.push(format!("the terms: {e:#}")),
+    match crate::pool::lead::declared(&nas) {
+        Ok(Some(d)) => out.push(format!("the declared lead: {} ({})", d.host, d.member)),
+        Ok(None) => out.push("no lead declared".to_string()),
+        Err(e) => out.push(format!("the lead's declaration: {e:#}")),
     }
     let now = crate::agent::jobs::now_s();
     for (f, st) in statuses(root) {
         let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| {
             format!(
-                "{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}{}",
+                "{} {}, leads in epoch {:?}, duties {}, caught up {}, unacked {}{}{}",
                 serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(),
                 p.member,
-                p.gates.term,
                 p.gates.leads,
                 p.gates.duties,
                 p.gates.caught_up,
@@ -2305,15 +2318,15 @@ mod tests {
         let home = d.path().join("a/agent");
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
         let id = a.member().id.clone();
-        // Its first step: term 1, its own (this Mac is the writer), taken up from today's records;
-        // caught up at once, no member heard writing the journal (docs/coordination.md step 6's
-        // gate), so no listing of it.
+        // Its first step: the first Mac in the pool, it declares itself and leads epoch 1, taken up
+        // from today's records; caught up at once, no member heard writing the journal
+        // (docs/coordination.md step 6's gate), so no listing of it.
         let out = a.step(Give::default(), &any);
-        assert_eq!((out.term, out.leads, out.duties, out.caught_up), (1, Some(1), true, true));
+        assert_eq!((out.leads, out.duties, out.caught_up), (Some(1), true, true));
         assert!(out.list.is_none() && a.listings_out() == 0, "{:?}", out.list);
-        // Its saved state on disk before anything else: naming it, the term it led.
+        // Its saved state on disk before anything else: naming it, the records it saved.
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
-        assert_eq!((saved.member.as_str(), saved.led), (id.as_str(), 1));
+        assert_eq!((saved.member.as_str(), saved.records), (id.as_str(), Some((1, 1))));
         // Its heartbeat, for its agent's beat: the driver's fields and the members it knows; none
         // on the NAS.
         let hb = a.http_beats().own().unwrap();
@@ -2350,34 +2363,13 @@ mod tests {
         std::fs::remove_file(&lock).unwrap();
         let _other = MemberLock::take(home.parent().unwrap(), &a.member().id).unwrap().unwrap();
         let beat = a.http_beats().own().unwrap().pool.beat;
-        let e = unit_entry(&a.member().id, LeaseId { term: 1, n: 7 }, "6/1/2", "k2");
+        let e = unit_entry(&a.member().id, LeaseId { epoch: 1, n: 7 }, "6/1/2", "k2");
         let out = a.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
         assert!(out.stop.is_some() && a.stopped.is_some());
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
         assert_eq!(saved.mine.unwritten().count(), 1, "its hand-off kept for the next process");
         assert_eq!(a.http_beats().own().unwrap().pool.beat, beat);
         assert!(a.step(Give::default(), &any).stop.is_some(), "it steps no more");
-    }
-
-    #[test]
-    fn a_saved_state_of_an_earlier_time_the_pool_was_on_counts_for_nothing() {
-        let d = tempfile::tempdir().unwrap();
-        let r = root(d.path());
-        let home = d.path().join("a/agent");
-        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
-        until(&mut a, || Give::default(), |o| o.leads == Some(1));
-        drop(a);
-        // Switched off, its terms moved aside: the state of term 1 would hold this member above them.
-        std::fs::rename(r.join("state/build"), d.path().join("aside")).unwrap();
-        std::fs::create_dir_all(r.join("state/build")).unwrap();
-        for f in ["manifest.json", "jobs.json", "pending.json"] {
-            std::fs::copy(d.path().join("aside").join(f), r.join("state/build").join(f)).unwrap();
-        }
-        let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &home);
-        assert_eq!(a.driver().saved().term, 0);
-        assert!(home.join("pool/saved.earlier.json").exists());
-        let out = a.step(Give::default(), &any);
-        assert_eq!((out.term, out.leads), (1, Some(1)), "term 1 afresh");
     }
 
     #[test]
@@ -2532,7 +2524,7 @@ mod tests {
         /// B's job's hand-off `n`, handed to its step: kept whole, neither written nor told.
         fn hand_off(&mut self, n: u64) -> Entry {
             let ib = self.b.member().id.clone();
-            let e = unit_entry(&ib, LeaseId { term: 1, n }, &format!("6/1/{n}"), &format!("k{n}"));
+            let e = unit_entry(&ib, LeaseId { epoch: 1, n }, &format!("6/1/{n}"), &format!("k{n}"));
             let out = self.b.step(Give { entries: vec![(e.clone(), None)], ..Default::default() }, &any);
             let key = e.key().unwrap();
             assert!(out.send.is_empty() && !self.r.join(journal::path(&key)).exists(), "{:?}", out.send);
@@ -2553,7 +2545,7 @@ mod tests {
         /// B's job's entry `n`: B's Tell of it to A sent.
         fn tell(&mut self, n: u64) -> String {
             let (ia, ib) = (self.a.member().id.clone(), self.b.member().id.clone());
-            let e = unit_entry(&ib, LeaseId { term: 1, n }, &format!("6/1/{n}"), "k2");
+            let e = unit_entry(&ib, LeaseId { epoch: 1, n }, &format!("6/1/{n}"), "k2");
             let key = e.key().unwrap();
             let out = self.b.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
             assert!(
@@ -2586,24 +2578,21 @@ mod tests {
     /// (no mailbox written), taken from its store once, and acknowledged; the lead's Ack comes back
     /// in the answer to the member's next beat (no mailbox either), dropped by the lead once the
     /// member's beat says it took it.
-    /// A NAS whose terms' files and the lead's declaration don't answer while `hung` (a share
-    /// stuck on them); every other call the share's.
-    struct TermsHung(SharedNas, Arc<std::sync::atomic::AtomicBool>);
+    /// A NAS whose lead's declaration doesn't answer while `hung` (a share stuck on it); every other
+    /// call the share's.
+    struct DeclarationHung(SharedNas, Arc<std::sync::atomic::AtomicBool>);
 
-    impl TermsHung {
+    impl DeclarationHung {
         fn check(&self, path: &str) -> Result<()> {
-            let terms = path.starts_with(crate::pool::term::DIR)
-                || path == crate::pool::term::LEAD
-                || path == crate::pool::term::HINT;
             anyhow::ensure!(
-                !(terms && self.1.load(std::sync::atomic::Ordering::SeqCst)),
+                !(path == crate::pool::lead::LEAD && self.1.load(std::sync::atomic::Ordering::SeqCst)),
                 "{path}: the share doesn't answer"
             );
             Ok(())
         }
     }
 
-    impl Nas for TermsHung {
+    impl Nas for DeclarationHung {
         fn create_new(&self, path: &str, bytes: &[u8]) -> Result<crate::pool::nas::Created> {
             self.check(path)?;
             self.0.create_new(path, bytes)
@@ -2628,26 +2617,27 @@ mod tests {
         }
     }
 
-    /// docs/coordination.md step 8a: a member's pool side takes its lead's term from the lead's
-    /// beat answer (as the lead's agent tells its coordinator the term it leads, lead::after), so
-    /// its steps learn the lead and its re-assertions with the terms' files and the declaration
-    /// not answering; its lead's word stale (no answer within `PAGE_AWAY_S`), it reads them again.
+    /// docs/coordination.md steps 8a, 8c: a member's pool side takes its lead from the lead's beat
+    /// answer (as the lead's agent tells its coordinator it leads, lead::after), so its steps learn
+    /// the lead with the declaration not answering, across the lead's restart; its lead's word
+    /// stale (no answer within `PAGE_AWAY_S`), it reads the declaration again.
     #[test]
-    fn a_member_learns_its_lead_s_term_by_the_beat_with_the_terms_hung() {
+    fn a_member_learns_its_lead_by_the_beat_with_the_declaration_hung() {
         let d = tempfile::tempdir().unwrap();
         let r = root(d.path());
         let hung = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut a = side(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("a/agent"));
         assert_eq!(until(&mut a, || Give::default(), |o| o.caught_up).leads, Some(1));
-        let nas: SharedNas = Arc::new(TermsHung(Arc::new(store::nasfs::NasRoot::local_for_test(&r)), hung.clone()));
+        let nas: SharedNas =
+            Arc::new(DeclarationHung(Arc::new(store::nasfs::NasRoot::local_for_test(&r)), hung.clone()));
         let mut b = side_over(nas, &d.path().join("b/agent"));
         let (c, _port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
         c.set_member(Some(&a.member().id));
         c.set_beats(Some(a.http_beats()));
         let tell = |a: &Side| {
-            let t = a.driver().current().lead.clone().unwrap();
-            c.set_term(t.term);
-            c.set_led(Some(t));
+            let e = a.driver().leads().unwrap();
+            c.set_epoch(e);
+            c.set_led(Some((e, a.member().clone())));
         };
         let beat = |b: &Side| {
             let w = crate::coord::held::Beat {
@@ -2659,28 +2649,30 @@ mod tests {
             b.http_beats().answered(&c.member_beat(&w), b.now());
         };
         let unlearnt = |o: &Out| {
-            o.events.iter().any(|e| matches!(e, Event::Failed { what, .. } | Event::Waits { what, .. } if what.contains("term") || what.contains("declaration")))
+            o.events.iter().any(
+                |e| matches!(e, Event::Failed { what, .. } | Event::Waits { what, .. } if what.contains("declaration")),
+            )
         };
         tell(&a);
         beat(&b);
         hung.store(true, std::sync::atomic::Ordering::SeqCst);
         let o = b.step(Give::default(), &any);
-        assert_eq!((o.term, o.leads), (1, None), "{:?}", o.events);
+        assert_eq!(o.leads, None, "{:?}", o.events);
         assert!(!unlearnt(&o), "{:?}", o.events);
         assert_eq!(b.driver().declared(), Some(a.member().id.as_str()));
-        // A re-asserts (a restart): B learns term 2 from its next answer.
+        assert_eq!(b.driver().lead().map(|l| l.app.clone()), Some(a.member().app.clone()), "its app, from its word");
+        // A restarted (a new epoch): B goes on learning its lead from its next answer.
         a.restart().unwrap();
         until(&mut a, || Give::default(), |o| o.leads == Some(2));
         tell(&a);
         beat(&b);
         let o = b.step(Give::default(), &any);
-        assert_eq!(o.term, 2, "{:?}", o.events);
-        assert!(!unlearnt(&o), "{:?}", o.events);
-        // No answer lately: the NAS read, which doesn't answer: said.
+        assert!(!unlearnt(&o) && b.driver().declared() == Some(a.member().id.as_str()), "{:?}", o.events);
+        // No answer lately: the declaration read, which doesn't answer: said, its view kept.
         b.ahead += crate::coord::beats::PAGE_AWAY_S;
         let o = b.step(Give::default(), &any);
         assert!(unlearnt(&o), "{:?}", o.events);
-        assert_eq!(o.term, 2, "its view kept");
+        assert_eq!(b.driver().declared(), Some(a.member().id.as_str()), "its view kept");
     }
 
     #[test]
@@ -2945,7 +2937,7 @@ mod tests {
         };
         buildstore::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
         buildstore::handoff::write(&dir, &save("base/6-1-2", "base/6-1-2.2222222222222222.base")).unwrap();
-        let lease = LeaseId { term: 1, n: 3 };
+        let lease = LeaseId { epoch: 1, n: 3 };
         // A shared step's: only the files of the targets it finished.
         let e = entry_of(
             crate::agent::seam::for_tests(),
@@ -3039,8 +3031,8 @@ mod tests {
         run.drain_outbox(&home.join("outbox"));
         let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
         assert_eq!(leases.len(), 3, "{leases:?}");
-        assert!(leases.iter().all(|l| l.term == 0));
-        assert!(leases.contains(&LeaseId { term: 0, n: 1791328399374 }), "an outbox job keeps its lease");
+        assert!(leases.iter().all(|l| l.epoch == 0));
+        assert!(leases.contains(&LeaseId { epoch: 0, n: 1791328399374 }), "an outbox job keeps its lease");
         assert_eq!(leases.iter().filter(|l| l.n >= DRAINED).count(), 2);
         // Drained once in this process, whatever the next look finds.
         run.drain(&journal);
@@ -3088,7 +3080,7 @@ mod tests {
                 names.iter().map(|l| (format!("{l}/{dash}"), Some(format!("{l}/{dash}.{n:016x}.pack")))).collect();
             Entry {
                 member: me.clone(),
-                lease: LeaseId { term: 1, n },
+                lease: LeaseId { epoch: 1, n },
                 step: "pack".into(),
                 handoff: Handoff {
                     changes,
@@ -3149,7 +3141,7 @@ mod tests {
         let me = run.side.member().id.clone();
         let gc = |n: u64, names: &[&str]| Entry {
             member: me.clone(),
-            lease: LeaseId { term: 1, n },
+            lease: LeaseId { epoch: 1, n },
             step: "gc".into(),
             handoff: Handoff { changes: names.iter().map(|l| (l.to_string(), None)).collect(), ..Default::default() },
             at: crate::agent::jobs::now_s(),
@@ -3193,7 +3185,7 @@ mod tests {
         let me = run.side.member().id.clone();
         let entry = |n: u64, step: &str, changes: &[(&str, Option<&str>)]| Entry {
             member: me.clone(),
-            lease: LeaseId { term: 1, n },
+            lease: LeaseId { epoch: 1, n },
             step: step.into(),
             handoff: Handoff {
                 changes: changes.iter().map(|(l, c)| (l.to_string(), c.map(str::to_string))).collect(),
@@ -3240,7 +3232,7 @@ mod tests {
     fn jobs_an_earlier_process_left_are_handed_off() {
         let d = tempfile::tempdir().unwrap();
         let home = d.path().join("agent");
-        let lease = LeaseId { term: 3, n: 11 };
+        let lease = LeaseId { epoch: 3, n: 11 };
         let dir = job_dir(&home, lease);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -3300,7 +3292,7 @@ mod tests {
 
     #[test]
     fn the_merges_checks() {
-        let e = unit_entry("m-000000000000000a", LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
+        let e = unit_entry("m-000000000000000a", LeaseId { epoch: 1, n: 1 }, "6/1/2", "k2");
         let r = Records::default();
         assert!(check(crate::agent::seam::for_tests(), &e, &r).is_ok());
         let mut other = e.clone();
@@ -3349,28 +3341,27 @@ mod tests {
     /// An entry outside its step's write-set from a member on a newer app than the lead's is held,
     /// not refused (its app's write-sets may know the name); from the lead's app or an older one,
     /// refused; its member's app not read now, held; any other refusal stands whatever the app.
-    /// Task #780 review: a redo's entry is merged from the lead of its lease's term alone; another
-    /// member's is refused, and one whose term's lead can't be read is held. Other steps' pass.
+    /// Task #780 review: a redo's entry is merged from the lead merging it alone (its own job, of
+    /// any epoch of its); another member's, a lead's before the owner moved the lead among them, is
+    /// refused (docs/coordination.md step 8c: no term says who led an epoch). Other steps' pass.
     #[test]
-    fn a_redo_entry_from_anyone_but_its_terms_lead_is_refused() {
-        let lead = |t: u64| (t == 3).then(|| "m-lead".to_string());
-        let mut e = unit_entry("m-lead", LeaseId { term: 3, n: 1 }, "6/1/2", "");
+    fn a_redo_entry_from_anyone_but_the_lead_is_refused() {
+        let mut e = unit_entry("m-lead", LeaseId { epoch: 3, n: 1 }, "6/1/2", "");
         e.step = crate::agent::redo::STEP.into();
-        assert_eq!(by_its_lead(&e, &lead), Ok(()));
+        assert_eq!(by_its_lead(&e, "m-lead"), Ok(()));
+        e.lease.epoch = 840;
+        assert_eq!(by_its_lead(&e, "m-lead"), Ok(()), "an earlier epoch's, its own");
         e.member = "m-other".into();
-        assert!(by_its_lead(&e, &lead).unwrap_err().contains("didn't lead term 3"));
-        e.member = "m-lead".into();
-        e.lease.term = 4;
-        assert!(by_its_lead(&e, &lead).unwrap_err().starts_with(crate::pool::records::HOLD));
-        let u = unit_entry("m-other", LeaseId { term: 3, n: 2 }, "6/1/2", "k");
-        assert_eq!(by_its_lead(&u, &lead), Ok(()));
+        assert!(by_its_lead(&e, "m-lead").unwrap_err().contains("isn't the lead"));
+        let u = unit_entry("m-other", LeaseId { epoch: 3, n: 2 }, "6/1/2", "k");
+        assert_eq!(by_its_lead(&u, "m-lead"), Ok(()));
     }
 
     #[test]
     fn an_entry_outside_from_a_newer_app_is_held() {
         let r = Records::default();
         let lead = "20261009-0000-bbbbbbb";
-        let mut e = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
+        let mut e = unit_entry("m-000000000000000b", LeaseId { epoch: 1, n: 1 }, "6/1/2", "k2");
         e.handoff.changes.insert("work/new-output".into(), Some("work/new-output.0123456789abcdef.json".into()));
         let on = |app: Option<&'static str>| move |_: &str| app.map(str::to_string);
         let held =
@@ -3392,7 +3383,7 @@ mod tests {
             );
         }
         // Another check's refusal (a content name not of its logical name): refused, newer or not.
-        let mut bad = unit_entry("m-000000000000000b", LeaseId { term: 1, n: 2 }, "6/1/2", "k2");
+        let mut bad = unit_entry("m-000000000000000b", LeaseId { epoch: 1, n: 2 }, "6/1/2", "k2");
         bad.handoff.changes.insert("base/6-1-2".into(), Some("base/6-1-3.3333333333333333.base".into()));
         assert!(!check_from(crate::agent::seam::for_tests(), &bad, &r, lead, &on(Some("20261010-0000-ccccccc")))
             .unwrap_err()
@@ -3400,7 +3391,7 @@ mod tests {
         assert_eq!(
             check_from(
                 crate::agent::seam::for_tests(),
-                &unit_entry("m-000000000000000b", LeaseId { term: 1, n: 3 }, "6/1/2", "k2"),
+                &unit_entry("m-000000000000000b", LeaseId { epoch: 1, n: 3 }, "6/1/2", "k2"),
                 &r,
                 lead,
                 &on(None)
@@ -3457,9 +3448,9 @@ mod tests {
     }
 
     #[test]
-    fn only_the_current_leads_coordinator_answering_counts() {
-        // Its answers say its term and member, while it has them; a member counts an answer only
-        // from the current term's lead.
+    fn only_the_declared_leads_coordinator_answering_counts() {
+        // Its answers say its epoch and member, while it has them; a member counts an answer only
+        // from the declared lead's, leading (a member's broker says epoch 0).
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "a", "development");
         let client =
@@ -3468,32 +3459,25 @@ mod tests {
             crate::coord::Ask { kind: "native".into(), can: vec!["x".into()], mem_mb: 1024, ..Default::default() };
         client.ask(&ask).ok();
         let first = client.answered().expect("answered");
-        assert_eq!((first.term, first.member.as_deref()), (None, None), "not a pool's lead yet: it says nothing");
+        assert_eq!((first.epoch, first.member.as_deref()), (None, None), "not a pool's lead yet: it says nothing");
         c.set_member(Some("m-000000000000000a"));
-        c.set_term(3);
+        c.set_epoch(841);
         client.ask(&ask).ok();
         let a = client.answered().unwrap();
-        assert_eq!((a.term, a.member.as_deref()), (Some(3), Some("m-000000000000000a")));
-        let term = |t: u64, m: &str| crate::pool::term::Term {
-            term: t,
-            member: m.into(),
-            host: "A".into(),
-            app: "development".into(),
-            since: 1,
-            how: String::new(),
-            from: t - 1,
-        };
-        assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000a"))), Some(a.at));
-        assert_eq!(lead_answered(Some(&a), Some(&term(4, "m-000000000000000a"))), None, "an earlier term's lead");
-        assert_eq!(lead_answered(Some(&a), Some(&term(3, "m-000000000000000c"))), None, "another member's");
-        assert_eq!(lead_answered(Some(&first), Some(&term(3, "m-000000000000000a"))), None, "one that says nothing");
-        assert_eq!(lead_answered(None, Some(&term(3, "m-000000000000000a"))), None);
-        // (Task #497) Its Mac lost the NAS: its answers say nothing of its term.
+        assert_eq!((a.epoch, a.member.as_deref()), (Some(841), Some("m-000000000000000a")));
+        assert_eq!(lead_answered(Some(&a), Some("m-000000000000000a")), Some(a.at));
+        assert_eq!(lead_answered(Some(&a), Some("m-000000000000000c")), None, "another member's");
+        assert_eq!(lead_answered(Some(&first), Some("m-000000000000000a")), None, "one that says nothing");
+        assert_eq!(lead_answered(None, Some("m-000000000000000a")), None);
+        assert_eq!(lead_answered(Some(&a), None), None, "no lead declared");
+        let broker = crate::coord::client::Answered { epoch: Some(0), ..a.clone() };
+        assert_eq!(lead_answered(Some(&broker), Some("m-000000000000000a")), None, "a broker's");
+        // (Task #497) Its Mac lost the NAS: its answers say nothing of its epoch.
         c.set_member(None);
         client.ask(&ask).ok();
         let lost = client.answered().unwrap();
-        assert_eq!((lost.term, lost.member.as_deref()), (None, None));
-        assert_eq!(lead_answered(Some(&lost), Some(&term(3, "m-000000000000000a"))), None);
+        assert_eq!((lost.epoch, lost.member.as_deref()), (None, None));
+        assert_eq!(lead_answered(Some(&lost), Some("m-000000000000000a")), None);
     }
 
     #[test]
@@ -3576,9 +3560,9 @@ mod tests {
     }
 
     /// Task #881: the lead's restart (an update's, at a safe point) keeps its leases. A member asks
-    /// for work all through term 1; the lead's process ends, and the next takes term 2 up: its
-    /// coordinator opens the store (task #878), every lease granted and answered in term 1 there,
-    /// still term 1's, so every job out goes on renewing with it.
+    /// for work all through epoch 1; the lead's process ends, and the next takes the records up in
+    /// epoch 2: its coordinator opens the store (task #878), every lease granted and answered in
+    /// epoch 1 there, still epoch 1's, so every job out goes on renewing with it.
     #[test]
     fn the_leads_restart_keeps_its_leases() {
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -3605,7 +3589,7 @@ mod tests {
             ..Default::default()
         };
         tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
-        coord.set_term(1);
+        coord.set_epoch(1);
         // The member asks without a pause, each grant a target of its own.
         let stop = Arc::new(AtomicBool::new(false));
         let (c2, s2) = (coord.clone(), stop.clone());
@@ -3656,8 +3640,8 @@ mod tests {
         let granted = burst.join().unwrap();
         coord.stop();
         drop(a);
-        // The next process: its driver from the saved state re-asserts (term 2), and its new
-        // coordinator takes term 1's leases up.
+        // The next process: its driver from the saved state takes the records up in epoch 2, and
+        // its new coordinator has epoch 1's leases.
         let mut a = Run::new(
             crate::agent::seam::for_tests(),
             side(&store::nasfs::NasRoot::local_for_test(&r), &ha),
@@ -3677,12 +3661,12 @@ mod tests {
         };
         assert_eq!(out.leads, Some(2));
         assert!(
-            took.iter().any(|e| matches!(e, Event::TookUp { term: 2, how } if how == "restarted: re-asserted")),
+            took.iter().any(|e| matches!(e, Event::TookUp { epoch: 2, how } if how == "its own records")),
             "{took:?}"
         );
         let (cb, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
         took_up(&mut a, Some(&cb), &took, out.leads, "a", &[]);
-        let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_term(*id) != 1).collect();
+        let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_epoch(*id) != 1).collect();
         assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not taken up: {lost:?}", granted.len());
     }
 }

@@ -3,9 +3,9 @@
 //!   scenic status                       what the lead is doing, what waits and why, regions
 //!   scenic agent [--once] [--dry-run] [--home <dir>]  the agent (every Mac's login item: its
 //!                                       member of the pool, leading when it's the declared lead)
-//!   scenic pool [status]                the pool as it stands (docs/pool.md): the terms, the agents
-//!   scenic lead                         who leads the build (the declared lead, the Mac mini), its
-//!                                       term, since when, and each member (docs/pool.md §11)
+//!   scenic pool [status]                the pool as it stands (docs/pool.md): the declared lead, the agents
+//!   scenic lead                         who leads the build (the declared lead, the Mac mini), since
+//!                                       when, and each member (docs/pool.md §11)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic pause --here | <member>      pause one Mac alone (this one, or a member by host name or
@@ -1352,7 +1352,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     println!("asked the lead (redo {}); its job clears them, merged within minutes", v["n"]);
     // The redo's job is leased after `after`; an older lead's answer lacks it: each target's mark.
     let floor = match serde_json::from_value::<(u64, u64)>(serde_json::json!([v["after"]["term"], v["after"]["n"]])) {
-        Ok((term, n)) => vec![Some(agentcore::pool::journal::LeaseId { term, n }); todo.len()],
+        Ok((epoch, n)) => vec![Some(agentcore::pool::journal::LeaseId { epoch, n }); todo.len()],
         Err(_) => redo::marks(&rec, &step, &todo),
     };
     let landed = redo::follow(

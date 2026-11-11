@@ -4,10 +4,10 @@
 //! is sent there, or this Mac's own is shown while the lead isn't reached (crate::coord::memberpage,
 //! docs/roles.md §3.3). Not a
 //! coordinator: it offers no plan, holds no job's lease, reads none of the files a lead kept in
-//! the folder (the leases, measures and pause of a term this Mac once led are the lead's: a
+//! the folder (the leases, measures and pause of when this Mac once led are the lead's: a
 //! member's agent removes them, crate::agent::room::member_leftovers), keeps nothing in the pool's
 //! store and runs no phase sharer.
-//! Its answers say term 0 (`Shared::broker`), so a member that still asks this Mac as the lead
+//! Its answers say epoch 0 (`Shared::broker`), so a member that still asks this Mac as the lead
 //! after a change of lead reads the lead's contact again, whatever its app.
 //!
 //! It answers on the coordinator's port and folder (one runs at a time on a Mac), its jobs' token
@@ -61,7 +61,7 @@ impl Broker {
         self.c.port()
     }
 
-    /// The pool's member it is, said in its answers with term 0.
+    /// The pool's member it is, said in its answers with epoch 0.
     pub fn set_member(&self, member: Option<&str>) {
         self.c.set_member(member)
     }

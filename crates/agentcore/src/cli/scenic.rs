@@ -71,8 +71,8 @@ pub enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// The build agent (every Mac's login item, a member of the pool, leading or not as the terms
-    /// say)
+    /// The build agent (every Mac's login item, a member of the pool, leading or not as the lead's
+    /// declaration says)
     Agent {
         /// One loop, then out
         #[arg(long)]
@@ -83,7 +83,8 @@ pub enum Cmd {
         #[command(flatten)]
         places: Places,
     },
-    /// The pool as it stands (docs/pool.md): the terms, the agents; and the owner's asks of its lead
+    /// The pool as it stands (docs/pool.md): the declared lead, the agents; and the owner's asks of
+    /// its lead
     Pool(Pool),
     /// A task a member's agent leased, run here (the agent's)
     RunTask {
@@ -102,7 +103,7 @@ pub enum Cmd {
         #[command(flatten)]
         root: Root,
     },
-    /// Who leads the build (the declared lead, the Mac mini), its term, since when, and each member
+    /// Who leads the build (the declared lead, the Mac mini), since when, and each member
     /// (docs/pool.md §11)
     Lead(Lead),
     /// Pause the whole build: every Mac's jobs stop at their next safe point. --here or a member

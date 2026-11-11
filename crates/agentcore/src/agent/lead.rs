@@ -1,35 +1,36 @@
 //! What every view shows of the pool's lead (docs/pool.md §6, §10): the lead, which is fixed (the
 //! member `state/build/lead-member.json` declares: the Mac mini; no election, handover or takeover,
-//! task #881), its term, and the members.
+//! task #881; no terms, docs/coordination.md step 8c), and the members.
 //!
-//! - **The view** (`View`, in the agent's status): the declared lead and its term; each member,
-//!   read by id from its heartbeat (never listed), with its state; "no lead", and why (the lead out
-//!   of touch: the members finish their jobs and wait); the last change of term in words. Made
-//!   again every `VIEW_S`, and at once after a change.
-//! - **The history** (`notes`): each term made (term 1, the lead's re-assertions) and stepped down
-//!   from, as `term` events: into the lead's coordinator's history (the build page's activity, and
-//!   the NAS's history per writer through it); a member, without one, appends them to its own file
-//!   on the NAS and keeps them for its next process's coordinator (`NOTES`).
+//! - **The view** (`View`, in the agent's status): the declared lead; each member, read by id from
+//!   its heartbeat (never listed), with its state; "no lead", and why (the lead out of touch: the
+//!   members finish their jobs and wait); the last change of lead in words. Made again every
+//!   `VIEW_S`, and at once after a change.
+//! - **The history** (`notes`): each take-up of the records and each step down, as `term` events
+//!   (their kind's name from when the lead's runs were terms): into the lead's coordinator's history
+//!   (the build page's activity, and the NAS's history per writer through it); a member, without
+//!   one, appends them to its own file on the NAS and keeps them for its next process's coordinator
+//!   (`NOTES`).
 
 use super::pool::{Heartbeat, Run};
 use crate::coord::history;
 use crate::pool::driver::{Event, Out};
-use crate::pool::{reachable, term};
+use crate::pool::{lead, reachable};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// No lead for this long (by this Mac's clock: since the lead was last heard from, or since this
-/// Mac first saw no lead in the term) is an alert, on every view (s).
+/// Mac first saw no lead) is an alert, on every view (s).
 pub const ALERT_S: u64 = 3600;
 /// The view is made again this often (s): a heartbeat read per member.
 const VIEW_S: u64 = 30;
-/// The terms' events a member keeps for its next process's coordinator, in the agent's pool folder.
+/// The lead's events a member keeps for its next process's coordinator, in the agent's pool folder.
 pub const NOTES: &str = "notes.jsonl";
 /// What it keeps across its processes, in the agent's pool folder.
 const KEPT: &str = "lead.json";
 
-/// The last change of term this Mac saw, in words ("No longer leading …").
+/// The last change of lead this Mac saw, in words ("No longer leading …").
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Change {
     pub at: u64,
@@ -42,21 +43,30 @@ pub struct Change {
 pub struct Kept {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub change: Option<Change>,
-    /// The term with no lead anyone can reach, as first seen so (its number, since when): for the
-    /// alert (`ALERT_S`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub no_lead: Option<(u64, u64)>,
+    /// Since when (this Mac's clock) no lead anyone can reach has been seen: for the alert
+    /// (`ALERT_S`). (An app before docs/coordination.md step 8c kept a term with it: read as none.)
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "since_or_none")]
+    pub no_lead: Option<u64>,
 }
 
-/// The term's lead, as its file says.
+/// `Kept::no_lead` as kept, or as an app before step 8c kept it (a term and since when): none.
+fn since_or_none<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_u64()))
+}
+
+/// The lead, as this Mac knows it: its declaration's member, its host and app (empty while no answer
+/// of it came lately), and when it took the records up (this Mac's own lead; 0 for another's).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeadOf {
-    pub term: u64,
     pub member: String,
     pub host: String,
     pub app: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub since: u64,
-    pub how: String,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A member, as its heartbeat says.
@@ -70,7 +80,7 @@ pub struct Member {
     /// This Mac.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub me: bool,
-    /// It leads the current term (the term names it).
+    /// It's the declared lead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub leads: bool,
     /// In words: home on power, on battery (54 %), away, out of touch, clock wrong, app too old.
@@ -94,18 +104,17 @@ pub struct Member {
 pub struct View {
     /// When it was made (this Mac's clock).
     pub at: u64,
-    pub term: u64,
-    /// The current term's lead (None: the term can't be read whole).
+    /// The declared lead (None: none declared yet, or the declaration not read).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead: Option<LeadOf>,
-    /// The declared lead's member id (crate::pool::term::declared; None: none declared yet).
+    /// The declared lead's member id (crate::pool::lead::declared; None: none declared yet).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub declared: Option<String>,
     /// This Mac leads it.
     pub leading: bool,
     /// Every member it knows, this Mac's first, then by host.
     pub members: Vec<Member>,
-    /// No lead anyone can reach, and why: the lead out of touch, or the term unreadable.
+    /// No lead anyone can reach, and why: the lead out of touch, or none declared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub no_lead: Option<String>,
     /// No lead for `ALERT_S` or more: since when, why, and what to do, in words (the menu bar's
@@ -183,8 +192,8 @@ pub(crate) fn resolve(run: &Run, name: &str) -> Result<String, String> {
     }
 }
 
-/// After a step: the last change of term noted, the history's terms written, the view made again
-/// when due. `coord`: this process's coordinator (the lead's), whose history the terms go to.
+/// After a step: the last change of lead noted, the history's take-ups written, the view made again
+/// when due. `coord`: this process's coordinator (the lead's), whose history they go to.
 pub fn after(
     run: &mut Run,
     out: &Out,
@@ -195,17 +204,10 @@ pub fn after(
     let now = run.side.now();
     let dir = home.join("pool");
     let me = run.side.member().id.clone();
-    // The term it leads, for its members' beats' answers (docs/coordination.md step 8a): only as
-    // this step's own reads found it (`Out::vouched`).
+    // The lead it is, for its members' beats' answers (docs/coordination.md steps 8a, 8c): only as
+    // this step's own read of the declaration found it (`Out::vouched`).
     if let Some(c) = coord {
-        c.set_led(
-            run.side
-                .driver()
-                .current()
-                .lead
-                .clone()
-                .filter(|t| t.member == me && out.leads == Some(t.term) && out.vouched),
-        );
+        c.set_led(out.leads.filter(|_| out.vouched).map(|e| (e, run.side.member().clone())));
     }
     // The history.
     let notes = notes(&out.events, &run.side.member().host, now);
@@ -213,33 +215,27 @@ pub fn after(
         note(&notes, coord, root, &me, &dir);
         run.controls.stale = true;
     }
-    let leading = run.side.driver().current().lead.as_ref().is_some_and(|t| t.member == me);
+    let leading = run.side.driver().declared() == Some(me.as_str());
     let host = run.side.member().host.clone();
     let joins = membership(&mut run.in_touch, &run.side.beats, run.side.beats_at, &me, &host, leading);
     if !joins.is_empty() {
         note(&joins, coord, root, &me, &dir);
         run.controls.stale = true;
     }
-    // The last change of term, in words.
-    let cur = run.side.driver().current().lead.clone();
+    // The last change of lead, in words.
+    let next = run.side.driver().lead().filter(|l| l.id != me).map(|l| l.host.clone());
     for e in &out.events {
-        if let Event::SteppedDown { term, why } = e {
-            let next = cur
-                .as_ref()
-                .filter(|t| t.term > *term)
-                .map(|t| format!("; term {} is {}'s ({})", t.term, t.host, t.how))
-                .unwrap_or_default();
-            run.controls.kept.change =
-                Some(Change { at: now, said: format!("No longer leading term {term}: {why}{next}") });
-        }
-        if let Event::Made { term, how } = e {
-            if cur.as_ref().is_some_and(|t| t.term == *term && t.member == me) {
-                run.controls.kept.change =
-                    Some(Change { at: now, said: format!("This Mac leads term {term} ({how})") });
+        match e {
+            Event::SteppedDown { why, .. } => {
+                let next = next.as_ref().map(|h| format!("; {h} is the declared lead")).unwrap_or_default();
+                run.controls.kept.change = Some(Change { at: now, said: format!("No longer leading: {why}{next}") });
             }
+            Event::TookUp { how, .. } => {
+                run.controls.kept.change =
+                    Some(Change { at: now, said: format!("This Mac leads (took the records up from {how})") });
+            }
+            _ => continue,
         }
-    }
-    if out.events.iter().any(|e| matches!(e, Event::Made { .. } | Event::SteppedDown { .. } | Event::TookUp { .. })) {
         run.controls.stale = true;
     }
     // The view.
@@ -265,7 +261,7 @@ pub fn state_of(h: &Heartbeat, now: u64, app: Option<&str>) -> String {
     if b.clock_wrong(now) {
         return "clock wrong".into();
     }
-    if app.is_some_and(|a| !term::app_at_least(&b.app, a)) {
+    if app.is_some_and(|a| !lead::app_at_least(&b.app, a)) {
         return "app too old".into();
     }
     match h.conds {
@@ -282,35 +278,30 @@ fn view(run: &Run) -> View {
     let side = &run.side;
     let now = side.now();
     let me = side.member().id.clone();
-    let cur = side.driver().current().clone();
     let leading = side.driver().leads().is_some();
-    let lead = cur.lead.as_ref().map(|t| LeadOf {
-        term: t.term,
-        member: t.member.clone(),
-        host: t.host.clone(),
-        app: t.app.clone(),
-        since: t.since,
-        how: t.how.clone(),
+    let lead = side.driver().lead().map(|l| LeadOf {
+        member: l.id.clone(),
+        host: l.host.clone(),
+        app: l.app.clone(),
+        since: if l.id == me { side.driver().leads_since().unwrap_or(0) } else { 0 },
     });
     let mut ids: Vec<String> = side.members().iter().cloned().collect();
-    if let Some(t) = &cur.lead {
-        if !ids.contains(&t.member) {
-            ids.push(t.member.clone());
+    if let Some(l) = &lead {
+        if !ids.contains(&l.member) {
+            ids.push(l.member.clone());
         }
     }
     let pool_beats: Vec<crate::pool::Beat> = ids.iter().filter_map(|id| side.heartbeat(id)).map(|h| h.pool).collect();
     let mut beats: Vec<(String, Heartbeat)> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
-    // (The app a member needs: the term's, and once a readers' switch is recorded, the one it was
+    // (The app a member needs: the lead's, and once a readers' switch is recorded, the one it was
     // recorded on, whichever is newer: an older one is "app too old".)
     let regions = side.regions_app();
-    let need = inputs::inputs::regions::read::needed_app(
-        cur.lead.as_ref().map(|t| t.app.as_str()),
-        regions.as_ref().ok().and_then(|r| r.as_deref()),
-    );
+    let lead_app = lead.as_ref().map(|l| l.app.as_str()).filter(|a| !a.is_empty());
+    let need = inputs::inputs::regions::read::needed_app(lead_app, regions.as_ref().ok().and_then(|r| r.as_deref()));
     for id in ids {
         let h = side.heartbeat(&id).unwrap_or_default();
-        let is_lead = cur.lead.as_ref().is_some_and(|t| t.member == id);
+        let is_lead = lead.as_ref().is_some_and(|l| l.member == id);
         let host = if h.pool.host.is_empty() {
             if id == me {
                 side.member().host.clone()
@@ -340,16 +331,14 @@ fn view(run: &Run) -> View {
         beats.push((id, h));
     }
     members.sort_by(|a, b| b.me.cmp(&a.me).then(b.leads.cmp(&a.leads)).then(a.host.cmp(&b.host)));
-    let lead_beat =
-        cur.lead.as_ref().and_then(|t| beats.iter().find(|(id, _)| *id == t.member)).map(|(_, h)| h.clone());
-    let no_lead = match (&cur.lead, &lead_beat) {
-        _ if cur.term == 0 => None,
-        (None, _) => Some(format!("term {} can't be read whole", cur.term)),
-        (Some(t), _) if leading || t.member == me => None,
-        (Some(t), None) => Some(format!("no heartbeat from {}", t.host)),
-        (Some(t), Some(h)) if h.pool.beat == 0 => Some(format!("no heartbeat from {}", t.host)),
-        (Some(t), Some(h)) if h.pool.out_of_touch(now) => {
-            Some(format!("{} is out of touch: last heard from {}", t.host, ago(now, h.pool.beat)))
+    let lead_beat = lead.as_ref().and_then(|l| beats.iter().find(|(id, _)| *id == l.member)).map(|(_, h)| h.clone());
+    let no_lead = match (&lead, &lead_beat) {
+        (None, _) => Some("no lead is declared".to_string()),
+        (Some(l), _) if leading || l.member == me => None,
+        (Some(l), None) => Some(format!("no heartbeat from {}", l.host)),
+        (Some(l), Some(h)) if h.pool.beat == 0 => Some(format!("no heartbeat from {}", l.host)),
+        (Some(l), Some(h)) if h.pool.out_of_touch(now) => {
+            Some(format!("{} is out of touch: last heard from {}", l.host, ago(now, h.pool.beat)))
         }
         _ => None,
     };
@@ -374,7 +363,6 @@ fn view(run: &Run) -> View {
         .collect();
     View {
         at: now,
-        term: cur.term,
         lead,
         declared: side.driver().declared().map(str::to_string),
         leading,
@@ -387,21 +375,15 @@ fn view(run: &Run) -> View {
 }
 
 /// The alert (`View::alert`): no lead for `ALERT_S` or more, since the lead was last heard from or
-/// since this Mac first saw no lead in this term (`kept.no_lead`), whichever is earlier; with why,
-/// and what to do: the lead is fixed, so it's the lead Mac to see to (no other Mac takes over).
+/// since this Mac first saw no lead (`kept.no_lead`), whichever is earlier; with why, and what to
+/// do: the lead is fixed, so it's the lead Mac to see to (no other Mac takes over).
 pub fn alert(v: &mut View, kept: &mut Kept, now: u64) {
     let Some(why) = v.no_lead.clone() else {
         kept.no_lead = None;
         v.alert = None;
         return;
     };
-    let seen = match kept.no_lead {
-        Some((e, since)) if e == v.term => since,
-        _ => {
-            kept.no_lead = Some((v.term, now));
-            now
-        }
-    };
+    let seen = *kept.no_lead.get_or_insert(now);
     let heard = v
         .lead
         .as_ref()
@@ -433,14 +415,14 @@ fn span(s: u64) -> String {
 /// What the owner does about a coordinator members can't reach (docs/pool.md §6.8).
 pub const OWNER_STEPS: &str = "On the Mac named: check it is awake, on the network and its agent running; then allow Scenic in System Settings › Network › Firewall (Options…), or turn the firewall off";
 
-/// The step's events of the terms, as the history notes them (kind `term`, `worker` this Mac's
-/// host): each term made (its `how`) and stepped down from.
+/// The step's events of the lead, as the history notes them (kind `term`, `worker` this Mac's
+/// host): each take-up of the records (in its epoch, from where) and each step down.
 pub fn notes(events: &[Event], me: &str, now: u64) -> Vec<history::Event> {
     let mut out = Vec::new();
     for e in events {
         let note = match e {
-            Event::Made { term, how } => format!("term {term}: {how}"),
-            Event::SteppedDown { term, why } => format!("stepped down from term {term}: {why}"),
+            Event::TookUp { epoch, how } => format!("took the records up in epoch {epoch}, from {how}"),
+            Event::SteppedDown { epoch, why } => format!("stepped down (epoch {epoch}): {why}"),
             _ => continue,
         };
         out.push(history::Event {
@@ -500,7 +482,7 @@ pub fn membership(
     out
 }
 
-/// The terms' events noted: appended to this member's history on the NAS (`root`) at once (a lead
+/// The lead's events noted: appended to this member's history on the NAS (`root`) at once (a lead
 /// stepping down appends its coordinator's history no more: crate::agent's `pool_lead_files`
 /// leaves them out); and into this process's coordinator's history, when it has one, else kept in
 /// its pool folder `dir` for its next process's coordinator (`replay`).
@@ -512,7 +494,7 @@ fn note(
     dir: &Path,
 ) {
     if let Err(e) = super::pool::append_history(root, member, events) {
-        eprintln!("pool: the terms in the history on the NAS: {e:#}");
+        eprintln!("pool: the lead's events in the history on the NAS: {e:#}");
     }
     if let Some(c) = coord {
         for e in events {
@@ -530,11 +512,11 @@ fn note(
         .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(dir.join(NOTES)))
         .and_then(|mut f| f.write_all(&b));
     if let Err(e) = r {
-        eprintln!("pool: keeping the terms' events: {e}");
+        eprintln!("pool: keeping the lead's events: {e}");
     }
 }
 
-/// The terms' events an earlier process of this member kept (`note`), into this process's
+/// The lead's events an earlier process of this member kept (`note`), into this process's
 /// coordinator's history (the build page's activity; on the NAS already); their file removed.
 pub fn replay(dir: &Path, coord: &crate::coord::Coordinator) {
     let p: PathBuf = dir.join(NOTES);
@@ -585,20 +567,12 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
     match (&v.lead, &v.no_lead) {
         (_, Some(why)) => out.push(v.alert.clone().unwrap_or_else(|| format!("No lead: {why}"))),
         (Some(l), None) => out.push(format!(
-            "The lead: {}{} — term {}, since {} ({})",
+            "The lead: {}{}{}",
             l.host,
             if v.leading { " (this Mac)" } else { "" },
-            l.term,
-            ago(now, l.since),
-            l.how
+            if l.since > 0 { format!(", since {}", ago(now, l.since)) } else { String::new() }
         )),
-        (None, None) => out.push("No terms yet".into()),
-    }
-    if let (Some(d), Some(l)) = (&v.declared, &v.lead) {
-        if *d != l.member {
-            let host = v.members.iter().find(|m| m.member == *d).map_or(d.clone(), |m| m.host.clone());
-            out.push(format!("The declared lead is {host}: it takes the next term"));
-        }
+        (None, None) => out.push("No lead declared".into()),
     }
     for m in &v.members {
         let mut tags: Vec<&str> = Vec::new();
@@ -659,19 +633,18 @@ mod tests {
     #[test]
     fn the_alert_counts_from_the_first_sight_of_no_lead_or_the_leads_last_beat() {
         let mut kept = Kept::default();
-        // Term 55 unreadable: seen at 1000, an alert from an hour on.
-        let mut v = View { term: 55, no_lead: Some("term 55 can't be read whole".into()), ..Default::default() };
+        // No lead declared: seen at 1000, an alert from an hour on.
+        let mut v = View { no_lead: Some("no lead is declared".into()), ..Default::default() };
         alert(&mut v, &mut kept, 1000);
-        assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some((55, 1000))));
+        assert_eq!((v.alert.as_deref(), kept.no_lead), (None, Some(1000)));
         alert(&mut v, &mut kept, 1000 + ALERT_S - 1);
         assert_eq!(v.alert, None);
         alert(&mut v, &mut kept, 1000 + 3 * 3600);
-        assert!(v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 3 h: term 55 can't be read whole. ")));
+        assert!(v.alert.as_deref().is_some_and(|w| w.starts_with("No lead for 3 h: no lead is declared. ")));
         // The lead out of touch: from its last beat, though first seen just now; no takeover offered,
         // the lead Mac to see to.
-        let lead = LeadOf { term: 56, member: "m-a".into(), host: "Mac-mini".into(), ..Default::default() };
+        let lead = LeadOf { member: "m-a".into(), host: "Mac-mini".into(), ..Default::default() };
         let mut v = View {
-            term: 56,
             lead: Some(lead),
             members: vec![Member { member: "m-a".into(), beat: 30_000, ..Default::default() }],
             no_lead: Some("Mac-mini is out of touch".into()),
@@ -684,7 +657,7 @@ mod tests {
             Some("No lead for 62 min: Mac-mini is out of touch. Nothing new builds until Mac-mini is back (the members finish their jobs and wait): check it is awake, on the network and its agent running.")
         );
         // A lead again: none, and forgotten.
-        let mut v = View { term: 57, ..Default::default() };
+        let mut v = View::default();
         alert(&mut v, &mut kept, 40_000);
         assert_eq!((v.alert, kept.no_lead), (None, None));
     }
@@ -706,17 +679,20 @@ mod tests {
     }
 
     #[test]
-    fn the_terms_events_in_the_history() {
+    fn the_leads_events_in_the_history() {
         let events = [
-            Event::Made { term: 4, how: "restarted: re-asserted".into() },
-            Event::SteppedDown { term: 3, why: "another member is the declared lead".into() },
+            Event::TookUp { epoch: 842, how: "its own records".into() },
+            Event::SteppedDown { epoch: 842, why: "another member is the declared lead".into() },
             Event::Merged { applied: vec![], overtaken: 0, refused: 0, listed: false, done: vec![] },
         ];
         let n = notes(&events, "mini", 5);
         let said: Vec<&str> = n.iter().map(|e| e.note.as_str()).collect();
         assert_eq!(
             said,
-            ["term 4: restarted: re-asserted", "stepped down from term 3: another member is the declared lead"]
+            [
+                "took the records up in epoch 842, from its own records",
+                "stepped down (epoch 842): another member is the declared lead"
+            ]
         );
         assert!(n.iter().all(|e| e.kind == "term" && e.worker.as_deref() == Some("mini") && e.t == 5));
     }
@@ -829,9 +805,8 @@ mod tests {
                 self.run.controls.view.clone().expect("a view")
             }
             /// Both its clocks moved on `s` seconds, its run stepped every `TICK_S` meanwhile, as its
-            /// pool's own thread steps it whatever its agent's loop does (a lead not stepped for
-            /// five minutes awake re-asserts: crate::pool::driver's `STALL_S`). The last step is
-            /// the test's.
+            /// pool's own thread steps it whatever its agent's loop does. The last step is the
+            /// test's.
             pub fn pass(&mut self, mut s: u64) {
                 while s > 0 {
                     let k = s.min(crate::agent::pool::TICK_S);
@@ -860,34 +835,13 @@ mod tests {
             }
         }
 
-        /// Steps the Macs in turn until `done` (their listings made off the loop meanwhile, as long
-        /// as a busy Mac takes: five minutes is a watchdog, not a measure).
-        pub(super) fn until(macs: &mut [&mut Mac], done: impl Fn(&[&mut Mac]) -> bool) {
-            let end = std::time::Instant::now() + store::testkit::WATCHDOG;
-            loop {
-                for m in macs.iter_mut() {
-                    m.go();
-                }
-                hear(macs);
-                if done(macs) {
-                    return;
-                }
-                assert!(
-                    std::time::Instant::now() < end,
-                    "not done in five minutes: {:?}",
-                    macs.iter().map(|m| m.run.side.driver().current().clone()).collect::<Vec<_>>()
-                );
-                std::thread::sleep(std::time::Duration::from_millis(30));
-            }
-        }
-
-        /// docs/coordination.md step 8a: the lead's agent tells its coordinator the term it leads
-        /// after each step (`after`), and its beats' answers say it, only while that step's own
-        /// reads found it leading (`Out::vouched`). Its declaration unreadable, it keeps its view
-        /// and leads on, but its answers say no term, so its members read the declaration
+        /// docs/coordination.md steps 8a, 8c: the lead's agent tells its coordinator it leads after
+        /// each step (`after`), and its beats' answers say it, only while that step's own read of
+        /// the declaration found it the lead (`Out::vouched`). Its declaration unreadable, it keeps
+        /// its view and leads on, but its answers say no lead, so its members read the declaration
         /// themselves and find an owner's move; moved, it steps down and says none.
         #[test]
-        fn the_lead_s_answers_say_its_term_only_as_its_own_step_read_it() {
+        fn the_lead_s_answers_say_it_leads_only_as_its_own_step_read_it() {
             let d = tempfile::tempdir().unwrap();
             let (mut a, b) = pool(d.path());
             let (c, _port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
@@ -904,14 +858,14 @@ mod tests {
                     speaks: vec![crate::coord::held::SPEAKS.into()],
                     ..Default::default()
                 };
-                c.member_beat(&w).term.map(|t| (t.term, t.member))
+                c.member_beat(&w).leading.map(|m| m.id)
             };
-            (c.set_term(1), c.set_member(Some(&a.id())));
+            (c.set_epoch(1), c.set_member(Some(&a.id())));
             let o = go(&mut a);
             assert_eq!((o.leads, o.vouched), (Some(1), true), "{:?}", o.events);
-            assert_eq!(said(), Some((1, a.id())));
+            assert_eq!(said(), Some(a.id()));
             // Its declaration not readable (a share failing it): it leads on, its answers say none.
-            let decl = d.path().join("nas").join(term::LEAD);
+            let decl = d.path().join("nas").join(lead::LEAD);
             let kept = std::fs::read(&decl).unwrap();
             std::fs::remove_file(&decl).unwrap();
             std::fs::create_dir(&decl).unwrap();
@@ -921,9 +875,9 @@ mod tests {
             std::fs::remove_dir(&decl).unwrap();
             std::fs::write(&decl, &kept).unwrap();
             assert!(go(&mut a).vouched);
-            assert_eq!(said(), Some((1, a.id())));
+            assert_eq!(said(), Some(a.id()));
             // The owner moves the lead to B: A steps down, and says none.
-            let to_b = term::Declared { member: b.id(), host: "b".into(), since: 1 };
+            let to_b = lead::Declared { member: b.id(), host: "b".into(), since: 1 };
             std::fs::write(&decl, serde_json::to_vec(&to_b).unwrap()).unwrap();
             assert_eq!(go(&mut a).leads, None);
             assert_eq!(said(), None);
@@ -960,42 +914,28 @@ mod tests {
             assert!(a.run.side.all_check_map);
         }
 
-        /// Task #881: the mini is the fixed lead. A term naming a member (an elected lead's, from
-        /// before) isn't led by it: the declared lead makes the next. With the lead gone, the member
-        /// makes no term and leads nothing, however long; every view says so.
+        /// Task #881: the mini is the fixed lead. The member never leads; with the lead gone it
+        /// leads nothing, however long, and every view says so (docs/coordination.md step 8c: no
+        /// term is made, nor read).
         #[test]
         fn a_member_never_claims_the_lead_and_waits_for_it() {
             let d = tempfile::tempdir().unwrap();
-            let (mut a, mut b) = pool(d.path());
-            let (ia, ib) = (a.id(), b.id());
-            let declared = crate::pool::term::declared(a.run.side.nas()).unwrap().map(|d| d.member);
-            assert_eq!(declared, Some(ia.clone()), "term 1's maker declared itself");
-            let t2 = crate::pool::term::Term {
-                term: 2,
-                member: ib.clone(),
-                host: "b".into(),
-                app: "development".into(),
-                since: b.run.side.now(),
-                how: "taken over by b".into(),
-                from: 1,
-            };
-            b.run.side.nas().create_new(&crate::pool::term::path(2), &serde_json::to_vec(&t2).unwrap()).unwrap();
+            let (a, mut b) = pool(d.path());
+            let ia = a.id();
+            let declared = crate::pool::lead::declared(a.run.side.nas()).unwrap().map(|d| d.member);
+            assert_eq!(declared, Some(ia.clone()), "the first Mac in the pool declared itself");
             for _ in 0..3 {
                 assert_eq!(b.go().leads, None, "B never leads");
             }
-            // (A makes term 3, and takes it up once B's last save can't read stale: `STALE_S`.)
-            until(&mut [&mut a, &mut b], |m| m[1].run.side.driver().current().term == 3);
-            assert_eq!(a.go().leads, None, "waits");
-            pass_all(&mut [&mut b, &mut a], crate::pool::driver::STALE_S);
-            until(&mut [&mut a, &mut b], |m| m[0].run.side.driver().leads() == Some(3));
-            let t3 = b.run.side.driver().current().lead.clone().unwrap();
-            assert_eq!((t3.member.as_str(), t3.how.as_str()), (ia.as_str(), "the declared lead, after b"));
-            // A gone for two hours: B makes no term and leads nothing; its view says to see to A.
+            let v = b.view();
+            assert_eq!(v.lead.as_ref().map(|l| l.member.as_str()), Some(ia.as_str()));
+            assert!(!v.leading, "{v:?}");
+            // A gone for two hours: B leads nothing; its view says to see to A.
             b.go();
             b.pass(2 * 3600);
             assert_eq!(b.go().leads, None);
-            assert_eq!(b.run.side.driver().current().term, 3);
-            assert!(!d.path().join("nas").join(crate::pool::term::path(4)).exists(), "no term made");
+            assert_eq!(b.run.side.driver().declared(), Some(ia.as_str()));
+            assert!(!d.path().join("nas/state/build/terms").exists(), "no term made");
             let v = b.view();
             // (A's beat not heard for its 20 min: its heartbeat forgotten.)
             assert!(v.no_lead.as_deref().is_some_and(|w| w.contains("no heartbeat")), "{v:?}");

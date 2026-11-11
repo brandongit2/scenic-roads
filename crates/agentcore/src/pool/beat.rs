@@ -1,5 +1,5 @@
 //! The fields of a member's heartbeat the pool's protocol reads and writes (docs/pool.md §10): who
-//! it is, when it beat, the term it leads, and where to reach it. A struct of their own, every field
+//! it is, when it beat, the epoch it leads, and where to reach it. A struct of their own, every field
 //! defaulted, to embed in the agent's heartbeat (crate::agent::pool::Heartbeat), which rides in its
 //! beat to the lead (crate::coord::beats).
 
@@ -23,7 +23,7 @@ pub struct Beat {
     pub app: String,
     /// When it beat: unix seconds, by its own clock.
     pub beat: u64,
-    /// The term it leads, while it leads.
+    /// The epoch of its store it leads in, while it leads (docs/coordination.md §4.3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leads: Option<u64>,
     /// Where it answers the pool's API: Tailscale's addresses, then the LAN's.

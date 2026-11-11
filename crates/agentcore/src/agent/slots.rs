@@ -264,7 +264,7 @@ pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut
                 // (An app from before this Mac's may not know a pause of its own: refused, not
                 // said done.)
                 match run.side.heartbeat(&id) {
-                    Some(h) if crate::pool::term::app_at_least(&h.pool.app, &m.app) => Ok(Some((id, name.to_string()))),
+                    Some(h) if crate::pool::lead::app_at_least(&h.pool.app, &m.app) => Ok(Some((id, name.to_string()))),
                     Some(_) => Err(format!(
                         "{name}'s app is too old to pause alone (older than this Mac's): update it, or pause the whole build"
                     )),

@@ -29,11 +29,13 @@ pub const GRACE_S: u64 = 2 * 86400;
 /// its return it resets from the snapshot (PM's decision 3, 30 Oct; docs/maplog.md §5.4).
 pub const CURSOR_TTL_S: u64 = 7 * 86400;
 
-/// A lease's id as the pool numbers them (pipeline's `pool::journal::LeaseId`): its term, then its
-/// number there; later grants are greater.
+/// A lease's id as the pool numbers them (agentcore's `pool::journal::LeaseId`): the epoch of the
+/// lead's store it was granted in (under the key `term`, as when leases were numbered by the pool's
+/// terms), then its number; later grants are greater.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Lease {
-    pub term: u64,
+    #[serde(rename = "term")]
+    pub epoch: u64,
     pub n: u64,
 }
 
@@ -766,7 +768,7 @@ mod tests {
         q.orphans(&names, 100).unwrap();
         let none = BTreeMap::new();
         let h = Holders { cursors: &none, oldest_lease: None, now: 100 + GRACE_S };
-        let (l1, l2) = (Lease { term: 1, n: 1 }, Lease { term: 1, n: 2 });
+        let (l1, l2) = (Lease { epoch: 1, n: 1 }, Lease { epoch: 1, n: 2 });
         assert_eq!(q.chunk(&h, l1, 4, &|_| true).unwrap(), names[..4]);
         // (a gone; b, c, d told again, e first told; then c let go (kept: told twice) and d kept.)
         q.gone(&names[..1], &[], 100 + GRACE_S, l1).unwrap();
@@ -803,29 +805,29 @@ mod tests {
         let x = vec!["x.0000000000000000.pack".to_string()];
         let none = BTreeMap::new();
         let h = Holders { cursors: &none, oldest_lease: None, now: 100 };
-        let mark = Lease { term: 1, n: 5 };
+        let mark = Lease { epoch: 1, n: 5 };
         q.removing(&x, &h, mark).unwrap();
         q.gone(&x, &[], 100, mark).unwrap();
         let known: BTreeSet<String> = ["m2".to_string(), "m4".to_string()].into();
         // (Not known yet: kept.)
         q.leases(known.clone(), None);
         assert_eq!(q.deletions_kept(), 1, "m2 and m4 not heard since");
-        q.granted("m4", Lease { term: 1, n: 3 });
+        q.granted("m4", Lease { epoch: 1, n: 3 });
         q.beat("m2", BTreeSet::new());
         assert_eq!(q.deletions_kept(), 1, "m4 not heard since");
-        q.beat("m4", [Lease { term: 1, n: 3 }].into());
+        q.beat("m4", [Lease { epoch: 1, n: 3 }].into());
         assert_eq!(q.deletions_kept(), 1, "m4 owes 1-3, older than the mark");
         // (A lease of the coordinator's as old holds it too.)
-        q.leases(known.clone(), Some(Lease { term: 1, n: 4 }));
+        q.leases(known.clone(), Some(Lease { epoch: 1, n: 4 }));
         q.beat("m4", BTreeSet::new());
         assert_eq!(q.deletions_kept(), 1);
         // Across a restart, what each owes: m4 granted 1-6 (newer), owes nothing older.
-        q.granted("m4", Lease { term: 1, n: 6 });
+        q.granted("m4", Lease { epoch: 1, n: 6 });
         let back = GcQueue::default();
         back.open(d.path(), &m).unwrap();
         back.leases(known.clone(), None);
         assert_eq!(back.deletions_kept(), 0, "no lease as old as it may be handed off");
-        assert_eq!(back.lock().owed.get("m4").cloned().unwrap_or_default(), [Lease { term: 1, n: 6 }].into());
+        assert_eq!(back.lock().owed.get("m4").cloned().unwrap_or_default(), [Lease { epoch: 1, n: 6 }].into());
         q.leases(known, None);
         assert_eq!(q.deletions_kept(), 0);
     }

@@ -1,47 +1,32 @@
 //! The build's records (docs/pool.md §6.2): the manifest, the job keys, the uploads not yet
-//! verified, the raw tiles' archives waiting to be named, and the journal entries they reflect,
-//! numbered by their term and a sequence number one more each save. The lead keeps them on its
-//! own disk first (docs/coordination.md step 8b: what its take-up starts from), then writes them
-//! whole to one path on the NAS, `state/build/records.json` (and its brief), and to its term's own
-//! snapshot, `state/build/term/<E>/records.json` (its brief there too while a member heard reads
-//! those: the rollout gate). A reader never pairs keys from one version with a manifest of another
-//! (invariant 4). A save of an earlier term's lead landing late over the one path is passed over:
-//! a term after its own is made, so a reader or a take-up from the NAS reads the later term's own
-//! (invariant 5); one of this term's (an earlier process's take-up of it) is read until the lead's
-//! next save (`driver::RESAVE_S` at most).
+//! verified, the raw tiles' archives waiting to be named, and the hand-offs they reflect, numbered
+//! by the epoch of the lead's store they were saved in (docs/coordination.md §4.3, step 8c) and a
+//! sequence number one more each save. The lead keeps them on its own disk first (step 8b: what its
+//! take-up starts from), then writes them whole to one path on the NAS, `state/build/records.json`,
+//! and its brief, which every reader reads (buildstore::records::now). A reader never pairs keys
+//! from one version with a manifest of another (invariant 4). A save landing late over the one
+//! path (one an earlier process left running as it stopped) is read until the lead's next save
+//! (`driver::RESAVE_S` at most), and never taken up: the lead's own copy is newer
+//! (crate::pool::driver's take-up).
 //!
-//! Term 1 is today's layout, `state/build/manifest.json`, `jobs.json` and `pending.json` (nothing
-//! moves when the pool begins): its first snapshot is made from them before term 1 itself is, in a
-//! file of its own that no lead writes (`first`: `term/1/first.json`), and they're written after
-//! each of term 1's snapshots, for today's readers. Term 1's take-up, and a reader, read its lead's
-//! snapshot, then its first, and today's files again only once the first has stayed unreadable
-//! longer than any stale read (its maker stopped midway, or its bytes landed out of order), no
-//! lead's snapshot there: three files can be read half rewritten, one stale and another not. Its
-//! maker finishing it late lands where no one reads once its lead has saved.
+//! A take-up (crate::pool::driver) starts from the newest of its lead's own records and the one
+//! path's, by (epoch, seq); in a new pool, from today's files (`Records::today`). Each target keeps
+//! the lease that last set it, so an older lease's hand-off merged later (a member back from
+//! sleep, a replay) doesn't undo a newer one's.
 //!
-//! Taking up a term (`start`, then the merge and the save) starts from the records of the term
-//! before: its lead's own, kept on its disk, when it led that term; else (another Mac led it, or
-//! its own copy is lost) the newest snapshot a read finds. It replays the journal
-//! entries they don't name in (term, lease) order, and saves that as the new term's first snapshot.
-//! A stale read only sends an entry to the replay, or to its member's telling the new lead again
-//! (crate::pool::journal::Mine): none is lost (invariant 3). Each target keeps the lease that last
-//! set it, so an older lease's entry merged later (a member back from sleep, a replay) doesn't undo
-//! a newer one's.
-//!
-//! Which file a reader reads them from (the paths, `load`, `newest`, `now`, `Brief::now`, term 1's
-//! fallbacks) is buildstore::records's, generic over what's read (task #916 step 6a, docs/crates.md
-//! §6): here, the whole records.
+//! Which file a reader reads them from (`ONE`, `ONE_BRIEF`, today's files before the pool) is
+//! buildstore::records's, generic over what's read (task #916 step 6a, docs/crates.md §6): here,
+//! the whole records.
 
 use super::journal::{self, Entry, LeaseId};
-use super::nas::{Created, Nas};
-use super::term::Term;
-use anyhow::{bail, Context, Result};
+use super::nas::Nas;
+use anyhow::Result;
 use buildstore::rawpack::Pack;
-use buildstore::records::{read_or_default, BriefOf, Snapshot, TODAY};
+use buildstore::records::{read_or_default, Snapshot, TODAY};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub use buildstore::records::{brief_path, path, FirstUnreadable, FIRST, ONE, ONE_BRIEF};
+pub use buildstore::records::{ONE, ONE_BRIEF};
 
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
@@ -323,12 +308,15 @@ pub type Check<'a> = &'a dyn Fn(&Entry, &Records) -> std::result::Result<(), Str
 /// write-sets don't know of (crate::agent::pool::check_from).
 pub const HOLD: &str = "held: ";
 
-/// A term's records.
+/// The build's records.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Records {
-    /// The term they're of.
-    pub term: u64,
-    /// The snapshot's number in its term: one more each save, from 1 (0: none saved yet).
+    /// The epoch of the lead's store they were saved in (docs/coordination.md §4.3): under the key
+    /// `term`, as when they were numbered by the pool's terms (step 8c: the first epoch is past
+    /// every term made, the records' term the floor of a take-up's epoch).
+    #[serde(rename = "term")]
+    pub epoch: u64,
+    /// The snapshot's number in its epoch: one more each save, from 1 (0: none saved yet).
     pub seq: u64,
     /// Logical name → content name.
     pub manifest: BTreeMap<String, String>,
@@ -361,14 +349,14 @@ pub struct Records {
 }
 
 /// A snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads, the sizes
-/// and the journal's names left out), written whole by the lead after each snapshot (`ONE_BRIEF`;
-/// a term's own past the first while the gate writes them), for the readers that need no more (`Brief::now`): the map server's syncs,
-/// the hosts, the agent's planning, a catalog's checks. One read pairs keys and manifest of one
-/// version (invariant 4).
+/// and the journal's names left out), written whole by the lead after each snapshot (`ONE_BRIEF`),
+/// for the readers that need no more (`Brief::now`): the map server's syncs, the hosts, the agent's
+/// planning, a catalog's checks. One read pairs keys and manifest of one version (invariant 4).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Brief {
-    /// The term it's of.
-    pub term: u64,
+    /// The epoch it's of (`Records::epoch`).
+    #[serde(rename = "term")]
+    pub epoch: u64,
     /// The snapshot it's of (`Records::seq`).
     pub seq: u64,
     /// Logical name → content name.
@@ -378,26 +366,16 @@ pub struct Brief {
 }
 
 impl Brief {
-    /// `Records::now`'s manifest and keys: the one path's brief while it's the current term's, else a
-    /// term's brief where it has one (its snapshot where it has none); today's two files before the
-    /// pool (buildstore::records::brief_now).
+    /// `Records::now`'s manifest and keys: the one path's brief; today's two files before the pool
+    /// (buildstore::records::brief_now).
     pub fn now(nas: &dyn Nas) -> Result<Brief> {
-        buildstore::records::brief_now::<Records, Brief>(nas)
+        buildstore::records::brief_now::<Brief>(nas)
     }
 }
 
-impl BriefOf<Records> for Brief {
-    fn term(&self) -> u64 {
-        self.term
-    }
-
-    fn of(r: Records) -> Brief {
-        Brief { term: r.term, seq: r.seq, manifest: r.manifest, keys: r.keys }
-    }
-
+impl buildstore::records::Brief for Brief {
     fn today(nas: &dyn Nas) -> Result<Brief> {
         Ok(Brief {
-            term: 1,
             manifest: read_or_default(nas, TODAY[0])?,
             keys: read_or_default(nas, TODAY[1])?,
             ..Default::default()
@@ -406,16 +384,8 @@ impl BriefOf<Records> for Brief {
 }
 
 impl Snapshot for Records {
-    fn term(&self) -> u64 {
-        self.term
-    }
-
     fn today(nas: &dyn Nas) -> Result<Records> {
         Records::today(nas)
-    }
-
-    fn with_seq(self, seq: u64) -> Records {
-        Records { seq, ..self }
     }
 }
 
@@ -436,27 +406,20 @@ fn slots(step: &str, t: &str) -> Vec<(String, String)> {
     }
 }
 
+/// The one path's snapshot as read now (buildstore::records::load_one); None when there's none: a
+/// lead's take-up (crate::pool::driver).
+pub fn load_one(nas: &dyn Nas) -> Result<Option<Records>> {
+    buildstore::records::load_one(nas)
+}
+
 impl Records {
-    /// Term `term`'s snapshot, as read now (buildstore::records::load); None when it has none.
-    pub fn load(nas: &dyn Nas, term: u64) -> Result<Option<Records>> {
-        buildstore::records::load(nas, term)
-    }
-
-    /// The terms' own snapshots as a reader walks them while term `term` is current, the one path
-    /// left out (buildstore::records::newest_over): the tests' look at them.
-    #[cfg(test)]
-    pub fn newest(nas: &dyn Nas, term: u64, today: bool) -> Result<Option<Records>> {
-        buildstore::records::newest_over(nas, term, None, today)
-    }
-
-    /// The build's records as today's three files hold them (term 1's, as the pool begins). The
-    /// pending read before the manifest (a save writes the manifest first: every upload the pending
-    /// read holds is one the manifest read after has named, unless replaced since; GC's drop of the
-    /// uploads no name reads counts on it).
+    /// The build's records as today's three files hold them (before the pool: its first take-up's).
+    /// The pending read before the manifest (a save writes the manifest first: every upload the
+    /// pending read holds is one the manifest read after has named, unless replaced since; GC's drop
+    /// of the uploads no name reads counts on it).
     pub fn today(nas: &dyn Nas) -> Result<Records> {
         let pending = read_or_default(nas, TODAY[2])?;
         Ok(Records {
-            term: 1,
             manifest: read_or_default(nas, TODAY[0])?,
             keys: read_or_default(nas, TODAY[1])?,
             pending,
@@ -465,24 +428,19 @@ impl Records {
         })
     }
 
-    /// The build's records as a reader has them now (§6.2; buildstore::records::now): the one path's
-    /// while it's the current term's, else the current term's own snapshot, or the newest before
-    /// it; before the pool's first term, today's files.
+    /// The build's records as a reader has them now (§6.2; buildstore::records::now): the one
+    /// path's; before the pool, today's files.
     pub fn now(nas: &dyn Nas) -> Result<Records> {
         buildstore::records::now(nas)
     }
 
     /// Saves them as the next snapshot (`seq` one more): kept by `keep` first (the lead's own
     /// disk, what its take-up starts from: docs/coordination.md step 8b), nothing written to the
-    /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`), and to
-    /// their term's own snapshot (`path`: only this term's lead writes it, so a late write of an
-    /// earlier term's lead, landed over the one path, never hides it from a take-up or a reader);
-    /// with `per_term` (a member heard reads the terms' own briefs: the rollout gate) past term 1
-    /// to the term's own brief (`brief_path`); term 1's to today's files after. The number goes up
-    /// even when a write fails, so no two versions that may land share one.
-    pub fn save(&mut self, nas: &dyn Nas, keep: Keep, per_term: bool) -> std::result::Result<(), Unsaved> {
-        if self.term < 1 {
-            return Err(Unsaved::Kept(anyhow::anyhow!("records of no term")));
+    /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`). The
+    /// number goes up even when a write fails, so no two versions that may land share one.
+    pub fn save(&mut self, nas: &dyn Nas, keep: Keep) -> std::result::Result<(), Unsaved> {
+        if self.epoch < 1 {
+            return Err(Unsaved::Kept(anyhow::anyhow!("records of no epoch")));
         }
         self.seq += 1;
         // (The sizes of files the manifest no longer names let go.)
@@ -490,11 +448,11 @@ impl Records {
         self.sizes.retain(|c, _| named.contains(c));
         let b = serde_json::to_vec(self).map_err(|e| Unsaved::Kept(e.into()))?;
         keep(&b).map_err(Unsaved::Kept)?;
-        self.put(nas, &b, per_term).map_err(Unsaved::Nas)
+        self.put(nas, &b).map_err(Unsaved::Nas)
     }
 
     /// Their NAS files, `b` the snapshot's bytes (`save`).
-    fn put(&self, nas: &dyn Nas, b: &[u8], per_term: bool) -> Result<()> {
+    fn put(&self, nas: &dyn Nas, b: &[u8]) -> Result<()> {
         // (Brief's fields, borrowed.)
         #[derive(Serialize)]
         struct B<'a> {
@@ -504,22 +462,9 @@ impl Records {
             keys: &'a Keys,
         }
         let brief =
-            serde_json::to_vec(&B { term: self.term, seq: self.seq, manifest: &self.manifest, keys: &self.keys })?;
+            serde_json::to_vec(&B { term: self.epoch, seq: self.seq, manifest: &self.manifest, keys: &self.keys })?;
         nas.write_whole(ONE, b)?;
-        nas.write_whole(ONE_BRIEF, &brief)?;
-        // (The term's own snapshot, always: what fences a late write at the one path from a take-up
-        // that reads the NAS, docs/coordination.md step 8b.)
-        nas.write_whole(&path(self.term), b)?;
-        if per_term && self.term >= 2 {
-            nas.write_whole(&brief_path(self.term), &brief)?;
-        }
-        if self.term == 1 {
-            nas.write_whole(TODAY[0], &serde_json::to_vec_pretty(&self.manifest)?)?;
-            nas.write_whole(TODAY[2], &serde_json::to_vec_pretty(&self.pending)?)?;
-            nas.write_whole(buildstore::out::SIZES, &serde_json::to_vec(&self.sizes)?)?;
-            nas.write_whole(TODAY[1], &serde_json::to_vec_pretty(&self.keys)?)?;
-        }
-        Ok(())
+        nas.write_whole(ONE_BRIEF, &brief)
     }
 
     /// Whether journal entry `key` is in them: applied (or passed over), or refused.
@@ -575,27 +520,6 @@ impl Records {
     }
 }
 
-/// Makes term 1's first snapshot from today's three files, unless it has one: before term 1 is made
-/// (crate::pool::term::bootstrap), so every Mac that learns of term 1 reads it whole. In a file of
-/// its own (`FIRST`) that no lead writes: term 1's lead saves its snapshots to its records file
-/// (`path(1)`), read first. Made with create-new: of two Macs making it, the first's stays. This
-/// call's create whose bytes didn't land is written whole, as `term::finish` does a term's, before
-/// term 1 is made: landing late (its Mac asleep between its temporary file and its rename), it
-/// lands where no one reads once term 1's lead has saved. One there already that doesn't read
-/// whole (an earlier try's, its answer lost or its maker stopped; or another Mac's, its bytes not
-/// landed yet, or a stale read) is left as it is: `term_one` reads today's files once it has
-/// stayed so longer than any stale read.
-pub fn first(nas: &dyn Nas) -> Result<()> {
-    if nas.exists(FIRST)? {
-        return Ok(());
-    }
-    let b = serde_json::to_vec(&Records { seq: 1, ..Records::today(nas)? })?;
-    match nas.create_new(FIRST, &b)? {
-        Created::Made | Created::There => Ok(()),
-        Created::Unwritten(_) => nas.write_whole(FIRST, &b).context("finish term 1's first snapshot"),
-    }
-}
-
 /// What a merge did, by journal key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Merged {
@@ -623,7 +547,7 @@ pub struct Merged {
 pub type MergedJob = (String, String, String, Vec<String>);
 
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
-/// or refused, in (term, lease) order: this lead's check decides, whatever another lead's refusal
+/// or refused, in lease order: this lead's check decides, whatever another lead's refusal
 /// (crate::pool::journal::refusal). Nothing is written: the caller saves the records, then notes
 /// the refusals (crate::pool::journal::note_refusal) and acknowledges what the saved records name.
 pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> Merged {
@@ -701,69 +625,14 @@ pub fn merge_from(
     out
 }
 
-/// Journal keys in the order of their leases (`<day>/<term>-<n>`: by term, then number, then key):
+/// Journal keys in the order of their leases (`<day>/<epoch>-<n>`: by epoch, then number, then key):
 /// the order a merge applies them in.
 pub fn by_lease(keys: &mut [String]) {
     keys.sort_by_cached_key(|k| (k.rsplit('/').next().and_then(|l| l.parse::<LeaseId>().ok()), k.clone()));
 }
 
-/// The records term `t` starts from (§6.2). `own`, its lead's own (kept on its disk, or in memory: a
-/// lead re-asserting; an earlier try of this take-up, its save failed, numbered on), when they're
-/// of the term before `t` or of `t`: no other lead between, and nothing read (docs/coordination.md
-/// step 8b: a save of its own landing late on the NAS can't send it back). Else (the owner moved
-/// the lead here, or its own are lost or older) the newest a read finds: the one path's
-/// (`ONE`), unless a term after it has a snapshot of its own (walking down from `t`'s, an earlier
-/// try's that landed; term 1's as `term_one` says, `today` as it says: a stale read of today's files
-/// pairs a manifest of one version with keys of another), or `own` where newer. Numbered as `t`'s,
-/// on from a snapshot of `t`'s own, from 0 otherwise. Refused (`Older`) when what it finds is older
-/// than `saved` (term, seq): its lead's last save to the NAS.
-pub fn start(
-    nas: &dyn Nas,
-    t: &Term,
-    own: Option<&Records>,
-    today: bool,
-    saved: Option<(u64, u64)>,
-) -> Result<Records> {
-    let mut base = own.filter(|o| o.term >= t.from && o.term <= t.term).cloned();
-    if base.is_none() {
-        let one = buildstore::records::load_one::<Records>(nas)?.filter(|o| o.term <= t.term);
-        let floor = one.as_ref().map_or(1, |o| o.term + 1);
-        for f in (floor..=t.term).rev() {
-            if let Some(o) = own.filter(|o| o.term == f) {
-                base = Some(o.clone());
-                break;
-            }
-            let loaded = if f == 1 { Some(buildstore::records::term_one(nas, today)?) } else { Records::load(nas, f)? };
-            if let Some(r) = loaded {
-                base = Some(r);
-                break;
-            }
-        }
-        base = base.or(one);
-        if let Some(o) = own.filter(|o| base.as_ref().is_none_or(|b| (o.term, o.seq) > (b.term, b.seq))) {
-            base = Some(o.clone());
-        }
-    }
-    let Some(mut r) = base else { bail!("no records to take term {} up from", t.term) };
-    // (Never from records older than those its lead last saved: a stale read's, or one of a term
-    // before. What their saves acknowledged is on no member's disk any more: docs/coordination.md
-    // step 6.)
-    if let Some((term, seq)) = saved.filter(|s| (r.term, r.seq) < *s) {
-        return Err(Older(format!(
-            "the newest records read are term {}'s at {}, older than term {term}'s at {seq}, which its lead \
-             saved (a stale read: tried again)",
-            r.term, r.seq
-        ))
-        .into());
-    }
-    if r.term != t.term {
-        r.term = t.term;
-        r.seq = 0;
-    }
-    Ok(r)
-}
-
-/// `start`'s error when the records it reads are older than those its lead saved last.
+/// A take-up's error when the records it reads are older than those its lead saved last
+/// (crate::pool::driver: a stale read, or its disk's copy restored from a backup).
 #[derive(Debug)]
 pub struct Older(pub String);
 
@@ -802,54 +671,21 @@ impl std::error::Error for Unsaved {}
 #[cfg(test)]
 mod tests {
     use super::super::journal::LeaseId;
-    use super::super::nas::Mem;
-    use super::super::term::{self, Current};
-    use super::super::Member;
+    use super::super::nas::{Created, Mem};
     use super::*;
+    use anyhow::bail;
     use buildstore::handoff::Handoff;
     use std::cell::Cell;
 
     const DAY: u64 = 1_791_300_000;
 
-    /// What taking up a term gave (`take_up`).
-    #[derive(Clone, Debug)]
-    struct TakenUp {
-        records: Records,
-        merged: Merged,
-    }
-
-    /// Takes up term `t` in one go, as the driver does: `start` (from `own`, as it says; `today` as
-    /// it says), the journal entries `keys` replayed where the records don't name them, `check`ed
-    /// first; saved as `t`'s first snapshot, and the refusals noted. When the save fails, `own`
-    /// keeps the records as tried, numbered: passed again, the next try numbers on.
-    fn take_up(
-        nas: &dyn Nas,
-        t: &Term,
-        own: &mut Option<Records>,
-        keys: &[String],
-        check: Check,
-        today: bool,
-    ) -> Result<TakenUp> {
-        let mut r = start(nas, t, own.as_ref(), today, None)?;
-        let merged = merge(nas, &mut r, keys, check);
-        if let Err(e) = r.save(nas, &|_| Ok(()), true) {
-            *own = Some(r);
-            return Err(e).with_context(|| format!("save term {}'s records", t.term));
-        }
-        *own = None;
-        for (k, why) in &merged.refused {
-            journal::note_refusal(nas, k, why).ok();
-        }
-        Ok(TakenUp { records: r, merged })
-    }
-
-    /// Saves `r` to the NAS alone, its term's own too.
+    /// Saves `r` to the NAS alone.
     fn save(r: &mut Records, nas: &dyn Nas) -> std::result::Result<(), Unsaved> {
-        r.save(nas, &|_| Ok(()), true)
+        r.save(nas, &|_| Ok(()))
     }
 
-    /// An entry of lease `term`-`n` building unit `t` with key `k`.
-    fn built(term: u64, n: u64, t: &str, k: &str) -> Entry {
+    /// An entry of lease `epoch`-`n` building unit `t` with key `k`.
+    fn built(epoch: u64, n: u64, t: &str, k: &str) -> Entry {
         let content = format!("base/{t}.{k}.base");
         let h = Handoff {
             changes: [(format!("base/{t}"), Some(content.clone()))].into(),
@@ -859,7 +695,7 @@ mod tests {
         };
         Entry {
             member: "m-000000000000000b".into(),
-            lease: LeaseId { term, n },
+            lease: LeaseId { epoch, n },
             step: "unit".into(),
             handoff: h,
             at: DAY + n,
@@ -870,12 +706,12 @@ mod tests {
         Ok(())
     }
 
-    /// The sizes an entry hands off are kept for the files it names alone, let go once the manifest
-    /// no longer names them, and written beside today's manifest; an entry without sizes still merges.
+    /// The sizes an entry hands off are kept for the files it names alone, and let go once the
+    /// manifest no longer names them; an entry without sizes still merges.
     #[test]
     fn the_records_keep_the_sizes_of_the_files_the_manifest_names() {
         let nas = Mem::default();
-        let mut r = Records { term: 1, ..Default::default() };
+        let mut r = Records { epoch: 1, ..Default::default() };
         let mut e = built(1, 1, "6-1-1", "k1");
         e.handoff.sizes = [("base/6-1-1.k1.base".into(), 12), ("base/6-9-9.k0.base".into(), 3)].into();
         assert!(r.apply("a", &e));
@@ -886,69 +722,67 @@ mod tests {
         assert!(r.apply("c", &again));
         save(&mut r, &nas).unwrap();
         assert_eq!(r.sizes, [("base/6-1-1.k3.base".to_string(), 14)].into());
-        let today: BTreeMap<String, u64> =
-            serde_json::from_slice(&nas.read(buildstore::out::SIZES).unwrap().unwrap()).unwrap();
-        assert_eq!(today, r.sizes);
-        assert_eq!(Records::today(&nas).unwrap().sizes, r.sizes);
+        assert_eq!(Records::now(&nas).unwrap().sizes, r.sizes);
     }
 
-    fn lead(app: &str) -> Member {
-        Member { id: "m-000000000000000a".into(), host: "Mac-mini".into(), app: app.into() }
-    }
-
-    /// Takes up `t` in one go, the journal listed whole (term 1's first snapshot that can't be read
-    /// whole taken from today's files: it has stayed so longer than any stale read).
-    fn up(nas: &dyn Nas, t: &Term, own: Option<Records>, check: Check) -> Result<TakenUp> {
-        take_up(nas, t, &mut own.clone(), &journal::list(nas, None)?, check, true)
+    /// docs/coordination.md step 8c: a save writes the one path and its brief alone (no term's own
+    /// files, nor today's), under the key `term` older apps read; readers read them back, today's
+    /// files only before the pool, never once a lead is declared and the one path can't be read.
+    #[test]
+    fn a_save_writes_the_one_path_and_its_brief_alone() {
+        let nas = Mem::default();
+        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
+        assert_eq!((Brief::now(&nas).unwrap().manifest.len(), Records::now(&nas).unwrap().manifest.len()), (1, 1));
+        let mut r = Records { epoch: 841, ..Records::today(&nas).unwrap() };
+        let e = built(841, 1, "6-1-2", "k1");
+        r.apply(&e.key().unwrap(), &e);
+        save(&mut r, &nas).unwrap();
+        let mut files = nas.list("state/build").unwrap();
+        files.sort();
+        assert_eq!(files, ["brief.json", "manifest.json", "records.json"], "today's manifest as it was");
+        let brief = Brief::now(&nas).unwrap();
+        assert_eq!((brief.epoch, brief.seq, &brief.manifest, &brief.keys), (841, 1, &r.manifest, &r.keys));
+        assert_eq!(Records::now(&nas).unwrap(), r);
+        let v: serde_json::Value = serde_json::from_slice(&nas.read(ONE).unwrap().unwrap()).unwrap();
+        assert_eq!((v["term"].as_u64(), v["seq"].as_u64()), (Some(841), Some(1)), "{v}");
+        // The one path not read (a stale read) once a lead is declared: an error, never today's.
+        let fresh = Mem::default();
+        fresh.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
+        fresh.write_whole(buildstore::records::lead::LEAD, br#"{"member": "m-000000000000000a"}"#).unwrap();
+        assert!(Records::now(&fresh).is_err() && Brief::now(&fresh).is_err());
+        assert!(Records { epoch: 0, ..r }.save(&nas, &|_| Ok(())).is_err(), "records of no epoch");
     }
 
     #[test]
-    fn term_ones_first_snapshot_is_todays_files_and_they_follow_its_saves() {
+    fn a_refused_entrys_refusal_is_noted_and_checked_again_when_told_again() {
+        // A lead's check refuses an entry (say, its app's write-sets are older) and notes why once
+        // the records naming it are saved. Told again by its member to a lead whose records lack it
+        // (a lead whose disk's copy was lost, its last save not on the NAS), or found by a listing:
+        // that lead's own check decides. (Review M1: the lead whose check would take it refused it
+        // unread.)
         let nas = Mem::default();
-        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        nas.write_whole(TODAY[1], br#"{"unit": {"6-1-1": "k0"}}"#).unwrap();
-        assert!(Records::newest(&nas, 1, false).unwrap_err().is::<FirstUnreadable>(), "none made yet");
-        first(&nas).unwrap();
-        let mut r = Records::newest(&nas, 1, false).unwrap().unwrap();
-        assert_eq!((r.term, r.seq, r.manifest.len(), r.keys.unit.len(), r.pending.len()), (1, 1, 1, 1, 0));
-        assert_eq!(r, Records { seq: 1, ..Records::today(&nas).unwrap() });
-        assert_eq!(Records::load(&nas, 1).unwrap(), None, "in a file of its own, no lead's snapshot yet");
-        let e = built(1, 1, "6-1-2", "k1");
-        r.apply(&e.key().unwrap(), &e);
-        save(&mut r, &nas).unwrap();
-        assert_eq!(Records::load(&nas, 1).unwrap(), Some(r.clone()), "its lead's snapshot");
-        assert_eq!(Records::newest(&nas, 1, false).unwrap(), Some(r.clone()), "read first");
-        // Made once: a second Mac's try leaves it.
-        let made = nas.read(FIRST).unwrap();
-        first(&nas).unwrap();
-        assert_eq!(nas.read(FIRST).unwrap(), made);
-        // Its maker stopped between its create and its bytes: readers can't read it, and term 1's
-        // take-up starts from today's files once it has stayed so longer than any stale read.
-        let stopped = Mem::default();
-        stopped.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        stopped.create_new(FIRST, b"").unwrap();
-        assert!(Records::newest(&stopped, 1, false).unwrap_err().is::<FirstUnreadable>());
-        assert_eq!(
-            Records::newest(&stopped, 1, true).unwrap().map(|r| r.manifest.len()),
-            Some(1),
-            "today's files after `STALE_S`"
-        );
-        let a = lead("development");
-        let t1 = term::bootstrap(&stopped, &a, DAY).unwrap().unwrap();
-        let taken = up(&stopped, &t1, None, &any).unwrap();
-        assert_eq!((taken.records.seq, taken.records.manifest.len()), (2, 1));
-        // Today's files, written after it, for today's readers.
-        let m: BTreeMap<String, String> = serde_json::from_slice(&nas.read(TODAY[0]).unwrap().unwrap()).unwrap();
-        assert_eq!(m, r.manifest);
-        let k: Keys = serde_json::from_slice(&nas.read(TODAY[1]).unwrap().unwrap()).unwrap();
-        assert_eq!(k.unit.get("6-1-2").map(String::as_str), Some("k1"));
-        assert!(nas.read(TODAY[2]).unwrap().is_some());
+        let x = journal::write(&nas, &built(1, 5, "6-1-1", "k5")).unwrap();
+        let stale = |_: &Entry, _: &Records| Err::<(), String>("6-1-1 leased again since".into());
+        let mut r1 = Records { epoch: 1, ..Default::default() };
+        let m = merge(&nas, &mut r1, std::slice::from_ref(&x), &stale);
+        save(&mut r1, &nas).unwrap();
+        for (k, why) in &m.refused {
+            journal::note_refusal(&nas, k, why).unwrap();
+        }
+        assert_eq!(journal::refusal(&nas, &x).unwrap().as_deref(), Some("6-1-1 leased again since"));
+        let mut r2 = Records { epoch: 2, ..Default::default() };
+        assert_eq!(journal::list(&nas, None).unwrap(), std::slice::from_ref(&x));
+        let m2 = merge(&nas, &mut r2.clone(), std::slice::from_ref(&x), &any);
+        assert_eq!(m2.applied, std::slice::from_ref(&x), "{m2:?}");
+        let m3 = merge(&nas, &mut r2, &journal::list(&nas, None).unwrap(), &any);
+        assert_eq!(m3.applied, std::slice::from_ref(&x), "{m3:?}");
+        assert_eq!(r2.keys.unit.get("6-1-1").map(String::as_str), Some("k5"));
     }
 
     #[test]
     fn a_merge_applies_in_lease_order_and_refuses_what_its_check_refuses() {
         let nas = Mem::default();
-        let mut r = Records { term: 3, ..Default::default() };
+        let mut r = Records { epoch: 3, ..Default::default() };
         // Told in another order than leased: the later lease's key wins.
         let (a, b) = (built(3, 9, "6-1-1", "k9"), built(3, 2, "6-1-1", "k2"));
         let bad = Entry { step: "bogus".into(), ..built(3, 5, "6-1-3", "kx") };
@@ -981,7 +815,7 @@ mod tests {
         // (Review M5: lease order held only within one merge, and an older lease's entry merged
         // later won.)
         let nas = Mem::default();
-        let mut r = Records { term: 3, ..Default::default() };
+        let mut r = Records { epoch: 3, ..Default::default() };
         let newer = journal::write(&nas, &built(3, 9, "6-1-1", "k9")).unwrap();
         let older = journal::write(&nas, &built(3, 5, "6-1-1", "k5")).unwrap();
         assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&newer), &any).applied, std::slice::from_ref(&newer));
@@ -1005,7 +839,7 @@ mod tests {
         let late = journal::write(&nas, &built(3, 10, "6-1-1", "k10")).unwrap();
         assert_eq!(merge(&nas, &mut r, std::slice::from_ref(&late), &any).overtaken, [late]);
         assert!(!r.manifest.contains_key("base/6-1-1") && !r.keys.unit.contains_key("6-1-1"));
-        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { term: 3, n: 12 });
+        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { epoch: 3, n: 12 });
         // Kept in the snapshot, for the next lead.
         assert_eq!(serde_json::from_slice::<Records>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
     }
@@ -1017,7 +851,7 @@ mod tests {
     #[test]
     fn a_redo_forgets_its_targets_keys_alone() {
         let nas = Mem::default();
-        let mut r = Records { term: 3, ..Default::default() };
+        let mut r = Records { epoch: 3, ..Default::default() };
         let check = |e: &Entry, r: &Records| crate::agent::pool::check(crate::agent::seam::for_tests(), e, r);
         let keys: Vec<String> = [built(3, 1, "6-1-1", "k1"), built(3, 2, "6-1-2", "k2")]
             .iter()
@@ -1040,7 +874,7 @@ mod tests {
         let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
         // (#789: what `scenic redo --run` follows: the redo's lease is the target's mark now.)
         assert_ne!(crate::agent::redo::marks(&r, "unit", &ts), marks);
-        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { term: 3, n: 5 });
+        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { epoch: 3, n: 5 });
         assert!(m.refused.is_empty() && m.applied == [k], "{:?}", m.refused);
         assert_eq!(r.keys.unit.get("6-1-1"), None);
         assert_eq!(r.keys.unit.get("6-1-2").map(String::as_str), Some("k2"), "the other target's kept");
@@ -1068,7 +902,7 @@ mod tests {
         // (Review 2: a lead taking up from an old snapshot read every entry since in one loop, on a
         // share under load an hour of reads.)
         let nas = Mem::default();
-        let mut r = Records { term: 3, ..Default::default() };
+        let mut r = Records { epoch: 3, ..Default::default() };
         let mut keys: Vec<String> = [(3, 9, "6-1-1"), (2, 4, "6-1-2"), (3, 1, "6-1-3")]
             .iter()
             .map(|&(t, n, u)| journal::write(&nas, &built(t, n, u, "k")).unwrap())
@@ -1120,330 +954,11 @@ mod tests {
         let short = "2026-10-06/3-3".to_string();
         mem.write_whole(&journal::path(&short), b"{\"member\":").unwrap();
         let nas = Failing(mem, journal::path(&keys[0]));
-        let mut r = Records { term: 3, ..Default::default() };
+        let mut r = Records { epoch: 3, ..Default::default() };
         let m = merge(&nas, &mut r, &[keys.clone(), vec![short.clone()]].concat(), &any);
         assert_eq!(
             (m.failed, m.unread, m.applied, m.waiting),
             (vec![keys[0].clone()], vec![], vec![keys[1].clone()], vec![short])
         );
-    }
-
-    #[test]
-    fn a_new_lead_takes_up_from_the_term_before_and_replays_what_it_lacks() {
-        let nas = Mem::default();
-        let a = lead("20261005-2202-61eb22c");
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let up1 = up(&nas, &t1, None, &any).unwrap();
-        assert_eq!((up1.records.term, up1.records.seq), (1, 2), "after its first snapshot");
-        // Term 1's lead merges one entry and saves; another is written and never merged.
-        let (e1, e2) = (built(1, 1, "6-1-1", "k1"), built(1, 2, "6-1-2", "k2"));
-        let k1 = journal::write(&nas, &e1).unwrap();
-        journal::write(&nas, &e2).unwrap();
-        let mut r1 = up1.records;
-        merge(&nas, &mut r1, &[k1], &any);
-        save(&mut r1, &nas).unwrap();
-        // Taken over: term 2 starts from term 1's snapshot and replays the other.
-        let b =
-            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60)
-            .unwrap()
-            .unwrap();
-        // A reader while term 2 has no snapshot yet: term 1's.
-        assert_eq!(Records::newest(&nas, 2, false).unwrap().map(|r| (r.term, r.seq)), Some((1, 3)));
-        let up2 = up(&nas, &t2, None, &any).unwrap();
-        assert_eq!(up2.merged.applied, [e2.key().unwrap()]);
-        assert_eq!((up2.records.term, up2.records.seq), (2, 1));
-        assert!(up2.records.handles(&e1.key().unwrap()) && up2.records.handles(&e2.key().unwrap()));
-        assert_eq!(Records::load(&nas, 2).unwrap(), Some(up2.records.clone()));
-        assert_eq!(Records::newest(&nas, 2, false).unwrap(), Some(up2.records.clone()));
-        // Term 3 made, its lead gone before saving anything: term 4 starts from term 2's.
-        let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2.clone()) }, &a, "taken over", DAY + 120)
-            .unwrap()
-            .unwrap();
-        let t4 = term::claim(&nas, &Current { term: 3, lead: Some(t3) }, &b, "taken over", DAY + 900).unwrap().unwrap();
-        assert_eq!(
-            Records::newest(&nas, 4, false).unwrap().map(|r| r.term),
-            Some(2),
-            "readers meanwhile: term 2's (review L6: none)"
-        );
-        let up4 = up(&nas, &t4, None, &any).unwrap();
-        assert_eq!((up4.records.term, up4.records.reflected.len()), (4, 2));
-        // Tried again after its save landed: from its own snapshot, its number going on.
-        let again = up(&nas, &t4, None, &any).unwrap();
-        assert_eq!((again.records.term, again.records.seq), (4, 2));
-    }
-
-    #[test]
-    fn readers_read_a_terms_brief_its_snapshot_without_one_and_todays_files_only_before_the_pool() {
-        let nas = Mem::default();
-        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        // Before the pool: today's files.
-        assert_eq!(Brief::now(&nas).unwrap().manifest.len(), 1);
-        assert_eq!(Records::now(&nas).unwrap().manifest.len(), 1);
-        let a = lead("20261005-2202-61eb22c");
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let mut r1 = up(&nas, &t1, None, &any).unwrap().records;
-        assert!(nas.read(&brief_path(1)).unwrap().is_none(), "term 1's: today's files");
-        let e1 = built(1, 1, "6-1-2", "k1");
-        r1.apply(&e1.key().unwrap(), &e1);
-        save(&mut r1, &nas).unwrap();
-        let b1 = Brief::now(&nas).unwrap();
-        assert_eq!((b1.term, b1.seq, b1.keys.unit.get("6-1-2").map(String::as_str)), (1, r1.seq, Some("k1")));
-        // Term 2, its lead's snapshots each with its brief: one read, of a quarter the bytes.
-        let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: a.app.clone() };
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60)
-            .unwrap()
-            .unwrap();
-        let mut r2 = up(&nas, &t2, None, &any).unwrap().records;
-        let e2 = built(2, 1, "6-1-3", "k2");
-        r2.apply(&e2.key().unwrap(), &e2);
-        save(&mut r2, &nas).unwrap();
-        let brief = Brief::now(&nas).unwrap();
-        assert_eq!(
-            (brief.term, brief.seq, &brief.manifest, &brief.keys),
-            (2, r2.seq, &r2.manifest, &r2.keys),
-            "the term's brief, of its last snapshot"
-        );
-        assert!(nas.read(&brief_path(2)).unwrap().is_some());
-        assert_eq!(Records::now(&nas).unwrap(), r2);
-        // A lead on an app from before briefs (its snapshot alone): its snapshot.
-        nas.remove(&brief_path(2)).unwrap();
-        assert_eq!(Brief::now(&nas).unwrap(), Brief::of(r2.clone()));
-        // Term 3 made, no snapshot yet: term 2's.
-        term::claim(&nas, &Current { term: 2, lead: Some(t2) }, &a, "taken over", DAY + 120).unwrap().unwrap();
-        assert_eq!(Brief::now(&nas).unwrap().term, 2);
-        // No term found (the hint, the listing and the terms unreadable: stale) once the pool has
-        // begun: the one path's, else an error,
-        // never today's files (GC's live set from days-old records).
-        struct Lost<'a>(&'a Mem, bool);
-        impl Nas for Lost<'_> {
-            fn create_new(&self, p: &str, b: &[u8]) -> Result<Created> {
-                self.0.create_new(p, b)
-            }
-            fn write_whole(&self, p: &str, b: &[u8]) -> Result<()> {
-                self.0.write_whole(p, b)
-            }
-            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
-                if p == term::HINT || (self.1 && (p == ONE || p == ONE_BRIEF)) {
-                    Ok(None)
-                } else {
-                    self.0.read(p)
-                }
-            }
-            fn exists(&self, p: &str) -> Result<bool> {
-                Ok(!p.starts_with(term::DIR) && self.0.exists(p)?)
-            }
-            fn list(&self, _: &str) -> Result<Vec<String>> {
-                Ok(Vec::new())
-            }
-            fn remove(&self, p: &str) -> Result<()> {
-                self.0.remove(p)
-            }
-        }
-        assert_eq!(Brief::now(&Lost(&nas, false)).unwrap().seq, r2.seq, "the one path's");
-        assert_eq!(Records::now(&Lost(&nas, false)).unwrap(), r2);
-        assert!(Brief::now(&Lost(&nas, true)).is_err());
-        assert!(Records::now(&Lost(&nas, true)).is_err());
-    }
-
-    #[test]
-    fn a_lead_re_asserting_starts_from_its_own_records_unread() {
-        let nas = Mem::default();
-        let a = lead("20261005-2202-61eb22c");
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let r = up(&nas, &t1, None, &any).unwrap().records;
-        let mut own = r.clone();
-        let e4 = built(1, 4, "6-1-4", "k4");
-        own.apply(&e4.key().unwrap(), &e4);
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &a, "re-asserted after a gap", DAY + 900)
-            .unwrap()
-            .unwrap();
-        let up2 = up(&nas, &t2, Some(own), &any).unwrap();
-        assert_eq!(up2.records.keys.unit.get("6-1-4").map(String::as_str), Some("k4"));
-        assert_eq!((up2.records.term, up2.records.seq), (2, 1));
-    }
-
-    #[test]
-    fn a_refused_entrys_why_is_noted_once_its_refusal_is_saved() {
-        let nas = Mem::default();
-        let a = lead("development");
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let bad = Entry { step: "bogus".into(), ..built(1, 3, "6-1-3", "kx") };
-        let k = journal::write(&nas, &bad).unwrap();
-        let check = |e: &Entry, _: &Records| if e.step == "bogus" { Err("no such step".to_string()) } else { Ok(()) };
-        let taken = up(&nas, &t1, None, &check).unwrap();
-        assert_eq!(taken.records.rejected.get(&k).map(String::as_str), Some("no such step"));
-        assert_eq!(journal::refusal(&nas, &k).unwrap().as_deref(), Some("no such step"));
-        // Told again by its member, to a lead whose records lack it: checked again, refused again.
-        let mut r = Records { term: 2, ..Default::default() };
-        let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
-        assert_eq!(m.refused, [(k, "no such step".to_string())]);
-    }
-
-    #[test]
-    fn a_stale_leads_refusal_is_checked_again_by_the_current_lead() {
-        // A stale lead's check refuses an entry (say, it leased its targets again after the lease
-        // lapsed, or its app's write-sets are older) and sets it aside. (Review M1: the current
-        // lead, whose check would take it, refused it unread.)
-        let nas = Mem::default();
-        let (a, b) = (
-            lead("development"),
-            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() },
-        );
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let mut r1 = up(&nas, &t1, None, &any).unwrap().records;
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700)
-            .unwrap()
-            .unwrap();
-        let mut r2 = up(&nas, &t2, None, &any).unwrap().records;
-        let x = journal::write(&nas, &built(1, 5, "6-1-1", "k5")).unwrap();
-        let stale = |_: &Entry, _: &Records| Err::<(), String>("6-1-1 leased again since".into());
-        let m = merge(&nas, &mut r1, std::slice::from_ref(&x), &stale);
-        save(&mut r1, &nas).unwrap();
-        for (k, why) in &m.refused {
-            journal::note_refusal(&nas, k, why).unwrap();
-        }
-        // Told of it by its member, or (its member gone) listing it: its own check decides.
-        assert_eq!(journal::list(&nas, None).unwrap(), std::slice::from_ref(&x));
-        let m2 = merge(&nas, &mut r2.clone(), std::slice::from_ref(&x), &any);
-        assert_eq!(m2.applied, std::slice::from_ref(&x), "{m2:?}");
-        let m3 = merge(&nas, &mut r2, &journal::list(&nas, None).unwrap(), &any);
-        assert_eq!(m3.applied, std::slice::from_ref(&x), "{m3:?}");
-        assert_eq!(r2.keys.unit.get("6-1-1").map(String::as_str), Some("k5"));
-    }
-
-    /// A NAS on which term 2's first snapshot's save lands but answers an error, and reads it as
-    /// missing a moment after (a stale read).
-    #[derive(Default)]
-    struct LostSave {
-        mem: Mem,
-        lost: Cell<bool>,
-        stale: Cell<bool>,
-    }
-
-    impl Nas for LostSave {
-        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-            self.mem.create_new(path, bytes)
-        }
-        fn write_whole(&self, p: &str, bytes: &[u8]) -> Result<()> {
-            self.mem.write_whole(p, bytes)?;
-            if p == path(2) && self.lost.replace(false) {
-                self.stale.set(true);
-                bail!("write {p}: the answer was lost");
-            }
-            Ok(())
-        }
-        fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
-            if p == path(2) && self.stale.replace(false) {
-                return Ok(None);
-            }
-            self.mem.read(p)
-        }
-        fn exists(&self, p: &str) -> Result<bool> {
-            self.mem.exists(p)
-        }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.mem.list(dir)
-        }
-        fn remove(&self, p: &str) -> Result<()> {
-            self.mem.remove(p)
-        }
-    }
-
-    #[test]
-    fn a_take_up_tried_again_numbers_its_snapshot_on() {
-        // Term 2's first save lands and answers an error; the next try reads it as missing.
-        // (Review L1: the try started again from term 1's records at 0, and two versions of term
-        // 2's records, with other entries, were both numbered 1.)
-        let nas = LostSave::default();
-        let (a, b) = (
-            lead("development"),
-            Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() },
-        );
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        up(&nas, &t1, None, &any).unwrap();
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700)
-            .unwrap()
-            .unwrap();
-        journal::write(&nas, &built(1, 1, "6-1-1", "k1")).unwrap();
-        nas.lost.set(true);
-        let mut own = None;
-        assert!(take_up(&nas, &t2, &mut own, &journal::list(&nas, None).unwrap(), &any, false).is_err());
-        let first = Records::load(&nas.mem, 2).unwrap().unwrap();
-        assert_eq!(own.as_ref().map(|r| (r.term, r.seq)), Some((2, 1)), "kept as tried");
-        journal::write(&nas, &built(1, 2, "6-1-2", "k2")).unwrap();
-        let again = take_up(&nas, &t2, &mut own, &journal::list(&nas, None).unwrap(), &any, false).unwrap().records;
-        assert_eq!((first.seq, again.seq, first.reflected.len(), again.reflected.len()), (1, 2, 1, 2));
-        assert!(own.is_none());
-    }
-
-    #[test]
-    fn term_ones_first_snapshot_whose_create_is_cut_is_written_whole() {
-        // Its create made the file and its bytes didn't land. (Re-review 2, H1: term 1 was made all
-        // the same, and a take-up under stale reads paired today's files of two versions.)
-        struct Cut(Mem);
-        impl Nas for Cut {
-            fn create_new(&self, p: &str, _: &[u8]) -> Result<Created> {
-                self.0.create_new(p, b"")?;
-                Ok(Created::Unwritten(anyhow::anyhow!("write {p} (made, and left short)")))
-            }
-            fn write_whole(&self, p: &str, bytes: &[u8]) -> Result<()> {
-                self.0.write_whole(p, bytes)
-            }
-            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
-                self.0.read(p)
-            }
-            fn exists(&self, p: &str) -> Result<bool> {
-                self.0.exists(p)
-            }
-            fn list(&self, dir: &str) -> Result<Vec<String>> {
-                self.0.list(dir)
-            }
-            fn remove(&self, p: &str) -> Result<()> {
-                self.0.remove(p)
-            }
-        }
-        let nas = Cut(Mem::default());
-        nas.0.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        first(&nas).unwrap();
-        assert_eq!(Records::newest(&nas, 1, false).unwrap().map(|r| (r.seq, r.manifest.len())), Some((1, 1)));
-    }
-
-    #[test]
-    fn term_ones_first_snapshot_finished_late_lands_where_none_reads() {
-        // Its maker's create cut short, and its finish landing late, its Mac asleep between its
-        // temporary file and its rename: term 1's lead took up from today's files meanwhile, and
-        // saved. (Re-review 3: written to term 1's records file, it landed over that snapshot.)
-        let nas = Mem::default();
-        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        let late = serde_json::to_vec(&Records { seq: 1, ..Records::today(&nas).unwrap() }).unwrap();
-        nas.create_new(FIRST, b"").unwrap();
-        let t1 = term::bootstrap(&nas, &lead("development"), DAY).unwrap().unwrap();
-        let mut r = up(&nas, &t1, None, &any).unwrap().records;
-        let e = built(1, 1, "6-1-2", "k1");
-        r.apply(&e.key().unwrap(), &e);
-        save(&mut r, &nas).unwrap();
-        nas.write_whole(FIRST, &late).unwrap();
-        assert_eq!(Records::newest(&nas, 1, false).unwrap(), Some(r.clone()), "its lead's");
-        let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() };
-        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over", DAY + 60).unwrap().unwrap();
-        assert!(start(&nas, &t2, None, false, None).unwrap().handles(&e.key().unwrap()), "term 2 from its lead's too");
-    }
-
-    #[test]
-    fn term_ones_first_snapshot_with_a_hole_is_taken_up_from_todays_files() {
-        // Its bytes landed out of order and its maker stopped: a hole of zeros mid-file, not a
-        // short end. (Review L5: it couldn't be read, nor term 1 taken up.)
-        let nas = Mem::default();
-        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        let mut b = serde_json::to_vec(&Records { seq: 1, ..Records::today(&nas).unwrap() }).unwrap();
-        let n = b.len();
-        b[n / 4..n / 2].fill(0);
-        nas.create_new(FIRST, &b).unwrap();
-        let a = lead("development");
-        let t1 = term::bootstrap(&nas, &a, DAY).unwrap().unwrap();
-        let taken = up(&nas, &t1, None, &any).unwrap();
-        assert_eq!((taken.records.seq, taken.records.manifest.len()), (2, 1));
-        assert_eq!(Records::load(&nas, 1).unwrap().map(|r| r.seq), Some(2), "its lead's, saved whole");
     }
 }

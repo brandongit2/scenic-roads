@@ -265,6 +265,31 @@ impl Store {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).state.epoch
     }
 
+    /// The epoch, raised past `past` first when it isn't (a line of the log, durable before it
+    /// answers): a lead's take-up leads an epoch past the records it starts from
+    /// (crate::pool::driver::Io::epoch: another lead's after the owner moved the lead, or the
+    /// pool's last term at the move from terms, docs/coordination.md step 8c). An error when the
+    /// line isn't on disk within `DURABLE_WAIT`.
+    pub fn raise_epoch(&self, past: u64) -> Result<u64> {
+        let seq = {
+            let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
+            if m.state.epoch > past {
+                return Ok(m.state.epoch);
+            }
+            let l = Line { seq: m.state.seq + 1, epoch: Some(past + 1), ..Default::default() };
+            match line_bytes(&l) {
+                Ok(b) => m.pending.extend_from_slice(&b),
+                Err(_) => m.compact = true,
+            }
+            m.pending_n += 1;
+            m.state.apply(&l);
+            self.work.notify_all();
+            l.seq
+        };
+        ensure!(self.wait(seq, DURABLE_WAIT), "the store's epoch {} isn't on its disk", past + 1);
+        Ok(past + 1)
+    }
+
     /// The state with every change submitted.
     pub fn snapshot(&self) -> Snapshot {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).state.clone()
@@ -443,6 +468,21 @@ mod tests {
         let n = s.submit(set(k, v), Vec::new());
         assert!(s.wait(n, Duration::from_secs(10)));
         n
+    }
+
+    /// docs/coordination.md step 8c: a take-up raises the epoch past the records it starts from,
+    /// durably: a restart bumps it on from there, and a raise below it changes nothing.
+    #[test]
+    fn the_epoch_raised_past_a_take_ups_records_stays_past_them() {
+        let d = tempfile::tempdir().unwrap();
+        let s = Store::open(d.path()).unwrap();
+        assert_eq!(s.epoch(), 1);
+        assert_eq!(s.raise_epoch(840).unwrap(), 841, "past the pool's last term");
+        assert_eq!(s.raise_epoch(12).unwrap(), 841, "already past");
+        assert_eq!(s.raise_epoch(841).unwrap(), 842);
+        s.stop();
+        drop(s);
+        assert_eq!(Store::open(d.path()).unwrap().epoch(), 843);
     }
 
     #[test]

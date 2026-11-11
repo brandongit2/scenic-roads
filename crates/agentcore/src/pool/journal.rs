@@ -1,13 +1,12 @@
-//! The jobs' hand-offs as entries (`Entry`, keyed `<day>/<term>-<n>`), what a member keeps of them
+//! The jobs' hand-offs as entries (`Entry`, keyed `<day>/<epoch>-<n>`), what a member keeps of them
 //! until acknowledged (`Mine`), and the journal they go to for a lead on an app before
 //! docs/coordination.md step 6 (the rollout gate, deleted with it: a lead on this app is posted them
 //! by HTTP, crate::coord::handoffs).
 //!
 //! The journal (docs/pool.md §7.3): every job's hand-off, written by the member whose job made it
-//! straight to the NAS, `state/journal/<day>/<term>-<n>.json`, written whole (a temporary name,
+//! straight to the NAS, `state/journal/<day>/<epoch>-<n>.json`, written whole (a temporary name,
 //! renamed: a reader never sees it half written) by that member alone, named after the job's
-//! lease (`<term>-<n>`: the term it was leased in, and its number there, unique by
-//! construction). The lead merges entries into its term's records (crate::pool::records) as
+//! lease (`LeaseId`). The lead merges entries into its term's records (crate::pool::records) as
 //! members tell it of them, and lists the journal after taking up a term and now and then,
 //! replaying what its records don't name. It's a log, not a queue: nothing is removed on the merge
 //! path, so a lead taking over finds every result. An entry a lead refuses stays where it is, its
@@ -34,19 +33,22 @@ pub const DIR: &str = "state/journal";
 /// Where a refused entry's why is noted, under its key (`<key>.why`).
 pub const REJECTED: &str = "state/journal/rejected";
 
-/// A lease's id (§6.5, §7.5): the term it was granted in and its number there, `<term>-<n>`, so no
-/// two terms ever give the same one.
+/// A lease's id (§6.5, §7.5; docs/coordination.md §4.3): the epoch of the lead's store it was
+/// granted in and its number, `<epoch>-<n>`, ordered by both. The epoch goes up at each start of
+/// the lead's store and past every epoch a take-up finds (crate::pool::driver::Io::epoch); the
+/// number is the store's own (crate::coord::lease), never repeated. Leases granted in the pool's
+/// terms, before step 8c, are `<term>-<n>`: the first epoch is past every term.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseId {
-    /// The term it was granted in.
-    pub term: u64,
-    /// Its number in that term.
+    /// The epoch it was granted in (a term, before step 8c).
+    pub epoch: u64,
+    /// Its number.
     pub n: u64,
 }
 
 impl fmt::Display for LeaseId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}", self.term, self.n)
+        write!(f, "{}-{}", self.epoch, self.n)
     }
 }
 
@@ -54,10 +56,10 @@ impl FromStr for LeaseId {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<LeaseId> {
-        let Some((t, n)) = s.split_once('-') else { bail!("{s:?} isn't a lease: <term>-<n>") };
+        let Some((t, n)) = s.split_once('-') else { bail!("{s:?} isn't a lease: <epoch>-<n>") };
         match (t.parse(), n.parse()) {
-            (Ok(term), Ok(n)) => Ok(LeaseId { term, n }),
-            _ => bail!("{s:?} isn't a lease: <term>-<n>"),
+            (Ok(epoch), Ok(n)) => Ok(LeaseId { epoch, n }),
+            _ => bail!("{s:?} isn't a lease: <epoch>-<n>"),
         }
     }
 }
@@ -90,7 +92,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Its key, `<day>/<term>-<n>`: what records name it by, and where it is under the journal;
+    /// Its key, `<day>/<epoch>-<n>`: what records name it by, and where it is under the journal;
     /// None when its time isn't a day (a damaged entry's).
     pub fn key(&self) -> Option<String> {
         Some(format!("{}/{}", day(self.at)?, self.lease))
@@ -320,13 +322,13 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
 
-    fn entry(term: u64, n: u64, at: u64) -> Entry {
+    fn entry(epoch: u64, n: u64, at: u64) -> Entry {
         let h = Handoff {
             changes: [("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string()))].into(),
             done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])),
             ..Default::default()
         };
-        Entry { member: "m-000000000000000a".into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at }
+        Entry { member: "m-000000000000000a".into(), lease: LeaseId { epoch, n }, step: "unit".into(), handoff: h, at }
     }
 
     fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
@@ -334,13 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn leases_read_back_and_order_by_term_then_number() {
+    fn leases_read_back_and_order_by_epoch_then_number() {
         let l: LeaseId = "12-345".parse().unwrap();
-        assert_eq!(l, LeaseId { term: 12, n: 345 });
+        assert_eq!(l, LeaseId { epoch: 12, n: 345 });
         assert_eq!(serde_json::to_string(&l).unwrap(), "\"12-345\"");
         assert_eq!(serde_json::from_str::<LeaseId>("\"12-345\"").unwrap(), l);
         assert!("12".parse::<LeaseId>().is_err() && "a-1".parse::<LeaseId>().is_err());
-        let mut v = [LeaseId { term: 3, n: 1 }, LeaseId { term: 2, n: 10 }, LeaseId { term: 2, n: 9 }];
+        let mut v = [LeaseId { epoch: 3, n: 1 }, LeaseId { epoch: 2, n: 10 }, LeaseId { epoch: 2, n: 9 }];
         v.sort();
         assert_eq!(v.map(|l| l.to_string()), ["2-9", "2-10", "3-1"]);
     }
@@ -393,7 +395,7 @@ mod tests {
         note_refusal(&nas, "2026-10-06/5-2", "writes outside its step's names").unwrap();
         assert_eq!(list(&nas, None).unwrap(), ["2026-10-05/5-1", "2026-10-06/5-2", "2026-10-06/5-3"], "still listed");
         assert!(
-            matches!(read(&nas, "2026-10-06/5-2").unwrap(), Read::Entry(e) if e.lease == LeaseId { term: 5, n: 2 })
+            matches!(read(&nas, "2026-10-06/5-2").unwrap(), Read::Entry(e) if e.lease == LeaseId { epoch: 5, n: 2 })
         );
         assert_eq!(refusal(&nas, "2026-10-06/5-2").unwrap().as_deref(), Some("writes outside its step's names"));
         // Noted again (another lead's, or a first try cut short): the first why kept.
@@ -433,7 +435,7 @@ mod tests {
         v["at"] = serde_json::json!(u64::MAX);
         nas.write_whole(&path(&key), &serde_json::to_vec(&v).unwrap()).unwrap();
         assert!(matches!(read(&nas, &key).unwrap(), Read::Damaged(why) if why.contains("isn't a day")));
-        let mut r = Records { term: 2, ..Default::default() };
+        let mut r = Records { epoch: 2, ..Default::default() };
         let m = records::merge(&nas, &mut r, std::slice::from_ref(&key), &any);
         assert_eq!(m.refused.len(), 1, "{m:?}");
         // Nor can one be written, or kept to write.
@@ -502,7 +504,7 @@ mod tests {
         let nas = Torn::default();
         let e = entry(4, 2, 1_791_300_000);
         let key = e.key().unwrap();
-        let r = std::rc::Rc::new(RefCell::new(Records { term: 4, ..Default::default() }));
+        let r = std::rc::Rc::new(RefCell::new(Records { epoch: 4, ..Default::default() }));
         let seen = std::rc::Rc::new(RefCell::new(None));
         {
             let (r, seen, key) = (r.clone(), seen.clone(), key.clone());

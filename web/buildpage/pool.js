@@ -45,7 +45,7 @@ export function poolSection(agent, now, macs = new Map(), asks = new Map(), ask 
   const v = agent?.pool?.lead;
   if (!v) return null;
   const lead = v.lead;
-  const sub = v.no_lead ? `term ${v.term}: no lead` : lead ? `${lead.host} leads term ${lead.term} since ${clock(lead.since)}` : "";
+  const sub = v.no_lead ? "no lead" : lead ? `${lead.host} leads${lead.since ? ` since ${clock(lead.since)}` : ""}` : "";
   const cards = v.members.map((m) => {
     const [state, cls] = chipFor(m);
     const x = macs.get(m.member), hold = x?.status?.hold || null;
@@ -53,7 +53,6 @@ export function poolSection(agent, now, macs = new Map(), asks = new Map(), ask 
       h("div", "top", h("span", "name", m.host), h("span", "role", [m.me ? "serves this page" : null, m.app].filter(Boolean).join(" · ")), h("span", { class: `chip ${cls}` }, state),
         hold && hold.stage !== m.state ? h("span", { class: "chip warn", title: hold.said }, hold.stage) : null,
         m.beat ? h("span", "right", `heard from ${ago(now, m.beat)}`) : null));
-    if (m.leads && lead) card.append(h("div", "sub", `Term ${lead.term}: ${lead.how}`));
     if (ask) {
       const c = holdControl(m, hold, x ? x.fresh : !m.out_of_touch, asks.get(m.member));
       const said = typeof asks.get(m.member) === "string" ? asks.get(m.member) : hold?.said;
@@ -71,7 +70,7 @@ export function poolSection(agent, now, macs = new Map(), asks = new Map(), ask 
     h("div", "pool-top", top), h("div", "machines", cards));
 }
 
-/** A term's event in the history, in words. */
+/** The lead's event in the history (kind `term`: a take-up of the records, a step down), in words. */
 export function termText(e) {
   return [`${e.worker || ""}: ${e.note || ""}`, /stepped down|out of touch/.test(e.note || "") ? "warn" : "run"];
 }

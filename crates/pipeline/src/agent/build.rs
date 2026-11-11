@@ -6814,7 +6814,7 @@ mod tests {
             h.done = Some((step.to_string(), vec![(t.to_string(), k)]));
             let e = Entry {
                 member: "m-0000000000000001".into(),
-                lease: agentcore::pool::journal::LeaseId { term: 1, n: 1 },
+                lease: agentcore::pool::journal::LeaseId { epoch: 1, n: 1 },
                 step: step.into(),
                 handoff: h,
                 at: 1_791_500_000,

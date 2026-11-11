@@ -118,12 +118,13 @@ pub struct Answer {
     /// began: crate::coord::budgets).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub progress_released: Vec<(String, u64)>,
-    /// The term the lead leads, while it leads it and its pool's step isn't taken as hung (the
-    /// term its answers' `x-pool-term` says): a member learns its lead and term from it, reading the
-    /// NAS's declaration and terms only while no answer within `beats::PAGE_AWAY_S` carried one
-    /// (docs/coordination.md step 8a). Left out by a lead before it.
+    /// The lead, while it leads (its agent's driver took the records up in the epoch its leases
+    /// are granted in, its last step's read of the declaration named it, and its pool's step isn't
+    /// taken as hung): a member learns its lead from it, reading the NAS's declaration only while no
+    /// answer within `beats::PAGE_AWAY_S` carried one (docs/coordination.md steps 8a, 8c). Left
+    /// out by a lead before step 8c (whose `term` a member reads past).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub term: Option<crate::pool::term::Term>,
+    pub leading: Option<crate::pool::Member>,
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
@@ -193,11 +194,12 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
     }
-    // (As its answers' headers say it: its leases' term, its member said; a member's broker none.)
-    a.term = s
+    // (As its answers' headers say it: its leases' epoch, its member said; a member's broker none.)
+    a.leading = s
         .led
         .clone()
-        .filter(|t| !s.broker && t.term == s.leases.term && s.pool_member.as_deref() == Some(t.member.as_str()));
+        .filter(|(e, m)| !s.broker && *e == s.leases.epoch && s.pool_member.as_deref() == Some(m.id.as_str()))
+        .map(|(_, m)| m);
     if b.speaks.iter().any(|w| w == SPEAKS) {
         // (As of when its list was made: a lease granted since isn't in it.)
         let now = s.now();
@@ -226,9 +228,9 @@ pub fn tell_gc(s: &mut Shared) {
     let Some(q) = s.gc.clone() else { return };
     let me = crate::agent::host_of(&s.leases.me).to_string();
     let mut oldest: Option<store::map::gc::Lease> = None;
-    for (worker, term, n) in granted {
+    for (worker, epoch, n) in granted {
         let host = crate::agent::host_of(&worker);
-        let l = store::map::gc::Lease { term, n };
+        let l = store::map::gc::Lease { epoch, n };
         oldest = oldest.min(Some(l)).or(Some(l));
         if host != me {
             q.granted(host, l);
@@ -249,15 +251,15 @@ fn owes(s: &mut Shared, b: &Beat) {
     if !(speaks(SPEAKS) && speaks(super::beats::HANDOFF)) {
         return;
     }
-    let term = s.leases.term;
+    let epoch = s.leases.epoch;
     let mut leases: BTreeSet<store::map::gc::Lease> = s
         .leases
         .take_granted()
         .into_iter()
         .filter(|(w, _, _)| crate::agent::host_of(w) == b.member)
-        .map(|(_, term, n)| store::map::gc::Lease { term, n })
+        .map(|(_, epoch, n)| store::map::gc::Lease { epoch, n })
         .collect();
-    leases.extend(b.held.iter().map(|&n| store::map::gc::Lease { term, n }));
+    leases.extend(b.held.iter().map(|&n| store::map::gc::Lease { epoch, n }));
     for k in &b.handoffs {
         if let Some(l) = k.rsplit('/').next().and_then(|l| l.parse::<crate::pool::journal::LeaseId>().ok()) {
             leases.insert(crate::agent::gcqueue::lease(l));

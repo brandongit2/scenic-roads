@@ -317,7 +317,7 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(d.path());
         let e = |n: u64, step: &str| Entry {
             member: "m-b".into(),
-            lease: LeaseId { term: 2, n },
+            lease: LeaseId { epoch: 2, n },
             step: step.into(),
             handoff: Handoff {
                 changes: [(format!("sources/osm/d/x{n}"), Some("c".to_string()))].into(),
@@ -353,7 +353,7 @@ mod tests {
     fn unmerged_lays_a_steps_entries_in_lease_order() {
         let e = |n: u64, step: &str, l: &str, c: Option<&str>| Entry {
             member: "m-b".into(),
-            lease: LeaseId { term: 2, n },
+            lease: LeaseId { epoch: 2, n },
             step: step.into(),
             handoff: Handoff { changes: [(l.to_string(), c.map(str::to_string))].into(), ..Default::default() },
             at: T,

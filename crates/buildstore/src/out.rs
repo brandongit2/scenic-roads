@@ -52,10 +52,6 @@ static TESTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// (`unmerged`), which `Out` lays over the snapshot (agentcore::agent::resume).
 pub const UNMERGED_ENV: &str = "SCENIC_UNMERGED";
 
-/// The folder of the pool's terms (agentcore::pool::term::DIR): once it's there, the pool has
-/// begun, and no step saves the records (`check_writer`).
-pub const TERMS: &str = "state/build/terms";
-
 /// The outputs of a run.
 pub struct Out {
     root: store::nasfs::NasRoot,
@@ -1065,15 +1061,15 @@ fn upload_retrying(
     }
 }
 
-/// An error once the pool has begun (its first term made): the records are its lead's to write,
-/// through its merge of the journal alone, and every job hands its saves off (SCENIC_HANDOFF,
-/// docs/pool.md §7.3), whatever Mac it runs on. A folder no term was made in yet (a test's, a
-/// scratch build's) has its records written as today's files (term 1's first snapshot is made from
-/// them).
+/// An error once the pool has begun (a lead declared, crate::records::lead::LEAD): the records are
+/// its lead's to write, through its merges alone, and every job hands its saves off
+/// (SCENIC_HANDOFF, docs/pool.md §7.3), whatever Mac it runs on. A folder with no lead declared (a
+/// test's, a scratch build's) has its records written as today's files (the pool's first take-up
+/// starts from them).
 pub fn check_writer(root: &store::nasfs::NasRoot) -> Result<()> {
-    let terms = root.join(TERMS);
-    if terms.exists() {
-        bail!("the pool leads this build ({} exists): the records are its lead's to write; a step saves only as a job's, handing off (SCENIC_HANDOFF)", terms.display());
+    let lead = root.join(crate::records::lead::LEAD);
+    if lead.exists() {
+        bail!("the pool leads this build ({} exists): the records are its lead's to write; a step saves only as a job's, handing off (SCENIC_HANDOFF)", lead.display());
     }
     Ok(())
 }
@@ -1550,12 +1546,12 @@ mod tests {
         let root = d.path().join("root");
         let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        // No term made: saved, as today's files.
+        // No lead declared: saved, as today's files.
         out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
         out.save().unwrap();
         assert!(root.join("state/build/manifest.json").exists());
-        // The pool begun (a term made): no one's step writes them (a job hands off).
-        std::fs::create_dir_all(root.join(crate::out::TERMS)).unwrap();
+        // The pool begun (a lead declared): no one's step writes them (a job hands off).
+        std::fs::write(root.join(crate::records::lead::LEAD), b"{}").unwrap();
         out.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
         assert!(format!("{:#}", out.save().unwrap_err()).contains("the pool leads this build"));
         assert!(check_writer(&store::nasfs::NasRoot::local_for_test(&root)).is_err());

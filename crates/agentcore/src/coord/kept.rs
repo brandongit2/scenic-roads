@@ -108,7 +108,7 @@ impl Loaded {
         }
     }
 
-    /// As the pool's per-term state was (`PoolState`): what a lead taking up another's backup loads
+    /// As a lead's state for the next (`PoolState`): what a lead taking up another's backup loads
     /// (crate::agent::pool's `took_up`).
     pub fn pool_state(self) -> super::PoolState {
         let (pause, pause_at) = self.pause.unwrap_or_default();

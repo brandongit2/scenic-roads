@@ -40,8 +40,9 @@ const FLUSH: Duration = Duration::from_secs(4 * EVERY_S);
 /// The days kept (s back from now): the backtest's default span.
 pub const KEEP_S: u64 = fccheck::SPAN_S;
 
-/// A forecast's input as the lead's pool step hands it over: its term, its time (the forecast's)
-/// and its bytes as `Record::bytes` made them.
+/// A forecast's input as the lead's pool step hands it over: the epoch its lead leads in (a term's
+/// number before docs/coordination.md step 8c: the archive's key stays `term`), its time (the
+/// forecast's) and its bytes as `Record::bytes` made them.
 pub struct Given {
     pub term: u64,
     pub at: u64,

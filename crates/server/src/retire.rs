@@ -8,10 +8,10 @@
 //! The live map must never go down for a file gone missing, so a server retires only when it's
 //! sure it isn't the map's Mac (`retires`): no name in `~/.config/scenic/names` (the file there
 //! and without one, or not there; one that can't be read is no answer), and this Mac's role
-//! (`buildstore::records::term::role`, the agent's own: the declared lead, `state/build/lead-member.json`,
+//! (`buildstore::records::lead::role`, the agent's own: the declared lead, `state/build/lead-member.json`,
 //! against this Mac's member file) a member's. An unknown role keeps it serving.
 
-use buildstore::records::term::Role;
+use buildstore::records::lead::Role;
 use std::path::{Path, PathBuf};
 
 pub const LABEL: &str = "local.scenic.server";
@@ -39,7 +39,7 @@ pub fn this_mac_retires(home: &Path, user_home: &Path) -> bool {
     }
     let me = buildstore::records::member::read_member_id(&home.join("agent"));
     let role = store::nasfs::NasRoot::find(false)
-        .map_or(Role::Unknown, |r| buildstore::records::term::role(&r, me.as_deref()));
+        .map_or(Role::Unknown, |r| buildstore::records::lead::role(&r, me.as_deref()));
     retires(&names, role)
 }
 
@@ -100,9 +100,9 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(d.path());
         let lead =
             buildstore::records::Member { id: "m-000000000000000a".into(), host: "mini".into(), app: "x".into() };
-        let role = |me: Option<&str>| buildstore::records::term::role(&nas, me);
+        let role = |me: Option<&str>| buildstore::records::lead::role(&nas, me);
         assert_eq!(role(Some(&lead.id)), Role::Unknown, "none declared yet");
-        buildstore::records::term::declare(&nas, &lead, 1).unwrap();
+        buildstore::records::lead::declare(&nas, &lead, 1).unwrap();
         let (other, mine) = (role(Some("m-000000000000000b")), role(Some(&lead.id)));
         assert_eq!((other, mine), (Role::Member, Role::Lead));
         // A member that isn't the declared lead, without a name: it retires.

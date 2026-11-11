@@ -33,8 +33,9 @@ pub fn contact_path(root: &store::nasfs::NasRoot) -> store::nasfs::NasPath {
 /// The lead's heartbeat on the NAS (agentcore::agent's `Status`), relative to the project folder.
 pub const LEAD_STATUS: &str = "state/status.json";
 
-/// The headers every answer of a pool's lead's coordinator carries: its term and its member.
-pub const POOL_TERM: &str = "x-pool-term";
+/// The headers every answer of a pool's lead's coordinator carries: the epoch its leases are
+/// granted in (docs/coordination.md §4.3; 0 from a member's broker) and its member.
+pub const POOL_EPOCH: &str = "x-pool-epoch";
 pub const POOL_MEMBER: &str = "x-pool-member";
 
 /// The map now, for a job or a command (docs/maplog.md §6.7, §6.10): the lead's (`GET

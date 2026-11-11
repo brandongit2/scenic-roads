@@ -347,7 +347,6 @@ struct OwnPool: Decodable {
 
 struct PoolView: Decodable {
     let at: Int
-    let term: Int
     let lead: LeadOf?
     let leading: Bool
     let members: [PoolMember]
@@ -360,12 +359,12 @@ struct PoolView: Decodable {
     let change: LeadChange?
 }
 
+/// The declared lead: `since`, when it took the records up, said by the lead's own agent alone.
 struct LeadOf: Decodable {
-    let term: Int
     let member: String
     let host: String
     let app: String
-    let since: Int
+    let since: Int?
 }
 
 struct PoolMember: Decodable {
@@ -385,14 +384,15 @@ struct LeadChange: Decodable {
     let said: String
 }
 
-/// The pool's lines for the menu: who leads, each member and its state, the last change of term.
+/// The pool's lines for the menu: who leads, each member and its state, the last change of lead.
 func poolLines(_ v: PoolView, now: Int) -> [Line] {
     var out = [Line(text: "", style: .separator)]
     if let why = v.no_lead {
-        out.append(Line(text: "The pool · term \(v.term) · no lead: \(why)", style: .header))
+        out.append(Line(text: "The pool · no lead: \(why)", style: .header))
         if let a = v.alert { out.append(Line(text: a, style: .plain)) }
     } else if let l = v.lead {
-        out.append(Line(text: "The pool · \(l.host) leads term \(l.term)\(v.leading ? " (this Mac)" : "") since \(clock(l.since))", style: .header))
+        let since = l.since.map { " since \(clock($0))" } ?? ""
+        out.append(Line(text: "The pool · \(l.host) leads\(v.leading ? " (this Mac)" : "")\(since)", style: .header))
         // (A lead its take-up refused by the journal GC's marker, #651: the alert, what to do.)
         if let a = v.alert { out.append(Line(text: a, style: .plain)) }
     }

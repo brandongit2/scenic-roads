@@ -293,7 +293,8 @@ pub fn chains(events: &[Event]) -> (Vec<CatalogueChain>, Vec<UnitChain>) {
         let done: Vec<crate::pool::records::MergedJob> =
             e.data.as_ref().and_then(|d| serde_json::from_value(d["done"].clone()).ok()).unwrap_or_default();
         for (key, _, step, targets) in done {
-            // (`<day>/<term>-<n>`: the coordinator's lease is its `n`, which repeats across terms.)
+            // (`<day>/<epoch>-<n>`: the coordinator's lease is its `n`, which may repeat across
+            // leads.)
             let n = key.rsplit(['/', '-']).next().and_then(|l| l.parse().ok());
             merges.push((e.t, n, step, targets));
         }
@@ -787,7 +788,7 @@ mod tests {
         assert_eq!(units[0].catalogue, None);
     }
 
-    /// Lease numbers repeat across leads (terms): a hand-off's merge is the one of its z6 tile, after
+    /// Lease numbers may repeat across leads: a hand-off's merge is the one of its z6 tile, after
     /// its job ended, at its lease's number.
     #[test]
     fn a_hand_off_is_matched_by_its_unit_and_lease_across_terms() {

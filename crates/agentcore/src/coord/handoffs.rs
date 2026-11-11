@@ -118,7 +118,7 @@ mod tests {
     fn entry(member: &str, n: u64) -> Entry {
         Entry {
             member: member.into(),
-            lease: LeaseId { term: 7, n },
+            lease: LeaseId { epoch: 7, n },
             step: "unit".into(),
             handoff: Default::default(),
             at: 1_791_300_000,

@@ -89,7 +89,7 @@ pub mod slots;
 pub mod takeover;
 
 use crate::coord::client::LeaseCalls;
-use crate::pool::term::Role;
+use crate::pool::lead::Role;
 use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};
 use jobs::{now_s, JobId, JobSpec, Needs, Running};
@@ -127,7 +127,7 @@ pub struct Options {
     /// One loop, then exit (tests, `scenic agent --once`).
     pub once: bool,
     /// A test's role out of the pool (no NAS, a dry run): a member's (true) or the lead's. In the
-    /// pool the declaration says (`pool::term::role`); out of it a real agent's is unknown.
+    /// pool the declaration says (`pool::lead::role`); out of it a real agent's is unknown.
     #[cfg(test)]
     pub member: bool,
 }
@@ -244,7 +244,7 @@ pub(crate) fn want(slots: usize, running: usize) -> usize {
 
 /// This Mac's role as its pool's driver last read the declaration (docs/roles.md §1).
 fn role_by(run: &pool::Run) -> Role {
-    crate::pool::term::role_of(run.side.driver().declared(), Some(&run.side.member().id))
+    crate::pool::lead::role_of(run.side.driver().declared(), Some(&run.side.member().id))
 }
 
 /// What only the lead's parts keep in the agent's folder `home`, removed on a member (docs/roles.md
@@ -720,8 +720,15 @@ enum Held {
     Leased { lease: u64, dir: PathBuf },
     /// A job's while the pool is on (docs/pool.md §7.3), the lead's own (`own`: its coordinator's
     /// lease) or a member's (the lead's): it saves into `dir` (crate::agent::pool::job_dir), and
-    /// the agent hands that to the pool's journal as an entry of its lease, `<term>-<id>`.
-    Pooled { id: u64, term: u64, dir: PathBuf, own: bool },
+    /// the agent hands that to the pool's journal as an entry of its lease, `<epoch>-<id>` (its
+    /// epoch kept under the key `term`, as before docs/coordination.md step 8c).
+    Pooled {
+        id: u64,
+        #[serde(rename = "term")]
+        epoch: u64,
+        dir: PathBuf,
+        own: bool,
+    },
 }
 
 /// A worker as the heartbeat shows it.
@@ -1452,7 +1459,7 @@ fn edit_held(
 
 pub struct Agent {
     o: Options,
-    /// This Mac's role (docs/roles.md §1, `pool::term::role`), decided as it starts: its parts are
+    /// This Mac's role (docs/roles.md §1, `pool::lead::role`), decided as it starts: its parts are
     /// built by it (a lead's, or a member's for a member and an unknown one). A member's unknown
     /// role learnt a member's stays; a declaration naming another role restarts the agent
     /// (`declared_role`).
@@ -1586,9 +1593,9 @@ pub struct Agent {
     published: Option<Instant>,
     /// A member's way to the lead's coordinator (made once its contact is on the NAS).
     client: Option<crate::coord::client::Client>,
-    /// Its own jobs' ends owed to the lead: ended while this process led a term it had lost without
-    /// its step knowing yet (it froze, a later term made meanwhile), told to the lead through its
-    /// client once its part has changed (`end_lease`, `tell_owed`); and a member's ends the lead
+    /// Its own jobs' ends owed to the lead: ended while this process led and was no longer the
+    /// declared lead without its step knowing yet (the owner moved the lead), told to the lead
+    /// through its client once its part has changed (`end_lease`, `tell_owed`); and a member's ends the lead
     /// didn't take when they ended (it didn't answer). Each told each loop until the lead answers:
     /// its lease is held meanwhile (listed in the beat, `to_lead`; docs/coordination.md §6).
     owed: Vec<Tell>,
@@ -1688,8 +1695,6 @@ pub struct Agent {
     pool_seen: Option<PoolView>,
     /// Its jobs' hand-offs that ended, for the round's pool step (which follows the jobs' ends).
     held_entries: Vec<(crate::pool::journal::Entry, Option<PathBuf>)>,
-    /// A sweep waiting to start asked the next pool step to re-assert the term (`Run::reassert`).
-    reassert: bool,
     /// Whether a tick holds the run, and since when (`pool::Ticking`, read without its lock); the
     /// loop's pool steps passed over in a row for it, and since when it's taken for hung
     /// (`pool_skipped`).
@@ -1863,14 +1868,13 @@ impl Agent {
                             let (r1, out) = pool::Run::start(o.the_plan, side, &o.home);
                             role = role_by(&r1);
                             eprintln!(
-                                "agent: the pool is on: this Mac's member {} is {} (term {})",
+                                "agent: the pool is on: this Mac's member {} is {}",
                                 r1.side.member().id,
                                 match role {
                                     Role::Lead => "the declared lead",
                                     Role::Member => "a member",
                                     Role::Unknown => "of a role not known yet (no lead declared): a member's parts",
                                 },
-                                out.term
                             );
                             run = Some(r1);
                             first = Some((out, r.clone()));
@@ -1897,7 +1901,7 @@ impl Agent {
         };
         if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
             pool::took_up(r, coord.as_deref(), &out.events, out.leads, &store::sys::host_name(), &[]);
-            // (The terms' events a member's process before this one kept, for this coordinator's
+            // (The lead's events a member's process before this one kept, for this coordinator's
             // history; and this first step's.)
             if let Some(c) = &coord {
                 lead::replay(&o.home.join("pool"), c);
@@ -2042,7 +2046,6 @@ impl Agent {
             ramp_trouble: None,
             pool_seen: run.as_ref().map(|r| r.pool_view()),
             held_entries: Vec::new(),
-            reassert: false,
             pool: run.map(|r| std::sync::Arc::new(std::sync::Mutex::new(r))),
             ticker: None,
             restart_for: None,
@@ -2077,20 +2080,18 @@ impl Agent {
         root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
     ) -> Option<&crate::coord::client::Client> {
-        // (A coordinator that last answered as an earlier term's lead than the pool's view, or as a
-        // broker (term 0, crate::coord::Broker): the lead before a change of lead, its Mac's broker
+        // (A coordinator that last answered as another member than the declared lead, or as a
+        // broker (epoch 0, crate::coord::Broker): the lead before a change of lead, its Mac's broker
         // now answering on its port, every ask with nothing, never failing a request, so the
-        // contact was never read again. Task #815: the M4,
-        // paused through a change of lead, got no job for hours. Its contact read again. By the term,
-        // not the member alone: a view lagging the term, the new lead's answer is kept, not read
-        // again at every ask until the view catches up.)
+        // contact was never read again. Task #815: the M4, paused through a change of lead, got no
+        // job for hours. Its contact read again.)
         let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.as_ref());
         if let (Some(c), Some(l)) = (&self.client, lead) {
-            let stale = c.answered().filter(|a| a.term.is_some_and(|t| t < l.term)).and_then(|a| a.member);
-            if let Some(m) = stale {
+            let stale = c.answered().filter(|a| a.epoch == Some(0) || a.member.as_ref() != Some(&l.member));
+            if let Some(m) = stale.and_then(|a| a.member) {
                 eprintln!(
-                    "agent: the coordinator it asked answers as {m}, not term {}'s lead {}: reading the lead's contact again",
-                    l.term, l.host
+                    "agent: the coordinator it asked answers as {m}, not as the lead {}: reading the lead's contact again",
+                    l.host
                 );
                 self.client = None;
             }
@@ -2106,7 +2107,7 @@ impl Agent {
                     // (In the pool, the lead is known: its contact not written yet, not "isn't running".)
                     let lead = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
                     let why = match lead {
-                        Some(l) => format!("{} leads term {}, but its coordinator's address isn't on the NAS yet (it's taking up the term, or its agent stopped)", l.host, l.term),
+                        Some(l) => format!("{} is the declared lead, but its coordinator's address isn't on the NAS yet (it's taking the records up, or its agent stopped)", l.host),
                         None => "the lead isn't coordinating (its agent isn't running, or is on an older app)".into(),
                     };
                     waiting.push(Waiting { step: None, what: "Building".into(), why });
@@ -2481,7 +2482,7 @@ impl Agent {
         self.slots[k].peak_mb = Some(grant.peak_mb).filter(|&m| m > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         match grant {
-            crate::coord::Grant { lease, term, work: crate::coord::Granted::Job { step, targets, pass }, .. }
+            crate::coord::Grant { lease, epoch, work: crate::coord::Granted::Job { step, targets, pass }, .. }
                 if every::offered(self.o.the_plan, &step)
                     || (self.resume_on() && resume::RESUMABLE.contains(&step.as_str())) =>
             {
@@ -2489,8 +2490,8 @@ impl Agent {
                 // its step's whole hand-off as the lead's own job's, no done record: its target,
                 // the pass's date, is no step's target. crate::agent::resume.)
                 let resumed = resume::RESUMABLE.contains(&step.as_str()) && !every::offered(self.o.the_plan, &step);
-                // (In the pool, its folder is its lease's, `<term>-<lease>`, handed to the journal.)
-                let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { term, n: lease });
+                // (In the pool, its folder is its lease's, `<epoch>-<lease>`, handed to the journal.)
+                let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { epoch, n: lease });
                 let dir = match pooled {
                     Some(l) => pool::job_dir(&self.o.home, l),
                     None => self.outbox().join(lease.to_string()),
@@ -2524,7 +2525,7 @@ impl Agent {
                     let (date, planet) = targets.first().cloned().unwrap_or_default();
                     cmd.extend(self.osm_pass_cmd(root, &root.join(&planet), &date));
                     let lease_kept = match pooled {
-                        Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
+                        Some(l) => Held::Pooled { id: lease, epoch: l.epoch, dir, own: false },
                         None => Held::Leased { lease, dir },
                     };
                     self.slots[k].lease = Some(lease_kept);
@@ -2547,7 +2548,7 @@ impl Agent {
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
                 let what = format!("{}, for the lead", self.o.the_plan.said(&step, n));
                 self.slots[k].lease = Some(match pooled {
-                    Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
+                    Some(l) => Held::Pooled { id: lease, epoch: l.epoch, dir, own: false },
                     None => Held::Leased { lease, dir },
                 });
                 Some((
@@ -2801,7 +2802,7 @@ impl Agent {
     }
 
     /// Lease `n` of this Mac's coordinator held for `spec` in slot `k`: in the pool, with the folder
-    /// its job saves into (`<term>-<n>`, handed to the journal as it ends: docs/pool.md §7.3), its
+    /// its job saves into (`<epoch>-<n>`, handed to the journal as it ends: docs/pool.md §7.3), its
     /// step and targets kept there; out of it, the lease alone. False (the lease ended, why said)
     /// when its folder can't be made.
     fn lease_own(
@@ -2817,7 +2818,7 @@ impl Agent {
             return true;
         }
         let w = held_work(spec);
-        let lease = crate::pool::journal::LeaseId { term: co.lease_term(n), n };
+        let lease = crate::pool::journal::LeaseId { epoch: co.lease_epoch(n), n };
         let dir = pool::job_dir(&self.o.home, lease);
         let kept = pool::JobKept { step: w.step.clone(), targets: w.targets.clone(), lease };
         if let Err(e) = std::fs::create_dir_all(&dir)
@@ -2828,7 +2829,7 @@ impl Agent {
             waiting.push(Waiting { step: Some(w.step), what: spec.what.clone(), why: format!("its folder: {e:#}") });
             return false;
         }
-        self.slots[k].lease = Some(Held::Pooled { id: n, term: lease.term, dir, own: true });
+        self.slots[k].lease = Some(Held::Pooled { id: n, epoch: lease.epoch, dir, own: true });
         true
     }
 
@@ -2960,9 +2961,9 @@ impl Agent {
                     _ => None,
                 };
                 // (Through the lead wherever it is now, as `beat` does: this process's coordinator
-                // only while it still holds its term; one that froze and woke to a later term ends
-                // it through that term's lead, once its part has changed: `owed`.)
-                let local = self.coord.is_some() && !self.lost_term();
+                // only while it's still the declared lead; one the owner moved the lead from ends
+                // it through the new lead, once its part has changed: `owed`.)
+                let local = self.coord.is_some() && !self.lost_lead();
                 if local {
                     if let Some(c) = &self.coord {
                         if outcome == Outcome::Failed || guard_stopped {
@@ -3040,7 +3041,7 @@ impl Agent {
                         self.unjournaled.insert(id, dir.clone());
                     }
                     if self.coord.is_some() {
-                        eprintln!("agent: lease {id} ended as this Mac finds its term lost: told to the lead once it works as a member");
+                        eprintln!("agent: lease {id} ended as this Mac finds another member declared the lead: told to the lead once it works as a member");
                         self.owed.push(tell);
                     } else {
                         self.tell_or_owe(tell);
@@ -3087,15 +3088,17 @@ impl Agent {
         }
     }
 
-    /// Whether this process leads a term a later one has followed, its step not knowing yet (it
-    /// froze, and a later term was made meanwhile: the owner's move of the lead): a stat of the next term's file, as the
-    /// driver's step makes. False when it leads none, or the NAS can't say now.
-    fn lost_term(&self) -> bool {
-        // (A tick holds the run: it can't say now.)
-        // (The pool's run, the pool's part until #878: a tick holding it, it can't say now.)
+    /// Whether this process leads and the declaration names another member now, its step not
+    /// knowing yet (the owner's move of the lead): a read of the declaration, as the driver's step
+    /// makes. False when it leads none, or the NAS can't say now.
+    fn lost_lead(&self) -> bool {
+        // (The pool's run: a tick holding it, it can't say now.)
         let Some(Some(run)) = self.pool.as_ref().map(pool::try_lock) else { return false };
-        let Some(e) = run.side.driver().leads() else { return false };
-        crate::pool::term::next(run.side.nas(), e).unwrap_or(false)
+        if run.side.driver().leads().is_none() {
+            return false;
+        }
+        let me = &run.side.member().id;
+        crate::pool::lead::declared(run.side.nas()).ok().flatten().is_some_and(|d| d.member != *me)
     }
 
     /// Tells the lead a job's end, or owes it (not told: the lead didn't answer, its round failed
@@ -3232,7 +3235,7 @@ impl Agent {
                         // keeps the lease it began under, its files where it writes them.)
                         c.renew_live(id, progress, live);
                         self.slots[k].lease = Some(match self.slots[k].lease.take() {
-                            Some(Held::Pooled { term, dir, own, .. }) => Held::Pooled { id, term, dir, own },
+                            Some(Held::Pooled { epoch, dir, own, .. }) => Held::Pooled { id, epoch, dir, own },
                             _ => Held::Own(id),
                         });
                         true
@@ -3897,9 +3900,9 @@ impl Agent {
                 (Some(Held::Own(n)), Some(c)) => {
                     Some(Held::Own(if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) }))
                 }
-                (Some(Held::Pooled { id: n, term, dir, own: true }), Some(c)) => {
+                (Some(Held::Pooled { id: n, epoch, dir, own: true }), Some(c)) => {
                     let n = if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) };
-                    Some(Held::Pooled { id: n, term, dir, own: true })
+                    Some(Held::Pooled { id: n, epoch, dir, own: true })
                 }
                 (l, _) => l,
             };
@@ -4323,7 +4326,7 @@ impl Agent {
                     .into(),
             ),
             (Some(g), None) if self.leads() && !g.duties => Some(if g.leads.is_some() {
-                "the lead re-asserts its term first".into()
+                "the lead's member's lock isn't known held this step".into()
             } else {
                 "this Mac no longer leads the build".into()
             }),
@@ -5226,9 +5229,9 @@ impl Agent {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
             return false;
         }
-        // The pool's lead publishes only once its records reflect the journal, and sweeps only on a
-        // step that re-asserted its term, caught up (docs/pool.md §6.2, §6.6): an entry not merged
-        // yet may hold uploads the records don't name.
+        // The pool's lead publishes only once its records reflect what's handed off, and sweeps only
+        // on a step whose read of the declaration found it the lead, caught up (docs/pool.md §6.2):
+        // an entry not merged yet may hold uploads the records don't name.
         // (The gates as the round's pool step left them, just before: never waiting on the run.)
         if let (Some(p), false) = (self.pool_seen.as_ref().filter(|_| self.pool.is_some()), self.is_member()) {
             let st = step_of(&spec.id).unwrap_or_default();
@@ -5237,7 +5240,7 @@ impl Agent {
                 waiting.push(Waiting {
                     step: Some(st),
                     what: spec.what.clone(),
-                    why: "the lead re-asserts its term first".into(),
+                    why: "the lead's member's lock isn't known held this step".into(),
                 });
                 return false;
             }
@@ -5246,12 +5249,10 @@ impl Agent {
                 return false;
             }
             if pool::SWEEPS.contains(&st.as_str()) && !gates.sweep() {
-                // (Asked of the next pool step, which holds the run.)
-                self.reassert = true;
                 waiting.push(Waiting {
                     step: Some(st),
                     what: spec.what.clone(),
-                    why: "this Mac re-asserts its term first, its records caught up".into(),
+                    why: "the lead's records catch up first, its declaration read".into(),
                 });
                 return false;
             }
@@ -7519,7 +7520,7 @@ impl Agent {
         self.pool_restart().filter(|_| at_once || self.slots[0].running.is_none())
     }
 
-    /// Why this process restarts (the pool's switch changed, its role, or its term); None: it goes on.
+    /// Why this process restarts (the pool's switch changed, or its role); None: it goes on.
     fn pool_restart(&self) -> Option<String> {
         self.restart_for
             .clone()
@@ -7724,7 +7725,7 @@ impl Agent {
 
     /// The build page, each loop (docs/roles.md §3.3): the lead's alone. On the lead, its
     /// coordinator serves it from this Mac's views (crate::agent::pageview, cataloguesview,
-    /// builtview), the pageview told the term, the members, this app and this Mac's lanes now, and
+    /// builtview), the pageview told the lead, the members, this app and this Mac's lanes now, and
     /// its pages' asks taken. On a member, its port (its broker, else a viewer alone started there)
     /// told where the page is (`member_page`).
     fn tend_pageview(&mut self, root: &store::nasfs::NasRoot) {
@@ -8089,7 +8090,7 @@ impl Agent {
 
     /// This member's hand-offs for `step` its lead hasn't acknowledged, laid in lease order
     /// (crate::agent::resume::unmerged): unwritten, handed from a job and not yet stepped, or
-    /// written and not acknowledged by the current term's lead (read from the journal; one that
+    /// written and not acknowledged by the lead (read from the journal; one that
     /// can't be read now left out).
     fn unmerged_for(&self, step: &str) -> Result<buildstore::handoff::Handoff> {
         let Some(shared) = &self.pool else { return Ok(Default::default()) };
@@ -8184,9 +8185,8 @@ impl Agent {
 
     /// The pool's step while it's on (docs/pool.md §12): the hand-offs from before the pool drained
     /// into the journal, the driver's step; then, leading, its
-    /// coordinator told the term and whether it grants, and the files the lead keeps written (today's
-    /// records for their readers, the raw tiles' archives named, the coordinator's state per term,
-    /// its history). What it may do now; None when the pool isn't on. The pool's own thread
+    /// coordinator told the epoch and whether it grants, and what the lead keeps written (the raw
+    /// tiles' archives named, its store's backup, its history). What it may do now; None when the pool isn't on. The pool's own thread
     /// (`pool::Ticker`) steps nothing from its start to its end, and steps the driver itself while
     /// this loop is busy elsewhere (`pool::Run::tick`); what it needs of the agent for that is set
     /// here (`pool::Cx`).
@@ -8222,10 +8222,6 @@ impl Agent {
             self.pool_skips = 0;
             run.in_step = true;
             run.entries.append(&mut self.held_entries);
-            // (A sweep's start asked for its term re-asserted: `try_start_said`.)
-            if std::mem::take(&mut self.reassert) {
-                run.reassert = true;
-            }
         }
         // (`in_step` cleared however this step ends, a panic too: else no tick ever again.)
         let _clear = pool::InStep(shared.clone());
@@ -8239,7 +8235,7 @@ impl Agent {
     }
 
     /// The loop's pool step passed over, a tick holding the run since `since` (this Mac's clock):
-    /// the gates held (nothing granted or started on its behalf). Held past `STALL_S`, the tick is
+    /// the gates held (nothing granted or started on its behalf). Held past `UNTOLD_S`, the tick is
     /// taken for hung on the share: a lead's coordinator stops granting and its contact comes off
     /// the NAS (members find no lead to ask, rather than one that won't answer them), and from
     /// `HUNG_SKIPS` passed over the status says so, naming the cause; all of it until a pool step
@@ -8253,14 +8249,14 @@ impl Agent {
         self.pool_skips += 1;
         // (By the awake clock: a sleep isn't a hang.)
         let held = since.map_or(0, |t| pool::Ticking::awake().saturating_sub(t));
-        if held > crate::pool::driver::STALL_S {
+        if held > crate::coord::UNTOLD_S {
             if self.pool_hung.is_none() {
                 eprintln!("agent: the pool's thread's step has held its state {} min: taken for hung (the NAS not answering); its coordinator grants nothing", held / 60);
             }
             self.pool_hung = since;
             if let Some(co) = &self.coord {
                 co.set_moving(Some(HUNG.into()));
-                // (Its answers say no term; the next pool step that runs says it again.)
+                // (Its answers say no epoch; the next pool step that runs says it again.)
                 co.set_member(None);
                 // (On a thread of its own, not waited for: the NAS it reads and removes on hangs. One
                 // at a time; and not once the contact was published again since it began.)
@@ -8284,7 +8280,7 @@ impl Agent {
         };
         waiting.push(Waiting { step: None, what: "The pool".into(), why });
         let g = self.pool_seen.as_ref().map(|p| p.gates.clone()).unwrap_or_default();
-        pool::Gates { term: g.term, leads: g.leads, ..Default::default() }
+        pool::Gates { leads: g.leads, ..Default::default() }
     }
 
     fn pool_step_in(
@@ -8297,11 +8293,11 @@ impl Agent {
         let Some(r) = root else {
             // (No NAS: no step; leading, nothing the driver hasn't said. Nor a tick.)
             let mut run = self.pooled()?;
-            run.gates = pool::Gates { term: run.gates.term, leads: run.gates.leads, ..Default::default() };
+            run.gates = pool::Gates { leads: run.gates.leads, ..Default::default() };
             run.cx.root = None;
             if let Some(co) = &self.coord {
                 co.set_moving(Some("the NAS isn't reachable".into()));
-                // (Its answers say no term.)
+                // (Its answers say no epoch.)
                 co.set_member(None);
             }
             return Some(run.gates.clone());
@@ -8327,9 +8323,8 @@ impl Agent {
         let (lead_urls, lead_failed, lead_token) =
             self.client.as_ref().map(|c| (c.urls(), c.failed(), c.token())).unwrap_or_default();
         let mut run = self.pooled()?;
-        // (Only an answer from the current term's lead's coordinator, as it said it is.)
-        let cur = run.side.driver().current().lead.clone();
-        let lead_answered = pool::lead_answered(answered.as_ref(), cur.as_ref());
+        // (Only an answer from the declared lead's coordinator, as it said it is.)
+        let lead_answered = pool::lead_answered(answered.as_ref(), run.side.driver().declared());
         if let Some(co) = &self.coord {
             co.set_member(Some(&run.side.member().id));
         }
@@ -8385,7 +8380,7 @@ impl Agent {
             })
             .collect();
         let mut run = self.pooled()?;
-        // (With the terms a tick took up, whose coordinator's part is this step's.)
+        // (With the take-ups a tick made, whose coordinator's part is this step's.)
         let mut took = std::mem::take(&mut run.pending_took_up);
         took.extend(out.events.iter().filter(|e| matches!(e, crate::pool::driver::Event::TookUp { .. })).cloned());
         pool::took_up(&mut run, self.coord.as_deref(), &took, out.leads, &self.host, &keep);
@@ -8423,10 +8418,10 @@ impl Agent {
         Some(g)
     }
 
-    /// This process's term changed with its step `out` (docs/pool.md §7.6; its parts are its role's,
-    /// docs/roles.md §1, never changed in process): the declared lead took up a term, so its
-    /// coordinator (built as it started) leads it, the jobs it runs going on, their leases its own
-    /// coordinator's from now (held again: `beat`); or it no longer leads one, so it restarts, its
+    /// This process's part changed with its step `out` (docs/pool.md §7.6; its parts are its role's,
+    /// docs/roles.md §1, never changed in process): the declared lead took the records up, so its
+    /// coordinator (built as it started) leads, the jobs it runs going on, their leases its own
+    /// coordinator's from now (held again: `beat`); or it no longer leads, so it restarts, its
     /// duties in flight stopped first. A lead whose coordinator didn't start restarts too.
     fn change_part(&mut self, root: &store::nasfs::NasRoot, out: &crate::pool::driver::Out) {
         let Some(role) = self.pooled().map(|r| r.role) else { return };
@@ -8436,8 +8431,8 @@ impl Agent {
             self.beat.part_changed();
         }
         match (role, out.leads) {
-            (pool::Role::Member, Some(term)) if self.coord.is_some() => {
-                eprintln!("agent: this Mac leads term {term}: its coordinator leads it, its jobs going on");
+            (pool::Role::Member, Some(epoch)) if self.coord.is_some() => {
+                eprintln!("agent: this Mac leads (epoch {epoch}): its coordinator leads, its jobs going on");
                 if let Some(mut run) = self.pooled() {
                     run.role = pool::Role::Lead;
                 }
@@ -8450,8 +8445,8 @@ impl Agent {
                 }
                 self.published = None;
             }
-            (pool::Role::Member, Some(term)) => self.restart_for_part(format!(
-                "it leads term {term}, and no coordinator runs in this process (its role {:?} as it started)",
+            (pool::Role::Member, Some(epoch)) => self.restart_for_part(format!(
+                "it leads (epoch {epoch}), and no coordinator runs in this process (its role {:?} as it started)",
                 self.role
             )),
             (pool::Role::Lead, None) if out.stop.is_none() => {
@@ -8473,7 +8468,7 @@ impl Agent {
                     }
                 }
                 self.lead_awake_off();
-                self.restart_for_part("it no longer leads its term".into());
+                self.restart_for_part("it no longer leads".into());
             }
             _ => {}
         }
@@ -8562,7 +8557,7 @@ impl Agent {
             }
         }
         let Some(co) = &self.coord else { return };
-        let term = run.gates.leads.unwrap_or(run.gates.term);
+        let epoch = run.gates.leads.unwrap_or(0);
         // (Its store backed up to the NAS by a thread of its own, crate::pool::store::back_up.)
         co.back_up(run.side.shared_nas());
         // The page's files: to its coordinator, which serves every Mac's page from memory
@@ -8581,7 +8576,7 @@ impl Agent {
         // which writes in batches. (The input at its own forecast's time: an older one than the
         // entry's when the entry's bytes didn't serialize.)
         if let Some(e) = fc_entry {
-            let input = fc_bytes.map(|(bytes, at)| fcinputs::Given { term, at, bytes });
+            let input = fc_bytes.map(|(bytes, at)| fcinputs::Given { term: epoch, at, bytes });
             let a = self.fc_archiver.get_or_init(|| {
                 fcarchive::Archiver::start(root.clone())
                     .map_err(|e| eprintln!("agent: the forecasts' archive's thread: {e}"))
@@ -8594,8 +8589,8 @@ impl Agent {
         let events = co.history_since(run.history_seq);
         if run.history_seq == 0 {
             // (From this process's start: what came before is in the coordinator's own history. But
-            // its coordinator's start ("agent", again on a term taken up by the same coordinator:
-            // read once), which crate::coord::history::mend_runs knows a lead's restart by: the
+            // its coordinator's start ("agent", again on a take-up by the same coordinator: read
+            // once), which crate::coord::history::mend_runs knows a lead's restart by: the
             // NAS's history had none, so its readers (forecast-check, the backtest's inputs) took
             // the runs across a restart as written, task #988.)
             let start: Vec<crate::coord::history::Event> =
@@ -8605,8 +8600,9 @@ impl Agent {
             }
             run.history_seq = events.last().map_or(0, |e| e.seq).max(1);
         } else if !events.is_empty() {
-            // (The terms' events are on the NAS already: crate::agent::lead appends them as they come.)
+            // (The lead's events are on the NAS already: crate::agent::lead appends them as they come.)
             let last = events.last().map_or(run.history_seq, |e| e.seq);
+            // (Kind `term`: the lead's take-ups and step-downs, crate::agent::lead::notes.)
             let events: Vec<crate::coord::history::Event> = events.into_iter().filter(|e| e.kind != "term").collect();
             match pool::append_history(root, &run.side.member().id, &events) {
                 Ok(()) => run.history_seq = last,
@@ -15374,9 +15370,9 @@ mod pool_tests {
         r
     }
 
-    /// The owner's edit of the lead's declaration (crate::pool::term::LEAD): member `to` leads.
+    /// The owner's edit of the lead's declaration (crate::pool::lead::LEAD): member `to` leads.
     fn move_lead(r: &Path, to: &str) {
-        std::fs::write(r.join(crate::pool::term::LEAD), format!("{{\"member\": \"{to}\"}}")).unwrap();
+        std::fs::write(r.join(crate::pool::lead::LEAD), format!("{{\"member\": \"{to}\"}}")).unwrap();
     }
 
     /// Placement set on or off: the lead's setting (crate::coord::asks).
@@ -15468,7 +15464,7 @@ mod pool_tests {
         .unwrap();
         assert!(a.pool.is_some(), "this Mac's member in the pool, with no switch on the NAS");
         a.round().unwrap();
-        assert!(r.join(crate::pool::term::DIR).join("1.json").exists(), "term 1 made");
+        assert!(r.join(crate::pool::records::ONE).exists(), "the records taken up and saved");
         assert!(read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &a.o.home).unwrap().pool.is_some());
         assert!(a.pool_restart().is_none());
     }
@@ -15539,7 +15535,7 @@ mod pool_tests {
         ticking.start_at(pool::Ticking::awake() - 60);
         a.round().unwrap();
         assert!(a.pool_skips == 1 && a.pool_hung.is_none() && a.published.is_some(), "a minute: under way");
-        ticking.start_at(pool::Ticking::awake() - crate::pool::driver::STALL_S - 1);
+        ticking.start_at(pool::Ticking::awake() - crate::coord::UNTOLD_S - 1);
         a.round().unwrap();
         assert_eq!(moving(&a).as_deref(), Some(HUNG));
         assert!(a.published.is_none() && a.pool_hung.is_some(), "its contact off the NAS");
@@ -15609,10 +15605,11 @@ mod pool_tests {
             .reflected
             .iter()
             .any(|k| k.ends_with(&format!("/1-{}", rec.reflected.iter().next().unwrap().rsplit('-').next().unwrap()))));
-        // (Its own, lease 1's: other jobs may run beside it, cold starts too since task #499.)
+        // (Its own, its lease's: other jobs of the epoch may run beside it, cold starts too since
+        // task #499.)
+        let lease = rec.reflected.iter().next().unwrap().rsplit('/').next().unwrap().to_string();
         assert!(
-            std::fs::read_dir(home.join("pool/jobs"))
-                .map_or(true, |d| !d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("1-"))),
+            !home.join("pool/jobs").join(&lease).exists(),
             "its folder removed once its saved state held the entry"
         );
         // The writer isn't named any more (its file as it was), the coordinator's state of its term
@@ -15636,11 +15633,10 @@ mod pool_tests {
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &home).unwrap();
         let pv = st.pool.expect("the pool in its status");
         assert_eq!((pv.role, pv.member.as_str()), (pool::Role::Lead, me.as_str()));
-        // The daily sweep waits for a re-assertion, then runs on the step that made it, caught up:
-        // term 2, whose records its readers read (today's files no more: they're term 1's).
+        // The daily sweep runs on a step whose read of the declaration found it the lead, caught
+        // up, its hand-off merged into the records at the one path (today's files no more).
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
-        assert!(a.pooled().unwrap().gates.term >= 2);
-        assert!(r.join("state/build/terms/2.json").exists());
+        assert!(a.pooled().unwrap().gates.leads.is_some());
         let m = crate::pool::records::Records::now(&store::nasfs::NasRoot::local_for_test(&r)).unwrap().pending;
         assert!(m.contains_key("work/gc.0123456789abcdef.json"), "{m:?}");
         stop_jobs(&mut a);
@@ -15797,8 +15793,8 @@ mod pool_tests {
         // The lead's coordinator ended the lease, its target kept out of offers until the plan shows
         // it built; its own jobs hold none of it meanwhile.
         assert!(lead.coord.as_ref().unwrap().held("slope-hi").is_empty());
-        let lid = LeaseId { term: 1, n: key.rsplit('-').next().unwrap().parse().unwrap() };
-        assert_eq!(lid.term, 1);
+        let lid: LeaseId = key.rsplit('/').next().unwrap().parse().unwrap();
+        assert_eq!(lid.epoch, 1);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
     }
@@ -16091,7 +16087,7 @@ mod pool_tests {
         // (Its earlier stage's entry, handed and not yet merged: laid over the snapshot for its job.)
         let earlier = crate::pool::journal::Entry {
             member: im.clone(),
-            lease: LeaseId { term: 1, n: 99 },
+            lease: LeaseId { epoch: 1, n: 99 },
             step: "osm-pass".into(),
             handoff: buildstore::handoff::Handoff {
                 changes: [(
@@ -16415,20 +16411,20 @@ mod pool_tests {
         (code, serde_json::from_str(b.trim()).unwrap_or_default(), acao)
     }
 
-    /// Task #882 step 1 (docs/roles.md, decision 3): a pool past term 1 with no lead declared: the
-    /// role isn't known, so the agent starts a member's parts (no plan, no coordinator); the
-    /// declaration then read naming another member, it is a member, with no restart.
+    /// Task #882 step 1 (docs/roles.md, decision 3): a pool past its start (its records saved) with
+    /// no lead declared: the role isn't known, so the agent starts a member's parts (no plan, no
+    /// coordinator); the declaration then read naming another member, it is a member, with no
+    /// restart.
     #[test]
     fn an_unknown_role_starts_the_members_parts() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());
-        // (Term 2 by another Mac, the pool from before #881: none declared.)
+        // (The records saved by another Mac, none declared.)
         let id = String::from("m-00000000000000ff");
         let other = crate::pool::Member { id, host: "mini".into(), app: "x".into() };
-        crate::pool::term::bootstrap(&root, &other, now_s() - 60).unwrap();
-        let cur = crate::pool::term::current(&root).unwrap();
-        crate::pool::term::claim(&root, &cur, &other, "a test", now_s() - 30).unwrap();
+        let saved = crate::pool::records::Records { epoch: 2, seq: 1, ..Default::default() };
+        std::fs::write(r.join(crate::pool::records::ONE), serde_json::to_vec(&saved).unwrap()).unwrap();
         let mut a = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
             root: Some(root.clone()),
@@ -17389,7 +17385,7 @@ mod pool_tests {
             crate::agent::seam::for_tests(),
             side,
             pool::Role::Lead,
-            pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() },
+            pool::Gates { leads: Some(1), duties: true, ..Default::default() },
         ))));
         a.seen_pool();
         let job = JobSpec {
@@ -17433,7 +17429,7 @@ mod pool_tests {
             crate::agent::seam::for_tests(),
             side,
             pool::Role::Lead,
-            pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() },
+            pool::Gates { leads: Some(1), duties: true, ..Default::default() },
         ))));
         a.seen_pool();
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
@@ -17445,13 +17441,13 @@ mod pool_tests {
             restart_after_sleep: false,
             record: None,
         };
-        // Not caught up: no catalogue; a sweep asks for a re-assertion first.
+        // Not caught up: no catalogue, no sweep.
         let mut w = Vec::new();
         assert!(!a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         assert!(w.iter().any(|w| w.why.contains("reflect the journal")), "{w:?}");
         assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
-        assert!(a.reassert);
-        // Caught up: the catalogue; the sweep only on a step that re-asserted.
+        // Caught up: the catalogue; the sweep only on a step whose read of the declaration found it
+        // the lead.
         a.pooled().unwrap().gates.caught_up = true;
         a.seen_pool();
         assert!(
@@ -17459,7 +17455,7 @@ mod pool_tests {
             "would start (dry run)"
         );
         assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
-        a.pooled().unwrap().gates.fresh = true;
+        a.pooled().unwrap().gates.vouched = true;
         a.seen_pool();
         assert!(a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         // Other work as before.
@@ -17687,10 +17683,10 @@ mod pool_tests {
         let kept = pool::JobKept {
             step: "unit".into(),
             targets: vec![("6/12/25".into(), "k".into())],
-            lease: crate::pool::journal::LeaseId { term: 1, n: 7 },
+            lease: crate::pool::journal::LeaseId { epoch: 1, n: 7 },
         };
         std::fs::write(dir.join("work.json"), serde_json::to_vec(&kept).unwrap()).unwrap();
-        a.slots[0].lease = Some(Held::Pooled { id: g.lease, term: 1, dir: dir.clone(), own: false });
+        a.slots[0].lease = Some(Held::Pooled { id: g.lease, epoch: 1, dir: dir.clone(), own: false });
         assert!(a.beat(0, None), "its lease renewed with the lead");
         assert!(c.held("unit").contains("6/12/25"));
         // It ends well: told done for the lead to journal (nothing is in the pool's journal from
@@ -17724,7 +17720,7 @@ mod pool_tests {
 
     /// Task #815: a member paused (or away) through a change of lead kept its way to the old lead's
     /// Mac, where its broker now answers, granting nothing and never failing a request: resumed, it
-    /// got no job until the lead came back to that Mac. The broker's answer says term 0 (task #882
+    /// got no job until the lead came back to that Mac. The broker's answer says epoch 0 (task #882
     /// step 3): the contact is read again, and the new lead grants it work.
     #[test]
     fn a_member_asking_the_old_lead_after_a_change_of_lead_asks_the_new_one() {
@@ -17752,9 +17748,9 @@ mod pool_tests {
                 }],
             )
         };
-        // Term 538's lead (the mini), which this member asked before it was paused.
+        // The lead (the mini, in epoch 538), which this member asked before it was paused.
         let (old, old_port) = crate::coord::start_for_test(&d.path().join("old"), "mini", "");
-        (old.set_term(538), old.set_member(Some("m-mini")));
+        (old.set_epoch(538), old.set_member(Some("m-mini")));
         offer(&old);
         a.client = Some(crate::coord::client::Client::at(
             vec![format!("http://127.0.0.1:{old_port}")],
@@ -17764,27 +17760,26 @@ mod pool_tests {
         let ask =
             crate::coord::Ask { kind: "native".into(), can: vec!["unit".into()], mem_mb: 64_000, ..Default::default() };
         // The change of lead, this member held meanwhile: the mini restarted as a member (docs/roles.md
-        // §1), its broker on the same port and token (crate::coord::Broker), term 539's lead (the M1)
-        // publishing its contact.
+        // §1), its broker on the same port and token (crate::coord::Broker), the new lead (the M1,
+        // in epoch 539) publishing its contact.
         drop(old);
         let old =
             crate::coord::Broker::start(crate::agent::seam::for_tests(), &d.path().join("old"), old_port, "mini", "")
                 .unwrap();
         old.set_member(Some("m-mini"));
         let (new, new_port) = crate::coord::start_for_test(&d.path().join("new"), "m1", "");
-        (new.set_term(539), new.set_member(Some("m-m1")));
+        (new.set_epoch(539), new.set_member(Some("m-m1")));
         new.publish(&root).unwrap();
         offer(&new);
         a.pool_seen = Some(PoolView {
             member: "m-m4".into(),
             role: pool::Role::Member,
-            gates: pool::Gates { term: 539, ..Default::default() },
+            gates: pool::Gates::default(),
             members: Vec::new(),
             unacked: 0,
             restart: None,
             lead: Some(lead::View {
-                term: 539,
-                lead: Some(lead::LeadOf { term: 539, member: "m-m1".into(), host: "m1".into(), ..Default::default() }),
+                lead: Some(lead::LeadOf { member: "m-m1".into(), host: "m1".into(), ..Default::default() }),
                 ..Default::default()
             }),
             all_check_map: false,
@@ -17795,23 +17790,12 @@ mod pool_tests {
         // Its answer named the mini: the contact read again, the M1 asked and granting.
         let c = a.client(&root, &mut w).expect("the new lead's contact");
         assert!(c.urls().iter().any(|u| u.ends_with(&format!(":{new_port}"))), "{:?}", c.urls());
-        let g = c.ask(&ask).unwrap().expect("granted by term 539's lead");
+        let g = c.ask(&ask).unwrap().expect("granted by the new lead");
         assert!(matches!(g.work, crate::coord::Granted::Job { ref step, .. } if step == "unit"));
         assert!(new.held("unit").contains("6/12/25"));
         // Kept while the lead answers as itself.
         let urls = a.client(&root, &mut w).unwrap().urls();
         assert_eq!(a.client(&root, &mut w).unwrap().urls(), urls);
-        // A view lagging the term (still naming term 538's lead): the newer lead's kept.
-        if let Some(v) = a.pool_seen.as_mut().and_then(|p| p.lead.as_mut()) {
-            (v.term, v.lead) = (
-                538,
-                Some(lead::LeadOf { term: 538, member: "m-mini".into(), host: "mini".into(), ..Default::default() }),
-            );
-        }
-        let c = a.client(&root, &mut w).unwrap();
-        c.ask(&ask).unwrap();
-        let ptr = c as *const _;
-        assert_eq!(a.client(&root, &mut w).unwrap() as *const _, ptr, "kept, not read again");
     }
 
     #[test]

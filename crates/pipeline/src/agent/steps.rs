@@ -2879,7 +2879,7 @@ mod tests {
         }
         Entry {
             member: "m-0000000000000001".into(),
-            lease: LeaseId { term: 1, n: 1 },
+            lease: LeaseId { epoch: 1, n: 1 },
             step: step.into(),
             handoff: h,
             at: 1_791_500_000,

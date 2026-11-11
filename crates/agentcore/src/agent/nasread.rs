@@ -32,9 +32,6 @@ use store::nasfs::NasPath;
 pub const DEADLINE: Duration = Duration::from_secs(20);
 /// How long a listing may take (3 to 33 s a folder under load, pool::nas::Nas::list).
 pub const LIST_DEADLINE: Duration = Duration::from_secs(60);
-/// How long a create in the terms' folder may take: a term made but its bytes not landed comes back
-/// as `Created::Unwritten` for the driver to finish, which a timeout would lose.
-pub const TERM_CREATE_DEADLINE: Duration = Duration::from_secs(300);
 /// The switches' readers (`threads`).
 const SWITCH_READERS: usize = 2;
 /// The records' readers.
@@ -369,25 +366,11 @@ pub struct Deadlined {
     writes: &'static Calls,
     deadline: Duration,
     list_deadline: Duration,
-    term_create_deadline: Duration,
 }
 
 impl Deadlined {
     pub fn new(inner: Arc<dyn Nas + Send + Sync>) -> Deadlined {
-        Deadlined {
-            inner,
-            reads: records(),
-            writes: writers(),
-            deadline: DEADLINE,
-            list_deadline: LIST_DEADLINE,
-            term_create_deadline: TERM_CREATE_DEADLINE,
-        }
-    }
-
-    /// Its terms' creates' deadline set (a test's).
-    pub fn term_create_deadline(mut self, d: Duration) -> Deadlined {
-        self.term_create_deadline = d;
-        self
+        Deadlined { inner, reads: records(), writes: writers(), deadline: DEADLINE, list_deadline: LIST_DEADLINE }
     }
 
     /// With pools and deadlines of its own (a test's).
@@ -398,7 +381,7 @@ impl Deadlined {
         deadline: Duration,
         list_deadline: Duration,
     ) -> Deadlined {
-        Deadlined { inner, reads, writes, deadline, list_deadline, term_create_deadline: TERM_CREATE_DEADLINE }
+        Deadlined { inner, reads, writes, deadline, list_deadline }
     }
 
     fn run<T: Send + 'static>(
@@ -434,8 +417,7 @@ impl Deadlined {
 impl Nas for Deadlined {
     fn create_new(&self, path: &str, bytes: &[u8]) -> anyhow::Result<Created> {
         let (p, b) = (path.to_string(), bytes.to_vec());
-        let deadline = if path.starts_with(crate::pool::term::DIR) { self.term_create_deadline } else { self.deadline };
-        self.run(self.writes, path, deadline, move |n| n.create_new(&p, &b))
+        self.run(self.writes, path, self.deadline, move |n| n.create_new(&p, &b))
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
@@ -776,28 +758,6 @@ pub(crate) mod tests {
         store::testkit::eventually("the path's write ends", || writes.busy() == 0);
         n.write_whole("state/pool/members/m.json", b"{\"a\":1}").unwrap();
         assert_eq!(std::fs::read(d.path().join("state/pool/members/m.json")).unwrap(), b"{\"a\":1}");
-    }
-
-    #[test]
-    fn a_slow_term_create_keeps_its_answer() {
-        let d = tempfile::tempdir().unwrap();
-        let (hold, gate) = mpsc::channel::<()>();
-        let stuck = Stuck {
-            inner: store::nasfs::NasRoot::local_for_test(d.path()),
-            stuck: crate::pool::term::DIR.into(),
-            gate: Arc::new(Mutex::new(gate)),
-        };
-        let (reads, writes) = (leak(Calls::new("cr", 1)), leak(Calls::new("cw", 2)));
-        let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_millis(100), Duration::from_millis(100))
-            .term_create_deadline(Duration::from_secs(10));
-        // The share answers after five ordinary deadlines: the term's create waits for its answer.
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            drop(hold);
-        });
-        let term = format!("{}/7.json", crate::pool::term::DIR);
-        assert!(matches!(n.create_new(&term, b"{}").unwrap(), Created::Made));
-        assert!(matches!(n.create_new(&term, b"{}").unwrap(), Created::There));
     }
 
     #[test]

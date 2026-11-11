@@ -231,8 +231,8 @@ mod tests {
     #[test]
     fn the_follow_up_sees_the_merge_land_though_the_keys_are_back() {
         let ts = vec!["6/1/1".to_string(), "6/1/2".to_string()];
-        let lease = |n| LeaseId { term: 3, n };
-        let mut r = Records { term: 3, ..Default::default() };
+        let lease = |n| LeaseId { epoch: 3, n };
+        let mut r = Records { epoch: 3, ..Default::default() };
         for t in &ts {
             r.keys.record("terrain-hi", &[(t.clone(), "k".into())]);
             r.last.entry("terrain-hi".into()).or_default().insert(t.clone(), lease(1));
@@ -295,13 +295,13 @@ mod tests {
         assert!(!follow(&mut fixed(&part), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}), "one of two");
         let mut later_term = early.clone();
         for t in &ts {
-            later_term.last.get_mut("terrain-hi").unwrap().insert(t.clone(), LeaseId { term: 4, n: 1 });
+            later_term.last.get_mut("terrain-hi").unwrap().insert(t.clone(), LeaseId { epoch: 4, n: 1 });
         }
         assert!(follow(&mut fixed(&later_term), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}), "a later term's");
         // A target with no lease recorded before: any merge for it is later than None.
         let none = vec![None; ts.len()];
         assert!(!follow(
-            &mut fixed(&Records { term: 3, ..Default::default() }),
+            &mut fixed(&Records { epoch: 3, ..Default::default() }),
             "terrain-hi",
             &ts,
             &none,

@@ -29,7 +29,7 @@ pub struct Client {
     /// This worker's name.
     pub worker: String,
     /// When the coordinator last answered (this Mac's clock, unix s; any answer but a refused
-    /// token), and the pool's term and member it said it is (crate::POOL_TERM, POOL_MEMBER).
+    /// token), and the epoch and member it said it is (crate::POOL_EPOCH, POOL_MEMBER).
     answered: Mutex<Option<Answered>>,
     /// When a request last reached none of the coordinator's addresses (this Mac's clock, unix s),
     /// and why (pipeline's pool::reachable: its cause read from it).
@@ -372,12 +372,12 @@ impl std::error::Error for Declined {}
 pub fn refused(e: &anyhow::Error) -> Option<&str> {
     e.chain().filter_map(|c| c.downcast_ref::<Declined>()).find(|d| d.code == 400).map(|d| d.why.as_str())
 }
-/// A coordinator's last answer to this client: when (this Mac's clock, unix s), and the pool's term
-/// and member it said it is (None: it didn't say: not a pool's lead, or an older app).
+/// A coordinator's last answer to this client: when (this Mac's clock, unix s), and the epoch
+/// and member it said it is (None: it didn't say: not a pool's lead, or an app before step 8c).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Answered {
     pub at: u64,
-    pub term: Option<u64>,
+    pub epoch: Option<u64>,
     pub member: Option<String>,
 }
 
@@ -596,9 +596,9 @@ impl Client {
                             break;
                         }
                         let h = |n: &str| resp.headers().get(n).and_then(|v| v.to_str().ok()).map(str::to_string);
-                        let term = h(super::POOL_TERM).and_then(|t| t.parse().ok());
+                        let epoch = h(super::POOL_EPOCH).and_then(|t| t.parse().ok());
                         *self.answered.lock().unwrap() =
-                            Some(Answered { at: jobrt::jobs::now_s(), term, member: h(super::POOL_MEMBER) });
+                            Some(Answered { at: jobrt::jobs::now_s(), epoch, member: h(super::POOL_MEMBER) });
                         // The working address first from now on.
                         let mut cur = self.contact.lock().unwrap();
                         if let Some(i) = cur.urls.iter().position(|u| u == url) {
