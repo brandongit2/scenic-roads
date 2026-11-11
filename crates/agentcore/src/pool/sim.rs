@@ -142,6 +142,9 @@ const P_MOVE: f64 = 0.0005;
 const P_MOVE_MIDSAVE: f64 = 0.004;
 /// Per step: that the turn stays with the Mac that has it.
 const P_KEEP: f64 = 0.85;
+/// How long the declared lead's take-up waits on records another Mac holds (a late save over the
+/// one path older than its brief) before the owner declares that Mac again, as the wait says to (s).
+const OWNER_S: u64 = 1200;
 /// How long the run's end must have seen no take-up (s).
 const QUIET_S: u64 = 600;
 /// At most how long a run goes on past its end while its lead still merges what the faults left,
@@ -459,6 +462,9 @@ struct World {
     served: Option<(usize, u64)>,
     /// The hand-offs a landed snapshot refused for a name GC removed.
     gc_refused: BTreeSet<String>,
+    /// Since when the declared lead's take-up has waited on the records of the Mac that led an
+    /// epoch (`OWNER_S`), and that epoch.
+    stuck: Option<(u64, u64)>,
     /// The run's folder (each Mac's under it), kept until the run ends.
     _dir: tempfile::TempDir,
     wrong: Vec<String>,
@@ -636,6 +642,7 @@ impl World {
             grant_marks: BTreeMap::new(),
             served: None,
             gc_refused: BTreeSet::new(),
+            stuck: None,
             _dir: dir,
             wrong: Vec::new(),
             counts: BTreeMap::new(),
@@ -687,6 +694,24 @@ impl World {
         self.count("steps");
         let dt = self.rng.below(2);
         self.advance(self.t + dt);
+        // The owner, as the waiting take-up says: the Mac whose records the brief is of declared
+        // again.
+        if let Some((since, e)) = self.stuck.filter(|&(since, _)| self.t >= since + OWNER_S) {
+            self.stuck = None;
+            match self.leaders.get(&e).copied().filter(|&k| k != self.declared && !self.macs[k].gone) {
+                Some(k) => {
+                    let waited = self.t - since;
+                    self.note(|| {
+                        format!(
+                            "the owner declares mac{k} again: the records of epoch {e} are on its disk ({waited} s)"
+                        )
+                    });
+                    self.count("leads moved by the owner to the Mac with the newest records");
+                    self.move_lead_to(k);
+                }
+                None => self.note(|| format!("the owner can't declare epoch {e}'s lead again")),
+            }
+        }
         if self.faulting() {
             self.faults(me);
         }
@@ -908,6 +933,22 @@ impl World {
                 Err(e) => self.wrong(format!("mac{k}'s store can't be restored from the backup: {e:#}")),
             },
             None => self.note(|| format!("mac{k}'s disk replaced with no backup on the NAS")),
+        }
+    }
+
+    /// The owner declares Mac `to` the lead (docs/pool.md §6.1).
+    fn move_lead_to(&mut self, to: usize) {
+        let old = self.declared;
+        (self.declared, self.before) = (to, Some(old));
+        let since = self.clock(to);
+        self.files.insert(lead::LEAD.to_string(), declaration(to, since));
+        self.writes.insert(lead::LEAD.to_string(), (usize::MAX, self.t));
+    }
+
+    /// Mac `me`, the declared lead, waits to take up: on the records of the Mac that led epoch `e`.
+    fn waits_on(&mut self, me: usize, e: u64) {
+        if me == self.declared && self.stuck.is_none() {
+            self.stuck = Some((self.t, e));
         }
     }
 
@@ -1578,6 +1619,7 @@ impl World {
             }
             self.leaders.insert(e, me);
             self.took.insert(e, (me, self.t));
+            self.stuck = None;
             self.macs[me].led = e;
             self.count("take-ups");
             self.note(|| format!("mac{me} leads epoch {e}"));

@@ -391,8 +391,7 @@ impl Mac {
                 }
             }
             if let Some(b) = &backup {
-                let st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
-                match c.load_pool_state(&st) {
+                match crate::agent::pool::load_backup(&c, b) {
                     Ok(n) => {
                         w.count("lead states taken up from another's backup");
                         w.note(|| format!("mac{k}'s coordinator took up {n} leases from {}'s backup", b.member));
@@ -678,7 +677,14 @@ impl Mac {
                     w.applied(k, e, applied);
                 })?;
             }
-            Event::Waits { what: "take up the records", .. } => self.sim.count("take-ups tried again"),
+            Event::Waits { what: "take up the records", why } => {
+                self.sim.count("take-ups tried again");
+                // (Records older than the one path's brief: the Mac that led its epoch has them.)
+                let led = why.split("the Mac that led epoch ").nth(1).and_then(|r| r.split(':').next()?.parse().ok());
+                if let Some(e) = led {
+                    self.sim.quiet(|w| w.waits_on(k, e))?;
+                }
+            }
             Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
             _ => {}
         }
