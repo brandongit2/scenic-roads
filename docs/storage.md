@@ -32,7 +32,8 @@ app/           published app versions; current.json, previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)
 state/         status.json (the lead's heartbeat), build/ (the records, their brief, the lead's declaration),
-               journal/, coord/, pool/ (switches), backups/, logs/
+               coord/, pool/ (switches), backups/, logs/; journal/ (hand-offs written by apps before
+               task #1125: read by none but an older app's saved state's keys, the owner's to remove)
 nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by publish.sh)
 ```
 
@@ -116,7 +117,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
   NAS in pages (docs/macs.md).
 
 **Writers.** Every job uploads its files (content-named) and hands its record changes off to the
-lead (by HTTP; to the journal on the NAS for a lead on an older app), which merges them; no step
+lead by HTTP (docs/coordination.md step 6), which merges them; no step
 writes the records directly once a lead is declared
 (`crate::out::check_writer`). Other writers: the map's server (`settings/profiles.json` alone), the owner's inputs folders, `tools/app/publish.sh`, and the
 NAS's own planet fetch.
@@ -167,8 +168,9 @@ it stopped.
     files after 2 days, and a retired pass's other files (the planet download) once the newer
     pass has been complete 14 days, with its folders left empty.
   - **The inputs sweep**, a pass every 14 days: the input check's checked copies (`sources/inputs/`,
-    inputs.md §4.9) are kept while the manifest, an accepted index, an unmerged journal entry or
-    an index of the last 14 days names them; an index names its files' copies and every content
+    inputs.md §4.9) are kept while the records' manifest, an accepted index or
+    an index of the last 14 days names them (a hand-off not merged yet bringing one removed is
+    refused by the merge, its job's work done again: the lead's GC queue, docs/maplog.md §7.4); an index names its files' copies and every content
     name under `sources/inputs/` in their facts, nested ones too (`FileEntry::stored`: a region's
     `.rgeo`, and the regions' `.rgeo` an elevation dataset's `measured.outline` was cut by, which
     its plans read while that index is accepted). The rest, 14 days old, is told the lead 200 at a

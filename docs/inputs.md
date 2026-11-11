@@ -277,8 +277,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 - GC sweeps `sources/inputs/` (`gc::inputs_kept`) and no other part of `sources/` (`NEVER`). A file
   there goes once nothing names it and it's older than `keep_days` (default 14). Named: the
-  manifest's and newest records' indexes, listings and held reports, those of journal entries not
-  yet merged (pool.md §7.3), every index touched within `keep_days`, and the index each recent check
+  manifest's and newest records' indexes, listings and held reports, every index touched within
+  `keep_days`, and the index each recent check
   state names as `replaced`. So a replaced version stays restorable for 14 days. If any folder can't
   be read, nothing is swept that day. The inputs folders and `state/inputs/` are never swept.
 - Every accepted version of a file is kept whole, so the briefs say to add one answer file per

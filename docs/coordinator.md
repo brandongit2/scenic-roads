@@ -24,8 +24,8 @@ any device and takes the owner's asks; it runs no work. What is not built is mar
   jobs' tasks (docs/pool.md §8).
 - **Jobs** of the plan (the z6 tile runs of terrain, slope, tree cover, roads (`unit`), candidates, peaks,
   bldprep, bldtiles, map tiles) go to workers that mount the NAS (every Mac's agent). A job saves
-  into the store's content-named files; its record changes come back as one hand-off through the
-  journal (docs/pool.md §7.3).
+  into the store's content-named files; its record changes come back as one hand-off, posted to the
+  lead by its member (docs/pool.md §7.3).
 - **Tasks** (`coord::task`) are pure work a running job offers to any worker: programs run over a
   folder of files, giving files back. A task's folder is served by the Mac whose job offers it;
   what it reads of the NAS's stores and the land cover's servers it reads where it lies (§3), never
@@ -130,7 +130,7 @@ Common rules:
   to the lead every 10 s lists them, one left out is released, and they go after 12 h unheard or
   by `scenic pool release <member>`.
 - **Handing back:** a job's saves, done record and costs go back as one hand-off, posted by its
-  member to the lead (to the journal, for a lead on an older app) and merged by the lead (docs/pool.md §7.3). A task's files go back to the
+  member to the lead and merged by the lead (docs/pool.md §7.3). A task's files go back to the
   broker that offered it; a hand-back for a gone lease is refused (410).
 - **Restarts:** leases and costs are kept in the lead's store on its disk (backed up to the NAS,
   `state/lead/store.json`), the token in `state/coord/` (docs/pool.md §7.5); a

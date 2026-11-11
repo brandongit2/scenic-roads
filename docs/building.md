@@ -66,7 +66,7 @@ from the first (`edit_held`).
   cancel of its job or target is dropped. The checklist and the regions' counts are the plan's
   too. Planning reads the terrain packs' indexes once each by content name, kept in the agent's
   `pack-idx/` (the lead's alone: a member plans nothing, and removes its own as it starts). On the
-  lead, the journal is merged each round.
+  lead, the hand-offs posted it are merged each round.
 - **Jobs at once** (docs/pool.md §7.2, §7.7): every job starts by a grant of the lead's
   coordinator, the lead's own too, packed by their measures: a job beside others only when their
   measured memory, disk and cores fit the Mac's room. Never beside a cold start (a step none of
@@ -317,7 +317,7 @@ from the first (`edit_held`).
   mac]` prints them (`--here` this Mac's own).
 - **Publishing's times** (`agentcore::pubtimes`, task #250): each stage from a z6 tile's job to its
   tiles on every Mac's map leaves an event. In the history: the z6 tile's job ending; its hand-off
-  merged (`merged`: each journal entry's key, member, step and targets); the map tiles
+  merged (`merged`: each hand-off's key, member, step and targets); the map tiles
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
   from the history after a restart or a change of lead; with, per z6 tile, the tiles its change made
   stale: their owners whose base pack or road values differ from the served catalogue's), leased and
@@ -393,8 +393,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<epoch>-<id>` it saves into `agent/pool/jobs/<epoch>-<id>/`
   (`SCENIC_HANDOFF`, `buildstore::handoff`), then as an entry (its done record and costs) kept by its
-  member and posted to the lead by HTTP (docs/coordination.md step 6; to the journal,
-  `state/journal/<day>/<epoch>-<id>.json`, for a lead on an older app). The lead merges entries
+  member and posted to the lead by HTTP (docs/coordination.md step 6). The lead merges entries
   into its records all or nothing, checking each against its step's write-set
   (`agent::steps::writes`) and, for a shared step, the files it saved. Readers read its
   snapshot at the one path, `state/build/records.json` (docs/pool.md §6.2), which it keeps on its

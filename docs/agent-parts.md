@@ -171,7 +171,7 @@ Planned: the view on the page's machine card and the menu's NAS line (`up`, `slo
 (at most one plan running, one queued):
 
 - a `JobEvent::Ended` (any member's, through the coordinator or **pool**);
-- the records' generation changed (the journal's merge, `plan_seen`'s inputs);
+- the records' generation changed (the hand-offs' merge, `plan_seen`'s inputs);
 - an input or region edit's hold ended (`edit_held`), a gate ask, a redo;
 - a timed wait in the plan ran out (`plan_due`'s timers become one deadline the part sleeps to);
 - a 5-min fallback.
@@ -310,6 +310,10 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
   client: a member's heartbeat, mail and holds are posts to the lead's endpoint, and **beat**'s
   shared write goes there too. **nas** then serves only the jobs' and the plan's data reads. The
   channels and snapshots don't change: `PoolView` is filled from HTTP answers instead of NAS reads.
+  Built so far: the heartbeat, mail, holds and settings, and (step 6, task #1125) the jobs'
+  hand-offs, posted by **beat**'s poster alone: **pool** neither writes nor lists the NAS's journal,
+  and runs no listing thread; **beat**'s NAS writer thread starts only with a first status to share
+  (the lead's `state/status.json`), so a member runs none.
 - **docs/readiness.md (#879)**: §4.4; **plan** owns calling it, nothing else.
 
 ## 7. Migration

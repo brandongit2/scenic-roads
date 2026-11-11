@@ -102,8 +102,8 @@
 #
 # What a run shows (the scratch folder's first Mac, which makes term 1, declares itself the lead:
 # docs/pool.md §6.1): the lead's jobs hand off under its term's leases, its sweep after a
-# re-assertion; the member's entry reaches the lead's records through the journal and its mail,
-# acknowledged; the lead restarted re-asserts, its leases kept; the lead frozen (SIGSTOP) past ten
+# re-assertion; the member's hand-off reaches the lead's records by its beat's post, acknowledged in
+# the beat's answer; the lead restarted re-asserts, its leases kept; the lead frozen (SIGSTOP) past ten
 # minutes: the member finishes its job, hands it off and waits, making no term; thawed, the lead
 # re-asserts and merges it. The declaration moved by hand to the member (`<F>/state/build/
 # lead-member.json` naming its member id) mid-job: neither agent restarting (same pids), the

@@ -203,7 +203,7 @@ files on a laptop are §8.3's.
 
 | Need | Today | By HTTP (lead's coordinator) |
 | --- | --- | --- |
-| Work | `/work/ask`, `/work/beat`, NAS mail and journal | unchanged; #878 steps 2, 3, 6 |
+| Work | `/work/ask`, `/work/beat`; hand-offs by `/pool/handoff` (#878 step 6; the NAS's journal gone, #1125) | unchanged; #878 steps 2, 3, 6 |
 | Its jobs to come (caches) | `/api/tocome` | unchanged |
 | `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, built: step 5) | the same |
 | Holds and settings | NAS files | `/pool/hold`, `/pool/settings` (#878 step 5) |
@@ -283,7 +283,8 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
 8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
    deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
-   thread's mail and journal). The role is buildstore's since #916 step 7a (the map server reads
+   thread's mail and journal: the last two gone, #1036 and #1125, and `beat-nas` started only
+   where there's a status to share, the lead's). The role is buildstore's since #916 step 7a (the map server reads
    it without the runtime): `records::lead` since #878 step 8c deleted `pool::term`
    (`pool::lead` re-exports it).
 9. **Docs**: macs.md (Devices: roles; the App Macs' offline map as 7a builds it), agent-parts.md
@@ -369,7 +370,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Beat poster | members | members | `POST /pool/beat` to the mini |
 | Budgets' proxy | every Mac | every Mac (jobs ask it) | it asks the mini (`/pool/budget/take`) |
 | NAS mount, heal, read and write pools | every Mac | every Mac (jobs read and write the NAS); the switch pool goes with #878 | — |
-| Pool thread (journal, the declaration) | every Mac, its NAS side gated | an HTTP client alone after #878's gates | the mini's `/pool/*` |
+| Pool thread (the declaration, the lead's records) | every Mac; no journal since #1125 | an HTTP client alone after #878's gates | the mini's `/pool/*` |
 | Menu bar | every Mac: this Mac's status and `lead-view.json` (step 5) | the same: the thin local status | the lead's line in the beat's answer |
 | Build page and its data: pageview, forecast and its archive, Catalogues map, built tiles, region steps, phase shares, history | the mini (step 4) | the mini | a member's port 307s to it (§3.3) |
 | Plan, checklist, regions' states, gate, inputs watch, redo | the mini (steps 1–2) | the mini | grants by `/work/ask` |
@@ -519,7 +520,7 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
 | 6, leftovers | ~1.1 GB disk each (`backups/` 1.1 GB, `status.json`, `coord/`'s lead files ~6 MB, stall samples 2 MB, the rest of §3.5's list KBs) | — |
 | 7a, map on demand | nothing resident; ~1.7 GB and ~3 % of a core avoided against a resident server; disk as downloaded | — |
 | 7b, no offline map | ~1 GB disk each (`accepted/` 0.9 GB and the rest of §8.3's list) | — |
-| 8, #878's gates | three threads (`nas-switch` ×2, `beat-nas`), the NAS status and mailbox writes at each start | the journal listings and old-member paths |
+| 8, #878's gates | three threads (`nas-switch` ×2, `beat-nas`; `beat-nas` now on the lead alone, #1125), the NAS status and mailbox writes at each start | the journal listings and old-member paths (gone, #1125) |
 | #883 step 9 | 100–150 MB each (`catalog/`, `Caches/scenic/catalogue`) | 80 MB |
 
 Nothing moves to the mini that it doesn't run already, so its load stays as measured (the agent

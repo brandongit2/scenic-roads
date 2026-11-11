@@ -32,7 +32,7 @@ NAS-loading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIE
 
 | Field | Meaning | Values |
 |---|---|---|
-| `id` (`name`) | the stored name: in the records, the journal, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
+| `id` (`name`) | the stored name: in the records, the hand-offs, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `does` | one sentence: what it makes from what | |
 | `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalogue), `keep` (checks, lists, removals, backups) |
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/api/steps` (the stored words, kept: `Scope`'s serde names) |
@@ -62,11 +62,11 @@ steps` prints it.
 ## 3. The table
 
 Ids are the stored names, kept as they are: a rename would call every record of the step stale
-(its records, journal entries, timings, floors and `work/` paths all carry it), for nothing people
+(its records, hand-offs, timings, floors and `work/` paths all carry it), for nothing people
 see. A test pins them (`steps::tests::the_ids_are_the_stored_names`). The one rename, task #639's
 (the terrain's and the slope's steps by the pack each makes: `terrain` → `terrain-hi`, `slope` →
 `slope-hi`), keeps the old names readable: `pool::records::RENAMED` and `current` (a row looked up by
-either name, a hand-off's or journal entry's done targets recorded under the new one), and the
+either name, a hand-off's done targets recorded under the new one), and the
 records' `terrain` and `slope` keys read as `terrain_hi` and `slope_hi` (`jobs.json`); the `work/`
 paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. Place: any member
 (⇄) or the lead.

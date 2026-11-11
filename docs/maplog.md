@@ -523,8 +523,8 @@ A content-named file on the NAS is **held** while any of these names it:
 
 1. **the map** at any `seq` a client in the cursor set (§5.4) still holds;
 2. **the records** (the merged manifest, keys' outputs, pending uploads), which the lead alone saves;
-3. **a hand-off taken and not yet merged**, which the lead alone holds (with #878; before it, the
-   journal entries `unmerged` reads today).
+3. **a hand-off taken and not yet merged**, which the lead alone holds (docs/coordination.md step 6;
+   one not yet posted, its member's alone, is refused by the merge if it brings a name removed).
 
 The lead sees every change to 1 and 2 as it makes it, and 3 as it takes it. So GC doesn't look for
 garbage: the lead **queues** it as it's made.
@@ -676,7 +676,7 @@ its own resumable cursor: stray `.tmp` files (2 days), retired passes' sources, 
 copies (`sources/inputs/`, by their own holders: the accepted indexes), removed steps' names
 (`RETIRED`) and depth packs no target names (`drop_names`, which only drop names from the records:
 their files then enter the queue like any other freed name), the pending uploads' verification over
-SSH, the history and forecast archives, and the journal's GC until #878 removes the journal. The
+SSH, and the history and forecast archives. The
 tombstones' put-back (`TOMB`) goes with the folder sweep it served.
 
 Built (step 8b, `gc::Sweeps`): three passes, each with its own cursor, after the queue's chunks:

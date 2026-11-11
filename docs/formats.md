@@ -1034,7 +1034,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     dropped as it's read); the measures
     of z3 `terrain` and `trees` runs, an old step shape, dropped from `costs.json`, `floors.json`
     and `disks.json` as they're read); `journal/<worker>/` (hand-offs sent rather than journaled, drained into the
-    pool's journal); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
+    member's hand-offs); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
     at}`, `jobrt::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` (`unit`: the target, stored so) as a target
     begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `buildstore::costin`, a
     map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `local` (of `bytes`, those read from this Mac's own disk: a mapped or local file's, its whole local copies', task #551, and the part of a NAS file copied whole that this Mac's page cache held as the copy began, task #939) where any were, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read, `paused_ms` (the time its process was stopped over the target (SIGSTOP), its tail's too) where it was, `waited_ms` (the wall time over the target in which its process waited on the NAS, the network, the disk or other work, store::waits by its wall clock, its tail's too) where its run was timed (task #896)
@@ -1089,11 +1089,15 @@ class, id) within a tile. The client sends the id with the clicked point.
     them); no lead writes them. The terms' files (`state/build/terms/`, `state/build/lead.json`,
     `state/build/term/<E>/`, `state/coord/term/<E>/`) are neither written nor read since
     docs/coordination.md step 8c, but the terms' `forecast-input.json` (the backtest's).
-  - `state/journal/<day>/<epoch>-<n>.json`: a job's entry `{member, lease, step, handoff, at}`
-    (`handoff.sizes`: the bytes of each file it wrote, by content name; none in older entries);
-    `state/journal/rejected/<day>/<epoch>-<n>.why`. Since #878 step 6 written only by a member whose
-    lead doesn't take hand-offs by HTTP (the same entry posted whole, `POST /pool/handoff`, kept in
-    the lead's store as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md).
+  - A job's hand-off, as a member keeps it (`agent/pool/saved.json`'s `mine.unwritten`, by key
+    `<day>/<epoch>-<n>`) and posts it whole (`POST /pool/handoff {entry}`, kept in the lead's store
+    as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md step 6): `{member, lease,
+    step, handoff, at}` (`handoff.sizes`: the bytes of each file it wrote, by content name; none in
+    older ones). Nothing goes to the NAS (task #1125): `state/journal/` (entries
+    `<day>/<epoch>-<n>.json`, `rejected/<day>/<epoch>-<n>.why`, `gc.json`), written by apps before
+    it for a lead on an app before step 6, is read only for the keys an older app's saved state
+    still lists (`mine.entries`, read back once whole, `Mine::read_back`), and is the owner's to
+    remove.
   - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md step 3):
     `{member, host, app, beat, leads, addresses, reach, checks_map, members, conds: {home, ac,
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
