@@ -32,8 +32,9 @@
 //! epoch (bumped at each restart, raised past a take-up's records: docs/coordination.md step 8c), a
 //! job reading the records. Once the faults stop every Mac stays awake for a while; then the
 //! declared lead must lead, alone, caught up, its records at the one path must name every hand-off
-//! ever made (but those a lost saved state took with it before any post, and a Mac gone for good
-//! still holds), and no take-up may have been made in the run's last ten minutes. Every hand-off a
+//! ever made (but those a lost saved state took with it before any post, those posted whose
+//! member's saved state and then the lead's store were both lost before a merge, and those a Mac
+//! gone for good still holds), and no take-up may have been made in the run's last ten minutes. Every hand-off a
 //! lead acknowledged is in every snapshot of its epoch or a later one, and no snapshot both applies
 //! and refuses one.
 
@@ -289,6 +290,9 @@ struct World {
     /// (crate::coord::handoffs `taken`); and those answered merged, from its memory, by their Mac.
     taken: BTreeMap<String, Entry>,
     merged: BTreeMap<String, usize>,
+    /// Of those taken, the ones whose member's saved state was lost since: the lead's store holds
+    /// the only copy (no journal on the NAS since task #1125), so losing that store too loses them.
+    lead_only: BTreeSet<String>,
     /// The leases granted in each epoch (the lead grants in order: the coordinator isn't modelled).
     leases: BTreeMap<u64, u64>,
     /// The epochs whose lead was seen caught up.
@@ -433,6 +437,7 @@ impl World {
             acked: BTreeMap::new(),
             taken: BTreeMap::new(),
             merged: BTreeMap::new(),
+            lead_only: BTreeSet::new(),
             leases: BTreeMap::new(),
             caught: BTreeSet::new(),
             away: vec![0; n],
@@ -725,14 +730,6 @@ impl World {
         true
     }
 
-    fn remove(&mut self, me: usize, path: &str) {
-        if path == lead::LEAD || path == records::ONE || path == records::ONE_BRIEF {
-            self.wrong(format!("mac{me} removed {path}"));
-        }
-        self.files.remove(path);
-        self.see(me, path, None);
-    }
-
     /// A file's bytes landed: checked by what it is. `made`: by its create (or its maker finishing
     /// it).
     fn landed(&mut self, me: usize, path: &str, b: &[u8], made: bool) {
@@ -860,6 +857,9 @@ impl World {
 
     /// Mac `me` restarted: the lead's memory of what it answered merged gone; its saved state lost
     /// (`lost`) takes with it its hand-offs no post reached (`keeps`), and on the lead its store's.
+    /// Both lost (a member's saved state, then the lead's store before it merged what that member
+    /// posted) lose those hand-offs: no other copy is kept anywhere (seed 100448 of the review's
+    /// 20,000: a member's state lost at 791 s with one posted, the lead's store at 1150 s).
     fn restarted(&mut self, me: usize, lost: bool, keeps: &[String]) {
         if me == 0 {
             self.merged.clear();
@@ -869,7 +869,11 @@ impl World {
         }
         let named = self.landed.values().next_back().map(|(_, h)| h.clone()).unwrap_or_default();
         for k in keeps {
-            if self.taken.contains_key(k) || named.contains(k) {
+            if named.contains(k) {
+                continue;
+            }
+            if self.taken.contains_key(k) {
+                self.lead_only.insert(k.clone());
                 continue;
             }
             if let Some(m) = self.made.get_mut(k) {
@@ -878,8 +882,18 @@ impl World {
             }
         }
         if me == 0 && !self.taken.is_empty() {
-            self.taken.clear();
+            let taken = std::mem::take(&mut self.taken);
+            let gone: Vec<String> = taken.into_keys().filter(|k| self.lead_only.contains(k)).collect();
+            for k in gone {
+                if let Some(m) = self.made.get_mut(&k) {
+                    m.lost = true;
+                    self.count("hand-offs lost with a member's saved state and the lead's store");
+                }
+            }
             self.count("lead stores' hand-offs lost");
+        }
+        if me == 0 {
+            self.lead_only.clear();
         }
     }
 
@@ -1148,16 +1162,6 @@ impl Nas for Sim {
             w.answers(me, path)?;
             Ok(w.fetch(me, path).is_some())
         })?
-    }
-
-    fn list(&self, dir: &str) -> Result<Vec<String>> {
-        // (Nothing in the pool's protocol lists a folder: docs/coordination.md step 6, task #1125.)
-        self.op(|w, me| w.wrong(format!("mac{me} listed {dir}")))?;
-        bail!("no listing in the simulator")
-    }
-
-    fn remove(&self, path: &str) -> Result<()> {
-        self.op(|w, me| w.remove(me, path))
     }
 }
 

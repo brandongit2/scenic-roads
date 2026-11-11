@@ -47,10 +47,9 @@ pub const ASKS: &str = "asks";
 
 /// What a member's beat says it speaks, and a lead's answer that it takes (docs/coordination.md
 /// step 6, crate::coord::handoffs): its jobs' hand-offs posted by HTTP (`POST /pool/handoff`), its
-/// beat listing those it keeps, the answer saying which are merged and which the lead lacks. A
-/// member keeps them while its lead doesn't say it. (A member on an app before task #1125 writes
-/// them to the NAS's journal for a lead whose answer doesn't say it: a lead says it in every
-/// answer, its registry attached or not, so none does.)
+/// beat listing those it keeps, the answer saying which are merged and which the lead lacks. (A
+/// member on an app before task #1125 writes them to the NAS's journal for a lead whose answer
+/// doesn't say it: a lead says it in every answer, its registry attached or not, so none does.)
 pub const HANDOFF: &str = "handoff";
 
 /// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
@@ -129,10 +128,9 @@ struct Inner {
     /// Its asks not yet answered 200 (`ask`), kept at `queue_at` (crate::coord::asks::QUEUE).
     queue: Vec<super::asks::Ask>,
     queue_at: Option<std::path::PathBuf>,
-    /// On a member: whether its lead's last answer said it takes hand-offs (`HANDOFF`); its
-    /// hand-offs kept whole, as its pool side last saved them (its beat lists them, posting those
-    /// the lead lacks); those the lead's answers said merged, for the pool side to drop.
-    lead_handoffs: bool,
+    /// On a member: its hand-offs kept whole, as its pool side last saved them (its beat lists
+    /// them, posting those the lead lacks); those the lead's answers said merged, for the pool side
+    /// to drop.
     handoffs: Vec<crate::pool::Entry>,
     merged: Vec<String>,
     /// On a member: its resume progress as its agent last noted it (its beat carries it), and the
@@ -182,7 +180,6 @@ impl Default for Beats {
                 settings_gen: 0,
                 queue: Vec::new(),
                 queue_at: None,
-                lead_handoffs: false,
                 handoffs: Vec::new(),
                 merged: Vec::new(),
                 progress: None,
@@ -260,7 +257,6 @@ impl Beats {
             g.hold = a.hold.clone();
             g.settings_gen = a.settings_gen;
         }
-        g.lead_handoffs = a.speaks.iter().any(|w| w == HANDOFF);
         g.merged.extend(a.merged.iter().cloned());
         g.progress_released = a.progress_released.clone();
         g.lead_view = LeadView { at: now, lead: a.lead.clone() };
@@ -305,12 +301,13 @@ impl Beats {
         self.inner.lock().unwrap().handoffs = h;
     }
 
-    /// The keys of its hand-offs kept whole, while its lead takes them by HTTP.
+    /// The keys of its hand-offs kept whole, listed in every beat, whatever the lead's last answer
+    /// said (or none since this process started): the lead's GC queue takes a beat's list as every
+    /// lease the member may still hand off under (crate::coord::held's `owes`), so a beat listing
+    /// none while it keeps some would let go of deletions a merge of them must refuse. (An older
+    /// lead, before step 6, reads past the list.)
     pub fn handoff_keys(&self) -> Vec<String> {
         let g = self.inner.lock().unwrap();
-        if !g.lead_handoffs {
-            return Vec::new();
-        }
         g.handoffs.iter().filter_map(crate::pool::Entry::key).collect()
     }
 
@@ -482,7 +479,6 @@ impl Beats {
         g.lead_root = false;
         g.leading = None;
         g.lead_asks = false;
-        g.lead_handoffs = false;
         g.threads.clear();
         g.lead_view = LeadView { at: now, lead: None };
         drop(g);
@@ -543,6 +539,25 @@ mod tests {
 
     /// The lead hears two members and answers each with the other and itself; one not heard for
     /// `FORGET_S` is dropped.
+    #[test]
+    fn a_member_s_beat_lists_its_hand_offs_before_any_answer_and_after_an_older_lead_s() {
+        // (Review of task #1125: listed only once a lead's answer said `HANDOFF`, a restarted
+        // member's first beat listed none, and the lead's GC queue let go of deletions a merge of
+        // them must refuse.)
+        let e = crate::pool::Entry {
+            member: "m-000000000000000b".into(),
+            lease: crate::pool::journal::LeaseId { epoch: 3, n: 4 },
+            step: "unit".into(),
+            handoff: Default::default(),
+            at: 1_791_300_000,
+        };
+        let b = Beats::default();
+        b.set_handoffs(vec![e.clone()]);
+        assert_eq!(b.handoff_keys(), [e.key().unwrap()]);
+        b.lead_older(1_791_300_000);
+        assert_eq!(b.handoff_keys(), [e.key().unwrap()]);
+    }
+
     #[test]
     fn the_lead_answers_each_member_with_the_others() {
         let b = Beats::default();

@@ -4,8 +4,8 @@
 //!
 //! Each call runs on a thread of a small pool while the caller waits a deadline at most. Three
 //! pools, so one kind of call stuck can't starve another: the switches' reads (`read_switch`), the
-//! records' reads (`read`, `read_to_string`, and `Deadlined`'s reads, stats and listings), and the
-//! writes (`write`, and `Deadlined`'s writes, creates and removes). A call past its deadline
+//! records' reads (`read`, `read_to_string`, and `Deadlined`'s reads and stats), and the writes
+//! (`write`, and `Deadlined`'s writes and creates). A call past its deadline
 //! returns `ErrorKind::TimedOut` to the caller, which takes it as it takes any call that fails now
 //! (its own "can't read" path), and is logged once per path per streak (a call on that path that
 //! answers ends the streak). The thread stuck in it is left to it and counts as busy until it
@@ -30,8 +30,6 @@ use store::nasfs::NasPath;
 
 /// How long a small read or write may take before its caller goes on without it.
 pub const DEADLINE: Duration = Duration::from_secs(20);
-/// How long a listing may take (3 to 33 s a folder under load, pool::nas::Nas::list).
-pub const LIST_DEADLINE: Duration = Duration::from_secs(60);
 /// The switches' readers (`threads`).
 const SWITCH_READERS: usize = 2;
 /// The records' readers.
@@ -357,20 +355,19 @@ impl Drop for InFlight {
     }
 }
 
-/// A NAS whose every call runs under a deadline: its reads, stats and listings on the records'
-/// readers, its writes, creates and removes on the writers. The pool's driver and its member's
+/// A NAS whose every call runs under a deadline: its reads and stats on the records' readers, its
+/// writes and creates on the writers. The pool's driver and its member's
 /// opening go through it (crate::agent::pool).
 pub struct Deadlined {
     inner: Arc<dyn Nas + Send + Sync>,
     reads: &'static Calls,
     writes: &'static Calls,
     deadline: Duration,
-    list_deadline: Duration,
 }
 
 impl Deadlined {
     pub fn new(inner: Arc<dyn Nas + Send + Sync>) -> Deadlined {
-        Deadlined { inner, reads: records(), writes: writers(), deadline: DEADLINE, list_deadline: LIST_DEADLINE }
+        Deadlined { inner, reads: records(), writes: writers(), deadline: DEADLINE }
     }
 
     /// With pools and deadlines of its own (a test's).
@@ -379,9 +376,8 @@ impl Deadlined {
         reads: &'static Calls,
         writes: &'static Calls,
         deadline: Duration,
-        list_deadline: Duration,
     ) -> Deadlined {
-        Deadlined { inner, reads, writes, deadline, list_deadline }
+        Deadlined { inner, reads, writes, deadline }
     }
 
     fn run<T: Send + 'static>(
@@ -438,16 +434,6 @@ impl Nas for Deadlined {
     fn exists(&self, path: &str) -> anyhow::Result<bool> {
         let p = path.to_string();
         self.run(self.reads, path, self.deadline, move |n| n.exists(&p))
-    }
-
-    fn list(&self, dir: &str) -> anyhow::Result<Vec<String>> {
-        let p = dir.to_string();
-        self.run(self.reads, dir, self.list_deadline, move |n| n.list(&p))
-    }
-
-    fn remove(&self, path: &str) -> anyhow::Result<()> {
-        let p = path.to_string();
-        self.run(self.writes, path, self.deadline, move |n| n.remove(&p))
     }
 }
 
@@ -626,14 +612,6 @@ pub(crate) mod tests {
             self.hang(path);
             self.inner.exists(path)
         }
-        fn list(&self, dir: &str) -> anyhow::Result<Vec<String>> {
-            self.hang(dir);
-            self.inner.list(dir)
-        }
-        fn remove(&self, path: &str) -> anyhow::Result<()> {
-            self.hang(path);
-            self.inner.remove(path)
-        }
     }
 
     pub(crate) fn leak(c: Calls) -> &'static Calls {
@@ -729,7 +707,7 @@ pub(crate) mod tests {
             gate: Arc::new(Mutex::new(gate)),
         };
         let (reads, writes) = (leak(Calls::new("tr", 2)), leak(Calls::new("tw", 2)));
-        let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_secs(4), Duration::from_millis(200));
+        let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_secs(4));
         // The heartbeat's write stuck: an error within its deadline; a second write to that path
         // refused at once while the first still runs (never two at once on one temporary name).
         let t = Instant::now();
@@ -747,8 +725,8 @@ pub(crate) mod tests {
         let t = Instant::now();
         assert!(n.write_whole("state/pool/members/p.json", b"{}").is_err());
         store::testkit::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
-        // The reads go on: the terms listed, read.
-        assert_eq!(n.list("state/pool/terms").unwrap(), vec!["1.json".to_string()]);
+        // The reads go on.
+        assert!(n.exists("state/pool/terms/1.json").unwrap());
         assert_eq!(n.read("state/pool/terms/1.json").unwrap().unwrap(), b"{}");
         // And a switch, on its own readers.
         std::fs::write(d.path().join("sw"), "on").unwrap();

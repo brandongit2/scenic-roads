@@ -44,14 +44,6 @@ pub trait Nas {
 
     /// Whether `path` exists: a stat, never a listing; stale as reads are.
     fn exists(&self, path: &str) -> Result<bool>;
-
-    /// The names in folder `dir`, sorted, temporary files left out; none when it isn't there. Slow
-    /// (3 to 33 s a folder under load) and possibly stale: for taking up a term and for GC, never
-    /// in a loop.
-    fn list(&self, dir: &str) -> Result<Vec<String>>;
-
-    /// Removes file `path`; nothing when it isn't there.
-    fn remove(&self, path: &str) -> Result<()>;
 }
 
 /// The NAS project folder: the protocol's operations are store::nasfs's (its `made` set and whole
@@ -87,25 +79,11 @@ impl Nas for NasRoot {
         let p = self.join(path);
         p.try_exists().with_context(|| format!("stat {}", p.display()))
     }
-
-    fn list(&self, dir: &str) -> Result<Vec<String>> {
-        let d = self.join(dir);
-        d.list().with_context(|| format!("list {}", d.display()))
-    }
-
-    fn remove(&self, path: &str) -> Result<()> {
-        let p = self.join(path);
-        match p.remove_file() {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("remove {}", p.display())),
-        }
-    }
 }
 
 /// The share read only, through a reader's own read of a path (the map server's, through its pool):
-/// `read` answers None for a file that isn't there. Writes are refused; a listing is empty (a
-/// reader of the records lists nothing: it reads the one path, super::now).
+/// `read` answers None for a file that isn't there. Writes are refused (a reader of the records
+/// reads the one path, super::now).
 pub struct ReadOnly<'a>(pub &'a dyn Fn(&str) -> Result<Option<Vec<u8>>>);
 
 impl Nas for ReadOnly<'_> {
@@ -121,12 +99,6 @@ impl Nas for ReadOnly<'_> {
     fn exists(&self, path: &str) -> Result<bool> {
         Ok((self.0)(path)?.is_some())
     }
-    fn list(&self, _: &str) -> Result<Vec<String>> {
-        Ok(Vec::new())
-    }
-    fn remove(&self, path: &str) -> Result<()> {
-        anyhow::bail!("{path}: read only")
-    }
 }
 
 #[cfg(test)]
@@ -134,7 +106,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_share_makes_once_writes_whole_and_lists_without_temporary_files() {
+    fn the_share_makes_once_and_writes_whole() {
         let d = tempfile::tempdir().unwrap();
         let s = NasRoot::local_for_test(d.path());
         assert!(matches!(s.create_new("state/build/lead-member.json", b"one").unwrap(), Created::Made));
@@ -143,14 +115,7 @@ mod tests {
         s.write_whole("state/pool/members/m-1.json", b"a").unwrap();
         s.write_whole("state/pool/members/m-1.json", b"bb").unwrap();
         assert_eq!(s.read("state/pool/members/m-1.json").unwrap().as_deref(), Some(&b"bb"[..]));
-        std::fs::write(d.path().join("state/pool/members/m-2.json.mac.7.tmp"), b"x").unwrap();
-        assert_eq!(s.list("state/pool/members").unwrap(), ["m-1.json"]);
-        assert_eq!(s.list("state/build").unwrap(), ["lead-member.json"]);
-        assert!(s.list("state/journal").unwrap().is_empty(), "no folder: nothing");
         assert!(s.exists("state/build/lead-member.json").unwrap() && !s.exists("state/build/lead.json").unwrap());
         assert_eq!(s.read("state/build/lead.json").unwrap(), None);
-        s.remove("state/pool/members/m-1.json").unwrap();
-        s.remove("state/pool/members/m-1.json").unwrap();
-        assert!(!s.exists("state/pool/members/m-1.json").unwrap());
     }
 }

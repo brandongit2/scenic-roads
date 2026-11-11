@@ -161,7 +161,7 @@ mod tests {
     use super::*;
     use store::nasfs::NasRoot;
 
-    /// A NAS whose calls are counted (reads, stats, listings).
+    /// A NAS whose calls are counted (reads, stats).
     struct Counted<'a>(&'a NasRoot, std::cell::Cell<u64>);
 
     impl Nas for Counted<'_> {
@@ -178,13 +178,6 @@ mod tests {
         fn exists(&self, path: &str) -> Result<bool> {
             self.1.set(self.1.get() + 1);
             self.0.exists(path)
-        }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.1.set(self.1.get() + 1);
-            self.0.list(dir)
-        }
-        fn remove(&self, path: &str) -> Result<()> {
-            self.0.remove(path)
         }
     }
 

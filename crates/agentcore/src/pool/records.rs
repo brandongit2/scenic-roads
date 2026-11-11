@@ -698,8 +698,8 @@ mod tests {
         let e = built(841, 1, "6-1-2", "k1");
         r.apply(&e.key().unwrap(), &e);
         save(&mut r, &nas).unwrap();
-        let mut files = nas.list("state/build").unwrap();
-        files.sort();
+        let files: Vec<String> =
+            nas.0.borrow().keys().filter_map(|k| k.strip_prefix("state/build/")).map(str::to_string).collect();
         assert_eq!(files, ["brief.json", "manifest.json", "records.json"], "today's manifest as it was");
         let brief = Brief::now(&nas).unwrap();
         assert_eq!((brief.epoch, brief.seq, &brief.manifest, &brief.keys), (841, 1, &r.manifest, &r.keys));

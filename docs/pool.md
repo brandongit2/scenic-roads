@@ -1244,13 +1244,17 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 - **A job's hand-off goes to the lead by HTTP** (docs/coordination.md step 6,
   `crate::coord::handoffs`): its member's driver keeps it whole in its saved state
   (`journal::Mine`, keyed `<day>/<epoch>-<n>`: the lease's id, the UTC day of first try); the
-  member's beat lists the keys it keeps, the lead's answer says which it lacks (posted next,
+  member's beat lists the keys it keeps (every beat, whatever the lead last answered: the lead's
+  GC queue takes the list as every lease the member may still hand off under), the lead's answer
+  says which it lacks (posted next,
   `POST /pool/handoff`, into the lead's store before its 200) and which a saved records snapshot
   names (dropped). The lead's agent merges what its coordinator took from memory, with its own
   jobs' hand-offs (never written anywhere first). Nothing goes to the NAS: the journal
   (`state/journal/`), which apps before task #1125 wrote for a lead on an app before step 6, is
   neither written nor listed; its entries an older app's saved state lists as unacknowledged are
-  read back whole once and posted (`Mine::read_back`). A lead says `handoff` in every beat's
+  read back whole once and posted (`Mine::read_back`, under a new member id too). A job's folder is
+  removed only once the saved state holding its hand-off is durable, its rename flushed (the
+  hand-off's only other copy). A lead says `handoff` in every beat's
   answer, so a member on an app before #1125 never writes the journal for it.
 - **The lead validates at merge** (`agent::pool::check`, `records::Check`): every change within the
   step's write-set, content names matching logical names, the lease's targets. Write-sets are one
@@ -3019,16 +3023,19 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   store; posts and answers lost, the lead's store lost with its saved state, its memory of what it
   answered merged lost at each restart), with skewed clocks, sleeps, restarts, app upgrades and
   rollbacks, members leaving. Mac 0 is the declared lead, its store's epoch bumped at each restart
-  and raised past a take-up's records: any other Mac leading is wrong, as is any listing or any
-  file under `state/journal/`. It checks §4's invariants at every step (epochs strictly rising at
+  and raised past a take-up's records: any other Mac leading is wrong, as is any file
+  under `state/journal/` (the pool's NAS has no listing nor removal since task #1125's review:
+  `records::nas::Nas` lost both, their last callers the journal's). It checks §4's invariants at every step (epochs strictly rising at
   each take-up and past every other landed records' epoch; each epoch's snapshots at the one path
   never going back or losing a hand-off, none both applying and refusing one; an acknowledgement
   only of a hand-off a landed snapshot of its epoch names; no snapshot of an epoch at or after an
   acknowledgement's lacking it; a lead caught up only with every hand-off its step was given
   named), and at the end that the declared lead leads, caught up, the one path naming every
-  hand-off made (but those a lost saved state took before any post, and those a Mac gone for good
-  still holds), and no take-up in the run's last ten minutes. 2,000 seeds by default; longer runs
-  are opt-in.
+  hand-off made (but those a lost saved state took before any post, those posted whose member's
+  saved state and then the lead's store were both lost before a merge, the one loss two faults
+  make with no journal, and those a Mac gone for good still holds), and no take-up in the run's
+  last ten minutes. 2,000 seeds by default; longer runs are opt-in (task #1125's review: 20,000
+  mixed seeds, and 5,000 of four hours' faults, none wrong). It never moves the lead (#1038).
 - **Not modelled:** torn reads, other I/O errors, the member lock, a wall clock set while awake, GC,
   the coordinator (the driver's and modules' own tests cover these).
 - **The placement simulator** (`sim::place`, in the crate's tests, a few seconds a run): N

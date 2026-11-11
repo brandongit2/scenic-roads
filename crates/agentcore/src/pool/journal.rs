@@ -134,12 +134,6 @@ impl Mine {
         self.kept.values()
     }
 
-    /// Its hand-offs alone, none read back yet: what another member id (this Mac's member file lost)
-    /// keeps of them, the same bytes whoever hands them on.
-    pub fn foreign(self) -> Mine {
-        Mine { kept: self.kept, written: BTreeSet::new() }
-    }
-
     /// Notes entry `key` acknowledged: a lead's saved records name it. Dropped.
     pub fn acked(&mut self, key: &str) {
         self.kept.remove(key);
@@ -255,8 +249,5 @@ mod tests {
         assert_eq!(m.keys().collect::<Vec<_>>(), [&ka], "kept whole, to post");
         assert_eq!(m.unacked(), 1);
         assert!(serde_json::to_value(&m).unwrap().get("entries").is_none(), "none left to read");
-        // Another member's (this Mac's member file lost): its whole ones alone.
-        let other: Mine = serde_json::from_value(serde_json::json!({ "entries": ["2026-10-06/4-9"] })).unwrap();
-        assert_eq!(other.foreign().unacked(), 0);
     }
 }

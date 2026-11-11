@@ -119,12 +119,6 @@ impl Nas for Clocked<'_> {
     fn exists(&self, path: &str) -> Result<bool> {
         self.nas.exists(path)
     }
-    fn list(&self, dir: &str) -> Result<Vec<String>> {
-        self.nas.list(dir)
-    }
-    fn remove(&self, path: &str) -> Result<()> {
-        self.nas.remove(path)
-    }
 }
 
 impl Io for Clocked<'_> {
@@ -372,6 +366,9 @@ impl Side {
         // the lead hasn't taken. Its asks of the lead an earlier process left, queued again.)
         let mail_dirty = mail.sent.keys().cloned().collect();
         let http: Arc<crate::coord::beats::Beats> = Arc::default();
+        // (Its hand-offs known to its beat before its first step: its first beat lists them, so the
+        // lead's GC queue never hears it owes fewer leases than it does.)
+        http.set_handoffs(driver.mine().entries().cloned().collect());
         http.keep_asks(&dir.join(crate::coord::asks::QUEUE));
         http.had_settings(jobrt::control::read_pool_settings(home));
         http.keep_lead_view(&home.join(crate::coord::beats::LEAD_VIEW));
@@ -625,12 +622,18 @@ impl Side {
         out
     }
 
-    /// Writes the saved state when it changed; the folders of the hand-offs it now holds removed.
+    /// Writes the saved state when it changed; the folders of the hand-offs it now holds removed,
+    /// once the state holding them is durable, its rename too (the folder flushed): its job's
+    /// folder is the hand-off's only other copy, and no journal on the NAS holds one since task
+    /// #1125.
     fn keep(&mut self) -> Result<()> {
         let b = serde_json::to_vec(&self.driver().saved())?;
         if b != self.written {
             store::whole::write(&self.dir.join("saved.json"), &b)?;
             self.written = b;
+        }
+        if !self.folders.is_empty() {
+            store::seglog::sync_dir(&self.dir).with_context(|| format!("fsync {}", self.dir.display()))?;
         }
         for f in std::mem::take(&mut self.folders) {
             let gone = if f.is_dir() { std::fs::remove_dir_all(&f) } else { std::fs::remove_file(&f) };
@@ -2443,13 +2446,6 @@ mod tests {
             self.check(path)?;
             self.0.exists(path)
         }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.check(dir)?;
-            self.0.list(dir)
-        }
-        fn remove(&self, path: &str) -> Result<()> {
-            self.0.remove(path)
-        }
     }
 
     /// docs/coordination.md steps 8a, 8c: a member's pool side takes its lead from the lead's beat
@@ -2682,12 +2678,6 @@ mod tests {
         }
         fn exists(&self, p: &str) -> Result<bool> {
             self.nas.exists(p)
-        }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.nas.list(dir)
-        }
-        fn remove(&self, p: &str) -> Result<()> {
-            self.nas.remove(p)
         }
     }
 

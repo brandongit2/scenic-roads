@@ -317,7 +317,8 @@ impl Driver {
     /// The driver of member `me` (its app the process's), holding its lock, from what it saved
     /// last. Another member's state (a copy of the agent's folder, or this Mac's member file lost
     /// and a new id made), or one naming none (lost, or never saved), counts for nothing but its
-    /// jobs' hand-offs: those are posted, the same bytes whoever posts them.
+    /// jobs' hand-offs: those are posted, the same bytes whoever posts them (an older app's keys of
+    /// the NAS's journal read back first, `Mine::read_back`).
     pub fn new(me: Member, saved: Saved, lock: MemberLock) -> Driver {
         Driver { lock: Some(lock), ..Driver::without(me, saved) }
     }
@@ -330,11 +331,7 @@ impl Driver {
 
     fn without(me: Member, saved: Saved) -> Driver {
         let known = saved.member == me.id;
-        let saved = if known {
-            saved
-        } else {
-            Saved { member: me.id.clone(), mine: saved.mine.foreign(), ..Default::default() }
-        };
+        let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine, ..Default::default() } };
         Driver {
             me,
             lock: None,
@@ -968,15 +965,6 @@ mod tests {
             }
             self.mem.exists(path)
         }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            if self.down.get() && self.fail.borrow().as_deref().is_none_or(|f| dir.contains(f)) {
-                anyhow::bail!("list {dir}: the share doesn't answer");
-            }
-            self.mem.list(dir)
-        }
-        fn remove(&self, path: &str) -> Result<()> {
-            self.mem.remove(path)
-        }
     }
 
     impl Io for Mac<'_> {
@@ -1115,7 +1103,7 @@ mod tests {
             assert_eq!((o.leads, b.declared()), (None, Some(A)), "{:?}", o.events);
         }
         // A pool past its start with no declaration (the records saved): no Mac declares itself.
-        mem.remove(lead::LEAD).unwrap();
+        mem.0.borrow_mut().remove(lead::LEAD);
         let mut c = Driver::unlocked(member(C, "MacBook-Pro", V2), Saved::default());
         let ic = Mac::new(&mem);
         for _ in 0..3 {
@@ -1363,7 +1351,7 @@ mod tests {
             .events
             .iter()
             .any(|e| matches!(e, Event::Waits { what: "take up the records", why } if why.contains("older"))));
-        mem.remove(records::ONE).unwrap();
+        mem.0.borrow_mut().remove(records::ONE);
         ib.pass(20);
         let o = step(&mut b, &ib, able());
         assert!(
@@ -1594,12 +1582,6 @@ mod tests {
             fn exists(&self, path: &str) -> Result<bool> {
                 self.0.exists(path)
             }
-            fn list(&self, dir: &str) -> Result<Vec<String>> {
-                self.0.list(dir)
-            }
-            fn remove(&self, path: &str) -> Result<()> {
-                self.0.remove(path)
-            }
         }
         impl Io for NoStore<'_> {
             fn now(&self) -> u64 {
@@ -1698,6 +1680,13 @@ mod tests {
             o.events
         );
         assert_eq!(b.mine().unacked(), 1);
+        // (Review: another member id's saved state, this Mac's member file lost, had its journal keys
+        // dropped unread: no lead reads the journal now, so they're read back as its own are.)
+        let saved: Saved =
+            serde_json::from_value(serde_json::json!({ "member": C, "mine": { "entries": [key] } })).unwrap();
+        let mut b2 = Driver::unlocked(member(B, "MacBook-Air", V2), saved);
+        step(&mut b2, &ib, able());
+        assert_eq!(b2.mine().keys().collect::<Vec<_>>(), [&key], "read back whole under its new id");
     }
 
     #[test]
@@ -1748,12 +1737,6 @@ mod tests {
                 None => self.mac.exists(path),
             }
         }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.mac.list(dir)
-        }
-        fn remove(&self, path: &str) -> Result<()> {
-            self.mac.remove(path)
-        }
     }
 
     impl Io for Racing<'_> {
@@ -1802,14 +1785,6 @@ mod tests {
         fn exists(&self, path: &str) -> Result<bool> {
             self.note("stat", path);
             self.0.exists(path)
-        }
-        fn list(&self, dir: &str) -> Result<Vec<String>> {
-            self.note("list", dir);
-            self.0.list(dir)
-        }
-        fn remove(&self, path: &str) -> Result<()> {
-            self.note("remove", path);
-            self.0.remove(path)
         }
     }
 
