@@ -1,0 +1,625 @@
+//! A simulated Mac's agent (crate::pool's `sim`; modelled): its loop around the pool's driver, its
+//! role read from the declaration (docs/roles.md §1: a change restarts it into the new one), its
+//! coordinator while it leads (crate::coord, in process: offered the plan's work, its own jobs
+//! granted by `ask_own`, told what its driver's step came to as `agent::lead::after` and
+//! `agent::pool`'s step tell it, its store backed up to the NAS), its member's beat to the lead
+//! (crate::agent::beat::ToLead::post_on over the network) and its asks (`LeaseCalls::ask`), its
+//! jobs (a few minutes each, a hand-off each as it ends; stopped when the lead says their lease
+//! isn't its), and its restarts (an update, a crash, its disk replaced).
+
+use super::*;
+use crate::agent::beat::ToLead;
+use crate::coord::beats::Beats;
+use crate::coord::client::LeaseCalls;
+use crate::coord::handoffs::Handoffs;
+use crate::coord::{held, Ask, Capacity, Cost, Granted, Offer};
+use crate::pool::driver::{Driver, Event, Heard, Out, Saved};
+use crate::pool::Member;
+use buildstore::handoff::Handoff;
+use coordwire::client::Client;
+use lead::Role;
+use std::time::Duration;
+
+/// Per loop while the faults last: that a free slot asks for work (a member's over the network,
+/// the lead's own in process); that one of its jobs reads the current records.
+const P_ASK: f64 = 0.5;
+const P_READ: f64 = 0.2;
+/// A job's run (s).
+const JOB_S: (u64, u64) = (60, 900);
+/// The lead's store backed up this often (s: `pool::store::backup_every`).
+const BACKUP_S: u64 = 600;
+/// The memory, cores and disk each Mac asks with (MB, cores, MB): room for any job.
+const MEM_MB: u64 = 16_000;
+const CORES: u32 = 8;
+const DISK_MB: u64 = 100_000;
+
+/// A job running: its lease, targets, and when it ends (the run's time).
+struct Job {
+    epoch: u64,
+    n: u64,
+    targets: Vec<String>,
+    ends: u64,
+}
+
+pub(super) struct Mac {
+    sim: Sim,
+    k: usize,
+    rng: Rng,
+    me: Member,
+    driver: Driver,
+    /// Its driver's state as last saved (the agent saves it after each step, before acting on it):
+    /// what a crash restarts it from.
+    saved: Saved,
+    jobs: u64,
+    /// The epoch it leads in, as the world was told.
+    leads: Option<u64>,
+    /// Its role, decided as its process starts (docs/roles.md §1).
+    role: Role,
+    /// Its registry (a member's: its lead's answers; the lead's: its members' beats) and, leading,
+    /// its coordinator's hand-offs.
+    beats: Arc<Beats>,
+    handoffs: Arc<Handoffs>,
+    running: Vec<Job>,
+    /// Its jobs' hand-offs handed to a step whose state isn't saved yet: in their jobs' folders
+    /// still (crate::agent::pool::job_dir), handed again after a crash.
+    unsaved: Vec<Entry>,
+    /// Leading: its coordinator took another lead's state up once in this process (`Run::led`).
+    took: bool,
+    /// The Mac whose coordinator it reaches (the contact on the NAS, as it last read it).
+    lead: Option<usize>,
+    /// Its beat's last post failed.
+    failing: bool,
+    /// Leading: its store's backup's `seq` last written, and when (the run's time).
+    backed: (u64, u64),
+}
+
+impl Mac {
+    pub(super) fn new(sim: Sim, k: usize, seed: u64) -> Mac {
+        let me = Member { id: id(k), host: host(k), app: app(0) };
+        let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
+        let driver = Driver::unlocked(me.clone(), Saved::default());
+        Mac {
+            sim,
+            k,
+            rng,
+            me,
+            saved: driver.saved(),
+            driver,
+            jobs: 0,
+            leads: None,
+            role: Role::Unknown,
+            beats: Arc::new(Beats::default()),
+            handoffs: Arc::new(Handoffs::default()),
+            running: Vec::new(),
+            unsaved: Vec::new(),
+            took: false,
+            lead: None,
+            failing: false,
+            backed: (0, 0),
+        }
+    }
+
+    pub(super) fn run(mut self) {
+        if self.start().is_err() {
+            return;
+        }
+        loop {
+            if let Err(e) = self.turn() {
+                if self.sim.over() {
+                    return;
+                }
+                self.sim.note(|| format!("mac{}: {e:#}", self.k));
+            }
+            if self.idle().is_err() {
+                return;
+            }
+        }
+    }
+
+    /// Its process starts: its role read, its coordinator started when it's the lead.
+    fn start(&mut self) -> Result<()> {
+        self.role = lead::role(&self.sim, Some(&self.me.id));
+        if self.role == Role::Lead {
+            self.start_coord()?;
+        }
+        Ok(())
+    }
+
+    /// The lead's coordinator in this process (its store opened from its folder: its epoch one
+    /// more), its clock its Mac's, granting nothing until its agent's step says it may (as
+    /// `agent::make_coordinator_on` starts it); the plan's step measured on it.
+    fn start_coord(&mut self) -> Result<()> {
+        let (k, me, app) = (self.k, self.me.clone(), self.me.app.clone());
+        let (beats, handoffs) = (self.beats.clone(), self.handoffs.clone());
+        self.sim.alive(|w| -> Result<()> {
+            let dir = w.macs[k].dir.join("coord");
+            let clock = store::clock::Virtual::new_at(std::time::UNIX_EPOCH + Duration::from_secs(w.clock(k)));
+            let c = Coordinator::in_process(crate::agent::seam::for_tests(), &dir, &me.host, &app, clock.clone())?;
+            c.set_moving(Some(crate::agent::UNSTEPPED.into()));
+            c.set_member(Some(&me.id));
+            c.set_beats(Some(beats));
+            c.set_handoffs(Some(handoffs));
+            let cost = Cost {
+                peak_mb: 1_000,
+                secs: 1_500,
+                v: crate::coord::cost_version(STEP),
+                sizes: [("threads".to_string(), 2), ("cpu_ms".to_string(), 2 * 1_500_000)].into(),
+                ..Default::default()
+            };
+            let keys: Vec<String> = TARGETS.iter().map(|t| crate::coord::cost_key(STEP, t)).collect();
+            c.add_costs(&keys.iter().map(|k| (k.clone(), cost.clone())).collect::<Vec<_>>());
+            c.add_disks(&keys.iter().map(|k| (k.clone(), 1_000)).collect::<Vec<_>>());
+            w.macs[k].epoch = c.shared.lock().unwrap().keep.store().map_or(0, |s| s.epoch());
+            w.macs[k].coord = Some(Arc::new(c));
+            w.macs[k].clock = Some(clock);
+            w.known[k].clear();
+            w.seen_coord(k);
+            w.count("lead coordinators started");
+            let e = w.macs[k].epoch;
+            w.note(|| format!("mac{k}'s coordinator starts, its store's epoch {e}"));
+            Ok(())
+        })??;
+        self.backed = (0, self.sim.quiet(|w| w.t)?);
+        Ok(())
+    }
+
+    /// Restarts its process: its coordinator stopped (`clean`: backed up first, as its stop
+    /// writes it; or gone with a crash), its memory gone but its saved state, or that lost too
+    /// (`Cfg::lose`, its disk replaced); its role read again.
+    fn restart(&mut self, clean: bool) -> Result<()> {
+        let k = self.k;
+        if clean && self.role == Role::Lead {
+            self.back_up(true);
+        }
+        let keeps: BTreeSet<String> =
+            self.saved.mine.keys().cloned().chain(self.unsaved.iter().filter_map(Entry::key)).collect();
+        let lost = self.sim.quiet(|w| {
+            w.stop_coord(k, clean);
+            w.running.retain(|_, r| r.mac != k);
+            let lost = std::mem::take(&mut w.macs[k].lose) || (w.cfg.lose && w.rng.chance(0.3));
+            if lost {
+                w.state_lost(&keeps);
+                w.macs[k].local = None;
+                w.count("saved states lost");
+            }
+            w.macs[k].crashed = false;
+            w.count("restarts");
+            lost
+        })?;
+        let saved = if lost { Saved::default() } else { self.saved.clone() };
+        if lost {
+            // (Their jobs' folders gone with its disk or state.)
+            self.unsaved.clear();
+        }
+        self.me.app = self.sim.quiet(|w| app(w.macs[k].app))?;
+        self.driver = Driver::unlocked(self.me.clone(), saved);
+        self.saved = self.driver.saved();
+        let mine: BTreeSet<String> = self.saved.mine.keys().cloned().collect();
+        self.sim.quiet(|w| w.macs[k].mine = mine)?;
+        (self.beats, self.handoffs) = (Arc::new(Beats::default()), Arc::new(Handoffs::default()));
+        self.running.clear();
+        (self.took, self.lead, self.failing) = (false, None, false);
+        if self.leads.take().is_some() {
+            self.sim.quiet(|w| w.leads(k, None))?;
+        }
+        self.start()
+    }
+
+    /// One loop of the agent.
+    fn turn(&mut self) -> Result<()> {
+        let k = self.k;
+        // A process that died, or another app installed: a restart.
+        let (crashed, app_now) = self.sim.quiet(|w| (w.macs[k].crashed, app(w.macs[k].app)))?;
+        if crashed || app_now != self.me.app {
+            self.restart(!crashed)?;
+        }
+        // Its role, read again: another (the owner moved the lead) restarts it into that one.
+        let role = lead::role(&self.sim, Some(&self.me.id));
+        if role != Role::Unknown && role != self.role && !self.sim.quiet(|w| w.macs[k].crashed)? {
+            self.sim.note(|| format!("mac{k}'s role is now {role:?}: its agent restarts"));
+            self.sim.count("restarts into a new role");
+            self.restart(true)?;
+        }
+        let leading = self.role == Role::Lead;
+        let faulting = self.sim.quiet(|w| w.faulting())?;
+        let (t, now) = (self.sim.quiet(|w| w.t)?, Io::now(&self.sim));
+        // Its jobs that ended: their hand-offs (and, leading, its own leases ended).
+        let mut heard = Heard { entries: self.unsaved.clone(), ..Default::default() };
+        let (ended, left): (Vec<Job>, Vec<Job>) =
+            std::mem::take(&mut self.running).into_iter().partition(|j| j.ends <= t);
+        self.running = left;
+        for j in ended {
+            let e = self.entry(&j, now);
+            self.sim.alive(|w| {
+                w.running.remove(&(j.epoch, j.n));
+                w.handed_off(k, &e);
+                if let (true, Some(c)) = (leading, w.macs[k].coord.clone()) {
+                    w.tick(k);
+                    c.finish(j.n, &[]);
+                }
+            })?;
+            self.unsaved.push(e.clone());
+            heard.entries.push(e);
+        }
+        // What it heard: leading, what its coordinator took; a member, its lead's word.
+        let mut given: Vec<String> = heard.entries.iter().filter_map(Entry::key).collect();
+        if leading {
+            let h = self.handoffs.clone();
+            heard.handed = self.sim.alive(|_| h.taken())?;
+            given.extend(heard.handed.iter().filter_map(Entry::key));
+            given.extend(self.driver.mine().keys().cloned());
+        } else {
+            heard.merged = self.beats.take_merged();
+            let merged = heard.merged.clone();
+            self.sim.alive(|w| w.told_merged(k, &merged))?;
+            heard.lead_says = self.beats.lead_says(now);
+        }
+        let out = self.driver.step(&self.sim, heard, &check);
+        // (Its process died during the step: nothing of it saved or acted on.)
+        if self.sim.quiet(|w| w.macs[k].crashed)? {
+            return Ok(());
+        }
+        self.saved = self.driver.saved();
+        self.unsaved.clear();
+        self.after(out, faulting, &given)
+    }
+
+    /// What its driver's step came to, its state saved: acted on.
+    fn after(&mut self, out: Out, faulting: bool, given: &[String]) -> Result<()> {
+        let k = self.k;
+        let mine: BTreeSet<String> = self.saved.mine.keys().cloned().collect();
+        let caught = out.leads.is_some() && out.caught_up;
+        self.sim.alive(|w| {
+            w.macs[k].mine = mine;
+            w.macs[k].caught = caught;
+        })?;
+        if let (Some(e), true) = (out.leads, out.caught_up) {
+            self.sim.op(|w, me| w.caught_up(me, e, given, &out.held))?;
+        }
+        for ev in &out.events {
+            self.event(ev)?;
+        }
+        if out.leads != self.leads {
+            self.sim.op(|w, me| w.leads(me, out.leads))?;
+            self.leads = out.leads;
+        }
+        if let (Some(e), false) = (out.leads, out.merged.is_empty()) {
+            self.sim.op(|w, me| w.ack(me, e, &out.merged))?;
+        }
+        if self.role == Role::Lead {
+            self.lead_after(&out, faulting)?;
+        } else {
+            self.member_after(&out, faulting)?;
+        }
+        // A job reading the records: the one path's.
+        if self.rng.chance(P_READ) {
+            if let Ok(Some(r)) = records::load_one(&self.sim) {
+                if let Err(why) = consistent(&r) {
+                    self.sim.op(|w, me| {
+                        w.wrong(format!("mac{me} read epoch {}'s records at {}, not consistent: {why}", r.epoch, r.seq))
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The lead's agent after its step (crate::agent::pool's step, `took_up`, `lead::after`): its
+    /// coordinator told what the step came to, the plan's work offered, its own slot's job asked
+    /// for, its store backed up when due, its contact published.
+    fn lead_after(&mut self, out: &Out, faulting: bool) -> Result<()> {
+        let k = self.k;
+        let (me, h) = (self.me.clone(), self.handoffs.clone());
+        // (Another Mac's lead before it left its store's backup: taken up once a process.)
+        let first =
+            out.events.iter().any(|e| matches!(e, Event::TookUp { .. })) && !std::mem::replace(&mut self.took, true);
+        let backup = if first {
+            crate::pool::store::read_backup(&self.sim).ok().flatten().filter(|b| b.member != me.host)
+        } else {
+            None
+        };
+        let own: Vec<u64> = self.running.iter().map(|j| j.n).collect();
+        let records = self.driver.records().cloned();
+        let saved_records = self.driver.saved_records();
+        let checked = Io::now(&self.sim);
+        let gates = crate::agent::pool::Gates {
+            leads: out.leads,
+            duties: out.duties,
+            caught_up: out.caught_up,
+            vouched: out.vouched,
+            held: out.held.clone(),
+        };
+        let ask = faulting && self.running.is_empty() && self.rng.chance(P_ASK);
+        let cap = self.capacity(checked);
+        let granted = self.sim.alive(|w| -> Result<Option<crate::coord::Grant>> {
+            let Some(c) = w.macs[k].coord.clone() else { return Ok(None) };
+            w.tick(k);
+            h.merged(&out.merged);
+            for e in &out.events {
+                if let Event::TookUp { epoch, .. } = e {
+                    c.set_epoch(*epoch);
+                }
+            }
+            if let Some(b) = &backup {
+                let st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
+                match c.load_pool_state(&st) {
+                    Ok(n) => {
+                        w.count("lead states taken up from another's backup");
+                        w.note(|| format!("mac{k}'s coordinator took up {n} leases from {}'s backup", b.member));
+                    }
+                    Err(e) => w.wrong(format!("mac{k} can't take up {}'s backup: {e:#}", b.member)),
+                }
+            }
+            if first {
+                c.drop_workers(&crate::agent::slot_workers(&me.host), &own);
+            }
+            if let Some(e) = out.leads {
+                c.set_epoch(e);
+            }
+            c.set_led(out.leads.filter(|_| out.vouched).map(|e| (e, me.clone())));
+            match &records {
+                Some(r) if saved_records == Some((r.epoch, r.seq)) => c.set_brief(Some(r)),
+                Some(_) => {}
+                None => c.set_brief(None),
+            }
+            c.set_moving_as_of(crate::agent::pool::moving(&gates, false), checked);
+            c.keep_own(own.iter().map(|&n| (n, 0)).collect());
+            c.set_plan(1);
+            let key = |t: &str| (t.to_string(), "k".to_string(), 0);
+            c.offer(
+                "sim",
+                vec![Offer { step: STEP.into(), targets: TARGETS.iter().map(|t| key(t)).collect(), job: None }],
+            );
+            let g = if ask { c.ask_own(&Self::ask_of(&me.app, cap, own.len()), &BTreeSet::new(), 1) } else { None };
+            w.seen_coord(k);
+            w.one_granting();
+            Ok(g)
+        })??;
+        if let Some(g) = granted {
+            self.start_job(g, k)?;
+        }
+        // Its store backed up each `BACKUP_S`, its contact published.
+        if self.sim.quiet(|w| w.t)? >= self.backed.1 + BACKUP_S {
+            self.back_up(false);
+        }
+        let contact = format!("{{\"mac\": {k}}}").into_bytes();
+        if Nas::read(&self.sim, CONTACT).ok().flatten().as_deref() != Some(&contact[..]) {
+            Nas::write_whole(&self.sim, CONTACT, &contact).ok();
+        }
+        Ok(())
+    }
+
+    /// Its store's snapshot to the NAS (crate::pool::store::back_up_once), as a stop writes it
+    /// (`stopping`: whether it changed or not since).
+    fn back_up(&mut self, stopping: bool) {
+        let k = self.k;
+        let Ok(Some(snap)) = self.sim.alive(|w| {
+            let c = w.macs[k].coord.clone()?;
+            let s = c.shared.lock().unwrap().keep.store().cloned()?;
+            Some(crate::pool::store::Snapshot { member: host(k), at: w.clock(k), ..s.snapshot() })
+        }) else {
+            return;
+        };
+        let backed = if stopping { u64::MAX } else { self.backed.0 };
+        match crate::pool::store::back_up_once(&snap, &self.sim, backed) {
+            Ok(seq) => {
+                self.backed = (seq, self.sim.quiet(|w| w.t).unwrap_or(0));
+                self.sim.count("lead stores backed up");
+            }
+            Err(e) => self.sim.note(|| format!("mac{k}'s backup: {e:#}")),
+        }
+    }
+
+    /// A member's agent after its step: its beat to its lead (the leases its jobs hold, the
+    /// hand-offs it keeps: those the lead lacks posted), the jobs whose leases the answer says
+    /// aren't its stopped, and its free slot's ask.
+    fn member_after(&mut self, out: &Out, faulting: bool) -> Result<()> {
+        let k = self.k;
+        // (Its lead's coordinator: where the contact on the NAS says.)
+        if let Ok(Some(b)) = Nas::read(&self.sim, CONTACT) {
+            self.lead = serde_json::from_slice::<serde_json::Value>(&b)
+                .ok()
+                .and_then(|v| v["mac"].as_u64())
+                .map(|m| m as usize);
+        }
+        let Some(to) = self.lead else { return Ok(()) };
+        let now = Io::now(&self.sim);
+        self.beats.set_own(crate::agent::pool::Heartbeat { pool: out.beat.clone(), ..Default::default() });
+        self.beats.set_handoffs(self.driver.mine().entries().cloned().collect());
+        let body = held::Beat {
+            member: host(k),
+            speaks: crate::agent::beat::speaks(),
+            held: self.running.iter().map(|j| j.n).collect(),
+            heartbeat: self.beats.own(),
+            ..Default::default()
+        };
+        let to_lead = ToLead {
+            urls: Vec::new(),
+            token: String::new(),
+            member: host(k),
+            held: BTreeSet::new(),
+            listed: std::time::Instant::now(),
+            cap: None,
+            beats: self.beats.clone(),
+            home: self.sim.quiet(|w| w.macs[k].dir.clone())?,
+        };
+        let c = self.client(to);
+        c.new_round();
+        self.failing = to_lead.post_on(&c, &body, self.failing, Duration::ZERO, now);
+        let released = self.beats.take_released();
+        if !released.is_empty() {
+            let stopped: Vec<Job> = {
+                let (s, keep) = std::mem::take(&mut self.running).into_iter().partition(|j| released.contains(&j.n));
+                self.running = keep;
+                s
+            };
+            self.sim.alive(|w| {
+                for j in &stopped {
+                    w.running.remove(&(j.epoch, j.n));
+                    w.count("jobs stopped, their leases not the lead's");
+                    w.note(|| format!("mac{k} stops {}-{}: its lead says the lease isn't its", j.epoch, j.n));
+                }
+            })?;
+        }
+        if faulting && self.running.is_empty() && self.rng.chance(P_ASK) {
+            let a = Self::ask_of(&self.me.app, self.capacity(now), 0);
+            match c.ask(&a) {
+                Ok(Some(g)) => self.start_job(g, to)?,
+                Ok(None) => self.sim.count("asks given nothing"),
+                Err(_) => self.sim.count("asks refused or unanswered"),
+            }
+        }
+        Ok(())
+    }
+
+    /// Its client to Mac `to`'s coordinator, over the network.
+    fn client(&self, to: usize) -> Client {
+        let sim = self.sim.clone();
+        Client::through(Arc::new(move |_method, path, body| sim.wire(to, path, body)), &host(self.k))
+    }
+
+    /// Its Mac's capacity now (`at`: its clock), its jobs' room.
+    fn capacity(&self, at: u64) -> Capacity {
+        Capacity {
+            at,
+            limit_mb: MEM_MB,
+            mem_mb: MEM_MB,
+            cores: CORES,
+            cores_free: CORES,
+            disk_mb: DISK_MB,
+            ac: true,
+            nas: true,
+            home: true,
+            leases: self.running.iter().map(|j| j.n).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Its ask for one job on app `app`, with `cap`.
+    fn ask_of(app: &str, cap: Capacity, running: usize) -> Ask {
+        Ask {
+            kind: "native".into(),
+            app: Some(app.to_string()),
+            can: vec![STEP.into()],
+            mem_mb: MEM_MB,
+            cores: CORES,
+            limit_mb: Some(MEM_MB),
+            disk_mb: Some(DISK_MB),
+            cap: Some(cap),
+            want: usize::from(running == 0),
+            ..Default::default()
+        }
+    }
+
+    /// The job grant `g` of Mac `by`'s coordinator gives it starts.
+    fn start_job(&mut self, g: crate::coord::Grant, by: usize) -> Result<()> {
+        let Granted::Job { targets, .. } = g.work else { return Ok(()) };
+        let targets: Vec<String> = targets.into_iter().map(|t| t.0).collect();
+        let k = self.k;
+        let worker = host(k);
+        let d = self.rng.range(JOB_S.0, JOB_S.1);
+        let ends = self.sim.alive(|w| {
+            w.starts(k, by, g.epoch, g.lease, &worker, &targets);
+            w.t + d
+        })?;
+        self.running.push(Job { epoch: g.epoch, n: g.lease, targets, ends });
+        Ok(())
+    }
+
+    fn event(&mut self, ev: &Event) -> Result<()> {
+        let k = self.k;
+        match ev {
+            Event::TookUp { how, .. } => {
+                let kind = match how.as_str() {
+                    "its own records" => "take-ups from its own records",
+                    h if h.starts_with("the one path's") => "take-ups from the one path's records",
+                    _ => "take-ups from today's files",
+                };
+                self.sim.count(kind);
+            }
+            Event::Merged { applied, overtaken, .. } => {
+                let (n, e) = (*overtaken as u64, self.driver.leads().unwrap_or(0));
+                self.sim.alive(|w| {
+                    *w.counts.entry("hand-offs passed over for a later lease's").or_default() += n;
+                    w.applied(k, e, applied);
+                })?;
+            }
+            Event::Waits { what: "take up the records", .. } => self.sim.count("take-ups tried again"),
+            Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
+            _ => {}
+        }
+        self.sim.note(|| format!("mac{k}: {ev:?}"));
+        Ok(())
+    }
+
+    /// Its job `j`'s hand-off: its units built with a new key, now and then a prune, one that
+    /// writes outside its step's outputs too (refused by every lead), or a flaky one (refused by
+    /// the lead of an odd epoch).
+    fn entry(&mut self, j: &Job, now: u64) -> Entry {
+        self.jobs += 1;
+        let (k, n) = (self.k, self.jobs);
+        let ts = &j.targets;
+        let built = |key: &str| Handoff {
+            changes: ts.iter().map(|t| (logical(t), Some(content(t, key)))).collect(),
+            pending: ts.iter().map(|t| (content(t, key), "sha".into())).collect(),
+            done: Some((STEP.into(), ts.iter().map(|t| (t.clone(), key.to_string())).collect())),
+            ..Default::default()
+        };
+        let h = match self.rng.below(20) {
+            0 => Handoff {
+                changes: ts
+                    .iter()
+                    .flat_map(|t| {
+                        [
+                            (logical(t), Some(content(t, "bogus"))),
+                            (format!("elsewhere/{t}"), Some(format!("elsewhere/{t}.bogus.x"))),
+                        ]
+                    })
+                    .collect(),
+                done: Some((STEP.into(), ts.iter().map(|t| (t.clone(), "bogus".into())).collect())),
+                ..Default::default()
+            },
+            1 | 2 => Handoff {
+                changes: ts.iter().map(|t| (logical(t), None)).collect(),
+                done: Some(("prune".into(), ts.iter().map(|t| (format!("unit {t}"), String::new())).collect())),
+                ..Default::default()
+            },
+            3 | 4 => built(&format!("f{k}x{n}")),
+            _ => built(&format!("k{k}x{n}")),
+        };
+        Entry {
+            member: self.me.id.clone(),
+            lease: LeaseId { epoch: j.epoch, n: j.n },
+            step: STEP.into(),
+            handoff: h,
+            at: now,
+        }
+    }
+
+    /// Waits for its next loop. A member leaves for good now and then, between two of its loops:
+    /// its lid closed for the week (never the declared lead: with it gone, nothing builds until
+    /// it's back).
+    fn idle(&self) -> Result<()> {
+        let k = self.k;
+        self.sim.quiet(|w| {
+            let j = w.rng.below(5);
+            w.macs[k].ready_at = w.t + LOOP_S + j;
+            let leaves = w.cfg.leave
+                && k != w.declared
+                && !w.macs.iter().any(|m| m.gone)
+                && w.t > w.cfg.faults / 3
+                && w.faulting()
+                && w.rng.chance(0.02);
+            if leaves {
+                w.macs[k].gone = true;
+                w.macs[k].asleep_until = u64::MAX;
+                w.count("Macs gone for good");
+                w.note(|| format!("mac{k} leaves for good"));
+            }
+            w.after(k);
+            if w.turn != k || w.done {
+                self.sim.sh.cv.notify_all();
+            }
+        })
+    }
+}
