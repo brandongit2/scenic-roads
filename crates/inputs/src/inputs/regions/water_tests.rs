@@ -951,8 +951,10 @@ fn land_in_two_regions_with_water_is_an_overlap() {
     let mut files = all();
     files.push(("w/dup.toml", dup));
     let out = run(&w, &files);
-    let cover: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover").collect();
+    let cover: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && !p.warning).collect();
     assert_eq!(cover.len(), 1, "{:?}", out.problems);
+    // (Said as land two regions both had, a warning, too.)
+    assert!(out.problems.iter().any(|p| p.warning && p.found[0] == "overlap-settled" && p.about == vec!["a", "dup"]));
     let p = cover[0];
     assert_eq!(p.found, vec!["overlap"]);
     assert_eq!(p.about, vec!["a", "dup"]);
@@ -967,6 +969,16 @@ fn land_in_two_regions_with_water_is_an_overlap() {
         .map(|s| s.trim_start_matches(", ").parse().unwrap())
         .collect();
     assert!((0.7..0.8).contains(&at[0]) && (0.7..0.8).contains(&at[1]), "{}", p.message);
+    // A small one (about 5 km², under sliver_km2) is settled, said only as a warning (#1127).
+    let dup = "id = \"dup\"\nname = \"Dup\"\noutline = [\"box:0.7,0.7,0.72,0.72\"]\nwater = []\n";
+    let mut files = all();
+    files.push(("w/dup.toml", dup));
+    let out = run(&w, &files);
+    // (All of it inside A, so it all goes to A, dup left empty.)
+    let cover: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover").collect();
+    assert_eq!(cover.len(), 1, "{:?}", out.problems);
+    let p = cover[0];
+    assert!(p.warning && p.found[0] == "overlap-settled" && p.about == vec!["a", "dup"], "{p:?}");
 }
 
 /// A nearest-coast split decides by the nearest coast however far it is: coasts 670 and 780 km off

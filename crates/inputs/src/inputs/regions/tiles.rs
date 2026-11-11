@@ -1891,6 +1891,10 @@ pub struct Fit {
 /// or a cell's gap or the rest's water inside a zone there, up to it is no finding.
 pub const HAIR_KM2: f64 = 0.1;
 
+/// Land two regions both have (km², summed over the cells) past which the cover check says so, a
+/// warning, though it settles it: 1 km², a strip 100 m wide along a 10 km border.
+pub const LAND_OVERLAP_KM2: f64 = 1.0;
+
 #[derive(Debug)]
 pub struct GapFit {
     pub km2: f64,
@@ -2214,6 +2218,22 @@ fn cells_pass(
     }
     if !cover {
         return rest_t;
+    }
+    // Land two regions both had, settled below (taken from both, then filled by the longest edge,
+    // piece by piece) but said: past a hair it's two outlines that disagree (a disputed border).
+    for ((a, b), (land, _)) in &fit.overlaps {
+        if *land > LAND_OVERLAP_KM2 {
+            problems.push(Problem {
+                warning: true,
+                check: "rg-cover",
+                about: vec![a.clone(), b.clone()],
+                found: vec!["overlap-settled".into(), format!("{land:.0}")],
+                files: [a, b].iter().filter_map(|x| folder.regions.get(*x).map(|r| r.0.clone())).collect(),
+                message: format!(
+                    "{a} and {b} both have {land:.1} km² of land: the cover check gives each piece of it to the neighbour sharing its longest edge; take it out of one (minus), or accept"
+                ),
+            });
+        }
     }
     trace("the gaps joined across the cells' edges");
     // The gaps' stretches, each decided whole: one over `fill_km2` touching no land is the rest's

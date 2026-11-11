@@ -499,7 +499,9 @@ short of) stays out, for the cover check. A region's
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
 `cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
-(2°), land in two regions is taken from those of them with water. Then each piece still in no
+(2°), land in two regions is taken from those of them with water (a pair's over `LAND_OVERLAP_KM2`,
+1 km² summed over the cells, a warning, `overlap-settled`: two outlines disagree, a disputed border
+like Croatia's and Serbia's on the Danube). Then each piece still in no
 region (its cells' pieces joined across the cells' edges, as the stretches are) within 100 m of land
 up to `sliver_km2` joins the region with water it shares the longest edge with, as does one
 touching none (a hole in the zones' water off any coast, where their source has a rock OSM hasn't).
@@ -737,7 +739,7 @@ pair's overlap, each cell's gap and the rest's water inside a zone.
 
 #### 6.1.8 Checks
 
-All errors but `rg-cover`'s `unnamed`, a warning; ids `rg-<check>.<hash16>`.
+All errors but `rg-cover`'s `unnamed` and `overlap-settled`, warnings; ids `rg-<check>.<hash16>`.
 
 | Check | Raised when |
 |---|---|
@@ -763,7 +765,7 @@ All errors but `rg-cover`'s `unnamed`, a warning; ids `rg-<check>.<hash16>`.
 | `rg-hand-out` | a `hand_out_all` region left with land or water no region of its folder could take |
 | `rg-rest` | `rest` in more than one region's water |
 | `rg-rules` | a `_rules.toml` that doesn't parse or has an unknown field or value |
-| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2`; the rest's water inside a zone (`rest-in-zone`), two regions overlapping or area in none after the check (`overlap-after`, `gap-after`), each over `HAIR_KM2` (0.1 km²); a warning: a stretch in no region's parts over `sliver_km2` split among several regions by nearest edge (`unnamed`) |
+| `rg-cover` | with `cover = "earth"`: water in two regions, or in none without a `rest` region; land in no region, or mostly in two regions with water, over `sliver_km2`; the rest's water inside a zone (`rest-in-zone`), two regions overlapping or area in none after the check (`overlap-after`, `gap-after`), each over `HAIR_KM2` (0.1 km²); a warning: a stretch in no region's parts over `sliver_km2` split among several regions by nearest edge (`unnamed`), land two regions both had over `LAND_OVERLAP_KM2` (`overlap-settled`) |
 
 A held region keeps its last geometry; a new held region isn't in the coverage yet. Deleting a
 region file takes it out with the next version.
