@@ -2,6 +2,8 @@
 # Claude Code hook (PreToolUse on Bash and Agent; .claude/settings.local.json). Enforces
 # tools/dev/testing.md (the checks: tools/dev/test-guard.py); exits 2 with the reason, which Claude
 # Code shows while blocking the call, when
+# - the PM's Agent brief doesn't name tools/dev/agent-rules.md (the standing rules; but for
+#   web-fetch, claude-code-guide and statusline-setup agents, which never touch the repo);
 # - the PM's Agent brief mentions tests without pointing at tools/dev/testing.md;
 # - a subagent's cargo test or nextest run breaks the rules: --release without #perf; --workspace
 #   without #repro or #perf; a filter that doesn't start with one of the crate's modules (bare words,

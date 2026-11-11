@@ -1,5 +1,7 @@
 # How agents run tests (owner's rule, 16 Oct; affected tests only since 17 Oct, #269)
 
+(The rest of the agents' standing rules, where runs go among them: tools/dev/agent-rules.md.)
+
 Enforced by tools/dev/test-guard.sh (a PreToolUse hook in .claude/settings.local.json), which blocks
 a command that breaks these and says why. It finds a test run where a command starts (also after
 `env`/`time`/`nice`/`command`/`xargs`, by a path to cargo, with cargo flags before `test`, as `cargo t`,

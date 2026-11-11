@@ -8,7 +8,10 @@ RULES = " See tools/dev/testing.md."
 def block(m): print(m + RULES); sys.exit()
 if tool == "Agent":
     p = ti.get("prompt") or ""
-    if not agent and re.search(r"\btests?\b|cargo test", p) and "tools/dev/testing.md" not in p:
+    # (tools/dev/agent-rules.md: every brief the PM writes names it, but for agents that never touch the repo)
+    if not agent and ti.get("subagent_type") not in ("web-fetch", "claude-code-guide", "statusline-setup") and "tools/dev/agent-rules.md" not in p:
+        print("Agent brief doesn't name the standing rules: add \"Follow the standing rules in tools/dev/agent-rules.md.\" to the prompt.")
+    elif not agent and re.search(r"\btests?\b|cargo test", p) and "tools/dev/testing.md" not in p:
         print("Agent brief mentions tests but not the testing rules: add \"Follow tools/dev/testing.md for running tests.\" to the prompt.")
     elif not agent and re.search(r"\bcommit", p) and "tools/dev/check.sh" not in p:
         print("Agent brief asks for commits but not the check: add \"Run tools/dev/check.sh in your worktree before reporting; report only after it prints PASS.\" to the prompt.")

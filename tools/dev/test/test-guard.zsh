@@ -145,4 +145,20 @@ if (( rc == 0 )) && [[ -z $out ]]; then print "ok (hook passes): ls"; else print
 out=$(PATH=${(j.:.)${path:#${commands[rg]:h}}} hook "cargo test -p $crate -- $f"); rc=$?
 if (( rc == 2 )) && [[ $out == *"affected-tests.sh failed"*"'rg'"* ]]; then print "ok (hook, no rg): cargo test -p $crate -- $f"
 else print "FAIL (hook, no rg, exit $rc): cargo test -p $crate -- $f\n  $out"; fail=1; fi
+# The PM's Agent briefs (no agent_id): each names the standing rules (tools/dev/agent-rules.md), but
+# a brief to an agent that never touches the repo; a subagent's own Agent call isn't checked.
+brief() { python3 -c 'import json,sys; ti={"prompt":sys.argv[1]}; ti.update({"subagent_type":sys.argv[2]} if sys.argv[2] else {}); d={"tool_name":"Agent","tool_input":ti}; d.update({"agent_id":"t"} if sys.argv[3] else {}); print(json.dumps(d))' "$1" "$2" "$3" | zsh $here/../test-guard.sh 2>&1 }
+for want type agent prompt in \
+    refuse "" "" "Look at the pool's logs." \
+    refuse general-purpose "" "Fix the docs. Follow tools/dev/testing.md for running tests." \
+    pass "" "" "Fix the docs. Follow the standing rules in tools/dev/agent-rules.md." \
+    pass web-fetch "" "Read https://example.org/ and summarise it." \
+    pass "" t "Look at the pool's logs."; do
+  out=$(brief "$prompt" "$type" "$agent"); rc=$?
+  if [[ $want == refuse ]]; then
+    (( rc == 2 )) && [[ $out == *"tools/dev/agent-rules.md"* ]] && print "ok (brief refused): $prompt" || { print "FAIL (brief refused, exit $rc): $prompt\n  $out"; fail=1 }
+  else
+    (( rc == 0 )) && [[ -z $out ]] && print "ok (brief passes): $type $prompt" || { print "FAIL (brief passes, exit $rc): $type $prompt\n  $out"; fail=1 }
+  fi
+done
 exit $fail
