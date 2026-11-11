@@ -1,0 +1,14 @@
+#!/bin/zsh
+# The rustc wrapper (RUSTC_WRAPPER) of tools/dev/bin/cargo's builds in the shared build folder
+# (#1123): cargo there judges a crate fresh by its sources' checksums, not their times (cargo's
+# -Z checksum-freshness), so a crate another worktree built from the same sources is fresh here.
+# Cargo then passes rustc `-Z checksum-hash-algorithm=blake3`, which a stable rustc takes only with
+# RUSTC_BOOTSTRAP=1: set here for those compiles alone. A build script's own rustc (a version or
+# feature probe: anyhow's, proc-macro2's) runs without it, as in any other build, so no crate takes
+# itself for a nightly. Then the wrapper cargo's config names (SCENIC_RUSTC_WRAPPER: sccache in the
+# agent worktrees), else rustc.
+for a in "$@"; do
+  [[ $a == (-Z|)checksum-hash-algorithm=* ]] && { export RUSTC_BOOTSTRAP=1; break }
+done
+[[ -n ${SCENIC_RUSTC_WRAPPER:-} ]] && exec $SCENIC_RUSTC_WRAPPER "$@"
+exec "$@"

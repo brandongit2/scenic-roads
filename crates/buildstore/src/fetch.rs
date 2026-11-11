@@ -1397,7 +1397,7 @@ mod tests {
     /// `kind` is inputs::inputs::sources::parse's.)
     #[test]
     fn every_fetching_script_declares_its_kinds() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let root = std::path::absolute("../..").unwrap();
         fn walk(d: &Path, out: &mut Vec<PathBuf>) {
             for e in std::fs::read_dir(d).unwrap().flatten() {
                 let p = e.path();

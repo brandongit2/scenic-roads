@@ -202,7 +202,7 @@ mod tests {
             eprintln!("uv isn't here: not made");
             return;
         }
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem");
+        let repo = std::path::absolute("../../dem").unwrap();
         let d = tempfile::tempdir().unwrap();
         let home = d.path().canonicalize().unwrap();
         let mut dems = Vec::new();

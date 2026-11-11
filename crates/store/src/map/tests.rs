@@ -222,7 +222,7 @@ fn a_snapshot_reads_back_and_the_nas_keeps_three() {
 /// again, each is the bytes it was.
 #[test]
 fn the_recorded_log_is_written_as_it_was() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/map/testdata/log");
+    let src = std::path::absolute("../store/src/map/testdata/log").unwrap();
     let d = tempfile::tempdir().unwrap();
     for f in ["snapshot.json.zst", "1470.jsonl"] {
         std::fs::copy(src.join(f), d.path().join(f)).unwrap();

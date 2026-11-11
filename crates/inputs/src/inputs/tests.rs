@@ -755,7 +755,7 @@ fn check_py_flags_lines_in_its_flagged_mode() {
         return;
     }
     let d = tempfile::tempdir().unwrap();
-    lint::set(lint::Python::uv(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dem"), d.path()));
+    lint::set(lint::Python::uv(&std::path::absolute("../../dem").unwrap(), d.path()));
     let text = [
         tr_line("Lac Bleu", "fr", Some("Lac Bleu"), Some("Blue Lake")),
         tr_line("東京", "ja", Some("東京"), Some("Tōkyō")),

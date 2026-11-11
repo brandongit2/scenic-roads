@@ -995,7 +995,7 @@ mod tests {
 
     /// The Singapore basemap part, when this checkout has it (it isn't in git).
     fn singapore() -> Option<PmTiles> {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build/base-parts/singapore.pmtiles");
+        let p = std::path::absolute("../../data/build/base-parts/singapore.pmtiles").unwrap();
         if !p.exists() {
             eprintln!("skipping: {} isn't here", p.display());
             return None;

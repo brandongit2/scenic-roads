@@ -1194,7 +1194,7 @@ mod tests {
     /// --test checks it against are what request_hold writes, field for field, and read back as asked.
     #[test]
     fn the_menu_bars_hold_ask_is_scenics() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/status/test");
+        let dir = std::path::absolute("../../tools/status/test").unwrap();
         for (f, held) in [("hold-request-pause.json", true), ("hold-request-resume.json", false)] {
             let menu: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(f)).unwrap()).unwrap();
             let d = tempfile::tempdir().unwrap();

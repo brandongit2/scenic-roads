@@ -543,7 +543,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_menu_bars_status_is_scenics() {
-        let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/status/test/status-said.json");
+        let f = std::path::absolute("../../tools/status/test/status-said.json").unwrap();
         let ours = serde_json::json!({ "status": said_status(), "local": true, "now": 1_700_000_030 });
         if std::env::var_os("SCENIC_BLESS").is_some() {
             std::fs::write(&f, serde_json::to_vec_pretty(&ours).unwrap()).unwrap();

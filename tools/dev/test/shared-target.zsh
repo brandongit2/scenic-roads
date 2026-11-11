@@ -250,7 +250,8 @@ for c in 'fmt --check' '--color never metadata --no-deps --format-version 1' 'bu
   grep -q waiting $s/err && fail "cargo $c waited for the lock: $(cat $s/err)"
 done
 # The order: a cargo that writes its name (the shim's "real" cargo; the folder already a's).
-mkdir -p $s/fake; print -rl -- '#!/bin/sh' 'echo "$TOY_NAME" >> "$TOY_ORDER"' > $s/fake/cargo; chmod +x $s/fake/cargo
+# (It answers the shim's question for the configured rustc wrapper, `config get`, with none.)
+mkdir -p $s/fake; print -rl -- '#!/bin/sh' 'case " $* " in *" config "*) exit 101 ;; esac' 'echo "$TOY_NAME" >> "$TOY_ORDER"' > $s/fake/cargo; chmod +x $s/fake/cargo
 export TOY_ORDER=$s/order; rm -f $TOY_ORDER
 waiter() {  # waiter <name>: a build behind the lock, its pid in $waiting, its stderr in $s/<name>.err
   # (zsh -f: a ~/.zshenv putting rustup's cargo first on the PATH, as the M1's does, hid the fake.)
@@ -331,4 +332,36 @@ assert [(x["name"], x["status"]) for x in under(bad, "suite")] == [("toy", "fail
 assert (end[bad]["status"], end[bad]["attrs"]["exit"]) == ("fail", "101"), end[bad]
 PY
 [[ -z $(print $s/shared/cargo-timings/cargo-timing-*.html(N)) ]] || fail "timing reports left in the shared folder: $(ls $s/shared/cargo-timings)"
+
+# #1123: a crate whose sources are the bytes another worktree built is fresh, whatever its files'
+# times (c and d are two checkouts of one workspace, d's files newer than c's build); a crate
+# compiling in a file outside its package (cargo checks it by c's full path) compiles again where
+# that file differs, and one built with env!("CARGO_MANIFEST_DIR") compiles again in each checkout.
+for x in c d; do
+  mkdir -p $w/$x/crates/{plain,inc,dir}/src $w/$x/shared; : > $w/$x/.git
+  printf '[workspace]\nmembers = ["crates/plain", "crates/inc", "crates/dir"]\nresolver = "2"\n' > $w/$x/Cargo.toml
+  for k in plain inc dir; do
+    printf '[package]\nname = "%s"\nversion = "0.1.0"\nedition = "2021"\n' $k > $w/$x/crates/$k/Cargo.toml
+  done
+  print 'pub fn two() -> u32 { 2 }' > $w/$x/crates/plain/src/lib.rs
+  print 'fn main() { print!("{}", include_str!("../../../shared/note.txt")); }' > $w/$x/crates/inc/src/main.rs
+  print 'fn main() { print!("{}", env!("CARGO_MANIFEST_DIR")); }' > $w/$x/crates/dir/src/main.rs
+  print same > $w/$x/shared/note.txt
+done
+built() {  # built <checkout> <cargo build args>…: the packages it compiled (not fresh), sorted
+  (cd $w/$1 && $sh build --message-format json "${@:2}" 2>$s/err) | python3 -c '
+import json, sys
+print(" ".join(sorted({json.loads(l)["package_id"].split("#")[0].rsplit("/", 1)[-1] for l in sys.stdin
+    if l.startswith("{") and json.loads(l).get("reason") == "compiler-artifact" and not json.loads(l)["fresh"]})))'
+}
+[[ $(built c) == "dir inc plain" ]] || fail "c's first build: $(cat $s/err)"
+touch $w/d/crates/*/src/*.rs(N) $w/d/shared/note.txt
+b=$(built d); [[ $b == dir ]] || fail "d, the same sources as c's, compiled more than dir (env!): $b; $(cat $s/err; cat $s/shared/.scenic-tied)"
+grep -q 'dir-.*CARGO_MANIFEST_DIR names another checkout' $s/shared/.scenic-tied || fail "no tied dir: $(cat $s/shared/.scenic-tied)"
+[[ $(cd $w/d && $sh run -q -p dir 2>$s/err) == ${w:A}/d/crates/dir ]] || fail "d's dir ran with another checkout's path: $(cat $s/err)"
+print other > $w/d/shared/note.txt
+[[ $(built d) == inc ]] || fail "d's note.txt changed: not inc alone: $(built d)"
+[[ $(cd $w/d && $sh run -q -p inc 2>$s/err) == other ]] || fail "d's inc ran with c's note.txt: $(cat $s/err)"
+[[ $(built c) == "dir inc" ]] || fail "back in c: not dir and inc again: $(built c)"
+[[ $(cd $w/c && $sh run -q -p inc 2>$s/err) == same ]] || fail "c's inc ran with d's note.txt: $(cat $s/err)"
 print "shared-target: ok"

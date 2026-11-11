@@ -175,7 +175,7 @@ mod tests {
     /// reads it beside status-said.json; `SCENIC_BLESS=1` writes it anew).
     #[test]
     fn the_menu_bars_lead_line_is_scenics() {
-        let f = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/status/test/lead-view-said.json");
+        let f = std::path::absolute("../../tools/status/test/lead-view-said.json").unwrap();
         let mut lead = Status { host: "mini".into(), beat: 1_700_000_020, ..Default::default() };
         lead.helpers = vec![crate::agent::asks::tests::said_status()];
         lead.say(None, &HoldState::default(), false);

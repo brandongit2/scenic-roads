@@ -2178,7 +2178,7 @@ mod tests {
     /// is a clear of the cheap caches.
     #[test]
     fn the_menu_bars_clear_ask_is_scenics() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tools/status/test");
+        let dir = std::path::absolute("../../tools/status/test").unwrap();
         for (f, level) in [("clear-request-caches.json", Level::Caches), ("clear-request-deep.json", Level::Deep)] {
             let menu: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(f)).unwrap()).unwrap();
             let d = tempfile::tempdir().unwrap();
