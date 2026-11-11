@@ -6113,7 +6113,7 @@ mod tests {
         pub m: BTreeMap<String, String>,
         pub inputs: BTreeMap<String, String>,
         pub reach: Option<Reaches>,
-        pub tiles: Box<dyn Fn(&BTreeMap<String, String>) -> TerrainTiles>,
+        pub tiles: Box<dyn Fn(&BTreeMap<String, String>) -> TerrainTiles + Sync>,
     }
 
     impl Fixture {
@@ -6381,33 +6381,47 @@ mod tests {
                     assert!(lines.is_some(), "{} {step} {t}: its scheme-2 key is worked out", f.name);
                 }
             }
-            for (l, m2, _) in f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")) {
-                let moved = f.keys(&steps, &m2, &f.inputs);
-                let (own, content) = (format!("{l}="), f.m[&l].as_str());
-                for (step, base) in &all {
-                    let after = &moved[step];
-                    for (t, lines) in base {
-                        let lines = lines.as_ref().unwrap();
-                        let named = lines.iter().any(|s| s.contains(&own) || s.contains(content));
-                        // (A key that can't be worked out after the change, its input unread: no
-                        // key to compare.)
-                        let Some(a) = after.get(t).and_then(|k| k.as_ref()) else { continue };
-                        let changed = a != lines;
-                        // (What changed besides the entry's own line: the tiles read inside it. Its
-                        // lines looked up in a set, #1112: a slope target's thousands of tile lines
-                        // searched one by one were half the test's 21 s.)
-                        let tiles_only = changed && {
-                            let was: std::collections::HashSet<&String> = lines.iter().collect();
-                            a.iter().filter(|s| !was.contains(s)).all(|s| s.contains(" tile ") || s.contains(&own))
-                        };
-                        assert!(
-                            changed == named || (changed && tiles_only),
-                            "{} {step} {t}: {l} changed (named in its lines: {named}, key changed: {changed}) {lines:#?}",
-                            f.name
-                        );
-                    }
+            // (Each change's keys worked out on threads of their own, #1112: a whole context's keys
+            // a change, some 190 changes, were most of the test's time.)
+            let changes: Vec<_> = f.one_changed().into_iter().filter(|c| !c.0.starts_with("input ")).collect();
+            let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+            std::thread::scope(|s| {
+                for some in changes.chunks(changes.len().div_ceil(n).max(1)) {
+                    let (all, steps) = (&all, &steps);
+                    s.spawn(move || {
+                        for (l, m2, _) in some {
+                            let moved = f.keys(steps, m2, &f.inputs);
+                            let (own, content) = (format!("{l}="), f.m[l].as_str());
+                            for (step, base) in all {
+                                let after = &moved[step];
+                                for (t, lines) in base {
+                                    let lines = lines.as_ref().unwrap();
+                                    let named = lines.iter().any(|s| s.contains(&own) || s.contains(content));
+                                    // (A key that can't be worked out after the change, its input
+                                    // unread: no key to compare.)
+                                    let Some(a) = after.get(t).and_then(|k| k.as_ref()) else { continue };
+                                    let changed = a != lines;
+                                    // (What changed besides the entry's own line: the tiles read
+                                    // inside it. Its lines looked up in a set, #1112: a slope
+                                    // target's thousands of tile lines searched one by one were half
+                                    // the test's 21 s.)
+                                    let tiles_only = changed && {
+                                        let was: std::collections::HashSet<&String> = lines.iter().collect();
+                                        a.iter()
+                                            .filter(|s| !was.contains(s))
+                                            .all(|s| s.contains(" tile ") || s.contains(&own))
+                                    };
+                                    assert!(
+                                        changed == named || (changed && tiles_only),
+                                        "{} {step} {t}: {l} changed (named in its lines: {named}, key changed: {changed}) {lines:#?}",
+                                        f.name
+                                    );
+                                }
+                            }
+                        }
+                    });
                 }
-            }
+            });
         }
         let unkeyed: Vec<&str> = derived_steps().into_iter().filter(|s| !keyed.contains(s)).collect();
         assert!(unkeyed.is_empty(), "no fixture keys a target of {unkeyed:?}");
