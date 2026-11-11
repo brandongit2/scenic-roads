@@ -124,6 +124,7 @@ impl Loaded {
             failed: Vec::new(),
             pause,
             pause_at,
+            members: self.members,
         }
     }
 }

@@ -3259,6 +3259,15 @@ impl Coordinator {
         if p.pause_at >= s.pause_at {
             set_pause(&mut s, p.pause.clone(), p.pause_at);
         }
+        // (The members' words, each heard later there than here: an away member's leases held by
+        // its word, as they were there.)
+        let here = s.keep.members();
+        for (m, h) in &p.members {
+            if here.get(m).is_none_or(|o| o.at < h.at) {
+                s.keep.heard(m, h.speaks.clone(), h.at);
+            }
+        }
+        held::refresh(&mut s);
         s.save_leases();
         s.save_costs();
         Ok(n)
@@ -3329,6 +3338,7 @@ fn pool_state_of(s: &Shared) -> PoolState {
         failed,
         pause: s.paused.clone(),
         pause_at: s.pause_at,
+        members: s.keep.members(),
     }
 }
 
@@ -3365,6 +3375,11 @@ pub struct PoolState {
     pub pause: Option<jobrt::control::Pause>,
     #[serde(default)]
     pub pause_at: u64,
+    /// The members as the lead before last heard them (`kept::Heard`, by host): what each speaks,
+    /// so the leases of one away now go by its word here too (crate::coord::held), not lapsing
+    /// after `TTL` with their targets granted again (task #1038).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub members: BTreeMap<String, kept::Heard>,
 }
 
 /// The owner's cancel (jobrt::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
@@ -6533,6 +6548,35 @@ mod tests {
         w.give_back(g.lease, "done").unwrap();
         assert!(!c.held("unit").contains("6/1/1"));
         assert!(c.away().is_empty());
+    }
+
+    /// Task #1038 (the pool's simulator, seed 20029): a lead taking up another's state (the owner
+    /// moved the lead, its store's backup read) takes the members' words with its leases, so a
+    /// member away holds its lease there as it did at the lead before: its target is granted to no
+    /// one after `TTL` (the new lead had never heard it, and let its lease lapse as an older
+    /// member's: its job ran twice).
+    #[test]
+    fn a_lead_taking_up_anothers_state_holds_an_away_members_lease_by_its_word() {
+        let (_d, c, w) = start();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        c.member_beat(&word("m1", &[g.lease]));
+        let p = c.pool_state();
+        assert!(p.members.contains_key("m1"), "{:?}", p.members);
+        let (_d2, next, _w2) = start();
+        let clock = store::clock::Virtual::new();
+        next.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&next, 1);
+        assert_eq!(next.load_pool_state(&p).unwrap(), 1);
+        let other = client::Client::at(_w2.urls(), next.contact.token.clone(), "m6");
+        for _ in 0..6 {
+            clock.advance(Duration::from_secs(1800));
+            assert!(next.expire().is_empty(), "nothing lapses");
+            unit_offer(&next, "6/1/1");
+            assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
+        }
+        assert_eq!(next.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
     }
 
     /// The 30 Oct decision: unheard 12 h, a member's leases go (a repeat costs doubled work only).
