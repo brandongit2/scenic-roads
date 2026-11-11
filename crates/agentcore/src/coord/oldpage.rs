@@ -13,8 +13,8 @@
 //! every member heard says it; on a member's port, when its lead's answer does. Then the old
 //! addresses aren't answered (refused, as any path not one). This module, `post_api`'s second ask,
 //! `memberpage::location`'s `work/`, the page's second asks and `/work/` checks, the menu bar's
-//! `/work/` in `Panel.inPage` and the word go one release after every Mac has run the new app for a
-//! day (the #642 gate).
+//! `/work/` in `Panel.inPage` and the word go once every Mac runs the new app (the rule for old-app
+//! paths, docs/coordination.md: task #1121).
 
 use super::beats::Beats;
 use super::memberpage::PageAt;

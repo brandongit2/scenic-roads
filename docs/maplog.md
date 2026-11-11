@@ -695,8 +695,8 @@ stays.
 Each step ships alone and keeps the map served throughout. The catalogues go on being written until
 every reader has moved (step 6); a reader moves by a release, and the old readers keep working on
 the catalogues in between. A server says what it reads in its `changes` requests and in its
-heartbeat (`speaks: ["maplog"]`); the lead drops the catalogues one release after every Mac's
-server has spoken the log for a day (the #642 gate, as coordination.md §8).
+heartbeat (`speaks: ["maplog"]`); the lead drops the catalogues once every Mac's server runs an
+app that reads the log (the rule for old-app paths, coordination.md, at its top).
 
 | # | Step | Deletes | Tests |
 | --- | --- | --- | --- |

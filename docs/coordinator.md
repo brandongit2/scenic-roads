@@ -215,7 +215,8 @@ Common rules:
   a member heard doesn't say it, on a member's port while its lead doesn't); a member's port sends
   the page to an older lead's `/work/`, an agent and the page ask an older Mac's `/work/<name>`
   when `/api/` is refused. It
-  lifts by itself once every Mac runs the new app; the code goes one release after (the #642 gate).
+  lifts by itself once every Mac runs the new app; the code goes then (the rule for old-app paths,
+  docs/coordination.md; #1121).
 - **The page's version and its home screen entry.** The page has no service worker and no offline
   copy: it is what the coordinator answers, and a Mac that doesn't answer shows the browser's own
   error. Its `manifest.webmanifest`, `icons/` and the `apple-touch-icon` link and
