@@ -382,8 +382,15 @@ impl Handle {
     /// No timer (before `spawn`): it writes only when told a state changed.
     #[cfg(test)]
     pub fn never_tick(&mut self) {
+        self.tick_every(Duration::from_secs(365 * 86_400));
+    }
+
+    /// Its timer's period `every` (before `spawn`), not `EVERY`: a test of a beat steady through
+    /// something long needn't wait out 10 s a beat (#1112).
+    #[cfg(test)]
+    pub fn tick_every(&mut self, every: Duration) {
         if let Some((b, _)) = self.inline.as_mut() {
-            b.every = Duration::from_secs(365 * 86_400);
+            b.every = every;
         }
     }
 
@@ -523,8 +530,9 @@ mod tests {
     }
 
     /// docs/coordination.md §8, step 3: the slow-NAS fake blocks every write of the shared copy
-    /// until released; two members' beats reach the lead all the while, each of 60 (ten minutes'
-    /// at `EVERY`; the timer off, each beat a change's, so none is the timer's doing), and each
+    /// until released; two members' beats reach the lead all the while, each of 20 (three
+    /// minutes' at `EVERY`; the timer off, each beat a change's, so none is the timer's doing: 60,
+    /// 13 s alone on the M4, before #1112, each past the first held the same as the first), and each
     /// member hears the other from the lead's answers.
     #[test]
     fn beats_go_on_while_the_nas_hangs() {
@@ -556,7 +564,7 @@ mod tests {
                 (h, beats, id.to_string())
             })
             .collect();
-        for i in 1..=60 {
+        for i in 1..=20 {
             for (h, beats, id) in &mut members {
                 std::fs::create_dir_all(d.path().join(&*id)).unwrap();
                 h.publish(LoopView {
@@ -849,3 +857,4 @@ mod tests {
         c.stop();
     }
 }
+// (#1112: measuring, temporary)

@@ -4072,9 +4072,35 @@ mod tests {
         }
     }
 
-    /// At a live scale of 400 regions (over 30,000 targets): a run of the forecast's whole, its CPU
-    /// time bounded; past its budget, cut there.
+    /// The live-scale input's shape at a tenth of 22 Oct's scale (13 regions, over a thousand
+    /// targets: every kind of item, measure, lease and lane the live ones have): the forecast whole
+    /// within its budget, each run whole and uncut; past its budget (none), cut there, partial and
+    /// said so; and the budget is CPU time (task #584): a thread's wait counts nothing. The same at
+    /// live scale, its CPU time bounded, is the benchmark `a_live_scale_forecast_runs_whole_and_bounded`
+    /// (#1112: 11 and 4 s alone on the M4 as tests, up to 11 min on the loaded test Mac).
     #[test]
+    fn a_forecast_is_whole_within_its_budget_and_cut_past_it() {
+        let inp = live_scale_input(13, 115);
+        let n = items(crate::agent::seam::for_tests(), &inp).items.len();
+        assert!(n > 1_000, "{n} targets");
+        let budget = if cfg!(debug_assertions) { BUDGET * 4 } else { BUDGET };
+        let f = forecast_by(crate::agent::seam::for_tests(), &inp, budget);
+        assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
+        let r = run(crate::agent::seam::for_tests(), &inp, &scaled(SCALINGS[2]), Duration::from_secs(600));
+        assert!(r.done && !r.cut, "the run was cut or unfinished");
+        // (No budget: cut at its first look, every 32 placements.)
+        let f = forecast_by(crate::agent::seam::for_tests(), &inp, Duration::ZERO);
+        assert!(f.partial && f.done_at.is_none(), "{:?}", f.why);
+        let cpu0 = thread_cpu();
+        std::thread::sleep(Duration::from_millis(300)); // (sleep ok: a wait whose CPU time is measured)
+        assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
+    }
+
+    /// A benchmark (run by hand: `-- --ignored`), #1112: at a live scale of 400 regions (over
+    /// 30,000 targets) a run of the forecast's whole, its CPU time bounded; past its budget, cut
+    /// there; and at 22 Oct's (134 regions, about 4,600 chain targets), whole within its budget.
+    #[test]
+    #[ignore]
     fn a_live_scale_forecast_runs_whole_and_bounded() {
         let inp = live_scale_input(400, 1500);
         let n = items(crate::agent::seam::for_tests(), &inp).items.len();
@@ -4095,23 +4121,15 @@ mod tests {
         // Past its budget: cut there, partial and said so.
         let f = forecast_by(crate::agent::seam::for_tests(), &inp, Duration::from_millis(50));
         assert!(f.partial && f.done_at.is_none(), "{:?}", f.why);
-    }
-
-    /// At 22 Oct's live scale (134 regions, about 4,600 chain targets): whole within its budget;
-    /// and the budget is CPU time (task #584): a thread's wait counts nothing.
-    #[test]
-    fn a_live_scale_forecast_is_whole_and_a_wait_is_no_cpu_time() {
+        // At 22 Oct's live scale: whole within its budget. (The test build computes ~4x slower than
+        // the app's, release: its budget so much longer. Release, on the M1 at load 140: 48 s of
+        // wall, whole.)
         let inp = live_scale_input(134, 1150);
-        // (The test build computes ~4x slower than the app's, release: its budget so much longer.
-        // Release, on the M1 at load 140: 48 s of wall, whole.)
         let budget = if cfg!(debug_assertions) { BUDGET * 4 } else { BUDGET };
         let t = Instant::now();
         let f = forecast_by(crate::agent::seam::for_tests(), &inp, budget);
         eprintln!("22 Oct's live scale: {} ms", t.elapsed().as_millis());
         assert!(!f.partial && f.done_at.is_some(), "{:?}", f.why);
-        let cpu0 = thread_cpu();
-        std::thread::sleep(Duration::from_millis(300)); // (sleep ok: a wait whose CPU time is measured)
-        assert!(thread_cpu() - cpu0 < Duration::from_millis(50), "a wait is no CPU time");
     }
 
     /// Each item's waits, its own deps and its sets' items: as (step, target).

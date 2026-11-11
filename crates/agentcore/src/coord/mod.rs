@@ -122,8 +122,32 @@ pub fn listeners_on(port: u16) -> std::io::Result<Listeners> {
 fn keep_listeners(l: Listeners) {
     if buildstore::out::testing() {
         if let Ok(a) = l.listener.local_addr() {
+            for s in std::iter::once(&l.listener).chain(&l.loopback) {
+                s.set_nonblocking(true).ok();
+            }
             KEPT.lock().unwrap_or_else(|e| e.into_inner()).insert(a.port(), l);
+            static KEEPER: std::sync::Once = std::sync::Once::new();
+            KEEPER.call_once(|| {
+                std::thread::Builder::new().name("kept-listeners".into()).spawn(close_kept_connections).ok();
+            });
         }
+    }
+}
+
+/// A test program's kept listeners (`KEPT`) take each connection and close it at once, as a port
+/// nothing listens on refuses it: a client of a stopped coordinator fails then, as a Mac's does,
+/// not after its own timeout with its connection waiting in the backlog (#1112: 15 s a request,
+/// 15-60 s of each test asking a stopped lead).
+fn close_kept_connections() {
+    loop {
+        {
+            let kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+            for s in kept.values().flat_map(|l| std::iter::once(&l.listener).chain(&l.loopback)) {
+                // (Nonblocking: it takes only what waits, then lets the lock go.)
+                while store::spawn::sockets(|| s.accept().map(drop)).is_ok() {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -481,6 +505,9 @@ pub struct Shared {
     /// The time its leases, workers' paces and their being around are reckoned in (a test's
     /// virtual one).
     pub clock: std::sync::Arc<dyn store::clock::Clock>,
+    /// How long a request's headers may take, and an idle kept-alive connection stay open
+    /// (`http::HEADERS_MAX`; a test's shorter, set before it connects).
+    pub headers_max: Duration,
     /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/api/swarm`
     /// and `/api/history` answered from it once it has a snapshot.
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
@@ -1638,6 +1665,7 @@ impl Coordinator {
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
+            headers_max: http::HEADERS_MAX,
         };
         if !viewer {
             shared.save_leases();
@@ -5470,6 +5498,7 @@ mod http {
         for n in super::API {
             routes = routes.route(&format!("/api/{n}"), any(json));
         }
+        let headers = ctx.shared.clone();
         // (The map's, answered from memory: maproutes.)
         let shared = ctx.shared.clone();
         let routes = routes.merge(super::maproutes::router::<Ctx>(Arc::new(move || {
@@ -5504,7 +5533,7 @@ mod http {
                 match (coordwire::net::Listener::new(listener), loopback.map(coordwire::net::Listener::new).transpose())
                 {
                     (Ok(l), Ok(lo)) => {
-                        let (l, lo) = accept(l, lo, app, stopped, wake, taken).await;
+                        let (l, lo) = accept(l, lo, app, headers, stopped, wake, taken).await;
                         Some(super::Listeners { listener: l.into_std(), loopback: lo.map(|l| l.into_std()) })
                     }
                     (Err(e), _) | (_, Err(e)) => {
@@ -5562,6 +5591,7 @@ mod http {
         listener: coordwire::net::Listener,
         loopback: Option<coordwire::net::Listener>,
         app: Router,
+        shared: Arc<Mutex<super::Shared>>,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
         taken: Arc<std::sync::atomic::AtomicU64>,
@@ -5611,6 +5641,7 @@ mod http {
                 store::spawn::sockets(|| drop(stream));
                 continue;
             };
+            let headers_max = shared.lock().unwrap_or_else(|e| e.into_inner()).headers_max;
             let keepalive =
                 socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
             socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive).ok();
@@ -5631,7 +5662,7 @@ mod http {
                 // `HEADERS_MAX` from the last answer too, so an idle connection closes then.)
                 let conn = hyper::server::conn::http1::Builder::new()
                     .timer(hyper_util::rt::TokioTimer::new())
-                    .header_read_timeout(HEADERS_MAX)
+                    .header_read_timeout(headers_max)
                     .serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
                 let mut conn = Box::pin(conn);
                 // (Its life's end: from `CONNECTION_MAX` it takes no new request, closed once the one
@@ -11987,7 +12018,11 @@ mod tests {
         // A connection whose headers don't come is closed by the server once their time is up, not
         // before. (Timed from before it's made: the server's clock can't start before this one,
         // however slowly this test's thread goes on. This end's own wait is a watchdog: a read that
-        // runs it out means the server never closed it, which a busy Mac doesn't explain.)
+        // runs it out means the server never closed it, which a busy Mac doesn't explain. Its time
+        // 2 s, not `HEADERS_MAX`'s 20, #1112: set for this connection alone, the held ones above
+        // kept stalled while the worker was answered.)
+        let headers_max = Duration::from_secs(2);
+        c.shared.lock().unwrap().headers_max = headers_max;
         let t = Instant::now();
         let mut slow = std::net::TcpStream::connect(&addr).unwrap();
         slow.write_all(b"GET / HTTP/1.1\r\nHost").unwrap();
@@ -11995,7 +12030,7 @@ mod tests {
         let mut b = [0u8; 64];
         match slow.read(&mut b) {
             Ok(n) => assert!(
-                t.elapsed() >= http::HEADERS_MAX,
+                t.elapsed() >= headers_max,
                 "closed after {:?} with {n} bytes, before the headers' time was up",
                 t.elapsed()
             ),
@@ -13492,3 +13527,4 @@ mod tests {
         }
     }
 }
+// (#1112: measuring, temporary)

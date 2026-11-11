@@ -770,8 +770,9 @@ pub fn seed(root: &store::nasfs::NasRoot, cache: &Path, scratch: &Path, lease: O
 /// A lease lapses this long after its holder last renewed it (s): a holder gone (a Mac asleep, a
 /// process killed) costs a wait this long, never a torn archive (each is written whole).
 pub const LEASE_S: u64 = 600;
-/// How often a waiting taker looks again.
-const LEASE_AGAIN: std::time::Duration = std::time::Duration::from_secs(5);
+/// How often a waiting taker looks again (this crate's tests: 50 ms, so a test of the wait waits
+/// moments, not 5 s a look: #1112, the lease test's 11 s).
+const LEASE_AGAIN: std::time::Duration = std::time::Duration::from_millis(if cfg!(test) { 50 } else { 5000 });
 
 /// Where the answers' lease is taken: through the agent's proxy at `proxy` (its lead's).
 #[derive(Clone, Debug)]
