@@ -1487,7 +1487,7 @@ impl<'a> Maker<'a> {
     ) -> anyhow::Result<Vec<Vec<crate::terrain_resume::Finished>>> {
         use crate::terrain_resume::Finished;
         use jobrt::timings::sub;
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
         if todo.is_empty() {
             return Ok(Vec::new());
         }
@@ -1495,13 +1495,13 @@ impl<'a> Maker<'a> {
         let threads = rayon::current_num_threads().max(1);
         let turns = Turns::new(threads);
         // (By tile, its block and its place there, and whether it's been said ready; by block, its
-        // tiles not yet made.)
+        // tiles made so far and how many are not.)
         let at: HashMap<(u32, u32), (usize, usize)> =
             todo.iter().enumerate().flat_map(|(j, b)| b.iter().enumerate().map(move |(i, &t)| (t, (j, i)))).collect();
         let told: Vec<Vec<AtomicBool>> =
             todo.iter().map(|b| b.iter().map(|_| AtomicBool::new(false)).collect()).collect();
-        let unmade: Vec<AtomicUsize> = todo.iter().map(|b| AtomicUsize::new(b.len())).collect();
-        let tiles: Vec<Mutex<Vec<Option<Finished>>>> = todo.iter().map(|b| Mutex::new(vec![None; b.len()])).collect();
+        let tiles: Vec<Mutex<(Vec<Option<Finished>>, usize)>> =
+            todo.iter().map(|b| Mutex::new((vec![None; b.len()], b.len()))).collect();
         let made: Vec<Mutex<Option<Vec<Finished>>>> = todo.iter().map(|_| Mutex::new(None)).collect();
         // (The tiles ready to make, and whether no more will be.)
         let queue: Mutex<(std::collections::VecDeque<(usize, usize)>, bool)> = Default::default();
@@ -1526,17 +1526,23 @@ impl<'a> Maker<'a> {
             let kids = (0..4u32).any(|k| quads.contains_key(&(x * 2 + (k & 1), y * 2 + (k >> 1))));
             let (b, r, q) = process(raw.filter(|_| kids || self.raw.keep(z, x, y)), z, x, y, quads, src)?;
             self.processed.fetch_add(1, Relaxed);
-            tiles[j].lock().unwrap()[i] = Some((x, y, b, r, q));
-            if unmade[j].fetch_sub(1, Relaxed) == 1 {
-                let done: Vec<Finished> =
-                    std::mem::take(&mut *tiles[j].lock().unwrap()).into_iter().map(|t| t.expect("made")).collect();
+            // (Its block's last tile, counted under the block's lock: every other tile put there
+            // before it.)
+            let last = {
+                let mut g = tiles[j].lock().unwrap();
+                let (ts, unmade) = &mut *g;
+                ts[i] = Some((x, y, b, r, q));
+                *unmade -= 1;
+                (*unmade == 0).then(|| std::mem::take(ts))
+            };
+            if let Some(ts) = last {
+                let done: Vec<Finished> = ts.into_iter().map(|t| t.expect("made")).collect();
                 keep(todo[j], &done)?;
                 *made[j].lock().unwrap() = Some(done);
             }
             Ok(())
         };
         let maker = || {
-            let _p = jobrt::timings::phase("making the tiles, shading and encoding them");
             loop {
                 let (j, i) = {
                     let mut q = queue.lock().unwrap();
@@ -1552,12 +1558,25 @@ impl<'a> Maker<'a> {
                     continue;
                 }
                 let _turn = turns.take();
+                // (A phase a tile, beside the main thread's: the making's own time, not its
+                // threads' waits for the sampling.)
+                let _p = jobrt::timings::phase("making the tiles, shading and encoding them");
                 if let Err(e) = make(j, i) {
                     failed.lock().unwrap().get_or_insert(e);
                 }
             }
         };
+        // (No more tiles said ready, however the sampling ends: an error, a panic, a making thread
+        // not started. Else the threads started wait for more, and the scope for them, forever.)
+        struct Closing<'q>(&'q Mutex<(std::collections::VecDeque<(usize, usize)>, bool)>, &'q std::sync::Condvar);
+        impl Drop for Closing<'_> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+                self.1.notify_all();
+            }
+        }
         let sampled = std::thread::scope(|s| {
+            let closing = Closing(&queue, &cv);
             let makers: Vec<_> = (0..threads)
                 .map(|_| std::thread::Builder::new().name("making tiles".into()).spawn_scoped(s, maker))
                 .collect::<std::io::Result<_>>()?;
@@ -1572,9 +1591,8 @@ impl<'a> Maker<'a> {
                     let rest = (0..todo.len()).flat_map(|j| (0..todo[j].len()).map(move |i| (j, i)));
                     q.0.extend(rest.filter(|&(j, i)| !told[j][i].swap(true, Relaxed)));
                 }
-                q.1 = true;
-                cv.notify_all();
             }
+            drop(closing);
             let _p = sub("making the last tiles sampled");
             for m in makers {
                 m.join().unwrap_or_else(|e| std::panic::resume_unwind(e));
@@ -2638,6 +2656,37 @@ pub(crate) mod tests {
             v
         };
         assert!(sorted(made) == sorted(after), "the same tiles");
+    }
+
+    /// Task #1097 review: a level whose sampling panics, its first block said ready, ends with
+    /// the panic (its making threads let go: they had waited for more tiles, and the level for
+    /// them, forever).
+    #[test]
+    fn a_level_whose_sampling_panics_ends() {
+        struct Panics(Const);
+        impl RawSource for Panics {
+            fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+                self.0.get(z, x, y)
+            }
+            fn prefetch_each(&self, _z: u8, tiles: &[(u32, u32)], _: &Turns, ready: Ready) -> anyhow::Result<usize> {
+                ready(&tiles[..2]);
+                panic!("a sampling's bug");
+            }
+        }
+        let src = Sources::default();
+        let tiles = vec![(0, 0), (1, 0), (16, 0), (17, 0)];
+        let ended = store::testkit::Signal::new();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let raw = Panics(Const::new(100.0));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Maker::new(&raw, &src).level(12, tiles.clone(), &HashMap::new(), None)
+                }));
+                assert!(r.is_err(), "the panic carried out");
+                ended.set();
+            });
+            ended.wait("the level ended");
+        });
     }
 
     /// The rule (docs/steps.md §2, Terrain): a z6 tile's run samples only its finest zoom's tiles; a

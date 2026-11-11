@@ -528,9 +528,35 @@ impl RawSource for Tiles<'_> {
             }
         };
         let k = at_once.min(chunks.len());
-        jobrt::control::on_outside_pool(|| {
-            rayon::broadcast(|b| if b.index() < k { run() } else { Ok(()) }).into_iter().collect::<Result<()>>()
-        })?;
+        // (The threads still running chunks.)
+        let running = std::sync::atomic::AtomicUsize::new(k);
+        struct Ran<'a>(&'a std::sync::atomic::AtomicUsize);
+        impl Drop for Ran<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::Release);
+            }
+        }
+        let each = |b: rayon::BroadcastContext<'_>| {
+            let r = if b.index() < k {
+                let _ran = Ran(&running);
+                run()
+            } else {
+                Ok(())
+            };
+            // (A thread of the pool with no chunk left helps the passes of those still sampled, as
+            // the pool's idle thread it would be would steal them, but on a turn: the job stays on
+            // its grant's cores at a level's last chunks too, the making taking the turns it
+            // doesn't. Task #1097 review: helping on none, a level's tail ran on up to twice them.)
+            while running.load(Ordering::Acquire) > 0 {
+                let t = turns.take();
+                if rayon::yield_now() != Some(rayon::Yield::Executed) {
+                    drop(t);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+            r
+        };
+        jobrt::control::on_outside_pool(|| rayon::broadcast(each).into_iter().collect::<Result<()>>())?;
         Ok(0)
     }
 }

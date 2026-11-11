@@ -354,6 +354,15 @@ core isn't idle either. Not read ahead: a chunk's next dataset (its points known
 dataset before has run over the chunk; a sampling thread waiting on its first blocks lends its
 turn to the making instead).
 
+In a run's phases a level is now the main thread's `sampling the terrain pool into raw tiles`, then
+`making the last tiles sampled` (what the making had left once the sampling ended); the making
+itself, `making the tiles, shading and encoding them`, a main thread's sub-phase before, is its
+threads' (beside, a phase a tile: its wall the threads' making summed, not the level's span), so a
+run before and one after differ there by more than their times. terrain-deep's `writing and
+uploading its deep pack and mid` reads as `writing its deep pack and mid` (jobrt::phase_names);
+terrain-lo's `uploading the lo pack` is `writing the lo pack` from now on, not mapped (slope-lo's
+phase keeps the name, its upload still in it).
+
 Measured with `terrain-same` (release; the NAS read only; `SCENIC_CACHE` a cache of the runs' own,
 its coverage file cloned in, so the regions are read from this Mac; a target's Terrarium tiles and
 whole local copies warmed by a first run not counted). On the M4, main (03e6cd6b) and the branch

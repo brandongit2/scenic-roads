@@ -156,8 +156,9 @@ makes the same bytes on every Mac.
     chunk is sampled, beside the sampling of the rest, on as many threads as the
     grant; the making takes the turns the sampling's threads lend while they wait on the NAS, the
     network or a read ahead (store::waits::Turns), so it computes on the cores those waits leave
-    idle and the job on no more than its grant's (one over while a thread back from a wait finds
-    its turn taken, until that tile is made). A block is kept to the run's resume log as its last
+    idle and the job on no more than its grant's (but for a thread back from a wait whose turn was
+    taken, until that tile is made; a sampling thread with no chunk left helps the others' passes
+    on a turn too). A block is kept to the run's resume log as its last
     tile is made. A level waits for the one finer (its quarters are those tiles' means). Each is
     pinned in the key (`TERRAIN_V`, the datasets meeting the target by their lines and zooms there,
     its tiles near the coverage), so a rebuild with the same key gives identical packs.
