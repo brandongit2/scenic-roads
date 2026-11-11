@@ -8775,7 +8775,10 @@ impl Agent {
                 // for UPDATE_STALL holds it no longer: it may be stuck. By its CPU, not its progress
                 // lines, which a long step may not print.)
                 let stalled = self.sampler.busy_at(k).is_some_and(|t| t.elapsed() >= UPDATE_STALL);
-                since.elapsed() >= wait || (stalled && since.elapsed() >= self.grace)
+                // (Frozen by a guard, it reaches no safe point until that guard lets it go on: held
+                // no longer than a pause gives, the next agent holding it frozen, task #1137.)
+                let frozen = self.sampler.frozen(k) || self.sampler.disk_frozen(k);
+                since.elapsed() >= wait || ((stalled || frozen) && since.elapsed() >= self.grace)
             }
         }
     }
@@ -15084,6 +15087,13 @@ mod tests {
         // (Idle for 31 min but only 10 min into the drain: the time a pause gives first.)
         a.slots[0].drain_since = Some(ago(10 * 60));
         assert!(!a.update_due());
+        // Frozen by a guard (task #1137), busy until just now: it reaches no safe point while
+        // frozen, so it holds the update the time a pause gives, not its wait; let go on, its wait.
+        a.sampler.set_test_busy(Some(vec![Some(Instant::now()), None]));
+        assert!(a.sampler.freeze(0) && !a.update_due(), "frozen, 10 min into the drain");
+        a.slots[0].drain_since = Some(ago(20 * 60));
+        assert!(a.update_due(), "frozen, 20 min into the drain");
+        assert!(a.sampler.thaw(0) && !a.update_due(), "going on: its wait");
         a.sampler.set_test_busy(None);
         // The install undone: the wait forgotten; a new update works it out again, from the
         // target's expected time (no pace yet), capped at 3 h.

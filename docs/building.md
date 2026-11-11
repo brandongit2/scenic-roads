@@ -90,7 +90,9 @@ from the first (`edit_held`).
   15 minutes; 15 minutes for a target with no estimate. A member, without the coordinator's costs,
   goes by its pace, else its step's time there, else 15 minutes. Once 15 minutes have passed, a job
   whose processes used less than a core-minute of CPU over the last 30 minutes (the memory guard's
-  sampler) holds the restart no longer: by its CPU, since a long step may print no progress for hours. The log and the status's Waiting line say how long and
+  sampler) holds the restart no longer: by its CPU, since a long step may print no progress for hours; nor
+  does a job the memory or disk guard holds frozen, which reaches no safe point until that guard lets
+  it go on (task #1137: the new agent holds it frozen, Restarts, below). The log and the status's Waiting line say how long and
   why. Pauses, the memory guard and the disk guard keep their own rules. The lead
   grants nothing to an agent on another app, and an agent with a newer app waiting asks for
   nothing.
