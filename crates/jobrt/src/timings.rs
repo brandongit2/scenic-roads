@@ -12,10 +12,23 @@
 //! - A child program run within a phase (`child(&mut cmd)`) writes its own phases (this module's
 //!   twin in Python, dem/timings.py, or a scenic-build run as a child) to a file this one names; its
 //!   phases come in as the phase's sub-phases as it ends.
-//! - CPU is the process's, from `getrusage`: a phase while another thread's phase (or work in no
-//!   phase) runs counts that thread's CPU too. Such a phase is marked `overlapped`, its CPU an
-//!   approximation; a phase on a thread but the job's main one is marked `background`, and its wall
-//!   isn't counted toward the run's timed part (it ran beside the main thread's phases).
+//! - CPU (task #1116) is a phase's own: each thread's CPU (macOS's `thread_info`) is charged to the
+//!   span innermost on it as the thread opens or closes one (a sub-phase's to its parent too), and
+//!   the job's CPU on threads in no phase (a rayon pool's workers doing a phase's parallel work, a
+//!   thread of no phase, a child program as it's reaped: the process's `getrusage` less what the
+//!   threads were charged) to the main thread's innermost span, settled as that changes and four
+//!   times a second (`settle`). So a run's top-level phases' CPU, its `background` ones' too, and
+//!   its CPU in no phase (`RunRec::untimed_cpu_s`) add up to its CPU. Where that no-phase CPU came
+//!   while another thread had a phase open, it may have been that phase's work (its parallel work
+//!   on the pool), not the main thread's: that part is said (`PhaseRec::uncertain_cpu_s`), and the
+//!   readers show it. A pool thread that waits inside its own phase's parallel work may take up
+//!   another phase's tasks meanwhile: counted to its own. A phase while another thread's is open is
+//!   marked `overlapped` (wall: the uses' floor reads it); a main thread's top-level phase also
+//!   keeps the job's CPU while it was open (`job_cpu_s`: every thread's, the cores it kept busy). A
+//!   phase on a thread but the job's main one is marked `background`, and its wall isn't counted
+//!   toward the run's timed part (it ran beside the main thread's phases). Elsewhere than macOS no
+//!   phase's CPU is measured. Records before task #1116 (`v` 1) gave a phase the process's CPU
+//!   while it was open: an `overlapped` one's counts other threads' work too (`uncertain_cpu`).
 //! - Memory: while a run is timed, a thread samples the job's memory four times a second (its
 //!   process group's physical footprints summed, `crate::sys::group_footprint`, as the agent's
 //!   memory guard measures a job), and each phase keeps the most it saw while open (`peak_mb`): a
@@ -49,8 +62,9 @@ pub const TIMINGS_ENV: &str = "SCENIC_TIMINGS";
 pub const JOB_ID_ENV: &str = "SCENIC_JOB_ID";
 /// Where a child program writes its phases, for the phase that ran it.
 pub const PHASES_TO_ENV: &str = "SCENIC_PHASES_TO";
-/// The record's version.
-pub const VERSION: u32 = 1;
+/// The record's version: 2 since task #1116 (a phase's CPU its own; 1: the process's while it was
+/// open).
+pub const VERSION: u32 = 2;
 
 /// A phase's wall time by what the job waited on while it was open, measured (store::waits): by
 /// the job's wall clock, so the waits never sum past the phase's wall time; the rest is computing.
@@ -213,15 +227,26 @@ pub struct PhaseRec {
     /// Its wall time by what the job waited on (task #870): None in a record from before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waits: Option<Waits>,
+    /// Its own CPU (task #1116: its threads', and the job's in no phase while it was the main
+    /// thread's innermost; the module's doc), its sub-phases' within it. A `v` 1 record's: the
+    /// process's while it was open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_s: Option<f64>,
+    /// Of `cpu_s`, the job's CPU in no phase taken in while another thread's phase was open too: it
+    /// may have been that one's (`uncertain_cpu`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncertain_cpu_s: Option<f64>,
+    /// The job's CPU while it was open, every thread's and its finished child programs' (the cores it
+    /// kept busy then): a main thread's top-level phase's (task #1116; before, its `cpu_s`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_cpu_s: Option<f64>,
     /// Its spans (a loop's stage: one a pass).
     pub n: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub bytes: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub files: u64,
-    /// Another thread's work ran during it: its CPU counts that too (approximate).
+    /// Another thread's phase was open during it (in a `v` 1 record, its CPU counts that one's too).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub overlapped: bool,
     /// Run on a thread beside the main one: not counted toward the run's timed part.
@@ -263,6 +288,11 @@ pub struct RunRec {
     pub wall_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_s: Option<f64>,
+    /// Its CPU in no phase (task #1116): its threads' while they had none open, and the job's on
+    /// threads in no phase while the main thread had none. Its top-level phases' CPU and this add
+    /// up to `cpu_s`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub untimed_cpu_s: Option<f64>,
     /// Its worker threads (RAYON_NUM_THREADS), where set: those it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
@@ -342,6 +372,17 @@ impl RunRec {
     }
 }
 
+/// Of a phase's CPU in a record of version `v`, the part that may be another phase's: its
+/// `uncertain_cpu_s`; in a record from before task #1116 (`v` 1), an `overlapped` phase's whole CPU
+/// (the process's while it was open: other threads' work in it).
+pub fn uncertain_cpu(p: &PhaseRec, v: u32) -> f64 {
+    match (v < 2, p.overlapped) {
+        (true, true) => p.cpu_s.unwrap_or(0.0),
+        (true, false) => 0.0,
+        (false, _) => p.uncertain_cpu_s.unwrap_or(0.0),
+    }
+}
+
 /// A phase's running totals.
 #[derive(Clone)]
 struct Acc {
@@ -350,7 +391,11 @@ struct Acc {
     /// Its spans' waits (`Waits::between` each span's ends).
     waits: Waits,
     wall_ns: u64,
-    cpu_us: Option<u64>,
+    /// Its spans' CPU (µs; `Open::cpu`), the part that may be another phase's, and the job's while
+    /// they were open (a main thread's top-level phase's).
+    cpu_us: u64,
+    uncertain_us: u64,
+    job_cpu_us: Option<u64>,
     n: u64,
     bytes: u64,
     files: u64,
@@ -372,12 +417,77 @@ struct Open {
     peak: AtomicU64,
     thread: std::thread::ThreadId,
     children: Mutex<Vec<PathBuf>>,
-    /// When it opened, and the CPU then: a span still open as the run ends counts to then.
+    /// When it opened: a span still open as the run ends counts to then.
     t0: Instant,
-    cpu0: Option<u64>,
     /// store::waits' totals and the bytes as it opened.
     w0: (store::waits::Totals, u64, u64),
+    /// The span it opened within on its thread (a sub-phase's parent's): what's charged to it is
+    /// charged to that one too.
+    parent: Option<Arc<Open>>,
+    /// Its CPU so far (µs, `charge`), and of that, what may be another phase's.
+    cpu: AtomicU64,
+    uncertain: AtomicU64,
+    /// The job's CPU as it opened (µs): a main thread's top-level span's alone (`job_cpu_s`).
+    job0: Option<u64>,
 }
+
+/// Adds `us` of CPU to `o` and the spans it's within (`uncertain`: what may be another phase's).
+fn charge(o: &Arc<Open>, us: u64, uncertain: bool) {
+    let mut at = Some(o);
+    while let Some(x) = at {
+        x.cpu.fetch_add(us, Ordering::Relaxed);
+        if uncertain {
+            x.uncertain.fetch_add(us, Ordering::Relaxed);
+        }
+        at = x.parent.as_ref();
+    }
+}
+
+/// A thread with a span open (`Run::threads`): its innermost span, which its CPU is charged to, its
+/// Mach port (to read its CPU from another thread), and its CPU when last charged (µs).
+struct Thr {
+    id: std::thread::ThreadId,
+    port: u32,
+    at: u64,
+    cur: Arc<Open>,
+}
+
+/// This thread's Mach port (`thread_cpu`): pthread's, no reference taken (0 elsewhere than macOS).
+fn this_port() -> u32 {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: pthread_self is this thread; its port lives as long as the thread.
+        unsafe { libc::pthread_mach_thread_np(libc::pthread_self()) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        0
+    }
+}
+
+/// A thread's CPU time so far (user + system, µs), by its Mach port; None where it can't be read
+/// (the thread gone, or elsewhere than macOS).
+fn thread_cpu(port: u32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: thread_info fills at most `n` integers of the struct it's given.
+        let mut i: libc::thread_basic_info = unsafe { std::mem::zeroed() };
+        let mut n = libc::THREAD_BASIC_INFO_COUNT;
+        let r = unsafe {
+            libc::thread_info(port, libc::THREAD_BASIC_INFO as u32, &mut i as *mut _ as libc::thread_info_t, &mut n)
+        };
+        let t = |v: libc::time_value_t| v.seconds as u64 * 1_000_000 + v.microseconds as u64;
+        (r == libc::KERN_SUCCESS).then(|| t(i.user_time) + t(i.system_time))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = port;
+        None
+    }
+}
+
+/// Whether a phase's own CPU is measured here (`thread_cpu`).
+const PER_THREAD: bool = cfg!(target_os = "macos");
 
 struct Run {
     kind: String,
@@ -387,6 +497,19 @@ struct Run {
     main: std::thread::ThreadId,
     accs: Vec<Acc>,
     open: Vec<Arc<Open>>,
+    /// The threads with a span open, each charged as it changes span and as the CPU in no phase is
+    /// settled (`settle`).
+    threads: Vec<Thr>,
+    /// The job's CPU when the CPU in no phase was last settled, and what the threads were charged
+    /// by then (µs).
+    settled: (u64, u64),
+    /// What the threads were charged so far (µs).
+    charged: u64,
+    /// A thread but the main one had a span open since the last settle: the CPU in no phase meanwhile
+    /// may have been its phase's.
+    others: bool,
+    /// The CPU in no phase while the main thread had none open (µs).
+    untimed_cpu: u64,
     overhead_ns: u64,
     finished: bool,
     /// The main thread's last top-level phase to end, and when (the start at first).
@@ -411,6 +534,65 @@ fn add_gap(gaps: &mut Vec<(String, String, u64, u64)>, after: &str, before: &str
     }
 }
 
+impl Run {
+    /// Charges thread `i` its CPU since it was last charged, to its innermost span.
+    fn settle_thread(&mut self, i: usize) {
+        let t = &mut self.threads[i];
+        let Some(now) = thread_cpu(t.port) else { return };
+        let d = now.saturating_sub(t.at);
+        t.at = now;
+        charge(&t.cur, d, false);
+        self.charged += d;
+    }
+
+    /// Every thread with a span open charged its CPU, then the job's CPU since the last settle that
+    /// no thread was charged (its threads in no phase, its child programs reaped) charged to the
+    /// main thread's innermost span, or the run's CPU in no phase where it has none. The job's CPU
+    /// now (µs).
+    fn settle(&mut self) -> Option<u64> {
+        for i in 0..self.threads.len() {
+            self.settle_thread(i);
+        }
+        let now = cpu_us()?;
+        if !PER_THREAD {
+            return Some(now);
+        }
+        let (p0, c0) = self.settled;
+        // (The job's CPU read after the threads': at least what they were charged but for the
+        // readings' grain; a shortfall waits for the next settle.)
+        if let Some(loose) = now.checked_sub(p0).and_then(|p| p.checked_sub(self.charged - c0)) {
+            match self.threads.iter().find(|t| t.id == self.main) {
+                Some(t) => charge(&t.cur, loose, self.others),
+                None => self.untimed_cpu += loose,
+            }
+            self.settled = (now, self.charged);
+            self.others = self.threads.iter().any(|t| t.id != self.main);
+        }
+        Some(now)
+    }
+
+    /// Thread `id` (its Mach port `port`) in span `cur` from now (None: in none), its CPU so far
+    /// charged to the span it was in.
+    fn on_span(&mut self, id: std::thread::ThreadId, port: u32, cur: Option<Arc<Open>>) {
+        let i = self.threads.iter().position(|t| t.id == id);
+        if let Some(i) = i {
+            self.settle_thread(i);
+        }
+        match (i, cur) {
+            (Some(i), Some(c)) => self.threads[i].cur = c,
+            (Some(i), None) => {
+                self.threads.swap_remove(i);
+            }
+            (None, Some(cur)) => {
+                let Some(at) = thread_cpu(port) else { return };
+                self.others |= id != self.main;
+                self.threads.push(Thr { id, port, at, cur });
+            }
+            (None, None) => {}
+        }
+    }
+}
+
 static RUN: OnceLock<Mutex<Option<Run>>> = OnceLock::new();
 
 fn run() -> &'static Mutex<Option<Run>> {
@@ -427,6 +609,8 @@ thread_local! {
 /// phases opened meanwhile are the main thread's (not `background`), nested as they would have been.
 pub struct Main {
     stack: Option<Vec<Arc<Open>>>,
+    /// The thread it was taken on, and its Mach port.
+    from: (std::thread::ThreadId, u32),
 }
 
 impl Main {
@@ -434,25 +618,40 @@ impl Main {
     pub fn here() -> Main {
         let main = run().lock().unwrap().as_ref().map(|r| r.main);
         let me = std::thread::current().id();
-        Main { stack: (main == Some(me)).then(|| STACK.with(|s| s.borrow().clone())) }
+        Main { stack: (main == Some(me)).then(|| STACK.with(|s| s.borrow().clone())), from: (me, this_port()) }
     }
 
-    /// `f` on this thread as the run's main thread, then the main thread given back.
+    /// `f` on this thread as the run's main thread, then the main thread given back. (Its CPU
+    /// charged as the main thread's meanwhile; the thread it came from, waiting, charged nothing.)
     pub fn run<R>(self, f: impl FnOnce() -> R) -> R {
         let Some(stack) = self.stack else { return f() };
         let me = std::thread::current().id();
-        let was = run().lock().unwrap().as_mut().map(|r| std::mem::replace(&mut r.main, me));
+        let port = this_port();
+        let top = stack.last().cloned();
         let had = STACK.with(|s| std::mem::replace(&mut *s.borrow_mut(), stack));
-        struct Back(Option<std::thread::ThreadId>, Vec<Arc<Open>>);
+        let was = run().lock().unwrap().as_mut().map(|r| {
+            r.settle();
+            r.on_span(self.from.0, self.from.1, None);
+            let was = std::mem::replace(&mut r.main, me);
+            r.on_span(me, port, top.clone());
+            was
+        });
+        struct Back(Option<std::thread::ThreadId>, Vec<Arc<Open>>, (std::thread::ThreadId, u32), Option<Arc<Open>>);
         impl Drop for Back {
             fn drop(&mut self) {
-                STACK.with(|s| *s.borrow_mut() = std::mem::take(&mut self.1));
+                let had = std::mem::take(&mut self.1);
+                let mine = had.last().cloned();
+                STACK.with(|s| *s.borrow_mut() = had);
                 if let (Some(was), Some(r)) = (self.0, run().lock().unwrap().as_mut()) {
+                    r.settle();
+                    let me = std::thread::current().id();
                     r.main = was;
+                    r.on_span(me, this_port(), mine);
+                    r.on_span(self.2 .0, self.2 .1, self.3.take());
                 }
             }
         }
-        let _back = Back(was, had);
+        let _back = Back(was, had, self.from, top);
         f()
     }
 }
@@ -490,14 +689,20 @@ pub fn start(kind: &str) {
     if g.is_none() {
         crate::control::gaps_begin();
         store::waits::enable();
+        let cpu0 = cpu_us();
         *g = Some(Run {
             kind: kind.to_string(),
             start_wall: now_s(),
             t0: Instant::now(),
-            cpu0: cpu_us(),
+            cpu0,
             main: std::thread::current().id(),
             accs: Vec::new(),
             open: Vec::new(),
+            threads: Vec::new(),
+            settled: (cpu0.unwrap_or(0), 0),
+            charged: 0,
+            others: false,
+            untimed_cpu: 0,
             overhead_ns: 0,
             finished: false,
             mark: (Instant::now(), START.to_string()),
@@ -515,7 +720,8 @@ static LAST_MEM: AtomicU64 = AtomicU64::new(0);
 const MEM_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Starts the thread that samples the job's memory (`crate::sys::group_footprint`) into every open
-/// span while the run is timed; none where it can't be read (elsewhere than macOS).
+/// span while the run is timed, and settles its CPU in no phase as often (`Run::settle`); none where
+/// it can't be read (elsewhere than macOS).
 fn sample_memory() {
     static ON: std::sync::Once = std::sync::Once::new();
     let Some(now) = crate::sys::group_footprint() else { return };
@@ -532,10 +738,14 @@ fn sample_memory() {
                 }
                 let Some(v) = crate::sys::group_footprint() else { continue };
                 LAST_MEM.store(v, Ordering::Relaxed);
-                let Ok(g) = run().lock() else { return };
-                for o in g.iter().flat_map(|r| &r.open) {
+                let Ok(mut g) = run().lock() else { return };
+                let Some(r) = g.as_mut().filter(|r| !r.finished) else { continue };
+                for o in &r.open {
                     o.peak.fetch_max(v, Ordering::Relaxed);
                 }
+                let t = Instant::now();
+                r.settle();
+                r.overhead_ns += t.elapsed().as_nanos() as u64;
             })
             .ok();
     });
@@ -563,7 +773,6 @@ pub fn on() -> bool {
 pub struct Phase {
     open: Option<Arc<Open>>,
     t: Instant,
-    cpu: Option<u64>,
 }
 
 impl Phase {
@@ -580,7 +789,7 @@ impl Phase {
 
     /// A phase that times nothing (no run being timed).
     pub fn none() -> Phase {
-        Phase { open: None, t: Instant::now(), cpu: None }
+        Phase { open: None, t: Instant::now() }
     }
 }
 
@@ -604,13 +813,16 @@ fn open(name: &str) -> Phase {
     };
     let me = std::thread::current().id();
     // (Its parent: the phase open on this thread; in a sub-phase, it's folded into that one.)
-    let inner = STACK.with(|s| s.borrow().last().map(|o| o.idx));
+    let inner = STACK.with(|s| s.borrow().last().cloned());
     // (Nor under one of its own name: a library's phase inside the step's that already says it,
     // the records saved within "saving records".)
-    if inner.is_some_and(|i| r.accs[i].parent.is_some() || r.accs[i].name == name) {
+    if inner.as_ref().is_some_and(|o| r.accs[o.idx].parent.is_some() || r.accs[o.idx].name == name) {
         return Phase::none();
     }
-    let parent = inner;
+    let parent = inner.as_ref().map(|o| o.idx);
+    // (The CPU so far charged to the span this thread was in: the main thread's, with the job's in
+    // no phase.)
+    let job = if me == r.main { r.settle() } else { None };
     // (The main thread's time since its last top-level phase ended: a gap, named by its ends.)
     if parent.is_none() && me == r.main {
         // (Said in the job's counts file for the agent to show live: store::nasio::set_phase.)
@@ -628,7 +840,9 @@ fn open(name: &str) -> Phase {
                 parent,
                 waits: Waits::default(),
                 wall_ns: 0,
-                cpu_us: None,
+                cpu_us: 0,
+                uncertain_us: 0,
+                job_cpu_us: None,
                 n: 0,
                 bytes: 0,
                 files: 0,
@@ -649,8 +863,11 @@ fn open(name: &str) -> Phase {
         thread: me,
         children: Mutex::new(Vec::new()),
         t0: Instant::now(),
-        cpu0: cpu_us(),
         w0: waits_now(),
+        job0: if parent.is_none() { job } else { None },
+        parent: inner,
+        cpu: AtomicU64::new(0),
+        uncertain: AtomicU64::new(0),
     });
     // (Another thread's phase open now, or opening while this one is: both overlap.)
     let mut over = false;
@@ -663,9 +880,9 @@ fn open(name: &str) -> Phase {
     }
     r.open.push(o.clone());
     STACK.with(|s| s.borrow_mut().push(o.clone()));
-    let cpu = cpu_us();
+    r.on_span(me, this_port(), Some(o.clone()));
     r.overhead_ns += t_in.elapsed().as_nanos() as u64;
-    Phase { open: Some(o), t: Instant::now(), cpu }
+    Phase { open: Some(o), t: Instant::now() }
 }
 
 impl Drop for Phase {
@@ -674,21 +891,23 @@ impl Drop for Phase {
         let wall = self.t.elapsed();
         let t_in = Instant::now();
         let waits = Waits::between(&o.w0, &waits_now());
-        let cpu = match (self.cpu, cpu_us()) {
-            (Some(a), Some(b)) => Some(b.saturating_sub(a)),
-            _ => None,
-        };
-        STACK.with(|s| {
-            let mut s = s.borrow_mut();
-            if let Some(i) = s.iter().rposition(|x| Arc::ptr_eq(x, &o)) {
-                s.remove(i);
-            }
-        });
         // Its child programs' phases (read before the lock: files).
         let kids: Vec<PhaseRec> =
             o.children.lock().map(|c| c.iter().flat_map(|p| take_child(p)).collect()).unwrap_or_default();
         let mut g = run().lock().unwrap();
+        let me = std::thread::current().id();
+        // (The CPU so far charged to the spans, the job's in no phase too where it's the main
+        // thread's; then the thread in the span it's within.)
+        let job = g.as_mut().filter(|r| r.main == me).and_then(Run::settle);
+        let inner = STACK.with(|s| {
+            let mut s = s.borrow_mut();
+            if let Some(i) = s.iter().rposition(|x| Arc::ptr_eq(x, &o)) {
+                s.remove(i);
+            }
+            s.last().cloned()
+        });
         let Some(r) = g.as_mut() else { return };
+        r.on_span(me, this_port(), inner);
         if let Some(i) = r.open.iter().position(|x| Arc::ptr_eq(x, &o)) {
             r.open.remove(i);
         }
@@ -703,11 +922,11 @@ impl Drop for Phase {
         let a = &mut r.accs[o.idx];
         a.wall_ns += wall.as_nanos() as u64;
         a.waits.add(&waits);
-        a.cpu_us = match (a.cpu_us, cpu) {
-            (Some(x), Some(y)) => Some(x + y),
-            (None, y) if a.n == 0 => y,
-            (x, _) => x,
-        };
+        a.cpu_us += o.cpu.load(Ordering::Relaxed);
+        a.uncertain_us += o.uncertain.load(Ordering::Relaxed);
+        if let (Some(c0), Some(c1)) = (o.job0, job) {
+            a.job_cpu_us = Some(a.job_cpu_us.unwrap_or(0) + c1.saturating_sub(c0));
+        }
         a.n += 1;
         a.bytes += o.bytes.load(Ordering::Relaxed);
         a.files += o.files.load(Ordering::Relaxed);
@@ -725,16 +944,23 @@ impl Drop for Phase {
     }
 }
 
+/// Two figures summed where either is said.
+fn add_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a + b),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Adds `k` to `list`, into the phase of its name there.
 fn merge_into(list: &mut Vec<PhaseRec>, k: PhaseRec) {
     match list.iter_mut().find(|p| p.name == k.name) {
         Some(p) => {
             p.wall_s += k.wall_s;
             add_waits(&mut p.waits, k.waits);
-            p.cpu_s = match (p.cpu_s, k.cpu_s) {
-                (Some(a), Some(b)) => Some(a + b),
-                (a, b) => a.or(b),
-            };
+            p.cpu_s = add_opt(p.cpu_s, k.cpu_s);
+            p.uncertain_cpu_s = add_opt(p.uncertain_cpu_s, k.uncertain_cpu_s);
+            p.job_cpu_s = add_opt(p.job_cpu_s, k.job_cpu_s);
             p.n += k.n;
             p.bytes += k.bytes;
             p.files += k.files;
@@ -788,21 +1014,24 @@ fn take_child(p: &Path) -> Vec<PhaseRec> {
 
 /// The run so far as a record (`ok` as given).
 pub fn snapshot(ok: bool) -> Option<RunRec> {
-    let g = run().lock().unwrap();
-    let r = g.as_ref()?;
+    let mut g = run().lock().unwrap();
+    let r = g.as_mut()?;
     Some(record_of(r, ok))
 }
 
-fn record_of(r: &Run, ok: bool) -> RunRec {
-    // (Spans still open, a phase held past the run's end or a thread's still going: counted to now.)
+fn record_of(r: &mut Run, ok: bool) -> RunRec {
+    // (Every thread's CPU charged to now; then spans still open, a phase held past the run's end or
+    // a thread's still going, counted to now.)
+    let job = if r.finished { None } else { r.settle() };
     let mut accs = r.accs.clone();
-    let now_cpu = cpu_us();
     for o in &r.open {
         let a = &mut accs[o.idx];
         a.wall_ns += o.t0.elapsed().as_nanos() as u64;
         a.waits.add(&Waits::between(&o.w0, &waits_now()));
-        if let (Some(c0), Some(c1)) = (o.cpu0, now_cpu) {
-            a.cpu_us = Some(a.cpu_us.unwrap_or(0) + c1.saturating_sub(c0));
+        a.cpu_us += o.cpu.load(Ordering::Relaxed);
+        a.uncertain_us += o.uncertain.load(Ordering::Relaxed);
+        if let (Some(c0), Some(c1)) = (o.job0, job) {
+            a.job_cpu_us = Some(a.job_cpu_us.unwrap_or(0) + c1.saturating_sub(c0));
         }
         a.n += 1;
         a.bytes += o.bytes.load(Ordering::Relaxed);
@@ -810,30 +1039,29 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         a.overlapped |= o.overlapped.load(Ordering::Relaxed);
         a.peak = fold_peak(a.peak, o.peak.load(Ordering::Relaxed));
     }
+    let s_of = |us: u64| PER_THREAD.then_some(us as f64 / 1e6);
+    let own = |a: &Acc, sub: Vec<PhaseRec>, waits: Waits| PhaseRec {
+        name: a.name.clone(),
+        class: String::new(),
+        wall_s: a.wall_ns as f64 / 1e9,
+        waits: Some(waits),
+        cpu_s: s_of(a.cpu_us),
+        uncertain_cpu_s: s_of(a.uncertain_us).filter(|&u| u > 0.0),
+        job_cpu_s: a.job_cpu_us.map(|c| c as f64 / 1e6),
+        n: a.n,
+        bytes: a.bytes,
+        files: a.files,
+        overlapped: a.overlapped,
+        background: a.background,
+        peak_mb: mb(a.peak),
+        sub,
+    };
     let rec_of = |i: usize| {
         let a = &accs[i];
-        let mut sub: Vec<PhaseRec> = r
-            .accs
-            .iter()
-            .filter(|s| s.parent == Some(i) && s.n > 0)
-            .map(|s| PhaseRec {
-                name: s.name.clone(),
-                class: String::new(),
-                wall_s: s.wall_ns as f64 / 1e9,
-                waits: Some(s.waits),
-                cpu_s: s.cpu_us.map(|c| c as f64 / 1e6),
-                n: s.n,
-                bytes: s.bytes,
-                files: s.files,
-                overlapped: s.overlapped,
-                background: s.background,
-                peak_mb: mb(s.peak),
-                sub: Vec::new(),
-            })
-            .collect();
+        let mut sub: Vec<PhaseRec> =
+            accs.iter().filter(|s| s.parent == Some(i) && s.n > 0).map(|s| own(s, Vec::new(), s.waits)).collect();
         // (Its child programs' waits taken in beside its own: it waited on the child meanwhile. Their
         // main thread's phases' alone: one beside them spans the same wall time. Measured only.)
-        let wall_s = a.wall_ns as f64 / 1e9;
         let mut waits = a.waits;
         for k in &a.kids {
             if let Some(w) = k.waits.filter(|_| !k.background) {
@@ -841,25 +1069,13 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
             }
             merge_into(&mut sub, k.clone());
         }
-        PhaseRec {
-            name: a.name.clone(),
-            class: String::new(),
-            wall_s,
-            waits: Some(waits.within(wall_s)),
-            cpu_s: a.cpu_us.map(|c| c as f64 / 1e6),
-            n: a.n,
-            bytes: a.bytes,
-            files: a.files,
-            overlapped: a.overlapped,
-            background: a.background,
-            peak_mb: mb(a.peak),
-            sub,
-        }
+        own(a, sub, waits.within(a.wall_ns as f64 / 1e9))
     };
     let phases: Vec<PhaseRec> =
         (0..accs.len()).filter(|&i| accs[i].parent.is_none() && accs[i].n > 0).map(rec_of).collect();
     let wall_s = r.t0.elapsed().as_secs_f64();
-    let cpu_s = match (r.cpu0, cpu_us()) {
+    // (The run's CPU as settled: what its phases were charged against.)
+    let cpu_s = match (r.cpu0, job.or_else(cpu_us)) {
         (Some(a), Some(b)) => Some(b.saturating_sub(a) as f64 / 1e6),
         _ => None,
     };
@@ -871,6 +1087,7 @@ fn record_of(r: &Run, ok: bool) -> RunRec {
         start: r.start_wall,
         wall_s,
         cpu_s,
+        untimed_cpu_s: s_of(r.untimed_cpu),
         threads: std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()),
         held: r.held.iter().map(|(&threads, &(wall_s, cpu_s))| Held { threads, wall_s, cpu_s }).collect(),
         ok,
@@ -982,7 +1199,18 @@ pub fn bytes(b: u64) -> String {
     }
 }
 
-/// The run's table, as the log ends with it.
+/// " (N of it uncertain)" after a phase's CPU where some of it may be another phase's
+/// (`uncertain_cpu`); nothing where none is.
+fn uncertain_text(u: f64) -> String {
+    if u >= 0.05 {
+        format!(" ({} of it uncertain)", secs(u))
+    } else {
+        String::new()
+    }
+}
+
+/// The run's table, as the log ends with it. A phase's CPU says how much of it may be another
+/// phase's (`uncertain_cpu`); the CPU in no phase is on the "(unaccounted)" line.
 pub fn table(r: &RunRec) -> String {
     let mut s = format!(
         "timings: {} {} in {} (CPU {}), {}\n",
@@ -996,7 +1224,7 @@ pub fn table(r: &RunRec) -> String {
         let share = if r.wall_s > 0.0 { p.wall_s / r.wall_s * 100.0 } else { 0.0 };
         let mut extra = Vec::new();
         if let Some(c) = p.cpu_s {
-            extra.push(format!("CPU {}{}", secs(c), if p.overlapped { " ~" } else { "" }));
+            extra.push(format!("CPU {}{}", secs(c), uncertain_text(uncertain_cpu(p, r.v))));
         }
         if p.n > 1 {
             extra.push(format!("×{}", p.n));
@@ -1033,7 +1261,14 @@ pub fn table(r: &RunRec) -> String {
         }
     }
     let share = if r.wall_s > 0.0 { r.untimed_s / r.wall_s * 100.0 } else { 0.0 };
-    s.push_str(&format!("timings: {:<40} {:>10} {:>4.0}%\n", "(unaccounted)", secs(r.untimed_s), share));
+    s.push_str(&format!(
+        "timings: {:<40} {:>10} {:>4.0}%  {:<34} {}\n",
+        "(unaccounted)",
+        secs(r.untimed_s),
+        share,
+        "",
+        r.untimed_cpu_s.map(|c| format!("CPU {}", secs(c))).unwrap_or_default()
+    ));
     for g in r.gaps.iter().take(3) {
         s.push_str(&format!("timings:   {:<38} {:>10}\n", gap_name(g), secs(g.wall_s)));
     }
@@ -1107,8 +1342,8 @@ pub struct PhaseSum {
     pub n: u64,
     pub bytes: u64,
     pub files: u64,
-    /// In some run it overlapped another thread's work: its CPU is approximate.
-    pub overlapped: bool,
+    /// Of `cpu_s`, what may be other phases' (`uncertain_cpu`), summed.
+    pub uncertain_cpu_s: f64,
     pub background: bool,
     /// Its share of the runs' wall time.
     pub share: f64,
@@ -1129,6 +1364,9 @@ pub struct KindSum {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_s: Option<f64>,
     pub untimed_s: f64,
+    /// The runs' CPU in no phase (`RunRec::untimed_cpu_s`), where any said it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub untimed_cpu_s: Option<f64>,
     pub overhead_s: f64,
     pub phases: Vec<PhaseSum>,
     /// The runs' gaps summed by their ends, largest first.
@@ -1201,7 +1439,8 @@ pub fn peak_text(holders: &[PeakHolder]) -> String {
     out
 }
 
-fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
+/// Adds `p`, a phase of a record of version `v`, to `list` (its sub-phases too where `top`).
+fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, v: u32, top: bool) {
     let i = match list.iter().position(|q| q.name == p.name) {
         Some(i) => i,
         None => {
@@ -1216,19 +1455,16 @@ fn add_phase(list: &mut Vec<PhaseSum>, p: &PhaseRec, total: f64, top: bool) {
         add_waits(&mut q.waits, Some(w));
         q.waits_wall_s += p.wall_s;
     }
-    q.cpu_s = match (q.cpu_s, p.cpu_s) {
-        (Some(a), Some(b)) => Some(a + b),
-        (a, b) => a.or(b),
-    };
+    q.cpu_s = add_opt(q.cpu_s, p.cpu_s);
+    q.uncertain_cpu_s += uncertain_cpu(p, v);
     q.n += p.n;
     q.bytes += p.bytes;
     q.files += p.files;
-    q.overlapped |= p.overlapped;
     q.background |= p.background;
     q.peak_mb = q.peak_mb.max(p.peak_mb);
     if top {
         for s in &p.sub {
-            add_phase(&mut q.sub, s, total, false);
+            add_phase(&mut q.sub, s, v, false);
         }
     }
 }
@@ -1260,14 +1496,12 @@ pub fn summary(runs: &[RunRec], kind: Option<&str>, last: usize, host: Option<&s
                     s.hosts.push(r.host.clone());
                 }
                 s.wall_s += r.wall_s;
-                s.cpu_s = match (s.cpu_s, r.cpu_s) {
-                    (Some(a), Some(b)) => Some(a + b),
-                    (a, b) => a.or(b),
-                };
+                s.cpu_s = add_opt(s.cpu_s, r.cpu_s);
                 s.untimed_s += r.untimed_s;
+                s.untimed_cpu_s = add_opt(s.untimed_cpu_s, r.untimed_cpu_s);
                 s.overhead_s += r.overhead_s;
                 for p in &r.phases {
-                    add_phase(&mut s.phases, p, r.wall_s, true);
+                    add_phase(&mut s.phases, p, r.v, true);
                 }
                 for g in &r.gaps {
                     match s.gaps.iter_mut().find(|h| h.after == g.after && h.before == g.before) {
@@ -1485,6 +1719,8 @@ struct PhaseSumOf {
     class: String,
     wall: f64,
     cpu: f64,
+    /// Of `cpu`, what may be other phases' (`uncertain_cpu`).
+    unsure: f64,
     nas: u64,
     net: u64,
     waits: Option<Waits>,
@@ -1525,6 +1761,7 @@ impl RunSum {
                     class: p.class.clone(),
                     wall: p.wall_s,
                     cpu: p.cpu_s.unwrap_or(0.0),
+                    unsure: uncertain_cpu(p, r.v),
                     nas,
                     net,
                     waits: p.waits,
@@ -1565,7 +1802,9 @@ pub struct PhaseTimes {
 /// a tenth of a second); the rest of a phase's measured wall computing, its unmeasured wall (older
 /// runs') shown by its class. And what ran at once there (task #891, `Waits::both_s`): `o`,
 /// `[edge, phase, [[pair, s], …]]`, `pair` an index into store::waits::PAIRS (the waits in `w`'s
-/// order, then computing), the pairs of a tenth of a second or more only.
+/// order, then computing), the pairs of a tenth of a second or more only. And of a phase's CPU, the
+/// whole seconds that may be other phases' (task #1116, `uncertain_cpu`): `u`, `[edge, phase, s]`,
+/// where any.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct StepTimes {
     pub phases: Vec<(String, String)>,
@@ -1574,14 +1813,24 @@ pub struct StepTimes {
     pub w: Vec<(usize, usize, f64, f64, f64, f64, f64)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub o: Vec<(usize, usize, Vec<(usize, f64)>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub u: Vec<(usize, usize, u64)>,
 }
 
 /// `PhaseTimes` of `runs` at `now`; a run ended past the last edge isn't counted.
 pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> PhaseTimes {
     use std::collections::BTreeMap;
     // (Step → its edge's sums: runs, failed, wall, CPU, by phase: wall, CPU, NAS, internet.)
-    // (And by phase: its measured wall and its waits.)
-    type Sums = (u32, u32, f64, f64, BTreeMap<String, (f64, f64, u64, u64)>, BTreeMap<String, (f64, Waits)>);
+    // (And by phase: its measured wall and its waits; its CPU that may be other phases'.)
+    type Sums = (
+        u32,
+        u32,
+        f64,
+        f64,
+        BTreeMap<String, (f64, f64, u64, u64)>,
+        BTreeMap<String, (f64, Waits)>,
+        BTreeMap<String, f64>,
+    );
     let mut by: BTreeMap<&str, (BTreeMap<String, (String, f64)>, BTreeMap<usize, Sums>)> = BTreeMap::new();
     for r in runs {
         let Some(e) = TIMES_EDGES.iter().position(|&e| r.end + e >= now) else { continue };
@@ -1603,6 +1852,9 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
             p.1 += ph.cpu;
             p.2 += ph.nas;
             p.3 += ph.net;
+            if ph.unsure > 0.0 {
+                *s.6.entry(ph.name.clone()).or_default() += ph.unsure;
+            }
             if let Some(w) = ph.waits {
                 let m = s.5.entry(ph.name.clone()).or_default();
                 m.0 += ph.wall;
@@ -1629,6 +1881,7 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
             let tenth = |v: f64| (v * 10.0).round() / 10.0;
             let mut w: Vec<(usize, usize, f64, f64, f64, f64, f64)> = Vec::new();
             let mut o: Vec<(usize, usize, Vec<(usize, f64)>)> = Vec::new();
+            let mut u: Vec<(usize, usize, u64)> = Vec::new();
             for (e, s) in &edges {
                 let mut sums: BTreeMap<usize, (f64, Waits)> = BTreeMap::new();
                 for (name, (mw, ws)) in &s.5 {
@@ -1644,10 +1897,15 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
                         o.push((*e, i, both));
                     }
                 }
+                let mut unsure: BTreeMap<usize, f64> = BTreeMap::new();
+                for (name, s) in &s.6 {
+                    *unsure.entry(at(name)).or_default() += s;
+                }
+                u.extend(unsure.into_iter().map(|(i, s)| (*e, i, s.round() as u64)).filter(|x| x.2 > 0));
             }
             let b = edges
                 .into_iter()
-                .map(|(e, (runs, failed, wall, cpu, ps, _))| {
+                .map(|(e, (runs, failed, wall, cpu, ps, _, _))| {
                     let mut sums: Vec<(usize, f64, f64, u64, u64)> = Vec::new();
                     for (name, (w, c, nas, net)) in ps {
                         let i = at(&name);
@@ -1669,7 +1927,7 @@ pub fn phase_times<'a>(runs: impl IntoIterator<Item = &'a RunSum>, now: u64) -> 
                     (e, runs, failed, wall.round() as u64, cpu.round() as u64, ps)
                 })
                 .collect();
-            (step.to_string(), StepTimes { phases, b, w, o })
+            (step.to_string(), StepTimes { phases, b, w, o, u })
         })
         .collect();
     PhaseTimes { at: now, edges: TIMES_EDGES.to_vec(), steps }
@@ -1689,8 +1947,13 @@ pub fn last_runs(runs: &[RunRec], kind: Option<&str>, last: usize) -> Vec<RunRec
     runs.iter().zip(keep).filter(|(_, k)| *k).map(|(r, _)| r.clone()).collect()
 }
 
-/// `summary`, readably: a table per kind. CPU marked `~` is approximate (the phase overlapped
-/// another thread's work).
+/// The share of a phase's CPU that may be other phases' (`uncertain_cpu`) past which its CPU/wall is
+/// marked `~` in `summary_text`.
+pub const UNSURE_MARK: f64 = 0.1;
+
+/// `summary`, readably: a table per kind. A phase's share of CPU that may be other phases'
+/// (`uncertain_cpu`) is said beside it, and its CPU/wall marked `~` past `UNSURE_MARK`; the
+/// unaccounted line's CPU/wall is the runs' CPU in no phase over their time in none.
 pub fn summary_text(sums: &[KindSum]) -> String {
     let mut out = String::new();
     for k in sums {
@@ -1713,13 +1976,17 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             "phase", "share", "total", "a run", "CPU/wall", "waits", "peak", "moved"
         ));
         let row = |out: &mut String, indent: &str, p: &PhaseSum| {
+            let unsure = p.cpu_s.filter(|&c| c > 0.0).map_or(0.0, |c| p.uncertain_cpu_s / c);
             let ratio = match p.cpu_s {
                 Some(c) if p.wall_s > 0.0 => {
-                    format!("{}{:.1}", if p.overlapped { "~" } else { "" }, c / p.wall_s)
+                    format!("{}{:.1}", if unsure >= UNSURE_MARK { "~" } else { "" }, c / p.wall_s)
                 }
                 _ => "".into(),
             };
             let mut moved = Vec::new();
+            if unsure >= 0.01 {
+                moved.push(format!("{:.0}% of its CPU uncertain", unsure * 100.0));
+            }
             if p.bytes > 0 {
                 moved.push(bytes(p.bytes));
             }
@@ -1749,11 +2016,15 @@ pub fn summary_text(sums: &[KindSum]) -> String {
             }
         }
         out.push_str(&format!(
-            "  {:<44} {:>5.1}% {:>11} {:>11}\n",
+            "  {:<44} {:>5.1}% {:>11} {:>11} {:>7}\n",
             "(unaccounted)",
             k.unaccounted() * 100.0,
             secs(k.untimed_s),
-            secs(k.untimed_s / n)
+            secs(k.untimed_s / n),
+            match k.untimed_cpu_s {
+                Some(c) if k.untimed_s > 0.0 => format!("{:.1}", c / k.untimed_s),
+                _ => String::new(),
+            }
         ));
         for g in k.gaps.iter().take(3) {
             out.push_str(&format!("    {:<42} {:>6} {:>11}\n", gap_name(g), "", secs(g.wall_s)));
@@ -2070,7 +2341,7 @@ mod tests {
         // Task #870: a phase's wall time split by what the job waited on, by wall clock: a NAS
         // call's 40 ms, two threads' network requests at once (30 ms each, together): 30 ms, not
         // 60; the rest computing.
-        let mut both = std::time::Duration::ZERO;
+        let both;
         {
             let _p = phase("measured");
             {
@@ -2154,6 +2425,106 @@ mod tests {
         assert!(!on());
         // Nothing timed after.
         let _p = phase("after");
+        reset();
+    }
+
+    /// Spins on this thread until it has used `ms` more of CPU.
+    #[cfg(target_os = "macos")]
+    fn burn(ms: u64) {
+        let port = this_port();
+        let end = thread_cpu(port).unwrap() + ms * 1000;
+        let mut x = 1u64;
+        while thread_cpu(port).unwrap() < end {
+            for i in 0..10_000u64 {
+                x = std::hint::black_box(x.wrapping_mul(6364136223846793005).wrapping_add(i));
+            }
+        }
+    }
+
+    /// Task #1116: a phase's CPU is its own work's, with phases running at once on several threads
+    /// (as terrain-deep's chunks): each thread's phase its thread's CPU, not the others' too; the
+    /// pool's work for the main thread's phase (rayon's workers, in no phase) that phase's, and
+    /// said uncertain where other threads' phases were open meanwhile; a target's work carried onto
+    /// a pool's thread (`Main`) the main thread's; and the run's phases' CPU and its CPU in no phase
+    /// add up to its CPU.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn phase_cpu_is_its_own_and_the_phases_add_up_to_the_run() {
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "timings::tests::phase_cpu_is_its_own_and_the_phases_add_up_to_the_run"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        use rayon::prelude::*;
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        reset();
+        start("test");
+        // The pool's work for a phase of the main thread alone: 4 × 100 ms on its workers.
+        {
+            let _p = phase("on the pool");
+            pool.install(|| (0..4).into_par_iter().for_each(|_| burn(100)));
+        }
+        // Three threads' phases at once (200 ms each), beside the main thread's, which has the pool
+        // work 4 × 50 ms meanwhile.
+        {
+            let _p = phase("spread");
+            std::thread::scope(|s| {
+                for k in 0..3 {
+                    s.spawn(move || {
+                        let _b = phase(["chunk a", "chunk b", "chunk c"][k]);
+                        burn(200);
+                    });
+                }
+                pool.install(|| (0..4).into_par_iter().for_each(|_| burn(50)));
+            });
+        }
+        // A target's work carried onto a pool's thread: the main thread's.
+        let m = Main::here();
+        pool.install(|| {
+            m.run(|| {
+                let _p = phase("a target");
+                burn(100);
+            })
+        });
+        // 100 ms in no phase.
+        burn(100);
+        let r = snapshot(true).unwrap();
+        finish(true);
+        let p = |n: &str| r.phases.iter().find(|p| p.name == n).unwrap_or_else(|| panic!("{n}: {:?}", r.phases));
+        let cpu = |n: &str| p(n).cpu_s.unwrap();
+        let near = |got: f64, want: f64| (got - want).abs() <= 0.02 + want * 0.15;
+        // (Each phase its own work, give or take the spinning's ends and the threads' starts.)
+        assert!(near(cpu("on the pool"), 0.4) && uncertain_cpu(p("on the pool"), r.v) == 0.0, "{:?}", p("on the pool"));
+        for c in ["chunk a", "chunk b", "chunk c"] {
+            assert!(near(cpu(c), 0.2) && p(c).background && p(c).overlapped, "{c}: {:?}", p(c));
+        }
+        // (The pool's work while the chunks' phases were open: the main thread's phase's, uncertain.)
+        let s = p("spread");
+        assert!(near(cpu("spread"), 0.2) && near(s.uncertain_cpu_s.unwrap_or(0.0), 0.2), "{s:?}");
+        // (The job's CPU while it was open: every thread's, the cores it kept busy.)
+        assert!(near(s.job_cpu_s.unwrap(), 0.8), "{s:?}");
+        assert!(near(cpu("a target"), 0.1) && !p("a target").background, "{:?}", p("a target"));
+        // The phases and the CPU in no phase add up to the run's CPU.
+        let phases: f64 = r.phases.iter().map(|p| p.cpu_s.unwrap()).sum();
+        let untimed = r.untimed_cpu_s.unwrap();
+        let run = r.cpu_s.unwrap();
+        assert!(untimed >= 0.1, "{untimed}");
+        assert!(
+            (phases + untimed - run).abs() <= 0.005 + run * 0.01,
+            "phases {phases} + untimed {untimed} vs run {run}"
+        );
+        assert!(table(&r).contains("of it uncertain"), "{}", table(&r));
         reset();
     }
 
