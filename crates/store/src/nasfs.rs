@@ -279,7 +279,7 @@ fn taking_turn(read: impl FnOnce() -> io::Result<Vec<u8>>) -> io::Result<Vec<u8>
 
 /// A whole copy here under a turn of the process's NAS limit (crate::aimd): its time no sample (a
 /// copy's length is its file's), a failure as the share's a halving (`congested`).
-fn copying_turn<T, E>(copy: impl FnOnce() -> Result<T, E>, congested: impl Fn(&E) -> bool) -> Result<T, E> {
+pub(crate) fn copying_turn<T, E>(copy: impl FnOnce() -> Result<T, E>, congested: impl Fn(&E) -> bool) -> Result<T, E> {
     let mut turn = crate::aimd::NAS.take();
     turn.unmeasured();
     let r = copy();

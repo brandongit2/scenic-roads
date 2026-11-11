@@ -44,7 +44,11 @@ impl Blobs {
         let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
             let _w = crate::waits::nas();
-            let (n, _) = crate::sys::copy_data_held(&src, tmp, &mut crate::nasfs::copy_counter())?;
+            // (Under a turn of the process's NAS limit, crate::aimd, as nasfs's copies are.)
+            let (n, _) = crate::nasfs::copying_turn(
+                || crate::sys::copy_data_held(&src, tmp, &mut crate::nasfs::copy_counter()),
+                crate::aimd::nas_congested,
+            )?;
             let want = fs::metadata(&src)?.len();
             if n != want {
                 return Err(io::Error::other(format!("{}: copied {n} of {want} bytes", src.display())));

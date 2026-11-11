@@ -1319,8 +1319,8 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   whatever its readers keep in flight: starting at 2 (`HOST_START`), up while answers come near
   their best (the floor never under 20 ms), halved when they slow to twice it, on a 429 or a 5xx, never past the host's ceiling
   (`fetch::host_ceiling`): Amazon S3's 64 (it states 5,500 GETs a second a prefix), every other
-  host's 8 (`HOST_DEFAULT`): the hosts read live are free services that publish no limit (GSI's
-  among them, task #665 review).
+  host's 16 (`HOST_DEFAULT`, every host's fixed cap before): the hosts read live are free services
+  that publish no limit (GSI's among them, task #665 review).
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
   linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in

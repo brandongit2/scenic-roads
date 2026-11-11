@@ -229,6 +229,20 @@ pub const NAS_LEAST: Duration = Duration::from_millis(2);
 /// The least a host's request's floor is taken to be: about an internet round trip.
 pub const NET_LEAST: Duration = Duration::from_millis(20);
 
+/// `read` of `bytes` from the NAS under a turn of the process's NAS limit (`NAS`), for a reader
+/// outside store::range and crate::nasfs (a base pack's ranges, codecs::basepart): its time a
+/// sample when it succeeds, a failure of the share's (`nas_congested`) a halving.
+pub fn nas_read<T>(bytes: u64, read: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut turn = NAS.take();
+    let r = read();
+    match &r {
+        Ok(_) => turn.read(bytes),
+        Err(e) if nas_congested(e) => turn.congested(),
+        Err(_) => turn.unmeasured(),
+    }
+    r
+}
+
 /// Whether an I/O error is the share's being overloaded or stuck (a timeout, a network failure of
 /// the mount), not the read's own (a file not there, a permission).
 pub fn nas_congested(e: &std::io::Error) -> bool {

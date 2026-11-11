@@ -14,7 +14,8 @@
 //! The ranges are copied into a sparse local file the size of the original, at their own offsets,
 //! then mapped as a whole file is (crate::basepack::Sect::open_only, only the sections read named):
 //! the bytes not read are zeros and take no room. Neighbouring ranges are read as one (`GAP`), in
-//! reads of `READ` bytes at most, `READERS` at once, each given up after `STALL` without a byte
+//! reads of `READ` bytes at most, `READERS` at once (each taking its turn of the process's NAS
+//! limit, store::aimd), each given up after `STALL` without a byte
 //! (`watched`: a stuck SMB read fails the job rather than holding it for good). Sections read
 //! whole are checked against their XXH3; ranges can't be (a file's sections are checksummed whole).
 
@@ -202,7 +203,7 @@ impl Copy {
         let b = watched(self.stall, &format!("read {}", self.name), move |p| {
             let mut b = vec![0u8; len];
             for (k, c) in b.chunks_mut(READ).enumerate() {
-                src.read_exact_at(c, off + (k * READ) as u64)?;
+                store::aimd::nas_read(c.len() as u64, || src.read_exact_at(c, off + (k * READ) as u64))?;
                 p.fetch_add(c.len() as u64, Ordering::Relaxed);
             }
             Ok(b)
@@ -259,7 +260,7 @@ impl Copy {
                             loop {
                                 let k = next.fetch_add(1, Ordering::Relaxed);
                                 let Some(&(at, n)) = pieces.get(k) else { return Ok(r) };
-                                src.read_exact_at(&mut buf[..n], at)?;
+                                store::aimd::nas_read(n as u64, || src.read_exact_at(&mut buf[..n], at))?;
                                 dst.write_all_at(&buf[..n], at)?;
                                 p.fetch_add(n as u64, Ordering::Relaxed);
                                 r += Read { bytes: n as u64, reads: 1 };

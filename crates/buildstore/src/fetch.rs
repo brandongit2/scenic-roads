@@ -605,7 +605,8 @@ pub const HOST_START: usize = 2;
 /// Amazon S3 (`*.amazonaws.com`: the Terrarium tiles, the stores read live) states 5,500 GETs a
 /// second a prefix (its performance guidelines), far past `HOST_S3`. The hosts read live that
 /// publish no limit (GSI's cyberjapandata.gsi.go.jp among them, task #665 review) get the
-/// conservative default.
+/// conservative default: the 16 a process every host had before the limits adapted (task #1096
+/// review: 8 would have halved what a GSI tile fill or sampling may keep in flight).
 pub fn host_ceiling(host: &str) -> usize {
     let h = host.split(':').next().unwrap_or(host);
     if h.ends_with(".amazonaws.com") {
@@ -615,7 +616,7 @@ pub fn host_ceiling(host: &str) -> usize {
     }
 }
 pub const HOST_S3: usize = 64;
-pub const HOST_DEFAULT: usize = 8;
+pub const HOST_DEFAULT: usize = 16;
 
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,
@@ -1236,7 +1237,12 @@ mod net {
                     }
                 })()?;
                 let last = match r {
-                    Ok(()) => return Ok(out),
+                    Ok(()) => {
+                        // (Its bytes and time a sample of the host's latency: a range request's
+                        // answer is the host's, as a tile's is.)
+                        slot.read(out.len());
+                        return Ok(out);
+                    }
                     Err(why) => why,
                 };
                 if last == "the file changed while it was read" {
