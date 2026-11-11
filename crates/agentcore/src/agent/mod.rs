@@ -3708,7 +3708,7 @@ impl Agent {
             self.beat.spawn();
             self.nas.spawn();
             if self.mac == cond::Mac::Real {
-                self.dsm = dsm::Part::spawn(dsm::Api::nas, self.pool.clone());
+                self.dsm = dsm::Part::spawn(dsm::Api::nas);
             }
             // **plan** on its thread: it plans on changes, the round granting from its last plan.
             self.plan.spawn();
@@ -4126,7 +4126,7 @@ impl Agent {
         // (**nas** unmounts it under the pool's lock, a tick never writing as the share goes, and
         // mounts it again at once.)
         self.nas.ask(nas::Req::Remount(self.pool.clone()));
-        // (And this Mac's other sessions on the NAS: a second address's, one from before a crash.)
+        // (And this Mac's stale sessions on the NAS: a second address's, one a reconnect left.)
         if let Some(d) = &self.dsm {
             let (why, mine) = dsm::Watch::remount(now_s(), store::nas::own_addrs());
             d.ask(why, mine, self.last_root.clone());
@@ -4135,18 +4135,12 @@ impl Agent {
     }
 
     /// This Mac's stale SMB sessions on the NAS dropped through DSM (crate::agent::dsm) as the
-    /// round sees it: at the start, on leaving home (`home`), once paused with no job running.
+    /// round sees it: at the start, on leaving home (`home`).
     fn tend_dsm(&mut self, home: bool, root: Option<&NasRoot>) {
-        if self.dsm.is_none() {
-            return;
-        }
-        let paused = self.own_pause().filter(|_| self.idle()).map(|p| p.at);
-        let seen = dsm::Seen { now: now_s(), home, nas: root.is_some(), addrs: store::nas::own_addrs(), paused };
-        let asks = self.dsm_watch.round(&seen);
-        if let Some(d) = &self.dsm {
-            for (why, mine) in asks {
-                d.ask(why, mine, root.cloned());
-            }
+        let Some(d) = &self.dsm else { return };
+        let seen = dsm::Seen { now: now_s(), home, nas: root.is_some(), addrs: store::nas::own_addrs() };
+        for (why, mine) in self.dsm_watch.round(&seen) {
+            d.ask(why, mine, root.cloned());
         }
     }
 

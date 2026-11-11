@@ -13,32 +13,34 @@
 //! `{pid, type, who, from}`; `http_conn` `[]`), as DSM's Resource Monitor sends them (its
 //! resource.js). The API allows any user to call; DSM shows the Kick button to administrators
 //! alone, and the account in keys.env (`NAS_DSM_USER`, `NAS_DSM_PASS`, read through jobrt::keys) is
-//! in administrators, with only the DSM application allowed. `kick_connection` answers error 105
-//! when any one of the connections asked can't be kicked (one gone by then, its own web session),
-//! the others kicked all the same, so what it ended is read from a second list. Every request is a
-//! POST (the password and the session id never in a URL), over HTTPS checked against the NAS's
-//! tailnet name's certificate (store::nas::DSM_NAME), at home by its LAN address; logged out after
-//! each use.
+//! in administrators, with only the DSM application allowed. A kick ends the connection's smbd, so
+//! every share it holds. `kick_connection` answers error 105 when any one of the connections asked
+//! can't be kicked (one gone by then), the others kicked all the same, so after a 105 what it ended
+//! is read from a second list. Every request is a POST (the password and the session id never in a
+//! URL), over HTTPS checked against the NAS's tailnet name's certificate (store::nas::DSM_NAME), at
+//! home by its LAN address; logged out after each use. A certificate that fails (lapsed: it is
+//! Let's Encrypt's, 90 days, renewed on the NAS by the owner) is a warning saying so and nothing is
+//! sent; there is no unchecked fallback.
 //!
-//! **Whose sessions:** `who` the share's SMB user (store::nas::smb_user), the share among `descr`'s
-//! (Time Machine's own connection never), `from` one of this Mac's addresses: those it has now (`own_addrs`), and, away
-//! from home, the LAN addresses it had at home (`home-addresses.json` in the agent's folder, written
-//! while at home), used for 24 hours at most and only for sessions last connected before it was last seen at
-//! home, so an address the LAN has since given another Mac is never taken for this one's. Sessions
-//! through Tailscale can't be told apart: the NAS's Tailscale runs in userspace and every tunnelled
-//! client shows as 127.0.0.1, so they are never dropped.
+//! **Whose sessions:** `who` the share's SMB user (store::nas::smb_user, every Mac's), the share
+//! among `descr`'s and no Time Machine there, `from` one of this Mac's addresses: those it has now
+//! (`own_addrs`), and, away from home, the LAN addresses it had at home (`home-addresses.json` in
+//! the agent's folder, written while at home), used for 24 hours at most and only for sessions last
+//! connected before it was last seen at home, so an address the LAN has since given another Mac is
+//! never taken for this one's. Sessions through Tailscale can't be told apart: the NAS's Tailscale
+//! runs in userspace and every tunnelled client shows as 127.0.0.1, so they are never dropped.
 //!
-//! **When** (`Watch`): at the agent's start, once the NAS answers (its keys read), the sessions
-//! last connected before the start but the newest (the live one: the share answering, its session
-//! is this Mac's newest); on leaving home (at home: yes, then no), those of the addresses it had at home
-//! (the share can't be unmounted cleanly by then: the LAN is gone, so an unmount ends nothing on
-//! the NAS; only DSM, over Tailscale, can); once this Mac is paused (from the menu bar, alone or
-//! with the build) with no job left running, at home, all its sessions, the live one too (it
-//! reconnects at the next call, holding none of the jobs' leases); and with the self-heal's
-//! remount (crate::agent::heal), all of them. The last two kick the live session, so they run under
-//! the pool's lock (no tick mid-write), as the remount does. A failure (DSM unreachable, no keys,
-//! refused) is a warning in the log and never stops the agent; one that didn't reach DSM is tried
-//! again each minute for half an hour (a Mac that just left may have no network yet).
+//! **When** (`Watch`): at the agent's start, once the NAS answers (its keys read), the sessions of
+//! its addresses now last connected before the start but the newest (the live one: a dead session
+//! stopped before the session replacing it began, so the live one connected last); with the
+//! self-heal's remount (crate::agent::heal), the same as of the remount; on leaving home (at home:
+//! yes, then no), those of the addresses it had at home (the share can't be unmounted cleanly by
+//! then: the LAN is gone, so an unmount ends nothing on the NAS; only DSM, over Tailscale, can).
+//! The live session is never kicked: the server, Finder and the agent's own beats hold or reopen
+//! files on the share within seconds, so a kick only swaps it for a fresh one while their open
+//! handles go stale (task #567's review). A failure (DSM unreachable, no keys, refused) is a
+//! warning in the log and never stops the agent; one that didn't reach DSM is tried again each
+//! minute for half an hour (a Mac that just left may have no network yet).
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -60,8 +62,6 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// A drop that didn't reach DSM is tried again this often, this many times.
 const RETRY_EVERY: Duration = Duration::from_secs(60);
 const RETRIES: u32 = 30;
-/// A drop under the pool's lock waits this long at most for it.
-const LOCK_WAIT: Duration = Duration::from_secs(60);
 
 /// DSM's account (Debug shows neither).
 #[derive(Clone, PartialEq, Eq)]
@@ -166,11 +166,10 @@ pub struct Home {
 /// Which of this Mac's sessions a drop ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mine {
-    /// Its addresses now: their sessions last connected before `before` (Unix s), but the newest of them
-    /// all when `keep_newest` (the live one).
+    /// Its addresses now: their sessions last connected before `before` (Unix s), but the newest of
+    /// them all (the live one).
     pub now: Vec<IpAddr>,
     pub before: u64,
-    pub keep_newest: bool,
     /// Away from home: the addresses it had there, their sessions last connected before it was last seen
     /// there.
     pub home: Option<Home>,
@@ -191,13 +190,16 @@ impl Mine {
 }
 
 /// Of `l`'s connections, this Mac's to drop (`m`): SMB, of the share's user `user` and the share
-/// `share`, from its addresses (task #567: never another Mac's, never a tunnelled one, which shows
-/// as the NAS's own loopback).
+/// `share` (none holding Time Machine: a kick ends every share of the connection), from its
+/// addresses (task #567: never another Mac's, never a tunnelled one, which shows as the NAS's own
+/// loopback), never the live one.
 pub fn pick(l: &Listing, user: &str, share: &str, m: &Mine, now: u64) -> Vec<Conn> {
     let ours = |c: &&Conn| {
+        let shares = || c.descr.split(',').map(str::trim);
         c.protocol == "SMB"
             && c.who == user
-            && c.descr.split(',').any(|d| d.trim().eq_ignore_ascii_case(share))
+            && shares().any(|d| d.eq_ignore_ascii_case(share))
+            && !shares().any(|d| d.eq_ignore_ascii_case("Time Machine"))
             && c.pid > 0
     };
     let connected = |c: &Conn| l.connected(c, now);
@@ -207,7 +209,7 @@ pub fn pick(l: &Listing, user: &str, share: &str, m: &Mine, now: u64) -> Vec<Con
     let mut out: Vec<Conn> = on_now
         .into_iter()
         .filter(|c| connected(c).is_some_and(|b| b < m.before))
-        .filter(|c| !(m.keep_newest && Some(c.pid) == newest))
+        .filter(|c| Some(c.pid) != newest)
         .cloned()
         .collect();
     if let Some(h) = &m.home {
@@ -245,29 +247,22 @@ pub struct Api {
     agent: ureq::Agent,
 }
 
-/// The NAS's DSM addresses for its tailnet name (store::nas::dsm_addrs), looked up once (an `Api`
-/// serves one drop: away from home, the LAN name's lookup takes seconds to fail, and a drop makes
-/// four requests); any other name as usual.
-#[derive(Debug, Default)]
-struct NasResolver {
-    other: ureq::unversioned::resolver::DefaultResolver,
-    addrs: std::sync::OnceLock<Vec<std::net::SocketAddr>>,
-}
+/// The NAS's DSM addresses (store::nas::dsm_addrs) for its tailnet name, the only name an
+/// `Api::nas` asks for: looked up once as it is made, outside every request's `TIMEOUT` (away from
+/// home, the LAN name's lookup alone takes 5 s to fail).
+#[derive(Debug)]
+struct NasResolver(Vec<std::net::SocketAddr>);
 
 impl ureq::unversioned::resolver::Resolver for NasResolver {
     fn resolve(
         &self,
-        uri: &ureq::http::Uri,
-        config: &ureq::config::Config,
-        timeout: ureq::unversioned::transport::NextTimeout,
+        _: &ureq::http::Uri,
+        _: &ureq::config::Config,
+        _: ureq::unversioned::transport::NextTimeout,
     ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
-        if uri.host() != Some(store::nas::DSM_NAME) {
-            return self.other.resolve(uri, config, timeout);
-        }
-        let addrs = self.addrs.get_or_init(store::nas::dsm_addrs).clone();
         let mut out = self.empty();
-        for a in addrs.into_iter().take(16) {
-            out.push(a);
+        for a in self.0.iter().take(16) {
+            out.push(*a);
         }
         if out.is_empty() {
             Err(ureq::Error::HostNotFound)
@@ -301,7 +296,7 @@ impl Api {
         let agent = ureq::Agent::with_parts(
             config,
             ureq::unversioned::transport::DefaultConnector::new(),
-            NasResolver::default(),
+            NasResolver(store::nas::dsm_addrs()),
         );
         Api { base: format!("https://{}:{}", store::nas::DSM_NAME, store::nas::DSM_PORT), agent }
     }
@@ -322,6 +317,12 @@ impl Api {
             self.agent.post(&url).send_form(f).and_then(|mut r| r.body_mut().read_to_string()).map_err(
                 |e| match e {
                     ureq::Error::StatusCode(c) => Failed::Refused(anyhow!("DSM answered HTTP {c} to {api} {method}")),
+                    // (rustls's handshake failures, a certificate refused among them, come as
+                    // InvalidData: not the network's, so not tried again.)
+                    ureq::Error::Io(e) if e.kind() == std::io::ErrorKind::InvalidData => Failed::Refused(anyhow!(
+                        "{api} {method}: TLS with DSM failed ({e}): its certificate must be valid for {} (renewed on the NAS, docs/macs.md); nothing was sent",
+                        store::nas::DSM_NAME
+                    )),
                     e => Failed::Unreached(anyhow!("{api} {method}: {e}")),
                 },
             )?;
@@ -374,38 +375,30 @@ impl Api {
     }
 
     /// Logged in, this Mac's sessions `m` listed and kicked, logged out (whatever happened between);
-    /// the ones that ended. The kick under `pool`'s lock when given (waited for `LOCK_WAIT` at most).
-    pub fn drop_mine(
-        &self,
-        k: &Keys,
-        m: &Mine,
-        now: u64,
-        pool: Option<&super::pool::Shared>,
-    ) -> Result<Vec<Conn>, Failed> {
+    /// the ones that ended.
+    pub fn drop_mine(&self, k: &Keys, m: &Mine, now: u64) -> Result<Vec<Conn>, Failed> {
         let sid = self.login(k)?;
         let r = (|| {
-            let l = self.list(&sid)?;
-            let drop = pick(&l, store::nas::smb_user(), store::nas::SHARE, m, now);
-            if !drop.is_empty() {
-                let _g = match pool {
-                    Some(p) => Some(super::pool::lock_within(p, LOCK_WAIT).ok_or_else(|| {
-                        Failed::Unreached(anyhow!("the pool's step held its lock for {LOCK_WAIT:?}"))
-                    })?),
-                    None => None,
-                };
-                let kicked = self.kick(&sid, &drop);
-                // (What ended, by a second list: a kick refused for one connection ends the others.)
-                let left = self.list(&sid)?;
-                let gone: Vec<Conn> = drop
-                    .into_iter()
-                    .filter(|c| !left.conns.iter().any(|l| l.pid == c.pid && l.from == c.from))
-                    .collect();
-                if gone.is_empty() {
-                    kicked?;
-                }
-                return Ok(gone);
+            let drop = pick(&self.list(&sid)?, store::nas::smb_user(), store::nas::SHARE, m, now);
+            if drop.is_empty() {
+                return Ok(drop);
             }
-            Ok(drop)
+            match self.kick(&sid, &drop) {
+                Err(Failed::Refused(e)) => {
+                    // (A kick refused for one connection ends the others: what ended, by a second
+                    // list.)
+                    let left = self.list(&sid)?;
+                    let gone: Vec<Conn> = drop
+                        .into_iter()
+                        .filter(|c| !left.conns.iter().any(|l| l.pid == c.pid && l.from == c.from))
+                        .collect();
+                    if gone.is_empty() {
+                        return Err(Failed::Refused(e));
+                    }
+                    Ok(gone)
+                }
+                r => r.map(|()| drop),
+            }
         })();
         if let Err(e) = self.logout(&sid) {
             eprintln!("agent: DSM: logging out: {e}");
@@ -419,7 +412,6 @@ impl Api {
 pub enum Why {
     Start,
     Left,
-    Paused,
     Remount,
 }
 
@@ -428,14 +420,8 @@ impl Why {
         match self {
             Why::Start => "the agent started",
             Why::Left => "this Mac left home",
-            Why::Paused => "this Mac is paused",
             Why::Remount => "the self-heal's remount",
         }
-    }
-
-    /// Whether it may end the live session (under the pool's lock, then).
-    fn kicks_live(self) -> bool {
-        matches!(self, Why::Paused | Why::Remount)
     }
 }
 
@@ -448,8 +434,6 @@ pub struct Seen {
     pub nas: bool,
     /// This Mac's addresses now (store::nas::own_addrs).
     pub addrs: Vec<IpAddr>,
-    /// This Mac's pause (its own or the build's) as of when, while no job runs here.
-    pub paused: Option<u64>,
 }
 
 /// Whether `a` is a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48).
@@ -471,8 +455,6 @@ pub struct Watch {
     home: Option<Home>,
     file: PathBuf,
     written: Option<Home>,
-    /// The pause (its `at`) a drop was asked for.
-    paused_for: Option<u64>,
 }
 
 impl Watch {
@@ -480,7 +462,7 @@ impl Watch {
     pub fn new(started: u64, dir: &std::path::Path) -> Watch {
         let file = dir.join(HOME_FILE);
         let home = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<Home>(&b).ok());
-        Watch { started, start_asked: false, was_home: None, written: home.clone(), home, file, paused_for: None }
+        Watch { started, start_asked: false, was_home: None, written: home.clone(), home, file }
     }
 
     /// The remembered home addresses to use away at `now`: within `HOME_FOR`.
@@ -512,36 +494,21 @@ impl Watch {
         if !self.start_asked && s.nas {
             self.start_asked = true;
             let home = if s.home { None } else { self.left(s.now) };
-            out.push((Why::Start, Mine { now: s.addrs.clone(), before: self.started, keep_newest: true, home }));
+            out.push((Why::Start, Mine { now: s.addrs.clone(), before: self.started, home }));
         }
         if self.was_home == Some(true) && !s.home {
             if let Some(home) = self.left(s.now) {
-                out.push((Why::Left, Mine { now: Vec::new(), before: 0, keep_newest: false, home: Some(home) }));
+                out.push((Why::Left, Mine { now: Vec::new(), before: 0, home: Some(home) }));
             }
         }
-        // (Paused with no job from before this agent started, as it first looks: its drop was the
-        // earlier agent's.)
-        let first = self.was_home.is_none();
         self.was_home = Some(s.home);
-        match s.paused {
-            Some(at) if self.paused_for != Some(at) => {
-                self.paused_for = Some(at);
-                if s.home && !(first && at < self.started) {
-                    out.push((
-                        Why::Paused,
-                        Mine { now: s.addrs.clone(), before: s.now, keep_newest: false, home: None },
-                    ));
-                }
-            }
-            Some(_) => {}
-            None => self.paused_for = None,
-        }
         out
     }
 
-    /// The self-heal's remount at `now`: every session of this Mac's addresses `addrs`.
+    /// The self-heal's remount at `now`: the sessions of this Mac's addresses `addrs` but the live
+    /// one (the remount ends that one itself).
     pub fn remount(now: u64, addrs: Vec<IpAddr>) -> (Why, Mine) {
-        (Why::Remount, Mine { now: addrs, before: now, keep_newest: false, home: None })
+        (Why::Remount, Mine { now: addrs, before: now, home: None })
     }
 }
 
@@ -560,11 +527,10 @@ pub struct Part {
 }
 
 impl Part {
-    /// Its thread, kicking through an `api` made for each drop; the live session's kicks under the
-    /// pool's lock (`pool`, when this Mac is in it).
-    pub fn spawn(api: fn() -> Api, pool: Option<super::pool::Shared>) -> Option<Part> {
+    /// Its thread, kicking through an `api` made for each drop.
+    pub fn spawn(api: fn() -> Api) -> Option<Part> {
         let (tx, rx) = mpsc::channel();
-        let started = std::thread::Builder::new().name("dsm".into()).spawn(move || run(api, pool, rx));
+        let started = std::thread::Builder::new().name("dsm".into()).spawn(move || run(api, rx));
         match started {
             Ok(_) => Some(Part { tx }),
             Err(e) => {
@@ -579,7 +545,7 @@ impl Part {
     }
 }
 
-fn run(api: fn() -> Api, pool: Option<super::pool::Shared>, rx: Receiver<Ask>) {
+fn run(api: fn() -> Api, rx: Receiver<Ask>) {
     let mut keys: Option<Keys> = None;
     let mut told_keys = false;
     // (Drops to try again: the ask, its tries left, when next.)
@@ -627,8 +593,7 @@ fn run(api: fn() -> Api, pool: Option<super::pool::Shared>, rx: Receiver<Ask>) {
         if mine.is_empty() {
             continue;
         }
-        let pool = pool.as_ref().filter(|_| a.why.kicks_live());
-        match api().drop_mine(k, &mine, super::jobs::now_s(), pool) {
+        match api().drop_mine(k, &mine, super::jobs::now_s()) {
             Ok(d) if d.is_empty() => {}
             Ok(d) => eprintln!(
                 "agent: DSM: {}: ended this Mac's SMB sessions {}",
@@ -696,8 +661,8 @@ mod tests {
     }
 
     /// Only this Mac's: its addresses (not another Mac's, nor a tunnelled one's 127.0.0.1), the
-    /// share's user, the share (not Time Machine's own connection); at the start, those last
-    /// connected before it but the live (newest) one.
+    /// share's user, the share (no connection holding Time Machine); those last connected before
+    /// the start, never the live (newest) one.
     #[test]
     fn only_this_macs_stale_sessions_are_picked() {
         let l = Listing {
@@ -711,19 +676,16 @@ mod tests {
                 Conn { who: "someone".into(), ..conn(6, "192.168.2.15", "personal", "2026/11/01 00:00:00") },
                 Conn { protocol: "HTTP/HTTPS".into(), ..conn(7, "192.168.2.15", "personal", "2026/11/01 00:00:00") },
                 conn(8, "192.168.2.15", "personal", "2026/11/11 14:59:00"),
+                conn(9, "192.168.2.15", "personal, Time Machine", "2026/11/02 00:00:00"),
             ],
         };
         let start = NOW - 10 * 60;
-        let m =
-            Mine { now: vec![ip("192.168.2.15"), ip("100.70.85.80")], before: start, keep_newest: true, home: None };
+        let m = Mine { now: vec![ip("192.168.2.15"), ip("100.70.85.80")], before: start, home: None };
         // (1 and 2 last connected before the start; 8 after it, the newest: live, kept.)
         assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1, 2]);
-        // Started after every one of them: the newest is still the live one.
-        let m = Mine { before: NOW - 30, ..m };
+        // Asked after every one of them (a remount): the newest is still the live one, kept.
+        let m = Mine { before: NOW, ..m };
         assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1, 2]);
-        // Paused: every one of them, the live one too.
-        let m = Mine { before: NOW, keep_newest: false, ..m };
-        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1, 2, 8]);
     }
 
     /// Away: the addresses it had at home, their sessions last connected before it was last seen
@@ -739,12 +701,7 @@ mod tests {
             ],
         };
         let left_at = NOW - 3 * 3600; // 12:00 on the NAS's clock
-        let m = Mine {
-            now: vec![],
-            before: 0,
-            keep_newest: false,
-            home: Some(Home { addrs: vec![ip("192.168.2.15")], at: left_at }),
-        };
+        let m = Mine { now: vec![], before: 0, home: Some(Home { addrs: vec![ip("192.168.2.15")], at: left_at }) };
         assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1]);
         // Holding that address again (home, a blip): nothing.
         let mut back = m.clone();
@@ -753,51 +710,37 @@ mod tests {
         assert!(pick(&l, "brandontsang", "personal", &back, NOW).is_empty());
     }
 
-    fn seen(now: u64, home: bool, nas: bool, paused: Option<u64>) -> Seen {
-        Seen { now, home, nas, addrs: vec![ip("192.168.2.15"), ip("100.70.85.80")], paused }
+    fn seen(now: u64, home: bool, nas: bool) -> Seen {
+        Seen { now, home, nas, addrs: vec![ip("192.168.2.15"), ip("100.70.85.80")] }
     }
 
     #[test]
-    fn the_watch_asks_at_start_on_leaving_and_once_paused() {
+    fn the_watch_asks_at_start_and_on_leaving() {
         let d = tempfile::tempdir().unwrap();
         let mut w = Watch::new(1000, d.path());
         // (No NAS yet: no start's drop.)
-        assert!(w.round(&seen(1000, true, false, None)).is_empty());
-        let a = w.round(&seen(1020, true, true, None));
+        assert!(w.round(&seen(1000, true, false)).is_empty());
+        let a = w.round(&seen(1020, true, true));
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].0, Why::Start);
-        assert_eq!(a[0].1, Mine { now: seen(0, true, true, None).addrs, before: 1000, keep_newest: true, home: None });
+        assert_eq!(a[0].1, Mine { now: seen(0, true, true).addrs, before: 1000, home: None });
         // (The home addresses kept, the tunnel's left out.)
         let kept: Home = serde_json::from_slice(&std::fs::read(d.path().join(HOME_FILE)).unwrap()).unwrap();
         assert_eq!(kept, Home { addrs: vec![ip("192.168.2.15")], at: 1000 });
-        assert!(w.round(&seen(1040, true, true, None)).is_empty(), "once");
+        assert!(w.round(&seen(1040, true, true)).is_empty(), "once");
         // Left: the addresses it had at home, as last seen there.
-        let a = w.round(&seen(1060, false, false, None));
+        let a = w.round(&seen(1060, false, false));
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].0, Why::Left);
         assert_eq!(a[0].1.home, Some(Home { addrs: vec![ip("192.168.2.15")], at: 1040 }));
         assert!(a[0].1.now.is_empty());
-        assert!(w.round(&seen(1080, false, true, None)).is_empty(), "once");
-        // Home again and paused, its jobs ended: every one of its sessions, once a pause.
-        assert!(w.round(&seen(1100, true, true, None)).is_empty());
-        let a = w.round(&seen(1120, true, true, Some(1110)));
-        assert_eq!(a.len(), 1);
-        assert_eq!(a[0].0, Why::Paused);
-        assert_eq!((a[0].1.before, a[0].1.keep_newest), (1120, false));
-        assert!(w.round(&seen(1140, true, true, Some(1110))).is_empty(), "once a pause");
-        assert!(w.round(&seen(1160, true, true, None)).is_empty());
-        assert_eq!(w.round(&seen(1180, true, true, Some(1170)))[0].0, Why::Paused, "a new pause");
-        // Paused away: nothing (its home sessions went as it left; tunnelled ones can't be told).
-        assert!(w.round(&seen(1200, false, true, None)).iter().all(|a| a.0 == Why::Left));
-        assert!(w.round(&seen(1220, false, true, Some(1210))).is_empty());
-        // Started paused with no job (the pause from before it): the earlier agent's drop; not again.
-        let mut w = Watch::new(2000, d.path());
-        assert!(w.round(&seen(2000, true, true, Some(1500))).iter().all(|a| a.0 == Why::Start));
-        assert!(w.round(&seen(2020, true, true, Some(1500))).is_empty());
-        // Started paused with jobs finishing: dropped once they have.
-        let mut w = Watch::new(3000, d.path());
-        w.round(&seen(3000, true, true, None));
-        assert_eq!(w.round(&seen(3020, true, true, Some(2500)))[0].0, Why::Paused);
+        assert!(w.round(&seen(1080, false, true)).is_empty(), "once");
+        // Home again, then left again: once more.
+        assert!(w.round(&seen(1100, true, true)).is_empty());
+        assert_eq!(
+            w.round(&seen(1120, false, true))[0].1.home,
+            Some(Home { addrs: vec![ip("192.168.2.15")], at: 1100 })
+        );
     }
 
     /// An agent started away uses the home addresses its Mac kept, within a day of leaving.
@@ -807,11 +750,11 @@ mod tests {
         let h = Home { addrs: vec![ip("192.168.2.15")], at: 5000 };
         std::fs::write(d.path().join(HOME_FILE), serde_json::to_vec(&h).unwrap()).unwrap();
         let mut w = Watch::new(6000, d.path());
-        let a = w.round(&seen(6000, false, true, None));
+        let a = w.round(&seen(6000, false, true));
         assert_eq!(a[0].0, Why::Start);
         assert_eq!(a[0].1.home, Some(h.clone()));
         let mut w = Watch::new(5000 + HOME_FOR + 1, d.path());
-        assert_eq!(w.round(&seen(5000 + HOME_FOR + 1, false, true, None))[0].1.home, None);
+        assert_eq!(w.round(&seen(5000 + HOME_FOR + 1, false, true))[0].1.home, None);
     }
 
     /// A fake DSM: its connections, what it was asked (each request's line and form), its open
@@ -946,34 +889,37 @@ mod tests {
             ..Default::default()
         }));
         let api = Api::at(&serve(fake.clone()));
-        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW - 600, keep_newest: true, home: None };
-        let d = api.drop_mine(&keys(), &m, NOW, None).unwrap();
+        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW - 600, home: None };
+        let d = api.drop_mine(&keys(), &m, NOW).unwrap();
         assert_eq!(pids(&d), vec![1]);
         let f = fake.write().unwrap();
         assert_eq!(pids(&f.conns), vec![2, 3, 4]);
         assert!(f.sessions.is_empty(), "logged out");
         let methods: Vec<String> =
             f.asked.iter().map(|(_, form)| form.iter().find(|(k, _)| k == "method").unwrap().1.clone()).collect();
-        assert_eq!(methods, ["login", "list", "kick_connection", "list", "logout"]);
+        assert_eq!(methods, ["login", "list", "kick_connection", "logout"]);
         assert!(f.asked.iter().all(|(line, _)| line.starts_with("POST /webapi/entry.cgi ") && !line.contains("pw")));
     }
 
-    /// A kick refused for one connection (gone by then) ends the others: what ended is read back.
+    /// A kick refused for one connection (gone by then) ends the others: what ended is read back,
+    /// once.
     #[test]
     fn a_partly_refused_kick_says_what_ended() {
         let fake = Arc::new(RwLock::new(Fake {
             conns: vec![
                 conn(1, "192.168.2.15", "personal", "2026/11/08 09:09:51"),
                 conn(2, "192.168.2.15", "personal", "2026/11/09 09:09:51"),
+                conn(3, "192.168.2.15", "personal", "2026/11/11 14:59:00"),
             ],
             unkickable: vec![2],
             ..Default::default()
         }));
         let api = Api::at(&serve(fake.clone()));
-        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, keep_newest: false, home: None };
-        assert_eq!(pids(&api.drop_mine(&keys(), &m, NOW, None).unwrap()), vec![1]);
+        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, home: None };
+        assert_eq!(pids(&api.drop_mine(&keys(), &m, NOW).unwrap()), vec![1]);
+        assert_eq!(fake.read().unwrap().asked.len(), 5, "login, list, kick, list, logout");
         // All refused: the error.
-        let e = api.drop_mine(&keys(), &m, NOW, None).unwrap_err();
+        let e = api.drop_mine(&keys(), &m, NOW).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("105"), "{e}");
         assert!(fake.write().unwrap().sessions.is_empty(), "logged out after a failure too");
     }
@@ -984,12 +930,37 @@ mod tests {
         let fake = Arc::new(RwLock::new(Fake::default()));
         let api = Api::at(&serve(fake));
         let bad = parse_keys("NAS_DSM_USER=scenic-sessions\nNAS_DSM_PASS=wrong\n").unwrap();
-        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, keep_newest: false, home: None };
-        let e = api.drop_mine(&bad, &m, NOW, None).unwrap_err();
+        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, home: None };
+        let e = api.drop_mine(&bad, &m, NOW).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("wrong password"), "{e}");
         let closed = store::spawn::listen("127.0.0.1:0").unwrap();
         let base = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        assert!(matches!(Api::at(&base).drop_mine(&keys(), &m, NOW, None), Err(Failed::Unreached(_))));
+        assert!(matches!(Api::at(&base).drop_mine(&keys(), &m, NOW), Err(Failed::Unreached(_))));
+    }
+
+    /// TLS that fails (here a server that doesn't speak it; a lapsed certificate fails the same
+    /// way, rustls's InvalidData) is refused, saying so, and not tried again as unreached.
+    #[test]
+    fn a_failed_tls_handshake_is_refused() {
+        let l = store::spawn::listen("127.0.0.1:0").unwrap();
+        let base = format!("https://{}", l.local_addr().unwrap());
+        l.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..5000 {
+                match store::spawn::accept(&l) {
+                    Ok((mut s, _)) => {
+                        s.set_nonblocking(false).ok();
+                        s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").ok();
+                        std::thread::sleep(Duration::from_millis(500));
+                        return;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+        });
+        let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, home: None };
+        let e = Api::at(&base).drop_mine(&keys(), &m, NOW).unwrap_err();
+        assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("certificate"), "{e}");
     }
 }

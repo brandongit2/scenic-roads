@@ -2,7 +2,7 @@
 //! this Mac (the agent's own, and its Rust jobs' through `store::whole::STUCK_ENV`) keep staying
 //! "Resource busy" past `codecs::whole`'s retries, the agent remounts its share, which ends this
 //! Mac's SMB session and with it every handle the session held (a process here killed with a file
-//! open), and this Mac's other sessions are dropped through DSM with it (crate::agent::dsm). It
+//! open), and this Mac's stale sessions are dropped through DSM with it (crate::agent::dsm). It
 //! can't free another Mac's session: that one ends when the server drops it or that Mac's agent
 //! drops it.
 //!

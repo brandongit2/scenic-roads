@@ -236,31 +236,43 @@ installed by `tools/app/install.sh`, updated by the updater).
   its own Mac's stale SMB sessions on the NAS through DSM's web API (`SYNO.API.Auth` login and
   logout, `SYNO.Core.CurrentConnection` list and kick_connection; HTTPS on 5001, the certificate
   checked against the NAS's tailnet name `fishandchips.tail23e9f2.ts.net`, reached at home by the
-  NAS's LAN address and away through Tailscale; logged out after each use). The account is
+  NAS's LAN address and away through Tailscale; every request a POST, logged out after each use).
+  The certificate is Let's Encrypt's for that name (90 days; the current one ends 14 Nov 2026),
+  installed and renewed on the NAS by the owner, not by the repo; once it lapses or doesn't match,
+  each drop is a warning saying the TLS failed and naming the certificate, and nothing is sent (there
+  is no unchecked fallback). The account is
   `NAS_DSM_USER` / `NAS_DSM_PASS` in `inputs/keys.env` (`scenic-sessions`: in administrators,
   which kicking another user's connection takes, with only the DSM application allowed); never
-  printed or logged. A session is this Mac's when it is SMB, of the share's user (`brandontsang`),
-  holds the `personal` share (DSM lists one row per client connection with every share it holds;
-  Time Machine's own connection is never touched), and comes from one of this Mac's addresses: those
+  printed or logged. A session is this Mac's when it is SMB, of the share's user (`brandontsang`,
+  every Mac's), holds the `personal` share and not Time Machine (DSM lists one row per client
+  connection with every share it holds, and a kick ends the whole connection; Time Machine's own
+  connection is separate, so never touched), and comes from one of this Mac's addresses: those
   it has now, or, away from home, the LAN addresses it had there (`home-addresses.json` in the
   agent's folder, written while at home), for 24 hours at most and only for sessions that last
   connected a share before the Mac was last seen at home, so an address the LAN has since given
   another Mac is never taken for this one's. Sessions through Tailscale are never dropped: the
-  NAS's Tailscale runs in userspace, so every tunnelled client shows as 127.0.0.1. When:
-  - at the agent's start, once the share answers: the sessions that last connected before the start,
-    but the newest (the live one);
+  NAS's Tailscale runs in userspace, so every tunnelled client shows as 127.0.0.1. The live
+  session is never dropped: the map server, Finder and the agent's own beats keep or reopen files
+  on the share within seconds, so a kick would only swap it for a fresh one while their open
+  handles fail. When:
+  - at the agent's start, once the share answers: the sessions of its addresses now that last
+    connected a share before the start, but the newest (the live one: a dead session stopped before
+    the one replacing it began; DSM's time is when a connection last connected a share, not when
+    it began, which keeps that order). Two live connections from one address holding the share
+    (two mounts of it) would lose the older;
   - when the agent sees it has left home (at home: yes, then no): those of the addresses it had at
     home. Dropping beats unmounting here: by then the LAN is gone, so a forced unmount ends nothing
     on the NAS (no word reaches it), and the share is mounted again through Tailscale at once; only
     DSM, reached through Tailscale, can end the session the NAS still holds. A drop that doesn't
     reach DSM (no network yet) is tried again each minute for half an hour;
-  - once this Mac is paused (from the menu bar, alone or with the build) and no job runs here, at
-    home: all its sessions, the live one too, under the pool's lock (a pause from before the
-    agent's start, its jobs already ended, counts as dropped by the earlier agent). It reconnects at its next
-    call, holding none of the jobs' leases, so a Mac paused and then carried away asleep leaves
-    little behind until it wakes and drops the rest;
-  - with the self-heal's remount: all its sessions (another address's, one from before a crash).
-  A failure (DSM not reached, no keys, refused) is a warning in the agent's log and stops nothing.
+  - with the self-heal's remount: the same as at the start, as of the remount (another address's,
+    one a reconnect left behind); the remount itself ends the live one.
+
+  Pausing from the menu bar drops nothing: the session left behind on leaving is the live one,
+  which the drop on leaving ends; a Mac carried away asleep keeps its session on the NAS until it
+  wakes and its agent sees it has left. A failure (DSM not reached, no keys, refused) is a warning
+  in the agent's log and stops nothing. By hand still: a Mac that doesn't come back, a session
+  through Tailscale, and the certificate's renewal on the NAS.
 - **Settings that shorten a dead client's hold** (the owner applies them; nothing in the repo
   changes system settings). They are server-wide trade-offs:
   - Synology, DSM Control Panel → File Services → SMB → Advanced settings:

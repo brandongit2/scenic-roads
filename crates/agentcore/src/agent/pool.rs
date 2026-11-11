@@ -1195,19 +1195,6 @@ pub fn try_lock(r: &Shared) -> Option<std::sync::MutexGuard<'_, Run>> {
     }
 }
 
-/// The run, locked, waited for `wait` at most (a second between tries: a tick under way); None
-/// past it.
-pub fn lock_within(r: &Shared, wait: std::time::Duration) -> Option<std::sync::MutexGuard<'_, Run>> {
-    let t = std::time::Instant::now();
-    loop {
-        match try_lock(r) {
-            Some(g) => return Some(g),
-            None if t.elapsed() < wait => std::thread::sleep(std::time::Duration::from_secs(1)),
-            None => return None,
-        }
-    }
-}
-
 /// Clears `Run::in_step` when dropped: the agent's loop's pool step over, however it ended.
 pub struct InStep(pub Shared);
 

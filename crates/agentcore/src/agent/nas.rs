@@ -165,14 +165,17 @@ impl Nas {
 
     /// The self-heal's remount: the share unmounted under the pool's lock, then mounted again.
     fn remount(&mut self, pool: Option<super::pool::Shared>) {
-        let guard = match pool.as_ref().map(|p| super::pool::lock_within(p, LOCK_WAIT)) {
-            Some(None) => {
-                eprintln!(
-                    "agent: the pool's step held its lock for {LOCK_WAIT:?}: the remount is left for the next drain"
-                );
-                return;
+        let t = Instant::now();
+        let guard = loop {
+            match pool.as_ref().map(super::pool::try_lock) {
+                Some(None) if t.elapsed() < LOCK_WAIT => std::thread::sleep(Duration::from_secs(1)),
+                Some(None) => {
+                    eprintln!("agent: the pool's step held its lock for {LOCK_WAIT:?}: the remount is left for the next drain");
+                    return;
+                }
+                Some(g) => break g,
+                None => break None,
             }
-            g => g.flatten(),
         };
         if self.mounts {
             if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE) {
