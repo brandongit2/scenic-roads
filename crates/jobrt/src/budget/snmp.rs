@@ -1,7 +1,7 @@
 //! The Synology's own figures over SNMPv3 (docs/pool.md §7.7, task #534): the one reader of them,
 //! for the NAS budget's closed loop (crate::budget::nas::Loop) and the build page's NAS figures
 //! (task #517). Polled by the lead alone. The keys (`NAS_SNMP_USER`, `NAS_SNMP_AUTH`) are read
-//! from the project's `inputs/keys.env` (git-ignored copies in each Mac's `data/keys.env`), handed
+//! from the project's `inputs/keys.env` (crate::keys), handed
 //! to `/usr/bin/snmpget` in a private config file (`Session`), never on its command line, and
 //! never logged or printed.
 
@@ -10,8 +10,6 @@ use std::time::Duration;
 
 /// The NAS.
 pub const HOST: &str = store::nas::LAN_HOST;
-/// The keys' file, under the project folder.
-pub const KEYS: &str = "inputs/keys.env";
 /// SYNOLOGY-STORAGEIO-MIB storageIOLA: each disk's busy share now (%), disks 1 to 3.
 pub const DISK_BUSY: [&str; 3] =
     [".1.3.6.1.4.1.6574.101.1.1.8.1", ".1.3.6.1.4.1.6574.101.1.1.8.2", ".1.3.6.1.4.1.6574.101.1.1.8.3"];
@@ -45,13 +43,7 @@ pub enum NoKeys {
 /// The keys in a `KEY=value` file's text.
 pub fn parse_keys(s: &str) -> Result<Keys, NoKeys> {
     let get = |k: &'static str| -> Result<String, NoKeys> {
-        let v = s
-            .lines()
-            .find_map(|l| {
-                let (a, b) = l.trim().split_once('=')?;
-                (a.trim() == k).then(|| b.trim().trim_matches(['"', '\'']).to_string()).filter(|v| !v.is_empty())
-            })
-            .ok_or(NoKeys::Missing)?;
+        let v = crate::keys::value(s, k).ok_or(NoKeys::Missing)?;
         if v.contains(|c: char| c.is_whitespace() || c == '#') {
             Err(NoKeys::Unusable(k))
         } else {
@@ -67,7 +59,7 @@ pub fn parse_keys(s: &str) -> Result<Keys, NoKeys> {
 
 /// The keys under the project folder `root`.
 pub fn read_keys(root: &store::nasfs::NasRoot) -> Result<Keys, NoKeys> {
-    parse_keys(&root.join(KEYS).read_to_string().map_err(|_| NoKeys::Missing)?)
+    parse_keys(&crate::keys::read(root).map_err(|_| NoKeys::Missing)?)
 }
 
 /// How long a poll may run at all before it's killed (snmpget's own timeout doesn't cover the

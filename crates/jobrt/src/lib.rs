@@ -8,6 +8,7 @@ pub mod appupdate;
 pub mod budget;
 pub mod control;
 pub mod jobs;
+pub mod keys;
 pub mod phase_names;
 pub mod pyenv;
 pub mod resume_log;
