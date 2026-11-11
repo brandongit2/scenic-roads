@@ -253,6 +253,22 @@ at their corner in a projected CRS, one with no data and a hole across a group's
 early stop is safe as libm's `hypot(x, y)` is never below the larger of x and y, and a row's least
 distance only grows outward.
 
+## 4e. A phase's own CPU (task #1116, 11 Nov)
+
+`terrain-same 10/321/338` (this branch's release binary, 4 threads, the M4 at load 60-70 with
+other agents' work: its wall is noisy, its shares aren't): 421 s, 678.6 s of CPU. Its phases' own
+CPU (the top-level ones, the sampling threads' `beside` ones too) and its 0.24 s in no phase add
+up to 678.6 s. Of it, `making the tiles, shading and encoding them` 184.9 s (27 %); the sampling
+threads' phases 215.2 s (32 %): `blending the edges` 96.9 s (14 %, where the profile of §4d
+found 15 %), `sampling hrdem-1m` 65.6 s, `sampling hrdem` 25.5 s, `sampling glo30` 14.5 s,
+`bringing the heights to EGM2008` 12.2 s; and `sampling the terrain pool into raw tiles` itself
+223.4 s (33 %), 197.8 s of it uncertain: the sampling threads' work outside their named phases
+(the points' projections and reading order, which §4d's profile put at 41 % of the sampler) and
+the pool's, taken in by the main thread's phase while the threads' own phases were open. Then
+`reading the regions and their outlines` 50.9 s (7.5 %). The timing's own cost (`overhead_s`): 74 ms
+for 1,721 spans, 0.02 % of the run. The deep pack and mid had the manifest's content names
+(02e54b896b199b6f, e2a73323ce2adb71).
+
 ## 5. Not done, with what the data says (the ranking of what's left)
 
 1. **GSI's tiles fetched live, every run (41 % of terrain-hi: 58.6 h in 16 Japan runs; the
