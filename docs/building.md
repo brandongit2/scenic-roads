@@ -101,7 +101,7 @@ from the first (`edit_held`).
     (`pause-request.json`) passed to the lead's coordinator; an ask older than the build's last
     change is passed over. One the lead refuses (task #922) is said in the menu bar and on the build
     page until seen, and `scenic pause`/`resume` exit 1 with the lead's reason.
-  - **Held** by the lead's coordinator (in its store, `coord/store/`, mirrored to `state/build/pause.json`) and
+  - **Held** by the lead's coordinator (in its store, `coord/store/`) and
     told to every worker; each agent keeps what it last heard.
   - **At a safe point** (the default): each job finishes its target, notes it done (`SCENIC_DONE`)
     and exits as paused (75; `SCENIC_CONTROL` said "drain"); the steps keeping a resume log (depth,

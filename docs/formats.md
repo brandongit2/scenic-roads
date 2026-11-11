@@ -1048,7 +1048,6 @@ class, id) within a tile. The client sends the id with the clicked point.
     `SCENIC_THREADS_FILE`, docs/pool.md §7.1, Threads re-granted), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
     `POST /api/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
-    `state/build/pause.json` mirrors the lead's.
   - **Input check asks** (`inputs::inputs::Ask`, docs/inputs.md §4.5): `inputs-asks/<at, 20
     digits>-<pid or "menu">-….json`, `{unit, accept, all, unaccept, check, full, forget, by, at}`,
     from the menu and `scenic inputs check`; taken up at the agent's next
@@ -1061,10 +1060,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
     merged; `.bad` one set aside unparsed.
-  - `state/helpers/<host>.json`: a member's status while not leading, written only while a member
-    on an app before #878 step 3 is in touch (docs/coordination.md step 3: the status rides in the
-    beat, the lead's `state/status.json` lists the members' as `helpers` and their heartbeats as
-    `beats`).
+  - A member's status rides in its beat (docs/coordination.md step 3); the lead's
+    `state/status.json` lists the members' as `helpers` and their heartbeats as `beats`.
 - **The pool** (docs/pool.md):
   - `state/build/terms/<E>.json`: term E, create-new, `{term, member, host, app, since, how, from,
     seq}`; `state/build/lead.json` a copy of the newest (a hint).
@@ -1085,34 +1082,26 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/journal/rejected/<day>/<term>-<n>.why`. Since #878 step 6 written only by a member whose
     lead doesn't take hand-offs by HTTP (the same entry posted whole, `POST /pool/handoff`, kept in
     the lead's store as `handoff/<day>/<term>-<n>` until merged: docs/coordination.md).
-  - `state/pool/members/<id>.json`: a heartbeat `{member, host, app, beat, leads, handing_to: {to,
-    term, offer, since, stage}, ready_for, stood_down, addresses, members, conds: {home, ac, battery,
-    able}}` (with brokers on, `broker: {urls, https, pages}`; `beat_http`: its app beats it to the
-    lead by HTTP). Since #878 step 3 written only while a member on an older app is in touch; else
-    it rides in `POST /pool/beat` (docs/coordination.md).
+  - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md step 3):
+    `{member, host, app, beat, leads, addresses, reach, checks_map, members, conds: {home, ac,
+    battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
+    always true, for a lead on the app before #1036).
   - Switches (present or `on` in it: on; `off` or missing: off, unless said): `near-slope`
-    (docs/building.md §2, Publishing's switch), under `state/pool/`. `placement`
-    (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `nas-budget` and
-    `nas-target.json` are the lead's settings (docs/coordination.md step 5), their files written and
-    read only while an older app is in the pool; `memory-guard`, `resume` and `brokers` are no
-    longer read (always on), nor `delta-catalog` (#883 step 6).
+    (docs/building.md §2, Publishing's switch), under `state/pool/`. `placement` (§7.2: jobs get
+    `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `nas-budget` and `nas-target` are the lead's
+    settings (docs/coordination.md step 5), with no file; `memory-guard`, `resume` and `brokers`
+    are no longer read (always on), nor `delta-catalog` (#883 step 6).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).
-  - `state/pool/progress/<member>.json`: `{member, worker, jobs: {"osm-pass <date>": {at, since,
-    done, scratch}}}` (a resumable job's progress there, offered to it alone for 24 h);
-    `state/pool/progress/released/<member>/<job>-<since>` (`scenic pool release`, empty). Since
-    #878 step 7 kept on the member's disk (`progress.json` in its agent's folder, the same shape)
-    and carried in its beats, the lead keeping `progress/<member>` (`{progress, released: [[job,
-    since], …]}`) in its store; these files only while a member or its lead is on an older app.
-  - `state/pool/wiki/<class>/<window>-<slot>`: a lease of the Wikimedia budget (`wiki` or `query`),
-    create-new, the leaser's id in it; removed 30 windows on.
-  - `state/pool/answers.lease`: `{by, token, until}` (crate::answers::Lease), create-new; a lapsed
-    one moved aside as `answers.lease.lapsed-<token>`, then removed. Since #878 step 7 both are
-    the lead's (`POST /pool/budget/take`, `/pool/lease/answers`; the lease as `answers-lease` in
-    its store), these files only while a member in touch is on an older app.
-  - `state/pool/mail/<to>/<from>.json`: the last 64 messages, `{msgs: [[n, msg], …]}`, `msg` one of
-    `{"Tell": [keys]}`, `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`,
-    `{"HandTo": member}`.
+  - A member's resume progress: `{member, worker, jobs: {"osm-pass <date>": {at, since, done,
+    scratch}}}` (a resumable job's progress there, offered to it alone for 24 h), on the member's
+    disk (`progress.json` in its agent's folder) and carried in its beats, the lead keeping
+    `progress/<member>` (`{progress, released: [[job, since], …]}`) in its store (#878 step 7).
+  - The Wikimedia budget and the answers' lease are the lead's (`POST /pool/budget/take`,
+    `/pool/lease/answers`; the lease as `answers-lease` in its store), nothing on the NAS.
+  - The members' mail goes by HTTP (`POST /pool/mail`; the lead's in its beats' answers): each
+    sender's last 64 messages, `[[n, msg], …]`, `msg` one of `{"Tell": [keys]}`, `{"Ack": {term,
+    keys, horizon}}`, `{"Passed": term}`.
   - `state/lead/store.json`: the lead's store's backup (`agentcore::pool::store::Snapshot`, `{epoch,
     seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
     `state/coord/history/<day>/<member>.jsonl` (history events, terms' as `kind: term`; days older than 7 are

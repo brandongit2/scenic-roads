@@ -32,7 +32,7 @@ app/           published app versions; current.json, previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)
 state/         status.json (the lead's heartbeat), build/ (manifest, job keys, pending, terms),
-               journal/, coord/, pool/ (switches), helpers/, backups/, logs/
+               journal/, coord/, pool/ (switches), backups/, logs/
 nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by publish.sh)
 ```
 

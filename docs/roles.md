@@ -351,7 +351,7 @@ one.) A member's threads (`sample`): `control`,
 `forecast-archive`, `pageview`, `pageview-lead`, `phase-shares`, `inputs-watch`, `maplog`,
 `pool-store`, `pool-store-backup`, three more `coordinator`. The members' NAS status copies
 (`state/helpers/<host>.json`) were written at their agents' start alone (before the lead's first
-answer, #878 step 3's gate), none after.
+answer, #878 step 3's gate), none after; none at all since #1036 deleted the gate.
 
 Besides the app: `local.scenic.sweep` (the dev tools' target sweep, every 20 min) on all three;
 supervised long runs (`local.scenic.run.*`, tools/dev/longrun.sh) and the agents' test runs on the
