@@ -144,7 +144,7 @@ pub trait LeaseCalls {
 
 impl LeaseCalls for Client {
     fn ask(&self, a: &Ask) -> Result<Option<Grant>> {
-        let a = Ask { worker: self.worker.clone(), ..a.clone() };
+        let a = Ask { worker: self.worker.clone(), sent: Some(super::held::sent()), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
             (200, v) => Ok(Some(serde_json::from_value(v)?)),
             (409, v) => Err(Refused {

@@ -64,6 +64,42 @@ pub struct Beat {
     /// disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::agent::resume::Progress>,
+    /// When its agent sent it, among its requests (`Sent`): a beat older than an ask or beat the
+    /// lead took from it since releases nothing. Left out by apps before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent: Option<Sent>,
+}
+
+/// Where a member's beat or ask stands among its agent's requests: its process (its start, unix
+/// ms) and its number there, so a later process's and a later request's are greater. A beat
+/// delayed past its client's time and taken after the member's next ask (task #1038, the pool's
+/// simulator's seed 37: a beat made before an ask, held 70 s on its way and taken 45 s after the
+/// grant, past `OMIT_GRACE`) lists the leases it held before that grant: the lease would end, its
+/// target granted again while its job ran.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Sent {
+    pub process: u64,
+    pub n: u64,
+}
+
+/// This process's next `Sent` (an agent's beats and asks, crate::agent::beat and
+/// crate::coord::client::LeaseCalls::ask).
+pub fn sent() -> Sent {
+    static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let process = *PROCESS.get_or_init(|| {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    });
+    Sent { process, n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
+}
+
+/// Request `sent` of member `member` taken: whether it's the newest taken from it (kept so),
+/// rather than one sent before another the lead took already.
+pub fn newest(s: &mut Shared, member: &str, sent: Sent) -> bool {
+    let last = s.sent.entry(member.to_string()).or_default();
+    let newest = sent >= *last;
+    *last = (*last).max(sent);
+    newest
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -191,7 +227,10 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         .clone()
         .filter(|(e, m)| !s.broker && *e == s.leases.epoch && s.pool_member.as_deref() == Some(m.id.as_str()))
         .map(|(_, m)| m);
-    if b.speaks.iter().any(|w| w == SPEAKS) {
+    // (A beat sent before a request the lead took from it since lists what it held then: it
+    // releases nothing.)
+    let stale = b.sent.is_some_and(|x| !newest(s, &b.member, x));
+    if b.speaks.iter().any(|w| w == SPEAKS) && !stale {
         // (As of when its list was made: a lease granted since isn't in it.)
         let now = s.now();
         let now = now.checked_sub(Duration::from_secs(b.held_age_s)).unwrap_or(now);

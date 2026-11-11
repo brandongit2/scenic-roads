@@ -116,6 +116,7 @@ impl ToLead {
             handoffs: Vec::new(),
             cap: self.cap.clone(),
             progress: self.beats.progress(),
+            sent: None,
         }
     }
 
@@ -215,6 +216,7 @@ impl ToLead {
         let b = crate::coord::held::Beat {
             held_age_s: age.as_secs_f64().ceil() as u64,
             handoffs: self.beats.handoff_keys(),
+            sent: Some(crate::coord::held::sent()),
             ..b.clone()
         };
         match c.pool_beat(&b) {

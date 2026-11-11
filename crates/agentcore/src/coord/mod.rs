@@ -503,6 +503,8 @@ pub struct Shared {
     /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
     /// (`Coordinator::refusals`): why nothing more fits a Mac.
     pub refused: BTreeMap<String, (u64, String)>,
+    /// Each member's newest request taken (held::Sent: its beats' and asks'), by its host.
+    pub sent: BTreeMap<String, held::Sent>,
     /// Tasks brokered by every member (docs/pool.md §8; crate::agent::brokers): the members and
     /// their brokers, as the agent last read their heartbeats. None: the switch off, the
     /// coordinator as it was (no page from elsewhere, a take-up's leases in place
@@ -967,6 +969,9 @@ impl Drop for Coordinator {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ask {
     pub worker: String,
+    /// When its agent sent it (held::Sent): a beat sent before it releases no lease it was granted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent: Option<held::Sent>,
     #[serde(default)]
     pub kind: String,
     #[serde(default)]
@@ -1732,6 +1737,7 @@ impl Coordinator {
             nas_disks: Vec::new(),
             nas_mount: None,
             refused: BTreeMap::new(),
+            sent: BTreeMap::new(),
             brokers: None,
             pageview: None,
             live: None,
@@ -4372,6 +4378,9 @@ fn route(
             let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
             let mut s = shared.lock().unwrap();
+            if let Some(x) = a.sent {
+                held::newest(&mut s, crate::agent::host_of(&a.worker), x);
+            }
             // The pool's lead not fresh: nothing now (docs/pool.md §6.5).
             if let Some(why) = s.moving_now(s.wall_s()) {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
@@ -4729,10 +4738,10 @@ fn route(
             // name it removes marked deleted first (written and fsynced), the newest lease granted
             // now its, so the merge refuses a hand-off of an older lease bringing one from then on;
             // each checked against its holders as of now.
-            let (q, feed, oldest_lease, lease) = {
+            let (q, feed, oldest_lease, lease, now) = {
                 let s = shared.lock().unwrap();
                 let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
-                (s.gc.clone(), s.maplog.clone(), oldest, crate::agent::gcqueue::lease(newest_lease(&s)))
+                (s.gc.clone(), s.maplog.clone(), oldest, crate::agent::gcqueue::lease(newest_lease(&s)), s.wall_s())
             };
             let (Some(q), Some(feed)) = (q, feed) else {
                 return Ok((
@@ -4741,7 +4750,6 @@ fn route(
                 ));
             };
             let cursors = feed.cursors();
-            let now = unix_now();
             let holders = store::map::gc::Holders { cursors: &cursors, oldest_lease, now };
             let answer = match p {
                 crate::agent::gc::CHUNK => {
@@ -6577,6 +6585,27 @@ mod tests {
             assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
         }
         assert_eq!(next.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
+    }
+
+    /// Task #1038 (the pool's simulator, seed 37): a member's beat sent before its ask and taken
+    /// after the grant, past `OMIT_GRACE` (held on its way), lists what it held before: it releases
+    /// nothing; its next beat, sent after, leaving the lease out, ends it.
+    #[test]
+    fn a_beat_sent_before_an_ask_and_taken_after_releases_nothing() {
+        let (_d, c, w) = start();
+        let clock = store::clock::Virtual::new();
+        c.shared.lock().unwrap().clock = clock.clone();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let before = held::sent();
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        clock.advance(Duration::from_secs(60));
+        let late = held::Beat { sent: Some(before), ..word("m1", &[]) };
+        assert!(c.member_beat(&late).released.is_empty());
+        assert!(c.held("unit").contains("6/1/1"), "still its lease");
+        let next = held::Beat { sent: Some(held::sent()), ..word("m1", &[]) };
+        c.member_beat(&next);
+        assert!(!c.held("unit").contains("6/1/1"), "its next beat ends lease {}", g.lease);
     }
 
     /// The 30 Oct decision: unheard 12 h, a member's leases go (a repeat costs doubled work only).
