@@ -7,8 +7,7 @@
 //! of its own: this Mac's status, from its `helper.json`, and since when the lead isn't reached.
 //!
 //! Not redirected: `/api/live`, `/api/settings` and `/api/asked` asked by the lead's page from any origin it is served at
-//! (CORS, `Coordinator::set_brokers`), the jobs' calls (a key), and `sw.js` (an installed page's
-//! worker updates from its own origin, then follows the redirects: web/buildpage/sw.js).
+//! (CORS, `Coordinator::set_brokers`) and the jobs' calls (a key).
 //! A lead before task #1101 is sent to its old addresses (crate::coord::oldpage).
 
 use std::path::Path;
@@ -38,7 +37,7 @@ pub enum Answer {
     Lead,
     /// The page's address itself: the lead's, or this Mac's own page.
     Page,
-    /// Answered here (`/api/live`, `sw.js`, the jobs' calls).
+    /// Answered here (`/api/live`, the jobs' calls).
     Here,
 }
 
@@ -47,7 +46,6 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
     if get {
         return match path {
             "/" | "/index.html" => Answer::Page,
-            "/sw.js" => Answer::Here,
             p if p.strip_prefix('/').is_some_and(&page_file) => Answer::Lead,
             _ => Answer::Here,
         };
@@ -164,11 +162,10 @@ mod tests {
 
     #[test]
     fn the_page_and_its_asks_go_to_the_lead_the_jobs_and_live_stay() {
-        let file = |p: &str| ["", "index.html", "dash.js", "dash.css", "sw.js"].contains(&p);
+        let file = |p: &str| ["", "index.html", "dash.js", "dash.css"].contains(&p);
         assert_eq!(answer("/", true, file), Answer::Page);
         assert_eq!(answer("/index.html", true, file), Answer::Page);
         assert_eq!(answer("/dash.js", true, file), Answer::Lead);
-        assert_eq!(answer("/sw.js", true, file), Answer::Here);
         assert_eq!(answer("/work/in/1/a", true, file), Answer::Here);
         assert_eq!(answer("/map/snapshot", true, file), Answer::Here);
         for p in ["/api/swarm", "/api/pause", "/api/settings", "/api/hold", "/api/act"] {

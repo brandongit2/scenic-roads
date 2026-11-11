@@ -206,7 +206,7 @@ Common rules:
   Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,
   so it outlives a restart.
 - **HTTPS** through `tailscale serve` (docs/pool.md §14), or the M6's
-  https://map.brandontsang.net/build (Caddy, docs/macs.md), gives the secure context the PWA needs;
+  https://map.brandontsang.net/build (Caddy, docs/macs.md), gives a secure context;
   plain HTTP on the tailnet still works. The page's files and requests are relative
   to the folder it was served from, so it works under a proxy's path.
 - **Its old addresses** (task #1101 moved the page from `/work/` and its data and asks from
@@ -214,13 +214,26 @@ Common rules:
   coordinator answers them as the new (`coord::oldpage`, gated by `beats::ROOT`: on the lead while
   a member heard doesn't say it, on a member's port while its lead doesn't); a member's port sends
   the page to an older lead's `/work/`, an agent and the page ask an older Mac's `/work/<name>`
-  when `/api/` is refused, and the page served at `/work/` installs no service worker there. It
+  when `/api/` is refused. It
   lifts by itself once every Mac runs the new app; the code goes one release after (the #642 gate).
-- **The page as an app** (`manifest.webmanifest`, `sw.js`, `icons/`): installable; its service
-  worker caches the page's files (one version's set, as it installs: a fresher answer is used, never
-  kept over it, so the page while the Mac is away is never a mix of versions), and takes a new
-  page when the coordinator's hash changes, reloading into it. Its scope is the page's folder
-  (`./`: `/build/` through Caddy).
+- **The page's version and its home screen entry.** The page has no service worker and no offline
+  copy: it is what the coordinator answers, and a Mac that doesn't answer shows the browser's own
+  error. Its `manifest.webmanifest`, `icons/` and the `apple-touch-icon` link and
+  `apple-mobile-web-app-*` meta tags only give a device's own Add to Home Screen (every browser has
+  its own way: there is no Install button or hint) its name, icon and full screen.
+  A page open for days reloads into a newly published one: the coordinator's hash of the page's
+  files (`http::page_version`) is in the page it serves (index.html's `page-version` meta tag, filled
+  in as it is served) and in the `X-Page-Version` header of every answer (`stamp`); the page
+  (`version.js`, from its `call`, so within 10 s while it is visible) reloads when an answer's
+  differs, once per version (`sessionStorage`, against a reload that serves the same old page), and
+  not when an answer has none (the lead away, a proxy's 502) or the page was served without one.
+  - **A one-off cleanup** (task #1117): the page unregisters every service worker registration and
+    deletes the `shell-` caches of the worker it had (`sw.js`, removed), for a device that still
+    has it; `sw.js` is no longer served (the gate refuses it, 403), which a browser's next update
+    check of the worker may also take as its end. It can go (index.html's two lines) once every device
+    that had the page as an app (the owner's phone, iPad and Macs) has opened the page once since
+    this app was published: a device drops the worker the first time it loads the page, so the
+    release after that is enough.
 
 ## 8. The workers: the Macs' agents
 

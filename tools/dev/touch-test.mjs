@@ -115,7 +115,9 @@ const PHONE = WIDTH < 768;
 const NARROW = WIDTH < 720; // dash.css's phone layout (max-width: 719px): stacked, wrapping
 const SCHEME = arg("--scheme", null);
 const PAUSE_LAG = +arg("--pause-lag", 3000);
-const fake = { pause: null, posts: 0 }; // (the page's Pause as this server keeps it)
+// (The page's Pause as this server keeps it; `version`: the page's version it serves and every answer
+// says, as the coordinator does, "" for none: GET /__version?to=V sets it.)
+const fake = { pause: null, posts: 0, version: "v1" };
 const ONLY_MAP = process.argv.includes("--only-map");
 const MAC = arg("--mac", null);
 const PHASE_TIMES = arg("--phase-times", null);
@@ -126,6 +128,9 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 function serve() {
   const srv = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
+    const writeHead = res.writeHead.bind(res);
+    res.writeHead = (...a) => { if (fake.version) res.setHeader("X-Page-Version", fake.version); return writeHead(...a); };
+    if (url.pathname === "/__version") { fake.version = url.searchParams.get("to") ?? ""; res.writeHead(200); return res.end(); }
     const call = url.pathname.match(/^\/api\/([a-z]+)$/)?.[1];
     if (call && call in READS) {
       let body = "";
@@ -210,14 +215,12 @@ function serve() {
     }
     if (req.method === "GET" && url.pathname === "/__posts") { res.writeHead(200); return res.end(String(fake.posts)); }
     if (req.method !== "GET" || url.pathname.startsWith("/api/")) { res.writeHead(403); return res.end(); }
-    // (No service worker: it would cache the page across runs.)
-    if (url.pathname === "/sw.js") { res.writeHead(404); return res.end(); }
     const rel = normalize(url.pathname.slice(1) || "index.html").replace(/^(\.\.[/\\])+/, "");
     let p = join(WEB, rel);
     if (existsSync(p) && statSync(p).isDirectory()) p = join(p, "index.html");
     if (!existsSync(p)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { "Content-Type": TYPES[extname(p)] || "application/octet-stream", "Cache-Control": "no-store" });
-    res.end(readFileSync(p));
+    res.end(p.endsWith("index.html") ? readFileSync(p, "utf8").replace("__VERSION__", fake.version) : readFileSync(p));
   });
   return new Promise((ok) => srv.listen(PORT, "0.0.0.0", () => ok(srv)));
 }
@@ -288,6 +291,27 @@ async function run() {
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stub() });
     await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?view${MAC ? `&mac=${encodeURIComponent(MAC)}` : ""}#overview` });
     await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
+
+    // The page's version (docs/coordinator.md §7): answers saying none (the lead away) or the
+    // version it was served as leave the page open (a poll is 10 s); an answer saying another reloads it.
+    {
+      const mark = () => js(`window.__open ? 1 : (window.__open = 1, 0)`);
+      const sameVersion = await js(`document.querySelector('meta[name="page-version"]').content`);
+      await mark();
+      await fetch(`http://127.0.0.1:${PORT}/__version?to=`);
+      await sleep(11500);
+      const noneKept = await js(`!!window.__open`);
+      await fetch(`http://127.0.0.1:${PORT}/__version?to=${sameVersion}`);
+      await sleep(11500);
+      const sameKept = await js(`!!window.__open`);
+      await fetch(`http://127.0.0.1:${PORT}/__version?to=v2`);
+      const gone = await until(`!window.__open`, 15000);
+      const now = await js(`document.querySelector('meta[name="page-version"]').content`).catch(() => "");
+      check("version: no reload on an answer with none or the page's own; a new version reloads into it", sameVersion === "v1" && noneKept && sameKept && gone >= 0 && now === "v2", `served ${sameVersion}, kept ${noneKept}/${sameKept}, reloaded in ${gone} ms into ${now}`);
+      await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
+      // (The service worker of before and its files, gone from a device that had them: the page's one-off cleanup.)
+      check("version: no service worker registered, no shell- cache kept", await js(`navigator.serviceWorker.getRegistrations().then((r) => r.length === 0)`) && !(await js(`caches.keys().then((k) => k.some((n) => n.startsWith("shell-")))`)));
+    }
 
     // `?mac=` (the menu bar's panel on a member, sent to the lead's page): the page opens on it.
     if (MAC) {

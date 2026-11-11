@@ -7,7 +7,9 @@
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
-<!-- An app to install: home screen, full screen (manifest, sw.js: docs/coordinator.md §7). -->
+<!-- The page's version, filled in as it is served (docs/coordinator.md §7, The page's version). -->
+<meta name="page-version" content="__VERSION__">
+<!-- A device's own home screen entry: its icon, name and full screen (docs/coordinator.md §7). -->
 <link rel="manifest" href="manifest.webmanifest" id="manifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -78,8 +80,8 @@
   h1 { font-size: var(--fs-l); font-weight: 600; margin: 0; }
   #state { color: var(--dim); font-size: var(--fs-s); }
   #status { flex: 1 1 auto; min-width: 0; }
-  /* (A phone: Install beside the title, not a row of its own under the wrapped status.) */
-  @media (max-width: 719px) { .top h1, #state { order: -2; } #install { order: -1; margin-left: auto; } #status { flex-basis: 100%; } }
+  /* (A phone: the status a row of its own under the title.) */
+  @media (max-width: 719px) { #status { flex-basis: 100%; } }
   nav { display: flex; gap: 2px; padding-top: 4px; overflow-x: auto; scrollbar-width: none; border-bottom: 1px solid var(--line); }
   nav::-webkit-scrollbar { display: none; }
   nav a { color: var(--dim); text-decoration: none; padding: 5px 10px 6px; border-bottom: 2px solid transparent; white-space: nowrap; font-size: var(--fs-b); }
@@ -108,8 +110,8 @@
 </head>
 <body>
 <header><div>
-  <!-- The title, the build's status and its pause controls (dash.js), Install. -->
-  <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><div id="status"></div><button id="install" hidden>Install</button></div>
+  <!-- The title and the build's status and its pause controls (dash.js). -->
+  <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><div id="status"></div></div>
 </div></header>
 <div id="split">
 <!-- Left, the world map (dash.js); right, the tabs; the bar between drags. -->
@@ -120,7 +122,6 @@
   <a href="#overview">Overview</a><a href="#jobs">Jobs</a><a href="#machines">Machines</a><a href="#nas">NAS</a><a href="#regions">Regions</a><a href="#inputs">Inputs</a><a href="#activity">Activity</a><a href="#details">Details</a>
 </nav>
 <main>
-  <p class="hint" id="hint" hidden></p>
   <!-- A panel a tab (dash.js fills them). -->
   <div class="panel" data-tab="overview"></div>
   <div class="panel" data-tab="jobs" hidden></div>
@@ -139,16 +140,15 @@
 </div></footer>
 <script type="module">
 import { dashboard } from "./dash.js";
+import { versionWatch } from "./version.js";
 // The build's page (docs/coordinator.md §7): the whole build at a glance for anyone it answers, and the
 // owner's controls. It reads and asks; it never runs the build's work (pages stopped helping,
 // #875: the Macs' agents do it all).
 //
-// `?view` (the menu bar's panel, tools/status): a viewer only; the page as an app (its service
-// worker) isn't installed either. `?mac=<host>` (the panel on a member: its port sends it to the
+// `?view` (the menu bar's panel, tools/status) changes nothing here. `?mac=<host>` (the panel on a member: its port sends it to the
 // lead's page, docs/roles.md §3.3): the page opens on that Mac, named in the title and first in the
 // Machines tab.
 const $ = (id) => document.getElementById(id);
-const viewer = new URLSearchParams(location.search).has("view");
 const here = new URLSearchParams(location.search).get("mac") || null;
 if (here) { $("title").textContent = `Scenic build · ${here}`; document.title = `Scenic build · ${here}`; }
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
@@ -167,6 +167,7 @@ const label = (() => {
 const READING = new Set(["/api/swarm", "/api/history", "/api/catalogs"]);
 async function call(path, body) {
   const r = await fetch(ROOT + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  pageVersion(r.headers);
   if (r.status === 204) return [204, null];
   const text = await r.text();
   // (A 503 from the build at a glance is an answer: this Mac hasn't read the build's state yet,
@@ -175,41 +176,17 @@ async function call(path, body) {
   return [r.status, text ? JSON.parse(text) : null];
 }
 
-// The page as an app (sw.js, manifest.webmanifest): kept for when its Mac doesn't answer. A new
-// version taking over (a newly published app): reloaded into it. (A first install takes over too:
-// that's no reason to reload.)
-// (Served at its old address, /work/, while an app before task #1101 may send it there:
-// crates/agentcore/src/coord/oldpage.rs. Not installed there, and an install from before removed,
-// so none is left once that address goes.)
-const oldAddress = ROOT.endsWith("/work");
-// (The worker of /work/'s own scope alone: one at the root, which scope covers /work/ too, stays.)
-if (oldAddress && "serviceWorker" in navigator) navigator.serviceWorker.getRegistration().then((r) => r && new URL(r.scope).pathname.endsWith("/work/") && r.unregister(), () => {});
-if (!oldAddress && !viewer && "serviceWorker" in navigator && window.isSecureContext) {
-  let had = !!navigator.serviceWorker.controller;
-  // (Asked about whenever the page comes back to the front, and every half hour: an installed app
-  // stays open for days.)
-  navigator.serviceWorker.register("sw.js").then((reg) => {
-    const check = () => reg.update().catch(() => {});
-    document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && check());
-    setInterval(check, 30 * 60000);
-  }, (e) => console.error(`couldn't install the page as an app: ${e.message}`));
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!had) { had = true; return; }
-    location.reload();
-  });
-}
-// Installing it: the browser's own prompt where it offers one, else (Safari on an iPhone or iPad)
-// how to.
-let installer = null;
-window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installer = e; $("install").hidden = false; });
-$("install").onclick = async () => { if (!installer) return; installer.prompt(); await installer.userChoice; installer = null; $("install").hidden = true; };
-const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-// (An iPad says it's a Mac: one with a touch screen.)
-const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
-if (!standalone && window.isSecureContext && ios) {
-  $("hint").hidden = false;
-  $("hint").textContent = "To keep it on your home screen as an app: Share, then Add to Home Screen.";
-}
+// A newly published page (docs/coordinator.md §7, The page's version): every answer of the
+// coordinator carries its page's version; the one in this page's meta tag is the version it was
+// served as. They differ: the page reloads into the new one (once per version).
+const pageVersion = versionWatch(document.querySelector('meta[name="page-version"]')?.content, () => location.reload(), {
+  get: () => { try { return sessionStorage.getItem("page-version-tried"); } catch { return null; } },
+  set: (v) => { try { sessionStorage.setItem("page-version-tried", v); } catch {} },
+});
+// A one-off cleanup (docs/coordinator.md §7 says when it goes): a device that had this page's
+// service worker, which is gone, drops it and the files it kept.
+navigator.serviceWorker?.getRegistrations().then((rs) => rs.forEach((r) => r.unregister()), () => {});
+window.caches?.keys().then((ks) => ks.filter((k) => k.startsWith("shell-")).forEach((k) => caches.delete(k)), () => {});
 
 // ---- Tabs, by the address's #hash (kept in it: a link or a reload opens the same tab) -------------
 const panels = Object.fromEntries([...document.querySelectorAll(".panel[data-tab]")].map((el) => [el.dataset.tab, el]));

@@ -7,8 +7,7 @@
 //! before. While one may (`gated`), a coordinator answers them as the new ones (`new_path`); a
 //! member's port sends the page to an older lead's old addresses (`old_path`), an agent asks an
 //! older lead's (coordwire's `Client::post_api`), and the page asks an older Mac's (its `remote`
-//! and `ask`, web/buildpage/live.js and settings.js). The page served at `/work/` installs no
-//! service worker there and removes one from before (web/buildpage/index.html).
+//! and `ask`, web/buildpage/live.js and settings.js).
 //!
 //! The gate lifts by itself once every Mac runs an app that says `beats::ROOT`: on the lead, when
 //! every member heard says it; on a member's port, when its lead's answer does. Then the old
@@ -58,12 +57,11 @@ mod tests {
 
     #[test]
     fn the_old_addresses_are_the_new_ones() {
-        let file = |f: &str| ["", "index.html", "dash.js", "sw.js", "icons/icon-192.png"].contains(&f);
+        let file = |f: &str| ["", "index.html", "dash.js", "icons/icon-192.png"].contains(&f);
         for (old, new) in [
             ("/work", Some("/")),
             ("/work/", Some("/")),
             ("/work/index.html", Some("/index.html")),
-            ("/work/sw.js", Some("/sw.js")),
             ("/work/icons/icon-192.png", Some("/icons/icon-192.png")),
             ("/work/swarm", Some("/api/swarm")),
             ("/work/pause", Some("/api/pause")),

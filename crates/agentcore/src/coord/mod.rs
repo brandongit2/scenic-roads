@@ -5350,8 +5350,8 @@ mod http {
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
     /// The build page (docs/coordinator.md §7), built in: (path under the coordinator's root, type,
-    /// contents). An app to install (its manifest, service worker and icons: docs/coordinator.md §7,
-    /// The page as an app).
+    /// contents). Its manifest and icons are for a device's own home screen entry (docs/coordinator.md
+    /// §7, The page's version).
     const PAGE: &[(&str, &str, &[u8])] = &[
         ("", "text/html; charset=utf-8", include_bytes!("../../../../web/buildpage/index.html")),
         ("index.html", "text/html; charset=utf-8", include_bytes!("../../../../web/buildpage/index.html")),
@@ -5369,6 +5369,8 @@ mod http {
         // The Jobs tab's schedule: its view, gestures and arrows (task #787).
         ("timeline.js", "text/javascript", include_bytes!("../../../../web/buildpage/timeline.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/buildpage/dash.css")),
+        // An open page reloading into a newly published version (the page's version, §7).
+        ("version.js", "text/javascript", include_bytes!("../../../../web/buildpage/version.js")),
         // Every module's elements and words (one way to make an element, a count, a token's value).
         ("dom.js", "text/javascript", include_bytes!("../../../../web/buildpage/dom.js")),
         ("words.js", "text/javascript", include_bytes!("../../../../web/buildpage/words.js")),
@@ -5381,7 +5383,6 @@ mod http {
         // The large lakes it draws as the sea (Natural Earth 1:10m lakes, scalerank ≤ 3, simplified,
         // the same rings; the NAS's sources/fetched/natural-earth-lakes-10m, task #831).
         ("lakes.json", "application/json", include_bytes!("../../../../web/buildpage/lakes.json")),
-        ("sw.js", "text/javascript", include_bytes!("../../../../web/buildpage/sw.js")),
         (
             "manifest.webmanifest",
             "application/manifest+json",
@@ -5401,8 +5402,9 @@ mod http {
         ),
     ];
 
-    /// The page's version: its files' hash, in its service worker (sw.js's VERSION), so a new
-    /// app's page is a new service worker, which takes over.
+    /// The page's version: its files' hash. The page (index.html) is served with it (`__VERSION__`)
+    /// and every answer carries it (`PAGE_VERSION`, `stamp`), so an open page reloads into a newly
+    /// published one.
     pub(super) fn page_version() -> &'static str {
         static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         V.get_or_init(|| {
@@ -5412,12 +5414,8 @@ mod http {
         })
     }
 
-    /// The page's files' addresses for its service worker (sw.js's PAGE, kept as it installs): all
-    /// but the worker itself.
-    pub(super) fn page_list() -> String {
-        let v: Vec<String> = PAGE.iter().filter(|(n, _, _)| *n != "sw.js").map(|(n, _, _)| format!("/{n}")).collect();
-        serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
-    }
+    /// The header every answer carries with `page_version`.
+    pub(super) const PAGE_VERSION: &str = "x-page-version";
 
     /// The largest JSON body taken, and the largest upload.
     const JSON_MAX: usize = 16 << 20;
@@ -5739,9 +5737,11 @@ mod http {
     /// (`/task/…`), with its own key, from this Mac itself (coordwire::net::own: `tailscale serve` hands
     /// the tailnet's requests over from loopback). A key that isn't one is refused (401), so an
     /// agent with an old one reads the new one. Who it is goes on to the request (`Caller`).
-    /// Every answer says the pool's term and member this coordinator is, while it has them.
+    /// Every answer says the pool's term and member this coordinator is, while it has them, and the
+    /// page's version it serves.
     async fn stamp(State(c): State<Ctx>, req: Request, next: Next) -> Response {
         let mut r = next.run(req).await;
+        r.headers_mut().insert(PAGE_VERSION, HeaderValue::from_static(page_version()));
         let (term, member, broker) = {
             let s = c.shared.lock().unwrap();
             (s.leases.term, s.pool_member.clone(), s.broker)
@@ -5852,7 +5852,7 @@ mod http {
     /// What a member's port (a broker, a viewer) answers a keyless request for `path` from a page of
     /// its own origin (crate::coord::memberpage): the page and its data and asks with a 307 to the
     /// lead, or, the lead not reached, `/` with this Mac's own page and the rest 503; None:
-    /// answered here (the lead's own coordinator, `/api/live`, the page's worker, the jobs').
+    /// answered here (the lead's own coordinator, `/api/live`, the jobs').
     fn elsewhere(c: &Ctx, req: &Request, path: &str) -> Option<Response> {
         use super::memberpage::{self, Answer, PageAt};
         let (at, home) = {
@@ -5939,9 +5939,9 @@ mod http {
 
     async fn page(file: &str) -> Response {
         match PAGE.iter().find(|(n, _, _)| *n == file) {
-            Some(("sw.js", t, body)) => (
+            Some(("" | "index.html", t, body)) => (
                 [(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")],
-                String::from_utf8_lossy(body).replace("__VERSION__", page_version()).replace("__PAGE__", &page_list()),
+                String::from_utf8_lossy(body).replace("__VERSION__", page_version()),
             )
                 .into_response(),
             Some((_, t, body)) => {
@@ -11987,7 +11987,7 @@ mod tests {
         let mut page = String::new();
         s.read_to_string(&mut page).unwrap();
         assert!(page.starts_with("HTTP/1.1 200") && page.contains("Scenic build"), "{}", &page[..page.len().min(200)]);
-        // The page as an app: its manifest, service worker (its version filled in) and icons, likewise.
+        // The page's manifest and icons, likewise.
         let get = |path: &str| {
             let mut s = std::net::TcpStream::connect(&addr).unwrap();
             s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
@@ -12001,19 +12001,21 @@ mod tests {
                 && manifest.contains("application/manifest+json")
                 && manifest.contains("\"start_url\": \"./\"")
         );
-        let sw = String::from_utf8(get("/sw.js")).unwrap();
-        assert!(
-            sw.starts_with("HTTP/1.1 200")
-                && !sw.contains("__VERSION__")
-                && sw.contains(&format!("const VERSION = \"{}\"", http::page_version()))
-        );
-        // (Its list of the page's files, to keep as it installs: the page's own address among them,
-        // not the worker's.)
-        assert!(
-            !sw.contains("__PAGE__")
-                && sw.contains(r#"const PAGE = ["/","/index.html","/dash.js""#)
-                && !sw.contains(r#""/sw.js""#)
-        );
+        // (The page's version: in the page served, and on every answer, the page's own or not; and
+        // no service worker.)
+        let version = http::page_version();
+        for path in ["/", "/index.html"] {
+            let r = String::from_utf8(get(path)).unwrap();
+            assert!(
+                r.contains(&format!("content=\"{version}\"")) && !r.contains("__VERSION__"),
+                "{path}: the version is in the page"
+            );
+        }
+        for path in ["/", "/dash.js", "/api/nope", "/sw.js"] {
+            let r = String::from_utf8(get(path)).unwrap().to_ascii_lowercase();
+            assert!(r.contains(&format!("\r\nx-page-version: {version}\r\n")), "{path}: {r}");
+        }
+        assert!(!String::from_utf8(get("/sw.js")).unwrap().starts_with("HTTP/1.1 200"), "no service worker");
         let icon = get("/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
         // (Task #792, the server's own layers: the page gzipped for a client that asks, a PNG never.)
@@ -12277,8 +12279,6 @@ mod tests {
         // (Through `tailscale serve`: the lead's HTTPS page.)
         let proxied = [("X-Forwarded-Host", "m4.tail1.ts.net"), ("X-Forwarded-For", "100.101.1.2")];
         assert_eq!(get("/", &proxied).1, "https://mini.tail1.ts.net/");
-        // (The page's worker stays: an installed page updates it from here, then follows.)
-        assert_eq!(get("/sw.js", &[]).0, 200);
         // (Its lead knows the new addresses: the old ones aren't answered.)
         assert_eq!(get("/work/", &[]).0, 403);
         let post = |path: &str, h: &[(&str, &str)]| send(&addr, "POST", path, None, h, &serde_json::json!({})).0;
