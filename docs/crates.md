@@ -593,7 +593,8 @@ The choices, against the alternatives:
   docs/coordination.md step 8c, task #1124, there are no terms: `records::term` is
   `records::lead` (`LEAD`, `Declared`, `declared`, `declare`, the role, the app rule), re-exported
   as `pool::lead`, and the choice is the one path's alone (`load_one`, `now`, `brief_now`,
-  `no_pool`, `TODAY`, `ONE`, `ONE_BRIEF`).)
+  `no_pool`, `TODAY`, `ONE`, `ONE_BRIEF`; `BriefOf` is the `Brief` trait, and `Recorded` reads no
+  term).)
 - **Items the steps name from the agent move to their owners** (built, 6b): the version
   constants to their step (`TERRAIN_V` terrain_pack's, `SLOPE_V` and `SLOPE_LO_V` slope_pack's;
   the plan and the steps table import them), `grown_e7` to roadcore::geo, `coverage_tiles` (with
@@ -616,7 +617,7 @@ The choices, against the alternatives:
 - **coordwire** (built, 6c): the client's transport (coord/client.rs's `Client`: the contact
   read from the NAS, the rounds, the kept connections, the files' transfers; `Answered`,
   `Reply`, `Files`), coord/task.rs's client half (`Offer`, `Output`, `clone`, `safe`, `beats`,
-  `MARGIN`), the contact (`Contact`, `contact_path`, `POOL_TERM`, `POOL_MEMBER`) and `map_now`;
+  `MARGIN`), the contact (`Contact`, `contact_path`, `POOL_EPOCH` (`POOL_TERM` before #878 step 8c), `POOL_MEMBER`) and `map_now`;
   coord re-exports what it and the agent name. Not a trait object: offload needs the real client,
   and the client is small. Not the wire types (`Ask`, `Grant`, `Granted`, `Done`, `Fail`, the
   work beat, held's `Beat`/`Answer`), as planned first: they reach the agent's runtime (`Ask`'s

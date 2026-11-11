@@ -3092,7 +3092,7 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   modelled: other step dependencies, failures; a job's time doesn't depend on its threads.
 - **The agent's tests** (`crate::agent::pool`, `crate::agent::lead`, the agent's `pool_tests`): two
   agents in one process, a lead and a member: a member never claims the lead, and with the lead
-  gone writes its jobs' hand-offs and waits (`pool::driver::tests::a_member_never_claims_the_lead`,
+  gone writes its jobs' hand-offs and waits (`pool::driver::tests::a_member_never_leads`,
   `with_the_lead_gone_a_member_writes_its_jobs_hand_offs_and_waits`,
   `agent::lead::tests::runs::a_member_never_claims_the_lead_and_waits_for_it`); the lead's restart
   keeps its leases (`agent::pool::tests::the_leads_restart_keeps_its_leases`); the owner's move of

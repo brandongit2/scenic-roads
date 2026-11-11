@@ -216,11 +216,12 @@ Each step ships alone and keeps the build running; each ends with its tests.
 
 1. *Built.* **The role** (§1): `pool::lead::role` (`pool::term::role` until #878 step 8c), used by `Agent::new` and `retire::retires`; parts built
    by role; `o.helper` derived from it, then removed. A changed declaration restarts the agent.
-   Tests: `role_reads_the_declared_lead`, `an_unknown_role_starts_the_members_parts`,
+   Tests: `an_unknown_role_starts_the_members_parts` (`role_reads_the_declared_lead` went with
+   `pool::term`, #878 step 8c),
    `a_changed_declaration_restarts_into_the_new_role`; the server's retire tests on the shared
    function. As built: `Options::helper` and the CLI's `--helper` are gone (no Mac's run file passes it: the status app
    writes `run/agent` without it);
-   a role change, or the lead losing the lead, restarts at once (`role_restart`), its jobs handed
+   a role change, or the lead no longer declared, restarts at once (`role_restart`), its jobs handed
    over; the coordinator is built from the role, and the in-process promotion, demotion and the
    coordinator kept on as a broker are deleted. An unknown role learnt a member's is taken in place.
 2. *Built.* **The regions' states and the checklist off members** (after #871 6–7): no `region-states`

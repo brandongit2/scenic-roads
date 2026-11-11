@@ -665,7 +665,7 @@ pack-idx/<hash16>.idx   indexes of the terrain packs the manifest names (agent::
                         alone (removed as a member starts)
 pool/                   crate::agent::pool: saved.json (crate::pool::driver::Saved: {member, mine:
                         {entries, unwritten}, records?: [epoch, seq]}; an older app's keys read
-                        past; saved.earlier.json one set aside), records.json (the lead's own copy
+                        past; saved.bad one that can't be read, set aside), records.json (the lead's own copy
                         of the records it saves, written before the NAS's: docs/pool.md §6.2),
                         mail.json ({read, sent, n}), members.json,
                         forgotten.json, jobs/<epoch>-<n>/ (a job under its lease: work.json {step,

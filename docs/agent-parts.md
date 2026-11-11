@@ -218,7 +218,7 @@ plan before it and an old cancel drops none of its grants. A plan past `beat::LO
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
 channel (`plan::Out`) for the lead's pool step. Not done: a plan's errors stay waiting lines (`plan`
 returns jobs, not a result); the pool's own run is still locked by the pool's ops (`pool::try_lock`:
-`lost_term`, the broker made on the run, the page's acts, the members' clock) until #878.
+`lost_lead`, the broker made on the run, the page's acts, the members' clock) until #878.
 
 ### 4.5 jobs
 
