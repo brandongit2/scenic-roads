@@ -17,9 +17,29 @@ use std::path::{Path, PathBuf};
 
 pub const SEGMENT: &str = ".jsonl";
 
+/// A simulator's disk (other crates' tests, `testkit`): no `fsync` made while set. Its "crashes"
+/// cut the files themselves, which a process still sees whole; an `fsync` on these Macs is ~4 ms
+/// (`F_FULLFSYNC`), the simulator's thousands of runs' whole time over. Never set otherwise.
+#[cfg(any(test, feature = "testkit"))]
+pub static UNSYNCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// `f` flushed to the disk (its data alone: `data`), but on a simulator's (`UNSYNCED`): the
+/// store's logs' and GC's queue's (crate::map::gc) every flush.
+pub(crate) fn flush(f: &File, data: bool) -> std::io::Result<()> {
+    #[cfg(any(test, feature = "testkit"))]
+    if UNSYNCED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(());
+    }
+    if data {
+        f.sync_data()
+    } else {
+        f.sync_all()
+    }
+}
+
 /// `fsync` of a folder: the names made, renamed or removed in it durable.
 pub fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    File::open(dir)?.sync_all()
+    flush(&File::open(dir)?, false)
 }
 
 /// Writes `b` at `path` whole and durably: a crash leaves the old file or the new one, never half.
@@ -28,7 +48,7 @@ pub fn write_durable(path: &Path, b: &[u8]) -> Result<()> {
     let tmp = crate::naming::tmp_path(path);
     let mut f = File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
     f.write_all(b)?;
-    f.sync_all()?;
+    flush(&f, false)?;
     fs::rename(&tmp, path).with_context(|| format!("rename into {}", path.display()))?;
     sync_dir(dir).with_context(|| format!("fsync {}", dir.display()))
 }
@@ -73,7 +93,7 @@ pub fn read<T: DeserializeOwned>(
                 eprintln!("{who}: {}: a torn last line ({} bytes) dropped", path.display(), text.len() - at);
                 let f = OpenOptions::new().write(true).open(&path)?;
                 f.set_len(at as u64)?;
-                f.sync_all()?;
+                flush(&f, false)?;
                 break;
             };
             each(v).with_context(|| format!("{}", path.display()))?;
@@ -124,9 +144,9 @@ impl Appender {
     /// nothing counts: what went down is cut off again, or else the appender is `torn`.
     pub fn append(&mut self, bytes: &[u8], n: u64) -> Result<()> {
         ensure!(!self.torn, "the log has a failed write it couldn't cut off: read it again");
-        let wrote = self.file.write_all(bytes).and_then(|_| self.file.sync_data());
+        let wrote = self.file.write_all(bytes).and_then(|_| flush(&self.file, true));
         if let Err(e) = wrote {
-            self.torn = self.file.set_len(self.bytes).and_then(|_| self.file.sync_data()).is_err();
+            self.torn = self.file.set_len(self.bytes).and_then(|_| flush(&self.file, true)).is_err();
             return Err(e).with_context(|| format!("append to {}", self.dir.display()));
         }
         self.lines += n;

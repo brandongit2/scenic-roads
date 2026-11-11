@@ -71,7 +71,12 @@ impl std::fmt::Debug for Virtual {
 
 impl Virtual {
     pub fn new() -> Arc<Virtual> {
-        Arc::new(Virtual { start: Instant::now(), start_wall: SystemTime::now(), state: Mutex::new(VState::default()) })
+        Virtual::new_at(SystemTime::now())
+    }
+
+    /// `new`, its wall clock starting at `wall` (a simulated Mac's, crate users' simulators).
+    pub fn new_at(wall: SystemTime) -> Arc<Virtual> {
+        Arc::new(Virtual { start: Instant::now(), start_wall: wall, state: Mutex::new(VState::default()) })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, VState> {

@@ -303,7 +303,7 @@ impl Inner {
                 None => self.file.insert(OpenOptions::new().create(true).append(true).open(&path)?),
             };
             f.write_all(&out)?;
-            f.sync_data()?;
+            crate::seglog::flush(f, true)?;
             Ok(())
         })();
         let written = r.is_ok();

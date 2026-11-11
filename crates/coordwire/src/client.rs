@@ -41,6 +41,40 @@ pub struct Client {
     round: Mutex<Option<Option<String>>>,
     /// Its HTTP clients: the process's (`Agents::shared`), or a test's own (`with_files`).
     agents: Arc<Agents>,
+    /// A simulator's network in place of HTTP (`Client::through`).
+    #[cfg(any(test, feature = "testkit"))]
+    wire: Option<OnWire>,
+}
+
+/// A `Wire` held (its own `Debug`: a closure has none).
+#[cfg(any(test, feature = "testkit"))]
+#[derive(Clone)]
+struct OnWire(Wire);
+
+#[cfg(any(test, feature = "testkit"))]
+impl std::fmt::Debug for OnWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a simulator's network")
+    }
+}
+
+/// A simulator's network (other crates' tests, `testkit`): a request's method, path and body to
+/// what came of it. Everything above the transport is the client's own (its rounds, its errors, the
+/// lease calls on it).
+#[cfg(any(test, feature = "testkit"))]
+pub type Wire = Arc<dyn Fn(&str, &str, Option<&[u8]>) -> Wired + Send + Sync>;
+
+/// What came of a request on a simulator's network (`Wire`).
+#[cfg(any(test, feature = "testkit"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wired {
+    /// Its answer: the status and the body.
+    Answered(u16, Vec<u8>),
+    /// No connection made (the coordinator's Mac down, asleep or cut off), why: never read.
+    Unreached(String),
+    /// Connected, and no answer in time (the answer lost, or slow past the client's timeout): it may
+    /// have been read and done.
+    TimedOut(String),
 }
 
 /// How a file's transfer (`/work/in/`, `/work/out/`) is timed: no limit on its whole time, so a big
@@ -409,6 +443,8 @@ impl Client {
             failed: Mutex::new(None),
             round: Mutex::new(None),
             agents: Agents::shared(),
+            #[cfg(any(test, feature = "testkit"))]
+            wire: None,
         }))
     }
 
@@ -422,7 +458,15 @@ impl Client {
             failed: Mutex::new(None),
             round: Mutex::new(None),
             agents: Agents::shared(),
+            #[cfg(any(test, feature = "testkit"))]
+            wire: None,
         }
+    }
+
+    /// A client whose requests go over a simulator's network (`Wire`), as `worker`.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn through(wire: Wire, worker: &str) -> Client {
+        Client { wire: Some(OnWire(wire)), ..Client::at(Vec::new(), String::new(), worker) }
     }
 
     /// Begins a round (an agent's loop): from now on, once a request gets no answer from the
@@ -574,6 +618,22 @@ impl Client {
         tag: Option<&str>,
         unanswered: &mut bool,
     ) -> Result<(u16, Vec<u8>, Option<String>)> {
+        #[cfg(any(test, feature = "testkit"))]
+        if let Some(OnWire(w)) = &self.wire {
+            return match w(method, path, body) {
+                Wired::Answered(code, b) => {
+                    *self.answered.lock().unwrap() =
+                        Some(Answered { at: jobrt::jobs::now_s(), epoch: None, member: None });
+                    Ok((code, b, None))
+                }
+                Wired::Unreached(why) => {
+                    *unanswered = true;
+                    *self.failed.lock().unwrap() = Some((jobrt::jobs::now_s(), why.clone()));
+                    Err(anyhow::anyhow!("reach the coordinator: {why}"))
+                }
+                Wired::TimedOut(why) => Err(anyhow::anyhow!("the coordinator's answer to {path}: {why}")),
+            };
+        }
         let mut last = None;
         // (Whether every address failed while connecting: only that says it can't be reached, not
         // a long request that ran past its time.)
