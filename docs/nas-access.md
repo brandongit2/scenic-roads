@@ -35,7 +35,7 @@ it (store::nasio) and retries the reads, stats and listings the share fails for 
 - **Reads** are counted as file reads (one `Files`, the bytes, a note in the ring) and retried:
   `read` (store::whole::read: a busy file waited out), `read_to_string`, `read_replaced`,
   `read_fresh` (`F_NOCACHE`), `open` (a `NasFile`: `Read`, `Seek`, its reads counted), `open_plain`
-  (store::range::PlainFile), `copy_to_local` (whole), `copy_data_to_local` (store::sys::copy_data).
+  (store::range::PlainFile: its reads each within a deadline, docs/pool.md §3), `copy_to_local` (whole), `copy_data_to_local` (store::sys::copy_data).
 - **Stats and listings** are counted (`Stats`, `Listed`) and retried: `metadata`, `exists`,
   `try_exists`, `is_dir`, `is_file`, `read_dir` (entries with their names and types), `list`
   (sorted names, temporary files left out, none for a missing folder).

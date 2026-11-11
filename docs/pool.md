@@ -106,7 +106,17 @@ The share is SMB 3 on a Synology. The design assumes:
   EIO on every read; `retry::handle_gone`, EBADF too), so a read meeting one opens the file again
   by its path and reads that, each try, and the new handle is kept (task #1090: a slope job's
   every read of one neighbour pack failed for 3 h 50 min on a handle cached dead). A file that
-  can't be opened and read again still fails past the bound. A raw tile's archive read tries once
+  can't be opened and read again still fails past the bound. A `PlainFile`'s NAS read that is
+  never answered (no error, the call held in the kernel) fails instead of holding its job for
+  good: each runs on a thread of its own, waited for `range::READ_DEADLINE` (120 s) and a second
+  more a MB it reads, counting only the time the job ran (a look at it that comes back over four
+  times later than asked counts as one: the guards' freeze, the Mac asleep); past it the read fails
+  with `TimedOut` naming the file, not tried again, the NAS's I/O limit halves (store::aimd), its
+  descriptor is let go (the next read opens the file again) and its thread is left to the kernel
+  (task #1139: on 11 Nov two unit jobs, on the M4 and the mini, sat in `pread` on a terrain deep
+  pack at "staging layers from the packs" for 40 minutes and more at no CPU, flagged stuck, which
+  ends nothing, while the NAS answered every other read at once). Its opens, and the other
+  readers here, have no such deadline. A raw tile's archive read tries once
   (the file opened again if its handle is gone), then takes the tile from the next source; its
   archive's entries are read as an open is, within the bound. Each of these files is content-named
   (a pack's or archive's name is its hash, never rewritten), so the file opened again by its path
