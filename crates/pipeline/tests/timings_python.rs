@@ -34,14 +34,18 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
             ("beside", 1),
             ("at once", 1),
             ("one thread", 1),
-            ("another", 1)
+            ("another", 1),
+            ("beside a held one", 1),
+            ("its own, held open", 1)
         ]
     );
-    // (Task #1116: each thread's phase its own CPU, the helper's 60 ms, not the other's too; the
-    // helper checks the run's phases add up to its CPU.)
-    for s in &p.sub[6..] {
+    // (Task #1116: each thread's phase its own CPU, the helper's 60 ms, not the other's too, nor
+    // the main thread's phase's whose span changed while one was open; the helper checks the run's
+    // phases add up to its CPU.)
+    for s in [&p.sub[6], &p.sub[7], &p.sub[9]] {
         assert!(s.background && s.cpu_s.is_some_and(|c| (0.055..=0.1).contains(&c)), "{s:?}");
     }
+    assert!(!p.sub[8].background && p.sub[8].cpu_s.is_some_and(|c| c < 0.03), "{:?}", p.sub[8]);
     // No class: every phase's waits measured (task #870), by wall clock.
     assert!(p.sub.iter().all(|s| s.class.is_empty() && s.waits.is_some()), "{:?}", p.sub);
     let w = p.sub[2].waits.unwrap();

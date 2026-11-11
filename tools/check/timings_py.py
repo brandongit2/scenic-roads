@@ -82,8 +82,31 @@ with phase("at once"):
     ts = [threading.Thread(target=spin, args=(n,)) for n in ("one thread", "another")]
     [t.start() for t in ts]
     [t.join() for t in ts]
+
+
+# (Review: the main thread's span changes while another thread's is open, mid-way through its
+# work: that thread's CPU is its phase's alone, not the main thread's phase's too.)
+def held_open(began, done):
+    with phase("its own, held open"):
+        t0 = time.thread_time()
+        while time.thread_time() - t0 < 0.06:
+            pass
+        began.set()
+        assert done.wait(WATCHDOG), "never released"
+
+
+with phase("beside a held one"):
+    began, done = threading.Event(), threading.Event()
+    t = threading.Thread(target=held_open, args=(began, done))
+    t.start()
+    begun(began)
+    with sub("a step of the main thread's"):
+        pass
+    done.set()
+    t.join()
 r = record()
 mine = {p["name"]: p["cpu_s"] for p in r["phases"]}
-assert all(0.055 <= mine[n] <= 0.1 for n in ("one thread", "another")), mine
+assert all(0.055 <= mine[n] <= 0.1 for n in ("one thread", "another", "its own, held open")), mine
+assert mine["beside a held one"] < 0.03, mine
 total = sum(p["cpu_s"] for p in r["phases"]) + r["untimed_cpu_s"]
 assert abs(total - r["cpu_s"]) <= 0.005 + 0.01 * r["cpu_s"], (total, r["cpu_s"])

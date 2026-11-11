@@ -22,8 +22,11 @@ thread's phase they ran within), each counted the others' work too. Those figure
 overlap-inflated and not a phase's own: §3's CPU/wall of `sampling hrdem-1m` (2.0) and of
 `bringing the heights to EGM2008` (1.9); §4b's "of CPU summed over threads" for EGM2008 (4 min 48 s
 → 10.8 s) and `sampling hrdem-1m` (8 min 44 s → 2 min 52 s), and §5.3's 2 min 52 s; §4d's
-`blending the edges` at 75 % of terrain-deep's CPU (a profile: 15 %). The runs' CPU/wall (§2, §4c's
-CPU s) are the process's and hold. Since task #1116 a phase's CPU is its own work's (jobrt::timings:
+`blending the edges` at 75 % of terrain-deep's CPU (a profile: 15 %); terrain-lo's `sampling glo30`
+at CPU/wall 0.34 in §3 and 3/4/2's at about 0.6 in §5.5 (summed over threads, each thread's phase
+counting the others'). §3's CPU/wall 0.5 of terrain-hi's `sampling the terrain pool into raw tiles`
+is the job's while it was open (every thread's, its `job_cpu_s` now), not the phase's own. The
+runs' CPU/wall (§2, §4c's CPU s) are the process's and hold. Since task #1116 a phase's CPU is its own work's (jobrt::timings:
 each thread's CPU charged to the span innermost on it), a run's phases add up to its CPU, and what
 may be another phase's is said (`uncertain_cpu_s`).
 

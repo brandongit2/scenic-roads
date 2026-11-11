@@ -28,9 +28,10 @@ and the bytes and files it moved:
   says as the program exits, and come in as that phase's sub-phases. Run by hand: nothing kept.
 - A phase on a thread but the main one is marked `background`; a phase while another thread's is
   open, `overlapped`. Python reads no other thread's CPU, so a thread's comes in as it opens or
-  closes a span: until then the main thread's phase may take it in, as CPU in no phase, said in
-  `uncertain_cpu_s` (another thread's span was open), as is any pool work while one was. A main
-  thread's top-level phase keeps the process's CPU while it was open, `job_cpu_s`.
+  closes a span, and the CPU in no phase isn't settled while another thread has a span open: it
+  goes to the main thread's span at its first change after, said in `uncertain_cpu_s`, as is any
+  pool work while another's span was open. A main thread's top-level phase keeps the process's
+  CPU while it was open, `job_cpu_s`.
 """
 
 from __future__ import annotations
@@ -236,10 +237,15 @@ def _settle_loose() -> float:
     """The process's CPU since the last settle that no thread was charged (threads in no phase,
     child programs reaped) to the main thread's innermost span, or the run's CPU in no phase (under
     `_lock`). Another thread's CPU comes in only as it changes span (Python reads no other thread's
-    CPU): meanwhile the main thread's phase may take it in, said uncertain as another's span was
-    open. The process's CPU now."""
+    CPU), so while one has a span open nothing is settled: its CPU so far can't be told from the
+    CPU in no phase (taken in then, it would be counted twice as the thread's span ends). It's
+    settled at the first change of the main thread's span after, said uncertain (another's span
+    was open). The process's CPU now."""
     global _settled, _others, _untimed_cpu
     now = _cpu()
+    if any(o.thread != _main for o in _open):
+        _others = True
+        return now
     loose = (now - _settled[0]) - (_charged - _settled[1])
     if loose >= 0:
         main = next((o for o in reversed(_open) if o.thread == _main), None)
