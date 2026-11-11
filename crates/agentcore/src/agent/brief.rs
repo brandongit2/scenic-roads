@@ -17,10 +17,11 @@
 //!   when the lead's app serves no brief (an app before this step: `Fresh::Nas`), no lead is known,
 //!   the lead has saved none yet in its process; and always by the map server and the CLI.
 
+use super::bus::Snap;
 use crate::coord::brief::{Held, PATH};
 use crate::pool::records::Brief;
 use anyhow::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Where the brief comes from.
 pub enum Lead<'a> {
@@ -44,12 +45,16 @@ pub enum Fresh {
     Away(String),
 }
 
-/// A member's last brief from its lead, held between asks.
-#[derive(Default)]
+/// A member's last brief from its lead, held between asks: one a Mac, its jobs' and its pool's
+/// view's (`pool::Cx::briefs`), published whole (agent::bus).
 pub struct Briefs {
-    held: Mutex<Option<Held>>,
-    /// One ask of the lead at a time: a second asker waits for it and asks naming what it got.
-    asking: Mutex<()>,
+    held: Arc<Snap<Option<Held>>>,
+}
+
+impl Default for Briefs {
+    fn default() -> Briefs {
+        Briefs { held: Snap::new(None) }
+    }
 }
 
 impl Briefs {
@@ -65,13 +70,12 @@ impl Briefs {
             Lead::At(c) => c,
             Lead::None => return Fresh::Nas("no lead known".into()),
         };
-        let _one = self.asking.lock().unwrap_or_else(|e| e.into_inner());
         let held = self.held();
         let tag = held.as_ref().map(Held::tag);
         match c.get_tagged(PATH, tag.as_deref()) {
             Ok((200, b, _)) => match Held::parse(b) {
                 Ok(h) => {
-                    *self.held.lock().unwrap_or_else(|e| e.into_inner()) = Some(h.clone());
+                    self.held.set(Some(h.clone()));
                     Fresh::Got(h)
                 }
                 Err(e) => Fresh::Away(format!("its brief can't be read: {e:#}")),
@@ -101,7 +105,7 @@ impl Briefs {
 
     /// The last brief had from the lead over HTTP.
     pub fn held(&self) -> Option<Held> {
-        self.held.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        (*self.held.get()).clone()
     }
 }
 

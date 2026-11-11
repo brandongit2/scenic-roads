@@ -1514,9 +1514,10 @@ pub struct Agent {
     proxy: Option<jobrt::budget::Proxy>,
     /// Where its proxy's budget is taken from, as last said (`budget_lead`).
     budget_from: Option<String>,
-    /// The records' brief as it last had it from its lead (crate::agent::brief), and the (epoch,
-    /// seq) of the one its jobs' file holds (`brief_for_job`).
-    briefs: brief::Briefs,
+    /// The records' brief as it last had it from its lead (crate::agent::brief; its pool's view's
+    /// too, `pool::Cx::briefs`), and the (epoch, seq) of the one its jobs' file holds
+    /// (`brief_for_job`).
+    briefs: std::sync::Arc<brief::Briefs>,
     brief_written: Option<(u64, u64)>,
     /// Held unless another agent runs (then this one only plans and reports: a dry run).
     _lock: Option<AgentLock>,
@@ -8412,6 +8413,7 @@ impl Agent {
             lead_urls,
             lead_failed,
             lead_token,
+            briefs: self.briefs.clone(),
         };
         // (The jobs an earlier process left, once `run` stopped any still running; those this one
         // took over, `adopt_jobs`, hand off as they end.)

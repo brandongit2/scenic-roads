@@ -1070,8 +1070,6 @@ pub struct Run {
     /// The lead's member, and when this Mac first saw it lead (its own clock): a request that
     /// failed before then was another lead's.
     lead_seen: Option<(String, u64)>,
-    /// The records' brief as it last had it from the lead (crate::agent::brief), for its view.
-    briefs: super::brief::Briefs,
 }
 
 /// Since when a tick has held the run (the awake clock, `awake`), 0 while none does: set and read
@@ -1146,6 +1144,9 @@ pub struct Cx {
     pub lead_failed: Option<(u64, String)>,
     /// The key its client calls the lead's coordinator with (the contact's): its mail's posts too.
     pub lead_token: String,
+    /// The records' brief as the agent last had it from the lead (crate::agent::brief), its jobs' and
+    /// its view's alike: one copy a Mac.
+    pub briefs: Arc<super::brief::Briefs>,
 }
 
 /// How a member tries another's coordinator: at its addresses, reached or not and why
@@ -1320,7 +1321,6 @@ impl Run {
             broker_told: None,
             prober: Prober::default(),
             lead_seen: None,
-            briefs: Default::default(),
         }
     }
 
@@ -1331,19 +1331,19 @@ impl Run {
         use super::brief::Lead;
         let root = self.cx.root.clone().context("no NAS")?;
         if let Some(c) = self.cx.coord.as_deref().filter(|_| self.side.driver().leads().is_some()) {
-            return self.briefs.now(Lead::Here(c), &root);
+            return self.cx.briefs.now(Lead::Here(c), &root);
         }
         if self.side.driver().declared().is_none() || self.cx.lead_urls.is_empty() {
-            return self.briefs.now(Lead::None, &root);
+            return self.cx.briefs.now(Lead::None, &root);
         }
         if !self.side.http.lead_answering(self.side.now()) {
-            if let Some(h) = self.briefs.held() {
+            if let Some(h) = self.cx.briefs.held() {
                 return Ok(h.brief);
             }
         }
         let host = self.side.member().host.clone();
         let c = crate::coord::client::Client::at(self.cx.lead_urls.clone(), self.cx.lead_token.clone(), &host);
-        self.briefs.now(Lead::At(&c), &root)
+        self.cx.briefs.now(Lead::At(&c), &root)
     }
 
     /// Whether the pool's own thread steps it now: the agent's loop isn't, no step has run for

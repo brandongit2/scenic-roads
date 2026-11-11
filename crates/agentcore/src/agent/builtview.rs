@@ -153,7 +153,7 @@ pub struct BuiltView {
     /// The catalogues read (the latest's names publish a tile); None: not told.
     catalogues: Option<Arc<super::cataloguesview::CataloguesView>>,
     /// The coordinator serving it, whose records' brief it reads (`served_by`); none told: the NAS's.
-    lead: Mutex<std::sync::Weak<crate::coord::Coordinator>>,
+    lead: Arc<super::bus::Snap<std::sync::Weak<crate::coord::Coordinator>>>,
     read: Mutex<Read>,
     reading: AtomicBool,
 }
@@ -176,7 +176,7 @@ impl BuiltView {
             the_plan,
             root: root.short_retry(),
             catalogues,
-            lead: Mutex::new(std::sync::Weak::new()),
+            lead: super::bus::Snap::new(std::sync::Weak::new()),
             read: Mutex::new(Read::default()),
             reading: AtomicBool::new(false),
         })
@@ -218,12 +218,12 @@ impl BuiltView {
 
     /// Served by `c` (its `/api/built`): the records' brief read from it from now on.
     pub fn served_by(&self, c: &Arc<crate::coord::Coordinator>) {
-        *self.lead.lock().unwrap() = Arc::downgrade(c);
+        self.lead.set(Arc::downgrade(c));
     }
 
     /// Reads the keys and the manifest (the last read kept when they can't be read now).
     pub fn refresh(&self) {
-        let served = self.lead.lock().unwrap().upgrade().and_then(|c| c.brief());
+        let served = self.lead.get().upgrade().and_then(|c| c.brief());
         let brief = match served {
             Some(h) => Ok(h.brief),
             None => crate::pool::records::Brief::now(&self.root).map(Arc::new),
