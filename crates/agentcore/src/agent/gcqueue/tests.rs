@@ -482,7 +482,8 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
 /// first, reuses a file a publish then frees; its live lease holds the file past the grace. m4
 /// sleeps with its hand-off unposted: its lease released, the file is due once the grace has
 /// passed from its freeing, and a chunk removes it; m4 back hours later, its hand-off is refused
-/// (the deletion kept while m4 owes the lease), its targets done again, and the redo merges.
+/// (the deletion kept while m4 owes the lease, forgotten by the lead or not), its targets done
+/// again, and the redo merges.
 #[test]
 fn a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused() {
     use crate::coord::{beats, held, lease::Work};
@@ -530,6 +531,9 @@ fn a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused() {
     assert_eq!(q.chunk(&h(now, None), mark, 200, &|_| true).unwrap(), [name]);
     q.gone(&[name.to_string()], &[], now, mark).unwrap();
     assert_eq!(q.deletions_kept(), 1, "kept: m4 may still hand off under its lease");
+    // m4 unheard past FORGET_S: the lead knows only m2 now; its lease is still owed, the mark kept.
+    q.leases(["m2".to_string()].into(), None);
+    assert_eq!(q.deletions_kept(), 1, "kept while m4 is forgotten");
     // m4 back three hours on, its hand-off (reusing `name`) listed: refused, its targets done again.
     let later = T0 + 3 * GRACE_S;
     let reused = Entry {

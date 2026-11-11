@@ -561,7 +561,14 @@ Deletions are kept for the merge's refusal while a lease up to theirs may still 
 The grace keeps no hand-off safe, so its length doesn't bound one: a member asleep or a lead down
 for longer than the grace, holding a hand-off whose job reused a file freed under its lease, finds
 it refused at the merge and its targets done again, never the records naming a deleted file
-(`a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused`). Why no longer (task #1106):
+(`a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused`: the mark kept while the
+member is forgotten, its lease owed until a beat of its says otherwise). Two limits: the marks are
+the lead's queue's, so a lead moved to another Mac, which starts an empty queue (§4.5, §11.3: #882's
+fixed lead), refuses nothing the old one deleted, and a reused file missing is then found only by
+the uploads' check (`verify_pending`, said, not mended); and a reused name freed during a long
+job is due once its lease ends, before its hand-off is posted and merged (a beat, and the merge's
+wait for the records' save), so a chunk then refuses it and its targets are done again: a redo,
+never a loss, which a grace of days had made all but impossible. Why no longer (task #1106):
 each day of grace holds a day's freed files (2,000 to 9,000 names, some 26 MB each: 50 to 240 GB)
 on a NAS at 97%, and no window to look at a bad publish is wanted: publishes are small and many a
 day, a bad one is fixed by the next, and the map isn't rolled back to an earlier `seq` (§10, 5).

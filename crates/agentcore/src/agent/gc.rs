@@ -1175,11 +1175,13 @@ fn inputs_walk(
 }
 
 /// How old what keeps the gate's copies (`inputs_kept`) may be as `inputs_walk` tells the lead a
-/// chunk: half GC's grace (store::map::gc::GRACE_S, so 30 minutes), so a copy the merge took
-/// since, which the lead holds that long once the records naming its index are seen, is among
-/// them by then; the other half covers a chunk's removals (200 at the tenth percentile of the
-/// share's probed rate, 2.5 a second: 80 s) and those records reaching the NAS. A re-read lists `sources/inputs/` and
-/// reads its young indexes (the sweep's whole pass took 193 s on 7 Nov), so it stays cheap.
+/// chunk: half GC's grace (store::map::gc::GRACE_S, so 30 minutes). The lead holds a copy a
+/// merge took for the grace from that merge (`GcQueue::bringing`, then queued from its time at
+/// the records after it), so one the lead no longer holds as a chunk is told was merged at least
+/// half the grace before what keeps them was read; its index, uploaded before its hand-off, was
+/// young on the NAS by then, and the records naming it on the NAS within that half. Once told, a
+/// name is marked, so the chunk's removals after need no margin. A re-read lists `sources/inputs/`,
+/// reads its young indexes and the records' brief, once per 30 minutes at most.
 pub const KEEP_FRESH_S: u64 = store::map::gc::GRACE_S / 2;
 
 /// A file no content name is (a stray `.tmp`, a retired pass's planet) removed (a dry run: said);

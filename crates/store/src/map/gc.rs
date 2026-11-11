@@ -26,8 +26,8 @@ pub const FILE: &str = "gc.jsonl";
 /// outside the cursor set, which hold a name for seconds to minutes (a request in flight as the map
 /// server's cursor moves on, an ad-hoc script); browser tabs never hold one (the map server
 /// resolves their tiles by its own map, a cursor). Not what keeps a hand-off safe: the merge
-/// refuses one bringing a name deleted under its lease, however long it was held (§7.4). Task
-/// #1106: two days held some 120 to 480 GB on a NAS at 97%.
+/// refuses one bringing a name deleted under its lease, however long it was held (§7.4). Each day
+/// of grace holds a day's freed files on the NAS (§7.2).
 pub const GRACE_S: u64 = 3600;
 /// A client unheard this long no longer holds anything: a laptop away a month doesn't hold GC; on
 /// its return it resets from the snapshot (PM's decision 3, 30 Oct; docs/maplog.md §5.4).
