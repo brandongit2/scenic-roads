@@ -15,6 +15,10 @@ pub const HASH_LEN: usize = 16;
 /// Chunk size for streaming file copies and hashes.
 pub const CHUNK: usize = 4 << 20;
 
+/// Writes of one file `write_atomic` makes before it gives up on a share whose read-backs keep
+/// differing from a source that hasn't changed.
+const WRITE_TRIES: u32 = 3;
+
 /// The bytes the streamed hashes and copies here have read and written, all told: a long upload
 /// says how far it is by them (pipeline's `Out::put_file_with`).
 static MOVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -141,8 +145,13 @@ pub enum Source<'a> {
 }
 
 /// Writes `src` under `root` as `<logical>.<hash16>.<ext>` and returns that name (relative to
-/// `root`). The bytes go to `<name>.tmp` first, are read back and checked against the hash, and only
-/// then renamed into place, so a reader never sees a partial file under a content name. When the
+/// `root`). The bytes go to `<name>.tmp` first, are read back past the client's cache and checked
+/// against the hash, and only then renamed into place, so a reader never sees a partial or damaged
+/// file under a content name. A read-back that differs is read once more: matching then, the file
+/// is taken (the first read went wrong); differing again, the source is checked, and while it is
+/// unchanged the file is written again, `WRITE_TRIES` writes at most (task #1140: on the NAS, a
+/// write in a session reconnect of the Mac's SMB client came back other bytes of the same length);
+/// a source changed since it was hashed fails at once. Each such step is a line on stderr. When the
 /// name already exists with the right size nothing is written; an existing content-named file is
 /// never overwritten (one with the wrong size is an error to resolve by hand, not a file to replace).
 ///
@@ -154,7 +163,7 @@ pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src:
 /// `write_atomic` of a local file whose `hash16` and length the caller has just worked out (an
 /// upload hashing it once for its name and its checksum together: pipeline's `Out::put_file`), so
 /// it isn't read for them again. The read-back is checked against them as against its own: a wrong
-/// hash, or a file changed since, fails as a corrupted write does, and leaves nothing.
+/// hash, or a file changed since, fails (the source changed since it was hashed), and leaves nothing.
 pub fn write_atomic_hashed(
     root: &crate::nasfs::NasRoot,
     logical: &str,
@@ -197,13 +206,47 @@ fn write_atomic_as(
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
     let tmp = TmpFile(tmp_path(&dest));
-    write_tmp(&tmp.0, src).with_context(|| format!("write {}", tmp.0.display()))?;
-    let (got, got_size) = reread(&tmp.0).with_context(|| format!("read back {}", tmp.0.display()))?;
-    ensure!(
-        got == hash && got_size == size,
-        "{}: read back {got} ({got_size} bytes), expected {hash} ({size} bytes); the source changed or the write was corrupted",
-        tmp.0.display()
-    );
+    let mut writes = 0;
+    loop {
+        write_tmp(&tmp.0, src).with_context(|| format!("write {}", tmp.0.display()))?;
+        writes += 1;
+        let read = || reread(&tmp.0).with_context(|| format!("read back {}", tmp.0.display()));
+        let first = read()?;
+        if first == (hash.clone(), size) {
+            break;
+        }
+        // (Read again: a read that went wrong once leaves the file as written; one that reads
+        // wrong again is the file itself.)
+        let (got, got_size) = &first;
+        let what = format!("{}: read back {got} ({got_size} bytes), expected {hash} ({size} bytes)", tmp.0.display());
+        let second = read()?;
+        if second == (hash.clone(), size) {
+            eprintln!("{what}; read again, it matched: the first read went wrong, the file is whole");
+            break;
+        }
+        // The file is as the share holds it. Its source the same still: the write went wrong on
+        // its way (task #1140: one in a session reconnect of the Mac's SMB client), written again.
+        let now = match src {
+            // (Borrowed for the call: it can't change.)
+            Source::Bytes(_) => (hash.clone(), size),
+            Source::File(p) => {
+                let size = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
+                (hash16_file(p)?, size)
+            }
+        };
+        let again = if second == first { "the same again" } else { "other bytes again" };
+        ensure!(
+            now == (hash.clone(), size),
+            "{what}, {again}; the source changed since it was hashed (now {} with {} bytes)",
+            now.0,
+            now.1
+        );
+        ensure!(
+            writes < WRITE_TRIES,
+            "{what}, {again}, the source unchanged; the write was corrupted {writes} times running"
+        );
+        eprintln!("{what}, {again}, the source unchanged: the write was corrupted, written again");
+    }
     match rename_no_replace(&tmp.0, &dest) {
         Ok(()) => {
             tmp.keep();
@@ -262,7 +305,12 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
             }
         }
     }
-    out.sync_all()
+    out.sync_all()?;
+    #[cfg(test)]
+    if faults::take(|f| &mut f.writes) {
+        faults::damage(tmp)?;
+    }
+    Ok(())
 }
 
 /// Hash and size of a just-written file, read back past the client's cache where the OS allows it.
@@ -270,7 +318,54 @@ fn reread(path: &Path) -> io::Result<(String, u64)> {
     let f = File::open(path)?;
     no_cache(&f);
     let size = f.metadata()?.len();
-    Ok((hash16_reader(f)?, size))
+    let hash = hash16_reader(f)?;
+    #[cfg(test)]
+    if faults::take(|f| &mut f.reads) {
+        return Ok(("0".repeat(HASH_LEN), size));
+    }
+    Ok((hash, size))
+}
+
+/// Tests' faults in `write_atomic`'s writes and read-backs, this thread's.
+#[cfg(test)]
+mod faults {
+    #[derive(Clone, Copy, Default)]
+    pub struct Faults {
+        /// Writes whose file is left damaged (a byte flipped), the next ones.
+        pub writes: u32,
+        /// Read-backs that read other bytes than the file's, the next ones.
+        pub reads: u32,
+    }
+
+    thread_local! {
+        static NOW: std::cell::Cell<Faults> = const { std::cell::Cell::new(Faults { writes: 0, reads: 0 }) };
+    }
+
+    pub fn set(f: Faults) {
+        NOW.with(|n| n.set(f));
+    }
+
+    /// Whether the fault `which` picks is due (then one fewer of it is).
+    pub fn take(which: impl FnOnce(&mut Faults) -> &mut u32) -> bool {
+        NOW.with(|n| {
+            let mut f = n.get();
+            let c = which(&mut f);
+            let due = *c > 0;
+            *c = c.saturating_sub(1);
+            n.set(f);
+            due
+        })
+    }
+
+    /// Flips the byte in the middle of `path`.
+    pub fn damage(path: &std::path::Path) -> std::io::Result<()> {
+        use std::os::unix::fs::FileExt;
+        let f = std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+        let at = f.metadata()?.len() / 2;
+        let mut b = [0u8];
+        f.read_exact_at(&mut b, at)?;
+        f.write_all_at(&[b[0] ^ 0xff], at)
+    }
 }
 
 /// Asks the OS not to serve this descriptor's reads from its cache (best effort; macOS only).
@@ -456,7 +551,7 @@ mod tests {
         // A wrong hash (or the file changed since it was hashed): the read-back doesn't match it,
         // and nothing is left, under its name or a temporary one.
         let e = write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"other bytes"), 9).unwrap_err();
-        assert!(format!("{e:#}").contains("the write was corrupted"), "{e:#}");
+        assert!(format!("{e:#}").contains("the source changed since it was hashed"), "{e:#}");
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         // A wrong length likewise.
         assert!(write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"the bytes"), 8).is_err());
@@ -465,6 +560,55 @@ mod tests {
         let name = write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"the bytes"), 9).unwrap();
         assert_eq!(name, write_atomic(nr, "h", "bin", Source::File(&src)).unwrap());
         assert_eq!(fs::read(root.join(&name)).unwrap(), b"the bytes");
+    }
+
+    #[test]
+    fn a_damaged_write_is_written_again_and_a_misread_read_again() {
+        use faults::{set, Faults};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let nr = &crate::nasfs::NasRoot::local_for_test(&root);
+        let src = dir.path().join("src.bin");
+        let big: Vec<u8> = (0..(CHUNK + 999)).map(|i| (i % 251) as u8).collect();
+        fs::write(&src, &big).unwrap();
+        let landed = |name: &str| fs::read(root.join(name)).unwrap() == big;
+        let left = || fs::read_dir(&root).unwrap().count();
+
+        // A read-back that went wrong once: read again, matching, the file taken as written.
+        set(Faults { writes: 0, reads: 1 });
+        let name = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap();
+        assert!(landed(&name));
+        fs::remove_file(root.join(&name)).unwrap();
+
+        // A write the share took damaged (both read-backs agree), its source unchanged: written
+        // again, and the second lands whole. From bytes as from a file.
+        set(Faults { writes: 1, reads: 0 });
+        let name = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap();
+        assert!(landed(&name));
+        fs::remove_file(root.join(&name)).unwrap();
+        set(Faults { writes: 1, reads: 0 });
+        assert_eq!(write_atomic(nr, "a", "bin", Source::Bytes(&big)).unwrap(), name);
+        assert!(landed(&name));
+        fs::remove_file(root.join(&name)).unwrap();
+
+        // Every write damaged: it gives up after WRITE_TRIES of them, leaving nothing.
+        set(Faults { writes: WRITE_TRIES, reads: 0 });
+        let e = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap_err();
+        assert!(format!("{e:#}").contains(&format!("corrupted {WRITE_TRIES} times running")), "{e:#}");
+        assert_eq!(left(), 0);
+        // (Its faults all taken: the next write lands at once.)
+        set(Faults::default());
+        assert!(landed(&write_atomic(nr, "a", "bin", Source::File(&src)).unwrap()));
+
+        // A source changed since it was hashed is never written again (the hash given is stale).
+        fs::remove_dir_all(&root).unwrap();
+        fs::create_dir(&root).unwrap();
+        let stale = hash16(&big);
+        fs::write(&src, big.iter().map(|b| b ^ 1).collect::<Vec<u8>>()).unwrap();
+        let e = write_atomic_hashed(nr, "a", "bin", &src, &stale, big.len() as u64).unwrap_err();
+        assert!(format!("{e:#}").contains("the source changed since it was hashed"), "{e:#}");
+        assert_eq!(left(), 0);
     }
 
     #[test]
