@@ -8,8 +8,9 @@
 #             changed; every crate when a manifest, the lints or the toolchain changed; none when no
 #             crate did): cargo clippy -q -p … --all-targets -- -A clippy::all
 #             -D clippy::disallowed_methods (processes only through store::spawn; clippy.toml). Run
-#             after the parts below but the tests, with the tests' build in one turn with the shared
-#             build folder (a hold, let go as the first test starts) when the tests run here
+#             after the parts below but prod, the tests and python; with prod and the tests' build in
+#             one turn with the shared build folder (a hold, let go as the first test starts) when
+#             two of them run here
 #   prod      every workspace library and program as publish's release build compiles them (#1133):
 #             cargo check -q --workspace --lib --bins, no test target, so no dev-dependency's feature
 #             (testkit), when a crate or what all of them build from changed; in the hold with clippy
