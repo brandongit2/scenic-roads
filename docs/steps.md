@@ -194,7 +194,9 @@ makes the same bytes on every Mac.
   A slope-deep job's z10 tiles read the terrain through one reader (`slope_pack::DeepBatch`, task
   #928): the next target's terrain deep pack is copied here while one is made and kept for it
   alone, every other copy and open pack let go once a target is made (an edge neighbour's few edge
-  tiles are read where they are), so the job's copies are never more than two packs (the one being
+  tiles are read where they are, on a thread beside the pyramid's compute, ahead of it: task #1096,
+  `slope_pack::terrain_wanted`, `ManifestTiles::reading_ahead`; slope-hi's the same, with its z10
+  tiles' deep mids), so the job's copies are never more than two packs (the one being
   made's and the next's); and each target's uploads land beside the next one's work
   (docs/storage.md, Uploads beside the work). At a pause, a failure or the job's end its copies are
   deleted.
