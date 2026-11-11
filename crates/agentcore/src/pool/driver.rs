@@ -479,11 +479,33 @@ impl Driver {
                 if self.declared.is_some() { "another member is the declared lead" } else { "no lead is declared" };
             self.step_down(&mut out, why);
         }
-        if mine {
+        // A lead no read has named for `VOUCH_S` steps down (by either clock), whatever this step's
+        // read says: the owner may have moved the lead meanwhile, the next taking up and granting,
+        // and moved it back. It takes the records up again once a read names it, this step's too:
+        // its own, unless another lead saved since (then `STALE_S` after that read, once that lead
+        // has stopped granting). (Task #1038, the simulator's seed 20001: a lead whose reads failed, then asleep past
+        // `VOUCH_S`, its first read on waking naming it, led on in its old epoch and saved over the
+        // records of the lead between, losing what that one acknowledged.)
+        let lapsed = |l: &Lead| {
+            l.vouched_at
+                .is_none_or(|(w, a)| start.0.saturating_sub(w) >= VOUCH_S || start.1.saturating_sub(a) >= VOUCH_S)
+        };
+        if self.lead.as_ref().is_some_and(lapsed) {
+            self.step_down(
+                &mut out,
+                &format!(
+                    "no read of the declaration has named it the lead in the last {VOUCH_S} s: it may not lead now"
+                ),
+            );
+        }
+        if mine && read {
             if self.lead.is_none() {
                 self.take_up(io, &mut out);
             }
-        } else {
+        } else if self.lead.is_none() {
+            // (Named another, or not read this step: the declaration may have named another
+            // meanwhile, which may have led and granted till `VOUCH_S` after its last read naming
+            // it; a take-up waits for a read naming this member again, and `STALE_S` after it.)
             (self.declared_at, self.wait_until) = (None, None);
         }
         if let Some(l) = self.lead.as_mut().filter(|_| read) {
@@ -1142,12 +1164,13 @@ mod tests {
             ib.pass(600);
             assert_eq!(step(&mut b, &ib, able()).leads, None);
         }
-        // A back (its sleep no matter: no other lead could have saved), posted it: merged, same
-        // epoch, acknowledged.
+        // A back, posted it: asleep past `VOUCH_S`, it takes up again from its own records (no other
+        // lead saved since) in a new epoch, and merges it, acknowledged.
         ia.wall.set(ib.now());
         let handed = b.mine().entries().cloned().collect();
         let o = step(&mut a, &ia, Heard { handed, ..able() });
-        assert_eq!((o.leads, o.merged.clone()), (Some(1), vec![key.clone()]), "{:?}", o.events);
+        assert_eq!((o.leads, o.merged.clone()), (Some(2), vec![key.clone()]), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
         assert!(one(&mem).handles(&key), "{:?}", o.events);
         ib.pass(20);
         step(&mut b, &ib, Heard { merged: o.merged, ..able() });
@@ -1495,6 +1518,9 @@ mod tests {
     /// A lead whose reads of the declaration fail (a hung share) leads on, but grants and plans
     /// only while one named it less than `VOUCH_S` ago: the owner may have moved the lead, and the
     /// next lead takes up `STALE_S` after finding itself declared, so the two never grant at once.
+    /// Past `VOUCH_S` it steps down, and takes up again once a read names it: from its own records
+    /// when no other lead saved since (task #1038: one that led on and granted again at its first
+    /// read, the lead moved away and back meanwhile, granted beside the lead between).
     #[test]
     fn a_lead_whose_declaration_reads_fail_stops_granting_before_a_next_lead_could() {
         let mem = Mem::default();
@@ -1510,12 +1536,53 @@ mod tests {
         assert_eq!((o.leads, o.vouched, o.duties), (Some(1), false, true), "{:?}", o.events);
         ia.pass(20);
         let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.duties), (Some(1), false), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what: "grant jobs", .. })));
+        assert_eq!((o.leads, o.duties), (None, false), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::SteppedDown { epoch: 1, .. })), "{:?}", o.events);
         ia.down.set(false);
         ia.pass(20);
         let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.vouched, o.duties), (Some(1), true, true), "{:?}", o.events);
+        assert_eq!((o.leads, o.vouched, o.duties), (Some(2), true, true), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
+    }
+
+    /// Task #1038 (the simulator's seed 88): A leads; the owner moves the lead to B while A's reads
+    /// fail; B takes up, saves and grants; the owner moves it back to A while B's reads fail. A,
+    /// stepped down at `VOUCH_S`, reads itself declared again: B's records on the one path are
+    /// newer than its own, so it takes up only `STALE_S` after that read, when B (granting until
+    /// `VOUCH_S` after its last read naming it) has stopped.
+    #[test]
+    fn a_lead_moved_away_and_back_while_its_reads_failed_waits_for_the_next_to_stop() {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        *ia.fail.borrow_mut() = Some(lead::LEAD.into());
+        ia.down.set(true);
+        declare(&mem, B);
+        ib.pass(20);
+        assert_eq!(step(&mut b, &ib, able()).leads, None);
+        ib.pass(STALE_S);
+        ia.pass(STALE_S + 20);
+        assert_eq!(step(&mut a, &ia, able()).leads, None, "A steps down past `VOUCH_S`");
+        let o = step(&mut b, &ib, able());
+        assert!(o.leads.is_some_and(|e| e > 1) && o.duties, "{:?}", o.events);
+        // Moved back to A while B's reads fail: B grants on till `VOUCH_S` after its last read.
+        declare(&mem, A);
+        ia.down.set(false);
+        *ib.fail.borrow_mut() = Some(lead::LEAD.into());
+        ib.down.set(true);
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, None, "the one path's newer: A waits `STALE_S`: {:?}", o.events);
+        ib.pass(VOUCH_S - 30);
+        assert!(step(&mut b, &ib, able()).duties, "B still grants");
+        ia.pass(VOUCH_S);
+        assert_eq!(step(&mut a, &ia, able()).leads, None, "A still waits while B may grant");
+        ia.pass(STALE_S - VOUCH_S);
+        let o = step(&mut a, &ia, able());
+        assert!(o.leads.is_some_and(|e| e > 2) && o.duties, "{:?}", o.events);
     }
 
     /// docs/coordination.md step 8b, as on 9 Nov at 20:40Z: a lead whose take-up's NAS write fails
