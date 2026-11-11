@@ -675,7 +675,8 @@ each array at a multiple of 8 bytes into it, the shapes' rings, grids and edge t
 the mapped file, its structure checked as it's read (rings closed, every cell's and run's edges
 there), so they are the file cache's pages, not the process's memory: no footprint, one copy for
 the agent and every job on the Mac, dropped by macOS under pressure and read again as asked (the
-world's 1,605 shapes were 1.74 GB of the lead's footprint read into its own memory). A version
+world's 1,605 shapes, read into the process's own memory, were 1.68 GB of its footprint on the
+plan bench of 11 Nov, 4 MB read in place; the file 1.62 GB with the edge trees, 1.41 without). A version
 just made is read back from its file the same way, the one made let go. The answers are those of
 the shapes made from the rings, bit for bit (the same values). `scenic-build`'s steps read the
 same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
