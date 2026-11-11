@@ -602,14 +602,21 @@ or its siblings' order:
 **Format bumps:** publish an app that reads both forms, then the data; drop the old reader once
 everything is rebuilt.
 
-**App publishing:** `tools/app/publish.sh`, run on any Mac with the NAS mounted and the
-"Scenic Code Signing" identity in its login keychain; normally on the Mac mini over ssh:
-`ssh m6 'cd ~/projets/scenic-roads && tools/app/publish.sh'` (it puts brew's and rustup's folders
-on the PATH itself and takes the rest from mise.toml, so no shell profile is needed). It
+**App publishing:** `tools/app/publish.sh`, run on any Mac with the "Scenic Code Signing" identity
+in its login keychain that reaches the NAS's Mac (below), at home or away; normally on the Mac mini
+over ssh: `ssh m6 'cd ~/projets/scenic-roads && tools/app/publish.sh'` (it puts brew's and rustup's
+folders on the PATH itself and takes the rest from mise.toml, so no shell profile is needed).
+Every read and write of the NAS's `app/` runs on **the NAS's Mac**, the Mac mini, on the NAS's
+LAN (`tools/app/lib.zsh`'s `on_nas_mac`: here when this is it, by its LocalHostName; else over
+`ssh m6`, a fresh connection with keepalives, in its checkout `~/projets/scenic-roads`, whose git
+checks the order): the publishing Mac's own NAS mount plays no part. Away from home that mount is
+the NAS's Tailscale (~1 MB/s, and stale after a network change), and the app is ~840 files; so the
+app goes to the mini as one gzipped archive instead (113 MB, 43 MB packed). It
 1. builds the tip of origin's main, fetched now, in its own snapshot
    (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
    refuses without the signing identity, or when codesign can't use its key unprompted;
-2. refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
+2. reads the live version on the NAS's Mac, within 60 s, and stops there when it's unreachable or
+   without the NAS; refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
    of where tasks ran, `tools/devtools/schema.mjs`, exempt), or when its commit doesn't contain the live version's (below);
 3. builds the server and pipeline, and runs the release server through `crates/server/tests/serves.rs`
    (below), on this Mac, before the suite: the suite's run of it starts the test profile's program,
@@ -622,10 +629,19 @@ on the PATH itself and takes the rest from mise.toml, so no shell profile is nee
    and made from an ancestor (past one from before the shading's encoding and one that won't
    decode), each 200 with a body that decodes;
 5. signs the programs and Scenic.app;
-6. takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken over),
-   waiting while another publish holds it, checks the order again, writes `app/<version>/` and
-   `app/current.json` with every file's SHA-256, copies `tools/nas/fetch-planet.sh` to the NAS's
-   `nas/` when it differs, and frees the lock.
+6. puts the app's folder together in a scratch folder, with its manifest (every file's SHA-256,
+   `app_manifest`) and `tools/nas/fetch-planet.sh`, and sends them as one archive to the NAS's Mac
+   (`nas_send`), whose `nas_install`:
+   receives it whole into `~/Library/Caches/scenic-publish/incoming/<pid>.tgz` and checks its size
+   and SHA-256 (an upload cut short installs nothing); takes the lock on the NAS
+   (`app/publish.lock`, create-new; one over six hours old taken over, as is one whose process on
+   the NAS's Mac is gone), waiting while another publish holds it; checks the order again; extracts
+   the app beside its folder (`app/<version>.tmp`) and checks it against the manifest; then, on the
+   publishing Mac's go-ahead (asked for once all that passed; none within 5 min, nothing goes in),
+   whatever the connection does next, moves it to `app/<version>/`, copies `fetch-planet.sh` to the
+   NAS's `nas/` when it differs, the old `current.json` to `previous.json`, writes `current.json`
+   (the manifest), and frees the lock. The archive is removed as it ends, and any left by a
+   receiver that's gone at the next install.
 
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;
@@ -637,11 +653,13 @@ the lock. Publishes from two Macs queue their tests only through the test Mac's 
 runs its suite there beside them. A publish installs only when its commit contains the live
 version's (fast-forward; a live commit published from the other Mac since this one's fetch is
 fetched): one of an older or diverged commit fails, saying so, as does one begun before a rollback
-(`--rollback` no longer waits for a publish's build, only its install). A lock held by a process
-of this Mac that is gone is taken over at once. Its last line is `published <version>` or
-`publish: FAILED …`.
+(`--rollback` no longer waits for a publish's build, only its install). Its last line is
+`published <version>` or `publish: FAILED …`: `FAILED, nothing published` when the NAS's Mac
+installed nothing (unreachable, the upload cut short, a check failed, no go-ahead), or, when the
+go-ahead was sent and the answer lost and `current.json`, read again, doesn't name the version,
+`FAILED, unknown whether <version> went live` (the NAS's Mac goes on once it has the go-ahead).
 
-`publish.sh --rollback` swaps `current.json` and `previous.json`, unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
+`publish.sh --rollback` swaps `current.json` and `previous.json` on the NAS's Mac (`nas_rollback`, under the lock, not waiting for it; within 120 s), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
 
 The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
 the keychains). An ssh session can't use the login keychain the desktop unlocked, so a Mac that

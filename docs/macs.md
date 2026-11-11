@@ -132,7 +132,8 @@ the members' in its own (`state/status.json`, `helpers`).
 (`tools/devtools`, http://mac-mini-de-brandon:8077, its LaunchAgent and nightly NAS backup from
 `tools/devtools/launchd/install.sh`) and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
-~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing), its tests
+~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing) and is the NAS's
+Mac every publish installs through (in this checkout, whose git checks the order); its publishes' tests
 run on the test Mac (`tools/app/remote-tests.sh`: known by its LocalHostName, `SCENIC_TEST_MAC`, default the M4's, on which the tests run in place with no ssh; reached from another Mac by `SCENIC_TEST_HOST`, an ssh alias, default `m4`). Its toolchain: brew's mise
 and rustup (`/opt/homebrew/bin`, `~/.cargo/bin`, which publish.sh puts on the PATH itself) and,
 from `mise install` in the checkout, everything mise.toml and rust-toolchain.toml pin (Rust,

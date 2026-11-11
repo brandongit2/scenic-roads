@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
 # tests (the server's routes among them, on a fixture map: crates/server/tests/serves.rs, run against
-# the release server too), then copy it
-# to the NAS (app/<version>/) and point app/current.json at it. Every Mac's agent copies it within
+# the release server too), then send it in one stream to the NAS's Mac (the Mac mini, on the NAS's
+# LAN: tools/app/lib.zsh's nas_send and nas_install), which writes it to the NAS (app/<version>/)
+# and points app/current.json at it. Every Mac's agent copies it within
 # five minutes (jobrt::appupdate) and restarts into it by its update drain; the Mac mini's map
 # server, the only one, restarts into it once the map has been idle a minute.
 #
@@ -10,8 +11,9 @@
 #   tools/app/publish.sh --rollback   point app/current.json back at the previous version, unless
 #                                     it's before the live one's rollback floor (tools/app/rollback-floor)
 #
-# Either Mac may publish, and two publishes may run at once: each builds and tests in its own tree
-# beside the other, and only the install (app/<version>/, app/current.json) holds the lock on the NAS
+# Any Mac that reaches the NAS's Mac may publish, at home or away (its own NAS mount plays no part),
+# and two publishes may run at once: each builds and tests in its own tree beside the other, and
+# only the install on the NAS's Mac (app/<version>/, app/current.json) holds the lock on the NAS
 # (app/publish.lock), the second waiting for the first's. A publish is only ever of a clean tree whose
 # commit is on origin's main (no -dirty versions), and installs only over a live version its commit
 # contains (fast-forward).
@@ -33,24 +35,26 @@ source tools/dev/devjob.zsh
 # Its tools found without a login shell's profile (over ssh, `ssh m6 '…/publish.sh'`, the PATH is the
 # system's): brew's mise and rustup's cargo; the rest come from mise.toml through `mise env` below.
 path=(/opt/homebrew/bin ~/.cargo/bin $path)
+# The NAS's root on the NAS's Mac, where every read and write of its app/ runs (lib.zsh's on_nas_mac).
 NAS=/Volumes/personal/projects/scenic-roads
-# (Every copy leaves the extended attributes behind, cp -X: the NAS refuses macOS's provenance one
-# when it differs from the folder's, failing the copy.)
-[[ -d $NAS ]] || { echo "the NAS isn't mounted at /Volumes/personal"; exit 2; }
-lock=$NAS/app/publish.lock
-cleanup=()
+sb=$(mktemp -d)
+cleanup=("rm -rf $sb")
 # Its last line says how it ended: "published <version>" (exit 0), or, on any other exit, "publish:
 # FAILED, nothing published (exit N)" with N non-zero, whatever stopped it. (A wrapper's own exit
 # status, e.g. `publish.sh > log; grep … log`, is the wrapper's last command's: read this line or
 # publish.sh's own status.)
 # (tools/app/lib.zsh's at_end: zsh runs no EXIT trap when errexit stops it inside a function.)
+# (Or, when the NAS's Mac had the go-ahead and its answer was lost, "publish: FAILED, unknown
+# whether <version> went live …": its app/current.json says.)
 published=
 on_exit() {
   local rc=$? c
   for c in $cleanup; do eval $c; done
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
-    echo "publish: FAILED, nothing published (exit $rc)"
+    if [[ ${nas_state:-} == unknown ]]; then
+      echo "publish: FAILED, unknown whether $version went live: the NAS's Mac had the go-ahead, then didn't answer (its app/current.json says; exit $rc)"
+    else echo "publish: FAILED, nothing published (exit $rc)"; fi
     c=$djstep_name; step "" 1; dj_end $djrun fail exit $rc ${c:+failed_in} ${c:+$c}
   else
     step ""; dj_end $djrun ok ${published:+version} ${published:+$published}
@@ -69,17 +73,11 @@ step() {  # step <name> [<the exit status of the one ending: 0 ok, else fail>]
 dj_start publish ${${rollback:+rollback}:-publish}; djrun=$REPLY
 export SCENIC_DEVJOB_PARENT=$djrun
 at_end on_exit
-who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+from="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$"
 if [[ $rollback == asked ]]; then
-  nas_lock $lock "$who" || { echo "another publish holds $lock ($lock_held): try again once it's over"; exit 1; }
-  cleanup+=('nas_unlock $lock "$who"')
-  [[ -f $NAS/app/previous.json ]] || { echo "no previous version to roll back to"; exit 1; }
-  rollback_ok $NAS/app/current.json $NAS/app/previous.json || exit 1
-  cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
-  cp -X $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json
-  mv $NAS/app/current.json.tmp.old $NAS/app/previous.json
+  bounded 120 on_nas_mac nas_rollback $NAS "$from" </dev/null || {
+    rc=$?; (( rc != 124 )) || echo "no answer from the NAS's Mac ($nas_host) within 120 s"; exit $rc; }
   rollback=done
-  echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
 fi
 # What's published is always the tip of origin's main, fetched now, so every version names a commit
@@ -89,10 +87,15 @@ step fetch
 git fetch -q origin main || { echo "can't fetch origin's main"; exit 1; }
 head=$(git rev-parse --short origin/main)
 dj_attr $djrun head $head
-# (Refused now, before building, when it couldn't go in; checked again at the install, where a
-# rollback since now refuses it too.)
-began=$(live_version $NAS/app/current.json || true)
-fast_forward $NAS/app/current.json $head || exit 1
+# The live version, read on the NAS's Mac: refused now, before building, when it couldn't go in
+# (checked again at the install, where a rollback since now refuses it too); and the NAS's Mac
+# unreachable, or without the NAS, stops the publish here, before the build.
+step "NAS's Mac"
+bounded 60 on_nas_mac nas_current $NAS </dev/null > $sb/current.json \
+  || { echo "can't read app/current.json on the NAS's Mac ($nas_host): unreachable, or without the NAS"; exit 1; }
+[[ -s $sb/current.json ]] || rm $sb/current.json
+began=$(live_version $sb/current.json || true)
+fast_forward $sb/current.json $head || exit 1
 # The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
 # rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
 # History (the task board's list of where tasks ran) is exempt.
@@ -152,7 +155,7 @@ if [[ -f $signing_kc && -r $signing_pw ]]; then
   security unlock-keychain -p "$(<$signing_pw)" $signing_kc || { echo "publish: can't unlock $signing_kc"; exit 1; }
 fi
 security find-identity -p codesigning 2>/dev/null | grep -q "\"$sign_id\"" || { echo "publish: no \"$sign_id\" identity in this Mac's keychain (docs/building.md, App publishing)"; exit 1; }
-probe=$(mktemp -d)/probe; cp /usr/bin/true $probe
+probe=$sb/probe; cp /usr/bin/true $probe
 codesign -s "$sign_id" --force $probe </dev/null || { echo "publish: codesign can't use the \"$sign_id\" key: unlock the login keychain and let codesign use the key (docs/building.md, App publishing)"; exit 1; }
 # The guards first (tools/app/guards.sh, docs/inputs.md §7): the inputs folders read only through their
 # accessor, no data source named in the app's code, and the Python steps loaded from the app's dem/
@@ -257,12 +260,7 @@ step "web build"
 # writes and checks our MapLibre's declarations, then the app's; the build compiles its source with
 # the app: web/maplibre/FORK.md.)
 (cd web && pnpm run typecheck && pnpm exec vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
-fonts=$repo/data/fonts
-[[ -d $fonts ]] || fonts=$NAS/app/fonts
-[[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
 version=$(date -u +%Y%m%d-%H%M)-$head
-dest=$NAS/app/$version
-sb=$(mktemp -d)
 step "sign and bundle"
 # The programs that listen (the map server; the agent, whose coordinator and broker members reach)
 # signed with the owner's certificate when this Mac has it, under fixed identifiers, so a Mac's
@@ -275,46 +273,38 @@ codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
 # then copied without extended attributes (none to keep as AppleDouble files). Each Mac's copy in
 # /Applications replaces itself with it.
 zsh tools/status/bundle.sh $sb $version "$sign_id" >/dev/null
-# The install, the one part two publishes can't run at once: the lock on the NAS, waited for while
-# another publish installs (one older than six hours is taken over), freed only by its holder.
-step "wait for the install lock"
-until nas_lock $lock "$who"; do
-  [[ -n ${said_lock:-} ]] || { echo "waiting for the publish holding $lock ($lock_held)"; said_lock=1; }
-  sleep 10
-done
-cleanup+=('nas_unlock $lock "$who"')
-step install
-# (Again, under the lock: the publish that went in meanwhile may be newer, or a rollback since.)
-fast_forward $NAS/app/current.json $head "$began" || exit 1
-[[ ! -e $dest ]] || { echo "$dest exists already"; exit 1; }
-rm -rf $dest.tmp; mkdir -p $dest.tmp/web $dest.tmp/fonts
-# The server, and the agent with the programs its jobs run (each Mac runs them from here):
-# the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
-# (The step programs a job or task runs are scenic-build's tools: `scenic-build tool <name>`, #917.)
-cp -X target/release/$^app_programs $dest.tmp/
-mkdir -p $dest.tmp/dem
-git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
-cp -RX "$sb/Scenic.app" "$dest.tmp/"  # (Scenic.app, signed above)
-rsync -a web/dist-publish/ $dest.tmp/web/
-rsync -a $fonts/ $dest.tmp/fonts/
-mv $dest.tmp $dest
-# The manifest: every file with its SHA-256 (the servers check their copies against it).
-manifest=$(cd $dest && find . -type f ! -name .DS_Store ! -name '._*' | sed 's|^\./||' | sort | python3 -c "
-import hashlib, json, sys
-files = [l.strip() for l in sys.stdin if l.strip()]
-sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
-print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha}))" "$version")
-# The NAS's own planet fetch (DSM's Task Scheduler runs it daily): the repository's copy, when it
-# differs. (Before the version goes live, so "published …" stays the last line and a failure here
-# publishes nothing.)
-if ! cmp -s tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh; then
-  mkdir -p $NAS/nas
-  cp -X tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh.tmp && chmod 755 $NAS/nas/fetch-planet.sh.tmp
-  mv $NAS/nas/fetch-planet.sh.tmp $NAS/nas/fetch-planet.sh
-  echo "updated nas/fetch-planet.sh"
+step stage
+# The app's folder put together here ($sb/send/app): the server, and the agent with the programs its
+# jobs run (each Mac runs them from there): the pipeline's binaries, and the Python steps (dem/, run
+# with uv) with their lock file. (The step programs a job or task runs are scenic-build's tools:
+# `scenic-build tool <name>`, #917.) Every copy leaves the extended attributes behind (cp -X, and
+# the archive below): the NAS refuses macOS's provenance one when it differs from the folder's.
+app=$sb/send/app
+mkdir -p $app/web $app/fonts $app/dem
+cp -X target/release/$^app_programs $app/
+git ls-files dem | while read f; do cp -X "$f" "$app/$f"; done
+cp -RX "$sb/Scenic.app" "$app/"  # (Scenic.app, signed above)
+rsync -a web/dist-publish/ $app/web/
+# The fonts: this checkout's data/fonts, else the NAS's app/fonts (read on the NAS's Mac).
+if [[ -d $repo/data/fonts ]]; then rsync -a $repo/data/fonts/ $app/fonts/
+else
+  bounded 300 on_nas_mac nas_fonts $NAS </dev/null | tar -x -C $app/fonts \
+    || { echo "no fonts folder (data/fonts, or the NAS's app/fonts through the NAS's Mac)"; exit 1; }
 fi
-[[ -f $NAS/app/current.json ]] && cp -X $NAS/app/current.json $NAS/app/previous.json
-print -r -- "$manifest" > $NAS/app/current.json.tmp
-mv $NAS/app/current.json.tmp $NAS/app/current.json
+# The manifest (app/current.json's content), made here from what is sent: the NAS's Mac checks what
+# it wrote against it. With the NAS's planet fetch (DSM's Task Scheduler runs it daily), which it
+# installs when it differs. One gzipped stream, its size and SHA-256 checked on arrival.
+app_manifest $app $version > $sb/send/manifest.json
+cp -X tools/nas/fetch-planet.sh $sb/send/
+COPYFILE_DISABLE=1 tar -czf $sb/app.tgz --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app manifest.json fetch-planet.sh
+dj_attr $djrun upload_bytes $(stat -f %z $sb/app.tgz)
+# The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the archive received whole;
+# then under the lock on the NAS, the one part two publishes can't run at once (waited for while
+# another publish installs; one older than six hours is taken over; freed only by its holder), the
+# order checked again (the publish that went in meanwhile may be newer, or a rollback since), the
+# app written beside its folder and checked; then on this side's go-ahead, app/<version>/, the
+# planet fetch, previous.json and current.json. Nothing goes in on a failure before the go-ahead.
+step install
+nas_send $NAS $version $head "$began" $sb/app.tgz "$from" || exit $?
 published=$version
 echo "published $version"

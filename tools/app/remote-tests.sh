@@ -69,7 +69,7 @@ host=${SCENIC_TEST_HOST:-m4}
 probe_s=${SCENIC_TEST_PROBE_S:-20}
 self=${0:A}
 setopt extendedglob
-# Owner ids (proc_id, proc_alive) are tools/app/lib.zsh's: sourced here, and sent ahead of this
+# Owner ids (proc_id, proc_alive) and bounded are tools/app/lib.zsh's: sourced here, and sent ahead of this
 # script to the test Mac's side (`< <(cat $lib $self)`), where they are defined already.
 lib=${self:h}/lib.zsh
 (( $+functions[proc_id] )) || source $lib
@@ -357,17 +357,6 @@ run_local() {  # <source dir> <command>
   ( cd $1 && eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
     ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null
     zsh -c "$2" </dev/null 2>&1 )
-}
-
-bounded() {  # <seconds> <command...>: the command, stopped (by its PID) past <seconds>, then 124
-  "${@:2}" <&0 &  # (its stdin this function's, not the /dev/null a background job gets)
-  local p=$! w rc
-  # (The watchdog's sleep is its own child, stopped with it: no sleep left behind.)
-  ( trap 'kill $s 2>/dev/null; exit 1' TERM; sleep $1 & s=$!; wait $s && kill $p ) </dev/null >/dev/null 2>&1 &
-  w=$!
-  wait $p; rc=$?
-  kill $w 2>/dev/null; wait $w && rc=124  # (the watchdog exits 0 only once it fired, maybe still exiting)
-  return $rc
 }
 
 on_test_mac() {  # <args...>: this script's test Mac side, over ssh (the shared connection), within 60 s
