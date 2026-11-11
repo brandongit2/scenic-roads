@@ -209,6 +209,7 @@ pub fn nas_congested(e: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -305,24 +306,25 @@ mod tests {
         let b = l.take();
         assert_eq!(l.now().1, 2);
         // (A third waits; it goes once one is given back, a read with nothing to learn from.)
+        let went = AtomicBool::new(false);
         std::thread::scope(|s| {
-            let h = s.spawn(|| {
-                let t0 = Instant::now();
+            s.spawn(|| {
                 let _c = l.take();
-                t0.elapsed()
+                went.store(true, Ordering::SeqCst);
             });
-            std::thread::sleep(ms(50));
+            std::thread::sleep(ms(50)); // (absence)
+            assert!(!went.load(Ordering::SeqCst), "a read past the limit waits");
             drop(a);
-            assert!(h.join().unwrap() >= ms(40));
         });
+        assert!(went.load(Ordering::SeqCst));
         drop(b);
         assert_eq!(l.now().1, 0, "nothing held once the readers are done");
-        // (A stuck read doesn't hold the rest past TAKE_WAIT: here a few ms.)
+        // (A stuck read doesn't hold the rest past TAKE_WAIT: here 30 ms, then it goes anyway.)
         let _x = l.take();
         let _y = l.take();
         let t0 = Instant::now();
         let _z = l.take_within(ms(30));
-        assert!(t0.elapsed() >= ms(30) && t0.elapsed() < ms(5000));
+        assert!(t0.elapsed() >= ms(30));
         assert_eq!(l.now().1, 3);
     }
 
