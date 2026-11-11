@@ -855,17 +855,17 @@ pub fn build_piece(
     expect_same: bool,
     on: &(dyn Fn(&str, u64, u64) + Sync),
 ) -> Result<Report> {
-    let rep = build_piece_later(out, t, expect_same, on)?;
+    let rep = Batch::hi(out, &[t]).build_hi(out, t, expect_same, on)?;
     out.save()?;
     out.claim_into_costin();
     Ok(rep)
 }
 
-/// `build_piece`, its uploads put off (buildstore::out::Out::put_file_later): they go on beside what the
-/// job does next, and the z6 tile is saved (and noted done) by a later save (`Out::save_upto` the
-/// mark after it).
-pub fn build_piece_later(
+/// `Batch::build_hi`'s making of z6 tile `t` from the terrain as `terr` reads it, its own terrain
+/// hi pack copied here.
+fn build_hi_with(
     out: &mut Out,
+    terr: &ManifestTiles,
     t: (u32, u32),
     expect_same: bool,
     on: &(dyn Fn(&str, u64, u64) + Sync),
@@ -873,26 +873,17 @@ pub fn build_piece_later(
     use jobrt::timings::phase;
     let mut rep = Report::default();
     let p = phase("reading the terrain packs' indexes");
-    let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
-    let (get, has) = terrain_reads(&terr);
+    let (get, has) = terrain_reads(terr);
     let terrain = Terrain::new(&get, &has);
     // (Its z10 tiles with a deep mid, and the z13 tiles their slope-deep runs made: those of their
     // terrain deep packs.)
     let mids: BTreeMap<(u32, u32), String> = deep_mids_under(&out.manifest, t).into_iter().collect();
     let mut tops = BTreeMap::new();
     for &f in mids.keys() {
-        tops.insert(f, deep_tops(&deep_tiles(&deep_terrain(&terr, f)?, f)));
+        tops.insert(f, deep_tops(&deep_tiles(&deep_terrain(terr, f)?, f)));
     }
     let tiles = piece_tiles(&has, &tops, t);
     let count = Count::new(tiles.len() as u64 + 1, on);
-    drop(p);
-    // Its own z6 tile's terrain pack, which it reads thousands of tiles of (each a round trip to
-    // the share), copied here whole, one sequential read; its neighbours' few edge tiles read where
-    // they are.
-    let p = phase("copying its terrain pack here");
-    if let Some(n) = terr.copy_here(9, t.0 << 3, t.1 << 3) {
-        p.count(n, 1);
-    }
     drop(p);
     on("slope tiles worked out", 0, count.total);
     let p = phase("working out the slope tiles");
@@ -983,9 +974,9 @@ pub fn build_piece_later(
 /// `deep_part`, from its own and its edge neighbours' terrain deep packs alone: `fallback_floor`)
 /// and uploads them: its deep pack (z13–16; none when it made no deep tile: the manifest's then
 /// dropped) and its deep mid (`deep_mid_logical`: its z13 tiles' quadrants), which its z6 tile's
-/// slope-hi run takes in. Saved here (a batch's targets: `DeepBatch::build`, their uploads put off).
+/// slope-hi run takes in. Saved here (a batch's targets: `Batch::build_deep`, their uploads put off).
 pub fn build_deep(out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
-    let rep = DeepBatch::new(out, &[t]).build(out, t, on)?;
+    let rep = Batch::deep(out, &[t]).build_deep(out, t, on)?;
     out.save()?;
     out.claim_into_costin();
     Ok(rep)
@@ -998,49 +989,86 @@ fn deep_copied(t: (u32, u32)) -> (u8, u32, u32) {
     (FIRST_Z, t.0 << 3, t.1 << 3)
 }
 
-/// A slope-deep job's batch of z10 tiles (`targets`, in the order it makes them), its terrain read
-/// through one reader for the whole job. The next target's terrain deep pack is copied on a thread
-/// beside the target being made (its compute, its uploads), so it starts with it here; once a
-/// target is made, every copy and open pack but that one is let go, so the copies here are never
-/// more than two packs (the one being made's and the next's), however long the batch and in
-/// whatever order. The same bytes as each made alone: a pack is content-named, read here or on the
-/// NAS alike.
-pub struct DeepBatch {
+/// The same for slope-hi z6 tile `t`: its own terrain hi pack (each a round trip to the share a
+/// tile read in place, it reads thousands).
+fn hi_copied(t: (u32, u32)) -> (u8, u32, u32) {
+    (9, t.0 << 3, t.1 << 3)
+}
+
+/// A slope job's batch of targets (`targets`, in the order it makes them: slope-deep's z10 tiles,
+/// `deep`; slope-hi's z6 tiles, `hi`), its terrain read through one reader for the whole job. The
+/// terrain pack each target reads thousands of tiles of (`copied`) is copied here whole; the next
+/// target's on a thread beside the target being made (its compute, its uploads), so it starts with
+/// it here (task #928 for slope-deep, #1097 for slope-hi); once a target is made, every copy and
+/// open pack but that one is let go, so the copies here are never more than two packs (the one
+/// being made's and the next's), however long the batch and in whatever order. The same bytes as
+/// each made alone: a pack is content-named, read here or on the NAS alike.
+pub struct Batch {
     terr: Arc<ManifestTiles>,
     targets: Vec<(u32, u32)>,
+    /// The tile of the terrain pack a target copies here (`deep_copied`, `hi_copied`).
+    copied: fn((u32, u32)) -> (u8, u32, u32),
     /// The thread copying the next target's pack ahead.
     ahead: Option<std::thread::JoinHandle<()>>,
 }
 
-impl DeepBatch {
-    pub fn new(out: &Out, targets: &[(u32, u32)]) -> Self {
+impl Batch {
+    /// A slope-deep job's batch of z10 tiles.
+    pub fn deep(out: &Out, targets: &[(u32, u32)]) -> Self {
+        Self::new(out, targets, deep_copied)
+    }
+
+    /// A slope-hi job's batch of z6 tiles.
+    pub fn hi(out: &Out, targets: &[(u32, u32)]) -> Self {
+        Self::new(out, targets, hi_copied)
+    }
+
+    fn new(out: &Out, targets: &[(u32, u32)], copied: fn((u32, u32)) -> (u8, u32, u32)) -> Self {
         let terr = ManifestTiles::with_copies(out, "terrain", out.scratch_file("terrain-copies"));
-        DeepBatch { terr: Arc::new(terr), targets: targets.to_vec(), ahead: None }
+        Batch { terr: Arc::new(terr), targets: targets.to_vec(), copied, ahead: None }
     }
 
     /// Makes z10 tile `t` (`build_deep`), its uploads put off (buildstore::out::Out::put_file_later):
     /// they go on beside what the job does next, and the target is saved (and noted done) by a later
-    /// save (`Out::save_upto` the mark after it). Its pack copied first, or waited for where it's
-    /// being copied ahead; then the next target's copying ahead begins.
-    pub fn build(&mut self, out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    /// save (`Out::save_upto` the mark after it). Around it, `around`'s copies.
+    pub fn build_deep(&mut self, out: &mut Out, t: (u32, u32), on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+        self.around(t, |terr| build_deep_with(out, terr, t, on))
+    }
+
+    /// Makes z6 tile `t` (`build_piece`), its uploads put off as `build_deep`'s are. Around it,
+    /// `around`'s copies.
+    pub fn build_hi(
+        &mut self,
+        out: &mut Out,
+        t: (u32, u32),
+        expect_same: bool,
+        on: &(dyn Fn(&str, u64, u64) + Sync),
+    ) -> Result<Report> {
+        self.around(t, |terr| build_hi_with(out, terr, t, expect_same, on))
+    }
+
+    /// `make` of target `t` given the reader: its pack copied first, or waited for where it's being
+    /// copied ahead; then the next target's copying ahead begun; after it, every copy but that let go.
+    fn around<R>(&mut self, t: (u32, u32), make: impl FnOnce(&ManifestTiles) -> R) -> R {
         use jobrt::timings::phase;
         let at = self.targets.iter().position(|&u| u == t);
         let p = phase("copying its terrain pack here");
         if let Some(h) = self.ahead.take() {
             // (Its pack copied ahead: done before its reads begin.)
+            let _w = store::waits::other();
             h.join().ok();
         }
-        let (z, x, y) = deep_copied(t);
+        let (z, x, y) = (self.copied)(t);
         if let Some(n) = self.terr.copy_here(z, x, y) {
             p.count(n, 1);
         }
         drop(p);
         let next = at.and_then(|k| self.targets.get(k + 1)).copied();
         if let Some(next) = next {
-            let terr = self.terr.clone();
+            let (terr, copied) = (self.terr.clone(), self.copied);
             let h = std::thread::Builder::new().name("copies ahead".into()).spawn(move || {
                 let p = phase("copying the next target's terrain pack ahead");
-                let (z, x, y) = deep_copied(next);
+                let (z, x, y) = copied(next);
                 if let Some(n) = terr.copy_here(z, x, y) {
                     p.count(n, 1);
                 }
@@ -1048,14 +1076,14 @@ impl DeepBatch {
             // (No thread: the next copies its own.)
             self.ahead = h.ok();
         }
-        let rep = build_deep_with(out, &self.terr, t, on);
+        let r = make(&self.terr);
         // (All but the next target's pack let go: the copying ahead's.)
         let ahead = next.map(|u| {
-            let (z, x, y) = deep_copied(u);
+            let (z, x, y) = (self.copied)(u);
             ManifestTiles::logical("terrain", z, x, y)
         });
         self.terr.keep_only(&|l| ahead.as_deref() == Some(l));
-        rep
+        r
     }
 
     /// The copies made here deleted now, the copying ahead's once it ends (waited for: by a safe
@@ -1069,7 +1097,7 @@ impl DeepBatch {
     }
 }
 
-impl Drop for DeepBatch {
+impl Drop for Batch {
     /// (A batch ended by a failure: the copying ahead holds the reader, so without the wait its
     /// copy would outlive the job's exit.)
     fn drop(&mut self) {
@@ -1077,7 +1105,7 @@ impl Drop for DeepBatch {
     }
 }
 
-/// `DeepBatch::build`'s making of z10 tile `t` from the terrain as `terr` reads it.
+/// `Batch::build_deep`'s making of z10 tile `t` from the terrain as `terr` reads it.
 fn build_deep_with(
     out: &mut Out,
     terr: &ManifestTiles,
@@ -1761,7 +1789,7 @@ mod tests {
         assert!(out.get(&deep_mid_logical(448, 256)).is_none());
     }
 
-    /// Task #928: a batch's targets (`DeepBatch`) come out as each made alone (`build_deep`); the
+    /// Task #928: a batch's targets (`Batch::deep`) come out as each made alone (`build_deep`); the
     /// next target's terrain deep pack is copied ahead while one is made, read there by that target
     /// (copied once), and kept for it alone: let go once it's made, though a neighbour after reads its
     /// edge tiles (then on the NAS's); every copy let go after the last.
@@ -1780,11 +1808,11 @@ mod tests {
                     let copies = out.scratch_file("terrain-copies");
                     let name = |l: &str| out.path(out.get(l).unwrap()).file_name().unwrap().to_owned();
                     let deep = copies.join(name(&crate::terrain_deep::pack_logical(448, 256)));
-                    let mut b = DeepBatch::new(&out, ts);
+                    let mut b = Batch::deep(&out, ts);
                     let seen = Mutex::new(HashSet::new());
                     for (k, &t) in ts.iter().enumerate() {
                         // (As it's made, the copy it reads: the one made ahead, the same file.)
-                        b.build(&mut out, t, &|_, _, _| {
+                        b.build_deep(&mut out, t, &|_, _, _| {
                             seen.lock().unwrap().extend(deep.metadata().ok().map(|m| m.ino()));
                         })
                         .unwrap();
@@ -1816,6 +1844,64 @@ mod tests {
         let alone = made(&ts, false);
         assert_eq!(alone.len(), 4, "a deep pack and three deep mids: {alone:?}");
         assert_eq!(made(&ts, true), alone);
+    }
+
+    /// Task #1097: a slope-hi batch's z6 tiles (`Batch::hi`) come out as each made alone
+    /// (`build_piece`); the next one's terrain hi pack is copied ahead while one is made, and every
+    /// copy is let go after the last.
+    #[test]
+    fn a_hi_batch_is_its_z6_tiles_made_alone() {
+        let ts = [(28, 16), (29, 16)];
+        let made = |batch: bool| {
+            let d = tempfile::tempdir().unwrap();
+            let mut out =
+                Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
+                    .unwrap();
+            terrain(&mut out, false);
+            // (6/29/16's terrain too: its z12 tiles, the hills of 6/28/16's east.)
+            let mut east = (1856..1860).flat_map(|x| (1024..1028).map(move |y| (12u8, x, y))).map(|(z, x, y)| {
+                let b = hill(z, x, y);
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            });
+            crate::layers::write_pack(&mut out, "terrain", "terrarium-png", false, "hi", (6, 29, 16), &mut east)
+                .unwrap();
+            out.save().unwrap();
+            match batch {
+                true => {
+                    let copies = out.scratch_file("terrain-copies");
+                    let next = out.path(out.get(&crate::layers::hi_logical("terrain", 29, 16)).unwrap());
+                    let next = copies.join(next.file_name().unwrap());
+                    let mut b = Batch::hi(&out, &ts);
+                    for (k, &t) in ts.iter().enumerate() {
+                        b.build_hi(&mut out, t, false, &|_, _, _| {}).unwrap();
+                        // (The copying ahead ended.)
+                        if let Some(h) = b.ahead.take() {
+                            h.join().unwrap();
+                        }
+                        out.save().unwrap();
+                        assert_eq!(
+                            next.exists(),
+                            k == 0,
+                            "6/29/16's terrain pack copied ahead, kept for it alone ({k})"
+                        );
+                    }
+                    assert_eq!(std::fs::read_dir(&copies).unwrap().count(), 0, "every copy let go");
+                }
+                false => {
+                    for &t in &ts {
+                        build_piece(&mut out, t, false, &|_, _, _| {}).unwrap();
+                    }
+                }
+            }
+            out.manifest
+                .into_iter()
+                .filter(|(l, _)| l.starts_with("layers/slope/") || l.starts_with("work/slope"))
+                .collect::<Vec<_>>()
+        };
+        let alone = made(false);
+        assert_eq!(alone.len(), 4, "two hi packs and two mids: {alone:?}");
+        assert_eq!(made(true), alone);
     }
 
     /// Task #929 review: a slope-deep batch re-granted as it goes (its job's threads file rewritten
@@ -1864,7 +1950,7 @@ mod tests {
         let grants = [2, 5, 1];
         jobrt::control::grant(&f, grants[0]).unwrap();
         std::env::set_var(jobrt::control::THREADS_ENV, &f);
-        let mut batch = DeepBatch::new(&out, &ts);
+        let mut batch = Batch::deep(&out, &ts);
         // (The mark after the target uploading's uploads, and the targets landed: saved and named.)
         let mut up: Option<(buildstore::out::Mark, (u32, u32))> = None;
         let mut landed = Vec::new();
@@ -1873,7 +1959,7 @@ mod tests {
                 let ran = rayon::current_num_threads();
                 // (Re-granted while it's made: the next target takes it.)
                 jobrt::control::grant(&f, grants.get(k + 1).copied().unwrap_or(1)).unwrap();
-                batch.build(&mut out, t, &|_, _, _| {}).unwrap();
+                batch.build_deep(&mut out, t, &|_, _, _| {}).unwrap();
                 assert_eq!(rayon::current_num_threads(), ran, "a target stays on its grant to its end");
                 // (The one before landed, as `Landing::then` lands it: its uploads went on beside.)
                 if let Some((m, u)) = up.take() {
@@ -2335,29 +2421,36 @@ mod tests {
         }
     }
 
-    /// A measure (run by hand; the root only read): real slope-deep z10 tiles (`<x/y,…>`) made as
-    /// the step makes a batch of them (`DeepBatch`, each one's uploads landing beside the next one's
-    /// work), or with `alone` as it made each before task #928 (its own reader, its packs copied
-    /// then, its uploads waited for). Their uploads go to `<into>` (a local folder of its own: never
-    /// the root, nor the NAS). Each target's time and its outputs' content names (the same bytes either way), then
-    /// the batch's wall, CPU, the share of its threads kept busy and its peak footprint (sampled
-    /// every 50 ms; past 4 GB it stops).
-    /// SCENIC_SLOPE_DEEP_MEASURE="<root> <into> <x/y,…> [alone]"; unset, nothing.
+    /// A measure (run by hand; the root only read): real slope-deep z10 tiles or slope-hi z6 tiles
+    /// (`deep`, `hi`; `<x/y,…>`) made as the step makes a batch of them (`Batch`, the next one's
+    /// terrain pack copied ahead, each one's uploads landing beside the next one's work), or with
+    /// `alone` each with its own reader, its pack copied as it begins, its uploads waited for (a
+    /// slope-deep target before task #928, a slope-hi one before #1097). Their uploads go to
+    /// `<into>` (a local folder of its own: never the root, nor the NAS), where a slope-hi z6 tile's
+    /// deep mids are copied first. Each target's time and its outputs' content names (the same
+    /// bytes either way), then the batch's wall, CPU, the share of its threads kept busy and its
+    /// peak footprint (sampled every 50 ms; past 4 GB it stops).
+    /// SCENIC_SLOPE_MEASURE="<root> <into> deep|hi <x/y,…> [alone]"; unset, nothing.
     #[test]
-    fn measure_a_slope_deep_batch() {
-        let Ok(m) = std::env::var("SCENIC_SLOPE_DEEP_MEASURE") else { return };
+    fn measure_a_slope_batch() {
+        let Ok(m) = std::env::var("SCENIC_SLOPE_MEASURE") else { return };
         let a: Vec<&str> = m.split_whitespace().collect();
         let (root, into) = (std::path::Path::new(a[0]), std::path::Path::new(a[1]));
         assert!(!into.starts_with(root), "{} is inside the root", into.display());
-        let ts: Vec<(u32, u32)> = a[2]
+        let hi = match a[2] {
+            "hi" => true,
+            "deep" => false,
+            k => panic!("{k}: deep or hi"),
+        };
+        let ts: Vec<(u32, u32)> = a[3]
             .split(',')
             .map(|s| {
                 let (x, y) = s.split_once('/').unwrap();
                 (x.parse().unwrap(), y.parse().unwrap())
             })
             .collect();
-        let alone = a.get(3) == Some(&"alone");
-        jobrt::sys::footprint_guard("measure_a_slope_deep_batch", 4000);
+        let alone = a.get(4) == Some(&"alone");
+        jobrt::sys::footprint_guard("measure_a_slope_batch", 4000);
         let peak = Arc::new(std::sync::atomic::AtomicU64::new(0));
         {
             let peak = peak.clone();
@@ -2377,17 +2470,35 @@ mod tests {
         let read = Out::unbound(&store::nasfs::NasRoot::from_arg(root), scratch.path()).unwrap();
         std::fs::create_dir_all(into).unwrap();
         let mut w = Out::unbound(&store::nasfs::NasRoot::local_for_test(into), scratch.path()).unwrap();
-        jobrt::timings::start("slope-deep");
+        if hi {
+            // (A z6 tile's z10 tiles' deep mids, as its run reads them: named in the records it
+            // writes to, their files there.)
+            for &t in &ts {
+                for (_, c) in deep_mids_under(&read.manifest, t) {
+                    let p = into.join(&c);
+                    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    std::fs::write(&p, read.path(&c).read().unwrap()).unwrap();
+                    let l = c.split('.').next().unwrap().to_string();
+                    w.manifest.insert(l, c);
+                }
+            }
+        }
+        jobrt::timings::start(if hi { "slope-hi" } else { "slope-deep" });
         let none = |_: &str, _: u64, _: u64| {};
         let threads = rayon::current_num_threads();
         let (t0, c0) = (std::time::Instant::now(), cpu());
-        let mut batch = (!alone).then(|| DeepBatch::new(&read, &ts));
+        let batch_of = |ts: &[(u32, u32)]| if hi { Batch::hi(&read, ts) } else { Batch::deep(&read, ts) };
+        let mut batch = (!alone).then(|| batch_of(&ts));
+        let build = |b: &mut Batch, w: &mut Out, t: (u32, u32)| {
+            let r = if hi { b.build_hi(w, t, false, &none) } else { b.build_deep(w, t, &none) };
+            r.unwrap()
+        };
         let mut before: Option<buildstore::out::Mark> = None;
         for &t in &ts {
             let (s, c) = (std::time::Instant::now(), cpu());
             let r = match &mut batch {
                 Some(b) => {
-                    let r = b.build(&mut w, t, &none).unwrap();
+                    let r = build(b, &mut w, t);
                     if let Some(m) = before.take() {
                         w.save_upto(m).unwrap();
                     }
@@ -2395,17 +2506,18 @@ mod tests {
                     r
                 }
                 None => {
-                    let r = DeepBatch::new(&read, &[t]).build(&mut w, t, &none).unwrap();
+                    let r = build(&mut batch_of(&[t]), &mut w, t);
                     w.save().unwrap();
                     r
                 }
             };
             let (wall, cpu) = (s.elapsed().as_secs_f64(), cpu() - c);
             println!(
-                "10/{}/{}: {} tiles, {wall:.1} s, CPU {cpu:.1} s ({:.0} % of {threads} threads)",
+                "{}/{}/{}: {} tiles, {wall:.1} s, CPU {cpu:.1} s ({:.0} % of {threads} threads)",
+                if hi { 6 } else { PACK_Z },
                 t.0,
                 t.1,
-                r.deep_tiles,
+                r.deep_tiles + r.hi_tiles + r.lo_tiles,
                 100.0 * cpu / wall / threads as f64
             );
         }
@@ -2420,13 +2532,11 @@ mod tests {
             peak.load(std::sync::atomic::Ordering::Relaxed) >> 20
         );
         for &t in &ts {
-            println!(
-                "  10/{}/{}: {:?} {:?}",
-                t.0,
-                t.1,
-                w.get(&deep_logical(t.0, t.1)),
-                w.get(&deep_mid_logical(t.0, t.1))
-            );
+            let (pack, mid) = match hi {
+                true => (hi_logical(t.0, t.1), mid_logical(t.0, t.1)),
+                false => (deep_logical(t.0, t.1), deep_mid_logical(t.0, t.1)),
+            };
+            println!("  {}/{}/{}: {:?} {:?}", if hi { 6 } else { PACK_Z }, t.0, t.1, w.get(&pack), w.get(&mid));
         }
         let r = jobrt::timings::snapshot(true).unwrap();
         for p in &r.phases {

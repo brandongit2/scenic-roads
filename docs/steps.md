@@ -203,8 +203,9 @@ makes the same bytes on every Mac.
   nearest ancestor within the deep levels (z13–15, `slope_pack::fallback_floor`), never a hi tile;
   where the fine data ends and there is none, the tile's own edge pixels are taken again, a strip
   of one pixel along the edge of the fine coverage (the owner's choice, task #952).
-  A slope-deep job's z10 tiles read the terrain through one reader (`slope_pack::DeepBatch`, task
-  #928): the next target's terrain deep pack is copied here while one is made and kept for it
+  A slope-deep job's z10 tiles, and a slope-hi job's z6 tiles, read the terrain through one reader
+  (`slope_pack::Batch`, tasks #928 and #1097): the next target's terrain deep pack (slope-hi's: its
+  terrain hi pack) is copied here while one is made and kept for it
   alone, every other copy and open pack let go once a target is made (an edge neighbour's few edge
   tiles are read where they are, on a thread beside the pyramid's compute, ahead of it: task #1096,
   `slope_pack::terrain_wanted`, `ManifestTiles::reading_ahead`; slope-hi's the same, with its z10
@@ -217,7 +218,8 @@ makes the same bytes on every Mac.
   (z9–12: over its z10 tiles' deep terrain, z10–12 from their z13 tiles' quadrants, taken in from
   their deep mids as made, and its hi terrain where they don't cover; the same bytes as one run of
   the whole pyramid) and its mid (`work/slope-mid/6-x-y`: its z6–8 tiles), reading the terrain packs
-  (its own z6 tile's hi pack copied whole first) and its neighbours' edge strips; a deep mid is read
+  (its own z6 tile's hi pack copied whole, ahead while the job's z6 tile before is made: `Batch`)
+  and its neighbours' edge strips; a deep mid is read
   as the pyramid first reaches its z10 tile and let go once taken in, so a thread holds one at a
   time; **slope-lo**, an
   assembly per z3 tile from its z6 tiles' mids (each read whole, eight at once, under a deadline and

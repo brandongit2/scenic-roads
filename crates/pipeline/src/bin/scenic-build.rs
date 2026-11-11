@@ -5627,10 +5627,13 @@ fn slope_pieces(
 ) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let made: Vec<(u32, u32)> =
+        ts.iter().filter(|t| buildstore::coverage::near_coverage(cov, 6, t.x, t.y)).map(|t| (t.x, t.y)).collect();
+    let mut batch = terrain::slope_pack::Batch::hi(out, &made);
     // (Each z6 tile's uploads go on beside the next z6 tile's work: it's noted done once they've landed.)
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
-        landing.safe_point(out, "slope-hi", || ())?;
+        landing.safe_point(out, "slope-hi", || batch.let_go())?;
         jobrt::jobs::part(k, &names);
         // (A "none" z6 tile first: nothing read, its cost a drop's, `run_drop`.)
         if !buildstore::coverage::near_coverage(cov, 6, t.x, t.y) {
@@ -5643,12 +5646,9 @@ fn slope_pieces(
         jobrt::control::on_grant(|| -> Result<()> {
             let c = cost_start("slope-hi", &t.slash());
             let r = landing.after(out, |out| {
-                terrain::slope_pack::build_piece_later(
-                    out,
-                    (t.x, t.y),
-                    same.contains(&t.slash()),
-                    &|what, done, total| jobrt::jobs::report(done, total, what),
-                )
+                batch.build_hi(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| {
+                    jobrt::jobs::report(done, total, what)
+                })
             })?;
             landing.then(out, "slope-hi", &t.slash(), format!("slope-hi {}: {r:?}", t.slash()), c)
         })?;
@@ -5829,7 +5829,7 @@ fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     slope_deep_batch(out, &ts, &made)
 }
 
-/// slope-deep's z10 tiles `ts` in turn: each `made` one made (terrain::slope_pack::DeepBatch: one
+/// slope-deep's z10 tiles `ts` in turn: each `made` one made (terrain::slope_pack::Batch::deep: one
 /// terrain reader for them all, the next one's terrain deep pack copied ahead), its uploads going on beside
 /// the next one's work and noted done once they've landed (`Landing`); the others' deep packs and
 /// deep mids dropped.
@@ -5838,7 +5838,7 @@ fn slope_deep_batch(out: &mut Out, ts: &[TileId], made: &[bool]) -> Result<()> {
     let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s deep slope", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let built: Vec<(u32, u32)> = ts.iter().zip(made).filter(|(_, &m)| m).map(|(t, _)| (t.x, t.y)).collect();
-    let mut batch = terrain::slope_pack::DeepBatch::new(out, &built);
+    let mut batch = terrain::slope_pack::Batch::deep(out, &built);
     let mut landing = Landing::default();
     for (k, t) in ts.iter().enumerate() {
         landing.safe_point(out, STEP, || batch.let_go())?;
@@ -5857,7 +5857,7 @@ fn slope_deep_batch(out: &mut Out, ts: &[TileId], made: &[bool]) -> Result<()> {
         jobrt::control::on_grant(|| -> Result<()> {
             let c = cost_start(STEP, &t.slash());
             let r = landing.after(out, |out| {
-                batch.build(out, (t.x, t.y), &|what, done, total| jobrt::jobs::report(done, total, what))
+                batch.build_deep(out, (t.x, t.y), &|what, done, total| jobrt::jobs::report(done, total, what))
             })?;
             landing.then(out, STEP, &t.slash(), format!("{STEP} {}: {r:?}", t.slash()), c)
         })?;
