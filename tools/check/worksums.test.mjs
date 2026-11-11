@@ -438,6 +438,9 @@ test("a step's time breakdown over the footer's range (#844)", () => {
   assert.equal(phaseBreakdown(pt, "depth", 604800).runs, 8);
   assert.equal(phaseBreakdown(pt, "depth", 50000).runs, 3);
   assert.equal(phaseBreakdown(pt, "depth", 30), null, "under the first edge: none");
+  // Task #1116: of a phase's CPU, what may be other phases' (`u`: [edge, phase, s]), by range.
+  const u = { ...pt, steps: { depth: { ...pt.steps.depth, u: [[0, 0, 12], [6, 0, 30], [8, 1, 4]] } } };
+  assert.deepEqual(phaseBreakdown(u, "depth", 21600).parts.map((p) => [p.name, p.unsure]), [["composing", 42], ["reading the depth sources' windows", 0]]);
 });
 
 test("a phase split into its measured waits and computing (#870)", () => {

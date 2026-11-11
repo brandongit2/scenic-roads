@@ -691,15 +691,19 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 1, kind, id, host, start, wall_s, cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
-phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
+{v: 2, kind, id, host, start, wall_s, cpu_s, untimed_cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
+phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
   tail`, `task bldtile`, `task treeblock`, `task terrainsub`). `id`: the agent's job id
   (`SCENIC_JOB_ID`, "unit 6/32/24"; a leased task's "<kind> <unit>", "tail 6/32/24", task #849). `host`: the Mac. `start`:
   unix seconds.
-- `cpu_s`: user + system, the process's and its finished children's. `threads`:
+- `v`: 2 since task #1116 (a phase's `cpu_s` its own work's); 1 before (a phase's `cpu_s` the
+  process's while it was open, so an `overlapped` phase's counts other threads' work too).
+- `cpu_s`: user + system, the process's and its finished children's. `untimed_cpu_s` (v 2): of
+  it, the CPU in no phase; the top-level phases' `cpu_s` (the `background` ones' too) and it add up
+  to `cpu_s`. `threads`:
   RAYON_NUM_THREADS. `ok`: ended without error (a pause isn't). `untimed_s`: `wall_s` less the
   top-level non-`background` phases. `overhead_s`: the timing's own cost.
 - `held` (`[{threads, wall_s, cpu_s}]`): what its targets run on their job's grant held, by
@@ -711,7 +715,14 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
   ends), its eight largest, each 1 ms or more; left out when none (a Python child's record has
   none).
 - A phase totals its `n` spans. `class`: `nas-read`, `nas-write`, `disk`, `net`, `compute`, `wait`,
-  `mixed`. `overlapped`: another thread's phase ran during it. `background`: off the main thread.
+  `mixed`. `cpu_s`: its own CPU (v 2; jobrt::timings' doc): each thread's CPU charged to the span
+  innermost on it, and the job's on threads in no phase (a rayon pool's workers, child programs)
+  to the main thread's innermost span; a phase's includes its sub-phases'. `uncertain_cpu_s`: of
+  that, the job's CPU in no phase taken in while another thread's phase was open too, which may
+  have been that one's work; absent when none (`timings::uncertain_cpu` reads a v 1 record's
+  overlapped phase's whole CPU so). `job_cpu_s`: a main thread's top-level phase's, the job's CPU
+  (every thread's) while it was open, which the uses' floor reads. `overlapped`: another thread's
+  phase ran during it. `background`: off the main thread.
   `peak_mb`: the most memory the job's process group held while it was open (physical
   footprints summed, sampled every 250 ms, as the memory guard measures a job; the most over its
   spans); a phase running a program is that program's peak. Absent where it can't be read. `sub`: one level of sub-phases (a child program's phases come in here). Empty, zero and false

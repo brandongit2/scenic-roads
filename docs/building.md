@@ -294,7 +294,11 @@ from the first (`edit_held`).
   agents, conditions, cache clears and freeings. Summed by the hour for the build page, and the
   forecast's measure of members' pace and of publishing's time.
 - **Timings** (`jobrt::timings`; `dem/timings.py`): every
-  job's run is broken into named phases, each with wall time, CPU time (`getrusage`), its wall time
+  job's run is broken into named phases, each with wall time, its own CPU time (task #1116: each
+  thread's CPU, macOS's `thread_info`, charged to the span innermost on it; the job's on threads in
+  no phase, a pool's workers and child programs, to the main thread's innermost span, the part that
+  came while another thread's phase was open said as uncertain; a run's phases and its CPU in no
+  phase add up to its CPU), its wall time
   split by measured waits (task #870: NAS, network, local disk, other work, the rest computing;
   the Python twin measures its own the same way; pages still declare a class), spans, bytes and files. One
   level of sub-phases; a child program's phases arrive as sub-phases (`SCENIC_PHASES_TO`). Rules:
@@ -303,7 +307,8 @@ from the first (`edit_held`).
   loop; untimed time stays under about 5 %. A run keeps where its untimed time lies (`gaps`: the
   main thread's time between two top-level phases, named by them), and `scenic timings` shows it
   as "(unaccounted)" with its three largest gaps, flagging a kind past 5 % (`UNACCOUNTED_MAX`) with
-  a closing line naming every such kind. Background and overlapped phases are marked. Each phase keeps the most memory the job held
+  a closing line naming every such kind. Background phases are marked, and a phase's uncertain CPU
+  is said (`scenic timings` marks its CPU/wall `~` past a tenth, `UNSURE_MARK`). Each phase keeps the most memory the job held
   while it was open (`peak_mb`, sampled four times a second over the job's process group), shown in
   the log's table and as `scenic timings`' peak column; `scenic pool needs --fit` ends with each
   step's heaviest phase over its last 20 timed runs (`timings::peak_holders`). The record

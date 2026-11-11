@@ -952,7 +952,8 @@ fn add_opt(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     }
 }
 
-/// Adds `k` to `list`, into the phase of its name there.
+/// Adds `k` to `list`, into the phase of its name there. (A child's phase on a thread beside its
+/// main one stays marked `background`: its wall and CPU ran beside the others'.)
 fn merge_into(list: &mut Vec<PhaseRec>, k: PhaseRec) {
     match list.iter_mut().find(|p| p.name == k.name) {
         Some(p) => {
@@ -965,9 +966,10 @@ fn merge_into(list: &mut Vec<PhaseRec>, k: PhaseRec) {
             p.bytes += k.bytes;
             p.files += k.files;
             p.overlapped |= k.overlapped;
+            p.background &= k.background;
             p.peak_mb = p.peak_mb.max(k.peak_mb);
         }
-        None => list.push(PhaseRec { sub: Vec::new(), background: false, ..k }),
+        None => list.push(PhaseRec { sub: Vec::new(), ..k }),
     }
 }
 
@@ -2134,6 +2136,11 @@ mod tests {
         e.phases[0].waits.as_mut().unwrap().both_s[6] = 40.0;
         e.phases[0].waits.as_mut().unwrap().both_s[7] = 0.04;
         e.start = now - 100 - 3000;
+        // (Task #1116: of a phase's CPU, what may be other phases': a record of its own CPU says it;
+        // an older record's overlapped phase's CPU, the process's, is all of it.)
+        e.v = 2;
+        e.phases[0].uncertain_cpu_s = Some(12.4);
+        a.phases[0].overlapped = true;
         let sums: Vec<RunSum> = [a, b, old, c, e].iter().map(RunSum::of).collect();
         let t = phase_times(&sums, now);
         assert_eq!(t.edges, TIMES_EDGES);
@@ -2148,6 +2155,7 @@ mod tests {
         );
         assert_eq!(d.w, [(4, 0, 80.0, 50.0, 4.0, 1.0, 0.0)]);
         assert_eq!(d.o, [(4, 0, vec![(0, 2.0), (6, 40.0)])]);
+        assert_eq!(d.u, [(0, 0, 6), (4, 0, 12)]);
         // (A record from before #891, and one without anything at once, read and written alike.)
         let w: Waits = serde_json::from_str(r#"{"nas_s":1.0,"net_s":0,"disk_s":0,"other_s":0}"#).unwrap();
         assert_eq!(w.both_s, [0.0; PAIRS]);

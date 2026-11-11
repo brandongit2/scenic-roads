@@ -24,7 +24,24 @@ fn a_python_programs_phases_come_in_under_the_phase_that_ran_it() {
     let p = &r.phases[0];
     let subs: Vec<(&str, u64)> = p.sub.iter().map(|s| (s.name.as_str(), s.n)).collect();
     // Top-level phases alone (theirs folded into them), in the order they began.
-    assert_eq!(subs, [("loop stage", 3), ("parent", 1), ("waiting", 1), ("main work", 1), ("beside", 1)]);
+    assert_eq!(
+        subs,
+        [
+            ("loop stage", 3),
+            ("parent", 1),
+            ("waiting", 1),
+            ("main work", 1),
+            ("beside", 1),
+            ("at once", 1),
+            ("one thread", 1),
+            ("another", 1)
+        ]
+    );
+    // (Task #1116: each thread's phase its own CPU, the helper's 60 ms, not the other's too; the
+    // helper checks the run's phases add up to its CPU.)
+    for s in &p.sub[6..] {
+        assert!(s.background && s.cpu_s.is_some_and(|c| (0.055..=0.1).contains(&c)), "{s:?}");
+    }
     // No class: every phase's waits measured (task #870), by wall clock.
     assert!(p.sub.iter().all(|s| s.class.is_empty() && s.waits.is_some()), "{:?}", p.sub);
     let w = p.sub[2].waits.unwrap();

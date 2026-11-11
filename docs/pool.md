@@ -584,7 +584,8 @@ fewest threads at which its runs, together, are predicted to take no more than 5
 than they did (`uses::WALL_SLACK`, a choice). Its runs on every Mac count: the threads a phase keeps
 are the step's (its readers, its batches), and a Mac whose runs were all cut low can't show them (the
 M4's one terrain-lo run in the lead's window was at 1 thread). Each top-level phase of a run's main thread keeps
-its CPU over its wall busy, and one overlapped by phases on other threads also as many threads as
+the job's CPU while it was open (every thread's: its `job_cpu_s`, a record's before task #1116 its
+`cpu_s`) over its wall busy, and one overlapped by phases on other threads also as many threads as
 those phases' wall summed over the overlapped phases' (terrain-lo's sampling keeps 3-5 threads
 waiting on GLO-30 at once: 1556 s of reads in a 533 s run); at fewer threads than a phase keeps it
 takes that many over them as long, and a long run weighs as long as it took, so a rare short burst
@@ -2548,7 +2549,9 @@ step, were deleted with its rollout gate, task #1036.)
   (`timings::PhaseTimes`): `{"at", "edges", "steps": {"<step>": {"phases": [[name, class], …],
   "b": [[edge, runs, failed, wall s, CPU s, [[phase, wall s, CPU s, NAS MB, internet MB], …]],
   …], "w": [[edge, phase, measured wall s, NAS s, network s, disk s, other work s], …], "o": [[edge,
-  phase, [[pair, s], …]], …]}}}`; a
+  phase, [[pair, s], …]], …], "u": [[edge, phase, s], …]}}}`, `u` of a phase's CPU (its own work's,
+  task #1116) the seconds that may be other phases' (`timings::uncertain_cpu`; the phase card's
+  "Uncertain CPU"); a
   step's top-level phases of its main thread, largest over the week first, at most 8
   (`TIMES_PHASES`: past that, the 7 largest and the rest as "other phases"); a run's time in no
   phase is its wall less its phases'.

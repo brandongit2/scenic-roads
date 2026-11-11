@@ -138,7 +138,10 @@ fn timings(a: &cli::Timings) -> Result<()> {
         println!("no timings yet ({from}{})", kind.map(|k| format!(", kind {k}")).unwrap_or_default());
         return Ok(());
     }
-    println!("Timings of {from}, the last {last} runs of each kind (CPU/wall marked ~: approximate, the phase overlapped another thread's work)\n");
+    println!(
+        "Timings of {from}, the last {last} runs of each kind (a phase's CPU is its own work's; marked ~: over {:.0}% of it may be another thread's phase's, pool work while both were open, or from before task #1116 the process's)\n",
+        jobrt::timings::UNSURE_MARK * 100.0
+    );
     print!("{}", summary_text(&sums));
     Ok(())
 }

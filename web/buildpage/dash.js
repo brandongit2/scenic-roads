@@ -1552,6 +1552,7 @@ function phaseCard(step, b, p, range) {
     ["Alongside", segs.some((x) => x.with?.length) ? h("div", "tb-split", ...segs.flatMap((x) => x.with.map((y) => h("div", null, h("i", { style: { background: WAIT_COLOURS[y.key] } }), `${y.label} ${x.label} for ${dur(y.s)} (${pct(y.s / x.s)} of it)`)))) : null],
     ["How", segs.some((x) => x.key !== "old") ? WAITS_RULE : null],
     ["CPU / wall", cpu != null ? `${cpu.toFixed(2)} (${dur(p.cpu)} of CPU in ${dur(p.wall)}; above 1: several threads)` : p ? "not measured" : null],
+    ["Uncertain CPU", p?.unsure >= 1 ? `${dur(p.unsure)} of its CPU (${pct(p.unsure / p.cpu)}) may be another phase's: pool work while a phase on another thread was open, or in a run from before task #1116 the whole job's CPU while another thread's phase ran` : null],
     ["NAS", p?.nas ? `${mbText(p.nas)} in all · ${mbText(per(p.nas))} a job` : null],
     ["Internet", p?.net ? `${mbText(p.net)} in all · ${mbText(per(p.net))} a job` : null],
     ["Does", p ? PHASE_ABOUT[p.name] || `${p.name[0].toUpperCase()}${p.name.slice(1)}.` : "The jobs' time between their phases, or before the first and after the last: setting up, and what no phase times."],

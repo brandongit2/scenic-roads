@@ -529,13 +529,14 @@ export function rowsWindow(top, height, rowH, n, over = 6) {
 // it (the sums of the edges up to it), each phase's wall and CPU seconds and NAS and internet MB
 // summed, its measured waits (task #870: `w`, the runs that measured them: `measured` of its wall,
 // split into `waits`' NAS, network, disk and other work seconds; task #891, `o`: `both`, the
-// seconds two of them, or one and computing, ran at once, by WAIT_PAIRS), and their time in no
-// phase (`untimed`). Null when the step ran none in the range.
+// seconds two of them, or one and computing, ran at once, by WAIT_PAIRS), of its CPU the seconds
+// that may be other phases' (task #1116, `u`: `unsure`, pool work while another thread's phase was
+// open), and their time in no phase (`untimed`). Null when the step ran none in the range.
 export function phaseBreakdown(pt, step, range) {
   const st = pt?.steps?.[step];
   if (!st) return null;
   const upto = (pt.edges || []).reduce((k, e, i) => (e <= range ? i : k), -1);
-  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name]) => ({ name, wall: 0, cpu: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 }, both: WAIT_PAIRS.map(() => 0) })) };
+  const out = { runs: 0, failed: 0, wall: 0, cpu: 0, parts: st.phases.map(([name]) => ({ name, wall: 0, cpu: 0, unsure: 0, nas: 0, net: 0, measured: 0, waits: { nas: 0, net: 0, disk: 0, other: 0 }, both: WAIT_PAIRS.map(() => 0) })) };
   for (const [e, runs, failed, wall, cpu, ps] of st.b) {
     if (e > upto) continue;
     out.runs += runs; out.failed += failed; out.wall += wall; out.cpu += cpu;
@@ -550,6 +551,10 @@ export function phaseBreakdown(pt, step, range) {
     const p = out.parts[i];
     if (e > upto || !p) continue;
     for (const [k, s] of pairs) if (k < WAIT_PAIRS.length) p.both[k] += s;
+  }
+  for (const [e, i, s] of st.u || []) {
+    const p = out.parts[i];
+    if (e <= upto && p) p.unsure += s;
   }
   if (!out.runs) return null;
   out.parts = out.parts.filter((p) => p.wall > 0).sort((a, b) => b.wall - a.wall);

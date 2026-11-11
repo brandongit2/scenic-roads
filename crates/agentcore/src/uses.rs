@@ -32,7 +32,8 @@
 //! (its readers, its batches), and a Mac whose runs were all cut low can't show them: on the lead's
 //! timings to 4 Nov the M4's one terrain-lo run in the window was the 1-thread one, whose phases keep
 //! a thread, so a floor of the M4's runs alone held it at 1 (task #948 review). Each top-level phase
-//! of a run's main thread keeps busy its CPU over its wall, and one overlapped by phases on other
+//! of a run's main thread keeps busy the job's CPU while it was open (every thread's: its
+//! `job_cpu_s`, not its own `cpu_s`, task #1116) over its wall, and one overlapped by phases on other
 //! threads also as many threads as those phases' wall summed over the overlapped phases' (the threads
 //! waiting beside it); at fewer threads than a phase keeps it takes that many over them as long
 //! (`kept`). Summed over the runs, a long run weighs as long as it took, and a rare short burst
@@ -80,12 +81,16 @@ pub struct Run {
     pub phases: Vec<(f64, f64)>,
 }
 
-/// A top-level phase as the floor reads it (jobrt::timings::PhaseRec's fields).
+/// A top-level phase as the floor reads it (jobrt::timings::PhaseRec's fields): the job's CPU while
+/// it was open is its `job_cpu_s` (task #1116), or in a record from before that, its `cpu_s`, which
+/// was the same figure.
 #[derive(Clone, Debug, Default, Deserialize)]
 struct Phase {
     wall_s: f64,
     #[serde(default)]
     cpu_s: Option<f64>,
+    #[serde(default)]
+    job_cpu_s: Option<f64>,
     #[serde(default)]
     overlapped: bool,
     #[serde(default)]
@@ -93,18 +98,20 @@ struct Phase {
 }
 
 /// A run's main-thread top-level phases, each its wall time and the threads it keeps (the module's
-/// floor): its CPU over its wall, and an overlapped one also the threads its run's background
-/// phases' wall summed over the overlapped phases' keeps. None where no phase says its CPU.
+/// floor): the job's CPU while it was open over its wall, and an overlapped one also the threads its
+/// run's background phases' wall summed over the overlapped phases' keeps. None where no phase says
+/// its CPU.
 fn kept(phases: &[Phase]) -> Vec<(f64, f64)> {
     let main: Vec<&Phase> = phases.iter().filter(|p| !p.background && p.wall_s > 0.0).collect();
-    if !main.iter().any(|p| p.cpu_s.is_some()) {
+    let job_cpu = |p: &Phase| p.job_cpu_s.or(p.cpu_s);
+    if !main.iter().any(|p| job_cpu(p).is_some()) {
         return Vec::new();
     }
     let beside: f64 = phases.iter().filter(|p| p.background).map(|p| p.wall_s).sum();
     let over: f64 = main.iter().filter(|p| p.overlapped).map(|p| p.wall_s).sum();
     main.iter()
         .map(|p| {
-            let cpu = p.cpu_s.unwrap_or(0.0) / p.wall_s;
+            let cpu = job_cpu(p).unwrap_or(0.0) / p.wall_s;
             (p.wall_s, if p.overlapped && over > 0.0 { cpu.max(beside / over) } else { cpu })
         })
         .collect()
@@ -174,7 +181,13 @@ impl Run {
         let phases = r
             .phases
             .iter()
-            .map(|p| Phase { wall_s: p.wall_s, cpu_s: p.cpu_s, overlapped: p.overlapped, background: p.background })
+            .map(|p| Phase {
+                wall_s: p.wall_s,
+                cpu_s: p.cpu_s,
+                job_cpu_s: p.job_cpu_s,
+                overlapped: p.overlapped,
+                background: p.background,
+            })
             .collect();
         Run::of_line(
             the_plan,
@@ -414,6 +427,22 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// Task #1116: a phase's `cpu_s` is its own work's since records' version 2; the floor reads the
+    /// job's CPU while it was open (`job_cpu_s`), as a version 1 record's `cpu_s` said it: the same
+    /// threads kept.
+    #[test]
+    fn the_floor_reads_the_jobs_cpu_while_a_phase_was_open() {
+        let v1 = timed("pack", 4, 100.0, 150.0, vec![phase(60.0, 30.0, true, false), phase(40.0, 120.0, true, true)]);
+        let own = |wall_s: f64, cpu_s: f64, job: Option<f64>, background: bool| jobrt::timings::PhaseRec {
+            job_cpu_s: job,
+            ..phase(wall_s, cpu_s, true, background)
+        };
+        let mut v2 =
+            timed("pack", 4, 100.0, 150.0, vec![own(60.0, 6.0, Some(30.0), false), own(40.0, 120.0, None, true)]);
+        assert_eq!(v1[0].phases, v2[0].phases);
+        assert_eq!(v2.remove(0).phases[0], (60.0, 0.5f64.max(40.0 / 60.0)));
     }
 
     /// Task #948: the phases' floor. pack on the M4 (a run of 4 Nov): half an hour reading base packs

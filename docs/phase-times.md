@@ -16,6 +16,17 @@ the "mixed" shares below would now split into those and computing); "untimed" is
 sampling thread's) is summed over the threads that ran it, so a run's `beside` phases add up to
 more than its wall.
 
+**A phase's CPU in this file is the process's while it was open** (the records before task #1116,
+`v` 1): where phases ran at once on several threads (the samplers' `beside` phases, the main
+thread's phase they ran within), each counted the others' work too. Those figures are
+overlap-inflated and not a phase's own: §3's CPU/wall of `sampling hrdem-1m` (2.0) and of
+`bringing the heights to EGM2008` (1.9); §4b's "of CPU summed over threads" for EGM2008 (4 min 48 s
+→ 10.8 s) and `sampling hrdem-1m` (8 min 44 s → 2 min 52 s), and §5.3's 2 min 52 s; §4d's
+`blending the edges` at 75 % of terrain-deep's CPU (a profile: 15 %). The runs' CPU/wall (§2, §4c's
+CPU s) are the process's and hold. Since task #1116 a phase's CPU is its own work's (jobrt::timings:
+each thread's CPU charged to the span innermost on it), a run's phases add up to its CPU, and what
+may be another phase's is said (`uncertain_cpu_s`).
+
 ## 1. A full build, by step (the per-target steps, summed over the latest run of each target)
 
 | step | targets | median s | p90 s | sum h | peak MB p90 |
@@ -220,9 +231,10 @@ there; the hours before it (3 threads, mostly HRDEM) ran at CPU/wall 1.80.
 ## 4d. What task #1095 did (10 Nov): the blends' distances
 
 The lead's timings put `blending the edges` at a median 75 % of terrain-deep's CPU. That share
-isn't the blend's own: a phase's CPU is the whole process's while it is open (jobrt::timings), and
-terrain-deep samples 4 chunks at once, so each chunk's blend phase also counts the other chunks'
-sampling (the sampler's phases' CPUs sum to about twice the run's). Profiled with `sample`
+wasn't the blend's own: a phase's CPU was then the whole process's while it was open (records
+before task #1116), and terrain-deep samples 4 chunks at once, so each chunk's blend phase also
+counted the other chunks' sampling (the sampler's phases' CPUs summed to about twice the run's).
+Task #1116 made a phase's CPU its own work's. Profiled with `sample`
 (`terrain-same 10/321/338`, HRDEM 1 m and 2 m, GLO-30, Terrarium; 4 threads; 120 s of the
 sampling), the sampler's own CPU was the points' projection to EPSG:3979 (24 %), the GeoTIFF
 sampling (20 %), the reading order's sort (17 %), the blends' distances (15 %, before the run
