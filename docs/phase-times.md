@@ -452,7 +452,7 @@ Not done:
   comparable change), every terrain key with them (a rebuild of the world). What it would save: the
   projection is now about a quarter of the profile's CPU, some 100 of a 10/321/338 run's 480 CPU s. A
   fallback to the exact projection where a point's weights or distances could change would fall back
-  for nearly every point (the margin above), so no gain. Left for the owner's decision.
+  for nearly every point (the margin above), so no gain. Decided against (11 Nov): the heights stay the exact projection's.
 - **The WebP encode** (now about a quarter of a deep run's CPU in the profile): its combined
   entropy kept for each accumulated histogram (libwebp passes one for every mode or multiplier tried
   on a tile, the tile's own histogram 20 of 256 bins full on average) was tried and was 7 % slower
