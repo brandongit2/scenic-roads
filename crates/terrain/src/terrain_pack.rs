@@ -2039,8 +2039,10 @@ pub(crate) fn build_piece_kept(
 
 /// Makes z3 tile `q`'s zoomed-out terrain (an assembly: its levels z8 → z3, the whole of it) from
 /// its z6 tiles' mids (`ts`: its z6 tiles near the coverage, in column then row order, each with its
-/// mid in the manifest), and uploads its lo pack (none when it made no tile: the manifest's then
-/// dropped). Says how far it is (`saying`: its tiles, then "packs").
+/// mid in the manifest), and puts its lo pack (none when it made no tile: the manifest's then
+/// dropped), its upload put off (buildstore::out::Out::put_file_later: it goes on beside what the
+/// job does next, the z3 tile saved by a later save). Says how far it is (`saying`: its tiles,
+/// then "packs").
 pub fn build_lo(
     out: &mut Out,
     raw: &dyn RawSource,
@@ -2050,20 +2052,21 @@ pub fn build_lo(
     progress: buildstore::rawpack::Progress,
 ) -> anyhow::Result<PackReport> {
     let (lo, mut rep) = make_lo(out, raw, q, ts, src, progress)?;
-    let up = jobrt::timings::phase("uploading the lo pack");
+    let p = jobrt::timings::phase("writing the lo pack");
     progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
         (z, x, y, b, n)
     });
-    if crate::layers::write_pack(out, "terrain", codecs::terrain_codec::ENCODING, false, "lo", (3, q.0, q.1), &mut it)?
-        .is_none()
-    {
-        crate::layers::drop(out, &[crate::layers::lo_logical("terrain", q.0, q.1)]);
+    let enc = codecs::terrain_codec::ENCODING;
+    match crate::layers::write_pack_local(out, "terrain", enc, false, "lo", (3, q.0, q.1), &mut it)? {
+        Some(p) => out.put_file_later(&p.logical, "pack", &p.local)?,
+        None => {
+            crate::layers::drop(out, &[crate::layers::lo_logical("terrain", q.0, q.1)]);
+        }
     }
-    drop(up);
-    out.save()?;
+    drop(p);
     progress("packs", 1, 1);
     Ok(rep)
 }

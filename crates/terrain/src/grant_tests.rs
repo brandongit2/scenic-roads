@@ -207,6 +207,7 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
                 })
                 .unwrap()
                 .unwrap();
+            out.save().unwrap();
             (rep.tiles, out.manifest.into_iter().collect::<Vec<_>>())
         })
     });

@@ -309,8 +309,10 @@ pub struct Report {
 /// Deep target `t` made, its levels `levels` (`levels`) from the tiles `raw` gives
 /// (crate::terrain_pack::Fills over the pool) and sources `src`, and put: its deep pack (none where
 /// it made no tile: the manifest's
-/// dropped, a retired one there too) and its mid (`mid_logical`). Its levels' blocks kept as made
-/// and an earlier run's taken (`keep`: crate::terrain_resume).
+/// dropped, a retired one there too) and its mid (`mid_logical`), their uploads put off
+/// (buildstore::out::Out::put_file_later: they go on beside what the job does next, the target
+/// saved by a later save). Its levels' blocks kept as made and an earlier run's taken (`keep`:
+/// crate::terrain_resume).
 pub fn build_target(
     out: &mut Out,
     t: (u32, u32),
@@ -330,7 +332,7 @@ pub fn build_target(
     };
     let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut())?;
     drop(p);
-    let _p = jobrt::timings::phase("writing and uploading its deep pack and mid");
+    let _p = jobrt::timings::phase("writing its deep pack and mid");
     rep.tiles = made.len();
     rep.bytes = made.iter().map(|m| m.3.len() as u64).sum();
     let (pack, mid_path) = write_local(out, t, made, &mid)?;
@@ -339,10 +341,10 @@ pub fn build_target(
     if let Some(p) = pack {
         gone.retain(|l| *l != p.logical);
         rep.packs = 1;
-        out.put_file(&p.logical, "pack", &p.local)?;
+        out.put_file_later(&p.logical, "pack", &p.local)?;
     }
     rep.dropped = crate::layers::drop(out, &gone);
-    out.put_file(&ml, "sect", &mid_path)?;
+    out.put_file_later(&ml, "sect", &mid_path)?;
     std::fs::remove_file(jobrt::resume_log::path(&out.scratch, (PACK_Z, t.0, t.1))).ok();
     Ok(rep)
 }

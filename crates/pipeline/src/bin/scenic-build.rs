@@ -5455,20 +5455,23 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let pool = base_pool(out, td::PACK_Z, &ts.iter().map(|t| (t.x, t.y)).collect::<Vec<_>>())?;
+    // (Each target's uploads go on beside the next target's work: it's noted done once they've landed.)
+    let mut landing = Landing::default();
     with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| -> Result<()> {
         for (k, t) in ts.iter().enumerate() {
-            jobrt::control::safe_point(STEP);
+            landing.safe_point(out, STEP, || ())?;
             jobrt::jobs::part(k, &names);
             // (On its job's grant as it begins: jobrt::control::on_grant.)
             jobrt::control::on_grant(|| -> Result<()> {
                 let c = cost_start(STEP, &t.slash());
                 let fetched = buildstore::fetch::fetched_bytes();
                 let levels = td::levels(&cov, &sets, (t.x, t.y));
-                // (Paused mid-sampling: nothing of it put, its blocks made kept in its resume log.)
-                let r = td::build_target(out, (t.x, t.y), levels, tiles, src, jobrt::resume_log::on())
+                // (Paused mid-sampling: the target before landed (`after`), nothing of this one put,
+                // its blocks made kept in its resume log.)
+                let r = landing
+                    .after(out, |out| td::build_target(out, (t.x, t.y), levels, tiles, src, jobrt::resume_log::on()))
                     .map_err(|e| jobrt::control::stop_if_paused(STEP, e))?;
-                out.save()?;
-                eprintln!(
+                let said = format!(
                     "{STEP} {}: {} tiles, {} MB; {} dropped; {} MB fetched",
                     t.slash(),
                     r.tiles,
@@ -5476,13 +5479,12 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
                     r.dropped,
                     (buildstore::fetch::fetched_bytes() - fetched) >> 20
                 );
-                jobrt::control::done(STEP, &t.slash());
-                note_cost(STEP, &t.slash(), c);
-                Ok(())
+                landing.then(out, STEP, &t.slash(), said, c)
             })?;
         }
         Ok(())
     })?;
+    landing.land(out)?;
     jobrt::control::safe_point(STEP);
     jobrt::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| jobrt::jobs::report(done, total, what));
@@ -5590,28 +5592,33 @@ fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let say = |what: &str, done: u64, total: u64| jobrt::jobs::report(done, total, what);
+    // (Each z3 tile's upload goes on beside the next one's work: it's noted done once it has landed.)
+    let mut landing = Landing::default();
     for (k, (q, ts)) in qs.iter().enumerate() {
-        jobrt::control::safe_point("terrain-lo");
+        landing.safe_point(out, "terrain-lo", || ())?;
         jobrt::jobs::part(k, &names);
         let c = cost_start("terrain-lo", &q.slash());
-        let pool = base_pool(out, 3, &[(q.x, q.y)])?;
-        // (Paused mid-sampling: nothing of it put.)
-        let r = with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| {
-            terrain::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, src, &say)
-        })
-        .map_err(|e| jobrt::control::stop_if_paused("terrain-lo", e))?;
-        eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
-        jobrt::control::done("terrain-lo", &q.slash());
-        note_cost("terrain-lo", &q.slash(), c);
+        // (Paused mid-sampling: the z3 tile before landed (`after`), nothing of this one put.)
+        let r = landing
+            .after(out, |out| {
+                let pool = base_pool(out, 3, &[(q.x, q.y)])?;
+                with_fills(&raw, &pool, &cov, &sets, &|_, _| false, |tiles, src| {
+                    terrain::terrain_pack::build_lo(out, tiles, (q.x, q.y), ts, src, &say)
+                })
+            })
+            .map_err(|e| jobrt::control::stop_if_paused("terrain-lo", e))?;
+        landing.then(out, "terrain-lo", &q.slash(), format!("terrain-lo {}: {r:?}", q.slash()), c)?;
     }
+    landing.land(out)?;
     jobrt::control::safe_point("terrain-lo");
     jobrt::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &say);
     Ok(())
 }
 
-/// slope <6/x/y …> [--expect-same T,…]: slope's z6 tiles (terrain::slope_pack::build_piece); of a z6
-/// tile the coverage has left, its hi pack, deep packs and mid dropped (terrain::slope_pack::drop_piece).
+/// slope <6/x/y …> [--expect-same T,…]: slope's z6 tiles (terrain::slope_pack::Batch::build_hi: one
+/// terrain reader for them all, the next one's terrain hi pack copied ahead); of a z6 tile the
+/// coverage has left, its hi pack, deep packs and mid dropped (terrain::slope_pack::drop_piece).
 fn slope_pieces(
     out: &mut Out,
     cov: &buildstore::coverage::Coverage,

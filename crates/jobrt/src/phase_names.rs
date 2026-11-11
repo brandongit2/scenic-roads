@@ -509,6 +509,8 @@ const RENAMED: &[(&str, &str)] = &[
     ("whole local copies made", "making whole local copies"),
     ("working out slope tiles (the terrain read as needed)", "working out the slope tiles"),
     ("working out their road links (extract)", "working out how their roads connect (extract)"),
+    // (Task #1097: its uploads land beside the next target's work, `waiting for the uploads beside to land`.)
+    ("writing and uploading its deep pack and mid", "writing its deep pack and mid"),
     ("writing the unit's", "writing the unit's roads"),
     ("written", "writing"),
     ("z12 terrain tiles loaded (packs, else AWS)", "loading z12 terrain tiles (from the packs, else AWS)"),
