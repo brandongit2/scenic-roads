@@ -35,3 +35,14 @@ test("a page served without a version never reloads", () => {
   assert.equal(watch("").answer("bbb"), undefined);
   assert.equal(w.reloads, 0);
 });
+
+test("not while the page says it isn't ready (a field being typed in): the next answer asks again", () => {
+  const w = { reloads: 0, kept: null, ready: false };
+  const seen = versionWatch("aaa", () => w.reloads++, { get: () => w.kept, set: (v) => (w.kept = v) }, () => w.ready);
+  seen(new Headers({ [HEADER]: "bbb" }));
+  assert.equal(w.reloads, 0);
+  assert.equal(w.kept, null);
+  w.ready = true;
+  seen(new Headers({ [HEADER]: "bbb" }));
+  assert.equal(w.reloads, 1);
+});

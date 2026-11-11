@@ -5383,6 +5383,9 @@ mod http {
         // The large lakes it draws as the sea (Natural Earth 1:10m lakes, scalerank ≤ 3, simplified,
         // the same rings; the NAS's sources/fetched/natural-earth-lakes-10m, task #831).
         ("lakes.json", "application/json", include_bytes!("../../../../web/buildpage/lakes.json")),
+        // The service worker the page had, ending itself on a device that still has it (§7, the
+        // page's version: a one-off cleanup).
+        ("sw.js", "text/javascript", include_bytes!("../../../../web/buildpage/sw.js")),
         (
             "manifest.webmanifest",
             "application/manifest+json",
@@ -12011,11 +12014,18 @@ mod tests {
                 "{path}: the version is in the page"
             );
         }
-        for path in ["/", "/dash.js", "/api/nope", "/sw.js"] {
+        for path in ["/", "/dash.js", "/api/nope"] {
             let r = String::from_utf8(get(path)).unwrap().to_ascii_lowercase();
             assert!(r.contains(&format!("\r\nx-page-version: {version}\r\n")), "{path}: {r}");
         }
-        assert!(!String::from_utf8(get("/sw.js")).unwrap().starts_with("HTTP/1.1 200"), "no service worker");
+        // (The worker the page had: one that ends itself, keeping nothing.)
+        let sw = String::from_utf8(get("/sw.js")).unwrap();
+        assert!(
+            sw.starts_with("HTTP/1.1 200")
+                && sw.contains("self.registration.unregister()")
+                && !sw.contains("\"fetch\""),
+            "{sw}"
+        );
         let icon = get("/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
         // (Task #792, the server's own layers: the page gzipped for a client that asks, a PNG never.)
@@ -12279,6 +12289,9 @@ mod tests {
         // (Through `tailscale serve`: the lead's HTTPS page.)
         let proxied = [("X-Forwarded-Host", "m4.tail1.ts.net"), ("X-Forwarded-For", "100.101.1.2")];
         assert_eq!(get("/", &proxied).1, "https://mini.tail1.ts.net/");
+        // (The worker that ends the page's old one: answered here, as a worker's update takes no
+        // redirect.)
+        assert_eq!(get("/sw.js", &[]).0, 200);
         // (Its lead knows the new addresses: the old ones aren't answered.)
         assert_eq!(get("/work/", &[]).0, 403);
         let post = |path: &str, h: &[(&str, &str)]| send(&addr, "POST", path, None, h, &serde_json::json!({})).0;

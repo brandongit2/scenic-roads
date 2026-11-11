@@ -225,15 +225,20 @@ Common rules:
   files (`http::page_version`) is in the page it serves (index.html's `page-version` meta tag, filled
   in as it is served) and in the `X-Page-Version` header of every answer (`stamp`); the page
   (`version.js`, from its `call`, so within 10 s while it is visible) reloads when an answer's
-  differs, once per version (`sessionStorage`, against a reload that serves the same old page), and
-  not when an answer has none (the lead away, a proxy's 502) or the page was served without one.
-  - **A one-off cleanup** (task #1117): the page unregisters every service worker registration and
-    deletes the `shell-` caches of the worker it had (`sw.js`, removed), for a device that still
-    has it; `sw.js` is no longer served (the gate refuses it, 403), which a browser's next update
-    check of the worker may also take as its end. It can go (index.html's two lines) once every device
-    that had the page as an app (the owner's phone, iPad and Macs) has opened the page once since
-    this app was published: a device drops the worker the first time it loads the page, so the
-    release after that is enough.
+  differs, once per version (`sessionStorage`, against a reload that serves the same old page), not
+  while a field has the focus or a pointer is down (a setting being typed, a limit line dragged: the
+  next answer asks again), and not when an answer has none (the lead away, a proxy's 502) or the
+  page was served without one.
+  - **A one-off cleanup** (task #1117) of the service worker the page had, for a device that still
+    has it: `sw.js` is now a worker that ends itself (no page registers it; a member's port answers
+    it too, not with a redirect, which fails a worker's update). A device's next update check of the
+    old worker (a page loaded; an old page open for days checks when it comes back to the front and
+    half-hourly) takes it, and it deletes the old one's `shell-<version>` caches, unregisters and
+    reloads the pages it held into the new page. The page itself also unregisters the worker of its
+    own folder (through Caddy, `/build/`: the map's at `/` stays) and deletes those caches. Both
+    can go (`sw.js`, its `PAGE` entry and memberpage's arm; index.html's two lines) once every device
+    that had the page as an app (the owner's phone, iPad and Macs) has opened it since this app was
+    published.
 
 ## 8. The workers: the Macs' agents
 
