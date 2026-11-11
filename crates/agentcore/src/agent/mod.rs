@@ -10231,21 +10231,35 @@ mod tests {
     /// The beat's period in the tests of a beat steady through something long (`Handle::tick_every`;
     /// `beat::EVERY`, 10 s, had them wait out 50 s, #1112): what they claim is a beat each period
     /// all along, whatever the period.
-    const TEST_BEAT: Duration = Duration::from_secs(1);
+    const TEST_BEAT: Duration = Duration::from_millis(250);
 
-    /// The local status' beat as it changes while `busy` runs (on this thread) for `ran` at least,
-    /// the beat's timer every `TEST_BEAT`: each change's time, sampled every 100 ms on a thread of
-    /// the test's.
+    /// The longest gap between two beats `beats_while` takes as steady: the period, and a second and
+    /// a half for the sampler and a loaded Mac (as with `beat::EVERY`'s 10 s before #1112). A beat
+    /// held by something the test makes last longer than this shows as a gap past it.
+    const BEAT_GAP: Duration = TEST_BEAT.saturating_add(Duration::from_millis(1500));
+
+    /// The local status' beats while `busy` runs (on this thread) for `ran` at least, the beat's
+    /// timer every `TEST_BEAT`: each write's time and stamp, sampled every 50 ms on a thread of the
+    /// test's. A write is told by the file's modification time, not its stamp, which is whole
+    /// seconds: four periods would share one, and a gap be read a second off (#1112 review).
     fn beats_while(status: PathBuf, ran: Duration, mut busy: impl FnMut()) -> Vec<(Duration, u64)> {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
         let t0 = Instant::now();
         let sampler = std::thread::spawn(move || {
             let mut seen: Vec<(Duration, u64)> = Vec::new();
-            while stopped.recv_timeout(Duration::from_millis(100)).is_err() {
+            let mut last = None;
+            while stopped.recv_timeout(Duration::from_millis(50)).is_err() {
+                let Some(m) = std::fs::metadata(&status).and_then(|m| m.modified()).ok() else { continue };
+                if last == Some(m) {
+                    continue;
+                }
+                let at = t0.elapsed();
                 let beat =
                     std::fs::read(&status).ok().and_then(|b| serde_json::from_slice::<Status>(&b).ok()).map(|s| s.beat);
-                if let Some(b) = beat.filter(|b| seen.last().is_none_or(|l| l.1 != *b)) {
-                    seen.push((t0.elapsed(), b));
+                // (Stamped as it was written, not a stale status written again.)
+                if let Some(b) = beat.filter(|b| *b + BEAT_GAP.as_secs() + 2 >= now_s()) {
+                    seen.push((at, b));
+                    last = Some(m);
                 }
             }
             seen
@@ -10255,24 +10269,22 @@ mod tests {
         }
         stop.send(()).unwrap();
         let seen = sampler.join().unwrap();
-        // (Within the beat's period, a second more as its stamp is whole seconds (two beats a
-        // period apart, one late, can share a second: the sampler sees the second's first), and a
-        // second and a half for the sampler and a loaded Mac, all along.)
-        let most = TEST_BEAT + Duration::from_millis(2500);
         let mut at = Duration::ZERO;
         for (t, _) in &seen {
-            assert!(*t - at <= most, "a beat {:?} after the last: {seen:?}", *t - at);
+            assert!(*t - at <= BEAT_GAP, "a beat {:?} after the last: {seen:?}", *t - at);
             at = *t;
         }
-        assert!(t0.elapsed() - at <= most && at >= ran.saturating_sub(most), "{seen:?}");
+        assert!(t0.elapsed() - at <= BEAT_GAP && at >= ran.saturating_sub(BEAT_GAP), "{seen:?}");
+        assert!(seen.windows(2).all(|w| w[0].1 <= w[1].1), "a stamp went back: {seen:?}");
         eprintln!("beats {:?}", seen.iter().map(|(t, _)| t.as_secs_f32()).collect::<Vec<_>>());
         seen
     }
 
     /// Task #871 step 2: the heartbeat advances each period while every NAS call hangs (the slow-NAS
-    /// fake), for five periods (five beats, past two NAS calls' deadlines; 2 min before #969, 50 s
-    /// before #1112: 10-s periods and the calls' real 20-s deadline), the loop going round on it
-    /// meanwhile; the NAS's copy never written then.
+    /// fake), for 7 s (past two NAS calls' deadlines; 2 min before #969, 50 s before #1112: 10-s
+    /// periods and the calls' real 20-s deadline), the loop going round on it meanwhile; the NAS's
+    /// copy never written then. Each call is held 3 s, over `BEAT_GAP` as the real 20 s was over
+    /// 11.5: a beat that waited on one (its NAS write in line, say) shows as a gap past it.
     #[test]
     fn beat_steady_while_the_nas_hangs() {
         let d = tempfile::tempdir().unwrap();
@@ -10282,9 +10294,8 @@ mod tests {
         let before = std::fs::read(&shared).unwrap();
         a.beat.tick_every(TEST_BEAT);
         a.beat.spawn();
-        // (Each hung call given up after two periods: five periods outlast two of them.)
-        let hung = nasread::fake::hang(&root).deadline(2 * TEST_BEAT);
-        let seen = beats_while(a.o.home.join("status.json"), 5 * TEST_BEAT, || {
+        let hung = nasread::fake::hang(&root).deadline(Duration::from_secs(3));
+        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(7), || {
             a.round().ok();
         });
         assert!(seen.len() >= 5, "{seen:?}");
@@ -10292,9 +10303,10 @@ mod tests {
         drop(hung);
     }
 
-    /// Task #871 step 2: the heartbeat advances each period while a plan runs six (the slow-plan
-    /// fake; 3 min before #969, 50 s of 10-s periods before #1112: five beats show it as well), the
-    /// loop in it all along; the status says how old the loop's part is.
+    /// Task #871 step 2: the heartbeat advances each period while a plan runs 6 s (the slow-plan
+    /// fake; 3 min before #969, 50 s of 10-s periods before #1112), over three times `BEAT_GAP`: a
+    /// beat that waited on it shows as a gap past it; the loop in it all along; the status says how
+    /// old the loop's part is.
     #[test]
     fn beat_steady_while_planning() {
         let d = tempfile::tempdir().unwrap();
@@ -10302,16 +10314,16 @@ mod tests {
         a.round().unwrap();
         a.beat.tick_every(TEST_BEAT);
         a.beat.spawn();
-        a.planner().slow_plan = Some(6 * TEST_BEAT);
+        a.planner().slow_plan = Some(Duration::from_secs(6));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let status = a.o.home.join("status.json");
-        let seen = beats_while(status.clone(), 6 * TEST_BEAT, || {
+        let seen = beats_while(status.clone(), Duration::from_secs(6), || {
             a.planner().plan(&r, &c, &mut Vec::new());
         });
         assert!(seen.len() >= 5, "{seen:?}");
         let s: Status = serde_json::from_slice(&std::fs::read(&status).unwrap()).unwrap();
-        // (The last beat at least four periods into the plan, of six.)
+        // (The last beat at least 4 s into the plan, of 6: within `BEAT_GAP` of its end.)
         assert!(s.loop_age_s.is_some_and(|age| age >= 4), "{:?}", s.loop_age_s);
     }
 
@@ -10618,8 +10630,8 @@ mod tests {
     /// grant, no pause and no heartbeat: grants come from the last plan at once, each carrying its
     /// number, a lease never granted twice; a pause is answered and said within a second; the beat
     /// goes on each period (`TEST_BEAT`); each round takes moments; and the plan is still under way
-    /// at the end. (#1112: the pause asked 1 s in, not 2, the rounds 2 s at least, not 8, and three
-    /// beats of 1 s, not of 10: 39 s alone on the M4.)
+    /// at the end. (#1112: the pause asked 1 s in, not 2, the rounds 2 s at least, not 8, and the
+    /// beat 3 s of 250-ms periods, not 30 s of 10-s ones: 39 s alone on the M4 before.)
     #[test]
     fn a_slow_plan_delays_no_grant_pause_or_heartbeat() {
         let d = tempfile::tempdir().unwrap();
@@ -10660,7 +10672,7 @@ mod tests {
             a_job_running(a);
         });
         // The beat: each period.
-        let seen = beats_while(a.o.home.join("status.json"), 4 * TEST_BEAT, || {
+        let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(3), || {
             a.round().ok();
         });
         assert!(seen.len() >= 3, "{seen:?}");

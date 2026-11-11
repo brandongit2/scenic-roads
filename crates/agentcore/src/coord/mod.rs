@@ -97,7 +97,8 @@ impl From<std::net::TcpListener> for Listeners {
 /// restarting its process (docs/roles.md), and a port kept open with nothing taking its
 /// connections would leave every member's, page's and job's connection to a Mac that just
 /// stopped hanging in its backlog where it is refused at once. (So filled only in a unit test,
-/// `buildstore::out::testing`.)
+/// `buildstore::out::testing`, where `close_kept_connections` takes and closes what a kept port is
+/// sent meanwhile, as a refusal would.)
 static KEPT: Mutex<BTreeMap<u16, Listeners>> = Mutex::new(BTreeMap::new());
 
 /// The listeners for `port`, listened on anew; in a test program, the ones it kept for the port
@@ -507,9 +508,10 @@ pub struct Shared {
     /// The time its leases, workers' paces and their being around are reckoned in (a test's
     /// virtual one).
     pub clock: std::sync::Arc<dyn store::clock::Clock>,
-    /// How long a request's headers may take, and an idle kept-alive connection stay open
-    /// (`http::HEADERS_MAX`; a test's shorter, set before it connects).
-    pub headers_max: Duration,
+    /// How long a request's headers may take, and an idle kept-alive connection stay open, in ms
+    /// (`http::HEADERS_MAX`; a test's shorter, set before it connects). Read by the accept loop
+    /// without this lock (#1112 review: a handler holding it never holds up a connection).
+    pub headers_max_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/api/swarm`
     /// and `/api/history` answered from it once it has a snapshot.
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
@@ -1667,7 +1669,7 @@ impl Coordinator {
             own_cap: None,
             dir: dir.to_path_buf(),
             clock: store::clock::real(),
-            headers_max: http::HEADERS_MAX,
+            headers_max_ms: Arc::new((http::HEADERS_MAX.as_millis() as u64).into()),
         };
         if !viewer {
             shared.save_leases();
@@ -5500,7 +5502,7 @@ mod http {
         for n in super::API {
             routes = routes.route(&format!("/api/{n}"), any(json));
         }
-        let headers = ctx.shared.clone();
+        let headers = ctx.shared.lock().unwrap_or_else(|e| e.into_inner()).headers_max_ms.clone();
         // (The map's, answered from memory: maproutes.)
         let shared = ctx.shared.clone();
         let routes = routes.merge(super::maproutes::router::<Ctx>(Arc::new(move || {
@@ -5593,7 +5595,7 @@ mod http {
         listener: coordwire::net::Listener,
         loopback: Option<coordwire::net::Listener>,
         app: Router,
-        shared: Arc<Mutex<super::Shared>>,
+        headers_max_ms: Arc<std::sync::atomic::AtomicU64>,
         stopped: Arc<std::sync::atomic::AtomicBool>,
         wake: Arc<tokio::sync::Notify>,
         taken: Arc<std::sync::atomic::AtomicU64>,
@@ -5643,7 +5645,7 @@ mod http {
                 store::spawn::sockets(|| drop(stream));
                 continue;
             };
-            let headers_max = shared.lock().unwrap_or_else(|e| e.into_inner()).headers_max;
+            let headers_max = Duration::from_millis(headers_max_ms.load(std::sync::atomic::Ordering::Relaxed));
             let keepalive =
                 socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
             socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive).ok();
@@ -12024,7 +12026,11 @@ mod tests {
         // 2 s, not `HEADERS_MAX`'s 20, #1112: set for this connection alone, the held ones above
         // kept stalled while the worker was answered.)
         let headers_max = Duration::from_secs(2);
-        c.shared.lock().unwrap().headers_max = headers_max;
+        c.shared
+            .lock()
+            .unwrap()
+            .headers_max_ms
+            .store(headers_max.as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
         let t = Instant::now();
         let mut slow = std::net::TcpStream::connect(&addr).unwrap();
         slow.write_all(b"GET / HTTP/1.1\r\nHost").unwrap();
@@ -13529,4 +13535,3 @@ mod tests {
         }
     }
 }
-// (#1112: measuring, temporary)

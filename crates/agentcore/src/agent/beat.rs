@@ -857,4 +857,3 @@ mod tests {
         c.stop();
     }
 }
-// (#1112: measuring, temporary)
