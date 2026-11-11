@@ -935,6 +935,15 @@ fn an_added_measure_alone_is_read_for_a_dataset_as_accepted() {
     assert!(anew.sorted().iter().all(|r| r.0 == other));
     assert_eq!(anew.sorted(), fresh.sorted());
     assert!(anew.sorted().len() > added.sorted().len(), "its headers and presence read too");
+    // (Review: a step made makes every step after it again: hollow tiles kept beside a presence
+    // lacking aren't of the presence made, so they're made again too, as a whole measurement's.)
+    let m = before.index.files.get_mut("idx.toml").unwrap().facts.get_mut("measured").unwrap();
+    let m = m.as_object_mut().unwrap();
+    m.remove("presence");
+    m.insert("hollow".into(), serde_json::json!([[0, 0]]));
+    let remade = decide_with(&checks(&Noted::default()), &files, Some(&before), &copies);
+    assert!(remade.report.is_none(), "{:?}", remade.report);
+    assert_eq!(measured(&remade), want);
 }
 
 /// Task #842: of a dataset's presence, the deep tiles a finer read finds no valid pixel in are

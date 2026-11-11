@@ -417,10 +417,11 @@ fn hollow_level(t: &buildstore::geotiff::Tiff, px: f64) -> Result<usize> {
 
 /// A GeoTIFF dataset's measures, in the order they're made, each reading what those before it
 /// found (`Elevation::measure_now`). A dataset taken as accepted (`seed`: its declaration and data
-/// as accepted) that a version of this check with fewer measures measured is measured in those
-/// it lacks alone, what it has kept (task #1088): a measure a version adds is one more step here,
-/// and costs a dataset that measure only.
-#[derive(Clone, Copy)]
+/// as accepted) that a version of this check with fewer measures measured is measured from the
+/// first step it lacks on, what's before it kept (task #1088): a measure a version adds is one
+/// more step here, last, and costs a dataset that measure only. Every step from the first lacking
+/// is made again, so what's kept and what's made are what a whole measurement makes.
+#[derive(Clone, Copy, PartialEq, PartialOrd)]
 enum Step {
     /// Its files' headers: its CRS, resolution, bands and coverage.
     Headers,
@@ -435,8 +436,9 @@ impl Step {
 
     /// Whether `m`, measured by the steps before this one, lacks this one's measure. A measure
     /// that's None by design isn't lacking: a projected dataset's bands, the world's presence and
-    /// hollow tiles. Nor a geographic dataset's bands holding the world: one accepted before bands
-    /// were (checks version 5) keeps its `resolution` everywhere, as it was accepted.
+    /// hollow tiles. Nor a geographic dataset's bands holding the world (glo30): one accepted before
+    /// bands were (checks version 5) keeps its `resolution` everywhere, its headers not read again,
+    /// as it was accepted (bands there would move the keys of everything it feeds).
     fn lacks(self, m: &Measured) -> bool {
         match self {
             Step::Headers => match m.crs {
@@ -448,9 +450,9 @@ impl Step {
         }
     }
 
-    /// Whether `m`, measured of declaration `d`, lacks any measure (a tile pyramid's has none).
-    fn lacking(d: &Declaration, m: &Measured) -> bool {
-        matches!(d.data, Data::Geotiff { .. }) && Step::ALL.iter().any(|s| s.lacks(m))
+    /// The first step whose measure `m` lacks (None: it has them all).
+    fn first_lacking(m: &Measured) -> Option<Step> {
+        Step::ALL.into_iter().find(|s| s.lacks(m))
     }
 }
 
@@ -465,9 +467,11 @@ impl Elevation {
         memo_key: &str,
     ) -> std::result::Result<Measured, String> {
         // (One taken as accepted (`seed`) but measured by a version with fewer measures: measured
-        // in those it lacks alone.)
+        // from the first step it lacks on.)
         let prior = match self.memo.lock().unwrap().get(memo_key) {
-            Some(Ok(m)) if Step::lacking(d, m) => Some(m.clone()),
+            Some(Ok(m)) if matches!(d.data, Data::Geotiff { .. }) && Step::first_lacking(m).is_some() => {
+                Some(m.clone())
+            }
             Some(m) => return m.clone(),
             None => None,
         };
@@ -623,8 +627,9 @@ impl Elevation {
                     header(w, src)
                 };
                 let mut m = prior.unwrap_or_default();
+                let Some(from) = Step::first_lacking(&m) else { return Ok(m) };
                 // (Its files' headers: its CRS, resolution and bands, and its coverage.)
-                if Step::Headers.lacks(&m) {
+                if from <= Step::Headers {
                     let mut crs = None;
                     let mut resolution: f64 = 0.0;
                     // (The index's files sampled; every other file read, its coverage its own.)
@@ -696,13 +701,19 @@ impl Elevation {
                 }
                 let crs = m.crs.expect("measured with its headers");
                 // (Where it really has data, by deep-pack tile: crate::terrain_zoom's places.)
-                if Step::Presence.lacks(&m) {
-                    let cover = m.cover.as_deref().expect("a presence is of a coverage");
-                    m.presence = Some(presence_of(crs, &list, cover, &open)?);
+                if from <= Step::Presence {
+                    m.presence = match m.cover.as_deref() {
+                        Some(cover) => Some(presence_of(crs, &list, cover, &open)?),
+                        None => None,
+                    };
                 }
                 // (Of that, where a finer read finds nothing: the terrain-deep targets the plan never
                 // runs. Its files read at once, the version's own ones read first, as `open` reads them.)
-                if Step::Hollow.lacks(&m) {
+                if from <= Step::Hollow {
+                    let Some(presence) = m.presence.as_deref() else {
+                        m.hollow = None;
+                        return Ok(m);
+                    };
                     let mut local: BTreeMap<&str, Arc<Vec<u8>>> = BTreeMap::new();
                     for (w, _) in list.iter().filter(|(w, _)| !w.starts_with("http")) {
                         local.insert(w, (v.read)(w).map_err(|e| format!("{w}: {e:#}"))?);
@@ -713,7 +724,6 @@ impl Elevation {
                             None => header(w, remote(w)?),
                         }
                     };
-                    let presence = m.presence.as_deref().expect("hollow tiles are of a presence");
                     m.hollow = Some(hollow_of(crs, &list, presence, &open)?);
                 }
                 Ok(m)
@@ -821,7 +831,8 @@ impl Checks for Elevation {
     /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
     /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`). 5: a
     /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`). 6: its hollow tiles
-    /// (`Measured::hollow`). One accepted without a measure is measured in those it lacks (`Step`).
+    /// (`Measured::hollow`). One accepted without a measure is measured from the first it lacks on
+    /// (`Step`).
     fn version(&self) -> u32 {
         6
     }
@@ -1047,8 +1058,9 @@ impl Checks for Elevation {
 
     /// Each accepted dataset's measurement, as measured (before its `regions` and `exclude` cut it),
     /// under the key its accepted entry names: one whose declaration and data are as accepted
-    /// isn't read again, only cut again (read for the measures it lacks alone: `Step`). A tile pyramid's of a territory, measured from other
-    /// outlines than these (or from ones the index doesn't name), is measured again.
+    /// isn't read again, only cut again (one measured by a version with fewer measures is read from
+    /// the first it lacks on: `Step`). A tile pyramid's of a territory, measured from other outlines
+    /// than these (or from ones the index doesn't name), is measured again.
     fn seed(&self, accepted: &super::Index) {
         let same_outlines = accepted.derived_from.as_deref().and_then(|d| {
             let t: Vec<&str> = d.split(' ').collect();
@@ -1067,8 +1079,8 @@ impl Checks for Elevation {
             let Some(Ok(mut m)) = e.facts.get("measured").map(|v| serde_json::from_value::<Measured>(v.clone())) else {
                 continue;
             };
-            // (One measured by a version with fewer measures is taken too: `measure` makes those it
-            // lacks alone, `Step`.)
+            // (One measured by a version with fewer measures is taken too: `measure` makes the steps
+            // from the first it lacks on, `Step`.)
             if let Some(u) = m.uncut.take() {
                 m.cover = (u != [declared::WORLD]).then_some(u);
             }

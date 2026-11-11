@@ -1286,12 +1286,17 @@ reads it: a terrain-deep target whose every source reaching past z12 is hollow t
 tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those
 before it (`Step`: its headers, giving its CRS, resolution, bands and coverage; its presence; its
 hollow tiles), and a dataset taken as accepted (below) that a version of the check with fewer
-measures measured is measured in those it lacks alone (task #1088): one accepted by checks version 5
-has its hollow tiles read, nothing else; by version 4, its presence and hollow tiles (a geographic
-one's headers too, for its bands). A
-measure is lacking only where it isn't none by design: a projected dataset's bands, or the world's
-presence and hollow tiles; a geographic dataset holding the world accepted without bands keeps its
-`resolution` everywhere, as accepted. A dataset whose declaration or data changed is measured whole.
+measures measured is measured from the first step it lacks on, every step after it made again, what's
+before it kept (task #1088): one accepted by checks version 5 has its hollow tiles read, nothing
+else; a projected one accepted by version 4, its presence and hollow tiles; a geographic one, its
+headers too, for its bands (so measured whole). What's kept and what's made are what a whole
+measurement of the same data makes, so its keys don't move. A measure is lacking only where it isn't
+none by design: a projected dataset's bands, or the world's presence and hollow tiles. A geographic
+dataset holding the world (glo30) accepted without bands keeps its single `resolution` everywhere
+and its headers aren't read again: bands there would move the keys of everything built from it. A
+dataset whose declaration or data changed is measured whole: its memo key is its `keyed` with its
+data's (`data_digest`: its index's content and its added files' names and contents, as the gate
+holds them; a file named by URL counts by its URL, as the units' keys count it).
 A tile pyramid's resolution comes from its zoom at its coverage's
 mid-latitude, and a tile is read to check it's 256 px (`generic::TILE_PX`). The coverage is also the
 credits' extent (§4.8).
