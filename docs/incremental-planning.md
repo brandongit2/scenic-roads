@@ -358,8 +358,9 @@ reference.
 - **#878 (coordination off the NAS).** Today each plan reads the records' brief from the NAS (5 MB
   for term 752) and stats the snapshot for `plan_seen`. Step 8b of docs/coordination.md put the
   records at `state/build/records.json` and `brief.json` (the lead's own copy on its disk first);
-  step 8c names them by the store's epoch;
-  `GET /pool/brief` is an open decision there. On the lead the records are the pool driver's, in
-  the same process: step 7 here takes the brief from it (a channel or a `Snap`, after the merge is
-  saved), so the plan reads no records over SMB, and the trigger is the merge's saved generation
-  instead of a file's stat. The diff of §3 is the same whichever way the brief comes.
+  step 8c names them by the store's epoch; step 8d (task #1037) serves the brief by
+  `GET /pool/brief`, the lead's coordinator holding the brief of each save whole. The plan reads
+  that one in process (`Planner::brief_now`; the NAS's only before the first save), so it reads no
+  records over SMB, and its digest takes the brief's (epoch, seq) beside the snapshot's stat: step
+  7's read is built that way; its trigger by the merge's saved generation alone is not. The diff of
+  §3 is the same whichever way the brief comes.

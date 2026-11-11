@@ -266,9 +266,15 @@ becomes 841).
   and the one path not readable (a stale read), an error, never today's files. Readers of the
   manifest or keys alone (the map server's syncs every minute, the hosts, the plan and status, job
   starts, the CLI and checks) read the brief instead, the same way (`records::Brief`,
-  `state/build/brief.json`: the manifest and keys, ~4 MB against the snapshot's ~15 MB, which is
+  `state/build/brief.json`: the manifest and keys, ~6.5 MB against the snapshot's ~14 MB, which is
   mostly the unverified uploads). An idle agent's plan digest stats the one path's snapshot. The
-  map server reads them through its own pool (`pool::nas::ReadOnly`).
+  map server reads them through its own pool (`pool::nas::ReadOnly`). **Agents read the brief
+  from the lead** (docs/coordination.md step 8d, crate::agent::brief): the lead's in process (its
+  coordinator holds the brief of its last save), a member's by `GET /pool/brief` (304 while
+  unchanged); a job of a pool's lease opens the brief its agent had from the lead as it started it
+  (`SCENIC_BRIEF`, a file in the agent's folder), never the NAS's snapshot, and isn't started while
+  the lead doesn't answer (its lease given back). The NAS's brief is read by the map server and the
+  CLI, and by an agent whose lead serves none (an older app's, or none saved yet in its process).
 - **Today's files** are the records before the pool: a new pool's first take-up is made from them.
   No lead writes them.
 - **The coordinator's state** is in its store on its own disk (docs/coordination.md §4, task #878:

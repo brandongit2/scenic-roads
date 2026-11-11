@@ -208,7 +208,7 @@ files on a laptop are §8.3's.
 | `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, built: step 5) | the same |
 | Holds and settings | NAS files | `/pool/hold`, `/pool/settings` (#878 step 5) |
 | The build page | its own NAS readers | a 307 to the lead (§3.3) |
-| The records brief (jobs' `Out`) | NAS snapshot | `GET /pool/brief` (#878's later step, decision 2) |
+| The records brief (jobs' `Out`, the view, `--expect-same`) | NAS snapshot | `GET /pool/brief` (built: #878 step 8d, task #1037) |
 
 ## 5. Migration order
 
@@ -230,7 +230,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `start_region_steps` call and opens no pack index), and a loop-time test with #871's slow-NAS fake:
    a member's round never waits on the records brief (`a_members_round_never_waits_on_the_records_brief`). As built: the member had none of these since #871
    step 6 (no plan); the M1's were a lead's parts started out of the pool (the old `o.helper` false),
-   which step 1 ends. Also: a job's `--expect-same` reads the brief under the NAS's deadline. The idle footprint was not measured: the
+   which step 1 ends. Also: a job's `--expect-same` reads the brief from the lead (#878 step 8d). The idle footprint was not measured: the
    harness has no regions' data to fill one.
 3. *Built.* **The member's broker** (§3.2): `coord::Broker`; `become_broker` and the member's phase sharer
    deleted. Tests: the brokers' task tests moved to `Broker` (`a_task_goes_out_and_comes_back`,
@@ -502,8 +502,9 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
 - **#880 (incremental planning, in flight):** the plan is the mini's alone since steps 1–2, so its
   kept state costs the laptops nothing; #882 has nothing left in agent/plan.rs or build.rs.
 - **#878 (coordination off the NAS):** its step 3 carried step 5 here. Left on the
-  members: the gated NAS fallbacks (step 8 above), and records by HTTP (`GET /pool/brief`, its open
-  decision 2), which would take a job's `--expect-same` brief read off SMB. Its step 8c ("terms
+  members: the gated NAS fallbacks (step 8 above). Records by HTTP (`GET /pool/brief`, its
+  decision 2) is built as its step 8d: a member's jobs, view and `--expect-same` read no brief off
+  SMB. Its step 8c ("terms
   out", built, task #1124) deleted `pool::term`; `role` is `buildstore::records::lead`'s
   (re-exported as `pool::lead`), reading `lead-member.json`, which stays.
 - **#883 (the map's log):** the log, its feed, GC and its queue are the mini's already; #882 moves
