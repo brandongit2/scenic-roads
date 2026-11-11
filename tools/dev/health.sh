@@ -37,7 +37,10 @@ print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/map ]] && echo mount
 if [[ ! -f .claude/nas-links || -n $(find .claude/nas-links -mmin +360) ]]; then
   # (On the NAS, POSIX sh: the candidates, then each checked; a find cut short says so. ~70 s on
   # 7 Nov; bounded: 5 s to connect, find's 180 s, a silent link dropped after 45 s.)
-  if ans=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 brandontsang@fishandchips.local '
+  # (The NAS by its LAN name at home, else through Tailscale by its bare name; the host key checked
+  # as the LAN name's either way.)
+  nas_host=fishandchips.local; dscacheutil -q host -a name $nas_host | grep -q ip_address || nas_host=fishandchips
+  if ans=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o HostKeyAlias=fishandchips.local brandontsang@$nas_host '
     cd /volume1/personal/projects/scenic-roads || exit 3
     { for d in */; do d=${d%/}; echo "$d/$d"; done
       timeout 180 find inputs state sources/inputs -mindepth 1 \( -type l -o -type f -size 1067c \) -print || echo "!find $?"
