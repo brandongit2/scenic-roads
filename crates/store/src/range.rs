@@ -23,6 +23,12 @@ pub trait RangeRead: Send + Sync {
 
     /// Exactly `len` bytes at `off`; an error if that runs past the end.
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError>;
+
+    /// Whether bytes `off..off + len` are in memory already, a read of them no I/O (nothing to read
+    /// ahead: buildstore::geotiff::Tiff::fetch).
+    fn in_memory(&self, _off: u64, _len: usize) -> bool {
+        false
+    }
 }
 
 /// A range source whose bytes are all in memory already (an mmap), so they can be borrowed.
@@ -496,6 +502,10 @@ impl<T: RangeRead + ?Sized> RangeRead for &T {
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         (**self).read_at(off, len)
     }
+
+    fn in_memory(&self, off: u64, len: usize) -> bool {
+        (**self).in_memory(off, len)
+    }
 }
 
 impl<T: RangeRead + ?Sized> RangeRead for Arc<T> {
@@ -506,6 +516,10 @@ impl<T: RangeRead + ?Sized> RangeRead for Arc<T> {
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         (**self).read_at(off, len)
     }
+
+    fn in_memory(&self, off: u64, len: usize) -> bool {
+        (**self).in_memory(off, len)
+    }
 }
 
 impl<T: RangeRead + ?Sized> RangeRead for Box<T> {
@@ -515,6 +529,10 @@ impl<T: RangeRead + ?Sized> RangeRead for Box<T> {
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
         (**self).read_at(off, len)
+    }
+
+    fn in_memory(&self, off: u64, len: usize) -> bool {
+        (**self).in_memory(off, len)
     }
 }
 

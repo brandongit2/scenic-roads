@@ -1289,8 +1289,11 @@ input check, the plan (`declared::projected_cells`, `plan_converted`) and the sa
   store::ahead's threads, task #1096), a fetched dataset's over the network and a stored one's read
   in place on the NAS alike (a whole copy on this Mac's disk is read as sampled): its files first
   opened together (`GeoSet::blocks_ahead`), then each block's bytes as stored (`Tiff::fetch`, held
-  in the cache under a quarter of its budget), at most `GEO_AHEAD` (128) blocks past the chunk being
-  sampled, decoded by the sampling's own threads as they come to them. A process keeps at most 8
+  in the cache within its one budget, a quarter of it at most, decoded blocks let go to make room;
+  a level read whole, `read_level_whole`, has nothing to read ahead), at most `GEO_AHEAD` (128)
+  blocks past the chunk being sampled and no more than the list's share of that quarter (the chunks
+  sampled at once share it, `BlockCache::begin_list`, so none of their blocks is let go before it's
+  decoded, to be read twice), decoded by the sampling's own threads as they come to them. A process keeps at most 8
   reads in flight on the NAS and 64 on the network (`store::ahead::AT_ONCE`), whatever number of
   chunks it samples at once, so the sampler doesn't wait on a chunk's few blocks one round trip
   after another, and its threads never sit in a read its points foresaw. A tile pyramid's

@@ -1678,7 +1678,7 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
         let Set::Geo(g) = &s.sets[0] else { panic!("a GeoTIFF dataset") };
         let sel: Vec<u32> = (0..lon.len() as u32).collect();
         let parts: Vec<&[u32]> = sel.chunks(100).collect();
-        let (blocks, starts, _) = g.blocks_ahead(&parts, &lon, &lat).unwrap();
+        let (blocks, starts, ..) = g.blocks_ahead(&parts, &lon, &lat).unwrap();
         assert_eq!(starts.len(), parts.len() + 1);
         (blocks.len(), blocks.iter().all(|b| b.4 == Lane::Nas))
     };

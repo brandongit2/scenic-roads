@@ -128,19 +128,22 @@ pub struct Sampled {
 pub const CACHE_BYTES: usize = 512 << 20;
 
 /// How many blocks past the end of the chunk being sampled a GeoTIFF dataset's reading ahead goes
-/// at most (`ahead_for` holds that to a quarter of the cache).
+/// at most (`ahead_for` holds that to its share of a quarter of the cache).
 pub const GEO_AHEAD: usize = 128;
 
-/// How many blocks of `block_bytes` (decoded) to read ahead with a cache of `cache_bytes`:
-/// `GEO_AHEAD`, but no more than a quarter of the cache holds, so the blocks read ahead never let
-/// the chunk being sampled lose its own.
+/// How many blocks of `block_bytes` (decoded) to read ahead with a cache of `cache_bytes` (a list's
+/// share of it: `read_ahead`): `GEO_AHEAD`, but no more than a quarter of that holds, so the blocks
+/// read ahead never let the chunk being sampled lose its own, nor each other (as stored, they're
+/// no bigger than decoded).
 pub fn ahead_for(cache_bytes: usize, block_bytes: usize) -> usize {
     GEO_AHEAD.min(cache_bytes / block_bytes.max(1) / 4)
 }
 
-/// What to read ahead: the blocks, where each part's begin in that list (and its end), and how
-/// many blocks past the part being sampled to go (`ahead_for`).
-type Ahead = (Vec<AheadBlock>, Vec<usize>, usize);
+/// What to read ahead: the blocks, where each part's begin in that list (and its end), the largest
+/// of their blocks decoded (bytes), and the cache they're read into (how many blocks past the part
+/// being sampled to go: `ahead_for`, the cache's budget shared by the lists reading into it at
+/// once).
+type Ahead = (Vec<AheadBlock>, Vec<usize>, usize, Arc<Mutex<BlockCache>>);
 
 /// A file's block to read ahead: the file, its level, the block's column and row, and the lane its
 /// file is read on.
@@ -153,10 +156,24 @@ type AheadBlock = (Arc<Tiff>, usize, u32, u32, Lane);
 /// however it ends, a read waiting to retry too (buildstore::fetch::cancellable): a host that gives
 /// no answer doesn't keep the threads, or the step, waiting out their retries. No list: `run` alone.
 fn read_ahead<R>(ahead: Option<&Ahead>, run: impl FnOnce(&dyn Fn(usize)) -> R) -> R {
-    let Some((blocks, starts, n_ahead)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
+    let Some((blocks, starts, biggest, cache)) = ahead.filter(|a| a.0.len() > 1) else { return run(&|_| {}) };
+    // (Its window: its share of the cache with the lists reading into it now (a chunk a thread),
+    // so what they hold read ahead stays under the quarter, and none is let go before it's
+    // decoded, to be read again.)
+    let (cap, lists) = {
+        let mut c = cache.lock().unwrap();
+        (c.cap(), c.begin_list())
+    };
+    struct End<'a>(&'a Mutex<BlockCache>);
+    impl Drop for End<'_> {
+        fn drop(&mut self) {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).end_list();
+        }
+    }
+    let _end = End(cache);
     store::ahead::ahead(
         blocks.len(),
-        *n_ahead,
+        ahead_for(cap / lists, *biggest),
         |i| Some(blocks[i].4),
         |i, stop| {
             let (t, level, bx, by, _) = &blocks[i];
@@ -707,8 +724,7 @@ impl GeoSet<'_> {
         starts.push(out.len());
         let biggest =
             out.iter().map(|(t, level, ..)| t.level(*level).map_or(0, |i| i.block_bytes())).max().unwrap_or(0);
-        let n_ahead = ahead_for(self.cache.lock().unwrap().cap(), biggest);
-        Ok((out, starts, n_ahead))
+        Ok((out, starts, biggest, self.cache.clone()))
     }
 
     /// The distance (m) from each point (native `x`, `y`, latitude `lat`; its file `file`) to the

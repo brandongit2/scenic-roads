@@ -275,8 +275,10 @@ impl Block {
 /// many threads each holding one hold that much over it.
 ///
 /// It also holds blocks read ahead and not yet decoded (`Tiff::fetch`: their bytes as stored, read
-/// on an I/O thread ahead of the compute: store::ahead), under a quarter of its budget, the oldest
-/// out first past it; a block's decode takes its bytes from there, not the file.
+/// on an I/O thread ahead of the compute: store::ahead), within the same budget (decoded blocks
+/// let go to make room for them) and under a quarter of it, the oldest out first past that; a
+/// block's decode takes its bytes from there, not the file. The lists reading ahead into it at once
+/// (`begin_list`) share that quarter (a terrain job samples a chunk a thread, each its own list).
 pub struct BlockCache {
     map: HashMap<(u64, usize, u64), (Arc<Block>, u64)>,
     /// The blocks being read now: a thread asking for one waits on its lock (`Tiff::block`).
@@ -284,19 +286,22 @@ pub struct BlockCache {
     /// The blocks read ahead, as stored, until decoded (`Tiff::fetch`), and their bytes.
     raw: HashMap<(u64, usize, u64), (Vec<u8>, u64)>,
     raw_bytes: usize,
+    /// The lists reading ahead into it now (`begin_list`).
+    lists: usize,
     tick: u64,
     bytes: usize,
     cap: usize,
 }
 
 impl BlockCache {
-    /// A cache holding up to `bytes` of decoded blocks.
+    /// A cache holding up to `bytes` of decoded blocks and blocks read ahead.
     pub fn new(bytes: usize) -> BlockCache {
         BlockCache {
             map: HashMap::new(),
             loading: HashMap::new(),
             raw: HashMap::new(),
             raw_bytes: 0,
+            lists: 0,
             tick: 0,
             bytes: 0,
             cap: bytes,
@@ -308,16 +313,42 @@ impl BlockCache {
         self.raw_bytes
     }
 
+    /// A list begins reading ahead into the cache (its end: `end_list`): the lists reading ahead
+    /// now, this one too, whose windows share the quarter of the budget the bytes read ahead may
+    /// hold (inputs::dem::generic::read_ahead).
+    pub fn begin_list(&mut self) -> usize {
+        self.lists += 1;
+        self.lists
+    }
+
+    /// A list's reading ahead ended (`begin_list`).
+    pub fn end_list(&mut self) {
+        self.lists = self.lists.saturating_sub(1);
+    }
+
     fn put_raw(&mut self, k: (u64, usize, u64), b: Vec<u8>) {
         self.tick += 1;
         self.raw_bytes += b.len();
         if let Some(old) = self.raw.insert(k, (b, self.tick)) {
             self.raw_bytes -= old.0.len();
         }
+        // (Past the quarter, the oldest read out (a list's left untaken, its compute ended); the
+        // lists' windows (`begin_list`) keep it from coming to that otherwise.)
         while self.raw_bytes > self.cap / 4 && self.raw.len() > 1 {
             let oldest = *self.raw.iter().min_by_key(|e| e.1 .1).unwrap().0;
             let (b, _) = self.raw.remove(&oldest).unwrap();
             self.raw_bytes -= b.len();
+        }
+        self.trim();
+    }
+
+    /// Decoded blocks let go, least recently used first, till they and the bytes read ahead fit the
+    /// budget.
+    fn trim(&mut self) {
+        while self.bytes + self.raw_bytes > self.cap && self.map.len() > 1 {
+            let oldest = *self.map.iter().min_by_key(|e| e.1 .1).unwrap().0;
+            let (b, _) = self.map.remove(&oldest).unwrap();
+            self.bytes -= b.bytes();
         }
     }
 
@@ -347,11 +378,7 @@ impl BlockCache {
         if let Some(old) = self.map.insert(k, (b, self.tick)) {
             self.bytes -= old.0.bytes();
         }
-        while self.bytes > self.cap && self.map.len() > 1 {
-            let oldest = *self.map.iter().min_by_key(|e| e.1 .1).unwrap().0;
-            let (b, _) = self.map.remove(&oldest).unwrap();
-            self.bytes -= b.bytes();
-        }
+        self.trim();
     }
 }
 
@@ -494,6 +521,10 @@ impl Drop for Spanned {
 impl RangeRead for Spanned {
     fn len(&self) -> Result<u64, store::IoError> {
         self.inner.len()
+    }
+
+    fn in_memory(&self, off: u64, len: usize) -> bool {
+        off.checked_sub(self.start).is_some_and(|at| at as usize + len <= self.bytes.len())
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::IoError> {
@@ -958,8 +989,9 @@ impl Tiff {
     /// (`BlockCache`'s held bytes), for its decode to take when it's asked for (`block`): a read
     /// ahead of the compute (store::ahead), on a thread of its own, so the compute's threads
     /// decode and sample and never wait on the file. Nothing read where the block is decoded or
-    /// held already, or sparse; a block being read (by `block` or another `fetch`) is waited for.
-    /// No cache: nothing to hold it in, nothing read.
+    /// held already, sparse, or in memory already (its level read whole: `read_level_whole`); a
+    /// block being read (by `block` or another `fetch`) is waited for. No cache: nothing to hold it
+    /// in, nothing read.
     pub fn fetch(&self, level: usize, bx: u32, by: u32) -> Result<()> {
         let Some((id, c)) = &self.cache else { return Ok(()) };
         let img = self.level(level)?;
@@ -968,7 +1000,7 @@ impl Tiff {
         let there = |g: &mut BlockCache| (g.raw.contains_key(&k) || g.get(k).is_some()).then_some(());
         let read = || {
             let (off, n) = (self.strile(&img.offsets, index)?, self.strile(&img.counts, index)?);
-            if off != 0 && n != 0 {
+            if off != 0 && n != 0 && !self.src.in_memory(off, n as usize) {
                 ensure!(n <= 1 << 30, "a TIFF block of {n} bytes");
                 let raw = self
                     .src
@@ -2267,6 +2299,49 @@ mod tests {
         let after = n();
         assert_eq!(t.read_window(0, 0, 0, 512, 512).unwrap(), data);
         assert_eq!(n(), after + 16, "past the cap: a read a block");
+        // (Task #1096 review: a level held in memory has nothing to read ahead: no bytes held twice.)
+        let t = Tiff::open(src.clone())
+            .unwrap()
+            .read_level_whole(0, 1 << 30)
+            .unwrap()
+            .with_shared_cache(1, Arc::new(Mutex::new(BlockCache::new(64 << 20))));
+        let after = n();
+        t.fetch(0, 1, 1).unwrap();
+        assert_eq!((n(), t.cache.as_ref().unwrap().1.lock().unwrap().held_raw()), (after, 0));
+        assert_eq!(t.read_window(0, 0, 0, 512, 512).unwrap(), data);
+    }
+
+    /// Task #1096 review: the bytes read ahead are within the cache's one budget (decoded blocks let
+    /// go to make room, least recently used first), under a quarter of it (the oldest out past
+    /// that); the lists reading ahead at once are counted, to share that quarter.
+    #[test]
+    fn blocks_read_ahead_are_within_the_caches_budget() {
+        let block = |n: usize| Arc::new(Block { width: n, height: 1, data: Samples::U8(vec![0; n]) });
+        let mut c = BlockCache::new(1000);
+        for i in 0..8 {
+            c.put((1, 0, i), block(100));
+        }
+        assert_eq!(c.bytes, 800);
+        c.put_raw((1, 0, 100), vec![0; 150]);
+        assert_eq!((c.bytes, c.raw_bytes), (800, 150));
+        c.put_raw((1, 0, 101), vec![0; 100]);
+        assert_eq!((c.bytes, c.raw_bytes), (700, 250), "decoded let go to make room");
+        assert!(c.get((1, 0, 0)).is_none() && c.get((1, 0, 1)).is_some(), "the least recently used");
+        c.put_raw((1, 0, 102), vec![0; 50]);
+        assert_eq!(c.raw_bytes, 150, "past a quarter: the oldest read ahead let go");
+        assert!(!c.raw.contains_key(&(1, 0, 100)) && c.raw.contains_key(&(1, 0, 101)));
+        c.put((1, 0, 50), block(200));
+        assert!(c.bytes + c.raw_bytes <= 1000, "{} decoded and {} read ahead", c.bytes, c.raw_bytes);
+        assert_eq!(c.raw_bytes, 150, "a block decoded lets go of decoded ones, not the bytes read ahead");
+        assert_eq!(c.take_raw((1, 0, 101)).map(|b| b.len()), Some(100));
+        assert_eq!(c.raw_bytes, 50);
+        assert_eq!((c.begin_list(), c.begin_list()), (1, 2));
+        c.end_list();
+        assert_eq!(c.begin_list(), 2);
+        c.end_list();
+        c.end_list();
+        c.end_list();
+        assert_eq!(c.begin_list(), 1, "never below none");
     }
 
     /// Task #492: a header's reads come from windows: a read within one costs nothing, one past
