@@ -659,7 +659,7 @@ which uploads the file afresh). With §7.2's third rule this can only happen to 
 the lease, found by the job, and deleted during it: rare, and correct when it happens. The touch
 (an SMB write per reused file, in the upload path) and `remove_unless_touched` go.
 
-Built (steps 7 and 8b): "since the lease was granted" by lease ids, no clocks: each deletion keeps
+Built (steps 7 and 8b): "since the lease was granted" by the leases' job ids (`<epoch>-<n>`, pool.md §7.5), no clocks: each deletion keeps
 the newest lease granted when it was marked, renewed when it's said gone, and a hand-off of that
 lease or an older one bringing the name is refused; a hand-off bringing a name being removed (told,
 not yet gone) is refused whatever its lease. **A mark is kept while a lease up to its own may still

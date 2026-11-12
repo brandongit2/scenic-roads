@@ -125,8 +125,8 @@ starts listening, before the agent asks anything of it): it is what the lead lea
 raises it past the records it starts from (`Store::raise_epoch`, a durable line, its retry after a
 timed-out raise too; `pool::driver::Io::epoch`), and past the NAS backup's by `RESTORE_EPOCHS`
 (1000) when another Mac wrote that (the owner moved the lead: its leases may be of epochs up to a
-restart past its last backup: `agent::pool::epochs`). So the records' (epoch, seq) and lease ids
-`<epoch>-<n>` order across restarts and moves. Every answer says `x-pool-epoch` (0 from a member's
+restart past its last backup: `agent::pool::epochs`). So the records' (epoch, seq) and job ids
+`<epoch>-<n>` (the leases' runs, pool.md §7.5) order across restarts and moves. Every answer says `x-pool-epoch` (0 from a member's
 broker) and `x-pool-member`. Records and lease JSON keep the key `term` for the epoch's value.
 
 ### 4.4 Recovery

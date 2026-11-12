@@ -642,7 +642,11 @@ The agent's folder, `agent/`:
 ```
 timings.jsonl, timings-run.json, timings-run-<k>.json   jobs' timings (below)
 status.json             the lead's status; a member not leading writes helper.json
-state.json, job.json, logs/
+state.json, job.json, logs/   job.json (job-<k>.json, slot k's past the first): the running job's
+                        record (agent::jobs::Record) with its slot (`hand`: {lease, job, …}, `job`
+                        its run's id, absent in an older app's: its lease's); a job's log's run
+                        begins `=== run of <name> (<unix s>, job <epoch>-<n>) ===` (no job part
+                        before job ids, or for a job of no lease)
 agent.lock              the agent's lock (one agent a Mac), its text its holder's `<pid> <start µs>`
                         (agent::takeover, docs/surface.md)
 publishing.json         the lead's record of its catalogues {held_at, ran}: when a catalogue due was
@@ -667,8 +671,8 @@ pool/                   crate::agent::pool: saved.json (crate::pool::driver::Sav
                         past; saved.bad one that can't be read, set aside), records.json (the lead's own copy
                         of the records it saves, written before the NAS's: docs/pool.md §6.2),
                         mail.json ({read, sent, n}), members.json,
-                        forgotten.json, jobs/<epoch>-<n>/ (a job under its lease: work.json {step,
-                        targets, lease}, its hand-offs, done.txt, costs.jsonl, unmerged.json),
+                        forgotten.json, jobs/<epoch>-<n>/ (a job run, by its job id: work.json {step,
+                        targets, lease (its job id)}, its hand-offs, done.txt, costs.jsonl, unmerged.json),
                         lead.json (crate::agent::lead::Kept), notes.jsonl
 cache/                  build caches (below)
 ```
@@ -692,14 +696,16 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 2, kind, id, host, start, wall_s, cpu_s, untimed_cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
+{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
 - `kind`: the job's step (`unit`, `peaks`, `gc`, `backup`, `osm-pass`), or `task <kind>` (`task
-  tail`, `task bldtile`, `task treeblock`, `task terrainsub`). `id`: the agent's job id
-  (`SCENIC_JOB_ID`, "unit 6/32/24"; a leased task's "<kind> <unit>", "tail 6/32/24", task #849). `host`: the Mac. `start`:
-  unix seconds.
+  tail`, `task bldtile`, `task treeblock`, `task terrainsub`). `id`: the job's name as its agent
+  knows it, not unique (`SCENIC_JOB_NAME`, "unit 6/32/24"; a leased task's "<kind> <unit>", "tail
+  6/32/24", task #849). `job`: its run's job id (below, Job ids: `SCENIC_JOB`, else stamped by its
+  agent and by the lead as they keep it; absent before task #1103 and for a job of no lease).
+  `host`: the Mac. `start`: unix seconds.
 - `v`: 2 since task #1116 (a phase's `cpu_s` its own work's); 1 before (a phase's `cpu_s` the
   process's while it was open, so an `overlapped` phase's counts other threads' work too).
 - `cpu_s`: user + system, the process's and its finished children's. `untimed_cpu_s` (v 2): of
@@ -738,6 +744,26 @@ Where they're kept:
 - `agent/coord/timings.jsonl` (the lead's coordinator): every worker's, sent with `/work/done`;
   read by `/api/timings {kind?, last?}` (`{runs: [...]}`, each kind's last 20 by default).
 - Each log is cut to its newer half past 16 MB.
+
+## Job ids (jobrt::jobid, docs/pool.md §7.5)
+
+A job run's id is `<epoch>-<n>`, a string: the lease the lead's coordinator first granted the run
+under (`n`, the lease's number) and the epoch of the lead's store it was granted in. Epoch 0 is no
+lead's (a coordinator out of the pool, a hand-off drained from one). Where a run is recorded:
+
+- the history (`coord/history.jsonl`, `/api/history`): `job` on a worker's job's `lease`, `done`,
+  `fail`, `lapse` and `cancel`, a lead's own job's `start`, `end` and `cancel`, a task's `task`,
+  `task-fail` and `task-back`; a `merged` event's `data.done` keys (`<day>/<epoch>-<n>`) end in it;
+- the status: the coordinator's leases (`pool_view`'s `leases[].job`, beside the lease's own `id`),
+  each Mac's running jobs (`jobs[].job`) and its jobs ended (`state.json`'s `recent[].job`);
+- the timings' record (`job`, above), the cost book's entries (`cost/<key>`'s `job`), the job's log
+  (its run's first line), its record (`job.json`'s `hand.job`), its hand-off (`lease`) and its
+  folder (`pool/jobs/<epoch>-<n>/`).
+
+A record from before job ids (task #1103) names its run by its lease's number alone, a JSON number
+under `lease` in a history event: read as `0-<n>` (its epoch unsaid). An app before them reads
+no `job`, and passes over a history event's run. A run's later lease, held again for it while it
+runs on (its own lapsed, or lost to a lead's restart), carries the run's id (`lease/<id>`'s `job`).
 
 ## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; agentcore::agent::fcarchive, docs/pool.md §7.9)
 
@@ -1011,8 +1037,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     pool's store, `agentcore::pool::store`, docs/coordination.md §4: `snapshot.json`, `{epoch, seq,
     docs}`, written whole, and segments `<first seq>.jsonl`, one line per change after it, `{seq,
     epoch?, set: {key: value}, del: [key]}`; its documents, `agentcore::coord::kept`: `leases`
-    (`{next, holds, cancelled}`), `lease/<id>` (`{id, term (its epoch), granted_at, worker, work, progress,
-    …}`), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
+    (`{next, holds, cancelled}`), `lease/<id>` (`{id, term (its epoch), granted_at, worker, work, job?
+    (the run it's held again for, below, Job ids), progress, …}`), `cost/<key>` (`{peak_mb, secs, worker,
+    job?, v, sizes}`: `job` the run that measured it), `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
     files below held them; `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
     last beat said, `agentcore::coord::held`; `beat/<member>` (its last heartbeat and when heard,
     `kept::Beat`); `inbox/<member>` (its mail not yet read); `hold/<member>` and `settings` (the
@@ -1097,8 +1124,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `forecast-input.json` (the backtest's; docs/coordination.md §9).
   - A job's hand-off, as a member keeps it (`agent/pool/saved.json`'s `mine.unwritten`, by key
     `<day>/<epoch>-<n>`) and posts it whole (`POST /pool/handoff {entry}`, kept in the lead's store
-    as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md §5.3): `{member, lease,
-    step, handoff, at}` (`handoff.sizes`: the bytes of each file it wrote, by content name; none in
+    as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md §5.3): `{member, lease
+    (its run's job id), step, handoff, at}` (`handoff.sizes`: the bytes of each file it wrote, by content name; none in
     older ones). Nothing goes to the NAS. The old journal, `state/journal/` (entries
     `<day>/<epoch>-<n>.json`), is written by no app and read only for the keys an older app's
     saved state still lists (`mine.entries`, read back once whole, `Mine::read_back`).

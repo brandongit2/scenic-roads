@@ -262,7 +262,7 @@ Common rules:
   A page carries none: it reads the build and takes the owner's asks (§7), never work (§5). A
   running job's requests come from the lead itself, through no proxy (`crate::net::own`).
 - A worker is served only its task's files and uploads only into its folder; bodies, connections,
-  timeouts and names are bounded; lease ids are never reused.
+  timeouts and names are bounded; lease numbers, and the job ids they make (pool.md §7.5), are never reused.
 - **Known limits:** by the owner's choice, any device on the LAN or tailnet can pause the build or
   change the owner's settings.
 - Licensed data on the owner's own devices isn't redistribution (docs/storage.md).

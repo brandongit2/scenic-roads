@@ -159,7 +159,7 @@ Checked by the simulator (§13):
    In a new pool only the Mac that declared itself takes today's files up at once.
 2. Each take-up leads an epoch past every earlier one's and past the records it starts from
    (`Io::epoch`, the store's epoch raised durably, its retry too), so (epoch, seq) orders every
-   snapshot, and lease ids order, across restarts and the owner's moves. Across a move it is past
+   snapshot, and job ids (`<epoch>-<n>`, §7.5) order, across restarts and the owner's moves. Across a move it is past
    what the NAS shows of the lead before (the one path, its brief, and the store's backup by
    `RESTORE_EPOCHS`), followed or not (§6.2); a lead before whose take-up never reached the NAS
    (every save and backup failing) may have granted in an epoch the next one repeats or passes
@@ -253,7 +253,7 @@ opens, so once a process; a take-up raises it past the records it starts from
 (`pool::store::Store::raise_epoch`, durable before it answers), and past the NAS backup's epoch by
 `RESTORE_EPOCHS` (1000) when the backup is another Mac's (the owner moved the lead:
 `agent::pool::epochs`). The records' snapshots are numbered (epoch, seq), their JSON key still
-`term` (older apps read them); lease ids are `<epoch>-<n>`.
+`term` (older apps read them); a lease's job run is named `<epoch>-<n>` (its job id, §7.5).
 
 - No app writes or reads the old term files (`state/build/terms/`, `state/build/lead.json`,
   `state/build/term/<E>/`, `state/coord/term/<E>/`), but each term's `forecast-input.json` (§7.9:
@@ -371,8 +371,8 @@ the records taken up, its member's lock known held, still leading) and told it s
 hang after the step (a history write on the share) or before the next one, or a Mac woken before
 its step, stops grants until a step runs again). Built files are content-named and never rewritten
 (docs/storage.md, Immutable, content-named files), each hand-off is its own entry keyed by
-its lease, and a merge applies an entry only if no later lease set its targets (`Records::apply`;
-an earlier epoch's lease ids sort before a later epoch's), else counts it overtaken; the files it
+its job id, and a merge applies an entry only if no later lease set its targets (`Records::apply`;
+an earlier epoch's job ids sort before a later epoch's), else counts it overtaken; the files it
 alone named go to GC.
 
 ### 6.6 Stepping down
@@ -1344,7 +1344,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 
 - **A job's hand-off goes to the lead by HTTP** (`crate::coord::handoffs`, docs/coordination.md
   §5.3): its member's driver keeps it whole in its saved state
-  (`journal::Mine`, keyed `<day>/<epoch>-<n>`: the lease's id, the UTC day of first try); the
+  (`journal::Mine`, keyed `<day>/<epoch>-<n>`: its job id, the UTC day of first try); the
   member's beat lists the keys it keeps (every beat, whatever the lead last answered: the lead's
   GC queue takes the list as every lease the member may still hand off under), the lead's answer
   says which it lacks (posted next,
@@ -1407,6 +1407,25 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   gets a fresh deadline). A lapsed lease stays in the table (a member's word may hold it again)
   until its target is granted again, which ends it (`Leases::grant_at`; task #1038: kept, a restart
   or the next lead's take-up gave it a fresh deadline beside the new lease).
+- **Job ids** (task #1103; jobrt::jobid, docs/formats.md, Job ids): each job run is named by the
+  lease it was first granted under, `<epoch>-<n>` (`Lease::job`): what the job inspector's page
+  will key a run by (planned: tasks #1104, #1105). Never given twice: each start of the lead's
+  store and each take-up leads an epoch past every earlier one's (§4, invariant 2), and within an
+  epoch the store's lease numbers only go up, from past the time in milliseconds, its saved next,
+  every lease it takes up and the highest number its history names (`Leases::load`, `restore`,
+  `past`), so a lead whose state is lost and whose clock was set back gives none again (test
+  `coord::tests::a_restart_with_its_state_lost_gives_no_number_its_history_names`). Two leads'
+  numbers may meet (the next goes on from the backup, which a lease granted after it passed); their
+  epochs tell them apart (`coord::lease::tests::a_job_id_is_never_given_twice_across_a_lead_move_or_a_lost_state`),
+  and the simulator checks every coordinator's grants of a run, across restarts and moves (§13). Not
+  covered, as invariant 2 says: a lead whose take-up never reached the NAS, whose epoch the next may
+  repeat. A job its agent's successor takes over keeps its id, and so does one whose lease is held
+  again under a new number (its own lapsed while it ran on, or ended with a lead's restart:
+  `Coordinator::hold_for`, the lease's `job`; test
+  `agent::tests::a_job_survives_its_agents_restart_taken_over_by_the_next`); a paused job resumed,
+  a failed one tried again, is a new run under a new lease. The id goes with the run into every
+  record of it (docs/formats.md, Job ids), and into its job's environment (`SCENIC_JOB`). A record
+  from before it names its run by the lease's number alone, read as `0-<n>`.
 - **Its backup on the NAS** (`state/lead/store.json`, the store's snapshot whole) is written by a
   thread of its own each `pool::store::backup_every` (10 min) while the store changed, started by
   the lead's step, never on a handler's path. The owner's move of the lead (§6.1) takes it up there
@@ -3143,7 +3162,7 @@ z6 tile's job.
   lead's reads fail) and declaring again the Mac a waiting take-up names (after 20 min); reads
   failing each on its own, at 5 % or 20 % (`Cfg::flaky`, task #1154). **Checked
   at every step:** no target under two live leases (the jobs running and each coordinator's
-  table), two coordinators never granting at once, no lease id granted twice, every hand-off merged
+  table), two coordinators never granting at once, no job id granted twice, every hand-off merged
   once or refused with why, acknowledgements only of what a landed snapshot names and no landed
   snapshot following the brief lacking one, §4's epoch and records invariants, a job's brief never
   older than the one its lease was granted from, GC removing no name the records it saw name nor
