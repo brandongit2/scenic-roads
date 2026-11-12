@@ -1,6 +1,8 @@
 //! Dated copies of the user's folders (docs/storage.md, Backups): `inputs/` (every inputs folder, the
 //! translations and descriptions among them since #137) and the input check's acceptances (`state/inputs/accepted/`), kept 30 days under
-//! `state/backups/` on the NAS and mirrored to the lead.
+//! `state/backups/` on the NAS and mirrored to the lead. With them, the user's files in the app's
+//! folder of the Mac that runs it (the lead, the map server's Mac): the map's settings profiles
+//! (`MAC_FILES`), listed as `mac/<name>`.
 //!
 //! Content-addressed, so an unchanged file is stored once however many days keep it:
 //! `blobs/<hash16>` holds each version of a file, and `<YYYY-MM-DD>.json` lists the folder as it
@@ -9,7 +11,8 @@
 //! copied (task #1004: a link to its own folder, `inputs/inputs`, failed the backup with "Too many
 //! levels of symbolic links").
 //!
-//! To restore a file: find it in a day's list and copy `blobs/<hash>` back to its path.
+//! To restore a file: find it in a day's list and copy `blobs/<hash>` back to its path (a `mac/<name>`
+//! one to `<name>` in the app's folder, ~/Library/Application Support/scenic, on the map server's Mac).
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -21,6 +24,13 @@ use store::nasfs::{Loc, NasPath};
 /// The user's folders: the inputs folders and the owner's acceptances of the input check's warnings
 /// (docs/inputs.md §4.9).
 pub const FOLDERS: [&str; 2] = ["inputs", inputs::inputs::ACCEPTED];
+
+/// The user's files in the app's folder of the Mac that runs the backup: the map's settings profiles,
+/// which its server keeps there (crates/server/src/profiles.rs).
+pub const MAC_FILES: [&str; 1] = [jobrt::PROFILES];
+
+/// A day's list names a file of `MAC_FILES` as this, then its name.
+pub const MAC_PREFIX: &str = "mac/";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Entry {
@@ -52,10 +62,38 @@ fn skip(name: &str) -> bool {
     name.starts_with('.') || name.starts_with('@') || name.starts_with('#') || name == "todo" || name.ends_with(".tmp")
 }
 
-/// The user's folders as they are now, their links passed over; files whose size and time match
-/// `prev` keep its blob without being read again.
-fn scan(root: &store::nasfs::NasRoot, prev: &Manifest) -> Result<Vec<(String, NasPath, u64, u64, Option<String>)>> {
+/// Where a file backed up is.
+enum Src {
+    Nas(NasPath),
+    /// In the app's folder on this Mac.
+    Mac(std::path::PathBuf),
+}
+
+/// The user's folders as they are now, their links passed over, and the files of `MAC_FILES` in
+/// `app` that are there; files whose size and time match `prev` keep its blob without being read again.
+fn scan(
+    root: &store::nasfs::NasRoot,
+    app: Option<&Path>,
+    prev: &Manifest,
+) -> Result<Vec<(String, Src, u64, u64, Option<String>)>> {
     let mut out = Vec::new();
+    let known = |rel: &str, size: u64, mtime: u64| {
+        prev.get(rel).filter(|e| e.size == size && e.mtime == mtime).map(|e| e.blob.clone())
+    };
+    for name in app.into_iter().flat_map(|a| MAC_FILES.map(|n| a.join(n))) {
+        let md = match std::fs::symlink_metadata(&name) {
+            Ok(md) => md,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("stat {}", name.display())),
+        };
+        if !md.is_file() {
+            continue;
+        }
+        let rel = format!("{MAC_PREFIX}{}", name.file_name().unwrap_or_default().to_string_lossy());
+        let (size, mtime) = (md.len(), mtime_s(&md));
+        let k = known(&rel, size, mtime);
+        out.push((rel, Src::Mac(name), size, mtime, k));
+    }
     for top in FOLDERS {
         let mut stack = vec![root.join(top)];
         while let Some(dir) = stack.pop() {
@@ -75,8 +113,8 @@ fn scan(root: &store::nasfs::NasRoot, prev: &Manifest) -> Result<Vec<(String, Na
                 }
                 let rel = p.rel().to_string();
                 let (size, mtime) = (md.len(), mtime_s(&md));
-                let known = prev.get(&rel).filter(|e| e.size == size && e.mtime == mtime).map(|e| e.blob.clone());
-                out.push((rel, p, size, mtime, known));
+                let k = known(&rel, size, mtime);
+                out.push((rel, Src::Nas(p), size, mtime, k));
             }
         }
     }
@@ -118,9 +156,15 @@ fn copy_atomic(src: &NasPath, dst: &Path) -> Result<u64> {
     Ok(n)
 }
 
-/// Backs up the user's folders under `root` into `root/state/backups` (and mirrors that to
-/// `local`), dated `today`, keeping `keep_days`.
-pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep_days: u64) -> Result<Report> {
+/// Backs up the user's folders under `root`, and the files of `MAC_FILES` in `app` (this Mac's app
+/// folder), into `root/state/backups` (and mirrors that to `local`), dated `today`, keeping `keep_days`.
+pub fn run(
+    root: &store::nasfs::NasRoot,
+    app: Option<&Path>,
+    local: Option<&Path>,
+    today: &str,
+    keep_days: u64,
+) -> Result<Report> {
     let dir = root.join("state/backups");
     let blobs = dir.join("blobs");
     use jobrt::timings::phase;
@@ -133,7 +177,7 @@ pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep
     let mut now: Manifest = BTreeMap::new();
     let files = {
         let _p = phase("scanning folders");
-        scan(root, &prev)?
+        scan(root, app, &prev)?
     };
     // (Each changed file copied into the blobs and hashed there: the NAS read and written.)
     let copying = phase("copying the changed files");
@@ -146,23 +190,38 @@ pub fn run(root: &store::nasfs::NasRoot, local: Option<&Path>, today: &str, keep
         }
         let blob = match known {
             Some(b) if blobs.join(&b).exists() => b,
-            _ => {
-                // Copy first, then name the copy by its own hash: a file changing meanwhile can't end
-                // up under another content's name.
-                let tmp = blobs.join(format!(".incoming-{}.tmp", std::process::id()));
-                let n = p.copy_data_to(&tmp).with_context(|| format!("copy {}", p.display()))?;
-                copying.count(n, 1);
-                let h = store::naming::hash16_reader(tmp.open()?)?;
-                let dst = blobs.join(&h);
-                if dst.exists() {
-                    tmp.remove_file()?;
-                } else {
-                    tmp.rename(&dst)?;
-                    rep.new_bytes += n;
-                    rep.new_blobs += 1;
+            _ => match p {
+                Src::Nas(p) => {
+                    // Copy first, then name the copy by its own hash: a file changing meanwhile can't
+                    // end up under another content's name.
+                    let tmp = blobs.join(format!(".incoming-{}.tmp", std::process::id()));
+                    let n = p.copy_data_to(&tmp).with_context(|| format!("copy {}", p.display()))?;
+                    copying.count(n, 1);
+                    let h = store::naming::hash16_reader(tmp.open()?)?;
+                    let dst = blobs.join(&h);
+                    if dst.exists() {
+                        tmp.remove_file()?;
+                    } else {
+                        tmp.rename(&dst)?;
+                        rep.new_bytes += n;
+                        rep.new_blobs += 1;
+                    }
+                    h
                 }
-                h
-            }
+                // (Small: read whole, named by its hash, written whole.)
+                Src::Mac(p) => {
+                    let b = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
+                    let h = store::naming::hash16(&b);
+                    let dst = blobs.join(&h);
+                    if !dst.exists() {
+                        dst.write_whole(&b)?;
+                        copying.count(b.len() as u64, 1);
+                        rep.new_bytes += b.len() as u64;
+                        rep.new_blobs += 1;
+                    }
+                    h
+                }
+            },
         };
         now.insert(rel, Entry { size, mtime, blob });
     }
@@ -308,22 +367,48 @@ mod tests {
         fs::write(root.join("inputs/translations/jp/places-jp.jsonl"), b"{\"n\":\"a\"}\n").unwrap();
         fs::write(root.join("inputs/translations/todo/jp.jsonl"), b"skipped").unwrap();
         fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-09-01", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, Some(&local), "2026-09-01", 30).unwrap();
         assert_eq!((r.files, r.new_blobs, r.written.as_deref()), (2, 2, Some("2026-09-01")));
         // Nothing changed: no new day.
-        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-09-02", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, Some(&local), "2026-09-02", 30).unwrap();
         assert_eq!((r.new_blobs, r.written), (0, None));
         // A change: a new day with one new blob; the old blob stays (the first day lists it).
         fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"\nname = \"X\"").unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-09-03", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, Some(&local), "2026-09-03", 30).unwrap();
         assert_eq!((r.new_blobs, r.written.as_deref()), (1, Some("2026-09-03")));
         assert_eq!(fs::read_dir(root.join("state/backups/blobs")).unwrap().count(), 3);
         // A month later the first day goes, and with it the blob only it listed.
-        let r = run(&store::nasfs::NasRoot::local_for_test(&root), Some(&local), "2026-10-04", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, Some(&local), "2026-10-04", 30).unwrap();
         assert_eq!((r.days_removed, r.blobs_removed), (1, 1));
         assert_eq!(fs::read_dir(local.join("blobs")).unwrap().count(), 2);
         assert!(local.join("2026-09-03.json").exists());
         assert!(!local.join("2026-09-01.json").exists());
+    }
+
+    /// Task #1119: the map server's profiles, in the app's folder here, backed up with the folders as
+    /// `mac/profiles.json`: once, again when they change, nothing when there are none.
+    #[test]
+    fn the_map_servers_profiles_are_backed_up_from_the_app_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, app) = (d.path().join("nas"), d.path().join("app"));
+        fs::create_dir_all(root.join("inputs/regions")).unwrap();
+        fs::create_dir_all(&app).unwrap();
+        fs::write(root.join("inputs/regions/x.toml"), b"id = \"x\"").unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let r = run(&nas, Some(&app), None, "2026-09-01", 30).unwrap();
+        assert_eq!((r.files, r.new_blobs), (1, 1));
+        fs::write(app.join(jobrt::PROFILES), b"{\"v\":1}").unwrap();
+        let r = run(&nas, Some(&app), None, "2026-09-02", 30).unwrap();
+        assert_eq!((r.files, r.new_blobs, r.written.as_deref()), (2, 1, Some("2026-09-02")));
+        let day: Manifest =
+            serde_json::from_slice(&fs::read(root.join("state/backups/2026-09-02.json")).unwrap()).unwrap();
+        let e = &day["mac/profiles.json"];
+        assert_eq!(fs::read(root.join("state/backups/blobs").join(&e.blob)).unwrap(), b"{\"v\":1}");
+        let r = run(&nas, Some(&app), None, "2026-09-03", 30).unwrap();
+        assert_eq!((r.new_blobs, r.written), (0, None));
+        fs::write(app.join(jobrt::PROFILES), b"{\"v\":1,\"x\":2}").unwrap();
+        let r = run(&nas, Some(&app), None, "2026-09-04", 30).unwrap();
+        assert_eq!((r.new_blobs, r.written.as_deref()), (1, Some("2026-09-04")));
     }
 
     /// Task #1004: no link is followed or backed up: a link to its own folder (`inputs/inputs`), a
@@ -337,7 +422,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("inputs"), root.join("inputs/inputs")).unwrap();
         std::os::unix::fs::symlink(root.join("inputs/regions"), root.join("inputs/regions/up")).unwrap();
         std::os::unix::fs::symlink(root.join("inputs/regions/x.toml"), root.join("inputs/regions/y.toml")).unwrap();
-        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, "2026-09-01", 30).unwrap();
+        let r = run(&store::nasfs::NasRoot::local_for_test(&root), None, None, "2026-09-01", 30).unwrap();
         assert_eq!((r.files, r.new_blobs), (1, 1));
         let day: Manifest =
             serde_json::from_slice(&fs::read(root.join("state/backups/2026-09-01.json")).unwrap()).unwrap();

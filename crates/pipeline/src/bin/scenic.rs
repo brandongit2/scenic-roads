@@ -1707,9 +1707,11 @@ fn cli_main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Redo { step, targets, run, root: r }) => redo(&step, &targets, run, &r.root),
-        Some(Cmd::Backup { local, root: r }) => {
+        Some(Cmd::Backup { local, app, root: r }) => {
             let today = backup::format_day(std::time::SystemTime::now());
-            let r = jobrt::timings::job("backup", || backup::run(&root(&r.root, true)?, local.as_deref(), &today, 30))?;
+            let r = jobrt::timings::job("backup", || {
+                backup::run(&root(&r.root, true)?, app.as_deref(), local.as_deref(), &today, 30)
+            })?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }

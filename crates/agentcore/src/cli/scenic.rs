@@ -237,6 +237,9 @@ pub enum Cmd {
         /// A local folder too
         #[arg(long, value_name = "DIR")]
         local: Option<PathBuf>,
+        /// This Mac's app folder: the map server's profiles in it backed up too
+        #[arg(long, value_name = "DIR")]
+        app: Option<PathBuf>,
         #[command(flatten)]
         root: Root,
     },

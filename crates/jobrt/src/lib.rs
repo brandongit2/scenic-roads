@@ -18,3 +18,7 @@ pub mod settings;
 pub mod spans;
 pub mod sys;
 pub mod timings;
+
+/// The map server's settings profiles, a file in the app's folder on the server's Mac
+/// (crates/server/src/profiles.rs), which the lead's daily backup job copies (agentcore::agent::backup).
+pub const PROFILES: &str = "profiles.json";

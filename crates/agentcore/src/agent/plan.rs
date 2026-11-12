@@ -1290,19 +1290,24 @@ impl Planner {
             std::mem::take(&mut out).into_iter().partition(|j| j.record.as_ref().is_some_and(|w| w.step == "inputs"));
         out = checks;
         out.extend(rest);
-        // Daily: the user's folders backed up, replaced files removed.
+        // Daily: the user's folders backed up, and the map server's profiles in the app's folder
+        // (the agent's home is inside it), replaced files removed.
         if self.due("backup", Duration::from_secs(86400)) {
+            let mut cmd = vec![
+                s(&me),
+                "backup".into(),
+                "--root".into(),
+                jobs::root_arg(root),
+                "--local".into(),
+                s(&self.o.home.join("backups")),
+            ];
+            if let Some(app) = self.o.home.parent() {
+                cmd.extend(["--app".into(), s(app)]);
+            }
             out.push(JobSpec {
                 id: "backup".into(),
                 what: "backup".into(),
-                cmd: vec![
-                    s(&me),
-                    "backup".into(),
-                    "--root".into(),
-                    jobs::root_arg(root),
-                    "--local".into(),
-                    s(&self.o.home.join("backups")),
-                ],
+                cmd,
                 needs: Needs { nas: true },
                 restart_after_sleep: true,
                 record: None,
