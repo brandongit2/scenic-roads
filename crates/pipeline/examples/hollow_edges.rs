@@ -19,6 +19,11 @@ use std::sync::Arc;
 use store::range::RangeRead;
 use store::IoError;
 
+/// The length of (`x`, `y`).
+fn len(x: f64, y: f64) -> f64 {
+    (x * x + y * y).sqrt()
+}
+
 /// A file's reads, counted.
 struct Counted {
     inner: Arc<dyn RangeRead>,
@@ -135,7 +140,7 @@ fn probe(
             })
             .map(|(lon, lat)| native(lon, lat))
             .collect();
-        let to_edge = |x: f64, y: f64| ring.iter().map(|p| (p.0 - x).hypot(p.1 - y)).fold(f64::MAX, f64::min);
+        let to_edge = |x: f64, y: f64| ring.iter().map(|p| len(p.0 - x, p.1 - y)).fold(f64::MAX, f64::min);
         let in_tile = |x: f64, y: f64| {
             let mut inside = false;
             for (i, &(xi, yi)) in ring.iter().enumerate() {
@@ -176,7 +181,7 @@ fn probe(
                             // (Its lon, lat: the nearest of the grid's points; the first 200.)
                             let p = pts
                                 .iter()
-                                .min_by(|a, b| (a.2 - fx).hypot(a.3 - fy).total_cmp(&(b.2 - fx).hypot(b.3 - fy)))
+                                .min_by(|a, b| len(a.2 - fx, a.3 - fy).total_cmp(&len(b.2 - fx, b.3 - fy)))
                                 .unwrap();
                             covered += inside(p.0, p.1) as usize;
                         }
@@ -233,7 +238,7 @@ fn probe(
                     for i in 0..w {
                         if ok(v[(j * w + i) as usize]) {
                             let (fx, fy) = (gf[0] + (fc0 + i) as f64 * gf[1], gf[3] + (fr0 + j) as f64 * gf[5]);
-                            best = best.min((fx - x).hypot(fy - y));
+                            best = best.min(len(fx - x, fy - y));
                         }
                     }
                 }

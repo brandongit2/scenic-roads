@@ -530,7 +530,8 @@ fn ring_distance(ring: &[(f64, f64)], p: (f64, f64)) -> f64 {
         let (dx, dy) = (bx - ax, by - ay);
         let len2 = dx * dx + dy * dy;
         let f = if len2 > 0.0 { (((p.0 - ax) * dx + (p.1 - ay) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
-        best = best.min((p.0 - ax - f * dx).hypot(p.1 - ay - f * dy));
+        let (ex, ey) = (p.0 - ax - f * dx, p.1 - ay - f * dy);
+        best = best.min((ex * ex + ey * ey).sqrt());
     }
     best
 }
