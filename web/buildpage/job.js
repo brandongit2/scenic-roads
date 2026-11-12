@@ -395,7 +395,8 @@ function render() {
 async function readMac(f) {
   if (!f.host) return;
   if (f.t0 != null && v.now - f.t0 > LIVE_KEPT_S) { mac = { host: f.host, error: "not kept (a Mac keeps its measures seven days)" }; return; }
-  const body = { range: Math.ceil(v.now - (f.t0 ?? v.now) + 120), series: SERIES, net: false };
+  // (Its window back from the Mac's now, not the view's: a page left open for a job that ended long ago.)
+  const body = { range: Math.ceil(Math.max(v.now, Date.now() / 1000) - (f.t0 ?? v.now) + 120), series: SERIES, net: false };
   try {
     if (!swarm) swarm = await ask("/api/swarm", {});
     const here = swarm?.agent?.host;
