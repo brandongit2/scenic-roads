@@ -82,7 +82,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
 /// Items constructing a root from a user's or a parent's string (`NasRoot::from_arg`): (file, item).
 const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/scenic.rs", "root"),
-    ("crates/pipeline/src/bin/scenic.rs", "main"),
+    ("crates/pipeline/src/bin/scenic.rs", "cli_main"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main"),
     ("crates/pipeline/src/bin/scenic-build.rs", "unit_step"),
     // (`--pyramids <dir>`, `--into <dir>`: a scratch store of GSI's tiles, task #806.)
