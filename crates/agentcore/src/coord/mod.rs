@@ -5870,19 +5870,21 @@ mod http {
             shared.lock().unwrap_or_else(|e| e.into_inner()).maplog.clone()
         })));
         // (A job's spans, log and record: jobspans, its file read off the lock; the history's other
-        // runs around it, from the history shared, not copied.)
+        // runs around it, from the history shared, not copied, those of no end running while a
+        // lease holds them.)
         let shared = ctx.shared.clone();
         let routes = routes.merge(super::jobspans::router::<Ctx>(Arc::new(move |job| {
-            let (store, all, dir) = {
+            let (store, all, dir, live) = {
                 let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
-                (s.jobspans.clone()?, s.history.all(), s.dir.clone())
+                let live = s.sched.leases.live(std::time::Instant::now()).map(Lease::job).collect();
+                (s.jobspans.clone()?, s.history.all(), s.dir.clone(), live)
             };
             let events = all.iter().filter(|e| e.job == Some(job)).cloned().collect();
             let mut v = super::jobspans::view(Some(&store), job, events, || {
                 super::jobspans::record_in(&dir.join("timings.jsonl"), job)
             });
             let now = v["now"].as_f64().unwrap_or(0.0);
-            super::jobspans::relate(&mut v, &all, job, now);
+            super::jobspans::relate(&mut v, &all, job, now, &live);
             Some(v)
         })));
         // (The newest map held for review, from this agent's folder.)

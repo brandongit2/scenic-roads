@@ -886,7 +886,7 @@ the lead): 400 for a malformed id, 503 off the lead, else:
  runs: [Run], runs_total,               the history's other runs of its step meeting its targets, the newest 50
  beside: [Run]}                         the history's other runs on its Mac while it ran, the first 200 by start
 {job, legacy: true, record, history, now, runs, runs_total, beside}   no spans kept here (from before them, an older app's, or kept by an earlier lead)
-Run {job, step, targets, n, worker, from, until, ok}   targets: its first 3 (n all); until null: no end in the history
+Run {job, step, targets, n, worker, from, until, ok, lost}   targets: its first 3 (n all); until null: no end in the history (lost: and no lease holds it now)
 ```
 
 Every time is unix seconds (ms precision). `spans` is in the dev jobs' run shape (tools/devtools'
@@ -899,7 +899,11 @@ other_s, bytes, files}` where said. A log line's `t` is where the job's log mark
 the two either side, by its bytes; none without marks). `app` is null from an agent before task #1105.
 `runs` and `beside` (`coord::jobspans::relate`, task #1105) come from the history's seven days, read
 in place (`History::all`, no copy): a run's `from` is its end's time less its `secs`, else its
-`start`'s, else its `lease`'s; its end an `end`, `done`, `fail` or `cancel`. `runs`: the runs of its
+`start`'s, else its `lease`'s; its end an `end`, `done`, `fail` or `cancel`, or the next lease of its
+step and targets under another id (a restart before job ids leased its work again; `ok` null). A
+lead's own job's `start` and `end` from before job ids (task #1103) name no job: each is its Mac's
+open run of the same step and targets. A run of no end is running while one of the lead's leases holds
+it, else `lost` (left out of `beside`). `runs`: the runs of its
 step any of whose targets is one of its own (a step of no targets: every run of it), newest first;
 `beside`: those on its Mac (any slot) from its start to its end (or now). A legacy job's step,
 targets, Mac and times are its own events'. The job's page reads it (docs/pipeline.md §5, A job's

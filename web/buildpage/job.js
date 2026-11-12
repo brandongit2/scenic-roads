@@ -106,7 +106,7 @@ function side(f, out) {
   ] : null;
   const runs = v.runs || [], beside = v.beside || [];
   const runRow = (r) => h("li", null, h("a", { href: encodeURIComponent(r.job), title: `job ${r.job} on ${r.worker}` }, clockText(r.from, { date: true }).replace(/:\d\d$/, "")),
-    h("span", r.until == null ? "run" : r.ok === false ? "bad" : "dim", r.until == null ? "running" : `${dur(r.until - r.from)}${r.ok === false ? " failed" : ""}`), h("span", "dim", hostOf(r.worker)));
+    h("span", r.lost ? "dim" : r.until == null ? "run" : r.ok === false ? "bad" : "dim", r.lost ? "no end kept" : r.until == null ? "running" : `${dur(r.until - r.from)}${r.ok === false ? " failed" : ""}`), h("span", "dim", hostOf(r.worker)));
   $("side").replaceChildren(
     sec("Job", kv([
       ["step", f.step ? h("span", null, h("i", { class: "sw", style: { background: stepColour(f.step) } }), f.step, stageOf(f.step) ? h("span", "dim", ` · ${stageOf(f.step)}`) : null) : "–"],
@@ -270,7 +270,7 @@ function timeline(f) {
     pack(beside, gap, (r) => r.from, (r) => r.until ?? now).forEach((rw, i) => {
       const t = row(i ? "" : `other jobs (${beside.length})`, tl.track(), "Other jobs on its Mac while it ran: the history's");
       for (const r of rw) seg(t, `b ${r.job}`, { from: r.from, until: r.until ?? now, colour: stepColour(r.step), kind: r.until == null ? "running" : "past", failed: r.ok === false, href: encodeURIComponent(r.job) },
-        () => card(`${r.step}${r.targets.length ? ` ${r.targets.join(" ")}` : ""}${r.n > r.targets.length ? ` and ${r.n - r.targets.length} more` : ""}`, [["on", r.worker], ["when", when(r.from, r.until)], ["ended", r.until == null ? "running (no end in the history)" : r.ok === false ? "failed" : "ok"], ["job", `${r.job} (click: its page)`]]));
+        () => card(`${r.step}${r.targets.length ? ` ${r.targets.join(" ")}` : ""}${r.n > r.targets.length ? ` and ${r.n - r.targets.length} more` : ""}`, [["on", r.worker], ["when", when(r.from, r.until)], ["ended", r.until == null ? "running (no end in the history)" : r.ok == null ? "how is unknown (its work leased again)" : r.ok ? "ok" : "failed"], ["job", `${r.job} (click: its page)`]]));
     });
   }
   lanes.append(h("div"), tl.axis);
@@ -416,7 +416,7 @@ function liveDot() {
   $("live-at").textContent = failing ? ` ${failing}` : heard ? ` updated ${clockText(heard / 1000)}` : "";
 }
 
-let lastMac = 0;
+let lastMac = 0, asked = false; // (its step's colours and medians asked once, answered or not)
 async function load() {
   busy(true);
   try {
@@ -432,7 +432,8 @@ async function load() {
   if (!v) { if (failing && !/not a job id/.test(failing)) setTimeout(load, POLL_MS * 2); return; }
   render();
   const f = facts();
-  const firstTime = !steps;
+  const firstTime = !asked;
+  asked = true;
   if (firstTime) {
     ask("/api/steps", {}).then((s) => { steps = s; render(); }, () => {});
     ask("/api/timings", { kind: v.record?.kind || v.kind || f.step, last: 20 }).then((t) => { meds = stepMedians(t.runs, ID); render(); }, (e) => { meds = { error: e.message }; render(); });

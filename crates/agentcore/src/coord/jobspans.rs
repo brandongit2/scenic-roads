@@ -489,7 +489,8 @@ const TARGETS_SHOWN: usize = 3;
 
 /// Another job run as the history has it (`relate`): its id, step, targets (the first
 /// `TARGETS_SHOWN`; `n` all of them), worker, from and until (unix s; `until` None: no end in the
-/// history, running) and how it ended.
+/// history, running while a lease of the lead's holds it, else `lost`: how long it ran unknown) and
+/// how it ended.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Run {
     pub job: JobId,
@@ -500,12 +501,18 @@ pub struct Run {
     pub from: f64,
     pub until: Option<f64>,
     pub ok: Option<bool>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lost: bool,
 }
 
 /// Every job run the history's events `all` name, by id, with all its targets: its step, targets
 /// and worker (its start's, which names the slot, else its lease's), its start (an end's time less
 /// its `secs`, else its start's, else its lease's) and its end (an `end`, `done`, `fail` or
-/// `cancel`).
+/// `cancel`). A lead's own job's start and end from before job ids (task #1103) name none: each is
+/// its Mac's newest run of the same step and targets still open (else every such run had no end,
+/// running beside every later job on its Mac). A run of no end is over when a run of another id
+/// leases the same step and targets (a lead's restart before job ids leased its jobs again): its
+/// end that lease's time, how it ended unknown.
 fn runs_of(all: &[super::history::Event]) -> HashMap<JobId, (Run, Vec<String>)> {
     struct Acc {
         run: Run,
@@ -515,12 +522,42 @@ fn runs_of(all: &[super::history::Event]) -> HashMap<JobId, (Run, Vec<String>)> 
         timed: bool,
     }
     let mut out: HashMap<JobId, Acc> = HashMap::new();
+    // (The runs open by their step and targets, oldest first, each with its Mac.)
+    let mut open: HashMap<(String, Vec<String>), Vec<(String, JobId)>> = HashMap::new();
     for e in all {
-        let Some(j) = e.job else { continue };
         let end = matches!(e.kind.as_str(), "end" | "done" | "fail" | "cancel");
         if !end && !matches!(e.kind.as_str(), "lease" | "start") {
             continue;
         }
+        let host = crate::agent::host_of(e.worker.as_deref().unwrap_or(""));
+        let runs = open.entry((e.step.clone().unwrap_or_default(), e.targets.clone())).or_default();
+        let j = match e.job {
+            Some(j) => {
+                if e.kind == "lease" {
+                    for (_, was) in runs.iter().filter(|(_, r)| *r != j) {
+                        if let Some(a) = out.get_mut(was) {
+                            a.run.until = Some(e.t as f64);
+                        }
+                    }
+                    runs.retain(|(_, r)| *r == j);
+                }
+                if end {
+                    runs.retain(|(_, r)| *r != j);
+                } else if !runs.iter().any(|(_, r)| *r == j) {
+                    runs.push((host.to_string(), j));
+                }
+                j
+            }
+            None if e.step.is_none() => continue,
+            None => {
+                let Some(at) = runs.iter().rposition(|(h, _)| h == host) else { continue };
+                let j = runs[at].1;
+                if end {
+                    runs.remove(at);
+                }
+                j
+            }
+        };
         let a = out.entry(j).or_insert_with(|| Acc {
             run: Run {
                 job: j,
@@ -531,6 +568,7 @@ fn runs_of(all: &[super::history::Event]) -> HashMap<JobId, (Run, Vec<String>)> 
                 from: e.t as f64,
                 until: None,
                 ok: None,
+                lost: false,
             },
             targets: Vec::new(),
             lease: None,
@@ -576,10 +614,20 @@ fn runs_of(all: &[super::history::Event]) -> HashMap<JobId, (Run, Vec<String>)> 
 /// Job `job`'s view `v` (`view`'s) given the history's other runs around it, from its events `all`
 /// (the history's seven days): `runs`, those of its step whose targets meet its own (a step of no
 /// targets: all its runs), the newest `RUNS_MAX` (`runs_total` all of them); `beside`, those on its
-/// Mac while it ran (from its start to its end, or `now`), the first `BESIDE_MAX` by start. Its own
-/// step, targets, Mac and times are its view's, else its own events' (a legacy job's).
-pub fn relate(v: &mut serde_json::Value, all: &[super::history::Event], job: JobId, now: f64) {
+/// Mac while it ran (from its start to its end, or `now`), the first `BESIDE_MAX` by start, none
+/// lost. A run of no end is running while `live` (the lead's leases now) holds it, else lost. Its
+/// own step, targets, Mac and times are its view's, else its own events' (a legacy job's).
+pub fn relate(
+    v: &mut serde_json::Value,
+    all: &[super::history::Event],
+    job: JobId,
+    now: f64,
+    live: &std::collections::HashSet<JobId>,
+) {
     let mut runs = runs_of(all);
+    for (r, _) in runs.values_mut() {
+        r.lost = r.until.is_none() && !live.contains(&r.job);
+    }
     let mine = runs.remove(&job);
     let said = |k: &str| v[k].as_str().filter(|x| !x.is_empty()).map(str::to_string);
     let step = said("step").or(mine.as_ref().map(|m| m.0.step.clone())).unwrap_or_default();
@@ -605,7 +653,9 @@ pub fn relate(v: &mut serde_json::Value, all: &[super::history::Event], job: Job
         Some(t0) if !host.is_empty() => runs
             .into_values()
             .map(|(r, _)| r)
-            .filter(|r| crate::agent::host_of(&r.worker) == host && r.from < t1 && r.until.unwrap_or(now) > t0)
+            .filter(|r| {
+                !r.lost && crate::agent::host_of(&r.worker) == host && r.from < t1 && r.until.unwrap_or(now) > t0
+            })
             .collect(),
         _ => Vec::new(),
     };
@@ -730,8 +780,9 @@ mod tests {
 
     /// Task #1105: a job's other runs around it, from the history: those of its step meeting its
     /// targets, newest first, timed by their end less its `secs` (else their start, else their
-    /// lease); those on its Mac (any slot) while it ran, by start, one with no end yet running; not
-    /// its own, nor another Mac's, nor one before or after it. A legacy job's from its own events.
+    /// lease); those on its Mac (any slot) while it ran, by start, one with no end that a lease holds
+    /// running; not its own, nor another Mac's, nor one before or after it. A legacy job's from its
+    /// own events.
     #[test]
     fn a_job_s_other_runs_and_the_jobs_beside_it_come_from_the_history() {
         use super::super::history::Event;
@@ -763,7 +814,8 @@ mod tests {
         ];
         let job: JobId = "1-2".parse().unwrap();
         let mut v = serde_json::json!({ "legacy": false, "start": 1000.0, "end": 2000.0, "step": "unit", "targets": ["6/1/1"], "host": "m1" });
-        relate(&mut v, &all, job, 3000.0);
+        let live = std::collections::HashSet::from(["1-4".parse().unwrap()]);
+        relate(&mut v, &all, job, 3000.0, &live);
         let ids = |k: &str| {
             v[k].as_array().unwrap().iter().map(|r| r["job"].as_str().unwrap().to_string()).collect::<Vec<_>>()
         };
@@ -779,8 +831,59 @@ mod tests {
         assert_eq!(v["beside"][0]["from"].as_f64(), Some(1020.0));
         // (A legacy job: its step, targets, Mac and times its own events'.)
         let mut legacy = serde_json::json!({ "legacy": true });
-        relate(&mut legacy, &all, job, 3000.0);
+        relate(&mut legacy, &all, job, 3000.0, &live);
         assert_eq!((legacy["runs_total"].as_u64(), legacy["beside"].as_array().map(Vec::len)), (Some(2), Some(2)));
+    }
+
+    /// Task #1105 (its review, on the lead's real history): a lead's own job from before job ids
+    /// (task #1103) named its lease alone, its start and end none; each is its Mac's open run of the
+    /// same step and targets. A run of no end is over at the next lease of its step and targets
+    /// under another id (a lead's restart leased it again), how it ended unknown; one no lease holds
+    /// now is lost, never beside a job. Before, ~7,000 such runs all ran beside every job on the lead.
+    #[test]
+    fn a_run_from_before_job_ids_or_one_leased_again_has_an_end() {
+        use super::super::history::Event;
+        let ev = |kind: &str, t: u64, job: Option<&str>, step: &str, worker: &str, target: &str| Event {
+            kind: kind.into(),
+            t,
+            job: job.map(|j| j.parse().unwrap()),
+            step: Some(step.into()),
+            worker: Some(worker.into()),
+            targets: vec![target.into()],
+            ..Default::default()
+        };
+        let end = |t: u64, job: Option<&str>, step: &str, worker: &str, target: &str, secs: f64| Event {
+            secs: Some(secs),
+            ok: Some(true),
+            ..ev("end", t, job, step, worker, target)
+        };
+        let all = vec![
+            // (Two of the lead's own, on two slots, their start and end naming no job.)
+            ev("lease", 100, Some("0-1"), "pack", "lead", "6/1/1"),
+            ev("lease", 101, Some("0-2"), "pack", "lead", "6/1/2"),
+            ev("start", 101, None, "pack", "lead #2", "6/1/1"),
+            ev("start", 102, None, "pack", "lead #3", "6/1/2"),
+            end(150, None, "pack", "lead #3", "6/1/2", 48.0),
+            end(160, None, "pack", "lead #2", "6/1/1", 59.0),
+            // (One leased, then leased again under another id after a restart; one never ended.)
+            ev("lease", 200, Some("0-3"), "unit", "lead", "6/2/1"),
+            ev("lease", 300, Some("0-4"), "unit", "lead", "6/2/1"),
+            end(350, Some("0-4"), "unit", "lead #2", "6/2/1", 50.0),
+            ev("lease", 400, Some("0-5"), "slope", "lead", "10/1/1"),
+            ev("lease", 500, Some("1-1"), "gc", "lead", "gc"),
+        ];
+        let runs = runs_of(&all);
+        let at = |j: &str| runs[&j.parse::<JobId>().unwrap()].0.clone();
+        assert_eq!((at("0-1").worker.as_str(), at("0-1").from, at("0-1").until), ("lead #2", 101.0, Some(160.0)));
+        assert_eq!((at("0-2").worker.as_str(), at("0-2").from, at("0-2").until), ("lead #3", 102.0, Some(150.0)));
+        assert_eq!((at("0-3").until, at("0-3").ok), (Some(300.0), None), "over as it was leased again");
+        assert_eq!(at("0-4").until, Some(350.0));
+        let mut v = serde_json::json!({ "legacy": false, "start": 500.0, "end": 600.0, "step": "gc", "targets": ["gc"], "host": "lead" });
+        relate(&mut v, &all, "1-1".parse().unwrap(), 700.0, &Default::default());
+        assert_eq!(v["beside"], serde_json::json!([]), "0-5 lost, not running beside it");
+        let mut v = serde_json::json!({ "legacy": false, "start": 400.0, "end": 450.0, "step": "slope", "targets": ["10/1/1"], "host": "lead" });
+        relate(&mut v, &all, "1-1".parse().unwrap(), 700.0, &Default::default());
+        assert_eq!((v["runs"][0]["job"].as_str(), v["runs"][0]["lost"].as_bool()), (Some("0-5"), Some(true)));
     }
 
     /// A benchmark, run by hand (`-- --ignored`): each job's spans file and log in
