@@ -284,14 +284,17 @@ landmarks and roads that lie past 85.05°, by the rules of the layers they stand
     `water-name`, `park-label`, `poi-<kind>-label`), evaluated for it: colour, halo, font, size,
     letter spacing, case and wrap, so Labels → Style and Label size apply; while that layer shows;
   - its glyphs the style's own SDF glyphs (the map's glyph manager), laid out and turned to pixels
-    as MapLibre's shaping and text shader do (`web/src/polarlabels.ts`), once per name and look;
+    as MapLibre's shaping and text shader do (`web/src/polarlabels.ts`), once per name and look
+    (the size in 0.25 px steps, so a size that follows the zoom isn't made again each frame);
   - thinned as the label tiles are, on the ground: a name shows once its `r` spans its kind's label
     spacing (Layers → Map labels → Density) at its own place, an area's also once its √area does
     (`w`); the most important first where names collide;
-  - the landmarks as dots in their kind's colour under their names (every one, named or not), the
-    roads as thin grey lines while the road layer shows;
+  - every landmark in its kind's colour under its name: its kind's icon where its name shows, a
+    small dot otherwise; the roads as thin grey lines while the road layer shows;
   - on the ground as the cap draws it (its loaded heights times the terrain's exaggeration), none
     past the horizon.
 - **Not drawn:** a cap's points have no hover or popup, and no landmark filters (Stops & sights'
   ranges) or prominence sizes: the Mercator side's come from the landmarks' Wikidata facts and
   peaks' prominence, which a cap's points don't have.
+- **Not searched:** the place search is made from the label tiles (crates/server/src/places.rs), so
+  the names past 85.05° aren't found (task #1184).
