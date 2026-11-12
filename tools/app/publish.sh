@@ -334,13 +334,11 @@ rsync -a web/dist-publish/ $app/web/
 rsync -a $repo/data/fonts/ $app/fonts/
 # The version's archive (its one file on the NAS, app/releases/<version>.tgz) and its manifest
 # (app/releases/current.json's content: every file's SHA-256 and the archive's), made here from what
-# is sent: the NAS's Mac checks what it received against it. With the NAS's planet fetch (DSM's Task
-# Scheduler runs it daily), which it installs when it differs. One stream, its size and SHA-256
+# is sent: the NAS's Mac checks what it received against it. One stream, its size and SHA-256
 # checked on arrival.
 app_pack $app $sb/send/app.tgz
 app_manifest $app $version $sb/send/app.tgz > $sb/send/manifest.json
-cp -X tools/nas/fetch-planet.sh $sb/send/
-COPYFILE_DISABLE=1 tar -cf $sb/upload.tar --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app.tgz manifest.json fetch-planet.sh
+COPYFILE_DISABLE=1 tar -cf $sb/upload.tar --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app.tgz manifest.json
 dj_attr $djrun upload_bytes $(stat -f %z $sb/upload.tar)
 # Live on the lead (lib.zsh's lead_install, through this snapshot's own `scenic releases`): the lead's
 # releases read, the order checked, the release uploaded and put live from the version read (the
@@ -361,7 +359,7 @@ esac
 # the one part two publishes can't run at once (waited for while another publish installs; one
 # older than six hours, or whose process is gone, taken over; freed only by its holder), the order
 # checked again (the publish that went in meanwhile may be newer, or a rollback since); then on this
-# side's go-ahead, app/releases/<version>.tgz, the planet fetch, previous.json and current.json.
+# side's go-ahead, app/releases/<version>.tgz, previous.json and current.json.
 # Nothing goes in on a failure before the go-ahead.
 step install
 nas_send $NAS $version $head "$began" $sb/upload.tar "$from" || exit $?

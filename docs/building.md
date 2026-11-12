@@ -9,9 +9,10 @@ by the OSM pass's cut; a split into z7 or z8 tiles waits until a z6 tile outgrow
 #480). Packs for serving are per z6 tile (hi), per z3 tile (lo) and one root (z0–2). (The step that
 makes a z6 tile's roads is named `unit`, as it is stored; docs/pipeline.md §1 has the terms.)
 
-**Where it runs.** All work runs on the pool's Macs (§2, The pool) except the planet's download,
-which the NAS does itself. The jobs (§2 has their order and keys):
-1. **The OSM pass**, when the NAS holds a newer planet: the filtered planet, the worldwide sets
+**Where it runs.** All work runs on the pool's Macs (§2, The pool). The jobs (§2 has their order
+and keys):
+1. **The OSM pass**, when the declared planet is newer than the last pass (fetched first, once, by
+   the lead's `planet-fetch`: docs/steps.md §1): the filtered planet, the worldwide sets
    (rail, ferries, designated areas, places, outlines, labels, summits, hiking routes,
    heritage-named objects, water), the worldwide basemap, z6 tile extracts (filtered OSM per z6 tile, 10 km
    buffer, ways whole) and worldwide road values (docs/steps.md).
@@ -443,7 +444,8 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 0. **The input check** (`inputs <unit>`, docs/inputs.md §4.3), before every other job: a unit whose
    inputs folder, acceptances or accepted index changed is checked (in full once a day), in the first
    slot or beside a job.
-1. **The OSM pass**, when the NAS holds a newer planet.
+1. **The OSM pass**, when the declared planet is newer than the last pass: `planet-fetch` first,
+   when the NAS lacks it (docs/steps.md §1).
 2. **The pass's worldwide jobs:** `pass-sets`, `outlines` (the rest waits for them), hiking routes'
    ends, `reach`, roadside buildings (once per release; z6 tiles wait), summits (once terrain-hi
    and terrain-lo have no work left: they read the lo packs' z8),
@@ -650,8 +652,7 @@ to write them; later that day, with no file's time set (`tar -m`), the mini wrot
 5. signs the programs and Scenic.app;
 6. puts the app's folder together in a scratch folder and packs it as the version's archive (a
    gzipped tar of its files, modes kept: `app_pack`), makes its manifest (every file's SHA-256 and
-   the archive's, `app_manifest`), and sends the archive, the manifest and
-   `tools/nas/fetch-planet.sh` in one tar to the NAS's Mac (`nas_send`), whose `nas_install`:
+   the archive's, `app_manifest`), and sends the archive and the manifest in one tar to the NAS's Mac (`nas_send`), whose `nas_install`:
    receives it whole into `~/Library/Caches/scenic-publish/incoming/<pid>.tar` and checks its size
    and SHA-256 (an upload cut short installs nothing), unpacks it and the archive beside it and
    checks the app against the manifest (on the mini's disk); checks the order; writes the archive
@@ -661,7 +662,7 @@ to write them; later that day, with no file's time set (`tar -m`), the mini wrot
    beside another install, the lock held only to go live; checks the order again; then, on the
    publishing Mac's go-ahead (asked for once all that passed; none within 5 min, nothing goes in),
    whatever the connection or signals do next, renames the archive to `app/releases/<version>.tgz`,
-   copies `fetch-planet.sh` to the NAS's `nas/` when it differs, the old `current.json` to
+   the old `current.json` to
    `previous.json` in `app/releases/`, writes `current.json` there (the manifest), and frees the
    lock. Its errors go to a file beside the upload, shown as it ends (zsh ends at once on a write
    to a closed stderr, so a lost connection would otherwise end it with the lock held). The upload
@@ -691,7 +692,7 @@ were. The lead down, nothing is published and the updates wait.
 beside `app/releases/current.json` (the live version's manifest: `version`, `sha256` of each file,
 `archive_sha256`, and `files`, the list alone, for the updaters before #1148) and `previous.json`
 (the one before), so a publish writes three files to the NAS (the archive, `current.json` and
-`previous.json`; `fetch-planet.sh` too when it changed) where a version's folder was 840 files:
+`previous.json`) where a version's folder was 840 files:
 the NAS creates 1–3 files a second when busy. Each Mac's updater copies the archive and unpacks it locally (docs/macs.md,
 The updater). Measured from the M1 at home through the mini to a scratch root on 12 Nov 2026, the same app
 (118 MB in 840 files; the archive 45 MB, sent in ~2 s): a whole install, upload to live, took 177 s

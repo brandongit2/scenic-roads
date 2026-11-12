@@ -14,10 +14,16 @@ makes the same bytes on every Mac.
 
 ## 1. The OSM pass
 
-1. **The NAS fetches the planet** (`nas/fetch-planet.sh`, from `tools/nas/`): DSM runs it daily; it
-   does nothing until the newest planet is six months old or `nas/fetch-now` exists, then downloads
-   the newest planet with a published MD5, resumably, checks it and moves it to
-   `sources/osm/<date>/`.
+1. **The planet is declared and fetched** (`crate::planet`, docs/inputs.md §6.9): the accepted
+   `osm-planet` declaration (`inputs/sources/osm-planet.toml`) pins it, its `version` the planet's
+   date; a new planet is the owner's edit of it. When the declared planet is newer than the last
+   complete pass and the NAS lacks it, the lead's `planet-fetch` job (a fetch, counted by the pool's
+   downloads cap) brings it once from its URLs in turn (the mirrors, then the main site) by the
+   build's fetcher (its User-Agent; 429 and 5xx answers waited out), resumably into
+   `sources/osm/<date>/planet.osm.pbf.part`, checks it against its published MD5 (read back from
+   the NAS; a mismatch starts the part over from the next URL) and names it
+   `sources/osm/<date>/planet.osm.pbf`. The pass reads it there; its date and path are the pass's
+   target and key, as before the declaration.
 2. **Copy to the SSD** when there's room (docs/macs.md).
 3. **Filter:** one `osmium tags-filter` into (a), the filtered planet, kept until the next pass so a
    new tag needs no download.

@@ -74,6 +74,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | Stage | Step | kind | each target | place |
 |---|---|---|---|---|
 | `pass` | `osm-pass` | derive | the world | lead |
+| | `planet-fetch` | fetch | the world | lead |
 | | `pass-sets` | derive | the world | lead |
 | | `outlines` | derive | the world | lead |
 | | `trailends` | derive | the world | lead |

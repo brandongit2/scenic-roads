@@ -345,9 +345,9 @@ N=$tmp/nas2; R=$N/app/releases; hm=$tmp/home; inc=$hm/Library/Caches/scenic-publ
 here=$(scutil --get LocalHostName)
 mk() {  # <version> <name> [<manifest's version>]: an app's upload, $tmp/<name>.tar
   local s=$tmp/$2; rm -rf $s; mkdir -p $s/app/web
-  print -r -- $1 > $s/app/server; chmod 755 $s/app/server; print w > $s/app/web/index.html; print planet > $s/fetch-planet.sh
+  print -r -- $1 > $s/app/server; chmod 755 $s/app/server; print w > $s/app/web/index.html
   zsh -c "source ${(q)lib}; app_pack $s/app $s/app.tgz; app_manifest $s/app ${3:-$1} $s/app.tgz" > $s/manifest.json
-  COPYFILE_DISABLE=1 tar -cf $tmp/$2.tar --no-xattrs --no-mac-metadata -C $s app.tgz manifest.json fetch-planet.sh
+  COPYFILE_DISABLE=1 tar -cf $tmp/$2.tar --no-xattrs --no-mac-metadata -C $s app.tgz manifest.json
 }
 ns() {  # <version> <commit> <began> <upload> [<settings>]: nas_send's output, then "rc=<status> state=<its state>"
   (cd $g && HOME=$hm zsh -c "set -euo pipefail; source ${(q)lib}; nas_mac=$here; nas_repo=${(q)g}; $5
@@ -381,7 +381,6 @@ out=$(ns $V1 $B $V9 $tmp/v1.tar)
 if [[ $out != *'sent '*' MB to '*$'\nrc=0 state=live' ]]; then no "nas_send first release" "$out"
 elif [[ $(<$R/current.json) != "$(<$tmp/v1/manifest.json)" || -e $R/previous.json || $(sum $R/$V1.tgz) != $(sum $tmp/v1/app.tgz) ]]; then no "nas_send first release" "releases: $(ls -R $R)"
 elif [[ $(<$N/app/$V1/server) != $V1 || ! -x $N/app/$V1/server || $(<$N/app/current.json) != "$(<$tmp/v1/manifest.json)" || $(lv $N/app/previous.json) != $V9 ]]; then no "nas_send first release" "old layout: $(ls -R $N/app)"
-elif [[ $(<$N/nas/fetch-planet.sh) != planet ]]; then no "nas_send first release" "no fetch-planet.sh"
 elif ! clean $V1; then no "nas_send first release" "left: $(ls $N/app) / $(ls $R) / $(ls $inc)"
 else ok "nas_send: the first release, through the NAS's Mac, in both layouts; a gone receiver's upload removed"; fi
 # The first release stopped at either of its two manifests (a stand-in cp failing that write, on a
@@ -409,9 +408,9 @@ out=$(rb)
   && ok "nas_rollback: none past the first release" || no "nas_rollback first release" "$out"
 mk $V2 v2
 out=$(ns $V2 $C $V1 $tmp/v2.tar)
-[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == $V1 && $out != *fetch-planet* ]] \
+[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == $V1 ]] \
   && [[ $(lv $N/app/current.json) == $V1 && ! -e $N/app/$V2 ]] && clean $V1 $V2 \
-  && ok "nas_send: the next release, app/releases alone, the last one previous, fetch-planet.sh unchanged" || no "nas_send next" "$out / $(ls $N/app)"
+  && ok "nas_send: the next release, app/releases alone, the last one previous" || no "nas_send next" "$out / $(ls $N/app)"
 mk $V0 v0
 out=$(ns $V0 $A $V2 $tmp/v0.tar)
 [[ $out == *'older than the live version'*'rc=1 state=' && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
@@ -432,7 +431,7 @@ for what in file archive; do
   mk 20261111-0005-$C v4
   if [[ $what == file ]]; then print other > $tmp/v4/app/web/index.html; zsh -c "source ${(q)lib}; app_pack $tmp/v4/app $tmp/v4/app.tgz"
   else print -n x >> $tmp/v4/app.tgz; fi
-  COPYFILE_DISABLE=1 tar -cf $tmp/v4.tar --no-xattrs --no-mac-metadata -C $tmp/v4 app.tgz manifest.json fetch-planet.sh
+  COPYFILE_DISABLE=1 tar -cf $tmp/v4.tar --no-xattrs --no-mac-metadata -C $tmp/v4 app.tgz manifest.json
   out=$(ns 20261111-0005-$C $C $V2 $tmp/v4.tar)
   [[ $out == *"isn't its manifest's"*'rc=1 state=' && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
     && ok "nas_install: an app whose $what isn't its manifest's installs nothing" || no "nas_install manifest $what" "$out"

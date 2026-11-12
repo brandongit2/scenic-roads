@@ -44,7 +44,6 @@ state/         status.json (the lead's heartbeat), coordinator.json (its contact
                kept for older apps), backups/, logs/;
                the old coordination files no app writes
                (journal/, the terms' folders: docs/coordination.md §9, the owner's to remove)
-nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by publish.sh)
 ```
 
 **Immutable, content-named files.**

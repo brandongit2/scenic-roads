@@ -337,7 +337,7 @@ print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha, 'archiv
 
 # nas_send <nas> <version> <commit> <live version when the publish began> <archive> <from>: publish.sh's
 # install, the publishing Mac's side. <archive> (a tar of app.tgz, the version's archive, app_pack;
-# manifest.json, its app_manifest; fetch-planet.sh) goes in one stream to the NAS's Mac, whose
+# manifest.json, its app_manifest) goes in one stream to the NAS's Mac, whose
 # nas_install (below) writes it to the NAS; its output is shown, its markers read: once it says the
 # version is ready, the go-ahead is sent. In $nas_state: "" when nothing went live, "live", or
 # "unknown" (the go-ahead sent, then no answer, nor from the live manifest read again). Returns 0
@@ -386,7 +386,7 @@ nas_send() {
 # layout's folder too: app/<version>.tmp, its files listed back); then under the NAS's lock
 # (nas_lock, waited for while another publish holds it) the order checked again, "@@ready", and the
 # go-ahead read (within $nas_go_wait s, 300), else nothing goes in; then, whatever the connection
-# and the signals, the archive (and the folder), nas/fetch-planet.sh when it differs, previous.json
+# and the signals, the archive (and the folder), previous.json
 # and current.json (before the first release, in app first, then in app/releases), in that order,
 # and "@@installed <version>".
 nas_install() {
@@ -447,14 +447,6 @@ nas_install() {
   [[ $go == go ]] || { print -r -- "no go-ahead from $from: nothing installed"; return 1; }
   mv $dest.tmp $dest
   [[ -z $bridge ]] || mv $old.tmp $old
-  # The NAS's own planet fetch (DSM's Task Scheduler runs it daily): the repository's copy, when it
-  # differs. (Before the version goes live: a failure here publishes nothing.)
-  if ! cmp -s $loc/fetch-planet.sh $nas/nas/fetch-planet.sh; then
-    mkdir -p $nas/nas
-    cp -X $loc/fetch-planet.sh $nas/nas/fetch-planet.sh.tmp && chmod 755 $nas/nas/fetch-planet.sh.tmp
-    mv $nas/nas/fetch-planet.sh.tmp $nas/nas/fetch-planet.sh
-    print -r -- "updated nas/fetch-planet.sh" || true
-  fi
   # Live: before the first release, the old layout's manifest first (read by the updaters before
   # #1148), then the releases'. (In that order: until app/releases/current.json is written,
   # live_dir is still app, so an install stopped between the two leaves the next publish writing

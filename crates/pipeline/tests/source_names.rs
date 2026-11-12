@@ -43,17 +43,12 @@ const EXTS: &[&str] = &[
 /// Links the app may write: the W3C's namespaces (SVG's, a format's), OpenStreetMap (its data and tags are the map's schema; a link opens a
 /// feature or a place there), and Wikidata's and Wikipedia's pages, opened from an item's id or
 /// title.
-const LINKS: &[&str] = &[
-    "http://www.w3.org/",
-    "https://www.openstreetmap.org/",
-    "https://planet.openstreetmap.org/",
-    "https://www.wikidata.org/wiki/",
-    ".wikipedia.org/wiki/",
-];
+const LINKS: &[&str] =
+    &["http://www.w3.org/", "https://www.openstreetmap.org/", "https://www.wikidata.org/wiki/", ".wikipedia.org/wiki/"];
 
 /// What §6.9's table keeps in code, cited by an exemption's reason as `kept (§6.9, <row>)`; the row
 /// must be in the table and say "kept in code".
-const KEPT: &[&str] = &["OSM planet", "Planetiler and its data"];
+const KEPT: &[&str] = &["Planetiler and its data"];
 
 /// Lines naming a source that may: by file, item, anchor (a part of the line), with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
@@ -89,7 +84,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     // Tools that check the app.
     ("tools/check/pool-two-macs.sh", "-", "http://en.wikipedia.org/budget-test", "the pool's check of the budgets' proxy: a request the proxy must meter, not a read of the source"),
     // Kept in code (§6.9).
-    ("tools/nas/fetch-planet.sh", "-", "MIRRORS=", "kept (§6.9, OSM planet): the NAS's own script, run outside the app"),
     ("scripts/fonts.sh", "-", "base=\"https://raw.githubusercontent.com/protomaps/basemaps-assets", "the app's own assets, the map's fonts (§6.9, also kept), not a data source"),
     ("tools/app/install.sh", "-", "https://docs.astral.sh/uv/", "a link to the tool's documentation in a message"),
     // The dev tools app's pages (tools/devtools).

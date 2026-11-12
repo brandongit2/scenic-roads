@@ -1582,8 +1582,8 @@ their indexes.
 
 | Field | Meaning |
 |---|---|
-| `role` | the slot the app reads it in, one source a role: `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
-| `format` | one of its role's: `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
+| `role` | the slot the app reads it in, one source a role: `osm-planet` (the pass's planet: its `version` the planet's date, `params.md5` its MD5's URL), `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
+| `format` | one of its role's: `osm-pbf`, `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
 | `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files) or `page` (a web page, an undocumented URL, links followed or scraped), refused: no step's fetcher reads robots.txt, so pages are a producer script's (`FETCHES = "page"`). Kept out of keys and the accepted index |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
@@ -1608,7 +1608,11 @@ one fetching pages reads robots.txt and tells its agent's proxy what it found (`
 in the build page's Activity tab): `fetch::tests::every_fetching_script_declares_its_kinds`.
 The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs and data.
 
-**How the steps read them.** Rust steps through `inputs::sources::open`/`read` (one read per
+**How the steps read them.** The planet by `crate::planet` (`declared`, `next`): the lead's plan
+fetches the declared planet when it's newer than the last complete pass and the NAS lacks it
+(`planet-fetch`, its job the lead's own, a fetch the pool's downloads cap counts and the NAS
+budget weighs), then plans the pass of it (docs/steps.md §1); a declared planet older than the last
+pass is said waiting (passes only go forward), and with none declared no new pass is planned. Rust steps through `inputs::sources::open`/`read` (one read per
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
 (`trees::RunSources`, passed to the trees program as `--sources`, which makes its leaf-type
@@ -1618,7 +1622,12 @@ and the water, terrain and catalogue that read it, wait too (`lakefill::run::pla
 the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::release_of`, held by
 `agent::tiles` for the keys) and the 3D buildings' chain (no "bld-key" in `agent::theplan::input_digests`).
 
-**Keys.** A key names a declared source only where it named the source in code before: the lake
+**Keys.** A key names a declared source only where it named the source in code before: the
+pass's key is its planet's path, `sources/osm/<version>/planet.osm.pbf`, and its target the date,
+so the declared version enters the pass's key, and through the pass's date every key after it; the
+declaration's other fields (its URLs, its MD5, its credit) enter none, so declaring the planet the
+build has (2026-09-28) is no new key (`planet::tests::the_staged_planet_is_the_one_the_build_has`,
+`agent::tests::osm_pass_waits_for_space_or_runs`: the pass's job and key as before); the lake
 fill's key names its zips' pin, and the declaration only once it names other than the code had
 (`Source::key_extra` against `inputs::sources::declared_before::LAKE_FILL`, the staged declaration's
 digest); the roadside buildings' (the z6 tiles', the buildings job's) and the 3D buildings' (bld-fetch,
@@ -1640,7 +1649,7 @@ URL one the code asked for; the leaf sources, boxes and zip member the same),
 
 | Source | Outcome | Declaration |
 |---|---|---|
-| OSM planet | kept in code: `tools/nas/fetch-planet.sh` runs on the NAS under DSM's Task Scheduler, outside the app, and can't read the accepted version through the accessor (§7.1) | — |
+| OSM planet | built: `osm-planet.toml`, the `osm-planet` role, its `version` the planet's date (`crate::planet`); fetched once by the `planet-fetch` step into `sources/osm/<version>/planet.osm.pbf`, then read by the pass | `osm-pbf`: the mirrors' and the main site's URLs (`urls`, tried in turn) and its published MD5 (`params.md5`) |
 | Planetiler and its data | kept in code: `water::PLANETILER_VERSION` is a code contract (the water layer's simplification was checked against that version's z14 water, `osmpass::check_planetiler`), and Natural Earth, the water polygons and lake centrelines are the jar's own downloads (`--download`), named by it, not by the app | — |
 | ESA WorldCover | built: `esa-worldcover.toml`, the `land-cover` role | `geotiff`, URL template (`{tile}`), version; its class table is its legend (`params.legend`) |
 | Meta & WRI canopy height | built: `meta-canopy.toml`, the `canopy` role, its index `canopy-squares.geojson` (`producers/sources/canopy.py`, from the bucket's listing: the equator row's `lat=-0.0` read there); a file the index doesn't list is none there | `geotiff` with an index: a file's `url`, `kind` and 10° square |
@@ -1670,6 +1679,10 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
    the keys it had.
 4. `sources/canvec/50k/` is deleted only after both Macs run the new app (an older app still reads
    it).
+5. The planet (#1120): once both Macs run the app that reads its declaration, `osm-planet.toml` is
+   added to `inputs/sources/` (until it's accepted no new pass is planned, and the plan says so),
+   and DSM's daily task that ran the NAS's own fetch is deleted, with what it left on the NAS
+   (`nas/`, `state/logs/fetch-planet.log`).
 
 ### 6.10 Depth
 
@@ -1868,7 +1881,6 @@ declarations are made and staged there.
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
 | `web/src/flags/index.json`'s pages and authors | each flag's credit is its file's page on Wikimedia Commons (the Credits link it) and its author as Commons gives it; their maker is a producer (`producers/flags/fetch.py`, §8) |
 | `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
-| `tools/nas/fetch-planet.sh`'s mirrors | kept in code (§6.9, OSM planet): the test checks the row says so (`KEPT`) |
 | `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
 | `tools/app/install.sh`'s uv link | documentation, in a message |
 

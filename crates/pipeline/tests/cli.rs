@@ -331,7 +331,6 @@ const SHELL_EXEMPT: &[(&str, &str)] = &[
     ("tools/dev/report-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/shell-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/test-guard.sh", "a hook: its input on stdin"),
-    ("tools/nas/fetch-planet.sh", "DSM's Task Scheduler runs it on the NAS"),
     ("tools/devtools/launchd/backup.sh", "launchd runs it nightly"),
 ];
 
