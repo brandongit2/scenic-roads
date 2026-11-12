@@ -200,13 +200,19 @@ fn a_terrain_deep_target_on_one_or_two_threads_finishes_the_same() {
                 &r.join("scratch"),
             )
             .unwrap();
+            // (It says how far it is in its tiles, all of its levels' at its end: task #1156.)
+            let said = std::sync::Mutex::new(Vec::new());
+            let progress =
+                |what: &str, done: u64, total: u64| said.lock().unwrap().push((what.to_string(), done, total));
             let rep = pool
                 .with_tiles(raw, |tiles| {
                     let fills = Fills::new(tiles, tiles, &fill, &reaching);
-                    crate::terrain_deep::build_target(&mut out, t, levels.clone(), &fills, &src, false)
+                    crate::terrain_deep::build_target(&mut out, t, levels.clone(), &fills, &src, false, &progress)
                 })
                 .unwrap()
                 .unwrap();
+            let n = levels.iter().map(|l| l.1.len() as u64).sum::<u64>();
+            assert_eq!(said.into_inner().unwrap().last(), Some(&("tiles".to_string(), n, n)));
             out.save().unwrap();
             (rep.tiles, out.manifest.into_iter().collect::<Vec<_>>())
         })

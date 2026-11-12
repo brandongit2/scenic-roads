@@ -434,12 +434,9 @@ impl<'a> Tiles<'a> {
     }
 }
 
-/// How often a level says how far it is.
-const SAY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
-
 /// Composes zoom `z`'s tiles `x0..x0 + n` by `y0..y0 + n` into `t`, block by block, telling
-/// `done` the share of the level's blocks done after each (a level's blocks can take an hour on the
-/// NAS: the job's progress moves within it).
+/// `done` the share of the level's blocks done every few seconds (jobrt::jobs::saying: a level's
+/// blocks can take an hour on the NAS, so the job's progress moves within it).
 fn level(
     t: &mut Tiles,
     sources: &[Source],
@@ -455,25 +452,13 @@ fn level(
     use std::sync::atomic::{AtomicU32, Ordering};
     let all = area.nx.div_ceil(BLOCK) * area.ny.div_ceil(BLOCK);
     let blocks = AtomicU32::new(0);
-    // (The reporter stops however the blocks end, a panic too, when `stop` drops: else the scope
-    // waits on it for good. The drop wakes it at once: a level never waits out its 200 ms.)
-    let (stop, stopped) = std::sync::mpsc::channel::<()>();
-    let counted = &blocks;
-    // (Said every few seconds by a thread beside the work: a block's sources can take minutes on the
-    // NAS, so a block's share counts its grids sampled so far, crate::depth::grids::sampled.)
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            let mut last = std::time::Instant::now();
-            let tick = std::time::Duration::from_millis(200);
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(tick) {
-                if last.elapsed() >= SAY_EVERY {
-                    let k = f64::from(counted.load(Ordering::Relaxed));
-                    done(((k + super::grids::sampled()) / f64::from(all)).min(1.0));
-                    last = std::time::Instant::now();
-                }
-            }
-        });
-        let _stop = stop;
+    // (A block's sources can take minutes on the NAS, so a block's share counts its grids sampled
+    // so far, crate::depth::grids::sampled.)
+    let say = |_| {
+        let k = f64::from(blocks.load(Ordering::Relaxed));
+        done(((k + super::grids::sampled()) / f64::from(all)).min(1.0));
+    };
+    jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, say, || {
         level_blocks(t, sources, rd, water, wc, z, area, zmin, log, &blocks)
     })
 }
@@ -1065,12 +1050,16 @@ pub(super) fn build_hi_keeping(
     Ok(n)
 }
 
+/// The unit the floor's shading says its progress in (`shading_over`): its pyramid's tiles.
+pub const SHADED: &str = "tiles shaded";
+
 /// The floor's shading (the `depth-shade` layer: crate::slope_pack's pyramid, as the terrain's)
 /// of a job's depth tiles `made`, from zoom `top` down: at each place's finest stored level each
 /// pixel's steepness and direction by Horn's method on the depth, a pixel without data taking its
 /// nearest's in the tile (`filled`: no cliff at the shore, which the map draws only in the water)
 /// and a neighbour tile the job didn't make read as the tile's own edge; each coarser level the mean
-/// of the four pixels beneath it where its children cover it, else its own depth's.
+/// of the four pixels beneath it where its children cover it, else its own depth's. Says how far
+/// it is as it goes, in `SHADED`.
 pub fn shading(made: &Made, top: u8) -> Result<BTreeMap<(u8, u32, u32), Vec<u8>>> {
     shading_over(made, top, HashMap::new())
 }
@@ -1114,9 +1103,20 @@ fn shading_over(
     let done = |z: u8, x: u32, y: u32| done.get(&(z, x, y)).cloned();
     let mut roots: Vec<(u8, u32, u32)> = tiles.iter().copied().filter(|t| t.0 == top).collect();
     roots.sort_unstable();
-    for (z, x, y) in roots {
-        crate::slope_pack::Pyramid { own: &own, tiles: &tiles, out: &out, tick: &|| {}, done: &done }.tile(z, x, y);
-    }
+    // (Said as it goes, in its own unit: a z6 tile's shading takes up to half an hour, after its
+    // zooms are all composed.)
+    let total = tiles.len() as u64;
+    let shaded = std::sync::atomic::AtomicU64::new(0);
+    let tick = || {
+        shaded.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    };
+    let say = |_| jobrt::jobs::report(shaded.load(std::sync::atomic::Ordering::Relaxed), total, SHADED);
+    jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, say, || {
+        for (z, x, y) in roots {
+            crate::slope_pack::Pyramid { own: &own, tiles: &tiles, out: &out, tick: &tick, done: &done }.tile(z, x, y);
+        }
+    });
+    jobrt::jobs::report(total, total, SHADED);
     Ok(out.into_inner().unwrap().into_iter().map(|(z, x, y, b)| ((z, x, y), b)).collect())
 }
 

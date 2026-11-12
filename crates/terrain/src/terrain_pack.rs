@@ -1669,14 +1669,17 @@ pub fn make_piece_from(
 }
 
 /// `make_piece` with its blocks kept as made and an earlier run's taken (`log`): a z10 tile's band
-/// (crate::terrain_deep).
+/// (crate::terrain_deep). Says how far it is to `progress` (`saying`: its tiles).
 pub fn make_piece_logged(
     raw: &dyn RawSource,
     src: &Sources,
     levels: Vec<(u8, Vec<(u32, u32)>)>,
     log: Option<&mut crate::terrain_resume::HiLog>,
+    progress: buildstore::rawpack::Progress,
 ) -> anyhow::Result<(Vec<Made>, Mid)> {
-    Maker::new(raw, src).piece(levels, log, Mid::default())
+    let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
+    let mk = Maker::new(raw, src);
+    saying(&mk, total, progress, || mk.piece(levels, log, Mid::default()))
 }
 
 /// The most memory (MB) a z6 tile's levels take as one run makes them (`make_piece`), from its
@@ -1811,20 +1814,8 @@ fn saying<T>(
     progress: buildstore::rawpack::Progress,
     run: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    // (Its sender dropped however the run ends, a panic too: the reporter wakes at once and ends,
-    // and the scope, waiting for it, goes on. Task #1126: a look at a flag every 200 ms had held
-    // each run up to 200 ms past its end: terrain_task's stopped-and-resumed test, 17 runs of a
-    // z6 tile of 60 tiles, took 6.0 s where it takes 4.0, on the M4.)
-    let (done, ended) = std::sync::mpsc::channel::<()>();
-    let r = std::thread::scope(|s| {
-        s.spawn(move || {
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(Duration::from_secs(5)) {
-                progress("tiles", mk.done().min(total), total);
-            }
-        });
-        let _done = done;
-        run()
-    })?;
+    // (Task #1126: the ticks end with the run at once, never 200 ms past it: jobrt::jobs::saying.)
+    let r = jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, |_| progress("tiles", mk.done().min(total), total), run)?;
     progress("tiles", total, total);
     Ok(r)
 }

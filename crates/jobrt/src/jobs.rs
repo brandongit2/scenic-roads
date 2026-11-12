@@ -1,5 +1,6 @@
 //! A job's side of its agent's protocol (docs/building.md §2): the lines it says how far it is in
-//! (`report`, `stage`, `within`, `part`) on stderr, which goes to its log, and the agent's reading
+//! (`report`, `stage`, `within`, `part`; `saying` for work in its own process) on stderr, which
+//! goes to its log, and the agent's reading
 //! of that log (`tail`, `error_of`, `parts`, `said`); a program it runs, watched for its own
 //! (`run_watched`). Running the jobs is the agent's (pipeline's agent::jobs, which re-exports these).
 
@@ -90,6 +91,30 @@ pub fn report(done: u64, total: u64, unit: &str) {
 pub fn report_f(done: f64, total: u64, unit: &str) {
     let d = (done.clamp(0.0, total as f64) * 1000.0).floor() / 1000.0;
     eprintln!("progress: {d}/{total} {unit}");
+}
+
+/// How often work done in a job's own process says how far it is (`saying`): a progress line every
+/// few seconds, as its agent's beats read it.
+pub const SAY_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `run`, with `say` called beside it every `every` (its tick: 1, 2 …) until it ends: a long stretch
+/// of work in the job's own process (a read, a pass over tiles) says how far it is as it goes, from
+/// counts `run` keeps where `say` reads them. However `run` ends, a panic too, the ticks stop at
+/// once (the scope never waits out a tick).
+pub fn saying<T>(every: std::time::Duration, say: impl Fn(u64) + Send, run: impl FnOnce() -> T) -> T {
+    let (done, ended) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        s.spawn(move || {
+            let mut tick = 0;
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(every) {
+                tick += 1;
+                say(tick);
+            }
+        });
+        // (Its sender dropped as `run` ends, however: the ticker wakes and ends.)
+        let _done = done;
+        run()
+    })
 }
 
 /// The stage a job said it began last (`stage`): a program's progress within it counts as the
@@ -258,6 +283,37 @@ pub fn progress(log: &Path) -> Option<(f64, f64, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A long stretch says how far it is as it goes, a tick at a time, and its ticks end with it at
+    /// once, a panic too.
+    #[test]
+    fn a_stretch_says_how_far_it_is_until_it_ends() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+        let counted = AtomicU64::new(0);
+        let said = std::sync::Mutex::new(Vec::new());
+        let every = Duration::from_millis(5);
+        let r = saying(
+            every,
+            |tick| said.lock().unwrap().push((tick, counted.load(Ordering::Relaxed))),
+            || {
+                for _ in 0..10 {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                    std::thread::sleep(every * 2);
+                }
+                7
+            },
+        );
+        assert_eq!(r, 7);
+        let said = said.into_inner().unwrap();
+        assert!(said.len() >= 3, "{said:?}");
+        assert!(said.windows(2).all(|w| w[1].0 == w[0].0 + 1 && w[1].1 >= w[0].1), "{said:?}");
+        assert!(said.last().unwrap().1 > said[0].1, "the counts said moved: {said:?}");
+        // Ended, by a panic too: no tick is waited out.
+        let t = Instant::now();
+        let caught = std::panic::catch_unwind(|| saying(Duration::from_secs(3600), |_| {}, || panic!("stopped")));
+        assert!(caught.is_err() && t.elapsed() < Duration::from_secs(60));
+    }
 
     #[test]
     fn a_jobs_parts_are_read_from_its_log() {

@@ -5487,7 +5487,17 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
                 // (Paused mid-sampling: the target before landed (`after`), nothing of this one put,
                 // its blocks made kept in its resume log.)
                 let r = landing
-                    .after(out, |out| td::build_target(out, (t.x, t.y), levels, tiles, src, jobrt::resume_log::on()))
+                    .after(out, |out| {
+                        td::build_target(
+                            out,
+                            (t.x, t.y),
+                            levels,
+                            tiles,
+                            src,
+                            jobrt::resume_log::on(),
+                            &|what, done, total| jobrt::jobs::report(done, total, what),
+                        )
+                    })
                     .map_err(|e| jobrt::control::stop_if_paused(STEP, e))?;
                 let said = format!(
                     "{STEP} {}: {} tiles, {} MB; {} dropped; {} MB fetched",
@@ -5531,7 +5541,9 @@ fn terrain_same_deep(
     let pool = base_pool(out, td::PACK_Z, &[t])?;
     let t0 = std::time::Instant::now();
     let (made, mid) = with_fills(raw, &pool, cov, &sets, &|_, _| false, |tiles, src| {
-        terrain::terrain_pack::make_piece_logged(tiles, src, levels, None)
+        terrain::terrain_pack::make_piece_logged(tiles, src, levels, None, &|what, done, total| {
+            jobrt::jobs::report(done, total, what)
+        })
     })?;
     let secs = t0.elapsed().as_secs_f64();
     let n = made.len();

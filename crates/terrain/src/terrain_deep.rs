@@ -312,7 +312,7 @@ pub struct Report {
 /// dropped, a retired one there too) and its mid (`mid_logical`), their uploads put off
 /// (buildstore::out::Out::put_file_later: they go on beside what the job does next, the target
 /// saved by a later save). Its levels' blocks kept as made and an earlier run's taken (`keep`:
-/// crate::terrain_resume).
+/// crate::terrain_resume). Says how far it is to `progress` (its tiles, every few seconds).
 pub fn build_target(
     out: &mut Out,
     t: (u32, u32),
@@ -320,6 +320,7 @@ pub fn build_target(
     raw: &dyn crate::terrain_pack::RawSource,
     src: &crate::terrain_pack::Sources,
     keep: bool,
+    progress: buildstore::rawpack::Progress,
 ) -> Result<Report> {
     let mut rep = Report::default();
     let p = jobrt::timings::phase("making its tiles, its finest zooms sampled, the coarser from them");
@@ -330,7 +331,7 @@ pub fn build_target(
     } else {
         None
     };
-    let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut())?;
+    let (made, mid) = crate::terrain_pack::make_piece_logged(raw, src, levels, log.as_mut(), progress)?;
     drop(p);
     let _p = jobrt::timings::phase("writing its deep pack and mid");
     rep.tiles = made.len();
