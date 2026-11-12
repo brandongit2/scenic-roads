@@ -119,7 +119,7 @@ pub fn count_ways_in(packs: &[&BasePack], within: Bounds) -> Result<u64> {
 /// way's copies together.
 const RUN: usize = 1 << 15;
 
-/// How far past a tile's edges (E7 units, ~1 m) a way's bbox may lie and its line still be cut into
+/// How far past a tile's edges (E7 units, ~0.1 m) a way's bbox may lie and its line still be cut into
 /// it: past the rounding of the tile's bounds to E7 (`tile_bounds`), which a line on the edge may
 /// fall either side of. A way this near that draws nothing in the tile adds no piece.
 const EDGE_E7: i32 = 10;
