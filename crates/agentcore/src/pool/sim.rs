@@ -471,9 +471,8 @@ struct World {
     /// Since when the declared lead's take-up has waited on the records of the Mac that led an
     /// epoch (`OWNER_S`), and that epoch.
     stuck: Option<(u64, u64)>,
-    /// The epochs each Mac landed a snapshot of at the one path (epoch, Mac), and those two Macs
-    /// led (`repeats`).
-    landed_by: BTreeSet<(u64, usize)>,
+    /// The epochs each Mac led (epoch, Mac), and those two Macs led (`repeats`).
+    led_by: BTreeSet<(u64, usize)>,
     repeated: BTreeSet<u64>,
     /// The run's folder (each Mac's under it), kept until the run ends.
     _dir: tempfile::TempDir,
@@ -654,7 +653,7 @@ impl World {
             served: None,
             gc_refused: BTreeSet::new(),
             stuck: None,
-            landed_by: BTreeSet::new(),
+            led_by: BTreeSet::new(),
             repeated: BTreeSet::new(),
             _dir: dir,
             wrong: Vec::new(),
@@ -790,6 +789,7 @@ impl World {
         }
         self.behind = Some(lack);
         self.end = self.t + QUIET_S;
+        self.waited |= waiting;
         if merging {
             self.count("ten minutes more, the lead merging");
             self.note(|| format!("the run goes on: the records lack {lack} hand-offs"));
@@ -800,7 +800,6 @@ impl World {
             self.count("ten minutes more, the take-ups settling");
             self.note(|| "the run goes on: the take-ups settling".to_string());
         } else {
-            self.waited = true;
             self.count("ten minutes more, the declared lead not leading yet");
             let d = self.declared;
             self.note(|| format!("the run goes on: the declared lead mac{d} doesn't lead yet"));
@@ -1405,16 +1404,14 @@ impl World {
             // past no snapshot or backup of it, repeated its number (docs/pool.md §4 invariant 2's
             // limit). Its two leads' snapshots aren't compared with each other; what either
             // acknowledged is checked as ever.)
-            if self.leaders.get(&e).is_some_and(|&o| o != me) && !self.landed_by.contains(&(e, me)) {
-                self.repeats(e);
-            }
-            self.landed_by.insert((e, me));
             let repeated = self.repeated.contains(&e);
-            if (self.leaders.get(&e).is_some_and(|&o| o != me) && !repeated) || e > self.macs[me].epoch {
+            // (Its own epoch: one it led, or its take-up's, raised and saving before it leads.)
+            let own = self.led_by.contains(&(e, me)) || self.macs[me].raised.is_some_and(|r| r.0 == e);
+            if !own || e > self.macs[me].epoch {
                 self.wrong(format!(
                     "mac{me} wrote epoch {e}'s records (its store's epoch {}, epoch {e} led by {:?})",
                     self.macs[me].epoch,
-                    self.leaders.get(&e)
+                    self.led_by.iter().filter(|l| l.0 == e).map(|l| l.1).collect::<Vec<_>>()
                 ));
             }
             let handled: BTreeSet<String> = r.reflected.iter().chain(r.rejected.keys()).cloned().collect();
@@ -1654,13 +1651,14 @@ impl World {
 
     fn leads(&mut self, me: usize, e: Option<u64>) {
         if let Some(e) = e {
-            if let Some(&other) = self.leaders.get(&e).filter(|&&o| o != me) {
-                if self.landed_by.contains(&(e, other)) && !self.repeated.contains(&e) {
-                    self.wrong(format!("mac{me} leads epoch {e}, which mac{other} led"));
-                } else {
-                    self.repeats(e);
-                }
+            // (Another Mac led this epoch's number: its take-up's raise, or this one's, reached
+            // no NAS file the other's raise read (docs/pool.md §4 invariant 2's limit). Each
+            // raise is checked as of its time below; the records tell the two apart by their
+            // lead, `Records::lead`.)
+            if self.led_by.iter().any(|&(k, o)| k == e && o != me) {
+                self.repeats(e);
             }
+            self.led_by.insert((e, me));
             if e <= self.macs[me].led {
                 self.wrong(format!("mac{me} leads epoch {e} after epoch {}", self.macs[me].led));
             }
@@ -1723,12 +1721,15 @@ impl World {
             ));
         }
         let d = self.declared;
+        // (Its own last take-up's epoch: another Mac's after it may be one whose take-up never
+        // reached the NAS before, its records fenced, numbered higher: invariant 2's limit.)
+        let last = self.took.iter().filter(|(_, &(m, _))| m == d).map(|(&e, _)| e).next_back();
         for k in 0..self.macs.len() {
             let leads = self.macs[k].leads;
-            if k == d && leads != Some(h) {
-                self.wrong(format!("the declared lead mac{d} leads {leads:?} at the end, the last epoch {h}"));
+            if k == d && (leads.is_none() || leads != last) {
+                self.wrong(format!("the declared lead mac{d} leads {leads:?} at the end, its last take-up's epoch {last:?} (the last of all {h})"));
             }
-            if k == d && leads == Some(h) && !self.macs[k].caught {
+            if k == d && leads.is_some() && leads == last && !self.macs[k].caught {
                 self.wrong(format!("the lead mac{d} isn't caught up at the end"));
             }
             // (A Mac gone for good never wakes to read the move: it leads nothing.)

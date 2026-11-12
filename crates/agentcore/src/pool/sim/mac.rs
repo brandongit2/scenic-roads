@@ -362,9 +362,12 @@ impl Mac {
         let k = self.k;
         let (me, h) = (self.me.clone(), self.handoffs.clone());
         // (Another Mac's lead before it left its store's backup: taken up once a process.)
-        let first =
-            out.events.iter().any(|e| matches!(e, Event::TookUp { .. })) && !std::mem::replace(&mut self.took, true);
-        let backup = if first {
+        let took = out.events.iter().find_map(|e| match e {
+            Event::TookUp { another, .. } => Some(*another),
+            _ => None,
+        });
+        let first = took.is_some() && !std::mem::replace(&mut self.took, true);
+        let backup = if first && took == Some(true) {
             crate::pool::store::read_backup(&self.sim).ok().flatten().filter(|b| b.member != me.host)
         } else {
             None
