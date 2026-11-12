@@ -248,12 +248,28 @@ fn read_lines(p: &Path, at: u64, max: usize, ended: bool) -> (String, bool) {
     if f.read_exact(&mut b).is_err() {
         return (String::new(), true);
     }
-    // (Whole lines: a line being written waits; an ended job's last line too, unless it's all there.)
+    // (Whole lines: a line being written waits; an ended job's last line too, unless it's all there.
+    // A line longer than `max` goes in pieces.)
     let whole = b.iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1);
-    let take = if ended && want as u64 == len - at && whole < want { want } else { whole };
+    let take = match () {
+        _ if ended && want as u64 == len - at && whole < want => want,
+        _ if whole == 0 && want == max => want,
+        _ => whole,
+    };
     b.truncate(take);
     let more = at + (take as u64) < len;
-    (String::from_utf8_lossy(&b).into_owned(), more)
+    (text_of(&b), more)
+}
+
+/// `b` as text of the same length in bytes (the lead counts where it has a file to by them): a byte
+/// that isn't UTF-8 (a program's binary output in its log, a char cut by a piece's end) as `?`.
+fn text_of(b: &[u8]) -> String {
+    let mut s = String::with_capacity(b.len());
+    for c in b.utf8_chunks() {
+        s.push_str(c.valid());
+        s.extend(std::iter::repeat_n('?', c.invalid().len()));
+    }
+    s
 }
 
 /// The job's log from byte `at` of its run's (`Facts::meta`'s `log_from` on), at most `max` bytes:
@@ -370,6 +386,21 @@ mod tests {
         assert_eq!(&b[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
         // No file: legacy.
         assert_eq!(view(&store, JobId { epoch: 3, n: 1 })["legacy"], true);
+    }
+
+    /// A log's bytes that aren't UTF-8 go as `?`, one each, so the lead's count of where it has the
+    /// log to is the file's; a line longer than a beat's bound goes in pieces, never holding the
+    /// rest back.
+    #[test]
+    fn a_log_s_bytes_are_counted_as_the_file_s() {
+        assert_eq!(text_of(b"ok \xff\xfe\n\xe2\x82"), "ok ??\n??");
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("log");
+        std::fs::write(&p, [b"x".repeat(300), b"\nnext\n".to_vec()].concat()).unwrap();
+        let (a, more) = read_lines(&p, 0, 100, false);
+        assert_eq!((a.len(), more), (100, true), "a piece of the long line");
+        let (b, _) = read_lines(&p, 100, 1000, false);
+        assert_eq!(b, "x".repeat(200) + "\nnext\n");
     }
 
     fn view(store: &Store, job: JobId) -> serde_json::Value {
