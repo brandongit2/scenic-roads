@@ -268,7 +268,8 @@ pub fn coverage_of(geoms: &[Geometry]) -> Coverage {
 /// disabled region is no coverage). Where there's a `cache` (this Mac's), kept there by the version
 /// (`coverage/<hash>.<format>.cov`): the geometry files are read once per version and Mac, by one process at
 /// a time (`store::cachefile::making`), and the file read in place (mapped; a cache on a network
-/// filesystem isn't: made in memory, as with none).
+/// filesystem isn't: made in memory, as with none), the folder's files no process holds swept
+/// (`sweep`).
 pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Option<&Path>) -> Result<Coverage> {
     let made = || -> Result<Coverage> {
         let l = enabled(a)?;
@@ -302,15 +303,20 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
         Err(_) => Kept::Unread,
     };
     if let Kept::Read(c) = read() {
+        sweep(&dir, &at);
         return Ok(c);
     }
     // (One process of the Mac makes it at a time, the others waiting to read it in place: each
     // making its own at once held the whole coverage in its memory beside the others', a cost no
     // job's memory is booked for since it reads in place, Coverage::read_peak_mb. The making not
     // held: made here.)
-    let _making = store::cachefile::making(&at);
+    let making = store::cachefile::making(&at);
     match read() {
-        Kept::Read(c) => return Ok(c),
+        Kept::Read(c) => {
+            drop(making);
+            sweep(&dir, &at);
+            return Ok(c);
+        }
         Kept::Remote => return made(),
         // (Another format's: made again in its place, not read past forever.)
         Kept::Unread => drop(store::cachefile::try_remove(&at)),
@@ -325,18 +331,31 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
         w.flush()
     });
     if written.is_ok() {
+        // (The one made let go for the file just written, read in place: the same shapes. Mapped
+        // before the hold `create` took goes, so no other version's sweep takes it in between.)
+        let kept = read();
         store::cachefile::release(&at);
-        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            if e.path() != at {
-                store::cachefile::try_remove(&e.path());
-            }
-        }
-        // (The one made let go for the file just written, read in place: the same shapes.)
-        if let Kept::Read(kept) = read() {
+        if let Kept::Read(kept) = kept {
+            drop(making);
+            sweep(&dir, &at);
             return Ok(kept);
         }
     }
     Ok(c)
+}
+
+/// Deletes every file of the kept coverage's folder `dir` but `at` (the version just read in place)
+/// that no process holds (store::cachefile::try_remove), each time a coverage is read there, not
+/// only as a version is made (task #1150: a version a job still mapped when the next was made had
+/// stayed for good): another version's or format's file once the last process mapping it lets go,
+/// a `.making` lock whose maker is gone (one held or waited on stays: a waiter whose lock file goes
+/// takes the one named again, store::cachefile::making), a temporary file whose writer died.
+fn sweep(dir: &Path, at: &Path) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path() != at {
+            store::cachefile::try_remove(&e.path());
+        }
+    }
 }
 
 /// The drawn regions of `regions` (as `recipes` lists them) from the accepted version's drawn

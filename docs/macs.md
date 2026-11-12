@@ -92,7 +92,9 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   - **Kept:** the answers (`items/`, `heritage-<date>/`), the trains' stop pairs (`rail/`), the z6 tile
     stages' timings (`unit-stages.json`), what a z6 tile kept that isn't on the NAS yet, and the
     coverage as last read (`coverage/<hash16>.<format>.cov`, by the regions' accepted version and the
-    file's format).
+    file's format). Each read of it there deletes the folder's other files no process holds: another
+    version's or format's once the last job mapping it lets go, a `.making` lock whose maker is
+    gone, a dead writer's temporary file (docs/inputs.md §6.1.4).
   - Nothing is deleted through a link, nor anything in the NAS's project folder.
 - **No installed map server** (task #874): the devices' map is the Mac mini's (Devices). An installed server started
   on any other Mac retires itself (`crates/server/src/retire.rs`): it removes its LaunchAgent

@@ -931,3 +931,54 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
         off_print
     );
 }
+
+#[test]
+fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds() {
+    let f = fx();
+    let d = job_root(&f, true);
+    let nas = store::nasfs::NasRoot::local_for_test(d.path());
+    let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("scratch")).unwrap();
+    crate::inputs::gate::run(&mut out, UNIT, true, None).unwrap();
+    let a = crate::inputs::open(&nas, &manifest(&nas), UNIT).unwrap().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let dir = cache.path().join("coverage");
+    let kept = buildstore::coverage::kept_name(&a.version);
+    let names = || -> Vec<String> {
+        let mut n: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        n.sort();
+        n
+    };
+    let box_a = [0, 0, 10_000_000, 10_000_000];
+    // Made: the file alone, its making's lock gone with its maker.
+    let made = read::accepted_coverage(&nas, &a, Some(cache.path())).unwrap();
+    assert!(made.contains([5_000_000, 5_000_000]));
+    assert_eq!(names(), [kept.clone()]);
+
+    // What others left: an older version's file no one maps, another a job still maps, a lock
+    // whose maker is gone, one a maker holds, a temporary file whose writer died.
+    let older = dir.join(buildstore::coverage::kept_name("older"));
+    let mapped_one = dir.join(buildstore::coverage::kept_name("oldest"));
+    for p in [&older, &mapped_one] {
+        store::cachefile::put(p, b"an older version's").unwrap();
+    }
+    let mapped = store::cachefile::map(&mapped_one).unwrap().unwrap();
+    let orphan = dir.join(format!("{}.making", buildstore::coverage::kept_name("older")));
+    std::fs::write(&orphan, b"").unwrap();
+    let making = store::cachefile::making(&dir.join(buildstore::coverage::kept_name("newer"))).unwrap();
+    std::fs::write(dir.join(format!("{kept}.99999.0.tmp")), b"").unwrap();
+    // Read again (as each job does): what no process holds goes; what's held stays.
+    let again = read::accepted_coverage(&nas, &a, Some(cache.path())).unwrap();
+    assert_eq!(again.fingerprint(box_a), made.fingerprint(box_a));
+    let mut want = vec![
+        kept.clone(),
+        mapped_one.file_name().unwrap().to_string_lossy().into_owned(),
+        format!("{}.making", buildstore::coverage::kept_name("newer")),
+    ];
+    want.sort();
+    assert_eq!(names(), want);
+    // Let go: the next read sweeps them.
+    drop((mapped, making));
+    read::accepted_coverage(&nas, &a, Some(cache.path())).unwrap();
+    assert_eq!(names(), [kept]);
+}

@@ -381,7 +381,7 @@ pub fn map(path: &Path) -> io::Result<Option<Mapped>> {
 
 /// The making of cache file `path` held by this process among the Mac's (`making`): an exclusive
 /// lock on `<path>.making` beside it, let go when dropped. (The lock file stays, empty: a sweep of
-/// its folder may delete it once no one holds it, as the coverage's next version's does.)
+/// its folder may delete it once no one holds it, as each read of the kept coverage does.)
 pub struct Making {
     _file: File,
 }

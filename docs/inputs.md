@@ -668,9 +668,9 @@ regions built, the coverage and the drawing (no area to cover).
 coverage from the stored shapes, regions in id order, shapes in stored order. The agent passes its
 cache folder: the coverage is kept there by the accepted version and the file's format
 (`coverage/<hash16>.rdcov007.cov`, `buildstore::coverage::kept_name`: an older app's file under its
-own name, so an update's agent and the jobs an older one left never delete each other's; the
-others deleted: the shapes with their grids and edge trees, tasks #807 and #1109, so a read makes
-nothing again), so each Mac reads a version's geometry files off the NAS and grids them once, a
+own name, so an update's agent and the jobs an older one left never read each other's as
+unreadable and make theirs in memory; the shapes with their grids and edge trees, tasks #807 and
+#1109, so a read makes nothing again), so each Mac reads a version's geometry files off the NAS and grids them once, a
 restart none; that first read runs on a thread of its own, the plan's region jobs waiting for it.
 The file is read in place (`store::cachefile::map`, `buildstore::coverage::from_kept`, task #1109):
 each array at a multiple of 8 bytes into it, the shapes' rings, grids and edge trees are views of
@@ -683,9 +683,13 @@ just made is read back from its file the same way, the one made let go. The answ
 the shapes made from the rings, bit for bit (the same values). `scenic-build`'s steps read the
 same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a folder of the Mac's
 own disk (a mapped NAS file faults with SIGBUS when the share drops: a cache on a network
-filesystem isn't mapped, the coverage made in memory as with no cache). Mapping it holds it (its
-shared lock) while mapped, so the next version's sweep leaves it; room-making never empties the
-folder (docs/macs.md). A version not kept yet is made by one process of the Mac at a time
+filesystem isn't mapped, the coverage made in memory as with no cache). Each read in place there
+(made or found) sweeps the folder: every other file no process holds is deleted
+(`store::cachefile::try_remove`; task #1150), so another version's or format's file goes once the
+last process mapping it lets go (mapping it holds it, its shared lock, while mapped: a job of an
+older app or version keeps its file until it's done), as does a `<name>.making` lock whose maker
+is gone and a temporary file whose writer died; room-making never empties the folder
+(docs/macs.md). A version not kept yet is made by one process of the Mac at a time
 (`store::cachefile::making`, `<name>.making` locked, taken again if a sweep deleted it meanwhile),
 the others waiting, then reading it in place: since a job's memory
 bound counts the coverage read in place, each making its own at once (a new version's first jobs
