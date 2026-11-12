@@ -330,8 +330,7 @@ mod tests {
         // A program still running from the first (the map server waiting for an idle map, or an
         // older server): a copy of this test program run from its folder, this test alone in it as
         // the stand-in (above), running once it says so. (Not a copy of a system program: macOS's
-        // launch constraints kill a copy of one of Apple's as it starts, #1110: `/bin/sleep`'s had
-        // passed only while a look caught it dying.)
+        // launch constraints kill a copy of one of Apple's as it starts, tools/dev/testing.md.)
         let server = app.join("20261001-0000-aaaaaaa/server");
         std::fs::copy(std::env::current_exe().unwrap(), &server).unwrap();
         let mut child = store::spawn::spawn(

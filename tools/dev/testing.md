@@ -627,13 +627,12 @@ dev jobs' test times). So a program (or library) that ran is never deleted for 1
   prune test, pyenv's `made_once_and_shared` (its environment's numpy and shapely loaded).
 - **A program copied to run is the test's own, never one of macOS's** (#1110): macOS's launch
   constraints kill a copy of an Apple platform program as it starts (the kernel logs AMFI's
-  "Launch Constraint Violation (enforcing)"; the shell's status 137). The prune test's copy of
-  `/bin/sleep` was killed at each of its runs, and the test passed only while its first look at the
-  processes caught the copy dying: on the loaded M4, 6 of 74 runs failed (11-12 Nov). It now copies
-  its own test program (`std::env::current_exe()`) and runs it as a stand-in, this test alone in
-  it, which says when it runs (a line on its output) and runs until its input closes, as sys.rs's
-  group test and test_start's probe run theirs. guards.sh refuses a `copy("/bin/…")` (or `/sbin`,
-  `/usr/bin`, `/usr/sbin`, `/usr/libexec`, `/System`) in crates/.
+  "Launch Constraint Violation (enforcing)"; the shell's status 137), so a test that looks for
+  such a copy running passes only when its look catches the copy dying. A test copies its own
+  program (`std::env::current_exe()`) and runs it as a stand-in, that test alone in it, which says
+  when it runs (a line on its output) and runs until its input closes: appupdate's prune test.
+  guards.sh refuses a `copy("/bin/…")` (or `/sbin`, `/usr/bin`, `/usr/sbin`, `/usr/libexec`,
+  `/System`, also through `Path::new`) in crates/.
 - **The cargo shim's clones** (`.scenic-runs/<pid>`, above) stay after their run; each run cleans
   the folder with `ran_clean`. A shim killed outright (`kill -9`) leaves its cargo or nextest
   running; their programs started before it was seen gone, so are in the rule, but a later test

@@ -65,7 +65,7 @@ fi
 # platform program as it starts (AMFI's "Launch Constraint Violation", SIGKILL), so a stand-in copied
 # from /bin/sleep never ran, and its test passed only while a look caught it dying. A test copies
 # its own program instead (tools/dev/testing.md, "A program that ran is kept 10 minutes").
-if grep -rnE 'copy\(\s*"/(bin|sbin|usr/bin|usr/sbin|usr/libexec|System)/' crates --include='*.rs'; then
+if grep -rnE 'copy\(\s*&?(Path::new\(\s*)?"/(bin|sbin|usr/bin|usr/sbin|usr/libexec|System)/' crates --include='*.rs'; then
   echo "a copy of a macOS program, which its launch constraints kill as it starts: copy the test's own program, std::env::current_exe() (tools/app/guards.sh says why)"
   exit 1
 fi
