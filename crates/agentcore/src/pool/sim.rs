@@ -1698,7 +1698,9 @@ impl World {
             if let Some(last) = landed.filter(|&k| k >= e && !(repeated && k == e)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past the records' epoch {last}"));
             }
-            if let Some(last) = took.filter(|&k| k >= e && !(repeated && k == e)) {
+            // (A take-up none of whose snapshots followed the brief, its records fenced (its Mac
+            // moved from mid-take-up, asleep: invariant 2's limit), led nothing anyone takes up.)
+            if let Some(last) = took.filter(|&k| k >= e && !(repeated && k == e) && self.landed.contains_key(&k)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past epoch {last} taken up before"));
             }
             self.leaders.insert(e, me);
