@@ -7,7 +7,8 @@
 `crates/bld`), 6f1 to 6f4 (§6.3: `build::pass_work`, the frozen-plan check, the `Plan` trait, test
 time, and the runtime in `crates/agentcore`), and 7a (§7: the map server on neither pipeline nor
 agentcore). The big cycle is gone: what §2 planned as "coordination" is agentcore (6f4), and
-pipeline holds the plan and the binaries. Planned: §7.4's next steps.
+pipeline holds the plan and the binaries. Planned: §7.4's next steps, and §8, agentcore split in two
+(the agent's loop and the coordinator's server over a new `crates/agentbase`).
 
 The `pipeline` crate held ~244k lines of Rust in `crates/pipeline/src` (85 % of the repo's Rust)
 and its binaries (15 then; 2 since #917, `scenic` and `scenic-build`, the other 13 programs
@@ -18,11 +19,15 @@ build green and every program's behaviour unchanged.
 
 ## 1. The module graph
 
-`tools/dev/modgraph.py` derives it from the sources: for each top-level module of
-`crates/pipeline/src` (a file `x.rs` and/or folder `x/`), the other top-level modules its code
-names by `crate::<m>` (also inside `use crate::{…}` groups) or, in a binary, `pipeline::<m>`; then
-the cycles (strongly connected components). `--dot` prints Graphviz. Rerun it rather than trusting
-numbers copied here.
+`tools/dev/modgraph.py [<crate>]` derives it from the sources: for each module of
+`crates/<crate>/src` (pipeline by default; top-level, a file `x.rs` and/or folder `x/`, or a file's
+own module with `--depth 2`), its lines of code and of tests, and the other modules its code names
+by `crate::<m>`, `super::`, `self::` or a child's bare path (also inside `use crate::{…}` groups) or,
+in a binary, `<crate>::<m>`; then the cycles (strongly connected components). `--code` leaves the
+`#[cfg(test)]` code out, `--items A B` lists what A names in B, `--cut M …` every mention leaving a
+set of modules, `--edges` every edge by item, `--dot` prints Graphviz. Rerun it rather than trusting
+numbers copied here (the figures below, before 12 Nov 2026, counted `crate::` paths only, tests
+included).
 
 What it showed on 31 Oct 2026 (main at 3cba2d2a):
 
@@ -170,7 +175,8 @@ names, webpenc as now).
      to buildstore::room (§6.3).
 7. **agentcore** (planned as "coordination"; built, step 6f4): the runtime: the agent but its plan,
    coord, pool, needs, paces, uses, pubtimes, answers, menu, cli. ~60k lines without tests, beside
-   the families (on inputs and below). agent ↔ coord ↔ pool are still one cycle inside it (§7.4).
+   the families (on inputs and below). agent ↔ coord ↔ pool are still one cycle inside it (§8
+   plans its split).
    The app's updater went to jobrt and net to coordwire (step 7a), for the map server.
 8. **pipeline** (kept under this name so `cargo run -p pipeline --bin …` stays): the plan (agent's
    build, steps, idents, tiles, theplan; ~18k lines with tests), offload's `run_task`, `out::open`,
@@ -1190,7 +1196,7 @@ commit; re-exports at the old paths as before.
         when its interface is unchanged), and they rebuild in series: pipeline (the plan and the
         binaries, ~22k), new on this chain, takes about what the halving saved (the family edit's
         2.3 s is bld, pipeline and server; the runtime's 3.5 s, agentcore, pipeline and server). Only a smaller crate under the edit, with less above it,
-        would shorten it (splitting agentcore along coord, pool and the forecast), not planned. The runtime's tests build as they did
+        would shorten it (splitting agentcore: planned, §8). The runtime's tests build as they did
         (the plan compiled into them). tools/dev/check.sh's tests part on this branch (10:26, the
         M4 at load 50-90 with the checks above): 514 s for 1,213 tests (its affected set, most of
         the suite: the branch moves ~90 files), nextest's run 124 s, the rest building; no before
@@ -1353,11 +1359,7 @@ follow pipeline's lib. landmarks' and bld's own edits: unchanged.
 What's left, by gain for its cost (rerun §7.1's measure before each):
 
 1. **Splitting agentcore** is the only lever for a runtime edit's own 2.1-4.0 s; the programs'
-   1.2-1.9 s follow any edit. A crate split off below agentcore makes its own edits slower (it,
-   then agentcore, then the programs), so only a part with nothing of the runtime above it helps:
-   agent ↔ coord name each other 418 and 255 times (tools/dev/modgraph.py agentcore, 7 Nov), pool
-   and the forecast are inside the same cycle. Not a move with re-exports: a design of its own,
-   now that #878 (coordination off the NAS) has reshaped coord and pool.
+   1.2-1.9 s follow any edit. Designed in §8 (planned, task #1025).
 Not done, and not planned: **the rest of cli and nasread's NAS reading** into jobrt (planned in
 §2 before 6f4; task #1026 closed it, 10 Nov 2026). Nothing in the build waits on them, and no
 crate below agentcore names either: cli's users are agentcore (the agent's and the plan's checks
@@ -1369,3 +1371,219 @@ all: `Deadlined` implements buildstore's `Nas` (records::nas), its big reads' de
 `buildstore::out::testing`; jobrt is below buildstore. The NAS calls below agentcore are bounded
 as every other is, by store::deadline (docs/nas-access.md §6); buildstore::nasssh bounds an
 `ssh`'s start, not a call.
+
+## 8. Splitting agentcore (planned, task #1025)
+
+**Status: planned** (design of 12 Nov 2026, main at ce054d66: after #878 reshaped coord and pool and
+#1183 deleted the lead's take-up, backup and move). Nothing of it is built. Figures are from
+`tools/dev/modgraph.py` and `tools/dev/edittimes.py` at that commit; rerun both before each step.
+
+### 8.1 What a runtime edit costs
+
+Measured on the M4 (rustc 1.98.1, sccache, through tools/app/remote-tests.sh) by `tools/dev/edittimes.py
+-n 3`: §7.1's `cargo build --workspace --bins --timings` (dev) from a built tree, one comment line
+appended to the file and built, the file put back and built again, the files interleaved. Rounds
+1-2 ran at load 5-17; round 3, at load 34-113 and 2-5 times slower, is left out.
+
+| edit | wall (s) | CPU (s) | what ran |
+|---|---|---|---|
+| agentcore: agent/bus.rs, agent/mod.rs, coord/mod.rs, agent/forecast.rs, coord/sched.rs, pool/driver.rs, needs.rs | 3.2-3.6 (median 3.4) | 8.1-8.4 | agentcore 2.0-2.2 whichever file; pipeline's lib +0.5-0.6 from 1.7-1.8 s (agentcore's metadata); scenic-build +1.1-1.2 and scenic +0.7 from 2.2-2.4 s (agentcore whole) |
+| jobrt's room.rs, buildstore's inputs_folder.rs | 5.3-7.2 | 17.6-20.4 | every crate above them; agentcore 2.5-3.2 (rebuilt as a dependency changed) |
+| inputs' rules.rs | 4.8-5.4 | 16.2-17.2 | inputs 1.2-1.5, then the families beside agentcore 2.5-2.7 |
+| a family's file (terrain, trees, roads, landmarks, bld) | 2.1-4.5 | 6.4-13.3 | its crate 0.3-0.7, those above it, pipeline's lib, the programs |
+| the plan (pipeline's agent/tiles.rs) | 1.8-2.6 | 5.9-7.0 | pipeline's lib 0.5-0.7, the programs |
+
+Peak memory was 1.40 GB in each (one rustc). What follows:
+
+- **A crate's rebuild after an edit costs what its size says, not what the edit touches.**
+  agentcore took 2.0-2.2 s for a comment in agent/bus.rs (75 lines of code) as in agent/mod.rs
+  (9.6k). `rustc -Ztime-passes` (RUSTC_BOOTSTRAP=1, a bus.rs edit, load 16: 3.0 s in all)
+  puts it in whole-crate passes that incremental compilation doesn't skip: macro expansion 0.67 s,
+  name resolution 0.14 s, the crate's metadata 0.78 s, the monomorphization walk and partitioning
+  0.73 s, persisting the incremental state 0.51 s; the checks of the unchanged items, codegen and
+  LLVM together under 0.3 s. Over nine crates, the own-edit rebuild fits **0.22 s + 0.033 s per
+  thousand lines without tests**, within ±0.1 s (trees 5.2k: 0.4 s; landmarks 15.1k: 0.6 s; inputs
+  32.1k: 1.2 s; agentcore 55.2k: 2.1 s). Rebuilt because a dependency changed, a crate takes ~1.24
+  times as long (agentcore 2.6 s against 2.1 s).
+- **The programs after it** (scenic-build 1.1-1.2 s, which links every crate below it) are ~1.3 s of
+  every edit's wall time, whatever the crate; pipeline's lib runs beside agentcore's tail and costs
+  no wall time (§7.1).
+
+The unit-test build after an edit (`cargo test -p agentcore --lib --no-run`: agentcore's test target
+alone, its code, its tests and the plan compiled in) took 8.3-13.3 s of CPU, 1.89-1.93 GB, for
+bus.rs, agent/mod.rs and coord/sched.rs alike (12 Nov, load 60-106, wall 7.7-13.5 s; 6f4's 3.8 s at
+load 17-52, §6.3, is the less loaded wall). That target compiles ~117k lines (55.2k of code, 43.4k
+of tests, the plan's ~18k): the same whole-crate passes over more.
+
+So an edit anywhere in agentcore pays agentcore's whole 2.1 s: nothing inside it is cheaper. A split
+pays off by the size of the crate an edit lands in and of the crates above that one.
+
+### 8.2 The graph
+
+`tools/dev/modgraph.py agentcore --code` (lines without `#[cfg(test)]` code): 55.2k lines of code,
+43.4k of tests. Its eight top-level modules are one cycle (agent 32.3k, coord 15.5k, pool 2.1k,
+needs 1.7k, answers 1.0k, pubtimes 0.6k, uses 0.3k, paces 0.2k); cli (1.3k) and menu stand apart.
+agent names coord 232 times in code and coord names agent 123 times (478 and 282 with the tests;
+7 Nov's 418 and 255 counted `crate::` paths only, not `super::` ones).
+
+At depth 2 (`--depth 2 --code`: a file's module, `agent::forecast`, `coord::sched`) it is one cycle of
+70 modules, 55.7k lines, held by two hubs, the files where the loop and the server live:
+
+- **agent** (agent/mod.rs: 9.6k lines of code, 8.8k of tests; `impl Agent`, the loop, is 7.1k of
+  them) names 57 of the crate's modules (582 mentions);
+- **coord** (coord/mod.rs: 6.4k of code, 7.8k of tests: `Coordinator`, its `Shared` state, its
+  routes, and at its head ~1.3k lines of the coordinator's wire and cost terms, `Cost`, `cost_key`,
+  `Offer`, `Ask`, `Grant`, `Answer`, `Done` …) names 44 (253).
+
+The other modules name the hubs little, and for vocabulary: their 105 mentions in code of the set
+§8.3 keeps in agentcore are each a type, a constant or a small function the hub defines or passes
+through (agent::jobs's `now_s`, named as `agent::now_s`), or a part's wire half (held's `Beat`);
+none is the loop or the server. The hubs are also where the edits are: of the 780 commits since 22
+Oct touching the runtime, 356 touched agent/mod.rs and 252 coord/mod.rs (then forecast 101, the
+planner's plan.rs 83, agent/pool.rs 81, sched 76, gc 72; `git log --numstat`).
+
+### 8.3 The cut
+
+**agentcore keeps the loop and the server; what they use goes to a new crate below it,
+`crates/agentbase`.**
+
+- **agentcore** (22.0k lines of code, 23.1k of tests): agent's root and the parts that work on the
+  loop's or the coordinator's live state, `agent::{pool, lead, plan, brief, builtview, pageview, nas,
+  slots}`; coord's root and `coord::{broker, budgets, releases, held, memberpage}`. Each names
+  `coord::Coordinator` (plan, lead, brief, builtview, pageview hold one), the coordinator's `Shared`
+  (broker, budgets, held), agent::pool's shared state (`Shared`, `try_lock`: nas, slots), coord's
+  `http` (releases), or the agent's `Status` and coord's `API` (memberpage, which #1107 is
+  editing).
+- **agentbase** (33.2k of code, 20.6k of tests): the rest, its module paths kept
+  (`agentbase::agent::jobs`, `agentbase::coord::sched`, `agentbase::pool::records` …, so the docs'
+  `agent::jobs` and `coord::sched` keep naming the same files): agent's `answered, asks, backup,
+  beat, brokers, bus, cataloguesview, cond, dsm, every, fcarchive, fccheck, fcinputs, flags,
+  forecast, gc, gcqueue, heal, histarchive, jobs, live, memfloor, memguard, nasread, placement,
+  progress, publish, redo, regionsview, resume, room, seam, settings, share, spans, takeover`;
+  coord's `asks, beats, brief, brokers, client, handoffs, history, inbox, jobspans, kept, lease,
+  maproutes, sched, task`; pool whole; needs, paces, uses, pubtimes, answers, menu, cli. On inputs
+  and the crates below it, as agentcore is now, beside the families.
+
+What crosses (`modgraph.py agentcore --depth 2 [--code] --cut <agentbase's modules>` and `--edges`):
+
+- **Up, agentbase's modules naming agentcore's: 105 mentions in code (34 edges), 102 more in
+  tests.** Each item moves down as it is, its users naming it at its new home:
+  - coord's wire and cost terms (51): `Cost`, `CostKey`, `cost_key`, `cost_version`,
+    `first_guess`, `Measured`, `Offer`, `Worker`, `Ask`, `Capacity`, `disk_words`, `mem_words`,
+    `Answer`, `Grant`, `Granted`, `Beat`, `Done`, `Fail`, `TTL`, `AROUND`, `ASKING`, `app_newer` →
+    a new `coord::types` (coord/mod.rs's head), named by forecast, fccheck, sched, paces, needs,
+    jobs, memguard, resume, client, kept, lease and beat;
+  - agent's root (26): `Status`, the plan's seam types `Waiting` and `Coverages`, the slots' names
+    (`MAX_SLOTS`, `job_slots`, `slot_worker`, `slot_workers`, `is_slot_of`, `host_of`), `Verdict`,
+    `NAS_CHECK`, `AgentLock`, `PUBLISHED_FILE`, `terrain_shards`, `archive_shard`,
+    `write_replace`, `mac_cores` → a new `agent::types`; names that only pass through agent's root
+    are named at home (`now_s` agent::jobs's, `stopping` jobrt::control's, coord's `Floor`
+    agent::memguard's);
+  - the top's parts (28): held's beat wire (`Beat`, `Answer`, `Reach`, `LeadLine`, `Sent` and
+    `sent`, `SPEAKS`, `OMIT_GRACE`) → `coord::types`, held keeping what works on `Shared`;
+    agent::pool's `Heartbeat` and `FORGET_AFTER` → coord::beats, its `PUBLISHES` → agent::publish,
+    its `check` (the merge's check of a hand-off: it reads the plan and the entry, nothing of the
+    pool; the plan's tests call it) → pool::records; plan's `STALL_SAMPLE` → agent::room; slots'
+    `JobRef` → agent::asks;
+  - tests (102): those that start a coordinator (`coord::start_for_test`: agent::beat's, gcqueue's,
+    answers', maproutes', menu's) or run the loop with it (pool::sim, the pool's simulator, 4.1k
+    lines; asks' and flags' over `JobView`, `CatalogueSeen`, `Done`) move to agentcore's tests; the
+    others name the items above at their new homes.
+- **Down, agentcore naming agentbase: 758 mentions in code and 805 in tests**, pipeline's ~250
+  (`agentcore::agent::gc`, `::pool::records`, `::coord::client`, `::cli::progs` …) and the server's
+  two dev-dependency tests: path rewrites, `crate::agent::jobs` → `agentbase::agent::jobs`. No
+  re-export at an old path.
+- **The plan in the tests.** The plan's files name the runtime's journal, records, seam, gc,
+  forecast, every, redo, publish, progress, nasread, jobs, sched, needs and answers, and the
+  agent's `Waiting`, `Coverages` and agent::pool's `check`: after the moves above, agentbase's
+  alone. Both crates' unit tests run on the real plan (`seam::for_tests`: agentbase's forecast 77
+  uses, needs 45, gc 41 …; agentcore's agent 150, coord 54, agent::pool 32 …), so both compile its
+  files in by `#[path]`, as agentcore does now (§6.3, 6f4), each with its own `TEST_START`. A test
+  build of all three then compiles the plan three times (pipeline's, agentbase's and agentcore's
+  tests), and a plan file's edit runs both crates' unit tests.
+
+Considered and not taken:
+
+- **A crate above agentcore** (a part nothing in the runtime names, beside pipeline): only cli's
+  `progs` and `scenic` (1.0k lines, named by pipeline's binaries alone) qualify: ~0.03 s.
+- **agent and coord as two crates**: the loop makes the coordinator (`make_coordinator_on`) and
+  calls it, and coord names the agent's slots and flags; one would sit on the other, and an edit in
+  the lower would pay both.
+- **The forecast or the pool alone below agentcore**: the forecast (2.5k) needs the scheduler
+  (sched → placement → forecast → sched), and either alone leaves agentcore at 45-50k: its edits
+  ~0.2-0.3 s faster, theirs slower.
+
+### 8.4 Expected gain
+
+From §8.1's fit (own rebuild 0.22 s + 0.033 s per thousand lines; ×1.24 when rebuilt under a changed
+dependency; the crate above starting at the one below's metadata, 79 % into it, as pipeline's lib
+starts 1.7 s into agentcore's 2.1; then the programs' 1.3 s), to be checked against each step's
+measurement. An edit's share is its part's share of the file changes in the 780 commits since 22
+Oct touching the runtime.
+
+| edit in | share | today | after 8b | after 8c |
+|---|---|---|---|---|
+| the loop and the server (agentcore after the cut) | 39 % | 3.4 s, CPU 8.2 s | ~2.3 s (agentcore 0.9 s), CPU ~7.0 s | ~2.3 s |
+| the parts (8c's R) | 29 % | 3.4 s | ~3.6 s (agentbase 1.3 s, agentcore 1.2 s from its metadata), CPU ~8.6 s | ~3.2 s |
+| the scheduler and the forecast (8c's F) | 12 % | 3.4 s | ~3.6 s | ~3.0 s |
+| the pool (8c's P) | 5 % | 3.4 s | ~3.6 s | ~2.8 s |
+| the vocabulary (8c's W) | 15 % | 3.4 s | ~3.6 s | ~3.6 s |
+| weighted | | 3.4 s | ~3.1 s (−9 %) | ~2.9 s (−16 %) |
+
+- **An edit's dev build**: the loop's and the server's edits, the largest share, lose a third
+  (~1.1 s); the others pay ~0.2 s more wall and ~0.4 s more CPU, agentcore rebuilding after
+  agentbase. On the whole −9 % after 8b, −16 % after 8c, ~−22 % after 8d (agentcore ~16k lines: its
+  edits ~2.1 s, every other ~0.25 s less). The programs' 1.3 s stay every edit's floor.
+- **An edit's unit-test build** (CPU, by the lines a test target compiles, ~0.094 s per thousand
+  from §8.1): the loop's or the server's rebuilds agentcore's target alone (~63k lines with the
+  plan, against ~117k): ~6 s of CPU against ~11 (−45 %). A part's rebuilds agentbase's target (~72k)
+  and agentcore's beside it: ~14 s of CPU (+30 %), its wall about today's (side by side).
+  affected-tests.sh runs agentcore's unit tests after an agentbase edit (its users), not the other
+  way round.
+- **A clean dev build**: agentcore's 17-20 s on the build's chain (§7.1) becomes agentbase's ~11 s
+  (~9 s to its metadata), then agentcore's ~7.4 s: ~2 s off. After 8c (W, then R beside F and P,
+  then agentcore) ~13 s: ~5 s off, ~13 % of the clean build. The clean build's largest rustc,
+  agentcore's 2.05-2.15 GB, should fall to agentbase's (~1.3 GB by size); an edit's 1.40 GB isn't
+  agentcore's (its incremental rustc peaked at 1.08 GB under `-Ztime-passes`) and stays.
+
+### 8.5 Steps
+
+Each lands alone with check.sh passing and every program's behaviour unchanged; each item moves as
+it is, its users naming it at its new path (no re-export at the old one). §8.1's measure is rerun
+after each step that moves a crate boundary.
+
+- **8a, the vocabulary down, inside agentcore** (no new crate; a commit each for coord's, the
+  agent's and the parts' items, then one for the tests): `coord::types` and `agent::types` made from
+  the hubs' heads, held's beat wire into `coord::types`, the other items to their homes (§8.3).
+  Done when `tools/dev/modgraph.py agentcore --depth 2 --cut <agentbase's modules>` prints no
+  mention leaving the set, with `--code` first, then with the tests.
+- **8b, `crates/agentbase`**: agentbase's modules moved there, their paths kept; its manifest the
+  dependencies they use (agentcore keeps axum and the server's; check.sh's clippy and `prod` say
+  what each needs); agentcore on agentbase; pipeline and the server's tests naming `agentbase::` for
+  what moved. In both crates: the plan's `#[path]` modules, `TEST_START`, `test_start` and the
+  `in_agentcore` cfg; tests/test_mode.rs allowing a `TEST_START` in agentbase; affected-tests.sh,
+  check-reuse.py and tools/dev/test/test-guard.zsh's `#[path]` and module cases naming both crates;
+  agentbase's `testkit` for the parts' test helpers pipeline's tests call
+  (`coord::start_on_test_port` stays agentcore's); the docs naming the crates (this file's §2 and
+  §7.4, testing.md, pool.md, coordination.md). Measured as §8.1: the edits, the unit-test builds, a
+  clean build.
+- **8c, agentbase in four** (a step each, measured; only once 8b's figures bear the model out): W,
+  the vocabulary (6.3k: jobs, seam, every, bus, nasread, backup, redo, progress, coord's history,
+  task, asks and types, pool's journal, records, nas and store, cli), then on it, side by side, F,
+  the scheduler and the forecast (10.0k: sched, needs, paces, uses, forecast, fccheck, fcarchive,
+  fcinputs, histarchive, placement), P, the pool (1.0k: its root, driver, beat, reachable, sim's
+  tests), and R, the agent's and the coordinator's other parts (15.9k). Crossing today, to move
+  first (`--cut` each): F → R 10 mentions (memguard's `step_of_key` and `Floor`, lease's `Work`);
+  R → F 12 (gc running the forecast archives' upkeep, `fcarchive::pack`, `fcinputs::prune`,
+  `histarchive::run`, which the loop would call instead; live's `MacRoom`, flags' `paces::mac_of`,
+  room's `needs::cache_of`, settings' `JOB_S`, pubtimes' `ARCHIVE`); R → P 8 (`pool::Member` and
+  `is_member_id`, buildstore's, named there; `OUT_OF_TOUCH_S`, `reachable::Cause`); W → above 13
+  (seam's signature types `ReadTarget` and `DepthKeep`, the publish line; `needs::p90`,
+  `memguard::targets`, `cli::check_command`).
+- **8d, agentcore smaller** (a design of its own, after 8c): plan, lead, brief, builtview,
+  pageview, broker and budgets take what they call on the coordinator as a narrower trait (or the
+  calls' results) instead of a `Coordinator`, and go down into R; agentcore is then the two hubs
+  and agent::pool (~16k).
+
+Not in these steps: the programs' 1.3 s, every edit's floor (scenic-build links every crate below
+it), and pipeline's lib after agentcore (no wall time, §7.1).
