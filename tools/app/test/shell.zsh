@@ -158,12 +158,14 @@ case "$1 $2" in
   "releases --json") [[ ! -f $LD/old ]] || exit 4; cat $LD/live.json ;;
   "releases push")
     [[ ! -f $LD/move-always ]] || { print -r -- moved >> $LD/log; exit 3; }
+    [[ ! -f $LD/refuse ]] || { print -r -- refused >> $LD/log; exit 1; }
     print -r -- "push $(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $4) from $6" >> $LD/log
     if [[ -f $LD/move-once ]]; then rm $LD/move-once; cp $LD/moved.json $LD/live.json; exit 3; fi
     python3 -c 'import json, sys
 live = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2]))
 if (live["current"] or {}).get("version", "none") != sys.argv[3]: sys.exit(3)
-json.dump({"current": m, "previous": live["current"]}, open(sys.argv[1], "w"))' $LD/live.json $4 $6 ;;
+json.dump({"current": m, "previous": live["current"]}, open(sys.argv[1], "w"))' $LD/live.json $4 $6 || exit
+    [[ ! -f $LD/answer-lost ]] || exit 1 ;;
   "releases rollback")
     print -r -- "rollback $3 $4" >> $LD/log
     python3 -c 'import json, sys
@@ -198,8 +200,20 @@ out=$(li 20261112-0002-$C)
 setlive 20261112-0000-$A > $LD/live.json; cp $LD/live.json $LD/moved.json
 out=$(cd $g && zsh -c "source ${(q)lib}; lead_tries=2; touch $LD/move-always; lead_install $fake /dev/null $tmp/c.manifest $C '' $tmp/lead-read; print -r -- rc=\$?" 2>&1)
 [[ $out == *'kept changing'*rc=1 ]] && ok "lead_install: a live release moving at every try, given up" || no "lead_install kept moving" "$out"
+# Taken, its answer lost (exit 1): live on the lead all the same. Refused (exit 1, not live): 1.
+rm -f $LD/move-once $LD/move-always
+setlive 20261112-0001-$B > $LD/live.json; touch $LD/answer-lost
+out=$(li 20261112-0001-$B)
+[[ $out == *'answer was lost'*rc=0 && $(lv1) == "20261112-0002-$C 20261112-0001-$B" ]] \
+  && ok "lead_install: the answer lost, live on the lead" || no "lead_install answer lost" "$out"
+rm $LD/answer-lost
+setlive 20261112-0001-$B > $LD/live.json; touch $LD/refuse
+out=$(li 20261112-0001-$B)
+[[ $out == *'refused the release'*rc=1 && $(lv1) == "20261112-0001-$B None" ]] \
+  && ok "lead_install: refused, 1" || no "lead_install refused" "$out"
+rm $LD/refuse
 # A lead on an app before #1118: 4, nothing pushed.
-rm -f $LD/move-once $LD/move-always; touch $LD/old
+touch $LD/old
 out=$(li '')
 [[ $out == rc=4 && ! -s $LD/log ]] && ok "lead_install: a lead keeping no releases, 4" || no "lead_install old lead" "$out"
 rm $LD/old

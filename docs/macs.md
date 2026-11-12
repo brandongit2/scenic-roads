@@ -199,7 +199,7 @@ and codesign.
   servers run from the shell.
 - **The updater** (`jobrt::appupdate`, `coordwire::releases`): every Mac's agent asks the lead
   for its releases every five minutes (`GET /release/live` on its coordinator, found by the NAS's
-  `state/coordinator.json`, with the workers' key: docs/coordinator.md §10); for a newer version it
+  `state/coordinator.json`, with the workers' key: docs/coordinator.md §10); for another version (a new one, or a rollback's) it
   fetches the version's archive from the lead (`/release/<version>.tgz`), checks its SHA-256,
   unpacks it locally (tar keeps the programs' modes) and checks every file against its SHA-256,
   the folder holding the manifest's files alone; then it points `app/current` at it and restarts
@@ -211,11 +211,10 @@ and codesign.
   docs/building.md, The NAS's `app/` until then). (The updaters before #1148 read
   `app/current.json` and the version's folder, file by file: the first release is the last
   written so, building.md's old layout.) On the Mac mini the map server
-  checks too (so the map updates with the agent stopped), one check at a time (`app/update.lock`),
-  and restarts into the new version once the map has been idle a minute. Each copier copies into a
-  folder and a link of its own (`<version>.<pid>.tmp`, `current.<pid>.tmp`), so an updater that
-  doesn't know the lock (a server from before #874, during the rollout) never writes into its copy;
-  whichever finishes first is used. Pruning keeps the current version, the checker's, every version
+  checks too (so the map updates with the agent stopped, while the lead's coordinator answers: on
+  the lead itself that's the agent's, so there the update waits for the agent), one check at a time
+  (`app/update.lock`), and restarts into the new version once the map has been idle a minute. Each
+  copier copies into a folder and a link of its own (`<version>.<pid>.tmp`, `current.<pid>.tmp`). Pruning keeps the current version, the checker's, every version
   a process on the Mac runs from (the map server waiting for an idle map, an older server), the
   agent's and its jobs', and one to roll back to.
 - The app reads the current and the previous form of every file kind.

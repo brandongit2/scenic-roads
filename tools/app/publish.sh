@@ -88,6 +88,17 @@ cli="$HOME/Library/Application Support/scenic/app/current/scenic"
 [[ -x $cli ]] && $cli releases --help >/dev/null 2>&1 || cli=
 lead_rc=4
 if [[ $rollback == asked ]]; then
+  # (No `scenic releases` here is the NAS's alone only while this Mac runs the live release: one
+  # behind it, an app before #1118, can't tell whether the lead keeps releases, which a rollback of
+  # the NAS's alone would leave live for every Mac on the new app.)
+  if [[ -z $cli ]]; then
+    bounded 60 on_nas_mac nas_current $NAS </dev/null > $sb/current.json \
+      || { echo "can't read the live manifest on the NAS's Mac ($nas_host)"; exit 1; }
+    mine=$(readlink "$HOME/Library/Application Support/scenic/app/current" 2>/dev/null || true)
+    [[ -s $sb/current.json && $mine == $(live_version $sb/current.json) ]] || {
+      echo "this Mac's app (${mine:-none}) has no \`scenic releases\` and isn't the live release: roll back from a Mac on it, or once this one has updated"
+      exit 1; }
+  fi
   if [[ -n $cli ]]; then lead_rc=0; lead_rollback $cli $sb/lead || lead_rc=$?; fi
   (( lead_rc == 0 || lead_rc == 4 )) || exit $lead_rc
   (( lead_rc == 0 )) || echo "the lead keeps no releases (an app before #1118, here or there): the NAS's alone"

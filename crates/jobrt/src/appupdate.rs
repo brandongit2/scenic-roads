@@ -15,7 +15,8 @@
 //!
 //! Every Mac's agent checks (coordwire::releases::spawn, from `scenic agent`); the Mac mini's map
 //! server checks too (crates/server/src/updater.rs), so the map updates while the agent there is
-//! stopped. One check at a time per Mac: each holds `app/update.lock` (taken without waiting; held,
+//! stopped, as long as the lead's coordinator answers (on the lead itself it's the agent's: there
+//! the update waits for it, as every Mac's does while the lead is down). One check at a time per Mac: each holds `app/update.lock` (taken without waiting; held,
 //! the check is skipped). A version a program runs from is never pruned (`running_versions`).
 
 use anyhow::{bail, ensure, Context, Result};
@@ -304,6 +305,9 @@ pub fn check(home: &Path, lead: &dyn Source, nas: Option<&dyn Source>, running: 
         staged.0.push((m.version.clone(), p.clone()));
         from.fetch(&m.version, &p)?;
         archive_checked(&p, m)?;
+        // (On the disk before `commit` names it: a power cut after leaves no torn archive that
+        // `holds` would take, unchecked, to unpack or serve as the lead.)
+        std::fs::File::open(&p)?.sync_all()?;
         Ok(p)
     };
     let archive = obtain(&cur)?;

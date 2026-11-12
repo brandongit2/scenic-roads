@@ -674,7 +674,9 @@ to write them; later that day, with no file's time set (`tar -m`), the mini wrot
    uploaded and put live from the live version read; the lead checks the archive's SHA-256, unpacks
    it and checks every file's, and takes it only while that version is still live. Refused for
    that (another publish or a rollback went in meanwhile), it reads and checks again, up to three
-   times. A lead on an app before #1118 keeps no releases: then the NAS's install alone.
+   times. A push that fails otherwise counts as live when the lead's releases, read again, say so
+   (its answer lost after the lead took it). A lead on an app before #1118 keeps no releases: then
+   the NAS's install alone.
 
 **The lead's releases** (#1118, docs/coordinator.md §10): the lead keeps the live release (its
 archive and manifest) and the one before, and serves them over HTTP with the workers' key; every
@@ -752,7 +754,7 @@ go-ahead was sent and the answer lost and the live manifest, read again, doesn't
 `FAILED: <version> is live on the lead, but the NAS's app/ … wasn't written` (the Macs on an app
 before #1118 don't get it).
 
-`publish.sh --rollback` puts the release before back live on the lead (`lead_rollback`, through this Mac's installed app: the lead's two releases read, then swapped only from them) and swaps `app/releases/current.json` and `previous.json` on the NAS's Mac (`nas_rollback`, under the lock, not waiting for it; within 120 s), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
+`publish.sh --rollback` puts the release before back live on the lead (`lead_rollback`, through this Mac's installed app: the lead's two releases read, then swapped only from them; an installed app without `scenic releases` rolls back the NAS's alone only while it is the NAS's live release, else refuses, since it can't tell whether the lead keeps releases) and swaps `app/releases/current.json` and `previous.json` on the NAS's Mac (`nas_rollback`, under the lock, not waiting for it; within 120 s), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
 
 The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
 the keychains). An ssh session can't use the login keychain the desktop unlocked, so a Mac that
