@@ -379,9 +379,9 @@ fn every_shell_tool_checks_its_arguments() {
 /// tools/app/remote-tests.sh never hangs connecting (#637): with an `ssh` that never returns (as
 /// when 1Password, the ssh agent, waits for an approval), its fresh-connection probe is stopped
 /// within its bound (2 s here, SCENIC_TEST_PROBE_S; the real 20 s was this test's 20 s, #1112) and the
-/// command runs here, saying why.
+/// run refused, saying why: nothing runs here in the test Mac's place (exit 3; task #668's review).
 #[test]
-fn remote_tests_falls_back_when_ssh_hangs() {
+fn remote_tests_refuses_when_ssh_hangs() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let bin = dir.path().join("bin");
@@ -408,7 +408,7 @@ fn remote_tests_falls_back_when_ssh_hangs() {
     // Mac took (task #921).
     let o = store::spawn::output(&mut cmd).unwrap();
     let out = String::from_utf8_lossy(&o.stdout);
-    assert!(o.status.success(), "{out}");
-    assert!(out.contains("no fresh ssh connection to hung-host within 2 s"), "{out}");
-    assert!(out.lines().any(|l| l == "ran-here"), "{out}");
+    assert_eq!(o.status.code(), Some(3), "{out}");
+    assert!(out.contains("remote-tests: NOT RUN: no fresh ssh connection to hung-host within 2 s"), "{out}");
+    assert!(!out.lines().any(|l| l == "ran-here"), "{out}");
 }
