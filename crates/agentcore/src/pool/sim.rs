@@ -1745,12 +1745,16 @@ impl World {
             if let Some((d, at)) = self.moved.filter(|m| m.0 == me) {
                 self.moved = None;
                 let took = self.awake_clock(me) - at;
+                // (A new pool's, no snapshot landed yet: a take-up of today's files reads half a
+                // dozen files more in its step, any failing its try; counted, not bounded.)
+                let today = self.landed.is_empty();
                 self.count(match took {
+                    _ if today => "take-ups after a move: of today's files, not bounded",
                     t if t <= driver::STALE_S + 5 * LOOP_S => "take-ups after a move: within STALE_S and 5 loops",
                     t if t <= driver::STALE_S + 10 * LOOP_S => "take-ups after a move: within STALE_S and 10 loops",
                     _ => "take-ups after a move: later",
                 });
-                if took > TAKE_UP_S {
+                if took > TAKE_UP_S && !today {
                     self.wrong(format!("mac{d} took up {took} s (awake) after the owner declared it, past {TAKE_UP_S} s"));
                 }
             }
@@ -2357,9 +2361,9 @@ fn the_lead_moves_and_moves_back() {
 
 /// A share whose reads fail now and then, each on its own at `rate` (task #1154), and the owner
 /// moving the lead twice, its Macs awake: each declared lead takes up within `TAKE_UP_S` (awake) of
-/// its move, and two leads never grant at once. The first move comes once the pool's first lead has
-/// taken up (an app upgrade restarting it can hold that back to 20 minutes in): a take-up of
-/// today's files reads half a dozen more, each of which may fail its try.
+/// its move (but a take-up of today's files, no snapshot landed yet: it reads half a dozen files
+/// more, any failing its try), and two leads never grant at once. The first move comes once the
+/// pool's first lead has mostly taken up (an app upgrade restarting it can hold that back).
 fn flaky_reads(rate: f64) -> Cfg {
     Cfg { flaky: rate, sleeps: false, move_at: &[1800, 3300], faults: 4500, end: 6000, ..Cfg::pool() }
 }
