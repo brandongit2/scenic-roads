@@ -1594,6 +1594,8 @@ pub struct Agent {
     /// Placement by how crucial a job is, and work offered ahead (crate::agent::placement), as the
     /// pool's settings last said (crate::coord::asks): it acts only in the pool (`placement_on`).
     placement: bool,
+    /// Publishing's switches (crate::agent::publish::Switches), as the pool's settings last said.
+    switches: publish::Switches,
     /// The settings' generation last written for the CLI and the menu bar
     /// (`control::POOL_SETTINGS`).
     settings_written: Option<u64>,
@@ -2050,6 +2052,7 @@ impl Agent {
             proxy_port: None,
             port,
             placement: false,
+            switches: Default::default(),
             settings_written: None,
             broker: None,
             pageview: pageview::PageView::new(o.the_plan),
@@ -4895,6 +4898,7 @@ impl Agent {
             pool_seen: self.pool_seen.clone(),
             member_id: self.member_id.clone(),
             placement: self.placement,
+            switches: self.switches,
             pooled: self.pool.is_some(),
             resume_now: self.resume_now(),
             ramp_held: self.ramp_held,
@@ -8399,6 +8403,12 @@ impl Agent {
             }
             self.placement = on;
         }
+        if let Some(sw) = self.pool_settings().map(|s| publish::Switches::of(&s)) {
+            if sw != self.switches {
+                eprintln!("agent: publishing's switches: {sw:?}");
+            }
+            self.switches = sw;
+        }
         self.tend_brokers();
         self.tend_pageview(r);
         // (The lead's coordinator told this Mac's capacity each loop.)
@@ -9897,12 +9907,11 @@ mod tests {
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
-        // Publishing's switch and the hold on publishing.
-        for f in [publish::NEAR_SLOPE, "inputs/hold-catalog"] {
-            std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-            std::fs::write(root.join(f), "on").unwrap();
+        // Publishing's switches (the pool's settings): slope near, and the hold on publishing.
+        for sw in [publish::Switches { near: true, held: false }, publish::Switches { near: true, held: true }] {
+            a.switches = sw;
             let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
-            assert_ne!(now, last, "{f}");
+            assert_ne!(now, last, "{sw:?}");
             last = now;
         }
         // A held map's folder made.

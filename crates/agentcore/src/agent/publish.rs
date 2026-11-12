@@ -1,9 +1,10 @@
 //! Publishing (docs/building.md §2, Publishing): its switch, and the map's log the lead writes.
 //!
-//! - **Slope and tree cover near** (`state/pool/near-slope`: off while missing or `off` in it, on
-//!   while `on` in it or present; acting whatever the pool, publishing being the lead's agent's): a
-//!   done region's slope and tree cover the z6 tiles near it (Publishing::near),
-//!   their assemblies with the low zooms.
+//! - **Its switches**, the pool's settings the lead keeps (`Switches`, jobrt::settings: set with
+//!   `scenic pool set` and the build page's Settings): publishing held for review (`hold-catalog`:
+//!   the `catalog` step keeps the map it would publish on the lead's disk, `catalog-held`), and
+//!   slope and tree cover near (`near-slope`: a done region's slope and tree cover the z6 tiles near
+//!   it, Publishing::near, their assemblies with the low zooms). Off while not set.
 //! - **The map's log** (docs/maplog.md): the `catalog` step builds the map from the records and
 //!   posts it whole to its agent (`POSTED`, a file in the agent's `maplog/`, `--post`); the agent's
 //!   writer (`MapLog`, on a thread of its own) diffs it against the map and appends the batch. The
@@ -15,22 +16,18 @@ use crate::pool::records::Keys;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const NEAR_SLOPE: &str = "state/pool/near-slope";
-/// The switches as last read.
+/// Publishing's switches, as the pool's settings say (crate::coord::asks; off while not set).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Switches {
+    /// Publishing held for review (`hold-catalog`).
+    pub held: bool,
+    /// Slope and tree cover near (`near-slope`).
     pub near: bool,
 }
 
 impl Switches {
-    /// The switches at `root`, each one that can't be read now as it was (`was`).
-    pub fn read(root: &store::nasfs::NasRoot, was: Switches) -> Switches {
-        let near = match super::nasread::read_switch(&root.join(NEAR_SLOPE)) {
-            Ok(s) => s.trim() != "off",
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => was.near,
-        };
-        Switches { near }
+    pub fn of(s: &crate::coord::asks::Settings) -> Switches {
+        Switches { held: s.on(crate::coord::asks::HOLD_CATALOG), near: s.on(crate::coord::asks::NEAR_SLOPE) }
     }
 }
 
@@ -69,13 +66,13 @@ pub const CATALOGUE_CAP_S: u64 = 600;
 /// when much has changed (`build::low_due`), when nothing else is queued, and once everything is built.
 pub const LOW_EVERY_S: u64 = 3 * 3600;
 
-/// How publishing goes, as the switches under `state/pool/` say (crate::agent::publish).
+/// How publishing goes, as its switches say (`Switches`) and its cadences.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Publishing {
     /// Seconds since a catalogue last went out with the low zooms made: the map log's last batch
     /// saying so (crate::agent::publish::LOW; None: none in the log).
     pub since_low: Option<u64>,
-    /// A done region's slope and tree cover by the z6 tiles near it (`state/pool/near-slope`): the
+    /// A done region's slope and tree cover by the z6 tiles near it (the pool's `near-slope`): the
     /// slope z6 tiles whose z6 tile is within 20 km of it (what its slope reads), the tree cover
     /// z6 tiles meeting it; not every stale z6 tile of the z3 tiles around it. Their assemblies (z3–8)
     /// are made with the low zooms, and a region is done with its
@@ -593,23 +590,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_switch_is_off_while_missing_or_off_and_kept_while_unreadable() {
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(
-            Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), Switches::default()),
-            Switches::default()
-        );
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        std::fs::write(d.path().join(NEAR_SLOPE), "off\n").unwrap();
-        let s = Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), Switches { near: true });
-        assert_eq!(s, Switches { near: false });
-        std::fs::write(d.path().join(NEAR_SLOPE), "on\n").unwrap();
-        assert!(Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), Switches::default()).near);
-        // (A switch that's a folder can't be read: as it was.)
-        std::fs::remove_file(d.path().join(NEAR_SLOPE)).unwrap();
-        std::fs::create_dir_all(d.path().join(NEAR_SLOPE)).unwrap();
-        let was = Switches { near: true };
-        assert!(Switches::read(&store::nasfs::NasRoot::local_for_test(d.path()), was).near);
+    fn the_switches_are_the_pools_settings_off_until_set() {
+        use crate::coord::asks::{SettingAsk, Settings, HOLD_CATALOG, NEAR_SLOPE};
+        let mut s = Settings::default();
+        assert_eq!(Switches::of(&s), Switches::default());
+        let ask = |name: &str, on: bool| SettingAsk { name: name.into(), value: on.into(), by: "t".into(), at: 1 };
+        s.take(&ask(HOLD_CATALOG, true));
+        assert_eq!(Switches::of(&s), Switches { held: true, near: false });
+        s.take(&ask(NEAR_SLOPE, true));
+        assert_eq!(Switches::of(&s), Switches { held: true, near: true });
     }
 
     #[test]

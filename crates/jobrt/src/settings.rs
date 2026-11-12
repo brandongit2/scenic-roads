@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 /// NAS's load target (crate::budget::nas::Target's share, %); and, with no switch file (an older lead
 /// refuses them): the batch length (task #927: the minutes of measured time a job of a shared step is
 /// sized to, pipeline's coord::sched::Sched::batch_len) and the factor past which a job's
-/// stillness or slowness, or a catalogue's wait, is flagged (`OVERDUE`).
+/// stillness or slowness, or a catalogue's wait, is flagged (`OVERDUE`); and two of publishing's
+/// switches, booleans read by the lead's plan (agentcore's agent::plan): `HOLD_CATALOG` and
+/// `NEAR_SLOPE`.
 pub const PLACEMENT: &str = "placement";
 pub const NAS_BUDGET: &str = "nas-budget";
 pub const NAS_TARGET: &str = "nas-target";
@@ -23,7 +25,16 @@ pub const BATCH: &str = "batch-minutes";
 /// before it's slow, and a catalogue due its most wait before it's stale (pipeline's agent::flags,
 /// tasks #953, #986 and #990): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
 pub const OVERDUE: &str = "overdue-factor";
-pub const NAMES: [&str; 5] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE];
+/// Publishing held for review (docs/building.md §2, Publishing): the `catalog` step writes the map
+/// it would publish to the lead's disk instead (`catalog-held`), and nothing is published. Off
+/// while not set.
+pub const HOLD_CATALOG: &str = "hold-catalog";
+/// A done region's slope and tree cover by the z6 tiles near it (agentcore's agent::publish::
+/// Publishing::near). Off while not set.
+pub const NEAR_SLOPE: &str = "near-slope";
+pub const NAMES: [&str; 7] = [PLACEMENT, NAS_BUDGET, NAS_TARGET, BATCH, OVERDUE, HOLD_CATALOG, NEAR_SLOPE];
+/// The settings that are on or off (a boolean; not set: off).
+pub const SWITCHES: [&str; 3] = [PLACEMENT, HOLD_CATALOG, NEAR_SLOPE];
 /// The batch lengths the lead takes (minutes): a minute to a day.
 pub const BATCH_RANGE: std::ops::RangeInclusive<u64> = 1..=1440;
 
@@ -58,9 +69,14 @@ impl Settings {
         self.values.get(name).map(|s| &s.value).filter(|v| !v.is_null())
     }
 
+    /// A switch (`SWITCHES`), as set (off while not).
+    pub fn on(&self, name: &str) -> bool {
+        self.get(name).and_then(Value::as_bool).unwrap_or(false)
+    }
+
     /// Placement, as set (off while not).
     pub fn placement(&self) -> bool {
-        self.get(PLACEMENT).and_then(Value::as_bool).unwrap_or(false)
+        self.on(PLACEMENT)
     }
 
     /// The NAS budget's switch, as set (its text, `budget::nas::parse`; not set: on, no cap).
@@ -117,7 +133,7 @@ impl SettingAsk {
     pub fn check(&self) -> Result<()> {
         let ok = match (self.name.as_str(), &self.value) {
             (_, Value::Null) => NAMES.contains(&self.name.as_str()),
-            (PLACEMENT, Value::Bool(_)) => true,
+            (n, Value::Bool(_)) => SWITCHES.contains(&n),
             (NAS_BUDGET, Value::String(t)) => t.len() <= 200,
             (NAS_TARGET, Value::Number(n)) => {
                 n.as_u64().is_some_and(|p| crate::budget::nas::TARGET_RANGE.contains(&(p as u32)))

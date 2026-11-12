@@ -496,8 +496,9 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
      by content. Zoom ranges don't overlap, so a region new since shows its roads from z9 until the
      low zooms are next made.
-   - **Publishing's switch** (crate::agent::publish), under `state/pool/`, off while missing or
-     `off`:
+   - **Publishing's switches** (crate::agent::publish::Switches), the pool's settings the lead
+     keeps (`scenic pool set <name> on|off`, the build page's Settings), off while not set:
+     - `hold-catalog`: publishing held for review (step 5 below).
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
 4. **Four chains:**
@@ -537,7 +538,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
    cover to make"). A z6 tile's hand-off waiting holds no catalogue: it goes out with a later one.
    The catalogue is the map: the step (`scenic-build catalog --post <file>`) builds it from the
    records, each file's size the records' or the map's, and posts it to the lead's agent, which
-   appends it to the map's log (docs/maplog.md §6.7). While `inputs/hold-catalog` exists, the map it
+   appends it to the map's log (docs/maplog.md §6.7). While the pool's `hold-catalog` is on, the map it
    would publish goes to the NAS's `map-held/<seq>.json.zst` instead, and nothing is published.
 6. **Daily:** backup and GC.
 

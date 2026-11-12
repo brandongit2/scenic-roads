@@ -1102,9 +1102,9 @@ fn pool_set(name: Option<&str>, value: Option<&str>, home: &Path) -> Result<()> 
         }
         if let Some(v) = value {
             let value: serde_json::Value = match (name, v) {
-                (asks::PLACEMENT, "on") => true.into(),
-                (asks::PLACEMENT, "off") => false.into(),
-                (asks::PLACEMENT, _) => anyhow::bail!("placement: on or off, not {v}"),
+                (n, "on") if asks::SWITCHES.contains(&n) => true.into(),
+                (n, "off") if asks::SWITCHES.contains(&n) => false.into(),
+                (n, _) if asks::SWITCHES.contains(&n) => anyhow::bail!("{n}: on or off, not {v}"),
                 (asks::NAS_TARGET, "off") => serde_json::Value::Null,
                 (asks::NAS_TARGET, p) => p
                     .trim_end_matches('%')

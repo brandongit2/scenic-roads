@@ -101,7 +101,7 @@ pub struct Keys {
     /// The served files the last catalogue was made from.
     #[serde(default, rename = "catalog")] // the stored key keeps its old spelling (task #547)
     pub catalogue: Option<String>,
-    /// The same for the last catalogue held for review (`inputs/hold-catalog`: written to
+    /// The same for the last catalogue held for review (the pool's setting `hold-catalog`: written to
     /// the NAS's map-held/, not served).
     #[serde(default, rename = "catalog_held")] // stored key: old spelling
     pub catalogue_held: Option<String>,

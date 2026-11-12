@@ -25,8 +25,8 @@ pub const QUEUE: &str = "asks.json";
 // The pool's settings, their names and an ask to set one: the runtime crate's (task #916 step 3,
 // docs/crates.md: control queues a Mac's asks), kept at these paths.
 pub use jobrt::settings::{
-    Setting, SettingAsk, Settings, BATCH, NAMES, NAS_BUDGET, NAS_TARGET, OVERDUE, OVERDUE_DEFAULT, OVERDUE_RANGE,
-    PLACEMENT,
+    Setting, SettingAsk, Settings, BATCH, HOLD_CATALOG, NAMES, NAS_BUDGET, NAS_TARGET, NEAR_SLOPE, OVERDUE,
+    OVERDUE_DEFAULT, OVERDUE_RANGE, PLACEMENT, SWITCHES,
 };
 
 /// Another Mac's pause set, or lifted (`held` None), as of `at` (`POST /pool/hold`).
@@ -188,6 +188,14 @@ mod tests {
         assert_eq!(l.settings.overdue(), (4.5, true));
         for bad in [Value::from(1), Value::from(0.5), Value::from(1000), Value::from("3")] {
             assert!(l.set(&SettingAsk { value: bad.clone(), at: 10, ..o.clone() }).is_err(), "{bad}");
+        }
+        // Publishing's switches (task #1119: once files on the NAS): on or off, off until set.
+        for name in [HOLD_CATALOG, NEAR_SLOPE] {
+            assert!(!l.settings.on(name));
+            let s = SettingAsk { name: name.into(), value: Value::Bool(true), by: "t".into(), at: 11 };
+            assert!(l.set(&s).unwrap().is_some());
+            assert!(l.settings.on(name));
+            assert!(l.set(&SettingAsk { value: Value::from("on"), at: 12, ..s }).is_err(), "a boolean");
         }
         // (Read back as the store keeps them.)
         let mut docs = crate::pool::store::Docs::new();

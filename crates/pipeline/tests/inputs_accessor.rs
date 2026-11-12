@@ -2,8 +2,8 @@
 //! (`inputs::open`, and the gate's check job, `inputs::gate::run`), and in Python `dem/inputs.py`'s
 //! `arg`. Every item outside `#[cfg(test)]` code whose text names an inputs folder (`MARKERS`, and each
 //! gate unit's name) calls the accessor, or is listed in `EXEMPT` by name with why: no reader, only
-//! the Regions panel's writes, the backups, GC's never-swept list, the controls beside the inputs folders
-//! (`inputs/hold-catalog`, `inputs/keys.env`), and words that aren't paths (the `inputs` step's
+//! the Regions panel's writes, the backups, GC's never-swept list, the keys beside the inputs folders
+//! (`inputs/keys.env`), and words that aren't paths (the `inputs` step's
 //! name, a task spec's "inputs", log lines). A new reader of an inputs folder fails here until it's routed
 //! through the accessor; an exemption that no longer matches a line fails too, so
 //! the list can't go stale. At run time the NAS root the steps get refuses an inputs folder path asked of
@@ -74,11 +74,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/agentcore/src/agent/plan.rs", "take", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/agentcore/src/cli/build.rs", "STEPS", "s(\"inputs", "the `inputs` step's name and usage"),
     ("crates/agentcore/src/agent/mod.rs", "is_paced", "Some(\"inputs\" | \"trees\")", "the `inputs` step's name"),
-    ("crates/agentcore/src/agent/plan.rs", "plan_unchecked","w.step == \"inputs\"", "the `inputs` step's name; inputs/hold-catalog, a control (§2)"),
-    ("crates/agentcore/src/agent/plan.rs", "region_jobs", "\"inputs/hold-catalog\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
-    ("crates/agentcore/src/agent/plan.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "inputs/hold-catalog and keys.env (not inputs, §2)"),
-    ("crates/agentcore/src/agent/plan.rs", "plan_seen", "\"inputs/hold-catalog\"", "inputs/hold-catalog, a control: only its size and time, for an idle agent's plan digest (task #154)"),
-    ("crates/pipeline/examples/checklist.rs", "main", "\"inputs/hold-catalog\"", "inputs/hold-catalog, a control"),
+    ("crates/agentcore/src/agent/plan.rs", "plan_unchecked","w.step == \"inputs\"", "the `inputs` step's name"),
+    ("crates/agentcore/src/agent/plan.rs", "region_jobs", "\"inputs/keys.env can't be read now\"", "inputs/keys.env (not inputs, §2)"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "w.step == \"inputs\"", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "\"inputs\".into()", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),
     ("crates/agentcore/src/agent/plan.rs", "gate_work", "strip_prefix(\"inputs/\")", "the `inputs` step's jobs, targets and the agent's own inputs-listing/ folder; the check job reads the inputs folder"),

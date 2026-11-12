@@ -4425,7 +4425,7 @@ fn chain_items(works: &[Work], steps: &[&str], known: bool) -> Vec<Item> {
 /// step by step (the pass's own steps are the agent's): the heritage sites, terrain, slope, tree
 /// cover, the roads, the map tiles, the map's finishing, trains a day, the landmarks, the 3D
 /// buildings, publishing.
-/// `held`: the catalogue is held for review (inputs/hold-catalog): publishing is its held copy.
+/// `held`: the catalogue is held for review (the pool's `hold-catalog`): publishing is its held copy.
 /// `ready`: the regions a catalogue would record as built now (`Planned::ready`). Made with each plan,
 /// with its keys (`plan`: `x`'s memo).
 pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Checklist {

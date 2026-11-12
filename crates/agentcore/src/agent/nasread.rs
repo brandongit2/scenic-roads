@@ -86,12 +86,6 @@ fn read_under<T: Send + 'static>(
     noted(p, deadline::call(&p.display(), &"read", deadline, f))
 }
 
-/// A switch file at `p` as text, read within `DEADLINE`.
-pub fn read_switch(p: &NasPath) -> io::Result<String> {
-    let owned = p.clone();
-    read_under(p, DEADLINE, move || owned.read_to_string())
-}
-
 /// The file at `p`, read within `DEADLINE` (`TimedOut` past it).
 pub fn read(p: &NasPath) -> io::Result<Vec<u8>> {
     let owned = p.clone();
@@ -358,13 +352,8 @@ pub(crate) mod tests {
             read_to_string(&store::nasfs::NasPath::local_for_test(&p)).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
-        assert_eq!(
-            read_switch(&store::nasfs::NasPath::local_for_test(&p)).unwrap_err().kind(),
-            io::ErrorKind::NotFound
-        );
         std::fs::write(&p, "on").unwrap();
         assert_eq!(read_to_string(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), "on");
-        assert_eq!(read_switch(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), "on");
         assert_eq!(read(&store::nasfs::NasPath::local_for_test(&p)).unwrap(), b"on");
         let q = d.path().join("w");
         let q2 = q.clone();
@@ -373,7 +362,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stuck_writes_time_out_and_leave_reads_and_switches_answering() {
+    fn stuck_writes_time_out_and_leave_reads_answering() {
         let d = tempfile::tempdir().unwrap();
         let _cap = store::deadline::cap_for_test(store::deadline::CAP_DEFAULT);
         std::fs::create_dir_all(d.path().join("state/pool/terms")).unwrap();
@@ -397,9 +386,6 @@ pub(crate) mod tests {
         // The reads go on.
         assert!(n.exists("state/pool/terms/1.json").unwrap());
         assert_eq!(n.read("state/pool/terms/1.json").unwrap().unwrap(), b"{}");
-        // And a switch.
-        std::fs::write(d.path().join("sw"), "on").unwrap();
-        assert_eq!(read_switch(&store::nasfs::NasPath::local_for_test(&d.path().join("sw"))).unwrap(), "on");
         // The share answers: the path's write ends, and the path is free again.
         drop(hold);
         store::testkit::eventually("the path's write ends", || {

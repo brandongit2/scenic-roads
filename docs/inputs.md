@@ -39,8 +39,8 @@ terrain's), the remaining sources (§6.9); the guards (§7). Companions: `docs/s
 | **Request–fulfil** | answers to the app's requests | writes a to-do list and a brief into the inputs folder's `todo/` after building; reads the answers like a declare input | the map falls back, the request stays listed |
 | **Source declaration** | a small file naming a standard format, where to get the data, its licence and credit (data may lie beside it) | fetches the data itself into `sources/`, content-named and pinned in the records | the source isn't used |
 
-Not inputs: `inputs/keys.env` (secrets; their names enter keys, never their values),
-`inputs/hold-catalog` (a control), `todo/` lists, and `how/` notes (§8).
+Not inputs: `inputs/keys.env` (secrets; their names enter keys, never their values), `todo/`
+lists, and `how/` notes (§8).
 
 ## 3. The inputs folders on the NAS
 
@@ -59,7 +59,7 @@ inputs/
     gtfs/             declare: <name>.zip [+ <name>.toml]; todo/ (§6.7.2, §6.7.3)
   elevation/          source declarations: <dataset>.toml, indexes, <dataset>/ (§6.8)
   sources/            source declarations: <id>.toml, indexes (§6.9, the depth's §6.10)
-  keys.env, hold-catalog   not inputs
+  keys.env            not inputs
 ```
 
 Each folder is one unit (`timetables/feeds` and `timetables/gtfs` are two units of one input).
@@ -1834,8 +1834,8 @@ publishing; the tests' whole output in `~/Library/Logs/scenic/guards-<time>.log`
   (`"inputs`, `join("inputs")`, `/inputs/`, `"translations`, `}/translations`, `"descriptions`,
   `}/descriptions`, each unit's name; `sources/inputs` aside) must call an accessor (`inputs::open(`,
   `inputs::gate::run(`) or be exempt by item name and line anchor with a reason. No reader is
-  exempt: only the Regions panel's writes, the backups, GC's never-swept list, the controls
-  (`inputs/hold-catalog`, `inputs/keys.env`) and words that aren't paths (the `inputs` step's name, a
+  exempt: only the Regions panel's writes, the backups, GC's never-swept list, the keys
+  (`inputs/keys.env`) and words that aren't paths (the `inputs` step's name, a
   task spec's "inputs", log lines). The scanner's own rules have a test.
 - **Python:** steps receive input paths on their command line. `dem/inputs.py`'s `arg(path)` refuses
   a path not under `sources/inputs/`, `sources/fetched/` or the job's scratch, and the same test

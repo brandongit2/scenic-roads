@@ -355,11 +355,14 @@ pub enum PoolCmd {
     /// Mac's agent, which sends it to the lead; with none, how they stand as it last had them.
     /// `placement on|off`, `nas-budget <its text>|off`, `nas-target <percent>|off`, `batch-minutes
     /// <minutes>|off` (the measured time a job of a shared step is sized to on its Mac; off: 15),
-    /// `overdue-factor <times>|off` (the status flags a job past that many times its sized time)
+    /// `overdue-factor <times>|off` (the status flags a job past that many times its sized time),
+    /// `hold-catalog on|off` (publishing held for review: the map kept back on the lead's disk),
+    /// `near-slope on|off` (a done region's slope and tree cover by the z6 tiles near it)
     Set {
-        /// The setting: placement, nas-budget, nas-target, batch-minutes or overdue-factor
+        /// The setting: placement, nas-budget, nas-target, batch-minutes, overdue-factor,
+        /// hold-catalog or near-slope
         name: Option<String>,
-        /// Its value; off: its default (placement off)
+        /// Its value; off: its default (placement, hold-catalog and near-slope off)
         value: Option<String>,
         #[command(flatten)]
         home: Home,

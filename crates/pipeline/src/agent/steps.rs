@@ -1494,7 +1494,7 @@ pub const TABLE: [Step; 61] = [
             Publish,
             World,
             store::catalogue::HELD_NAME,
-            "Makes a catalogue held for review (inputs/hold-catalog).",
+            "Makes a catalogue held for review (the pool's setting hold-catalog).",
             w_none,
         )
     },

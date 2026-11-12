@@ -513,7 +513,7 @@ folders there, read by nothing, go by the `gc` job once every member's app check
 (step 9).
 
 Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
-NAS holds years of data and the pool runs mixed app versions: the file `inputs/hold-catalog`, the steps
+NAS holds years of data and the pool runs mixed app versions: the pool's setting `hold-catalog`, the steps
 `catalog` and `catalog-held`, the history event kind `catalog`, JSON keys (`catalog`, `catalog_held`,
 `catalog_t`, `catalog_at`, `catalogs`, `catalogs_kept`), the routes `/api/catalog` and `/api/catalogs`, the commands `scenic catalogs` and `lakefill catalog-add`, the
 log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting the manifest's files into the catalog's" and "writing the catalog", gc's "reading the catalogs", namestodo's "reading the catalog, the languages spoken and the translations"). In Rust they are
@@ -1244,11 +1244,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     `{member, host, app, beat, leads, addresses, reach, checks_map, members, conds: {home, ac,
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
     always true, for a lead on the app before #1036).
-  - Switches (present or `on` in it: on; `off` or missing: off, unless said): `near-slope`
-    (docs/building.md §2, Publishing's switch), under `state/pool/`. `placement` (§7.2: jobs get
-    `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `nas-budget` and `nas-target` are the lead's
-    settings (`/pool/settings`), with no file; `memory-guard`, `resume` and `brokers`
-    are no longer read (always on), nor `delta-catalog` (#883 step 6).
+  - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers
+    carry `ahead`), `nas-budget`, `nas-target`, and publishing's `hold-catalog` and `near-slope`
+    (docs/building.md §2, Publishing's switches) are the lead's settings (`/pool/settings`).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).
   - A member's resume progress: `{member, worker, jobs: {"osm-pass <date>": {at, since, done,

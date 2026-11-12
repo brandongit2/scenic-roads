@@ -74,7 +74,7 @@ pub struct Publish<'a> {
     /// (`Planned::catalogue_held`), or by their hand-offs waiting to be merged (the agent's), since the
     /// last catalogue; None while none is. Past `CATALOGUE_CAP_S`, one goes out with what's drawn.
     pub held_for: Option<u64>,
-    /// Catalogues are held for review (`inputs/hold-catalog`): what's new is weighed against the last
+    /// Catalogues are held for review (the pool's `hold-catalog`): what's new is weighed against the last
     /// held one's.
     pub held: bool,
     /// How publishing goes (the switches).

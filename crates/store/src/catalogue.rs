@@ -18,7 +18,7 @@ pub use coverage::Coverage;
 /// the JSON keys naming it. It keeps its old spelling (task #547: stored in the history and job logs,
 /// and the pool runs mixed app versions): only the Rust names around it say "catalogue".
 pub const NAME: &str = "catalog";
-/// The step's job while publishing is held for review (`inputs/hold-catalog`): its map goes to the
+/// The step's job while publishing is held for review (the pool's setting `hold-catalog`): its map goes to the
 /// NAS's `map-held/` (crate::map::HELD_DIR), not the log.
 pub const HELD_NAME: &str = "catalog-held";
 

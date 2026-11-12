@@ -59,6 +59,8 @@ pub(super) struct Inputs {
     pub pool_seen: Option<PoolView>,
     pub member_id: Option<String>,
     pub placement: bool,
+    /// Publishing's switches, as the pool's settings say (crate::agent::publish::Switches).
+    pub switches: publish::Switches,
     pub pooled: bool,
     pub resume_now: u64,
     pub ramp_held: bool,
@@ -469,8 +471,6 @@ pub(super) struct Planner {
     pub(super) catalogue_low: std::cell::Cell<bool>,
     /// Since when a catalogue has been due (publish::PublishLine::due_since).
     pub(super) catalogue_due_since: std::cell::Cell<Option<u64>>,
-    /// Publishing's switches as last read (crate::agent::publish).
-    pub(super) publishing: std::cell::Cell<publish::Switches>,
     /// The map tiles noted planned in the history (crate::pubtimes), since the last catalogue.
     pub(super) planned_tiles: std::cell::RefCell<crate::pubtimes::PlannedNotes>,
     /// The gate (inputs::inputs): the inputs folders' listing thread, the status's entries as the last
@@ -552,7 +552,6 @@ impl Planner {
             catalogues: std::cell::RefCell::new(catalogues),
             catalogue_low: Default::default(),
             catalogue_due_since: Default::default(),
-            publishing: Default::default(),
             planned_tiles: Default::default(),
             inputs: Gate::default(),
         }
@@ -1095,17 +1094,15 @@ impl Planner {
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
         }
         serde_json::to_string(&self.inp.pause).unwrap_or_default().hash(&mut h);
-        // (Publishing's switch, the hold on publishing, the held maps' folder, and the map's head.)
-        for f in [publish::NEAR_SLOPE, "inputs/hold-catalog", store::map::HELD_DIR] {
-            stat(&mut h, (&root.join(f)).into());
-        }
+        // (The held maps' folder, and the map's head; publishing's switches are the pool's, below.)
+        stat(&mut h, (&root.join(store::map::HELD_DIR)).into());
         self.inp.map.as_ref().and_then(|m| m.feed.head()).hash(&mut h);
         // (The owner's redo asks: one taken or done.)
         stat(&mut h, (&self.o.home.join(redo::ASKS)).into());
         // (Not the coordinator's leases: they filter the last plan's work again, `refilter_due`.)
         self.newer_app().hash(&mut h);
         // (The pool's switches as this agent holds them.)
-        self.inp.placement.hash(&mut h);
+        (self.inp.placement, self.inp.switches.held, self.inp.switches.near).hash(&mut h);
         // (Never 0: that's "not read".)
         h.finish() | 1
     }
@@ -1600,7 +1597,7 @@ impl Planner {
                 inputs.insert("feeds-credited".into(), "?".into());
             }
         }
-        let held = root.join("inputs/hold-catalog").exists();
+        let held = self.inp.switches.held;
         // The base packs' extents (codecs::extents), kept by the lead alone, against its manifest:
         // the headers of packs new since read once, timed. (A pack whose header can't be read is
         // left out and looked at again next plan, the rest kept; the file not written costs only
@@ -1668,15 +1665,9 @@ impl Planner {
         let (on_map, since_publish) = self.on_map(root, held, map.as_deref(), &recipes);
         // (The map's, held ones aside.)
         self.catalogue_seen.set(map.as_deref().map(seen));
-        // (Publishing's switches: crate::agent::publish.)
-        let sw = publish::Switches::read(root, self.publishing.get());
-        if sw != self.publishing.get() {
-            eprintln!("agent: publishing's switches: {sw:?}");
-        }
-        self.publishing.set(sw);
         let way = publish::Publishing {
             since_low: self.since_low(now_s()),
-            near: sw.near,
+            near: self.inp.switches.near,
             since_marks: self.catalogues.borrow().since("marks", now_s()),
             since_overlays: self.catalogues.borrow().since("overlays", now_s()),
         };
@@ -2037,7 +2028,7 @@ impl Planner {
                     waiting.push(Waiting {
                         step: None,
                         what: "publish".into(),
-                        why: "held for review (inputs/hold-catalog); its map is in map-held/".into(),
+                        why: "held for review (the pool's setting hold-catalog); its map is in map-held/".into(),
                     });
                     continue;
                 }

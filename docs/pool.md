@@ -3156,8 +3156,9 @@ A depth, terrain-hi or terrain-deep job resumes its target at the block after th
 finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::resume_log).
 
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
-`placement` (§7.2; off while not set), `nas-budget`, `nas-target`, `batch-minutes` (§7.7) and
-`overdue-factor` (§10, Flags), with no switch file. A new setting is made only once every member's
+`placement` (§7.2; off while not set), `nas-budget`, `nas-target`, `batch-minutes` (§7.7),
+`overdue-factor` (§10, Flags), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2;
+off while not set), with no switch file. A new setting is made only once every member's
 heartbeat shows the app that has it. A role is read as the agent starts (docs/roles.md §1) and is
 no longer switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an older app may
 read it (one reading it missing or `off` restarts to change part). `state/pool/enabled` and

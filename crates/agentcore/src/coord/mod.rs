@@ -4750,8 +4750,9 @@ fn route(
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
             // `{"sweep_margin": <GB> | "off"}`, `{"nas_held": <calls> | "off"}` set this Mac's,
             // `{"nas_room": <GB> | "off"}`,
-            // `{"batch_minutes": <minutes> | "off"}` and `{"overdue_factor": <times> | "off"}` the
-            // pool's (the latter two asked of the lead with this Mac's agent's next beat), each through
+            // `{"batch_minutes": <minutes> | "off"}`, `{"overdue_factor": <times> | "off"}`,
+            // `{"hold_catalog": "on" | "off"}` and `{"near_slope": "on" | "off"}` the pool's (all but
+            // the reserve asked of the lead with this Mac's agent's next beat), each through
             // the same function as its `scenic` command (crate::agent::settings; the sweep's margin and
             // the NAS calls held have none). Answered with them as they stand.
             use crate::agent::settings;
@@ -4800,6 +4801,11 @@ fn route(
             }
             if let Some(v) = said("overdue_factor")? {
                 settings::set_overdue(&home, &v, &by)?;
+            }
+            for (key, name) in [("hold_catalog", asks::HOLD_CATALOG), ("near_slope", asks::NEAR_SLOPE)] {
+                if let Some(v) = said(key)? {
+                    settings::set_switch(&home, name, &v, &by)?;
+                }
             }
             let mut v = settings::view(&home, root.as_ref());
             v["mac"] = store::sys::host().into();

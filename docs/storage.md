@@ -8,7 +8,7 @@ inputs/        the inputs folders (docs/inputs.md): regions/, languages/, transl
                heritage/, heritage-matches/, timetables/{feeds,gtfs}/, elevation/, sources/, each
                with how/ (how it's made); README.md; keys.env (KEY=value: the feeds' API keys, the
                NAS's SNMP keys NAS_SNMP_USER and NAS_SNMP_AUTH, its DSM account NAS_DSM_USER and
-               NAS_DSM_PASS); hold-catalog;
+               NAS_DSM_PASS);
                _gate-test/ (the input check's test unit)
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass),
                basemap/ (Planetiler's jar and data), items/<date>/ (facts, pageviews, answers),
@@ -38,7 +38,7 @@ settings/      profiles.json: read and written by nothing: the map's server keep
 state/         status.json (the lead's heartbeat), coordinator.json (its contact),
                build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history and its archive, the forecast inputs' archive),
-               lead/ (the lead's store's backup), pool/ (`near-slope`, `nas-probes.json`; `slots`
+               lead/ (the lead's store's backup), pool/ (`nas-probes.json`; `slots`
                kept for older apps), backups/, logs/;
                the old coordination files no app writes
                (journal/, the terms' folders: docs/coordination.md §9, the owner's to remove)

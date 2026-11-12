@@ -2,10 +2,11 @@
 //! carries, and the build page and `scenic status` show) worked out from a NAS project folder,
 //! read only, and written as JSON: a look at the page against real data without an agent.
 //!
-//! usage: cargo run -p pipeline --example checklist -- <root> <pack-idx copy> <out.json>
+//! usage: cargo run -p pipeline --example checklist -- <root> <pack-idx copy> <out.json> [--held]
 //!
 //! `<pack-idx copy>`: a copy of an agent's `pack-idx` folder (the terrain packs' indexes are read
-//! from and kept in it; never an agent's own).
+//! from and kept in it; never an agent's own). `--held`: as with publishing held for review (the
+//! pool's setting `hold-catalog`).
 
 use agentcore::pool::records::Keys;
 use pipeline::agent::build::{checklist, fold, KeyCtx};
@@ -15,8 +16,12 @@ use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let [_, root, idx, out] = args.as_slice() else {
-        anyhow::bail!("usage: checklist <root> <pack-idx copy> <out.json>")
+    let (held, args) = match args.split_last() {
+        Some((l, rest)) if l == "--held" => (true, rest),
+        _ => (false, args.as_slice()),
+    };
+    let [_, root, idx, out] = args else {
+        anyhow::bail!("usage: checklist <root> <pack-idx copy> <out.json> [--held]")
     };
     let root = PathBuf::from(root);
     let nr = store::nasfs::NasRoot::from_arg(&root);
@@ -31,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     let inputs = pipeline::agent::theplan::the_plan().key_inputs(&nr, &m);
 
     let x = KeyCtx::new(&cov, &date, &m, &inputs, reach.as_ref(), &tiles);
-    let (items, next) = checklist(&x, &keys, root.join("inputs/hold-catalog").exists(), &[]);
+    let (items, next) = checklist(&x, &keys, held, &[]);
     let lines = fold(&items, &next, &BTreeMap::new());
     std::fs::write(out, serde_json::to_vec_pretty(&lines)?)?;
     eprintln!("{} lines, {} items, written to {out}", lines.len(), items.len());

@@ -244,6 +244,41 @@ fn overdue_view(home: &Path) -> serde_json::Value {
     })
 }
 
+/// Asks one of the pool's switches (`asks::SWITCHES`: `hold-catalog`, `near-slope`, `placement`)
+/// of this Mac's agent in `home`, which sends it to the lead with its next beat (as `scenic pool
+/// set <name> on|off`): `what` "on" or "off".
+pub fn set_switch(home: &Path, name: &str, what: &str, by: &str) -> Result<()> {
+    use crate::coord::asks::SWITCHES;
+    anyhow::ensure!(SWITCHES.contains(&name), "{name}: not one of the pool's switches ({})", SWITCHES.join(", "));
+    let value = match what.trim() {
+        "on" => true,
+        "off" => false,
+        _ => anyhow::bail!("{name}: on or off, not {what}"),
+    };
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    let ask = crate::coord::asks::SettingAsk {
+        name: name.into(),
+        value: value.into(),
+        by: by.to_string(),
+        at: super::jobs::now_s(),
+    };
+    jobrt::control::request_setting(home, &ask)
+}
+
+/// A switch of the pool's (`name`) as this Mac's agent last had the pool's settings from the lead
+/// (in `home`; `had` false: not yet).
+fn switch_view(home: &Path, name: &str) -> serde_json::Value {
+    let s = jobrt::control::read_pool_settings(home);
+    let v = s.as_ref().and_then(|s| s.values.get(name)).filter(|v| !v.value.is_null());
+    serde_json::json!({
+        "on": s.as_ref().is_some_and(|s| s.on(name)),
+        "set": v.is_some(),
+        "by": v.map(|v| v.by.clone()),
+        "at": v.map(|v| v.at),
+        "had": s.is_some(),
+    })
+}
+
 /// The settings as they stand, for the build page: this Mac's (in its agent's folder `home`), the
 /// pool's NAS reserve (under `root`; null while the NAS is away), and its batch length and overdue
 /// factor (as this Mac's agent last had them from the lead). Sizes in bytes, memory in MB.
@@ -293,6 +328,8 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::nas_free(r).ok(), None)),
         "batch": batch_view(home),
         "overdue": overdue_view(home),
+        "hold_catalog": switch_view(home, crate::coord::asks::HOLD_CATALOG),
+        "near_slope": switch_view(home, crate::coord::asks::NEAR_SLOPE),
     })
 }
 
@@ -411,6 +448,38 @@ mod tests {
         assert_eq!(
             (b["minutes"].as_u64(), b["set"].as_bool(), b["by"].as_str()),
             (Some(20), Some(true), Some("the build page"))
+        );
+    }
+
+    /// Task #1119: publishing's switches (once files on the NAS) are the pool's settings, set from
+    /// the build page as from `scenic pool set`: on or off, asked of the lead, read back as the
+    /// agent last had them, off until then.
+    #[test]
+    fn publishings_switches_are_asked_of_the_lead_and_read_back() {
+        use crate::coord::asks::{HOLD_CATALOG, NEAR_SLOPE};
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        let v = view(h, None);
+        assert_eq!((v["hold_catalog"]["on"].as_bool(), v["hold_catalog"]["had"].as_bool()), (Some(false), Some(false)));
+        assert!(set_switch(h, HOLD_CATALOG, "maybe", "t").is_err());
+        assert!(set_switch(h, "batch-minutes", "on", "t").is_err(), "not a switch");
+        assert!(set_switch(&h.join("nope"), NEAR_SLOPE, "on", "t").is_err(), "no agent");
+        set_switch(h, HOLD_CATALOG, "on", "the build page").unwrap();
+        set_switch(h, NEAR_SLOPE, " off ", "the build page").unwrap();
+        let asked = jobrt::control::take_setting_asks(h);
+        assert_eq!(
+            asked.iter().map(|a| (a.name.as_str(), a.value.clone())).collect::<Vec<_>>(),
+            [(HOLD_CATALOG, true.into()), (NEAR_SLOPE, false.into())]
+        );
+        let mut s = crate::coord::asks::Settings::default();
+        for a in &asked {
+            assert!(s.take(a));
+        }
+        std::fs::write(h.join(jobrt::control::POOL_SETTINGS), serde_json::to_vec(&s).unwrap()).unwrap();
+        let v = view(h, None);
+        assert_eq!(
+            (v["hold_catalog"]["on"].as_bool(), v["hold_catalog"]["by"].as_str(), v["near_slope"]["on"].as_bool()),
+            (Some(true), Some("the build page"), Some(false))
         );
     }
 }

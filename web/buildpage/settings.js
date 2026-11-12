@@ -1,8 +1,9 @@
 // The owner's settings on the build page (the Machines tab; docs/coordinator.md §7): this page's Mac's
 // in-use share, memory floor, disk room target, dev sweep margin and NAS calls held, a block per Mac, each set on
-// that Mac, and the pool's NAS reserve and batch length. Read and set through
-// `/api/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`, `pool set batch-minutes`; the sweep's margin and the NAS calls held have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// that Mac, and the pool's NAS reserve, batch length, overdue factor and publishing's switches
+// (holding publishing for review, slope near regions). Read and set through `/api/settings`, which
+// sets each through the same function as its `scenic` command (`scenic in-use`, `memory`, `room`,
+// `nas-room`, `pool set batch-minutes|overdue-factor|hold-catalog|near-slope`; the sweep's margin and the NAS calls held have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 import { h } from "./dom.js";
 
@@ -78,6 +79,13 @@ export function settingsSection(call, macs, done, onError) {
   const row = (put, r) => {
     if (!r.input) return h("div", "setting", h("span", "k", r.what), h("b", null, r.now), h("span", "dim small", r.note));
     const { key, what, input } = r;
+    // (A switch: On and Off, no field.)
+    if (input.toggle) {
+      return h("div", { class: "setting", "data-key": key },
+        h("span", "k", what), h("b", null, r.now), h("span", "dim small", r.note),
+        h("span", "ctl", h("button", { onclick: () => put({ [key]: "on" }, what) }, "On"),
+          h("button", { class: "quiet", title: input.offTitle, onclick: () => put({ [key]: "off" }, what) }, "Off")));
+    }
     const field = h("input", { type: "number", min: input.min, max: input.max, step: input.step, placeholder: input.placeholder, "aria-label": what });
     const go = () => field.value !== "" && put({ [key]: field.value }, what);
     field.addEventListener("keydown", (e) => e.key === "Enter" && go());
@@ -105,7 +113,7 @@ export function settingsSection(call, macs, done, onError) {
       return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
     : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "no Mac shown here has answered yet"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length and overdue factor, pool-wide")), blocks, pool);
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length, overdue factor and publishing's switches, pool-wide")), blocks, pool);
 }
 
 // Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
@@ -209,5 +217,17 @@ export function poolRows(s) {
       note: `a job whose work hasn't moved for this many times its usual still stretch is flagged stuck, one whose progress goes on this many times slower than its step's slowest tenth of jobs slow (Alerts, scenic status, the menu bar)${o.set ? by(o) : ` (the default, ${o.default}×)`}${o.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
       input: { min: 1.1, max: 100, step: 0.5, placeholder: "times", offTitle: `Back to the default (${o.default}×)` },
     })),
+    switchRow(s, "hold_catalog", "Hold publishing", "the catalogue step keeps the map it would publish on the lead's disk for review, and nothing is published"),
+    switchRow(s, "near_slope", "Slope near regions", "a done region's slope and tree cover are the z6 tiles near it, their assemblies made with the low zooms"),
   ];
 }
+
+// One of the pool's switches (`hold_catalog`, `near_slope`): on or off, off until set.
+const switchRow = (s, key, what, does) => guarded(key, what, () => {
+  const v = s[key];
+  return {
+    now: v.on ? "on" : "off",
+    note: `while on, ${does}${v.set ? by(v) : " (off until set)"}${v.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
+    input: { toggle: true, offTitle: "Off" },
+  };
+});
