@@ -1,5 +1,5 @@
 // Scenic as an app (task #194): its build service, quitting, and the
-// app replacing itself on an update. The menu bar item and its panel are main.swift's.
+// app replacing itself on an update. The menu bar item and its menu are main.swift's.
 //
 // - The build service (this Mac's agent, `scenic agent`) is the app's own launchd job, registered
 //   with SMAppService from the plist inside the app (Contents/Library/LaunchAgents/<label>.plist,
@@ -737,22 +737,15 @@ func selfTest(_ dir: String) -> Never {
     check("--help and -h anywhere: the usage", argsProblem(["--help"]) == "" && argsProblem(["-h"]) == "" && argsProblem(["--plan", "--help"]) == "")
     check("an unknown flag refused, never the app", argsProblem(["--hepl"])?.contains("unknown") == true && argsProblem(["plan"])?.contains("unknown") == true)
     check("values counted", argsProblem(["--reopen", "12", "/Applications/Scenic.app"]) == nil && argsProblem(["--reopen", "12"])?.contains("2 values") == true
-        && argsProblem(["--show"])?.contains("a value") == true && argsProblem(["--replay", "a.json", "b.json"]) == nil && argsProblem(["--replay"]) != nil
-        && argsProblem(["--no-window", "--show", "panel"]) == nil)
+        && argsProblem(["--render"])?.contains("a value") == true && argsProblem(["--replay", "a.json", "b.json"]) == nil && argsProblem(["--replay"]) != nil
+        && argsProblem(["--no-window", "--menu-proof"]) == nil)
     check("one mode at a time, nothing twice", argsProblem(["--print", "--plan"])?.contains("together") == true
         && argsProblem(["--test", "d", "--no-window"])?.contains("together") == true
-        && argsProblem(["--show", "menu", "--show", "panel"])?.contains("twice") == true
-        && argsProblem(["--menu-proof", "--show", "menu"]) == nil)
-    // The popover's page (docs/roles.md §3.3): this Mac's port asked with `?view&mac=<host>`, which
-    // a member's port sends on to the lead's page, query kept; the build page's addresses on any
-    // Mac stay in the popover, anything else opens in the browser.
-    check("the popover's URL: ?view, then this Mac's name once known", Panel.viewURL("http://127.0.0.1:8090/", mac: nil).absoluteString == "http://127.0.0.1:8090/?view"
-        && Panel.viewURL("http://127.0.0.1:8090/", mac: "MacBook-Pro de B").absoluteString == "http://127.0.0.1:8090/?view&mac=MacBook-Pro%20de%20B")
-    check("the lead's page stays in the popover, another site doesn't", Panel.inPage(URL(string: "http://100.64.0.6:8090/?view&mac=m1")!)
-        && Panel.inPage(URL(string: "https://mini.tail1.ts.net/?view&mac=m1#jobs")!)
-        && !Panel.inPage(URL(string: "http://100.64.0.6:8090/work/?view&mac=m1")!)
-        && !Panel.inPage(URL(string: "https://example.com/")!) && !Panel.inPage(URL(string: "https://map.example/")!)
-        && !Panel.inPage(URL(string: "http://100.64.0.6:8090/workshop?view")!))
+        && argsProblem(["--menu-proof", "--menu-proof"])?.contains("twice") == true
+        && argsProblem(["--show", "menu"])?.contains("unknown") == true)
+    // The menu's items in sentence case: a job's own words lower-cased after "Cancel", an acronym kept.
+    check("a phrase inside a menu item: its first letter lower case, an acronym kept", lowerFirst("Building unit 6/1/1") == "building unit 6/1/1"
+        && lowerFirst("OSM pass") == "OSM pass" && lowerFirst("x") == "x" && lowerFirst("") == "")
     // The hold ask's file, as control.rs's request_hold writes it (its tests read the same files).
     for (held, f) in [(true, "hold-request-pause.json"), (false, "hold-request-resume.json")] {
         let want = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent(f))).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? NSDictionary

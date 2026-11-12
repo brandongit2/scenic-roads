@@ -32,14 +32,11 @@
 	<string>Scenic.app</string>
 	<key>ScenicOpenAtLogin</key>
 	<true/>
-	<!-- The build page in the panel: the lead's coordinator over plain HTTP, at its Tailscale and
-	     LAN addresses. -->
+	<!-- This Mac's map server asked over plain HTTP at localhost (main.swift's mapAnswers). -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>Scenic shows the build page from the Mac that leads the build.</string>
 </dict>
 </plist>

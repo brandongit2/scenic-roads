@@ -1,15 +1,14 @@
 // Scenic's menu bar item: the build agent's state at a glance (docs/building.md §2, Status). An icon for
-// the state (building, paused, waiting, nothing to do, a problem, the lead out of touch); a
-// click opens the panel, the build page in a popover (`Panel`: this Mac's own agent's `/?view`, a viewer
-// only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
+// the state (building, paused, waiting, nothing to do, a problem, the lead out of touch); any
+// click on it (left or right) opens its menu: the state in a line, this Mac's downloads
 // and build caches, and the controls below. Its timers run in
 // the run loop's common modes, so the polls and the icon go on while a menu is
 // open. It asks `scenic menu` (crates/agentcore/src/menu.rs, the installed app's), which answers
 // from this Mac's disk alone, never the NAS (docs/roles.md §3.4): this Mac's own agent's status,
 // and on a member the lead's line as the lead's last beat answer carried it. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
-// and the last clears (crates/agentcore/src/agent/room.rs): Clear the Build's Caches asks
-// that agent to clear what later jobs copy back cheaply from the NAS, Clear Caches Deeply that
+// and the last clears (crates/agentcore/src/agent/room.rs): Clear the build caches asks
+// that agent to clear what later jobs copy back cheaply from the NAS, Clear caches deeply that
 // and what's costly to make again, at any moment; and this Mac's memory against its floor, as its agent says it (the brake
 // first when it's on). (The disk room target and the memory floor are set on the build page.) With
 // the pool on (docs/pool.md §11), its agent's view of the pool: who leads (the Mac mini, the fixed
@@ -18,7 +17,7 @@
 // It's the menu bar item of Scenic.app, the app opened from Launchpad, Spotlight or /Applications
 // (and at login), never in the Dock: opening it starts this Mac's build service, quitting it stops that service
 // (service.swift). The map server is no part of it: the devices' map is the Mac mini's, a service of
-// its own (docs/macs.md, Devices; task #874). Its menu's Open the Map on This Mac opens this Mac's
+// its own (docs/macs.md, Devices; task #874). Its menu's Open the map on this Mac opens this Mac's
 // own, starting a laptop's server on demand (`startMapHere`; docs/roles.md §8.3).
 //
 //   tools/status/bundle.sh <folder> [sandbox options]   builds Scenic.app (both files, its launcher
@@ -27,13 +26,11 @@
 //                                           (exit 2), never the app started
 // SCENIC_STATUS_COMMAND overrides the program asked (`<home>/app/current/scenic`; else Info.plist's
 // ScenicStatusCommand), run with `menu`,
-// SCENIC_HOME the app folder (else Info.plist's ScenicHome), SCENIC_STATUS_APPEARANCE (light,
-// dark) the system's appearance.
+// SCENIC_HOME the app folder (else Info.plist's ScenicHome).
 
 import AppKit
 import SystemConfiguration
 import ServiceManagement
-import WebKit
 
 let home = (ProcessInfo.processInfo.environment["SCENIC_HOME"] ?? info["ScenicHome"] as? String).map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
 let statusCommand = ProcessInfo.processInfo.environment["SCENIC_STATUS_COMMAND"] ?? info["ScenicStatusCommand"] as? String ?? home.appendingPathComponent("app/current/scenic").path
@@ -696,6 +693,13 @@ func clip(_ s: String, _ n: Int = 80) -> String {
     s.count <= n ? s : String(s.prefix(n - 1)) + "…"
 }
 
+/// `s` with its first letter lower case, for a phrase inside a sentence-case menu item ("Cancel
+/// building unit 6/1/1"); a first word in capitals (an acronym: "OSM pass") kept.
+func lowerFirst(_ s: String) -> String {
+    guard let f = s.first, f.isUppercase, !(s.dropFirst().first?.isUppercase ?? false) else { return s }
+    return f.lowercased() + s.dropFirst()
+}
+
 /// The helpers heard from lately (one not heard from for `outOfTouch` is left out).
 func freshHelpers(_ r: Reply) -> [Helper] {
     (r.status?.helpers ?? []).filter { r.now - $0.beat <= outOfTouch(r) }
@@ -817,9 +821,9 @@ func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: Str
         out.append(("Paused since \(clock(held.at)) (from \(clip(held.by, 40)))", nil, ""))
     }
     if h?.pause ?? (r?.held_here != nil) {
-        out.append(("Resume This Mac", false, "This Mac takes work again, as `scenic resume --here` does"))
+        out.append(("Resume this Mac", false, "This Mac takes work again, as `scenic resume --here` does"))
     } else {
-        out.append(("Pause This Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work (the lead goes on granting the others' work); the other Macs go on building"))
+        out.append(("Pause this Mac", true, "Only this Mac: its jobs stop at their next safe point and are given back, it takes no new work (the lead goes on granting the others' work); the other Macs go on building"))
     }
     return out
 }
@@ -1002,9 +1006,9 @@ func cachesLine(_ c: Caches) -> String {
     return t
 }
 
-/// A repeating timer on the main run loop in its common modes: it fires while a menu is open or a
-/// popover tracks the mouse too (the default mode alone is suspended then, and what it held up all
-/// came at once when the menu closed).
+/// A repeating timer on the main run loop in its common modes: it fires while a menu is open too
+/// (the default mode alone is suspended then, and what it held up all came at once when the menu
+/// closed).
 @discardableResult
 func every(_ secs: TimeInterval, _ f: @escaping () -> Void) -> Timer {
     let t = Timer(timeInterval: secs, repeats: true) { _ in f() }
@@ -1016,11 +1020,6 @@ func every(_ secs: TimeInterval, _ f: @escaping () -> Void) -> Timer {
 /// menu opened from one would hold that queue, the polls' answers with it, until it closed.)
 func after(_ secs: TimeInterval, _ f: @escaping () -> Void) {
     RunLoop.main.add(Timer(timeInterval: secs, repeats: false) { _ in f() }, forMode: .common)
-}
-
-/// Where a menu opens under a view: its bottom left corner, a few points down.
-func under(_ v: NSView) -> NSPoint {
-    NSPoint(x: 0, y: v.isFlipped ? v.bounds.height + 4 : -4)
 }
 
 /// A line's font and colour in the menu.
@@ -1091,349 +1090,9 @@ final class Flipped: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// The panel: the build page in a popover under the icon (docs/building.md §2, Status). The lead's
-/// page, asked of this Mac's own agent's port (`Panel.page`, 8090: on a member it answers with a
-/// redirect to the lead's, or, the lead not reached, a small page of this Mac's own: docs/roles.md
-/// §3.3) with `?view&mac=<this Mac>` (`viewURL`), so it only ever watches and opens on this Mac
-/// (web/buildpage/index.html), in
-/// a web view of its own that keeps nothing (no stored data: never a page that helps); made as the
-/// popover first opens and kept for the next opening (#408), its polling stopped while closed. Its
-/// height is the page's, within 900 pt and the screen; its links out of the page open in the
-/// browser. While this Mac's agent doesn't answer, one plain line says so. A footer: the state in a
-/// line (and a notice when the agent runs another app than this one), Reload, and "⋯", the menu.
-final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
-    static let pageWidth: CGFloat = 780
-    static let footerHeight: CGFloat = 30
-    /// This Mac's agent's build page (a sandbox's own: Info.plist's ScenicPage).
-    static let page = info["ScenicPage"] as? String ?? "http://127.0.0.1:8090/"
-    /// The page's address: `page` with `?view`, and `&mac=<host>` once this Mac's agent said its
-    /// name (its own status's `host`).
-    static func viewURL(_ page: String, mac: String?) -> URL {
-        var c = URLComponents(string: page)!
-        c.queryItems = [URLQueryItem(name: "view", value: nil)] + (mac.map { [URLQueryItem(name: "mac", value: $0)] } ?? [])
-        return c.url!
-    }
-    /// Whether `u` is the build page's own, on any Mac (the lead's, after this Mac's port sent it
-    /// there): a coordinator's root over HTTP or HTTPS, `?view` kept. Anything else opens in the
-    /// browser.
-    static func inPage(_ u: URL) -> Bool {
-        let view = URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "view" } ?? false
-        return ["http", "https"].contains(u.scheme ?? "") && view && ["", "/", "/index.html"].contains(u.path)
-    }
-    /// This Mac's name as its agent says it (its status's `host`): the page's `mac=`.
-    var mac: String?
-    let popover = NSPopover()
-    let menu: () -> NSMenu
-    var web: WKWebView?
-    weak var anchor: NSView?
-    /// When it last closed: the click on the icon that closed it doesn't open it again.
-    var closedAt = Date.distantPast
-    /// While it's open: the monitor of clicks in other apps, which close it.
-    var outside: Any?
-    /// The status as last polled: the footer's line.
-    var line = ""
-    /// The agent's app, when it isn't this one's (its own status's `app`): said in the footer.
-    var otherApp: String?
-    /// The content: clear, so the popover's own translucent material shows through, the same
-    /// under the body and the arrow.
-    let root = NSView(frame: NSRect(x: 0, y: 0, width: Panel.pageWidth, height: 400))
-    let state = NSTextField(labelWithString: "")
-    let reload = NSButton(title: "Reload", target: nil, action: nil)
-    let more = NSButton(title: "⋯", target: nil, action: nil)
-    /// The one line in the page's place while this Mac's agent doesn't answer.
-    var down: NSTextField?
-
-    init(menu: @escaping () -> NSMenu) {
-        self.menu = menu
-        super.init()
-        // The system's light or dark switched (open or not): the popover, its glass and the page
-        // follow at once.
-        appearanceWatch = NSApp.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.applyAppearance() }
-        }
-        popover.behavior = .transient
-        popover.animates = false
-        popover.delegate = self
-        let footer = NSView(frame: NSRect(x: 0, y: 0, width: root.frame.width, height: Panel.footerHeight))
-        footer.autoresizingMask = [.width]
-        state.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        state.textColor = .secondaryLabelColor
-        state.lineBreakMode = .byTruncatingTail
-        state.frame = NSRect(x: 12, y: 7, width: footer.frame.width - 130, height: 16)
-        state.autoresizingMask = [.width]
-        for (b, x, w) in [(reload, 112, 64), (more, 44, 32)] as [(NSButton, CGFloat, CGFloat)] {
-            b.bezelStyle = .accessoryBarAction
-            b.controlSize = .small
-            b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-            b.target = self
-            b.frame = NSRect(x: footer.frame.width - x, y: 4, width: w, height: 22)
-            b.autoresizingMask = [.minXMargin]
-            footer.addSubview(b)
-        }
-        reload.action = #selector(reloadPage)
-        reload.toolTip = "Load the build page again"
-        more.action = #selector(showMenu)
-        more.toolTip = "Pause, the lead, the map…"
-        footer.addSubview(state)
-        root.addSubview(footer)
-        let vc = NSViewController()
-        vc.view = root
-        popover.contentViewController = vc
-    }
-
-    func toggle(from button: NSView) {
-        if popover.isShown {
-            close()
-            return
-        }
-        if Date().timeIntervalSince(closedAt) < 0.3 { return }
-        anchor = button
-        NSApp.activate()
-        // (A click in another app closes it too: the cooperative `activate()` can be declined for
-        // a menu bar app, and then the transient popover never sees that click.)
-        outside = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in self?.close() }
-        // (The page kept from the last opening keeps its size, within maxHeight; nothing yet, a
-        // blank of 400.)
-        if web == nil { popover.contentSize = NSSize(width: Panel.pageWidth, height: 400) }
-        else if popover.contentSize.height > maxHeight { popover.contentSize.height = maxHeight }
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        applyAppearance()
-        popover.contentViewController?.view.window?.makeKey()
-        load()
-    }
-
-    func close() {
-        if popover.isShown { popover.performClose(nil) }
-    }
-
-    /// Watches the app's appearance (the system's, or SCENIC_STATUS_APPEARANCE's).
-    var appearanceWatch: NSKeyValueObservation?
-
-    /// The panel in the system's light or dark, not the menu bar's (which follows the wallpaper),
-    /// set on each opening and again on each switch: the popover's and the content's appearance
-    /// (the web view's prefers-color-scheme follows the content's, so the page re-styles itself
-    /// live), and the popover's own glass (one NSGlassEffectView under the arrow and the body
-    /// alike) in its regular style, tinted with the window's colour of that appearance, resolved
-    /// now, so the dim text stays readable over a bright window behind. (Before, both were set at
-    /// opening only: a switch while open, or the glass's tint kept from the other appearance, left
-    /// a grey veil over a light page.)
-    /// (Regular, not clear (#485): the popover puts its glass back to regular on each resize, so
-    /// regular was the look nearly always; a clear set after the last resize (a light/dark switch
-    /// while open, a kept page reopened at its height) stayed, and showed the backdrop unblurred.)
-    func applyAppearance() {
-        let a = NSApp.effectiveAppearance
-        popover.appearance = a
-        root.appearance = a
-        web?.appearance = a
-        var tint = NSColor.windowBackgroundColor
-        a.performAsCurrentDrawingAppearance { tint = NSColor(cgColor: NSColor.windowBackgroundColor.cgColor) ?? tint }
-        for case let g as NSGlassEffectView in popover.contentViewController?.view.window?.contentView?.superview?.subviews ?? [] {
-            g.appearance = a
-            g.style = .regular
-            g.tintColor = tint.withAlphaComponent(0.6)
-        }
-        root.needsDisplay = true
-    }
-
-    /// The tallest the panel's content may be: 900 pt, or the screen's room under the menu bar if
-    /// less; a taller page scrolls inside it.
-    var maxHeight: CGFloat {
-        min(900, ((anchor?.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 40)
-    }
-
-    /// The page: the one kept from the last opening loaded again in place (still shown meanwhile),
-    /// else a web view made for it.
-    func load() {
-        setDown(nil)
-        let url = Panel.viewURL(Panel.page, mac: mac)
-        if let w = web {
-            w.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData))
-            return
-        }
-        let conf = WKWebViewConfiguration()
-        // Not shared with Safari, nor kept on disk.
-        conf.websiteDataStore = .nonPersistent()
-        // The page's height, as it changes, for the panel's.
-        let measure = "new ResizeObserver(() => webkit.messageHandlers.size.postMessage(Math.ceil(document.body.getBoundingClientRect().height))).observe(document.body);"
-        conf.userContentController.addUserScript(WKUserScript(source: measure, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        conf.userContentController.add(self, name: "size")
-        // The page's own background let go, so the popover's material shows through (its cards
-        // keep theirs, so their text stays as legible as in a browser).
-        // (At the start, so no opaque flash on a load or Reload; `!important`, so no later rule of
-        // the page's undoes it.)
-        // Its cards, boxes and bars (index.html's --panel, --bg) partly see-through too, so what's
-        // behind the popover shows, the text on them still clear.
-        let css = "html,body{background:transparent!important}"
-            + ":root{--bg:rgba(14,16,19,.4)!important;--panel:rgba(22,26,31,.55)!important}"
-            + "@media (prefers-color-scheme: light){:root{--bg:rgba(244,246,248,.4)!important;--panel:rgba(255,255,255,.55)!important}}"
-        let clear = "const s = document.createElement('style'); s.textContent = '\(css)'; document.documentElement.appendChild(s);"
-        conf.userContentController.addUserScript(WKUserScript(source: clear, injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        let w = WKWebView(frame: NSRect(x: 0, y: Panel.footerHeight, width: root.frame.width, height: root.frame.height - Panel.footerHeight), configuration: conf)
-        w.autoresizingMask = [.width, .height]
-        // (Without this the web view paints its own opaque backdrop under the page, whatever the
-        // page's and the under-page colours: no public switch for it on macOS.)
-        w.setValue(false, forKey: "drawsBackground")
-        w.underPageBackgroundColor = .clear
-        w.navigationDelegate = self
-        w.uiDelegate = self
-        w.appearance = NSApp.effectiveAppearance
-        root.addSubview(w)
-        web = w
-        w.load(URLRequest(url: url))
-    }
-
-    /// This Mac's agent as its own status says (`own`, polled): its name for the page's `mac=`, and
-    /// its app against this one's, a notice in the footer when they differ.
-    func setOwn(_ own: Own?) {
-        mac = own?.host ?? mac
-        let mine = bundleVersion(Bundle.main.bundleURL)
-        let other = own?.app.flatMap { mine != nil && $0 != mine ? $0 : nil }
-        if other != otherApp {
-            otherApp = other
-            showState()
-        }
-    }
-
-    /// `--show panel`: once the page has loaded, whether it scrolls sideways at the panel's width.
-    var checkWidth = false
-
-    func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
-        guard checkWidth else { return }
-        after(3) {
-            w.evaluateJavaScript("[document.documentElement.scrollWidth, document.documentElement.clientWidth, document.getElementById('device')?.hidden, !!document.getElementById('help')]") { r, _ in
-                print("page width (scroll, client), This device hidden, help button: \(r ?? "?")")
-                fflush(stdout)
-            }
-        }
-    }
-
-    /// The web view gone, and its page with it.
-    func dropWeb() {
-        guard let w = web else { return }
-        w.stopLoading()
-        w.navigationDelegate = nil
-        w.uiDelegate = nil
-        w.configuration.userContentController.removeScriptMessageHandler(forName: "size")
-        w.removeFromSuperview()
-        web = nil
-    }
-
-    /// This Mac's agent doesn't answer (`why`: what the load said, for the log): the page dropped,
-    /// one plain line in its place; nil, the line gone.
-    func setDown(_ why: String?) {
-        down?.removeFromSuperview()
-        down = nil
-        guard let why else { return }
-        NSLog("scenic-status: the build page (%@): %@", Panel.page, why)
-        dropWeb()
-        let l = NSTextField(labelWithString: "The build's agent isn't running on this Mac")
-        l.textColor = .secondaryLabelColor
-        l.frame = NSRect(x: 16, y: Panel.footerHeight + 16, width: root.frame.width - 32, height: 20)
-        l.autoresizingMask = [.width]
-        root.addSubview(l)
-        down = l
-        popover.contentSize = NSSize(width: Panel.pageWidth, height: 52 + Panel.footerHeight)
-        reload.title = "Retry"
-    }
-
-    /// The status polled again: the footer's line.
-    func update(line: String) {
-        self.line = line
-        showState()
-    }
-
-    func showState() {
-        state.stringValue = otherApp.map { "This Mac's agent runs app \($0), not this app's: quit and open Scenic again · " + line } ?? line
-    }
-
-    @objc func reloadPage() {
-        reload.title = "Reload"
-        if let w = web, down == nil { w.reload() } else { load() }
-    }
-
-    @objc func showMenu(_ sender: NSButton) {
-        menu().popUp(positioning: nil, at: under(sender), in: sender)
-    }
-
-    // MARK: the popover
-
-    func popoverDidClose(_ n: Notification) {
-        if let m = outside { NSEvent.removeMonitor(m) }
-        outside = nil
-        // The kept page polls no more while closed: its loading stopped and its timers cleared
-        // (each opening loads it again, so nothing is lost; it stays drawn meanwhile).
-        if let w = web {
-            w.stopLoading()
-            w.evaluateJavaScript("for (let i = setTimeout(() => {}, 0); i > 0; i--) { clearTimeout(i); clearInterval(i); }")
-        }
-        closedAt = Date()
-    }
-
-    // MARK: the page
-
-    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
-        guard m.name == "size", let h = (m.body as? NSNumber).map({ CGFloat($0.doubleValue) }), web != nil, down == nil else { return }
-        fit(h)
-    }
-
-    /// The popover sized to the page's height, within maxHeight.
-    func fit(_ h: CGFloat) {
-        let height = min(max(h, 160), maxHeight - Panel.footerHeight) + Panel.footerHeight
-        if abs(popover.contentSize.height - height) >= 1 || popover.contentSize.width != Panel.pageWidth {
-            popover.contentSize = NSSize(width: Panel.pageWidth, height: height)
-        }
-    }
-
-    /// The page's own addresses stay in it; any other (the map, another site) opens in the browser.
-    func webView(_ w: WKWebView, decidePolicyFor a: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard let u = a.request.url else { return decisionHandler(.allow) }
-        if Panel.inPage(u) || ["about", "blob", "data"].contains(u.scheme ?? "") {
-            decisionHandler(.allow)
-            return
-        }
-        decisionHandler(.cancel)
-        NSLog("scenic-status: %@ isn't the build page's: in the browser", u.absoluteString)
-        if a.targetFrame?.isMainFrame ?? true { NSWorkspace.shared.open(u) }
-    }
-
-    /// The page's confirm() (a cancel, freezing the build): asked natively, the panel's own. The
-    /// popover kept open meanwhile (a transient one closes as the alert takes the keyboard, and
-    /// closing stops the page's timers), then made the key window again, the page going on.
-    func webView(_ w: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
-        let a = NSAlert()
-        a.messageText = message
-        a.addButton(withTitle: "OK")
-        a.addButton(withTitle: "Cancel")
-        popover.behavior = .applicationDefined
-        let ok = a.runModal() == .alertFirstButtonReturn
-        popover.behavior = .transient
-        if popover.isShown { popover.contentViewController?.view.window?.makeKey() }
-        completionHandler(ok)
-    }
-
-    /// A link to a new window: in the browser.
-    func webView(_ w: WKWebView, createWebViewWith c: WKWebViewConfiguration, for a: WKNavigationAction, windowFeatures f: WKWindowFeatures) -> WKWebView? {
-        if let u = a.request.url, ["http", "https", "mailto"].contains(u.scheme ?? "") { NSWorkspace.shared.open(u) }
-        return nil
-    }
-
-    func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
-        // (A load cancelled by the next one, the reopening's or Reload's, isn't a failure.)
-        if w === web, (e as NSError).code != NSURLErrorCancelled { setDown(e.localizedDescription) }
-    }
-
-    func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
-        if w === web, (e as NSError).code != NSURLErrorCancelled { setDown(e.localizedDescription) }
-    }
-
-    func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
-        // (Its process ended: made again, as the next opening would.)
-        if w === web {
-            dropWeb()
-            if popover.isShown { load() }
-        }
-    }
-}
+/// This Mac's agent's build page (a sandbox's own: Info.plist's ScenicPage), opened in the browser
+/// by a held unit's Show on the build page.
+let buildPage = info["ScenicPage"] as? String ?? "http://127.0.0.1:8090/"
 
 /// This Mac's ask to its agent (crates/jobrt/src/control.rs), while it waits to be taken up: to
 /// pause (true) or go on (false).
@@ -1488,14 +1147,14 @@ func keptWords(deep: Bool) -> String {
 /// ask waits, that it's clearing.
 func cachesItems(_ own: Own?, now: Int, asked: Bool) -> [(title: String, enabled: Bool, tip: String, deep: Bool)] {
     guard let own = own, let c = own.caches else { return [] }
-    if asked { return [("Clearing the Build's Caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "", false)] }
+    if asked { return [("Clearing the build caches… (asked; this Mac's agent does it now, jobs running keeping what they use)", false, "", false)] }
     return [false, true].map { deep in
-        let title = (deep ? "Clear Caches Deeply" : "Clear the Build's Caches") + (c.clearable(deep: deep).map { " (\(gb($0)))" } ?? "")
+        let title = (deep ? "Clear caches deeply" : "Clear the build caches") + (c.clearable(deep: deep).map { " (\(gb($0)))" } ?? "")
         if now - own.beat > (own.out_of_touch_s ?? outOfTouchDefault) { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?", deep) }
         if let why = c.why_not { return (title, false, "Not now: \(why)", deep) }
         if let n = c.clearable(deep: deep), n < 50 << 20 { return (title, false, "They hold nothing now", deep) }
         let what = deep
-            ? "Deletes what Clear the Build's Caches does, and what's costly to make again: the heritage jobs' planet clip (an hour of osmium) and the Wikidata and Wikipedia answers the NAS has (copied back as the items and heritage jobs start)."
+            ? "Deletes what Clear the build caches does, and what's costly to make again: the heritage jobs' planet clip (an hour of osmium) and the Wikidata and Wikipedia answers the NAS has (copied back as the items and heritage jobs start)."
             : "Deletes this Mac's copies of what the NAS keeps (canopy squares, raw terrain tiles, base packs, copies of the NAS's files …), what queued jobs will read included: later jobs copy back from the NAS what they need."
         return (title, true, "\(what) Jobs running keep what they use. The map's offline copy stays.", deep)
     }
@@ -1508,7 +1167,7 @@ func clearRequestJSON(by: String, at: Int, deep: Bool) -> Data {
     (try? JSONSerialization.data(withJSONObject: ["by": by, "at": at, "level": deep ? "deep" : "caches"] as [String: Any], options: [.sortedKeys])) ?? Data()
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     var reply: Reply?
     /// This Mac's agent's own status (its caches), read with each answer.
@@ -1520,44 +1179,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Quitting goes ahead without asking: the build service stopped as asked, or the app replaced
     /// by an update (the build service left running).
     var mayQuit = false
-    /// Whether this run manages the services (the app opened, not a --show or --menu-proof run).
+    /// Whether this run manages the services (the app opened, not a --menu-proof run).
     var managing = false
     /// `--menu-proof`: its polls printed with the time, a menu held open between.
     var proof = false
-    /// `--show panel|menu`: opened once the first answer is in, the panel closed 20 s later (for
-    /// screenshots, and what the panel costs open and closed).
-    var showAtStart: String?
     func applicationDidFinishLaunching(_ n: Notification) {
-        if !proof && showAtStart == nil { openApp() }
-        // (SCENIC_STATUS_APPEARANCE: light or dark whatever the system's, for screenshots.)
-        switch ProcessInfo.processInfo.environment["SCENIC_STATUS_APPEARANCE"] {
-        case "light": NSApp.appearance = NSAppearance(named: .aqua)
-        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
-        default: break
-        }
-        if let b = item.button {
-            // A click opens the panel (the build page); a right-click, or Control-click, the menu.
-            b.target = self
-            b.action = #selector(clicked)
-            b.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        }
+        if !proof { openApp() }
+        // Any click on the icon (left, right, Control-) opens the menu, made afresh as it opens
+        // (`menuNeedsUpdate`).
+        item.menu = itemMenu
         show()
         poll()
         every(5) { [weak self] in self?.poll() }
         every(60) { [weak self] in self?.updateIfReplaced() }
         if proof { menuProof() }
-        if let what = showAtStart {
-            after(2) {
-                self.panel.checkWidth = true
-                if what == "menu" { self.popMenu() } else if let b = self.item.button { self.panel.toggle(from: b) }
-                // (The panel closed again after 20 s: what it leaves behind measured.)
-                after(20) {
-                    self.panel.close()
-                    print("\(stamp()) panel closed")
-                    fflush(stdout)
-                }
-            }
-        }
     }
 
     /// `--menu-proof`: after a few seconds the menu opens and stays open 25 s (closed by a timer of
@@ -1566,9 +1201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func menuProof() {
         after(6) {
             print("\(stamp()) menu opens")
-            let menu = self.currentMenu()
-            after(25) { menu.cancelTracking() }
-            self.popMenu(menu)
+            after(25) { self.itemMenu.cancelTracking() }
+            self.item.button?.performClick(nil)
             print("\(stamp()) menu closed")
             after(12) { exit(0) }
         }
@@ -1589,7 +1223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         let name = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Scenic"
-        appMenu.addItem(withTitle: "Show the \(name) Window", action: #selector(showWindow), keyEquivalent: "0").target = self
+        appMenu.addItem(withTitle: "Show the \(name) window", action: #selector(showWindow), keyEquivalent: "0").target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide \(name)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(withTitle: "Quit \(name)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -1629,7 +1263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Each poll: the build service kept running (or, quitting after its job, the app quits once
     /// it has stopped), the window.
     func tendServices() {
-        // (Not in --show and --menu-proof's runs: the services left alone.)
+        // (Not in --menu-proof's runs: the services left alone.)
         guard managing else { return }
         recheckSwitchOver()
         build.tend()
@@ -1734,7 +1368,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.polling = false
                 self.reply = r
                 self.own = ownStatus()
-                self.panel.setOwn(self.own)
                 self.show()
             }
         }
@@ -1743,8 +1376,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: the icon and the menu
 
     /// A menu action whose ask to this Mac's agent couldn't be written (Accept, Cancel, Pause,
-    /// Resume, Clear): said in place of the state (the icon a problem, its tooltip, the panel's
-    /// line, the menu's first line) until an action's ask is written or a minute has passed.
+    /// Resume, Clear): said in place of the state (the icon a problem, its tooltip, the menu's
+    /// first line) until an action's ask is written or a minute has passed.
     var failure: (said: String, at: Int)?
 
     func failed(_ what: String, _ error: Error) {
@@ -1773,42 +1406,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             b.image = iconImage(kind, held: !held.isEmpty, line: line)
             b.toolTip = held.isEmpty ? line : "\(line)\n" + held.map { "Held at the gate: \(inputLine($0))" }.joined(separator: "\n")
         }
-        panel.update(line: line)
     }
 
-    /// The panel: the build page in a popover, while it's open.
-    lazy var panel = Panel(menu: { [weak self] in self?.currentMenu() ?? NSMenu() })
-
-    @objc func clicked(_ sender: NSStatusBarButton) {
-        let e = NSApp.currentEvent
-        if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true {
-            panel.close()
-            popMenu()
-        } else {
-            panel.toggle(from: sender)
-        }
-    }
-
-    /// The menu, under the icon, where the system puts a status item's menu (given to the item for
-    /// this click alone: a click opens the panel).
-    func popMenu(_ m: NSMenu? = nil) {
-        item.menu = m ?? currentMenu()
-        item.button?.performClick(nil)
-        item.menu = nil
-    }
-
-    func currentMenu() -> NSMenu {
-        recheckSwitchOver()
-        let (kind, line) = shownState()
-        return menu(kind, line)
-    }
-
-    /// The menu (a right-click on the icon, or the panel's "⋯"): what the page can't say (the state
-    /// in a line and its build caches), then the controls.
-    func menu(_ kind: Kind, _ line: String) -> NSMenu {
+    /// The icon's menu, the item's for good: any click opens it, filled afresh just before
+    /// (`menuNeedsUpdate`).
+    lazy var itemMenu: NSMenu = {
         let m = NSMenu()
         m.autoenablesItems = false
+        m.delegate = self
+        return m
+    }()
+
+    func menuNeedsUpdate(_ m: NSMenu) {
+        recheckSwitchOver()
+        let (kind, line) = shownState()
+        fill(m, kind, line)
+    }
+
+    /// The menu, `m` emptied and filled: the state in a line, this Mac's memory and build caches,
+    /// then the controls.
+    func fill(_ m: NSMenu, _ kind: Kind, _ line: String) {
+        m.removeAllItems()
         var info = [Line(text: line, style: .title)]
+        // (This Mac's agent running another app than this one: quitting and opening this one again
+        // puts them back in step.)
+        if let other = own?.app, let mine = bundleVersion(Bundle.main.bundleURL), other != mine {
+            info.append(Line(text: "This Mac's agent runs app \(other), not this app's: quit and open Scenic again", style: .plain))
+        }
         // (This Mac's memory against its floor, the brake first when it's on: task #932.)
         if let mem = own?.memory { info.append(Line(text: mem.said, style: mem.brake != nil ? .plain : .small)) }
         if let c = own?.caches { info.append(Line(text: cachesLine(c), style: .small)) }
@@ -1829,17 +1453,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let it = NSMenuItem(title: inputLine(v), action: nil, keyEquivalent: "")
             let sub = NSMenu()
             let warns = (v.findings ?? []).filter { $0.level == "warning" }
-            let acc = NSMenuItem(title: warns.isEmpty ? "Errors: fix or remove the files" : "Accept \(warns.count == 1 ? "the Warning" : "\(warns.count) Warnings")…", action: warns.isEmpty ? nil : #selector(acceptInputs), keyEquivalent: "")
+            let acc = NSMenuItem(title: warns.isEmpty ? "Errors: fix or remove the files" : "Accept \(warns.count == 1 ? "the warning" : "\(warns.count) warnings")…", action: warns.isEmpty ? nil : #selector(acceptInputs), keyEquivalent: "")
             acc.target = self
             acc.isEnabled = !warns.isEmpty
             acc.representedObject = v.unit
             sub.addItem(acc)
-            do { let page = Panel.page
-                let show = NSMenuItem(title: "Show on the Build Page", action: #selector(openPage), keyEquivalent: "")
-                show.target = self
-                show.representedObject = page.hasSuffix("#overview") ? page : page + "#inputs"
-                sub.addItem(show)
-            }
+            let show = NSMenuItem(title: "Show on the build page", action: #selector(openPage), keyEquivalent: "")
+            show.target = self
+            show.representedObject = buildPage + "#inputs"
+            sub.addItem(show)
             it.submenu = sub
             m.addItem(it)
         }
@@ -1856,15 +1478,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // (The opposite of what was asked, or of the state, is always there: an ask is never stuck.)
         if asked == true || (asked == nil && pausedHere) {
-            let it = NSMenuItem(title: "Resume Building", action: #selector(resumeBuild), keyEquivalent: "")
+            let it = NSMenuItem(title: "Resume building", action: #selector(resumeBuild), keyEquivalent: "")
             it.target = self
             m.addItem(it)
         } else {
-            let it = NSMenuItem(title: "Pause Building", action: #selector(pauseBuild), keyEquivalent: "")
+            let it = NSMenuItem(title: "Pause building", action: #selector(pauseBuild), keyEquivalent: "")
             it.target = self
             it.toolTip = "Every Mac's running job stops at its next safe point (a z3 tile, a z6 tile, a map tile), keeping what it did; nothing new starts until you resume"
             m.addItem(it)
-            let now = NSMenuItem(title: "Pause Building Now", action: #selector(pauseBuildNow), keyEquivalent: "")
+            let now = NSMenuItem(title: "Pause building now", action: #selector(pauseBuildNow), keyEquivalent: "")
             now.target = self
             now.isAlternate = true
             now.keyEquivalentModifierMask = [.option]
@@ -1886,12 +1508,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // until the lead runs a newer app.
         for j in runningJobs(serviceRunning: build.state.running) {
             guard let t = j.target else { continue }
-            let it = NSMenuItem(title: "Cancel \(j.what)", action: #selector(cancelJob), keyEquivalent: "")
+            let it = NSMenuItem(title: "Cancel \(lowerFirst(j.what))", action: #selector(cancelJob), keyEquivalent: "")
             it.target = self
             it.representedObject = [j.step, t, "rerun"]
             it.toolTip = "Stopped now and given back to the build (not a failure), its work under way dropped; it runs again from the start"
             m.addItem(it)
-            let alt = NSMenuItem(title: "Cancel \(j.what), Rerun on a Newer App", action: #selector(cancelJob), keyEquivalent: "")
+            let alt = NSMenuItem(title: "Cancel \(lowerFirst(j.what)), rerun on a newer app", action: #selector(cancelJob), keyEquivalent: "")
             alt.target = self
             alt.representedObject = [j.step, t, "update"]
             alt.isAlternate = true
@@ -1914,14 +1536,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // installed (a laptop), so the map and its downloads work with the Mac mini away (away from
         // the NAS too, only what's downloaded: docs/roles.md §8.3).
         do {
-            let it = NSMenuItem(title: mapStarting ? "Opening the Map on This Mac…" : "Open the Map on This Mac", action: mapStarting ? nil : #selector(openMapHere), keyEquivalent: "")
+            let it = NSMenuItem(title: mapStarting ? "Opening the map on this Mac…" : "Open the map on this Mac", action: mapStarting ? nil : #selector(openMapHere), keyEquivalent: "")
             it.target = self
             it.isEnabled = !mapStarting
             it.toolTip = "The map served by this Mac at \(mapHere.absoluteString): it works with the Mac mini away (away from the NAS too, with what this Mac downloaded); started if it isn't running, it quits 30 minutes after its last use"
             m.addItem(it)
         }
         if let log = reply?.log {
-            let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
+            let it = NSMenuItem(title: "Open the build log", action: #selector(openLog), keyEquivalent: "")
             it.target = self
             it.representedObject = log
             m.addItem(it)
@@ -1934,7 +1556,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 it.isEnabled = false
                 m.addItem(it)
             }
-            let win = NSMenuItem(title: "Show the Scenic Window", action: #selector(showWindow), keyEquivalent: "")
+            let win = NSMenuItem(title: "Show the Scenic window", action: #selector(showWindow), keyEquivalent: "")
             win.target = self
             m.addItem(win)
             if build.quitting == "finish" {
@@ -1942,10 +1564,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let info = NSMenuItem(title: "Quitting once this job ends" + (jobs.first?.left.map { ", about \(duration($0)) left" } ?? ""), action: nil, keyEquivalent: "")
                 info.isEnabled = false
                 m.addItem(info)
-                let cancel = NSMenuItem(title: "Don't Quit", action: #selector(cancelQuit), keyEquivalent: "")
+                let cancel = NSMenuItem(title: "Don't quit", action: #selector(cancelQuit), keyEquivalent: "")
                 cancel.target = self
                 m.addItem(cancel)
-                let now = NSMenuItem(title: "Stop Now and Quit", action: #selector(stopNowAndQuit), keyEquivalent: "")
+                let now = NSMenuItem(title: "Stop now and quit", action: #selector(stopNowAndQuit), keyEquivalent: "")
                 now.target = self
                 m.addItem(now)
             } else {
@@ -1954,7 +1576,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.addItem(quit)
             }
         }
-        return m
     }
 
     /// Accepts a held unit's warnings (the item's unit), once its owner says so, naming them: an ask
@@ -2120,7 +1741,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openPage(_ sender: NSMenuItem) {
         guard let p = sender.representedObject as? String, let u = URL(string: p) else { return }
-        panel.close()
         NSWorkspace.shared.open(u)
     }
 
@@ -2209,7 +1829,6 @@ usage: scenic-status [option]
                              beside it as "own", and "clear_asked" while an ask to clear its caches
                              waits)
   --render lines.png         the status's lines drawn as they lay out (dark), for checking
-  --show panel|menu          runs, and opens the panel (closed 20 s later) or the menu
   --menu-proof               runs, its polls printed with the time, a menu held
                              open 25 s between: they go on while it's open
   --reopen <pid> <app>       an update's helper: opens <app> once <pid> has ended
@@ -2221,11 +1840,11 @@ usage: scenic-status [option]
 /// The options and how many values each takes (-1: all the rest, at least one).
 let options: [String: Int] = [
     "--no-window": 0, "--plan": 0, "--services": 0, "--unregister": 0, "--print": 0, "--replay": -1,
-    "--render": 1, "--show": 1, "--menu-proof": 0, "--reopen": 2, "--test": 1,
+    "--render": 1, "--menu-proof": 0, "--reopen": 2, "--test": 1,
 ]
 
 /// The options that run something other than the app: one at a time, and not with the app's own
-/// (--no-window, --show, --menu-proof).
+/// (--no-window, --menu-proof).
 let modes: Set<String> = ["--plan", "--services", "--unregister", "--print", "--replay", "--render", "--reopen", "--test"]
 
 /// What's wrong with the arguments (after the program's name): nil when they're fine, "" for
@@ -2315,7 +1934,7 @@ if let i = args.firstIndex(of: "--reopen") {
     let views: [NSView] = [bar] + lines(r, line, own: ownStatus()).map { l in
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
     } + holdItems(r, own: ownStatus()).map { hi in LineView(hi.title, font: .menuFont(ofSize: 0), color: hi.held != nil ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
-        + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
+        + (r?.log != nil ? ["Open the build log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
     let height = views.reduce(CGFloat(0)) { $0 + $1.frame.height } + 16
     let canvas = NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: height))
     canvas.appearance = NSAppearance(named: .darkAqua)
@@ -2351,7 +1970,6 @@ if let i = args.firstIndex(of: "--reopen") {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     delegate.proof = args.contains("--menu-proof")
-    if let i = args.firstIndex(of: "--show") { delegate.showAtStart = args[i + 1] }
     app.delegate = delegate
     // (Never in the Dock (Info.plist's LSUIElement too): the menu bar item and the app's window.)
     app.setActivationPolicy(.accessory)

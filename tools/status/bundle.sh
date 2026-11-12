@@ -12,7 +12,8 @@
 # --sandbox builds "Scenic Sandbox.app", for testing on a Mac whose Scenic is live: its own bundle id
 # (local.scenic-sandbox.app) and build service (local.scenic-sandbox.build) label, its own home in
 # place of ~/Library/Application Support/scenic (its run files, its agent folder, its installed
-# versions, whose `scenic` answers its status), its build page on port 17399 (ScenicPage), never added
+# versions, whose `scenic` answers its status), its build page (the menu's Show on the build page) on
+# port 17399 (ScenicPage), never added
 # to the login items. It never touches the live app, services or home. (tools/status/sandbox.sh)
 set -euo pipefail
 usage="usage: tools/status/bundle.sh <folder> <version> <identity> [--sandbox <home>]"

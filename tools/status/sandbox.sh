@@ -5,8 +5,8 @@
 # (local.scenic.*) and ~/Library/Application Support/scenic are never touched. Its build service
 # runs a stand-in agent (it reports a job and quits as the app asks, as crates/jobrt/src/control.rs
 # Quit says), each installed version's `scenic` a stand-in answering `scenic menu`, and a stand-in
-# build page on port 17399 serves the panel (the app's ScenicPage, never this Mac's live agent's
-# port 8090).
+# build page on port 17399 for the menu's Show on the build page (the app's ScenicPage, never this
+# Mac's live agent's port 8090).
 #
 #   tools/status/sandbox.sh setup <dir>     builds v1 (and v2, for the update) and installs v1 at
 #                                           <dir>/Applications, the stand-ins, the page's job
@@ -80,7 +80,7 @@ done
 EOF
   chmod +x $home/stub-agent.sh
   printf '%s\n' "# scenic: keep (the sandbox's stand-in agent)" $home/stub-agent.sh > $home/run/agent
-  # The panel's build page, a stand-in (the app's ScenicPage, never the live agent's 8090), a
+  # The build page, a stand-in (the app's ScenicPage, never the live agent's 8090), a
   # launchd job of its own.
   print -r -- '<!doctype html><meta charset="utf-8"><body style="font: 13px system-ui; padding: 16px">The sandbox'"'"'s build page (a stand-in)</body>' > $home/www/index.html
   mkdir -p ${page_plist:h}
