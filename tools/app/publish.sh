@@ -1,23 +1,26 @@
 #!/bin/zsh
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
 # tests (the server's routes among them, on a fixture map: crates/server/tests/serves.rs, run against
-# the release server too), then send it in one stream to the NAS's Mac (the Mac mini, on the NAS's
-# LAN: tools/app/lib.zsh's nas_send and nas_install), which writes it to the NAS as one archive
-# (app/releases/<version>.tgz) and points app/releases/current.json at it. Every Mac's agent unpacks
-# it within five minutes (jobrt::appupdate) and restarts into it by its update drain; the Mac mini's
-# map server, the only one, restarts into it once the map has been idle a minute.
+# the release server too), then put it live on the lead over HTTP (tools/app/lib.zsh's lead_install:
+# its archive and manifest uploaded, checked there and taken only over the live release this
+# publish checked against), which keeps it with the release before and serves it. Every Mac's agent
+# fetches it from the lead within five minutes (coordwire::releases, jobrt::appupdate) and restarts
+# into it by its update drain; the Mac mini's map server, the only one, restarts into it once the
+# map has been idle a minute. Until every Mac has fetched from the lead for a day, the release also
+# goes to the NAS's app/releases/ as before, through the NAS's Mac (the Mac mini: nas_send and
+# nas_install), for the updaters before #1118 (docs/building.md, The NAS's app/ until then).
 #
 #   tools/app/publish.sh              build, test, publish
-#   tools/app/publish.sh --rollback   point app/releases/current.json back at the previous version,
+#   tools/app/publish.sh --rollback   put the release before back live on the lead (and on the NAS),
 #                                     unless it's before the live one's rollback floor
 #                                     (tools/app/rollback-floor)
 #
-# Any Mac that reaches the NAS's Mac may publish, at home or away (its own NAS mount plays no part),
-# and two publishes may run at once: each builds and tests in its own tree beside the other, and
-# only the install on the NAS's Mac (app/releases/) holds the lock on the NAS
-# (app/publish.lock), the second waiting for the first's. A publish is only ever of a clean tree whose
-# commit is on origin's main (no -dirty versions), and installs only over a live version its commit
-# contains (fast-forward).
+# Any Mac that reaches the lead (and the NAS's Mac) may publish, at home or away, and two publishes
+# may run at once: each builds and tests in its own tree beside the other; the lead takes each only
+# over the live release it was checked against, so the second, refused, checks again and goes in
+# after the first (the NAS's install holds its lock on the NAS, app/publish.lock). A publish is only
+# ever of a clean tree whose commit is on origin's main (no -dirty versions), and installs only over
+# a live version its commit contains (fast-forward).
 # Each publish is recorded for the dev job dashboard (tools/dev/devjob.zsh): the run and its steps,
 # the tests, compiles and clippy under theirs.
 set -euo pipefail
@@ -47,13 +50,17 @@ cleanup=("rm -rf $sb")
 # (tools/app/lib.zsh's at_end: zsh runs no EXIT trap when errexit stops it inside a function.)
 # (Or, when the NAS's Mac had the go-ahead and its answer was lost, "publish: FAILED, unknown
 # whether <version> went live …": its app/releases/current.json says.)
-published=
+# (Or, live on the lead and the NAS's app/ not written after it: "publish: FAILED: <version> is live
+# on the lead, …": the Macs on an app before #1118 don't get it.)
+published= lead_state=
 on_exit() {
   local rc=$? c
   for c in $cleanup; do eval $c; done
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
-    if [[ ${nas_state:-} == unknown ]]; then
+    if [[ $lead_state == live ]]; then
+      echo "publish: FAILED: $version is live on the lead, but the NAS's app/ (the updaters before #1118 read it) wasn't written (exit $rc)"
+    elif [[ ${nas_state:-} == unknown ]]; then
       echo "publish: FAILED, unknown whether $version went live: the NAS's Mac had the go-ahead, then didn't answer (its app/releases/current.json says; exit $rc)"
     else echo "publish: FAILED, nothing published (exit $rc)"; fi
     c=$djstep_name; step "" 1; dj_end $djrun fail exit $rc ${c:+failed_in} ${c:+$c}
@@ -75,7 +82,16 @@ dj_start publish ${${rollback:+rollback}:-publish}; djrun=$REPLY
 export SCENIC_DEVJOB_PARENT=$djrun
 at_end on_exit
 from="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$"
+# The lead's releases read and rolled back through this Mac's installed app (`scenic releases`),
+# when it has them (an app before #1118 doesn't: then the NAS's alone, the rollout's).
+cli="$HOME/Library/Application Support/scenic/app/current/scenic"
+[[ -x $cli ]] && $cli releases --help >/dev/null 2>&1 || cli=
+lead_rc=4
 if [[ $rollback == asked ]]; then
+  if [[ -n $cli ]]; then lead_rc=0; lead_rollback $cli $sb/lead || lead_rc=$?; fi
+  (( lead_rc == 0 || lead_rc == 4 )) || exit $lead_rc
+  (( lead_rc == 0 )) || echo "the lead keeps no releases (an app before #1118, here or there): the NAS's alone"
+  # (Rollout, docs/building.md: the NAS's too, for the updaters before #1118.)
   bounded 120 on_nas_mac nas_rollback $NAS "$from" </dev/null || {
     rc=$?; (( rc != 124 )) || echo "no answer from the NAS's Mac ($nas_host) within 120 s"; exit $rc; }
   rollback=done
@@ -97,6 +113,20 @@ bounded 60 on_nas_mac nas_current $NAS </dev/null > $sb/current.json \
 [[ -s $sb/current.json ]] || rm $sb/current.json
 began=$(live_version $sb/current.json || true)
 fast_forward $sb/current.json $head || exit 1
+# The lead's live release, read now too (through this Mac's installed app, when it has
+# `scenic releases`), checked as the NAS's: refused now, before building; and the lead unreachable
+# stops the publish here. Checked again at the install, by the lead too.
+step "the lead"
+lead_began=
+if [[ -n $cli ]]; then
+  lead_rc=0; lead_live $cli $sb/lead || lead_rc=$?
+  case $lead_rc in
+    0) lead_began=$(live_version $sb/lead/current.json || true)
+       fast_forward $sb/lead/current.json $head || exit 1 ;;
+    4) echo "the lead keeps no releases (an app before #1118): checked at the install" ;;
+    *) echo "can't read the lead's releases (the lead's coordinator unreachable?)"; exit 1 ;;
+  esac
+fi
 # The old name of the lead's role (the pattern below) nowhere in the code, docs or UI (the owner's
 # rule, 14 Oct 2026): the role is the lead's, a measure taken on a Mac names it (the M4, the M1).
 # History (the task board's list of where tasks ran) is exempt.
@@ -301,7 +331,21 @@ app_manifest $app $version $sb/send/app.tgz > $sb/send/manifest.json
 cp -X tools/nas/fetch-planet.sh $sb/send/
 COPYFILE_DISABLE=1 tar -cf $sb/upload.tar --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app.tgz manifest.json fetch-planet.sh
 dj_attr $djrun upload_bytes $(stat -f %z $sb/upload.tar)
-# The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the upload received whole and
+# Live on the lead (lib.zsh's lead_install, through this snapshot's own `scenic releases`): the lead's
+# releases read, the order checked, the release uploaded and put live from the version read (the
+# lead checks the archive and every file against the manifest); read and pushed again when another
+# publish or a rollback went in meanwhile. A lead on an app before #1118 keeps none: then the NAS's
+# alone (its first release with this app installed through the NAS, as before).
+step lead
+lead_rc=0
+lead_install $PWD/target/release/scenic $sb/send/app.tgz $sb/send/manifest.json $head "$lead_began" $sb/lead || lead_rc=$?
+case $lead_rc in
+  0) lead_state=live; echo "live on the lead: $version" ;;
+  4) echo "the lead keeps no releases (an app before #1118): the NAS's alone" ;;
+  *) exit 1 ;;
+esac
+# Rollout (docs/building.md, The NAS's app/ until then): the NAS's app/ too, for the updaters before
+# #1118. The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the upload received whole and
 # checked, the order checked, the archive written beside its name; then under the lock on the NAS,
 # the one part two publishes can't run at once (waited for while another publish installs; one
 # older than six hours, or whose process is gone, taken over; freed only by its holder), the order

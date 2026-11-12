@@ -197,12 +197,18 @@ and codesign.
   constraint, the next, 30 s later, takes); `sandbox.sh clean <dir>`. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
-- **The updater** (`jobrt::appupdate`): every Mac's agent checks the NAS's
-  `app/releases/current.json` every five minutes; for a newer version it copies the version's
-  archive (`app/releases/<version>.tgz`, one file: docs/building.md, The NAS's layout of the app),
-  checks its SHA-256, unpacks it locally (tar keeps the programs' modes) and checks every file
-  against its SHA-256, the folder holding the manifest's files alone; then it points
-  `app/current` at it and restarts into it by its update drain. (The updaters before #1148 read
+- **The updater** (`jobrt::appupdate`, `coordwire::releases`): every Mac's agent asks the lead
+  for its releases every five minutes (`GET /release/live` on its coordinator, found by the NAS's
+  `state/coordinator.json`, with the workers' key: docs/coordinator.md §10); for a newer version it
+  fetches the version's archive from the lead (`/release/<version>.tgz`), checks its SHA-256,
+  unpacks it locally (tar keeps the programs' modes) and checks every file against its SHA-256,
+  the folder holding the manifest's files alone; then it points `app/current` at it and restarts
+  into it by its update drain. It keeps the lead's live release and the one before
+  (`app/releases/`: `live.json` and their archives, each change under its lock and only from what
+  it was read as), so a Mac made the lead holds them; one it holds isn't fetched again. The lead
+  not answering, the update waits. While the lead holds no release (an app before #1118 there, or
+  none published to it yet) it reads the NAS's `app/releases/` instead (the rollout's:
+  docs/building.md, The NAS's `app/` until then). (The updaters before #1148 read
   `app/current.json` and the version's folder, file by file: the first release is the last
   written so, building.md's old layout.) On the Mac mini the map server
   checks too (so the map updates with the agent stopped), one check at a time (`app/update.lock`),

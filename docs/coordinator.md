@@ -263,6 +263,33 @@ Common rules:
   running job's requests come from the lead itself, through no proxy (`crate::net::own`).
 - A worker is served only its task's files and uploads only into its folder; bodies, connections,
   timeouts and names are bounded; lease numbers, and the job ids they make (pool.md §7.5), are never reused.
+- The app's releases (§10) are served and taken with the workers' key alone, by the lead alone; a
+  release goes live only once it and every file in it match its manifest.
 - **Known limits:** by the owner's choice, any device on the LAN or tailnet can pause the build or
   change the owner's settings.
 - Licensed data on the owner's own devices isn't redistribution (docs/storage.md).
+
+## 10. The app's releases
+
+- **Kept by the lead** (`coord::releases`, task #1118): the live release (its archive and its
+  manifest: every file's SHA-256 and the archive's) and the one before it, in its Mac's
+  `<home>/app/releases/` (`jobrt::appupdate::Releases`: `live.json`, one file written whole, and
+  the two archives), which every Mac's updater keeps as it follows the lead: a Mac made the lead
+  serves what it followed. Its agent gives its coordinator them (`set_releases`); a member's port
+  refuses them (409).
+- **Served:** `GET /release/live` (`{"current", "previous"}`, each a manifest or null) and
+  `GET /release/<version>.tgz` (either's archive), with the workers' key, to every Mac's updater
+  (docs/macs.md, The updater) and the map server's.
+- **Put live by a publish** (tools/app/publish.sh, through `scenic releases push`): the archive
+  streamed in (`PUT /release/upload/<version>`, into `incoming/`, flushed), then
+  `POST /release/install` with the manifest and the `base` (the live version publish.sh checked its
+  commit against, which needs git): the archive's SHA-256 checked, the archive unpacked aside and
+  every file's checked (400 and the upload dropped, else), then under the releases' lock taken only
+  while `base` is still the live version (409 with what is live, else: publish.sh reads and checks
+  again), the live one kept as the one before, the archives of neither removed, durable before the
+  answer. An upload no install took is removed by a later change once an hour old.
+- **Rolled back** (`POST /release/rollback`, `scenic releases rollback`, publish.sh --rollback after
+  its floor check): from the two releases as read (409 else), the one before made live and the
+  live one kept before it.
+- **Planned:** nothing of it on the NAS once the rollout ends (docs/building.md, The NAS's `app/`
+  until then).

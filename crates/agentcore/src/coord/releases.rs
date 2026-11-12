@@ -103,7 +103,7 @@ impl Drop for Part {
 
 /// `PUT /release/upload/<version>`: a release's archive streamed into `incoming/` (its own name,
 /// flushed to the disk), for its `install` to name: `{"upload": <its name>, "size"}`. One no
-/// install took goes after an hour (Releases::commit).
+/// install took is removed by a later commit once an hour old (Releases::commit).
 pub(super) async fn upload(State(c): State<Ctx>, Url(v): Url<String>, h: HeaderMap, body: Body) -> Response {
     let r = match releases(&c) {
         Ok(r) => r,

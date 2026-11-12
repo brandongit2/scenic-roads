@@ -144,6 +144,74 @@ out=$(ff $D) && no "fast_forward diverged" "allowed" || { [[ $out == *diverged* 
 print -r -- '{"version": "20261026-0953-0000000"}' > $cur
 out=$(ff $C) && no "fast_forward unknown live" "allowed" || ok "fast_forward unknown live refused"
 
+# lead_install / lead_rollback (#1118): against a stand-in `scenic releases` (the lead's releases
+# in $LD/live.json, each push and rollback logged; `old`: a lead on an app before #1118, exit 4;
+# `move-once`: the next push refused, exit 3, as another publish went in meanwhile, moved.json
+# live then), in the stand-in repository above: B builds on A, C on B, D diverged.
+LD=$tmp/lead; mkdir -p $LD
+fake=$tmp/scenic-releases
+cat > $fake <<'EOF'
+#!/bin/zsh
+LD=${0:h}/lead
+mf() { python3 -c 'import json, sys; print(json.dumps({"version": sys.argv[1]}))' $1; }
+case "$1 $2" in
+  "releases --json") [[ ! -f $LD/old ]] || exit 4; cat $LD/live.json ;;
+  "releases push")
+    [[ ! -f $LD/move-always ]] || { print -r -- moved >> $LD/log; exit 3; }
+    print -r -- "push $(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $4) from $6" >> $LD/log
+    if [[ -f $LD/move-once ]]; then rm $LD/move-once; cp $LD/moved.json $LD/live.json; exit 3; fi
+    python3 -c 'import json, sys
+live = json.load(open(sys.argv[1])); m = json.load(open(sys.argv[2]))
+if (live["current"] or {}).get("version", "none") != sys.argv[3]: sys.exit(3)
+json.dump({"current": m, "previous": live["current"]}, open(sys.argv[1], "w"))' $LD/live.json $4 $6 ;;
+  "releases rollback")
+    print -r -- "rollback $3 $4" >> $LD/log
+    python3 -c 'import json, sys
+live = json.load(open(sys.argv[1]))
+json.dump({"current": live["previous"], "previous": live["current"]}, open(sys.argv[1], "w"))' $LD/live.json ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x $fake
+lv1() { python3 -c 'import json, sys; l = json.load(open(sys.argv[1])); print((l["current"] or {}).get("version"), (l["previous"] or {}).get("version"))' $LD/live.json; }
+setlive() { python3 -c 'import json, sys; m = lambda v: {"version": v} if v else None; print(json.dumps({"current": m(sys.argv[1]), "previous": m(sys.argv[2])}))' "$1" "${2:-}"; }
+print -r -- '{"version": "20261112-0002-'$C'"}' > $tmp/c.manifest
+li() { rm -f $LD/log; (cd $g && zsh -c "source ${(q)lib}; lead_install $fake /dev/null $tmp/c.manifest $C '$1' $tmp/lead-read; print -r -- rc=\$?" 2>&1) }
+setlive 20261112-0001-$B > $LD/live.json
+out=$(li 20261112-0001-$B)
+[[ $out == rc=0 && $(<$LD/log) == "push 20261112-0002-$C from 20261112-0001-$B" && $(lv1) == "20261112-0002-$C 20261112-0001-$B" ]] \
+  && ok "lead_install: pushed from the live release read" || no "lead_install" "$out / $(<$LD/log)"
+# Another publish (B's, over A) went in between the read and the push: read again, pushed from it.
+setlive 20261112-0000-$A > $LD/live.json; setlive 20261112-0001-$B 20261112-0000-$A > $LD/moved.json; touch $LD/move-once
+out=$(li 20261112-0000-$A)
+[[ $out == *'changed since it was read: again'*rc=0 && $(wc -l < $LD/log) == *2 && $(tail -1 $LD/log) == "push 20261112-0002-$C from 20261112-0001-$B" ]] \
+  && ok "lead_install: the live release moved meanwhile, read and pushed again" || no "lead_install moved" "$out / $(<$LD/log)"
+# The lead's live release diverged from this commit (D's): refused here, nothing pushed.
+setlive 20261112-0003-$D > $LD/live.json
+out=$(li '')
+[[ $out == *diverged*rc=1 && ! -s $LD/log ]] && ok "lead_install: a diverged live release refused, nothing pushed" || no "lead_install diverged" "$out"
+# A rollback on the lead since the publish began (live B, C before it, began at C): refused.
+setlive 20261112-0001-$B 20261112-0002-$C > $LD/live.json
+out=$(li 20261112-0002-$C)
+[[ $out == *'rolled back to'*rc=1 && ! -s $LD/log ]] && ok "lead_install: a rollback since the publish began refused" || no "lead_install rolled back" "$out"
+# Moving on every push: given up.
+setlive 20261112-0000-$A > $LD/live.json; cp $LD/live.json $LD/moved.json
+out=$(cd $g && zsh -c "source ${(q)lib}; lead_tries=2; touch $LD/move-always; lead_install $fake /dev/null $tmp/c.manifest $C '' $tmp/lead-read; print -r -- rc=\$?" 2>&1)
+[[ $out == *'kept changing'*rc=1 ]] && ok "lead_install: a live release moving at every try, given up" || no "lead_install kept moving" "$out"
+# A lead on an app before #1118: 4, nothing pushed.
+rm -f $LD/move-once $LD/move-always; touch $LD/old
+out=$(li '')
+[[ $out == rc=4 && ! -s $LD/log ]] && ok "lead_install: a lead keeping no releases, 4" || no "lead_install old lead" "$out"
+rm $LD/old
+# lead_rollback: the one before made live from the two read; none before it, refused.
+setlive 20261112-0002-$C 20261112-0001-$B > $LD/live.json; rm -f $LD/log
+out=$(cd $g && zsh -c "source ${(q)lib}; lead_rollback $fake $tmp/lead-read; print -r -- rc=\$?" 2>&1)
+[[ $out == *"rolled back to 20261112-0001-$B on the lead"*rc=0 && $(<$LD/log) == "rollback 20261112-0002-$C 20261112-0001-$B" && $(lv1) == "20261112-0001-$B 20261112-0002-$C" ]] \
+  && ok "lead_rollback" || no "lead_rollback" "$out / $(<$LD/log)"
+setlive 20261112-0002-$C > $LD/live.json; rm -f $LD/log
+out=$(cd $g && zsh -c "source ${(q)lib}; lead_rollback $fake $tmp/lead-read; print -r -- rc=\$?" 2>&1)
+[[ $out == *'no release before'*rc=1 && ! -s $LD/log ]] && ok "lead_rollback: none before, refused" || no "lead_rollback none before" "$out"
+
 # Two publishes at once, as publish.sh composes these steps (fake steps, the stand-in NAS and
 # repository): each takes a tree, the tests one at a time, the NAS lock only around its install
 # with the ordering checked under it. The second (c, newer) builds beside the first (b) and goes in

@@ -201,6 +201,62 @@ rollback_ok() {
 # live_version <current.json>: its version's name.
 live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }
 
+# The lead's releases (#1118, docs/coordinator.md §10): the lead keeps the live release and the one
+# before and serves them to every Mac's updater; a publish puts one live there, and a rollback goes
+# back there, through `scenic releases` (<scenic>: a program that has it; the lead found by the
+# NAS's contact, with the workers' key). The order is checked here (fast_forward, rollback_ok: they
+# need git) on what the lead says is live, and the lead takes it only from that (its base).
+
+# lead_live <scenic> <dir>: the lead's live release and the one before, written as <dir>/current.json
+# and <dir>/previous.json (each missing when none). 0; 4: a lead on an app that keeps none (before
+# #1118); else 1.
+lead_live() {
+  local out rc=0
+  mkdir -p $2; rm -f $2/current.json $2/previous.json
+  out=$($1 releases --json) || rc=$?
+  (( rc == 0 )) || return $(( rc == 4 ? 4 : 1 ))
+  print -r -- $out | python3 -c 'import json, sys
+live = json.load(sys.stdin)
+for k in ("current", "previous"):
+    if live.get(k): open(sys.argv[1] + "/" + k + ".json", "w").write(json.dumps(live[k]))' $2
+}
+
+# lead_install <scenic> <archive> <manifest> <commit> <began> <dir>: publish.sh's release put live on
+# the lead: its releases read (lead_live, into <dir>), the order checked (fast_forward, <began> the
+# lead's live version when the publish began: a rollback since refuses it), then pushed from the
+# live version read (the lead checks the archive and every file, and takes it only from that
+# version); when the lead's releases changed meanwhile (another publish or a rollback went in:
+# exit 3), again, up to $lead_tries times (3). 0 live; 4: a lead keeping no releases, nothing sent;
+# else 1.
+lead_install() {
+  local scenic=$1 archive=$2 manifest=$3 head=$4 began=$5 d=$6 try rc base
+  for try in {1..${lead_tries:-3}}; do
+    rc=0; lead_live $scenic $d || rc=$?
+    (( rc == 0 )) || { (( rc == 4 )) || print -r -- "can't read the lead's releases"; return $rc; }
+    fast_forward $d/current.json $head "$began" || return 1
+    base=$(live_version $d/current.json) || base=none
+    rc=0; $scenic releases push $archive $manifest --base $base >/dev/null || rc=$?
+    (( rc != 3 )) || { print -r -- "the lead's live release changed since it was read: again"; continue; }
+    (( rc == 0 )) || { print -r -- "the lead refused the release (exit $rc)"; return 1; }
+    return 0
+  done
+  print -r -- "the lead's live release kept changing: nothing published"; return 1
+}
+
+# lead_rollback <scenic> <dir>: publish.sh --rollback on the lead: its two releases read (lead_live),
+# the floor checked (rollback_ok), then the one before put live from them. 0; 4: a lead keeping no
+# releases; else 1. Run in the repository.
+lead_rollback() {
+  local rc=0
+  lead_live $1 $2 || rc=$?
+  (( rc == 0 )) || { (( rc == 4 )) || print -r -- "can't read the lead's releases"; return $rc; }
+  [[ -f $2/previous.json ]] || { print -r -- "no release before the live one on the lead"; return 1; }
+  rollback_ok $2/current.json $2/previous.json || return 1
+  $1 releases rollback $(live_version $2/current.json) $(live_version $2/previous.json) >/dev/null \
+    || { print -r -- "the lead refused the rollback (its releases changed since they were read: try again)"; return 1; }
+  print -r -- "rolled back to $(live_version $2/previous.json) on the lead"
+}
+
 # bounded <seconds> <command...>: the command, stopped (by its PID) past <seconds>, then 124.
 bounded() {
   "${@:2}" <&0 &  # (its stdin this function's, not the /dev/null a background job gets)
