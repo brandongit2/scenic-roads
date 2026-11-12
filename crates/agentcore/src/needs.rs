@@ -551,6 +551,15 @@ struct Run {
     y: f64,
 }
 
+/// Target `target` of `step`'s own run in `costs`, its measure for every reader (its memory, its
+/// time, the coordinator's sizing, the forecast's cost table and run): its cost the way its step
+/// runs now (crate::coord::cost_version). One of an older way says nothing of it (task #1165: the
+/// forecast took terrain-deep runs of cost version 0, 0-8 s runs that found no tiffs, as known,
+/// where the coordinator sized the same targets by the step's runs at minutes a target).
+pub fn own<'c>(the_plan: &dyn Plan, costs: &'c BTreeMap<String, Cost>, step: &str, target: &str) -> Option<&'c Cost> {
+    costs.get(&cost_key(step, target)).filter(|c| c.v >= the_plan.cost_version(step))
+}
+
 /// The z/x/y tile a target (or a cost key's) ends in.
 fn tile(target: &str) -> Option<(u8, u32, u32)> {
     let t = target.rsplit(' ').next()?;
@@ -796,13 +805,9 @@ impl<'a> Book<'a> {
         (c.secs as f64 / self.pace(c.worker.as_deref(), step)).round() as u64
     }
 
-    /// Target `target` of `step`'s own run, its measure for every reader (its memory, its time, the
-    /// coordinator's sizing, the forecast's cost table): its cost the way its step runs now
-    /// (crate::coord::cost_version). One of an older way says nothing of it (task #1165: the
-    /// forecast took terrain-deep runs of cost version 0, 0-8 s runs that found no tiffs, as known,
-    /// where the coordinator sized the same targets by the step's runs at minutes a target).
+    /// Target `target` of `step`'s own run in its costs (`own`).
     pub fn own(&self, step: &str, target: &str) -> Option<&'a Cost> {
-        self.costs.get(&cost_key(step, target)).filter(|c| c.v >= self.the_plan.cost_version(step))
+        own(self.the_plan, self.costs, step, target)
     }
 
     fn floor(&self, key: &str) -> Option<&Floor> {

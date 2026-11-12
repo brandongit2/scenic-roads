@@ -1665,10 +1665,11 @@ alone (`Sched::sizing_threads`, the grant rule's):
 - **else** its step's model at this Mac's pace (above).
 Every one of these reads only runs of the way its step runs now (`coord::cost_version`): a target's
 own run, its source's, the bins, the fits, the Macs said to have runs and the jobs' starts. A target's
-own run is read by one rule wherever it's read (`needs::Book::own`): its time and memory here, its
-time at its threads (`Sched::target_most`, `per_thread_mb`), a drop's own drop (`Sched::drop_of`),
-and the forecast's cost table (`forecast::target_cost`: known at the lead's pace, else its step's
-mean), so the forecast times the jobs the grants size. Replayed with its table made by the rule
+own run is read by one rule wherever it's read (`needs::own`, `Book::own`): its time and memory here,
+its time at its threads (`Sched::target_most`, `per_thread_mb`), a drop's own drop (`Sched::drop_of`),
+the forecast's cost table (`forecast::target_cost`: known at the lead's pace, else its step's
+mean) and a measure its run takes as a job ends (`Pool::learn`: kept where the target has one
+already), so the forecast times the jobs the grants size. Replayed with its table made by the rule
 (`fccheck::recost`), the archived input of 12 Nov 02:39 UTC, whose table had known 155 of its 165
 terrain-deep targets at 0-8 s from runs of cost version 0, foresees 5 terrain-deep jobs on the M4,
 2 on the mini and 2 on the M1 in the 293 s to the next plan (the lead granted 2, 5 and 2), where

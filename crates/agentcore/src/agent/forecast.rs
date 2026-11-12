@@ -1533,13 +1533,12 @@ impl Pool {
     /// and time, as a hand-off's costs, where none of the way its step runs now is kept already
     /// (one of an older `cost_version` is replaced, as a hand-off's is).
     fn learn(&mut self, it: &Item) {
-        let k = cost_key(&it.step, &it.target);
-        let v = self.sched.the_plan.cost_version(&it.step);
-        if self.sched.costs.get(&k).is_some_and(|c| c.v >= v) {
+        if crate::needs::own(self.sched.the_plan, &self.sched.costs, &it.step, &it.target).is_some() {
             return;
         }
+        let v = self.sched.the_plan.cost_version(&it.step);
         self.sched.costs.insert(
-            k,
+            cost_key(&it.step, &it.target),
             crate::coord::Cost { peak_mb: it.cost.peak_mb, secs: it.cost.secs.round() as u64, v, ..Default::default() },
         );
         self.sched.needs_rev += 1;
