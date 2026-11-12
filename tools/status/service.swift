@@ -749,7 +749,8 @@ func selfTest(_ dir: String) -> Never {
     check("the popover's URL: ?view, then this Mac's name once known", Panel.viewURL("http://127.0.0.1:8090/", mac: nil).absoluteString == "http://127.0.0.1:8090/?view"
         && Panel.viewURL("http://127.0.0.1:8090/", mac: "MacBook-Pro de B").absoluteString == "http://127.0.0.1:8090/?view&mac=MacBook-Pro%20de%20B")
     check("the lead's page stays in the popover, another site doesn't", Panel.inPage(URL(string: "http://100.64.0.6:8090/?view&mac=m1")!)
-        && Panel.inPage(URL(string: "https://mini.tail1.ts.net/?view&mac=m1#jobs")!) && Panel.inPage(URL(string: "http://100.64.0.6:8090/work/?view&mac=m1")!)
+        && Panel.inPage(URL(string: "https://mini.tail1.ts.net/?view&mac=m1#jobs")!)
+        && !Panel.inPage(URL(string: "http://100.64.0.6:8090/work/?view&mac=m1")!)
         && !Panel.inPage(URL(string: "https://example.com/")!) && !Panel.inPage(URL(string: "https://map.example/")!)
         && !Panel.inPage(URL(string: "http://100.64.0.6:8090/workshop?view")!))
     // The hold ask's file, as control.rs's request_hold writes it (its tests read the same files).

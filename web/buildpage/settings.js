@@ -38,9 +38,6 @@ export async function ask(call, m, st, body, path = "/api/settings") {
     try {
       const post = (p) => fetch(`${u.replace(/\/$/, "")}${p}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
       r = await post(path);
-      // (A Mac on an app before task #1101 has its asks under /work/, refusing /api/: asked there.
-      // Gone with crates/agentcore/src/coord/oldpage.rs.)
-      if (r.status === 403 || r.status === 404) r = await post(path.replace(/^\/api\//, "/work/"));
     } catch (e) { last = e; continue; }
     st.url = u;
     const v = await r.json().catch(() => null);

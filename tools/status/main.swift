@@ -1114,11 +1114,11 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
         return c.url!
     }
     /// Whether `u` is the build page's own, on any Mac (the lead's, after this Mac's port sent it
-    /// there): a coordinator's root over HTTP or HTTPS, `?view` kept (an older lead's, before task
-    /// #1101: its `/work/`, crates/agentcore/src/coord/oldpage.rs). Anything else opens in the browser.
+    /// there): a coordinator's root over HTTP or HTTPS, `?view` kept. Anything else opens in the
+    /// browser.
     static func inPage(_ u: URL) -> Bool {
         let view = URLComponents(url: u, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "view" } ?? false
-        return ["http", "https"].contains(u.scheme ?? "") && view && ["", "/", "/index.html", "/work", "/work/"].contains(u.path)
+        return ["http", "https"].contains(u.scheme ?? "") && view && ["", "/", "/index.html"].contains(u.path)
     }
     /// This Mac's name as its agent says it (its status's `host`): the page's `mac=`.
     var mac: String?

@@ -106,10 +106,7 @@ export async function remote(m, st, body, path = "/api/live") {
   let last;
   for (const u of urls) {
     try {
-      let r = await post(u, path);
-      // (A Mac on an app before task #1101 has its calls under /work/, refusing /api/: asked there.
-      // Gone with crates/agentcore/src/coord/oldpage.rs.)
-      if (r.status === 403 || r.status === 404) r = await post(u, path.replace(/^\/api\//, "/work/"));
+      const r = await post(u, path);
       if (!r.ok) throw new Error(r.status === 503 ? "not measuring yet" : r.status === 404 ? "its app is older (no live measures)" : `answered ${r.status}`);
       st.url = u;
       return await r.json();
