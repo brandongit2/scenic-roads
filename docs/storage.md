@@ -33,9 +33,11 @@ catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: re
 app/           published app versions; current.json, previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)
-state/         status.json (the lead's heartbeat), build/ (the records, their brief, the lead's declaration),
-               coord/ (the token, the history), lead/ (the lead's store's backup), pool/
-               (`near-slope`, `nas-probes.json`; `slots` kept for older apps), backups/, logs/;
+state/         status.json (the lead's heartbeat), coordinator.json (its contact),
+               build/ (the records, their brief, the lead's declaration),
+               coord/ (the token, the history and its archive, the forecast inputs' archive),
+               lead/ (the lead's store's backup), pool/ (`near-slope`, `nas-probes.json`; `slots`
+               kept for older apps), backups/, logs/;
                the old coordination files no app writes
                (journal/, the terms' folders: docs/coordination.md §9, the owner's to remove)
 nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by publish.sh)

@@ -80,7 +80,8 @@ Still on the NAS though only the lead writes them, planned to move with task #11
   `backup_every` (10 min) while it changed and at a clean stop; a few MB. Read by a take-up when
   another Mac wrote it (the owner moved the lead, pool.md §7.5).
 - **History archives** `state/coord/history-archive/<day>.tar`, one big file a day.
-- **The token** `state/coord/token`: read once at start by every agent, never written by the pool.
+- **The token** `state/coord/token`: read at every agent's start (`agent::pool::seed`), and made
+  there, create-new, only by an agent finding none (the first one's stays).
 - **Read-only inputs** (`inputs/`, `inputs/keys.env`).
 
 ## 4. The lead's store
@@ -143,9 +144,10 @@ broker) and `x-pool-member`. Records and lease JSON keep the key `term` for the 
   this member (its id kept) isn't loaded, so the leases out are unknown: each member's next beat
   is answered released and its jobs stop. Members re-post every hand-off the new lead lacks (§5.3).
   *Planned:* `Store::restore` (built and tested, `store_restores_from_the_backup`: the store
-  rebuilt from the backup, its epoch past it by `RESTORE_EPOCHS`) run by an owner's command,
-  `scenic lead restore`, with the leases a member's beat lists that the lead doesn't know adopted
-  as granted (task #1159); nothing runs it today.
+  rebuilt from the backup, its epoch past it by `RESTORE_EPOCHS`; the simulator's disk
+  replacement runs it) run by an owner's command, `scenic lead restore`, with the leases a
+  member's beat lists that the lead doesn't know adopted as granted (task #1159); no command runs
+  it today.
 
 ## 5. The protocol
 
@@ -156,7 +158,7 @@ rule):
 
 | Call | From | Answer |
 | --- | --- | --- |
-| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, the lead's line for the menu bar (`lead`: docs/roles.md §3.4), and who leads while it leads (`leading`) |
+| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/roles.md §3.4), and who leads while it leads (`leading`) |
 | `POST /pool/handoff` | the beat poster, for each hand-off the answer says the lead lacks | taken (durable) |
 | `POST /pool/mail` | a member's agent: a page's `Cancel` or `Retry` | `took` |
 | `POST /pool/hold`, `/pool/settings` | any Mac's agent, for the owner's CLI, menu and page | the new state (the settings: a post naming none reads them) |
@@ -174,8 +176,9 @@ again.
 
 Each call has 5 s to connect and 15 s in all at the client (`coordwire::client`; a file's
 transfer, `/work/in/`, `/work/out/`, has no limit on its whole time, only 60 s with no byte
-moving). A call with no answer marks the lead unreached for that round (`Client::new_round`), and
-the next beat tries again.
+moving). Once a call gets no answer, the later calls of that round (an agent's loop:
+`Client::new_round`) fail at once without trying, until its next round; the beat's poster tries
+again at its next beat.
 
 Connections are kept alive (task #958): each process has one HTTP client, every `Client` sharing
 its pool, at most 4 idle to an address and 64 in all, each let go after 10 s idle; the coordinator
@@ -211,7 +214,9 @@ In `agent/pool/` on its own disk:
 - its **own hold and settings**, told again to a lead that lacks them or has them older (a moved
   lead, a lost store: `Beats::set_settings`, seeded from `pool-settings.json`).
 
-A repeat changes nothing (principle 4).
+A repeat changes nothing (principle 4). A hand-off is lost only to a double fault: its member's
+saved state lost after its job ended and before a saved snapshot named it, while no store of the
+declared lead's holds it (the simulator excuses that alone, pool.md §13).
 
 ## 6. Leases: a job is never run twice
 
@@ -257,8 +262,10 @@ work only, since the merge refuses the old lease's result.
 
 ### 6.3 The lead's own jobs
 
-Its slots ask its own coordinator in process (pool.md §7.6); their leases are in the same store
-under the same rule. A lead's restart confirms them from its own saved slots.
+Its slots ask its own coordinator in process (pool.md §7.6); their leases are in the same store,
+live while its agent says its slots run them (`Coordinator::keep_own`). A lead's restart ends
+them as its store opens (they ended with the agent before); the jobs the new agent takes over
+(`adopt_jobs`) are held again, under a new id where the old one ended.
 
 ## 7. Failure modes
 
@@ -323,7 +330,7 @@ Mac didn't say the new piece's word in its beat, and was deleted by the rule for
 
 ## 9. The NAS's leftover files
 
-No app writes or reads these any more; they are the owner's to remove, as one job on the NAS over
+No app writes these, and none reads them but as said below; they are the owner's to remove, as one job on the NAS over
 SSH (`rm -r`, `find … ! -name forecast-input.json -delete`; SMB removes file by file, and a held
 file's aside can't be removed for hours), never the agent's loop. Measured 11 Nov, read only:
 

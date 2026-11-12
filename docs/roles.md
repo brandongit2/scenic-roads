@@ -61,7 +61,7 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 | The broker's phase shares (`phase-shares` thread: the timings log read every 60 s) | yes | a thread; 4.5 MB log (the M1's is a stale lead copy) | **drop** on members |
 | The budgets' proxy and relays | yes | 1 + up to ~180 threads, one per job connection (before #908) | **keep** (jobs need it); since #908 its connections share a few threads (§6) |
 | Live store (`live`, `live-nas`, `live-sampler`: this Mac's measures) | yes | 21 MB file | **keep**; the lead's page reads it over HTTP |
-| NAS mount, heal, NAS read/write pools (`nas`, `nas-read-*`, `nas-write-*`, `nas-switch-*`, `nas-probe`) | yes | 13 threads | **keep** (jobs read and write the NAS); the switch pool went with #878 |
+| NAS mount, heal, NAS read/write pools (`nas`, `nas-read-*`, `nas-write-*`, `nas-switch-*`, `nas-probe`) | yes | 13 threads | **keep** (jobs read and write the NAS); the pools went with #1141: each NAS call is a store::deadline call, on a helper thread its caller keeps |
 | Pool step (`pool` thread: mail, beat, hold on the NAS) | yes | ~10 % of a core at the sample | **keep**; its mail, beat and holds by HTTP since #878 |
 | Control, beat, app updater, loop watchdog | yes | small | **keep** |
 | Caches: room target, freeing, clears, `ask_upcoming` (`/api/tocome` from the lead) | yes | cache 4.8 / 55 GB (the work's) | **keep**; already by HTTP |
@@ -81,7 +81,7 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 
 ### 3.1 The member's parts
 
-A member runs: **control**, **beat**, **nas** (mount, heal, its read/write pools), **jobs**, the
+A member runs: **control**, **beat**, **nas** (mount, heal; its NAS calls under store::deadline), **jobs**, the
 **pool** client (the lead by HTTP: docs/agent-parts.md §4.6), the caches, the live store, the memory and
 disk guards, the budgets' proxy, the updater, and its **broker** (§3.2). Nothing else is built:
 no checklist, regions' states or steps, pageview, catalogues or built views, forecast, inputs
@@ -284,7 +284,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `--listen`; `a_server_on_demand_ends_at_once_when_its_port_is_held`); by hand on the M1, 6 Nov (below). Either way `catalog/` and
    `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
 8. *Done by #878's gates* (§8.4; tasks #1036, #1125). **The member's NAS fallbacks**: a member
-   runs no `nas-switch` pool, writes no NAS status copy (`beat-nas` starts only where there's a
+   reads no NAS switches, writes no NAS status copy (`beat-nas` starts only where there's a
    status to share, the lead's), and its pool thread neither mails nor writes a journal on the
    NAS. The role is buildstore's since #916 step 7a (the map server reads
    it without the runtime): `records::lead` since #878 step 8c deleted `pool::term`
@@ -371,7 +371,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Control (this Mac's hold, quit, settings), the live store, the memory sampler, caches and room, the updater | every Mac | every Mac | local; the hold and settings told the lead by the beat |
 | Beat poster | members | members | `POST /pool/beat` to the mini |
 | Budgets' proxy | every Mac | every Mac (jobs ask it) | it asks the mini (`/pool/budget/take`) |
-| NAS mount, heal, read and write pools | every Mac | every Mac (jobs read and write the NAS) | — |
+| NAS mount, heal, the NAS calls' deadline | every Mac | every Mac (jobs read and write the NAS) | — |
 | Pool thread (the declaration, the lead's records) | every Mac; on a member, no NAS call while its lead answers | the same | the mini's `/pool/*`, by the beat |
 | Menu bar | every Mac: this Mac's status and `lead-view.json` (step 5) | the same: the thin local status | the lead's line in the beat's answer |
 | Build page and its data: pageview, forecast and its archive, Catalogues map, built tiles, region steps, phase shares, history | the mini (step 4) | the mini | a member's port 307s to it (§3.3) |
@@ -381,7 +381,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Caddy, dev tools app and its backup | the mini | the mini | — |
 
 So the owner's split already holds in what runs: the laptops run jobs, their broker, the beat and
-the menu bar's local status, with what those need of their own Mac (control, the NAS pools, the
+the menu bar's local status, with what those need of their own Mac (control, the NAS's mount, the
 budgets' proxy, the live store, the memory guard, the updater) and the pool thread, its lead
 reached by HTTP. What #882 has left is disk (§8.1: lead and server leftovers) and the laptops' offline map
 (§8.3).
