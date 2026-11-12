@@ -523,11 +523,14 @@ impl Records {
     /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`), the
     /// brief only while the declaration (read between) is still the one `lead` leads under (when
     /// given; `Under`): a save that lands late, its lead moved meanwhile (away, or away and
-    /// back: seed 1364), leaves the next lead's brief, so a take-up's
-    /// fence (`brief_mark`) sees the one path's records older than it (task #1038, the
-    /// simulator: a lead asleep mid-save wrote both over the next lead's, and a take-up from them
-    /// lost what that lead acknowledged). A read that fails writes it, as before. The number goes
-    /// up even when a write fails, so no two versions that may land share one.
+    /// back: seed 1364), leaves the next lead's brief, so a take-up's fence (`follows`) passes
+    /// the one path's records over (task #1038, the simulator: a lead asleep mid-save wrote both
+    /// over the next lead's, and a take-up from them lost what that lead acknowledged). A read
+    /// that fails, or finds no declaration, writes none either (seed 1,000,125 of the long run:
+    /// its reads failing, a lead moved away wrote its brief over the next lead's, which the
+    /// take-ups after would have passed over): the save isn't done, tried again next step, nothing
+    /// acknowledged. The number goes up even when a write fails, so no two versions that may land
+    /// share one.
     pub fn save(&mut self, nas: &dyn Nas, keep: Keep, lead: Option<Under>) -> std::result::Result<(), Unsaved> {
         if self.epoch < 1 {
             return Err(Unsaved::Kept(anyhow::anyhow!("records of no epoch")));
@@ -561,13 +564,17 @@ impl Records {
             keys: &self.keys,
         })?;
         nas.write_whole(ONE, b)?;
-        if let (Some(me), Ok(Some(d))) = (lead, buildstore::records::lead::declared(nas)) {
-            anyhow::ensure!(
-                me.names(&d),
-                "{ONE} written, its brief not: {} is the declared lead now, declared at {} (this save landed late)",
-                d.host,
-                d.since
-            );
+        if let Some(me) = lead {
+            match buildstore::records::lead::declared(nas) {
+                Ok(Some(d)) => anyhow::ensure!(
+                    me.names(&d),
+                    "{ONE} written, its brief not: {} is the declared lead now, declared at {} (this save landed late)",
+                    d.host,
+                    d.since
+                ),
+                Ok(None) => anyhow::bail!("{ONE} written, its brief not: no lead is declared"),
+                Err(e) => anyhow::bail!("{ONE} written, its brief not: the declaration can't be read: {e:#}"),
+            }
         }
         nas.write_whole(ONE_BRIEF, &brief)
     }
@@ -880,6 +887,11 @@ mod tests {
             Some((1, 10)),
             "under the declaration as it is: written"
         );
+        // The declaration not read (seed 1,000,125: the share answering none of its reads): no
+        // brief, the save not done.
+        nas.0.borrow_mut().remove(buildstore::records::lead::LEAD);
+        assert!(late.save(&nas, &|_| Ok(()), Some(Under { member: "a", since: Some(300) })).is_err());
+        assert_eq!(brief_mark(&nas).unwrap().map(|m| (m.epoch, m.seq)), Some((1, 10)), "not read: its brief not");
     }
 
     #[test]
