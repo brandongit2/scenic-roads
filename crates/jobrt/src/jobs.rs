@@ -162,11 +162,6 @@ pub fn within_doing(frac: f64, doing: &str) {
     }
 }
 
-/// How far the stage under way is, as `within` has said it (0 before it has, or with no stage).
-pub fn within_so_far() -> f64 {
-    FRAME.lock().ok().and_then(|f| f.as_ref().map(|f| f.best)).unwrap_or(0.0)
-}
-
 /// Unit `unit` saying `doing` too, in its brackets: added to those it ends with, else its own.
 fn doing_in(unit: &str, doing: &str) -> String {
     match (doing.is_empty(), unit.strip_suffix(')')) {
@@ -358,6 +353,8 @@ mod tests {
     /// the unit's brackets, the pace's unit unchanged.
     #[test]
     fn a_stages_share_never_goes_back() {
+        // (How far the stage under way is, as `within` has said it.)
+        let within_so_far = || FRAME.lock().unwrap().as_ref().map_or(0.0, |f| f.best);
         stage(2, 5, "inputs check (the candidate checked whole)");
         assert_eq!(within_so_far(), 0.0);
         within(0.4);

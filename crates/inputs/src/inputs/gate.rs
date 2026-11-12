@@ -27,7 +27,8 @@ use std::sync::Arc;
 /// whole, the next version checked whole, the version in use checked whole (when the next raised a
 /// finding that holds; else passed over), what's derived from the next, and the files stored. Each
 /// a check whole of a version at most, so a unit's progress within one (the regions' resolve,
-/// crate::inputs::regions::progress) runs from its stage's start to its end.
+/// crate::inputs::regions::progress) runs from its stage's start to its end. Numbered from 0, each
+/// the stages done before it (`jobs::stage`'s `k`): the files stored are 5/6, not the check done.
 const STAGES: u64 = 6;
 
 /// What a check is given.
@@ -98,7 +99,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let mut changes: BTreeMap<String, Change> = BTreeMap::new();
     let mut findings: Vec<Finding> = Vec::new();
     // 1. What changed, by content.
-    jobs::stage(1, STAGES, "inputs check (reading and checking the files)");
+    jobs::stage(0, STAGES, "inputs check (reading and checking the files)");
     let to_read: Vec<&String> = g
         .listing
         .files
@@ -188,7 +189,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         ));
     }
     // The candidate, checked whole: the files held still, and those that aren't as accepted.
-    jobs::stage(2, STAGES, "inputs check (the candidate checked whole)");
+    jobs::stage(1, STAGES, "inputs check (the candidate checked whole)");
     let candidate: BTreeMap<String, Option<Arc<Vec<u8>>>> = g
         .listing
         .files
@@ -277,7 +278,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     let mut together = None;
     let mut whole_found: Vec<Finding> = Vec::new();
     // 5. The next version checked whole.
-    jobs::stage(3, STAGES, "inputs check (the next version checked whole)");
+    jobs::stage(2, STAGES, "inputs check (the next version checked whole)");
     if files != prev.files {
         let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files
             .keys()
@@ -288,7 +289,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         let mut bad: Vec<Finding> = found.iter().filter(|f| f.holds(g.accepted)).cloned().collect();
         if !bad.is_empty() {
             // (Not one the version in use raises as it stands: that holds no change.)
-            jobs::stage(4, STAGES, "inputs check (the version in use checked whole)");
+            jobs::stage(3, STAGES, "inputs check (the version in use checked whole)");
             let before: BTreeMap<String, Option<Arc<Vec<u8>>>> = prev.files.keys().map(|p| (p.clone(), None)).collect();
             let rd = reader(&before, prev, g.read_old);
             let had: BTreeSet<String> = if prev.files.is_empty() {
@@ -315,7 +316,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     }
     // What's derived from the version whole (the regions' stored geometry): for every file but
     // those kept as accepted.
-    jobs::stage(5, STAGES, "inputs check (what's derived from the version)");
+    jobs::stage(4, STAGES, "inputs check (what's derived from the version)");
     if files != prev.files || rederive || (g.checks.holds_unchanged() && !changes.is_empty()) {
         let keep: BTreeSet<String> = held.iter().chain(&stuck).cloned().collect();
         // (A file kept as accepted keeps what was derived from the old: the index names that until
@@ -519,7 +520,7 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
     })?;
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
-    jobs::stage(6, STAGES, "inputs check (the accepted files stored)");
+    jobs::stage(5, STAGES, "inputs check (the accepted files stored)");
     let p = phase("storing the accepted files, the index and the report");
     for (name, bytes) in &d.store {
         let c = store::naming::parse_content_name(name).context("a copy's name")?;

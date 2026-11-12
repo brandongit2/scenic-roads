@@ -59,7 +59,7 @@ impl Step {
     ];
 
     /// What it is, and what its items are.
-    pub fn said(self) -> (&'static str, &'static str) {
+    fn said(self) -> (&'static str, &'static str) {
         match self {
             Step::Plain => ("the regions without water", "regions"),
             Step::Land => ("the land", "regions"),
@@ -130,7 +130,7 @@ impl Progress {
     }
 
     /// An item of the step under way done.
-    pub fn one(&self) {
+    fn one(&self) {
         let mut s = self.state();
         s.done = (s.done + 1).min(s.total);
         (s.parts, s.parts_done) = (0, 0);
@@ -154,7 +154,7 @@ impl Progress {
     }
 
     /// A part of the item under way done.
-    pub fn part(&self) {
+    fn part(&self) {
         let mut s = self.state();
         s.parts_done = (s.parts_done + 1).min(s.parts);
     }

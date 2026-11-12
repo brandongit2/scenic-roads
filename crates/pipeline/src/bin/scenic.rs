@@ -474,16 +474,17 @@ fn ramp_words(r: &agent::RampView) -> String {
     s
 }
 
-/// A running input check in a line: "check: running since 40 min ago, stage 1 of 5: reading and
-/// checking the files (33%), about 9 min left, 6 threads at its start". Its progress is the stage
-/// it is in (`inputs::gate::decide`'s `STAGES`) and how far within it.
+/// A running input check in a line: "check: running since 40 min ago, stage 1 of 6: reading and
+/// checking the files (33%), about 9 min left, 6 threads at its start". Its progress is the stages
+/// done (`inputs::gate::decide`'s `STAGES`, from 0) and how far within the one under way, counted
+/// here from 1.
 fn check_line(j: &agent::JobView) -> String {
     let mut v = vec![format!("check: running since {}", ago(j.started))];
     if let Some(p) = j.progress.as_ref().filter(|p| p.total > 0.0) {
         let stage = p.unit.split_once(" (").map_or(p.unit.as_str(), |(_, w)| w.trim_end_matches(')'));
         v.push(format!(
             "stage {} of {}: {stage} ({}%)",
-            p.done.floor() as u64,
+            (p.done.floor() + 1.0).min(p.total) as u64,
             p.total,
             (p.done.fract() * 100.0).floor()
         ));
