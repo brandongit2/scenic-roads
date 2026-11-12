@@ -1408,6 +1408,16 @@ Peak memory was 1.40 GB in each (one rustc). What follows:
 - **The programs after it** (scenic-build 1.1-1.2 s, which links every crate below it) are ~1.3 s of
   every edit's wall time, whatever the crate; pipeline's lib runs beside agentcore's tail and costs
   no wall time (§7.1).
+- **An edit that moves lines costs more, by the file, not the crate.** The comment put at the file's
+  head instead (`edittimes.py --top`: every item after it a line lower, as most real edits move
+  them; 12 Nov, load 6-8, two rounds each) took 4.6-4.8 s for agent/mod.rs, 4.3-4.4 s for
+  coord/sched.rs and 3.7-3.8 s for agent/bus.rs, against 3.3-3.4 s appended: 0.4-1.4 s more (which
+  passes, not measured). With `--timings` (load 22-33, its second round): agentcore itself 2.4 s
+  (bus.rs), 3.3 (sched.rs), 3.6 (agent/mod.rs), 4.5 (coord/mod.rs, peak 1.74 GB); CPU 9.3-13.1 s
+  against 8.2. So inside agentcore an edit of a small file is cheaper after all, when it moves
+  lines. That part is work on the items that moved, which a split shouldn't shrink: the gains
+  below are against the appended edit's 3.4 s, the cheapest an edit gets, and are smaller shares
+  of a real edit's time.
 
 The unit-test build after an edit (`cargo test -p agentcore --lib --no-run`: agentcore's test target
 alone, its code, its tests and the plan compiled in) took 8.3-13.3 s of CPU, 1.89-1.93 GB, for
@@ -1415,7 +1425,7 @@ bus.rs, agent/mod.rs and coord/sched.rs alike (12 Nov, load 60-106, wall 7.7-13.
 load 17-52, §6.3, is the less loaded wall). That target compiles ~117k lines (55.2k of code, 43.4k
 of tests, the plan's ~18k): the same whole-crate passes over more.
 
-So an edit anywhere in agentcore pays agentcore's whole 2.1 s: nothing inside it is cheaper. A split
+So an edit anywhere in agentcore pays agentcore's whole 2.1 s, and a line-moving one more. A split
 pays off by the size of the crate an edit lands in and of the crates above that one.
 
 ### 8.2 The graph
@@ -1423,11 +1433,11 @@ pays off by the size of the crate an edit lands in and of the crates above that 
 `tools/dev/modgraph.py agentcore --code` (lines without `#[cfg(test)]` code): 55.2k lines of code,
 43.4k of tests. Its eight top-level modules are one cycle (agent 32.3k, coord 15.5k, pool 2.1k,
 needs 1.7k, answers 1.0k, pubtimes 0.6k, uses 0.3k, paces 0.2k); cli (1.3k) and menu stand apart.
-agent names coord 232 times in code and coord names agent 123 times (478 and 282 with the tests;
+agent names coord 223 times in code and coord names agent 138 times (478 and 282 with the tests;
 7 Nov's 418 and 255 counted `crate::` paths only, not `super::` ones).
 
 At depth 2 (`--depth 2 --code`: a file's module, `agent::forecast`, `coord::sched`) it is one cycle of
-70 modules, 55.7k lines, held by two hubs, the files where the loop and the server live:
+70 modules, 52.3k lines of code, held by two hubs, the files where the loop and the server live:
 
 - **agent** (agent/mod.rs: 9.6k lines of code, 8.8k of tests; `impl Agent`, the loop, is 7.1k of
   them) names 57 of the crate's modules (582 mentions);
@@ -1533,11 +1543,16 @@ Oct touching the runtime.
 - **An edit's dev build**: the loop's and the server's edits, the largest share, lose a third
   (~1.1 s); the others pay ~0.2 s more wall and ~0.4 s more CPU, agentcore rebuilding after
   agentbase. On the whole −9 % after 8b, −16 % after 8c, ~−22 % after 8d (agentcore ~16k lines: its
-  edits ~2.1 s, every other ~0.25 s less). The programs' 1.3 s stay every edit's floor.
+  edits ~2.1 s, every other ~0.25 s less). The programs' 1.3 s stay every edit's floor. In CPU,
+  what decides on a loaded test Mac (testing.md: load 50-100 is usual), 8b's weighted figure is
+  ~8.0 s against 8.2 (−3 %); with a line-moving edit's 0.4-1.4 s on both sides (§8.1), its wall
+  gain, ~0.3 s an edit, is ~−7 %.
 - **An edit's unit-test build** (CPU, by the lines a test target compiles, ~0.094 s per thousand
   from §8.1): the loop's or the server's rebuilds agentcore's target alone (~63k lines with the
   plan, against ~117k): ~6 s of CPU against ~11 (−45 %). A part's rebuilds agentbase's target (~72k)
-  and agentcore's beside it: ~14 s of CPU (+30 %), its wall about today's (side by side).
+  and agentcore's beside it: ~14 s of CPU (+30 %), its wall about today's (side by side). Weighted
+  by the shares above, ~10.9 s against ~11: no gain. A full test build (check.sh's, publish's)
+  compiles the plan's ~18k lines once more (~1.7 s of CPU).
   affected-tests.sh runs agentcore's unit tests after an agentbase edit (its users), not the other
   way round.
 - **A clean dev build**: agentcore's 17-20 s on the build's chain (§7.1) becomes agentbase's ~11 s
@@ -1560,13 +1575,27 @@ after each step that moves a crate boundary.
 - **8b, `crates/agentbase`**: agentbase's modules moved there, their paths kept; its manifest the
   dependencies they use (agentcore keeps axum and the server's; check.sh's clippy and `prod` say
   what each needs); agentcore on agentbase; pipeline and the server's tests naming `agentbase::` for
-  what moved. In both crates: the plan's `#[path]` modules, `TEST_START`, `test_start` and the
-  `in_agentcore` cfg; tests/test_mode.rs allowing a `TEST_START` in agentbase; affected-tests.sh,
-  check-reuse.py and tools/dev/test/test-guard.zsh's `#[path]` and module cases naming both crates;
-  agentbase's `testkit` for the parts' test helpers pipeline's tests call
-  (`coord::start_on_test_port` stays agentcore's); the docs naming the crates (this file's §2 and
-  §7.4, testing.md, pool.md, coordination.md). Measured as §8.1: the edits, the unit-test builds, a
-  clean build.
+  what moved; the workspace's members. In both crates: the plan's `#[path]` modules, `TEST_START`,
+  `test_start` and `extern crate self as …`; agentbase a build.rs of its own setting the cfg the
+  plan's own tests are left out by (`#[cfg(all(test, not(in_agentcore)))]` in build.rs, steps.rs
+  and tiles.rs, and pipeline's `check-cfg`: one cfg both crates set). The test-only helpers
+  agentcore's tests call in agentbase's code, `seam::for_tests` (254 mentions) and
+  `gc::sweeps_done_for_tests` (19), are `#[cfg(test)]` and so absent from the library agentcore's
+  tests link: agentcore's tests take their own `for_tests` (its own copy of the plan, under
+  agentbase's `Plan`) and agentbase's `testkit` the rest, beside the parts' helpers pipeline's tests
+  call (`coord::start_on_test_port` stays agentcore's); the 4 `pub(crate)` items agentcore names
+  become `pub`. Then what names the moved files by path: tests/test_mode.rs (agentbase may hold a
+  `TEST_START`: it links no runtime above it); pipeline's source checks naming runtime files
+  (grant_rules.rs, no_shared_mutex.rs, cache_accessor.rs, budgets.rs, nas_access.rs,
+  inputs_accessor.rs, write_sets.rs: their file lists, `crates/agentcore/src/agent` scanned in
+  both crates); tools/dev/sweep-targets.sh, tools/dev/test/sweep-targets.zsh and check.sh's trigger
+  for them (they read `SWEEP_MARGIN_DEFAULT_GB` from agent/settings.rs, which moves; unread, the
+  sweep falls back to a margin of 0); the comments of affected-tests.sh, check-reuse.py and
+  test-guard.zsh (their `#[path]` and module handling is any crate's, unchanged), tools/status's
+  Swift sources and health.sh; every doc naming a moved file (`grep -rl agentcore docs tools`: this
+  file's §2 and §7.4, maplog.md, formats.md, building.md, testing.md, roles.md, inputs.md, pool.md,
+  coordinator.md and the others). Measured as §8.1: the edits (with `--top` too), the unit-test
+  builds, a clean build.
 - **8c, agentbase in four** (a step each, measured; only once 8b's figures bear the model out): W,
   the vocabulary (6.3k: jobs, seam, every, bus, nasread, backup, redo, progress, coord's history,
   task, asks and types, pool's journal, records, nas and store, cli), then on it, side by side, F,

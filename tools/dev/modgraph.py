@@ -13,9 +13,9 @@ A module is a file's module path cut to N parts (`--depth`, 1 by default: agent/
 modules its code names: paths `crate::a::b`, `super::…`, `self::…`, a child module's bare `x::` in
 the file declaring it, entries of `use crate::{a, b::c}` groups, and `<crate>::a` in the binaries.
 A path is resolved to the deepest module it names; an item a module re-exports from its own child
-(`pub use x::Item;`) counts as that child's. Prints each module's lines (code apart from tests) and
-edges with counts of mentions, then the strongly connected components (cycles). Comment lines
-(starting with //) are skipped, so doc links don't count.
+(`pub use x::Item;`) counts as that child's. Prints each module's lines (outside test code;
+comment and blank lines count) and edges with counts of mentions, then the strongly connected
+components (cycles). Comments and string literals are blanked first, so doc links don't count.
 
 Test code: an item under `#[cfg(test)]` (a `mod tests { … }`, a test-only fn, a `mod x;` whose file
 is then test code whole). `--code` counts only the rest (what a dev or release build compiles;
@@ -23,7 +23,8 @@ is then test code whole). `--code` counts only the rest (what a dev or release b
 compile the plan's modules in by #[path] (pipeline's agent/build.rs …), which count as pipeline's.
 
 `--items A B`: the paths module A names in module B, with counts (what a cut between them must
-move). `--cut M …`: for the set of modules given (`M::*`: M's children), every edge leaving the set,
+move). `--cut M …`: for the set of modules given (the words up to the next flag; `M::*`: M's
+children), every edge leaving the set,
 by item, so a set meant to be a crate below the rest names nothing of it when this prints none.
 `--edges`: every edge, by item. `--dot` prints Graphviz instead.
 """
@@ -39,7 +40,10 @@ def opt(name, n=1):
     if name not in args:
         return None
     i = args.index(name)
-    v = args[i + 1:i + 1 + n] if n else args[i + 1:]
+    v = args[i + 1:i + 1 + n]
+    if not n:  # the words up to the next flag
+        v = args[i + 1:]
+        v = v[:next((j for j, a in enumerate(v) if a.startswith('--')), len(v))]
     del args[i:i + 1 + len(v)]
     return v
 
