@@ -61,6 +61,14 @@ if grep -rnE 'env!\(\s*"CARGO_BIN_EXE_' crates --include='*.rs'; then
   echo "a test names its program by env!(\"CARGO_BIN_EXE_…\"): read std::env::var(\"CARGO_BIN_EXE_…\") as it runs (tools/app/guards.sh says why)"
   exit 1
 fi
+# No program is a copy of one of macOS's own (#1110): its launch constraints kill a copy of an Apple
+# platform program as it starts (AMFI's "Launch Constraint Violation", SIGKILL), so a stand-in copied
+# from /bin/sleep never ran, and its test passed only while a look caught it dying. A test copies
+# its own program instead (tools/dev/testing.md, "A program that ran is kept 10 minutes").
+if grep -rnE 'copy\(\s*"/(bin|sbin|usr/bin|usr/sbin|usr/libexec|System)/' crates --include='*.rs'; then
+  echo "a copy of a macOS program, which its launch constraints kill as it starts: copy the test's own program, std::env::current_exe() (tools/app/guards.sh says why)"
+  exit 1
+fi
 # No test reaches a live program's port on this Mac (#906: a unit test's coordinator on 127.0.0.1:8090,
 # beside the mini's agent, took its jobs' connections): test code (Rust test modules and tests/, the
 # node, shell, Swift and Python tests) names none of store::spawn::POOL_PORTS on a loopback or

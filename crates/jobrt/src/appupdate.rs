@@ -308,6 +308,14 @@ mod tests {
 
     #[test]
     fn prune_removes_a_stale_copy_and_keeps_the_running_ones() {
+        const STAND_IN: &str = "SCENIC_TEST_PRUNE_STAND_IN";
+        if std::env::var_os(STAND_IN).is_some() {
+            // (The stand-in: this test program run from a version's folder. It says it runs, then
+            // runs until its input closes, the test's end or its panic.)
+            println!("stand-in running");
+            std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new()).ok();
+            return;
+        }
         // (Not a tempdir: the program run from it is kept, testkit::ran_dir, #1131.)
         let d = store::testkit::ran_dir("appupdate-prune");
         let app = d.join("app");
@@ -320,16 +328,32 @@ mod tests {
         age(&tmp.join("server"), 7200);
         age(&tmp, 7200);
         // A program still running from the first (the map server waiting for an idle map, or an
-        // older server): a copy of `sleep` run from its folder.
-        std::fs::copy("/bin/sleep", app.join("20261001-0000-aaaaaaa/server")).unwrap();
-        let mut child =
-            store::spawn::spawn(store::spawn::command(app.join("20261001-0000-aaaaaaa/server")).arg("30")).unwrap();
-        store::testkit::eventually("the copy runs", || {
-            running_versions(&app) == vec!["20261001-0000-aaaaaaa".to_string()]
-        });
+        // older server): a copy of this test program run from its folder, this test alone in it as
+        // the stand-in (above), running once it says so. (Not a copy of a system program: macOS's
+        // launch constraints kill a copy of one of Apple's as it starts, #1110: `/bin/sleep`'s had
+        // passed only while a look caught it dying.)
+        let server = app.join("20261001-0000-aaaaaaa/server");
+        std::fs::copy(std::env::current_exe().unwrap(), &server).unwrap();
+        let mut child = store::spawn::spawn(
+            store::spawn::command(&server)
+                .args(["--exact", "appupdate::tests::prune_removes_a_stale_copy_and_keeps_the_running_ones"])
+                .args(["--nocapture", "--test-threads=1"])
+                .env(STAND_IN, "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null()),
+        )
+        .unwrap();
+        let mut out =
+            std::io::BufRead::lines(std::io::BufReader::new(child.stdout.take().unwrap())).map_while(Result::ok);
+        let said = out.by_ref().any(|l| l == "stand-in running");
+        assert!(said, "the stand-in ended before it ran: {:?}", child.wait());
+        assert_eq!(running_versions(&app), vec!["20261001-0000-aaaaaaa".to_string()]);
         prune(&d, "20261004-0000-eeeeeee", "20261004-0000-eeeeeee");
-        child.kill().ok();
-        child.wait().ok();
+        // (Its end: its input closed, its output read to the end.)
+        drop(child.stdin.take());
+        out.for_each(drop);
+        assert!(child.wait().unwrap().success());
         assert!(!tmp.exists());
         assert!(app.join("20261001-0000-aaaaaaa").exists(), "the running one's");
         assert!(!app.join("20261002-0000-bbbbbbb").exists());
