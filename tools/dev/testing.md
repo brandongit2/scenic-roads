@@ -714,8 +714,9 @@ Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log
 
 Every brief that changes web/buildpage runs both and looks at the screenshots. Neither presses a button
 that changes anything: the page opens as `?view` from a read-only server (`touch-test.mjs --serve`,
-port 8097) that serves web/buildpage and forwards only the reading calls (swarm, steps, regions,
-settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusing the rest.
+port 8097) that serves web/buildpage (a job's page at `/job/<id>` too) and forwards only the reading
+calls (swarm, steps, regions, settings with `{}`, history, live, timings, a job's `GET /api/job/<id>`)
+to this Mac's agent on 127.0.0.1:8090, refusing the rest.
 - `node tools/dev/touch-test.mjs [--out DIR]` (35–55 s on the M1): headless Chrome as a 390×844 phone (DPR 3,
   mobile, 5 touch points, iPhone user agent), real touches through CDP. Each tab: no sideways
   scroll (else the elements past the edge), no console errors, a screenshot (`chrome-<tab>.png`,
@@ -724,12 +725,12 @@ settings with `{}`, history, live) to this Mac's agent on 127.0.0.1:8090, refusi
   with a pinch (its touch-action turns `none`, its zoomed-in sign) and pans
   with a drag (pixels changed once it held still), the page staying put; the Jobs tab's stages counting done and left, no job squares; no share of a whole in the header, the Overview or the legend; a region row lighting its region on the map (a mouse); the panels' split (#685) stacked at phone width
   and side by side 2:1 at 1280 px, its bar dragged, a double click back to 2:1; the schedule's timeline (#787) pans with one finger sideways and zooms with a pinch, no dropdown; settings fields focus on a
-  tap without a jump (never Set); the map (#685: in its own panel, published tiles off at first, a step's legend item soloing it while hovered and holding it on a click or tap, its published tiles painted by age; the age controls' timeline, mark labels never overlapping, a mark hovered lighting its tiles, the range inputs' swap and one-span rule; `--catalogs FILE` answers `/api/catalogs` from `scenic catalogues > FILE`, `--width W --scheme dark|light --only-map` for its screenshots). At 720 px or wider (`--width`) the "no text cut off" check is skipped: a desktop keeps labels on one line, ellipsis and all (#617). `--agent H:P` reads another Mac's agent (the lead's, for its forecast's queue: an agent before #685 is asked a Mac at a time). `--member NAME --tocome FILE` checks a member's queued tiles (#622). One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
+  tap without a jump (never Set); the map (#685: in its own panel, published tiles off at first, a step's legend item soloing it while hovered and holding it on a click or tap, its published tiles painted by age; the age controls' timeline, mark labels never overlapping, a mark hovered lighting its tiles, the range inputs' swap and one-span rule; `--catalogs FILE` answers `/api/catalogs` from `scenic catalogues > FILE`, `--width W --scheme dark|light --only-map` for its screenshots). At 720 px or wider (`--width`) the "no text cut off" check is skipped: a desktop keeps labels on one line, ellipsis and all (#617). `--agent H:P` reads another Mac's agent (the lead's, for its forecast's queue: an agent before #685 is asked a Mac at a time). `--member NAME --tocome FILE` checks a member's queued tiles (#622). `--job-id ID` checks job ID's page (#1105; `--agent` the lead's, which keeps the spans; `--job FILE` answers every job's view from FILE): no sideways scroll, no console errors, `chrome-job.png`, a span tapped (clicked, its card hovered, at a desktop's width) shows its log lines, a pinch zooms its timeline, the times' button kept across a reload. One PASS/FAIL line a check, exit 1 on a FAIL. The other Macs'
   live/settings calls fail from this test origin (CORS) or when away: counted on an INFO line.
   Chrome is its own child, killed by PID; its profile is a temp folder, deleted.
 - `tools/dev/safari-sim.sh [out-dir] [device]` (~1.5 min; this M1 only, the M4 has no simulators):
   boots the simulator (default iPhone 18 Pro), opens each tab in Mobile Safari and saves
-  `safari-<tab>.png` (`xcrun simctl io`), then shuts the server down and the simulator if it booted it (one already running, someone's, stays), on any exit. `simctl openurl` may say
+  `safari-<tab>.png` (`xcrun simctl io`), and with `SCENIC_SIM_JOB=<id>` (`SCENIC_SIM_AGENT=<lead:8090>`) that job's page (`safari-job.png`), then shuts the server down and the simulator if it booted it (one already running, someone's, stays), on any exit. `simctl openurl` may say
   "Operation timed out" while Safari starts; the page opens anyway. For touch, set
   `SCENIC_SIM_HOLD=<s>` and drive it meanwhile with the Simulator control tools (tap, swipe,
   touch2_path for a pinch, screenshot; the first input after a boot may need a few retries). Port 8097 held

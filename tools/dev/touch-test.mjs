@@ -53,6 +53,8 @@
 //                     docs/roles.md §3.3): its title names NAME and the Machines tab shows NAME's card
 //                     first (when the build has it)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
+//   --job-id ID       job ID's page checked too (/job/ID, #1105); `--job FILE`: every job's view
+//                     answered from FILE (GET /api/job/<id>), ID 1-1 by default
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
 //                     Québec: 275,330), a solo held and let go: chrome-solo-zoom, chrome-nosolo-zoom
@@ -84,7 +86,7 @@ const TABS = ["overview", "jobs", "machines", "regions", "nas", "inputs", "activ
 
 // ---- The read-only server ------------------------------------------------------------------------
 // A call forwarded only when its body has no other keys than these (an empty body: {}).
-const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after", "steps"], tocome: ["raw", "renumber", "at"], built: [] };
+const READS = { pause: ["pause"], swarm: [], steps: [], regions: ["steps"], settings: [], history: ["since", "max"], live: ["range", "series", "net", "since"], catalogs: ["after", "steps"], tocome: ["raw", "renumber", "at"], built: [], timings: ["kind", "last"] };
 const CATS = arg("--catalogs", null);
 const TOCOME = arg("--tocome", null);
 const BUILT = arg("--built", null);
@@ -108,6 +110,10 @@ const HISTORY = arg("--history", null) && (() => {
   return evs.map((e) => ({ ...e, t: e.t + d })).sort((p, q) => p.seq - q.seq);
 })();
 const LIVE = arg("--live", null);
+// (`--job FILE`: every job's view, GET /api/job/<id>, answered from FILE (a view as JSON, #1105).)
+const JOB = arg("--job", null);
+// (`--job-id ID`: job ID's page checked too, /job/ID (#1105); with `--job FILE`, FILE's view.)
+const JOB_ID = arg("--job-id", JOB ? "1-1" : null);
 const STEPS = arg("--steps", null);
 const MEMBER = arg("--member", null);
 const WIDTH = +arg("--width", 390);
@@ -126,6 +132,8 @@ const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
 const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
 const ZOOM_ON = arg("--zoom-on", null)?.split(",").map(Number) ?? null;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".webmanifest": "application/manifest+json", ".svg": "image/svg+xml" };
+// (A forwarded answer's headers, less the agent's page version: every answer says this server's.)
+const own = ({ "x-page-version": _, ...h }) => h;
 function serve() {
   const srv = createServer((req, res) => {
     const url = new URL(req.url, "http://x");
@@ -208,7 +216,7 @@ function serve() {
           return res.end(JSON.stringify(a));
         }
         const fw = request({ ...AGENT, method: "POST", path: url.pathname, headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(out) } }, (r) => {
-          if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, r.headers); return r.pipe(res); }
+          if (call !== "swarm" || r.statusCode !== 200) { res.writeHead(r.statusCode, own(r.headers)); return r.pipe(res); }
           let b = "";
           r.on("data", (c) => (b += c));
           r.on("end", () => { const o = { ...JSON.parse(b), pause: fake.pause }; if (shifted && o.agent) o.agent.forecast = shifted; if (PHASE_TIMES && o.agent) o.agent.phase_times = { ...JSON.parse(readFileSync(PHASE_TIMES, "utf8")), at: Math.floor(Date.now() / 1000) }; if (OVER_BOUND && o.agent) { const ps = (o.agent.phase_shares ||= {}); ps[OVER_BOUND[0]] = { runs: 3, phases: [], ...ps[OVER_BOUND[0]], over_bound: { runs: 2, gap_s: +OVER_BOUND[1], bound_s: 300 } }; } if (LOOP_STUCK && o.agent) Object.assign(o.agent, { loop_age_s: +LOOP_STUCK[0], loop_stuck_s: 300, loop_phase: LOOP_STUCK[1] || undefined }); if (FORECAST === "none" && o.agent) delete o.agent.forecast; if (HISTORY) Object.assign(o, { seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }); res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); });
@@ -219,13 +227,22 @@ function serve() {
       return;
     }
     if (req.method === "GET" && url.pathname === "/__posts") { res.writeHead(200); return res.end(String(fake.posts)); }
+    // (A job's view, a GET (#1105), forwarded as it is: the lead's to answer.)
+    if (req.method === "GET" && /^\/api\/job\/[^/]+$/.test(url.pathname)) {
+      if (JOB) { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(readFileSync(JOB)); }
+      const fw = request({ ...AGENT, method: "GET", path: url.pathname }, (r) => { res.writeHead(r.statusCode, own(r.headers)); r.pipe(res); });
+      fw.on("error", (e) => { console.error(`touch-test server: ${url.pathname}: ${e.message}`); res.writeHead(502); res.end("{}"); });
+      return fw.end();
+    }
     if (req.method !== "GET" || url.pathname.startsWith("/api/")) { res.writeHead(403); return res.end(); }
-    const rel = normalize(url.pathname.slice(1) || "index.html").replace(/^(\.\.[/\\])+/, "");
+    // (A job's page, /job/<id>: job.html, as the coordinator serves it.)
+    const page = /^\/job\/[^/]+$/.test(url.pathname) ? "job.html" : null;
+    const rel = page || normalize(url.pathname.slice(1) || "index.html").replace(/^(\.\.[/\\])+/, "");
     let p = join(WEB, rel);
     if (existsSync(p) && statSync(p).isDirectory()) p = join(p, "index.html");
     if (!existsSync(p)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { "Content-Type": TYPES[extname(p)] || "application/octet-stream", "Cache-Control": "no-store" });
-    res.end(p.endsWith("index.html") ? readFileSync(p, "utf8").replace("__VERSION__", fake.version) : readFileSync(p));
+    res.end(/(index|job)\.html$/.test(p) ? readFileSync(p, "utf8").replace("__VERSION__", fake.version) : readFileSync(p));
   });
   return new Promise((ok) => srv.listen(PORT, "0.0.0.0", () => ok(srv)));
 }
@@ -234,6 +251,53 @@ if (process.argv.includes("--serve")) {
   await serve();
   console.log(`serving http://localhost:${PORT}/?view (reads forwarded to ${AGENT.host}:${AGENT.port}); Ctrl-C stops`);
 } else await run();
+
+// ---- A job's page (#1105) ----------------------------------------------------------------------------
+// /job/<JOB_ID>: no sideways scroll, no console errors, a screenshot (chrome-job.png); a tap (a
+// click at a desktop's width) on a span shows its log lines; the times' button kept across a
+// reload; a pinch zooms its timeline (a phone), a span's card on a mouse's hover (a desktop).
+async function jobPage({ js, tap, pinch, mouse, page, check, shot, until, errors }) {
+  errors.length = 0;
+  await js(`localStorage.removeItem("job-times")`);
+  await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/job/${encodeURIComponent(JOB_ID)}` });
+  const shown = await until(`!!document.querySelector("#tlsec .track canvas, .legacy, .empty.bad")`, 20000);
+  await sleep(800);
+  const legacy = await js(`!!document.querySelector(".legacy")`);
+  check(`job page: ${JOB_ID} shown`, shown >= 0 && !(await js(`!!document.querySelector(".empty.bad")`)), await js(`document.querySelector("#jmain").innerText.slice(0, 120)`));
+  const wide = await js(`[document.scrollingElement.scrollWidth, document.documentElement.clientWidth]`);
+  check("job page: no sideways scroll", wide[0] <= wide[1], `${wide[0]} > ${wide[1]}`);
+  await shot("chrome-job");
+  if (!legacy && shown >= 0) {
+    // (The first point on a span's track, the run's own track left out, that shows a span's lines.)
+    let hit = null;
+    for (let k = 1; k < 6 && !hit; k++) {
+      for (const f of [0.15, 0.3, 0.45, 0.6, 0.75, 0.9]) {
+        const p = await js(`(() => { const c = document.querySelectorAll("#tlsec .track canvas")[${k}]; if (!c) return null; c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); return [r.left + r.width * ${f}, r.top + r.height / 2]; })()`);
+        if (!p) break;
+        if (PHONE) await tap(...p); else { await mouse(...p); await sleep(120); if (!hit && (await js(`!document.querySelector(".card-tip").hidden`))) hit = "card"; await mouse(...p, "mousePressed"); await mouse(...p, "mouseReleased"); await sleep(200); }
+        if (await js(`/ of /.test(document.querySelector("#logsec h2")?.textContent || "")`)) { hit = hit === "card" ? "card and lines" : "lines"; break; }
+        hit = hit === "card" ? "card" : null;
+      }
+    }
+    check(`job page: a span ${PHONE ? "tapped" : "clicked"} shows its log lines${PHONE ? "" : ", its card on hover"}`, PHONE ? hit === "lines" : hit === "card and lines", hit || "no span found");
+    if (PHONE) {
+      const lw = await js(`(() => { const w = document.querySelector("#tlsec .lanewrap"); w.scrollIntoView({ block: "center" }); const r = w.getBoundingClientRect(); return [r.left + r.width * 0.6, r.top + 40]; })()`);
+      const a0 = await js(`document.querySelector("#tlsec .axis").textContent`), y0 = await js("scrollY");
+      await pinch(lw[0], lw[1], 20, 80);
+      await sleep(400);
+      check("job page: its timeline zooms with a pinch", (await js(`document.querySelector("#tlsec .axis").textContent`)) !== a0 && (await js("scrollY")) === y0);
+    }
+  }
+  // The times' button: T+ to clock times, kept in the browser across a reload.
+  const b = await js(`(() => { const b = document.getElementById("mode"); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  if (PHONE) await tap(...b); else { await mouse(...b, "mousePressed"); await mouse(...b, "mouseReleased"); }
+  const set = await js(`localStorage.getItem("job-times")`);
+  await page.send("Page.reload", {});
+  await until(`document.getElementById("mode")?.textContent === "Clock times"`, 15000);
+  check("job page: the times' button sets clock times, kept across a reload", set === '"clock"' && (await js(`document.getElementById("mode").textContent`)) === "Clock times", `${set}`);
+  await js(`localStorage.removeItem("job-times")`);
+  check("job page: no console errors", !errors.length, errors.slice(0, 3).join(" | ").slice(0, 300));
+}
 
 // ---- Chrome ------------------------------------------------------------------------------------------
 async function run() {
@@ -1044,6 +1108,7 @@ async function run() {
     }
     check("machines: settings fields focus on a tap without a jump", n > 0 && !bad.length, n ? bad.join("; ") || `${Math.min(n, 4)} of ${n} tried` : "no fields shown");
     await limitChecks({ js, at, touch, tap, page, check, shot, PHONE });
+    if (JOB_ID) await jobPage({ js, tap, pinch, mouse, page, check, shot, until, errors });
     if (cors) console.log(`INFO ${cors} failed calls to the other Macs (CORS refused this test origin, or away; not counted)`);
     page.close();
   } catch (e) {

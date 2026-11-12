@@ -3,7 +3,9 @@
 # touch-test.mjs's read-only server and saves a screenshot a tab, then shuts the simulator and the
 # server down (by their own ids). Touch by hand or with the Simulator control tools meanwhile:
 # SCENIC_SIM_HOLD=<seconds> waits that long before shutting down; SCENIC_SIM_PORT=<n> serves on another
-# port than 8097 (another agent's run holding it).
+# port than 8097 (another agent's run holding it); SCENIC_SIM_JOB=<id> opens that job's page too
+# (/job/<id>, #1105: safari-job.png); SCENIC_SIM_AGENT=<host:port> reads another Mac's agent (the
+# lead's, which keeps the jobs' spans).
 #   tools/dev/safari-sim.sh [out-dir] [device name]     (default: iPhone 18 Pro)
 set -uo pipefail
 case ${1:-} in
@@ -27,7 +29,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-node "$here/touch-test.mjs" --serve --port $port >"$out/server.log" 2>&1 &
+node "$here/touch-test.mjs" --serve --port $port --agent ${SCENIC_SIM_AGENT:-127.0.0.1:8090} >"$out/server.log" 2>&1 &
 srv=$!
 # (A port already held, someone else's server: their page would be the one shown.)
 sleep 1; kill -0 $srv 2>/dev/null || { srv=; echo "FAIL the server didn't start on $port ($out/server.log); SCENIC_SIM_PORT=<n> for another"; exit 1; }
@@ -38,5 +40,10 @@ for tab in overview jobs machines regions nas inputs activity details; do
   sleep ${SCENIC_SIM_WAIT:-6}
   xcrun simctl io "$udid" screenshot "$out/safari-$tab.png" >/dev/null 2>&1 && echo "saved $out/safari-$tab.png"
 done
+if [[ -n ${SCENIC_SIM_JOB:-} ]]; then
+  xcrun simctl openurl "$udid" "http://localhost:$port/job/$SCENIC_SIM_JOB"
+  sleep ${SCENIC_SIM_WAIT:-6}
+  xcrun simctl io "$udid" screenshot "$out/safari-job.png" >/dev/null 2>&1 && echo "saved $out/safari-job.png"
+fi
 # (Waited on in the background, so a kill of this script shuts down at once, not after the hold.)
 sleep ${SCENIC_SIM_HOLD:-0} & wait $!
