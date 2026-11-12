@@ -251,9 +251,9 @@ installed by `tools/app/install.sh`, updated by the updater).
   it has now, or, away from home, the LAN addresses it had there (`home-addresses.json` in the
   agent's folder, written while at home), for 24 hours at most and only for sessions that last
   connected a share before the Mac was last seen at home, so an address the LAN has since given
-  another Mac is never taken for this one's. Sessions through Tailscale are never dropped: the
-  NAS's Tailscale runs in userspace, so every tunnelled client shows as 127.0.0.1. The live
-  session is never dropped: the map server, Finder and the agent's own beats keep or reopen files
+  another Mac is never taken for this one's. A session through Tailscale comes from this Mac's
+  tailnet address (the NAS's Tailscale is a TUN device), one of its addresses like any other. The
+  live session is never dropped: the map server, Finder and the agent's own beats keep or reopen files
   on the share within seconds, so a kick would only swap it for a fresh one while their open
   handles fail. When:
   - at the agent's start, once the share answers: the sessions of its addresses now that last
