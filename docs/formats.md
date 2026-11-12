@@ -787,8 +787,8 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 {"term": <E>, "at": <unix s>, "record": <forecast::Record>}
 ```
 
-- `term`: the epoch its lead led in when it made the forecast (a term's number before
-  docs/coordination.md step 8c); `at`: the forecast's time (the record's `input.now`); `record`:
+- `term`: the epoch its lead led in when it made the forecast (in older inputs, a term's
+  number); `at`: the forecast's time (the record's `input.now`); `record`:
   the forecast's whole input, as the terms' `state/build/term/<E>/forecast-input.json` hold it
   (below, Forecast input), uncompressed inside the frame.
 - A frame is written with long-distance matching over a 64 MB window (`fcarchive::encoder`), so an
@@ -1013,8 +1013,12 @@ class, id) within a tile. The client sends the id with the clicked point.
     epoch?, set: {key: value}, del: [key]}`; its documents, `agentcore::coord::kept`: `leases`
     (`{next, holds, cancelled}`), `lease/<id>` (`{id, term (its epoch), granted_at, worker, work, progress,
     …}`), `cost/<key>`, `floor/<key>`, `disk/<key>`, `job_disks`, `fills` and `pause`, each as the
-    files below held them; and `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
-    last beat said, `agentcore::coord::held`). Read once, into a store not made yet (an agent before the store's), and
+    files below held them; `member/<host>`, `{speaks: ["held-leases"], at}`, a member as its
+    last beat said, `agentcore::coord::held`; `beat/<member>` (its last heartbeat and when heard,
+    `kept::Beat`); `inbox/<member>` (its mail not yet read); `hold/<member>` and `settings` (the
+    owner's asks, `agentcore::coord::asks`); `handoff/<key>` (a hand-off taken, until a saved
+    snapshot names it); `progress/<member>`, `answers-lease` and `budget-hold`
+    (`agentcore::coord::budgets`): docs/coordination.md §3.1). Read once, into a store not made yet (an agent before the store's), and
     no longer written: `leases.json` (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,
@@ -1077,7 +1081,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
     merged; `.bad` one set aside unparsed.
-  - A member's status rides in its beat (docs/coordination.md step 3); the lead's
+  - A member's status rides in its beat (docs/coordination.md §3.1); the lead's
     `state/status.json` lists the members' as `helpers` and their heartbeats as `beats`.
 - **The pool** (docs/pool.md):
   - `state/build/records.json` (`{term, seq, manifest,
@@ -1089,37 +1093,35 @@ class, id) within a tile. The client sends the id with the clicked point.
     read by readers of those alone (`Brief::now`). `manifest.json`, `jobs.json`, `pending.json`
     and `sizes.json` are the records before the pool (a new pool's first take-up is made from
     them); no lead writes them. The terms' files (`state/build/terms/`, `state/build/lead.json`,
-    `state/build/term/<E>/`, `state/coord/term/<E>/`) are neither written nor read since
-    docs/coordination.md step 8c, but the terms' `forecast-input.json` (the backtest's).
+    `state/build/term/<E>/`, `state/coord/term/<E>/`) are neither written nor read, but the terms'
+    `forecast-input.json` (the backtest's; docs/coordination.md §9).
   - A job's hand-off, as a member keeps it (`agent/pool/saved.json`'s `mine.unwritten`, by key
     `<day>/<epoch>-<n>`) and posts it whole (`POST /pool/handoff {entry}`, kept in the lead's store
-    as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md step 6): `{member, lease,
+    as `handoff/<day>/<epoch>-<n>` until merged: docs/coordination.md §5.3): `{member, lease,
     step, handoff, at}` (`handoff.sizes`: the bytes of each file it wrote, by content name; none in
-    older ones). Nothing goes to the NAS (task #1125): `state/journal/` (entries
-    `<day>/<epoch>-<n>.json`, `rejected/<day>/<epoch>-<n>.why`, `gc.json`), written by apps before
-    it for a lead on an app before step 6, is read only for the keys an older app's saved state
-    still lists (`mine.entries`, read back once whole, `Mine::read_back`), and is the owner's to
-    remove.
-  - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md step 3):
+    older ones). Nothing goes to the NAS. The old journal, `state/journal/` (entries
+    `<day>/<epoch>-<n>.json`), is written by no app and read only for the keys an older app's
+    saved state still lists (`mine.entries`, read back once whole, `Mine::read_back`).
+  - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md §5.1):
     `{member, host, app, beat, leads, addresses, reach, checks_map, members, conds: {home, ac,
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
     always true, for a lead on the app before #1036).
   - Switches (present or `on` in it: on; `off` or missing: off, unless said): `near-slope`
     (docs/building.md §2, Publishing's switch), under `state/pool/`. `placement` (§7.2: jobs get
     `SCENIC_OFFER_AHEAD=1`, task offers carry `ahead`), `nas-budget` and `nas-target` are the lead's
-    settings (docs/coordination.md step 5), with no file; `memory-guard`, `resume` and `brokers`
+    settings (`/pool/settings`), with no file; `memory-guard`, `resume` and `brokers`
     are no longer read (always on), nor `delta-catalog` (#883 step 6).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).
   - A member's resume progress: `{member, worker, jobs: {"osm-pass <date>": {at, since, done,
     scratch}}}` (a resumable job's progress there, offered to it alone for 24 h), on the member's
     disk (`progress.json` in its agent's folder) and carried in its beats, the lead keeping
-    `progress/<member>` (`{progress, released: [[job, since], …]}`) in its store (#878 step 7).
+    `progress/<member>` (`{progress, released: [[job, since], …]}`) in its store.
   - The Wikimedia budget and the answers' lease are the lead's (`POST /pool/budget/take`,
     `/pool/lease/answers`; the lease as `answers-lease` in its store), nothing on the NAS.
-  - The members' mail goes by HTTP (`POST /pool/mail`; the lead's in its beats' answers): each
-    sender's last 64 messages, `[[n, msg], …]`, `msg` one of `{"Tell": [keys]}`, `{"Ack": {term,
-    keys, horizon}}` (`term` the lead's epoch), `{"Cancel": …}`, `{"Retry": …}`.
+  - The members' mail to the lead goes by HTTP (`POST /pool/mail {from, to, msgs}`): each
+    sender's last 64 messages, `[[n, msg], …]`, `msg` one of `{"Cancel": …}`, `{"Retry": …}`; the
+    lead sends none.
   - `state/lead/store.json`: the lead's store's backup (`agentcore::pool::store::Snapshot`, `{epoch,
     seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
     `state/coord/history/<day>/<member>.jsonl` (history events, the lead's take-ups and step-downs as `kind: term`; days older than 7 are

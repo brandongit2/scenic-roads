@@ -34,8 +34,10 @@ app/           published app versions; current.json, previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)
 state/         status.json (the lead's heartbeat), build/ (the records, their brief, the lead's declaration),
-               coord/, pool/ (switches), backups/, logs/; journal/ (hand-offs written by apps before
-               task #1125: read by none but an older app's saved state's keys, the owner's to remove)
+               coord/ (the token, the history), lead/ (the lead's store's backup), pool/
+               (`near-slope`, `nas-probes.json`; `slots` kept for older apps), backups/, logs/;
+               the old coordination files no app writes
+               (journal/, the terms' folders: docs/coordination.md §9, the owner's to remove)
 nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by publish.sh)
 ```
 
@@ -144,7 +146,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
   NAS in pages (docs/macs.md).
 
 **Writers.** Every job uploads its files (content-named) and hands its record changes off to the
-lead by HTTP (docs/coordination.md step 6), which merges them; no step
+lead by HTTP (docs/coordination.md §5.3), which merges them; no step
 writes the records directly once a lead is declared
 (`crate::out::check_writer`). Other writers: the map's server (`settings/profiles.json` alone), the owner's inputs folders, `tools/app/publish.sh`, and the
 NAS's own planet fetch.

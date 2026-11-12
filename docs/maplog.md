@@ -206,8 +206,8 @@ What it costs: with the lead down nothing new is published anyway (publishing is
 clients keep the map they hold, which is what happens today when the catalogue job stops. A Mac
 that starts with no saved map and no lead reads the NAS snapshot (§5.2). A lead disk lost is §4.5.
 
-The log is its own store (`agent/maplog/`), not a part of #878's pool store, so this work doesn't
-wait on #878; whether to fold it in once #878 lands is open decision 1.
+The log is its own store (`agent/maplog/`), not a part of the pool store (docs/coordination.md
+§4); whether to fold it in is open decision 1.
 
 ## 4. The map, the log and the snapshot
 
@@ -543,7 +543,7 @@ A content-named file on the NAS is **held** while any of these names it:
 
 1. **the map** at any `seq` a client in the cursor set (§5.4) still holds;
 2. **the records** (the merged manifest, keys' outputs, pending uploads), which the lead alone saves;
-3. **a hand-off taken and not yet merged**, which the lead alone holds (docs/coordination.md step 6;
+3. **a hand-off taken and not yet merged**, which the lead alone holds (docs/coordination.md §5.3;
    one not yet posted, its member's alone, is refused by the merge if it brings a name removed).
 
 The lead sees every change to 1 and 2 as it makes it, and 3 as it takes it. So GC doesn't look for

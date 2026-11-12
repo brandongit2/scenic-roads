@@ -1,6 +1,6 @@
 # Roles: the mini serves, the laptops work
 
-**Status: planned (task #882); built: steps 1–6 and 7a of §5; steps 8–9 planned.** §8 is the audit
+**Status: planned (task #882); built: steps 1–6, 7a and 8 of §5; step 9 planned.** §8 is the audit
 again after step 5 (6 Nov): every service on each Mac, measured, where it runs and how the
 members reach it. Until each step below lands, docs/pool.md,
 docs/agent-parts.md and the code are what is true. It builds on #881 (the Mac mini is the fixed
@@ -56,20 +56,20 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 | Service | Runs on members today | Cost measured | Decision |
 | --- | --- | --- | --- |
 | Jobs (`jobs` part, slots, ramp, memory and disk guards, `memory-guard` sampler) | yes | the work itself | **keep** |
-| Grants, beats, hand-offs, outbox (`helper_grants`, `send_outbox`, `tell_owed`) | yes, NAS + HTTP | small | **keep**, moving to HTTP under #878 |
+| Grants, beats, hand-offs, outbox (`helper_grants`, `send_outbox`, `tell_owed`) | yes, NAS + HTTP | small | **keep**; by HTTP alone since #878 (docs/coordination.md) |
 | The member's broker (tasks of its own jobs, `/work/*` for its jobs) | yes, a whole `Coordinator` made `become_broker` | 5 `coordinator` threads | **keep, slimmed**: a broker type of its own (§3.2) |
 | The broker's phase shares (`phase-shares` thread: the timings log read every 60 s) | yes | a thread; 4.5 MB log (the M1's is a stale lead copy) | **drop** on members |
 | The budgets' proxy and relays | yes | 1 + up to ~180 threads, one per job connection (before #908) | **keep** (jobs need it); since #908 its connections share a few threads (§6) |
 | Live store (`live`, `live-nas`, `live-sampler`: this Mac's measures) | yes | 21 MB file | **keep**; the lead's page reads it over HTTP |
-| NAS mount, heal, NAS read/write pools (`nas`, `nas-read-*`, `nas-write-*`, `nas-switch-*`, `nas-probe`) | yes | 13 threads | **keep** (jobs read and write the NAS); the switch pool goes with #878 step 5 |
-| Pool step (`pool` thread: mail, beat, hold on the NAS) | yes | ~10 % of a core at the sample | **keep** until #878 steps 3–6 replace it with HTTP |
+| NAS mount, heal, NAS read/write pools (`nas`, `nas-read-*`, `nas-write-*`, `nas-switch-*`, `nas-probe`) | yes | 13 threads | **keep** (jobs read and write the NAS); the switch pool went with #878 |
+| Pool step (`pool` thread: mail, beat, hold on the NAS) | yes | ~10 % of a core at the sample | **keep**; its mail, beat and holds by HTTP since #878 |
 | Control, beat, app updater, loop watchdog | yes | small | **keep** |
 | Caches: room target, freeing, clears, `ask_upcoming` (`/api/tocome` from the lead) | yes | cache 4.8 / 55 GB (the work's) | **keep**; already by HTTP |
 | Checklist (`checklist`: records brief, outlines; with each plan, its regions' part the plan's) | yes | the 13–932 s loop phase | **drop** (#871 steps 6–7, merging) |
 | Regions' states (`region-states` thread, `build::region_states`) | yes | the busy core on the M1; 0.7–131 s a run | **drop** on members (#871 steps 6–7 take its output out of the status; this stops computing it) |
 | Terrain pack indexes (`tiles::TerrainTiles`, `agent/pack-idx/`) | yes, for the regions' states | 555 MB each; 358 s of SMB reads on the M1 | **drop** with the regions' states, if no job path reads it (verified in step 2) |
 | Regions loaded for the status (`load_regions` in the member's branch) | yes, each `plan_due` | 24 KB in `helper.json` | **drop** (#871 6–7) |
-| `all_new` (the lead's `state/status.json` read each minute) | yes | one NAS read a minute | **move**: in the beat's answer (#878 step 3) |
+| `all_new` (the lead's `state/status.json` read each minute) | yes | one NAS read a minute | **move**: in the beat's answer (done, #878) |
 | Build page on the member's port: `pageview` (lead's files every 12 s, history, the forecast run locally), `cataloguesview`, `builtview`, region steps | yes, kept warm by the menu bar's `/api/swarm` ask every 50 s | 1.6 MB `pageview-waits.json` written each read; forecast 5–6 s a run | **move**: the lead serves the page; the member's port redirects (§3.3) |
 | `scenic menu` (every 5 s: the lead's `state/status.json` from the NAS when the member's own isn't fresh) | yes | one NAS read each 5 s | **move**: the lead's summary over HTTP (§3.4) |
 | Inputs watch, gate's listing, redo, answers seeding, GC, backup, catalogues, publishing, forecast, coordinator, map log | no (lead only: `!o.helper`, `LEAD_ONLY`, `keeps_publishing`) | — | already lead only; the per-service checks become the role (§1) |
@@ -82,7 +82,7 @@ thread spent ~10 % serialising mail (`Side::save_mail`).
 ### 3.1 The member's parts
 
 A member runs: **control**, **beat**, **nas** (mount, heal, its read/write pools), **jobs**, the
-**pool** client (#871's, becoming #878's HTTP client), the caches, the live store, the memory and
+**pool** client (the lead by HTTP: docs/agent-parts.md §4.6), the caches, the live store, the memory and
 disk guards, the budgets' proxy, the updater, and its **broker** (§3.2). Nothing else is built:
 no checklist, regions' states or steps, pageview, catalogues or built views, forecast, inputs
 watch, plan, coordinator.
@@ -201,14 +201,16 @@ files on a laptop are §8.3's.
 
 ## 4. What the member still needs from the lead
 
-| Need | Today | By HTTP (lead's coordinator) |
-| --- | --- | --- |
-| Work | `/work/ask`, `/work/beat`; hand-offs by `/pool/handoff` (#878 step 6; the NAS's journal gone, #1125) | unchanged; #878 steps 2, 3, 6 |
-| Its jobs to come (caches) | `/api/tocome` | unchanged |
-| `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, built: step 5) | the same |
-| Holds and settings | NAS files | `/pool/hold`, `/pool/settings` (#878 step 5) |
-| The build page | its own NAS readers | a 307 to the lead (§3.3) |
-| The records brief (jobs' `Out`, the view, `--expect-same`) | NAS snapshot | `GET /pool/brief` (built: #878 step 8d, task #1037) |
+All by HTTP from the lead's coordinator (docs/coordination.md §5.1):
+
+| Need | How |
+| --- | --- |
+| Work | `/work/ask`, `/work/beat`, `/work/done`; its leases by its beat (`POST /pool/beat`); hand-offs by `/pool/handoff` |
+| Its jobs to come (caches) | `/api/tocome` |
+| `all_new`, the pause, the build's state line | the `POST /pool/beat` answer (`held::LeadLine`, step 5 here) |
+| Holds and settings | `/pool/hold`, `/pool/settings`, this Mac's in the beat's answer |
+| The build page | a 307 to the lead (§3.3) |
+| The records brief (jobs' `Out`, the view, `--expect-same`) | `GET /pool/brief` |
 
 ## 5. Migration order
 
@@ -281,10 +283,10 @@ Each step ships alone and keeps the build running; each ends with its tests.
    `a_server_on_demand_keeps_the_map_as_it_moves` and its command line's (`--on-demand` takes no
    `--listen`; `a_server_on_demand_ends_at_once_when_its_port_is_held`); by hand on the M1, 6 Nov (below). Either way `catalog/` and
    `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
-8. **The member's NAS fallbacks**, with #878's gates (§8.4): nothing to build in #882; each gate's
-   deletion takes a member's share of it (the `nas-switch` pool, `beat-nas`'s status copy, the pool
-   thread's mail and journal: the last two gone, #1036 and #1125, and `beat-nas` started only
-   where there's a status to share, the lead's). The role is buildstore's since #916 step 7a (the map server reads
+8. *Done by #878's gates* (§8.4; tasks #1036, #1125). **The member's NAS fallbacks**: a member
+   runs no `nas-switch` pool, writes no NAS status copy (`beat-nas` starts only where there's a
+   status to share, the lead's), and its pool thread neither mails nor writes a journal on the
+   NAS. The role is buildstore's since #916 step 7a (the map server reads
    it without the runtime): `records::lead` since #878 step 8c deleted `pool::term`
    (`pool::lead` re-exports it).
 9. **Docs**: macs.md (Devices: roles; the App Macs' offline map as 7a builds it), agent-parts.md
@@ -369,8 +371,8 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Control (this Mac's hold, quit, settings), the live store, the memory sampler, caches and room, the updater | every Mac | every Mac | local; the hold and settings told the lead by the beat |
 | Beat poster | members | members | `POST /pool/beat` to the mini |
 | Budgets' proxy | every Mac | every Mac (jobs ask it) | it asks the mini (`/pool/budget/take`) |
-| NAS mount, heal, read and write pools | every Mac | every Mac (jobs read and write the NAS); the switch pool goes with #878 | — |
-| Pool thread (the declaration, the lead's records) | every Mac; no journal since #1125 | an HTTP client alone after #878's gates | the mini's `/pool/*` |
+| NAS mount, heal, read and write pools | every Mac | every Mac (jobs read and write the NAS) | — |
+| Pool thread (the declaration, the lead's records) | every Mac; on a member, no NAS call while its lead answers | the same | the mini's `/pool/*`, by the beat |
 | Menu bar | every Mac: this Mac's status and `lead-view.json` (step 5) | the same: the thin local status | the lead's line in the beat's answer |
 | Build page and its data: pageview, forecast and its archive, Catalogues map, built tiles, region steps, phase shares, history | the mini (step 4) | the mini | a member's port 307s to it (§3.3) |
 | Plan, checklist, regions' states, gate, inputs watch, redo | the mini (steps 1–2) | the mini | grants by `/work/ask` |
@@ -380,15 +382,15 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 
 So the owner's split already holds in what runs: the laptops run jobs, their broker, the beat and
 the menu bar's local status, with what those need of their own Mac (control, the NAS pools, the
-budgets' proxy, the live store, the memory guard, the updater) and the pool thread until #878's
-gates. What #882 has left is disk (§8.1: lead and server leftovers) and the laptops' offline map
+budgets' proxy, the live store, the memory guard, the updater) and the pool thread, its lead
+reached by HTTP. What #882 has left is disk (§8.1: lead and server leftovers) and the laptops' offline map
 (§8.3).
 
 ### 8.3 When something is away, and the offline map
 
 - **The mini unreachable** (#881: no takeover): a member finishes its held jobs and starts none
   (no grant); its hand-offs stay in its saved state and are posted when the lead answers again
-  (#878 step 6); its budgets' proxy gives nothing, so a Wikimedia job waits. Its menu says "Lead
+  (docs/coordination.md §5.3); its budgets' proxy gives nothing, so a Wikimedia job waits. Its menu says "Lead
   (<name>) out of touch since <time>" from `lead-view.json`; its port shows its own small page
   (§3.3). The map and the build page are the mini's, so devices have neither until it's back;
   a laptop serves its own offline map on demand (below), whole while it reaches the NAS. Away
@@ -501,12 +503,10 @@ gates. What #882 has left is disk (§8.1: lead and server leftovers) and the lap
   in coord for 6f to move.
 - **#880 (incremental planning, in flight):** the plan is the mini's alone since steps 1–2, so its
   kept state costs the laptops nothing; #882 has nothing left in agent/plan.rs or build.rs.
-- **#878 (coordination off the NAS):** its step 3 carried step 5 here. Left on the
-  members: the gated NAS fallbacks (step 8 above). Records by HTTP (`GET /pool/brief`, its
-  decision 2) is built as its step 8d: a member's jobs, view and `--expect-same` read no brief off
-  SMB. Its step 8c ("terms
-  out", built, task #1124) deleted `pool::term`; `role` is `buildstore::records::lead`'s
-  (re-exported as `pool::lead`), reading `lead-member.json`, which stays.
+- **#878 (coordination off the NAS, landed):** its step 3 carried step 5 here, and its gates'
+  deletions (#1036, #1125) were step 8's member side. A member's jobs, view and `--expect-same`
+  read the brief from the lead. `role` is `buildstore::records::lead`'s (re-exported as
+  `pool::lead`), reading `lead-member.json`.
 - **#883 (the map's log):** the log, its feed, GC and its queue are the mini's already; #882 moves
   none. 7b (built) gave the mirror its cursor; on 6 Nov only the mini runs a mirror, so no
   laptop's cursor holds GC. 8a (built) and 8b are the lead's. With 7a, a laptop's two

@@ -589,8 +589,8 @@ The choices, against the alternatives:
   `Recorded`, which reads only the term, manifest, pending and sizes) and the brief
   (`BriefOf`: pool's `Brief`, and `read_manifest`'s manifest alone). Pool re-exports all of it at
   its old paths; `Records::{load, newest, now}` and `Brief::now` are one-line calls of these. The
-  writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice. (Since
-  docs/coordination.md step 8c, task #1124, there are no terms: `records::term` is
+  writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice. (There
+  are no terms (task #1124): `records::term` is
   `records::lead` (`LEAD`, `Declared`, `declared`, `declare`, the role, the app rule), re-exported
   as `pool::lead`, and the choice is the one path's alone (`load_one`, `now`, `brief_now`,
   `no_pool`, `TODAY`, `ONE`, `ONE_BRIEF`; `BriefOf` is the `Brief` trait, and `Recorded` reads no
@@ -1358,7 +1358,7 @@ What's left, by gain for its cost (rerun §7.1's measure before each):
    then agentcore, then the programs), so only a part with nothing of the runtime above it helps:
    agent ↔ coord name each other 418 and 255 times (tools/dev/modgraph.py agentcore, 7 Nov), pool
    and the forecast are inside the same cycle. Not a move with re-exports: a design of its own,
-   after #878 (coordination off the NAS) reshapes coord and pool.
+   now that #878 (coordination off the NAS) has reshaped coord and pool.
 Not done, and not planned: **the rest of cli and nasread's NAS reading** into jobrt (planned in
 §2 before 6f4; task #1026 closed it, 10 Nov 2026). Nothing in the build waits on them, and no
 crate below agentcore names either: cli's users are agentcore (the agent's and the plan's checks

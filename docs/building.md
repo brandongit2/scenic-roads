@@ -368,7 +368,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 - **Who leads** is fixed: the Mac mini, the member `state/build/lead-member.json` declares
   (pool.md §6.1, task #881). It plans, runs a coordinator (`agentcore::coord`, port 8090) from which
   every other worker asks for work, and merges the hand-offs into the records. Restarted, it takes
-  its own records up in a new epoch of its coordinator's store (docs/coordination.md step 8c) and
+  its own records up in a new epoch of its coordinator's store (docs/coordination.md §4.3) and
   goes on with its leases; woken, it goes on in the epoch it led. No other
   Mac leads: with the mini gone, the members finish their jobs and wait (pool.md §6.3). Each Mac
   reads its role once as its agent starts (`pool::lead::role`, docs/roles.md §1) and builds that
@@ -410,7 +410,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<epoch>-<id>` it saves into `agent/pool/jobs/<epoch>-<id>/`
   (`SCENIC_HANDOFF`, `buildstore::handoff`), then as an entry (its done record and costs) kept by its
-  member and posted to the lead by HTTP (docs/coordination.md step 6). The lead merges entries
+  member and posted to the lead by HTTP (docs/coordination.md §5.3). The lead merges entries
   into its records all or nothing, checking each against its step's write-set
   (`agent::steps::writes`) and, for a shared step, the files it saved. Readers read its
   snapshot at the one path, `state/build/records.json` (docs/pool.md §6.2), which it keeps on its
