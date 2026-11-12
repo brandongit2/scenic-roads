@@ -141,18 +141,26 @@ fn is_qid(s: &str) -> bool {
     s.strip_prefix('Q').is_some_and(|d| !d.is_empty() && d.chars().all(|c| pyport::pytext::decimal(c).is_some()))
 }
 
-/// The languages a park's other description is taken in, the first it has.
-const LOC: [&str; 4] = ["fr", "es", "pt", "ca"];
+/// A park's facts as `park_record` names them.
+const KEPT: [&str; 6] = ["d_en", "w_en", "op", "inception", "area_km2", "visitors"];
+
+/// A park's record in the pass's answers, `KEPT`'s facts alone: records an older query made hold
+/// others, which nothing reads.
+fn kept(rec: &Py) -> Py {
+    match rec {
+        Py::Dict(d) => Py::Dict(d.iter().filter(|(f, _)| KEPT.contains(&f.as_str())).cloned().collect()),
+        _ => Py::Null,
+    }
+}
 
 /// Each fact asked: its name in the answer (`?k`), and the pattern binding its `?v` to `?item`'s.
-const FACTS: [(&str, &str); 7] = [
-    ("d", r#"?item schema:description ?v FILTER(STR(LANG(?v)) IN ("en", "fr", "es", "pt", "ca"))"#),
+const FACTS: [(&str, &str); 6] = [
+    ("d", r#"?item schema:description ?v FILTER(STR(LANG(?v)) = "en")"#),
     ("w", "?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?v"),
     ("inc", "?item wdt:P571 ?v"),
     ("area", "?item p:P2046 ?st . ?st psn:P2046 ?nv . ?nv wikibase:quantityAmount ?v"),
     ("visitors", "?item wdt:P1174 ?v"),
     ("op", r#"?item wdt:P137 ?o . ?o rdfs:label ?v FILTER(STR(LANG(?v)) = "en")"#),
-    ("inst", r#"?item wdt:P31 ?o . ?o rdfs:label ?v FILTER(STR(LANG(?v)) = "en")"#),
 ];
 
 /// The park query of `chunk`'s items: each fact's values as rows (`?item ?k ?v`), a UNION of one
@@ -185,19 +193,16 @@ fn date_key(d: &str) -> (i64, &str) {
 }
 
 /// A park's facts from its rows (`?k ?v`, `qid`'s), each picked the same way whatever order they
-/// come in: its English description; its other the first language's of `LOC` (Wikidata has one
-/// description a language); its English article; its earliest inception; its largest area
-/// (normalised to m²) and visitors; its operators' and kinds' English labels, distinct and in
-/// order. An unknown value (crate::wikiask::val) is none; a value that isn't a number is left out,
+/// come in: its English description and article (the least, where the service has two: QLever
+/// answered two English descriptions of Q1 on 12 Nov); its earliest inception; its largest area
+/// (normalised to m²) and visitors; its operators' English labels, distinct and in order. (What
+/// the map reads of them: web/src/details.ts's `enrichArea`.) An unknown value (crate::wikiask::val) is none; a value that isn't a number is left out,
 /// logged (crate::wikiask::number); an inception or visitors that isn't a literal is none.
 fn park_record(rows: &[&Py], qid: &str) -> Py {
     let of = |k: &'static str| rows.iter().filter(move |b| val(b, "k") == Some(k)).copied();
     let literal = |b: &&Py| b.at("v").at("type").as_str().is_some_and(|t| t.contains("literal"));
-    let desc = |l: &str| of("d").filter(|b| b.at("v").at("xml:lang").as_str() == Some(l)).find_map(|b| val(b, "v"));
-    let labels = |k: &'static str| {
-        let l: std::collections::BTreeSet<&str> = of(k).filter_map(|b| val(b, "v")).collect();
-        (!l.is_empty()).then(|| l.into_iter().collect::<Vec<_>>().join("|"))
-    };
+    let least = |k: &'static str| of(k).filter_map(|b| val(b, "v")).min();
+    let ops: std::collections::BTreeSet<&str> = of("op").filter_map(|b| val(b, "v")).collect();
     let largest = |k: &'static str| {
         of(k)
             .filter(literal)
@@ -205,20 +210,13 @@ fn park_record(rows: &[&Py], qid: &str) -> Py {
             .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))))
     };
     let mut rec: Vec<(String, Py)> = vec![];
-    let fields = [
-        ("d_en", desc("en")),
-        ("d_loc", LOC.iter().find_map(|l| desc(l))),
-        ("w_en", of("w").find_map(|b| val(b, "v"))),
-    ];
-    for (key, v) in fields {
-        if let Some(v) = v {
+    for (key, k) in [("d_en", "d"), ("w_en", "w")] {
+        if let Some(v) = least(k) {
             rec.push((key.into(), Py::Str(v.into())));
         }
     }
-    for key in ["op", "inst"] {
-        if let Some(v) = labels(key) {
-            rec.push((key.into(), Py::Str(v)));
-        }
+    if !ops.is_empty() {
+        rec.push(("op".into(), Py::Str(ops.into_iter().collect::<Vec<_>>().join("|"))));
     }
     if let Some(v) = of("inc").filter(literal).filter_map(|b| val(b, "v")).min_by(|a, b| date_key(a).cmp(&date_key(b)))
     {
@@ -383,11 +381,11 @@ pub fn run(root: &Path, wikidata: &str) -> Result<()> {
         write_atomic(&cache, &dumps_spaced(&Py::Dict(have.clone())))?;
     }
     let p = phase("writing the park details");
-    let facts: HashMap<&str, &Py> = have.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let facts: HashMap<&str, Py> = have.iter().map(|(k, v)| (k.as_str(), kept(v))).collect();
     let add_wd = |rec: &mut Py| {
         let q = rec.at("wikidata").as_str().unwrap_or("").to_string();
         if let Some(w) = facts.get(q.as_str()).filter(|w| w.truthy()) {
-            rec.set("wd", (*w).clone());
+            rec.set("wd", w.clone());
         }
     };
     for rec in parks.iter_mut().chain(aboriginal.iter_mut().flat_map(|(_, rs)| rs.iter_mut())) {
@@ -491,28 +489,25 @@ mod tests {
     }
 
     /// Task #1144: each fact is picked the same way whatever order the service's rows come in (the
-    /// old query's SAMPLE gave another language's description for 80 of 173 parks asked on 11 Nov
-    /// and again on 12 Nov); and every branch of the query holds the items, so QLever joins them
-    /// before it scans.
+    /// old query's SAMPLE picked differently for 80 of 173 parks asked on 11 Nov and again on 12
+    /// Nov); every branch of the query holds the items, so QLever joins them before it scans.
     #[test]
     fn facts_picked_the_same_way() {
         let rows = vec![
-            row("Q9", "d", &lang("parque nacional", "es")),
             row("Q9", "d", &lang("national park", "en")),
-            row("Q9", "d", &lang("parc national", "fr")),
+            row("Q9", "d", &lang("a national park", "en")),
             row("Q9", "w", &lit("Some Park")),
             row("Q9", "inc", &lit("1972-01-01T00:00:00Z")),
             row("Q9", "inc", &lit("-0500-01-01T00:00:00Z")),
             row("Q9", "inc", &lit("1952-06-09T00:00:00Z")),
             row("Q9", "area", &lit("2500000")),
             row("Q9", "area", &lit("12500000")),
-            row("Q9", "inst", &lang("protected area", "en")),
-            row("Q9", "inst", &lang("national park", "en")),
-            row("Q9", "inst", &lang("protected area", "en")),
+            row("Q9", "op", &lang("Parks Board", "en")),
+            row("Q9", "op", &lang("Forest Service", "en")),
             row("Q9", "op", &lang("Parks Board", "en")),
             row("Q9", "visitors", &lit("lots")),
         ];
-        let want = r#"{"d_en": "national park", "d_loc": "parc national", "w_en": "Some Park", "op": "Parks Board", "inst": "national park|protected area", "inception": "-0500-01-0", "area_km2": 12.5}"#;
+        let want = r#"{"d_en": "a national park", "w_en": "Some Park", "op": "Forest Service|Parks Board", "inception": "-0500-01-0", "area_km2": 12.5}"#;
         let parsed: Vec<Py> = rows.iter().map(|r| loads(r).unwrap()).collect();
         let mut refs: Vec<&Py> = parsed.iter().collect();
         assert_eq!(dumps_spaced(&park_record(&refs, "Q9")), want);
@@ -521,5 +516,9 @@ mod tests {
         let q = parks_query(&["Q1".into(), "Q2".into()]);
         assert_eq!(q.matches("VALUES ?item { wd:Q1 wd:Q2 }").count(), FACTS.len());
         assert!(!q.contains("OPTIONAL") && !q.contains(" LANG("), "{q}");
+        // An older query's record: its facts no one reads left out.
+        let old = loads(r#"{"d_en": "x", "d_loc": "y", "inst": "z", "visitors": 3}"#).unwrap();
+        assert_eq!(dumps_spaced(&kept(&old)), r#"{"d_en": "x", "visitors": 3}"#);
+        assert!(!kept(&loads(r#"{"d_loc": "y"}"#).unwrap()).truthy());
     }
 }

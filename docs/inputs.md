@@ -1026,9 +1026,11 @@ The old `sources/registers/legacy-seeds` archive is read by nothing:
   `agentcore::answers`, linked into the chain's stand-in root and written through the link after
   each batch), asking Wikidata only for parks it lacks. A batch's query asks each fact in a UNION
   branch holding the batch's items, so its cost is the items' (QLever works an OPTIONAL out
-  without them); each fact is picked the same way whatever order the rows come in: the first of
-  fr, es, pt, ca for the other description, the earliest inception, the largest area and
-  visitors, the operators' and kinds' English labels sorted.
+  without them); each fact is picked the same way whatever order the rows come in: the English
+  description and article (the least, where the service has two), the earliest inception, the
+  largest area and visitors, the operators' English labels sorted. These are what the map's park
+  popup reads (`enrichArea` in web/src/details.ts); a record in the answers that holds others (an
+  older query's) is written to details-park.jsonl without them.
 - **Pageviews:** the items job's months' indexes (`sources/pageviews/`, docs/steps.md).
 
 #### 6.5.4 Heritage matches: the owner's judgment calls
