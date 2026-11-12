@@ -17688,6 +17688,7 @@ mod pool_tests {
             peak_mb: 1000,
             secs,
             worker: None,
+            job: None,
             v,
             sizes: sizes.iter().map(|(k, n)| (k.to_string(), *n)).collect(),
         };
