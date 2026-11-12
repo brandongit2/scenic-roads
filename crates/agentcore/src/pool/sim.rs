@@ -424,8 +424,8 @@ struct World {
     /// hand-offs the one path's records lacked when it last went on.
     end: u64,
     behind: Option<usize>,
-    /// Gone on past its config's end while the declared lead's take-up waited: its take-ups must
-    /// settle by the run's own end, not its config's.
+    /// The declared lead's take-up waited past its config's end, or the owner declared again the
+    /// Mac a take-up waited on: its take-ups must settle by the run's own end, not its config's.
     waited: bool,
     /// The declared lead, and the one before it (the owner's moves).
     declared: usize,
@@ -720,6 +720,9 @@ impl World {
                     });
                     self.count("leads moved by the owner to the Mac with the newest records");
                     self.move_lead_to(k);
+                    // (Its take-up, `STALE_S` on, may come past the run's end: the run's own end
+                    // then, its take-ups' quiet ten minutes counted from there.)
+                    self.waited = true;
                 }
                 None => self.note(|| format!("the owner can't declare epoch {e}'s lead again")),
             }
@@ -1723,7 +1726,7 @@ impl World {
         let d = self.declared;
         // (Its own last take-up's epoch: another Mac's after it may be one whose take-up never
         // reached the NAS before, its records fenced, numbered higher: invariant 2's limit.)
-        let last = self.took.iter().filter(|(_, &(m, _))| m == d).map(|(&e, _)| e).next_back();
+        let last = self.led_by.iter().filter(|&&(_, m)| m == d).map(|&(e, _)| e).max();
         for k in 0..self.macs.len() {
             let leads = self.macs[k].leads;
             if k == d && (leads.is_none() || leads != last) {
