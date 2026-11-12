@@ -6,6 +6,8 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable", "WebWorker"],
     "strict": true,
     "noEmit": true,
+    // (A module node's tests load names the modules it imports by their file: src/regions.ts.)
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "isolatedModules": true,
     "resolveJsonModule": true,

@@ -2,6 +2,8 @@
 // (/api/regions) and their outlines simplified for a zoom (/api/regions/outlines), drawn on the map
 // while "Show regions on map" is on. The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
+// (merc.ts by its file name: node's tests of this module, web/test/regionoutlines.test.ts, load it so.)
+import { MERCATOR_LAT, clampLat, mercLat, mercY } from './merc.ts';
 
 /** An administrative or ISO 3166 area's fields a region's flag comes from (its first osm: part's). */
 export interface Area {
@@ -107,9 +109,9 @@ export function getOutlines(z: number, opts: { bbox?: Bbox; ids?: string[]; unio
   return call<{ features: RegionOutline[]; z: number; clip: Bbox | null }>(`/api/regions/outlines?${q}`, { signal: opts.signal });
 }
 
-/** An outline's rings as lines, leaving out the stretches along the edges of the box it was clipped
- * to (`clip`) and along the antimeridian (where a ring crossing it is split): those are cuts, not its
- * border. */
+/** An outline's rings as lines, its border alone: leaving out the stretches along the edges of the
+ * box it was clipped to (`clip`) and along the antimeridian (where a ring crossing it is split), which
+ * are cuts, and what lies past the Mercator tiles' ±MERCATOR_LAT (inBand). */
 export function outlineLines(f: Pick<RegionOutline, 'geometry' | 'properties'>, clip: Bbox | null): GeoJSON.Feature<GeoJSON.MultiLineString> {
   const lines: GeoJSON.Position[][] = [];
   const onEdge = (p: GeoJSON.Position, q: GeoJSON.Position) => (Math.abs(p[0]) === 180 && q[0] === p[0]) || !!clip &&
@@ -119,17 +121,58 @@ export function outlineLines(f: Pick<RegionOutline, 'geometry' | 'properties'>, 
       let cur: GeoJSON.Position[] = [];
       for (let i = 1; i < ring.length; i++) {
         if (onEdge(ring[i - 1], ring[i])) {
-          if (cur.length > 1) lines.push(cur);
+          if (cur.length > 1) lines.push(...inBand(cur));
           cur = [];
           continue;
         }
         if (!cur.length) cur.push(ring[i - 1]);
         cur.push(ring[i]);
       }
-      if (cur.length > 1) lines.push(cur);
+      if (cur.length > 1) lines.push(...inBand(cur));
     }
   }
   return { type: 'Feature', geometry: { type: 'MultiLineString', coordinates: lines }, properties: { disabled: f.properties.disabled } };
+}
+
+/** The Mercator tiles' edges as y (merc.ts: 0 at MERCATOR_LAT, 1 at its negative). */
+const Y_N = mercY(MERCATOR_LAT), Y_S = mercY(-MERCATOR_LAT);
+/** y of a latitude, the poles held just short of ±90° (mercY is ∓Infinity there). */
+const yOf = (lat: number) => mercY(Math.max(-89.999999, Math.min(89.999999, lat)));
+
+/** A line's stretches within the Mercator tiles' latitudes (±MERCATOR_LAT), cut where it leaves
+ * them, at the point a straight line in Mercator (as the map draws it) crosses their edge. Past
+ * them the tiles have no ground to draw it on: MapLibre holds a point there to the tiles' edge, so an
+ * outline reaching a pole (Antarctica's to 90° S, along the pole's own latitude) drew a ring round
+ * it at 85.05°, which the globe's pole fans then smeared over the pole. */
+export function inBand(line: GeoJSON.Position[]): GeoJSON.Position[][] {
+  const out: GeoJSON.Position[][] = [];
+  let cur: GeoJSON.Position[] = [];
+  const end = () => {
+    if (cur.length > 1) out.push(cur);
+    cur = [];
+  };
+  for (let i = 1; i < line.length; i++) {
+    const a = line[i - 1], b = line[i];
+    const ya = yOf(a[1]), yb = yOf(b[1]);
+    // (The part of the stretch a→b inside the band: t0 to t1 of the way along it.)
+    let t0 = 0, t1 = 1;
+    if (ya !== yb) {
+      const tn = (Y_N - ya) / (yb - ya), ts = (Y_S - ya) / (yb - ya);
+      t0 = Math.max(0, Math.min(tn, ts));
+      t1 = Math.min(1, Math.max(tn, ts));
+    } else if (ya < Y_N || ya > Y_S) t0 = 1, t1 = 0;
+    if (t0 >= t1) {
+      end();
+      continue;
+    }
+    const at = (t: number): GeoJSON.Position => t === 0 ? a : t === 1 ? b : [a[0] + t * (b[0] - a[0]), clampLat(mercLat(ya + t * (yb - ya)))];
+    if (t0 > 0) end();
+    if (!cur.length) cur.push(at(t0));
+    cur.push(at(t1));
+    if (t1 < 1) end();
+  }
+  end();
+  return out;
 }
 
 /** Whether `p` ([lng, lat]) lies in a MultiPolygon (even-odd over every ring). */

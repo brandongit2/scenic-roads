@@ -1,8 +1,9 @@
 // node web/test/regionoutlines.test.ts (tools/dev/check.sh's web part): src/regions.ts, the
 // regions' outlines on the map: the region under the cursor (the footer's), the zoom asked, and the
-// lines drawn from outlines clipped to a box.
+// lines drawn from outlines clipped to a box or reaching past the Mercator tiles' latitudes.
 import assert from 'node:assert/strict';
-import { inside, outlineLines, outlineZoom, regionAt, type RegionOutline } from '../src/regions.ts';
+import { MERCATOR_LAT } from '../src/merc.ts';
+import { inBand, inside, outlineLines, outlineZoom, regionAt, type RegionOutline } from '../src/regions.ts';
 
 const sq = (w: number, s: number, e: number, n: number) => [[w, s], [e, s], [e, n], [w, n], [w, s]];
 const region = (id: string, rings: number[][][], bbox: [number, number, number, number]): RegionOutline => ({
@@ -34,4 +35,26 @@ assert.deepEqual(outlineLines(clipped, [-1, -1, 2, 2]).geometry.coordinates, [[[
 // Split at the antimeridian: the stretch along 180° is a cut too, with or without a box.
 const east = region('e', [[[170, 0], [180, 0], [180, 5], [170, 5], [170, 0]]], [170, 0, 180, 5]);
 assert.deepEqual(outlineLines(east, null).geometry.coordinates, [[[170, 0], [180, 0]], [[180, 5], [170, 5], [170, 0]]]);
+// Reaching a pole (Antarctica's drawn shape, split at the antimeridian, closed along 90° S): the
+// stretch along the pole's latitude isn't drawn (MapLibre held it to the tiles' edge, a ring at
+// 85.05° S), nor what lies past ±MERCATOR_LAT; the coast stays whole. The North Pole's alike.
+const south = region('s', [[[-180, -70], [0, -65], [180, -70], [180, -90], [-180, -90], [-180, -70]]], [-180, -90, 180, -65]);
+assert.deepEqual(outlineLines(south, null).geometry.coordinates, [[[-180, -70], [0, -65], [180, -70]]]);
+const north = region('n', [[[-180, 80], [180, 80], [180, 90], [-180, 90], [-180, 80]]], [-180, 80, 180, 90]);
+assert.deepEqual(outlineLines(north, null).geometry.coordinates, [[[-180, 80], [180, 80]]]);
+// A border crossing the edge is cut where it does, on the edge; one along a meridian to the pole
+// stops at the edge on that meridian.
+const lats = (ls: number[][][]) => ls.flat().map((p) => p[1]);
+const across = inBand([[10, 80], [20, 88], [30, 80]]);
+assert.equal(across.length, 2);
+assert.deepEqual([across[0][0], across[1][1]], [[10, 80], [30, 80]]);
+assert.ok(Math.abs(across[0][1][1] - MERCATOR_LAT) < 1e-9 && Math.abs(across[1][0][1] - MERCATOR_LAT) < 1e-9);
+assert.ok(across[0][1][0] > 10 && across[0][1][0] < 20 && across[1][0][0] > 20 && across[1][0][0] < 30);
+const meridian = inBand([[45, -80], [45, -90]]);
+assert.equal(meridian.length, 1);
+assert.equal(meridian[0][1][0], 45);
+assert.ok(Math.abs(meridian[0][1][1] + MERCATOR_LAT) < 1e-9);
+// Wholly past the edge: nothing; on it: drawn.
+assert.deepEqual(inBand([[0, 86], [10, 89], [20, 86]]), []);
+assert.ok(lats(inBand([[0, MERCATOR_LAT], [10, MERCATOR_LAT]])).every((l) => l === MERCATOR_LAT));
 console.log('regionoutlines: ok');
