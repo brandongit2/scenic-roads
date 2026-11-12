@@ -217,6 +217,7 @@ impl Mac {
             if lost {
                 w.state_lost(&keeps);
                 w.macs[k].local = None;
+                w.disk_lost.insert(k, w.t);
                 w.count("saved states lost");
             }
             w.macs[k].crashed = false;

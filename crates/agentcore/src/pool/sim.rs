@@ -471,6 +471,11 @@ struct World {
     /// Since when the declared lead's take-up has waited on the records of the Mac that led an
     /// epoch (`OWNER_S`), and that epoch.
     stuck: Option<(u64, u64)>,
+    /// The epoch the declared lead's take-up last waited on (`waits_on`), until it leads; and the
+    /// Macs whose records on their own disk were lost (their saved state or their disk), each since
+    /// when.
+    waits: Option<u64>,
+    disk_lost: BTreeMap<usize, u64>,
     /// The epochs each Mac led (epoch, Mac), and those two Macs led (`repeats`).
     led_by: BTreeSet<(u64, usize)>,
     repeated: BTreeSet<u64>,
@@ -653,6 +658,8 @@ impl World {
             served: None,
             gc_refused: BTreeSet::new(),
             stuck: None,
+            waits: None,
+            disk_lost: BTreeMap::new(),
             led_by: BTreeSet::new(),
             repeated: BTreeSet::new(),
             _dir: dir,
@@ -949,6 +956,7 @@ impl World {
         self.crash(k, "its disk is replaced");
         self.macs[k].lose = true;
         self.macs[k].local = None;
+        self.disk_lost.insert(k, self.t);
         std::fs::remove_dir_all(&self.macs[k].dir).ok();
         self.stored[k].clear();
         // (Its map log and GC's queue with it: a new disk's start afresh, docs/maplog.md §7.2.)
@@ -988,6 +996,9 @@ impl World {
 
     /// Mac `me`, the declared lead, waits to take up: on the records of the Mac that led epoch `e`.
     fn waits_on(&mut self, me: usize, e: u64) {
+        if me == self.declared {
+            self.waits = Some(e);
+        }
         if me == self.declared && self.stuck.is_none() {
             self.stuck = Some((self.t, e));
         }
@@ -1683,7 +1694,7 @@ impl World {
             }
             self.leaders.insert(e, me);
             self.took.insert(e, (me, self.t));
-            self.stuck = None;
+            (self.stuck, self.waits) = (None, None);
             self.macs[me].led = e;
             self.count("take-ups");
             self.note(|| format!("mac{me} leads epoch {e}"));
@@ -1724,6 +1735,23 @@ impl World {
             ));
         }
         let d = self.declared;
+        // (The declared lead's take-up waiting on records the one path's brief is of, which no Mac
+        // has: their lead's own disk's copy lost (its saved state or its disk) after it led them,
+        // and the one path written over by a late save (another lead's, fenced). Two faults with
+        // no copy left: the take-up waits for good, saying so, and the owner decides (docs/pool.md
+        // §4 invariant 5's limit). Counted, the end's checks of the lead and the hand-offs not made.)
+        let gone = self.waits.filter(|_| self.macs[d].leads.is_none()).and_then(|e| {
+            let by: Vec<usize> = self.led_by.iter().filter(|l| l.0 == e).map(|l| l.1).collect();
+            by.iter()
+                .all(|m| self.disk_lost.get(m).is_some_and(|&at| self.took.get(&e).is_some_and(|t| at >= t.1)))
+                .then_some(e)
+        });
+        if let Some(e) = gone {
+            self.count("runs ending on records lost with their lead's disk, a late save over the one path");
+            return self.note(|| {
+                format!("the declared lead mac{d} waits on epoch {e}'s records, lost with their lead's disk")
+            });
+        }
         // (Its own last take-up's epoch: another Mac's after it may be one whose take-up never
         // reached the NAS before, its records fenced, numbered higher: invariant 2's limit.)
         let last = self.led_by.iter().filter(|&&(_, m)| m == d).map(|&(e, _)| e).max();
