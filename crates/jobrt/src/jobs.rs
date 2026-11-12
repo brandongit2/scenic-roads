@@ -119,23 +119,60 @@ pub fn saying<T>(every: std::time::Duration, say: impl Fn(u64) + Send, run: impl
 }
 
 /// The stage a job said it began last (`stage`): a program's progress within it counts as the
-/// stage's (`within`).
-static FRAME: std::sync::Mutex<Option<(u64, u64, String)>> = std::sync::Mutex::new(None);
+/// stage's (`within`), and the most of it said so far (`Frame::best`).
+static FRAME: std::sync::Mutex<Option<Frame>> = std::sync::Mutex::new(None);
+
+/// A stage begun (`stage`): `k` of `n`, in `unit`, and the most of it `within` has said.
+#[derive(Clone)]
+struct Frame {
+    k: u64,
+    n: u64,
+    unit: String,
+    best: f64,
+}
 
 /// Says a job begins stage `k` of its `n` (`report`, in `unit`), and that a program run within it
 /// says how far the stage is (`within`).
 pub fn stage(k: u64, n: u64, unit: &str) {
     if let Ok(mut f) = FRAME.lock() {
-        *f = Some((k, n, unit.to_string()));
+        *f = Some(Frame { k, n, unit: unit.to_string(), best: 0.0 });
     }
     report(k, n, unit);
 }
 
 /// The stage under way (`stage`) is `frac` done, as a program it runs says: `<k + frac>/<n>`.
+/// Never back: a share under the most said within the stage says that most again (a stage of two
+/// programs, or of work run twice, each from 0; the agent's pace reads only what passes its most:
+/// agentcore's coord::lease::Pace).
 pub fn within(frac: f64) {
-    let frame = FRAME.lock().ok().and_then(|f| f.clone());
-    if let Some((k, n, unit)) = frame {
-        report_f(k as f64 + frac.clamp(0.0, 1.0), n, &unit);
+    within_doing(frac, "");
+}
+
+/// `within`, the line's unit saying what's under way too, in its brackets
+/// (`inputs check (the candidate checked whole: the cover check, 5200 of 16200 cells)`): a word in
+/// brackets, so the pace is the unit's (`unit_key`). Empty: the stage's unit alone.
+pub fn within_doing(frac: f64, doing: &str) {
+    let said = FRAME.lock().ok().and_then(|mut f| {
+        let f = f.as_mut()?;
+        f.best = f.best.max(frac.clamp(0.0, 1.0));
+        Some(f.clone())
+    });
+    if let Some(f) = said {
+        report_f(f.k as f64 + f.best, f.n, &doing_in(&f.unit, doing));
+    }
+}
+
+/// How far the stage under way is, as `within` has said it (0 before it has, or with no stage).
+pub fn within_so_far() -> f64 {
+    FRAME.lock().ok().and_then(|f| f.as_ref().map(|f| f.best)).unwrap_or(0.0)
+}
+
+/// Unit `unit` saying `doing` too, in its brackets: added to those it ends with, else its own.
+fn doing_in(unit: &str, doing: &str) -> String {
+    match (doing.is_empty(), unit.strip_suffix(')')) {
+        (true, _) => unit.to_string(),
+        (false, Some(u)) if unit_key(unit) != unit => format!("{u}: {doing})"),
+        (false, _) => format!("{unit} ({doing})"),
     }
 }
 
@@ -314,6 +351,27 @@ mod tests {
         let t = Instant::now();
         let caught = std::panic::catch_unwind(|| saying(Duration::from_secs(3600), |_| {}, || panic!("stopped")));
         assert!(caught.is_err() && t.elapsed() < Duration::from_secs(60));
+    }
+
+    /// A stage's share never goes back (task #1145): a second program, or work run again, from 0
+    /// says the most so far until it passes it; a new stage begins at 0. What's under way goes in
+    /// the unit's brackets, the pace's unit unchanged.
+    #[test]
+    fn a_stages_share_never_goes_back() {
+        stage(2, 5, "inputs check (the candidate checked whole)");
+        assert_eq!(within_so_far(), 0.0);
+        within(0.4);
+        within(0.1);
+        assert_eq!(within_so_far(), 0.4);
+        within_doing(0.7, "the cover check, 3 of 9 cells");
+        assert_eq!(within_so_far(), 0.7);
+        stage(3, 5, "inputs check (the next version checked whole)");
+        assert_eq!(within_so_far(), 0.0);
+        let u = doing_in("inputs check (the candidate checked whole)", "the coast, 2 of 4 cells");
+        assert_eq!(u, "inputs check (the candidate checked whole: the coast, 2 of 4 cells)");
+        assert_eq!(unit_key(&u), "inputs check");
+        assert_eq!(doing_in("parts", "the land, 1 of 3"), "parts (the land, 1 of 3)");
+        assert_eq!(doing_in("parts", ""), "parts");
     }
 
     #[test]

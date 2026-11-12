@@ -37,6 +37,7 @@
 use super::extract::Id;
 use super::file::{Part, Region, Target};
 use super::geom::{self, Area, Pt, Ring};
+use super::progress::{Progress, Step};
 use super::resolve::{Folder, Leaf, Outcome, Problem, Resolved};
 use super::stored::Shape;
 use crate::inputs::pace;
@@ -752,9 +753,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let mut needs: BTreeSet<Id> = BTreeSet::new();
     trace("land");
     // 1. Land, in waves by what outlines name.
+    let said = &ctx.progress;
+    said.begin(Step::Land, ids.len());
     let mut left: Vec<String> = ids.clone();
     while !left.is_empty() {
-        jobrt::jobs::within((ids.len() - left.len()) as f64 / ids.len() as f64);
         let (wave, rest): (Vec<String>, Vec<String>) = left.into_iter().partition(|id| {
             folder.deps(&folder.regions[id].1).iter().all(|d| {
                 // (One with water is ready once made; its placeholder in `out` isn't it.)
@@ -780,6 +782,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let res: Vec<(String, Result<Made, Vec<Problem>>)> = wave
             .iter()
             .map(|id| {
+                let _one = said.one_on_drop();
                 let make = || {
                     let mut more = BTreeSet::new();
                     let m = make_land(id, folder, ctx, data, &made, &others, out, &held, &mut more);
@@ -837,6 +840,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let mut done_w: BTreeSet<String> = BTreeSet::new();
     let mut left: Vec<String> =
         ids.iter().filter(|id| made.contains_key(*id) && !rests.contains(id)).cloned().collect();
+    said.begin(Step::Water, left.len());
     while !left.is_empty() {
         let (wave, rest): (Vec<String>, Vec<String>) = left
             .into_iter()
@@ -857,6 +861,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let res: Vec<(String, Result<TArea, Vec<Problem>>)> = wave
             .iter()
             .map(|id| {
+                let _one = said.one_on_drop();
                 trace(&format!("water of {id} begins"));
                 let make = || {
                     let mut more = BTreeSet::new();
@@ -905,7 +910,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     trace("lakes");
     // 3. Lakes: a region's own unless another's water names them.
     let lake_cells: BTreeSet<Cell> = made.values().flat_map(|m| m.lakes.cells.keys().copied()).collect();
+    said.begin(Step::Lakes, lake_cells.len());
     let lake_cuts: Vec<(String, Cell, Area)> = pace::par_map(lake_cells.into_iter().collect(), |c| {
+        let _one = said.one_on_drop();
         let mine: Vec<(&String, Area)> =
             made.iter().map(|(id, m)| (id, m.lakes.get(c))).filter(|(_, a)| !a.is_empty()).collect();
         let waters: Vec<(&String, Area)> =
@@ -932,7 +939,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .collect()
     });
     // 3b. One coastline: what lies in no region between a region's coast and the coastline's.
-    coast(data, folder, &mut made, &others);
+    coast(data, folder, &mut made, &others, said);
     // Each region's area by cell: land, water, lakes.
     // (Fanned out over (region, cell) pairs, not regions: one large region still uses every thread
     // allowed, its cells' unions being the work.)
@@ -945,9 +952,11 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         })
         .collect();
     let mut areas: BTreeMap<String, TArea> = made.keys().map(|id| (id.clone(), TArea::default())).collect();
-    for (id, c, a) in
-        pace::par_map(pairs, |(id, m, c)| (id, c, m.land.get(c).union(&m.water.get(c)).union(&m.lakes.get(c))))
-    {
+    said.begin(Step::Areas, pairs.len());
+    for (id, c, a) in pace::par_map(pairs, |(id, m, c)| {
+        let _one = said.one_on_drop();
+        (id, c, m.land.get(c).union(&m.water.get(c)).union(&m.lakes.get(c)))
+    }) {
         areas.get_mut(id).unwrap().set(c, a);
     }
     // (The lands kept only for the slivers' rule; otherwise only whether each is empty.)
@@ -959,7 +968,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     drop(made);
     trace("hand-outs");
     // 4. Hand-outs.
+    said.begin(Step::HandOuts, ids.len());
     for id in &ids {
+        let _one = said.one_on_drop();
         let Some(g) = folder.regions[id].1.hand_out.clone() else { continue };
         if !areas.contains_key(id) {
             continue;
@@ -984,7 +995,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .collect();
         // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
         // where it goes.
-        let moves: Vec<(String, BTreeMap<Cell, Area>)> = pace::par_map(components(&mine), |comp| {
+        let comps = components(&mine);
+        said.item(comps.len());
+        let moves: Vec<(String, BTreeMap<Cell, Area>)> = pace::par_map(comps, |comp| {
+            let _part = said.part_on_drop();
             let km2: f64 = comp.values().map(geom::area_km2).sum();
             let mut edge: Vec<f64> = vec![0.0; theirs.len()];
             for (c, p) in &comp {
@@ -1036,12 +1050,12 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let mut all: BTreeMap<String, TArea> = others;
     all.extend(areas);
     if cover {
-        slivers(&ids, folder, &lands, rules.sliver_km2, &mut all);
+        slivers(&ids, folder, &lands, rules.sliver_km2, &mut all, said);
     }
     drop(lands);
     trace("the cells' fills and the cover check");
     let rest_id = rests.first().map(|s| (*s).clone());
-    let zones = if cover { zones(data) } else { TArea::default() };
+    let zones = if cover { zones(data, said) } else { TArea::default() };
     let rest = cells_pass(
         folder,
         data,
@@ -1053,10 +1067,11 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         rules.sliver_km2,
         &mut out.problems,
         &mut out.fit,
+        said,
     );
     drop(zones);
     if cover {
-        fit_after(&all, rest_id.as_ref().map(|id| (id, &rest)), &mut out.fit);
+        fit_after(&all, rest_id.as_ref().map(|id| (id, &rest)), &mut out.fit, said);
         for ((a, b), k) in &out.fit.after_overlaps {
             if *k > HAIR_KM2 {
                 out.problems.push(Problem {
@@ -1091,7 +1106,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     trace_gaps("at the end", data, |c| all.values().map(|t| t.get(c)).filter(|a| !a.is_empty()).collect());
     trace("stored");
     // 6. Stored: every region with water, and the rest (those without, as they resolved).
+    said.begin(Step::Stored, all.len());
     for (id, t) in &all {
+        let _one = said.one_on_drop();
         if rest_id.as_ref() == Some(id) {
             continue;
         }
@@ -1335,7 +1352,9 @@ fn make_land(
         let i: BTreeSet<Cell> = r.intersect.iter().flat_map(|p| support(p, &env)).collect();
         cells = cells.intersection(&i).copied().collect();
     }
+    ctx.progress.item(cells.len());
     let got: Vec<Result<(Cell, Area, Area), Problem>> = pace::par_map(cells.into_iter().collect(), |c| {
+        let _part = ctx.progress.part_on_drop();
         geom::set_label(format!("the land of {id}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
         let o = geom::union_all(&r.outline.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
         let o = if r.intersect.is_empty() || o.is_empty() {
@@ -1398,6 +1417,7 @@ fn coast(
     folder: &Folder,
     made: &mut BTreeMap<String, Made>,
     others: &BTreeMap<String, TArea>,
+    progress: &Progress,
 ) {
     let cells: BTreeSet<Cell> = made
         .values()
@@ -1460,7 +1480,9 @@ fn coast(
         near: BTreeSet<String>,
         inner: Option<String>,
     }
+    progress.begin(Step::Coast, cells.len());
     let pieces: Vec<Piece> = pace::par_map(cells.into_iter().collect(), |c| {
+        let _one = progress.one_on_drop();
         geom::set_label(format!("the coast, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
         let land = land_and_lakes(data, c).0;
         if land.is_empty() {
@@ -1586,7 +1608,9 @@ fn coast(
     for (near, i) in split {
         by_cell.entry((pieces[i].c, pieces[i].sea)).or_default().push((near, i));
     }
+    progress.begin(Step::CoastSplits, by_cell.len());
     let cut: Vec<(String, usize, Area)> = pace::par_map(by_cell.into_iter().collect(), |((c, sea), v)| {
+        let _one = progress.one_on_drop();
         let idx = index(c, sea);
         let mut out = Vec::new();
         for (near, i) in v {
@@ -1634,8 +1658,10 @@ fn coast(
         "the coast: {} pieces of land, {:.1} km², and {} of sea, {:.1} km², to regions",
         said[0].0, said[0].1, said[1].0, said[1].1
     ));
+    progress.begin(Step::CoastFills, fill.len());
     let filled: Vec<(String, bool, Cell, Area)> =
         pace::par_map(fill.into_iter().collect(), |((id, sea, c), mut v): ((String, bool, Cell), Vec<Area>)| {
+            let _one = progress.one_on_drop();
             let m = &made[&id];
             v.push(if sea { m.water.get(c) } else { m.land.get(c) });
             (id, sea, c, geom::union_all(&v))
@@ -1669,7 +1695,9 @@ fn make_water(
     trace(&format!("water of {id}: its parts read"));
     let cells: BTreeSet<Cell> = r.water.iter().flat_map(|p| support(p, &env)).collect();
     trace(&format!("water of {id}: {} cells", cells.len()));
+    ctx.progress.item(cells.len());
     let got: Vec<Result<(Cell, Area), Problem>> = pace::par_map(cells.into_iter().collect(), |c| {
+        let _part = ctx.progress.part_on_drop();
         geom::set_label(format!("the water of {id}, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
         let w = geom::union_all(&r.water.iter().map(|p| eval(p, c, &env, r, path)).collect::<Result<Vec<_>, _>>()?);
         if w.is_empty() {
@@ -1804,10 +1832,12 @@ fn slivers(
     lands: &BTreeMap<String, TArea>,
     km2: f64,
     all: &mut BTreeMap<String, TArea>,
+    progress: &Progress,
 ) {
     if km2 <= 0.0 {
         return;
     }
+    progress.begin(Step::Slivers, ids.len());
     // (Which regions have a piece in each cell.)
     let mut index: HashMap<Cell, Vec<String>> = HashMap::new();
     for (id, t) in all.iter() {
@@ -1816,6 +1846,7 @@ fn slivers(
         }
     }
     for id in ids {
+        let _one = progress.one_on_drop();
         if folder.regions[id].1.is_rest() || !all.contains_key(id) {
             continue;
         }
@@ -1824,6 +1855,7 @@ fn slivers(
         // islands aren't pieces to test, each against its land.)
         let water = all[id].zip(&land, |a, l| if l.is_empty() { a.clone() } else { a.minus(l) });
         let comps = components(&water);
+        progress.item(comps.len());
         // (A region all of whose area is one piece of water keeps it.)
         if comps.len() + usize::from(!land.is_empty()) < 2 {
             continue;
@@ -1831,6 +1863,7 @@ fn slivers(
         // (Each piece decided at once, the cheap tests first: its size, whether it's land, then
         // its edges; then moved.)
         let moves: Vec<(String, BTreeMap<Cell, Area>)> = pace::par_map(comps, |comp| {
+            let _part = progress.part_on_drop();
             let piece = TArea { cells: comp };
             if piece.km2() >= km2 || shared_km(&piece, &land) > 0.0 {
                 return None;
@@ -1954,17 +1987,25 @@ fn land_within(data: &super::data::Datasets, p: Pt, d: f64) -> bool {
 
 /// Every 200-nmi zone of the datasets with its internal waters, by cell: where water is some
 /// country's.
-fn zones(data: &super::data::Datasets) -> TArea {
+fn zones(data: &super::data::Datasets, progress: &Progress) -> TArea {
     let shapes: Vec<&Vec<Ring>> = data.eez.values().chain(data.internal.values()).collect();
-    let parts: Vec<TArea> = pace::par_map(shapes, |rs| TArea::from_rings(rs));
+    progress.begin(Step::Zones, shapes.len());
+    let parts: Vec<TArea> = pace::par_map(shapes, |rs| {
+        let _one = progress.one_on_drop();
+        TArea::from_rings(rs)
+    });
     let mut by: BTreeMap<Cell, Vec<Area>> = BTreeMap::new();
     for t in parts {
         for (c, a) in t.cells {
             by.entry(c).or_default().push(a);
         }
     }
+    progress.begin(Step::ZoneCells, by.len());
     let mut t = TArea::default();
-    for (c, a) in pace::par_map(by.into_iter().collect(), |(c, v): (Cell, Vec<Area>)| (c, geom::union_all(&v))) {
+    for (c, a) in pace::par_map(by.into_iter().collect(), |(c, v): (Cell, Vec<Area>)| {
+        let _one = progress.one_on_drop();
+        (c, geom::union_all(&v))
+    }) {
         t.set(c, a);
     }
     t
@@ -1972,9 +2013,11 @@ fn zones(data: &super::data::Datasets) -> TArea {
 
 /// The regions as they end (the rest's area included): each pair's area both have and what none
 /// has, cell by cell.
-fn fit_after(all: &BTreeMap<String, TArea>, rest: Option<(&String, &TArea)>, fit: &mut Fit) {
+fn fit_after(all: &BTreeMap<String, TArea>, rest: Option<(&String, &TArea)>, fit: &mut Fit, progress: &Progress) {
     let cells: Vec<Cell> = (-90..90).flat_map(|x| (-45..45).map(move |y| (x, y))).collect();
+    progress.begin(Step::Fit, cells.len());
     let done: Vec<(Cell, Vec<(String, String, f64)>, f64)> = pace::par_map(cells, |c| {
+        let _one = progress.one_on_drop();
         let pieces: Vec<(&String, &Area)> =
             all.iter().chain(rest).filter_map(|(id, t)| t.cells.get(&c).map(|a| (id, a))).collect();
         let boxes: Vec<Option<[i64; 4]>> = pieces.iter().map(|p| p.1.bbox()).collect();
@@ -2105,21 +2148,17 @@ fn cells_pass(
     fill_km2: f64,
     problems: &mut Vec<Problem>,
     fit: &mut Fit,
+    progress: &Progress,
 ) -> TArea {
     if !cover && !rest {
         return TArea::default();
     }
     let cells: Vec<Cell> = (-90..90).flat_map(|x| (-45..45).map(move |y| (x, y))).collect();
     type One = (Cell, Vec<(String, Area)>, Area, Vec<Gap>, Twice, Vec<Problem>, Vec<Pair>);
+    progress.begin(Step::Cover, cells.len());
     let done: Vec<One> = pace::par_map(cells, |c| {
+        let _one = progress.one_on_drop();
         geom::set_label(format!("the cover check, the cell from {}°, {}°", c.0 * 2, c.1 * 2));
-        {
-            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if n % 2000 == 0 {
-                trace(&format!("the cover check: {n} of 16,200 cells"));
-            }
-        }
         let bb = geom::box_area(cell_box(c));
         let mut pieces: Vec<(String, Area)> =
             all.iter().filter_map(|(id, t)| t.cells.get(&c).map(|a| (id.clone(), a.clone()))).collect();
@@ -2312,7 +2351,9 @@ fn cells_pass(
         }
     }
     let none = Twice::new();
+    progress.begin(Step::GapLand, need.len());
     let lands: Vec<Vec<(usize, GapLand)>> = pace::par_map(need.into_iter().collect(), |(c, is): (Cell, Vec<usize>)| {
+        let _one = progress.one_on_drop();
         let land = land_and_lakes(data, c).0;
         let t = twice.get(&c).unwrap_or(&none);
         is.into_iter().filter_map(|i| gaps[i].area.as_ref().map(|a| (i, gap_land(a, &land, t)))).collect()
@@ -2376,7 +2417,9 @@ fn cells_pass(
     // the open sea beyond every zone.
     let mut given: Vec<(String, Cell, Area)> = Vec::new();
     let mut handed: Vec<BTreeMap<String, f64>> = vec![BTreeMap::new(); groups.len()];
+    progress.begin(Step::GapShares, groups.len());
     for (gi, idx) in groups.iter().enumerate() {
+        let _one = progress.one_on_drop();
         if idx.iter().map(|&i| gaps[i].km2).sum::<f64>() <= fill_km2 {
             continue;
         }
@@ -2553,8 +2596,10 @@ fn cells_pass(
         }
     }
     trace(&format!("the fill: {n} gaps' pieces, {km2:.1} km², to regions"));
+    progress.begin(Step::Fills, fill.len() + sea.len());
     let filled: Vec<(String, Cell, Area)> =
         pace::par_map(fill.into_iter().collect(), |((id, c), mut v): ((String, Cell), Vec<Area>)| {
+            let _one = progress.one_on_drop();
             v.push(all[&id].get(c));
             let a = geom::union_all(&v);
             (id, c, a)
@@ -2563,6 +2608,7 @@ fn cells_pass(
         all.get_mut(&id).unwrap().set(c, a);
     }
     let seas: Vec<(Cell, Area)> = pace::par_map(sea.into_iter().collect(), |(c, mut v): (Cell, Vec<Area>)| {
+        let _one = progress.one_on_drop();
         v.push(rest_t.get(c));
         (c, geom::union_all(&v))
     });
@@ -2571,7 +2617,9 @@ fn cells_pass(
     }
     // The rest inside a zone: water some country's region should have had.
     if rest {
+        progress.begin(Step::RestInZones, rest_t.cells.len());
         let inside: Vec<(Cell, f64)> = pace::par_map(rest_t.cells.iter().collect(), |(c, a)| {
+            let _one = progress.one_on_drop();
             (*c, zones.cells.get(c).map_or(0.0, |z| geom::area_km2(&a.intersect(z))))
         });
         for (c, k) in inside {

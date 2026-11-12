@@ -163,9 +163,10 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   operation inside a task runs its items one after another on that task's thread, inside its
   permit's budget, so a permit's holder never waits for another permit (no deadlock) and nothing
   runs beyond what is allowed. Without the file (a hand run) every core is allowed. It reports
-  its progress as five stages (the files read and checked, the candidate checked whole, the next
-  version checked whole, what is derived from it, the files stored), with how far within a stage
-  where it knows (files; regions), as `progress:` lines like any job (docs/building.md); `scenic
+  its progress as six stages (the files read and checked, the candidate checked whole, the next
+  version checked whole, the version in use checked whole when the next raised a finding that holds,
+  what is derived from the next, the files stored), with how far within a stage where it knows
+  (files; the regions' resolve by its steps, §6.1.4), never going back within a stage, as `progress:` lines like any job (docs/building.md); `scenic
   inputs` shows a checking unit's stage, share, time left and threads from the lead's status.
 - **Derived facts** (a register's box and count, a GeoTIFF's resolution and extent) go in the index
   with each file, computed from content, so steps read the index rather than every file.
@@ -622,6 +623,16 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   north of 86°N (where no land is); a buffer of
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart
   (within a twentieth of the distance).
+- **Progress:** a resolve counts its steps as it goes (`regions::progress`, task #1145): the regions
+  without water, the land and the water (by region, the one under way by its cells), the lakes, the
+  coast's cells, splits and fills, each region's area, the hand-outs and the slivers (by region, the
+  one under way by its stretches), the 200-nmi zones, the cover check's every cell, the gaps' land and
+  shares, the fills, the rest inside the zones, the fit's every cell, the regions stored. Each step
+  is an equal share of the resolve (a step the folder doesn't take passed over), its items done of
+  its total within it; every 5 s (`jobrt::jobs::saying`) the share goes out as the check's stage
+  under way, what's under way in its line (`2.642/6 inputs check (the candidate checked whole: the
+  cover check, 5200 of 16200 cells)`), so the slow and stuck flags judge it while it works. The share
+  never goes back.
 - **Snapping and the operations' watch:** the regions with water's operations snap with a growing
   radius (i_overlay's `Precision::HIGH`, from a unit; the others' stay at a unit, so they're byte
   for byte as before): with a fixed unit radius, cells whose edges ran nearly along each other

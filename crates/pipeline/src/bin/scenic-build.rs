@@ -2785,12 +2785,26 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
 }
 
 /// The terrain packs' z8 (roads::peaks::z8): the lo packs the manifest names, from local copies
-/// under `cache`.
+/// under `cache`. The packs copied of all said as the stage under way every few seconds
+/// (jobrt::jobs::saying: the copies took 13 min on a busy NAS, task #1145).
 fn open_z8(out: &Out, cache: &Path) -> Result<roads::peaks::z8::Z8> {
-    let mut packs = Vec::new();
-    for (l, q) in roads::peaks::z8::lo_packs(&out.manifest) {
-        packs.push((q, local_copy(out, &l, cache)?));
-    }
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    let lo = roads::peaks::z8::lo_packs(&out.manifest);
+    let done = AtomicUsize::new(0);
+    let say = |_| {
+        let k = done.load(Relaxed);
+        let n = lo.len().max(1);
+        jobrt::jobs::within_doing(k as f64 / n as f64, &format!("the z8 packs copied here, {k} of {n}"));
+    };
+    let packs = jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, say, || {
+        lo.iter()
+            .map(|(l, q)| {
+                let p = local_copy(out, l, cache)?;
+                done.fetch_add(1, Relaxed);
+                Ok((*q, p))
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
     roads::peaks::z8::Z8::open(&packs, 4096)
 }
 
@@ -3082,19 +3096,32 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let parts = Parts(PARTS);
     parts.start(0);
     let p = phase("gathering the candidates' items");
-    for (u, _, _) in pipeline::agent::build::pois_units(&cov, &date, &out.manifest) {
-        let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
-        for c in roads::candidates::read(&pc)? {
-            let Some(q) = c.qid.as_deref() else { continue };
-            if is_qid(q) {
-                facts.insert(q.to_string());
+    // (The z6 tiles read of all said every few seconds, jobrt::jobs::saying: their candidates' files
+    // took 15 min on a busy NAS, task #1145.)
+    let units = pipeline::agent::build::pois_units(&cov, &date, &out.manifest);
+    let read = std::sync::atomic::AtomicUsize::new(0);
+    let say = |_| {
+        let (k, n) = (read.load(std::sync::atomic::Ordering::Relaxed), units.len().max(1));
+        jobrt::jobs::within_doing(k as f64 / n as f64, &format!("the z6 tiles' candidates read, {k} of {n}"));
+    };
+    jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, say, || -> Result<()> {
+        for (u, _, _) in &units {
+            if let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) {
+                for c in roads::candidates::read(&pc)? {
+                    let Some(q) = c.qid.as_deref() else { continue };
+                    if is_qid(q) {
+                        facts.insert(q.to_string());
+                    }
+                    let first = q.split(';').next().unwrap_or("").trim();
+                    if is_qid(first) {
+                        views.insert(first.to_string());
+                    }
+                }
             }
-            let first = q.split(';').next().unwrap_or("").trim();
-            if is_qid(first) {
-                views.insert(first.to_string());
-            }
+            read.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-    }
+        Ok(())
+    })?;
     drop(p);
     // The pass's answers: this Mac's and the NAS's made one.
     // (With the budgets on: this Mac's answers held while the step runs, after the agent sending

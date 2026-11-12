@@ -24,8 +24,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The stages `decide` reports (`jobs::stage`): the files read and checked, the candidate checked
-/// whole, the next version checked whole, what's derived from it, and the files stored.
-const STAGES: u64 = 5;
+/// whole, the next version checked whole, the version in use checked whole (when the next raised a
+/// finding that holds; else passed over), what's derived from the next, and the files stored. Each
+/// a check whole of a version at most, so a unit's progress within one (the regions' resolve,
+/// crate::inputs::regions::progress) runs from its stage's start to its end.
+const STAGES: u64 = 6;
 
 /// What a check is given.
 pub struct Given<'a> {
@@ -285,6 +288,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         let mut bad: Vec<Finding> = found.iter().filter(|f| f.holds(g.accepted)).cloned().collect();
         if !bad.is_empty() {
             // (Not one the version in use raises as it stands: that holds no change.)
+            jobs::stage(4, STAGES, "inputs check (the version in use checked whole)");
             let before: BTreeMap<String, Option<Arc<Vec<u8>>>> = prev.files.keys().map(|p| (p.clone(), None)).collect();
             let rd = reader(&before, prev, g.read_old);
             let had: BTreeSet<String> = if prev.files.is_empty() {
@@ -311,7 +315,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
     }
     // What's derived from the version whole (the regions' stored geometry): for every file but
     // those kept as accepted.
-    jobs::stage(4, STAGES, "inputs check (what's derived from the version)");
+    jobs::stage(5, STAGES, "inputs check (what's derived from the version)");
     if files != prev.files || rederive || (g.checks.holds_unchanged() && !changes.is_empty()) {
         let keep: BTreeSet<String> = held.iter().chain(&stuck).cloned().collect();
         // (A file kept as accepted keeps what was derived from the old: the index names that until
@@ -515,7 +519,7 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
     })?;
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
-    jobs::stage(5, STAGES, "inputs check (the accepted files stored)");
+    jobs::stage(6, STAGES, "inputs check (the accepted files stored)");
     let p = phase("storing the accepted files, the index and the report");
     for (name, bytes) in &d.store {
         let c = store::naming::parse_content_name(name).context("a copy's name")?;

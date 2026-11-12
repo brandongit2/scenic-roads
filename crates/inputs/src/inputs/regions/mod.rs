@@ -21,6 +21,7 @@ pub mod file;
 pub mod geom;
 pub mod kept;
 pub mod land;
+pub mod progress;
 pub mod read;
 pub mod resolve;
 pub mod shapes;
@@ -107,7 +108,9 @@ impl Regions {
     }
 
     /// The folder `v` holds, resolved. The process is stopped (exit 3, saying so) if its footprint
-    /// passes `max_mb()` while it resolves: a check never takes the Mac down.
+    /// passes `max_mb()` while it resolves: a check never takes the Mac down. How far it is goes
+    /// out as the check's stage under way every few seconds (crate::inputs::regions::progress,
+    /// jobrt::jobs::saying).
     pub fn resolve(&self, v: &Version) -> Result<(resolve::Folder, resolve::Outcome)> {
         jobrt::sys::footprint_guard("the regions' check", max_mb());
         geom::watch(30, op_budget_s());
@@ -124,8 +127,10 @@ impl Regions {
             kept: Some(&self.kept),
             names: c.map(|c| c.names.clone()).unwrap_or_default(),
             data,
+            progress: Default::default(),
         };
-        let out = resolve::resolve(&folder, &ctx);
+        let out =
+            jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, |_| ctx.progress.say(), || resolve::resolve(&folder, &ctx));
         // (A pause a piece kept met: the check stops there.)
         self.kept.stopped()?;
         if let Some(d) = data {

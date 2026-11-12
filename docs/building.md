@@ -287,8 +287,12 @@ from the first (`edit_held`).
   (`staging layers from the packs: 12 of 31 parts …, 2154 MB from the NAS in 340s (6.3 MB/s); now …`).
   Work in a job's own process says how far it is every 5 s beside it (`jobrt::jobs::saying`: the
   staging, a depth level's blocks and the floor's shading, terrain-hi's, terrain-lo's and
-  terrain-deep's tiles), so the slow and stuck flags (docs/pool.md §10) judge it by its progress
-  while it works. A part's time left comes from its own pace; a stuck part shows as such.
+  terrain-deep's tiles, the regions check's resolve by its steps (docs/inputs.md §6.1.4), the
+  summits' z8 packs copied, the items' z6 tiles' candidates read), so the slow and stuck flags
+  (docs/pool.md §10) judge it by its progress while it works; heritage's park facts say theirs as
+  each Wikidata batch comes. Within a stage the share never goes back (`jobs::within`: a stage's
+  second program from 0 says the most so far until it passes it). A part's time left comes from
+  its own pace; a stuck part shows as such.
 - **The heartbeat's resources:** each Mac's memory, cores and load, disk free and droppable caches,
   NAS latency and free space; its build caches (`caches`) and room target (`caches.room`).
 - **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run

@@ -219,6 +219,11 @@ fn wd_parks(
         }
         done += chunk.len();
         eprintln!("  wikidata {done}/{}", qids.len());
+        // (As the chain's stage under way, task #1145: its batches took 11 min, said by no progress.)
+        jobrt::jobs::within_doing(
+            done as f64 / qids.len().max(1) as f64,
+            &format!("park facts from Wikidata, {done} of {}", qids.len()),
+        );
         save(&out)?;
         jobrt::control::piece_saved()
     })?;

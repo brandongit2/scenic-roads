@@ -242,6 +242,8 @@ pub struct Context<'a> {
     pub names: String,
     /// The regions' datasets (sea zones, territorial seas, lakes, the coastline's land), when read.
     pub data: Option<&'a super::data::Datasets>,
+    /// How far the resolve is, counted as it goes (crate::inputs::regions::progress).
+    pub progress: super::progress::Progress,
 }
 
 /// Resolutions kept, by a key of everything they were made from.
@@ -319,9 +321,8 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         }
         pending.push((id, key));
     }
-    let regions = pending.len().max(1);
+    ctx.progress.begin(super::progress::Step::Plain, pending.len());
     while !pending.is_empty() {
-        jobrt::jobs::within((regions - pending.len()) as f64 / regions as f64);
         let (wave, rest): (Vec<(String, String)>, Vec<(String, String)>) = pending.into_iter().partition(|(id, _)| {
             folder.deps(&folder.regions[id].1).iter().all(|d| out.resolved.contains_key(d) || held.contains(d))
         });
@@ -332,6 +333,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
             let done = &out.resolved;
             let held = &held;
             crate::inputs::pace::par_map(wave.iter().collect(), |(id, key)| {
+                let _one = ctx.progress.one_on_drop();
                 let (path, r) = &folder.regions[id];
                 if let Some(dep) = folder.deps(r).into_iter().find(|d| held.contains(d)) {
                     return (

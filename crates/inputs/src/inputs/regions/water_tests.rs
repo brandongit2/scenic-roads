@@ -6,6 +6,7 @@
 use super::data::Datasets;
 use super::file::{parse, Part};
 use super::geom::{self, Area};
+use super::progress::Step;
 use super::tests::outlines;
 use super::*;
 use std::collections::HashMap;
@@ -216,6 +217,12 @@ fn world_zones(north: f64, more: Vec<Vec<geom::Ring>>, zones: HashMap<u64, Vec<g
 }
 
 fn run(w: &World, files: &[(&str, &str)]) -> resolve::Outcome {
+    run_counted(w, files).0
+}
+
+/// `run`, and each step its progress counted (crate::inputs::regions::progress): the step, its
+/// items done and its total.
+fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Step, u64, u64)>, f64) {
     let m: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, t)| (p.to_string(), t.as_bytes().to_vec())).collect();
     let folder = resolve::Folder::read(m.keys().cloned(), &|p| Ok(m[p].clone())).unwrap();
     let others = BTreeMap::new();
@@ -228,8 +235,33 @@ fn run(w: &World, files: &[(&str, &str)]) -> resolve::Outcome {
         kept: None,
         names: String::new(),
         data: Some(&w.data),
+        progress: Default::default(),
     };
-    resolve::resolve(&folder, &ctx)
+    let out = resolve::resolve(&folder, &ctx);
+    (out, ctx.progress.steps(), ctx.progress.share())
+}
+
+/// Task #1145: a resolve counts every step it takes, in order, each to its total: the regions, the
+/// cells of every pass (the cover check's and the fit's every cell of the Earth), the regions
+/// stored; so its share ends whole, having gone on through each.
+#[test]
+fn a_resolve_counts_every_step_to_its_total() {
+    let w = world();
+    let (out, steps, share) = run_counted(&w, &all());
+    assert!(out.problems.is_empty(), "{:#?}", out.problems);
+    let taken: Vec<Step> = steps.iter().map(|s| s.0).collect();
+    assert_eq!(taken, Step::ALL, "every step taken, in order: the folder has water, cover and a rest");
+    for (step, done, total) in &steps {
+        assert_eq!(done, total, "{step:?}: {done} of {total}");
+    }
+    let of = |s: Step| steps.iter().find(|x| x.0 == s).map(|x| x.2);
+    let cells = 180 * 90;
+    assert_eq!((of(Step::Cover), of(Step::Fit)), (Some(cells), Some(cells)));
+    // No region without water (the slice has a water key, if empty); the seven with it, their water
+    // but the rest's (what's left at the end), and every region stored.
+    assert_eq!((of(Step::Plain), of(Step::Land), of(Step::Water)), (Some(0), Some(7), Some(6)));
+    assert_eq!(of(Step::Stored), Some(7));
+    assert_eq!(share, 1.0);
 }
 
 const A: &str = r#"id = "a"
@@ -369,6 +401,7 @@ fn a_resolution_paused_at_every_piece_resumes_to_the_same() {
             kept,
             names: String::new(),
             data: Some(&w.data),
+            progress: Default::default(),
         };
         resolve::resolve(&folder, &ctx)
     };
@@ -424,6 +457,7 @@ fn old_files_resolve_as_before_beside_new_ones() {
         kept: None,
         names: String::new(),
         data: None,
+        progress: Default::default(),
     };
     let out = resolve::resolve(&folder, &ctx);
     assert!(out.problems.iter().any(|p| p.check == "rg-data"), "{:?}", out.problems);
