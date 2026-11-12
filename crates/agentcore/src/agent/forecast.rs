@@ -1889,7 +1889,7 @@ fn run_on(
 
 /// How far into the run its grants are kept (`Forecast::grants`, s): what the lead's real grants are
 /// held to (`departures`).
-const GRANTS_S: f64 = 3600.0;
+pub const GRANTS_S: f64 = 3600.0;
 
 /// The work ready, a step's together in `order`, as the coordinator offers it to `ask`'s Mac
 /// (crate::agent's `offer_plan`): a step offered to every member one offer, its targets in order
@@ -2351,10 +2351,17 @@ fn runs_of(
 /// Where the lead's real grants departed from forecast `f`'s next steps: each Mac and step granted
 /// more or fewer jobs from when it was made until `until` (unix s) than its run granted by then
 /// (`Forecast::grants`, its first hour), by 2 or more and by more than half the forecast's
-/// (`departed`): ((Mac, step), in words). `real`: the grants made, (unix s, Mac, step).
-/// What the scheduler can't see moves them (docs/pool.md §7.8): a job ending sooner or later than
-/// measured, the owner's pause, the NAS slower than its probe.
-pub fn departures(f: &Forecast, real: &[(u64, String, String)], until: u64) -> Vec<((String, String), String)> {
+/// (`departed`): ((Mac, step), in words). `real`: the grants made, (unix s, Mac, step). A Mac
+/// granted fewer says what the lead answered its asks in that span (`answers`, each Mac's:
+/// crate::coord::Coordinator::answers; `held_back`). What the scheduler can't see moves them
+/// (docs/pool.md §7.2, One scheduler): a job ending sooner or later than measured, a Mac's asks
+/// held or refused, the work offered only once a plan lists it, the live state its rules read.
+pub fn departures(
+    f: &Forecast,
+    real: &[(u64, String, String)],
+    answers: &BTreeMap<String, Vec<crate::coord::Answer>>,
+    until: u64,
+) -> Vec<((String, String), String)> {
     let until = until.min(f.at + GRANTS_S as u64);
     let mut n: BTreeMap<(&str, &str), (usize, usize)> = BTreeMap::new();
     for g in f.grants.iter().filter(|g| (g.at as u64) < until) {
@@ -2366,9 +2373,73 @@ pub fn departures(f: &Forecast, real: &[(u64, String, String)], until: u64) -> V
     n.into_iter()
         .filter(|(_, (fc, got))| departed(*fc, *got))
         .map(|((mac, step), (fc, got))| {
-            ((mac.to_string(), step.to_string()), format!("{mac}: {got} job(s) of {step} granted, the forecast's {fc}"))
+            let mut d = format!("{mac}: {got} job(s) of {step} granted, the forecast's {fc}");
+            if got < fc {
+                let its: Vec<&crate::coord::Answer> =
+                    answers.get(mac).into_iter().flatten().filter(|a| a.at >= f.at && a.at < until).collect();
+                d.push_str(&held_back(step, &its));
+            }
+            ((mac.to_string(), step.to_string()), d)
         })
         .collect()
+}
+
+/// Why a Mac was granted fewer jobs of `step` than the forecast foresaw, from its asks answered
+/// since (`departures`), in words: none heard (its agent asks only while a slot is free and nothing
+/// holds it back); else how many, the jobs they wanted and got, how many were offered the step (the
+/// lead offers a target once a plan of its lists it, the run as soon as what it waits on ends), and
+/// the rules that held them back, each counted, the one deciding by live state the forecast can't
+/// know said so (`sched::Rule::live`), with the last one's words.
+fn held_back(step: &str, its: &[&crate::coord::Answer]) -> String {
+    if its.is_empty() {
+        return "; no ask from it since (its agent asks only with a slot free and nothing holding it back: \
+                its jobs running past their measures, an update's restart, its memory guard or a stalled loop, \
+                none of which the forecast foresees)"
+            .to_string();
+    }
+    let want: usize = its.iter().map(|a| a.want).sum();
+    let got: usize = its.iter().map(|a| a.got).sum();
+    let offered = its.iter().filter(|a| a.offered.iter().any(|s| s == step)).count();
+    let mut out =
+        format!("; its {} ask(s) since wanted {want} job(s) and got {got}, {offered} offered {step}", its.len());
+    if offered == 0 {
+        out.push_str(
+            " (not listed by the lead's plan yet: the forecast's run offers a target as soon as what it waits on ends)",
+        );
+    }
+    // (Each rule counted, the most first; the refusals before any packing together.)
+    let mut by: BTreeMap<Option<crate::coord::sched::Rule>, usize> = BTreeMap::new();
+    for a in its {
+        match (&a.refused, &a.held) {
+            (Some(_), _) => *by.entry(None).or_default() += 1,
+            (None, Some(h)) => *by.entry(Some(h.rule)).or_default() += 1,
+            (None, None) => {}
+        }
+    }
+    if by.is_empty() {
+        if got >= want {
+            out.push_str("; each got all it wanted: its slots freed later than the forecast's lanes");
+        }
+        return out;
+    }
+    let mut rules: Vec<(Option<crate::coord::sched::Rule>, usize)> = by.into_iter().collect();
+    rules.sort_by_key(|r| std::cmp::Reverse(r.1));
+    let named: Vec<String> = rules
+        .iter()
+        .map(|&(r, k)| match r {
+            None => format!("refused before packing ×{k} (the lead's or its agent's state now)"),
+            Some(r) => match r.live() {
+                Some(live) => format!("{} ×{k} (live: {live})", r.name()),
+                None => format!("{} ×{k}", r.name()),
+            },
+        })
+        .collect();
+    let last = its.iter().rev().find_map(|a| a.refused.clone().or_else(|| a.held.as_ref().map(|h| h.words.clone())));
+    out.push_str(&format!("; held back by {}", named.join(", ")));
+    if let Some(w) = last {
+        out.push_str(&format!("; the last: {w}"));
+    }
+    out
 }
 
 /// Whether `got` jobs granted against the forecast's `fc` is a departure worth saying: 2 or more
@@ -3734,6 +3805,89 @@ mod tests {
         assert_eq!(first, real);
     }
 
+    /// Task #1163: placement on, a member's ask tries the long poles' steps first (their slack in
+    /// the forecast, `sched::Sched::pack`), and the forecast's run so too: fed the coordinator's
+    /// recorded state, the member's first grant is the coordinator's, the step plan order puts
+    /// second (overnight on 12 Nov the lead granted the MacBooks slope-deep where the forecast,
+    /// trying plan order, granted them terrain-deep: its lines said "fewer" for one and "more" for
+    /// the other). Placement off, both grant the step plan order puts first.
+    #[test]
+    fn placement_on_the_forecast_tries_a_members_offers_as_the_coordinator_does() {
+        use crate::coord::{self, client, cost_version};
+        let units: Vec<String> = (0..4).map(|i| format!("6/8/{i}")).collect();
+        let terrain: Vec<String> = (0..4).map(|i| format!("6/1/{i}")).collect();
+        // (The coordinator offered the work in `order`; the run offers it as its plan lists it.)
+        let first_grants = |slack: Option<&[(&str, u64)]>, order: [&str; 2]| {
+            let d = tempfile::tempdir().unwrap();
+            let (c, port) = coord::start_for_test(&d.path().join("coord"), "m4", "");
+            let m1 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+            let of = |step: &str| if step == "unit" { &units } else { &terrain };
+            for step in order {
+                for t in of(step) {
+                    let sizes = [("threads".to_string(), 1)].into();
+                    let cost =
+                        coord::Cost { peak_mb: 1000, secs: 300, v: cost_version(step), sizes, ..Default::default() };
+                    c.add_costs_by(&[(coord::cost_key(step, t), cost)], "m1");
+                }
+            }
+            // (The member's room holds one job; the lead's none.)
+            let ask = coord::Ask {
+                kind: "native".into(),
+                can: vec!["terrain-hi".into(), "unit".into()],
+                mem_mb: 1500,
+                cores: 8,
+                disk_mb: Some(100_000),
+                cap: Some(coord::Capacity { cores: 8, cores_free: 8, ..Default::default() }),
+                want: 1,
+                ..Default::default()
+            };
+            assert!(m1.ask(&ask).unwrap().is_none());
+            if let Some(s) = slack {
+                let slack = s.iter().map(|(k, v)| (k.to_string(), *v)).collect();
+                c.set_placement(Some(crate::agent::placement::Placement { slack }));
+            }
+            let offer = |step: &str| coord::Offer {
+                step: step.into(),
+                targets: of(step).iter().map(|t| (t.clone(), super::KEY.to_string(), 0)).collect(),
+                job: None,
+            };
+            c.offer("p", order.iter().map(|s| offer(s)).collect());
+            let st: State = serde_json::from_str(&serde_json::to_string(&c.sched_state()).unwrap()).unwrap();
+            let real = match m1.ask(&ask).unwrap().map(|g| g.work) {
+                Some(coord::Granted::Job { step, targets, .. }) => (step, targets[0].0.clone()),
+                other => panic!("{other:?}"),
+            };
+            let t: Vec<&str> = terrain.iter().map(String::as_str).collect();
+            let u: Vec<&str> = units.iter().map(String::as_str).collect();
+            let regions = [region("a", &t, &[], &[]), region("b", &[], &u, &[])];
+            let one = |host: &str, lead: bool| Machine { lead_steps: lead, mac: Some(host.into()), ..mac(host, 1.0) };
+            let mut inp = input(&regions, vec![one("m4", true), one("m1", false)], &cost);
+            inp.after = Vec::new();
+            inp.macs.insert("m4".into(), MacRoom { mem_mb: 500, cores: 14 });
+            inp.sched = Some(st);
+            let f = forecast(crate::agent::seam::for_tests(), &inp);
+            let run: Vec<(String, String)> = f
+                .grants
+                .iter()
+                .filter(|g| g.at as u64 == inp.now && g.mac == "m1")
+                .map(|g| (g.step.clone(), g.targets[0].clone()))
+                .collect();
+            (real, run)
+        };
+        // (The step the run's plan order puts first, `first`; the other, `second`.)
+        let (_, run) = first_grants(None, ["terrain-hi", "unit"]);
+        assert_eq!(run.len(), 1, "{run:?}");
+        let first = run[0].0.clone();
+        let second = if first == "unit" { "terrain-hi" } else { "unit" };
+        let order = [first.as_str(), second];
+        let (real, run) = first_grants(None, order);
+        assert_eq!((real.0.as_str(), &run), (first.as_str(), &vec![real.clone()]), "off: plan order, both");
+        // On: the second has no slack, the first an hour's.
+        let (real, run) = first_grants(Some(&[(second, 0), (first.as_str(), 3600)]), order);
+        assert_eq!(real.0, second, "the coordinator: the long pole first");
+        assert_eq!(run, [real], "the forecast's run: as the coordinator");
+    }
+
     /// Task #563: the live error says how an earlier run fared against the targets done since.
     #[test]
     fn the_live_error_said() {
@@ -3857,8 +4011,68 @@ mod tests {
         let f = Forecast { at: 1000, grants: vec![g(1000.0), g(1100.0), g(1200.0), g(9000.0)], ..Default::default() };
         let real =
             |n: usize| (0..n).map(|k| (1000 + k as u64, "m4".to_string(), "unit".to_string())).collect::<Vec<_>>();
-        assert!(departures(&f, &real(4), 2000).is_empty(), "one more: not said");
-        assert_eq!(departures(&f, &real(0), 2000).len(), 1, "none of three");
+        let none = BTreeMap::new();
+        assert!(departures(&f, &real(4), &none, 2000).is_empty(), "one more: not said");
+        assert_eq!(departures(&f, &real(0), &none, 2000).len(), 1, "none of three");
+    }
+
+    /// Task #1163: a Mac granted fewer than the forecast foresaw is said with what the lead answered
+    /// its asks since: none heard; the step not offered; the rules that held them back, counted,
+    /// those deciding by live state said so, and the last one's words; a refusal before any
+    /// packing; each ask granted all it wanted. Asks before the forecast count for nothing.
+    #[test]
+    fn a_departure_of_fewer_names_what_held_the_grants_back() {
+        use crate::coord::sched::{Held, Rule};
+        use crate::coord::Answer;
+        let g = |at: f64| Grant { mac: "m4".into(), step: "unit".into(), targets: vec![], at, threads: 1 };
+        let f = Forecast { at: 1000, grants: vec![g(1000.0), g(1100.0), g(1200.0)], ..Default::default() };
+        let ask = |at: u64, want: usize, got: usize, offered: &[&str], held: Option<(Rule, &str)>| Answer {
+            at,
+            want,
+            got,
+            offered: offered.iter().map(|s| s.to_string()).collect(),
+            held: held.map(|(rule, w)| Held { rule, words: w.into() }),
+            refused: None,
+        };
+        let line = |answers: Vec<Answer>| {
+            let d = departures(&f, &[], &[("m4".to_string(), answers)].into(), 2000);
+            assert_eq!(d.len(), 1, "{d:?}");
+            d[0].1.clone()
+        };
+        let d = line(Vec::new());
+        assert!(d.starts_with("m4: 0 job(s) of unit granted, the forecast's 3; no ask from it since"), "{d}");
+        let d = line(vec![
+            ask(900, 4, 0, &["unit"], Some((Rule::Cores, "before the forecast"))),
+            ask(1010, 2, 0, &["unit"], Some((Rule::Memory, "memory: the brake is on"))),
+            ask(1020, 2, 0, &["pack"], Some((Rule::Memory, "memory: the brake is on"))),
+            ask(1030, 1, 0, &["pack", "unit"], Some((Rule::Cores, "cores: 0.5 of 8 left, a job of unit takes 1.0"))),
+        ]);
+        assert_eq!(
+            d,
+            "m4: 0 job(s) of unit granted, the forecast's 3; its 3 ask(s) since wanted 5 job(s) and got 0, 2 offered \
+             unit; held back by memory ×2 (live: macOS's memory now; the forecast takes each Mac at its sustained \
+             best), cores ×1; the last: cores: 0.5 of 8 left, a job of unit takes 1.0"
+        );
+        let d = line(vec![ask(1010, 2, 2, &["pack"], None)]);
+        assert!(d.contains("0 offered unit (not listed by the lead's plan yet"), "{d}");
+        assert!(d.ends_with("each got all it wanted: its slots freed later than the forecast's lanes"), "{d}");
+        let refused = Answer {
+            refused: Some("on the app of 11 Nov 23:10, the lead on 12 Nov 00:15's".into()),
+            ..ask(1010, 3, 0, &[], None)
+        };
+        let d = line(vec![refused]);
+        assert!(d.contains("held back by refused before packing ×1"), "{d}");
+        assert!(d.ends_with("the last: on the app of 11 Nov 23:10, the lead on 12 Nov 00:15's"), "{d}");
+        // (More granted: as it was, its cause #1094's.)
+        let more: Vec<(u64, String, String)> =
+            (0..6).map(|k| (1000 + k, "m4".to_string(), "unit".to_string())).collect();
+        let d = departures(
+            &f,
+            &more,
+            &[("m4".to_string(), vec![ask(1010, 2, 0, &[], Some((Rule::Cores, "x")))])].into(),
+            2000,
+        );
+        assert_eq!(d[0].1, "m4: 6 job(s) of unit granted, the forecast's 3");
     }
 
     #[test]
@@ -4334,7 +4548,7 @@ mod tests {
         for p in &picks {
             eprintln!("granted: {} ({} targets, {} threads)", p.step, p.targets.len(), p.threads);
         }
-        eprintln!("granted {} of {} wanted; why: {}", picks.len(), a.want, why.unwrap_or_default());
+        eprintln!("granted {} of {} wanted; why: {}", picks.len(), a.want, why.map(|h| h.words).unwrap_or_default());
     }
 
     /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing);

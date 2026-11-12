@@ -2151,11 +2151,13 @@ impl Planner {
                 .filter(|e| e.kind == "lease")
                 .filter_map(|e| Some((e.t, e.worker.clone()?, e.step.clone()?)))
                 .collect();
+            // (Each Mac's asks answered since, which a line of fewer granted names: task #1163.)
+            let answers = self.coord.as_ref().map(|c| c.answers(prev.at)).unwrap_or_default();
             // (Each Mac and step said at most once an hour.)
             let now = now_s();
             let mut said = self.departed.borrow_mut();
             said.retain(|_, at| now.saturating_sub(*at) < 3600);
-            for (k, d) in forecast::departures(prev, &real, now) {
+            for (k, d) in forecast::departures(prev, &real, &answers, now) {
                 // (Stamped when logged only: a departure recurring every plan is said again an hour on.)
                 if let std::collections::btree_map::Entry::Vacant(e) = said.entry(k) {
                     e.insert(now);

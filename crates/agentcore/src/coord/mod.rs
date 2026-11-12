@@ -502,7 +502,10 @@ pub struct Shared {
     /// Why each worker's last ask was granted fewer jobs than it wanted (`pack`: the packing's
     /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
     /// (`Coordinator::refusals`): why nothing more fits a Mac.
-    pub refused: BTreeMap<String, (u64, String)>,
+    pub refused: BTreeMap<String, (u64, sched::Held)>,
+    /// Each worker's asks answered over the last `ANSWERS_S`, oldest first (`answered`): what the
+    /// lead's departure lines name (crate::agent::forecast::departures, `Coordinator::answers`).
+    pub answers: BTreeMap<String, std::collections::VecDeque<Answer>>,
     /// Each member's newest request taken (held::Sent: its beats' and asks'), by its host.
     pub sent: BTreeMap<String, held::Sent>,
     /// Tasks brokered by every member (docs/pool.md §8; crate::agent::brokers): the members and
@@ -698,10 +701,10 @@ impl Shared {
     /// cores where its last ask, within `CAP_FRESH_S`, was refused for them. The re-grants it's to be
     /// told (lease, threads).
     fn regrant(&mut self, worker: &str, cap: Capacity) -> Vec<(u64, u32)> {
-        let wanted = self
-            .refused
-            .get(worker)
-            .is_some_and(|(at, w)| self.wall_s().saturating_sub(*at) < CAP_FRESH_S && w.starts_with("cores:"));
+        let wanted = self.refused.get(worker).is_some_and(|(at, w)| {
+            self.wall_s().saturating_sub(*at) < CAP_FRESH_S
+                && matches!(w.rule, sched::Rule::Cores | sched::Rule::Outside)
+        });
         let a = Ask { worker: worker.to_string(), cores: cap.cores, cap: Some(cap), ..Default::default() };
         let now = self.now();
         self.sched.regrant(&a, wanted, now)
@@ -709,11 +712,21 @@ impl Shared {
 
     /// The jobs `a`'s worker is granted: the scheduler's decision (`sched::Sched::pack`, on this
     /// coordinator's clock), then what a grant does outside it: the leases saved, each grant logged
-    /// and in the history, the refusal kept for the status (`refused`). None: no job.
+    /// and in the history, the refusal kept for the status (`refused`), the answer kept
+    /// (`answered`). None: no job.
     fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, now: Instant) -> Option<Grant> {
         self.sched.batch_s = self.asks.settings.batch_s().unwrap_or(0);
         let unix = self.wall_s();
         let (picks, why) = self.sched.pack(a, offers, lead, sched::Clock { now, unix });
+        let mut offered: Vec<String> = Vec::new();
+        for o in offers {
+            if !offered.contains(&o.step) {
+                offered.push(o.step.clone());
+            }
+        }
+        let answer =
+            Answer { at: unix, want: a.want.max(1), got: picks.len(), offered, held: why.clone(), refused: None };
+        self.answered(&a.worker, answer);
         match why {
             Some(w) => self.refused.insert(a.worker.clone(), (unix, w)),
             None => self.refused.remove(&a.worker),
@@ -847,6 +860,25 @@ impl Shared {
                 serde_json::json!({ "worker": n, "pace": pace, "explore": pace.is_none() && self.tasks.may_explore(n, now) })
             })
             .collect()
+    }
+
+    /// `worker`'s ask answered (`answers`): kept `ANSWERS_S`, the older let go.
+    fn answered(&mut self, worker: &str, answer: Answer) {
+        let since = answer.at.saturating_sub(ANSWERS_S);
+        let q = self.answers.entry(worker.to_string()).or_default();
+        while q.front().is_some_and(|x| x.at < since) {
+            q.pop_front();
+        }
+        q.push_back(answer);
+    }
+
+    /// `worker`'s ask refused before any packing, `why` (the lead moving, the build paused, another
+    /// app), kept as its answer (`answered`).
+    fn refused_ask(&mut self, worker: &str, want: usize, why: &str) {
+        let at = self.wall_s();
+        let answer =
+            Answer { at, want: want.max(1), got: 0, offered: Vec::new(), held: None, refused: Some(why.to_string()) };
+        self.answered(worker, answer);
     }
 
     fn seen(&mut self, worker: &str, what: String, a: Option<&Ask>, now: Instant) {
@@ -1170,6 +1202,24 @@ pub struct Capacity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best: Option<crate::agent::forecast::MacRoom>,
 }
+
+/// An ask answered (`Shared::answers`): when (unix s), the jobs it wanted and was granted, the
+/// steps it was offered (in the order tried), and why it got fewer: the packing's rule
+/// (`sched::Held`), or the ask refused before any packing (the lead moving, the build paused,
+/// another app: in words).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Answer {
+    pub at: u64,
+    pub want: usize,
+    pub got: usize,
+    pub offered: Vec<String>,
+    pub held: Option<sched::Held>,
+    pub refused: Option<String>,
+}
+
+/// How long each worker's asks are kept answered (`Shared::answers`, s): the span a departure line
+/// looks over at most (crate::agent::forecast::GRANTS_S).
+pub const ANSWERS_S: u64 = crate::agent::forecast::GRANTS_S as u64;
 
 /// A job of a Mac's on an older app than its agent's (`Capacity::old_app`): its id and that app.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1737,6 +1787,7 @@ impl Coordinator {
             nas_disks: Vec::new(),
             nas_mount: None,
             refused: BTreeMap::new(),
+            answers: BTreeMap::new(),
             sent: BTreeMap::new(),
             brokers: None,
             pageview: None,
@@ -2030,7 +2081,9 @@ impl Coordinator {
         // (The lock held: what follows is the packing, the agent loop's phase until its next.)
         crate::agent::nasread::phase("the grants: the coordinator's packing");
         let now = s.now();
-        if s.paused.is_some() || s.moving_now(s.wall_s()).is_some() {
+        if let Some(why) = s.paused.as_ref().map(|p| p.why()).or_else(|| s.moving_now(s.wall_s())) {
+            let me = self.me.clone();
+            s.refused_ask(&me, a.want, &why);
             return None;
         }
         let mut a = a.clone();
@@ -2249,7 +2302,23 @@ impl Coordinator {
         s.refused
             .iter()
             .filter(|(_, (at, _))| unix.saturating_sub(*at) < CAP_FRESH_S)
-            .map(|(w, (_, why))| (w.clone(), why.clone()))
+            .map(|(w, (_, why))| (w.clone(), why.words.clone()))
+            .collect()
+    }
+
+    /// Each worker's asks answered since `since` (unix s), oldest first (`Shared::answers`), the
+    /// older than `ANSWERS_S` let go: what the lead's departure lines name.
+    pub fn answers(&self, since: u64) -> BTreeMap<String, Vec<Answer>> {
+        let mut s = self.shared.lock().unwrap();
+        let old = s.wall_s().saturating_sub(ANSWERS_S);
+        s.answers.retain(|_, q| {
+            q.retain(|x| x.at >= old);
+            !q.is_empty()
+        });
+        s.answers
+            .iter()
+            .map(|(w, q)| (w.clone(), q.iter().filter(|x| x.at >= since).cloned().collect::<Vec<_>>()))
+            .filter(|(_, v)| !v.is_empty())
             .collect()
     }
 
@@ -4383,6 +4452,7 @@ fn route(
             }
             // The pool's lead not fresh: nothing now (docs/pool.md §6.5).
             if let Some(why) = s.moving_now(s.wall_s()) {
+                s.refused_ask(&a.worker, a.want, &format!("the lead is moving ({why})"));
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
                 return Ok((
                     409,
@@ -4391,6 +4461,7 @@ fn route(
             }
             // The build paused: nothing (an agent told why, and the pause).
             if let Some(p) = s.paused.clone() {
+                s.refused_ask(&a.worker, a.want, &p.why());
                 s.seen(&a.worker, format!("waiting: {}", p.why()), None, now);
                 return Ok((409, serde_json::json!({ "error": p.why(), "pause": p })));
             }
@@ -4409,6 +4480,7 @@ fn route(
                         app_when(&s.app)
                     )
                 };
+                s.refused_ask(&a.worker, a.want, &why);
                 s.seen(&a.worker, why.clone(), None, now);
                 return Ok((409, serde_json::json!({ "error": why })));
             }
@@ -4418,6 +4490,7 @@ fn route(
                 let theirs = a.app.clone().unwrap_or_default();
                 if !crate::pool::lead::app_at_least(&theirs, &min) {
                     let why = format!("on the app of {}, older than the one the readers' switch was recorded on ({}): it builds once it runs that one or newer", if theirs.is_empty() { "an older one".to_string() } else { app_when(&theirs) }, app_when(&min));
+                    s.refused_ask(&a.worker, a.want, &why);
                     s.seen(&a.worker, why.clone(), None, now);
                     return Ok((409, serde_json::json!({ "error": why })));
                 }
@@ -4464,19 +4537,24 @@ fn route(
                         job: None,
                         plan: s.plan,
                     };
+                    let at = s.wall_s();
+                    let answer =
+                        Answer { at, want: a.want.max(1), got: 1, offered: vec![o.step], held: None, refused: None };
+                    s.answered(&a.worker, answer);
                     return Ok((200, serde_json::to_value(g)?));
                 }
             }
-            if !s.pass.is_empty() {
+            if s.pass.is_empty() {
+                // (No pass: nothing offered.)
+                let at = s.wall_s();
+                let answer = Answer { at, want: a.want.max(1), got: 0, offered: Vec::new(), held: None, refused: None };
+                s.answered(&a.worker, answer);
+            } else {
                 // (In plan order, as the lead's own (task #909: no step ranked by hand; the plan
                 // lists readers first, steps::readers_first); the lead's own planned jobs never:
-                // crate::agent::every::grants.)
-                let mut offers: Vec<Offer> = s.offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
-                // (Placement on: the long poles' steps first, by their slack in the forecast; plan
-                // order between equals.)
-                if let Some((p, _)) = &s.placement {
-                    offers.sort_by_key(|o| p.slack_of(&o.step));
-                }
+                // crate::agent::every::grants. Placement on, the scheduler tries the long poles'
+                // steps first: `sched::Sched::pack`.)
+                let offers: Vec<Offer> = s.offers.iter().filter(|o| a.can.contains(&o.step)).cloned().collect();
                 // (As many jobs as the ask wants that fit its room together.)
                 if let Some(g) = s.pack(&a, &offers, false, now) {
                     return Ok((200, serde_json::to_value(g)?));
@@ -10592,11 +10670,16 @@ mod tests {
         assert_eq!(g.threads, 8);
         let l = g.lease;
         assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 120))))).is_empty(), "nothing wants its cores");
-        c.shared
-            .lock()
-            .unwrap()
-            .refused
-            .insert("m1".into(), (unix_now(), "cores: 0.0 of 8 left, a job of slope-hi takes 8.0".into()));
+        c.shared.lock().unwrap().refused.insert(
+            "m1".into(),
+            (
+                unix_now(),
+                sched::Held {
+                    rule: sched::Rule::Cores,
+                    words: "cores: 0.0 of 8 left, a job of slope-hi takes 8.0".into(),
+                },
+            ),
+        );
         assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 120))))), [(l, 1)]);
         assert_eq!(counted(&c, l), 8, "until a target runs on 1");
         // (Its use busier meanwhile: not decided again within the minute.)
@@ -10617,7 +10700,10 @@ mod tests {
         regrantable(&c);
         let a = Ask { cap: Some(m1_cap(8, false, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
         let l = w.ask(&a).unwrap().unwrap().lease;
-        c.shared.lock().unwrap().refused.insert("m1".into(), (unix_now(), "cores: 0.0 of 8 left".into()));
+        c.shared.lock().unwrap().refused.insert(
+            "m1".into(),
+            (unix_now(), sched::Held { rule: sched::Rule::Cores, words: "cores: 0.0 of 8 left".into() }),
+        );
         assert!(m1_beat(&c, None).is_empty(), "an older member's beat");
         assert!(m1_beat(&c, Some(m1_cap(8, false, None))).is_empty(), "no job's threads said");
         assert_eq!(counted(&c, l), 8);
@@ -10960,7 +11046,7 @@ mod tests {
         }
         let refused = w.ask(&ask(1, leases.clone())).unwrap();
         assert!(refused.is_none(), "reading their first target: counted for their measure");
-        let why = c.shared.lock().unwrap().refused.get("m1").map(|r| r.1.clone()).unwrap_or_default();
+        let why = c.shared.lock().unwrap().refused.get("m1").map(|r| r.1.words.clone()).unwrap_or_default();
         assert!(why.contains("a job of slope-hi takes 3.8"), "{why}");
         for _ in 0..30 {
             beat(2.5, 0);
@@ -11480,6 +11566,33 @@ mod tests {
         // Off again: as before.
         c.set_placement(None);
         assert!(c.shared.lock().unwrap().placement.is_none());
+    }
+
+    /// Task #1163: each ask answered is kept (`Coordinator::answers`, what the lead's departure
+    /// lines name): the jobs it wanted and got, the steps offered, the packing's rule; an ask refused
+    /// before any packing, in words. Those before `since` aren't given.
+    #[test]
+    fn each_ask_answered_is_kept_with_what_held_it_back() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let sizes = [("threads".to_string(), 1)].into();
+        let cost = Cost { peak_mb: 500, secs: 60, v: cost_version("pack"), sizes, ..Default::default() };
+        c.add_costs_by(&[(cost_key("pack", "6/1/1"), cost)], "m1");
+        c.add_disks(&[(cost_key("pack", "6/1/1"), 10)]);
+        c.offer("p", vec![Offer { step: "pack".into(), targets: vec![("6/1/1".into(), "k".into(), 0)], job: None }]);
+        let a = Ask { want: 2, ..every_ask("m1", "pack", 4096, 10_000) };
+        assert_eq!(granted(&w, &a), ["6/1/1"]);
+        // (Another app's ask: refused before any packing.)
+        c.shared.lock().unwrap().app = "20261112-0015-4a3c868e".into();
+        assert!(w.ask(&Ask { app: Some("20261111-2310-96c737d7".into()), ..a.clone() }).is_err());
+        let all = c.answers(0);
+        let m1 = &all["m1"];
+        assert_eq!(m1.len(), 2, "{m1:?}");
+        assert_eq!((m1[0].want, m1[0].got, m1[0].offered.as_slice()), (2, 1, ["pack".to_string()].as_slice()));
+        assert_eq!(m1[0].held.as_ref().map(|h| h.rule), Some(sched::Rule::Room), "{m1:?}");
+        assert!(m1[0].refused.is_none());
+        assert_eq!((m1[1].got, m1[1].held.is_none()), (0, true));
+        assert!(m1[1].refused.as_deref().is_some_and(|w| w.starts_with("on the app of")), "{m1:?}");
+        assert!(c.answers(m1[1].at + 1).is_empty(), "none since");
     }
 
     /// Task #440 review: placement leaves a member out of a target's draw only while load from
@@ -13685,7 +13798,7 @@ mod tests {
                     picks.len(),
                     w.ask.want,
                     steps.join(", "),
-                    why.unwrap_or_default()
+                    why.map(|h| h.words).unwrap_or_default()
                 );
             }
         }
@@ -13844,7 +13957,7 @@ mod tests {
                 w.ask.want,
                 gb(w.ask.cap.as_ref().map_or(0, |c| c.mem_mb)),
                 steps.join(", "),
-                why.unwrap_or_default()
+                why.map(|h| h.words).unwrap_or_default()
             );
         }
     }

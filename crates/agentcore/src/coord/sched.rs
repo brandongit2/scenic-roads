@@ -52,6 +52,73 @@ pub struct Pick {
     pub sized: Option<(u64, bool)>,
 }
 
+/// Why `Sched::pack` granted an ask fewer jobs than it wanted: the rule that held the rest back,
+/// and in words (the lead's status says them, `Shared::refused`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    pub rule: Rule,
+    pub words: String,
+}
+
+/// The grant rule that held an ask back (`Held`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Rule {
+    /// Its Mac's memory guard: the brake, under its floor or a give-back's cool-down
+    /// (`Capacity::mem_held_back`).
+    Memory,
+    /// A cold start: one at a time on a Mac, a step with nothing to size it by alone, a cold job of
+    /// the lead's own waiting for its jobs to end.
+    Cold,
+    /// Room held for the first offer in plan order refused for its room (`Backfill`).
+    Waiting,
+    /// Past the cores its jobs' threads leave, the minute's wait for the load (`SETTLE`).
+    Settle,
+    /// Its cores.
+    Cores,
+    /// Its cores, with some busy outside the pool (`outside_cores`).
+    Outside,
+    /// Nothing offered fitting the room left (memory, disk) or free to take.
+    Room,
+    /// The NAS budget: targets it would take waiting for the NAS's room.
+    Nas,
+    /// One job at a time while a member runs an older app.
+    OldApp,
+}
+
+impl Rule {
+    /// The rule in a few words.
+    pub fn name(self) -> &'static str {
+        match self {
+            Rule::Memory => "memory",
+            Rule::Cold => "a cold start",
+            Rule::Waiting => "room held for a waiting job",
+            Rule::Settle => "the load's minute",
+            Rule::Cores => "cores",
+            Rule::Outside => "cores busy outside the pool",
+            Rule::Room => "the room left",
+            Rule::Nas => "the NAS budget",
+            Rule::OldApp => "an older app",
+        }
+    }
+
+    /// Where the rule decides by live state the forecast can't know (docs/pool.md §7.2, One
+    /// scheduler): what it is, in words; None, a rule the forecast's run packs by too.
+    pub fn live(self) -> Option<&'static str> {
+        match self {
+            Rule::Memory => Some("macOS's memory now; the forecast takes each Mac at its sustained best"),
+            Rule::Outside => Some("load outside the pool now; the forecast takes each Mac at its sustained best"),
+            Rule::Nas => Some(
+                "its gate on the NAS's own load is a reading of now; the forecast holds it only while the jobs out run",
+            ),
+            _ => None,
+        }
+    }
+}
+
+fn held_by(rule: Rule, words: String) -> Held {
+    Held { rule, words }
+}
+
 /// What every grant is decided from: the leases out, the plan's offers, the work done and failed,
 /// the workers' last asks, the measures (costs, floors, disk floors, jobs' disks, caches' fills)
 /// and the NAS budget's limits and waits.
@@ -1278,8 +1345,9 @@ impl Sched {
     }
 
     /// The jobs `a`'s worker is granted (docs/pool.md §7.2), packed into its room in `offers`' order
-    /// (each by `pick_every`, the lead's own planned jobs by `pick_own`, those to `lead` alone:
-    /// crate::agent::every::grants), up to the jobs it wants (`Ask::want`, at least one). Each after
+    /// (a member's, placement on, by their steps' slack first: `placement`), each by `pick_every`,
+    /// the lead's own planned jobs by `pick_own`, those to `lead` alone
+    /// (crate::agent::every::grants), up to the jobs it wants (`Ask::want`, at least one). Each after
     /// the first it holds goes beside the others: measured (memory, disk, cores, crate::needs),
     /// within the room left (the ask's memory and disk, and its Mac's cores, less every job it
     /// holds and those granted in this answer: a lease held counts until it ends or lapses, and
@@ -1291,9 +1359,9 @@ impl Sched {
     /// they're expected to (`Backfill`, task #973), so a hold never idles its Mac for as long as
     /// those jobs last, nor delays the big one past them; held only while it would fit its
     /// Mac once the jobs there end, so a Mac never idles for a job that can't go there (a cold job
-    /// of the lead's own: `own_cold_waits`). And why it granted fewer jobs than the ask wanted
-    /// (None: as many as it wanted).
-    pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
+    /// of the lead's own: `own_cold_waits`). And why it granted fewer jobs than the ask wanted:
+    /// the rule and in words (`Held`; None: as many as it wanted).
+    pub fn pack(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<Held>) {
         *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = Some(Packing::default());
         let got = self.pack_kept(a, offers, lead, clock);
         *self.packing.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -1301,12 +1369,12 @@ impl Sched {
     }
 
     /// `pack`, its look-ups of the leases kept while it packs (`packing`).
-    fn pack_kept(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<String>) {
+    fn pack_kept(&mut self, a: &Ask, offers: &[Offer], lead: bool, clock: Clock) -> (Vec<Pick>, Option<Held>) {
         let now = clock.now;
         // (Its Mac below its memory floor, the brake on or a give-back cooling it down (docs/pool.md
         // §7.1): nothing, a cold start to a Mac running nothing among it.)
         if let Some(why) = a.cap.as_ref().and_then(|c| c.mem_held_back.as_ref()) {
-            return (Vec::new(), Some(format!("memory: {why}")));
+            return (Vec::new(), Some(held_by(Rule::Memory, format!("memory: {why}"))));
         }
         let mine: Vec<&Lease> = self.worker_jobs(&a.worker, now).collect();
         // (A job held: its measure, else its provisional need, `pack_need`; one its Mac says only
@@ -1348,7 +1416,8 @@ impl Sched {
         if let Some(st) =
             needs.iter().zip(&jobs).find(|(n, (_, st, ts))| n.cold && self.no_figure(st, &names(ts))).map(|(_, j)| j.1)
         {
-            return (Vec::new(), Some(format!("{st} has no measure to size it by: nothing goes beside its first job")));
+            let words = format!("{st} has no measure to size it by: nothing goes beside its first job");
+            return (Vec::new(), Some(held_by(Rule::Cold, words)));
         }
         // (At most one cold start on a Mac (task #499 review): two unknown needs never meet.)
         let mut cold_here = needs.iter().any(|n| n.cold);
@@ -1459,7 +1528,8 @@ impl Sched {
         };
         if let Some(o) = cold_own.first() {
             if !mine.is_empty() {
-                return (Vec::new(), Some(format!("a cold job of {} waits for the lead's jobs to end", o.step)));
+                let words = format!("a cold job of {} waits for the lead's jobs to end", o.step);
+                return (Vec::new(), Some(held_by(Rule::Cold, words)));
             }
             let fill = self.cache_fill(&o.step, &caches, a);
             let room_o = Ask { disk_mb: room.disk_mb.map(|d| d.saturating_sub(fill)), ..room.clone() };
@@ -1468,11 +1538,19 @@ impl Sched {
             }
         }
         let offers = if cold_own.is_empty() { offers } else { &cold_own[..] };
+        // (Placement on, a member's ask tries the long poles' steps first, by their slack in the
+        // forecast (crate::agent::placement), plan order between equals; the lead's own in plan
+        // order. Here, so the forecast's run tries them in the order the lead does: task #1163, its
+        // members granted terrain-deep where the lead granted them slope-deep.)
+        let mut offers: Vec<&Offer> = offers.iter().collect();
+        if let Some((p, _)) = self.placement.as_ref().filter(|_| !lead) {
+            offers.sort_by_key(|o| p.slack_of(&o.step));
+        }
         let mut held = mine.len();
         let mut grants: Vec<Pick> = Vec::new();
         // (Why the last round granted nothing: a job open but short of cores, or nothing open in
         // the room left.)
-        let mut why: Option<String> = None;
+        let mut why: Option<Held> = None;
         while grants.len() < want {
             let mut short: Option<(String, u32)> = None;
             let mut cold_why: Option<String> = None;
@@ -1487,7 +1565,7 @@ impl Sched {
             // terrain-hi job, 7 of its 12 cores idle, while room was held for timetables-todo).)
             let mut waiting: Option<Backfill> = None;
             let mut held_why: Option<String> = None;
-            for o in offers {
+            for &o in &offers {
                 if !crate::agent::every::grants(self.the_plan, &o.step, o.job.is_some(), lead) {
                     continue;
                 }
@@ -1579,45 +1657,51 @@ impl Sched {
             }
             let Some((o, pick, n)) = got else {
                 let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+                let nas_waits = self.nas_waits_at(now);
                 why = Some(match short {
-                    _ if held_why.is_some() => held_why.unwrap_or_default(),
-                    None if cold_why.is_some() => cold_why.unwrap_or_default(),
-                    None if ramp_why.is_some() => ramp_why.unwrap_or_default(),
-                    Some((st, c)) if outside > 0 => {
+                    _ if held_why.is_some() => held_by(Rule::Waiting, held_why.unwrap_or_default()),
+                    None if cold_why.is_some() => held_by(Rule::Cold, cold_why.unwrap_or_default()),
+                    None if ramp_why.is_some() => held_by(Rule::Settle, ramp_why.unwrap_or_default()),
+                    Some((st, c)) if outside > 0 => held_by(
+                        Rule::Outside,
                         format!(
                             "cores: {} of {total} left ({outside} busy outside the pool), a job of {st} takes {}",
                             tenths(cores),
                             tenths(c)
-                        )
-                    }
-                    Some((st, c)) => {
-                        format!("cores: {} of {total} left, a job of {st} takes {}", tenths(cores), tenths(c))
-                    }
-                    None => format!(
-                        "{}nothing {}offered fits the room left (memory: {}{}) or is free to take",
-                        // (Targets it would take passed over for the NAS budget alone in this
-                        // answer (`nas_wait`): said first, so a wait for the NAS doesn't read as
-                        // one for memory (task #931: on 4 Nov every slope-deep job weighed the
-                        // whole NAS, and the Macs idle beside one said only the room left).)
-                        // (Those fit the room: so nothing else does.)
-                        match self.nas_waits_at(now) {
-                            0 => String::new(),
-                            n => format!(
-                                "the NAS budget: {n} target{} it would take wait for the NAS's room; ",
-                                if n == 1 { "" } else { "s" }
-                            ),
-                        },
-                        if self.nas_waits_at(now) == 0 { "" } else { "else " },
-                        match a.cap.as_ref() {
-                            Some(c) => mem_words(c, room.mem_mb),
-                            None => gb(room.mem_mb),
-                        },
-                        room.disk_mb
-                            .map(|d| match a.cap.as_ref().filter(|c| c.free_mb > 0) {
-                                Some(c) => format!("; disk: {}", disk_words(c, d)),
-                                None => format!(", {} disk", gb(d)),
-                            })
-                            .unwrap_or_default()
+                        ),
+                    ),
+                    Some((st, c)) => held_by(
+                        Rule::Cores,
+                        format!("cores: {} of {total} left, a job of {st} takes {}", tenths(cores), tenths(c)),
+                    ),
+                    None => held_by(
+                        if nas_waits == 0 { Rule::Room } else { Rule::Nas },
+                        format!(
+                            "{}nothing {}offered fits the room left (memory: {}{}) or is free to take",
+                            // (Targets it would take passed over for the NAS budget alone in this
+                            // answer (`nas_wait`): said first, so a wait for the NAS doesn't read as
+                            // one for memory (task #931: on 4 Nov every slope-deep job weighed the
+                            // whole NAS, and the Macs idle beside one said only the room left).)
+                            // (Those fit the room: so nothing else does.)
+                            match nas_waits {
+                                0 => String::new(),
+                                n => format!(
+                                    "the NAS budget: {n} target{} it would take wait for the NAS's room; ",
+                                    if n == 1 { "" } else { "s" }
+                                ),
+                            },
+                            if nas_waits == 0 { "" } else { "else " },
+                            match a.cap.as_ref() {
+                                Some(c) => mem_words(c, room.mem_mb),
+                                None => gb(room.mem_mb),
+                            },
+                            room.disk_mb
+                                .map(|d| match a.cap.as_ref().filter(|c| c.free_mb > 0) {
+                                    Some(c) => format!("; disk: {}", disk_words(c, d)),
+                                    None => format!(", {} disk", gb(d)),
+                                })
+                                .unwrap_or_default()
+                        ),
                     ),
                 });
                 break;
@@ -1648,7 +1732,7 @@ impl Sched {
         }
         let why = why.filter(|_| grants.len() < want).or_else(|| {
             old.filter(|_| a.want > grants.len() && !grants.is_empty()).map(|w| {
-                format!("one job at a time: {w} runs an older app (its asks say no capacity); packing waits for every member on the new one")
+                held_by(Rule::OldApp, format!("one job at a time: {w} runs an older app (its asks say no capacity); packing waits for every member on the new one"))
             })
         });
         (grants, why)

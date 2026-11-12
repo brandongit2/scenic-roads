@@ -11,7 +11,8 @@
 use std::path::{Path, PathBuf};
 
 /// What names a grant rule: the NAS budget's fits, the packing's cores and provisional need, the
-/// steps kept to the lead, the scheduler's picks, and the forecast's old copies.
+/// steps kept to the lead, the scheduler's picks, placement's order of a member's offers, and the
+/// forecast's old copies.
 const RULES: &[&str] = &[
     "Limits::fits(",
     "fits_job(",
@@ -27,6 +28,7 @@ const RULES: &[&str] = &[
     "cold_fits(",
     "OLD_APP_GAP_S",
     "room_ok",
+    "slack_of(",
 ];
 
 /// Where they may be named: the scheduler, and the budget's limits where they're defined.
@@ -48,6 +50,11 @@ const EXEMPT: &[(&str, &str, &str)] = &[
         "agentcore/src/pool/sim/place.rs",
         "if !jobrt::budget::nas::Limits::fits_job(members, all, heaviest, job.nas, true) {",
         "the simulator's outcome check of a start the scheduler made (task #539), not a grant",
+    ),
+    (
+        "agentcore/src/agent/placement.rs",
+        "pub fn slack_of(&self, step: &str) -> u64 {",
+        "its definition: a step's slack, which the scheduler tries a member's offers by (task #1163)",
     ),
 ];
 
