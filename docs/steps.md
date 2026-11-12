@@ -734,7 +734,15 @@ index, so a new release rebuilds every z6 tile.
   (`global/roadids/<u>`; a z6 tile built before them: its road values), keyed on them by content; it
   reads only the lists changed since the index before, which names each by content (`srcs`).
 - **Labels** (per pass): places, states, seas, lakes and parks from the labels set (`crates/landmarks/src/labels.rs`,
-  with own English, kana reading, OSM languages and OSM object: docs/names.md).
+  with own English, kana reading, OSM languages and OSM object: docs/names.md). Those past the Web
+  Mercator tiles' 85.05° are ranked with the rest but left out of the tiles: the polar caps draw them.
+- **The polar caps' points** (per pass, `polar-points`, a run per pole, "n" and "s", both whatever the
+  coverage; `landmarks::polar`, docs/polar.md §10): the labels, landmarks and roads past 85.05° as
+  `global/polar/<pole>` (GeoJSON), from the pass's filtered planet cut to each pole past 75° in one
+  `osmium extract` (smart strategy: the input read three times; copied here first where there's
+  room, as pass-sets does, else streamed over SSH): over each cut the labels' rows
+  (`labels::read_rows`), the extract tool's landmark candidates and roads (`extract --candidates`),
+  each point ranked by its isolation on the sphere over the cut.
 - **Water** (per pass): above.
 - **Spoken languages** (per pass, the `spoken` job): `global/spoken` (docs/names.md).
 - **Rail stops:** from the rail set, for the built z6 tiles + 20 km.
@@ -863,6 +871,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   the shading codec's, the block, and the terrain packs of it and its built neighbours by content.
   **polar-root (a pole):** `polar::ROOT_V`, both codecs', the pole, the datasets meeting the root's
   latitudes, the blocks built, and every block pack of its layers by logical and content name.
+- **polar-points (a pole):** `landmarks::polar::POINTS_V`, the labels', candidates' and z6 tiles'
+  versions (`LABELS_V`, `POIS_V`, `UNIT_V`: the rules it draws by), the pole, and the pass's filtered
+  planet by content.
 - **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
   a z6 tile writes. A z6 tile the coverage has left, with tree hi packs or a mid still named, is
   keyed on the version and the tile (`steps::none_key`): a drop.
@@ -918,6 +929,7 @@ keeps its content name, so jobs keyed on it stop there.
 |---|---|
 | our layers | the pack for the tile; names attached |
 | polar caps | `/tiles/polar-terrain/<pole>/z/x/y`, `/tiles/polar-slope/…`: the pole's root (z0–3) or block (z4–9) pack's tile as stored, else 204 (none) |
+| polar caps' points | `/api/layer/polar-<pole>`: `global/polar/<pole>` whole, names attached, gzip'd (404 while the catalogue has none) |
 | basemap | tiles from the catalogue's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
 | whole road (hover) | the road's parts, through the road → z6 tiles index; away from the NAS, cut where the Mac's downloads end |

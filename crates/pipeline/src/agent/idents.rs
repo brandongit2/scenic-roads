@@ -239,6 +239,11 @@ pub fn coverage_piece(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }])
 }
 
+/// The pass's filtered planet (`sources/osm/<date>/filtered`) by content, required.
+pub fn filtered(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    required(x, [format!("sources/osm/{}/filtered", x.date)])
+}
+
 /// The pass the target is of (its planet's date).
 pub fn pass(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![x.date.to_string()])

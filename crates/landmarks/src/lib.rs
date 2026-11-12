@@ -2,7 +2,7 @@
 //! 5a and 6e): the asks of Wikidata and Wikipedia (wikiask), the heritage sites (heritage) and
 //! their Wikidata chain (heritagewd, heritage_layers, heritagedetails, filterprops), the landmarks'
 //! interest (interest), the items and their pageviews (items, pageviews), the labels (labels), the
-//! areas' details (areadetails), the World Heritage Sites' shapes (whsshapes), the marks and the
+//! polar caps' points past 85.05° (polar), the areas' details (areadetails), the World Heritage Sites' shapes (whsshapes), the marks and the
 //! overlays (markconv, marksjob, ovconv), the timetables (gtfs, railfeeds, ferries) and the
 //! descriptions to write (namestodo). Pipeline re-exports those its binaries and agent name at
 //! their old paths (all but wikiask).
@@ -23,6 +23,7 @@ pub mod marksjob;
 pub mod namestodo;
 pub mod ovconv;
 pub mod pageviews;
+pub mod polar;
 pub mod railfeeds;
 pub mod whsshapes;
 pub mod wikiask;

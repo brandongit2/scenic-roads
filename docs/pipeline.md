@@ -82,6 +82,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `buildings` | fetch | the world | lead |
 | | `summits` | derive | the world | lead |
 | | `labels` | pack | the world | lead |
+| | `polar-points` | pack | the world | lead |
 | | `lakefill` | derive | the world | lead |
 | | `water` | pack | the world | lead |
 | | `spoken` | derive | the world | lead |

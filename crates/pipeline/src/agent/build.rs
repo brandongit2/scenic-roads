@@ -145,14 +145,32 @@ pub fn reach_key(x: &KeyCtx) -> Option<String> {
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
 /// regions. (2: each label's OSM object, the languages OSM gives its name, its romanised name or
-/// kana reading: docs/names.md. 3, task #862: roadcore::geo's Mercator and Earth.)
-pub const LABELS_V: u32 = 3;
+/// kana reading: docs/names.md. 3, task #862: roadcore::geo's Mercator and Earth. 4, task #668: the
+/// labels past 85.05° left out of the tiles, drawn on the polar caps, not clamped to their edge.)
+pub const LABELS_V: u32 = 4;
 
 fn labels_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     x.m.get(&inputs::osmpass::set_name(x.date, "labels"))?;
     let k = world_key("labels", x)?;
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str()))
         .then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
+}
+
+/// What the polar caps draw past 85.05° (landmarks::polar), a file per pole, once per pass (or
+/// version), whatever the coverage: the poles whose key isn't the one recorded.
+fn polar_points_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+    x.m.get(&format!("sources/osm/{}/filtered", x.date))?;
+    let targets: Vec<(String, String)> = landmarks::polar::POLES
+        .iter()
+        .map(|p| {
+            let t = p.letter().to_string();
+            let k = super::steps::derived_key("polar-points", &t, x)?;
+            Some((t, k))
+        })
+        .collect::<Option<_>>()?;
+    let stale: Vec<(String, String)> =
+        targets.into_iter().filter(|(t, k)| done.polar_points.get(t) != Some(k)).collect();
+    (!stale.is_empty()).then(|| Work { step: "polar-points".into(), targets: stale })
 }
 
 /// The languages spoken where (names::spoken), worldwide, once per pass's outlines, accepted
@@ -260,8 +278,18 @@ pub fn water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
 }
 
 /// The pass's worldwide steps the checklist counts, after the planet's own (`PassWork::left`).
-pub const WORLDWIDE_STEPS: [&str; 9] =
-    ["pass-sets", "outlines", "trailends", "reach", "buildings", "summits", "labels", "lakefill", "water"];
+pub const WORLDWIDE_STEPS: [&str; 10] = [
+    "pass-sets",
+    "outlines",
+    "trailends",
+    "reach",
+    "buildings",
+    "summits",
+    "labels",
+    "polar-points",
+    "lakefill",
+    "water",
+];
 
 /// What the planner read for the pass's worldwide steps (`pass_work`) besides the manifest and the
 /// keys: the 3D buildings' declared release (bld::buildtiles::release_of; None while it can't be
@@ -306,6 +334,7 @@ pub fn pass_work(
         let buildings = reads.release.as_deref().filter(|r| !m.contains_key(&bld::buildtiles::index_logical(r)));
         w.summits = summits_work(&px, keys);
         let labels = labels_work(&px, keys);
+        let polar_points = polar_points_work(&px, keys);
         let lakefill = reads.lakefill.as_ref().map(|s| lakefill_work(date, m, keys, s.as_deref()));
         let water = water_work(&px, keys);
         w.left = [
@@ -316,6 +345,7 @@ pub fn pass_work(
             reads.release.as_ref().is_none_or(|r| !m.contains_key(&bld::buildtiles::index_logical(r))),
             w.summits.is_some() || !m.contains_key(&format!("work/summits/{date}")),
             labels.is_some(),
+            polar_points.is_some(),
             // (A source folder that can't be read: held, left, as the jobs see it.)
             lakefill.as_ref().map_or(true, |l| l.is_some()),
             water.is_some(),
@@ -394,6 +424,11 @@ pub fn pass_work(
         }
         if let Some(l) = labels {
             w.jobs.push(job("labels", p.clone(), Some(l)));
+        }
+        // (Its poles as its targets, before the pass.)
+        if let Some(pp) = polar_points {
+            let args = pp.targets.iter().map(|t| t.0.clone()).chain(p.iter().cloned()).collect();
+            w.jobs.push(job("polar-points", args, Some(pp)));
         }
         let table = m.get(&inputs::inputs::logical(inputs::inputs::languages::UNIT));
         if let (Some(s), Some(table)) = (spoken_work(&px, keys), table) {
@@ -2154,8 +2189,8 @@ impl<'a> KeyCtx<'a> {
 /// The steps the pass plans worldwide before there's a coverage (agent::plan: it's drawn from the
 /// pass's outlines): their keys read none of it, nor the reaches, the terrain packs or the
 /// planner's inputs (`tests::the_pass_steps_read_no_coverage`), so they're keyed in `PassCtx`'s.
-pub const PASS_STEPS: [&str; 8] =
-    ["outlines", "regions-land", "trailends", "reach", "labels", "spoken", "water", "summits"];
+pub const PASS_STEPS: [&str; 9] =
+    ["outlines", "regions-land", "trailends", "reach", "labels", "polar-points", "spoken", "water", "summits"];
 
 /// What the pass's steps (`PASS_STEPS`) are keyed with besides the pass and the manifest: nothing.
 #[derive(Default)]
@@ -6074,6 +6109,7 @@ mod tests {
             "trailends" => of_work(trailends_work(x, &none)),
             "reach" => world(reach_key(x)),
             "labels" => of_work(labels_work(x, &none)),
+            "polar-points" => of_work(polar_points_work(x, &none)),
             "spoken" => of_work(spoken_work(x, &none)),
             "summits" => of_work(summits_work(x, &none)),
             "water" => of_work(water_work(x, &none)),
@@ -6262,6 +6298,7 @@ mod tests {
             "base/6-28-16".to_string(),
             "global/roads/6-28-16".to_string(),
             inputs::osmpass::set_name("d", "rail"),
+            "sources/osm/d/filtered".to_string(),
         ];
         for l in made {
             m.entry(l.clone()).or_insert_with(|| format!("{l}.7b7b7b7b7b7b7b7b.bin"));
@@ -6474,6 +6511,39 @@ mod tests {
         }
         let unkeyed: Vec<&str> = derived_steps().into_iter().filter(|s| !keyed.contains(s)).collect();
         assert!(unkeyed.is_empty(), "no fixture keys a target of {unkeyed:?}");
+    }
+
+    /// Task #668: the polar caps' points (`polar-points`) are a step of their own, keyed by the
+    /// filtered planet alone, and they change no other target's key: in every fixture build, every
+    /// other step's targets and key lines are the same with the points' files made (each pole's
+    /// `global/polar/<n|s>` in the manifest) as without, and its own two targets are keyed. (The
+    /// steps' rows, each other step's versions and reads, are the table's as before: only the
+    /// labels' version moved, by #668's own change to the labels: `LABELS_V`.)
+    #[test]
+    fn the_polar_points_change_no_other_key() {
+        let others: Vec<&str> = derived_steps().into_iter().filter(|s| *s != "polar-points").collect();
+        assert!(others.len() > 40, "{others:?}");
+        let mut keyed = 0;
+        for f in fixtures() {
+            let mut with = f.m.clone();
+            for p in landmarks::polar::POLES {
+                let l = p.points_logical();
+                with.insert(l.clone(), format!("{l}.7f7f7f7f7f7f7f7f.json"));
+            }
+            assert_eq!(f.keys(&others, &with, &f.inputs), f.keys(&others, &f.m, &f.inputs), "{}", f.name);
+            let own = &f.keys(&["polar-points"], &with, &f.inputs)["polar-points"];
+            if own.is_empty() {
+                continue;
+            }
+            assert_eq!(own.keys().collect::<Vec<_>>(), ["n", "s"], "{}", f.name);
+            for (t, lines) in own {
+                let lines = lines.as_ref().unwrap();
+                assert!(lines.iter().any(|l| l.contains("sources/osm/d/filtered=")), "{} {t}: {lines:#?}", f.name);
+                assert!(!lines.iter().any(|l| l.contains("global/polar/")), "{} {t}: not its own output", f.name);
+            }
+            keyed += 1;
+        }
+        assert!(keyed > 0, "a fixture keys the points");
     }
 
     /// Tree cover's "none" targets are drops, as terrain's and slope's are (task #849): a z6 tile

@@ -9576,6 +9576,9 @@ fn first_secs(step: &str) -> f64 {
         "buildings" | "items" => 3600.0,
         "summits" => 30.0,
         "labels" => 2200.0,
+        // (The filtered planet read three times: one read streamed from the NAS took 9 min on the
+        // mini, 12 Nov, task #668; the cuts' labels, candidates and ranking seconds.)
+        "polar-points" => 1800.0,
         "water" => 3600.0,
         // (The survey, 47 s, and the fill by bands, about 15 min on the M1, 2026-10-09.)
         "lakefill" => 1200.0,

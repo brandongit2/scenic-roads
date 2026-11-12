@@ -52,7 +52,7 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/inputs/src/inputs/gtfs.rs", "zips", 1, "the counters' zip reader opens a member by its file's path, each time"),
     ("crates/inputs/src/dem/declared.rs", "locate", 1, "the converting program's input, read where it lies"),
     ("crates/pipeline/src/offload.rs", "run_task", 1, "a step's place on the NAS, as its program's argument"),
-    ("crates/pipeline/src/bin/scenic-build.rs", "step_main", 1, "the filtered planet streamed over SSH from its path on the NAS"),
+    ("crates/pipeline/src/bin/scenic-build.rs", "filtered_planet", 1, "the filtered planet streamed over SSH from its path on the NAS"),
     ("crates/pipeline/src/bin/scenic-build.rs", "pois_step", 1, "the extract program's input, read where it lies"),
     ("crates/pipeline/src/bin/scenic-build.rs", "heritage_step", 1, "osmium's input, read where it lies"),
     ("crates/pipeline/src/bin/scenic-build.rs", "areas_over_cover", 1, "osmium's input, read where it lies"),

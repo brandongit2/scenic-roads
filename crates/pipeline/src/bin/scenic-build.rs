@@ -47,6 +47,8 @@
 //!   polar-terrain <s/4/x/y …>    polar blocks' terrain (z4–9) from the elevation pool (terrain::polar)
 //!   polar-slope <s/4/x/y …>      polar blocks' shading from their and their neighbours' terrain packs
 //!   polar-root <s …> [--regions dir] [--pass d]  a pole's z0–3 of both, from its blocks; those no longer built dropped
+//!   polar-points <n|s …> [--pass d]  what the caps draw past 85.05° (labels, landmarks, roads;
+//!                                landmarks::polar) from the filtered planet cut to the poles
 //!   pyramids-fill <6/x/y …> [--into dir] [--sizes]  the pyramids read tile by tile (GSI's) stored
 //!                                on the NAS (terrain::pyramids): the tiles those z6 tiles'
 //!                                terrain runs read, each fetched once and packed; the lead's
@@ -714,35 +716,15 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let date = opt(&args, "--pass")
                 .or_else(|| ::inputs::osmpass::latest_pass(out.root()))
                 .context("no complete OSM pass")?;
-            let nas = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
-            std::fs::create_dir_all(&scratch)?;
-            let local = scratch.join("filtered.osm.pbf");
-            let size = nas.metadata()?.len();
-            // (Room for the copy and the sets made from it, the owner's disk room target left free:
-            // the agent tells it, room::TARGET_ENV; run by hand, none.)
-            let room = jobrt::room::free_past(&scratch, jobrt::room::job_target())
-                + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0)
-                > size + (20 << 30);
-            let src = if room && !::inputs::osmpass::missing_sets(&out, &date).is_empty() {
-                let _p = phase("copying the filtered planet here");
-                // (Each 1 % copied a safe point, task #890: a resumed copy appends the rest.)
-                ::inputs::osmpass::copy_resume_with(&nas, &local, &mut |d, t| {
-                    jobrt::jobs::report(d >> 20, t >> 20, "MB of the filtered planet copied here (then the sets)");
-                    jobrt::control::piece_saved()
-                })?;
-                jobrt::timings::count(std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0), 1);
-                ::inputs::osmpass::Input::Local(local.clone())
-            } else {
-                // (Streamed over SSH: the SMB mount times out on osmium's long reads. Its path
-                // on the NAS from the mount's: tests/nas_access.rs.)
-                ::inputs::osmpass::Input::Nas(nas.unchecked_path())
-            };
+            let wanted = !::inputs::osmpass::missing_sets(&out, &date).is_empty();
+            let (src, local) = filtered_planet(&out, &date, &scratch, wanted, "then the sets")?;
             let n = ::inputs::osmpass::make_missing_sets(&mut out, &date, &src, &scratch)?;
             let p = phase("removing the copy");
             std::fs::remove_file(&local).ok();
             drop(p);
             eprintln!("pass-sets: {n} made");
         }
+        "polar-points" => polar_points_step(&mut out, &args, &scratch)?,
         "outlines" => {
             // outlines [--pass <date>]: the pass's administrative and ISO 3166 outlines from its
             // outline set (inputs::osmpass::make_outlines), as sources/osm/<date>/outlines.
@@ -6280,6 +6262,105 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     out.save()?;
     std::fs::remove_dir_all(&work).ok();
+    Ok(())
+}
+
+/// The pass's filtered planet as osmium reads it (two or three times a run): copied here first when
+/// `wanted` and there's room for it and what's made from it, the owner's disk room target left free
+/// (the agent tells it, room::TARGET_ENV; run by hand, none), since from the NAS over Wi-Fi a set
+/// took hours, over the LAN 65 min; else streamed over SSH (the SMB mount times out on osmium's long
+/// reads; its path on the NAS from the mount's: tests/nas_access.rs). With the copy's path, for the
+/// caller to remove; `then` says what follows the copy in its progress.
+fn filtered_planet(
+    out: &Out,
+    date: &str,
+    scratch: &Path,
+    wanted: bool,
+    then: &str,
+) -> Result<(::inputs::osmpass::Input, PathBuf)> {
+    let nas = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
+    std::fs::create_dir_all(scratch)?;
+    let local = scratch.join("filtered.osm.pbf");
+    let size = nas.metadata()?.len();
+    let room = jobrt::room::free_past(scratch, jobrt::room::job_target())
+        + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0)
+        > size + (20 << 30);
+    let src = if room && wanted {
+        let _p = phase("copying the filtered planet here");
+        // (Each 1 % copied a safe point, task #890: a resumed copy appends the rest.)
+        ::inputs::osmpass::copy_resume_with(&nas, &local, &mut |d, t| {
+            jobrt::jobs::report(d >> 20, t >> 20, &format!("MB of the filtered planet copied here ({then})"));
+            jobrt::control::piece_saved()
+        })?;
+        jobrt::timings::count(std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0), 1);
+        ::inputs::osmpass::Input::Local(local.clone())
+    } else {
+        ::inputs::osmpass::Input::Nas(nas.unchecked_path())
+    };
+    Ok((src, local))
+}
+
+/// polar-points <n|s …> [--pass <date>]: what the polar caps draw past 85.05° (landmarks::polar;
+/// docs/polar.md §10), as `global/polar/<pole>`: the pass's filtered planet cut to each pole's box
+/// past `landmarks::polar::EXTRACT_LAT` in one osmium run, then over each cut the labels' rows and
+/// the extract tool's candidates and ways, ranked and kept where they're past 85.05°.
+fn polar_points_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use roadcore::polar::Pole;
+    let date =
+        opt(args, "--pass").or_else(|| ::inputs::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let poles: Vec<Pole> = positional(args)
+        .iter()
+        .map(|p| Pole::of_letter(p).with_context(|| format!("{p}: not a pole (n or s)")))
+        .collect::<Result<_>>()?;
+    let t = std::time::Instant::now();
+    let work = WorkDir::new(scratch.join("polar-points"))?;
+    let parts = Parts(&["Cutting the poles from the filtered planet", "Ranking each pole's points", "Uploading"]);
+    parts.start(0);
+    let (src, local) = filtered_planet(out, &date, &work.0, true, "then the poles cut")?;
+    let cut = |p: Pole| work.0.join(format!("polar-{}.osm.pbf", p.letter()));
+    let lat = landmarks::polar::EXTRACT_LAT;
+    let boxes: Vec<(PathBuf, [f64; 4])> = poles
+        .iter()
+        .map(|&p| (cut(p), if p == Pole::South { [-180.0, -90.0, 180.0, -lat] } else { [-180.0, lat, 180.0, 90.0] }))
+        .collect();
+    ::inputs::osmpass::extract_boxes(&src, &boxes, &work.0)?;
+    std::fs::remove_file(&local).ok();
+    parts.start(1);
+    let bin = own_bin()?;
+    let mut files = Vec::new();
+    for &p in &poles {
+        let dir = work.0.join(format!("extract-{}", p.letter()));
+        let _p = phase("finding the candidates and the roads (extract)");
+        // (The roads as drawn, not densified for their elevations: a spacing past any segment.)
+        let mut c = jobrt::sys::program(&bin, "extract");
+        c.arg(&dir).arg("1000000").arg("--candidates").arg(cut(p));
+        let o = store::spawn::output(&mut c).context("run extract")?;
+        anyhow::ensure!(
+            o.status.success(),
+            "extract --candidates for the {} pole's cut: {}\n{}",
+            p.letter(),
+            o.status,
+            String::from_utf8_lossy(&o.stderr).lines().rev().take(8).collect::<Vec<_>>().join("\n")
+        );
+        drop(_p);
+        let _p = phase("ranking the points");
+        let f = landmarks::polar::make(p == Pole::South, &cut(p), &dir, &work.0.join("labels"))?;
+        let file = work.0.join(format!("points-{}.json", p.letter()));
+        std::fs::write(&file, serde_json::to_vec(&f)?)?;
+        eprintln!(
+            "polar-points {}: {} features past 85.05° ({:.0?})",
+            p.letter(),
+            f["features"].as_array().map_or(0, Vec::len),
+            t.elapsed()
+        );
+        files.push((p, file));
+    }
+    parts.start(2);
+    let _p = phase("uploading");
+    for (p, file) in files {
+        out.put_file(&p.points_logical(), "json", &file)?;
+    }
+    out.save()?;
     Ok(())
 }
 

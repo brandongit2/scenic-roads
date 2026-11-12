@@ -164,6 +164,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | polar-terrain | `polar::TERRAIN_V`, codec, block, datasets by latitude | versions; `in datasets:polar` | same |
 | polar-slope | versions, block, terrain of it and built neighbours | `Targets polar-terrain` (block + neighbours) | changes: today `after: polar-terrain` waits on *every* block; derived waits only on its neighbours |
 | polar-root | versions, pole, datasets, blocks, every block pack | `Whole polar-terrain`, `Whole polar-slope`, `in datasets:polar` | same |
+| polar-points | `POINTS_V`, `LABELS_V`, `POIS_V`, `UNIT_V`, pole, the filtered planet | `in filtered` | same |
 | trees | coverage inside the tile, `TREES_V` | `in coverage:inside` | same |
 | trees-lo | z6 mids, `TREES_LO_V` | `Targets trees` | same |
 | heritage-sites | pass, areas set, registers, matches' version, coverage | `in pass:areas`, `in registers`, `in matches`, `in coverage:all` | same |

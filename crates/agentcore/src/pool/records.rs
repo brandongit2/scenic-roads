@@ -98,6 +98,9 @@ pub struct Keys {
     pub polar_slope: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub polar_root: BTreeMap<String, String>,
+    /// The caps' points past 85.05° (landmarks::polar), per pole ("n", "s"): `polar_points_targets`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub polar_points: BTreeMap<String, String>,
     /// The served files the last catalogue was made from.
     #[serde(default, rename = "catalog")] // the stored key keeps its old spelling (task #547)
     pub catalogue: Option<String>,
@@ -187,6 +190,7 @@ impl Keys {
             "polar-terrain" => &mut self.polar_terrain,
             "polar-slope" => &mut self.polar_slope,
             "polar-root" => &mut self.polar_root,
+            "polar-points" => &mut self.polar_points,
             _ => return None,
         })
     }
@@ -217,6 +221,7 @@ impl Keys {
             "polar-terrain" => &self.polar_terrain,
             "polar-slope" => &self.polar_slope,
             "polar-root" => &self.polar_root,
+            "polar-points" => &self.polar_points,
             _ => return None,
         };
         m.get(target).map(String::as_str)

@@ -50,6 +50,12 @@ impl Pole {
         }
     }
 
+    /// Its cap's points past 85.05° (`global/polar/<n|s>`: landmarks::polar's file), the server's
+    /// `/api/layer/polar-<n|s>`.
+    pub fn points_logical(self) -> String {
+        format!("global/polar/{}", self.letter())
+    }
+
     /// The projection's EPSG code.
     pub fn epsg(self) -> u16 {
         match self {

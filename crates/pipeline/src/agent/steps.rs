@@ -843,7 +843,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 61] = [
+pub const TABLE: [Step; 62] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -940,6 +940,27 @@ pub const TABLE: [Step; 61] = [
             "labels",
             "Ranks the world's place labels and packs them.",
             w_labels,
+        )
+    },
+    // What the polar caps draw past 85.05° (landmarks::polar; docs/polar.md §10): a pole's file
+    // from the filtered planet cut to it (a heavy NAS reader), by the labels', the landmark
+    // candidates' and the roads' own rules.
+    Step {
+        alone: true,
+        versions: &[
+            ("polar-points", || landmarks::polar::POINTS_V.to_string()),
+            ("labels", || super::build::LABELS_V.to_string()),
+            ("pois", || super::build::POIS_V.to_string()),
+            ("unit", || super::build::UNIT_V.to_string()),
+        ],
+        reads: &[In { name: "filtered", of: idents::filtered }],
+        ..step(
+            "pass",
+            Pack,
+            World,
+            "polar-points",
+            "Finds the labels, landmarks and roads past 85° that a pole's cap draws.",
+            w_polar_points,
         )
     },
     Step {
@@ -2084,6 +2105,10 @@ fn w_labels(l: &str, _: bool) -> bool {
     pack(l, "labels", &ALL)
 }
 
+fn w_polar_points(l: &str, _: bool) -> bool {
+    landmarks::polar::is_logical(l)
+}
+
 /// The pass's lakes filled from Canada's own data (the other passes' removed).
 fn w_lakefill(l: &str, _: bool) -> bool {
     matches!(parts(l).as_slice(), ["work", "lakefill", d] if date(d))
@@ -2827,6 +2852,7 @@ mod tests {
                 "buildings",
                 "summits",
                 "labels",
+                "polar-points",
                 "lakefill",
                 "water",
                 "spoken",

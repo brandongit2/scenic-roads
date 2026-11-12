@@ -138,6 +138,32 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
     Ok(missing.len())
 }
 
+/// The filtered planet `src` cut to boxes (`osmium extract`, one run for them all, its smart
+/// strategy: ways and multipolygons whole, the input read three times): each `(file, [west, south,
+/// east, north])` an OSM PBF of what meets its box. The polar caps' points (landmarks::polar).
+pub fn extract_boxes(src: &Input, boxes: &[(PathBuf, [f64; 4])], scratch: &Path) -> Result<()> {
+    std::fs::create_dir_all(scratch)?;
+    let extracts: Vec<serde_json::Value> =
+        boxes.iter().map(|(f, b)| serde_json::json!({"output": f, "output_format": "pbf", "bbox": b})).collect();
+    let config = scratch.join("extract-boxes.json");
+    std::fs::write(&config, serde_json::to_vec(&serde_json::json!({ "extracts": extracts }))?)?;
+    let _p = jobrt::timings::phase(match src {
+        Input::Local(_) => "cutting the boxes (osmium)",
+        Input::Nas(_) => "cutting the boxes (osmium, over SSH)",
+    });
+    read_input(src, &scratch.join("stream"), 3, |input, local| {
+        let mut c = osmium();
+        c.args(["extract", "--overwrite", "--strategy", "smart", "-c"]).arg(&config).arg(input);
+        if local {
+            run_osmium(c, "osmium extract (the boxes)")
+        } else {
+            run(c, "osmium extract (the boxes)")
+        }
+    })?;
+    std::fs::remove_file(&config).ok();
+    Ok(())
+}
+
 /// What an osmium filter reads: a file here, or one on the NAS (the share's mount), streamed over
 /// SSH (`streamed`).
 pub enum Input {

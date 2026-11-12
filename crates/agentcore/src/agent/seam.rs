@@ -52,7 +52,7 @@ pub struct PassWork {
     pub summits: Option<Work>,
     /// Each of `WORLDWIDE_STEPS` left (a run, or its output missing from the manifest), for the
     /// checklist, held or not.
-    pub left: [bool; 9],
+    pub left: [bool; 10],
 }
 
 /// What the plan builds the regions by, one at a time, and publishes them by, as they're done:

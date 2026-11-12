@@ -645,13 +645,17 @@ async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQ
     }
 }
 
-/// The file a layer name is served from: the overlays job's (`global/heritage/`).
+/// The file a layer name is served from: the overlays job's (`global/heritage/`), a polar cap's
+/// points (`polar-<n|s>`: landmarks::polar).
 fn layer_logical(cat: &store::catalogue::Catalogue, name: &str) -> Option<String> {
     let l = match name {
-        "summary" => "global/heritage/layer-summary",
-        _ => return None,
+        "summary" => "global/heritage/layer-summary".to_string(),
+        _ => match name.strip_prefix("polar-").and_then(roadcore::polar::Pole::of_letter) {
+            Some(p) => p.points_logical(),
+            None => return None,
+        },
     };
-    cat.files.contains_key(l).then(|| l.to_string())
+    cat.files.contains_key(&l).then_some(l)
 }
 
 /// Loads what a first click or page load would otherwise wait for: the rail frequencies, roads'
@@ -773,6 +777,9 @@ fn meta_json(s: &AppState) -> serde_json::Value {
             versions.insert(format!("{stem}.{}", c.ext), v);
         } else if k == "global/railfreq" {
             versions.insert("rail-freq.bin".into(), serde_json::Value::from(c.hash16.to_string()));
+        } else if let Some(p) = k.strip_prefix("global/polar/") {
+            // (A polar cap's points, named: polar-<n|s>.json.)
+            versions.insert(format!("polar-{p}.json"), named(c.hash16.to_string()));
         }
     }
     // Tile archives by their old names.

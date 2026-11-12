@@ -1,10 +1,9 @@
 # The polar caps
 
-**Status (task #601):** built and tested in scratch roots; not yet in the live build. The steps,
-packs, catalogue entries, server routes, region downloads and the app's layer exist. Nothing of it is
-registered with the live pool or published until the worldwide rebuild ends, and REMA's declaration
-is staged in `producers/elevation/` but not in the NAS's inputs folder (§9). Roads, labels and landmarks
-past 85° are task #668.
+**Status (task #601):** in the live build and on the map: the south cap's 76 blocks and its root.
+The steps, packs, catalogue entries, server routes, region downloads and the app's layer exist. The
+roads, labels and landmarks past 85° (§10, task #668) are a step of their own, `polar-points`,
+drawn over the caps.
 
 The Web Mercator tiles end at 85.05° N/S. Past them the map draws a cap per pole from its own
 tiles, on the pole's polar stereographic grid.
@@ -73,8 +72,8 @@ tiles, on the pole's polar stereographic grid.
   Stored as `shade-webp`. Its directions are the grid's (east = +x, south = −y); a renderer turns
   them to the ground's by longitude (`roadcore::polar::east_north`). Nothing is computed from heights
   at render time.
-- **Not here:** depth (IBCAO and IBCSO for the Arctic floor); roads, labels and landmarks past 85°
-  (§10).
+- **Not here:** depth (IBCAO and IBCSO for the Arctic floor). The roads, labels and landmarks past
+  85° are §10's.
 
 ## 3. Steps and packs
 
@@ -156,9 +155,9 @@ custom layer on the globe.
   interpolation where the Mercator terrain is built (z10–11 there). Where the coverage hasn't built
   the Mercator terrain (Antarctica isn't built today), its tiles past z2 are made from the root's
   coarse ones: the seam then steps between coarse and fine terrain.
-- **Known differences:** the Mercator side has the basemap's layers (water mask, landcover,
-  labels) and the cap doesn't; a slope across the seam can step by a few percent (each side's
-  shading on its own grid).
+- **Known differences:** the Mercator side has the basemap's layers (water mask, landcover) and the
+  cap doesn't; its labels, landmarks and roads are §10's, drawn over it; a slope across the seam can
+  step by a few percent (each side's shading on its own grid).
 
 ## 6. For a future flat projection
 
@@ -208,10 +207,7 @@ Memory: 0.3–0.9 GB a terrain job as measured.
 
 ## 8. What remains
 
-1. Registering the steps with the live pool and publishing, after the rebuild.
-2. REMA into the inputs folder and the store on the NAS (the owner's word first: §9), then the input
-   check accepts it.
-3. Labels and landmarks past 85° (§10). Depth for the Arctic floor (the north cap).
+1. Depth for the Arctic floor (the north cap).
 
 ## 9. Decisions
 
@@ -223,9 +219,9 @@ Memory: 0.3–0.9 GB a terrain job as measured.
    filled values where nothing lies beneath, the caps only. REMA has no data within ~150 km of the
    pole, so without it the pole keeps its 2,800 m pits. Measured: 0.405 % of the pole's z4 pixels
    were pits before, 0 after.
-3. **REMA on the NAS (approved 26 Oct; not yet done).** Its store and inputs folder need writing
-   (`scenic-build store-fetch rema` against the NAS, then the declaration and index into
-   `inputs/elevation/`). **What accepting it re-keys: the polar targets alone.** The keys name the
+3. **REMA on the NAS (approved 26 Oct; done: the map credits it).** Its store fetched
+   (`scenic-build store-fetch rema` against the NAS), its declaration and index in
+   `inputs/elevation/`. **What accepting it re-keys: the polar targets alone.** The keys name the
    pool's datasets meeting each target's box (`declared::meeting`, unexpanded tile boxes); REMA's
    cells reach 86° S and the Mercator tiles' last row ends at 85.05° S, so no Mercator terrain,
    slope, deep, lo, root or road (`unit`) key changes, nor peaks and summits (they read the
@@ -248,25 +244,54 @@ Memory: 0.3–0.9 GB a terrain job as measured.
    globe's hand-off still reads the zoom number; whether to cap the compensation near the poles is
    for the owner.
 
-## 10. Roads, labels and landmarks past 85° (not built)
+## 10. Roads, labels and landmarks past 85° (task #668)
 
-Measured on the 2026-09-28 pass (task #668, 26 Oct): the filtered planet clipped to 85°–90° N/S.
+The Mercator layers can't place a point past their tiles' 85.05° (MapLibre's symbols and the
+landmarks' dots work in Web Mercator tile coordinates), so a cap draws its own: the labels,
+landmarks and roads that lie past 85.05°, by the rules of the layers they stand for.
 
-- **Roads:** OSM has **no `highway` way** past 85° S or 85° N. The South Pole Traverse isn't mapped
-  as a road there (one route marker node, "657 km to South Pole"). Past 85° S: one `aeroway`
-  (the station's skiway, a node). So there is nothing for a polar road layer to draw yet.
-- **Labels** (the `labels` and `places` sets, which aren't cut by tile): 8 place nodes past 85° S
-  (the South Pole, Amundsen–Scott station, six localities and plateaus) and 1 past 85° N (the North
-  Pole). `labels.rs` clamps a label's latitude to ±85.05° when it places it in its Mercator tile,
-  so these are drawn on the map's edge at their longitude, not where they are.
-- **Landmarks:** about 185 peaks, the ceremonial pole, the station, the skiway, a few historic
-  sites (Polheim, a cairn, a memorial) past 85° S; a drifting ice camp's node past 85° N. The
-  landmark candidates and peaks come from the z6 tiles' extracts, whose top and bottom rows reach
-  only the 10 km buffer past 85.05° (`osmpass::BUFFER_KM`, about 85.14°): everything further is
-  dropped there. The `summits` set (worldwide, uncut) holds the peaks.
-- **What a cap layer needs:** points only (no lines while OSM has no roads there): a polar step
-  reading the uncut sets (`labels`, `summits`, `named`) for the points past 85.05°, a small file
-  per pole keyed by the sets, and the cap drawing text and dots in its custom layer (MapLibre's
-  symbols and the dot layer work in Mercator tile coordinates and can't place a point past
-  85.05°). Moving the edge's labels there means `labels.rs` leaving out what lies past 85.05°: a
-  change to the worldwide labels' output.
+- **What OSM has there** (the 2026-09-28 pass): no `highway` way past 85° N or S (the South Pole
+  Traverse isn't mapped as a road there; the station's skiway is an `aeroway`, not a road the road
+  layer draws), so a cap draws no road yet, but any mapped later are drawn. Labels: the South Pole,
+  Amundsen–Scott station and six localities and plateaus past 85° S, the North Pole past 85° N.
+  Landmarks: about 185 peaks past 85° S, the candidates' other kinds none.
+- **The step, `polar-points`** (a run per pole, "n" and "s", whatever the coverage: the labels are
+  the world's; `landmarks::polar`): the pass's filtered planet cut to each pole past 75°
+  (`EXTRACT_LAT`) in one `osmium extract` (smart: ways and multipolygons whole; the input read three
+  times, copied here first where there's room as pass-sets does, else streamed over SSH; the OSM
+  pass itself is as it was), then over each cut:
+  - the labels' rows as the labels step reads them (`labels::read_rows`: its filters, points and
+    areas, duplicates left out);
+  - the landmark candidates and roads as the z6 tiles have them (`extract --candidates` over the
+    cut: `pois.json` and the ways the road layer draws, motorway to service);
+  - each point's isolation in its group (the labels' kinds, the landmarks' map kinds) on the sphere,
+    every pair, over the whole cut: the points just short of 85.05° rank those past it, and one
+    whose nearest more important point lies past the cut is over 1,100 km from it, shown at every
+    zoom anyway. The labels' other rules (an area's size, a place's population: `labels.rs`'s
+    `absz`) are turned to the ground likewise: `r`, the metres that must span the label spacing.
+    A landmark scores by its name and its height (named first; a cap has no pageviews or
+    prominence).
+  - kept where they're past 85.05° on the pole's side, as `global/polar/<pole>` (docs/formats.md).
+- **Keys:** `POINTS_V`, the labels', candidates' and z6 tiles' versions, the pole, the filtered
+  planet by content; no other target reads its files, and its files change no other key
+  (`agent::build::tests::the_polar_points_change_no_other_key`).
+- **The labels step leaves them out:** a label past 85.05° is still ranked with the rest (its
+  neighbours' isolation counts it) but no longer in the label tiles (`LABELS_V` 4); before, its
+  latitude was clamped to the tiles' edge and it was drawn there, at its longitude.
+- **Served:** `/api/layer/polar-<pole>`, the file with display names attached (`main`, `sub`).
+- **Drawn** (`web/src/polarpoints.ts`), on the globe, over the map, each frame from the globe's matrix:
+  - a name in the look of its MapLibre label layer (`place-city` … `place-minor`, `place-state`,
+    `water-name`, `park-label`, `poi-<kind>-label`), evaluated for it: colour, halo, font, size,
+    letter spacing, case and wrap, so Labels → Style and Label size apply; while that layer shows;
+  - its glyphs the style's own SDF glyphs (the map's glyph manager), laid out and turned to pixels
+    as MapLibre's shaping and text shader do (`web/src/polarlabels.ts`), once per name and look;
+  - thinned as the label tiles are, on the ground: a name shows once its `r` spans its kind's label
+    spacing (Layers → Map labels → Density) at its own place, an area's also once its √area does
+    (`w`); the most important first where names collide;
+  - the landmarks as dots in their kind's colour under their names (every one, named or not), the
+    roads as thin grey lines while the road layer shows;
+  - on the ground as the cap draws it (its loaded heights times the terrain's exaggeration), none
+    past the horizon.
+- **Not drawn:** a cap's points have no hover or popup, and no landmark filters (Stops & sights'
+  ranges) or prominence sizes: the Mercator side's come from the landmarks' Wikidata facts and
+  peaks' prominence, which a cap's points don't have.

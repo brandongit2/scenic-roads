@@ -67,6 +67,7 @@ const STEPS: &[Step] = &[
     s("polar-terrain", "<s/4/x/y …>", "polar blocks' terrain (z4–9) from the elevation pool", &[], &[], ANY),
     s("polar-slope", "<s/4/x/y …>", "polar blocks' shading from their and their neighbours' terrain packs", &[], &[], ANY),
     s("polar-root", "<s …> [--regions dir] [--pass d]", "a pole's zoomed-out terrain and shading (z0–3) from its blocks; those no longer built dropped", &[], PASS_REGIONS, ANY),
+    s("polar-points", "<n|s …> [--pass d]", "what a pole's cap draws past 85.05° (its labels, landmarks and roads) from the filtered planet cut to the pole; copies the filtered planet here only with room past the room target SCENIC_ROOM_TARGET_MB says", &[], PASS, ANY),
     s("raw-pack", "[--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]", "AWS's raw tiles packed into the NAS's archives: a tar of them on stdin, else those waiting in the cache", &["--order", "--check"], &["--from-tar", "--expect", "--cache", "--every"], 0),
     s("prune", "<target …>", "drops from the manifest what the coverage no longer builds (\"unit U\", \"pois U\", \"pack T\", \"lo Q\", \"bldprep T\", \"bldtiles T\")", &[], &[], ANY),
     s("buildings", "[--dem dir] [--workers n]", "the world's roadside buildings: the declared release, in z8 tiles, onto the NAS with their index", &[], &["--dem", "--workers"], 0),

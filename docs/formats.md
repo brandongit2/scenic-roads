@@ -255,6 +255,22 @@ server makes z6 blocks from markdata. Each column starts 8-byte aligned.
 A thinned tile at zoom z holds the points with kz ≤ z, the rest as speck cells. Served props carry
 `main`/`sub` (and `cmain`/`csub` from `cn`).
 
+## The polar caps' points (landmarks::polar; docs/polar.md §10)
+
+Made by the `polar-points` job, a file per pole: `global/polar/<n|s>` (`.json`), a GeoJSON
+FeatureCollection of what lies past the Web Mercator tiles' 85.05° on that side. Its features, in a
+fixed order (labels by score, landmarks by score, roads by id):
+
+- **labels** (Point; `k` place, state, water or park, `c` its class, as the label tiles' `k` and `c`);
+- **landmarks** (Point; `k` poi, `c` the map's kind: peak, viewpoint …; `ele` m where it has one);
+- **roads** (LineString; `k` road, `c` its class's name: service … motorway).
+
+A point's properties: `n` (its name; a landmark's may be ""), `o` (its OSM object), `s` (its score:
+the most important placed first), `r` (m: it shows once `r` spans its kind's label spacing on
+screen, at its place), and as it has them `en`, `kana` and `l` (the label tiles'), `w` (an area's
+√area, m: its name waits until that spans 20 px at the default spacing). Served at
+`/api/layer/polar-<n|s>` with `main`/`sub` attached; meta's `versions` names it `polar-<n|s>.json`.
+
 ## Overlays, stations and ferries by view (landmarks::ovconv; docs/phase5.md)
 
 Made by the `overlays`, `stations` and `ferries` jobs; `overlays` also writes

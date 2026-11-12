@@ -29,7 +29,8 @@
 //!
 //! Output: a roadcore archive of gzip'd Mapbox vector tiles, layer "l", z0–12, z12 overzoomed
 //! beyond: a label is in the tiles from the zoom where it could show at MIN_PX, and in every z12
-//! tile. Properties: n (name), en (English: its own name:en only, as the server attaches the
+//! tile. A label past the tiles' 85.05° is ranked with the others (its neighbours' isolation counts
+//! it) but left out of them: the polar caps draw it where it is (crate::polar). Properties: n (name), en (English: its own name:en only, as the server attaches the
 //! translations when serving), kana, l (OSM's languages of the name), o (OSM object), k, c, mz,
 //! ms (areas), s (importance, the placement order). A feature's id is the label's row, the same
 //! in every tile it's in.
@@ -61,10 +62,10 @@ const SEA_SCORE: f64 = 20.0;
 /// An area's name shows once the area spans SIZE_PX (√area), whatever the spacing (the app scales
 /// it by the square root of the kind's spacing over DEFAULT_PX), and from BIG_PX however near a
 /// more important one is.
-const SIZE_PX: f64 = 20.0;
-const BIG_PX: f64 = 120.0;
+pub(crate) const SIZE_PX: f64 = 20.0;
+pub(crate) const BIG_PX: f64 = 120.0;
 /// The app's default label spacing (web/src/state.ts DEFAULT_DENSITY): mz is relative to it.
-const DEFAULT_PX: f64 = 90.0;
+pub(crate) const DEFAULT_PX: f64 = 90.0;
 /// A place with a population shows from zoom POP_ZOOM.0 − POP_ZOOM.1 log10(population) at the
 /// default spacing (a capital half a zoom sooner) however near a more important one is.
 const POP_ZOOM: (f64, f64) = (18.0, 2.0);
@@ -127,25 +128,30 @@ impl Tags {
     }
 }
 
+/// Whether a label goes in the tiles: those past their 85.05° are the polar caps' (crate::polar).
+fn tiled(r: &Row) -> bool {
+    r.lat.abs() <= roadcore::geo::MERCATOR_LAT
+}
+
 /// One label, before it's ranked.
 #[derive(Clone, Debug, PartialEq)]
-struct Row {
-    kind: &'static str,
-    class: String,
-    name: String,
-    lon: f64,
-    lat: f64,
-    score: f64,
+pub(crate) struct Row {
+    pub(crate) kind: &'static str,
+    pub(crate) class: String,
+    pub(crate) name: String,
+    pub(crate) lon: f64,
+    pub(crate) lat: f64,
+    pub(crate) score: f64,
     /// Its own English (stripped).
-    en: Option<String>,
+    pub(crate) en: Option<String>,
     /// Its area (km²): an area's, or a bay's or strait's point's stand-in.
-    km2: Option<f64>,
+    pub(crate) km2: Option<f64>,
     /// The zoom by population.
-    popz: Option<f64>,
-    kana: Option<String>,
-    langs: Option<String>,
+    pub(crate) popz: Option<f64>,
+    pub(crate) kana: Option<String>,
+    pub(crate) langs: Option<String>,
     /// The OSM object (`n123`, `w123`, `r123`).
-    oid: String,
+    pub(crate) oid: String,
 }
 
 /// Python's `float(v.replace(",", "").replace(" ", "").split(";")[0])`, at least 0; 0 when that
@@ -576,9 +582,10 @@ fn osmium(args: &[&std::ffi::OsStr], what: &str) -> Result<()> {
 
 const STEPS: u64 = 5;
 
-/// The labels of `src` (the pass's labels set, OSM PBF) as an archive at `out`, using `work` for
-/// osmium's filtered files.
-pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
+/// The labels of `src` (OSM PBF: the pass's labels set, or the filtered planet's polar extracts,
+/// crate::polar) before they're ranked: the label points and the named areas, the duplicates left
+/// out, using `work` for osmium's filtered files (stages 0–3 of `STEPS`).
+pub(crate) fn read_rows(src: &Path, work: &Path) -> Result<Vec<Row>> {
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(work)?;
     let (nodes, all_areas, areas) =
@@ -664,6 +671,15 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
         rows.retain(|_| k.next().unwrap());
     }
     eprintln!("{} duplicates left out ({:.0?})", n0 - rows.len(), t0.elapsed());
+    Ok(rows)
+}
+
+/// The labels of `src` (the pass's labels set, OSM PBF) as an archive at `out`, using `work` for
+/// osmium's filtered files. Those past the Web Mercator tiles (`roadcore::geo::MERCATOR_LAT`) are
+/// ranked with the rest but drawn on the polar caps (crate::polar), not in these tiles.
+pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    let rows = read_rows(src, work)?;
     jobs::stage(4, STEPS, "steps (each label's isolation and tiles)");
     let p = phase("measuring the isolation");
     let n = rows.len();
@@ -687,7 +703,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
         }
         eprintln!("  {k}: {}, isolation done ({:.0?})", idx.len(), t0.elapsed());
     }
-    let (tx, ty): (Vec<f64>, Vec<f64>) = rows.iter().map(|r| roadcore::geo::merc_clamped(r.lon, r.lat)).unzip();
+    let (tx, ty): (Vec<f64>, Vec<f64>) = rows.iter().map(|r| roadcore::geo::merc(r.lon, r.lat)).unzip();
     // (ms shifts by half the spacing's log2: up to this much sooner at MIN_PX.)
     let shift = 0.5 * (DEFAULT_PX / MIN_PX).dlog2();
     let first: Vec<u32> =
@@ -695,7 +711,7 @@ pub fn run(src: &Path, out: &Path, work: &Path) -> Result<()> {
     drop(p);
     let p = phase("placing the labels in tiles");
     let mut tiles: HashMap<(u32, u32, u32), Vec<u32>> = HashMap::new();
-    for i in 0..n {
+    for i in (0..n).filter(|&i| tiled(&rows[i])) {
         for z in first[i]..=MAXZ {
             let m = 1u32 << z;
             let cell = |t: f64| ((t * m as f64) as u32).min(m - 1);
@@ -846,6 +862,27 @@ mod tests {
         assert!(area_row(&f.replace(r#""natural":"water""#, r#""natural":"water","water":"river""#))
             .unwrap()
             .is_none());
+    }
+
+    /// The South Pole and the North Pole aren't drawn at the tiles' edge: the caps have them.
+    #[test]
+    fn labels_past_the_tiles_are_left_out() {
+        let at = |lat: f64| Row {
+            kind: "place",
+            class: "locality".into(),
+            name: "P".into(),
+            lon: 0.0,
+            lat,
+            score: 1.0,
+            en: None,
+            km2: None,
+            popz: None,
+            kana: None,
+            langs: None,
+            oid: "n1".into(),
+        };
+        assert!(tiled(&at(-85.05)) && tiled(&at(roadcore::geo::MERCATOR_LAT)));
+        assert!(!tiled(&at(-90.0)) && !tiled(&at(90.0)) && !tiled(&at(-85.06)));
     }
 
     #[test]
