@@ -92,17 +92,21 @@ pub fn coverage_cover(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 }
 
 /// What world step `t`'s run asked of the coverage, as the coverage answers it now
-/// (buildstore::asked::line: its record's line while every answer it got is the same); kept by the
-/// coverage's version and the record. None while the record, or what its questions name, can't be
-/// read now.
+/// (buildstore::asked::line: its record's line while the coverage is the version it asked, or
+/// answers all it asked the same); asked again once a coverage version and record. None while the
+/// record, or the outlines its questions name, can't be read now.
 pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let Some(c) = x.m.get(&buildstore::asked::logical(t)) else {
         return Some(vec![buildstore::asked::line(x.cov, None, &|_| None)?]);
     };
     let r = x.tiles.asked(c)?;
+    let v = x.cov.version();
+    if r.version == v {
+        return Some(vec![r.line.clone()]);
+    }
     let reask = |q: &str| -> Option<String> {
         let (o, _) = inputs::rail::parse_countries_question(q)?;
-        inputs::rail::reask_countries(x.cov, q, x.tiles.outlines(x.m, &o)?.as_deref())
+        inputs::rail::reask_countries(x.cov, q, x.tiles.outlines(x.m, &o)?.as_ref())
     };
     // (And whether the outlines each question names are named still: once they aren't, its answer is GONE.)
     let named: Vec<bool> = r
@@ -111,8 +115,7 @@ pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
         .filter_map(|(q, _)| inputs::rail::parse_countries_question(q))
         .map(|(o, _)| x.m.values().any(|v| *v == o))
         .collect();
-    let from = format!("{} {c} {named:?}", x.cov.version());
-    let l = x.tiles.memo(&format!("coverage:asked {t}"), &from, || {
+    let l = x.tiles.memo(&format!("coverage:asked {t}"), &format!("{v} {c} {named:?}"), || {
         buildstore::asked::line(x.cov, Some((c, &r)), &reask)
             .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
     });

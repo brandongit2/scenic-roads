@@ -3,21 +3,22 @@
 //! rail-feeds, timetables-todo, bld-fetch) rerun on a region change only where it changes an
 //! answer they read.
 //!
-//! The run asks through `coverage::Asking` and, as it ends, puts a record (`logical`): what it asked
-//! (`coverage::Asked`: its points, its boxes), its other questions with their answers
-//! (`Record::also`: rail-feeds' countries), a digest of all the answers (`Record::answers`), and the
-//! key line it ran under (`Record::line`). The key's line (`line`) is the record's own line while
-//! the coverage still answers those questions the same; otherwise a new one. The run works its line
-//! out as the plan did, from the record before it, so the key it is recorded done under is the one
-//! the plan works out after it: one run, never a second to settle the key (a record's places are
-//! only known once it has run).
+//! The run asks through `Run::asking` (`coverage::Asking`) and, as it ends, puts a record
+//! (`logical`): what it asked (`coverage::Asked`: its points, its boxes), its other questions with
+//! their answers (`Record::also`: rail-feeds' countries), a digest of all the answers
+//! (`Record::answers`), the coverage's version it asked (`Record::version`) and the key line it ran
+//! under (`Record::line`). The key's line (`line`) is the record's own line while the coverage is
+//! that version or answers those questions the same; otherwise a new one. The run works its line
+//! out as the plan did, from the record before it (`Run::start`), so the key it is recorded done
+//! under is the one the plan works out after it: one run, never a second to settle the key (a
+//! record's places are only known once it has run).
 //!
 //! Sound because a run is a function of its other reads (their own key lines) and of the answers
 //! it got: the same answers to the same questions, the same run. A line is either one a record
 //! carried or a new one naming the record it replaces, so a record's line never stands for answers
 //! it didn't get.
 
-use crate::coverage::{Asked, Coverage};
+use crate::coverage::{Asked, Asking, Coverage};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +31,8 @@ pub struct Record {
     pub also: Vec<(String, String)>,
     /// A digest of every answer (`answers`).
     pub answers: String,
+    /// The coverage's version it asked (`Coverage::version`: the same version, the same answers).
+    pub version: String,
     /// The key line the run ran under.
     pub line: String,
 }
@@ -52,7 +55,7 @@ impl Record {
     /// A run's record: what it asked and was answered, under key line `line`.
     pub fn new(cov: &Coverage, asked: Asked, also: Vec<(String, String)>, line: String) -> Record {
         let a = answers(cov, &asked, also.iter().cloned());
-        Record { asked, also, answers: a, line }
+        Record { asked, also, answers: a, version: cov.version(), line }
     }
 
     /// As put: zstd'd JSON (rail's asks a point of each of the world's rail ways).
@@ -66,12 +69,16 @@ impl Record {
 }
 
 /// The key line of a step keyed on what it asked: with no record yet, a new one of the coverage's
-/// version; with record `prev` (put as content `content`), its line while `cov` answers its
-/// questions as they were answered (`reask` answering its `also` questions now), else a new one
-/// naming it. None while a question can't be answered now (`reask` None).
+/// version; with record `prev` (put as content `content`), its line while `cov` is the version it
+/// asked (nothing asked again) or answers its questions as they were answered (`reask` answering
+/// its `also` questions now), else a new one naming it. None while a question can't be answered
+/// now (`reask` None).
 pub fn line(cov: &Coverage, prev: Option<(&str, &Record)>, reask: &dyn Fn(&str) -> Option<String>) -> Option<String> {
     let v = cov.version();
     let Some((content, r)) = prev else { return Some(store::naming::hash16(format!("none {v}").as_bytes())) };
+    if r.version == v {
+        return Some(r.line.clone());
+    }
     let also: Vec<(String, String)> =
         r.also.iter().map(|(q, _)| Some((q.clone(), reask(q)?))).collect::<Option<_>>()?;
     Some(if answers(cov, &r.asked, also.into_iter()) == r.answers {
@@ -81,43 +88,55 @@ pub fn line(cov: &Coverage, prev: Option<(&str, &Record)>, reask: &dyn Fn(&str) 
     })
 }
 
-/// The record before this run, as `out` names it: (content name, record), None before any.
-pub fn prev(out: &crate::out::Out, step: &str) -> Result<Option<(String, Record)>> {
-    let Some(c) = out.get(&logical(step)) else { return Ok(None) };
-    let b = out.path(c).read().with_context(|| format!("read {c}"))?;
-    Ok(Some((c.to_string(), Record::from_bytes(&b).with_context(|| c.to_string())?)))
-}
-
-/// The line this run ran under: the one the plan worked out from `prev`, the record before it
-/// (`prev`), `reask` answering its questions as the plan does.
-pub fn run_line(
-    cov: &Coverage,
-    prev: Option<&(String, Record)>,
-    reask: &dyn Fn(&str) -> Option<String>,
-) -> Result<String> {
-    line(cov, prev.map(|(c, r)| (c.as_str(), r)), reask)
-        .context("the record before this run asks what can't be answered now")
-}
-
-/// Puts this run's record (at its end, after its outputs): what it asked under `line` (`run_line`),
-/// its `also` answers.
-pub fn put(
-    out: &mut crate::out::Out,
-    step: &str,
-    cov: &Coverage,
+/// A run of a step keyed on what it asks: the coverage asked through (`asking`), the line it runs
+/// under (the plan's, worked out by `line` from the record before it).
+pub struct Run<'a> {
+    step: String,
+    cov: &'a Coverage,
     line: String,
-    asked: Asked,
-    also: Vec<(String, String)>,
-) -> Result<()> {
-    let r = Record::new(cov, asked, also, line);
-    out.put_bytes(&logical(step), "json.zst", &r.to_bytes())?;
-    out.save()
+    asking: Asking<'a>,
+}
+
+impl<'a> Run<'a> {
+    /// Step `step`'s run over `cov`: its line from the record `out` names (`reask` answering its
+    /// questions asked whole, as the plan's does). An error when that record can't be read, or asks
+    /// what can't be answered now.
+    pub fn start(
+        out: &crate::out::Out,
+        step: &str,
+        cov: &'a Coverage,
+        reask: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Run<'a>> {
+        let prev = match out.get(&logical(step)) {
+            None => None,
+            Some(c) => {
+                let b = out.path(c).read().with_context(|| format!("read {c}"))?;
+                Some((c.to_string(), Record::from_bytes(&b).with_context(|| c.to_string())?))
+            }
+        };
+        let line = line(cov, prev.as_ref().map(|(c, r)| (c.as_str(), r)), reask)
+            .context("the record before this run asks what can't be answered now")?;
+        Ok(Run { step: step.to_string(), cov, line, asking: Asking::new(cov) })
+    }
+
+    /// The coverage, every question kept.
+    pub fn asking(&self) -> &Asking<'a> {
+        &self.asking
+    }
+
+    /// Puts this run's record (at its end, after its outputs): what it asked, and `also`, its
+    /// questions asked whole with their answers.
+    pub fn put(self, out: &mut crate::out::Out, also: Vec<(String, String)>) -> Result<()> {
+        let r = Record::new(self.cov, self.asking.asked(), also, self.line);
+        out.put_bytes(&logical(&self.step), "json.zst", &r.to_bytes())?;
+        out.save()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::coverage::{fixture_circle, Asking, Shape};
+    use crate::coverage::{fixture_circle, Shape};
 
     fn cov(circles: &[(f64, f64, f64)]) -> Coverage {
         Coverage {
@@ -179,8 +198,27 @@ mod tests {
         let a = Asking::new(&c);
         a.contains(e7(4.85, 45.75));
         let r = Record::new(&c, a.asked(), vec![("countries x".into(), "FR".into())], "l".into());
-        assert_eq!(line(&c, Some(("n", &r)), &|_| Some("FR".into())).unwrap(), "l");
-        assert_ne!(line(&c, Some(("n", &r)), &|_| Some("FR,IT".into())).unwrap(), "l");
-        assert_eq!(line(&c, Some(("n", &r)), &|_| None), None);
+        // (Another version, the point answered the same: the question decides.)
+        let other = cov(&[(4.85, 45.75, 61.0)]);
+        assert_ne!(other.version(), c.version());
+        assert_eq!(line(&other, Some(("n", &r)), &|_| Some("FR".into())).unwrap(), "l");
+        assert_ne!(line(&other, Some(("n", &r)), &|_| Some("FR,IT".into())).unwrap(), "l");
+        assert_eq!(line(&other, Some(("n", &r)), &|_| None), None);
+    }
+
+    /// The version a record asked answers every question as it was answered: its line, nothing
+    /// asked again (rail's 4.3 M points, rail-feeds' countries: not on each lead's start).
+    #[test]
+    fn the_version_asked_keeps_the_line_without_asking_again() {
+        let c = cov(&[(4.85, 45.75, 60.0)]);
+        let r = Record::new(&c, Asked::default(), vec![("countries x".into(), "FR".into())], "l".into());
+        assert_eq!(r.version, c.version());
+        let asked_again = std::cell::Cell::new(false);
+        let reask = |_: &str| {
+            asked_again.set(true);
+            None
+        };
+        assert_eq!(line(&c, Some(("n", &r)), &reask).unwrap(), "l");
+        assert!(!asked_again.get());
     }
 }

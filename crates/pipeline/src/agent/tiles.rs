@@ -88,9 +88,10 @@ pub struct TerrainTiles {
     /// What the steps keyed on what they asked of the coverage last asked (buildstore::asked: the
     /// records `m` names under `work/asked/`), by content name (None: it can't be read now).
     asked: HashMap<String, Option<std::sync::Arc<buildstore::asked::Record>>>,
-    /// The pass outlines those records' questions name (inputs::rail::countries_question), by content
-    /// name (None: they can't be read now).
-    outlines: HashMap<String, Option<std::sync::Arc<buildstore::outlines::Outlines>>>,
+    /// The root the last load read from: where `outlines` opens the outlines a record's question
+    /// names, only when asked (never held open: a coverage of the version a record asked asks
+    /// nothing again).
+    root: Option<store::nasfs::NasRoot>,
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -142,7 +143,6 @@ impl TerrainTiles {
         self.depth_alone.as_ref().map(|d| &d.0).hash(&mut h);
         self.sets.as_ref().map(|d| (&d.0, d.1.is_some())).hash(&mut h);
         let mut a: Vec<(&String, bool)> = self.asked.iter().map(|(c, r)| (c, r.is_some())).collect();
-        a.extend(self.outlines.iter().map(|(c, o)| (c, o.is_some())));
         a.sort_unstable();
         a.hash(&mut h);
         h.finish()
@@ -347,10 +347,10 @@ impl TerrainTiles {
         self.enclosed = Some((c.clone(), e));
     }
 
-    /// Holds the coverage records `m` names (buildstore::asked::logical) and the outlines their
-    /// questions name, each read once by content name (one that can't be read now: tried again with
-    /// the next load).
+    /// Holds the coverage records `m` names (buildstore::asked::logical), each read once by content
+    /// name (one that can't be read now: tried again with the next load).
     fn load_asked(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
+        self.root = Some(root.clone());
         let want: BTreeSet<&String> = m
             .range("work/asked/".to_string()..)
             .take_while(|(l, _)| l.starts_with("work/asked/"))
@@ -375,24 +375,6 @@ impl TerrainTiles {
             };
             self.asked.insert(c.clone(), r);
         }
-        let named: BTreeSet<String> = self
-            .asked
-            .values()
-            .flatten()
-            .flat_map(|r| r.also.iter().filter_map(|(q, _)| inputs::rail::parse_countries_question(q).map(|(o, _)| o)))
-            .collect();
-        self.outlines.retain(|c, o| named.contains(c) && o.is_some());
-        let values: BTreeSet<&String> = m.values().collect();
-        for c in named.iter().filter(|c| values.contains(c)) {
-            if self.outlines.contains_key(c) {
-                continue;
-            }
-            let o = buildstore::outlines::Outlines::open(&root.join(c))
-                .map_err(|e| eprintln!("agent: the outlines {c} can't be read now ({e:#})"))
-                .ok()
-                .map(std::sync::Arc::new);
-            self.outlines.insert(c.clone(), o);
-        }
     }
 
     /// The coverage record of content name `c` (buildstore::asked), None while it can't be read now.
@@ -400,17 +382,18 @@ impl TerrainTiles {
         self.asked.get(c)?.clone()
     }
 
-    /// The outlines of content name `c` a held record's question names: Some(None) when `m` no longer
-    /// names them (their pass gone: its answer is `inputs::rail::GONE`), None while they can't be read now.
-    pub fn outlines(
-        &self,
-        m: &BTreeMap<String, String>,
-        c: &str,
-    ) -> Option<Option<std::sync::Arc<buildstore::outlines::Outlines>>> {
+    /// The outlines of content name `c` a record's question names, opened now: Some(None) when `m`
+    /// no longer names them (their pass gone: its answer is `inputs::rail::GONE`), None while they
+    /// can't be read now.
+    pub fn outlines(&self, m: &BTreeMap<String, String>, c: &str) -> Option<Option<buildstore::outlines::Outlines>> {
         if !m.values().any(|v| v == c) {
             return Some(None);
         }
-        Some(Some(self.outlines.get(c)?.clone()?))
+        let root = self.root.as_ref()?;
+        buildstore::outlines::Outlines::open(&root.join(c))
+            .map_err(|e| eprintln!("agent: the outlines {c} can't be read now ({e:#})"))
+            .ok()
+            .map(Some)
     }
 
     /// Holds record `r` under content name `content` (tests: no file).

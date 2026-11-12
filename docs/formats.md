@@ -1103,7 +1103,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   `areas`: a heritage or designated area's polygon in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/asked/<step>.json.zst` (what a run of rail-feeds,
   rail, timetables-todo or bld-fetch asked of the coverage, `buildstore::asked::Record`, zstd'd JSON:
   `{"asked": {"points": [[x, y]…], "land": [[w, s, e, n]…], "all": […]}, "also": [[question,
-  answer]…], "answers", "line"}`, E7; docs/steps.md §12); `work/rail/used.json`
+  answer]…], "answers", "version", "line"}`, E7; docs/steps.md §12); `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,
   from, to, km, served_km, passenger}], "unmatched"}`); `work/ferries/lines.json` (`{"lines": [{…,

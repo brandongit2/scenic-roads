@@ -927,17 +927,22 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   ferry lines' ends.
 - **The coverage as a run asked it** (`in coverage:asked`, `buildstore::asked`; rail-feeds, rail,
   timetables-todo, bld-fetch): the run asks through `coverage::Asking` (whether a point is in,
-  whether a box meets the land or any shape; no other way in) and puts what it asked as
-  `work/asked/<step>`: every question once, its questions of the whole coverage with their answers
-  (rail-feeds' countries), the digest of every answer (`Coverage::answers`, each asked again:
-  which region holds a point never enters it) and the key line it ran under. The key's line is that line while the coverage answers it all the same; otherwise a new one
-  naming the record, and none yet, one of the coverage's version. The run works its line out from
-  the record before it as the plan did, so the key it's recorded done under is the plan's after it:
-  one run. So a region change reruns these only where it changes an answer they read: water given
-  from one region to another, or a region added where none of them asked, changes none (task #1127's
-  regions change, measured on the real inputs, changed no answer of the four, nor the cover). The plan reads a record once by content name (`TerrainTiles`), and
-  works the line out once a coverage version and record; the record's outlines no longer named (a
-  pass gone) answer `GONE`.
+  whether a box meets the land or any shape; no other way in: `asked::Run` hands it out) and puts
+  what it asked as `work/asked/<step>`: every question once, its questions of the whole coverage
+  with their answers (rail-feeds' countries), the digest of every answer (`Coverage::answers`, each
+  asked again: which region holds a point never enters it), the coverage's version it asked and the
+  key line it ran under. The key's line is that line while the coverage is that version (nothing
+  asked again) or answers it all the same; otherwise a new one naming the record, and none yet, one
+  of the coverage's version. The run works its line out from the record before it as the plan does
+  (`asked::Run::start`), so the key it's recorded done under is the plan's after it: one run. So a
+  region change reruns these only where it changes an answer they read: water given from one region
+  to another, or a region added where none of them asked, changes none (task #1127's regions
+  change, measured on the real inputs, changed no answer of the four, nor the cover). The plan reads
+  a record once by content name (`TerrainTiles`) and asks it again only once a coverage version
+  other than the one it asked and the record (on the plan's thread: rail's 4.3 M points 1.2 s,
+  rail-feeds' countries 49 s, measured by task #1130 on the mini), opening the outlines a question
+  names only then; outlines no longer named (a pass gone) answer `GONE`. A record that can't be
+  read leaves its step waiting, its run failing.
 - **water:** its version and the pass's basemap.
 - **bld-fetch** (network): its version, the release and the coverage as its run asked it (each row
   group's and GHSL tile's box grown by 20 km, `bld::fetch::Near`).

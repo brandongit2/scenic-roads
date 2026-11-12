@@ -47,3 +47,66 @@ fn the_job_writes_into_todo_and_puts_the_report() {
         assert!(listed.strays.is_empty(), "{listed:?}");
     }
 }
+
+/// Task #1130: timetables-todo, keyed on what its run asked of the coverage, from run to plan and
+/// back: its run puts its record through its `Out`, the plan reads it from the NAS
+/// (`TerrainTiles::load`) and works out the key the run was dispatched under (one run settles it);
+/// a region added far from every point it asked keeps that key, one grown over a point it asked
+/// changes it, and the run under the new key settles that one too.
+#[test]
+fn timetables_todo_reruns_only_where_a_region_change_changes_an_answer() {
+    use crate::agent::{build::KeyCtx, steps, tiles::TerrainTiles};
+    use buildstore::coverage::Coverage;
+    let d = tempfile::tempdir().unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(&d.path().join("root"));
+    let scratch = d.path().join("scratch");
+    // A ferry line with an end in Reykjavik, one with its ends 25 and 60 km east of it.
+    let ferries = br#"{"lines": [
+        {"osm": "w1", "kind": "ferry", "km": 3.0, "ends": [[-21.9, 64.13], [-21.95, 64.2]]},
+        {"osm": "w2", "kind": "ferry", "km": 18.0, "ends": [[-21.386, 64.13], [-20.666, 64.13]]}
+    ], "unmatched": []}"#;
+    let rail = br#"{"lines": [], "unmatched": []}"#;
+    for (step, l, v) in [("rail", RAIL_LINES, &rail[..]), ("ferries", FERRY_LINES, &ferries[..])] {
+        let mut o = crate::out::open(&root, &scratch, step).unwrap();
+        o.put_bytes(l, "json", v).unwrap();
+        o.save().unwrap();
+    }
+    let cov_of = |places: &[&str]| {
+        let recipes: Vec<buildstore::recipes::Recipe> = places
+            .iter()
+            .enumerate()
+            .map(|(i, p)| buildstore::recipes::Recipe {
+                id: format!("r{i}"),
+                name: format!("R{i}"),
+                outline: vec![format!("place:{p}")],
+            })
+            .collect();
+        Coverage::fixture(&recipes, None, d.path()).unwrap()
+    };
+    let reykjavik = cov_of(&["-21.9,64.13,20"]);
+    let far = cov_of(&["-21.9,64.13,20", "-45,70,100"]);
+    let near = cov_of(&["-21.9,64.13,30"]);
+    let inputs = std::collections::BTreeMap::new();
+    let mut tiles = TerrainTiles::new(None);
+    let mut plan = |cov: &Coverage| {
+        let m = crate::out::open(&root, &scratch, "timetables-todo").unwrap().manifest;
+        tiles.load(&root, &m);
+        steps::key("timetables-todo", "timetables-todo", &KeyCtx::new(cov, "d", &m, &inputs, None, &tiles)).unwrap()
+    };
+    let run_job = |cov: &Coverage| {
+        let mut out = crate::out::open(&root, &scratch, "timetables-todo").unwrap();
+        let asked = buildstore::asked::Run::start(&out, "timetables-todo", cov, &|_| None).unwrap();
+        let r = run(&mut out, asked.asking(), &root).unwrap();
+        asked.put(&mut out, Vec::new()).unwrap();
+        r.ferry
+    };
+    let first = plan(&reykjavik);
+    assert_eq!(run_job(&reykjavik), 1);
+    assert_eq!(plan(&reykjavik), first, "the key it ran under is the plan's after it");
+    assert_eq!(plan(&far), first, "a region far from every point asked keeps it");
+    let grown = plan(&near);
+    assert_ne!(grown, first, "a region grown over a point asked changes it");
+    assert_eq!(run_job(&near), 2);
+    assert_eq!(plan(&near), grown, "one run settles it");
+    assert_ne!(plan(&reykjavik), grown, "and back again, it reruns");
+}

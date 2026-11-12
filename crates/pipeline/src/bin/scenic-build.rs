@@ -1114,17 +1114,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             // jobs' z6 tiles.
             let cov = coverage_of(&out, &args)?;
             let to = opt(&args, "--out").map_or_else(|| out.root().clone(), store::nasfs::NasRoot::from_arg);
-            let prev = buildstore::asked::prev(&out, "timetables-todo")?;
-            let asking = buildstore::coverage::Asking::new(&cov);
-            let r = roads::timetables::run(&mut out, &asking, &to)?;
-            buildstore::asked::put(
-                &mut out,
-                "timetables-todo",
-                &cov,
-                buildstore::asked::run_line(&cov, prev.as_ref(), &|_| None)?,
-                asking.asked(),
-                Vec::new(),
-            )?;
+            let asked = buildstore::asked::Run::start(&out, "timetables-todo", &cov, &|_| None)?;
+            let r = roads::timetables::run(&mut out, asked.asking(), &to)?;
+            asked.put(&mut out, Vec::new())?;
             eprintln!("timetables-todo: {} rail and {} ferry lines with no timetable ({:.0} km), {} routes matching nothing on the map", r.rail, r.ferry, r.km, r.unmatched);
         }
         "terrain-root" => {
@@ -4915,17 +4907,9 @@ fn z6_tiles(args: &[String], step: &str) -> Result<Vec<TileId>> {
 fn bld_fetch_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let sources = ::inputs::inputs::sources::read(out.root(), &out.manifest)?;
-    let prev = buildstore::asked::prev(out, "bld-fetch")?;
-    let asking = buildstore::coverage::Asking::new(&cov);
-    ::bld::bld::fetch::run(::bld::bld::fetch::Args { root: out.root(), sources: &sources, cov: &asking })?;
-    buildstore::asked::put(
-        out,
-        "bld-fetch",
-        &cov,
-        buildstore::asked::run_line(&cov, prev.as_ref(), &|_| None)?,
-        asking.asked(),
-        Vec::new(),
-    )
+    let asked = buildstore::asked::Run::start(out, "bld-fetch", &cov, &|_| None)?;
+    ::bld::bld::fetch::run(::bld::bld::fetch::Args { root: out.root(), sources: &sources, cov: asked.asking() })?;
+    asked.put(out, Vec::new())
 }
 
 /// bldprep <T …>: the 3D buildings' normalized files of z6 tiles T (docs/buildings3d.md §3.1,
@@ -6016,13 +6000,31 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let found = scratch.join("found");
     drop(p);
     parts.start(1);
-    let prev = buildstore::asked::prev(out, "rail-feeds")?;
-    let asking = buildstore::coverage::Asking::new(&cov);
+    // (Its countries are asked of the whole coverage: the record before it asked again as the plan
+    // asks it, when the coverage isn't the version it asked: of the outlines it names, opened again
+    // unless they're this pass's, `GONE` once no longer named.)
+    let asked = {
+        let reask = |q: &str| -> Option<String> {
+            let (c, _) = rail::parse_countries_question(q)?;
+            if c == outlines_content {
+                return rail::reask_countries(&cov, q, Some(&outlines));
+            }
+            if !out.manifest.values().any(|v| *v == c) {
+                return rail::reask_countries(&cov, q, None);
+            }
+            let o = buildstore::outlines::Outlines::open(&out.path(&c))
+                .map_err(|e| eprintln!("rail-feeds: {c}: {e:#}"))
+                .ok()?;
+            rail::reask_countries(&cov, q, Some(&o))
+        };
+        buildstore::asked::Run::start(out, "rail-feeds", &cov, &reask)?
+    };
+    drop(outlines);
     let ran = landmarks::railfeeds::run(landmarks::railfeeds::Args {
         declarations: &decls,
         // (railfeeds reads these by path: tests/nas_access.rs.)
         catalogue: catalogue.as_ref().map(|c| c.unchecked_path()),
-        coverage: &asking,
+        coverage: asked.asking(),
         countries: &countries,
         checked: checked.map(|c| c.unchecked_path()),
         zips: &zips,
@@ -6049,24 +6051,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         + rail::put_feeds(out, &found.join("ferries.json"), &found.join("gtfs"), rail::FERRY_FEEDS)?;
     drop(p);
     out.save()?;
-    // (Its countries asked of the whole coverage, the question asked again as the plan asks it: of
-    // the outlines it names, opened again unless they're this pass's, `GONE` once no longer named.)
-    let reask = |q: &str| -> Option<String> {
-        let (c, _) = rail::parse_countries_question(q)?;
-        if c == outlines_content {
-            return rail::reask_countries(&cov, q, Some(&outlines));
-        }
-        if !out.manifest.values().any(|v| *v == c) {
-            return rail::reask_countries(&cov, q, None);
-        }
-        let o = buildstore::outlines::Outlines::open(&out.path(&c))
-            .map_err(|e| eprintln!("rail-feeds: {c}: {e:#}"))
-            .ok()?;
-        rail::reask_countries(&cov, q, Some(&o))
-    };
-    let also = vec![(rail::countries_question(&outlines_content, &own), countries.join(","))];
-    let line = buildstore::asked::run_line(&cov, prev.as_ref(), &reask)?;
-    buildstore::asked::put(out, "rail-feeds", &cov, line, asking.asked(), also)?;
+    asked.put(out, vec![(rail::countries_question(&outlines_content, &own), countries.join(","))])?;
     std::fs::remove_dir_all(&found).ok();
     eprintln!("rail-feeds: {new} zips fetched");
     Ok(())
@@ -6158,13 +6143,13 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // 2. Stops beyond the coverage.
     parts.start(1);
     let p = phase("marking the stops beyond the coverage");
-    let prev = buildstore::asked::prev(out, "rail")?;
-    let asking = buildstore::coverage::Asking::new(&cov);
-    let (pairs, beyond) = rail::mark_beyond(&std::fs::read(&raw)?, &asking);
+    let asked = buildstore::asked::Run::start(out, "rail", &cov, &|_| None)?;
+    let asking = asked.asking();
+    let (pairs, beyond) = rail::mark_beyond(&std::fs::read(&raw)?, asking);
     let pairs_file = scratch.join("pairs.bin");
     std::fs::write(&pairs_file, &pairs)?;
     // (The count rows apart, after the trains: railfreq reads its inputs in their order.)
-    let (counted, _) = rail::mark_beyond(&std::fs::read(&raw_counts)?, &asking);
+    let (counted, _) = rail::mark_beyond(&std::fs::read(&raw_counts)?, asking);
     let counts_file = scratch.join("pairs-counts.bin");
     std::fs::write(&counts_file, &counted)?;
     let inputs = vec![pairs_file.clone(), counts_file];
@@ -6269,14 +6254,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     )?;
     drop(p);
     out.save()?;
-    buildstore::asked::put(
-        out,
-        "rail",
-        &cov,
-        buildstore::asked::run_line(&cov, prev.as_ref(), &|_| None)?,
-        asking.asked(),
-        Vec::new(),
-    )?;
+    asked.put(out, Vec::new())?;
     drop(ways);
     std::fs::remove_dir_all(&dir).ok();
     for f in inputs.into_iter().chain([poly, scratch.join("feeds.json")]) {

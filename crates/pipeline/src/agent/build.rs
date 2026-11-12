@@ -4731,7 +4731,7 @@ mod tests {
         let asking = buildstore::coverage::Asking::new(&reykjavik);
         assert!(asking.contains([-219_000_000, 641_300_000]));
         assert!(!asking.contains([-213_860_000, 641_300_000]));
-        let line = buildstore::asked::run_line(&reykjavik, None, &|_| None).unwrap();
+        let line = buildstore::asked::line(&reykjavik, None, &|_| None).unwrap();
         let rec = buildstore::asked::Record::new(&reykjavik, asking.asked(), Vec::new(), line);
         let content = "work/asked/timetables-todo.2222222222222222.json";
         m.insert(buildstore::asked::logical("timetables-todo"), content.into());
@@ -4747,6 +4747,18 @@ mod tests {
         let same = cov_of(&["-21.9,64.13,20", "-21.9,64.13,5"]);
         assert_eq!(cover(&same), cover(&reykjavik));
         assert_ne!(cover(&near), cover(&reykjavik));
+        // rail-feeds' countries, asked of outlines its pass no longer names: kept while the coverage
+        // is the version it asked; another version can't ask them again (GONE), and it reruns.
+        let q = inputs::rail::countries_question("sources/osm/d0/outlines.3333333333333333", &Default::default());
+        let rec = buildstore::asked::Record::new(&reykjavik, Default::default(), vec![(q, "IS".into())], "l".into());
+        let content = "work/asked/rail-feeds.4444444444444444.json.zst";
+        m.insert(buildstore::asked::logical("rail-feeds"), content.into());
+        tiles.hold_asked(content, rec);
+        let asked = |c: &Coverage| {
+            crate::agent::idents::coverage_asked("rail-feeds", &KeyCtx::new(c, "d", &m, &inputs, None, &tiles)).unwrap()
+        };
+        assert_eq!(asked(&reykjavik), ["l"]);
+        assert_ne!(asked(&far), ["l"]);
     }
 
     /// The z6 tiles whose change made a tile stale: its owners whose base pack or road values aren't
