@@ -269,7 +269,7 @@ fn put(path: &store::nasfs::NasPath, bytes: &[u8]) -> Result<()> {
 /// [`REPORT`].
 pub fn run(
     out: &mut buildstore::out::Out,
-    cov: &buildstore::coverage::Coverage,
+    cov: &buildstore::coverage::Asking,
     todo_root: &store::nasfs::NasRoot,
 ) -> Result<Report> {
     let read = |l: &str| -> Result<Value> {

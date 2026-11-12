@@ -139,8 +139,11 @@ store's read log, #866's `outside` machinery, must be a subset of the declared r
 `Input` identities are named by what the run cuts, never by a broader proxy. The coverage is
 `in coverage:<cut> <digest>`, where `<cut>` is how the step reads it: `piece` (#832's
 `piece_coverage`: the z9–12 tiles near the coverage), `inside` (trees: the coverage in the tile),
-`ways` (unit: as its ways meet it), `shapes` (bldtiles: `Coverage::shapes_key`), `all`
-(`coverage_all`). The same cut is one function shared by key and run, so the two can't differ.
+`ways` (unit: as its ways meet it), `shapes` (bldtiles: `Coverage::shapes_key`), `cover` (the
+heritage jobs and rail: `landmarks::heritage::cover_key`), `asked` (rail-feeds, rail,
+timetables-todo, bld-fetch: the coverage's answers where the run asked, `buildstore::asked`,
+docs/steps.md §12). The same cut is one function shared by key and run, so the two can't differ;
+`asked`'s run reads the coverage only through what records its questions (`coverage::Asking`).
 
 "None" targets (a target the coverage left, kept to drop its packs) declare no reads. Their key is
 lines 1–3 and `none`, as `none_*_key` today, from one function.
@@ -167,10 +170,10 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | polar-points | `POINTS_V`, `LABELS_V`, `POIS_V`, `UNIT_V`, pole, the filtered planet | `in filtered` | same |
 | trees | coverage inside the tile, `TREES_V` | `in coverage:inside` | same |
 | trees-lo | z6 mids, `TREES_LO_V` | `Targets trees` | same |
-| heritage-sites | pass, areas set, registers, matches' version, coverage | `in pass:areas`, `in registers`, `in matches`, `in coverage:all` | same |
+| heritage-sites | pass, areas set, registers, matches' version, coverage | `in pass:areas`, `in registers`, `in matches`, `in coverage:cover` | task #1130: the cover, not the coverage's shapes |
 | unit | extract, road values, coverage as ways meet it, rules, heritage slices, roadside index, elevation plan, terrain tiles by content | `in extract`, `in road-values`, `in coverage:ways`, `in rules`, `Whole heritage-sites` (its slices), `Whole buildings` (roadside index), `Whole reach`, `in datasets:plan`, `Targets terrain-*` `Grain::Tiles`, `Along terrain-*` (the packs along its long ways) | same inputs; the waits on heritage-sites, reach, buildings move from `UNITS_NEED` and the planner's code into the row |
 | pack(T) / lo | owners' base packs and road values | `Targets unit` | same |
-| rail-feeds, rail, water, bld-fetch | as §12 | `Input`s, and rail: `Whole rail-feeds` | same |
+| rail-feeds, rail, water, bld-fetch | as §12 | `Input`s, and rail: `Whole rail-feeds` | task #1130: `in coverage:asked` (rail also `in coverage:cover`) for the coverage, not its shapes |
 | bldprep | `BLDPREP_V`, release, row groups and GHSL tile | `Whole bld-fetch` (one world target), `in release` | same |
 | bldtiles | `BUILDINGS_V`, normalized files of tile + 8 neighbours, shapes | `Targets bldprep` (tile + 8), `in coverage:shapes` | changes: today `after: bldprep` waits on every bldprep; derived waits on 9 |
 | lake-depth | `depth::lakes::V`, the declarations it makes, the water, the terrain hi packs of its tile and ring | versions; `in lake-sources`, `in water-source`, `Targets terrain-hi` (its tile and the 8 around it) | task #959: the lakes' estimates follow the coverage |
@@ -181,7 +184,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | summits | (pass) | `Input`s | same |
 | peaks | candidates, summits, z8 digest, hi packs within 30 km | `Targets pois` (its tile), `Whole summits`, `Targets terrain-hi` (30 km box), `Targets terrain-lo` | changes in waiting only: the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box. Key same |
 | items | date, current candidates | `Whole pois` | same |
-| heritage | heritage-sources, sets, coverage | `Whole heritage-sites`, `in pass:*`, `in coverage:all` | same |
+| heritage | heritage-sources, sets, coverage | `Whole heritage-sites`, `in pass:*`, `in coverage:cover` | task #1130: the cover |
 | marks | facts, views, heritage files, every tile's pois and peaks | `Whole items`, `Whole heritage`, `Whole pois`, `Whole peaks` | same |
 | overlays | heritage outputs, dots | `Whole heritage`, `Whole marks` (dots) | same |
 | catalogue | manifest of what's ready | `Whole` of every pack step | same |

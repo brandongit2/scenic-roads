@@ -57,17 +57,6 @@ pub const PACK_V: u32 = 5;
 /// bumps both. (2: task #862's, as pack's 4. 3: task #853's, as pack's 5.)
 pub const LO_V: u32 = 3;
 
-/// The whole coverage, for the jobs that read all of it: its shapes by their geometry (buffer and
-/// rings) alone. (Jobs that read part of it are keyed on `Coverage::fingerprint` of their box.)
-/// Which region or outline entry a shape came from never enters a key, so renaming a region's id,
-/// or splitting and merging regions with the same outlines, reruns nothing.
-pub(crate) fn coverage_all(cov: &Coverage) -> String {
-    let mut v: Vec<String> = cov.shapes.iter().map(|s| format!("{}:{}", s.buffer_m, s.rings_digest())).collect();
-    v.sort();
-    v.dedup();
-    v.join(",")
-}
-
 /// The outlines step's version (inputs::osmpass::make_outlines, buildstore::outlines::assemble): bumped
 /// with any change to what the assembly makes, so the pass's outlines are made again then, not at
 /// the next pass. 1: assembled inside the OSM pass. 2: #199's (countries osmium's export leaves
@@ -1237,7 +1226,7 @@ fn terrain_slope_targets_kept(x: &KeyCtx) -> TerrainTargets {
             .join(",")
     };
     let from = h(&[
-        &coverage_all(cov),
+        &cov.version(),
         &named("layers/terrain/"),
         &named("layers/slope/"),
         &named("work/terrain-mid/"),
@@ -4699,6 +4688,66 @@ mod tests {
     use buildstore::recipes::Recipe;
     use roads::reach::{LongWay, Reach};
     use terrain::depth::build::depth_hi_box_read;
+
+    /// Task #1130: a worldwide step keyed on what its run asked of the coverage (timetables-todo:
+    /// its lines' points) keeps its key through a region change far from every point it asked, and
+    /// not through one under a point; and the key its run is recorded done under is the one the plan
+    /// works out after it (one run). The heritage jobs, keyed on the cover, keep theirs through a
+    /// region change that leaves the cover as it was.
+    #[test]
+    fn a_region_change_reruns_a_worldwide_step_only_where_it_changes_an_answer() {
+        let d = tempfile::tempdir().unwrap();
+        let cov_of = |places: &[&str]| {
+            let recipes: Vec<Recipe> = places
+                .iter()
+                .enumerate()
+                .map(|(i, p)| Recipe {
+                    id: format!("r{i}"),
+                    name: format!("R{i}"),
+                    outline: vec![format!("place:{p}")],
+                })
+                .collect();
+            Coverage::fixture(&recipes, None, d.path()).unwrap()
+        };
+        let reykjavik = cov_of(&["-21.9,64.13,20"]);
+        // A region in Greenland added, far from every point asked; Reykjavik's grown past one.
+        let far = cov_of(&["-21.9,64.13,20", "-45,70,100"]);
+        let near = cov_of(&["-21.9,64.13,30"]);
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for l in [inputs::inputs::gtfs::RAIL_LINES, inputs::inputs::gtfs::FERRY_LINES] {
+            m.insert(l.into(), format!("{l}.1111111111111111.json"));
+        }
+        let inputs = BTreeMap::new();
+        let key = |c: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles| {
+            crate::agent::steps::key(
+                "timetables-todo",
+                "timetables-todo",
+                &KeyCtx::new(c, "d", m, &inputs, None, tiles),
+            )
+            .unwrap()
+        };
+        // Its first run: dispatched with no record, it asks of Reykjavik and of a point 25 km east.
+        let dispatched = key(&reykjavik, &m, &TerrainTiles::default());
+        let asking = buildstore::coverage::Asking::new(&reykjavik);
+        assert!(asking.contains([-219_000_000, 641_300_000]));
+        assert!(!asking.contains([-213_860_000, 641_300_000]));
+        let line = buildstore::asked::run_line(&reykjavik, None, &|_| None).unwrap();
+        let rec = buildstore::asked::Record::new(&reykjavik, asking.asked(), Vec::new(), line);
+        let content = "work/asked/timetables-todo.2222222222222222.json";
+        m.insert(buildstore::asked::logical("timetables-todo"), content.into());
+        let mut tiles = TerrainTiles::default();
+        tiles.hold_asked(content, rec);
+        assert_eq!(key(&reykjavik, &m, &tiles), dispatched, "the key it ran under is the plan's after it");
+        assert_eq!(key(&far, &m, &tiles), dispatched, "a change far from every point asked keeps it");
+        assert_ne!(key(&near, &m, &tiles), dispatched, "one under a point asked changes it");
+        // The cover: the same through a region whose cover is the same, not through one that grew it.
+        let cover = |c: &Coverage| {
+            crate::agent::idents::coverage_cover("heritage", &KeyCtx::new(c, "d", &m, &inputs, None, &tiles))
+        };
+        let same = cov_of(&["-21.9,64.13,20", "-21.9,64.13,5"]);
+        assert_eq!(cover(&same), cover(&reykjavik));
+        assert_ne!(cover(&near), cover(&reykjavik));
+    }
 
     /// The z6 tiles whose change made a tile stale: its owners whose base pack or road values aren't
     /// the served catalogue's; one rebuilt the same made none.

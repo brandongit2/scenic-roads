@@ -83,9 +83,40 @@ pub fn transit_lines(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [inputs::inputs::gtfs::RAIL_LINES.to_string(), inputs::inputs::gtfs::FERRY_LINES.to_string()])
 }
 
-/// The whole coverage (`build::coverage_all`: each shape's buffer and rings).
-pub fn coverage_all(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
-    Some(vec![super::build::coverage_all(x.cov)])
+/// The cover (landmarks::heritage::cover_key: the z12 tiles within 20 km of the coverage's land
+/// and the z6 tiles holding them), what the heritage jobs and rail clip their sets to; kept by the
+/// coverage's version.
+pub fn coverage_cover(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let v = x.cov.version();
+    x.tiles.memo("coverage:cover", &v, || Ok(landmarks::heritage::cover_key(x.cov))).ok().map(|k| vec![k])
+}
+
+/// What world step `t`'s run asked of the coverage, as the coverage answers it now
+/// (buildstore::asked::line: its record's line while every answer it got is the same); kept by the
+/// coverage's version and the record. None while the record, or what its questions name, can't be
+/// read now.
+pub fn coverage_asked(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let Some(c) = x.m.get(&buildstore::asked::logical(t)) else {
+        return Some(vec![buildstore::asked::line(x.cov, None, &|_| None)?]);
+    };
+    let r = x.tiles.asked(c)?;
+    let reask = |q: &str| -> Option<String> {
+        let (o, _) = inputs::rail::parse_countries_question(q)?;
+        inputs::rail::reask_countries(x.cov, q, x.tiles.outlines(x.m, &o)?.as_deref())
+    };
+    // (And whether the outlines each question names are named still: once they aren't, its answer is GONE.)
+    let named: Vec<bool> = r
+        .also
+        .iter()
+        .filter_map(|(q, _)| inputs::rail::parse_countries_question(q))
+        .map(|(o, _)| x.m.values().any(|v| *v == o))
+        .collect();
+    let from = format!("{} {c} {named:?}", x.cov.version());
+    let l = x.tiles.memo(&format!("coverage:asked {t}"), &from, || {
+        buildstore::asked::line(x.cov, Some((c, &r)), &reask)
+            .ok_or_else(|| super::tiles::Unread(format!("{c}'s questions")))
+    });
+    l.ok().map(|l| vec![l])
 }
 
 /// The heritage matches' accepted version, when there is one.

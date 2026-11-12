@@ -100,7 +100,8 @@ else. Building heights don't enter the roadside factor, the horizons or the view
 ### 2.6 Downloads
 
 `bld-fetch` (`bld::bld::fetch`, §3.1) fetches whole files onto the NAS:
-- Overture's files with a row group within 20 km of the coverage (buildings and parts), into
+- Overture's files with a row group within 20 km of the coverage (the box grown by 20 km meeting
+  one of its shapes, water too, buffer and all: `fetch::Near`) (buildings and parts), into
   `sources/overture/<release>/theme=buildings/type=<type>/`, with `buildings.json` and
   `footers.json.gz` (every row group's box, from the footers);
 - GHSL's 10° tiles meeting it, into `sources/ghsl/R2023A/`, with `index.json`.
@@ -162,7 +163,9 @@ No `unit` (roads) key reads any of them.
   `Outlines::country_code` gives an `osm:` region's ISO 3166-1 code (its own, or from a subdivision
   code ISO lists as a country: US-PR, CN-HK, FR-GF, FR-PM; else the smallest country it lies in).
 - **`bldfield-lo`:** its mids' content names.
-- **`bld-fetch`:** its version, the release and `coverage_all` (not the footers: it writes them).
+- **`bld-fetch`:** its version, the release and the coverage as its run asked it (docs/steps.md
+  §12: each row group's and GHSL tile's box grown by 20 km; not the footers: it writes them), so a
+  region change reruns it only where a box's answer changed.
 
 ### 3.3 Order, publishing, the chain
 

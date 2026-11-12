@@ -33,7 +33,7 @@
 //! declaration's URL when there's no copy.
 
 use anyhow::{Context, Result};
-use buildstore::coverage::{Coverage, Shape};
+use buildstore::coverage::{Asking, Coverage, Shape};
 use buildstore::out::Out;
 use buildstore::outlines::{flag, Outlines};
 use jobrt::timings::day_of;
@@ -98,7 +98,7 @@ pub const BEYOND_B: u8 = 0x40;
 /// Marks each pair's stops beyond the coverage (`BEYOND_A`, `BEYOND_B`: a cross-border service,
 /// which railfreq runs as far as the track goes toward the stop) and leaves out pairs with both
 /// beyond. Returns the pairs kept and how many have a stop beyond.
-pub fn mark_beyond(pairs: &[u8], cov: &Coverage) -> (Vec<u8>, usize) {
+pub fn mark_beyond(pairs: &[u8], cov: &Asking) -> (Vec<u8>, usize) {
     let mut out = Vec::with_capacity(pairs.len());
     let mut beyond = 0;
     let e7 = |p: [f32; 2]| p.map(|v| (v as f64 * 1e7).round() as i32);
@@ -163,6 +163,34 @@ fn alpha2(iso: &str) -> Option<String> {
 /// code's end (and of two without one, whose ends are other countries' codes): their own code (the
 /// catalogue declaration's `own_code`, crate::inputs::feeds::own_code).
 pub type OwnCode = BTreeMap<String, Option<String>>;
+
+/// rail-feeds' countries (`countries`) as a question of the coverage asked whole, which its key
+/// asks again (buildstore::asked::Record::also): the pass outlines' content name and the own codes.
+pub fn countries_question(outlines: &str, own: &OwnCode) -> String {
+    format!("countries {outlines} {}", serde_json::to_string(own).expect("codes serialise"))
+}
+
+/// `countries_question`'s parts: (the outlines' content name, the own codes); None for another question.
+pub fn parse_countries_question(q: &str) -> Option<(String, OwnCode)> {
+    let (o, own) = q.strip_prefix("countries ")?.split_once(' ')?;
+    Some((o.to_string(), serde_json::from_str(own).ok()?))
+}
+
+/// The answer to a question whose outlines the records no longer name (their pass gone).
+pub const GONE: &str = "gone";
+
+/// The answer `cov` gives question `q` (`countries_question`) now, from the outlines it names
+/// (`outlines`; None: no longer named, `GONE`): the countries, comma-separated. None for another
+/// question, or while they can't be worked out now.
+pub fn reask_countries(cov: &Coverage, q: &str, outlines: Option<&Outlines>) -> Option<String> {
+    let (_, own) = parse_countries_question(q)?;
+    match outlines {
+        None => Some(GONE.to_string()),
+        Some(o) => {
+            countries(cov, o, &own).map_err(|e| eprintln!("rail-feeds' countries: {e:#}")).ok().map(|c| c.join(","))
+        }
+    }
+}
 
 /// The ISO 3166-1 codes a territory's outline stands for: its own, and for one with an ISO 3166-2
 /// code, its country's too ("CN-HK": HK and CN; "FR-PM": PM and FR; "FI-01": AX and FI, by
@@ -490,6 +518,7 @@ mod tests {
             pair((2.0, 2.0), (3.0, 3.0), 2, 7.0),
         ]
         .concat();
+        let cov = Asking::new(&cov);
         let (kept, beyond) = mark_beyond(&pairs, &cov);
         assert_eq!((kept.len() / PAIR, beyond), (3, 2), "both beyond: left out");
         let modes: Vec<u8> = kept.chunks_exact(PAIR).map(|r| r[16]).collect();

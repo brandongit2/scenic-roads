@@ -369,11 +369,11 @@ a relation, or'ed with the id; 0 none).
 **The sources' indexes** (written by `bld-fetch`, `bld::bld::fetch`, beside the downloads,
 outside the manifest, as Python's `json` wrote them;
 read by `bld::bld::sources`): `sources/overture/<release>/buildings.json` (`{"fmt": 1,
-"release", "source", "terms", "coverage": {"regions", "margin_km", "at"}, "files": {<name>: {"size",
+"release", "source", "terms", "coverage": {"margin_km", "at"}, "files": {<name>: {"size",
 "etag", "rows", "row_groups", "rows_near", "bbox", "checked"}}}`); `footers.json.gz` (every file of
 the release: `{"release/<release>/<name>": {"etag", "size", "rows", "rgs": [[w, s, e, n, rows],
 …]}}`); `sources/ghsl/R2023A/index.json` (`{"fmt": 1, "product", "source", "terms", "tiles": {<zip>:
-{"size", "bbox", "checked"}}}`). `coverage.regions`: the regions' ids.
+{"size", "bbox", "checked"}}}`).
 
 **Tiles** `layers/buildings/hi/6-<x>-<y>` (RDPACK, encoding `mvt`, blobs gzip level 6, z14 only):
 MVT 2.1, extent 4096, layer `b`, a feature per building or part touching the coverage (centroid or
@@ -1100,7 +1100,10 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>, pos/6-x-y.json,
   parts/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (`parts`: World Heritage components among `pos`;
-  `areas`: a heritage or designated area's polygon in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/rail/used.json`
+  `areas`: a heritage or designated area's polygon in each z6 tile its box meets); `work/marks/heritage-dots.json`; `work/asked/<step>.json.zst` (what a run of rail-feeds,
+  rail, timetables-todo or bld-fetch asked of the coverage, `buildstore::asked::Record`, zstd'd JSON:
+  `{"asked": {"points": [[x, y]…], "land": [[w, s, e, n]…], "all": […]}, "also": [[question,
+  answer]…], "answers", "line"}`, E7; docs/steps.md §12); `work/rail/used.json`
   (per feed: `id`, `provider`, `url`, `licence`, `fetched`, `status`, and when "ok" `day`, `trips`,
   `duplicates`, `rail_routes`); `work/rail/lines.json` (`{"lines": [{osm, kind, name, ref, operator,
   from, to, km, served_km, passenger}], "unmatched"}`); `work/ferries/lines.json` (`{"lines": [{…,

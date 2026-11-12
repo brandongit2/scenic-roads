@@ -1024,7 +1024,7 @@ pub const TABLE: [Step; 62] = [
         alone: true,
         answered: true,
         versions: &[("heritage-sites", || super::build::HERITAGE_SITES_V.to_string())],
-        reads: &[In { name: "pass", of: idents::pass }, In { name: "set:areas", of: idents::set_areas }, In { name: "registers", of: idents::registers }, In { name: "matches", of: idents::matches }, In { name: "coverage:all", of: idents::coverage_all }],
+        reads: &[In { name: "pass", of: idents::pass }, In { name: "set:areas", of: idents::set_areas }, In { name: "registers", of: idents::registers }, In { name: "matches", of: idents::matches }, In { name: "coverage:cover", of: idents::coverage_cover }],
         ..step(
             "sites",
             Derive,
@@ -1372,7 +1372,7 @@ pub const TABLE: [Step; 62] = [
         // feeds' checks, in one process: 4.46 GB at its peak on the Mac mini, 23 Oct, task #578;
         // the coverage itself, shared with every step, is most of it.)
         versions: &[("rail-feeds", || super::build::RAIL_FEEDS_V.to_string())],
-        reads: &[In { name: "feeds", of: idents::feeds_declared }, In { name: "feed-keys", of: idents::feed_keys }, In { name: "feeds-reads", of: idents::feeds_reads }, In { name: "coverage:all", of: idents::coverage_all }],
+        reads: &[In { name: "feeds", of: idents::feeds_declared }, In { name: "feed-keys", of: idents::feed_keys }, In { name: "feeds-reads", of: idents::feeds_reads }, In { name: "coverage:asked", of: idents::coverage_asked }],
         ..step(
             "trains",
             Fetch,
@@ -1384,7 +1384,7 @@ pub const TABLE: [Step; 62] = [
     },
     Step {
         versions: &[("rail", || super::build::RAIL_V.to_string())],
-        reads: &[All { step: "rail-feeds", grain: Grain::Read(idents::rail_feeds) }, In { name: "rail-reads", of: idents::rail_reads }, In { name: "coverage:all", of: idents::coverage_all }, In { name: "spacing", of: idents::spacing }],
+        reads: &[All { step: "rail-feeds", grain: Grain::Read(idents::rail_feeds) }, In { name: "rail-reads", of: idents::rail_reads }, In { name: "coverage:cover", of: idents::coverage_cover }, In { name: "coverage:asked", of: idents::coverage_asked }, In { name: "spacing", of: idents::spacing }],
         ..step("trains", Derive, World, "rail", "Counts trains a day on the regions' rail.", w_rail)
     },
     Step {
@@ -1418,7 +1418,7 @@ pub const TABLE: [Step; 62] = [
         cost_v: 1,
         answered: true,
         versions: &[("heritage", || super::build::HERITAGE_V.to_string())],
-        reads: &[In { name: "pass", of: idents::pass }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_sites_out) }, In { name: "heritage-sets", of: idents::heritage_sets }, In { name: "coverage:all", of: idents::coverage_all }],
+        reads: &[In { name: "pass", of: idents::pass }, All { step: "heritage-sites", grain: Grain::Read(idents::heritage_sites_out) }, In { name: "heritage-sets", of: idents::heritage_sets }, In { name: "coverage:cover", of: idents::coverage_cover }],
         ..step(
             "landmarks",
             Derive,
@@ -1450,14 +1450,14 @@ pub const TABLE: [Step; 62] = [
     Step {
         cost_v: 1,
         versions: &[("bld-fetch", || super::build::BLD_FETCH_V.to_string())],
-        reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "coverage:all", of: idents::coverage_all }],
+        reads: &[In { name: "bld-key", of: idents::bld_key }, In { name: "coverage:asked", of: idents::coverage_asked }],
         ..step(
             "buildings",
             Fetch,
             World,
             "bld-fetch",
             "Fetches the 3D buildings' sources.",
-            w_none,
+            w_bld_fetch,
         )
     },
     // (The 3D buildings: offered by the rows they read, agentcore::needs::OFFERED_BY.)
@@ -1543,7 +1543,7 @@ pub const TABLE: [Step; 62] = [
     },
     Step {
         versions: &[("timetables-todo", || roads::timetables::VERSION.to_string())],
-        reads: &[In { name: "transit-lines", of: idents::transit_lines }, In { name: "coverage:all", of: idents::coverage_all }],
+        reads: &[In { name: "transit-lines", of: idents::transit_lines }, In { name: "coverage:asked", of: idents::coverage_asked }],
         ..step(
             "upkeep",
             Keep,
@@ -2320,18 +2320,31 @@ fn w_ferries(l: &str, _: bool) -> bool {
 /// The timetable feeds: each feed's zip, the lists of those checked, fetched and kept (the rail
 /// feeds' and the ferry feeds'), and the catalogue when it was fetched.
 fn w_rail_feeds(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["sources", "rail", "checked" | "fetched" | "feeds" | "ferry-feeds" | "catalogue"])
+    l == buildstore::asked::logical("rail-feeds")
+        || matches!(
+            parts(l).as_slice(),
+            ["sources", "rail", "checked" | "fetched" | "feeds" | "ferry-feeds" | "catalogue"]
+        )
         || matches!(parts(l).as_slice(), ["sources", "rail", "gtfs", id] if !id.is_empty())
 }
 
 fn w_rail(l: &str, _: bool) -> bool {
-    l == "work/rail/used" || l == "global/railfreq" || l == inputs::inputs::gtfs::RAIL_LINES
+    l == "work/rail/used"
+        || l == buildstore::asked::logical("rail")
+        || l == "global/railfreq"
+        || l == inputs::inputs::gtfs::RAIL_LINES
 }
 
 /// The timetables' report (its to-do list is written into the inputs folder's todo/, outside the
-/// records).
+/// records) and what it asked of the coverage (buildstore::asked).
 fn w_timetables_todo(l: &str, _: bool) -> bool {
-    l == inputs::inputs::gtfs::REPORT
+    l == inputs::inputs::gtfs::REPORT || l == buildstore::asked::logical("timetables-todo")
+}
+
+/// What bld-fetch asked of the coverage (buildstore::asked); its files and indexes are outside the
+/// records.
+fn w_bld_fetch(l: &str, _: bool) -> bool {
+    l == buildstore::asked::logical("bld-fetch")
 }
 
 fn w_bldprep(l: &str, _: bool) -> bool {

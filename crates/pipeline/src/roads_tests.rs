@@ -30,7 +30,8 @@ fn the_job_writes_into_todo_and_puts_the_report() {
         d.path(),
     )
     .unwrap();
-    let r = run(&mut out, &cov, &store::nasfs::NasRoot::local_for_test(&root)).unwrap();
+    let asking = buildstore::coverage::Asking::new(&cov);
+    let r = run(&mut out, &asking, &store::nasfs::NasRoot::local_for_test(&root)).unwrap();
     assert_eq!(r.rail, 1);
     let todo = root.join("inputs/timetables/gtfs/todo");
     assert_eq!(std::fs::read_to_string(todo.join(TODO_FILE)).unwrap().lines().count(), 1);

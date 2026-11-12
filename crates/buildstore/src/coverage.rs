@@ -359,8 +359,8 @@ impl Shape {
     }
 
     /// A digest of its rings (`store::naming::hash16` of their points, ring after ring), worked out
-    /// once: what keys made of the whole coverage read (pipeline::agent::build::coverage_all), every
-    /// loop (task #894: hashing every point of the world's outlines each time was seconds).
+    /// once: `Coverage::version`'s part of it (`rings_print`), every loop (task #894: hashing every
+    /// point of the world's outlines each time was seconds).
     pub fn rings_digest(&self) -> &str {
         self.rings_digest.get_or_init(|| {
             let mut h = blake3::Hasher::new();
@@ -1418,6 +1418,95 @@ pub fn fingerprint_of(shapes: &[Shape], b: [i32; 4]) -> String {
     v.sort();
     v.dedup();
     v.join(",")
+}
+
+// ---- what a run asked of the coverage ------------------------------------------------------------
+
+/// What a run asked of the coverage (`Asking`), each question once, sorted: the points it asked
+/// about (`contains`), the boxes it asked of the land (`meets_rect`) and of every shape
+/// (`meets_rect_all`), E7. `Coverage::answers` answers them all again: the same answers, the same
+/// run.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asked {
+    pub points: Vec<[i32; 2]>,
+    pub land: Vec<[i32; 4]>,
+    pub all: Vec<[i32; 4]>,
+}
+
+/// The coverage asked through, each question kept (`asked`). A run whose key names what the
+/// coverage answered it (buildstore::asked) reads it only through this, so nothing it reads goes
+/// unkept: a point or a box, never the shapes themselves.
+pub struct Asking<'a> {
+    cov: &'a Coverage,
+    points: std::sync::Mutex<std::collections::HashSet<[i32; 2]>>,
+    land: std::sync::Mutex<std::collections::HashSet<[i32; 4]>>,
+    all: std::sync::Mutex<std::collections::HashSet<[i32; 4]>>,
+}
+
+impl<'a> Asking<'a> {
+    pub fn new(cov: &'a Coverage) -> Asking<'a> {
+        Asking { cov, points: Default::default(), land: Default::default(), all: Default::default() }
+    }
+
+    /// `Coverage::contains`.
+    pub fn contains(&self, p: [i32; 2]) -> bool {
+        self.points.lock().unwrap().insert(p);
+        self.cov.contains(p)
+    }
+
+    /// `Coverage::touches`: each vertex asked until one is in.
+    pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
+        verts.iter().any(|&p| self.contains(p))
+    }
+
+    /// `Coverage::meets_rect` (its land).
+    pub fn meets_rect(&self, b: [i32; 4]) -> bool {
+        self.land.lock().unwrap().insert(b);
+        self.cov.meets_rect(b)
+    }
+
+    /// `Coverage::meets_rect_all`.
+    pub fn meets_rect_all(&self, b: [i32; 4]) -> bool {
+        self.all.lock().unwrap().insert(b);
+        self.cov.meets_rect_all(b)
+    }
+
+    /// What was asked.
+    pub fn asked(self) -> Asked {
+        fn sorted<T: Ord>(s: std::sync::Mutex<std::collections::HashSet<T>>) -> Vec<T> {
+            let mut v: Vec<T> = s.into_inner().unwrap().into_iter().collect();
+            v.sort_unstable();
+            v
+        }
+        Asked { points: sorted(self.points), land: sorted(self.land), all: sorted(self.all) }
+    }
+}
+
+impl Coverage {
+    /// Whether the box w, s, e, n (E7) meets any shape, the regions' water too (`Shape::meets_rect`).
+    pub fn meets_rect_all(&self, b: [i32; 4]) -> bool {
+        self.shapes.iter().any(|s| s.meets_rect(b))
+    }
+
+    /// The coverage's answers to what `a` asked, each asked again, as a digest: equal answers to
+    /// the same questions, the same run. Which shapes give an answer never enters it, so water given
+    /// from one region to another, or a region split in two, answers the same.
+    pub fn answers(&self, a: &Asked) -> String {
+        use rayon::prelude::*;
+        let bits = |v: Vec<bool>| -> Vec<u8> {
+            v.chunks(8).map(|c| c.iter().enumerate().fold(0u8, |b, (i, &x)| b | (u8::from(x) << i))).collect()
+        };
+        let mut h = blake3::Hasher::new();
+        for (n, b) in [
+            (a.points.len(), bits(a.points.par_iter().map(|&p| self.contains(p)).collect())),
+            (a.land.len(), bits(a.land.par_iter().map(|&b| self.meets_rect(b)).collect())),
+            (a.all.len(), bits(a.all.par_iter().map(|&b| self.meets_rect_all(b)).collect())),
+        ] {
+            h.update(&(n as u64).to_le_bytes());
+            h.update(&b);
+        }
+        store::naming::hex16(&h.finalize())
+    }
 }
 
 // ---- the coverage a catalogue records ------------------------------------------------------------

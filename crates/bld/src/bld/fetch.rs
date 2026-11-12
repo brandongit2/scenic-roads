@@ -36,7 +36,7 @@
 
 use super::ghsl::zip_bad;
 use anyhow::{bail, ensure, Context, Result};
-use buildstore::coverage::Coverage;
+use buildstore::coverage::Asking;
 use pyport::pyjson::{self, Py};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -198,107 +198,44 @@ impl Http {
 
 // ---- the coverage ----------------------------------------------------------------------------------
 
-/// Whether a box comes within the margin of the coverage: a distance query on the coverage's
-/// polygons as they are (GEOS, an STR tree), never the coverage grown. Growing it (a buffer of every
-/// region, then their union) took GEOS past 60 GB on the regions' 244 MB outlines (126 regions, one
-/// of 98 k polygons: each polygon's 20 km ring overlapping thousands of others), task #493.
-pub struct Near {
-    geoms: Vec<geos::Geometry>,
-    tree: geos::STRtree<usize>,
+/// Whether a box comes within the margin of the coverage: the box grown by the margin meets one of
+/// its shapes (its regions' water too: `Asking::meets_rect_all`, each shape's buffer and all),
+/// asked of the coverage so the step's key names what it asked (buildstore::asked), never the
+/// coverage grown (a buffer of every region, then their union, took GEOS past 60 GB on the regions'
+/// 244 MB outlines, task #493).
+pub struct Near<'a> {
+    cov: &'a Asking<'a>,
     margin_km: f64,
 }
 
-/// shapely's `box(w, s, e, n)`: its ring from the south-east corner, anticlockwise.
-fn rect(w: f64, s: f64, e: f64, n: f64) -> Result<geos::Geometry> {
-    let ring = geos::CoordSeq::new_from_vec(&[[e, s], [e, n], [w, n], [w, s], [e, s]])?;
-    Ok(geos::Geometry::create_polygon(geos::Geometry::create_linear_ring(ring)?, Vec::new())?)
-}
-
-impl Near {
-    /// Every ring of the coverage's outlines as a polygon of its own, in degrees (the outlines'
-    /// even–odd rings, their holes too: near one is near the outline). An invalid polygon is made
-    /// valid first, every part kept: the lobes, and the lines and points of a zero-area outline,
-    /// which still answer distances (GEOS leaves its predicates on invalid input undefined).
-    pub fn new(cov: &Coverage, margin_km: f64) -> Result<Near> {
-        use geos::{Geom, SpatialIndex};
-        let mut geoms = Vec::new();
-        for s in &cov.shapes {
-            for r in s.rings.iter() {
-                let mut pts: Vec<[f64; 2]> = r.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect();
-                if pts.first() != pts.last() {
-                    pts.push(pts[0]);
-                }
-                let ring = geos::Geometry::create_linear_ring(geos::CoordSeq::new_from_vec(&pts)?)?;
-                let g = geos::Geometry::create_polygon(ring, Vec::new())?;
-                if g.is_empty()? {
-                    continue;
-                }
-                let g = if g.is_valid()? { g } else { g.make_valid()? };
-                let multi = matches!(
-                    g.geometry_type()?,
-                    geos::GeometryTypes::MultiPolygon
-                        | geos::GeometryTypes::GeometryCollection
-                        | geos::GeometryTypes::MultiLineString
-                        | geos::GeometryTypes::MultiPoint
-                );
-                if !multi {
-                    if !g.is_empty()? {
-                        geoms.push(g);
-                    }
-                    continue;
-                }
-                for k in 0..g.get_num_geometries()? {
-                    let x = geos::Geom::clone(&g.get_geometry_n(k)?)?;
-                    if !x.is_empty()? {
-                        geoms.push(x);
-                    }
-                }
-            }
-        }
-        ensure!(!geoms.is_empty(), "no coverage");
-        let mut tree = geos::STRtree::with_capacity(10)?;
-        for (i, g) in geoms.iter().enumerate() {
-            tree.insert(g, i);
-        }
-        tree.build()?;
-        Ok(Near { geoms, tree, margin_km })
+impl<'a> Near<'a> {
+    pub fn new(cov: &'a Asking<'a>, margin_km: f64) -> Near<'a> {
+        Near { cov, margin_km }
     }
 
-    /// Whether box (w, s, e, n) comes within the margin. Degrees of longitude shrink with
-    /// latitude: the margin in degrees at the highest latitude within the margin of the box, so
-    /// it's at least the margin everywhere near it. Near a pole (that latitude's circle shorter than
-    /// the margin's reach) every longitude is near.
-    pub fn meets(&self, w: f64, s: f64, e: f64, n: f64) -> Result<bool> {
-        use geos::{Geom, SpatialIndex};
+    /// Whether box (w, s, e, n, degrees) comes within the margin: grown by it, the margin in
+    /// longitude at the highest latitude it reaches, so it's at least the margin everywhere near
+    /// it; across ±180° also the part beyond, a turn east or west. Near a pole (that latitude's
+    /// circle shorter than the margin's reach) the band of every longitude.
+    pub fn meets(&self, w: f64, s: f64, e: f64, n: f64) -> bool {
         let dlat = self.margin_km / roadcore::geo::KM_PER_DEG;
         let dlon = roadcore::geo::lon_span(self.margin_km, s.abs().max(n.abs()) + dlat);
+        let (s, n) = ((s - dlat).max(-90.0), (n + dlat).min(90.0));
+        let mut boxes = vec![];
         if dlon >= 180.0 {
-            // (Any outline whose envelope meets the band, as the tree answers it.)
-            let mut hit = false;
-            self.tree.query(&rect(-180.0, s - dlat, 180.0, n + dlat)?, |_| hit = true);
-            return Ok(hit);
-        }
-        // (No wrap in the coordinates: the box also a turn east or west when its margin crosses
-        // ±180°, so a polygon at 179.9° meets a box at -179.9°.)
-        let mut ks = vec![0.0];
-        if w - dlon < -180.0 {
-            ks.push(360.0);
-        }
-        if e + dlon > 180.0 {
-            ks.push(-360.0);
-        }
-        for k in ks {
-            let b = rect(w + k, s, e + k, n)?;
-            let grown = rect(w + k - dlon, s - dlon, e + k + dlon, n + dlon)?;
-            let mut cand = Vec::new();
-            self.tree.query(&grown, |&i| cand.push(i));
-            for i in cand {
-                if b.dwithin(&self.geoms[i], dlon)? {
-                    return Ok(true);
-                }
+            boxes.push([-180.0, s, 180.0, n]);
+        } else {
+            let (w, e) = (w - dlon, e + dlon);
+            boxes.push([w.max(-180.0), s, e.min(180.0), n]);
+            if w < -180.0 {
+                boxes.push([w + 360.0, s, 180.0, n]);
+            }
+            if e > 180.0 {
+                boxes.push([-180.0, s, e - 360.0, n]);
             }
         }
-        Ok(false)
+        let e7 = |v: f64| (v * 1e7).round() as i32;
+        boxes.into_iter().any(|b| self.cov.meets_rect_all([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])]))
     }
 }
 
@@ -514,7 +451,7 @@ fn overture_jobs(
     release: &str,
     bucket: &str,
     types: &[String],
-    near: &Near,
+    near: &Near<'_>,
 ) -> Result<(Vec<Job>, NasPath)> {
     use jobrt::timings::phase;
     let base = root.join(super::sources::release_dir(release));
@@ -631,7 +568,7 @@ fn overture_jobs(
             .unwrap_or_default();
         let mut hit = Vec::new();
         for g in &rgs {
-            if near.meets(g[0], g[1], g[2], g[3])? {
+            if near.meets(g[0], g[1], g[2], g[3]) {
                 hit.push(*g);
             }
         }
@@ -672,7 +609,7 @@ fn ghsl_jobs(
     http: &Http,
     root: &store::nasfs::NasRoot,
     src: &inputs::inputs::sources::Source,
-    near: &Near,
+    near: &Near<'_>,
 ) -> Result<(Vec<Job>, NasPath)> {
     use jobrt::timings::phase;
     let base = root.join(super::sources::ghsl_dir(src.version()?));
@@ -685,7 +622,7 @@ fn ghsl_jobs(
     for f in index {
         let name = f.url.rsplit('/').next().unwrap_or("").to_string();
         let b = f.bbox;
-        if near.meets(b[0], b[1], b[2], b[3])? {
+        if near.meets(b[0], b[1], b[2], b[3]) {
             jobs.push(Job {
                 ghsl: true,
                 url: f.url.clone(),
@@ -1099,19 +1036,8 @@ pub struct Args<'a> {
     /// The declared sources (inputs::inputs::sources): `buildings` (its release, bucket and
     /// types) and `building-heights` (its version and index).
     pub sources: &'a inputs::inputs::sources::Sources,
-    pub cov: &'a Coverage,
-}
-
-/// The coverage's regions, by id, in their order.
-fn regions(cov: &Coverage) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for s in &cov.shapes {
-        let id = s.source.split_once(": ").map_or(s.source.as_str(), |(id, _)| id);
-        if !out.iter().any(|r| r == id) {
-            out.push(id.to_string());
-        }
-    }
-    out
+    /// The coverage, asked through (buildstore::asked: the step keys on what it asks).
+    pub cov: &'a Asking<'a>,
 }
 
 /// Fetches what the coverage needs and writes the indexes (see the module's docs).
@@ -1133,11 +1059,8 @@ pub fn run(a: Args<'_>) -> Result<()> {
         store::sys::host(),
         root.display()
     );
-    let p = phase("reading the coverage");
-    let near = Near::new(a.cov, MARGIN_KM)?;
-    let what = regions(a.cov);
-    drop(p);
-    eprintln!("bld-fetch: coverage: {} regions, files within {MARGIN_KM} km of it", what.len());
+    let near = Near::new(a.cov, MARGIN_KM);
+    eprintln!("bld-fetch: files within {MARGIN_KM} km of the coverage");
     let (ov, ov_base) = overture_jobs(&http, root, &release, &bucket, &types, &near)?;
     eprintln!(
         "bld-fetch: overture: {} files meet the coverage, {}, {:.1} M buildings in their row groups that meet it",
@@ -1173,7 +1096,7 @@ pub fn run(a: Args<'_>) -> Result<()> {
     let checked: Mutex<BTreeMap<String, &'static str>> = Mutex::new(BTreeMap::new());
     let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let save = |checked: &BTreeMap<String, &'static str>| {
-        if let Err(e) = save_indexes(&jobs, &ov_base, &gh_base, &release, &bucket, g, &what, checked) {
+        if let Err(e) = save_indexes(&jobs, &ov_base, &gh_base, &release, &bucket, g, checked) {
             eprintln!("bld-fetch: the indexes weren't written now ({e:#}); the next save writes them");
         }
     };
@@ -1250,7 +1173,6 @@ pub fn run(a: Args<'_>) -> Result<()> {
 
 /// The indexes beside the files: `buildings.json` (the files here, those listed before kept) and
 /// GHSL's `index.json` (likewise).
-#[allow(clippy::too_many_arguments)]
 fn save_indexes(
     jobs: &[Job],
     ov_base: &NasPath,
@@ -1258,7 +1180,6 @@ fn save_indexes(
     release: &str,
     bucket: &str,
     ghsl: &inputs::inputs::sources::Source,
-    what: &[String],
     checked: &BTreeMap<String, &'static str>,
 ) -> Result<()> {
     let whole = |j: &Job| j.dest.metadata().is_ok_and(|m| m.len() == j.size);
@@ -1289,11 +1210,7 @@ fn save_indexes(
         set(&mut d, "checked", c);
         files.insert(j.name.clone(), Py::Dict(d));
     }
-    let coverage = dict(vec![
-        ("regions", Py::List(what.iter().map(|r| Py::Str(r.clone())).collect())),
-        ("margin_km", Py::Float(MARGIN_KM)),
-        ("at", Py::Str(now_iso())),
-    ]);
+    let coverage = dict(vec![("margin_km", Py::Float(MARGIN_KM)), ("at", Py::Str(now_iso()))]);
     write_json(
         &idx_path,
         dict(vec![
@@ -1393,17 +1310,23 @@ mod tests {
             let e = |v: f64| (v * 1e7) as i32;
             vec![[e(x), e(y)], [e(x + d), e(y)], [e(x + d), e(y + d)], [e(x), e(y + d)]]
         };
-        let cov = Coverage {
+        let cov = buildstore::coverage::Coverage {
             shapes: vec![Shape::new("r: osm:1".into(), vec![sq(10.0, 45.0, 1.0), sq(179.8, 0.0, 0.1)], 0.0)],
             ..Default::default()
         };
-        let n = Near::new(&cov, 20.0).unwrap();
+        let asking = Asking::new(&cov);
+        let n = Near::new(&asking, 20.0);
         // 0.2° east at 45°N is ~15.7 km: near; 0.4° is ~31 km: not.
-        assert!(n.meets(11.2, 45.4, 11.3, 45.5).unwrap());
-        assert!(!n.meets(11.4, 45.4, 11.5, 45.5).unwrap());
+        assert!(n.meets(11.2, 45.4, 11.3, 45.5));
+        assert!(!n.meets(11.4, 45.4, 11.5, 45.5));
+        // 0.15° north is ~16.7 km: near; 0.2° is ~22 km: not.
+        assert!(n.meets(10.5, 46.15, 10.6, 46.2));
+        assert!(!n.meets(10.5, 46.2, 10.6, 46.3));
         // Across ±180°.
-        assert!(n.meets(-179.95, 0.0, -179.9, 0.05).unwrap());
+        assert!(n.meets(-179.95, 0.0, -179.9, 0.05));
         // Near the pole any longitude is near an outline in the latitudes within the margin: none here.
-        assert!(!n.meets(-50.0, 89.9, -49.0, 90.0).unwrap());
+        assert!(!n.meets(-50.0, 89.9, -49.0, 90.0));
+        // Each box asked (grown), for the step's key.
+        assert_eq!(asking.asked().all.len(), 7);
     }
 }

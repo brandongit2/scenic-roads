@@ -85,6 +85,12 @@ pub struct TerrainTiles {
     /// The terrain-deep targets and their levels' digests worked out so far (`deep`,
     /// terrain::terrain_deep::Kept). Shared by the copies, as `memo` is.
     deep: std::sync::Arc<terrain::terrain_deep::Kept>,
+    /// What the steps keyed on what they asked of the coverage last asked (buildstore::asked: the
+    /// records `m` names under `work/asked/`), by content name (None: it can't be read now).
+    asked: HashMap<String, Option<std::sync::Arc<buildstore::asked::Record>>>,
+    /// The pass outlines those records' questions name (inputs::rail::countries_question), by content
+    /// name (None: they can't be read now).
+    outlines: HashMap<String, Option<std::sync::Arc<buildstore::outlines::Outlines>>>,
 }
 
 /// What the z6 tiles' and tree cover's keys name of the declared sources: the buildings source's
@@ -135,6 +141,10 @@ impl TerrainTiles {
         self.depth.as_ref().map(|d| (&d.0, d.1.is_some())).hash(&mut h);
         self.depth_alone.as_ref().map(|d| &d.0).hash(&mut h);
         self.sets.as_ref().map(|d| (&d.0, d.1.is_some())).hash(&mut h);
+        let mut a: Vec<(&String, bool)> = self.asked.iter().map(|(c, r)| (c, r.is_some())).collect();
+        a.extend(self.outlines.iter().map(|(c, o)| (c, o.is_some())));
+        a.sort_unstable();
+        a.hash(&mut h);
         h.finish()
     }
 
@@ -159,6 +169,7 @@ impl TerrainTiles {
         self.load_depth(root, m);
         self.load_enclosed(root, m);
         self.load_sets(root, m);
+        self.load_asked(root, m);
         self.held.retain(|c, _| want.contains(c.as_str()));
         let missing: Vec<&str> = want.iter().copied().filter(|c| !self.held.contains_key(*c)).collect();
         if missing.is_empty() {
@@ -334,6 +345,78 @@ impl TerrainTiles {
             }
         };
         self.enclosed = Some((c.clone(), e));
+    }
+
+    /// Holds the coverage records `m` names (buildstore::asked::logical) and the outlines their
+    /// questions name, each read once by content name (one that can't be read now: tried again with
+    /// the next load).
+    fn load_asked(&mut self, root: &store::nasfs::NasRoot, m: &BTreeMap<String, String>) {
+        let want: BTreeSet<&String> = m
+            .range("work/asked/".to_string()..)
+            .take_while(|(l, _)| l.starts_with("work/asked/"))
+            .map(|(_, c)| c)
+            .collect();
+        self.asked.retain(|c, r| want.contains(c) && r.is_some());
+        for c in want {
+            if self.asked.contains_key(c) {
+                continue;
+            }
+            let r = root
+                .join(c)
+                .read()
+                .map_err(anyhow::Error::from)
+                .and_then(|b| buildstore::asked::Record::from_bytes(&b));
+            let r = match r {
+                Ok(r) => Some(std::sync::Arc::new(r)),
+                Err(e) => {
+                    eprintln!("agent: {c} can't be read now ({e:#})");
+                    None
+                }
+            };
+            self.asked.insert(c.clone(), r);
+        }
+        let named: BTreeSet<String> = self
+            .asked
+            .values()
+            .flatten()
+            .flat_map(|r| r.also.iter().filter_map(|(q, _)| inputs::rail::parse_countries_question(q).map(|(o, _)| o)))
+            .collect();
+        self.outlines.retain(|c, o| named.contains(c) && o.is_some());
+        let values: BTreeSet<&String> = m.values().collect();
+        for c in named.iter().filter(|c| values.contains(c)) {
+            if self.outlines.contains_key(c) {
+                continue;
+            }
+            let o = buildstore::outlines::Outlines::open(&root.join(c))
+                .map_err(|e| eprintln!("agent: the outlines {c} can't be read now ({e:#})"))
+                .ok()
+                .map(std::sync::Arc::new);
+            self.outlines.insert(c.clone(), o);
+        }
+    }
+
+    /// The coverage record of content name `c` (buildstore::asked), None while it can't be read now.
+    pub fn asked(&self, c: &str) -> Option<std::sync::Arc<buildstore::asked::Record>> {
+        self.asked.get(c)?.clone()
+    }
+
+    /// The outlines of content name `c` a held record's question names: Some(None) when `m` no longer
+    /// names them (their pass gone: its answer is `inputs::rail::GONE`), None while they can't be read now.
+    pub fn outlines(
+        &self,
+        m: &BTreeMap<String, String>,
+        c: &str,
+    ) -> Option<Option<std::sync::Arc<buildstore::outlines::Outlines>>> {
+        if !m.values().any(|v| v == c) {
+            return Some(None);
+        }
+        Some(Some(self.outlines.get(c)?.clone()?))
+    }
+
+    /// Holds record `r` under content name `content` (tests: no file).
+    #[cfg(test)]
+    pub fn hold_asked(&mut self, content: &str, r: buildstore::asked::Record) {
+        self.asked.insert(content.to_string(), Some(std::sync::Arc::new(r)));
     }
 
     /// The seas closed off from the world ocean `m` names (Some(None): none written); None while

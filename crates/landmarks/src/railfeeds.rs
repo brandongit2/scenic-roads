@@ -60,7 +60,7 @@
 
 use crate::gtfs::{self, ferrycount, railcount, Date, Kind, Lines};
 use anyhow::{Context, Result};
-use buildstore::coverage::Coverage;
+use buildstore::coverage::Asking;
 use pyport::pyjson::{self, Py};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
@@ -441,7 +441,7 @@ fn unanswered(c: &Py) -> bool {
 }
 
 /// Whether the box w, s, e, n (degrees) meets the coverage (buildstore::coverage's `meets_rect`).
-fn meets(cov: &Coverage, b: [f64; 4]) -> bool {
+fn meets(cov: &Asking, b: [f64; 4]) -> bool {
     let e7 = |v: f64, lim: f64| (v.clamp(-lim, lim) * 1e7).round() as i32;
     cov.meets_rect([e7(b[0], 180.0), e7(b[1], 90.0), e7(b[2], 180.0), e7(b[3], 90.0)])
 }
@@ -450,7 +450,7 @@ fn meets(cov: &Coverage, b: [f64; 4]) -> bool {
 /// corrects them) whose box meets the coverage, in its order.
 fn catalogue_feeds(
     path: &Path,
-    cov: &Coverage,
+    cov: &Asking,
     countries: &HashSet<String>,
     country_of: &HashMap<String, String>,
 ) -> Result<Vec<Py>> {
@@ -854,7 +854,7 @@ pub struct Args<'a> {
     pub declarations: &'a [serde_json::Value],
     /// The catalogue's pinned copy; none: fetched from its declaration's URL.
     pub catalogue: Option<PathBuf>,
-    pub coverage: &'a Coverage,
+    pub coverage: &'a Asking<'a>,
     /// ISO 3166-1 codes.
     pub countries: &'a [String],
     /// The catalogue feeds checked so far (a JSON list), when there's a copy.
@@ -1046,7 +1046,7 @@ impl Run<'_> {
 
     /// Why a declared feed with a zip is left out of the rail list: its stops all beyond the
     /// coverage, or (its modes not said) no rail routes. None: it's in.
-    fn beyond(&self, f: &Py, rec: &Py, cov: &Coverage) -> Result<Option<String>> {
+    fn beyond(&self, f: &Py, rec: &Py, cov: &Asking) -> Result<Option<String>> {
         let _p = jobrt::timings::phase("reading the declared feeds' stops");
         let i = f.at("id").py_str();
         let path = self.zip_path(&i, rec);
@@ -1345,24 +1345,24 @@ mod tests {
     /// answers them.
     #[test]
     fn boxes_meet_the_coverage_as_before() {
-        let cov = |rings: Vec<Vec<[i32; 2]>>, buffer: f64| Coverage {
+        let cov = |rings: Vec<Vec<[i32; 2]>>, buffer: f64| buildstore::coverage::Coverage {
             shapes: vec![buildstore::coverage::Shape::new("t".into(), rings, buffer)],
             ..Default::default()
         };
         let c = cov(vec![square(0.0, 0.0, 10.0), square(4.0, 4.0, 2.0)], 0.0);
-        assert!(meets(&c, [1.0, 1.0, 2.0, 2.0]));
-        assert!(!meets(&c, [4.5, 4.5, 5.5, 5.5])); // in the hole, no edge met
-        assert!(meets(&c, [3.0, 3.0, 4.5, 4.5])); // the hole's edge met
-        assert!(!meets(&c, [11.0, 11.0, 12.0, 12.0]));
-        assert!(meets(&c, [-5.0, -5.0, 20.0, 20.0])); // the box around it all
+        assert!(meets(&Asking::new(&c), [1.0, 1.0, 2.0, 2.0]));
+        assert!(!meets(&Asking::new(&c), [4.5, 4.5, 5.5, 5.5])); // in the hole, no edge met
+        assert!(meets(&Asking::new(&c), [3.0, 3.0, 4.5, 4.5])); // the hole's edge met
+        assert!(!meets(&Asking::new(&c), [11.0, 11.0, 12.0, 12.0]));
+        assert!(meets(&Asking::new(&c), [-5.0, -5.0, 20.0, 20.0])); // the box around it all
         let km = 1.0 / roadcore::geo::KM_PER_DEG;
         let c = cov(vec![square(10.0, 45.0, 0.1)], 1000.0);
-        assert!(meets(&c, [10.1 + 0.5 * km, 45.0, 10.2, 45.05]));
-        assert!(!meets(&c, [10.1 + 2.0 * km, 45.0, 10.2, 45.05]));
+        assert!(meets(&Asking::new(&c), [10.1 + 0.5 * km, 45.0, 10.2, 45.05]));
+        assert!(!meets(&Asking::new(&c), [10.1 + 2.0 * km, 45.0, 10.2, 45.05]));
         // (The catalogue has boxes past ±90°: with no margin, not every longitude.)
         let c = cov(vec![square(3.0, 49.0, 0.5)], 0.0);
-        assert!(meets(&c, [3.0, 48.9, 4.3, 2457338.0]));
-        assert!(!meets(&c, [120.0, 48.9, 121.0, 2457338.0]));
+        assert!(meets(&Asking::new(&c), [3.0, 48.9, 4.3, 2457338.0]));
+        assert!(!meets(&Asking::new(&c), [120.0, 48.9, 121.0, 2457338.0]));
     }
 
     #[test]

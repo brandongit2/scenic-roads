@@ -35,6 +35,17 @@ pub fn cover_tiles(cov: &Coverage) -> Vec<(u32, u32)> {
     out
 }
 
+/// The cover as a key names it (`cover_tiles`, and `cover_boxes`' z6 tiles): what the heritage
+/// jobs and rail read of the coverage, the same function as their runs'.
+pub fn cover_key(cov: &Coverage) -> String {
+    let z6: Vec<(u32, u32)> = buildstore::coverage::coverage_tiles(cov).into_values().flatten().collect();
+    let z12 = cover_tiles(cov);
+    let mut b = (z12.len() as u64).to_le_bytes().to_vec();
+    b.extend(tiles_bytes(&z12));
+    b.extend(tiles_bytes(&z6));
+    store::naming::hash16(&b)
+}
+
 /// The boxes (degrees) of the z6 tiles holding the cover (`cover_tiles`' parents).
 pub fn cover_boxes(cov: &Coverage) -> Vec<[f64; 4]> {
     buildstore::coverage::coverage_tiles(cov)

@@ -902,7 +902,12 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **trees-lo:** its z6 tiles' mids; `TREES_LO_V`. A z3 tile with no z6 tile the coverage meets, and
   tree lo packs still named: "none" likewise (`steps::none_key`), a drop.
 - **heritage-sites:** the pass, its areas set (the protected and Indigenous areas), the registers meeting the cover (their `keyed`
-  digests), the matches' accepted version, the coverage.
+  digests), the matches' accepted version, and the cover (`in coverage:cover`,
+  `landmarks::heritage::cover_key`: the z12 tiles within 20 km of the coverage's land and the z6
+  tiles holding them, what its run clips to), not the coverage's shapes: a region change that
+  leaves the cover as it was (water given from one region to another, land moved between
+  neighbours) keeps its key. **heritage** likewise: heritage-sites' outputs, the pass's sets, the
+  cover.
 - **unit** (a z6 tile): its extract, the pass's road values, the coverage as its ways meet it, the versions of the
   location rules where its ways go, its heritage slices, the roadside buildings' index, the elevation
   datasets' plan, and the terrain tiles it reads by content (`agent::build::unit_terrain`: each
@@ -911,12 +916,31 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   isn't built; the status says so.
 - **pack(T):** the base packs and road values of its owners, the z6 tiles whose ways come into T.
 - **lo:** the base packs and road values of the z6 tiles whose owned extent meets its z3 tile.
-- **rail-feeds:** the declarations' accepted index, the catalogue's copy, the coverage, the pass's
-  outlines, and which keys `inputs/keys.env` holds by name (never values). Not what it writes.
+- **rail-feeds:** the declarations' accepted index, the catalogue's copy, the pass's outlines,
+  which keys `inputs/keys.env` holds by name (never values), and the coverage as its run asked it
+  (`in coverage:asked`, below): the feeds' boxes, and its countries (`inputs::rail::countries`,
+  of every outline: asked again of the coverage whole, from the outlines). Not what it writes.
 - **rail:** the feeds' list (each zip by content name and its day), the static timetables' accepted
-  index, the pass's rail set and the coverage.
+  index, the pass's rail set, the cover (as heritage-sites': it clips the rail set to it), and the
+  coverage as its run asked it: its stops and its ways' vertices.
+- **timetables-todo:** the rail and ferries jobs' lines, and the coverage as its run asked it: the
+  ferry lines' ends.
+- **The coverage as a run asked it** (`in coverage:asked`, `buildstore::asked`; rail-feeds, rail,
+  timetables-todo, bld-fetch): the run asks through `coverage::Asking` (whether a point is in,
+  whether a box meets the land or any shape; no other way in) and puts what it asked as
+  `work/asked/<step>`: every question once, its questions of the whole coverage with their answers
+  (rail-feeds' countries), the digest of every answer (`Coverage::answers`, each asked again:
+  which region holds a point never enters it) and the key line it ran under. The key's line is that line while the coverage answers it all the same; otherwise a new one
+  naming the record, and none yet, one of the coverage's version. The run works its line out from
+  the record before it as the plan did, so the key it's recorded done under is the plan's after it:
+  one run. So a region change reruns these only where it changes an answer they read: water given
+  from one region to another, or a region added where none of them asked, changes none (task #1127's
+  regions change, measured on the real inputs, changed no answer of the four, nor the cover). The plan reads a record once by content name (`TerrainTiles`), and
+  works the line out once a coverage version and record; the record's outlines no longer named (a
+  pass gone) answer `GONE`.
 - **water:** its version and the pass's basemap.
-- **bld-fetch** (network): its version, the release and the coverage.
+- **bld-fetch** (network): its version, the release and the coverage as its run asked it (each row
+  group's and GHSL tile's box grown by 20 km, `bld::fetch::Near`).
 - **bldprep (per z6 tile):** `BLDPREP_V`, the release, and each downloaded file's row groups and GHSL
   tile meeting it (`crate::bld::sources`).
 - **depth (a z6 tile):** `DEPTH_V`, `DEPTH_LO_V` and the shading's codec (`shade_codec::version`),

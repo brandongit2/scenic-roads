@@ -1176,9 +1176,10 @@ waiting line naming the key). What a fetch brings back is the fetching job's sta
 catalogue's copy and writes `sources/rail/feeds` and `sources/rail/ferry-feeds`, each zip pinned by
 content in `sources/rail/gtfs/<id>` with its day (`sources/rail/fetched`). Its key names the
 declarations' `keyed` digests (`inputs::feeds::declared`, not the index, so an edited note or credit
-doesn't rerun it), the catalogue's copy, the coverage, the outlines and which of the keys the
-declarations fetch with `keys.env` holds. `rail` keys on the
-rail list, `ferries` on the ferry list. With a catalogue copy but no accepted catalogue declaration,
+doesn't rerun it), the catalogue's copy, the outlines, which of the keys the declarations fetch
+with `keys.env` holds, and the coverage as its run asked it (docs/steps.md §12: the feeds' boxes
+and the countries; a region change elsewhere keeps it). `rail` keys on the rail list, the cover and
+the coverage as it asked it (its stops and ways), `ferries` on the ferry list. With a catalogue copy but no accepted catalogue declaration,
 rail-feeds fails rather than read it uncorrected. A declaration's `pin` is put in by rail-feeds the
 first time it runs with no zip for that feed, so a pinned feed is never fetched before its pin.
 
@@ -1256,8 +1257,8 @@ finding, and nothing waits on them.
   routes no line took, and static ferry routes whose pin names no ferry line of this pass.
 
 `rail` hands off `work/rail/lines` (the rail counter's routes, railfreq's misses, the service
-relations); `ferries` hands off `work/ferries/lines`. `timetables-todo` (keyed on both, the coverage
-and its version) merges them, writes the to-do into `todo/` outside the records (as `names-todo`
+relations); `ferries` hands off `work/ferries/lines`. `timetables-todo` (keyed on both, its version
+and the coverage as its run asked it: the ferry lines' ends, docs/steps.md §12) merges them, writes the to-do into `todo/` outside the records (as `names-todo`
 does), and hands off the report, which the lead reads for its status (`Status::timetables`).
 Planned: matching rail routes to lines by their tracks (today a route with one matched pair isn't
 reported).

@@ -132,7 +132,7 @@ The jobs form a chain without cycles; the landmark chain runs beside the roads c
 | OSM pass sets | the filtered planet | `summits` (`-v2`), `hikes`, `named` (the heritage chain's filter plus World Heritage tags), `whs` (landmarks::whsshapes' objects and every multipolygon, with their references), `marks` |
 | `trailends` (per pass) | `hikes` | `work/trailends/<d>`: every simple linear hiking route's two ends |
 | `summits` (per pass; once terrain-hi and terrain-lo have no work left) | `summits` set, the terrain lo packs' z8 | `work/summits/<d>` |
-| `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the coverage | `work/heritage/<d>/base/…` and per z6 tile slices |
+| `heritage-sites` (before the z6 tiles) | the registers meeting the cover, the matches (docs/inputs.md §6.5), the pass's `areas` set, the cover (keyed on it, not on the coverage's shapes: docs/steps.md §12) | `work/heritage/<d>/base/…` and per z6 tile slices |
 | `unit` | as docs/steps.md, with the heritage slices within U + `stage::MARGIN_KM` | the base pack |
 | `pois` (per z6 tile) | U's extract, `trailends`, the coverage | `work/pois/<u>` |
 | `peaks` (per z6 tile; once terrain-hi and terrain-lo have no work left) | U's peak candidates, `summits`, the terrain hi packs within 30 km (z12), the terrain lo packs (z8) | `work/peaks/<u>` |
