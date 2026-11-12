@@ -30,7 +30,7 @@
 
 use crate::heritagewd::{wikipedias_told, write_atomic};
 use crate::interest::py_round;
-use crate::wikiask::{by_item, earliest, fact, fact_union, int, labels, largest, least, val, Asker};
+use crate::wikiask::{by_item, earliest, fact_union, labels, largest, least, most, val, Asker};
 use anyhow::{Context, Result};
 use jobrt::jobs::report;
 use jobrt::timings::phase;
@@ -75,7 +75,7 @@ fn facts_query(chunk: &[String]) -> String {
 /// labels (distinct and sorted), the earliest inception, and the numeric facts' largest to 2
 /// decimals. (What reads them: web/src/details.ts, crate::marksjob, crate::interest.)
 fn record(rows: &[&Py], qid: &str) -> Py {
-    let sl = fact(rows, "sl").filter_map(|b| int(b, "v", qid)).max().unwrap_or(0);
+    let sl = most(rows, "sl", qid).map_or(0, |(n, _)| n);
     let mut rec = vec![("sl".to_string(), Py::Int(sl.to_string()))];
     for k in ["d_en", "w_en"] {
         if let Some(v) = least(rows, k).and_then(|b| val(b, "v")) {
@@ -98,8 +98,8 @@ fn record(rows: &[&Py], qid: &str) -> Py {
     Py::Dict(rec)
 }
 
-/// A cached record with `record`'s facts alone: one an older query made holds others (`d_loc`,
-/// another language's description, and `elevation`), which nothing reads.
+/// A cached record with `record`'s facts alone (not its "qid"): one an older query made holds
+/// others (`d_loc`, another language's description, and `elevation`), which nothing reads.
 fn kept(r: &Py) -> Py {
     let made = |k: &str| {
         ["sl", "d_en", "w_en", "water", "range", "inception"].contains(&k) || Q_PROPS.iter().any(|(n, _)| *n == k)
@@ -181,14 +181,6 @@ fn with_qid(q: &str, r: &Py) -> Py {
     Py::Dict(d)
 }
 
-/// A record without its "qid".
-fn without_qid(r: &Py) -> Py {
-    match r {
-        Py::Dict(d) => Py::Dict(d.iter().filter(|(k, _)| k != "qid").cloned().collect()),
-        other => other.clone(),
-    }
-}
-
 /// Asks Wikidata (`wikidata`, the declared endpoint) for the facts of `facts_q` and the articles of
 /// `views_q` it hasn't for epoch `epoch` in `cache`, and writes `<out>/facts.json`; `part(i)` marks
 /// the job's part `i` beginning (1 the facts, 2 the articles).
@@ -220,7 +212,7 @@ pub fn run(
         write_atomic(&dpath, &dumps_spaced(&fetched))
     };
     let fpath = cache.join(format!("facts-{epoch}.jsonl"));
-    let mut facts: HashMap<String, Py> = read_jsonl(&fpath)?.into_iter().map(|(q, r)| (q, without_qid(&r))).collect();
+    let mut facts: HashMap<String, Py> = read_jsonl(&fpath)?.into_iter().map(|(q, r)| (q, kept(&r))).collect();
     let todo: Vec<String> = facts_q.iter().filter(|q| !facts.contains_key(*q)).cloned().collect();
     drop(p);
 
@@ -261,7 +253,7 @@ pub fn run(
 
     let p = phase("writing the outputs");
     // (An item left out, too costly a query alone, has no facts this run.)
-    let known: Vec<(String, Py)> = facts_q.iter().filter_map(|q| Some((q.clone(), kept(facts.get(q)?)))).collect();
+    let known: Vec<(String, Py)> = facts_q.iter().filter_map(|q| Some((q.clone(), facts.get(q)?.clone()))).collect();
     let file = out.join("facts.json");
     write_atomic(&file, &dumps_spaced(&Py::Dict(known)))?;
     drop(p);
@@ -334,7 +326,8 @@ mod tests {
         assert_eq!(q.matches("VALUES ?item { wd:Q1 wd:Q2 wd:Q3 }").count(), 6 + Q_PROPS.len());
         assert!(!q.contains("OPTIONAL") && !q.contains(" LANG("), "{q}");
         // An older query's record: the facts nothing reads left out of facts.json.
-        let old = loads(r#"{"sl": 1, "d_en": "x", "d_loc": "y", "elevation": 3.0, "height": 2.0}"#).unwrap();
+        let old =
+            loads(r#"{"qid": "Q1", "sl": 1, "d_en": "x", "d_loc": "y", "elevation": 3.0, "height": 2.0}"#).unwrap();
         assert_eq!(dumps_spaced(&kept(&old)), r#"{"sl": 1, "d_en": "x", "height": 2.0}"#);
     }
 

@@ -26,10 +26,10 @@
 //! Writes data/heritage/wd/items.jsonl (one line per matched site: its index in heritage.json and
 //! the facts) and the pass's answers it adds to: ids.jsonl (per register ID: a row per item, its
 //! facts as `grouped` puts them together, [] for no item), wp.jsonl (per item: its articles),
-//! enwiki-shortdesc.json (per title; "" for none), so a rerun only asks what is new. The files' bytes are as dem/heritagewd.py wrote them
-//! (pyport::pyjson's `dumps_spaced`).
+//! enwiki-shortdesc.json (per title; "" for none), so a rerun only asks what is new. The files'
+//! bytes are as Python's `json` writes them (pyport::pyjson's `dumps_spaced`).
 
-use crate::wikiask::{earliest, fact, fact_union, int, labels, least, urlencode, val, Asker};
+use crate::wikiask::{earliest, fact_union, int, labels, least, most, urlencode, val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
 use jobrt::timings::phase;
@@ -378,7 +378,7 @@ fn grouped(prop: &str, ids: &[String], rows: &[Py]) -> Result<HashMap<String, Ve
     let lit = |s: &str| dict(vec![("type", Py::Str("literal".into())), ("value", Py::Str(s.into()))]);
     let row = |id: &str, qid: &str, rows: &[&Py]| {
         let mut r: Vec<(String, Py)> = vec![("id".into(), lit(id)), ("item".into(), rows[0].at("item").clone())];
-        if let Some(b) = fact(rows, "sl").filter(|b| int(b, "v", qid).is_some()).max_by_key(|b| int(b, "v", qid)) {
+        if let Some((_, b)) = most(rows, "sl", qid) {
             r.push(("sl".into(), b.at("v").clone()));
         }
         if let Some(b) = earliest(rows, "inc") {

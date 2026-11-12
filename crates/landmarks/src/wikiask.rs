@@ -64,7 +64,7 @@ pub fn unknown(v: &Py) -> bool {
 
 /// A binding's value `k` as a number (Python's `float`): None when it has none (`val`), or, with a
 /// log line naming `what`, when it isn't a finite number.
-pub fn number(b: &Py, k: &str, what: &str) -> Option<f64> {
+fn number(b: &Py, k: &str, what: &str) -> Option<f64> {
     let v = val(b, k)?;
     let x = pyport::pytext::float(v).filter(|x| x.is_finite());
     if x.is_none() {
@@ -118,12 +118,12 @@ pub(crate) fn by_item(rows: &[Py]) -> Result<std::collections::HashMap<&str, Vec
 }
 
 /// The rows of fact `k` (a `fact_union` answer's `?k`).
-pub(crate) fn fact<'a>(rows: &'a [&'a Py], k: &'a str) -> impl Iterator<Item = &'a Py> + 'a {
+fn fact<'a>(rows: &'a [&'a Py], k: &'a str) -> impl Iterator<Item = &'a Py> + 'a {
     rows.iter().filter(move |b| val(b, "k") == Some(k)).copied()
 }
 
 /// Whether a row's value `?v` is a literal (not an item, nor an unknown value's IRI).
-pub(crate) fn literal(b: &&Py) -> bool {
+fn literal(b: &&Py) -> bool {
     b.at("v").at("type").as_str().is_some_and(|t| t.contains("literal"))
 }
 
@@ -134,7 +134,7 @@ pub(crate) fn labels(rows: &[&Py], k: &str) -> Option<String> {
 }
 
 /// A date's order (Wikidata's `xsd:dateTime`, a year before Christ signed): its year, then the rest.
-pub(crate) fn date_key(d: &str) -> (i64, &str) {
+fn date_key(d: &str) -> (i64, &str) {
     let (neg, rest) = d.strip_prefix('-').map_or((false, d), |r| (true, r));
     let n = rest.bytes().take_while(u8::is_ascii_digit).count();
     let y: i64 = rest[..n].parse().unwrap_or(0);
@@ -152,6 +152,11 @@ pub(crate) fn earliest<'a>(rows: &'a [&'a Py], k: &'a str) -> Option<&'a Py> {
 /// Fact `k`'s row with the least value.
 pub(crate) fn least<'a>(rows: &'a [&'a Py], k: &'a str) -> Option<&'a Py> {
     fact(rows, k).filter(|b| val(b, "v").is_some()).min_by_key(|b| val(b, "v"))
+}
+
+/// Fact `k`'s largest integer and its row (a value that isn't one left out, logged naming `what`).
+pub(crate) fn most<'a>(rows: &'a [&'a Py], k: &'a str, what: &str) -> Option<(i128, &'a Py)> {
+    fact(rows, k).filter_map(|b| Some((int(b, "v", what)?, b))).max_by_key(|(n, _)| *n)
 }
 
 /// Fact `k`'s largest literal number (a value that isn't one left out, logged naming `what`).
