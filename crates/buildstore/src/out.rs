@@ -33,7 +33,7 @@ pub type Writes = fn(step: &str, logical: &str, removal: bool) -> Option<bool>;
 
 /// Whether this process is a crate's unit tests (`go_testing`, from their start-up constructor;
 /// buildstore's own from the start): an `Out`'s retries wait 1 ms (`upload_waits`), a call on
-/// the NAS's deadline and grace are short (`nas_call_deadline`), and a disk's free space is the test's own
+/// the NAS may be given a test's short deadline (`short_nas_calls`), and a disk's free space is the test's own
 /// (`room::disk_free`). Never a feature's: an example, a binary or another
 /// crate's test built with the dev-dependencies is no test of it (pipeline's tests/test_mode.rs).
 pub fn testing() -> bool {
@@ -872,17 +872,42 @@ impl Out {
 }
 
 /// How long one call on the NAS (`verify`, `remove_on_nas`) may take: three minutes (the call's own
-/// authentication, and a NAS busy with others' work); a second in a test (`testing`).
-pub fn nas_call_deadline(testing: bool) -> std::time::Duration {
-    std::time::Duration::from_secs(if testing { 1 } else { 180 })
+/// authentication, and a NAS busy with others' work), in a test too; a test of a hung call gives
+/// its own thread's a short one (`short_nas_calls`). Its child's start is inside it, which on a
+/// loaded test Mac took 25 s for a `/bin/sh` (#1157): a short one for every test failed those
+/// whose stand-in answers.
+pub fn nas_call_deadline() -> std::time::Duration {
+    SHORT_CALLS.get().unwrap_or(std::time::Duration::from_secs(180))
 }
 
-/// How long a call past its deadline has to end after SIGTERM before it's killed (`testing`).
-fn nas_call_grace(testing: bool) -> std::time::Duration {
-    if testing {
+/// How long a call past its deadline has to end after SIGTERM before it's killed: 10 s; under a
+/// test's short deadline (`short_nas_calls`), 300 ms.
+fn nas_call_grace() -> std::time::Duration {
+    if SHORT_CALLS.get().is_some() {
         std::time::Duration::from_millis(300)
     } else {
         std::time::Duration::from_secs(10)
+    }
+}
+
+std::thread_local! {
+    static SHORT_CALLS: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// A test's own deadline `d` for this thread's calls on the NAS (`nas_call_deadline`), for a test
+/// of a call that hangs: the real one until the guard is dropped. Unit tests only (`testing`).
+pub fn short_nas_calls(d: std::time::Duration) -> ShortNasCalls {
+    assert!(testing(), "a short NAS call deadline is a unit test's");
+    SHORT_CALLS.set(Some(d));
+    ShortNasCalls(())
+}
+
+/// `short_nas_calls`' guard: the real deadline again once dropped.
+pub struct ShortNasCalls(());
+
+impl Drop for ShortNasCalls {
+    fn drop(&mut self) {
+        SHORT_CALLS.set(None);
     }
 }
 
@@ -978,8 +1003,8 @@ pub fn verify(
     cmd.arg(format!("cd '{nas_root}' && {{ wc -c -- {names} 2>/dev/null; true; }}"));
     // (The call itself bounded too: its authentication, outside the probe's, may stall on the SSH
     // agent again, and the NAS may hang; past `nas_call_deadline` it is stopped.)
-    let deadline = nas_call_deadline(testing());
-    let out = output_within(&mut cmd, deadline, nas_call_grace(testing())).map_err(|e| {
+    let deadline = nas_call_deadline();
+    let out = output_within(&mut cmd, deadline, nas_call_grace()).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
             anyhow::Error::new(e).context(format!(
                 "ssh to the NAS checking {} uploads: over {} s",
@@ -1016,7 +1041,7 @@ pub fn remove_on_nas(ssh: &[&str], nas_root: &str, dirs: &[&str]) -> Result<()> 
     cmd.args(&ssh[1..]);
     let quoted: Vec<String> = dirs.iter().map(|d| sh_quoted(d)).collect();
     cmd.arg(format!("cd '{nas_root}' && rm -rf -- {}", quoted.join(" ")));
-    let out = output_within(&mut cmd, nas_call_deadline(testing()), nas_call_grace(testing()))
+    let out = output_within(&mut cmd, nas_call_deadline(), nas_call_grace())
         .map_err(|e| anyhow::Error::new(e).context(format!("ssh to the NAS removing {}", dirs.join(", "))))?;
     anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
     Ok(())

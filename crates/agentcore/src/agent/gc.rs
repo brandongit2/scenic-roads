@@ -2504,6 +2504,8 @@ mod tests {
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         // (The probe, `true`, answers; the check's call sleeps: exec, so the PID signalled is the sleeper's.)
         let hung = ["sh", "-c", "[ \"$1\" = true ] || exec sleep 300", "sh"];
+        // (This test's own deadline: the real one, 3 min, is past nextest's bound on a test.)
+        let _short = buildstore::out::short_nas_calls(Duration::from_secs(1));
         let t = std::time::Instant::now();
         let v = verify_pending(
             super::super::seam::for_tests(),

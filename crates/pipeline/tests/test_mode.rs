@@ -9,7 +9,7 @@
 #[test]
 fn a_build_with_the_dev_dependencies_has_no_test_time_behaviour() {
     assert!(!buildstore::out::testing());
-    assert_eq!(buildstore::out::nas_call_deadline(buildstore::out::testing()).as_secs(), 180);
+    assert_eq!(buildstore::out::nas_call_deadline().as_secs(), 180);
     // (The environment is this test's: the binary's other reads only files.)
     std::env::remove_var("SCENIC_FETCH_OFFLINE");
     assert!(buildstore::fetch::online("https://example.org/x").is_ok());
