@@ -121,10 +121,7 @@ else (this Mac itself, the menu bar's web view) its first. Answered there still:
 `/api/settings` asked by the lead's page from any origin it is served at (CORS, the lead's
 heartbeat's addresses: docs/pool.md §8, Cross-member calls), the jobs' calls (their key), and
 `sw.js` (the worker ending the page's old one: a worker's update takes no redirect). The build's own asks (pause, inputs, cancel and
-retry) are refused there from any other origin: the lead's page sends them to the lead. A lead on
-an app before task #1101 (its answer doesn't say `beats::ROOT`) is sent to at its old addresses
-(`/work/`, `/work/<name>`), and this Mac's port answers that lead's page's old ones as the new
-(`coord::oldpage`, docs/coordinator.md §7).
+retry) are refused there from any other origin: the lead's page sends them to the lead.
 
 It redirects only to a lead that serves the page: the lead's beat answer says `page`
 (`beats::PAGE`), heard within 35 s (`beats::PAGE_AWAY_S`, three beats). An older lead, none

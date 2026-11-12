@@ -219,14 +219,6 @@ Common rules:
   https://map.brandontsang.net/build (Caddy, docs/macs.md), gives a secure context;
   plain HTTP on the tailnet still works. The page's files and requests are relative
   to the folder it was served from, so it works under a proxy's path.
-- **Its old addresses** (task #1101 moved the page from `/work/` and its data and asks from
-  `/work/<name>` to `/api/<name>`; no redirect from them): while an app before it may ask them, a
-  coordinator answers them as the new (`coord::oldpage`, gated by `beats::ROOT`: on the lead while
-  a member heard doesn't say it, on a member's port while its lead doesn't); a member's port sends
-  the page to an older lead's `/work/`, an agent and the page ask an older Mac's `/work/<name>`
-  when `/api/` is refused. It
-  lifts by itself once every Mac runs the new app; the code goes then (the rule for old-app paths,
-  docs/coordination.md; #1121).
 - **The page's version and its home screen entry.** The page has no service worker and no offline
   copy: it is what the coordinator answers, and a Mac that doesn't answer shows the browser's own
   error. Its `manifest.webmanifest`, `icons/` and the `apple-touch-icon` link and
@@ -299,6 +291,9 @@ Common rules:
   answer. An upload no install took is removed by a later change once an hour old.
 - **Rolled back** (`POST /release/rollback`, `scenic releases rollback`, publish.sh --rollback after
   its floor check): from the two releases as read (409 else), the one before made live and the
-  live one kept before it.
+  live one kept before it. An app rolled back to before task #1101 (20261111-0021-96c737d7) would
+  not reach this app's page or asks, nor this app its: it serves the page at `/work/` and its data
+  and asks at `/work/<name>`, which this app's coordinator refuses (`/work/` holds only the
+  workers' calls), and asks them there, where this app serves them at `/` and `/api/<name>` alone.
 - **Planned:** nothing of it on the NAS once the rollout ends (docs/building.md, The NAS's `app/`
   until then).
