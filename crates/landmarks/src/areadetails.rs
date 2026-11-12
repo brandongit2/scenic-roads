@@ -141,54 +141,103 @@ fn is_qid(s: &str) -> bool {
     s.strip_prefix('Q').is_some_and(|d| !d.is_empty() && d.chars().all(|c| pyport::pytext::decimal(c).is_some()))
 }
 
-/// The park query of `chunk`'s items. (An unknown value, a blank node, is no inception or
-/// visitors: `isLiteral`, so neither SAMPLE nor MAX takes one over a known value.)
+/// The languages a park's other description is taken in, the first it has.
+const LOC: [&str; 4] = ["fr", "es", "pt", "ca"];
+
+/// Each fact asked: its name in the answer (`?k`), and the pattern binding its `?v` to `?item`'s.
+const FACTS: [(&str, &str); 7] = [
+    ("d", r#"?item schema:description ?v FILTER(STR(LANG(?v)) IN ("en", "fr", "es", "pt", "ca"))"#),
+    ("w", "?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?v"),
+    ("inc", "?item wdt:P571 ?v"),
+    ("area", "?item p:P2046 ?st . ?st psn:P2046 ?nv . ?nv wikibase:quantityAmount ?v"),
+    ("visitors", "?item wdt:P1174 ?v"),
+    ("op", r#"?item wdt:P137 ?o . ?o rdfs:label ?v FILTER(STR(LANG(?v)) = "en")"#),
+    ("inst", r#"?item wdt:P31 ?o . ?o rdfs:label ?v FILTER(STR(LANG(?v)) = "en")"#),
+];
+
+/// The park query of `chunk`'s items: each fact's values as rows (`?item ?k ?v`), a UNION of one
+/// branch a fact, each holding the items itself, put together by `park_record` (task #1144).
+/// QLever works an OPTIONAL or a UNION's branch out on its own before joining it, and applies a
+/// language filter only after its scan: a fact's OPTIONAL naming no item read every description
+/// or label in Wikidata, some 17-35 s (more when it was busy) whatever the batch's size, past the
+/// service's time limit even for one item. Each branch here is joined with the items first, so
+/// its cost is theirs (125 items in about a second). The filters compare `STR(LANG(…))`: QLever's
+/// planner turns `LANG(?x) = "en"` into a scan of every English literal.
 fn parks_query(chunk: &[String]) -> String {
     let values = chunk.iter().map(|q| format!("wd:{q}")).collect::<Vec<_>>().join(" ");
+    let branches: Vec<String> = FACTS
+        .iter()
+        .map(|(k, pattern)| format!("{{ VALUES ?item {{ {values} }} {pattern} BIND(\"{k}\" AS ?k) }}"))
+        .collect();
     format!(
-        r#"PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>
-        SELECT ?item (SAMPLE(?den) AS ?d_en) (SAMPLE(?dloc) AS ?d_loc) (SAMPLE(?wen) AS ?w_en) (SAMPLE(?inc0) AS ?inc)
-          (MAX(?a0) AS ?area) (MAX(?v0) AS ?visitors) (GROUP_CONCAT(DISTINCT ?opL; SEPARATOR="|") AS ?op)
-          (GROUP_CONCAT(DISTINCT ?instL; SEPARATOR="|") AS ?inst) WHERE {{
-          VALUES ?item {{ {values} }}
-          OPTIONAL {{ ?item schema:description ?den FILTER(LANG(?den) = "en") }}
-          OPTIONAL {{ ?item schema:description ?dloc FILTER(LANG(?dloc) IN ("fr", "es", "pt", "ca")) }}
-          OPTIONAL {{ ?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wen }}
-          OPTIONAL {{ ?item wdt:P571 ?inc0 FILTER(isLiteral(?inc0)) }}
-          OPTIONAL {{ ?item p:P2046 ?st . ?st psn:P2046 ?nv . ?nv wikibase:quantityAmount ?a0 }}
-          OPTIONAL {{ ?item wdt:P1174 ?v0 FILTER(isLiteral(?v0)) }}
-          OPTIONAL {{ ?item wdt:P137 ?o . ?o rdfs:label ?opL FILTER(LANG(?opL) = "en") }}
-          OPTIONAL {{ ?item wdt:P31 ?i . ?i rdfs:label ?instL FILTER(LANG(?instL) = "en") }}
-        }} GROUP BY ?item"#
+        "PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>\n\
+         SELECT ?item ?k ?v WHERE {{\n  {}\n}}",
+        branches.join("\n  UNION ")
     )
 }
 
-/// A park's facts from its binding (`qid`'s): a value that isn't one left out, logged
-/// (crate::wikiask::number).
-fn park_record(b: &Py, qid: &str) -> Py {
+/// A date's order (Wikidata's `xsd:dateTime`, a year before Christ signed): its year, then the rest.
+fn date_key(d: &str) -> (i64, &str) {
+    let (neg, rest) = d.strip_prefix('-').map_or((false, d), |r| (true, r));
+    let n = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let y: i64 = rest[..n].parse().unwrap_or(0);
+    (if neg { -y } else { y }, &rest[n..])
+}
+
+/// A park's facts from its rows (`?k ?v`, `qid`'s), each picked the same way whatever order they
+/// come in: its English description; its other the first language's of `LOC` (Wikidata has one
+/// description a language); its English article; its earliest inception; its largest area
+/// (normalised to m²) and visitors; its operators' and kinds' English labels, distinct and in
+/// order. An unknown value (crate::wikiask::val) is none; a value that isn't a number is left out,
+/// logged (crate::wikiask::number); an inception or visitors that isn't a literal is none.
+fn park_record(rows: &[&Py], qid: &str) -> Py {
+    let of = |k: &'static str| rows.iter().filter(move |b| val(b, "k") == Some(k)).copied();
+    let literal = |b: &&Py| b.at("v").at("type").as_str().is_some_and(|t| t.contains("literal"));
+    let desc = |l: &str| of("d").filter(|b| b.at("v").at("xml:lang").as_str() == Some(l)).find_map(|b| val(b, "v"));
+    let labels = |k: &'static str| {
+        let l: std::collections::BTreeSet<&str> = of(k).filter_map(|b| val(b, "v")).collect();
+        (!l.is_empty()).then(|| l.into_iter().collect::<Vec<_>>().join("|"))
+    };
+    let largest = |k: &'static str| {
+        of(k)
+            .filter(literal)
+            .filter_map(|b| number(b, "v", qid))
+            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))))
+    };
     let mut rec: Vec<(String, Py)> = vec![];
-    for key in ["d_en", "d_loc", "w_en", "op", "inst"] {
-        if let Some(v) = val(b, key) {
+    let fields = [
+        ("d_en", desc("en")),
+        ("d_loc", LOC.iter().find_map(|l| desc(l))),
+        ("w_en", of("w").find_map(|b| val(b, "v"))),
+    ];
+    for (key, v) in fields {
+        if let Some(v) = v {
             rec.push((key.into(), Py::Str(v.into())));
         }
     }
-    if let Some(v) = val(b, "inc") {
+    for key in ["op", "inst"] {
+        if let Some(v) = labels(key) {
+            rec.push((key.into(), Py::Str(v)));
+        }
+    }
+    if let Some(v) = of("inc").filter(literal).filter_map(|b| val(b, "v")).min_by(|a, b| date_key(a).cmp(&date_key(b)))
+    {
         rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
     }
-    if let Some(a) = number(b, "area", qid) {
-        // (Normalised to m².)
+    if let Some(a) = largest("area") {
         rec.push(("area_km2".into(), Py::Float(py_round(a / 1e6, 2))));
     }
-    if let Some(f) = number(b, "visitors", qid).map(f64::trunc) {
+    if let Some(f) = largest("visitors").map(f64::trunc) {
         rec.push(("visitors".into(), Py::Int(if f == 0.0 { "0".into() } else { format!("{f:.0}") })));
     }
     Py::Dict(rec)
 }
 
 /// Facts of these items, `BATCH` a query (crate::wikiask::Asker::sparql_batches: a batch too
-/// costly for the service asked in halves, an item too costly alone left out), by item; `save`
-/// given what's in so far after each batch, a safe point after it (what came is in the pass's
-/// answers, which a resumed run doesn't ask again).
+/// costly for the service asked in halves, an item too costly alone left out), by item, every item
+/// of a batch answered given a record (`{}` when Wikidata has none of its facts: not asked again);
+/// `save` given what's in so far after each batch, a safe point after it (what came is in the
+/// pass's answers, which a resumed run doesn't ask again).
 fn wd_parks(
     ask: &Asker,
     endpoint: &str,
@@ -196,20 +245,15 @@ fn wd_parks(
     mut save: impl FnMut(&[(String, Py)]) -> Result<()>,
 ) -> Result<Vec<(String, Py)>> {
     let mut out: Vec<(String, Py)> = vec![];
-    let mut at: HashMap<String, usize> = HashMap::new();
     let mut done = 0;
     ask.sparql_batches(endpoint, qids, BATCH, &parks_query, &mut |chunk, rows| {
-        for b in rows {
-            let item = val(&b, "item").context("a binding without its item")?;
-            let qid = item.rsplit('/').next().unwrap_or(item).to_string();
-            let rec = park_record(&b, &qid);
-            match at.get(&qid) {
-                Some(&k) => out[k].1 = rec,
-                None => {
-                    at.insert(qid.clone(), out.len());
-                    out.push((qid, rec));
-                }
-            }
+        let mut by: HashMap<&str, Vec<&Py>> = HashMap::new();
+        for b in &rows {
+            let item = val(b, "item").context("a binding without its item")?;
+            by.entry(item.rsplit('/').next().unwrap_or(item)).or_default().push(b);
+        }
+        for qid in chunk {
+            out.push((qid.clone(), park_record(by.get(qid.as_str()).map_or(&[][..], |r| r), qid)));
         }
         done += chunk.len();
         eprintln!("  wikidata {done}/{}", qids.len());
@@ -397,29 +441,42 @@ mod tests {
         assert!(is_qid("Q42") && is_qid("Q١٢") && !is_qid("Q") && !is_qid("q42") && !is_qid("Q4 "));
     }
 
+    /// A row of the park query's answer: `q`'s fact `k`, its value the binding `v`.
+    fn row(q: &str, k: &str, v: &str) -> String {
+        format!(
+            r#"{{"item": {{"type": "uri", "value": "http://www.wikidata.org/entity/{q}"}},
+            "k": {{"type": "literal", "value": "{k}"}}, "v": {v}}}"#
+        )
+    }
+
+    fn lit(s: &str) -> String {
+        format!(r#"{{"type": "literal", "value": "{s}"}}"#)
+    }
+
+    fn lang(s: &str, l: &str) -> String {
+        format!(r#"{{"type": "literal", "value": "{s}", "xml:lang": "{l}"}}"#)
+    }
+
     /// 7 Nov's two failures, from recorded answers: a park whose visitors are an unknown value
     /// (QLever's genid IRI) has none, and a batch past QLever's time limit is asked in halves, each
-    /// batch saved as it comes.
+    /// batch saved as it comes. An item Wikidata has nothing of is answered `{}` (task #1144: the
+    /// rows name only items with facts), so it isn't asked again.
     #[test]
     fn unknown_values_and_costly_batches() {
         use crate::wikiask::tests::{bindings, noting, replay, QLEVER_TIMED_OUT};
-        let park = |q: &str, visitors: &str| {
-            format!(
-                r#"{{"item": {{"type": "uri", "value": "http://www.wikidata.org/entity/{q}"}},
-                "visitors": {visitors}, "area": {{"type": "literal", "value": "2500000"}}}}"#
-            )
-        };
         let genid =
             r#"{"type": "uri", "value": "http://www.wikidata.org/.well-known/genid/9e0e785fb54b8e85182f3338680c3feb"}"#;
+        let park = |q: &str, visitors: &str| [row(q, "visitors", visitors), row(q, "area", &lit("2500000"))].join(",");
         let (url, asked) = replay(vec![
             (429, None, QLEVER_TIMED_OUT.into()),
             (200, None, bindings(&park("Q1", genid))),
-            (200, None, bindings(&park("Q2", r#"{"type": "literal", "value": "1234.7"}"#))),
+            (200, None, bindings(&park("Q2", &lit("1234.7")))),
+            (200, None, bindings("")),
         ]);
         let (ask, waits) = noting();
         let mut saves = vec![];
-        let qids = vec!["Q1".to_string(), "Q2".to_string()];
-        let got = wd_parks(&ask, &url, &qids, |s| {
+        let qids = vec!["Q1".to_string(), "Q2".to_string(), "Q3".to_string()];
+        let got = wd_parks(&ask, &url, &qids[..2], |s| {
             saves.push(s.len());
             Ok(())
         })
@@ -429,5 +486,40 @@ mod tests {
         assert_eq!(saves, [1, 2]);
         assert_eq!(asked.lock().unwrap().len(), 3);
         assert!(waits.lock().unwrap().is_empty());
+        let got = wd_parks(&ask, &url, &qids[2..], |_| Ok(())).unwrap();
+        assert_eq!(dumps_spaced(&got[0].1), "{}");
+    }
+
+    /// Task #1144: each fact is picked the same way whatever order the service's rows come in (the
+    /// old query's SAMPLE gave another language's description for 80 of 173 parks asked on 11 Nov
+    /// and again on 12 Nov); and every branch of the query holds the items, so QLever joins them
+    /// before it scans.
+    #[test]
+    fn facts_picked_the_same_way() {
+        let rows = vec![
+            row("Q9", "d", &lang("parque nacional", "es")),
+            row("Q9", "d", &lang("national park", "en")),
+            row("Q9", "d", &lang("parc national", "fr")),
+            row("Q9", "w", &lit("Some Park")),
+            row("Q9", "inc", &lit("1972-01-01T00:00:00Z")),
+            row("Q9", "inc", &lit("-0500-01-01T00:00:00Z")),
+            row("Q9", "inc", &lit("1952-06-09T00:00:00Z")),
+            row("Q9", "area", &lit("2500000")),
+            row("Q9", "area", &lit("12500000")),
+            row("Q9", "inst", &lang("protected area", "en")),
+            row("Q9", "inst", &lang("national park", "en")),
+            row("Q9", "inst", &lang("protected area", "en")),
+            row("Q9", "op", &lang("Parks Board", "en")),
+            row("Q9", "visitors", &lit("lots")),
+        ];
+        let want = r#"{"d_en": "national park", "d_loc": "parc national", "w_en": "Some Park", "op": "Parks Board", "inst": "national park|protected area", "inception": "-0500-01-0", "area_km2": 12.5}"#;
+        let parsed: Vec<Py> = rows.iter().map(|r| loads(r).unwrap()).collect();
+        let mut refs: Vec<&Py> = parsed.iter().collect();
+        assert_eq!(dumps_spaced(&park_record(&refs, "Q9")), want);
+        refs.reverse();
+        assert_eq!(dumps_spaced(&park_record(&refs, "Q9")), want, "the same in any order");
+        let q = parks_query(&["Q1".into(), "Q2".into()]);
+        assert_eq!(q.matches("VALUES ?item { wd:Q1 wd:Q2 }").count(), FACTS.len());
+        assert!(!q.contains("OPTIONAL") && !q.contains(" LANG("), "{q}");
     }
 }

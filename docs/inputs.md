@@ -1023,7 +1023,12 @@ The old `sources/registers/legacy-seeds` archive is read by nothing:
   is the server's, from the translations as it serves the layers (docs/names.md). A name lacking English
   goes onto the translations' to-do (`landmarks::namestodo` reads the landmarks' `en`).
 - **Park facts:** landmarks::areadetails' cache is the pass's answers (`areas-wikidata.json`,
-  `agentcore::answers`), asking Wikidata only for parks it lacks.
+  `agentcore::answers`, linked into the chain's stand-in root and written through the link after
+  each batch), asking Wikidata only for parks it lacks. A batch's query asks each fact in a UNION
+  branch holding the batch's items, so its cost is the items' (QLever works an OPTIONAL out
+  without them); each fact is picked the same way whatever order the rows come in: the first of
+  fr, es, pt, ca for the other description, the earliest inception, the largest area and
+  visitors, the operators' and kinds' English labels sorted.
 - **Pageviews:** the items job's months' indexes (`sources/pageviews/`, docs/steps.md).
 
 #### 6.5.4 Heritage matches: the owner's judgment calls
