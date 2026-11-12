@@ -1625,9 +1625,11 @@ the roadside buildings' job and the z6 tiles' keys (the release, `buildtiles::re
 **Keys.** A key names a declared source only where it named the source in code before: the
 pass's key is its planet's path, `sources/osm/<version>/planet.osm.pbf`, and its target the date,
 so the declared version enters the pass's key, and through the pass's date every key after it; the
-declaration's other fields (its URLs, its MD5, its credit) enter none, so declaring the planet the
-build has (2026-09-28) is no new key (`planet::tests::the_staged_planet_is_the_one_the_build_has`,
-`agent::tests::osm_pass_waits_for_space_or_runs`: the pass's job and key as before); the lake
+declaration's URLs and MD5 enter none, and its description's credit only the catalogue's (§4.8), so
+declaring the planet the build has (2026-09-28) is a new catalogue and no other new key
+(`planet::tests::the_staged_planet_is_the_one_the_build_has`,
+`agent::tests::osm_pass_waits_for_space_or_runs`: the pass's job and key as before;
+`agent::tiles::tests::declaring_the_planet_changes_no_key_but_the_catalogues`); the lake
 fill's key names its zips' pin, and the declaration only once it names other than the code had
 (`Source::key_extra` against `inputs::sources::declared_before::LAKE_FILL`, the staged declaration's
 digest); the roadside buildings' (the z6 tiles', the buildings job's) and the 3D buildings' (bld-fetch,
@@ -1680,8 +1682,9 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
 4. `sources/canvec/50k/` is deleted only after both Macs run the new app (an older app still reads
    it).
 5. The planet (#1120): once both Macs run the app that reads its declaration, `osm-planet.toml` is
-   added to `inputs/sources/` (until it's accepted no new pass is planned, and the plan says so),
-   and DSM's daily task that ran the NAS's own fetch is deleted, with what it left on the NAS
+   added to `inputs/sources/` (until it's accepted no new pass is planned, and the plan says so;
+   accepted, its planet is on the NAS and its pass complete: no fetch, no pass, a new catalogue for
+   its credit), and DSM's daily task that ran the NAS's own fetch is deleted, with what it left on the NAS
    (`nas/`, `state/logs/fetch-planet.log`).
 
 ### 6.10 Depth
