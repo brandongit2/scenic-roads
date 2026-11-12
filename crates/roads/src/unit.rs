@@ -680,7 +680,7 @@ pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {
 /// what it wrote the first time: the scenic steps' kept results among it; task #903).
 pub fn split_kept<'a>(runs: &'a [Run], pieces: &jobrt::resume_log::Pieces) -> (&'a [Run], &'a [Run]) {
     let (here, anywhere) = split(runs);
-    let kept = (0..anywhere.len()).take_while(|i| pieces.kept(tail_piece(here.len() + i)).is_some()).count();
+    let kept = (0..anywhere.len()).take_while(|i| pieces.kept(tail_piece(here.len() + i))).count();
     runs.split_at(here.len() + kept)
 }
 

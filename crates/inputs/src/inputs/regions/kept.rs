@@ -69,7 +69,7 @@ impl Kept {
             .unwrap()
             .get(&b)
             .cloned()
-            .or_else(|| self.pieces.lock().unwrap().as_ref().and_then(|p| p.kept(b)).map(|p| Arc::new(p.to_vec())));
+            .or_else(|| self.pieces.lock().unwrap().as_ref().and_then(|p| p.read_kept(b)).map(Arc::new));
         if let Some(p) = had {
             let mut g = Get(&p);
             let read = (|| -> Result<T> {

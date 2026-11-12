@@ -15,8 +15,9 @@
 //!   the job's disk (agentcore::agent::memguard's `top_bytes`), so the step's measured disk, and the room
 //!   asked for it, hold it.
 //! - **Read a record at a time:** a log is streamed as it opens (`Log::open`'s `take`), never read
-//!   whole, so what a resumed run holds is what its step keeps of the blocks, as the run it resumes
-//!   held them.
+//!   whole; `Pieces` notes only where each record lies and reads one as its piece is taken (task
+//!   #1182), so a resumed run holds what its step holds of the pieces it has taken, as the run it
+//!   resumes held them.
 //! - **Taken only for the same inputs:** the identity is a digest of what decides the output: the
 //!   step's version(s), its target and everything the run reads, its step's choosing; never the
 //!   program, so a resume in a newly installed app keeps what was kept. Another identity, the log
@@ -158,9 +159,10 @@ pub struct Log {
 impl Log {
     /// Target `t`'s log in `scratch` (another slot's moved here) for a run of step kind `kind` and
     /// identity `id`: each block it holds given to `take` in the order kept (with what was kept of
-    /// it), none when it has another identity or none. A record `take` refuses ends the log there,
-    /// as a damaged one. None when it can't be written (nothing kept then). Logs left long by other
-    /// targets swept first.
+    /// it; each record starts where the one before ends, the first after `head`'s line), none when
+    /// it has another identity or none. A record `take` refuses ends the log there, as a damaged
+    /// one. None when it can't be written (nothing kept then). Logs left long by other targets
+    /// swept first.
     pub fn open(
         scratch: &Path,
         t: (u8, u32, u32),
@@ -256,7 +258,9 @@ impl Log {
 /// (resuming off, or the log unwritable) it just makes each.
 pub struct Pieces {
     log: Option<Log>,
-    kept: std::collections::HashMap<BlockId, Vec<u8>>,
+    /// Each piece an earlier run kept: where its record starts in the log and its payload's length,
+    /// read as it's taken (`read_kept`).
+    kept: std::collections::HashMap<BlockId, (u64, u64)>,
     /// The last piece the earlier run kept (`folders_as_kept`).
     last: Option<BlockId>,
 }
@@ -266,15 +270,20 @@ impl Pieces {
     /// kept only with `keep` (the job's agent turned resuming on, `on()`; tests say so).
     pub fn open(scratch: &Path, t: (u8, u32, u32), kind: &str, id: &str, keep: bool) -> Pieces {
         let (mut kept, mut last) = (std::collections::HashMap::new(), None);
+        let mut at = head(kind, id).len() as u64;
         let log = if keep {
             Log::open(scratch, t, kind, id, &mut |b, p| {
-                kept.insert(b, p.to_vec());
+                kept.insert(b, (at, p.len() as u64));
                 last = Some(b);
+                at += RECORD_TOP + p.len() as u64;
                 Ok(())
             })
         } else {
             None
         };
+        if log.is_none() {
+            (kept, last) = (Default::default(), None);
+        }
         Pieces { log, kept, last }
     }
 
@@ -304,8 +313,8 @@ impl Pieces {
     /// Whether folders `dirs` are as the last `folder_piece` an earlier run kept left them (none
     /// kept: true). Else what it kept is of folders since changed: the step starts afresh.
     pub fn folders_as_kept(&self, dirs: &[&Path]) -> bool {
-        let Some(last) = self.last.and_then(|b| self.kept.get(&b)) else { return true };
-        last.get(..32) == Some(folder_digest(dirs).as_slice())
+        let Some(last) = self.last.filter(|b| self.kept.contains_key(b)) else { return true };
+        self.read_kept(last).is_some_and(|p| p.get(..32) == Some(folder_digest(dirs).as_slice()))
     }
 
     /// Pieces of floats (`piece`, the floats by their bits).
@@ -325,9 +334,23 @@ impl Pieces {
         Ok(v)
     }
 
-    /// What an earlier run kept of piece `b`, if it did (not taken).
-    pub fn kept(&self, b: BlockId) -> Option<&[u8]> {
-        self.kept.get(&b).map(Vec::as_slice)
+    /// Whether an earlier run kept piece `b`.
+    pub fn kept(&self, b: BlockId) -> bool {
+        self.kept.contains_key(&b)
+    }
+
+    /// What an earlier run kept of piece `b`, read from the log (not taken): None when it kept
+    /// none, or its record no longer reads back whole.
+    pub fn read_kept(&self, b: BlockId) -> Option<Vec<u8>> {
+        use std::os::unix::fs::FileExt;
+        let (&(at, len), log) = (self.kept.get(&b)?, self.log.as_ref()?);
+        let mut r = vec![0u8; usize::try_from(RECORD_TOP + len).ok()?];
+        std::fs::File::open(&log.path).and_then(|f| f.read_exact_at(&mut r, at)).ok()?;
+        let p = &r[40..];
+        (u64::from_le_bytes(r[..8].try_into().ok()?) == 9 + len
+            && blake3::hash(p).as_bytes() == &r[8..40]
+            && p[..9] == [&[b.0][..], &b.1.to_le_bytes(), &b.2.to_le_bytes()].concat()[..])
+            .then(|| p[9..].to_vec())
     }
 
     /// Piece `b`'s result: kept by an earlier run, else `make`'s, kept (a safe point:
@@ -344,7 +367,9 @@ impl Pieces {
     /// What an earlier run kept of piece `b`, taken: for pieces made side by side (`piece`'s halves,
     /// the pieces held behind a lock only to take and keep them, never while one is made).
     pub fn take(&mut self, b: BlockId) -> Option<Vec<u8>> {
-        self.kept.remove(&b)
+        let p = self.read_kept(b);
+        self.kept.remove(&b);
+        p
     }
 
     /// Piece `b` made, `p` its result: kept (a safe point, as `piece`'s).
@@ -389,6 +414,10 @@ pub fn folder_digest(dirs: &[&Path]) -> Vec<u8> {
     }
     h.finalize().as_bytes().to_vec()
 }
+
+/// A record's bytes before what its step keeps: its payload's length and BLAKE3 (40), the block's
+/// z, x and y (9).
+const RECORD_TOP: u64 = 49;
 
 /// A record: its payload's length, its BLAKE3, the payload (the block's z, x and y, then what its
 /// step keeps).
@@ -715,6 +744,31 @@ mod tests {
         drop(p);
         let mut p = Pieces::none();
         assert_eq!(p.piece((9, 0, 0), || make(5)).unwrap(), [5; 3]);
+    }
+
+    /// Task #1182: the pieces an earlier run kept are read from its log as each is taken, not held
+    /// from the start: each reads back as kept, and one whose record was damaged since is made
+    /// again.
+    #[test]
+    fn pieces_kept_are_read_as_they_are_taken() {
+        let d = tempfile::tempdir().unwrap();
+        let t = (3, 4, 2);
+        let mut p = Pieces::open(d.path(), t, "k", "a", true);
+        for (k, n) in [(0u32, 5usize), (1, 0), (2, 70_000)] {
+            p.piece((8, k, 0), || Ok(vec![k as u8 + 1; n])).unwrap();
+        }
+        drop(p);
+        let mut p = Pieces::open(d.path(), t, "k", "a", true);
+        assert!(p.kept((8, 2, 0)) && !p.kept((8, 3, 0)));
+        assert_eq!(p.piece((8, 2, 0), || anyhow::bail!("made again")).unwrap(), vec![3; 70_000]);
+        assert_eq!(p.piece((8, 1, 0), || anyhow::bail!("made again")).unwrap(), Vec::<u8>::new());
+        // (The first piece's payload damaged under the open log: made again, the rest unharmed.)
+        let path = path(d.path(), t);
+        let mut b = std::fs::read(&path).unwrap();
+        b[head("k", "a").len() + 49] ^= 1;
+        std::fs::write(&path, &b).unwrap();
+        assert_eq!(p.piece((8, 0, 0), || Ok(vec![9; 5])).unwrap(), [9; 5]);
+        assert!(p.take((8, 2, 0)).is_none(), "taken once");
     }
 
     /// Task #889: a run's identity is what decides its output (its step, version, target and
