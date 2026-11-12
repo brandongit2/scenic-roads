@@ -110,13 +110,23 @@ fn copy(root: &store::nasfs::NasRoot, cur: &Current, tmp: &Path) -> Result<PathB
     let v = &cur.version;
     let (archive, app) = (tmp.join("app.tgz"), tmp.join("app"));
     std::fs::create_dir_all(&app)?;
-    root.join(format!("app/releases/{v}.tgz")).copy_to_local(&archive).with_context(|| format!("app {v}: its archive"))?;
+    root.join(format!("app/releases/{v}.tgz"))
+        .copy_to_local(&archive)
+        .with_context(|| format!("app {v}: its archive"))?;
     let got = sha256(&std::fs::read(&archive)?);
-    ensure!(got == cur.archive_sha256, "app {v}: its archive doesn't match its SHA-256 (copied {got}, published {})", cur.archive_sha256);
+    ensure!(
+        got == cur.archive_sha256,
+        "app {v}: its archive doesn't match its SHA-256 (copied {got}, published {})",
+        cur.archive_sha256
+    );
     // (bsdtar, macOS's: it refuses a path that is absolute or climbs with "..".)
     let out = store::spawn::output(store::spawn::command("/usr/bin/tar").arg("-xzf").arg(&archive).arg("-C").arg(&app))
         .context("run tar")?;
-    ensure!(out.status.success(), "app {v}: tar couldn't unpack its archive: {}", String::from_utf8_lossy(&out.stderr).trim());
+    ensure!(
+        out.status.success(),
+        "app {v}: tar couldn't unpack its archive: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
     let mut found = BTreeMap::new();
     files_in(&app, "", &mut found)?;
     for (f, want) in &cur.sha256 {
@@ -124,7 +134,11 @@ fn copy(root: &store::nasfs::NasRoot, cur: &Current, tmp: &Path) -> Result<PathB
         let got = sha256(&std::fs::read(&p)?);
         ensure!(&got == want, "app {v}: {f} doesn't match its SHA-256 (unpacked {got}, published {want})");
     }
-    ensure!(found.is_empty(), "app {v}: its archive holds files its manifest doesn't: {:?}", found.keys().collect::<Vec<_>>());
+    ensure!(
+        found.is_empty(),
+        "app {v}: its archive holds files its manifest doesn't: {:?}",
+        found.keys().collect::<Vec<_>>()
+    );
     Ok(app)
 }
 
@@ -472,7 +486,10 @@ mod tests {
             ("its archive doesn't match", Box::new(|c| c["archive_sha256"] = sha256(b"other").into())),
             ("scenic doesn't match", Box::new(|c| c["sha256"]["scenic"] = sha256(b"other").into())),
             ("dem/step.py isn't in its archive", Box::new(|c| c["sha256"]["dem/step.py"] = sha256(b"").into())),
-            ("files its manifest doesn't", Box::new(|c| drop(c["sha256"].as_object_mut().unwrap().remove("web/index.html")))),
+            (
+                "files its manifest doesn't",
+                Box::new(|c| drop(c["sha256"].as_object_mut().unwrap().remove("web/index.html"))),
+            ),
         ];
         for (why, tweak) in refused {
             publish(n, w, app, tweak);
