@@ -6,7 +6,7 @@ import type { Map as MLMap } from 'maplibre-gl';
 import { FIT_LEN_DEFAULT, fitByPct, fitByWidths, pairOf, spread, unitOf } from '../autofit';
 import { getWay, keepable, ver, version, type Meta } from '../api';
 import * as cam3d from '../camera3d';
-import { CASING_CLASSES_MASK, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from '../config';
+import { CASING_CLASSES_MASK, CASING_Z, DIM_GREY, FADES, FADE_Z, RAIL0, RAIL_GROUPS, interp, setWidths } from '../config';
 import { MAP_SCHEMES, lookUniforms, presetLook, type RoadMapLook } from '../mapschemes';
 import { lineName } from '../names';
 import { hexRgb, paletteRgb } from '../palettes';
@@ -14,7 +14,7 @@ import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from '../rail';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from '../roads/layer';
 import { distFromSamples, viewStatsGen, type Dist, type ViewStats } from '../roads/stats';
 import { isScenic, modeDef } from '../scenic';
-import { ROAD_WEIGHT, classMask, groupMask, lineWeight, railMask, roadLenM, surfaceMask, tollMask, unnamedHideClasses, unnamedHideGroups, seed, type AppState, type Store } from '../state';
+import { ROAD_WEIGHT, classMask, groupMask, lineWeight, railMask, roadLenM, surfaceMask, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Store } from '../state';
 import { tasks, type Task } from '../tasks';
 import { cdfOf, fadeAlpha, passes, scaleU } from '../ui/scale';
 import type { InViewExtra } from '../ui/stats';
@@ -38,7 +38,10 @@ const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
 const cssOfRgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
 
 /** The road layer's share of the settings' road look (AppState.roadLook; the width table aside:
- * config.ts setWidths). Rail keeps the seed's (no profile holds a rail road look). */
+ * config.ts setWidths). Rail has its own, fixed (RAIL_LOOK): no setting changes it. */
+/** How the railways are drawn, fixed (no setting changes it): cased from the first casing zoom,
+ * tunnels at 0.45 opacity, bridges cased. */
+const RAIL_LOOK = { casingFrom: CASING_Z[0], casingWidth: 1, tunnelFade: 0.45, bridgeCasing: true, dashUnpaved: true };
 function roadLookStyle(s: AppState): Pick<RoadStyle, 'minZoom' | 'casingFrom' | 'casingWidth' | 'tunnelFade' | 'bridgeCasing' | 'dashUnpaved'> {
   const l = s.roadLook;
   return { minZoom: [...l.minZoom], casingFrom: l.casingFrom, casingWidth: l.casingWidth, tunnelFade: l.tunnel, bridgeCasing: l.bridgeCasing, dashUnpaved: l.dashUnpaved };
@@ -138,7 +141,7 @@ export class RoadsRail implements FramePart {
     })();
     const rails = (this.rails = new RoadLayer(
       // Drawn as railways (a thin line with cross-ties: the layer's rail pattern), cased when zoomed in.
-      { ...roads.style, ...roadLookStyle(seed), minZoom: [], classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
+      { ...roads.style, ...RAIL_LOOK, minZoom: [], classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
       {
         id: 'rails',
         rail: true,

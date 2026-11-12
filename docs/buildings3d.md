@@ -347,7 +347,7 @@ the centroid's elevation), tiles and data-driven paint. An opacity under 1 draws
   of GPU a frame.
 - On the iPad (Shinjuku, Midtown, Châtelet) the buildings took ≤ ~88 MB of buffers and changed the
   frame rate within the whole map's own variation; the frame rate is the map's, not the buildings'.
-- On a touch screen the default opacity is 1 (one pass) (`state.ts`).
+- Opacity 1 draws the buildings in one pass, under 1 in two; the Default profile's is 1, on every device.
 - **If over budget** on touch devices: z14 tiles only from zoom 15, a smaller cache (4 tiles), or the
   centroids freed after upload (a change to our MapLibre).
 

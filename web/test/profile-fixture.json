@@ -1,0 +1,659 @@
+{
+  "mode": "score",
+  "looks": {},
+  "scales": {},
+  "palette": "pubugn",
+  "auto": true,
+  "range": [
+    0,
+    100
+  ],
+  "fit": [
+    80,
+    99.9
+  ],
+  "scenicFits": {},
+  "fitLens": {},
+  "fitUnits": {},
+  "equalize": false,
+  "weights": [
+    2,
+    0.4,
+    2,
+    2,
+    2,
+    0.4,
+    0,
+    -0.6,
+    -1.5,
+    -1.5,
+    0.3,
+    0.2
+  ],
+  "preset": "vistas",
+  "groups": [
+    true,
+    true,
+    true,
+    true,
+    true
+  ],
+  "unnamed": [
+    true,
+    true,
+    true,
+    false,
+    true
+  ],
+  "roadLen": [
+    0.5,
+    0
+  ],
+  "roadLenOn": true,
+  "roadMap": {
+    "kind": "class",
+    "fill": [
+      "#6b9cf033",
+      "#6b9cf03d",
+      "#6b9cf057",
+      "#7aa6f266",
+      "#8fb5f5a6",
+      "#8fbaffcc",
+      "#a9cbff",
+      "#cfe2ff",
+      "#f0f6ff",
+      "#6b9cf0b3"
+    ],
+    "casing": [
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12",
+      "#060a12"
+    ],
+    "cased": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ],
+    "cats": {
+      "speed": [
+        "#ffffff26",
+        "#9a70d8",
+        "#4d8ccc",
+        "#36b36a",
+        "#b8d830",
+        "#f59e0b",
+        "#e0443e"
+      ],
+      "lanes": [
+        "#ffffff26",
+        "#5a8ad0",
+        "#74add1",
+        "#fee090",
+        "#fdae61",
+        "#f46d43",
+        "#d73027"
+      ],
+      "surface": [
+        "#ffffff33",
+        "#cfd6e0",
+        "#8fb3d9",
+        "#c98f5a",
+        "#d8c27a",
+        "#e0a44a",
+        "#b8683f",
+        "#b07d3a"
+      ],
+      "oneway": [
+        "#ffffff33",
+        "#4cc9f0",
+        "#f59e0b"
+      ]
+    }
+  },
+  "roadLook": {
+    "minZoom": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "casingFrom": 9.5,
+    "casingWidth": 1,
+    "tunnel": 0.45,
+    "bridgeCasing": true,
+    "dashUnpaved": true,
+    "widths": [
+      [
+        0.2,
+        0.35,
+        0.6,
+        1.2,
+        3,
+        6
+      ],
+      [
+        0.25,
+        0.45,
+        0.8,
+        1.6,
+        4,
+        8
+      ],
+      [
+        0.3,
+        0.5,
+        0.9,
+        1.8,
+        4.5,
+        9
+      ],
+      [
+        0.3,
+        0.55,
+        1,
+        1.9,
+        4.5,
+        9
+      ],
+      [
+        0.45,
+        0.8,
+        1.4,
+        2.4,
+        5.5,
+        11
+      ],
+      [
+        0.6,
+        1,
+        1.7,
+        2.8,
+        6,
+        12
+      ],
+      [
+        0.8,
+        1.2,
+        2,
+        3.2,
+        6.5,
+        13
+      ],
+      [
+        1,
+        1.4,
+        2.2,
+        3.6,
+        7,
+        14
+      ],
+      [
+        1.1,
+        1.6,
+        2.4,
+        4,
+        8,
+        16
+      ],
+      [
+        0.5,
+        0.7,
+        1,
+        1.4,
+        2,
+        3
+      ],
+      [
+        0.3,
+        0.45,
+        0.8,
+        1.4,
+        2.6,
+        4
+      ],
+      [
+        0.5,
+        0.7,
+        1.1,
+        1.8,
+        3.2,
+        5
+      ],
+      [
+        0.6,
+        0.8,
+        1.3,
+        2,
+        3.4,
+        5.5
+      ],
+      [
+        0.8,
+        1,
+        1.5,
+        2.2,
+        3.6,
+        6
+      ],
+      [
+        0.7,
+        0.9,
+        1.4,
+        2.1,
+        3.6,
+        6
+      ]
+    ]
+  },
+  "rail": {
+    "on": true,
+    "groups": [
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "colour": "metric",
+    "metric": "rscore",
+    "looks": {},
+    "palette": "rocket",
+    "fit": [
+      70,
+      99.8
+    ],
+    "equalize": false,
+    "lowFade": 0.6,
+    "lowSpan": 0.6,
+    "auto": true,
+    "range": [
+      0,
+      100
+    ],
+    "threshold": {
+      "on": false,
+      "dir": "above",
+      "value": 50
+    },
+    "weights": [
+      0.7,
+      0.3,
+      0.8,
+      1,
+      2,
+      0,
+      2,
+      -1,
+      0.3,
+      0.3,
+      1
+    ],
+    "preset": "my-preset",
+    "opacity": 1,
+    "single": "#e8ecf2",
+    "freqOn": false,
+    "freqMin": 0,
+    "freqMax": 0,
+    "freqUnknown": true,
+    "fitLens": {},
+    "fitUnits": {},
+    "ties": 2.5,
+    "stopSize": 1,
+    "stopContrast": 0.5
+  },
+  "trees": {
+    "on": true,
+    "variable": "cover",
+    "style": "mask",
+    "opacity": 0.05,
+    "palette": "greens",
+    "cutCover": 20,
+    "cutHeight": 5,
+    "maskCover": 20,
+    "maskHeight": 10,
+    "maskColour": "#03a300"
+  },
+  "depth": {
+    "on": true,
+    "scale": "log",
+    "colours": {
+      "palette": "nautical",
+      "auto": false,
+      "range": [
+        0,
+        300
+      ],
+      "fit": [
+        2,
+        98
+      ],
+      "equalize": false,
+      "lowFade": 0,
+      "lowSpan": 0.6,
+      "threshold": {
+        "on": false,
+        "dir": "above",
+        "value": 100
+      }
+    },
+    "opacity": 0.85,
+    "shade": 0.45,
+    "light": 315,
+    "dry": true,
+    "dryColour": "#8fae7d",
+    "contours": false,
+    "interval": "zoom",
+    "fixed": 10,
+    "index": 5,
+    "labels": true,
+    "colour": "#9ec3dc",
+    "weight": 1,
+    "lineOpacity": 0.55,
+    "floor": false
+  },
+  "buildings": {
+    "on": true,
+    "flat": false,
+    "colour": "plain",
+    "plain": "#566173",
+    "opacity": 0.85,
+    "scale": 1,
+    "height": {
+      "palette": "viridis",
+      "fit": [
+        5,
+        99.5
+      ],
+      "equalize": false,
+      "lowFade": 0.6,
+      "lowSpan": 0.4,
+      "auto": true,
+      "range": [
+        0,
+        100
+      ],
+      "threshold": {
+        "on": false,
+        "dir": "above",
+        "value": 50
+      }
+    },
+    "heritage": true
+  },
+  "ferry": {
+    "on": true,
+    "groups": [
+      true,
+      true,
+      true,
+      true
+    ],
+    "colour": "metric",
+    "metric": "freq",
+    "looks": {},
+    "palette": "oslo",
+    "fit": [
+      0,
+      100
+    ],
+    "equalize": false,
+    "lowFade": 0.45,
+    "lowSpan": 0.5,
+    "auto": true,
+    "range": [
+      -0.8450980400142569,
+      2
+    ],
+    "threshold": {
+      "on": false,
+      "dir": "above",
+      "value": 0.577
+    },
+    "opacity": 0.9,
+    "dashed": true,
+    "single": "#8fc8ff",
+    "freqOn": false,
+    "freqMin": 0,
+    "freqMax": 0,
+    "freqUnknown": true,
+    "fitLens": {},
+    "fitUnits": {}
+  },
+  "surface": {
+    "paved": true,
+    "unpaved": true
+  },
+  "toll": {
+    "free": true,
+    "toll": true
+  },
+  "lineWeights": {
+    "global": 1,
+    "roads": 1.5,
+    "rail": 0.5,
+    "ferries": 0.5,
+    "borders": 1,
+    "rivers": 1,
+    "outlines": 1
+  },
+  "roadOpacity": 1,
+  "roadPersp": {
+    "strength": 1,
+    "cap": 3,
+    "fade": 0.3
+  },
+  "boundaryOpacity": 1,
+  "pointOutline": "#0b0e13",
+  "pointOutlineOpacity": 1,
+  "routeGlow": false,
+  "lowFade": 0.8,
+  "lowSpan": 0.6,
+  "labelOpacity": 0.5,
+  "labelSize": 1,
+  "labelLooks": {},
+  "land": "#0b0e13",
+  "water": {
+    "colour": "#0c1622",
+    "shade": true,
+    "width": 28,
+    "strength": 0.22,
+    "falloff": 1.8,
+    "shadeColour": "#4f7fa8",
+    "shore": 0.25,
+    "ripples": 0,
+    "rippleStrength": 0.35,
+    "lakes": false,
+    "rivers": true,
+    "foam": 0.8,
+    "foamFrom": 8,
+    "foamTo": 50,
+    "foamCover": 0.75,
+    "foamColour": "#cee0ec"
+  },
+  "labelDensity": {
+    "px": 90,
+    "kinds": {
+      "places": 1,
+      "water": 1,
+      "parks": 1,
+      "landmarks": 1,
+      "stations": 1
+    },
+    "horizon": 0.5
+  },
+  "poiOpacity": 0.7,
+  "poiEmphasis": 1,
+  "landmarks": {
+    "palette": "oslo",
+    "auto": true,
+    "range": [
+      0,
+      1
+    ],
+    "fit": [
+      70,
+      99.9
+    ],
+    "equalize": false,
+    "lowFade": 0.8,
+    "lowSpan": 0.4,
+    "threshold": {
+      "on": false,
+      "dir": "above",
+      "value": 0.5
+    },
+    "balance": 0.3,
+    "top": [
+      250,
+      10
+    ]
+  },
+  "globe": true,
+  "occlude": true,
+  "layers": {
+    "roads": true,
+    "water": true,
+    "boundaries": true,
+    "places": true
+  },
+  "boundaryLevels": [
+    true,
+    true,
+    true
+  ],
+  "labelKinds": {
+    "city": true,
+    "town": true,
+    "village": true,
+    "minor": true,
+    "state": true,
+    "water": true,
+    "parks": true,
+    "heritage": true,
+    "areas": true,
+    "stops": true,
+    "ferries": true,
+    "stations": true
+  },
+  "overlays": {
+    "parks": false,
+    "heritage": true,
+    "heritageAreas": true,
+    "special": false,
+    "indigenous": true,
+    "viewpoint": true,
+    "peak": true,
+    "waterfall": true,
+    "lighthouse": true,
+    "covered_bridge": true,
+    "rest": true,
+    "trailhead": true
+  },
+  "heritageOff": [],
+  "stopFilters": {},
+  "stopUnknown": {
+    "waterfall": false
+  },
+  "terrain": {
+    "on": true,
+    "exaggeration": 3,
+    "hillshade": true,
+    "method": "combined",
+    "light": 315,
+    "shade": 0.45,
+    "tint": true,
+    "tintVar": "slope",
+    "tintOpacity": 0.1,
+    "tintBands": 0,
+    "tintCurve": 1,
+    "tintMatch": false,
+    "tintScales": {
+      "elev": {
+        "palette": "atlas",
+        "auto": true,
+        "range": [
+          0,
+          1900
+        ],
+        "fit": [
+          1,
+          99
+        ],
+        "equalize": false,
+        "lowFade": 0,
+        "lowSpan": 0.5,
+        "threshold": {
+          "on": false,
+          "dir": "above",
+          "value": 1000
+        }
+      },
+      "slope": {
+        "palette": "plasma_r",
+        "auto": false,
+        "range": [
+          10,
+          70
+        ],
+        "fit": [
+          2,
+          98
+        ],
+        "equalize": false,
+        "lowFade": 1,
+        "lowSpan": 0.1,
+        "threshold": {
+          "on": false,
+          "dir": "above",
+          "value": 30
+        }
+      }
+    },
+    "contours": false,
+    "contour": {
+      "weight": 1,
+      "minor": 0.16,
+      "major": 0.34,
+      "colour": "#a9b6c8",
+      "density": 0,
+      "perspective": 1,
+      "labels": true,
+      "ring": 6,
+      "labelSize": 1
+    },
+    "sky": true,
+    "fog": {
+      "start": 0.02,
+      "end": 0.45,
+      "opacity": 0.9,
+      "colour": "#0b0e13",
+      "horizonColour": "#1b2432",
+      "horizonBlend": 0.6
+    }
+  },
+  "threshold": {
+    "on": false,
+    "dir": "above",
+    "value": 60
+  }
+}

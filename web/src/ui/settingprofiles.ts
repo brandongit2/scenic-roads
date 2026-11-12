@@ -26,14 +26,18 @@ export interface Listing {
   id?: string;
 }
 
-/** The list when the server doesn't answer, or answers none: the Default profile alone, holding the
- * seed (state.ts), which is also what the server seeds a new Default from (profiles.rs). Not
- * writable: nothing is saved while the server can't be had. */
+/** The list when the server doesn't answer (within PROFILES_WAIT_MS), or answers none: the Default
+ * profile alone, holding the seed (state.ts), which is also what the server seeds a new Default from
+ * (profiles.rs). Not writable: nothing is saved while the server can't be had. */
 export const FALLBACK: Listing = { default: 'base', profiles: [{ id: 'base', name: 'Default', settings: profileSettings(seed) }], writable: false };
+
+/** How long the map waits for the profiles (the map is made once they're known: main.ts); they
+ * answer in ~0.1 s, the map's metadata in ~0.2 s. */
+const PROFILES_WAIT_MS = 5000;
 
 export async function fetchProfiles(): Promise<Listing> {
   try {
-    const r = await fetch('/api/profiles', { cache: 'no-store' });
+    const r = await fetch('/api/profiles', { cache: 'no-store', signal: AbortSignal.timeout(PROFILES_WAIT_MS) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const l = (await r.json()) as Listing;
     return l.profiles?.some((p) => p.id === l.default) ? l : FALLBACK;

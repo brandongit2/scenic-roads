@@ -1,12 +1,12 @@
 import seedJson from '../default-profile.json';
-import { DEFAULT_WIDTHS, GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
+import { GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
 import { RAIL_COMPONENTS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from './rail';
 import { CAT_KINDS, MAP_KINDS, MAP_SCHEMES, presetLook, type RoadMapLook } from './mapschemes';
 import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetric } from './ferry';
 import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
-import { DEPTH_DEFAULTS, DEPTH_PALETTES, type DepthState } from './depthlook';
+import { DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
 import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
 import { BUILTIN, RAIL_DEFAULT_PRESET, presets, railPresets, sameWeights } from './presets';
@@ -74,15 +74,17 @@ export interface LabelDensity {
   /** Thinning toward the horizon in a pitched view (horizon.ts): 0 none … 1 strong. */
   horizon: number;
 }
-export const DEFAULT_DENSITY: LabelDensity = { px: 90, kinds: { places: 1, water: 1, parks: 1, landmarks: 1, stations: 1 }, horizon: 0.5 };
+/** The spacing the labels' zooms in the tiles are worked out at (px: landmarks::interest's mz and ms);
+ * a spacing applies as its ratio to this. */
+export const BASE_SPACING_PX = 90;
 /** The label spacing range (px); per kind, no closer than MIN_SPACING_PX (landmarks::labels MIN_PX:
  * the label tiles hold a label from the zoom it shows at that). */
 export const SPACING_RANGE: [number, number] = [30, 300];
 export const MIN_SPACING_PX = 16;
 /** A kind's spacing (px): the density's, over the kind's factor; `base` for a kind spaced on its
- * own scale (rail stops: 70 at the default 90). */
-export const kindSpacing = (d: LabelDensity, kind: DensityKind, base = DEFAULT_DENSITY.px): number =>
-  Math.max(MIN_SPACING_PX, (d.px * base) / DEFAULT_DENSITY.px / Math.max(0.05, d.kinds[kind]));
+ * own scale (rail stops: 70 at 90). */
+export const kindSpacing = (d: LabelDensity, kind: DensityKind, base = BASE_SPACING_PX): number =>
+  Math.max(MIN_SPACING_PX, (d.px * base) / BASE_SPACING_PX / Math.max(0.05, d.kinds[kind]));
 
 export interface Terrain {
   /** 3D terrain mesh. */
@@ -242,10 +244,10 @@ function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 
   };
 }
 
-/** The depth's colour scale within bounds: a depth palette, a range within 0–6,000 m. */
-function cleanDepthColours(c: ScaleFields): ScaleFields {
+/** The depth's colour scale within bounds: a depth palette (else `base`'s), a range within 0–6,000 m. */
+function cleanDepthColours(c: ScaleFields, base: ScaleFields): ScaleFields {
   const lo = Math.min(5995, Math.max(0, c.range[0])), hi = Math.min(6000, Math.max(lo + 5, c.range[1]));
-  return { ...c, palette: DEPTH_PALETTES.some((p) => p.key === baseKey(c.palette)) ? c.palette : DEPTH_DEFAULTS.colours.palette, range: [lo, hi] };
+  return { ...c, palette: DEPTH_PALETTES.some((p) => p.key === baseKey(c.palette)) ? c.palette : base.palette, range: [lo, hi] };
 }
 
 /** A colour scale's fields in a link: palette, auto, range, fit, equalise, fades, highlight. */
@@ -362,12 +364,15 @@ export function scaleOfLook(l: MetricLook): ScaleFields {
   };
 }
 
-/** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts): the
- * seed's for the layer's seed metric (the ride score, sailings a day), else a fresh one. */
+/** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts), and what a
+ * link's list of the other metrics' looks is written against (looksField): fixed, whatever the
+ * profiles, so that a link reads the same after any profile changes. The ride score: rocket over its
+ * top 30 %; sailings a day: oslo over them all; the others viridis. */
 export const railFreshLook = (m: RailMetric): MetricLook =>
-  m === seed.rail.metric ? lookOfScale(seed.rail) : freshLook(railMetricDef(m).range, 0.4);
-export const ferryFreshLook = (m: FerryMetric): MetricLook =>
-  m === seed.ferry.metric ? lookOfScale(seed.ferry) : { ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] };
+  m === 'rscore' ? { ...freshLook(railMetricDef(m).range, 0.6), palette: 'rocket', fit: [70, 99.8] } : freshLook(railMetricDef(m).range, 0.4);
+export const ferryFreshLook = (m: FerryMetric): MetricLook => (m === 'freq'
+  ? { ...freshLook(ferryMetricDef(m).range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }
+  : { ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] });
 
 /** The metrics but the one shown, their palettes and percentiles in a link value (rail,
  * ferries): `key_palette_lo_hi` for each whose differ from its look when first picked, the palette
@@ -671,8 +676,8 @@ export interface RoadLook {
   widths: number[][];
 }
 export const ROAD_LOOK_RANGE = { minZoom: [0, 16], casingFrom: [4, 18], casingWidth: [0, 4], tunnel: [0.05, 1] } as const;
-/** A road look with every value in range (a malformed width table: the default one). */
-export function cleanRoadLook(l: RoadLook): RoadLook {
+/** A road look with every value in range (a malformed width table: `base`'s). */
+export function cleanRoadLook(l: RoadLook, base: RoadLook): RoadLook {
   const R = ROAD_LOOK_RANGE;
   const okW = Array.isArray(l.widths) && l.widths.length === NCLASS && l.widths.every((r) => Array.isArray(r) && r.length === WIDTH_Z.length && r.every((v) => typeof v === 'number' && Number.isFinite(v)));
   return {
@@ -682,7 +687,7 @@ export function cleanRoadLook(l: RoadLook): RoadLook {
     tunnel: clampTo(l.tunnel, R.tunnel),
     bridgeCasing: l.bridgeCasing,
     dashUnpaved: l.dashUnpaved,
-    widths: okW ? l.widths.map((r) => r.map((v) => clampTo(v, WIDTH_RANGE))) : DEFAULT_WIDTHS.map((r) => [...r]),
+    widths: okW ? l.widths.map((r) => r.map((v) => clampTo(v, WIDTH_RANGE))) : base.widths.map((r) => [...r]),
   };
 }
 const HEX8 = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
@@ -742,7 +747,7 @@ export class Store {
     const looks = { ...s.looks, [modeGroup(s.mode)]: lookOf(s) };
     const scales = { ...s.scales, [s.mode]: { auto: s.auto, range: [...s.range], thrValue: s.threshold.value } as Scale };
     const d = modeDef(mode);
-    const lk = looks[modeGroup(mode)] ?? (modeGroup(mode) === modeGroup(seed.mode) ? lookOf(seed) : FRESH_LOOK);
+    const lk = looks[modeGroup(mode)] ?? freshLookOf(modeGroup(mode));
     const sc = scales[mode] ?? { auto: d.auto, range: [...d.range] as [number, number], thrValue: d.thrDefault };
     // A scenic metric's percentiles are its own: the one left keeps its, the one picked brings its.
     let scenicFits = isScenic(s.mode) ? withPair(s.scenicFits, s.mode, s.fit, FIT_DEFAULT) : s.scenicFits;
@@ -756,8 +761,12 @@ export class Store {
   }
 }
 
-/** A display type's colours the first time it is picked, unless it is the seed's (whose are the seed's). */
-const FRESH_LOOK: Look = { palette: 'viridis', fit: [1, 99], equalize: false, lowFade: 0.7, lowSpan: 0.6, thrOn: false, thrDir: 'above' };
+/** A display type's colours the first time it is picked (the settings hold no look of its own):
+ * fixed, as each metric's range is (scenic.ts MODES), whatever the profiles. The scenic metrics:
+ * PuBuGn over their top fifth (FIT_DEFAULT); the others viridis over the 1st to 99th percentile. */
+const freshLookOf = (g: ModeGroup): Look => (g === 'scenic'
+  ? { palette: 'pubugn', fit: [...FIT_DEFAULT], equalize: false, lowFade: 0.8, lowSpan: 0.6, thrOn: false, thrDir: 'above' }
+  : { palette: 'viridis', fit: [1, 99], equalize: false, lowFade: 0.7, lowSpan: 0.6, thrOn: false, thrDir: 'above' });
 
 function lookOf(s: AppState): Look {
   return {
@@ -1103,11 +1112,11 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   if (rxv && rxv.length === 6) {
     const mz = rxv[0].split('_').map(Number), n = rxv.slice(1, 4).map(Number);
     if (mz.length === NROAD && mz.every(Number.isFinite) && n.every(Number.isFinite)) {
-      s.roadLook = cleanRoadLook({ ...s.roadLook, minZoom: mz, casingFrom: n[0], casingWidth: n[1], tunnel: n[2], bridgeCasing: rxv[4] === '1', dashUnpaved: rxv[5] === '1' });
+      s.roadLook = cleanRoadLook({ ...s.roadLook, minZoom: mz, casingFrom: n[0], casingWidth: n[1], tunnel: n[2], bridgeCasing: rxv[4] === '1', dashUnpaved: rxv[5] === '1' }, base.roadLook);
     }
   }
   const wd = p.get('wd')?.split(',').map((r) => r.split('_').map(Number));
-  if (wd && wd.length === NCLASS && wd.every((r) => r.length === WIDTH_Z.length && r.every(Number.isFinite))) s.roadLook = cleanRoadLook({ ...s.roadLook, widths: wd });
+  if (wd && wd.length === NCLASS && wd.every((r) => r.length === WIDTH_Z.length && r.every(Number.isFinite))) s.roadLook = cleanRoadLook({ ...s.roadLook, widths: wd }, base.roadLook);
   const rsv = p.get('rs')?.split(',');
   if (rsv && rsv.length >= 13) {
     const rs = rsv;
@@ -1230,7 +1239,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
     };
   }
   const dsv = p.get('ds')?.split(',');
-  if (dsv && dsv.length >= 12) s.depth = { ...s.depth, colours: cleanDepthColours(parseScale(dsv, s.depth.colours)) };
+  if (dsv && dsv.length >= 12) s.depth = { ...s.depth, colours: cleanDepthColours(parseScale(dsv, s.depth.colours), base.depth.colours) };
   const bdv = buildings ? p.get('bd')?.split(',') : undefined;
   if (bdv && bdv.length >= 5) {
     const b = s.buildings;
@@ -1526,7 +1535,7 @@ export function fromSaved(o: unknown, base: AppState): AppState {
   const oldMs = MAP_SCHEMES.find((m) => m.key === src.mapScheme);
   if (oldMs && !src.roadMap) s.roadMap = presetLook(oldMs, s.roadMap);
   s.roadMap = cleanMapLook(s.roadMap, base.roadMap);
-  s.roadLook = cleanRoadLook(s.roadLook);
+  s.roadLook = cleanRoadLook(s.roadLook, base.roadLook);
   const lt = s.landmarks.top as unknown;
   s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : base.landmarks.top;
   s.rail.colour = colourOf(s.rail.colour, RAIL_COLOURS, RAIL_COLOURS_WERE, base.rail.colour);
@@ -1552,7 +1561,7 @@ export function fromSaved(o: unknown, base: AppState): AppState {
     if (typeof sd.max === 'number' && Number.isFinite(sd.max)) s.depth.colours.range = [0, sd.max];
   }
   if (s.depth.scale !== 'linear') s.depth.scale = 'log';
-  s.depth.colours = cleanDepthColours(s.depth.colours);
+  s.depth.colours = cleanDepthColours(s.depth.colours, base.depth.colours);
   if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = base.buildings.heritage;
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = base.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the base has).

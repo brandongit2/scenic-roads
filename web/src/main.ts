@@ -53,7 +53,7 @@ import { slicedGlyphs } from './glyphs';
 import { installTrackpad } from './trackpad';
 import { MapStatus } from './ui/mapstatus';
 import { ColourCard } from './ui/colour';
-import { Profiles, fetchProfiles } from './ui/settingprofiles';
+import { FALLBACK, Profiles, fetchProfiles } from './ui/settingprofiles';
 import { cap, toast } from './ui/dom';
 import { fmt } from './fmt';
 import { loadBar } from './ui/loadbar';
@@ -181,16 +181,17 @@ async function main() {
   const oldWidths = BENCH ? null : prefs.load<number[][] | null>('roadWidths', null);
   if (oldWidths) {
     if (!(prefs.load<Record<string, unknown> | null>('state', null)?.roadLook)) {
-      saved.roadLook = cleanRoadLook({ ...saved.roadLook, widths: oldWidths });
+      saved.roadLook = cleanRoadLook({ ...saved.roadLook, widths: oldWidths }, saved.roadLook);
       prefs.save('state', { ...saved, selected: null });
     }
     prefs.save('roadWidths', null);
   }
-  if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
+  if (listing === FALLBACK) toast('The settings profiles didn\u2019t load: the built-in Default is shown, and profiles can\u2019t be changed');
+  else if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
   // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
   const linked = BENCH ? fromHash(benchHash(), hasBuildings, seed) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // (A link without widths of its own, opened the session the widths moved in: they apply, as before.)
-  if (oldWidths && hasLink && !/(^#|&)wd=/.test(location.hash)) linked.roadLook = cleanRoadLook({ ...linked.roadLook, widths: oldWidths });
+  if (oldWidths && hasLink && !/(^#|&)wd=/.test(location.hash)) linked.roadLook = cleanRoadLook({ ...linked.roadLook, widths: oldWidths }, linked.roadLook);
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings, seed)) : CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
@@ -752,7 +753,7 @@ async function main() {
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
   // Depth under the water (depth.ts): its layers once the catalogue has them.
-  const depth = new Depth(map);
+  const depth = new Depth(map, store.s.depth);
   depth.viewOutline = overlays.viewOutline;
   layers.depth.onPreview = (palette) => depth.preview(palette);
   depth.onFit = () => layers.depth.update(depth.dist, depth.domain(), depth.cdf());

@@ -435,6 +435,25 @@ mod tests {
     }
 
     #[test]
+    fn an_existing_list_is_never_seeded_reading_or_changing_it() {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(jobrt::PROFILES);
+        // An older server's list: its Default holding nothing (the web app fills it from the seed).
+        let old = br#"{"v":1,"default":"base","profiles":[{"id":"base","name":"Default","settings":{}},{"id":"ab12","name":"Night","settings":{"mode":"score"}}]}"#;
+        std::fs::write(&file, old).unwrap();
+        let p = Profiles::new(home.path());
+        let (l, writable) = p.list();
+        assert!(writable);
+        assert!(l.profiles[0].settings.is_empty());
+        assert_eq!(std::fs::read(&file).unwrap(), old, "a read writes nothing");
+        let (next, _) = p.change(Op::Update { id: "ab12".into(), name: Some("Late".into()), settings: None }).unwrap();
+        let on_disk = List::parse(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(on_disk, next);
+        assert!(on_disk.profiles[0].settings.is_empty(), "the Default left as it was");
+        assert_eq!(on_disk.profiles[1].settings, l.profiles[1].settings);
+    }
+
+    #[test]
     fn a_new_default_is_the_web_apps_seed_and_a_change_writes_it_with_the_new_profile() {
         let home = tempfile::tempdir().unwrap();
         let p = Profiles::new(home.path());

@@ -25,7 +25,7 @@ import { displayOf } from './names';
 import { capGround } from './polarglobe';
 import { iconPath } from './poiicons';
 import { charsOf, nameShows, rasterize, textSize, type Glyph, type Rgba, type TextLine, type TextLook } from './polarlabels';
-import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity } from './state';
+import { BASE_SPACING_PX, kindSpacing, type DensityKind, type LabelDensity } from './state';
 
 type Props = Record<string, unknown> & { n?: string; k?: string; c?: string; s?: number; r?: number; w?: number; ele?: number };
 type Feature = { geometry: { type: 'Point' | 'LineString'; coordinates: number[] | number[][] }; properties: Props };
@@ -342,7 +342,7 @@ export class PolarPoints {
       if (!front(p)) continue;
       const s = screen(p);
       if (!s || !onScreen(s)) continue;
-      const show = !!f.properties.n && nameShows(f.properties, mppAt(p, s), kindSpacing(d, l.density), DEFAULT_DENSITY.px);
+      const show = !!f.properties.n && nameShows(f.properties, mppAt(p, s), kindSpacing(d, l.density), BASE_SPACING_PX);
       cands.push({ f, s, sl, poi: f.properties.k === 'poi', show });
     }
     cands.sort((a, b) => Number(a.poi) - Number(b.poi));

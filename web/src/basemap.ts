@@ -3,7 +3,7 @@ import { LAND_COLOUR } from './basecolours';
 import { ver, version } from './api';
 import type { TerrainAreas } from './packs';
 import { hostFor } from './hosts';
-import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights, type WaterLook } from './state';
+import { BASE_SPACING_PX, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights, type WaterLook } from './state';
 import { hexBytes } from './palettes';
 
 // Base style: terrain (hillshade, tint, 3D mesh source), context layers from the self-built
@@ -150,10 +150,6 @@ export const HALO = '#0b0e13';
 export const SHADE_SHIFT = 32768.5;
 /** Steepness (percent) at a shading tile's R channel's top (roadcore::shade::SLOPE_MAX). */
 export const SLOPE_MAX = 400;
-/** Names appear once a place's interest isolation spans this many pixels (landmarks::interest's mz: the zoom
- * where it spans one), the best-known winning collisions: the default label spacing (state.ts
- * LabelDensity). */
-export const LABEL_SPACING_PX = DEFAULT_DENSITY.px;
 export const spacingFilter = (px: number): ExpressionSpecification | null =>
   px > 0 ? ['>=', ['zoom'], ['+', ['coalesce', ['get', 'mz'], -99], Math.log2(px)]] : null;
 
@@ -175,9 +171,9 @@ export const labelTileFilter = (id: string, px: number): ExpressionSpecification
     ['==', ['get', 'k'], l.kind],
     ...(l.classes ? [['in', ['get', 'c'], ['literal', l.classes]] as ExpressionSpecification] : []),
     spacingFilter(px)!,
-    // An area's name once the area is big enough on screen (ms, at the default spacing; sooner or
+    // An area's name once the area is big enough on screen (ms, at BASE_SPACING_PX; sooner or
     // later by half as many zooms as the spacing moves).
-    ['>=', ['zoom'], ['-', ['coalesce', ['get', 'ms'], -99], 0.5 * Math.log2(DEFAULT_DENSITY.px / px)]],
+    ['>=', ['zoom'], ['-', ['coalesce', ['get', 'ms'], -99], 0.5 * Math.log2(BASE_SPACING_PX / px)]],
   ];
 };
 /** Whether the labels come from our label tiles (baseStyle). */
@@ -483,7 +479,7 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
  * landmark names alone (set with their dots). */
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-export function baseStyle(water: WaterLook, labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, waterTiles = false, terrainAreas?: TerrainAreas): StyleSpecification {
+export function baseStyle(water: WaterLook, labelTiles: boolean, density: LabelDensity, waterTiles: boolean, terrainAreas?: TerrainAreas): StyleSpecification {
   WATER_TILES = waterTiles;
   const base = hostFor('base');
   const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));

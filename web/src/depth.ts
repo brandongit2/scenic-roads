@@ -36,7 +36,7 @@ import { onVersions, ver } from './api';
 import { SHADE_SHIFT, floorTiles, waterTilesOn, waterTop } from './basemap';
 import { hostFor } from './hosts';
 import { DRY_MIN, depthZooms, type DepthZooms } from './depthgrid';
-import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, HCELLS, rgba, DEPTH_DEFAULTS, type DepthState } from './depthlook';
+import { DEPTH_DOMAIN, depthBins, depthColour, hdepth, HBINS, HCELLS, rgba, type DepthState } from './depthlook';
 import type { DepthMsg, DepthReply, Probe } from './depth.worker';
 import { viewArea } from './inview';
 import { mercLat, mercLon, mercX, mercY, mercYClamped, tileY } from './merc';
@@ -68,7 +68,6 @@ const SURFACE_OPACITY = 0.5;
 const SURFACE_LIFT_M = 1;
 
 export class Depth {
-  private s: DepthState = DEPTH_DEFAULTS;
   /** The catalogue has depth (its layers) and its sources. */
   private has = false;
   private sources: DepthSource[] = [];
@@ -88,7 +87,8 @@ export class Depth {
   /** The ground in view's outline (main.ts groundOutline), as the other layers' in-view take it. */
   viewOutline?: () => [number, number][];
 
-  constructor(private map: MLMap) {
+  /** `s`: the settings' depth look, until `apply` changes it. */
+  constructor(private map: MLMap, private s: DepthState) {
     map.on('moveend', () => this.scheduleView());
     onVersions((f) => f.startsWith('depth'), () => this.initWorkers());
   }

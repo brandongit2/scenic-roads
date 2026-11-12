@@ -39,14 +39,6 @@ export interface DepthState {
   floor: boolean;
 }
 
-export const DEPTH_DEFAULTS: DepthState = {
-  on: true, scale: 'log',
-  colours: { palette: 'nautical', auto: false, range: [0, 300], fit: [2, 98], equalize: false, lowFade: 0, lowSpan: 0.6, threshold: { on: false, dir: 'above', value: 100 } },
-  opacity: 0.85, shade: 0.45, light: 315, dry: true, dryColour: '#8fae7d',
-  contours: false, interval: 'zoom', fixed: 10, index: 5, labels: true, colour: '#9ec3dc', weight: 1, lineOpacity: 0.55,
-  floor: false,
-};
-
 /** Depth ramps made for the dark map: shallow light, deep sinking into the water's own colour. */
 const RAMPS: Record<string, { label: string; stops: [number, string][] }> = {
   nautical: { label: 'Nautical blues', stops: [[0, '#cfeef5'], [0.12, '#8fd0e6'], [0.3, '#4fa3d1'], [0.5, '#2f73b0'], [0.72, '#1e4b85'], [0.88, '#152f5a'], [1, '#0e1d36']] },

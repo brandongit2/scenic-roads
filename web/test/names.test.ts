@@ -49,46 +49,49 @@ const st = await import('../src/state.ts');
 const { presets, railPresets } = await import('../src/presets.ts');
 const { RAIL_COMPONENTS } = await import('../src/rail.ts');
 const { COMPONENTS, addedWeights, isScenic, migrateWeights } = await import('../src/scenic.ts');
-const { seed, fromHash, fromSaved, fromProfile, toHash } = st;
+const { fromHash, fromSaved, fromProfile, toHash } = st;
+/** The profile the tests read links and saves over: a fixed one (profile-fixture.json), not the fx,
+ * which follows the owner's Default. */
+const fx = fromProfile(JSON.parse((await import('node:fs')).readFileSync(new URL('./profile-fixture.json', import.meta.url), 'utf8')));
 const field = (h: string, k: string, i: number) => new URLSearchParams(h.slice(1)).get(k)!.split(',')[i];
 const at = '#map=9.00/46.00000/-71.00000';
 
 // Older links (written by the app before the renames) read with the new names, the rest as they were.
 {
-  const r = fromHash(`${at}&rs=1,11111,group,rscore,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1,70,99.8,0,0.6,0,a,50,1,15,1`, true, seed);
+  const r = fromHash(`${at}&rs=1,11111,group,rscore,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1,70,99.8,0,0.6,0,a,50,1,15,1`, true, fx);
   assert.equal(r.rail.colour, 'service');
-  assert.deepEqual({ ...r.rail, colour: seed.rail.colour }, seed.rail);
-  const f = fromHash(`${at}&fy=1,1111,freq,oslo,,1,8fc8ff,0.4,0,0,0,1,months,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,15,1`, true, seed);
+  assert.deepEqual({ ...r.rail, colour: fx.rail.colour }, fx.rail);
+  const f = fromHash(`${at}&fy=1,1111,freq,oslo,,1,8fc8ff,0.4,0,0,0,1,months,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,15,1`, true, fx);
   assert.equal(f.ferry.colour, 'metric');
   assert.equal(f.ferry.metric, 'months');
   assert.equal(f.ferry.opacity, 0.4);
   // A link of either name gives the same settings.
   const both = (rs: string, fy: string) => `${at}&rs=1,11111,${rs},rscore,rocket,1,0,100,,,,ff0000,0.6,0,0,0,1,70,99.8,0,0.6,0,a,50,1,15,1&fy=1,1111,${fy},oslo,,0,8fc8ff,0.9,0,0,0,1,freq,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,15,1`;
-  assert.deepEqual(fromHash(both('group', 'freq'), true, seed), fromHash(both('service', 'metric'), true, seed));
+  assert.deepEqual(fromHash(both('group', 'freq'), true, fx), fromHash(both('service', 'metric'), true, fx));
   // New links write the new names.
-  const h = toHash({ ...structuredClone(seed), rail: { ...seed.rail, colour: 'service' }, ferry: { ...seed.ferry, opacity: 0.4 } }, true, { id: 'base', name: 'Default', s: seed });
+  const h = toHash({ ...structuredClone(fx), rail: { ...fx.rail, colour: 'service' }, ferry: { ...fx.ferry, opacity: 0.4 } }, true, { id: 'base', name: 'Default', s: fx });
   assert.equal(field(h, 'rs', 2), 'service');
   assert.equal(field(h, 'fy', 2), 'metric');
   // A colouring neither name has: the base's.
-  assert.equal(fromHash(`${at}&rs=1,11111,colourful,rscore,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1`, true, seed).rail.colour, seed.rail.colour);
+  assert.equal(fromHash(`${at}&rs=1,11111,colourful,rscore,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1`, true, fx).rail.colour, fx.rail.colour);
 }
 
 // Rail weights in a link from before the service-frequency factor: one fewer, it at its def.
 {
   const rw = '0.7,0.4,1,1.3,2.4,0.5,2.6,-0.3,1.1,1.2';
-  const s = fromHash(`${at}&rw=${rw}&rp=custom`, true, seed);
+  const s = fromHash(`${at}&rw=${rw}&rp=custom`, true, fx);
   assert.deepEqual(s.rail.weights, [...rw.split(',').map(Number), 0.3]);
   assert.equal(s.rail.preset, '');
-  assert.deepEqual(fromHash(`${at}&rw=${rw},2&rp=custom`, true, seed).rail.weights, [...rw.split(',').map(Number), 2]);
+  assert.deepEqual(fromHash(`${at}&rw=${rw},2&rp=custom`, true, fx).rail.weights, [...rw.split(',').map(Number), 2]);
   // Any other length, or a value not a number: not weights.
-  assert.deepEqual(fromHash(`${at}&rw=1,2,3`, true, seed).rail.weights, seed.rail.weights);
-  assert.deepEqual(fromHash(`${at}&rw=${rw.replace('0.4', 'x')}`, true, seed).rail.weights, seed.rail.weights);
+  assert.deepEqual(fromHash(`${at}&rw=1,2,3`, true, fx).rail.weights, fx.rail.weights);
+  assert.deepEqual(fromHash(`${at}&rw=${rw.replace('0.4', 'x')}`, true, fx).rail.weights, fx.rail.weights);
 }
 
 // Saved state and profiles (the same reader) from before the renames.
 {
   const old = { rail: { colour: 'group', weights: [0.7, 0.4, 1, 1.3, 2.4, 0.5, 2.6, -0.3, 1.1, 1.2] }, ferry: { colour: 'freq', metric: 'months' } };
-  for (const s of [fromSaved(structuredClone(old), seed), fromProfile(structuredClone(old))]) {
+  for (const s of [fromSaved(structuredClone(old), fx), fromProfile(structuredClone(old))]) {
     assert.equal(s.rail.colour, 'service');
     assert.deepEqual(s.rail.weights, [...old.rail.weights, 0.3]);
     assert.equal(s.ferry.colour, 'metric');
@@ -96,10 +99,10 @@ const at = '#map=9.00/46.00000/-71.00000';
   }
   // The saved object itself is left as it was.
   assert.equal(old.rail.weights.length, 10);
-  const now = fromSaved({ rail: { colour: 'service' }, ferry: { colour: 'metric' } }, seed);
+  const now = fromSaved({ rail: { colour: 'service' }, ferry: { colour: 'metric' } }, fx);
   assert.deepEqual([now.rail.colour, now.ferry.colour], ['service', 'metric']);
-  assert.equal(fromSaved({ rail: { colour: 'nope' }, ferry: { colour: 'nope' } }, seed).ferry.colour, seed.ferry.colour);
-  assert.equal(seed.ferry.colour, 'metric');
+  assert.equal(fromSaved({ rail: { colour: 'nope' }, ferry: { colour: 'nope' } }, fx).ferry.colour, fx.ferry.colour);
+  assert.equal(fx.ferry.colour, 'metric');
 }
 
 // Older weight lists: the road ones' 16 and 11 values, the rail ones' 10.

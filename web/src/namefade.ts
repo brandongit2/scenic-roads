@@ -9,7 +9,8 @@
 // same eased scale as the dots (dots.ts nameScale); a hundred or so in a dense view. A tile made
 // before the first scale has no opacity in it (its names hidden): they fade in once there is one.
 import type { Map as MLMap, OverscaledTileID } from 'maplibre-gl';
-import { LABEL_SPACING_PX, POINT_TILE_LAYER, nameOpacity, type NameScale } from './basemap';
+import { POINT_TILE_LAYER, nameOpacity, type NameScale } from './basemap';
+import { BASE_SPACING_PX } from './state';
 import type { TileNames } from './landmarks.worker';
 
 /** Names are eased for points whose name shows within this many zooms in. */
@@ -36,7 +37,7 @@ export class NameFader {
   /** Tiles whose names are fading in (made before the first scale): since when. */
   private fading = new Map<TileNames, number>();
   /** The landmarks' label spacing (px; their names show from mz + log2 of it). */
-  spacingPx = LABEL_SPACING_PX;
+  spacingPx = BASE_SPACING_PX;
 
   constructor(private map: MLMap, private dots: Scales) {}
 

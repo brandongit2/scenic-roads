@@ -1,9 +1,11 @@
 // Layers → Labels → Style: one label type's look at a time (labellook.ts), picked from a list;
-// each control writes its change into AppState.labelLooks (only what differs from the style's).
+// each control writes its change into AppState.labelLooks (only what differs from the style's). The
+// resets (double-click, Reset type, Reset all) go back to the profile in use's look.
 import { LABEL_FONTS, LABEL_TYPES, type LabelLook, type TextCase } from '../labellook';
 import type { Store } from '../state';
 import * as prefs from '../prefs';
 import { h } from './dom';
+import { inUse } from './settingprofiles';
 import { Slider, pct } from './controls';
 import { onDouble } from './touch';
 
@@ -27,8 +29,8 @@ export class LabelStyleSection {
       prefs.save('labels.styleType', this.type);
       this.sync();
     });
-    const resetType = h('button', { class: 'pill', title: 'This type’s look back to the default', onclick: () => this.patch(null) }, 'Reset type');
-    const resetAll = h('button', { class: 'pill', title: 'Every label type’s look back to the default', onclick: () => this.store.set({ labelLooks: {} }) }, 'Reset all');
+    const resetType = h('button', { class: 'pill', title: 'This type’s look back to the profile’s', onclick: () => this.patch(null) }, 'Reset type');
+    const resetAll = h('button', { class: 'pill', title: 'Every label type’s look back to the profile’s', onclick: () => this.store.set({ labelLooks: structuredClone(inUse().labelLooks) }) }, 'Reset all');
     this.body = h('div', { class: 'lk-body' },
       this.check('Shown', 'shown', 'Show this type of label (with its kind’s switch above)'),
       this.colour('Fill', 'colour', 'opacity', 'Text colour and its opacity (× Label opacity)'),
@@ -59,10 +61,16 @@ export class LabelStyleSection {
     const d = this.defaults[this.type];
     return d ? { ...d, ...this.store.s.labelLooks[this.type] } : null;
   }
-  /** A change to the type's look (null: back to the default); values equal to the default dropped. */
+  /** The type's look in the profile in use. */
+  private profileLook(): LabelLook | null {
+    const d = this.defaults[this.type];
+    return d ? { ...d, ...inUse().labelLooks[this.type] } : null;
+  }
+  /** A change to the type's look (null: back to the profile's); values equal to the style's dropped. */
   private patch(p: Partial<LabelLook> | null) {
     const looks = { ...this.store.s.labelLooks };
     const d = this.defaults[this.type];
+    if (!p) p = this.profileLook();
     if (p && d) {
       const o: Partial<LabelLook> = { ...looks[this.type], ...p };
       for (const k of Object.keys(o) as (keyof LabelLook)[]) if (o[k] === d[k]) delete o[k];
@@ -84,9 +92,9 @@ export class LabelStyleSection {
   private colour(label: string, key: 'colour' | 'halo', op: 'opacity' | 'haloOpacity', title: string) {
     const c = h('input', { type: 'color', title });
     c.addEventListener('input', () => this.patch({ [key]: c.value }));
-    const r = h('input', { type: 'range', min: 0, max: 1, step: 0.05, title: `${title} (double-click: default)` });
+    const r = h('input', { type: 'range', min: 0, max: 1, step: 0.05, title: `${title} (double-click: the profile\u2019s)` });
     r.addEventListener('input', () => this.patch({ [op]: Number(r.value) }));
-    onDouble(r, () => this.patch({ [op]: this.defaults[this.type]?.[op] }));
+    onDouble(r, () => this.patch({ [op]: this.profileLook()?.[op] }));
     const out = h('output');
     this.syncs.push(() => {
       const l = this.look();
@@ -103,9 +111,9 @@ export class LabelStyleSection {
       get: () => this.look()?.[key] ?? 0,
       set: (v) => this.patch({ [key]: v }),
     });
-    // Double-click: this type's default (it changes with the type picked, so not Slider's fixed reset).
-    onDouble(sl.input, () => this.patch({ [key]: this.defaults[this.type]?.[key] }));
-    sl.input.title += ' (double-click: default)';
+    // Double-click: the profile's value for this type (it changes with the type picked: not Slider's reset).
+    onDouble(sl.input, () => this.patch({ [key]: this.profileLook()?.[key] }));
+    sl.input.title += ' (double-click: the profile\u2019s)';
     this.syncs.push(() => sl.sync());
     return sl.el;
   }

@@ -2,10 +2,14 @@
 // weight 1 at the zooms WIDTH_Z, per class) as a grid of numbers. Typing sets a cell (Enter or
 // leaving it); scrolling over the one being edited (trackpad or wheel) nudges it by 5 % a step. Edits are
 // a setting (AppState.roadLook.widths: in profiles and links), which ctl/roads.ts puts into WIDTHS for the
-// next frame; no tile reload.
-import { CLASS_LABELS, DEFAULT_WIDTHS, NCLASS, WIDTH_RANGE, WIDTH_Z } from '../config';
+// next frame; no tile reload. A cell differing from the profile in use's is marked; the resets go back
+// to the profile's.
+import { CLASS_LABELS, NCLASS, WIDTH_RANGE, WIDTH_Z } from '../config';
 import { h } from './dom';
+import { inUse } from './settingprofiles';
 
+/** The profile in use's table (ui/settingprofiles.ts inUse). */
+const profiles = () => inUse().roadLook.widths;
 const fmt = (v: number) => (v >= 10 ? v.toFixed(1) : v >= 1 ? v.toFixed(2) : v.toFixed(2).replace(/^0/, ''));
 
 export class WidthGrid {
@@ -25,7 +29,7 @@ export class WidthGrid {
       const row: HTMLInputElement[] = [];
       grid.append(h('label', { title: CLASS_LABELS[c] }, CLASS_LABELS[c]));
       WIDTH_Z.forEach((z, i) => {
-        const inp = h('input', { type: 'text', 'aria-label': `${CLASS_LABELS[c]} z${z}`, inputmode: 'decimal', spellcheck: 'false', title: `${CLASS_LABELS[c]} at zoom ${z}: width in CSS px (${WIDTH_RANGE[0]}–${WIDTH_RANGE[1]}; default ${DEFAULT_WIDTHS[c][i]}). Scroll over it while editing to nudge.` });
+        const inp = h('input', { type: 'text', 'aria-label': `${CLASS_LABELS[c]} z${z}`, inputmode: 'decimal', spellcheck: 'false', title: `${CLASS_LABELS[c]} at zoom ${z}: width in CSS px (${WIDTH_RANGE[0]}–${WIDTH_RANGE[1]}). Scroll over it while editing to nudge.` });
         const commit = () => {
           const v = Number(inp.value.replace(',', '.'));
           if (inp.value.trim() !== '' && Number.isFinite(v)) put(c, i, v);
@@ -45,17 +49,17 @@ export class WidthGrid {
         row.push(inp);
         grid.append(inp);
       });
-      const rs = h('button', { class: 'wtab-rs', title: `${CLASS_LABELS[c]}: back to the default widths` }, '↺');
+      const rs = h('button', { class: 'wtab-rs', title: `${CLASS_LABELS[c]}: back to the profile\u2019s widths` }, '↺');
       rs.addEventListener('click', () => {
         const t = get().map((r) => [...r]);
-        t[c] = [...DEFAULT_WIDTHS[c]];
+        t[c] = [...profiles()[c]];
         apply(t);
       });
       grid.append(rs);
       this.cells.push(row);
     }
-    const all = h('button', { class: 'wtab-all', title: 'Every class back to the default widths' }, 'Reset to defaults');
-    all.addEventListener('click', () => apply(DEFAULT_WIDTHS.map((r) => [...r])));
+    const all = h('button', { class: 'wtab-all', title: 'Every class back to the profile\u2019s widths' }, 'Reset all');
+    all.addEventListener('click', () => apply(profiles().map((r) => [...r])));
     this.el = h('details', { class: 'wtab-box' },
       h('summary', { title: 'Line width (CSS px, before the line weights) of each road class and rail line at zooms 4–19; between them interpolated. Edits are a setting: kept in profiles and links.' }, 'Widths by zoom'),
       grid, all);
@@ -63,10 +67,10 @@ export class WidthGrid {
   }
 
   sync() {
-    const t = this.get();
+    const t = this.get(), p = profiles();
     this.cells.forEach((row, c) => row.forEach((inp, i) => {
       if (document.activeElement !== inp) inp.value = fmt(t[c][i]);
-      inp.classList.toggle('edited', t[c][i] !== DEFAULT_WIDTHS[c][i]);
+      inp.classList.toggle('edited', t[c][i] !== p[c][i]);
     }));
   }
 }

@@ -244,6 +244,15 @@ for (const b of [base.s, seed]) {
   assert.notDeepEqual(base.s.terrain, seed.terrain);
   // A broken value in a save is the profile's, not the seed's.
   assert.deepEqual(st.fromSaved({ landmarks: { top: 'x' } }, base.s).landmarks.top, base.s.landmarks.top);
+  // So is a malformed width table or depth palette.
+  const p = structuredClone(base.s);
+  p.roadLook.widths = p.roadLook.widths.map((r) => r.map((v) => v * 2));
+  p.depth.colours.palette = 'quiet';
+  const bad = profileSettings(p) as { roadLook: { widths: unknown[] }; depth: { colours: { palette: string } } };
+  bad.roadLook.widths = bad.roadLook.widths.map(() => ['x']);
+  bad.depth.colours.palette = 'nope';
+  const got = st.fromSaved(bad, p);
+  assert.deepEqual([got.roadLook.widths, got.depth.colours.palette], [p.roadLook.widths, 'quiet']);
 }
 
 console.log('links: ok');

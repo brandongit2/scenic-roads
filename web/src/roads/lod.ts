@@ -38,8 +38,8 @@ export interface LodFilter {
    * the tile workers don't have the timetables, so lists for it are made there). */
   freqSig?: string;
   lineHidden?: (line: number) => boolean;
-  /** The width table the pieces are weighed by (config.ts WIDTHS, as edited: the workers have
-   * only the defaults), and its revision (in the signature, so an edit re-weighs). */
+  /** The width table the pieces are weighed by (config.ts WIDTHS, as set: the workers' own copy
+   * is never set, so theirs is handed over), and its revision (in the signature, so an edit re-weighs). */
   widths?: number[][];
   widthsRev?: number;
 }

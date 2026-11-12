@@ -85,7 +85,9 @@ export const LOD_CELLS = [8, 16, 32, 64];
  * stays the same, only the area moved within the cell. */
 export const LOD_CELL_PX = 1;
 
-// Line widths in CSS px at MapLibre zooms WIDTH_Z, per class.
+// Line widths in CSS px at MapLibre zooms WIDTH_Z, per class: the settings' table (AppState.roadLook.widths,
+// put in by setWidths before the roads are drawn; the tile workers are handed it, roads/lod.ts), these
+// numbers only until then.
 export const WIDTH_Z = [4, 7, 10, 13, 16, 19];
 export const WIDTHS: number[][] = [
   [0.2, 0.35, 0.6, 1.2, 3.0, 6], // service
@@ -104,9 +106,6 @@ export const WIDTHS: number[][] = [
   [0.8, 1.0, 1.5, 2.2, 3.6, 6], // intercity
   [0.7, 0.9, 1.4, 2.1, 3.6, 6], // heritage
 ];
-/** The table as shipped (WIDTHS follows the settings: AppState.roadLook.widths, Layers → Roads →
- * Style → Widths by zoom). */
-export const DEFAULT_WIDTHS: readonly (readonly number[])[] = WIDTHS.map((r) => [...r]);
 /** Limits of an edited width (CSS px). */
 export const WIDTH_RANGE: [number, number] = [0.05, 40];
 /** Bumped on every change to WIDTHS (the levels of detail weigh pieces by it: roads/lod.ts). */
