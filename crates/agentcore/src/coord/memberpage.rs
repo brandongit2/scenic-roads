@@ -10,7 +10,6 @@
 //! (CORS, `Coordinator::set_brokers`), the jobs' calls (a key), and `sw.js` (a device's worker from
 //! when this Mac led updates from its own origin, where a redirect fails the update: the worker
 //! that ends it, web/buildpage/sw.js).
-//! A lead before task #1101 is sent to its old addresses (crate::coord::oldpage).
 
 use std::path::Path;
 
@@ -19,8 +18,8 @@ use std::path::Path;
 pub enum PageAt {
     /// The lead's, at its coordinator's addresses (`urls`: its contact's, the tailnet's then its
     /// LAN name, coordwire::net::urls; `https`: its HTTPS page when `tailscale serve` proxies it,
-    /// `Contact::page`; `root`: it serves the page at its root, beats::ROOT, else at `/work/`).
-    Lead { urls: Vec<String>, https: Option<String>, root: bool },
+    /// `Contact::page`).
+    Lead { urls: Vec<String>, https: Option<String> },
     /// The lead not reached since `since` (unix s; None: not since this agent started), `lead` its
     /// name when known: this Mac's own page.
     Away { lead: Option<String>, since: Option<u64> },
@@ -69,7 +68,7 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
 /// (a device on the LAN, perhaps without Tailscale), its LAN name; else (this Mac itself, the menu
 /// bar's web view) its first.
 pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) -> Option<String> {
-    let PageAt::Lead { urls, https, root } = lead else { return None };
+    let PageAt::Lead { urls, https } = lead else { return None };
     let name = host.rsplit_once(':').filter(|(h, p)| !h.ends_with(']') || p.is_empty()).map_or(host, |(h, _)| h);
     let name = name.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
     let ip = name.parse::<std::net::IpAddr>().ok();
@@ -77,16 +76,14 @@ pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) 
     let lan = |u: &str| u.split("://").nth(1).and_then(|a| a.split(':').next()).is_some_and(|h| h.ends_with(".local"));
     let pick = |f: &dyn Fn(&str) -> bool| urls.iter().find(|u| f(u)).cloned();
     let base = match https.as_deref().filter(|_| proxied) {
-        // (An older lead's contact names its page under `work/`: crate::coord::oldpage.)
-        Some(h) => h.strip_suffix("work/").unwrap_or(h).to_string(),
+        Some(h) => h.to_string(),
         None if is_tailnet(&name) || name.ends_with(".ts.net") => pick(&tailnet).or_else(|| urls.first().cloned())?,
         None if name.ends_with(".local") || ip.is_some_and(|ip| !ip.is_loopback()) => {
             pick(&lan).or_else(|| urls.first().cloned())?
         }
         None => urls.first()?.clone(),
     };
-    let pq = if *root { path_and_query.to_string() } else { super::oldpage::old_path(path_and_query) };
-    Some(format!("{}/{}", base.trim_end_matches('/'), pq.trim_start_matches('/')))
+    Some(format!("{}/{}", base.trim_end_matches('/'), path_and_query.trim_start_matches('/')))
 }
 
 /// Whether `host` is a tailnet address (100.64.0.0/10).
@@ -185,7 +182,6 @@ mod tests {
         let lead = PageAt::Lead {
             urls: vec!["http://100.71.2.3:18091".into(), "http://mini.local:18091".into()],
             https: Some("https://mini.tail.ts.net/".into()),
-            root: true,
         };
         let at = |host: &str, proxied: bool| location(&lead, "/?view&mac=m1", proxied, host).unwrap();
         // (Each device sent the way it came: the tailnet, the LAN (a phone without Tailscale), this
@@ -197,18 +193,9 @@ mod tests {
         assert_eq!(at("127.0.0.1:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
         assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/?view&mac=m1");
         // (A lead with one address: that one, whichever way.)
-        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:18091".into()], https: None, root: true };
+        let one = PageAt::Lead { urls: vec!["http://100.71.2.3:18091".into()], https: None };
         assert_eq!(location(&one, "/", true, "m1.local").unwrap(), "http://100.71.2.3:18091/");
         assert!(location(&PageAt::default(), "/", false, "x").is_none());
-        // (A lead before task #1101: its page and data at its old addresses, its contact's page under
-        // work/.)
-        let older = PageAt::Lead {
-            urls: vec!["http://100.71.2.3:18091".into()],
-            https: Some("https://mini.tail.ts.net/work/".into()),
-            root: false,
-        };
-        assert_eq!(location(&older, "/?view", false, "x").unwrap(), "http://100.71.2.3:18091/work/?view");
-        assert_eq!(location(&older, "/api/swarm", true, "x").unwrap(), "https://mini.tail.ts.net/work/swarm");
     }
 
     #[test]

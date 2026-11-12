@@ -254,7 +254,6 @@ pub(crate) fn speaks() -> Vec<String> {
         beats::ASKS,
         beats::HANDOFF,
         beats::BUDGETS,
-        beats::ROOT,
         beats::BY_LEAD,
         beats::NAS_CHECK,
     ]

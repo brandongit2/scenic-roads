@@ -8158,9 +8158,7 @@ impl Agent {
         let served = self.beats.as_ref().map_or(Err(None), |b| b.lead_page(now));
         let url = self.client.as_ref().map(|c| (c.urls(), c.page())).filter(|(u, _)| !u.is_empty());
         match (served, url) {
-            (Ok(()), Some((urls, https))) => {
-                PageAt::Lead { urls, https, root: self.beats.as_ref().is_some_and(|b| b.lead_root()) }
-            }
+            (Ok(()), Some((urls, https))) => PageAt::Lead { urls, https },
             (served, _) => PageAt::Away {
                 lead: self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()?.lead.as_ref()).map(|l| l.host.clone()),
                 since: served.err().flatten(),

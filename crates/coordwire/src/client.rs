@@ -747,16 +747,9 @@ impl Client {
         Ok((code, v))
     }
 
-    /// `post_json` to the build page's data and the owner's asks, `/api/<name>`. An older
-    /// coordinator's 404 with no body (its router's: it served them under `/work/`, before task
-    /// #1101) is asked again there. (Gated: cut with agentcore's coord::oldpage, once every Mac runs
-    /// an app serving `/api/`.)
+    /// `post_json` to the build page's data and the owner's asks, `/api/<name>`.
     pub fn post_api(&self, name: &str, body: &serde_json::Value) -> Result<Reply> {
-        let r = self.post_json(&format!("/api/{name}"), body)?;
-        if r.0 != 404 || !r.1.is_null() {
-            return Ok(r);
-        }
-        self.post_json(&format!("/work/{name}"), body)
+        self.post_json(&format!("/api/{name}"), body)
     }
 
     /// A file (a task's input).
@@ -827,47 +820,6 @@ mod tests {
         let e =
             Client::at(vec![dead()], "t".into(), "m").post_json("/pool/settings", &serde_json::json!({})).unwrap_err();
         assert!(refused(&e).is_none(), "not reached: {e:#}");
-    }
-
-    /// Task #1101's rollout: an older coordinator's bare 404 for `/api/<name>` (its router's) is
-    /// asked again at `/work/<name>`; a 404 with an answer (a newer one's: no such thing) is not.
-    #[test]
-    fn an_older_coordinators_bare_404_is_asked_again_under_work() {
-        use std::io::{BufRead, BufReader, Read, Write};
-        for (bare, want) in [(true, vec!["/api/pause", "/work/pause"]), (false, vec!["/api/pause"])] {
-            let asked = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-            let seen = asked.clone();
-            let url = serve(move |mut s| {
-                let mut r = BufReader::new(s.try_clone().unwrap());
-                let (mut first, mut len) = (String::new(), 0usize);
-                r.read_line(&mut first).ok();
-                loop {
-                    let mut line = String::new();
-                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        len = v.trim().parse().unwrap_or(0);
-                    }
-                }
-                r.read_exact(&mut vec![0; len]).ok();
-                let path = first.split(' ').nth(1).unwrap_or("").to_string();
-                seen.lock().unwrap().push(path.clone());
-                let body = if path.starts_with("/work/") {
-                    "{\"ok\":true}"
-                } else if bare {
-                    ""
-                } else {
-                    "{}"
-                };
-                let code = if path.starts_with("/work/") { 200 } else { 404 };
-                write!(s, "HTTP/1.1 {code} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
-                    .ok();
-            });
-            let (code, _) = Client::at(vec![url], "t".into(), "m").post_api("pause", &serde_json::json!({})).unwrap();
-            assert_eq!(code, if bare { 200 } else { 404 });
-            assert_eq!(*asked.lock().unwrap(), want);
-        }
     }
 
     #[test]

@@ -230,10 +230,9 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         }
         // (Its words: `ASKS` and `BUDGETS` still said for the app before, which falls back to the
         // NAS without them.)
-        a.speaks =
-            [super::beats::SPEAKS, super::beats::PAGE, super::beats::ROOT, super::beats::ASKS, super::beats::BUDGETS]
-                .map(str::to_string)
-                .to_vec();
+        a.speaks = [super::beats::SPEAKS, super::beats::PAGE, super::beats::ASKS, super::beats::BUDGETS]
+            .map(str::to_string)
+            .to_vec();
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
     }

@@ -43,7 +43,6 @@ pub mod kept;
 pub mod lease;
 pub mod maproutes;
 pub mod memberpage;
-pub mod oldpage;
 pub mod releases;
 pub mod sched;
 pub mod task;
@@ -189,8 +188,8 @@ const ASKING: Duration = Duration::from_secs(30);
 /// The most of what a worker says it's doing (its progress, a failure's why) kept: characters.
 const WHAT_MAX: usize = 200;
 const WHY_MAX: usize = 3000;
-/// The build page's data and the owner's asks, each at `/api/<name>` (task #1101; under `/work/`
-/// before, where only the workers' calls are now: coord::oldpage).
+/// The build page's data and the owner's asks, each at `/api/<name>` (the workers' calls are under
+/// `/work/`).
 pub const API: &[&str] = &[
     "live", "swarm", "history", "steps", "regions", "catalogs", "tocome", "built", "pause", "inputs", "act",
     "settings", "hold", "asked", "timings", "floors", "redo",
@@ -5908,9 +5907,7 @@ mod http {
                     .no_zstd()
                     .compress_when(compressible()),
             )
-            .with_state(ctx.clone());
-        // (Rewritten before it routes: `old_addresses`.)
-        let app = Router::new().fallback_service(app).layer(axum::middleware::from_fn_with_state(ctx, old_addresses));
+            .with_state(ctx);
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .thread_name("coordinator")
@@ -6369,30 +6366,6 @@ mod http {
             }
             None => error(StatusCode::NOT_FOUND, format!("no {file}")),
         }
-    }
-
-    /// The old addresses (`/work/` and the page's under it) answered as the new while an app before
-    /// task #1101 may ask them (coord::oldpage, gated): the request's path rewritten before it is
-    /// routed.
-    async fn old_addresses(State(c): State<Ctx>, mut req: Request, next: Next) -> Response {
-        let path = req.uri().path();
-        if path == "/work" || path.starts_with("/work/") {
-            let new = super::oldpage::new_path(path, |f| PAGE.iter().any(|(n, _, _)| *n == f));
-            let gated = || {
-                let s = c.shared.lock().unwrap();
-                super::oldpage::gated(s.broker || s.viewer, &s.page_at, s.beats.as_deref(), unix_now())
-            };
-            if let Some(new) = new.filter(|_| gated()) {
-                let pq = match req.uri().query() {
-                    Some(q) => format!("{new}?{q}"),
-                    None => new,
-                };
-                if let Ok(u) = axum::http::Uri::builder().path_and_query(pq).build() {
-                    *req.uri_mut() = u;
-                }
-            }
-        }
-        next.run(req).await
     }
 
     /// How long a JSON request's body may take to arrive.
@@ -13006,7 +12979,7 @@ mod tests {
         let page = get_gz("/");
         assert!(page.contains("content-encoding: gzip") && page.contains("vary: accept-encoding"), "{page}");
         assert!(!get_gz("/icons/icon-192.png").contains("content-encoding"));
-        // (No page under /work/ (task #1101), no member heard asking it: refused, as any path not one.)
+        // (No page under /work/ (task #1101): refused, as any path not one.)
         assert!(String::from_utf8(get("/work/")).unwrap().starts_with("HTTP/1.1 403"));
         assert!(String::from_utf8(get("/work/dash.js")).unwrap().starts_with("HTTP/1.1 403"));
         // A connection whose headers don't come is closed by the server once their time is up, not
@@ -13226,41 +13199,10 @@ mod tests {
         assert_eq!(ask("POST", "/api/pause", Some(&c.contact.token)).0, 200);
         // (A wrong key is refused, so an agent with an old one reads the new one.)
         assert_eq!(ask("POST", "/api/pause", Some("0123456789abcdef0123456789abcdef")).0, 401);
-    }
-
-    /// Task #1101's rollout (coord::oldpage): while a member heard is on an older app (its beat
-    /// doesn't say `beats::ROOT`), the lead answers the page's old addresses as the new: the page
-    /// at /work/ (an older member's port sends it there) and what it asks from there, the data
-    /// and asks under /work/ (an older agent's, with the key). The workers' stay theirs. The member
-    /// updated: no longer.
-    #[test]
-    fn the_lead_answers_the_old_addresses_while_a_member_is_on_an_older_app() {
-        let (_d, c, w) = start();
-        let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let beats = std::sync::Arc::new(beats::Beats::default());
-        c.set_beats(Some(beats.clone()));
-        let hb = crate::agent::pool::Heartbeat {
-            pool: crate::pool::Beat { member: "m-a".into(), host: "m1".into(), beat: 1, ..Default::default() },
-            ..Default::default()
-        };
-        beats.heard(hb.clone(), vec![beats::SPEAKS.into()], None, unix_now());
-        let ask =
-            |method: &str, path: &str, key: Option<&str>| send(&addr, method, path, key, &[], &serde_json::json!({})).0;
-        assert_eq!(ask("GET", "/work/?view&mac=m1", None), 200);
-        assert_eq!(ask("GET", "/work", None), 200);
-        assert_eq!(ask("GET", "/work/dash.js", None), 200);
-        assert_eq!(ask("POST", "/work/swarm", None), 200);
-        assert_eq!(ask("POST", "/work/api/swarm", None), 200);
-        assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)), 200);
-        assert_eq!(ask("POST", "/work/ask", None), 403, "a worker's call, as before");
-        // (The new ones all along.)
-        assert_eq!(ask("GET", "/", None), 200);
-        assert_eq!(ask("POST", "/api/swarm", None), 200);
-        // Updated: refused, as any path not one.
-        beats.heard(hb, vec![beats::SPEAKS.into(), beats::ROOT.into()], None, unix_now());
-        assert_eq!(ask("GET", "/work/", None), 403);
-        assert_eq!(ask("POST", "/work/swarm", None), 403);
-        assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)), 404);
+        // (The page's addresses before task #1101, under /work/: not answered.)
+        assert_eq!(ask("GET", "/work/", None).0, 403);
+        assert_eq!(ask("POST", "/work/swarm", None).0, 403);
+        assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)).0, 404);
     }
 
     /// docs/roles.md §3.3: a member's port sends its page, the page's data and the owner's asks
@@ -13274,7 +13216,6 @@ mod tests {
         let lead = super::memberpage::PageAt::Lead {
             urls: vec!["http://100.64.0.6:8090".into()],
             https: Some("https://mini.tail1.ts.net/".into()),
-            root: true,
         };
         b.set_page_at(lead);
         let home = tempfile::tempdir().unwrap();
@@ -13289,7 +13230,7 @@ mod tests {
         // (The worker that ends the page's old one: answered here, as a worker's update takes no
         // redirect.)
         assert_eq!(get("/sw.js", &[]).0, 200);
-        // (Its lead knows the new addresses: the old ones aren't answered.)
+        // (The page's addresses before task #1101: not answered.)
         assert_eq!(get("/work/", &[]).0, 403);
         let post = |path: &str, h: &[(&str, &str)]| send(&addr, "POST", path, None, h, &serde_json::json!({})).0;
         for p in ["/api/swarm", "/api/history", "/api/pause", "/api/act", "/api/settings", "/api/hold"] {
@@ -13303,18 +13244,6 @@ mod tests {
         // (A job's call, with its key: answered here.)
         let (code, _, _) = send(&addr, "POST", "/work/beat", Some(b.job_token()), &[], &serde_json::json!({}));
         assert_ne!(code, 307);
-        // An older lead (before task #1101, coord::oldpage): the page sent to its old addresses,
-        // and its page asking this Mac's old ones answered as the new.
-        b.set_page_at(super::memberpage::PageAt::Lead {
-            urls: vec!["http://100.64.0.6:8090".into()],
-            https: Some("https://mini.tail1.ts.net/work/".into()),
-            root: false,
-        });
-        assert_eq!(get("/?view&mac=m4", &[]).1, "http://100.64.0.6:8090/work/?view&mac=m4");
-        assert_eq!(get("/", &proxied).1, "https://mini.tail1.ts.net/work/");
-        assert_eq!(post("/api/swarm", &[]), 307);
-        assert_eq!(post("/work/settings", &[("Origin", "http://100.64.0.6:8090")]), 200);
-        assert_eq!(post("/work/live", &[]), 503, "answered here as /api/live");
     }
 
     /// docs/roles.md §3.3: the lead not reached (or an older lead, not serving its members'
@@ -13345,11 +13274,7 @@ mod tests {
         let (code, _, v) = send(&addr, "POST", "/api/swarm", None, &[], &serde_json::json!({}));
         assert_eq!(code, 503, "{v}");
         // (The lead back: the redirect again.)
-        b.set_page_at(super::memberpage::PageAt::Lead {
-            urls: vec!["http://100.64.0.6:8090".into()],
-            https: None,
-            root: true,
-        });
+        b.set_page_at(super::memberpage::PageAt::Lead { urls: vec!["http://100.64.0.6:8090".into()], https: None });
         assert!(get("/").starts_with("HTTP/1.1 307"));
     }
 
@@ -13483,11 +13408,7 @@ mod tests {
         let get = || send(&addr, "GET", "/", None, &[], &serde_json::json!({}));
         assert_eq!(get().0, 200, "the lead not known: its own page");
         assert_eq!(ask("/api/swarm", None), 503);
-        v.set_page_at(super::memberpage::PageAt::Lead {
-            urls: vec!["http://100.64.0.6:8090".into()],
-            https: None,
-            root: true,
-        });
+        v.set_page_at(super::memberpage::PageAt::Lead { urls: vec!["http://100.64.0.6:8090".into()], https: None });
         assert_eq!(get(), (307, "http://100.64.0.6:8090/".into(), serde_json::Value::Null));
         assert_eq!(ask("/api/steps", None), 307);
         let far = |path: &str| {

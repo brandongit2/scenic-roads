@@ -34,12 +34,6 @@ pub const VIEW: &str = "view";
 /// or none answering) it shows its own (crate::coord::memberpage).
 pub const PAGE: &str = "page";
 
-/// What a member's beat says, and a lead's answer: its app serves the build page at the
-/// coordinator's root and its data and asks under `/api/`, and asks them there (task #1101). The
-/// lead answers the old `/work/` addresses too while a member heard doesn't say it (`old_page`); a
-/// member's port, while its lead doesn't (`lead_root`): crate::coord::oldpage.
-pub const ROOT: &str = "page-root";
-
 /// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
 /// step 5, crate::coord::asks): this member's hold and the settings' generation in the answer;
 /// its own mail, holds and settings by HTTP alone.
@@ -128,8 +122,6 @@ struct Inner {
     threads: Vec<(u64, u32)>,
     /// When the lead last answered (unix s), and whether that answer said `PAGE`.
     lead_answered: Option<(u64, bool)>,
-    /// Whether the lead's last answer said `ROOT`.
-    lead_root: bool,
     /// The asks (`ASKS`): whether the lead serves them.
     lead_asks: bool,
     /// On a member: its hold as the lead keeps it, the settings as last fetched and the generation
@@ -191,7 +183,6 @@ impl Default for Beats {
                 released: Vec::new(),
                 threads: Vec::new(),
                 lead_answered: None,
-                lead_root: false,
                 leading: None,
                 reach: None,
                 lead_asks: false,
@@ -261,7 +252,6 @@ impl Beats {
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = takes;
         g.lead_answered = Some((now, a.speaks.iter().any(|w| w == PAGE)));
-        g.lead_root = a.speaks.iter().any(|w| w == ROOT);
         g.leading = a.leading.clone().map(|m| (m, now));
         if let (Some(m), Some(r)) = (&a.leading, &a.reach) {
             g.reach = Some((m.id.clone(), r.clone()));
@@ -355,17 +345,6 @@ impl Beats {
     /// Those the lead's answers said merged since last taken.
     pub fn take_merged(&self) -> Vec<String> {
         std::mem::take(&mut self.inner.lock().unwrap().merged)
-    }
-
-    /// On the lead: whether a member heard within `FORGET_S` of `now` doesn't say `ROOT`: it may ask
-    /// the build page's old addresses (crate::coord::oldpage).
-    pub fn old_page(&self, now: u64) -> bool {
-        self.fresh(now).iter().any(|h| !h.speaks.iter().any(|w| w == ROOT))
-    }
-
-    /// On a member: whether its lead's last answer said `ROOT` (crate::coord::oldpage).
-    pub fn lead_root(&self) -> bool {
-        self.inner.lock().unwrap().lead_root
     }
 
     /// Whether the lead serves `ASKS` (its last answer said so; the lead's own registry once its
@@ -522,7 +501,6 @@ impl Beats {
         let mut g = self.inner.lock().unwrap();
         g.lead_takes = false;
         g.lead_answered = None;
-        g.lead_root = false;
         g.leading = None;
         g.lead_asks = false;
         g.threads.clear();
