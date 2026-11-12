@@ -1366,7 +1366,7 @@ of a job's command line, `check_command`) and pipeline's binaries (each tool's `
 nasread's are agentcore's agent and coord and pipeline's agent. The families make their programs'
 command lines with jobrt::sys's `program`, which is already below them, and agentcore's test of
 the tasks' command lines checks every family's specs in one place. nasread can't sit in jobrt at
-all: `Deadlined` implements buildstore's `Nas` (records::nas), its pools' sizes read
-`buildstore::out::testing`; jobrt is below buildstore. The two NAS reads below agentcore that are bounded keep their own bounds on purpose
-(terrain's GeoTIFF opens, `GRIDS_AT_ONCE` at once, would starve nasread's four readers;
-buildstore::nasssh bounds an `ssh`'s start, not a call).
+all: `Deadlined` implements buildstore's `Nas` (records::nas), its big reads' deadline reads
+`buildstore::out::testing`; jobrt is below buildstore. The NAS calls below agentcore are bounded
+as every other is, by store::deadline (docs/nas-access.md §6); buildstore::nasssh bounds an
+`ssh`'s start, not a call.

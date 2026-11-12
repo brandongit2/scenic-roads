@@ -69,8 +69,8 @@ it (store::nasio), retries the reads, stats and listings the share fails for a m
   `retry::transient` on the root's schedule. A "not found" is never retried there; a caller that
   rides out SMB's moment of ENOENT on a file that is there says so with `retry_with` or
   `retry_any` (`transient_or_missing`). A retry inside another's try tries once and leaves the waits
-  to the outer one (`retry::attempt`; the workers `nas_call` and `depth::grids::within_do` start
-  for a try count as that try): nested, it would wait on the lane the outer try holds, for good on
+  to the outer one (`retry::attempt`; a store::deadline call made in a try, on its helper, counts
+  as that try): nested, it would wait on the lane the outer try holds, for good on
   the same thread. Only the build's schedule looks at the share before its last try (and waits up
   to a minute for it); the server's 5 s never does. Writes, removes, renames, create-new and appends are never retried here: a lost
   answer can't tell made from not made. `nasfs::RETRY` turns the widening off without a revert.
@@ -139,24 +139,32 @@ the server is made through `store::deadline`, one mechanism:
   Mac asleep). Past it the caller gets `TimedOut` (`deadline::past_deadline`), logged with the
   path and the call; the helper is left to the kernel, its result going nowhere when it comes, and
   the caller's next call gets a new helper. A call made inside another (on a helper) runs there,
-  under the outer one's deadline. A deadline's `TimedOut` is never retried (`retry::transient`).
+  under the outer one's deadline, and the paths it changes are the outer one's too (held with it
+  when it's left, or at once when it already was: a write inside a read-labelled call, a remove
+  under `nasread::with`, a `Deadlined` write keyed its own way). A deadline's `TimedOut` is never retried (`retry::transient`).
 - **Deadlines.** `LONG` (120 s) for the build's roots (jobs, the CLI, the agent's own threads),
   `SHORT` (20 s) for the server's and the agent loop's (crate agentcore's `nasread::DEADLINE`); a
   positioned read `LONG` and a second a MB (`deadline::for_bytes`); the server's I/O pool its own
   (8 s for the map's data). A call that says it moves (`Progress::add`: a whole read's, a listing's,
   a copy's, a read-back's, a base pack's ranges') has its deadline counted from its last move, so
-  one that goes on is never ended for its length.
+  one that goes on is never ended for its length. One that moves at all within each deadline (a
+  `read` giving bytes, an entry listed, a name removed) holds its caller until it ends, however
+  slowly it goes: wanted, a slow share's copy isn't a stuck one, and the file's or folder's size
+  bounds it.
 - **A cap** on the calls a process holds past their deadline: at it, a call fails at once, never
   made (`deadline::refused`, `TimedOut` too), so stuck threads never pile up. Each Mac's setting,
   "NAS calls held" on the build page (1 to 1,000, default 32: `deadline::CAP_DEFAULT`), kept in
   the agent's folder (`nas-held.json`); the agent applies it each round and gives it to each job
-  as it starts (`SCENIC_NAS_HELD`), the CLI reads it as it starts. The NAS calls chart shows the
+  as it starts (`SCENIC_NAS_HELD`), the CLI reads it as it starts, the map server follows it
+  (`deadline::follow_cap`, every 10 s). The NAS calls chart shows the
   pool's caps summed beside its calls in flight.
 - **A job's end.** A process that left calls in the kernel may never finish exiting: the kernel
   ends it once each of its threads has left its call, and its group's head (the shell that writes
   its exit status) waits for that. A job (`scenic-build`, `scenic`) ending with calls held writes
   its status itself first (`jobrt::control::ending`, to the path its agent gives it,
-  `SCENIC_JOB_STATUS`); the agent takes that as the job's end (`jobs::Running::poll`), records it,
+  `SCENIC_JOB_STATUS`, store::spawn::JOB_STATUS: the job's own process alone, never inherited by
+  a program it starts, so a tool's end, `scenic-build tool trees`' or extract's, never says the
+  job's); the agent takes that as the job's end (`jobs::Running::poll`), records it,
   and stops what of the job still runs, a member that won't go killed again each round
   (`jobs::Outlived`).
 
