@@ -109,21 +109,23 @@ The share is SMB 3 on a Synology. The design assumes:
   EIO on every read; `retry::handle_gone`, EBADF too), so a read meeting one opens the file again
   by its path and reads that, each try, and the new handle is kept (task #1090: a slope job's
   every read of one neighbour pack failed for 3 h 50 min on a handle cached dead). A file that
-  can't be opened and read again still fails past the bound. A `PlainFile`'s NAS read that is
-  never answered (no error, the call held in the kernel) fails instead of holding its job for
-  good: each runs on a helper thread its calling thread keeps (`range::bounded`), waited for
-  `range::READ_DEADLINE` (120 s) and a second more a MB it reads, counting only the time the job
-  ran (a look at it that comes back over four times later than asked counts as one: the guards'
-  freeze); past it the read fails with `TimedOut` naming the file, not tried again, the NAS's I/O
-  limit halves (store::aimd), its descriptor is let go (the next read opens the file again) and
-  the helper is left to the kernel with the descriptor and the read's buffer, the next call
-  getting a new one (task #1139: on 11 Nov two unit jobs, on the M4 and the mini, sat in `pread`
-  on a terrain deep pack at "staging layers from the packs" for 40 minutes and more at no CPU,
-  flagged stuck, which ends nothing, while the NAS answered every other read at once). A
-  `PlainFile`'s opens (its first, and again by its path) are waited for `READ_DEADLINE` the same
-  way. The other NAS calls of a job have no such deadline: `NasPath`'s whole reads, `NasFile`
-  reads, stats, listings, copies and writes (docs/nas-access.md), and crate::blobs' copies. A raw
-  tile's archive read tries once
+  can't be opened and read again still fails past the bound. A NAS call that is never answered
+  (no error, the call held in the kernel) fails instead of holding its job for good: every NAS
+  call of a job is a store::deadline call (docs/nas-access.md §6), made on a helper thread its
+  calling thread keeps and waited for its deadline at most, counting only the time the job ran (a
+  look at it that comes back over four times later than asked counts as one: the guards' freeze).
+  A `PlainFile`'s read is waited for `deadline::LONG` (120 s) and a second more a MB it reads, its
+  opens (its first, and again by its path) for `LONG`; past it the read fails with `TimedOut`
+  naming the file, not tried again, the NAS's I/O limit halves (store::aimd), its descriptor is let
+  go (the next read opens the file again) and the call is left to the kernel with the descriptor
+  and the read's buffer (task #1139: on 11 Nov two unit jobs, on the M4 and the mini, sat in
+  `pread` on a terrain deep pack at "staging layers from the packs" for 40 minutes and more at no
+  CPU, flagged stuck, which ends nothing, while the NAS answered every other read at once).
+  `NasPath`'s other calls (whole reads, `NasFile` reads and writes, stats, listings, copies,
+  writes, renames, removes), crate::blobs' copies, the content-named uploads' calls and a base
+  pack's ranges are each waited for `LONG`, a read, listing or copy counted from its last move. A
+  job ending with calls left in the kernel says its end to its agent before its exit, which may
+  never end (docs/nas-access.md §6). A raw tile's archive read tries once
   (the file opened again if its handle is gone), then takes the tile from the next source; its
   archive's entries are read as an open is, within the bound. Each of these files is content-named
   (a pack's or archive's name is its hash, never rewritten), so the file opened again by its path
@@ -1664,24 +1666,23 @@ than kept by hand; progress of steps other than the OSM pass resumable on its Ma
 ### 7.8 The agent never waits on one NAS call
 
 An open on the SMB share can stay stuck in the kernel for many minutes while the same file reads at
-once from a shell. The agent's NAS calls listed below go through `crate::agent::nasread`: each runs
-on a thread of a small pool and is waited for a deadline at most (20 s; a listing 60 s). Past it,
-the caller gets a timeout and takes it as any call that fails now, logged once per path until that
-path answers again. The stuck thread is left to its call and stays busy; while every thread of a
-pool is busy, a call to it fails at once, so stuck threads never pile up. Three pools, so one kind
-stuck can't starve another:
+once from a shell. Every NAS call of the agent is a store::deadline call (docs/nas-access.md §6): on
+its loop's root (`no_retry`) and in `crate::agent::nasread`, waited for 20 s at most
+(`deadline::SHORT`; the planner's keys 5 min, below); on the threads it starts and never waits on
+(`long_retry`), 120 s. Past it, the caller gets a timeout and takes it as any call that fails now,
+logged once per path until that path answers again (`nasread`'s calls). The call is left to the
+kernel; while the process holds its cap of such calls ("NAS calls held", the build page), a call
+fails at once, so stuck threads never pile up. Through `nasread`:
 
-- **Switches** (two threads): publishing's switches. A switch that can't be read keeps its last
-  value.
-- **Records** (four threads): the loop's reads of `state/status.json`,
-  the manifest (where planning reads it through `nasread`) and the regions' extract (unreadable for
-  a reason other than missing: no extract job planned); and the pool's reads and stats
-  (`Deadlined`, which the agent opens its member over: the driver's reads of the declaration and
-  the one path).
-- **Writes** (four threads): the lead's heartbeat (`state/status.json`) and the pool's writes and
-  creates (the records, the declaration). A write to a path is refused
-  at once (a timeout) while an earlier write to it is still in flight, its thread stuck: two writes
-  never share one temporary name. The path is free again once that write ends.
+- **Switches**: publishing's switches. A switch that can't be read keeps its last value.
+- **Records**: the loop's reads of `state/status.json`, the manifest (where planning reads it
+  through `nasread`) and the regions' extract (unreadable for a reason other than missing: no
+  extract job planned); and the pool's reads and stats (`Deadlined`, which the agent opens its
+  member over: the driver's reads of the declaration and the one path).
+- **Writes**: the lead's heartbeat (`state/status.json`) and the pool's writes and creates (the
+  records, the declaration). A write to a path is refused at once (a timeout) while an earlier
+  write to it is held in the kernel: a late write would land over the newer. The path is free
+  again once that write ends.
 
 A healthy share's calls are unchanged.
 
@@ -1724,13 +1725,9 @@ waited for 30 s; past it the round says "the NAS is mounting (stuck since …)",
 and the loop, the beat and control go on. The planner's keys (`pool::records::Keys::load_with`) are read
 under a 5-min deadline (`nasread::with_big`).
 
-Still under no deadline (planned): the manifest read through `out::read_record` outside the
-planner's keys; the regions'
-held report (`inputs::read_report`); the coordinator's
-contact published and removed; GC's reads of the records;
-the caches' clears; and every NAS call of the coordinator's and the jobs' own. Those of the plan
-(the records, the held report, the helpers, the plan's digest) hang the plan's thread alone: its
-last plan stays the one granted from.
+The plan's calls (the records, the held report, the helpers, the plan's digest) are on its
+thread's roots, each within its deadline: a hung share holds the plan's thread for a deadline a
+call at most, its last plan staying the one granted from meanwhile.
 
 ### 7.9 The forecasts' archive
 
@@ -2811,11 +2808,11 @@ step, were deleted with its rollout gate, task #1036.)
   six (`pool_` then the name); on the lead too, from the load gate's own SNMP reading every 10 s
   (§7.7; no second poller), the disks' busy share, `nas_disk_busy_pct` (the busiest) and
   `nas_disk_busy_pct.<n>` (each, from 1). Each Mac's agent's NAS calls under their deadlines
-  (`agent::nasread`, §7.8) every second: `nas_calls`, in flight now in its three pools (stuck
-  ones included), and `nas_missed`, those that passed their deadline or were refused, every
-  thread busy, over the second; each member's ask carries them too (`Capacity::nas_calls`,
-  `Store::calls_now`: in flight now, missed a second over its last 30 s, its NAS call threads),
-  summed by the lead every 10 s into `pool_nas_calls`, `pool_nas_missed` and `pool_nas_threads`
+  (store::deadline, §7.8) every second: `nas_calls`, in flight now (held ones included), and
+  `nas_missed`, those that passed their deadline or were refused at the cap of calls held, over
+  the second; each member's ask carries them too (`Capacity::nas_calls`, `Store::calls_now`: in
+  flight now, missed a second over its last 30 s, its cap of calls held), summed by the lead every
+  10 s into `pool_nas_calls`, `pool_nas_missed` and `pool_nas_held_cap`
   (task #634; memory only, like every series). The lead's status says the rest (`nas`, `coord::NasView`): the
   day's probes as its prober keeps them (the ones in `state/pool/nas-probes.json`, read from there
   and saved there, no other copy), the limits they give, the gate's smoothed load, target and
@@ -2881,8 +2878,7 @@ step, were deleted with its rollout gate, task #1036.)
   M6's https://map.brandontsang.net among them), the page reading by the scheme it was served
   over. The build page's Machines tab draws it (docs/pipeline.md §5, Machines), asking with
   `net: false` (the proxy's counts left out); an answer also says the Mac's size, `mac: {cores,
-  cores_e, mem_gb, nas_threads}` (read once: `nas_threads` its NAS call threads, the most calls in
-  flight at once), the charts' scales. Its NAS section (`web/buildpage/nas.js`) reads the same answers:
+  cores_e, mem_gb, away_s}` (read once), the charts' scales. Its NAS section (`web/buildpage/nas.js`) reads the same answers:
   the lead's `nas_ms`, `pool_nas_*` and `nas_disk_busy_pct` (missing from a member's answer); beside the
   status's `nas` (`NasView`). The
   Activity tab (`web/buildpage/activity.js`) asks every Mac every 2 s while it shows, with no series:

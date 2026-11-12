@@ -149,14 +149,14 @@ the beat: the round says "the NAS is mounting (stuck since …): only work on th
 `Waiting` the page and status show), and only work that needs the NAS waits (`Needs { nas: true }`
 jobs don't start and are paused per today's rules, the plan and the pool step have no root). In
 line before its thread runs (a single loop's, a dry run's, the tests'), each `root` one look under
-the same deadline. The `nasread` pools (Switches, Records, Writes) stay nasread's, each call under
-its deadline.
+the same deadline. `nasread`'s calls (switches, records, writes) are store::deadline calls, each
+under its deadline, as every other NAS call of the agent is (docs/nas-access.md §6).
 
-Moved under a deadline too: the planner's keys (`planning_keys`: `pool::records::Keys::load_with` under
-`nasread::with_big`, 5 min). Still under none, for **plan** (step 6) and #878 (pool.md §7.8):
-`out::read_record` outside the keys, `inputs::read_report`, the helpers' listing, the coordinator's
-contact publish/unpublish, GC's reads, the caches' clears. Their callers are on **plan**'s or
-**pool**'s side, so a hang there costs that work, not the beat or control.
+The planner's keys (`planning_keys`: `pool::records::Keys::load_with`) are read under
+`nasread::with_big`, 5 min. The rest of **plan**'s and **pool**'s calls (`out::read_record` outside
+the keys, `inputs::read_report`, the helpers' listing, the coordinator's contact publish and
+unpublish, GC's reads, the caches' clears) are each within their root's deadline, so a hang there
+costs that work a deadline a call, not the beat or control.
 
 **Failure:** shown as the round's "the NAS is mounting (stuck since …)" while a look hangs.
 Planned: the view on the page's machine card and the menu's NAS line (`up`, `slow`, `stuck since`,
@@ -328,7 +328,7 @@ in tests.
 | # | Step | Deletes | Test that proves it |
 |---|---|---|---|
 | 0 | *Done (#846):* own hold asks on `asks`' thread | — | `agent::asks::tests` |
-| 1 | *Done:* `agent::bus` (`Snap`, the channel types `ControlMsg`, `BeatMsg`), the slow-NAS fake (`nasread::fake::hang`: every call under a folder held) and the slow-plan fake (`Agent::slow_plan`), and the no-shared-mutex scan | — | `agent::bus::tests`, `nasread::tests::the_slow_nas_fake_hangs_its_folder_alone`, `agent::tests::the_slow_plan_fake_makes_a_plan_take_its_time`, tests/no_shared_mutex.rs |
+| 1 | *Done:* `agent::bus` (`Snap`, the channel types `ControlMsg`, `BeatMsg`), the slow-NAS fake (`store::deadline::fake::hang`: every NAS call under a folder held) and the slow-plan fake (`Agent::slow_plan`), and the no-shared-mutex scan | — | `agent::bus::tests`, `store::deadline::tests::a_call_counts_the_time_the_process_ran`, `agent::tests::the_slow_plan_fake_makes_a_plan_take_its_time`, tests/no_shared_mutex.rs |
 | 2 | *Done:* **beat** on its own timer (`agent::beat`), sole status writer; the loop publishes what it composed (one `LoopView`, split into `JobsView`/`PlanView` by steps 5–6) instead of writing; also cut: `nasread::loop_thread`, `loop_work`, `PHASES`, `sys::this_thread`, `sys::thread_cpu_ms`, `Agent::last_beat` (the NAS copy written each beat) | `nasread::BEATING`, `Beating`, `beat_again`, `asks::Beat`, the watchdog's kept beat (`KEEP_EVERY`, `KEEP_FOR`, `WORKING_S`), the heartbeat phase of `step` | `beat_steady_while_the_nas_hangs`: the NAS fake holds every call (2.5 s each, a test's deadline); the local status is written each period (a test's 250 ms, `beat::Handle::tick_every`) through a round of the loop in them, no gap over 1.5 s. `beat_steady_while_planning`: the plan fake sleeps 6 s; same |
 | 3 | *Done:* **control** (`agent::asks::Handle`: its thread and a kqueue watcher on the agent's folder and `cancel-requests/`, opened anew when either is made again, each look asked once it is armed (#944: looked first, a change in between was seen by neither until the sweep), a 2-s sweep behind it; inline for a single loop) on the files the endpoint writes too (`/api/hold` added beside `/api/settings`); this Mac's hold, the quit and the settings taken up and published at once, the loop's wait woken (`ControlMsg`). A cancel and another member's hold ask wake the loop, which still takes them (they need the jobs, the pool: steps 5 and #878); the hold's NAS mirror stays the loop's (`hold_on_nas`) | `asks`' poll (`EVERY`), `Asks`, `sync_hold`, `adopt_hold`, `hold_asked_anew`, `hold_ask_time`, `hold_seen`, `asks_on`, `Agent::hold` the field (control's snapshot now), `quit_ask`'s file reads and the wait's polls, the settings block in `step`, `Snap::update` | `pause_shows_within_a_second_on_a_hung_nas` and `…_while_planning`: a hold posted; its answer and a "pausing" status within 1 s, the job's channel says drain |
 | 4 | *Done:* **nas** (`agent::nas`): the mount, probe, LAN remount and the heal's remount on its thread, each look under a 30-s deadline, published as `NasView`; the planner's keys under `nasread::with_big` | the mount block in `step`, `root`'s own finding and mounting, `Agent::last_mount_try`, `Agent::probe`, `heal_step`'s unmount, `answers`' `CHECKING` (a `Mutex`: mod.rs 4 → 3 in the scan's list); the mount, probe and keys off pool.md §7.8's "still under no deadline" list | `a_hung_mount_holds_only_nas_work`: the mount fake hangs; 20 rounds each in moments, "the NAS is mounting (stuck since …)" said, a pause answered at once, the root back once it answers; `agent::nas::tests` |

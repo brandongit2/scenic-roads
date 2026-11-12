@@ -23,14 +23,16 @@
 //! - **Nested**: a call made on a helper (inside another call) runs there, inline: the outer
 //!   call's deadline holds it.
 //! - **A job's exit**: a process that left calls in the kernel may never end its exit (the kernel
-//!   ends a process once each of its threads leaves its call); jobrt's `control::exit` writes the
+//!   ends a process once each of its threads leaves its call); jobrt's `control::ending` writes the
 //!   job's status first, which its agent takes as its end.
 //!
 //! Every NAS call of a job, the CLI, the agent and the server goes through here: store::nasfs's
-//! `NasPath` (its root's deadline: `LONG` but the agent's loop's and the server's, `SHORT`), the
-//! range readers (`range::PlainFile`), the server's I/O pool (store::iopool, its breaker on top),
-//! the copies to this Mac's disk (store::blobs), and the agent's own (crates/agentcore's
-//! agent::nasread).
+//! `NasPath` and `NasFile` (its root's deadline: `LONG` but the agent's loop's and the server's,
+//! `SHORT`), the range readers (`range::PlainFile`), the server's I/O pool (store::iopool, its
+//! breaker on top), the copies to this Mac's disk (store::blobs), the content-named uploads
+//! (store::naming), a base pack's ranges (crates/codecs' basepart), and the agent's own
+//! (crates/agentcore's agent::nasread). Not here: a `File` a library is given to read itself
+//! (docs/nas-access.md §6).
 
 use std::cell::{Cell, RefCell};
 use std::fmt::Display;
@@ -57,7 +59,7 @@ pub fn for_bytes(base: Duration, len: usize) -> Duration {
 
 /// The calls past their deadline a process holds in the kernel at most, when the Mac's setting
 /// isn't set: a job's every worker stuck once and more (a job ends once its work fails past a
-/// deadline: jobrt's `control::exit`), the agent's parts' calls on a share hung for minutes.
+/// deadline: jobrt's `control::ending`), the agent's parts' calls on a share hung for minutes.
 pub const CAP_DEFAULT: usize = 32;
 /// The cap as a job is given it by its agent (`cap`).
 pub const CAP_ENV: &str = "SCENIC_NAS_HELD";

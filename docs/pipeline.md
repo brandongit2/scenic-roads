@@ -445,7 +445,7 @@ The Jobs tab's stages are the one exception.
   (`nas`) and its `/api/live` answer, which `live.js` asks while the Machines or NAS tab is shown:
   **response time** (the lead's listing, `nas_ms`; the server's name, protocol and free space,
   `nas.mount`), **requests waiting** (`pool_nas_calls`, every Mac's calls in flight, against
-  `pool_nas_threads` dashed), **timed out** (`pool_nas_missed`, a minute; the range's count),
+  `pool_nas_held_cap` dashed: the most the Macs hold past their deadline, their caps summed), **timed out** (`pool_nas_missed`, a minute; the range's count),
   **NAS disks busy** (`nas_disk_busy_pct` against the owner's target dashed; "the gate is shut"
   when it holds), then the pool's use against the limits its probes give (`nas.limits`, dashed,
   with its share of each): **data moved** (`pool_nas_read_mbs` and `pool_nas_write_mbs` stacked),

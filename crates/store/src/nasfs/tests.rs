@@ -286,3 +286,31 @@ fn an_uploads_bytes_count_as_they_go() {
     assert!(r.join(&name).exists());
     assert!(d(Count::WroteBytes) >= wrote + 300_000, "a content-named upload's bytes, as it writes them");
 }
+
+/// Task #1141: a call the share never answers fails at its deadline (a read, a stat, a write),
+/// left to the kernel; while that write is held a later write of its path is refused at once,
+/// never made, and once the share answers the path is free again and the last write lands.
+#[test]
+fn a_call_never_answered_is_given_up_and_a_held_write_holds_its_path() {
+    use crate::deadline::{fake, past_deadline, refused};
+    let (d, r) = root();
+    let cap = crate::deadline::cap_for_test(crate::deadline::CAP_DEFAULT);
+    let p = r.join("f.json");
+    p.write_whole(b"1").unwrap();
+    let hung = fake::hang(&d.path().join("f.json")).deadline(Duration::from_millis(200));
+    let io = |e: anyhow::Error| e.downcast::<io::Error>().unwrap();
+    assert!(past_deadline(&p.read().unwrap_err()));
+    assert!(past_deadline(&p.metadata().unwrap_err()));
+    assert!(past_deadline(&io(p.write_whole(b"2").unwrap_err())));
+    let t = Instant::now();
+    let e = io(p.write_whole(b"3").unwrap_err());
+    assert!(refused(&e) && e.to_string().contains("still in the kernel"), "{e}");
+    crate::testkit::ended_before(t, Duration::from_millis(200), "refused at once");
+    assert_eq!(cap.held(), 3);
+    // (Another file goes on meanwhile.)
+    r.join("g.json").write_whole(b"g").unwrap();
+    drop(hung);
+    crate::testkit::eventually("the held calls end", || cap.held() == 0);
+    p.write_whole(b"4").unwrap();
+    assert_eq!(p.read().unwrap(), b"4");
+}

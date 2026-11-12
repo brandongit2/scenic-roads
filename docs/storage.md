@@ -49,7 +49,11 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   and on 24 Oct one of 185 MB from the M4, read back the same length but other bytes, and failed
   their jobs; the mini's SMB session had reconnected during the 11 Nov one's upload). Each write
   and read-back moves the whole file: the writes are counted as the NAS's bytes written, the
-  read-backs in no NAS count. An unchanged file keeps its name, so a
+  read-backs in no NAS count. Each of its calls on the share (the stat, the folder made, the open,
+  each 4 MB written, the sync, the read-back, the rename) is a store::deadline call, two minutes at
+  most (a read-back counted from its last byte); one left in the kernel past it fails the upload,
+  and a late finish lands only in this process's temporary name or the same content-named bytes
+  (docs/nas-access.md §6). An unchanged file keeps its name, so a
   rebuild uploads only what changed; one already there is reused as it is, nothing written to it,
   and named in the job's hand-off (`Handoff::reused`), which the merge checks against GC's deletions
   (docs/maplog.md §7.4). One the manifest already names under the same logical name takes one look
