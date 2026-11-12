@@ -15391,20 +15391,46 @@ mod tests {
     fn osm_pass_waits_for_space_or_runs() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
-        std::fs::create_dir_all(root.join("sources/osm/2026-09-28")).unwrap();
-        std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), b"x").unwrap();
         std::fs::create_dir_all(root.join("sources/basemap")).unwrap();
         std::fs::write(root.join("sources/basemap/planetiler.jar"), b"x").unwrap();
         let mut a = agent(&store::nasfs::NasRoot::local_for_test(&root), &home);
+        let plan_now = |a: &mut Agent, w: &mut Vec<Waiting>| {
+            a.planner().plan(
+                &store::nasfs::NasRoot::local_for_test(&root),
+                &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() },
+                w,
+            )
+        };
+        // No planet declared: no pass, and the plan says why.
+        let mut w = Vec::new();
+        assert!(!plan_now(&mut a, &mut w)
+            .iter()
+            .any(|j| j.id.starts_with("osm-pass") || j.id.starts_with("planet-fetch")));
+        assert!(w.iter().any(|x| x.why.contains("no planet is declared")), "{w:?}");
+        // The planet the build has, declared (task #1120): its fetch first while the NAS lacks it,
+        // then its pass, of the planet's path, its key as when the pass took the newest planet on
+        // the NAS (`resume_hold`'s offer and the coordinator's target name it).
+        let mut m = BTreeMap::new();
+        inputs::planet::accept_for_test(&store::nasfs::NasRoot::local_for_test(&root), &mut m, "2026-09-28");
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
+        let plan = plan_now(&mut a, &mut Vec::new());
+        let fetch = plan.iter().find(|j| j.id == "planet-fetch 2026-09-28").expect("the planet's fetch");
+        assert!(fetch.cmd.ends_with(&["--date".to_string(), "2026-09-28".to_string()]), "{:?}", fetch.cmd);
+        assert!(!plan.iter().any(|j| j.id.starts_with("osm-pass")));
+        std::fs::create_dir_all(root.join("sources/osm/2026-09-28")).unwrap();
+        std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), b"x").unwrap();
         // (The disk as the test says, both ways: not this Mac's.)
         a.free_set = Some(PASS_SPACE);
         let mut w = Vec::new();
-        let plan = a.planner().plan(
-            &store::nasfs::NasRoot::local_for_test(&root),
-            &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() },
-            &mut w,
-        );
-        assert!(plan.iter().any(|j| j.id == "osm-pass 2026-09-28"));
+        let plan = plan_now(&mut a, &mut w);
+        let pass = plan.iter().find(|j| j.id == "osm-pass 2026-09-28").expect("the pass");
+        assert!(!plan.iter().any(|j| j.id.starts_with("planet-fetch")));
+        // (Its job what it was before the declaration: the planet's path and date, the pass's key
+        // and target, `resume_hold`'s offer naming the path.)
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let planet = nas.join("sources/osm/2026-09-28/planet.osm.pbf");
+        assert_eq!(planet.rel(), "sources/osm/2026-09-28/planet.osm.pbf");
+        assert_eq!(pass.cmd, osm_pass_cmd(&a.o, &nas, &planet, "2026-09-28"));
         a.free_set = Some(PASS_SPACE / 4);
         let mut w = Vec::new();
         let plan = a.planner().plan(
@@ -16520,6 +16546,12 @@ mod pool_tests {
         let r = nas(d.path());
         let date = "2026-10-01";
         let pass = format!("osm-pass {date}");
+        // (Its planet declared, task #1120: the lead's first round fetches it, by the stand-in
+        // program; it's there after that round.)
+        let path = r.join("state/build/manifest.json");
+        let mut recs: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        inputs::planet::accept_for_test(&store::nasfs::NasRoot::local_for_test(r.clone()), &mut recs, date);
+        std::fs::write(&path, serde_json::to_vec(&recs).unwrap()).unwrap();
         let bin = app(d.path());
         let mut lead = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),

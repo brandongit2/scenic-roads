@@ -21,7 +21,7 @@ use std::sync::mpsc;
 /// the forecast's and the regions' steps' threads), when nothing wakes it sooner.
 pub(super) const LOOK: Duration = Duration::from_secs(5);
 /// The plan made again at least this often, whatever changed: the fallback for what the digest
-/// doesn't cover (time, disk room, planets newly on the NAS).
+/// doesn't cover (time, disk room, a planet newly fetched).
 pub(super) const FALLBACK: Duration = Duration::from_secs(300);
 /// The regions' steps counted again, while a page asks, at least this often.
 const STEPS_EVERY: Duration = Duration::from_secs(60);
@@ -804,6 +804,43 @@ impl Planner {
         inputs::osmpass::latest_pass_by(root, self.resume_on())
     }
 
+    /// The declared planet's date and next step (inputs::planet::next), the newest complete pass's
+    /// date `have`: None when its pass is complete, or none is declared or can be read now (said in
+    /// `waiting`, as a declared planet older than the last pass is).
+    pub(super) fn planet_next(
+        &self,
+        root: &NasRoot,
+        have: Option<&str>,
+        waiting: &mut Vec<Waiting>,
+    ) -> Option<(String, inputs::planet::Next)> {
+        let wait =
+            |why: String| Waiting { step: Some("osm-pass".into()), what: "the OpenStreetMap planet".into(), why };
+        let declared = self.brief_now(root).and_then(|b| inputs::planet::declared(root, &b.manifest));
+        let p = match declared {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                waiting.push(wait(
+                    "no planet is declared (inputs/sources/: the osm-planet role, docs/inputs.md §6.9)".into(),
+                ));
+                return None;
+            }
+            Err(e) => {
+                waiting.push(wait(format!("the planet's declaration can't be read now: {e:#}")));
+                return None;
+            }
+        };
+        let next = inputs::planet::next(root, &p, have)?;
+        if next == inputs::planet::Next::Behind {
+            waiting.push(wait(format!(
+                "the declared planet, of {}, is older than the last complete pass's ({}): passes only go forward",
+                p.date,
+                have.unwrap_or_default()
+            )));
+            return None;
+        }
+        Some((p.date, next))
+    }
+
     pub(super) fn newer_app(&self) -> bool {
         newer_app(&self.o, &self.app)
     }
@@ -1013,7 +1050,7 @@ impl Planner {
     /// manifest, the jobs' keys, the hand-offs waiting), the gate's view of the inputs and the units
     /// on it with their folders as last listed, the pool
     /// (membership, role, gates), its mode and switch, and the pause. Equal digests: the plan would
-    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, planets newly on the NAS)
+    /// come out the same but for what `IDLE_REPLAN` covers (time, disk room, a planet newly fetched)
     /// and the leases, whose change filters its work again (`refilter_due`).
     pub(super) fn plan_seen(&self, root: &store::nasfs::NasRoot) -> u64 {
         use std::hash::{Hash, Hasher};
@@ -1172,9 +1209,31 @@ impl Planner {
         let me = self.o.bin.join("scenic");
         let s = |p: &Path| p.to_string_lossy().into_owned();
 
-        // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
+        // 1. The OSM pass, when the declared planet is newer than the last complete pass: fetched
+        // first when the NAS lacks it (inputs::planet).
         let have = self.latest_pass(root);
-        let newer = inputs::osmpass::newer_planet(root, have.as_deref()).ok().flatten();
+        let newer = match self.planet_next(root, have.as_deref(), waiting) {
+            Some((date, inputs::planet::Next::Pass(planet))) => Some((planet, date)),
+            Some((date, inputs::planet::Next::Fetch)) => {
+                out.push(JobSpec {
+                    id: format!("planet-fetch {date}"),
+                    what: format!("Fetching the OpenStreetMap planet of {date}"),
+                    cmd: vec![
+                        s(&self.o.bin.join("scenic-build")),
+                        "planet-fetch".into(),
+                        "--root".into(),
+                        jobs::root_arg(root),
+                        "--date".into(),
+                        date,
+                    ],
+                    needs: Needs { nas: true },
+                    restart_after_sleep: true,
+                    record: None,
+                });
+                None
+            }
+            _ => None,
+        };
         // (Resuming on: held for, and offered to, the member whose Mac has its progress.)
         let held = self.resume_hold(newer.as_ref());
         if let Some((planet, date)) = newer.clone() {
@@ -2598,16 +2657,16 @@ impl Planner {
     }
 
     /// The build to the end (the status's checklist): a line per stage (crate::agent::steps::STAGES)
-    /// with an item per step counted: the OSM pass (the planet, read when a newer one is on the
-    /// NAS, and its worldwide steps), then the regions' steps (build::checklist, the last plan's:
+    /// with an item per step counted: the OSM pass (the planet, fetched and read when a newer one
+    /// is declared, and its worldwide steps), then the regions' steps (build::checklist, the last plan's:
     /// `regions_checklist`).
     pub(super) fn checklist(&self, root: &store::nasfs::NasRoot, regions: &[recipes::Recipe]) -> Vec<progress::Line> {
         let mut items = Vec::new();
         let mut next: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         let mut notes: BTreeMap<&str, String> = BTreeMap::new();
         let have = self.latest_pass(root);
-        // The planet: a newer one's under way (or waiting), else done.
-        let newer = matches!(inputs::osmpass::newer_planet(root, have.as_deref()), Ok(Some(_)));
+        // The planet: a newer one declared is under way (fetched, then read; or waiting), else done.
+        let newer = self.planet_next(root, have.as_deref(), &mut Vec::new()).is_some();
         items.push(progress::Item {
             step: "osm-pass".into(),
             left: Some((newer || have.is_none()) as usize),

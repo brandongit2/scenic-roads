@@ -6,6 +6,8 @@
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
 //!   osm-pass --planet <p> --date <d>  the OSM pass (extracts, sets, basemap, road values); resumable
+//!   planet-fetch --date <d>      the declared OSM planet of that date onto the NAS once
+//!                                (inputs::planet::fetch), resumably, checked against its MD5
 //!   outlines [--pass d]          the pass's administrative and ISO 3166 outlines from its outline
 //!                                set (inputs::osmpass::make_outlines)
 //!   patch-ferries [--pass d] [--near-coverage]  the pass's extracts given the standalone ferry ways
@@ -421,6 +423,21 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             eprintln!("  failed: {n}: {why}");
         }
         anyhow::ensure!(done.failed.is_empty(), "{} files failed: run it again", done.failed.len());
+        return Ok(());
+    }
+    if step == "planet-fetch" {
+        // planet-fetch --date <d>: the declared OSM planet of that date onto the NAS once
+        // (inputs::planet::fetch), from the accepted declaration the records name now: the one the
+        // agent planned it by, or it fails. Resumable; writes nothing else.
+        let date = opt(&args, "--date").context("--date YYYY-MM-DD: the declared planet's")?;
+        let m = buildstore::records::read_manifest(&root)?;
+        let p = ::inputs::planet::declared(&root, &m)?
+            .context("no planet is declared (inputs/sources/, the osm-planet role)")?;
+        anyhow::ensure!(p.date == date, "the declared planet is now of {}, not {date}", p.date);
+        // (Its cost noted for its date, as the pass's: what the NAS budget weighs its next run by.)
+        let c = cost_start("planet-fetch", &date);
+        ::inputs::planet::fetch(&root, &p, &::inputs::planet::NET, &|l| eprintln!("planet-fetch: {l}"))?;
+        note_cost("planet-fetch", &date, c);
         return Ok(());
     }
     if step == "names-todo" {

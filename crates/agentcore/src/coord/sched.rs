@@ -577,9 +577,10 @@ fn tenths(t: u32) -> String {
 /// its jobs' threads leave (`Sched::pack`, task #688 review): the minute its busy cores span.
 pub const SETTLE: Duration = Duration::from_secs(60);
 
-/// The steps that load the NAS as they go (reads; the clean-up's deletes, task #1000): one none of
-/// whose runs the way it runs now measured its rate weighs the NAS budget's whole (`NasWeigher`).
-pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo", "gc"];
+/// The steps that load the NAS as they go (reads; the clean-up's deletes, task #1000; the planet's
+/// download, written and read back, task #1120): one none of whose runs the way it runs now
+/// measured its rate weighs the NAS budget's whole (`NasWeigher`).
+pub(super) const NAS_STEPS: &[&str] = &["unit", "pack", "lo", "gc", "planet-fetch"];
 
 /// The batch length while the pool's setting `batch-minutes` isn't set (s; docs/pool.md §7.7, Batch
 /// length): a quarter of an hour, the owner's choice (`Sched::batch_len`).

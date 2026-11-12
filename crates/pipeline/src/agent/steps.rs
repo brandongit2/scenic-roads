@@ -843,7 +843,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 60] = [
+pub const TABLE: [Step; 61] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -856,6 +856,16 @@ pub const TABLE: [Step; 60] = [
             w_osm_pass,
         )
     },
+    // (The declared planet onto the NAS once, before its pass: inputs::planet. Outside the records:
+    // the pass reads it by its path.)
+    step(
+        "pass",
+        Fetch,
+        World,
+        "planet-fetch",
+        "Fetches the declared OpenStreetMap planet onto the NAS once, checked against its MD5, for the pass to read.",
+        w_none,
+    ),
     Step {
         alone: true,
         ..step(
@@ -2809,6 +2819,7 @@ mod tests {
             ids,
             [
                 "osm-pass",
+                "planet-fetch",
                 "pass-sets",
                 "outlines",
                 "trailends",
