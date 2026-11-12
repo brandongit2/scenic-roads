@@ -691,7 +691,8 @@ were. The lead down, nothing is published and the updates wait.
 **The NAS's layout of the app** (#1148): each version is one file, `app/releases/<version>.tgz`,
 beside `app/releases/current.json` (the live version's manifest: `version`, `sha256` of each file
 and `archive_sha256`) and `previous.json` (the one before), so a publish writes three files to the NAS (the archive, `current.json` and
-`previous.json`) where a version's folder was 840 files:
+`previous.json`) where a version's folder was 840 files, and then, still under the lock, removes
+every archive neither manifest names (an updater reads no other; a rollback swaps the two):
 the NAS creates 1–3 files a second when busy. Each Mac's updater copies the archive and unpacks it locally (docs/macs.md,
 The updater). Measured from the M1 at home through the mini to a scratch root on 12 Nov 2026, the same app
 (118 MB in 840 files; the archive 45 MB, sent in ~2 s): a whole install, upload to live, took 177 s

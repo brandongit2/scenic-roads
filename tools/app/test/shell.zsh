@@ -424,7 +424,8 @@ upon waiting $tmp/wait.out
 sleep 0.5; rm -f $N/app/publish.lock; wait $wp
 out=$(<$tmp/wait.out)
 [[ -n $written && $(grep -c waiting <<< $out) == 1 && $out == *'(other 1 now'*'rc=0 state=live' && $(lv $R/current.json) == 20261111-0006-$C ]] \
-  && ok "nas_install waits for another publish's lock, its archive written meanwhile" || no "nas_install lock wait" "$out"
+  && clean $V2 20261111-0006-$C && ok "nas_install waits for another publish's lock, its archive written meanwhile; the archive neither manifest names removed" \
+  || no "nas_install lock wait" "$out / $(ls $R)"
 # The NAS's Mac unreachable: nothing sent, nothing changed.
 out=$(ns 20261111-0007-$C $C 20261111-0006-$C $tmp/v3.tar 'nas_mac=none; nas_host=nas-mac.invalid')
 [[ $out == *"can't reach the NAS's Mac (nas-mac.invalid)"*'rc=1 state=' && $(lv $R/current.json) == 20261111-0006-$C ]] \
@@ -439,7 +440,7 @@ out=$(rb)
 out=$( { cat $tmp/v3.tar; sleep 0.5; print go; } | (cd $g && HOME=$hm zsh -euo pipefail -c "source ${(q)lib}; nas_install $N 20261111-0004-$C $C $V2 $b3 $s3 'test 1'" 2>&1; print -r -- "rc=$?" > $tmp/gone.rc) \
   | { while IFS= read -r l; do print -r -- $l; [[ $l != @@ready ]] || break; done; } )
 [[ $out == *@@ready && $(<$tmp/gone.rc) == rc=0 && $(lv $R/current.json) == 20261111-0004-$C && $(lv $R/previous.json) == $V2 ]] \
-  && clean $V1 $V2 20261111-0006-$C 20261111-0004-$C && ok "nas_install: the go-ahead, then the connection gone: installed, the lock freed" \
+  && clean $V2 20261111-0004-$C && ok "nas_install: the go-ahead, then the connection gone: installed, the lock freed, the rolled-back-from archive removed" \
   || no "nas_install gone after go" "$out / $(<$tmp/gone.rc) / $(ls $R)"
 
 exit $failed

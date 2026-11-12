@@ -378,7 +378,7 @@ nas_send() {
 # (nas_lock, waited for while another publish holds it) the order checked again, "@@ready", and the
 # go-ahead read (within $nas_go_wait s, 300), else nothing goes in; then, whatever the connection
 # and the signals, the archive, previous.json and current.json, in that order, and
-# "@@installed <version>".
+# "@@installed <version>"; then the archives of versions neither manifest names removed.
 nas_install() {
   local nas=$1 version=$2 head=$3 began=$4 bytes=$5 sum=$6 from=$7
   local inc=~/Library/Caches/scenic-publish/incoming lock=$1/app/publish.lock rel=$1/app/releases
@@ -429,6 +429,12 @@ nas_install() {
   cp -X $loc/manifest.json $rel/current.json.tmp
   mv $rel/current.json.tmp $rel/current.json
   print -r -- "@@installed $version" || true
+  # Every other archive removed, still under the lock: NasReleases reads only the two manifests'.
+  # (Live already: a removal failing is said, not the install's failure.)
+  local keep=($version $(live_version $rel/previous.json 2>/dev/null || true)) a
+  for a in $rel/*.tgz(N); do
+    (( ${keep[(Ie)${a:t:r}]} )) || rm -f -- $a || print -r -- "couldn't remove $a" || true
+  done
 }
 # _nas_begin: nas_install's and nas_rollback's start. Their cleanup (_nas_end, as the script ends:
 # its commands carry their values, the function's locals gone) put in place; SIGPIPE ignored, so a
