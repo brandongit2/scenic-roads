@@ -37,6 +37,7 @@ pub mod handoffs;
 pub mod held;
 pub mod history;
 pub mod inbox;
+pub mod jobspans;
 pub mod kept;
 pub mod lease;
 pub mod maproutes;
@@ -437,6 +438,8 @@ pub struct Shared {
     pub pause_at: u64,
     /// What happened, the last week's (`history`): the build page's activity.
     pub history: history::History,
+    /// The jobs' spans, logs and records by job id (jobspans: the lead's alone).
+    pub jobspans: Option<Arc<jobspans::Store>>,
     /// The pool's lead (docs/pool.md §6.6): why it grants nothing now (its view not fresh, no longer
     /// leading), workers told to ask again in a moment.
     pub moving: Option<String>,
@@ -1779,6 +1782,7 @@ impl Coordinator {
             paused,
             pause_at,
             history,
+            jobspans: lead.then(|| Arc::new(jobspans::Store::new(dir.join(jobspans::DIR)))),
             moving: None,
             told: None,
             min_app: None,
@@ -2564,6 +2568,11 @@ impl Coordinator {
     /// uses' (crate::uses).
     pub fn add_timings(&self, rec: &jobrt::timings::RunRec) {
         keep_timings(&self.shared, rec);
+    }
+
+    /// The jobs' spans' store (the lead's: jobspans), for this Mac's own jobs' (crate::agent::spans).
+    pub fn jobspans(&self) -> Option<Arc<jobspans::Store>> {
+        self.shared.lock().unwrap().jobspans.clone()
     }
 
     /// What this Mac's job's z6 tiles cost (measured here).
@@ -3790,9 +3799,16 @@ fn keep_timings(shared: &Mutex<Shared>, rec: &jobrt::timings::RunRec) {
         cost_v: rec.cost_v.or(Some(shared.lock().unwrap().the_plan.cost_version(&rec.kind))),
         ..rec.clone()
     };
-    let dir = shared.lock().unwrap().dir.clone();
+    let (dir, spans) = {
+        let s = shared.lock().unwrap();
+        (s.dir.clone(), s.jobspans.clone())
+    };
     if let Err(e) = jobrt::timings::append(&dir.join("timings.jsonl"), rec) {
         eprintln!("coordinator: keeping a run's timings: {e}");
+    }
+    // (And beside its spans, by its job's id.)
+    if let Some(j) = spans {
+        j.record(rec);
     }
     shared.lock().unwrap().add_use(rec, unix_now());
 }
@@ -4827,10 +4843,18 @@ fn route(
         }
         "/pool/beat" => {
             // A member's beat listing the leases it holds (docs/coordination.md §6.1, `held`).
-            let b: held::Beat = serde_json::from_slice(body)?;
+            let mut b: held::Beat = serde_json::from_slice(body)?;
             anyhow::ensure!(!b.member.is_empty() && b.member.len() <= 120, "a beat names its member");
+            // (Its jobs' spans kept off the lock: jobspans, a file each.)
+            let chunks = std::mem::take(&mut b.spans);
+            let spans = shared.lock().unwrap().jobspans.clone();
+            let acks = match spans {
+                Some(j) if !chunks.is_empty() => j.take(chunks),
+                _ => Vec::new(),
+            };
             let mut s = shared.lock().unwrap();
-            Ok((200, serde_json::to_value(held::beat(&mut s, &b))?))
+            let a = held::Answer { spans: acks, ..held::beat(&mut s, &b) };
+            Ok((200, serde_json::to_value(a)?))
         }
         "/pool/view" => {
             // Every Mac's page data (docs/coordination.md step 4), from memory.
@@ -5823,6 +5847,17 @@ mod http {
         let routes = routes.merge(super::maproutes::router::<Ctx>(Arc::new(move || {
             shared.lock().unwrap_or_else(|e| e.into_inner()).maplog.clone()
         })));
+        // (A job's spans, log and record: jobspans, its file read off the lock.)
+        let shared = ctx.shared.clone();
+        let routes = routes.merge(super::jobspans::router::<Ctx>(Arc::new(move |job| {
+            let (store, events, dir) = {
+                let s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                (s.jobspans.clone()?, s.history.of_job(job), s.dir.clone())
+            };
+            Some(super::jobspans::view(Some(&store), job, events, || {
+                super::jobspans::record_in(&dir.join("timings.jsonl"), job)
+            }))
+        })));
         // (A test's handler that waits on a blocking task for good: a stop returns all the same.)
         #[cfg(test)]
         let routes = routes.route("/work/test-block", get(test_block));
@@ -6121,8 +6156,9 @@ mod http {
         let is_page =
             req.method() == Method::GET && path.strip_prefix('/').is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p));
         let api = path.strip_prefix("/api/").unwrap_or("");
-        let is_view = req.method() == Method::POST
-            && matches!(api, "swarm" | "history" | "steps" | "live" | "regions" | "catalogs" | "tocome" | "built");
+        let is_view = (req.method() == Method::POST
+            && matches!(api, "swarm" | "history" | "steps" | "live" | "regions" | "catalogs" | "tocome" | "built"))
+            || (req.method() == Method::GET && api.starts_with("job/"));
         if is_page || is_view {
             return next.run(req).await;
         }
@@ -6892,6 +6928,69 @@ mod tests {
         let (url, _) = coordwire::testkit::answering(404);
         let older_lead = client::Client::at(vec![url], "t".into(), "m1");
         assert_eq!(older_lead.pool_beat(&word("m1", &[])).unwrap(), None);
+    }
+
+    /// Task #1104: a member's beat carrying its jobs' spans: kept by the lead by job id, from where
+    /// it has them (a beat posted again adds nothing), its answer saying it takes them and what it
+    /// has; the page reads the job whole at `GET /api/job/<id>`, no key; a job of no spans is
+    /// legacy; an older member's beat, none, is answered as before.
+    #[test]
+    fn a_member_s_jobs_spans_reach_the_lead_and_the_page() {
+        let (_d, _c, w) = start();
+        let job: jobrt::jobid::JobId = "5-1794000000001".parse().unwrap();
+        let meta = jobspans::Meta {
+            name: "unit 6/1/1".into(),
+            worker: "m1".into(),
+            host: "m1".into(),
+            start: 1000,
+            ..Default::default()
+        };
+        let s = [
+            r#"{"k":"h","v":1,"start_us":1000000000,"kind":"unit","pid":1}"#,
+            r#"{"k":"s","id":"1","name":"sampling","t0":0,"t1":2000000,"w":[500000,0,0,0]}"#,
+            r#"{"k":"w","on":"nas","t0":10,"t1":500010,"n":3,"busy":400000}"#,
+        ]
+        .map(|l| format!("{l}\n"))
+        .concat();
+        let chunk = jobspans::Chunk {
+            job,
+            meta: Some(meta),
+            s_at: 0,
+            s: s.clone(),
+            l_at: 0,
+            l: "=== run of unit 6/1/1 ===\n".into(),
+            end: false,
+        };
+        let b = held::Beat { spans: vec![chunk], ..word("m1", &[]) };
+        let a = w.pool_beat(&b).unwrap().unwrap();
+        assert!(a.speaks.iter().any(|x| x == beats::SPANS), "{:?}", a.speaks);
+        assert_eq!(a.spans.len(), 1);
+        assert_eq!((a.spans[0].s, a.spans[0].meta, a.spans[0].done), (s.len() as u64, true, false));
+        assert_eq!(w.pool_beat(&b).unwrap().unwrap().spans, a.spans, "posted again: nothing added");
+        assert!(w.pool_beat(&word("m1", &[])).unwrap().unwrap().spans.is_empty(), "an older member's beat");
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let get = |p: &str| send(&addr, "GET", p, None, &[], &serde_json::json!({}));
+        let (code, _, v) = get(&format!("/api/job/{job}"));
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(
+            (v["legacy"].as_bool(), v["running"].as_bool(), v["name"].as_str()),
+            (Some(false), Some(true), Some("unit 6/1/1"))
+        );
+        assert_eq!(v["spans"][0]["kind"], "job");
+        let sp = &v["spans"][1];
+        assert_eq!(
+            (sp["name"].as_str(), sp["t0"].as_f64(), sp["t1"].as_f64()),
+            (Some("sampling"), Some(1000.0), Some(1002.0))
+        );
+        assert_eq!(
+            (sp["parent"].as_str(), sp["kind"].as_str(), sp["attrs"]["nas_s"].as_f64()),
+            (Some("job"), Some("phase"), Some(0.5))
+        );
+        assert_eq!(v["waits"][0]["on"], "nas");
+        assert_eq!(v["log"]["lines"][0]["text"], "=== run of unit 6/1/1 ===");
+        let (code, _, v) = get("/api/job/5-2");
+        assert_eq!((code, v["legacy"].as_bool()), (200, Some(true)));
+        assert_eq!(get("/api/job/nope").0, 400);
     }
 
     /// A member's beat speaking `speaks`, with its heartbeat.

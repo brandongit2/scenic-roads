@@ -158,7 +158,7 @@ rule):
 
 | Call | From | Answer |
 | --- | --- | --- |
-| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/roles.md §3.4), and who leads while it leads (`leading`) |
+| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/roles.md §3.4), who leads while it leads (`leading`), and what it has of the jobs' spans the beat carried (`spans`: docs/formats.md, Job spans) |
 | `POST /pool/handoff` | the beat poster, for each hand-off the answer says the lead lacks | taken (durable) |
 | `POST /pool/mail` | a member's agent: a page's `Cancel` or `Retry` | `took` |
 | `POST /pool/hold`, `/pool/settings` | any Mac's agent, for the owner's CLI, menu and page | the new state (the settings: a post naming none reads them) |
@@ -229,7 +229,7 @@ can tell "holder gone" from "holder unreachable" only by hearing from it, so it 
 (`crate::coord::held`).
 
 - **The beat** (`POST /pool/beat {member, speaks, held, held_age_s, heartbeat, status, handoffs,
-  cap, progress, sent}`, every `agent::beat::EVERY`, 10 s, from its own poster thread, whatever the
+  cap, progress, sent, spans}`, every `agent::beat::EVERY`, 10 s, from its own poster thread, whatever the
   loop waits on): `held` is the list the loop made last, `held_age_s` its age, so the lead releases
   only leases granted before the list was made (a loop stuck after a grant never loses it).
 - **The grant is durable before its answer.** A lead crashing after the `fsync` and before the

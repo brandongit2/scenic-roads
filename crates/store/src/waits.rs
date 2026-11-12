@@ -34,6 +34,14 @@
 //! is taken and as it's dropped, and a read of the process's CPU time, outside the lock, when the
 //! kind holding the instant changes (hundreds of ns a guard: `waits_count_by_wall_clock_and_the_guards_cost_little`
 //! measures it), against NAS and network calls of hundreds of µs and more.
+//!
+//! As intervals too (task #1104, a job's spans: jobrt::spans), once `intervals_from` is called:
+//! each kind's waits as the times some thread was in one (`Interval`), by the wall clock, kinds
+//! apart (a NAS call beside a request is in both kinds' intervals). Those of a kind less than the
+//! merge gap apart (`set_gap`) are one interval, its `n` waits and their `busy` time: a loop of
+//! small reads is one bar, not thousands. The intervals ended, and the notes the store makes of
+//! its retries (`note`, crate::retry::log), wait for jobrt::spans to take them (`take`). Recorded
+//! only where a kind starts or stops being waited on, under the lock a guard takes anyway.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -82,6 +90,62 @@ struct State {
     span_since: Instant,
     span_cpu: u64,
     acc: Totals,
+    /// The intervals, once asked for (`intervals_from`).
+    iv: Option<Box<Intervals>>,
+}
+
+/// A kind's waits from `t0` to `t1` (ns since `intervals_from`'s base): `n` of them, waited on
+/// `busy` ns of it (all of it when `n` is 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Interval {
+    pub on: On,
+    pub t0: u64,
+    pub t1: u64,
+    pub busy: u64,
+    pub n: u32,
+}
+
+/// The intervals being recorded (`State::iv`).
+struct Intervals {
+    base: Instant,
+    /// Two of a kind this close (ns) are merged.
+    gap: u64,
+    /// Since when each kind has been waited on, while it is (ns since `base`).
+    since: [Option<u64>; KINDS],
+    /// Each kind's last interval, while the next may still merge into it.
+    open: [Option<Interval>; KINDS],
+    /// Those ended, for `take`.
+    done: Vec<Interval>,
+    /// The notes made (`note`): when (ns since `base`), what, the line.
+    notes: Vec<(u64, &'static str, String)>,
+}
+
+/// The most notes kept between two `take`s (a retry storm's: the rest counted in the last).
+const NOTES_MAX: usize = 200;
+
+impl Intervals {
+    fn at(&self, now: Instant) -> u64 {
+        now.saturating_duration_since(self.base).as_nanos() as u64
+    }
+
+    /// Kind `k`'s waits ended at `t1` (began at `since[k]`): into its open interval when within the
+    /// gap of it, else the open one done and this one open.
+    fn ended(&mut self, k: usize, t1: u64) {
+        let Some(t0) = self.since[k].take() else { return };
+        let on = [On::Nas, On::Net, On::Disk, On::Other][k];
+        match &mut self.open[k] {
+            Some(o) if t0 <= o.t1 + self.gap => {
+                o.t1 = t1;
+                o.busy += t1 - t0;
+                o.n += 1;
+            }
+            o => {
+                if let Some(d) = o.replace(Interval { on, t0, t1, busy: t1 - t0, n: 1 }) {
+                    self.done.push(d);
+                }
+            }
+        }
+    }
 }
 
 impl State {
@@ -167,6 +231,7 @@ fn state() -> &'static Mutex<State> {
             span_since: now,
             span_cpu: 0,
             acc: [0; KINDS + PAIRS.len()],
+            iv: None,
         })
     })
 }
@@ -238,6 +303,12 @@ impl Drop for Guard {
                 let now = Instant::now();
                 s.settle(now);
                 s.active[k as usize] -= 1;
+                if s.active[k as usize] == 0 {
+                    if let Some(iv) = s.iv.as_mut() {
+                        let t = iv.at(now);
+                        iv.ended(k as usize, t);
+                    }
+                }
                 s.retop().map(|c| (c, now))
             };
             reread(change);
@@ -257,6 +328,11 @@ fn wait(on: On) -> Guard {
         let now = Instant::now();
         s.settle(now);
         s.active[on as usize] += 1;
+        if s.active[on as usize] == 1 {
+            if let Some(iv) = s.iv.as_mut() {
+                iv.since[on as usize] = Some(iv.at(now));
+            }
+        }
         s.retop().map(|c| (c, now))
     };
     reread(change);
@@ -282,6 +358,81 @@ pub fn disk() -> Guard {
 /// A wait on other work (another worker, a thread, a lock) in progress.
 pub fn other() -> Guard {
     wait(On::Other)
+}
+
+/// Records the waits as intervals from now (`Interval`, times since `base`), two of a kind `gap_ns`
+/// apart or less merged, and the store's notes (`note`); measuring on (`enable`). Again: the base
+/// kept, the gap set.
+pub fn intervals_from(base: Instant, gap_ns: u64) {
+    enable();
+    let mut s = lock();
+    let now = Instant::now();
+    match s.iv.as_mut() {
+        Some(iv) => iv.gap = gap_ns,
+        None => {
+            let mut iv = Intervals {
+                base,
+                gap: gap_ns,
+                since: [None; KINDS],
+                open: [None; KINDS],
+                done: Vec::new(),
+                notes: Vec::new(),
+            };
+            // (A kind waited on now: from now.)
+            for k in 0..KINDS {
+                if s.active[k] > 0 {
+                    iv.since[k] = Some(iv.at(now));
+                }
+            }
+            s.iv = Some(Box::new(iv));
+        }
+    }
+}
+
+/// The merge gap from now (ns): wider as a job's records grow (jobrt::spans thins them).
+pub fn set_gap(gap_ns: u64) {
+    if let Some(iv) = lock().iv.as_mut() {
+        iv.gap = gap_ns;
+    }
+}
+
+/// A note of `what` (a retry's line, crate::retry::log) at this moment, for the job's spans; nothing
+/// while no intervals are recorded.
+pub fn note(what: &'static str, line: String) {
+    if !enabled() {
+        return;
+    }
+    let mut s = lock();
+    let now = Instant::now();
+    if let Some(iv) = s.iv.as_mut() {
+        let t = iv.at(now);
+        if iv.notes.len() < NOTES_MAX {
+            iv.notes.push((t, what, line));
+        }
+    }
+}
+
+/// The intervals ended (those that can't merge any more: their kind's next would come past the
+/// gap from now; every one, a kind waited on now to now, when `all`, as a job ends), and the notes
+/// made, since the last `take`.
+pub fn take(all: bool) -> (Vec<Interval>, Vec<(u64, &'static str, String)>) {
+    let mut s = lock();
+    let now = Instant::now();
+    let active = s.active;
+    let Some(iv) = s.iv.as_mut() else { return Default::default() };
+    let t = iv.at(now);
+    for k in 0..KINDS {
+        if all && active[k] > 0 {
+            iv.ended(k, t);
+            iv.since[k] = Some(t);
+        }
+        if iv.open[k].is_some_and(|o| all || (o.t1 + iv.gap < t && iv.since[k].is_none())) {
+            let o = iv.open[k].take().unwrap();
+            iv.done.push(o);
+        }
+    }
+    iv.done.sort_by_key(|i| i.t0);
+    (std::mem::take(&mut iv.done), std::mem::take(&mut iv.notes))
 }
 
 /// A job's computing held to so many threads at once, its waits lending their turns (task #1097):
@@ -504,6 +655,62 @@ mod tests {
         let each = (crate::testkit::thread_cpu_ns() - c0) as f64 / n as f64;
         eprintln!("a guard costs {each:.0} ns");
         assert!(each < 20_000.0, "{each} ns of CPU a guard"); // (bound ok: CPU time, not wall)
+    }
+
+    /// Task #1104: the waits as intervals, each kind's apart (a request beside a NAS call is in
+    /// both); two of a kind within the gap one interval, `n` 2, `busy` their time; past it, two; a
+    /// kind waited on as the job ends cut there (`take(true)`); the store's notes with them.
+    #[test]
+    fn waits_come_as_intervals_merged_within_the_gap() {
+        // (Alone in a process of its own: the waits are the process's.)
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = crate::spawn::output(
+                crate::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "waits::tests::waits_come_as_intervals_merged_within_the_gap"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        // (No note before intervals are asked for.)
+        note("retry", "unheard".into());
+        // A gap no sleep can pass: the two NAS calls merge, however loaded the Mac.
+        intervals_from(Instant::now(), 3_600_000_000_000);
+        for _ in 0..2 {
+            let _g = nas();
+            let _n = net();
+            std::thread::sleep(Duration::from_millis(5)); // (sleep ok: a NAS call's stand-in)
+        }
+        note("retry", "a read: EIO".into());
+        // (Still within the gap: nothing ended yet.)
+        let (ended, notes) = take(false);
+        assert!(ended.is_empty());
+        let (iv, _) = take(true);
+        assert_eq!(iv.len(), 2, "{iv:?}");
+        for (i, on) in iv.iter().zip([On::Nas, On::Net]) {
+            assert_eq!((i.on, i.n), (on, 2), "{i:?}");
+            assert!(i.busy >= 10_000_000 && i.busy <= i.t1 - i.t0, "{i:?}");
+        }
+        assert_eq!(notes.iter().map(|n| (n.1, n.2.as_str())).collect::<Vec<_>>(), [("retry", "a read: EIO")]);
+        // No gap: two calls, two intervals; one open as the job ends, cut there.
+        set_gap(0);
+        for _ in 0..2 {
+            let _g = disk();
+            std::thread::sleep(Duration::from_millis(2)); // (sleep ok: a disk call's stand-in)
+        }
+        let held = other();
+        let (iv, _) = take(true);
+        drop(held);
+        let kinds: Vec<On> = iv.iter().map(|i| i.on).collect();
+        assert_eq!(kinds, [On::Disk, On::Disk, On::Other], "{iv:?}");
+        assert!(iv.iter().all(|i| i.n == 1 && i.t1 >= i.t0));
     }
 
     /// Task #1097: two threads computing on two turns hold both; a taker waits until one of them

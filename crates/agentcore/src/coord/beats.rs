@@ -62,6 +62,12 @@ pub const BUDGETS: &str = "budgets";
 /// while every member heard says it.
 pub const BY_LEAD: &str = "budgets-by-lead";
 
+/// What a lead's answer says it takes (task #1104, crate::coord::jobspans): its members' jobs'
+/// spans and logs in their beats (`held::Beat::spans`), what it has of each in its answer. A member
+/// sends them only to a lead saying it: an older lead would read past them, and they'd go again
+/// with every beat.
+pub const SPANS: &str = "spans";
+
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
@@ -144,6 +150,10 @@ struct Inner {
     /// On a member: the lead its lead's last answer said leads (`Answer::leading`), and when that
     /// answer came (unix s): its driver's step takes it while fresh (`lead_says`).
     leading: Option<(crate::pool::Member, u64)>,
+    /// Whether the lead's last answer said `SPANS`; this Mac's jobs' spans to send
+    /// (crate::agent::spans), once its agent said.
+    lead_spans: bool,
+    spans: Option<std::sync::Arc<crate::agent::spans::Shipper>>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -186,6 +196,8 @@ impl Default for Beats {
                 progress_released: Vec::new(),
                 lead_view: LeadView::default(),
                 lead_view_at: None,
+                lead_spans: false,
+                spans: None,
             }),
             lead_view_write: Mutex::new(()),
         }
@@ -253,6 +265,7 @@ impl Beats {
         g.released.extend(a.released.iter().copied());
         g.threads = a.threads.clone();
         g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
+        g.lead_spans = a.speaks.iter().any(|w| w == SPANS);
         if g.lead_asks {
             g.hold = a.hold.clone();
             g.settings_gen = a.settings_gen;
@@ -457,6 +470,17 @@ impl Beats {
     /// Whether the lead's last answer said it takes the beat (and so reads `held_age_s`).
     pub fn lead_takes(&self) -> bool {
         self.inner.lock().unwrap().lead_takes
+    }
+
+    /// This Mac's jobs' spans, sent with its beats (crate::agent::spans).
+    pub fn set_spans(&self, s: std::sync::Arc<crate::agent::spans::Shipper>) {
+        self.inner.lock().unwrap().spans = Some(s);
+    }
+
+    /// The jobs' spans to send with the next beat: while the lead's last answer said it takes them.
+    pub fn spans_out(&self) -> Option<std::sync::Arc<crate::agent::spans::Shipper>> {
+        let g = self.inner.lock().unwrap();
+        g.spans.clone().filter(|_| g.lead_spans)
     }
 
     /// Whether the lead serves this member's page at `now` (`Ok`: it answered within `PAGE_AWAY_S`,

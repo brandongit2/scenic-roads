@@ -50,6 +50,8 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
             "/" | "/index.html" => Answer::Page,
             "/sw.js" => Answer::Here,
             p if p.strip_prefix('/').is_some_and(&page_file) => Answer::Lead,
+            // (A job's spans: the lead keeps them, crate::coord::jobspans.)
+            p if p.starts_with("/api/job/") => Answer::Lead,
             _ => Answer::Here,
         };
     }

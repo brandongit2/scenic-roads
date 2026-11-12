@@ -88,6 +88,7 @@ pub use buildstore::recipes;
 pub mod settings;
 pub mod share;
 pub mod slots;
+pub mod spans;
 pub mod takeover;
 
 use crate::coord::client::LeaseCalls;
@@ -1659,6 +1660,8 @@ pub struct Agent {
     /// The lead's coordinator (crate::coord), and when its contact on the NAS was last checked.
     coord: Option<std::sync::Arc<crate::coord::Coordinator>>,
     published: Option<Instant>,
+    /// Its jobs' spans and logs sent to the lead (crate::agent::spans).
+    spans: std::sync::Arc<spans::Shipper>,
     /// A member's way to the lead's coordinator (made once its contact is on the NAS).
     client: Option<crate::coord::client::Client>,
     /// Its own jobs' ends owed to the lead: ended while this process led and was no longer the
@@ -2015,7 +2018,9 @@ impl Agent {
         if role == Role::Member && lock.is_some() && !o.dry_run {
             drop_lead_files(&o.home);
         }
+        let spans = spans::Shipper::new(&o.home);
         let mut a = Agent {
+            spans,
             role,
             plan,
             cancels_at: BTreeMap::new(),
@@ -2124,6 +2129,15 @@ impl Agent {
             role_restart: None,
             out_why,
         };
+        // (Its jobs' spans: to its coordinator's store while it leads, every `spans::EVERY`; with its
+        // beats as a member.)
+        if let Some(c) = &a.coord {
+            a.spans.lead_store(c.jobspans());
+            a.spans.spawn_local();
+        }
+        if let Some(b) = &a.beats {
+            b.set_spans(a.spans.clone());
+        }
         // (The jobs the agent before this one left running, taken over before anything is
         // planned or offered.)
         a.adopt_jobs();
@@ -4951,6 +4965,12 @@ impl Agent {
             })
             .collect();
         self.control.jobs.set(jobs);
+        // (And the runs here, to its spans' shipper: a run's files whose job is gone unsaid are
+        // ended as lost, crate::agent::spans. Only by the agent running this Mac's jobs: one that
+        // only reports runs none.)
+        if self._lock.is_some() {
+            self.spans.running(self.slots.iter().filter(|s| s.running.is_some()).filter_map(|s| s.job).collect());
+        }
     }
 
     /// Slot `k`'s running job, looked after: ended (recorded, its lease ended, a failure retried with
@@ -7088,6 +7108,24 @@ impl Agent {
         let job = self.slots[k].job;
         if let Some(j) = job {
             env.push((jobrt::timings::JOB_ENV.into(), j.to_string()));
+            // (Where it writes its spans, for the lead (crate::agent::spans): its run's log from
+            // where this run's begins.)
+            let (step, targets) = spec.record.as_ref().map_or_else(
+                || (spec.id.split(' ').next().unwrap_or("").to_string(), Vec::new()),
+                |w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()),
+            );
+            let meta = crate::coord::jobspans::Meta {
+                name: spec.id.clone(),
+                step,
+                targets,
+                worker: self.worker_of(k),
+                host: self.host.clone(),
+                start: now_s(),
+                log_from: std::fs::metadata(&log).map_or(0, |m| m.len()),
+            };
+            if let Some(p) = self.spans.begin(j, meta, &log) {
+                env.push((jobrt::spans::SPANS_ENV.into(), p.to_string_lossy().into_owned()));
+            }
         }
         // Where its accessors count the bytes they add to the caches, afresh (docs/pool.md §7.7).
         let written = self.written_path(k);
@@ -7175,6 +7213,10 @@ impl Agent {
     /// Notes slot `k`'s job's end: its step, the targets it finished, its time, and how it ended
     /// (`how`: empty when it succeeded).
     fn note_end(&self, k: usize, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
+        // (Its end in its spans, for the lead: crate::agent::spans.)
+        if let Some(j) = self.slots[k].job {
+            self.spans.end(j, ok, how);
+        }
         // (A job with no record of its own, the pass's or the daily ones, by its id's first word.)
         let (id, what) = self.slots[k]
             .running

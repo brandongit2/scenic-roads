@@ -641,6 +641,8 @@ The agent's folder, `agent/`:
 
 ```
 timings.jsonl, timings-run.json, timings-run-<k>.json   jobs' timings (below)
+spans/<epoch>-<n>.{ndjson,json,sent}   a job run's spans, facts and what the lead has of them, until
+                        the lead has all (below, Job spans); the lead's: coord/jobs/
 status.json             the lead's status; a member not leading writes helper.json
 state.json, job.json, logs/   job.json (job-<k>.json, slot k's past the first): the running job's
                         record (agent::jobs::Record) with its slot (`hand`: {lease, job, …}, `job`
@@ -744,6 +746,8 @@ Where they're kept:
 - `agent/coord/timings.jsonl` (the lead's coordinator): every worker's, sent with `/work/done`;
   read by `/api/timings {kind?, last?}` (`{runs: [...]}`, each kind's last 20 by default).
 - Each log is cut to its newer half past 16 MB.
+- Its job's spans (below, Job spans): the record is also kept beside them on the lead, by its job
+  id, as the record comes in.
 
 ## Job ids (jobrt::jobid, docs/pool.md §7.5)
 
@@ -764,6 +768,92 @@ A record from before job ids (task #1103) names its run by its lease's number al
 under `lease` in a history event: read as `0-<n>` (its epoch unsaid). An app before them reads
 no `job`, and passes over a history event's run. A run's later lease, held again for it while it
 runs on (its own lapsed, or lost to a lead's restart), carries the run's id (`lease/<id>`'s `job`).
+
+## Job spans (jobrt::spans, agentcore::agent::spans, agentcore::coord::jobspans; task #1104)
+
+A job run's timeline, which its timings' record (above) sums: every phase and sub-phase a span with
+its start and end, the waits as intervals, what happened, and its log on the same axis. Only a run
+with a job id (its agent holds a lease for it) keeps spans; one from before task #1104, or run by
+an app before it, has none (the API's `legacy`).
+
+**The job's file** (`SCENIC_SPANS`, set by its agent: `agent/spans/<epoch>-<n>.ndjson`): a JSON
+line each, `jobrt::spans::Line`, written once a second by the timings' memory sampler (one append)
+and as the run ends. Times are µs from the job's start (`h`'s `start_us`, unix µs):
+
+```
+{k: "h", v: 1, start_us, kind, pid, in?}                       the start (a child program's: in = the span running it)
+{k: "o", id, in?, th?, name, t0}                              a span open a second or more (its "s" line replaces it)
+{k: "s", id, in?, th?, name, t0, t1, n?, busy?, cpu?, w?, b?, f?, cut?}   a span
+{k: "w", on, t0, t1, n, busy}                                 waits on "nas" | "net" | "disk" | "other"
+{k: "e", e, t? | at?, t1?, n?, ok?, text?}                    an event
+{k: "l", t, at}                                               the job's log was `at` bytes long (the file's) at t
+```
+
+- A span: its `id` (a child program's under its prefix, `3.`, `3.2.` for that one's child), its
+  parent `in` (none: top-level; a child's top-level spans are in the span that ran it), its lane
+  `th` (none: the job's main thread; `1`, `2`: other threads in the order they first opened a span,
+  a child's under its prefix; a child's main thread is its parent span's lane), its own CPU `cpu`
+  (µs, jobrt::timings' doc), its waits while open `w` (µs: NAS, network, disk, other work, the
+  job's), bytes `b` and files `f`; `cut` when the job ended with it open.
+- Merged: spans under a threshold (1 ms at first, `MIN_OWN0_NS`) with no sub-spans, of one name
+  under one parent on one lane, each starting within the threshold of the one before, are one line:
+  from the first's start to the last's end, `n` of them, `busy` their time together. Waits of a kind
+  within a gap (2 ms at first, `WAIT_GAP0_NS`) likewise: `n` waits, `busy` µs waited. Each 2000
+  lines (`STEP`) doubles both; past 40,000 (`LINES_MAX`) only the main thread's top-level spans and
+  the events are written (an event `thinned` says so). Safe points a second apart are one event.
+- Events (`e`): `retry` (store::retry's line), `safe` (`n` safe points from `t` to `t1`), `pausing`
+  (asked to stop at its next safe point), `paused`, `error` (the job's error), `thinned`, `end`
+  (`ok`: the job's own word), `exit` (its agent's, `at` unix ms: `ok`, how it ended, `lost` when its
+  agent lost it).
+- Beside it its agent keeps `<id>.json` (`agent::spans::Facts`: `meta` (`coord::jobspans::Meta`:
+  `{name, step, targets, worker, host, start, log_from}`, `log_from` the log's length as this run
+  began), its log's path, `ended`) and `<id>.sent` (`{s, l, meta}`: what the lead has). All three go
+  once the lead has all of it; any after 14 days.
+
+**To the lead:** a member's beat (`POST /pool/beat`) carries `spans: [Chunk]`, at most 512 KB a
+beat (`agent::spans::BEAT_MAX`), to a lead whose last answer said `spans` (`coord::beats::SPANS`;
+an older lead's doesn't, and gets none); the answer's `spans: [Ack]` say what it has. The lead's
+own jobs' go to its store every 10 s.
+
+```
+Chunk {job, meta?, s_at, s, l_at, l, end?}    the spans file from byte s_at (whole lines), the run's log from byte l_at
+Ack   {job, s, l, meta?, done?}                the lead has them to s and l; done: all of it (its agent drops its files)
+```
+
+A run's log goes whole up to 1.25 MB; past that its first 1 MB (`LOG_HEAD`) as it runs and its last
+256 KB (`LOG_TAIL`) once it ended, the middle left out (the lead keeps a `gap`).
+
+**On the lead** (`agent/coord/jobs/<epoch>/<n / 10000>/<epoch>-<n>.zst`): zstd frames, one a chunk
+(level 3), the whole file compressed again as one frame (level 9) once its last chunk is in; each
+line one of the job's (as written) or the lead's own (`coord::jobspans::Own`): `{k: "job", …Meta}`,
+`{k: "log", at, text}` (the log from byte `at` of the run's), `{k: "gap", of: "spans" | "log", from,
+to}`, `{k: "at", s, l}` (after each frame), `{k: "done", at}` (unix ms), `{k: "rec", rec}` (the
+timings' record, as `/work/done` or the lead's own job's end brings it). A chunk is taken from where
+the lead has the job to: one posted again adds nothing. Kept for good, as the history is (docs/pool.md
+§7.5); size a month: *planned* (measured below once the pool runs with spans).
+
+**`GET /api/job/<epoch>-<n>`** (the lead's coordinator; no key, any page; a member's port sends it to
+the lead): 400 for a malformed id, 503 off the lead, else:
+
+```
+{job, legacy: false, running, now, start, end, kind, name, step, targets, worker, host,
+ record: RunRec | null,                 the timings' record (above)
+ history: [Event],                      the history's events of the run (lease, start, end, done …)
+ spans: [{id, parent, kind, name, t0, t1, status, attrs}],
+ waits: [{on, t0, t1, n, busy_s}],
+ events: [{kind, t, t1, n, ok, text}],
+ log: {lines: [{t, text}], bytes},
+ gaps: [{of, from, to}]}
+{job, legacy: true, record, history, now}   no spans kept (from before them, or an older app's)
+```
+
+Every time is unix seconds (ms precision). `spans` is in the dev jobs' run shape (tools/devtools'
+`GET /api/jobs/runs/<id>`): the run itself first (`id` "job", `kind` "job"), then by start; `kind`
+`phase` (the main thread's lane) or `beside` (another thread's); `parent` "job" for a top-level
+span; `status` `ok`, `running` (said open, the job running) or `cut` (open as it ended, or as its
+word ended: its `t1` the last time heard); `attrs` `{th, n, busy_s, cpu_s, nas_s, net_s, disk_s,
+other_s, bytes, files}` where said. A log line's `t` is where the job's log marks place it (between
+the two either side, by its bytes; none without marks).
 
 ## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; agentcore::agent::fcarchive, docs/pool.md §7.9)
 

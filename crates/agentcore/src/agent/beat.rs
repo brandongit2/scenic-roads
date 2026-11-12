@@ -22,7 +22,9 @@
 //! once it says the lead serves the owner's asks, the asks queued go next, in order, and the pool's
 //! settings are fetched when their generation moved (`send_asks`, crate::coord::asks). The beat
 //! lists the jobs' hand-offs this member keeps whole for a lead that takes them by HTTP, and those
-//! the answer says the lead lacks are posted next (`send_handoffs`, crate::coord::handoffs).
+//! the answer says the lead lacks are posted next (`send_handoffs`, crate::coord::handoffs). It
+//! carries its jobs' spans and logs the lead lacks, to a lead that takes them, and notes what the
+//! answer says the lead has (crate::agent::spans).
 
 use super::bus::{BeatMsg, Snap};
 use super::{now_s, write_beat, write_replace, Status};
@@ -117,6 +119,7 @@ impl ToLead {
             cap: self.cap.clone(),
             progress: self.beats.progress(),
             sent: None,
+            spans: Vec::new(),
         }
     }
 
@@ -210,14 +213,20 @@ impl ToLead {
         if !self.beats.lead_takes() && age >= crate::coord::held::OMIT_GRACE / 2 {
             return failing;
         }
+        // (Its jobs' spans the lead lacks, to a lead that takes them: crate::agent::spans.)
+        let ship = self.beats.spans_out();
         let b = crate::coord::held::Beat {
             held_age_s: age.as_secs_f64().ceil() as u64,
             handoffs: self.beats.handoff_keys(),
             sent: Some(crate::coord::held::sent()),
+            spans: ship.as_ref().map(|s| s.chunks(super::spans::BEAT_MAX)).unwrap_or_default(),
             ..b.clone()
         };
         match c.pool_beat(&b) {
             Ok(Some(a)) => {
+                if let Some(s) = &ship {
+                    s.acked(&a.spans);
+                }
                 self.beats.answered(&a, now);
                 self.send_asks(c);
                 self.send_handoffs(c, &a.lacks);
@@ -761,6 +770,30 @@ mod tests {
         beat_once(&y);
         beat_once(&x);
         assert_eq!(x.beats.lead_hold().map(|h| (h.held, h.at)), Some((None, 101)));
+        c.stop();
+    }
+
+    /// Task #1104: a member's jobs' spans go with its beats once the lead has said it takes them (not
+    /// before: an older lead would read past them, and they'd go again with every beat), from where
+    /// the lead's answer says it has them: once there, nothing more goes.
+    #[test]
+    fn a_member_s_beats_carry_its_jobs_spans_to_a_lead_that_takes_them() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let x = member(d.path(), X, port, &c.contact.token);
+        let sh = super::super::spans::Shipper::new(&x.home);
+        x.beats.set_spans(sh.clone());
+        let job: jobrt::jobid::JobId = "4-1794000000009".parse().unwrap();
+        let meta = crate::coord::jobspans::Meta { name: "unit 6/1/1".into(), start: now_s(), ..Default::default() };
+        let p = sh.begin(job, meta, &x.home.join("job.log")).unwrap();
+        std::fs::write(&p, "{\"k\":\"h\",\"v\":1,\"start_us\":1,\"kind\":\"unit\",\"pid\":1}\n").unwrap();
+        let store = c.jobspans().unwrap();
+        assert!(!beat_once(&x));
+        assert!(store.read(job).is_none(), "the lead hadn't said it takes them yet");
+        assert!(!beat_once(&x));
+        assert!(store.read(job).is_some_and(|l| !l.is_empty()), "sent once it said");
+        assert!(sh.chunks(super::super::spans::BEAT_MAX).is_empty(), "the lead has them: nothing more to send");
         c.stop();
     }
 

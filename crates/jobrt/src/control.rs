@@ -406,8 +406,14 @@ pub const PAUSED_EXIT: i32 = 75;
 /// Whether the build is pausing: the running job stops at its next safe point.
 pub fn draining() -> bool {
     static EAR: std::sync::Mutex<Listener> = std::sync::Mutex::new(Listener::new());
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let Some(chan) = std::env::var_os(CONTROL_ENV) else { return false };
-    EAR.lock().unwrap_or_else(|e| e.into_inner()).heard(Path::new(&chan)) == Some(Say::Drain)
+    let d = EAR.lock().unwrap_or_else(|e| e.into_inner()).heard(Path::new(&chan)) == Some(Say::Drain);
+    // (The first time it's heard, among the job's events: crate::spans.)
+    if d && !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        crate::timings::span_event(crate::spans::event("pausing", "asked to stop at its next safe point"));
+    }
+    d
 }
 
 static STOPPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -502,12 +508,16 @@ pub fn reached() {
     }
 }
 
-/// A safe point reached at `at`: its gap since the last counted.
+/// A safe point reached at `at`: its gap since the last counted, and noted in the job's spans
+/// (crate::timings::safe_point, after the gaps' lock: the run's lock is taken before it).
 fn reached_at(at: std::time::Instant) {
-    let mut g = gaps().lock().unwrap_or_else(|e| e.into_inner());
-    g.longest = g.longest.max(at.saturating_duration_since(g.last));
-    g.last = g.last.max(at);
-    g.points += 1;
+    {
+        let mut g = gaps().lock().unwrap_or_else(|e| e.into_inner());
+        g.longest = g.longest.max(at.saturating_duration_since(g.last));
+        g.last = g.last.max(at);
+        g.points += 1;
+    }
+    crate::timings::safe_point(at);
 }
 
 /// How long a job asked to stop at its next safe point (the build pausing, the battery low) is given
@@ -613,6 +623,7 @@ pub fn stop_if_paused(step: &str, e: anyhow::Error) -> anyhow::Error {
 /// done): whether or not the pause has been lifted meanwhile, as it didn't do the rest.
 pub fn stop_paused(step: &str) -> ! {
     eprintln!("{step}: paused at a safe point; the rest goes on when the build does");
+    crate::timings::span_event(crate::spans::event("paused", "stopped at a safe point, the build pausing"));
     // (Its timings kept, as a run that didn't finish.)
     crate::timings::finish(false);
     exit(PAUSED_EXIT)

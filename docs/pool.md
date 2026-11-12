@@ -1408,8 +1408,9 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   until its target is granted again, which ends it (`Leases::grant_at`; task #1038: kept, a restart
   or the next lead's take-up gave it a fresh deadline beside the new lease).
 - **Job ids** (task #1103; jobrt::jobid, docs/formats.md, Job ids): each job run is named by the
-  lease it was first granted under, `<epoch>-<n>` (`Lease::job`): what the job inspector's page
-  will key a run by (planned: tasks #1104, #1105). Never given twice: each start of the lead's
+  lease it was first granted under, `<epoch>-<n>` (`Lease::job`): what its spans are kept by on the
+  lead (task #1104, docs/formats.md, Job spans; `GET /api/job/<id>`), and what the job inspector's
+  page will key a run by (planned: task #1105). Never given twice: each start of the lead's
   store and each take-up leads an epoch past every earlier one's (§4, invariant 2), and within an
   epoch the store's lease numbers only go up, from past the time in milliseconds, its saved next,
   every lease it takes up and the highest number its history names (`Leases::load`, `restore`,
@@ -2406,9 +2407,11 @@ docs/coordination.md §5):
 
 - **Its beat** (`POST /pool/beat`, every 10 s and on a change, from **beat**'s poster thread):
   its heartbeat and status (§10), the leases it holds (docs/coordination.md §6), its hand-offs'
-  keys (§7.3), its capacity and resume progress. The answer carries the lead's epoch, who leads
-  (`leading`), the leases ended, the others' heartbeats, this Mac's hold, the settings'
-  generation, the hand-offs merged and those the lead lacks (posted next, `POST /pool/handoff`).
+  keys (§7.3), its capacity and resume progress, and its jobs' spans and logs the lead lacks
+  (docs/formats.md, Job spans). The answer carries the lead's epoch, who leads (`leading`), the
+  leases ended, the others' heartbeats, this Mac's hold, the settings' generation, the hand-offs
+  merged and those the lead lacks (posted next, `POST /pool/handoff`), and what it has of each
+  job's spans.
 - **Jobs** go through the lead's coordinator (`/work/*`, coordinator.md), tasks through each
   member's broker (§8), the records' brief by `GET /pool/brief` (§6.2).
 - **Its owner's asks:** job cancels through `/work/cancel` (§11); another Mac's pause and a pool

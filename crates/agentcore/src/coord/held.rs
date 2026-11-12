@@ -69,6 +69,10 @@ pub struct Beat {
     /// lead took from it since releases nothing. Left out by apps before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent: Option<Sent>,
+    /// Its jobs' spans and logs the lead lacks (crate::coord::jobspans), to a lead saying it takes
+    /// them (`beats::SPANS`). Left out by apps before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<super::jobspans::Chunk>,
 }
 
 /// Where a member's beat or ask stands among its agent's requests: its process (its start, unix
@@ -154,6 +158,9 @@ pub struct Answer {
     /// out by a lead before step 8c (whose `term` a member reads past).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub leading: Option<crate::pool::Member>,
+    /// What it has of each job whose spans the beat carried (crate::coord::jobspans::Ack).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<super::jobspans::Ack>,
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
@@ -222,6 +229,10 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     // whose answer doesn't say it. Before the registry is attached the answer says none merged nor
     // lacking, and the member keeps them.)
     a.speaks.push(super::beats::HANDOFF.to_string());
+    // (Its jobs' spans, once it keeps them: the beat's are taken by the route, off the lock.)
+    if s.jobspans.is_some() {
+        a.speaks.push(super::beats::SPANS.to_string());
+    }
     // (As its answers' headers say it: its leases' epoch, its member said; a member's broker none.)
     a.leading = s
         .led

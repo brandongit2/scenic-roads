@@ -278,9 +278,11 @@ pub fn any_until<T>(
 }
 
 /// A retry's line in the log, with this Mac's local time to the second, to match against the NAS's
-/// own log (task #1090).
+/// own log (task #1090), and among the job's events (crate::waits::note).
 pub fn log(line: std::fmt::Arguments<'_>) {
     eprintln!("{} {line}", local_now());
+    // (And a note in the job's spans, when it keeps them: jobrt::spans.)
+    crate::waits::note("retry", line.to_string());
 }
 
 /// Now on this Mac's clock, `2026-11-10 14:03:22 -0800`.

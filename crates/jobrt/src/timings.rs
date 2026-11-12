@@ -45,6 +45,9 @@
 //! - Live: the top-level phase open on the main thread, and since when, is said in the
 //!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
 //!   cleared as it ends; the agent shows it under the job (agentcore::agent::jobs::Live).
+//! - Spans (task #1104): where `SCENIC_SPANS` says, each span as it closes, with its start and end,
+//!   the waits as intervals and the job's events, written once a second by the memory sampler
+//!   (crate::spans): the job's timeline, which these totals sum.
 //! - `finish(ok)` ends the run: the readable table in the log (stderr), and the record, where
 //!   `SCENIC_TIMINGS` says (the agent collects it), or as a child's phases where `SCENIC_PHASES_TO`
 //!   says. A run never `start`ed (a program run by hand, a test) keeps nothing and prints nothing.
@@ -437,6 +440,12 @@ struct Open {
     uncertain: AtomicU64,
     /// The job's CPU as it opened (µs): a main thread's top-level span's alone (`job_cpu_s`).
     job0: Option<u64>,
+    /// Its span's number and lane, its run keeping spans (crate::spans); whether a sub-span opened
+    /// in it, and whether it's been said open.
+    sid: u64,
+    lane: u32,
+    kids: AtomicBool,
+    said: AtomicBool,
 }
 
 /// Adds `us` of CPU to `o` and the spans it's within (`uncertain`: what may be another phase's).
@@ -526,6 +535,8 @@ struct Run {
     gaps: Vec<(String, String, u64, u64)>,
     /// What its targets on their grant held so far (`held`): threads → (wall s, CPU s).
     held: std::collections::BTreeMap<u32, (f64, f64)>,
+    /// Its spans, where `SCENIC_SPANS` asks for them (crate::spans).
+    spans: Option<crate::spans::Rec>,
 }
 
 /// Adds a gap of `ns` between `after` and `before` (none under `GAP_MIN_NS`).
@@ -716,7 +727,11 @@ pub fn start(kind: &str) {
             mark: (Instant::now(), START.to_string()),
             gaps: Vec::new(),
             held: std::collections::BTreeMap::new(),
+            spans: None,
         });
+        if let Some(r) = g.as_mut() {
+            r.spans = crate::spans::Rec::from_env(kind, r.t0);
+        }
         drop(g);
         sample_memory();
     }
@@ -737,26 +752,106 @@ fn sample_memory() {
     ON.call_once(|| {
         std::thread::Builder::new()
             .name("timings-memory".into())
-            .spawn(|| loop {
-                std::thread::sleep(MEM_EVERY);
-                // (Sampled while a run is timed, spans open or not: a span opening takes the last
-                // sample, at most `MEM_EVERY` old, as its first.)
-                if !on() {
-                    continue;
+            .spawn(|| {
+                let mut ticks = 0u64;
+                loop {
+                    std::thread::sleep(MEM_EVERY);
+                    ticks += 1;
+                    // (Sampled while a run is timed, spans open or not: a span opening takes the last
+                    // sample, at most `MEM_EVERY` old, as its first.)
+                    if !on() {
+                        continue;
+                    }
+                    // (Its spans written every `SPANS_EVERY` ticks.)
+                    if ticks % SPANS_EVERY == 0 {
+                        spans_tick(false);
+                    }
+                    let Some(v) = crate::sys::group_footprint() else { continue };
+                    LAST_MEM.store(v, Ordering::Relaxed);
+                    let Ok(mut g) = run().lock() else { return };
+                    let Some(r) = g.as_mut().filter(|r| !r.finished) else { continue };
+                    for o in &r.open {
+                        o.peak.fetch_max(v, Ordering::Relaxed);
+                    }
+                    let t = Instant::now();
+                    r.settle();
+                    r.overhead_ns += t.elapsed().as_nanos() as u64;
                 }
-                let Some(v) = crate::sys::group_footprint() else { continue };
-                LAST_MEM.store(v, Ordering::Relaxed);
-                let Ok(mut g) = run().lock() else { return };
-                let Some(r) = g.as_mut().filter(|r| !r.finished) else { continue };
-                for o in &r.open {
-                    o.peak.fetch_max(v, Ordering::Relaxed);
-                }
-                let t = Instant::now();
-                r.settle();
-                r.overhead_ns += t.elapsed().as_nanos() as u64;
             })
             .ok();
     });
+}
+
+/// The memory sampler's ticks between two writes of the spans (a second).
+const SPANS_EVERY: u64 = 4;
+
+/// The run's spans written (crate::spans::Rec::tick): those that can't merge any more, the waits,
+/// the events and the open spans to say; every one, the open spans cut where they are, when
+/// `last` (the run ending). The lines made under the run's lock, written after it.
+fn spans_tick(last: bool) {
+    let out = {
+        let Ok(mut g) = run().lock() else { return };
+        let Some(r) = g.as_mut() else { return };
+        let Some(rec) = r.spans.as_mut() else { return };
+        let mut open: Vec<(u64, Option<u64>, u32, &str, Instant)> = Vec::new();
+        for o in &r.open {
+            if !last && o.t0.elapsed() >= crate::spans::OPEN_SAID && !o.said.swap(true, Ordering::Relaxed) {
+                open.push((o.sid, o.parent.as_ref().map(|p| p.sid), o.lane, r.accs[o.idx].name.as_str(), o.t0));
+            }
+        }
+        if last {
+            let now = Instant::now();
+            for o in &r.open {
+                let waits = Waits::between(&o.w0, &waits_now());
+                rec.closed(crate::spans::Closed {
+                    id: o.sid,
+                    parent: o.parent.as_ref().map(|p| p.sid),
+                    th: o.lane,
+                    name: &r.accs[o.idx].name,
+                    t0: o.t0,
+                    t1: now,
+                    cpu_us: PER_THREAD.then(|| o.cpu.load(Ordering::Relaxed)),
+                    waits_ns: waits_ns(&waits),
+                    bytes: o.bytes.load(Ordering::Relaxed),
+                    files: o.files.load(Ordering::Relaxed),
+                    kids: true,
+                    cut: true,
+                });
+            }
+        }
+        let b = rec.tick(&mut open.into_iter(), last);
+        (b, rec.sink())
+    };
+    if let (b, Some(sink)) = out {
+        let t = Instant::now();
+        sink.write(&b);
+        if let Some(r) = run().lock().ok().as_mut().and_then(|g| g.as_mut()).and_then(|r| r.spans.as_mut()) {
+            r.cost_ns += t.elapsed().as_nanos() as u64;
+        }
+    }
+}
+
+/// A phase's waits as ns (NAS, network, disk, other work), for its span.
+fn waits_ns(w: &Waits) -> [u64; 4] {
+    [w.nas_s, w.net_s, w.disk_s, w.other_s].map(|s| (s * 1e9) as u64)
+}
+
+/// An event of the job's (crate::spans::event), in its spans where it keeps them.
+pub fn span_event(l: crate::spans::Ev) {
+    if let Some(r) = run().lock().ok().as_mut().and_then(|g| g.as_mut()).filter(|r| !r.finished) {
+        if let Some(rec) = r.spans.as_mut() {
+            rec.event(l);
+        }
+    }
+}
+
+/// A safe point reached at `at` (crate::control::reached), in the job's spans where it keeps them.
+pub fn safe_point(at: Instant) {
+    if let Some(r) = run().lock().ok().as_mut().and_then(|g| g.as_mut()).filter(|r| !r.finished) {
+        if let Some(rec) = r.spans.as_mut() {
+            rec.safe_point(at);
+        }
+    }
 }
 
 /// Folds a span's peak (bytes; 0: none) into a phase's.
@@ -833,6 +928,14 @@ fn open(name: &str) -> Phase {
         return Phase::none();
     }
     let parent = inner.as_ref().map(|o| o.idx);
+    // (Its span, where the run keeps them: its number and lane, its parent told it has one inside.)
+    let (sid, lane) = match r.spans.as_mut() {
+        Some(rec) => (rec.open_id(), rec.lane(me, me == r.main)),
+        None => (0, 0),
+    };
+    if let Some(p) = &inner {
+        p.kids.store(true, Ordering::Relaxed);
+    }
     // (The CPU so far charged to the span this thread was in: the main thread's, with the job's in
     // no phase.)
     let job = if me == r.main { r.settle() } else { None };
@@ -881,6 +984,10 @@ fn open(name: &str) -> Phase {
         parent: inner,
         cpu: AtomicU64::new(0),
         uncertain: AtomicU64::new(0),
+        sid,
+        lane,
+        kids: AtomicBool::new(false),
+        said: AtomicBool::new(false),
     });
     // (Another thread's phase open now, or opening while this one is: both overlap.)
     let mut over = false;
@@ -931,6 +1038,22 @@ impl Drop for Phase {
         if parent.is_none() && o.thread == r.main {
             store::nasio::set_phase("");
             r.mark = (Instant::now(), r.accs[o.idx].name.clone());
+        }
+        if let Some(rec) = r.spans.as_mut() {
+            rec.closed(crate::spans::Closed {
+                id: o.sid,
+                parent: o.parent.as_ref().map(|p| p.sid),
+                th: o.lane,
+                name: &r.accs[o.idx].name,
+                t0: o.t0,
+                t1: o.t0 + wall,
+                cpu_us: PER_THREAD.then(|| o.cpu.load(Ordering::Relaxed)),
+                waits_ns: waits_ns(&waits),
+                bytes: o.bytes.load(Ordering::Relaxed),
+                files: o.files.load(Ordering::Relaxed),
+                kids: o.kids.load(Ordering::Relaxed),
+                cut: false,
+            });
         }
         let a = &mut r.accs[o.idx];
         a.wall_ns += wall.as_nanos() as u64;
@@ -1015,6 +1138,10 @@ pub fn child(c: &mut std::process::Command) {
     if let Ok(mut v) = o.children.lock() {
         v.push(p);
     };
+    // (Its spans inside this one's, in the job's file: crate::spans.)
+    if let Some(rec) = run().lock().unwrap().as_mut().and_then(|r| r.spans.as_mut()) {
+        c.env(crate::spans::SPANS_IN_ENV, rec.child_env(Some(o.sid), o.lane));
+    }
 }
 
 /// A child's phases from its file (gone after), top-level only (its sub-phases are in them).
@@ -1144,11 +1271,23 @@ fn gap_name(g: &Gap) -> String {
 /// Ends the run: its table in the log, its record where `SCENIC_TIMINGS` (a job's) or
 /// `SCENIC_PHASES_TO` (a child's) says. Once; a run never started: nothing.
 pub fn finish(ok: bool) {
+    // (Its spans' last: the open ones cut here, its end said.)
+    if run().lock().unwrap().as_ref().is_some_and(|r| !r.finished && r.spans.is_some()) {
+        span_event(crate::spans::Ev { ok: Some(ok), ..crate::spans::event("end", "") });
+        spans_tick(true);
+    }
     let rec = {
         let mut g = run().lock().unwrap();
         let Some(r) = g.as_mut().filter(|r| !r.finished) else {
             return;
         };
+        // (The spans' own cost is the timing's too.)
+        if let Some(s) = &r.spans {
+            r.overhead_ns += s.cost_ns;
+            if std::env::var_os(PHASES_TO_ENV).is_none() {
+                eprintln!("timings: spans kept, their own cost {}", secs(s.cost_ns as f64 / 1e9));
+            }
+        }
         let rec = record_of(r, ok);
         r.finished = true;
         rec
@@ -1182,6 +1321,9 @@ fn write_whole(p: &Path, b: &[u8]) -> std::io::Result<()> {
 pub fn job<T>(kind: &str, f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
     start(kind);
     let r = f();
+    if let Err(e) = &r {
+        span_event(crate::spans::event("error", &format!("{e:#}")));
+    }
     finish(r.is_ok());
     r
 }
