@@ -485,9 +485,10 @@ struct World {
     /// The brief last served over the network: by which coordinator (its Mac, its number).
     served: Option<(usize, u64)>,
     /// `Cfg::move_at`'s moves made, and the last one's Mac and its awake clock then (or at its
-    /// process's restart since: an app installed), until it takes up.
+    /// process's restart since: an app installed), and whether no snapshot had landed then, until
+    /// it takes up.
     fixed_moves: usize,
-    moved: Option<(usize, u64)>,
+    moved: Option<(usize, u64, bool)>,
     /// The hand-offs a landed snapshot refused for a name GC removed.
     gc_refused: BTreeSet<String>,
     /// Since when the declared lead's take-up has waited on the records of the Mac that led an
@@ -766,7 +767,7 @@ impl World {
             self.note(|| format!("the owner moves the lead from mac{from} to mac{to} (at {at} s)"));
             self.move_lead_to(to);
             self.count("leads moved");
-            self.moved = Some((to, self.awake_clock(to)));
+            self.moved = Some((to, self.awake_clock(to), self.landed.is_empty()));
         }
         if self.faulting() {
             self.faults(me);
@@ -1742,12 +1743,11 @@ impl World {
             if let Some(last) = took.filter(|&k| k >= e && !(repeated && k == e) && self.landed.contains_key(&k)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past epoch {last} taken up before"));
             }
-            if let Some((d, at)) = self.moved.filter(|m| m.0 == me) {
+            if let Some((d, at, today)) = self.moved.filter(|m| m.0 == me) {
                 self.moved = None;
                 let took = self.awake_clock(me) - at;
-                // (A new pool's, no snapshot landed yet: a take-up of today's files reads half a
-                // dozen files more in its step, any failing its try; counted, not bounded.)
-                let today = self.landed.is_empty();
+                // (A new pool's, no snapshot landed at the move: a take-up of today's files reads
+                // half a dozen files more in its step, any failing its try; counted, not bounded.)
                 self.count(match took {
                     _ if today => "take-ups after a move: of today's files, not bounded",
                     t if t <= driver::STALE_S + 5 * LOOP_S => "take-ups after a move: within STALE_S and 5 loops",
@@ -1801,7 +1801,7 @@ impl World {
             ));
         }
         let d = self.declared;
-        if let Some((k, at)) = self.moved.filter(|m| m.0 == d) {
+        if let Some((k, at, _)) = self.moved.filter(|m| m.0 == d) {
             let waited = self.awake_clock(k) - at;
             self.wrong(format!("mac{k}, declared {waited} s (awake) before the end, never took up"));
         }
