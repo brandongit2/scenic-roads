@@ -825,7 +825,7 @@ pub(crate) mod tests {
         fn view(&self, _: &ViewAsk) -> anyhow::Result<Value> {
             let raw = |p: &str| std::fs::read(self.0.join(p)).ok();
             let json = |p: &str| raw(p).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
-            let status = json("state/status.json").unwrap_or(Value::Null);
+            let status = json("lead-status.json").unwrap_or(Value::Null);
             let macs: Vec<Value> = status["beats"]
                 .as_array()
                 .into_iter()
@@ -939,7 +939,7 @@ pub(crate) mod tests {
             "helpers": [{ "host": "m1", "beat": now, "regions": [1] }],
             "beats": [{ "member": "m-a", "host": "m1", "broker": { "urls": ["http://100.1.1.1:8090"], "https": "https://m1.t.ts.net/" } }],
         });
-        put(root, "state/status.json", status.to_string().as_bytes());
+        put(root, "lead-status.json", status.to_string().as_bytes());
         put(root, "state/pool/members/m-b.json", br#"{"member":"m-b","host":"gone"}"#);
     }
 
@@ -1312,7 +1312,7 @@ pub(crate) mod tests {
                 .collect();
             put(&store::nasfs::NasRoot::local_for_test(d.path()), &format!("history/{day}/m-b.jsonl"), text.as_bytes());
         }
-        put(&store::nasfs::NasRoot::local_for_test(d.path()), "state/status.json", b"{}");
+        put(&store::nasfs::NasRoot::local_for_test(d.path()), "lead-status.json", b"{}");
         let src = Dir(d.path().into(), AtomicUsize::new(0));
         let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
