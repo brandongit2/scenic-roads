@@ -113,6 +113,9 @@ fi
 # it ends; with both held a publish waits for one to free (claim_tree), making no third. tree-2,
 # built only beside another publish, is removed by a publish that finds it unused for 3 days; both have their target/ pruned (prune_target, below).
 repo=$PWD
+# The fonts each version serves, from this checkout's data/fonts (not in git: scripts/fonts.sh makes
+# them), every glyph range there before anything is built.
+bash $repo/scripts/fonts.sh --check $repo/data/fonts || exit 1
 cache=~/Library/Caches/scenic-publish
 mkdir -p $cache
 step snapshot
@@ -286,8 +289,7 @@ cp -X target/release/$^app_programs $app/
 git ls-files dem | while read f; do cp -X "$f" "$app/$f"; done
 cp -RX "$sb/Scenic.app" "$app/"  # (Scenic.app, signed above)
 rsync -a web/dist-publish/ $app/web/
-# The fonts: this checkout's data/fonts (scripts/fonts.sh makes them).
-[[ -d $repo/data/fonts ]] || { echo "no fonts folder: make $repo/data/fonts with scripts/fonts.sh"; exit 1; }
+# The fonts: this checkout's data/fonts (checked whole before the build, below `repo=`).
 rsync -a $repo/data/fonts/ $app/fonts/
 # The version's archive (its one file on the NAS, app/releases/<version>.tgz) and its manifest
 # (app/releases/current.json's content: every file's SHA-256 and the archive's), made here from what

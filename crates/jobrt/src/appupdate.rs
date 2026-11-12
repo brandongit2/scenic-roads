@@ -72,7 +72,10 @@ pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result
     }
     let Ok(bytes) = root.join(LIVE).read() else { return Ok(None) };
     let cur: Current = serde_json::from_slice(&bytes).context(LIVE)?;
-    if cur.version.is_empty() || cur.version.contains('/') {
+    // (A version's name, as publish.sh makes it: `<UTC time>-<commit>`, never a path.)
+    if !cur.version.bytes().next().is_some_and(|b| b.is_ascii_digit())
+        || !cur.version.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
         return Ok(None);
     }
     // Already in place (this check's earlier, or the other program's).
@@ -119,7 +122,9 @@ fn copy(root: &store::nasfs::NasRoot, cur: &Current, tmp: &Path) -> Result<PathB
         "app {v}: its archive doesn't match its SHA-256 (copied {got}, published {})",
         cur.archive_sha256
     );
-    // (bsdtar, macOS's: it refuses a path that is absolute or climbs with "..".)
+    // (bsdtar, macOS's, writes only inside `app` without -P: it refuses a path climbing with ".."
+    // or through a link, and unpacks an absolute one inside; a link it unpacks is refused below,
+    // files_in. The test: an_archive_reaching_outside_its_folder_is_refused.)
     let out = store::spawn::output(store::spawn::command("/usr/bin/tar").arg("-xzf").arg(&archive).arg("-C").arg(&app))
         .context("run tar")?;
     ensure!(
@@ -508,5 +513,55 @@ mod tests {
         // Once right, it goes in.
         publish(n, w, app, |_| {});
         assert_eq!(check(home, &root, u).unwrap().as_deref(), Some(w));
+    }
+
+    /// An archive that would write outside its folder (a path climbing out, an absolute one, a file
+    /// through a link it holds, a link out), its SHA-256 the manifest's all the same: refused,
+    /// nothing written outside, `current` as it was, nothing left behind.
+    #[test]
+    fn an_archive_reaching_outside_its_folder_is_refused() {
+        let (home, nas, out) =
+            (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (home, n, out) = (home.path(), nas.path(), out.path().canonicalize().unwrap());
+        let a = "20261001-0000-aaaaaaa";
+        std::fs::create_dir_all(home.join("app").join(a)).unwrap();
+        std::os::unix::fs::symlink(a, home.join("app/current")).unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(n);
+        let src = n.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("f"), b"hi").unwrap();
+        std::os::unix::fs::symlink(&out, src.join("l")).unwrap();
+        std::fs::create_dir_all(n.join("app/releases")).unwrap();
+        let abs = format!("|^f$|{}/abs|", out.display());
+        let cases: [(&str, &[&str]); 4] = [
+            ("climbing", &["-s", "|^f$|../../../esc|", "f"]),
+            ("absolute", &["-P", "-s", &abs, "f"]),
+            ("through a link", &["-s", "|^f$|l/through|", "l", "f"]),
+            ("a link", &["l"]),
+        ];
+        for (i, (what, args)) in cases.into_iter().enumerate() {
+            let v = format!("2026100{}-0000-bbbbbbb", i + 2);
+            let archive = n.join(format!("app/releases/{v}.tgz"));
+            let st = store::spawn::status(
+                store::spawn::command("/usr/bin/tar").arg("-czf").arg(&archive).arg("-C").arg(&src).args(args),
+            )
+            .unwrap();
+            assert!(st.success(), "{what}");
+            let cur = serde_json::json!({"version": v, "sha256": {"f": sha256(b"hi")},
+                "archive_sha256": sha256(&std::fs::read(&archive).unwrap())});
+            std::fs::write(n.join(LIVE), cur.to_string()).unwrap();
+            let e = check(home, &root, a);
+            assert!(e.is_err(), "{what}: {e:?}");
+            assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "{what}: written outside");
+            assert!(!home.join("esc").exists() && !n.join("esc").exists(), "{what}");
+            assert_eq!(current(home), a, "{what}");
+            let left: Vec<_> = std::fs::read_dir(home.join("app"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|f| f != a && f != "current" && f != "update.lock")
+                .collect();
+            assert!(left.is_empty(), "{what}: {left:?}");
+        }
     }
 }

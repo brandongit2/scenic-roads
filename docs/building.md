@@ -678,7 +678,9 @@ in 0.4 s.
 `app/<version>/`, and the live manifest `app/current.json` (`previous.json` beside it), which the
 updaters before #1148 read. The first release (a publish that finds no `app/releases/current.json`
 while `app/current.json` names a version: `lib.zsh`'s `live_dir`) writes both layouts: the folder
-too, and the manifest in both places, `app/releases/` first. Every later publish, rollback and
+too (complete before either manifest), and the manifest in both places, `app/current.json`
+first: until `app/releases/current.json` is written `live_dir` still says the old layout, so an
+install stopped between the two leaves the next publish writing both again. Every later publish, rollback and
 check reads and writes `app/releases/` alone, so `app/current.json` stays on the first release
 for good: a Mac on an old updater, however long it was off, updates to that release once, and
 its updater from then on follows `app/releases/`. A rollback never goes past the first release:

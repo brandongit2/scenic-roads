@@ -294,6 +294,7 @@ out=$(rb)
 [[ $out == *'no previous version'* && $(lv $N/app/current.json) == $V9 && ! -e $R ]] \
   && ok "nas_rollback: before the first release, on the old layout" || no "nas_rollback old layout" "$out"
 mk $V1 v1
+cp -R $N $tmp/nas-old  # (the old layout alone, for the stopped first releases below)
 out=$(ns $V1 $B $V9 $tmp/v1.tar)
 if [[ $out != *'sent '*' MB to '*$'\nrc=0 state=live' ]]; then no "nas_send first release" "$out"
 elif [[ $(<$R/current.json) != "$(<$tmp/v1/manifest.json)" || -e $R/previous.json || $(sum $R/$V1.tgz) != $(sum $tmp/v1/app.tgz) ]]; then no "nas_send first release" "releases: $(ls -R $R)"
@@ -301,6 +302,25 @@ elif [[ $(<$N/app/$V1/server) != $V1 || ! -x $N/app/$V1/server || $(<$N/app/curr
 elif [[ $(<$N/nas/fetch-planet.sh) != planet ]]; then no "nas_send first release" "no fetch-planet.sh"
 elif ! clean $V1; then no "nas_send first release" "left: $(ls $N/app) / $(ls $R) / $(ls $inc)"
 else ok "nas_send: the first release, through the NAS's Mac, in both layouts; a gone receiver's upload removed"; fi
+# The first release stopped at either of its two manifests (a stand-in cp failing that write, on a
+# copy of the NAS as it was before it): the next publish writes both layouts again, so
+# app/current.json and app/releases/current.json both move on with it. (Were app/releases' written
+# first, a stop before app/current.json would leave the old updaters on the version before.)
+mkdir -p $tmp/shim
+print -r -- '#!/bin/zsh
+[[ ${@[-1]} != $FAILCP ]] || { print -ru2 -- "stand-in cp: failing $FAILCP"; exit 1; }
+exec /bin/cp "$@"' > $tmp/shim/cp; chmod 755 $tmp/shim/cp
+mk $V2 v2s
+for at in app app/releases; do
+  N=$tmp/nas3 R=$tmp/nas3/app/releases; rm -rf $N; cp -R $tmp/nas-old $N
+  out=$(ns $V1 $B $V9 $tmp/v1.tar "export PATH=${(q)tmp}/shim:\$PATH FAILCP=${(q)N}/$at/current.json.tmp")
+  out+=$'\n'$(ns $V2 $C $V9 $tmp/v2s.tar)
+  [[ $out == *'stand-in cp: failing'*'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $N/app/current.json) == $V2 \
+    && $(<$N/app/$V2/server) == $V2 && -z $(ls $inc 2>/dev/null) ]] \
+    && ok "nas_send: a first release stopped at $at/current.json, the next writes both layouts" \
+    || no "nas_send first release stopped at $at/current.json" "$out / $(ls $N/app) / $(ls $R)"
+done
+rm -rf $N $tmp/nas-old; N=$tmp/nas2 R=$tmp/nas2/app/releases
 # Right after the first release, no rollback: none before it in app/releases.
 out=$(rb)
 [[ $out == *'no previous version'* && $(lv $R/current.json) == $V1 && $(lv $N/app/current.json) == $V1 ]] \

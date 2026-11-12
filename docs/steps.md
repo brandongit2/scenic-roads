@@ -793,7 +793,9 @@ What no job makes, kept on the NAS with how it was made. Scripts run in `dem/` (
   (docs/inputs.md §8); its README is kept in the repository as `producers/how/<box>/README.md`, and
   `inputs/README.md` as `producers/how/inputs-README.md`.
 - **Fonts** (`data/fonts` in a checkout, which publish.sh puts in each version's `fonts/`): three
-  Noto Sans styles' glyph ranges, `scripts/fonts.sh <folder>`.
+  Noto Sans styles' glyph ranges, `scripts/fonts.sh <folder>`. publish.sh needs every range in the
+  publishing checkout's `data/fonts` (`scripts/fonts.sh --check`, before its build) and stops
+  otherwise.
 
 ## 12. Job keys
 

@@ -326,8 +326,8 @@ nas_send() {
 # (nas_lock, waited for while another publish holds it) the order checked again, "@@ready", and the
 # go-ahead read (within $nas_go_wait s, 300), else nothing goes in; then, whatever the connection
 # and the signals, the archive (and the folder), nas/fetch-planet.sh when it differs, previous.json
-# and current.json in app/releases (and, before the first release, in app), in that order, and
-# "@@installed <version>".
+# and current.json (before the first release, in app first, then in app/releases), in that order,
+# and "@@installed <version>".
 nas_install() {
   local nas=$1 version=$2 head=$3 began=$4 bytes=$5 sum=$6 from=$7
   local inc=~/Library/Caches/scenic-publish/incoming lock=$1/app/publish.lock rel=$1/app/releases
@@ -394,9 +394,11 @@ nas_install() {
     mv $nas/nas/fetch-planet.sh.tmp $nas/nas/fetch-planet.sh
     print -r -- "updated nas/fetch-planet.sh" || true
   fi
-  # (Live: the releases' manifest, then, before the first release, the old layout's, read by the
-  # updaters before #1148.)
-  for f in $rel ${bridge:+$nas/app}; do
+  # Live: before the first release, the old layout's manifest first (read by the updaters before
+  # #1148), then the releases'. (In that order: until app/releases/current.json is written,
+  # live_dir is still app, so an install stopped between the two leaves the next publish writing
+  # both layouts again; the other way, app/current.json would stay on the version before for good.)
+  for f in ${bridge:+$nas/app} $rel; do
     [[ ! -f $f/current.json ]] || cp -X $f/current.json $f/previous.json
     cp -X $loc/manifest.json $f/current.json.tmp
     mv $f/current.json.tmp $f/current.json
