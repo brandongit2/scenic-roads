@@ -299,20 +299,12 @@ on_nas_mac() {
 # The NAS's releases (#1148): each version is one archive, app/releases/<version>.tgz, beside the
 # live version's manifest (current.json) and the one before it (previous.json), so a publish writes
 # a few files where a version's folder was ~840 (the NAS creates 1-3 files a second when busy).
-# live_dir <nas>: the folder of the live manifest and the one before it: app/releases; before the
-# first release, app (the old layout, a folder per version, app/<version>/, which the updaters
-# before #1148 read: the first release writes it too, so each Mac on one updates once more, to it).
-live_dir() {
-  if [[ -f $1/app/releases/current.json || ! -f $1/app/current.json ]]; then print -r -- $1/app/releases
-  else print -r -- $1/app; fi
-}
 
-# nas_current <nas>: the live manifest's content (live_dir), nothing when no version is live; 2 when
-# the NAS isn't mounted. (On the NAS's Mac.)
+# nas_current <nas>: the live manifest's content (app/releases/current.json), nothing when no
+# version is live; 2 when the NAS isn't mounted. (On the NAS's Mac.)
 nas_current() {
   [[ -d $1/app ]] || { print -ru2 -- "the NAS isn't mounted at $1 on $(scutil --get LocalHostName 2>/dev/null)"; return 2; }
-  local d=$(live_dir $1)
-  [[ ! -f $d/current.json ]] || cat $d/current.json
+  [[ ! -f $1/app/releases/current.json ]] || cat $1/app/releases/current.json
 }
 
 # app_files <folder>: the app's files in <folder>, sorted, .DS_Store and AppleDouble files left out.
@@ -325,14 +317,14 @@ app_pack() {
 # app_manifest <folder> <version> <archive>: the manifest (app/releases/current.json's content) of
 # the app in <folder>, packed as <archive>: its version, every file (app_files) with its SHA-256,
 # which every Mac's updater checks its unpacked copy against, and the archive's SHA-256, checked
-# before it's unpacked. (`files`, the list alone, is for the updaters before #1148: live_dir.)
+# before it's unpacked.
 app_manifest() {
   app_files $1 | (cd $1 && python3 -c "
 import hashlib, json, sys
 files = [l.strip() for l in sys.stdin if l.strip()]
 sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
 arch = hashlib.sha256(open(sys.argv[2], 'rb').read()).hexdigest()
-print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha, 'archive_sha256': arch}))" "$2" "${3:A}")
+print(json.dumps({'version': sys.argv[1], 'sha256': sha, 'archive_sha256': arch}))" "$2" "${3:A}")
 }
 
 # nas_send <nas> <version> <commit> <live version when the publish began> <archive> <from>: publish.sh's
@@ -381,18 +373,16 @@ nas_send() {
 # (~/Library/Caches/scenic-publish/incoming/<pid>.tar) and checked by its size and SHA-256 (an
 # upload cut short installs nothing), then unpacked beside it (<pid>/), the version's archive
 # unpacked there too and checked against the manifest; the order checked (fast_forward, on the live
-# manifest: live_dir); the archive written beside its name on the NAS
-# (app/releases/<version>.tgz.tmp) and its SHA-256 read back (before the first release, the old
-# layout's folder too: app/<version>.tmp, its files listed back); then under the NAS's lock
+# manifest: app/releases/current.json); the archive written beside its name on the NAS
+# (app/releases/<version>.tgz.tmp) and its SHA-256 read back; then under the NAS's lock
 # (nas_lock, waited for while another publish holds it) the order checked again, "@@ready", and the
 # go-ahead read (within $nas_go_wait s, 300), else nothing goes in; then, whatever the connection
-# and the signals, the archive (and the folder), previous.json
-# and current.json (before the first release, in app first, then in app/releases), in that order,
-# and "@@installed <version>".
+# and the signals, the archive, previous.json and current.json, in that order, and
+# "@@installed <version>".
 nas_install() {
   local nas=$1 version=$2 head=$3 began=$4 bytes=$5 sum=$6 from=$7
   local inc=~/Library/Caches/scenic-publish/incoming lock=$1/app/publish.lock rel=$1/app/releases
-  local dest=$1/app/releases/$2.tgz old=$1/app/$2 bridge=
+  local dest=$1/app/releases/$2.tgz
   local who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ) for $from"
   local in=$inc/$$.tar loc=$inc/$$ f got go said=
   _nas_begin
@@ -411,8 +401,7 @@ nas_install() {
   git cat-file -e "$head^{commit}" 2>/dev/null || git fetch -q origin main 2>/dev/null || true
   git cat-file -e "$head^{commit}" 2>/dev/null || { print -r -- "$head isn't in ${who%% *}'s $PWD, nor its origin's main"; return 1; }
   # (Checked first unlocked, so a publish that can't go in writes nothing; again under the lock.)
-  fast_forward $(live_dir $nas)/current.json $head "$began" || return 1
-  [[ $(live_dir $nas) == $rel ]] || bridge=1
+  fast_forward $rel/current.json $head "$began" || return 1
   [[ ! -e $dest ]] || { print -r -- "$dest exists already"; return 1; }
   mkdir -p $rel
   ( set -o noclobber; : > $dest.tmp ) 2>/dev/null || { print -r -- "$dest.tmp exists already (another install of this version)"; return 1; }
@@ -420,16 +409,6 @@ nas_install() {
   cp -X $loc/app.tgz $dest.tmp
   [[ $(shasum -a 256 < $dest.tmp) == "$(shasum -a 256 < $loc/app.tgz)" ]] \
     || { print -r -- "the archive written to the NAS isn't the one sent: nothing installed"; return 1; }
-  if [[ -n $bridge ]]; then
-    # Before the first release, the old layout too (live_dir): the version's folder, for the Macs'
-    # updaters before #1148. (-m: no file's time set, a round trip a file on the share.)
-    [[ ! -e $old ]] || { print -r -- "$old exists already"; return 1; }
-    mkdir $old.tmp || { print -r -- "$old.tmp exists already (another install of this version)"; return 1; }
-    _nas_cleanup+=("rm -rf ${(q)old}.tmp")
-    tar -xzmf $loc/app.tgz -C $old.tmp --no-same-owner --no-xattrs --no-acls --no-fflags --no-mac-metadata
-    [[ $(app_files $old.tmp) == "$(app_files $loc/app)" ]] \
-      || { print -r -- "the app written to the NAS isn't the one sent (its files differ): nothing installed"; return 1; }
-  fi
   # The lock held only from here: the writes above run beside another publish's install.
   until nas_lock $lock "$who"; do
     [[ -n $said ]] || { print -r -- "waiting for the publish holding $lock ($lock_held)"; said=1; }
@@ -437,7 +416,7 @@ nas_install() {
   done
   _nas_cleanup+=("nas_unlock ${(q)lock} ${(q)who}")
   # (Again, under the lock: the publish that went in meanwhile may be newer, or a rollback since.)
-  fast_forward $(live_dir $nas)/current.json $head "$began" || return 1
+  fast_forward $rel/current.json $head "$began" || return 1
   [[ ! -e $dest ]] || { print -r -- "$dest exists already"; return 1; }
   # (Signals ignored from before the go-ahead's read, so none lands between it and the writes; the
   # publishing Mac gone ends the read all the same: its end of the stream closes.)
@@ -446,16 +425,9 @@ nas_install() {
   IFS= read -r -t ${nas_go_wait:-300} go || go=
   [[ $go == go ]] || { print -r -- "no go-ahead from $from: nothing installed"; return 1; }
   mv $dest.tmp $dest
-  [[ -z $bridge ]] || mv $old.tmp $old
-  # Live: before the first release, the old layout's manifest first (read by the updaters before
-  # #1148), then the releases'. (In that order: until app/releases/current.json is written,
-  # live_dir is still app, so an install stopped between the two leaves the next publish writing
-  # both layouts again; the other way, app/current.json would stay on the version before for good.)
-  for f in ${bridge:+$nas/app} $rel; do
-    [[ ! -f $f/current.json ]] || cp -X $f/current.json $f/previous.json
-    cp -X $loc/manifest.json $f/current.json.tmp
-    mv $f/current.json.tmp $f/current.json
-  done
+  [[ ! -f $rel/current.json ]] || cp -X $rel/current.json $rel/previous.json
+  cp -X $loc/manifest.json $rel/current.json.tmp
+  mv $rel/current.json.tmp $rel/current.json
   print -r -- "@@installed $version" || true
 }
 # _nas_begin: nas_install's and nas_rollback's start. Their cleanup (_nas_end, as the script ends:
@@ -473,22 +445,19 @@ _nas_begin() {
   exec 2>$_nas_err
   _nas_cleanup+=("cat ${(q)_nas_err} || true; rm -f ${(q)_nas_err}")
 }
-# (The last put first: the lock freed before what is half-written on the NAS is removed: the old
-# layout's folder took minutes for its 840 files on 11 Nov.)
+# (The last put first: the lock freed before what is half-written on the NAS is removed.)
 _nas_end() { local rc=$? c; for c in ${(Oa)_nas_cleanup}; do eval $c; done; return $rc; }
 
 # nas_rollback <nas> <from>: publish.sh --rollback, on the NAS's Mac: the live manifest and the one
-# before it (live_dir's current.json and previous.json) swapped under the NAS's lock (not waited
-# for), unless rollback_ok refuses. (The first release has none before it in app/releases: no
-# rollback past it, whose old layout the updaters since read no more.)
+# before it (app/releases' current.json and previous.json) swapped under the NAS's lock (not waited
+# for), unless rollback_ok refuses.
 nas_rollback() {
-  local nas=$1 lock=$1/app/publish.lock d
+  local nas=$1 lock=$1/app/publish.lock d=$1/app/releases
   local who="$(scutil --get LocalHostName 2>/dev/null || hostname -s) $$ $(date -u +%Y-%m-%dT%H:%M:%SZ) for $2"
   _nas_begin
   [[ -d $nas/app ]] || { print -r -- "the NAS isn't mounted at $nas on ${who%% *}"; return 2; }
   nas_lock $lock "$who" || { print -r -- "another publish holds $lock ($lock_held): try again once it's over"; return 1; }
   _nas_cleanup+=("nas_unlock ${(q)lock} ${(q)who}")
-  d=$(live_dir $nas)
   [[ -f $d/previous.json ]] || { print -r -- "no previous version to roll back to"; return 1; }
   rollback_ok $d/current.json $d/previous.json || return 1
   cp -X $d/current.json $d/current.json.tmp.old

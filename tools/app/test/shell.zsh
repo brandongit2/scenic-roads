@@ -133,7 +133,7 @@ kill $pa $pb $pn 2>/dev/null; wait $pa $pb $pn 2>/dev/null
 g=$tmp/repo; git init -q $g
 c() { git -C $g -c user.name=t -c user.email=t@t commit -q --allow-empty -m $1; git -C $g rev-parse --short HEAD }
 A=$(c a); B=$(c b); C=$(c c); git -C $g checkout -q $A; D=$(c d)
-cur=$nas/app/current.json
+mkdir -p $nas/app/releases; cur=$nas/app/releases/current.json
 ff() { (cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $1" 2>&1) }
 out=$(ff $A) && ok "fast_forward nothing live" || no "fast_forward nothing live" "$out"
 print -r -- "{\"version\": \"20261026-0953-$B\"}" > $cur
@@ -315,18 +315,18 @@ out=$(r "mv() { [[ \$2 == *aside* ]] && print -r -- 'x other' > \$1/owner; comma
 [[ $out == 'held: taken just now' && -d $H2 && $(<$H2/owner 2>/dev/null) == 'x other' ]] && ok "hold puts back one taken meanwhile" || no "hold put back" "$out; $(ls $tmp | grep race)"
 
 # fast_forward: a publish begun before a rollback is refused; one begun after it goes in.
-print -r -- "{\"version\": \"20261026-1000-$C\"}" > $nas/app/previous.json
+print -r -- "{\"version\": \"20261026-1000-$C\"}" > $nas/app/releases/previous.json
 print -r -- "{\"version\": \"20261026-0953-$B\"}" > $cur
 out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-1000-$C" 2>&1) && no "fast_forward after a rollback" "allowed" || {
   [[ $out == *'rolled back'* ]] && ok "fast_forward begun before a rollback refused" || no "fast_forward rollback" "$out"; }
 out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-0953-$B" 2>&1) && ok "fast_forward begun after a rollback" || no "fast_forward after rollback" "$out"
-rm -f $nas/app/previous.json
+rm -f $nas/app/releases/previous.json
 
 # rollback_ok: back to a version with the live one's rollback floor, or both without one: allowed;
 # to one before the live one's floor (none, or another): refused, saying why; an unknown commit: refused.
 rf() { mkdir -p $g/tools/app; print -r -- "$1"$'\n'"# why $1" > $g/tools/app/rollback-floor; git -C $g add -A; c $2; }
 E=$(c e); F=$(rf one f); G=$(c g); H=$(rf two h)
-prev=$nas/app/previous.json
+prev=$nas/app/releases/previous.json
 ro() { print -r -- "{\"version\": \"20261026-0953-$1\"}" > $cur; print -r -- "{\"version\": \"20261026-0900-$2\"}" > $prev
   (cd $g && zsh -c "source ${(q)lib}; rollback_ok $cur $prev" 2>&1) }
 out=$(ro $E $C) && ok "rollback_ok neither has a floor" || no "rollback_ok no floors" "$out"
@@ -338,9 +338,7 @@ rm -f $prev
 
 # The install through the NAS's Mac (nas_send, nas_install, nas_rollback): this Mac named the NAS's
 # Mac, so it runs here (on_nas_mac without ssh), in the stand-in repository, its incoming folder in a
-# stand-in home, on a stand-in NAS root. (The ssh path: the end-to-end run, docs/building.md.) The
-# stand-in NAS starts in the old layout (a folder per version, app/current.json), as the NAS was
-# before #1148: the first release writes both, the next ones app/releases alone.
+# stand-in home, on a stand-in NAS root. (The ssh path: the end-to-end run, docs/building.md.)
 N=$tmp/nas2; R=$N/app/releases; hm=$tmp/home; inc=$hm/Library/Caches/scenic-publish/incoming
 here=$(scutil --get LocalHostName)
 mk() {  # <version> <name> [<manifest's version>]: an app's upload, $tmp/<name>.tar
@@ -361,56 +359,33 @@ rb() {  # nas_rollback's output, through the NAS's Mac
 }
 sum() { local s=$(shasum -a 256 $1); print -r -- ${s%% *}; }
 lv() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }  # (lib.zsh's live_version)
-V9=20261110-0009-$A V1=20261111-0001-$B V2=20261111-0002-$C V0=20261111-0003-$A
-# (Nothing half-written: in app/ the old layout's two versions alone, in app/releases the archives
-# of the versions named alone, no .tmp, no lock, no incoming upload.)
+V1=20261111-0001-$B V2=20261111-0002-$C V0=20261111-0003-$A
+# (Nothing half-written: in app/ the releases alone, in app/releases the archives of the versions
+# named alone, no .tmp, no lock, no incoming upload.)
 clean() {
-  [[ -z $(ls $N/app | grep -vxF -e current.json -e previous.json -e releases -e $V9 -e $V1) \
+  [[ -z $(ls $N/app | grep -vx releases) \
     && -z $(ls $R | grep -vxF -e current.json -e previous.json ${${@/%/.tgz}/#/-e}) && -z $(ls $inc 2>/dev/null) ]]
 }
-# The old layout, live.
-mkdir -p $N/app/$V9; print -r -- $V9 > $N/app/$V9/server
-print -r -- "{\"version\": \"$V9\", \"files\": [\"server\"], \"sha256\": {}}" > $N/app/current.json
+# Nothing live yet: no rollback; the first release goes to app/releases.
+mkdir -p $N/app
 mkdir -p $inc; zsh -c 'exit 0' & dp=$!; wait $dp; print x > $inc/$dp.tar  # (a gone receiver's)
 out=$(rb)
-[[ $out == *'no previous version'* && $(lv $N/app/current.json) == $V9 && ! -e $R ]] \
-  && ok "nas_rollback: before the first release, on the old layout" || no "nas_rollback old layout" "$out"
+[[ $out == *'no previous version'* && ! -e $R/current.json ]] \
+  && ok "nas_rollback: nothing live, nothing rolled back" || no "nas_rollback nothing live" "$out"
 mk $V1 v1
-cp -R $N $tmp/nas-old  # (the old layout alone, for the stopped first releases below)
-out=$(ns $V1 $B $V9 $tmp/v1.tar)
+out=$(ns $V1 $B '' $tmp/v1.tar)
 if [[ $out != *'sent '*' MB to '*$'\nrc=0 state=live' ]]; then no "nas_send first release" "$out"
 elif [[ $(<$R/current.json) != "$(<$tmp/v1/manifest.json)" || -e $R/previous.json || $(sum $R/$V1.tgz) != $(sum $tmp/v1/app.tgz) ]]; then no "nas_send first release" "releases: $(ls -R $R)"
-elif [[ $(<$N/app/$V1/server) != $V1 || ! -x $N/app/$V1/server || $(<$N/app/current.json) != "$(<$tmp/v1/manifest.json)" || $(lv $N/app/previous.json) != $V9 ]]; then no "nas_send first release" "old layout: $(ls -R $N/app)"
 elif ! clean $V1; then no "nas_send first release" "left: $(ls $N/app) / $(ls $R) / $(ls $inc)"
-else ok "nas_send: the first release, through the NAS's Mac, in both layouts; a gone receiver's upload removed"; fi
-# The first release stopped at either of its two manifests (a stand-in cp failing that write, on a
-# copy of the NAS as it was before it): the next publish writes both layouts again, so
-# app/current.json and app/releases/current.json both move on with it. (Were app/releases' written
-# first, a stop before app/current.json would leave the old updaters on the version before.)
-mkdir -p $tmp/shim
-print -r -- '#!/bin/zsh
-[[ ${@[-1]} != $FAILCP ]] || { print -ru2 -- "stand-in cp: failing $FAILCP"; exit 1; }
-exec /bin/cp "$@"' > $tmp/shim/cp; chmod 755 $tmp/shim/cp
-mk $V2 v2s
-for at in app app/releases; do
-  N=$tmp/nas3 R=$tmp/nas3/app/releases; rm -rf $N; cp -R $tmp/nas-old $N
-  out=$(ns $V1 $B $V9 $tmp/v1.tar "export PATH=${(q)tmp}/shim:\$PATH FAILCP=${(q)N}/$at/current.json.tmp")
-  out+=$'\n'$(ns $V2 $C $V9 $tmp/v2s.tar)
-  [[ $out == *'stand-in cp: failing'*'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $N/app/current.json) == $V2 \
-    && $(<$N/app/$V2/server) == $V2 && -z $(ls $inc 2>/dev/null) ]] \
-    && ok "nas_send: a first release stopped at $at/current.json, the next writes both layouts" \
-    || no "nas_send first release stopped at $at/current.json" "$out / $(ls $N/app) / $(ls $R)"
-done
-rm -rf $N $tmp/nas-old; N=$tmp/nas2 R=$tmp/nas2/app/releases
-# Right after the first release, no rollback: none before it in app/releases.
+else ok "nas_send: the first release, through the NAS's Mac, to app/releases; a gone receiver's upload removed"; fi
+# One release live, none before it: no rollback.
 out=$(rb)
-[[ $out == *'no previous version'* && $(lv $R/current.json) == $V1 && $(lv $N/app/current.json) == $V1 ]] \
-  && ok "nas_rollback: none past the first release" || no "nas_rollback first release" "$out"
+[[ $out == *'no previous version'* && $(lv $R/current.json) == $V1 ]] \
+  && ok "nas_rollback: none before the only release" || no "nas_rollback only release" "$out"
 mk $V2 v2
 out=$(ns $V2 $C $V1 $tmp/v2.tar)
-[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == $V1 ]] \
-  && [[ $(lv $N/app/current.json) == $V1 && ! -e $N/app/$V2 ]] && clean $V1 $V2 \
-  && ok "nas_send: the next release, app/releases alone, the last one previous" || no "nas_send next" "$out / $(ls $N/app)"
+[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == $V1 ]] && clean $V1 $V2 \
+  && ok "nas_send: the next release, the last one previous" || no "nas_send next" "$out / $(ls $N/app)"
 mk $V0 v0
 out=$(ns $V0 $A $V2 $tmp/v0.tar)
 [[ $out == *'older than the live version'*'rc=1 state=' && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
@@ -454,10 +429,10 @@ out=$(<$tmp/wait.out)
 out=$(ns 20261111-0007-$C $C 20261111-0006-$C $tmp/v3.tar 'nas_mac=none; nas_host=nas-mac.invalid')
 [[ $out == *"can't reach the NAS's Mac (nas-mac.invalid)"*'rc=1 state=' && $(lv $R/current.json) == 20261111-0006-$C ]] \
   && ok "nas_send: the NAS's Mac unreachable, nothing sent" || no "nas_send unreachable" "$out"
-# nas_rollback: back to the previous version, through the NAS's Mac (the old layout's untouched).
+# nas_rollback: back to the previous version, through the NAS's Mac.
 out=$(rb)
 [[ $out == "rolled back to $V2" && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == 20261111-0006-$C && ! -e $N/app/publish.lock ]] \
-  && [[ $(lv $N/app/current.json) == $V1 ]] && ok "nas_rollback through the NAS's Mac" || no "nas_rollback" "$out"
+  && ok "nas_rollback through the NAS's Mac" || no "nas_rollback" "$out"
 
 # The go-ahead, then the publishing Mac gone (its reader closed as "@@ready" came): installed all the
 # same, the lock freed.
@@ -466,11 +441,5 @@ out=$( { cat $tmp/v3.tar; sleep 0.5; print go; } | (cd $g && HOME=$hm zsh -euo p
 [[ $out == *@@ready && $(<$tmp/gone.rc) == rc=0 && $(lv $R/current.json) == 20261111-0004-$C && $(lv $R/previous.json) == $V2 ]] \
   && clean $V1 $V2 20261111-0006-$C 20261111-0004-$C && ok "nas_install: the go-ahead, then the connection gone: installed, the lock freed" \
   || no "nas_install gone after go" "$out / $(<$tmp/gone.rc) / $(ls $R)"
-
-# A NAS with no app yet: the first release goes to app/releases alone (no old layout to keep up).
-N=$tmp/nas3; R=$N/app/releases; mkdir -p $N/app
-out=$(ns $V1 $B '' $tmp/v1.tar)
-[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V1 && -z $(ls $N/app | grep -vx releases) ]] \
-  && ok "nas_send: a first release on an empty NAS, app/releases alone" || no "nas_send empty NAS" "$out / $(ls $N/app)"
 
 exit $failed

@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime};
 pub const RELEASES: &str = "app/releases";
 
 /// A published version's manifest (tools/app/lib.zsh's app_manifest): every file's SHA-256 and the
-/// archive's. (The NAS's copy also lists `files`, for the updaters before #1148: not read.)
+/// archive's.
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Manifest {
     pub version: String,
@@ -625,8 +625,7 @@ mod tests {
         assert!(st.success());
         let sha: serde_json::Map<String, serde_json::Value> =
             files.iter().map(|(f, b)| (f.to_string(), sha256(b).into())).collect();
-        let mut cur = serde_json::json!({"version": v, "files": files.iter().map(|(f, _)| *f).collect::<Vec<_>>(),
-            "sha256": sha, "archive_sha256": sha256(&std::fs::read(&archive).unwrap())});
+        let mut cur = serde_json::json!({"version": v, "sha256": sha, "archive_sha256": sha256(&std::fs::read(&archive).unwrap())});
         tweak(&mut cur);
         std::fs::write(nas.join(LIVE), cur.to_string()).unwrap();
     }

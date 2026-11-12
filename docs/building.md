@@ -689,16 +689,14 @@ keeps two publishes from both going in over one. Every Mac holds the lead's two 
 were. The lead down, nothing is published and the updates wait.
 
 **The NAS's layout of the app** (#1148): each version is one file, `app/releases/<version>.tgz`,
-beside `app/releases/current.json` (the live version's manifest: `version`, `sha256` of each file,
-`archive_sha256`, and `files`, the list alone, for the updaters before #1148) and `previous.json`
-(the one before), so a publish writes three files to the NAS (the archive, `current.json` and
+beside `app/releases/current.json` (the live version's manifest: `version`, `sha256` of each file
+and `archive_sha256`) and `previous.json` (the one before), so a publish writes three files to the NAS (the archive, `current.json` and
 `previous.json`) where a version's folder was 840 files:
 the NAS creates 1–3 files a second when busy. Each Mac's updater copies the archive and unpacks it locally (docs/macs.md,
 The updater). Measured from the M1 at home through the mini to a scratch root on 12 Nov 2026, the same app
 (118 MB in 840 files; the archive 45 MB, sent in ~2 s): a whole install, upload to live, took 177 s
-and then 42 s in the folder layout, 15, 9 and 11 s as a release, and 46 s as the first release
-(both layouts); on the mini alone, writing the archive took 0.5–1.1 s and reading it back 0.7–2.4 s,
-against 15–43 s for the 840 files; the M1 copied the archive from the NAS in 5.5 s and unpacked it
+and then 42 s in the folder layout, 15, 9 and 11 s as a release; on the mini alone, writing the
+archive took 0.5–1.1 s and reading it back 0.7–2.4 s, against 15–43 s for the 840 files; the M1 copied the archive from the NAS in 5.5 s and unpacked it
 in 0.4 s.
 
 **The NAS's `app/` until then** (#1118's rollout): publish.sh writes the NAS's `app/releases/`
@@ -708,33 +706,9 @@ published to it yet). Once every Mac has fetched from the lead for a day (#642's
 updater's `app/releases/live.json` written by the new app on every Mac a day ago), these become
 dead and go, as a change of their own: the NAS's `app/releases/` and `app/publish.lock`;
 publish.sh's "NAS's Mac" step (`nas_current`), its `nas_send` of the release, and `--rollback`'s
-`nas_rollback`; lib.zsh's `live_dir`, `nas_current`, `nas_lock`/`nas_unlock`, `nas_install`'s
-release writes and `nas_rollback`; the manifest's `files`; jobrt::appupdate's `NasReleases` and
-`check`'s `nas` argument, with coordwire::releases::check's; and the CLI's exit 4 (a lead before
+`nas_rollback`; lib.zsh's `nas_current`, `nas_lock`/`nas_unlock`, `nas_install`'s release writes
+and `nas_rollback`; jobrt::appupdate's `NasReleases` and `check`'s `nas` argument, with coordwire::releases::check's; and the CLI's exit 4 (a lead before
 #1118) with publish.sh's cases for it.
-
-**The old layout, until every Mac runs the new app:** before #1148 each version was a folder,
-`app/<version>/`, and the live manifest `app/current.json` (`previous.json` beside it), which the
-updaters before #1148 read. The first release (a publish that finds no `app/releases/current.json`
-while `app/current.json` names a version: `lib.zsh`'s `live_dir`) writes both layouts: the folder
-too (complete before either manifest), and the manifest in both places, `app/current.json`
-first: until `app/releases/current.json` is written `live_dir` still says the old layout, so an
-install stopped between the two leaves the next publish writing both again. Every later publish, rollback and
-check reads and writes `app/releases/` alone, so `app/current.json` stays on the first release
-for good: a Mac on an old updater, however long it was off, updates to that release once, and
-its updater from then on follows `app/releases/`. A rollback never goes past the first release:
-`app/releases/` has nothing before it (a version before it, whose updater reads `app/current.json`
-only, would go back to the first release at once). One process of the old app still running beside
-a new one fights it: an old updater points `app/current` back at the first release every five
-minutes while the new one points it at the live release. Only the Mac mini runs two updaters (its
-agent and its map server, which restarts into a new version once the map has been idle a minute),
-so publish the release after the first only once the mini's map server runs the first (its
-process's path under `app/<version>/`); else, until that server restarts, the mini's agent drains
-for an update at every flip. (Seen in the end-to-end run of 12 Nov 2026: an old updater on a home
-at the second release moved it back to the first.) Old path, to delete once every Mac runs a
-release (each Mac's `~/Library/Application Support/scenic/app/current` names one): the NAS's
-`app/<version>/` folders, `app/current.json` and `app/previous.json`, `live_dir`'s fallback and
-the first release's folder write in `nas_install`, and the manifest's `files`.
 
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;

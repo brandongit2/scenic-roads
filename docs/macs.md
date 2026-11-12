@@ -208,9 +208,7 @@ and codesign.
   it was read as), so a Mac made the lead holds them; one it holds isn't fetched again. The lead
   not answering, the update waits. While the lead holds no release (an app before #1118 there, or
   none published to it yet) it reads the NAS's `app/releases/` instead (the rollout's:
-  docs/building.md, The NAS's `app/` until then). (The updaters before #1148 read
-  `app/current.json` and the version's folder, file by file: the first release is the last
-  written so, building.md's old layout.) On the Mac mini the map server
+  docs/building.md, The NAS's `app/` until then). On the Mac mini the map server
   checks too (so the map updates with the agent stopped, while the lead's coordinator answers: on
   the lead itself that's the agent's, so there the update waits for the agent), one check at a time
   (`app/update.lock`), and restarts into the new version once the map has been idle a minute. Each
