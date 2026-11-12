@@ -33,8 +33,8 @@ catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: re
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
                current.json (the live one's manifest: {version, sha256, archive_sha256}),
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
-settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
-               the one file the map's server writes on the NAS)
+settings/      profiles.json: read and written by nothing: the map's server keeps its settings profiles
+               on its own Mac (Backups, below); the PM's to remove
 state/         status.json (the lead's heartbeat), coordinator.json (its contact),
                build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history and its archive, the forecast inputs' archive),
@@ -151,8 +151,8 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
 **Writers.** Every job uploads its files (content-named) and hands its record changes off to the
 lead by HTTP (docs/coordination.md §5.3), which merges them; no step
 writes the records directly once a lead is declared
-(`crate::out::check_writer`). Other writers: the map's server (`settings/profiles.json` alone), the owner's inputs folders, `tools/app/publish.sh`, and the
-NAS's own planet fetch.
+(`crate::out::check_writer`). Other writers: the owner's inputs folders, `tools/app/publish.sh`, and the
+NAS's own planet fetch. The map's server writes nothing on the NAS.
 
 **GC** (`agent::gc`, docs/maplog.md §7) is the lead's `gc` job, planned whenever GC's queue has a
 chunk for it or one of its sweeps is due, and run when the NAS is quiet: only beside leased jobs
@@ -240,11 +240,14 @@ it stopped.
   tombstone the GC before step 8b left (a file renamed `….gc-tomb` by a run stopped between its
   rename and its removal) is never taken for a content-named file and stays.
 
-**Backups.** Daily, the agent copies `inputs/` and the input check's acceptances
-(`state/inputs/accepted/`) into a content-addressed store under `state/backups/`, with a dated list
-on days something changed (kept 30 days), mirrored to the M4; `todo/` isn't backed up, and no link
-is followed or backed up (#1004: a link to its own folder, `inputs/inputs`, failed the backup on
-7 Nov). Everything else can be regenerated.
+**Backups.** Daily, the lead's `backup` job (agentcore::agent::backup) copies `inputs/`, the input
+check's acceptances (`state/inputs/accepted/`) and the map's settings profiles (`profiles.json` in
+the app's folder on the lead, the map server's Mac: crates/server/src/profiles.rs; listed as
+`mac/profiles.json`) into a content-addressed store under `state/backups/`, with a dated list on
+days something changed (kept 30 days), mirrored to the lead's own disk (`<home>/agent/backups/`);
+`todo/` isn't backed up, and no link is followed or backed up (#1004: a link to its own folder,
+`inputs/inputs`, failed the backup on 7 Nov). Everything else can be regenerated. A laptop's server
+on demand keeps a list of profiles of its own, in its own app folder, not backed up.
 
 **Links.** None belongs in the project folder. A link made from a Mac is stored on the NAS as an
 XSym file and lists as a file over SMB; only its stat says it's a link. No walk of the NAS's folders

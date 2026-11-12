@@ -1,11 +1,10 @@
 //! Settings profiles (task #819): named sets of every sidebar setting, shared by every user of the
-//! app. One file, `settings/profiles.json` on the NAS (`{"v": 1, "default": id, "profiles": [{"id",
-//! "name", "settings"}]}`), so every Mac's server serves the same list; this Mac keeps a copy in
-//! `<home>/profiles.json`, served while the NAS is away (changes then refused: they would fork the
-//! list). A server without a NAS root keeps the list in its home alone. `settings` is the web app's
-//! own (its state without the camera: state.ts `profileSettings`); the server only checks that it
-//! is an object. Before any profile is saved the list is one, `base` ("Default"), whose settings are
-//! `{}`: the app's defaults.
+//! map. One file, `<home>/profiles.json` (`{"v": 1, "default": id, "profiles": [{"id", "name",
+//! "settings"}]}`), on the map server's Mac, in the lead's daily backup (agentcore::agent::backup,
+//! `mac/profiles.json`). A laptop's server on demand (its offline map) keeps a list of its own, in
+//! its own home. `settings` is the web app's own (its state without the camera: state.ts
+//! `profileSettings`); the server only checks that it is an object. Before any profile is saved the
+//! list is one, `base` ("Default"), whose settings are `{}`: the app's defaults.
 //!
 //!   GET    /api/profiles               the list, the default's id, and whether it can be changed now
 //!   POST   /api/profiles               {name, settings, id?}: a new profile (`id`: one deleted, back
@@ -14,8 +13,7 @@
 //!   DELETE /api/profiles/{id}          removed (never the default)
 //!   POST   /api/profiles/{id}/default  made the default
 //!
-//! Every change reads the NAS's file again, changes it and writes it back (a temporary file renamed
-//! over it), under one lock here: two Macs changing it at the same moment, the later write wins.
+//! Every change reads the file again, changes it and writes it back whole, under one lock.
 
 use crate::S;
 use anyhow::{bail, ensure, Context, Result};
@@ -28,9 +26,6 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The file, on the NAS (under the project folder) and in the home.
-const NAS_FILE: &str = "settings/profiles.json";
-const LOCAL_FILE: &str = "profiles.json";
 /// The first profile: the app's defaults.
 pub const BASE_ID: &str = "base";
 const BASE_NAME: &str = "Default";
@@ -182,132 +177,64 @@ impl List {
     }
 }
 
-/// Where the list is kept.
+/// Where the list is kept: `<home>/profiles.json`.
 pub struct Profiles {
-    home: PathBuf,
+    file: PathBuf,
     /// Held across a change's read, change and write.
     lock: Mutex<()>,
 }
 
-/// Why a change can't be made now.
+/// Why a change can't be made now: the file is there but doesn't read.
 #[derive(Debug)]
-pub struct Away;
+pub struct Unreadable(String);
 
-impl std::fmt::Display for Away {
+impl std::fmt::Display for Unreadable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the NAS is away: profiles can be changed once it is back")
+        write!(f, "the profiles' file doesn't read ({}): nothing changed", self.0)
     }
 }
-impl std::error::Error for Away {}
+impl std::error::Error for Unreadable {}
 
 impl Profiles {
     pub fn new(home: &Path) -> Profiles {
-        Profiles { home: home.to_owned(), lock: Mutex::new(()) }
+        Profiles { file: home.join(jobrt::PROFILES), lock: Mutex::new(()) }
     }
 
-    fn local(&self) -> PathBuf {
-        self.home.join(LOCAL_FILE)
-    }
-
-    fn read_local(&self) -> Option<List> {
-        List::parse(&std::fs::read(self.local()).ok()?)
-    }
-
-    /// Writes the copy here (through a temporary file).
-    fn write_local(&self, l: &List) -> Result<()> {
-        let path = self.local();
-        let tmp = self.home.join(format!("{LOCAL_FILE}.{}.tmp", std::process::id()));
-        std::fs::create_dir_all(&self.home).ok();
-        std::fs::write(&tmp, serde_json::to_vec_pretty(l)?).with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("rename {}", tmp.display()))?;
-        Ok(())
-    }
-
-    /// The NAS's list: Ok(None) when there is no file yet (or no NAS at all: no root), Err(Away)
-    /// while the NAS can't be reached, Err(Unreadable) when the file is there but doesn't read or
-    /// doesn't hold together (busy, a hand edit): never taken as none, which a change would then
-    /// write over every profile.
-    fn read_nas(data: &crate::data::Data) -> Result<Option<List>, NasErr> {
-        let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(None) };
-        if !pool.is_online() {
-            return Err(NasErr::Away);
-        }
-        match pool.read_all(&root.join(NAS_FILE)) {
-            Ok(b) => List::parse(&b).map(Some).ok_or_else(|| NasErr::Unreadable("not a list".into())),
-            Err(e) if e.is_unreachable() => Err(NasErr::Away),
-            Err(store::iopool::IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(NasErr::Unreadable(format!("{e:?}"))),
+    /// The list: Ok(None) when there is no file yet, Err when it's there but doesn't read or
+    /// doesn't hold together (a hand edit): never taken as none, which a change would then write
+    /// over every profile.
+    fn read(&self) -> Result<Option<List>, Unreadable> {
+        match std::fs::read(&self.file) {
+            Ok(b) => List::parse(&b).map(Some).ok_or_else(|| Unreadable("not a list".into())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Unreadable(e.to_string())),
         }
     }
 
-    /// Writes the NAS's file whole: a temporary file (named by host and pid: store::whole), synced,
-    /// renamed over it (busy waited out), so a reader finds the old list or the new, never a torn one.
-    fn write_nas(data: &crate::data::Data, l: &List) -> Result<()> {
-        let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(()) };
-        let path = root.join(NAS_FILE);
-        let tmp = path.tmp_name();
-        let dir = path.parent().context("the profiles' folder")?;
-        pool.create_dir_all(&dir).map_err(|e| anyhow::anyhow!("{e:?}")).context("make settings/ on the NAS")?;
-        pool.write(&tmp, serde_json::to_vec_pretty(l)?)
-            .map_err(|e| anyhow::anyhow!("{e:?}"))
-            .context("write the profiles on the NAS")?;
-        let (from, to) = (tmp.clone(), path.clone());
-        if let Err(e) = pool.call(move || from.rename_over(&to)) {
-            pool.call(move || tmp.remove_file()).ok();
-            return Err(anyhow::anyhow!("{e:?}")).context("rename the profiles on the NAS");
-        }
-        Ok(())
-    }
-
-    /// The list (the NAS's, kept here too; while it's away or its file doesn't read, the copy
-    /// here) and whether it can be changed now.
-    pub fn list(&self, data: &crate::data::Data) -> (List, bool) {
-        match Self::read_nas(data) {
-            Ok(nas) => {
-                let have = data.nas_root().is_some();
-                let l = nas.or_else(|| if have { None } else { self.read_local() }).unwrap_or_default();
-                if have && self.read_local().as_ref() != Some(&l) {
-                    if let Err(e) = self.write_local(&l) {
-                        eprintln!("profiles: the copy here: {e:#}");
-                    }
-                }
-                (l, true)
-            }
+    /// The list and whether it can be changed now (not while its file doesn't read: the app's
+    /// defaults served meanwhile).
+    pub fn list(&self) -> (List, bool) {
+        match self.read() {
+            Ok(l) => (l.unwrap_or_default(), true),
             Err(e) => {
-                if let NasErr::Unreadable(why) = &e {
-                    eprintln!("profiles: {NAS_FILE} on the NAS: {why}: the copy here served");
-                }
-                (self.read_local().unwrap_or_default(), false)
+                eprintln!("profiles: {}: {}", self.file.display(), e.0);
+                (List::default(), false)
             }
         }
     }
 
-    /// Applies `op` to the list where it is kept: the new list and the profile's id. The NAS's file
-    /// is read again just before, under this server's lock; two Macs' servers changing it within
-    /// the same read-and-write (well under a second), the later write wins.
-    pub fn change(&self, data: &crate::data::Data, op: Op) -> Result<(List, String)> {
+    /// Applies `op` to the list, read again under the lock and written back whole
+    /// (store::whole::write): the new list and the profile's id.
+    pub fn change(&self, op: Op) -> Result<(List, String)> {
         let _g = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let cur = match Self::read_nas(data) {
-            Ok(Some(l)) => l,
-            Ok(None) if data.nas_root().is_some() => List::default(),
-            Ok(None) => self.read_local().unwrap_or_default(),
-            Err(NasErr::Away) => return Err(Away.into()),
-            Err(NasErr::Unreadable(why)) => {
-                return Err(anyhow::Error::from(Away)
-                    .context(format!("{NAS_FILE} on the NAS doesn't read ({why}): nothing changed")))
-            }
-        };
-        let (next, id) = cur.apply(op)?;
-        Self::write_nas(data, &next)?;
-        self.write_local(&next)?;
+        let (next, id) = self.read()?.unwrap_or_default().apply(op)?;
+        if let Some(d) = self.file.parent() {
+            std::fs::create_dir_all(d).with_context(|| format!("make {}", d.display()))?;
+        }
+        store::whole::write(&self.file, &serde_json::to_vec_pretty(&next)?)
+            .with_context(|| format!("write {}", self.file.display()))?;
         Ok((next, id))
     }
-}
-
-/// Why the NAS's list can't be had.
-enum NasErr {
-    Away,
-    Unreadable(String),
 }
 
 fn answer(l: &List, writable: bool, id: Option<&str>) -> Value {
@@ -323,16 +250,16 @@ fn no_store(v: Value) -> Response {
 }
 
 async fn changed(s: S, op: Op) -> Response {
-    match tokio::task::spawn_blocking(move || s.profiles.change(&s.data, op)).await {
+    match tokio::task::spawn_blocking(move || s.profiles.change(op)).await {
         Ok(Ok((l, id))) => no_store(answer(&l, true, Some(&id))),
-        Ok(Err(e)) if e.is::<Away>() => (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
+        Ok(Err(e)) if e.is::<Unreadable>() => (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
         Ok(Err(e)) => (StatusCode::BAD_REQUEST, format!("{e:#}")).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
 pub async fn get_list(State(s): State<S>) -> Response {
-    match tokio::task::spawn_blocking(move || s.profiles.list(&s.data)).await {
+    match tokio::task::spawn_blocking(move || s.profiles.list()).await {
         Ok((l, w)) => no_store(answer(&l, w, None)),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -401,7 +328,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_api_lists_adds_renames_replaces_sets_the_default_and_deletes_on_the_nas() {
+    async fn the_api_lists_adds_renames_replaces_sets_the_default_and_deletes_in_the_home() {
         let nas = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
@@ -421,10 +348,10 @@ mod tests {
         let id = v["id"].as_str().unwrap().to_string();
         assert!(valid_id(&id), "{id}");
         assert_eq!(names(&v), ["Default", "Scenic night"]);
-        // On the NAS, and kept here.
-        let on_nas = List::parse(&std::fs::read(nas.path().join(NAS_FILE)).unwrap()).unwrap();
-        assert_eq!(on_nas.profiles[1].settings, json!({"mode": "score"}).as_object().unwrap().clone());
-        assert_eq!(List::parse(&std::fs::read(home.path().join(LOCAL_FILE)).unwrap()), Some(on_nas));
+        // In the home; nothing on the NAS (task #1119).
+        let kept = List::parse(&std::fs::read(home.path().join(jobrt::PROFILES)).unwrap()).unwrap();
+        assert_eq!(kept.profiles[1].settings, json!({"mode": "score"}).as_object().unwrap().clone());
+        assert_eq!(std::fs::read_dir(nas.path()).unwrap().count(), 0, "nothing written on the NAS");
         // A name taken (in any case), or empty: refused.
         let (st, _) = call(&s, "POST", "/api/profiles", Some(json!({"name": "scenic NIGHT", "settings": {}}))).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
@@ -454,31 +381,43 @@ mod tests {
         // Unknown ids.
         let (st, _) = call(&s, "PUT", "/api/profiles/zzzz", Some(json!({"name": "x"}))).await;
         assert_eq!(st, StatusCode::BAD_REQUEST);
-        // Another Mac's server over the same NAS sees the same list.
-        let home2 = tempfile::tempdir().unwrap();
-        let s2 = crate::test_state(home2.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
+        // A server started again over the same home (its file copied in by hand among them) serves
+        // the same list.
+        let s2 = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let (_, v2) = call(&s2, "GET", "/api/profiles", None).await;
         assert_eq!(
             (names(&v2), v2["default"].as_str()),
             (vec!["Night".to_string(), "Default".into()], Some(id.as_str()))
         );
+        // Another home over the same NAS (a laptop's server on demand) keeps a list of its own.
+        let home2 = tempfile::tempdir().unwrap();
+        let s3 = crate::test_state(home2.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
+        let (_, v3) = call(&s3, "GET", "/api/profiles", None).await;
+        assert_eq!((names(&v3), v3["writable"].as_bool()), (vec!["Default".to_string()], Some(true)));
+        assert_eq!(std::fs::read_dir(nas.path()).unwrap().count(), 0, "nothing written on the NAS");
     }
 
     #[tokio::test]
-    async fn a_nas_file_that_doesnt_read_is_never_written_over() {
+    async fn a_file_that_doesnt_read_is_never_written_over() {
         let nas = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
         let (_, v) = call(&s, "POST", "/api/profiles", Some(json!({"name": "Night", "settings": {}}))).await;
         assert_eq!(names(&v), ["Default", "Night"]);
-        std::fs::write(nas.path().join(NAS_FILE), b"{\"v\":1,").unwrap();
-        // The copy here is served, read-only; a change is refused and the file left as it is.
+        let file = home.path().join(jobrt::PROFILES);
+        std::fs::write(&file, b"{\"v\":1,").unwrap();
+        // The app's defaults are served, read-only; a change is refused and the file left as it is.
         let (_, v) = call(&s, "GET", "/api/profiles", None).await;
-        assert_eq!((names(&v), v["writable"].as_bool()), (vec!["Default".to_string(), "Night".into()], Some(false)));
+        assert_eq!((names(&v), v["writable"].as_bool()), (vec!["Default".to_string()], Some(false)));
         let (st, _) = call(&s, "POST", "/api/profiles", Some(json!({"name": "Day", "settings": {}}))).await;
         assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(std::fs::read(nas.path().join(NAS_FILE)).unwrap(), b"{\"v\":1,");
-        assert!(std::fs::read_dir(nas.path().join("settings")).unwrap().count() == 1, "no temporary file left");
+        assert_eq!(std::fs::read(&file).unwrap(), b"{\"v\":1,");
+        let left: Vec<_> = std::fs::read_dir(home.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains("profiles"))
+            .collect();
+        assert_eq!(left, [jobrt::PROFILES], "no temporary file left");
     }
 
     #[test]

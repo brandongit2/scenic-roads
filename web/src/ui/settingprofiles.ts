@@ -20,7 +20,7 @@ export interface ProfileItem {
 export interface Listing {
   default: string;
   profiles: ProfileItem[];
-  /** False while the NAS is away: the list is this Mac's copy and can't be changed. */
+  /** False while the server's profiles file doesn't read, or the server didn't answer (FALLBACK): the list can't be changed. */
   writable: boolean;
   /** The profile a change made or changed. */
   id?: string;
@@ -349,7 +349,7 @@ export class Profiles {
 
   private render() {
     const off = !this.writable;
-    const why = off ? 'The NAS is away: profiles can be changed once it is back' : '';
+    const why = off ? "Profiles can't be changed now: the server didn't answer or its profiles don't read" : '';
     const rows = this.list.map((p) => {
       const isActive = p.id === this.active, isDef = p.id === this.def;
       if (this.edit?.kind === 'rename' && this.edit.id === p.id) {
