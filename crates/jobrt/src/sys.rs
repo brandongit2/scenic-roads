@@ -405,7 +405,7 @@ pub fn footprint_guard(what: &'static str, max_mb: u64) {
                     let mb = b / 1_000_000;
                     if mb > max_mb {
                         eprintln!("{what}: {mb} MB of memory (its footprint, compressed and swapped included), past its limit of {max_mb} MB: stopped");
-                        std::process::exit(3);
+                        crate::control::exit(3);
                     }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));

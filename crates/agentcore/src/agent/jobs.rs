@@ -386,7 +386,7 @@ impl Running {
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", HEAD, "sh"]).arg(&status);
         // (And the job's, to say its end itself when its exit may not end: jobrt::control::ending.)
-        c.env(jobrt::control::STATUS_ENV, &status);
+        c.env(store::spawn::JOB_STATUS, &status);
         c.args(["/usr/sbin/taskpolicy", "-c", "utility"]);
         if let Some(profile) = sandbox {
             c.args(["/usr/bin/sandbox-exec", "-p", profile]);
@@ -479,8 +479,8 @@ impl Running {
     }
 
     /// Its exit status once it has finished: its child's, or the one the job wrote itself while its
-    /// exit doesn't end (jobrt::control::ending: `said_end`); an adopted job's from its status file,
-    /// or, its group gone without one (killed while no agent tended it: `vanished`), as killed.
+    /// exit doesn't end (jobrt::control::ending: `said_end`); an adopted job's from its status file
+    /// (`said_end` too while its group is still there), or, its group gone without one (killed while no agent tended it: `vanished`), as killed.
     pub fn poll(&mut self) -> Result<Option<ExitStatus>> {
         if let Some(c) = self.child.as_mut() {
             if let Some(st) = c.try_wait()? {
@@ -491,6 +491,9 @@ impl Running {
             return Ok(said);
         }
         if let Some(st) = read_status(&self.status) {
+            // (Its group still there: the job said its end before its exit ended, stopped as a
+            // child's is.)
+            self.said_end |= self.group().is_the_jobs();
             return Ok(Some(st));
         }
         if !group_members(self.pgid).is_empty() {
@@ -1193,6 +1196,19 @@ mod tests {
         assert!(jobrt::sys::signal_group(r.pgid, Signal::Probe), "the job's process still runs");
         let pgid = r.pgid;
         assert!(r.stop(Duration::from_secs(1)).is_none(), "what of it ran, stopped");
+        assert!(!jobrt::sys::signal_group(pgid, Signal::Probe));
+        // (Review: taken over by a later agent, the same: its end as it said it, what of it still
+        // runs stopped.)
+        let rec = d.path().join("job2.json");
+        let r = Running::start(spec(&["/bin/sh", "-c", cmd]), 1, &[], d.path().join("log2"), &rec, None, None).unwrap();
+        let status = r.status.clone();
+        store::testkit::eventually("its end said", || status.exists());
+        r.hand_over(&rec, serde_json::json!({"lease": null}));
+        let (mut a, _) = adopt(&rec).expect("taken over");
+        assert_eq!(a.poll().unwrap().and_then(|s| s.code()), Some(1));
+        assert!(a.said_end, "said by the job, its group still there");
+        let pgid = a.pgid;
+        assert!(a.stop(Duration::from_secs(1)).is_none(), "what of it ran, stopped");
         assert!(!jobrt::sys::signal_group(pgid, Signal::Probe));
     }
 

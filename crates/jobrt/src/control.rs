@@ -618,19 +618,16 @@ pub fn stop_paused(step: &str) -> ! {
     exit(PAUSED_EXIT)
 }
 
-/// Where a job's agent has its exit status written (its group's head writes it as the job ends;
-/// the job itself first when its exit may not end, `ending`).
-pub const STATUS_ENV: &str = "SCENIC_JOB_STATUS";
-
 /// The job is ending with exit code `code`: when it leaves NAS calls in the kernel past their
 /// deadline (store::deadline::held), its exit may never end (the kernel ends a process once each
 /// of its threads has left its call, and an SMB call can stay there for hours), nor its group's
-/// head write its status: the status is written here first (`STATUS_ENV`, as the head writes it),
-/// which its agent takes as the job's end (agentcore's jobs::Running::poll), stopping what of it
-/// still runs. Whether it was written.
+/// head write its status: the status is written here first (store::spawn::JOB_STATUS, as the head
+/// writes it), which its agent takes as the job's end (agentcore's jobs::Running::poll), stopping
+/// what of it still runs. Only the job's own process has the path: a program it starts doesn't
+/// inherit it (store::spawn). Whether it was written.
 pub fn ending(code: i32) -> bool {
     let held = store::deadline::held();
-    let Some(p) = std::env::var_os(STATUS_ENV) else { return false };
+    let Some(p) = std::env::var_os(store::spawn::JOB_STATUS) else { return false };
     held > 0 && say_end(Path::new(&p), code, held)
 }
 

@@ -286,7 +286,7 @@ pub fn watch(say_s: u64, budget_s: u64) {
                     eprintln!(
                         "regions: an operation on {label} ({n} points) ran past its budget of {budget_s} s: stopped"
                     );
-                    std::process::exit(3);
+                    jobrt::control::exit(3);
                 }
                 if s >= say_s && !*said {
                     eprintln!("regions: slow operation on {label}: {n} points, {s} s so far");

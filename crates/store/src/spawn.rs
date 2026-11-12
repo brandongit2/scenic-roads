@@ -194,12 +194,19 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
 
 /// `command`, the name looked up in `path` (a PATH): for a child given that PATH. Every child is
 /// started through here is started without macOS malloc's cache of freed large blocks
-/// (`NO_LARGE_CACHE`).
+/// (`NO_LARGE_CACHE`), and without its parent's `JOB_STATUS`.
 pub fn command_in(program: impl AsRef<OsStr>, path: &OsStr) -> Command {
     let mut c = Command::new(find(program.as_ref(), path));
     c.env(NO_LARGE_CACHE.0, NO_LARGE_CACHE.1);
+    c.env_remove(JOB_STATUS);
     c
 }
+
+/// Where a job's agent has the job's exit status written (agentcore's jobs::Running::start sets it
+/// on the job's group's head; jobrt::control::ending writes it). The job's alone: a program the
+/// job starts (`scenic-build tool trees`, extract's) is a part of the job, and its end never the
+/// job's, so no child started here inherits it.
+pub const JOB_STATUS: &str = "SCENIC_JOB_STATUS";
 
 /// The environment setting (libmalloc's, undocumented: `man malloc` doesn't name it) that turns off
 /// macOS malloc's cache of freed large blocks: with it on, a
@@ -434,6 +441,17 @@ mod tests {
     fn children_run_without_the_large_cache() {
         let o = output(command("/bin/sh").args(["-c", "/usr/bin/printenv MallocLargeCache"])).unwrap();
         assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), NO_LARGE_CACHE.1);
+    }
+
+    /// Task #1141 review: a job's status path is the job's alone; a child it starts (a tool, whose
+    /// end with NAS calls held would say it, jobrt::control::ending) never inherits it.
+    #[test]
+    fn children_never_inherit_the_job_s_status_path() {
+        let c = command("/usr/bin/true");
+        assert!(c.get_envs().any(|(k, v)| k == JOB_STATUS && v.is_none()), "removed from every child");
+        let mut c = command("/bin/sh");
+        c.env(JOB_STATUS, "/x");
+        assert!(c.get_envs().any(|(k, v)| k == JOB_STATUS && v == Some(OsStr::new("/x"))), "the agent's own, set");
     }
 
     /// A process started with the large cache starts itself again without it, in its own place
