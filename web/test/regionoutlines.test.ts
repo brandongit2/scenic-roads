@@ -2,7 +2,7 @@
 // regions' outlines on the map: the region under the cursor (the footer's), the zoom asked, and the
 // lines drawn from outlines clipped to a box or reaching past the Mercator tiles' latitudes.
 import assert from 'node:assert/strict';
-import { MERCATOR_LAT } from '../src/merc.ts';
+import { MERCATOR_LAT, mercY } from '../src/merc.ts';
 import { inBand, inside, outlineLines, outlineZoom, regionAt, type RegionOutline } from '../src/regions.ts';
 
 const sq = (w: number, s: number, e: number, n: number) => [[w, s], [e, s], [e, n], [w, n], [w, s]];
@@ -42,19 +42,31 @@ const south = region('s', [[[-180, -70], [0, -65], [180, -70], [180, -90], [-180
 assert.deepEqual(outlineLines(south, null).geometry.coordinates, [[[-180, -70], [0, -65], [180, -70]]]);
 const north = region('n', [[[-180, 80], [180, 80], [180, 90], [-180, 90], [-180, 80]]], [-180, 80, 180, 90]);
 assert.deepEqual(outlineLines(north, null).geometry.coordinates, [[[-180, 80], [180, 80]]]);
-// A border crossing the edge is cut where it does, on the edge; one along a meridian to the pole
-// stops at the edge on that meridian.
-const lats = (ls: number[][][]) => ls.flat().map((p) => p[1]);
+// A border crossing the edge is cut where a straight line in Mercator meets it, exactly on it.
 const across = inBand([[10, 80], [20, 88], [30, 80]]);
 assert.equal(across.length, 2);
 assert.deepEqual([across[0][0], across[1][1]], [[10, 80], [30, 80]]);
-assert.ok(Math.abs(across[0][1][1] - MERCATOR_LAT) < 1e-9 && Math.abs(across[1][0][1] - MERCATOR_LAT) < 1e-9);
-assert.ok(across[0][1][0] > 10 && across[0][1][0] < 20 && across[1][0][0] > 20 && across[1][0][0] < 30);
-const meridian = inBand([[45, -80], [45, -90]]);
-assert.equal(meridian.length, 1);
-assert.equal(meridian[0][1][0], 45);
-assert.ok(Math.abs(meridian[0][1][1] + MERCATOR_LAT) < 1e-9);
-// Wholly past the edge: nothing; on it: drawn.
+assert.deepEqual([across[0][1][1], across[1][0][1]], [MERCATOR_LAT, MERCATOR_LAT]);
+const tN = (mercY(MERCATOR_LAT) - mercY(80)) / (mercY(88) - mercY(80));
+assert.ok(Math.abs(across[0][1][0] - (10 + 10 * tN)) < 1e-12 && Math.abs(across[1][0][0] - (30 - 10 * tN)) < 1e-12);
+// To a pole (y ∓Infinity), a line in Mercator runs along its other end's meridian, whatever the
+// pole's longitude.
+assert.deepEqual(inBand([[45, -80], [45, -90]]), [[[45, -80], [45, -MERCATOR_LAT]]]);
+assert.deepEqual(inBand([[45, -80], [135, -90]]), [[[45, -80], [45, -MERCATOR_LAT]]]);
+assert.deepEqual(inBand([[0, 90], [30, 80]]), [[[30, MERCATOR_LAT], [30, 80]]]);
+// Wholly past the edge, on one side: nothing; across the band from side to side: the stretch
+// between the edges (from a pole: on the other end's meridian; pole to pole has no line).
 assert.deepEqual(inBand([[0, 86], [10, 89], [20, 86]]), []);
-assert.ok(lats(inBand([[0, MERCATOR_LAT], [10, MERCATOR_LAT]])).every((l) => l === MERCATOR_LAT));
+assert.deepEqual(inBand([[5, 90], [5, -90], [6, 90]]), []);
+assert.deepEqual(inBand([[60, 90], [20, -88]]), [[[20, MERCATOR_LAT], [20, -MERCATOR_LAT]]]);
+const through = inBand([[0, 88], [10, -88]]);
+assert.equal(through.length, 1);
+assert.deepEqual(through[0].map((p) => p[1]), [MERCATOR_LAT, -MERCATOR_LAT]);
+assert.ok(Math.abs(through[0][0][0] + through[0][1][0] - 10) < 1e-9);
+// On the edge: drawn, and a border that touches it and comes back stays whole; one leaving from
+// it (from the edge to a pole, or across the band) leaves no point behind.
+assert.deepEqual(inBand([[0, MERCATOR_LAT], [10, MERCATOR_LAT]]), [[[0, MERCATOR_LAT], [10, MERCATOR_LAT]]]);
+assert.deepEqual(inBand([[0, 80], [5, MERCATOR_LAT], [10, 80]]), [[[0, 80], [5, MERCATOR_LAT], [10, 80]]]);
+assert.deepEqual(inBand([[0, 80], [5, MERCATOR_LAT], [5, 90]]), [[[0, 80], [5, MERCATOR_LAT]]]);
+assert.deepEqual(inBand([[5, MERCATOR_LAT], [5, -90]]), [[[5, MERCATOR_LAT], [5, -MERCATOR_LAT]]]);
 console.log('regionoutlines: ok');

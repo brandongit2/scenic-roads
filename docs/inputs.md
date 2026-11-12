@@ -836,8 +836,9 @@ region file takes it out with the next version.
   region's stored outline as a line, green (a disabled region grey: it is checked even though it
   isn't built), with its name as a country's label. Only its border is drawn: not the cuts along a
   box it was clipped to or the antimeridian, nor what lies past the Mercator tiles' ±85.05°
-  (`web/src/regions.ts` `outlineLines`; there MapLibre would draw it along the tiles' edge, a ring
-  round a pole that a region such as Antarctica reaches); the line's width and opacity are the
+  (`web/src/regions.ts` `outlineLines`, cut where a line crosses that edge; there MapLibre would draw
+  it along the tiles' edge, a ring round a pole that a region such as Antarctica reaches, and the
+  polar caps draw no region lines); the line's width and opacity are the
   boundaries'. The server simplifies the drawn files (copied to the Mac as the translations are)
   for every zoom when the accepted version changes and keeps them on the Mac (docs/formats.md). The footer tells the region under
   the cursor: its folders and name with their flags, its state, land and water and download.
