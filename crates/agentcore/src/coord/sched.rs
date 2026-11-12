@@ -1384,7 +1384,10 @@ impl Sched {
         // the climb within a minute instead of a whole ask's worth landing at once. A job older
         // than its lease (`Lease::taken_up`: read back at a lead's restart, or from a record, the
         // forecast's) has had its load show since it began (task #1094: the forecast held back
-        // the overcommit the lead made, its record's leases all granted that instant).)
+        // the overcommit the lead made, its record's leases all granted that instant). Its
+        // agent restarted too, the load still shows it: its busy cores are its CPU's ticks a
+        // second, the minute's read back from its disk (crate::agent::live), else the kernel's
+        // load average.)
         let mut by_threads = needs
             .iter()
             .zip(&jobs)
@@ -2569,9 +2572,8 @@ impl Sched {
             let at = if l.granted_at > 0 { l.granted_at.min(clock.unix) } else { clock.unix };
             let id =
                 leases.grant_at(&l.worker, Work::Job { step: l.step.clone(), targets: l.targets.clone() }, now, at);
-            leases.began_at(id, at, clock.unix, now);
+            leases.from_record(id, at, l.busy_tenths, clock.unix, now);
             leases.set_threads(id, l.threads);
-            leases.set_busy_said(id, l.busy_tenths);
         }
         let workers = s
             .workers
