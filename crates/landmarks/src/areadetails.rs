@@ -17,7 +17,7 @@
 
 use crate::heritagewd::write_atomic;
 use crate::interest::py_round;
-use crate::wikiask::{number, val, Asker};
+use crate::wikiask::{by_item, earliest, fact_union, labels, largest, least, val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
 use jobrt::timings::phase;
@@ -164,32 +164,11 @@ const FACTS: [(&str, &str); 6] = [
 ];
 
 /// The park query of `chunk`'s items: each fact's values as rows (`?item ?k ?v`), a UNION of one
-/// branch a fact, each holding the items itself, put together by `park_record` (task #1144).
-/// QLever works an OPTIONAL or a UNION's branch out on its own before joining it, and applies a
-/// language filter only after its scan: a fact's OPTIONAL naming no item read every description
-/// or label in Wikidata, some 17-35 s (more when it was busy) whatever the batch's size, past the
-/// service's time limit even for one item. Each branch here is joined with the items first, so
-/// its cost is theirs (125 items in about a second). The filters compare `STR(LANG(…))`: QLever's
-/// planner turns `LANG(?x) = "en"` into a scan of every English literal.
+/// branch a fact holding the items (crate::wikiask::fact_union, task #1144), put together by
+/// `park_record`.
 fn parks_query(chunk: &[String]) -> String {
     let values = chunk.iter().map(|q| format!("wd:{q}")).collect::<Vec<_>>().join(" ");
-    let branches: Vec<String> = FACTS
-        .iter()
-        .map(|(k, pattern)| format!("{{ VALUES ?item {{ {values} }} {pattern} BIND(\"{k}\" AS ?k) }}"))
-        .collect();
-    format!(
-        "PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>\n\
-         SELECT ?item ?k ?v WHERE {{\n  {}\n}}",
-        branches.join("\n  UNION ")
-    )
-}
-
-/// A date's order (Wikidata's `xsd:dateTime`, a year before Christ signed): its year, then the rest.
-fn date_key(d: &str) -> (i64, &str) {
-    let (neg, rest) = d.strip_prefix('-').map_or((false, d), |r| (true, r));
-    let n = rest.bytes().take_while(u8::is_ascii_digit).count();
-    let y: i64 = rest[..n].parse().unwrap_or(0);
-    (if neg { -y } else { y }, &rest[n..])
+    fact_union("?item ?k ?v", &format!("VALUES ?item {{ {values} }}"), FACTS)
 }
 
 /// A park's facts from its rows (`?k ?v`, `qid`'s), each picked the same way whatever order they
@@ -199,33 +178,22 @@ fn date_key(d: &str) -> (i64, &str) {
 /// the map reads of them: web/src/details.ts's `enrichArea`.) An unknown value (crate::wikiask::val) is none; a value that isn't a number is left out,
 /// logged (crate::wikiask::number); an inception or visitors that isn't a literal is none.
 fn park_record(rows: &[&Py], qid: &str) -> Py {
-    let of = |k: &'static str| rows.iter().filter(move |b| val(b, "k") == Some(k)).copied();
-    let literal = |b: &&Py| b.at("v").at("type").as_str().is_some_and(|t| t.contains("literal"));
-    let least = |k: &'static str| of(k).filter_map(|b| val(b, "v")).min();
-    let ops: std::collections::BTreeSet<&str> = of("op").filter_map(|b| val(b, "v")).collect();
-    let largest = |k: &'static str| {
-        of(k)
-            .filter(literal)
-            .filter_map(|b| number(b, "v", qid))
-            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))))
-    };
     let mut rec: Vec<(String, Py)> = vec![];
     for (key, k) in [("d_en", "d"), ("w_en", "w")] {
-        if let Some(v) = least(k) {
+        if let Some(v) = least(rows, k).and_then(|b| val(b, "v")) {
             rec.push((key.into(), Py::Str(v.into())));
         }
     }
-    if !ops.is_empty() {
-        rec.push(("op".into(), Py::Str(ops.into_iter().collect::<Vec<_>>().join("|"))));
+    if let Some(ops) = labels(rows, "op") {
+        rec.push(("op".into(), Py::Str(ops)));
     }
-    if let Some(v) = of("inc").filter(literal).filter_map(|b| val(b, "v")).min_by(|a, b| date_key(a).cmp(&date_key(b)))
-    {
+    if let Some(v) = earliest(rows, "inc").and_then(|b| val(b, "v")) {
         rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
     }
-    if let Some(a) = largest("area") {
+    if let Some(a) = largest(rows, "area", qid) {
         rec.push(("area_km2".into(), Py::Float(py_round(a / 1e6, 2))));
     }
-    if let Some(f) = largest("visitors").map(f64::trunc) {
+    if let Some(f) = largest(rows, "visitors", qid).map(f64::trunc) {
         rec.push(("visitors".into(), Py::Int(if f == 0.0 { "0".into() } else { format!("{f:.0}") })));
     }
     Py::Dict(rec)
@@ -245,11 +213,7 @@ fn wd_parks(
     let mut out: Vec<(String, Py)> = vec![];
     let mut done = 0;
     ask.sparql_batches(endpoint, qids, BATCH, &parks_query, &mut |chunk, rows| {
-        let mut by: HashMap<&str, Vec<&Py>> = HashMap::new();
-        for b in &rows {
-            let item = val(b, "item").context("a binding without its item")?;
-            by.entry(item.rsplit('/').next().unwrap_or(item)).or_default().push(b);
-        }
+        let by = by_item(&rows)?;
         for qid in chunk {
             out.push((qid.clone(), park_record(by.get(qid.as_str()).map_or(&[][..], |r| r), qid)));
         }

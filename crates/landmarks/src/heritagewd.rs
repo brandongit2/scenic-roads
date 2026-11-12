@@ -7,8 +7,10 @@
 //! site's id, `site`), and a site whose record links its Wikidata item (a wikidata.org link) by
 //! that item, in batches: descriptions (en, fr, es, pt, ca), Wikipedia article titles in those
 //! languages, the number of sitelinks (a notability measure), inception, and the labels of its type
-//! (P31), architectural style (P149) and architect (P84). English Wikipedia's short descriptions
-//! are then fetched for the English titles. Queries go to the declared `wikidata` source
+//! (P31), architectural style (P149) and architect (P84). A batch's query asks each fact in a UNION
+//! branch holding the batch's IDs, so its cost is theirs (crate::wikiask::fact_union), each fact
+//! picked the same way whatever order the rows come in (`grouped`). English Wikipedia's short
+//! descriptions are then fetched for the English titles. Queries go to the declared `wikidata` source
 //! (docs/inputs.md §6.9: QLever's endpoint), the short descriptions to the declared `wikipedia`
 //! source, both through crate::wikiask.
 //!
@@ -22,12 +24,12 @@
 //! languages above links its article in another language (`OTHER`).
 //!
 //! Writes data/heritage/wd/items.jsonl (one line per matched site: its index in heritage.json and
-//! the facts) and the pass's answers it adds to: ids.jsonl (per register ID: its result rows, []
-//! for no item), wp.jsonl (per item: its articles), enwiki-shortdesc.json (per title; "" for none),
-//! so a rerun only asks what is new. The files' bytes are as dem/heritagewd.py wrote them
+//! the facts) and the pass's answers it adds to: ids.jsonl (per register ID: a row per item, its
+//! facts as `grouped` puts them together, [] for no item), wp.jsonl (per item: its articles),
+//! enwiki-shortdesc.json (per title; "" for none), so a rerun only asks what is new. The files' bytes are as dem/heritagewd.py wrote them
 //! (pyport::pyjson's `dumps_spaced`).
 
-use crate::wikiask::{int, urlencode, val, Asker};
+use crate::wikiask::{earliest, fact, fact_union, int, labels, least, urlencode, val, Asker};
 use anyhow::{bail, Context, Result};
 use det::Det;
 use jobrt::timings::phase;
@@ -330,46 +332,88 @@ fn osm_link(
     Ok(best.map(|(q, _)| q.to_string()))
 }
 
-/// Its query: the facts of the items with `prop` = each of `ids` (or the items themselves, "QID").
+/// Its query: the facts of the items with `prop` = each of `ids` (or the items themselves,
+/// "QID"), each fact's values as rows (`?id ?item ?k ?v`; a "QID" query's without `?id`), a UNION
+/// of one branch a fact holding the IDs (crate::wikiask::fact_union), put together by `grouped`.
+/// A `prop` query's "item" branch names each ID's items, whatever facts they have.
 fn query(prop: &str, ids: &[String]) -> String {
     let q = prop == "QID";
     let values =
         ids.iter().map(|i| if q { format!("wd:{i}") } else { format!("\"{i}\"") }).collect::<Vec<_>>().join(" ");
-    let bind = if q {
-        format!("VALUES ?item {{ {values} }} BIND(STRAFTER(STR(?item), 'entity/') AS ?id)")
+    let items = if q {
+        format!("VALUES ?item {{ {values} }}")
     } else {
         format!("VALUES ?id {{ {values} }} ?item wdt:{prop} ?id .")
     };
-    let opt = LANGS
-        .iter()
-        .map(|l| {
-            format!(
-                "OPTIONAL {{ ?item schema:description ?dd_{l} FILTER(LANG(?dd_{l}) = \"{l}\") }}\n\
-                 OPTIONAL {{ ?art_{l} schema:about ?item ; schema:isPartOf <https://{l}.wikipedia.org/> ; schema:name ?ww_{l} }}"
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let samples = LANGS
-        .iter()
-        .map(|l| format!("(SAMPLE(?dd_{l}) AS ?d_{l}) (SAMPLE(?ww_{l}) AS ?w_{l})"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "SELECT ?id ?item (SAMPLE(?sl0) AS ?sl) (SAMPLE(?inc0) AS ?inc)
-      {samples}
-      (GROUP_CONCAT(DISTINCT ?instL; SEPARATOR=\"|\") AS ?inst)
-      (GROUP_CONCAT(DISTINCT ?styleL; SEPARATOR=\"|\") AS ?style)
-      (GROUP_CONCAT(DISTINCT ?archL; SEPARATOR=\"|\") AS ?arch) WHERE {{
-      {bind}
-      OPTIONAL {{ ?item wikibase:sitelinks ?sl0 }}
-      OPTIONAL {{ ?item wdt:P571 ?inc0 FILTER(isLiteral(?inc0)) }}
-      {opt}
-      OPTIONAL {{ ?item wdt:P31 ?i . ?i rdfs:label ?instL FILTER(LANG(?instL) = \"en\") }}
-      OPTIONAL {{ ?item wdt:P149 ?s . ?s rdfs:label ?styleL FILTER(LANG(?styleL) = \"en\") }}
-      OPTIONAL {{ ?item wdt:P84 ?a . ?a rdfs:label ?archL FILTER(LANG(?archL) = \"en\") }}
-    }} GROUP BY ?id ?item"
-    )
+    let en = |p: &str| format!(r#"?item wdt:{p} ?o . ?o rdfs:label ?v FILTER(STR(LANG(?v)) = "en")"#);
+    let mut facts: Vec<(String, String)> =
+        vec![("sl".into(), "?item wikibase:sitelinks ?v".into()), ("inc".into(), "?item wdt:P571 ?v".into())];
+    for l in LANGS {
+        facts.push((format!("d_{l}"), format!(r#"?item schema:description ?v FILTER(STR(LANG(?v)) = "{l}")"#)));
+        facts.push((
+            format!("w_{l}"),
+            format!("?art schema:about ?item ; schema:isPartOf <https://{l}.wikipedia.org/> ; schema:name ?v"),
+        ));
+    }
+    facts.extend([("inst", "P31"), ("style", "P149"), ("arch", "P84")].map(|(k, p)| (k.into(), en(p))));
+    if !q {
+        facts.push(("item".into(), String::new()));
+    }
+    fact_union(if q { "?item ?k ?v" } else { "?id ?item ?k ?v" }, &items, facts)
+}
+
+/// The rows of a batch of `query(prop, ids)`, one a site's item as `record` reads them, by ID: an
+/// ID's items in QID order, each's facts picked the same way whatever order the service's rows
+/// come in (sitelinks; the earliest inception; per language, the least description and article,
+/// where the service has two; the type's, style's and architect's English labels, distinct and
+/// sorted, `|` between them). Every ID of a "QID" batch has its row (its item's), whatever
+/// facts it has; another property's an ID no item holds has none.
+fn grouped(prop: &str, ids: &[String], rows: &[Py]) -> Result<HashMap<String, Vec<Py>>> {
+    let q = prop == "QID";
+    let mut by: HashMap<&str, std::collections::BTreeMap<(usize, &str), Vec<&Py>>> = HashMap::new();
+    for b in rows {
+        let item = val(b, "item").context("a row without its item")?;
+        let qid = item.rsplit('/').next().unwrap_or(item);
+        let id = if q { qid } else { val(b, "id").context("a row without its ID")? };
+        by.entry(id).or_default().entry((qid.len(), qid)).or_default().push(b);
+    }
+    let lit = |s: &str| dict(vec![("type", Py::Str("literal".into())), ("value", Py::Str(s.into()))]);
+    let row = |id: &str, qid: &str, rows: &[&Py]| {
+        let item = dict(vec![
+            ("type", Py::Str("uri".into())),
+            ("value", Py::Str(format!("http://www.wikidata.org/entity/{qid}"))),
+        ]);
+        let mut r: Vec<(String, Py)> = vec![("id".into(), lit(id)), ("item".into(), item)];
+        if let Some(b) = fact(rows, "sl").filter(|b| int(b, "v", qid).is_some()).max_by_key(|b| int(b, "v", qid)) {
+            r.push(("sl".into(), b.at("v").clone()));
+        }
+        if let Some(b) = earliest(rows, "inc") {
+            r.push(("inc".into(), b.at("v").clone()));
+        }
+        for l in LANGS {
+            for k in [format!("d_{l}"), format!("w_{l}")] {
+                if let Some(v) = least(rows, &k).map(|b| b.at("v").clone()) {
+                    r.push((k, v));
+                }
+            }
+        }
+        for k in ["inst", "style", "arch"] {
+            if let Some(v) = labels(rows, k) {
+                r.push((k.into(), lit(&v)));
+            }
+        }
+        Py::Dict(r)
+    };
+    let mut out = HashMap::new();
+    for id in ids {
+        let mut got: Vec<Py> =
+            by.get(id.as_str()).into_iter().flatten().map(|((_, qid), rs)| row(id, qid, rs)).collect();
+        if q && got.is_empty() {
+            got.push(row(id, id, &[]));
+        }
+        out.insert(id.clone(), got);
+    }
+    Ok(out)
 }
 
 /// Looks up `todo`'s IDs, each property's (or "QID"'s) `BATCH` a query
@@ -388,18 +432,13 @@ fn look_up(
     let (mut done, mut batches) = (0, 0);
     for (prop, keys) in todo {
         ask.sparql_batches(endpoint, keys, BATCH, &|ks| query(prop, ks), &mut |ks, rows| {
-            let mut got: HashMap<&str, Vec<Py>> = HashMap::new();
-            for b in &rows {
-                if let Some(id) = val(b, "id") {
-                    got.entry(id).or_default().push(b.clone());
-                }
-            }
+            let mut got = grouped(prop, ks, &rows)?;
             let mut lines = String::new();
             for k in ks {
                 let r = dict(vec![
                     ("prop", Py::Str(prop.clone())),
                     ("id", Py::Str(k.clone())),
-                    ("rows", Py::List(got.remove(k.as_str()).unwrap_or_default())),
+                    ("rows", Py::List(got.remove(k).unwrap_or_default())),
                 ]);
                 lines.push_str(&dumps_spaced(&r));
                 lines.push('\n');
@@ -929,6 +968,75 @@ mod tests {
         assert_eq!(lines(&p)[2], r#"Q3 {"qid": "Q3", "n": 0}"#);
         assert!(std::fs::read_to_string(&p).unwrap().ends_with("3}\n{\"qid\": \"Q3\", \"n\": 0}\n"));
         std::fs::remove_file(&p).ok();
+    }
+
+    /// A row of a facts query's answer: ID `id`'s item `q`, its fact `k` (the value `v`, JSON; ""
+    /// for none, the "item" branch's).
+    fn fact_row(id: Option<&str>, q: &str, k: &str, v: &str) -> String {
+        let id = id.map_or(String::new(), |i| format!(r#""id": {{"type": "literal", "value": "{i}"}}, "#));
+        let v = if v.is_empty() { String::new() } else { format!(r#", "v": {v}"#) };
+        format!(
+            r#"{{{id}"item": {{"type": "uri", "value": "http://www.wikidata.org/entity/{q}"}}, "k": {{"type": "literal", "value": "{k}"}}{v}}}"#
+        )
+    }
+
+    /// Task #1151: a batch's rows put together as `record` reads them, the same whatever order
+    /// the service's rows come in (the old query's SAMPLE and GROUP_CONCAT took its order): an
+    /// ID's items in QID order, each fact picked order-free. A "QID" batch's item with no facts
+    /// still has its row (the old query's was all OPTIONALs); another property's ID no item holds
+    /// has none.
+    #[test]
+    fn rows_grouped_the_same_way() {
+        let lit = |s: &str| format!(r#"{{"type": "literal", "value": "{s}"}}"#);
+        let lang = |s: &str, l: &str| format!(r#"{{"type": "literal", "value": "{s}", "xml:lang": "{l}"}}"#);
+        let genid =
+            r#"{"type": "uri", "value": "http://www.wikidata.org/.well-known/genid/9e0e785fb54b8e85182f3338680c3feb"}"#;
+        let rows = [
+            fact_row(Some("PA1"), "Q10", "item", ""),
+            fact_row(Some("PA1"), "Q9", "sl", &lit("3")),
+            fact_row(Some("PA1"), "Q9", "d_fr", &lang("église paroissiale", "fr")),
+            fact_row(Some("PA1"), "Q9", "d_fr", &lang("église", "fr")),
+            fact_row(Some("PA1"), "Q9", "w_en", &lang("St Paul's", "en")),
+            fact_row(Some("PA1"), "Q9", "inc", &lit("1200-01-01T00:00:00Z")),
+            fact_row(Some("PA1"), "Q9", "inc", genid),
+            fact_row(Some("PA1"), "Q9", "inc", &lit("1150-01-01T00:00:00Z")),
+            fact_row(Some("PA1"), "Q9", "inst", &lang("church", "en")),
+            fact_row(Some("PA1"), "Q9", "inst", &lang("building", "en")),
+            fact_row(Some("PA1"), "Q9", "inst", &lang("church", "en")),
+            fact_row(Some("PA1"), "Q9", "item", ""),
+        ];
+        let ids: Vec<String> = ["PA1", "PA2"].map(String::from).into();
+        let want = [
+            r#"PA1 Q9 {"qid": "Q9", "sl": 3, "desc": {"fr": "église"}, "wiki": {"en": "St Paul's"}, "inception": "1150-01-01", "inst": ["building", "church"]}"#,
+            r#"PA1 Q10 {"qid": "Q10", "sl": 0, "desc": {}, "wiki": {}}"#,
+        ];
+        let made = |rows: &[String]| {
+            let parsed: Vec<Py> = rows.iter().map(|r| loads(r).unwrap()).collect();
+            let mut by = grouped("P380", &ids, &parsed).unwrap();
+            assert!(by.remove("PA2").unwrap().is_empty(), "an ID no item holds has no rows");
+            let mut out = vec![];
+            for b in by.remove("PA1").unwrap() {
+                let item = val(&b, "item").unwrap().rsplit('/').next().unwrap().to_string();
+                out.push(format!("{} {item} {}", val(&b, "id").unwrap(), dumps_spaced(&Py::Dict(record(&b).unwrap()))));
+            }
+            out
+        };
+        assert_eq!(made(&rows), want);
+        assert_eq!(made(&rows.iter().rev().cloned().collect::<Vec<_>>()), want, "the same in any order");
+        // A "QID" batch: every item its row.
+        let rows = [fact_row(None, "Q1", "sl", &lit("2"))].map(|r| loads(&r).unwrap());
+        let by = grouped("QID", &["Q1".into(), "Q404".into()], &rows).unwrap();
+        let rec = |q: &str| dumps_spaced(&Py::Dict(record(&by[q][0]).unwrap()));
+        assert_eq!(rec("Q1"), r#"{"qid": "Q1", "sl": 2, "desc": {}, "wiki": {}}"#);
+        assert_eq!(rec("Q404"), r#"{"qid": "Q404", "sl": 0, "desc": {}, "wiki": {}}"#);
+        assert_eq!(val(&by["Q404"][0], "id"), Some("Q404"));
+        let q = query("P380", &ids);
+        assert_eq!(
+            q.matches(r#"VALUES ?id { "PA1" "PA2" } ?item wdt:P380 ?id ."#).count(),
+            2 + 2 * LANGS.len() + 3 + 1
+        );
+        assert!(!q.contains("OPTIONAL") && !q.contains(" LANG("), "{q}");
+        assert_eq!(query("QID", &["Q1".into()]).matches("VALUES ?item { wd:Q1 }").count(), 2 + 2 * LANGS.len() + 3);
     }
 
     /// A run on caches holding every answer asks nothing (the unit tests' process is offline) and

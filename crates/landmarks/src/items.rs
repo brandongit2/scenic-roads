@@ -16,7 +16,13 @@
 //! delete facts-<epoch>.jsonl (or wp-) here: the deletion goes to the NAS with the next run, which
 //! asks about every item again. Older epochs' files go at the end of a run.
 //!
-//! Output: `<out>/facts.json` (QID → record, the items Wikidata knows). A failed query fails the
+//! A batch's query asks each fact in a UNION branch holding the batch's items, so its cost is the
+//! items' (crate::wikiask::fact_union); each fact is picked the same way whatever order the rows
+//! come in (`record`).
+//!
+//! Output: `<out>/facts.json` (QID → record, every item asked: `{"sl": 0}` for one Wikidata has
+//! nothing of or doesn't know; a cached record's facts `record` doesn't make, an older query's,
+//! left out). A failed query fails the
 //! run; one too costly for the service is asked in halves, and an item too costly alone is left
 //! out with a log line (not cached, so asked again by the next run: crate::wikiask). An unknown
 //! value, or one that isn't a number, is no value. The files' bytes are as Python's `json` writes
@@ -24,7 +30,7 @@
 
 use crate::heritagewd::{wikipedias_told, write_atomic};
 use crate::interest::py_round;
-use crate::wikiask::{int, number, val, Asker};
+use crate::wikiask::{by_item, earliest, fact, fact_union, int, labels, largest, least, val, Asker};
 use anyhow::{Context, Result};
 use jobrt::jobs::report;
 use jobrt::timings::phase;
@@ -39,88 +45,92 @@ const CHUNK: usize = 5000;
 const WD_BATCH: usize = 250;
 
 /// The numeric facts: their names and properties.
-const Q_PROPS: [(&str, &str); 6] = [
-    ("height", "P2048"),
-    ("elevation", "P2044"),
-    ("prominence", "P2660"),
-    ("isolation", "P2659"),
-    ("discharge", "P2225"),
-    ("focal", "P2923"),
-];
+const Q_PROPS: [(&str, &str); 5] =
+    [("height", "P2048"), ("prominence", "P2660"), ("isolation", "P2659"), ("discharge", "P2225"), ("focal", "P2923")];
 
-/// The facts query for `chunk`.
+/// The facts query for `chunk`: each fact's values as rows (`?item ?k ?v`), a UNION of one branch a
+/// fact holding the items (crate::wikiask::fact_union), put together by `record`.
 fn facts_query(chunk: &[String]) -> String {
     let values = chunk.iter().map(|q| format!("wd:{q}")).collect::<Vec<_>>().join(" ");
-    let num = Q_PROPS
-        .iter()
-        .map(|(n, p)| {
-            format!("OPTIONAL {{ ?item p:{p} ?st_{n} . ?st_{n} psn:{p} ?nv_{n} . ?nv_{n} wikibase:quantityAmount ?v_{n}0 }}")
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let maxes = Q_PROPS.iter().map(|(n, _)| format!("(MAX(?v_{n}0) AS ?v_{n})")).collect::<Vec<_>>().join(" ");
-    format!(
-        r#"PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>
-        SELECT ?item (SAMPLE(?sl0) AS ?sl) (SAMPLE(?den) AS ?d_en) (SAMPLE(?dloc) AS ?d_loc) (SAMPLE(?wen) AS ?w_en) (SAMPLE(?inc0) AS ?inc)
-          {maxes}
-          (GROUP_CONCAT(DISTINCT ?waterL; SEPARATOR="|") AS ?water) (GROUP_CONCAT(DISTINCT ?rangeL; SEPARATOR="|") AS ?range) WHERE {{
-          VALUES ?item {{ {values} }}
-          OPTIONAL {{ ?item wikibase:sitelinks ?sl0 }}
-          OPTIONAL {{ ?item schema:description ?den FILTER(LANG(?den) = "en") }}
-          OPTIONAL {{ ?item schema:description ?dloc FILTER(LANG(?dloc) IN ("fr", "es", "pt", "ca")) }}
-          OPTIONAL {{ ?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wen }}
-          OPTIONAL {{ ?item wdt:P571 ?inc0 FILTER(isLiteral(?inc0)) }}
-          {num}
-          OPTIONAL {{ ?item wdt:P206 ?w . ?w rdfs:label ?waterL FILTER(LANG(?waterL) = "en") }}
-          OPTIONAL {{ ?item wdt:P4552 ?r . ?r rdfs:label ?rangeL FILTER(LANG(?rangeL) = "en") }}
-        }} GROUP BY ?item"#
-    )
+    let en = |p: &str| format!(r#"?item wdt:{p} ?o . ?o rdfs:label ?v FILTER(STR(LANG(?v)) = "en")"#);
+    let mut facts: Vec<(&str, String)> = vec![
+        ("sl", "?item wikibase:sitelinks ?v".into()),
+        ("d_en", r#"?item schema:description ?v FILTER(STR(LANG(?v)) = "en")"#.into()),
+        ("w_en", "?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?v".into()),
+        ("water", en("P206")),
+        ("range", en("P4552")),
+        ("inc", "?item wdt:P571 ?v".into()),
+    ];
+    facts.extend(
+        Q_PROPS
+            .iter()
+            .map(|(n, p)| (*n, format!("?item p:{p} ?st . ?st psn:{p} ?nv . ?nv wikibase:quantityAmount ?v"))),
+    );
+    fact_union("?item ?k ?v", &format!("VALUES ?item {{ {values} }}"), facts)
 }
 
-/// One binding's record: sitelinks, short descriptions (English, else French, Spanish, Portuguese
-/// or Catalan), English article, water body (P206), mountain range (P4552), inception, and the
-/// numeric facts to 2 decimals.
-fn record(b: &Py, qid: &str) -> Py {
-    let sl = int(b, "sl", qid).unwrap_or(0);
+/// An item's record from its rows (`?k ?v`, `qid`'s), each fact picked the same way whatever
+/// order they come in: sitelinks (0 for none), English short description and article (the least,
+/// where the service has two), water bodies (P206) and mountain ranges (P4552) by their English
+/// labels (distinct and sorted), the earliest inception, and the numeric facts' largest to 2
+/// decimals. (What reads them: web/src/details.ts, crate::marksjob, crate::interest.)
+fn record(rows: &[&Py], qid: &str) -> Py {
+    let sl = fact(rows, "sl").filter_map(|b| int(b, "v", qid)).max().unwrap_or(0);
     let mut rec = vec![("sl".to_string(), Py::Int(sl.to_string()))];
-    for k in ["d_en", "d_loc", "w_en", "water", "range"] {
-        if let Some(v) = val(b, k) {
+    for k in ["d_en", "w_en"] {
+        if let Some(v) = least(rows, k).and_then(|b| val(b, "v")) {
             rec.push((k.into(), Py::Str(v.into())));
         }
     }
-    if let Some(v) = val(b, "inc") {
+    for k in ["water", "range"] {
+        if let Some(v) = labels(rows, k) {
+            rec.push((k.into(), Py::Str(v)));
+        }
+    }
+    if let Some(v) = earliest(rows, "inc").and_then(|b| val(b, "v")) {
         rec.push(("inception".into(), Py::Str(v.chars().take(10).collect())));
     }
     for (n, _) in Q_PROPS {
-        if let Some(x) = number(b, &format!("v_{n}"), qid) {
+        if let Some(x) = largest(rows, n, qid) {
             rec.push((n.into(), Py::Float(py_round(x, 2))));
         }
     }
     Py::Dict(rec)
 }
 
+/// A cached record with `record`'s facts alone: one an older query made holds others (`d_loc`,
+/// another language's description, and `elevation`), which nothing reads.
+fn kept(r: &Py) -> Py {
+    let made = |k: &str| {
+        ["sl", "d_en", "w_en", "water", "range", "inception"].contains(&k) || Q_PROPS.iter().any(|(n, _)| *n == k)
+    };
+    match r {
+        Py::Dict(d) => Py::Dict(d.iter().filter(|(k, _)| made(k)).cloned().collect()),
+        other => other.clone(),
+    }
+}
+
 /// Facts of these items from the Wikidata endpoint, WD_BATCH a query (`progress` told how many
-/// are done after each batch): the items asked (an item too costly a query alone is left out:
-/// crate::wikiask::Asker::sparql_batches), and the facts of those Wikidata knows.
+/// are done after each batch): each item asked and its record (`{"sl": 0}` for one Wikidata has
+/// nothing of, or doesn't know: merged, deleted), in `qids`' order (an item too costly a query
+/// alone is left out: crate::wikiask::Asker::sparql_batches).
 fn facts_of(
     ask: &Asker,
     endpoint: &str,
     qids: &[String],
     progress: &mut dyn FnMut(usize),
-) -> Result<(Vec<String>, HashMap<String, Py>)> {
-    let (mut asked, mut out) = (vec![], HashMap::new());
+) -> Result<Vec<(String, Py)>> {
+    let mut out = vec![];
     ask.sparql_batches(endpoint, qids, WD_BATCH, &facts_query, &mut |chunk, rows| {
-        for b in rows {
-            let item = val(&b, "item").context("a binding without its item")?;
-            let qid = item.rsplit_once('/').context("an item not a URL")?.1;
-            out.insert(qid.to_string(), record(&b, qid));
+        let by = by_item(&rows)?;
+        for q in chunk {
+            out.push((q.clone(), record(by.get(q.as_str()).map_or(&[][..], |r| r), q)));
         }
-        asked.extend_from_slice(chunk);
-        eprintln!("  wikidata {}/{}", asked.len(), qids.len());
-        progress(asked.len());
+        eprintln!("  wikidata {}/{}", out.len(), qids.len());
+        progress(out.len());
         Ok(())
     })?;
-    Ok((asked, out))
+    Ok(out)
 }
 
 /// A JSON-lines cache's records by "qid", in the file's order (a repeated QID keeps its first
@@ -223,16 +233,11 @@ pub fn run(
         // (The job's progress; within a chunk, said again after each of its batches.)
         report(k as u64, todo.len() as u64, what);
         let p = phase("fetching facts from Wikidata");
-        let (asked, got) = facts_of(&ask, wikidata, chunk, &mut |n| report((k + n) as u64, todo.len() as u64, what))?;
+        let got = facts_of(&ask, wikidata, chunk, &mut |n| report((k + n) as u64, todo.len() as u64, what))?;
         drop(p);
-        // Items Wikidata doesn't know (merged, deleted) are remembered as such, not asked again.
         let _p = phase("appending to the caches");
-        let missing = Py::Dict(vec![("sl".into(), Py::Int("0".into())), ("missing".into(), Py::Bool(true))]);
-        let rows: Vec<Py> = asked.iter().map(|q| with_qid(q, got.get(q).unwrap_or(&missing))).collect();
-        append_jsonl(&fpath, &rows)?;
-        for (q, r) in asked.iter().zip(&rows) {
-            facts.insert(q.clone(), without_qid(r));
-        }
+        append_jsonl(&fpath, &got.iter().map(|(q, r)| with_qid(q, r)).collect::<Vec<_>>())?;
+        facts.extend(got);
         note_fetch()?;
     }
 
@@ -256,11 +261,7 @@ pub fn run(
 
     let p = phase("writing the outputs");
     // (An item left out, too costly a query alone, has no facts this run.)
-    let known: Vec<(String, Py)> = facts_q
-        .iter()
-        .filter_map(|q| Some((q.clone(), facts.get(q)?.clone())))
-        .filter(|(_, r)| !r.get("missing").is_some_and(Py::truthy))
-        .collect();
+    let known: Vec<(String, Py)> = facts_q.iter().filter_map(|q| Some((q.clone(), kept(facts.get(q)?)))).collect();
     let file = out.join("facts.json");
     write_atomic(&file, &dumps_spaced(&Py::Dict(known)))?;
     drop(p);
@@ -284,34 +285,57 @@ pub fn run(
 mod tests {
     use super::*;
 
-    fn binding(kv: &[(&str, &str)]) -> Py {
-        Py::Dict(
-            kv.iter().map(|(k, v)| (k.to_string(), Py::Dict(vec![("value".into(), Py::Str(v.to_string()))]))).collect(),
+    /// A row of the facts query's answer: `q`'s fact `k`, its value `v` (of `ty`).
+    fn row(q: &str, k: &str, ty: &str, v: &str) -> String {
+        format!(
+            r#"{{"item": {{"type": "uri", "value": "http://www.wikidata.org/entity/{q}"}}, "k": {{"type": "literal", "value": "{k}"}}, "v": {{"type": "{ty}", "value": "{v}"}}}}"#
         )
     }
 
+    /// Task #1151: each fact picked the same way whatever order the service's rows come in (the
+    /// old query's SAMPLE and GROUP_CONCAT took the service's order); an item with no rows
+    /// (Wikidata has nothing of it) answered `{"sl": 0}`, as the old query's empty row was.
     #[test]
-    fn records_as_python() {
-        let b = binding(&[
-            ("item", "http://www.wikidata.org/entity/Q1"),
-            ("sl", "12"),
-            ("range", "Alps"),
-            ("d_en", "mountain"),
-            ("d_loc", ""),
-            ("inc", "1850-01-01T00:00:00Z"),
-            ("v_focal", "12.345"),
-            ("v_height", "8848.86"),
-            ("v_prominence", "1e3"),
-        ]);
-        assert_eq!(
-            dumps_spaced(&record(&b, "Q1")),
-            r#"{"sl": 12, "d_en": "mountain", "range": "Alps", "inception": "1850-01-01", "height": 8848.86, "prominence": 1000.0, "focal": 12.35}"#
-        );
-        // (No sitelinks: 0. A value that isn't a number, or is unknown, is none.)
-        assert_eq!(dumps_spaced(&record(&binding(&[]), "Q2")), r#"{"sl": 0}"#);
+    fn records_from_the_rows() {
+        use crate::wikiask::tests::{bindings, noting, replay};
         let genid = "http://www.wikidata.org/.well-known/genid/9e0e785fb54b8e85182f3338680c3feb";
-        let odd = binding(&[("v_height", "tall"), ("v_focal", "2"), ("inc", genid), ("v_discharge", genid)]);
-        assert_eq!(dumps_spaced(&record(&odd, "Q3")), r#"{"sl": 0, "focal": 2.0}"#);
+        let rows = [
+            row("Q1", "sl", "literal", "12"),
+            row("Q1", "range", "literal", "Alps"),
+            row("Q1", "range", "literal", "Bernese Alps"),
+            row("Q1", "range", "literal", "Alps"),
+            row("Q1", "d_en", "literal", "mountain in Switzerland"),
+            row("Q1", "d_en", "literal", "mountain"),
+            row("Q1", "inc", "literal", "1850-01-01T00:00:00Z"),
+            row("Q1", "inc", "literal", "-0300-01-01T00:00:00Z"),
+            row("Q1", "focal", "literal", "12.345"),
+            row("Q1", "height", "literal", "8848.86"),
+            row("Q1", "height", "literal", "8000"),
+            row("Q1", "prominence", "literal", "1e3"),
+            row("Q3", "height", "literal", "tall"),
+            row("Q3", "focal", "literal", "2"),
+            row("Q3", "inc", "uri", genid),
+            row("Q3", "discharge", "uri", genid),
+        ];
+        let want = [
+            r#"Q1 {"sl": 12, "d_en": "mountain", "range": "Alps|Bernese Alps", "inception": "-0300-01-0", "height": 8848.86, "prominence": 1000.0, "focal": 12.35}"#,
+            // (No sitelinks: 0. A value that isn't a number, or is unknown, is none.)
+            r#"Q2 {"sl": 0}"#,
+            r#"Q3 {"sl": 0, "focal": 2.0}"#,
+        ];
+        let qids: Vec<String> = ["Q1", "Q2", "Q3"].map(String::from).into();
+        for order in [rows.to_vec(), rows.iter().rev().cloned().collect()] {
+            let (url, _) = replay(vec![(200, None, bindings(&order.join(",")))]);
+            let (ask, _) = noting();
+            let got = facts_of(&ask, &url, &qids, &mut |_| {}).unwrap();
+            assert_eq!(got.iter().map(|(q, r)| format!("{q} {}", dumps_spaced(r))).collect::<Vec<_>>(), want);
+        }
+        let q = facts_query(&qids);
+        assert_eq!(q.matches("VALUES ?item { wd:Q1 wd:Q2 wd:Q3 }").count(), 6 + Q_PROPS.len());
+        assert!(!q.contains("OPTIONAL") && !q.contains(" LANG("), "{q}");
+        // An older query's record: the facts nothing reads left out of facts.json.
+        let old = loads(r#"{"sl": 1, "d_en": "x", "d_loc": "y", "elevation": 3.0, "height": 2.0}"#).unwrap();
+        assert_eq!(dumps_spaced(&kept(&old)), r#"{"sl": 1, "d_en": "x", "height": 2.0}"#);
     }
 
     #[test]

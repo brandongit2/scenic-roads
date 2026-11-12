@@ -1022,11 +1022,24 @@ The old `sources/registers/legacy-seeds` archive is read by nothing:
   `english_at`: a site's UNESCO name or English Wikipedia title, an area's `name_en`). Other English
   is the server's, from the translations as it serves the layers (docs/names.md). A name lacking English
   goes onto the translations' to-do (`landmarks::namestodo` reads the landmarks' `en`).
+- **The chain's Wikidata queries** (landmarks::heritagewd's sites, landmarks::areadetails' parks,
+  and the items job's landmarks::items) ask each fact in a UNION branch holding the batch's items
+  (or register IDs), so a query's cost is its batch's: QLever works an OPTIONAL or a branch out
+  on its own before joining it, and one naming no item read every description or label in Wikidata
+  (9-45 s for a single item). Language filters are written `STR(LANG(…))` (`landmarks::wikiask::fact_union`).
+  The facts are put together in Rust, each picked the same way whatever order the service's rows
+  come in: the least value where it has two (a description, an article), the earliest inception,
+  the largest number, labels distinct and sorted; a register ID's items in QID order.
+  heritagewd asks what details-heritage.jsonl and the layers read: sitelinks, inception,
+  descriptions and articles in en, fr, es, pt and ca, the type's, style's and architect's English
+  labels. items asks what the landmark popups and filters read (web/src/details.ts,
+  landmarks::marksjob, landmarks::interest): sitelinks, the English description and article, water
+  body, mountain range, inception, height, prominence, isolation, discharge, focal height; a cached
+  record's other facts (an older query's `d_loc`, `elevation`) are left out of facts.json.
 - **Park facts:** landmarks::areadetails' cache is the pass's answers (`areas-wikidata.json`,
   `agentcore::answers`, linked into the chain's stand-in root and written through the link after
-  each batch), asking Wikidata only for parks it lacks. A batch's query asks each fact in a UNION
-  branch holding the batch's items, so its cost is the items' (QLever works an OPTIONAL out
-  without them); each fact is picked the same way whatever order the rows come in: the English
+  each batch), asking Wikidata only for parks it lacks. Each fact is picked the same way whatever
+  order the rows come in: the English
   description and article (the least, where the service has two), the earliest inception, the
   largest area and visitors, the operators' English labels sorted. These are what the map's park
   popup reads (`enrichArea` in web/src/details.ts); a record in the answers that holds others (an

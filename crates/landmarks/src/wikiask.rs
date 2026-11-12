@@ -83,6 +83,85 @@ pub fn int(b: &Py, k: &str, what: &str) -> Option<i128> {
     x
 }
 
+/// A query of facts (task #1144): each fact's values as rows (`select`, `?k` the fact's name, `?v`
+/// its value), a UNION of one branch a fact, each starting with `items` (the batch's VALUES and
+/// what binds `?item` from them) before the fact's pattern (`?v` bound from `?item`). QLever works
+/// an OPTIONAL or a UNION's branch out on its own before joining it, and applies a language filter
+/// only after its scan: a fact's OPTIONAL naming no item read every description or label in
+/// Wikidata, 9-45 s whatever the batch's size (more when the service was busy), past its time
+/// limit even for one item. A branch holding the items is joined with them first, so its cost is
+/// theirs. Language filters are written `STR(LANG(…))`: QLever's planner turns `LANG(?x) = "en"`
+/// into a scan of every English literal. The rows' order is the service's: what is made of them
+/// mustn't depend on it.
+pub(crate) fn fact_union<K: std::fmt::Display, P: std::fmt::Display>(
+    select: &str,
+    items: &str,
+    facts: impl IntoIterator<Item = (K, P)>,
+) -> String {
+    let branches: Vec<String> =
+        facts.into_iter().map(|(k, pattern)| format!("{{ {items} {pattern} BIND(\"{k}\" AS ?k) }}")).collect();
+    format!(
+        "PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>\n\
+         SELECT {select} WHERE {{\n  {}\n}}",
+        branches.join("\n  UNION ")
+    )
+}
+
+/// A `fact_union` answer's rows by their item's QID.
+pub(crate) fn by_item(rows: &[Py]) -> Result<std::collections::HashMap<&str, Vec<&Py>>> {
+    let mut by: std::collections::HashMap<&str, Vec<&Py>> = Default::default();
+    for b in rows {
+        let Some(item) = val(b, "item") else { bail!("a binding without its item") };
+        by.entry(item.rsplit('/').next().unwrap_or(item)).or_default().push(b);
+    }
+    Ok(by)
+}
+
+/// The rows of fact `k` (a `fact_union` answer's `?k`).
+pub(crate) fn fact<'a>(rows: &'a [&'a Py], k: &'a str) -> impl Iterator<Item = &'a Py> + 'a {
+    rows.iter().filter(move |b| val(b, "k") == Some(k)).copied()
+}
+
+/// Whether a row's value `?v` is a literal (not an item, nor an unknown value's IRI).
+pub(crate) fn literal(b: &&Py) -> bool {
+    b.at("v").at("type").as_str().is_some_and(|t| t.contains("literal"))
+}
+
+/// The labels of fact `k`'s rows, distinct and sorted, `|` between them (None for none).
+pub(crate) fn labels(rows: &[&Py], k: &str) -> Option<String> {
+    let l: std::collections::BTreeSet<&str> = fact(rows, k).filter_map(|b| val(b, "v")).collect();
+    (!l.is_empty()).then(|| l.into_iter().collect::<Vec<_>>().join("|"))
+}
+
+/// A date's order (Wikidata's `xsd:dateTime`, a year before Christ signed): its year, then the rest.
+pub(crate) fn date_key(d: &str) -> (i64, &str) {
+    let (neg, rest) = d.strip_prefix('-').map_or((false, d), |r| (true, r));
+    let n = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let y: i64 = rest[..n].parse().unwrap_or(0);
+    (if neg { -y } else { y }, &rest[n..])
+}
+
+/// Fact `k`'s earliest literal date's row.
+pub(crate) fn earliest<'a>(rows: &'a [&'a Py], k: &'a str) -> Option<&'a Py> {
+    fact(rows, k).filter(literal).filter(|b| val(b, "v").is_some()).min_by(|a, b| {
+        let (x, y) = (val(a, "v").unwrap_or(""), val(b, "v").unwrap_or(""));
+        date_key(x).cmp(&date_key(y)).then(x.cmp(y))
+    })
+}
+
+/// Fact `k`'s row with the least value.
+pub(crate) fn least<'a>(rows: &'a [&'a Py], k: &'a str) -> Option<&'a Py> {
+    fact(rows, k).filter(|b| val(b, "v").is_some()).min_by_key(|b| val(b, "v"))
+}
+
+/// Fact `k`'s largest literal number (a value that isn't one left out, logged naming `what`).
+pub(crate) fn largest(rows: &[&Py], k: &str, what: &str) -> Option<f64> {
+    fact(rows, k)
+        .filter(literal)
+        .filter_map(|b| number(b, "v", what))
+        .fold(None, |m, x| Some(m.map_or(x, |m: f64| m.max(x))))
+}
+
 /// What a service said to a request (see the module's docs).
 #[derive(Debug, PartialEq)]
 enum Said {
