@@ -272,6 +272,8 @@ update_devtools() {
   elif [[ -n $prev ]]; then
     was=$(pid_of $label || true)
     launchctl kickstart -k $domain/$label
+  else
+    gone $label  # (No version before it to run: stopped, not left failing.)
   fi
   if [[ -n $prev ]]; then
     up $label "$was" 150 answers $port && say "devtools: $prev answers again" || say "devtools: $prev doesn't answer either"
