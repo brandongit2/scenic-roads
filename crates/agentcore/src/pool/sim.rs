@@ -55,13 +55,15 @@
 //! Each Mac runs in a thread of its own, but one at a time: every NAS operation, request and look at
 //! a clock waits for the Mac's turn, and after each the schedule (`World::after`) says whose turn
 //! is next, puts the Mac to sleep there or not, and brings the faults and the owner's changes. Once
-//! the faults stop every Mac stays awake for a while; then the declared lead must lead, alone,
-//! caught up, its records at the one path must name every hand-off owed, and no take-up may have
-//! been made in the run's last ten minutes. Checked throughout: no target under two live leases
+//! the faults stop every Mac stays awake for a while (longer while the lead merges what the faults
+//! left, or the declared lead's take-up waits: `World::goes_on`); then the declared lead must lead,
+//! alone, caught up, its records at the one path must name every hand-off owed, and no take-up may
+//! have been made in the run's last ten minutes. Checked throughout: no target under two live leases
 //! (the jobs running, all Macs', and each coordinator's table), two leads never granting at once,
 //! no lease id granted twice, every hand-off merged once or refused with why (never applied again
 //! once acknowledged), acknowledgements only of what a saved snapshot names, §4's epoch and
-//! records invariants, a job's brief never older than the one its lease was granted from (from the
+//! records invariants (a save landed late over the one path, not following its brief, fenced as a
+//! take-up fences it: `records::follows`), a job's brief never older than the one its lease was granted from (from the
 //! same coordinator), GC removing no name the records it saw name nor one a map server heard within
 //! the cursor TTL serves, and no records naming a name GC removed (but another disk's queue's,
 //! docs/maplog.md §7.2's limit, counted).

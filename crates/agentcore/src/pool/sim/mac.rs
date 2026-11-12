@@ -121,8 +121,13 @@ impl Mac {
     }
 
     pub(super) fn run(mut self) {
-        if self.start().is_err() {
-            return;
+        // (Its process crashed as it started: its next loop restarts it. Its thread had ended,
+        // the turn left with it, and the run hung: the simulator's seed 1224 of every fault.)
+        if let Err(e) = self.start() {
+            if self.sim.over() {
+                return;
+            }
+            self.sim.note(|| format!("mac{}: {e:#}", self.k));
         }
         loop {
             if let Err(e) = self.turn() {
