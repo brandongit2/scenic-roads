@@ -62,9 +62,11 @@ fn scan() -> (Vec<String>, Vec<String>) {
     files(&root.join("crates"), "rs", &mut rs);
     for f in rs {
         let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-        // (The writer itself; and test code in files of its own, `#[cfg(test)] mod sim` or `tests`.)
+        // (The writer itself; and test code in files of its own, `#[cfg(test)] mod sim` (its
+        // modules too: `sim::mac`, the agent's loop it models, makes its jobs' hand-offs) or `tests`.)
         if rel == "crates/buildstore/src/out.rs"
             || rel == "crates/agentcore/src/pool/sim.rs"
+            || rel.starts_with("crates/agentcore/src/pool/sim/")
             || rel.ends_with("/tests.rs")
         {
             continue;
