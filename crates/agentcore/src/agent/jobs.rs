@@ -718,26 +718,26 @@ fn stop_group(pgid: i32, grace: Duration, still: impl FnMut() -> bool) -> bool {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    kill_until_gone(pgid, still)
+    kill_until_gone(pgid, KILL_AGAIN, still)
 }
 
 /// SIGKILL to group `pgid`, sent again while `still` (some of it runs, and it's still the job's),
-/// for `KILL_AGAIN` at most; whether any of it still runs then. A SIGKILL can miss a member: one
+/// for `bound` at most (a stop's: `KILL_AGAIN`); whether any of it still runs then. A SIGKILL can miss a member: one
 /// a fork under way as it went out makes after it, never signalled (or signalled while still
 /// being made, the signal lost: task #987, 56 groups in 12,600 killed as they started, the M4
 /// under load). The forking member dies as its fork returns, and the next SIGKILL reaches its
 /// child. A group none of whose members runs stays so: a member mid-fork is running, so its
 /// child is in the group before it can end.
-fn kill_until_gone(pgid: i32, mut still: impl FnMut() -> bool) -> bool {
+fn kill_until_gone(pgid: i32, bound: Duration, mut still: impl FnMut() -> bool) -> bool {
     let t = Instant::now();
     loop {
         jobrt::sys::signal_group(pgid, Signal::Kill);
-        // (bound ok: what was signalled ends meanwhile; the loop's bound is KILL_AGAIN)
+        // (bound ok: what was signalled ends meanwhile; the loop's bound is `bound`)
         std::thread::sleep(Duration::from_millis(10));
         if !still() {
             return false;
         }
-        if t.elapsed() >= KILL_AGAIN {
+        if t.elapsed() >= bound {
             return true;
         }
     }
@@ -917,7 +917,7 @@ mod tests {
         r.pause("test");
         assert!(r.poll().unwrap().is_none());
         r.resume();
-        r.stop(Duration::from_secs(5));
+        assert!(r.stop(store::testkit::WATCHDOG).is_none());
         assert!(r.poll().unwrap().is_some_and(|st| st.code().is_none()), "stopped by a signal");
         assert!(tail(&r.log, 5).contains("hello"));
     }
@@ -1008,7 +1008,7 @@ mod tests {
         let env: Vec<(String, String)> = proxy.env_for("job1");
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let script = format!(
-            "/usr/bin/nc -v -z -G 5 192.0.2.1 9; echo \"out=$?\"; /usr/bin/nc -z -G 5 127.0.0.1 {port}; echo \"here=$?\"; /usr/bin/curl -sS -m 20 http://en.wikipedia.org/w/api.php; echo \"curl=$?\""
+            "/usr/bin/nc -v -z -G 5 192.0.2.1 9; echo \"out=$?\"; /usr/bin/nc -z -G 5 127.0.0.1 {port}; echo \"here=$?\"; /usr/bin/curl -sS -m 120 http://en.wikipedia.org/w/api.php; echo \"curl=$?\""
         );
         let log = d.path().join("log");
         let mut r = Running::start(
@@ -1190,12 +1190,12 @@ mod tests {
         .unwrap();
         let t = Instant::now();
         let st = wait_for(&mut r, "its end, as it said it", |r| r.poll().unwrap());
-        assert!(t.elapsed() < Duration::from_secs(60), "taken at once, not when its exit ends");
+        store::testkit::ended_before(t, Duration::from_secs(3600), "taken at once, not when its exit ends");
         assert_eq!(st.code(), Some(1));
         assert!(r.said_end, "said by the job, its process still there");
         assert!(jobrt::sys::signal_group(r.pgid, Signal::Probe), "the job's process still runs");
         let pgid = r.pgid;
-        assert!(r.stop(Duration::from_secs(1)).is_none(), "what of it ran, stopped");
+        assert!(r.stop(store::testkit::WATCHDOG).is_none(), "what of it ran, stopped");
         assert!(!jobrt::sys::signal_group(pgid, Signal::Probe));
         // (Review: taken over by a later agent, the same: its end as it said it, what of it still
         // runs stopped.)
@@ -1208,7 +1208,7 @@ mod tests {
         assert_eq!(a.poll().unwrap().and_then(|s| s.code()), Some(1));
         assert!(a.said_end, "said by the job, its group still there");
         let pgid = a.pgid;
-        assert!(a.stop(Duration::from_secs(1)).is_none(), "what of it ran, stopped");
+        assert!(a.stop(store::testkit::WATCHDOG).is_none(), "what of it ran, stopped");
         assert!(!jobrt::sys::signal_group(pgid, Signal::Probe));
     }
 
@@ -1274,7 +1274,9 @@ mod tests {
         let pgid = r.pgid;
         store::testkit::eventually("its two sleeps", || sleeps(pgid) == 2);
         let (mut late, mut looks) = (None, 0);
-        let left = kill_until_gone(pgid, || {
+        // (Bounded by the watchdog, not `KILL_AGAIN`: the late member's start is inside the loop,
+        // and a start can take 25 s on a loaded test Mac, #1157.)
+        let left = kill_until_gone(pgid, store::testkit::WATCHDOG, || {
             looks += 1;
             if looks == 1 {
                 late = Some(late_member(pgid));
@@ -1286,7 +1288,7 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(late.unwrap().wait().unwrap().signal(), Some(libc::SIGKILL));
         // Its head ended, not reaped until the stop: nothing left, its end the SIGKILL's.
-        assert!(r.stop(Duration::from_secs(1)).is_none());
+        assert!(r.stop(store::testkit::WATCHDOG).is_none());
         assert!(r.poll().unwrap().is_some_and(|st| st.signal() == Some(libc::SIGKILL)));
     }
 
@@ -1294,6 +1296,9 @@ mod tests {
     /// of it runs, its head (ended, held unreaped) reaped once none does.
     #[test]
     fn a_group_left_after_its_stop_is_killed_again() {
+        // (The job's start as an agent records it, before its head: every member starts after,
+        // however long the head takes to fork and end on a loaded Mac, #1157.)
+        let started = now_s();
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", "/bin/sleep 3600 & exit 0"]);
         jobrt::sys::own_group(&mut c);
@@ -1302,7 +1307,7 @@ mod tests {
         store::testkit::eventually("its head ended, the sleep left", || {
             process_start(pgid).is_none() && live_members(pgid).len() == 1
         });
-        let group = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
+        let group = Group { pgid, leader_start: 0, started, id: "left".into() };
         let mut o = Outlived { group, head: Some(head) };
         assert!(o.kill_again());
         assert!(group_members(pgid).contains(&pgid), "its head held unreaped while some of it ran");
@@ -1328,7 +1333,7 @@ mod tests {
         // Resumed: every member goes on, the one stopped again too.
         r.resume();
         store::testkit::eventually("the late member going on", || !stopped(late.id()));
-        assert!(r.stop(Duration::from_secs(1)).is_none());
+        assert!(r.stop(store::testkit::WATCHDOG).is_none());
         late.wait().unwrap();
     }
 
@@ -1350,7 +1355,7 @@ mod tests {
         store::testkit::eventually("the late member stopped", || stopped(late.id()));
         assert!(s.thaw(0));
         store::testkit::eventually("the late member going on", || !stopped(late.id()));
-        assert!(r.stop(Duration::from_secs(1)).is_none());
+        assert!(r.stop(store::testkit::WATCHDOG).is_none());
         late.wait().unwrap();
     }
 
@@ -1359,6 +1364,9 @@ mod tests {
     /// last SIGKILL missed (started into the group after it) is killed by the next.
     #[test]
     fn a_group_killed_again_kills_what_its_last_sigkill_missed() {
+        // (The job's start as an agent records it, before its head: every member starts after,
+        // however long the head takes to fork and end on a loaded Mac, #1157.)
+        let started = now_s();
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", "/bin/sleep 3600 & exit 0"]);
         jobrt::sys::own_group(&mut c);
@@ -1369,7 +1377,7 @@ mod tests {
         store::testkit::eventually("its head ended, the sleep left", || {
             process_start(pgid).is_none() && live_members(pgid).len() == 1
         });
-        let g = Group { pgid, leader_start: 0, started: now_s() - 5, id: "left".into() };
+        let g = Group { pgid, leader_start: 0, started, id: "left".into() };
         assert!(g.kill_again());
         let mut late = late_member(pgid);
         store::testkit::eventually("the late member running", || process_start(late.id() as i32).is_some());

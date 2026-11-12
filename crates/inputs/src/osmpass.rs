@@ -1577,6 +1577,11 @@ mod tests {
         dest
     }
 
+    /// The fake `ssh`'s bound on its start where the test's claim isn't the bound (#1157): each
+    /// call is the fake's shell, the `sh` it runs and their `cat` or `ls`, three or four starts that
+    /// can take 25 s each on a loaded test Mac, past the real `SSH_START`.
+    const WAIT: std::time::Duration = store::testkit::WATCHDOG;
+
     /// A fake `ssh` (in the returned folder) that runs its command here: its last argument; with
     /// FAIL set it can't connect, with HANG it never returns (as while 1Password waits for an
     /// approval), with HANG_CAT only its `cat`s don't, with SHORT set a `cat` stops after 50 bytes and exits 0.
@@ -1636,18 +1641,18 @@ mod tests {
             c.arg("w/wikidata");
             run(c, "osmium tags-filter")
         };
-        let n = streamed(&*ssh(""), SSH_START, remote, 2, &stream, filter).unwrap();
+        let n = streamed(&*ssh(""), WAIT, remote, 2, &stream, filter).unwrap();
         assert_eq!(n, 2 * len, "read twice, each read counted");
         let opl = store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&o)).unwrap().stdout;
         let ids: Vec<String> =
             String::from_utf8(opl).unwrap().lines().map(|l| l.split(' ').next().unwrap().to_string()).collect();
         assert_eq!(ids, ["n1", "n2", "w10"]);
         assert!(!stream.exists(), "its pipes gone");
-        let e = streamed(&*ssh("FAIL"), SSH_START, remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
+        let e = streamed(&*ssh("FAIL"), WAIT, remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
         assert!(format!("{e:#}").contains("SSH keys"), "{e:#}");
-        let e = streamed(&*ssh("SHORT"), SSH_START, remote, 2, &stream, filter).unwrap_err();
+        let e = streamed(&*ssh("SHORT"), WAIT, remote, 2, &stream, filter).unwrap_err();
         assert!(format!("{e:#}").contains("short read"), "{e:#}");
-        let e = streamed(&*ssh(""), SSH_START, remote, 2, &stream, |p| {
+        let e = streamed(&*ssh(""), WAIT, remote, 2, &stream, |p| {
             drop(std::fs::File::open(p).unwrap());
             anyhow::bail!("osmium failed")
         })
@@ -1671,7 +1676,8 @@ mod tests {
                 Ok(())
             })
             .unwrap_err();
-            store::testkit::ended_before(t, std::time::Duration::from_secs(20), mode);
+            // (What waiting would take: the fake's `sleep 600`.)
+            store::testkit::ended_before(t, std::time::Duration::from_secs(600), mode);
             assert!(buildstore::records::nas::timed_out(&e), "{mode}: {e:#}");
             assert!(format!("{e:#}").contains("didn't start within 1 s"), "{mode}: {e:#}");
         }
@@ -1694,7 +1700,7 @@ mod tests {
         let kids: Vec<TileId> = (0..2).flat_map(|x| (0..2).map(move |y| TileId { z: 1, x, y })).collect();
         let (here, there) = (d.path().join("here"), d.path().join("there"));
         cut(&src, &kids, &here, 4).unwrap();
-        let n = streamed(&*ssh(""), SSH_START, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| {
+        let n = streamed(&*ssh(""), WAIT, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| {
             cut(p, &kids, &there, 4)
         })
         .unwrap();

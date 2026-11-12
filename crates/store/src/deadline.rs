@@ -662,8 +662,8 @@ mod tests {
     }
 
     /// Task #1155: a real stop (SIGSTOP, then SIGCONT, as the guards freeze a job) isn't counted
-    /// toward a call's deadline: a call held in the kernel (a FIFO's open), its process stopped for
-    /// 3 s of its 3 s deadline by another process, is given up only after the stop and its
+    /// toward a call's deadline: a call held in the kernel (a FIFO's open), its process stopped in
+    /// the call and let go on by another 3 s or more later, is given up only after the stop and its
     /// deadline's run (the look the stop came in counted as asked at most).
     #[test]
     fn a_stop_isnt_counted_toward_a_deadline() {
@@ -686,28 +686,31 @@ mod tests {
             return;
         }
         let d = tempfile::tempdir().unwrap();
-        let (r, go) = (fifo(d.path(), "r"), fifo(d.path(), "go"));
+        let r = fifo(d.path(), "r");
         let _cap = cap_for_test(CAP_DEFAULT);
-        // (The stopper, once it reads a line: only its shell's builtins until the stop, so no
-        // program it starts holds it back: a shell's start at nice 20, as tests run, took 25 s on
-        // the loaded M4.)
-        let script = r#"read a < "$1"; kill -STOP "$2"; sleep 3; kill -CONT "$2""#;
+        // (The stop is this process's own, made inside the call, so it always falls in it; the
+        // stopper only ends it, 3 s or more after its line, which waits in its stdin's pipe until
+        // its shell reads it: a shell's start at nice 20, as tests run, took 25 s on the loaded M4
+        // (#1157), and a late stopper only makes the stop longer.)
+        let script = r#"read a; sleep 3; kill -CONT "$1""#;
         let mut cmd = crate::spawn::command("/bin/sh");
-        cmd.args(["-c", script, "sh"]).arg(&go).arg(std::process::id().to_string());
+        cmd.args(["-c", script, "sh"]).arg(std::process::id().to_string()).stdin(std::process::Stdio::piped());
         let mut child = crate::spawn::spawn(&mut cmd).unwrap();
-        // (Opened once the stopper waits for its line; the line written 0.3 s into the call.)
-        let mut w = std::fs::OpenOptions::new().write(true).open(&go).unwrap();
-        let line = std::thread::spawn(move || {
-            std::thread::sleep(ms(300));
-            std::io::Write::write_all(&mut w, b"go\n").unwrap();
-        });
+        let mut w = child.stdin.take().unwrap();
         let deadline = Duration::from_secs(3);
         let conts = crate::sys::continued();
         let rr = r.clone();
         let t = Instant::now();
-        let e = call(&r.display(), &"read", deadline, move || std::fs::read(&rr)).unwrap_err();
+        let e = call(&r.display(), &"read", deadline, move || {
+            // (The line, then the stop: every thread of the process, the deadline's looks too.)
+            std::io::Write::write_all(&mut w, b"go\n").unwrap();
+            drop(w);
+            // SAFETY: a plain signal to this process, alone in it (above).
+            unsafe { libc::kill(std::process::id() as libc::pid_t, libc::SIGSTOP) };
+            std::fs::read(&rr)
+        })
+        .unwrap_err();
         let took = t.elapsed();
-        line.join().unwrap();
         assert!(child.wait().unwrap().success());
         assert!(past_deadline(&e), "{e}");
         assert!(crate::sys::continued() > conts, "the stop came during the call");
