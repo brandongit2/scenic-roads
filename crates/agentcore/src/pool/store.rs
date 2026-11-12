@@ -301,6 +301,11 @@ impl Store {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).state.clone()
     }
 
+    /// Document `key` with every change submitted (None: not held).
+    pub fn doc(&self, key: &str) -> Option<serde_json::Value> {
+        self.m.lock().unwrap_or_else(|e| e.into_inner()).state.docs.get(key).cloned()
+    }
+
     /// Why the last write failed, while it did (the status's: a lead's disk that can't take its
     /// store is broken).
     pub fn failing(&self) -> Option<String> {

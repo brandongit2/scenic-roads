@@ -10,7 +10,8 @@
 //!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once), and the
 //!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`), the members' messages to
 //!   the lead (crate::coord::inbox: `inbox/<member>`), and the answers' lease and the members'
-//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`);
+//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`), and the NAS
+//!   budget's probes (`nas-probes`, `PROBES`);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -44,6 +45,11 @@ pub struct Beat {
     pub beat: crate::agent::pool::Heartbeat,
     pub at: u64,
 }
+
+/// The NAS budget's probes, the lead's prober's (crate::coord's `nas_prober`): the last day's, so
+/// a restart keeps the day's best, and a lead taking another's backup up too
+/// (crate::agent::pool's `load_backup`).
+pub const PROBES: &str = "nas-probes";
 
 /// A member's `Heard` (and its `Beat`) is saved again once its time moved this far (its beats come every 10 s; the
 /// 12-h rule needs no finer).
@@ -222,6 +228,11 @@ impl Kept {
     /// `settings`).
     pub fn put(&self, key: &str, v: Value) {
         self.submit([(key.to_string(), v)].into(), Vec::new());
+    }
+
+    /// The NAS budget's probes the store holds (`PROBES`; none without a store or before any).
+    pub fn probes(&self) -> Option<jobrt::budget::nas::Probes> {
+        serde_json::from_value(self.store.get()?.doc(PROBES)?).ok()
     }
 
     /// Document `key` deleted (crate::coord::budgets's answers' lease given up, a member's progress

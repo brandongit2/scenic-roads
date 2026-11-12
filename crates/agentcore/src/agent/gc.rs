@@ -41,7 +41,7 @@ pub const REMOVING: &str = "/gc/removing";
 
 /// How many names a chunk takes (the design's, docs/maplog.md §7.3). What bounds it: a chunk's
 /// names are refused to every hand-off while they're being removed, and at the share's measured
-/// deletion rates (`state/pool/nas-probes.json`: 8.4 a second at the median, 2.5 at the tenth
+/// deletion rates (the NAS budget's probes, 6 and 7 Nov: 8.4 a second at the median, 2.5 at the tenth
 /// percentile) 200 are some 24 s of deletions, 80 s at the slow end; its two asks of the lead and
 /// one `fsync` there are noise beside 200 SMB calls; and 200 names make a request of some 15 kB.
 /// A yield doesn't wait for a chunk's end (the job looks at each name), so it bounds nothing there.

@@ -1747,6 +1747,10 @@ pub fn load_backup(c: &crate::coord::Coordinator, b: &crate::pool::store::Snapsh
         let speaks = vec![crate::coord::held::SPEAKS.to_string()];
         st.members.entry(b.member.clone()).or_insert(crate::coord::kept::Heard { speaks, at: b.at });
     }
+    // (The NAS budget's probes too: the day's best, merged in by the prober as it saves next.)
+    if let Some(p) = b.docs.get(crate::coord::kept::PROBES) {
+        c.take_probes(p);
+    }
     c.load_pool_state(&st)
 }
 

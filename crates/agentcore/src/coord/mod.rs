@@ -501,8 +501,8 @@ pub struct Shared {
     /// The gate on the NAS's own disk load (jobrt::budget::nas::Loop): held, `nas` and `nas_own`
     /// say so (`Limits::held`); read by the lead's waiting lines (`Coordinator::nas_held`).
     pub nas_loop: jobrt::budget::nas::Loop,
-    /// The probes the lead's prober keeps (`nas_prober`'s, as read from and written to
-    /// jobrt::budget::nas::PROBES_FILE), and the disks' busy shares it read last (%): the status's.
+    /// The probes the lead's prober keeps (`nas_prober`'s, as read from and written to its store,
+    /// `kept::PROBES`), and the disks' busy shares it read last (%): the status's.
     pub nas_probes: Vec<jobrt::budget::nas::Probe>,
     pub nas_disks: Vec<f64>,
     /// The NAS's mount as the prober last read it (`NasMount`), each `MOUNT_EVERY_S`.
@@ -1264,7 +1264,7 @@ pub struct WaitingJob {
 }
 
 /// The NAS as the lead sees it, for the status (`Coordinator::nas_view`): the day's probes kept
-/// (jobrt::budget::nas::PROBES_FILE's), the limits they give the lead's own jobs, the load gate's
+/// (its store's, `kept::PROBES`), the limits they give the lead's own jobs, the load gate's
 /// reading (the busiest disk smoothed, its target, held) and the disks' last busy shares, and the
 /// pool's NAS traffic, the fresh members' summed.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -3309,6 +3309,18 @@ impl Coordinator {
         held::away(&self.shared.lock().unwrap())
     }
 
+    /// Takes the NAS budget's probes of another lead's backup (`probes`, `kept::PROBES`'s) into its
+    /// store, those it holds kept: its prober merges them in as it saves next.
+    pub fn take_probes(&self, probes: &serde_json::Value) {
+        let Ok(theirs) = serde_json::from_value::<jobrt::budget::nas::Probes>(probes.clone()) else { return };
+        let keep = self.shared.lock().unwrap().keep.clone();
+        let mut all = keep.probes().unwrap_or_default();
+        all.merge(&theirs, unix_now());
+        if let Ok(v) = serde_json::to_value(&all) {
+            keep.put(kept::PROBES, v);
+        }
+    }
+
     /// Takes up `p`, the state of the lead before it (another Mac's, from its store's backup: the
     /// owner moved the lead here): its leases over these, its costs and failures added, its pause if
     /// it's the later.
@@ -3592,8 +3604,8 @@ fn app_when(v: &str) -> String {
 /// is probed every `EVERY_S` (in a folder of this process's, removed after) and the limits set to
 /// the best of the last day's probes, held shut while the NAS's own disk load read each round is
 /// over the owner's target (nas::Loop); off, the limits are let go. A probe that fails leaves them.
-/// The probes are kept on the NAS (`nas::PROBES_FILE`) and read once it's known (the day's best
-/// outlive a restart and a change of lead).
+/// The probes are kept in its store (`kept::PROBES`) and read once it's open (the day's best
+/// outlive a restart, and a change of lead through the store's backup).
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
     root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
@@ -3623,17 +3635,11 @@ fn nas_prober(
                         eprintln!("coordinator: removed {n} probe folders of this host's a stopped process left");
                     }
                 }
-                if !loaded {
-                    match nas::Probes::load(&r.join(nas::PROBES_FILE), unix_now()) {
-                        Ok(kept) => {
-                            loaded = true;
-                            for p in kept.0 {
-                                probes.add(p);
-                            }
-                            probes.0.sort_by_key(|p| p.at);
-                        }
-                        Err(e) => eprintln!("coordinator: the kept NAS probes can't be read now ({e}): trying again"),
-                    }
+                // (The kept probes, once the store is open: till then, none saved over them.)
+                let keep = shared.lock().unwrap_or_else(|e| e.into_inner()).keep.clone();
+                if !loaded && keep.store().is_some() {
+                    loaded = true;
+                    probes.merge(&keep.probes().unwrap_or_default(), unix_now());
                 }
                 // (Probed whatever the switch says: the lead's own jobs are always held to the
                 // budget, `nas_own`; the members' only while it's on, `nas`.)
@@ -3654,10 +3660,13 @@ fn nas_prober(
                                 p.creates_s
                             );
                             probes.add(p);
-                            // (Not before the kept ones are read: never over them.)
-                            let saved = if loaded { probes.save(&r.join(nas::PROBES_FILE)) } else { Ok(()) };
-                            if let Err(e) = saved {
-                                eprintln!("coordinator: keeping the NAS probes: {e:#}");
+                            // (Not before the kept ones are read: never over them. With what the
+                            // store holds now: a backup taken up meanwhile, agent::pool's `load_backup`.)
+                            if loaded {
+                                probes.merge(&keep.probes().unwrap_or_default(), unix_now());
+                                if let Ok(v) = serde_json::to_value(&probes) {
+                                    keep.put(kept::PROBES, v);
+                                }
                             }
                             failed = Some(false);
                         }
@@ -6748,6 +6757,31 @@ mod tests {
             assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
         }
         assert_eq!(next.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
+    }
+
+    /// Task #1119: the NAS budget's probes are kept in the lead's store, not on the NAS: a lead
+    /// taking another's backup up has its probes beside its own, the day-old let go.
+    #[test]
+    fn the_nas_probes_ride_the_store_to_the_next_lead() {
+        use jobrt::budget::nas::{Probe, Probes, KEEP_S};
+        let (_d, c, _w) = start();
+        let now = unix_now();
+        let theirs = Probes(vec![
+            Probe { at: now - KEEP_S - 10, bytes_s: 99e6, ..Default::default() },
+            Probe { at: now - 60, bytes_s: 86e6, ..Default::default() },
+        ]);
+        let keep = c.shared.lock().unwrap().keep.clone();
+        keep.put(kept::PROBES, serde_json::to_value(&theirs).unwrap());
+        let store = keep.store().cloned().unwrap();
+        let b = crate::pool::store::Snapshot { member: "m1".into(), at: wall_now(), ..store.snapshot() };
+        let (_d2, next, _w2) = start();
+        let mine = Probes(vec![Probe { at: now - 30, bytes_s: 50e6, ..Default::default() }]);
+        let nk = next.shared.lock().unwrap().keep.clone();
+        nk.put(kept::PROBES, serde_json::to_value(&mine).unwrap());
+        crate::agent::pool::load_backup(&next, &b).unwrap();
+        let got = nk.probes().unwrap();
+        assert_eq!(got.0.iter().map(|p| p.bytes_s).collect::<Vec<_>>(), [86e6, 50e6], "both kept, the day-old let go");
+        assert_eq!(got.limits(None).unwrap().bytes_s, 86e6, "the day's best");
     }
 
     /// Task #1038 (the pool's simulator, seed 10054): the lead before, a member now, holds its own

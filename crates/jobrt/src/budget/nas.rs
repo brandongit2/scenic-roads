@@ -20,10 +20,10 @@
 //!   says, and takes the best of the last `KEEP_S`'s probes (`Probes`): a probe run while the build
 //!   loads the NAS measures what's left, so the best is the nearest to the whole. Probes taken
 //!   under load are kept too (they only ever read low, and the best of the day passes over them;
-//!   dropped, a lead started on a busy NAS would have no limits at all). The probes are kept on
-//!   the NAS (`PROBES_FILE`, under the project folder, written by the lead's prober alone) and read
-//!   once the NAS is known: a restart, or a new lead on another Mac, keeps the day's best (task
-//!   #603: a restart under load had cut the limits from 86 MB/s to 66.5).
+//!   dropped, a lead started on a busy NAS would have no limits at all). The probes are kept in
+//!   the lead's store (agentcore::coord::kept's `PROBES`, so in its backup too) and read once it's
+//!   open: a restart, or a new lead on another Mac taking the backup up, keeps the day's best
+//!   (task #603: a restart under load had cut the limits from 86 MB/s to 66.5).
 //! - **The gate on the NAS's own load** (`Loop`, task #534): every 10 s the coordinator reads the
 //!   NAS's own disks' busy shares (crate::budget::snmp); while the busiest, smoothed, is over the
 //!   owner's target (`Target`, `scenic nas-target`, by default `DEFAULT_TARGET_PCT`), whatever
@@ -291,10 +291,6 @@ impl Limits {
 /// leased jobs none of which weighs the whole (`Limits::fits_own_job`).
 pub const OWN_AGE: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Where the lead keeps its probes, under the project folder (`Probes::load`, `Probes::save`):
-/// one small file written whole every `EVERY_S`, by the lead alone.
-pub const PROBES_FILE: &str = "state/pool/nas-probes.json";
-
 /// The probes kept (the last `KEEP_S`'s), and the limits they give: the best of each.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Probes(pub Vec<Probe>);
@@ -305,22 +301,16 @@ impl Probes {
         self.0.push(p);
     }
 
-    /// The probes kept at `path` within `KEEP_S` of `now` (unix s): none when missing or not
-    /// parsed; an error when it can't be read now (a stale SMB handle, busy: try again later, and
-    /// never save over what may be there).
-    pub fn load(path: &store::nasfs::NasPath, now: u64) -> std::io::Result<Probes> {
-        let mut p: Probes = match path.read() {
-            Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Probes::default(),
-            Err(e) => return Err(e),
-        };
-        p.0.retain(|q| q.at + KEEP_S > now);
-        Ok(p)
-    }
-
-    /// Keeps the probes at `path`, whole or not at all.
-    pub fn save(&self, path: &store::nasfs::NasPath) -> anyhow::Result<()> {
-        path.write_whole(serde_json::to_vec(self)?)
+    /// `kept`'s probes (another copy's: the store's, a backup's) added to these, those of `KEEP_S`
+    /// before `now` let go, oldest first.
+    pub fn merge(&mut self, kept: &Probes, now: u64) {
+        for p in &kept.0 {
+            if !self.0.contains(p) {
+                self.0.push(*p);
+            }
+        }
+        self.0.retain(|q| q.at + KEEP_S > now);
+        self.0.sort_by_key(|p| p.at);
     }
 
     /// The limits (None: nothing probed yet).
@@ -636,43 +626,21 @@ mod tests {
         assert_eq!(p.limits(None).unwrap().bytes_s, 50e6, "a day old: let go");
     }
 
-    /// Task #603: the probes survive a restart: kept, read again within the day, the day-old let go.
+    /// Task #603: the probes survive a restart (the store's copy merged in), the day-old let go.
     #[test]
     fn the_probes_survive_a_restart() {
-        let d = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(d.path().join("state/pool")).unwrap();
-        let f = d.path().join(PROBES_FILE);
-        assert_eq!(
-            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap(),
-            Probes::default(),
-            "none kept: none"
-        );
+        let mut kept = Probes::default();
+        kept.add(Probe { at: 1000, bytes_s: 86e6, creates_s: 30.0, ..Default::default() });
+        kept.add(Probe { at: 4000, bytes_s: 66.5e6, creates_s: 42.3, ..Default::default() });
         let mut p = Probes::default();
-        p.add(Probe { at: 1000, bytes_s: 86e6, creates_s: 30.0, ..Default::default() });
-        p.add(Probe { at: 4000, bytes_s: 66.5e6, creates_s: 42.3, ..Default::default() });
-        p.save(&store::nasfs::NasPath::local_for_test(&f)).unwrap();
-        assert_eq!(Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap(), p);
-        assert_eq!(
-            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap().limits(None).unwrap().bytes_s,
-            86e6,
-            "the day's best kept"
-        );
-        assert_eq!(
-            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 1000 + KEEP_S).unwrap().0,
-            [p.0[1]],
-            "a day old: let go"
-        );
-        std::fs::write(&f, "not json").unwrap();
-        assert_eq!(
-            Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).unwrap(),
-            Probes::default(),
-            "not parsed: none"
-        );
-        // (Task #603 review: a read that fails otherwise (here a folder in its place) is an error,
-        // not "none": the prober tries again and saves nothing until a load succeeds.)
-        std::fs::remove_file(&f).unwrap();
-        std::fs::create_dir(&f).unwrap();
-        assert!(Probes::load(&store::nasfs::NasPath::local_for_test(&f), 5000).is_err(), "can't be read now: an error");
+        p.add(Probe { at: 4500, bytes_s: 60e6, creates_s: 40.0, ..Default::default() });
+        p.merge(&kept, 5000);
+        assert_eq!(p.0.iter().map(|q| q.at).collect::<Vec<_>>(), [1000, 4000, 4500], "oldest first");
+        assert_eq!(p.limits(None).unwrap().bytes_s, 86e6, "the day's best kept");
+        p.merge(&kept, 5000);
+        assert_eq!(p.0.len(), 3, "merged again: nothing doubled");
+        p.merge(&Probes::default(), 1000 + KEEP_S);
+        assert_eq!(p.0.iter().map(|q| q.at).collect::<Vec<_>>(), [4000, 4500], "a day old: let go");
     }
 
     /// A probe measures and leaves nothing behind.
