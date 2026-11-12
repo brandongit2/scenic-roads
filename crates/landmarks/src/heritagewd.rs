@@ -335,7 +335,8 @@ fn osm_link(
 /// Its query: the facts of the items with `prop` = each of `ids` (or the items themselves,
 /// "QID"), each fact's values as rows (`?id ?item ?k ?v`; a "QID" query's without `?id`), a UNION
 /// of one branch a fact holding the IDs (crate::wikiask::fact_union), put together by `grouped`.
-/// A `prop` query's "item" branch names each ID's items, whatever facts they have.
+/// Its "item" branch names each ID's items, whatever facts they have (a "QID" query's, every item
+/// it asks, as the old query's OPTIONALs did).
 fn query(prop: &str, ids: &[String]) -> String {
     let q = prop == "QID";
     let values =
@@ -356,9 +357,7 @@ fn query(prop: &str, ids: &[String]) -> String {
         ));
     }
     facts.extend([("inst", "P31"), ("style", "P149"), ("arch", "P84")].map(|(k, p)| (k.into(), en(p))));
-    if !q {
-        facts.push(("item".into(), String::new()));
-    }
+    facts.push(("item".into(), String::new()));
     fact_union(if q { "?item ?k ?v" } else { "?id ?item ?k ?v" }, &items, facts)
 }
 
@@ -366,8 +365,7 @@ fn query(prop: &str, ids: &[String]) -> String {
 /// ID's items in QID order, each's facts picked the same way whatever order the service's rows
 /// come in (sitelinks; the earliest inception; per language, the least description and article,
 /// where the service has two; the type's, style's and architect's English labels, distinct and
-/// sorted, `|` between them). Every ID of a "QID" batch has its row (its item's), whatever
-/// facts it has; another property's an ID no item holds has none.
+/// sorted, `|` between them). An ID no item holds has none.
 fn grouped(prop: &str, ids: &[String], rows: &[Py]) -> Result<HashMap<String, Vec<Py>>> {
     let q = prop == "QID";
     let mut by: HashMap<&str, std::collections::BTreeMap<(usize, &str), Vec<&Py>>> = HashMap::new();
@@ -379,11 +377,7 @@ fn grouped(prop: &str, ids: &[String], rows: &[Py]) -> Result<HashMap<String, Ve
     }
     let lit = |s: &str| dict(vec![("type", Py::Str("literal".into())), ("value", Py::Str(s.into()))]);
     let row = |id: &str, qid: &str, rows: &[&Py]| {
-        let item = dict(vec![
-            ("type", Py::Str("uri".into())),
-            ("value", Py::Str(format!("http://www.wikidata.org/entity/{qid}"))),
-        ]);
-        let mut r: Vec<(String, Py)> = vec![("id".into(), lit(id)), ("item".into(), item)];
+        let mut r: Vec<(String, Py)> = vec![("id".into(), lit(id)), ("item".into(), rows[0].at("item").clone())];
         if let Some(b) = fact(rows, "sl").filter(|b| int(b, "v", qid).is_some()).max_by_key(|b| int(b, "v", qid)) {
             r.push(("sl".into(), b.at("v").clone()));
         }
@@ -406,11 +400,7 @@ fn grouped(prop: &str, ids: &[String], rows: &[Py]) -> Result<HashMap<String, Ve
     };
     let mut out = HashMap::new();
     for id in ids {
-        let mut got: Vec<Py> =
-            by.get(id.as_str()).into_iter().flatten().map(|((_, qid), rs)| row(id, qid, rs)).collect();
-        if q && got.is_empty() {
-            got.push(row(id, id, &[]));
-        }
+        let got = by.get(id.as_str()).into_iter().flatten().map(|((_, qid), rs)| row(id, qid, rs)).collect();
         out.insert(id.clone(), got);
     }
     Ok(out)
@@ -982,9 +972,8 @@ mod tests {
 
     /// Task #1151: a batch's rows put together as `record` reads them, the same whatever order
     /// the service's rows come in (the old query's SAMPLE and GROUP_CONCAT took its order): an
-    /// ID's items in QID order, each fact picked order-free. A "QID" batch's item with no facts
-    /// still has its row (the old query's was all OPTIONALs); another property's ID no item holds
-    /// has none.
+    /// ID's items in QID order, each fact picked order-free. An item with no facts still has its
+    /// row (the "item" branch's: the old query's were all OPTIONALs); an ID no item holds has none.
     #[test]
     fn rows_grouped_the_same_way() {
         let lit = |s: &str| format!(r#"{{"type": "literal", "value": "{s}"}}"#);
@@ -1023,8 +1012,13 @@ mod tests {
         };
         assert_eq!(made(&rows), want);
         assert_eq!(made(&rows.iter().rev().cloned().collect::<Vec<_>>()), want, "the same in any order");
-        // A "QID" batch: every item its row.
-        let rows = [fact_row(None, "Q1", "sl", &lit("2"))].map(|r| loads(&r).unwrap());
+        // A "QID" batch: every item its row (the "item" branch's, whatever facts it has).
+        let rows = [
+            fact_row(None, "Q1", "sl", &lit("2")),
+            fact_row(None, "Q1", "item", ""),
+            fact_row(None, "Q404", "item", ""),
+        ]
+        .map(|r| loads(&r).unwrap());
         let by = grouped("QID", &["Q1".into(), "Q404".into()], &rows).unwrap();
         let rec = |q: &str| dumps_spaced(&Py::Dict(record(&by[q][0]).unwrap()));
         assert_eq!(rec("Q1"), r#"{"qid": "Q1", "sl": 2, "desc": {}, "wiki": {}}"#);
@@ -1036,7 +1030,7 @@ mod tests {
             2 + 2 * LANGS.len() + 3 + 1
         );
         assert!(!q.contains("OPTIONAL") && !q.contains(" LANG("), "{q}");
-        assert_eq!(query("QID", &["Q1".into()]).matches("VALUES ?item { wd:Q1 }").count(), 2 + 2 * LANGS.len() + 3);
+        assert_eq!(query("QID", &["Q1".into()]).matches("VALUES ?item { wd:Q1 }").count(), 2 + 2 * LANGS.len() + 3 + 1);
     }
 
     /// A run on caches holding every answer asks nothing (the unit tests' process is offline) and
