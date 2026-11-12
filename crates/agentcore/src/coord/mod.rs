@@ -8505,7 +8505,8 @@ mod tests {
                 let sizes = [
                     ("threads".to_string(), 1),
                     ("bytes".to_string(), 18_000_000_000),
-                    ("wrote".to_string(), 12_000_000_000),
+                    ("wrote".to_string(), 6_000_000_000),
+                    ("read_back".to_string(), 6_000_000_000),
                 ];
                 let cost = Cost {
                     peak_mb: 2000,
@@ -9988,7 +9989,8 @@ mod tests {
             let sizes = [
                 ("threads".to_string(), 1),
                 ("bytes".to_string(), 18_000_000_000),
-                ("wrote".to_string(), 12_000_000_000),
+                ("wrote".to_string(), 6_000_000_000),
+                ("read_back".to_string(), 6_000_000_000),
             ];
             let cost = Cost {
                 peak_mb: 2000,
