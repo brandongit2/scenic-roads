@@ -18,7 +18,7 @@ const ago = (a) =>
   a === 0 ? "now" : a < 60 ? `−${a} s` : a < 3600 ? `−${a / 60} min` : a >= 172800 && a % 86400 === 0 ? `−${a / 86400} d` : `−${+(a / 3600).toFixed(1)} h`;
 const hover = new WeakMap();
 
-// The page's colours (index.html's tokens), read once a draw.
+// The page's colours (theme.css's tokens), read once a draw.
 function tokens(at) {
   const v = (k) => token(`--${k}`, at);
   return { line: v("line"), grid: v("grid"), warn: v("warn"), dim: v("dim"), text: v("text"), panel: v("panel"), bad: v("bad") };

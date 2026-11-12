@@ -22,5 +22,5 @@ export function h(tag, attrs, ...kids) {
 /** An element with a class and its text: `el("span", "k", "load")`. */
 export const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-/** A colour token's value (index.html's `--name`, as the theme has it now), read at `at` (the page's root). */
+/** A colour token's value (theme.css's `--name`, as the theme has it now), read at `at` (the page's root). */
 export const token = (k, at = document.documentElement) => getComputedStyle(at).getPropertyValue(k).trim();

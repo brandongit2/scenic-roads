@@ -91,7 +91,7 @@ export function createMap({ pick = () => {} } = {}) {
   let firstFinished = true;
   let raf = 0, litRaf = 0;
 
-  // ---- Colours: the page's tokens (index.html), read at each draw (light or dark as it is now) --
+  // ---- Colours: the page's tokens (theme.css), read at each draw (light or dark as it is now) --
   const tokens = {};
   const readTokens = () => {
     const cs = getComputedStyle(document.documentElement);

@@ -66,7 +66,7 @@ const ago = (now, t) => (t ? `${dur(now - t)} ago` : "never");
 // ---- The steps table (crates/pipeline/src/agent/steps.rs, served at /api/steps) ---------------
 // Every word about a step comes from its row: the noun its targets are counted in, its stage (its
 // colour) and where it runs; it's named by its id, as are stages.
-// A stage's colour: its token in index.html (--st-<stage>, a hue each in either theme).
+// A stage's colour: its token in theme.css (--st-<stage>, a hue each in either theme).
 const stageColour = (g) => `var(--st-${g || "upkeep"}, var(--st-upkeep))`;
 const table = { steps: {}, stages: [] };
 const S = {
@@ -121,7 +121,7 @@ function countsOf(l) {
   return out.join(" · ");
 }
 const fraction = (x) => (x.total ? x.done / x.total : x.left != null ? (x.left ? 0 : 1) : 0);
-// Machines' colours (index.html's --mac-0 … --mac-4): a Mac's by a stable hash of its name (FNV-1a),
+// Machines' colours (theme.css's --mac-0 … --mac-4): a Mac's by a stable hash of its name (FNV-1a),
 // so it keeps its colour whatever the order and whichever Macs are in touch; of two whose hashes
 // meet, the later by name takes the next free one. `names`: every Mac the build knows.
 const MAC_COLOURS = 5;
