@@ -142,18 +142,13 @@ pub fn make_missing_sets(out: &mut Out, date: &str, src: &Input, scratch: &Path)
 /// strategy: ways and multipolygons whole, the input read three times): each `(file, [west, south,
 /// east, north])` an OSM PBF of what meets its box. The polar caps' points (landmarks::polar).
 pub fn extract_boxes(src: &Input, boxes: &[(PathBuf, [f64; 4])], scratch: &Path) -> Result<()> {
-    std::fs::create_dir_all(scratch)?;
-    let extracts: Vec<serde_json::Value> =
-        boxes.iter().map(|(f, b)| serde_json::json!({"output": f, "output_format": "pbf", "bbox": b})).collect();
-    let config = scratch.join("extract-boxes.json");
-    std::fs::write(&config, serde_json::to_vec(&serde_json::json!({ "extracts": extracts }))?)?;
+    let config = boxes_config(boxes, scratch)?;
     let _p = jobrt::timings::phase(match src {
         Input::Local(_) => "cutting the boxes (osmium)",
         Input::Nas(_) => "cutting the boxes (osmium, over SSH)",
     });
     read_input(src, &scratch.join("stream"), 3, |input, local| {
-        let mut c = osmium();
-        c.args(["extract", "--overwrite", "--strategy", "smart", "-c"]).arg(&config).arg(input);
+        let c = boxes_extract(&config, input);
         if local {
             run_osmium(c, "osmium extract (the boxes)")
         } else {
@@ -162,6 +157,23 @@ pub fn extract_boxes(src: &Input, boxes: &[(PathBuf, [f64; 4])], scratch: &Path)
     })?;
     std::fs::remove_file(&config).ok();
     Ok(())
+}
+
+/// `extract_boxes`'s config for osmium, in `scratch`.
+fn boxes_config(boxes: &[(PathBuf, [f64; 4])], scratch: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(scratch)?;
+    let extracts: Vec<serde_json::Value> =
+        boxes.iter().map(|(f, b)| serde_json::json!({"output": f, "output_format": "pbf", "bbox": b})).collect();
+    let config = scratch.join("extract-boxes.json");
+    std::fs::write(&config, serde_json::to_vec(&serde_json::json!({ "extracts": extracts }))?)?;
+    Ok(config)
+}
+
+/// `extract_boxes`'s osmium command: `input` cut by `config` (`boxes_config`).
+fn boxes_extract(config: &Path, input: &Path) -> Command {
+    let mut c = osmium();
+    c.args(["extract", "--overwrite", "--strategy", "smart", "-c"]).arg(config).arg(input);
+    c
 }
 
 /// What an osmium filter reads: a file here, or one on the NAS (the share's mount), streamed over
@@ -199,7 +211,7 @@ fn read_input(src: &Input, dir: &Path, reads: u32, run: impl FnOnce(&Path, bool)
         Input::Nas(p) => {
             let remote =
                 store::nas::on_nas(p).with_context(|| format!("{} isn't on the NAS's mounted share", p.display()))?;
-            let n = streamed(&ssh, SSH_START, &remote, reads, dir, |input| run(input, false))?;
+            let n = streamed(&ssh, SSH_START, STREAM_STALL, &remote, reads, dir, |input| run(input, false))?;
             jobrt::timings::count(n, 1);
             Ok(())
         }
@@ -224,24 +236,40 @@ fn ssh() -> Command {
     c
 }
 
+/// How long a stream to osmium may move no bytes once its `cat` has started (`streamed`): the NAS
+/// sending none (a dead connection ends ssh sooner itself: ServerAliveInterval 30 s, three
+/// missed), or osmium taking none. Past it the stream fails `TimedOut`, osmium is let go, and the
+/// job fails and is tried again later.
+pub const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Runs `run` on a path that reads as `remote` (a file on the NAS) streamed over SSH
 /// (`ssh`'s command, `cat` on the NAS), never through the SMB mount: a soft mount times out on
 /// osmium's hour-long reads ("Close failed: Operation timed out", 2026-10-21, four times). osmium
-/// reads its input twice to add the objects the matches reference (and refuses stdin for that), so
-/// the path is a link to a named pipe, fed one `cat` each time osmium opens it: once it's opened,
-/// the link is pointed at a fresh pipe for the next open. Each read must carry the file's whole
-/// length (its size taken over SSH first): a short `cat` that exits 0 fails. `reads`: how many
-/// reads `run` makes, for progress (0: none said, the caller says its own). Each `ssh` is bounded
-/// by `start` (`SSH_START`): the size's call whole, each `cat` to its first byte. Returns the bytes read off the NAS. In `dir`, made afresh.
+/// reads its input more than once (tags-filter twice, to add the objects the matches reference;
+/// extract's smart strategy three times) and refuses stdin for that, so the path is a link to a
+/// named pipe, fed one `cat` each time osmium opens it: once it's opened, the link is pointed at a
+/// fresh pipe for the next open, before any byte is written. A reader may let go of a read early:
+/// osmium extract opens its input once and closes it after its header (8 KiB) or before any
+/// byte, ahead of its reads (osmium 1.19, task #1189); that `cat` is stopped, the next open fed
+/// anew. A read the reader takes to its end must
+/// carry the file's whole length (its size taken over SSH first): a short `cat` that exits 0 fails.
+/// `reads`: how many reads `run` makes, for progress (0: none said, the caller says its own). Each
+/// `ssh` is bounded by `start` (`SSH_START`): the size's call whole, each `cat` to its first byte;
+/// after it, a read moving no bytes for `stall` (`STREAM_STALL`) fails. When the feed fails, the
+/// reader is let go: the link removed (a later open fails) and a pipe it waits to open given its
+/// end, so `run` ends rather than wait for a writer. Returns the bytes read off the NAS. In `dir`,
+/// made afresh.
 pub fn streamed(
     ssh: &(dyn Fn() -> Command + Sync),
     start: std::time::Duration,
+    stall: std::time::Duration,
     remote: &str,
     reads: u32,
     dir: &Path,
     run: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<u64> {
-    let quoted = format!("'{}'", remote.replace('\'', "'\\''"));
+    use std::sync::atomic::Ordering::Relaxed;
+    let quoted = sh_quoted(remote);
     let mut check = ssh();
     // (Its size by `ls`, as producers/depth/repack.py reads sizes on the NAS: `-L` through a link.)
     check.arg(store::nas::SSH).arg(format!("test -r {quoted} && ls -lnL -- {quoted}"));
@@ -260,18 +288,17 @@ pub fn streamed(
         return Err(ssh_stalled(&format!("the size of {remote}"), start));
     }
     let (stdout, stderr) = read.context("read ssh's output")?;
-    let ok = std::process::Output { status, stdout, stderr };
     ensure!(
-        ok.status.success(),
+        status.success(),
         "can't read {remote} on the NAS over SSH ({}: {}): set up SSH keys to the NAS (docs/macs.md)",
         store::nas::SSH,
-        String::from_utf8_lossy(&ok.stderr).trim()
+        String::from_utf8_lossy(&stderr).trim()
     );
-    let len: u64 = String::from_utf8_lossy(&ok.stdout)
+    let len: u64 = String::from_utf8_lossy(&stdout)
         .split_whitespace()
         .nth(4)
         .and_then(|n| n.parse().ok())
-        .with_context(|| format!("{remote}'s size on the NAS ({})", String::from_utf8_lossy(&ok.stdout).trim()))?;
+        .with_context(|| format!("{remote}'s size on the NAS ({})", String::from_utf8_lossy(&stdout).trim()))?;
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir)?;
     let link = dir.join("input.osm.pbf");
@@ -286,72 +313,60 @@ pub fn streamed(
         std::fs::rename(&tmp, &link)?;
         Ok(())
     };
+    // (A writer's open of a pipe, non-blocking: it fails at once, ENXIO, while no reader has it open.)
+    let open = |k: u32| -> std::io::Result<Option<std::fs::File>> {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(pipe(k)) {
+            Ok(w) => Ok(Some(w)),
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) => Ok(None),
+            Err(e) => Err(e),
+        }
+    };
     point(0)?;
     let stop = std::sync::atomic::AtomicBool::new(false);
     let (ran, fed) = std::thread::scope(|s| {
         let feeder = s.spawn(|| -> Result<u64> {
-            use std::os::unix::fs::OpenOptionsExt;
-            let (mut total, mut said) = (0u64, 0.0f64);
-            for k in 0.. {
-                // (Waits for osmium to open the pipe, or to be done: a writer's open without a
-                // reader fails at once, non-blocking.)
-                let mut w = loop {
-                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Ok(total);
+            let (total, said) = (std::cell::Cell::new(0u64), std::cell::Cell::new(0.0f64));
+            let mut tick = |n: u64| {
+                total.set(total.get() + n);
+                // (Said each 0.1 %.)
+                let f = (total.get() as f64 / (u64::from(reads.max(1)) * len.max(1)) as f64).min(0.99);
+                if reads > 0 && f - said.get() >= 0.001 {
+                    jobrt::jobs::within(f);
+                    said.set(f);
+                }
+            };
+            let mut k = 0;
+            let fed = loop {
+                // (Waits for osmium to open the pipe, or to be done.)
+                let w = match open(k) {
+                    Ok(Some(w)) => w,
+                    Ok(None) if stop.load(Relaxed) => break Ok(()),
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        continue;
                     }
-                    match std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(pipe(k)) {
-                        Ok(w) => break w,
-                        Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
-                            std::thread::sleep(std::time::Duration::from_millis(50))
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
+                    Err(e) => break Err(e.into()),
                 };
-                // (Blocking writes from here.)
-                // SAFETY: the open file's descriptor.
-                unsafe {
-                    let fd = std::os::fd::AsRawFd::as_raw_fd(&w);
-                    libc::fcntl(fd, libc::F_SETFL, libc::fcntl(fd, libc::F_GETFL) & !libc::O_NONBLOCK);
+                if let Err(e) = point(k + 1).and_then(|()| feed(ssh, start, stall, remote, len, &w, &mut tick)) {
+                    break Err(e);
                 }
-                point(k + 1)?;
-                let mut c = ssh();
-                c.arg(store::nas::SSH).arg(format!("cat {quoted}")).stdout(std::process::Stdio::piped());
-                let mut child = store::spawn::spawn(&mut c).context("run ssh")?;
-                let mut from = child.stdout.take().context("ssh's output")?;
-                let mut buf = vec![0u8; 1 << 20];
-                let before = total;
-                let (copied, stalled) = watched(child.id(), start, |started| -> std::io::Result<()> {
-                    loop {
-                        let n = std::io::Read::read(&mut from, &mut buf)?;
-                        started();
-                        if n == 0 {
-                            return Ok(());
-                        }
-                        std::io::Write::write_all(&mut w, &buf[..n])?;
-                        total += n as u64;
-                        // (Said each 0.1 %.)
-                        let f = (total as f64 / (u64::from(reads.max(1)) * len.max(1)) as f64).min(0.99);
-                        if reads > 0 && f - said >= 0.001 {
-                            jobrt::jobs::within(f);
-                            said = f;
-                        }
+                k += 1;
+            };
+            if fed.is_err() {
+                // (Osmium let go: a later open fails, and one waiting on a pipe opens, at its end.)
+                std::fs::remove_file(&link).ok();
+                while !stop.load(Relaxed) {
+                    for j in k..=k + 1 {
+                        drop(open(j));
                     }
-                });
-                if copied.is_err() {
-                    child.kill().ok();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
-                let st = child.wait()?;
-                if stalled {
-                    return Err(ssh_stalled(&format!("cat {remote}"), start));
-                }
-                copied.context("stream the NAS's file to osmium")?;
-                ensure!(st.success(), "ssh {} cat {remote} failed: {st}", store::nas::SSH);
-                ensure!(total - before == len, "a short read of {remote}: {} of its {len} bytes", total - before);
             }
-            Ok(total)
+            fed.map(|()| total.get())
         });
         let ran = run(&link);
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        stop.store(true, Relaxed);
         (ran, feeder.join().unwrap_or_else(|_| Err(anyhow::anyhow!("the feeder panicked"))))
     });
     std::fs::remove_dir_all(dir).ok();
@@ -361,6 +376,107 @@ pub fn streamed(
         (Err(e), Ok(_)) => Err(e),
         (Err(e), Err(f)) => Err(anyhow::anyhow!("{e:#} (the NAS's stream: {f:#})")),
     }
+}
+
+/// `s` quoted for the NAS's shell.
+fn sh_quoted(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// One read of `streamed`'s: `remote` (`len` bytes) copied by `ssh … cat` into `w` (a pipe its
+/// reader has open, non-blocking), each piece moved told to `tick`. Its end: the file's whole
+/// length, or the reader letting go (closing the pipe) first.
+fn feed(
+    ssh: &(dyn Fn() -> Command + Sync),
+    start: std::time::Duration,
+    stall: std::time::Duration,
+    remote: &str,
+    len: u64,
+    w: &std::fs::File,
+    tick: &mut dyn FnMut(u64),
+) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let mut c = ssh();
+    c.arg(store::nas::SSH).arg(format!("cat {}", sh_quoted(remote)));
+    c.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped());
+    let mut child = store::spawn::spawn(&mut c).context("run ssh")?;
+    let mut from = child.stdout.take().context("ssh's output")?;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut copied = 0u64;
+    let r = (|| -> Result<bool> {
+        loop {
+            if !ready(from.as_raw_fd(), libc::POLLIN, if copied == 0 { start } else { stall })? {
+                return Err(if copied == 0 {
+                    ssh_stalled(&format!("cat {remote}"), start)
+                } else {
+                    stream_stalled(&format!("the NAS sent none of {remote}"), stall)
+                });
+            }
+            let n = match std::io::Read::read(&mut from, &mut buf) {
+                Ok(0) => return Ok(true),
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e).context("read ssh's output"),
+            };
+            let mut at = 0;
+            while at < n {
+                match std::io::Write::write(&mut &*w, &buf[at..n]) {
+                    Ok(m) => {
+                        at += m;
+                        copied += m as u64;
+                        tick(m as u64);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if !ready(w.as_raw_fd(), libc::POLLOUT, stall)? {
+                            return Err(stream_stalled(&format!("osmium took none of {remote}"), stall));
+                        }
+                    }
+                    // (The reader let go of this read.)
+                    Err(e) if e.raw_os_error() == Some(libc::EPIPE) => return Ok(false),
+                    Err(e) => return Err(e).context("stream the NAS's file to osmium"),
+                }
+            }
+        }
+    })();
+    if !matches!(r, Ok(true)) {
+        child.kill().ok();
+    }
+    let st = child.wait()?;
+    if r? {
+        ensure!(st.success(), "ssh {} cat {remote} failed: {st}", store::nas::SSH);
+        ensure!(copied == len, "a short read of {remote}: {copied} of its {len} bytes");
+    }
+    Ok(())
+}
+
+/// Whether `fd` is ready for `events` (or has an error or its end to say) within `bound`.
+fn ready(fd: std::os::fd::RawFd, events: libc::c_short, bound: std::time::Duration) -> std::io::Result<bool> {
+    let end = std::time::Instant::now() + bound;
+    loop {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        let mut p = libc::pollfd { fd, events, revents: 0 };
+        // SAFETY: one pollfd, ours.
+        match unsafe { libc::poll(&mut p, 1, left.as_millis().min(i32::MAX as u128) as libc::c_int) } {
+            0 => return Ok(false),
+            n if n > 0 => return Ok(true),
+            _ => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+    }
+}
+
+/// The error for a stream moving no bytes for `stall` (`STREAM_STALL`): `TimedOut`, as a NAS call
+/// past its deadline.
+fn stream_stalled(what: &str, stall: std::time::Duration) -> anyhow::Error {
+    anyhow::Error::new(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("the stream to osmium moved no bytes for {} s ({what}): stopped", stall.as_secs()),
+    ))
 }
 
 /// The basemap's input (Planetiler's OpenMapTiles layers water, waterway, boundary, place,
@@ -569,8 +685,9 @@ fn cut_tree(
     let dir = work.join(format!("z{}", t.z + 1));
     let marker = work.join(format!("{}.cut", t.dash()));
     if !marker.exists() {
-        // (osmium extract with the smart strategy reads its input four times (1.19), each open a stream of its own when
-        // it's on the NAS; the cut says its progress by the extracts made.)
+        // (osmium extract with the smart strategy opens its input four times (1.19): the first let go
+        // after its header, then three reads, each a stream of its own when it's on the NAS; the cut says its
+        // progress by the extracts made.)
         read_input(input, &work.join("stream"), 0, |p, _| cut(p, &kids, &dir, 4))?;
         std::fs::write(&marker, b"")?;
     }
@@ -1590,8 +1707,10 @@ mod tests {
 
     /// A fake `ssh` (in the returned folder) that runs its command here: its last argument; with
     /// FAIL set it can't connect, with HANG it never returns (as while 1Password waits for an
-    /// approval), with HANG_CAT only its `cat`s don't, with SHORT set a `cat` stops after 50 bytes and exits 0.
-    fn fake_ssh(dir: &Path) -> impl Fn(&str) -> Box<dyn Fn() -> Command + Sync> {
+    /// approval), with HANG_CAT only its `cat`s don't, with SHORT set a `cat` stops after 50 bytes
+    /// and exits 0, with STALL it sends 50 bytes and then nothing, never ending, with FAIL_CAT a
+    /// `cat` fails at once.
+    fn fake_ssh(dir: &Path) -> impl Fn(&str) -> Box<dyn Fn() -> Command + Sync + Send> {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let fake = bin.join("ssh");
@@ -1599,7 +1718,9 @@ mod tests {
             &fake,
             "#!/bin/sh\n[ -n \"$FAIL\" ] && { echo 'Permission denied' >&2; exit 255; }\n[ -n \"$HANG\" ] && exec sleep 600\n\
              for a; do last=$a; done\n\
-             case \"$last\" in cat*) [ -n \"$HANG_CAT\" ] && exec sleep 600; [ -n \"$SHORT\" ] && { sh -c \"$last\" | head -c 50; exit 0; };; esac\n\
+             case \"$last\" in cat*) [ -n \"$HANG_CAT\" ] && exec sleep 600; [ -n \"$FAIL_CAT\" ] && exit 1;\n\
+               [ -n \"$SHORT\" ] && { sh -c \"$last\" | head -c 50; exit 0; };\n\
+               [ -n \"$STALL\" ] && { sh -c \"$last\" | head -c 50; exec sleep 600; };; esac\n\
              exec sh -c \"$last\"\n",
         )
         .unwrap();
@@ -1647,18 +1768,18 @@ mod tests {
             c.arg("w/wikidata");
             run(c, "osmium tags-filter")
         };
-        let n = streamed(&*ssh(""), WAIT, remote, 2, &stream, filter).unwrap();
+        let n = streamed(&*ssh(""), WAIT, WAIT, remote, 2, &stream, filter).unwrap();
         assert_eq!(n, 2 * len, "read twice, each read counted");
         let opl = store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&o)).unwrap().stdout;
         let ids: Vec<String> =
             String::from_utf8(opl).unwrap().lines().map(|l| l.split(' ').next().unwrap().to_string()).collect();
         assert_eq!(ids, ["n1", "n2", "w10"]);
         assert!(!stream.exists(), "its pipes gone");
-        let e = streamed(&*ssh("FAIL"), WAIT, remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
+        let e = streamed(&*ssh("FAIL"), WAIT, WAIT, remote, 2, &stream, |_| panic!("osmium ran")).unwrap_err();
         assert!(format!("{e:#}").contains("SSH keys"), "{e:#}");
-        let e = streamed(&*ssh("SHORT"), WAIT, remote, 2, &stream, filter).unwrap_err();
+        let e = streamed(&*ssh("SHORT"), WAIT, WAIT, remote, 2, &stream, filter).unwrap_err();
         assert!(format!("{e:#}").contains("short read"), "{e:#}");
-        let e = streamed(&*ssh(""), WAIT, remote, 2, &stream, |p| {
+        let e = streamed(&*ssh(""), WAIT, WAIT, remote, 2, &stream, |p| {
             drop(std::fs::File::open(p).unwrap());
             anyhow::bail!("osmium failed")
         })
@@ -1677,7 +1798,7 @@ mod tests {
         let bound = std::time::Duration::from_secs(1);
         for mode in ["HANG", "HANG_CAT"] {
             let t = std::time::Instant::now();
-            let e = streamed(&*ssh(mode), bound, src.to_str().unwrap(), 1, &d.path().join("stream"), |p| {
+            let e = streamed(&*ssh(mode), bound, WAIT, src.to_str().unwrap(), 1, &d.path().join("stream"), |p| {
                 drop(std::fs::read(p));
                 Ok(())
             })
@@ -1708,10 +1829,12 @@ mod tests {
         let kids: Vec<TileId> = (0..2).flat_map(|x| (0..2).map(move |y| TileId { z: 1, x, y })).collect();
         let (here, there) = (d.path().join("here"), d.path().join("there"));
         cut(&src, &kids, &here, 4).unwrap();
-        let n =
-            streamed(&*ssh(""), WAIT, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| cut(p, &kids, &there, 4))
-                .unwrap();
-        assert_eq!(n, 4 * len, "four whole reads (osmium 1.19)");
+        let n = streamed(&*ssh(""), WAIT, WAIT, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| {
+            cut(p, &kids, &there, 4)
+        })
+        .unwrap();
+        // (Three whole reads, and what the first open, let go after its header, took.)
+        assert!((3 * len..=4 * len).contains(&n), "three whole reads (osmium 1.19): {n} of {len}");
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
         };
@@ -1722,6 +1845,146 @@ mod tests {
                 assert_eq!(opl(&here.join(&f)), opl(&there.join(&f)), "{f}");
             }
         }
+    }
+
+    /// Task #1189: osmium extract opens its input once and lets go of it after its header, before its
+    /// three reads (osmium 1.19, `--strategy smart`, with a config or a box). With a file past the pipe's
+    /// buffer (64 KiB), the polar points' cut (`extract_boxes`'s command) streamed off the NAS
+    /// makes what the local file's cut makes, from three whole reads; it once hung for good,
+    /// osmium waiting to open the next pipe after its first open's feed failed.
+    #[test]
+    fn the_polar_cut_streams_a_file_past_the_pipes_buffer() {
+        let d = tempfile::tempdir().unwrap();
+        let opl: String = (1..=60_000u32)
+            .map(|i| {
+                let (x, y) = (
+                    (u64::from(i) * 7919 % 36_000) as f64 / 100.0 - 180.0,
+                    (u64::from(i) * 104_729 % 18_000) as f64 / 100.0 - 90.0,
+                );
+                format!("n{i} v1 x{x:.2} y{y:.2} Tname=n{i}\n")
+            })
+            .chain((1..=10_000u32).map(|w| format!("w{w} v1 Thighway=road Nn{},n{}\n", w * 2, w * 2 + 1)))
+            .collect();
+        let src = osm(d.path(), "planet", &opl);
+        let len = std::fs::metadata(&src).unwrap().len();
+        assert!(len > 1 << 17, "past the pipe's buffer: {len}");
+        let ssh = fake_ssh(d.path());
+        let cut = |input: &Path, o: &Path| {
+            let boxes = [
+                (o.join("n.osm.pbf"), [-180.0, 75.0, 180.0, 90.0]),
+                (o.join("s.osm.pbf"), [-180.0, -90.0, 180.0, -75.0]),
+            ];
+            run(boxes_extract(&boxes_config(&boxes, o)?, input), "osmium extract (the boxes)")
+        };
+        let (here, there) = (d.path().join("here"), d.path().join("there"));
+        cut(&src, &here).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (remote, stream) = (src.to_str().unwrap().to_string(), d.path().join("stream"));
+        std::thread::spawn(move || tx.send(streamed(&*ssh(""), WAIT, WAIT, &remote, 3, &stream, |p| cut(p, &there))));
+        let n = rx.recv_timeout(WAIT).expect("the stream hung").unwrap();
+        assert!((3 * len..3 * len + (128 << 10)).contains(&n), "three whole reads, and a header: {n} of {len}");
+        let opl = |p: &Path| {
+            store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
+        };
+        for f in ["n.osm.pbf", "s.osm.pbf"] {
+            let a = opl(&here.join(f));
+            assert!(!a.is_empty(), "{f} has points");
+            assert_eq!(a, opl(&d.path().join("there").join(f)), "{f}");
+        }
+    }
+
+    /// A file of `n` bytes past the pipe's buffer, not OSM (the stream reads no format).
+    fn bytes_file(dir: &Path, n: usize) -> PathBuf {
+        let p = dir.join("blob");
+        std::fs::write(&p, (0..n).map(|i| (i * 31 % 251) as u8).collect::<Vec<u8>>()).unwrap();
+        p
+    }
+
+    /// Runs `streamed` on a thread of its own, its result within the watchdog: a hang fails the
+    /// test rather than holding it.
+    fn stream_bounded(
+        ssh: Box<dyn Fn() -> Command + Sync + Send>,
+        stall: std::time::Duration,
+        src: &Path,
+        dir: &Path,
+        run: impl FnOnce(&Path) -> Result<()> + Send + 'static,
+    ) -> Result<u64> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (src, dir) = (src.to_str().unwrap().to_string(), dir.join("stream"));
+        std::thread::spawn(move || tx.send(streamed(&*ssh, WAIT, stall, &src, 0, &dir, run)));
+        rx.recv_timeout(WAIT).expect("the stream hung")
+    }
+
+    /// Task #1189: a reader letting go of a read, unread or part read (its feed's write blocked on
+    /// the full pipe), has its next open fed from the start, whole.
+    #[test]
+    fn a_reader_letting_go_early_gets_the_next_read_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let src = bytes_file(d.path(), 1 << 20);
+        let want = std::fs::read(&src).unwrap();
+        let ssh = fake_ssh(d.path());
+        let n = stream_bounded(ssh(""), WAIT, &src, d.path(), move |p| {
+            drop(std::fs::File::open(p)?);
+            let mut part = [0u8; 10];
+            std::io::Read::read_exact(&mut std::fs::File::open(p)?, &mut part)?;
+            // (Its write waiting on the full pipe when it's let go.)
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            ensure!(std::fs::read(p)? == want, "the third read whole");
+            Ok(())
+        })
+        .unwrap();
+        assert!(n >= 1 << 20, "{n}");
+    }
+
+    /// Task #1189: a feed that fails lets the reader go, with the feed's error: one waiting to
+    /// open the next pipe opens it at its end, and a later open fails, rather than wait for good.
+    #[test]
+    fn a_failed_feed_ends_the_reader() {
+        let d = tempfile::tempdir().unwrap();
+        let src = bytes_file(d.path(), 1 << 20);
+        let ssh = fake_ssh(d.path());
+        let e = stream_bounded(ssh("FAIL_CAT"), WAIT, &src, d.path(), |p| {
+            let first = std::fs::read_link(p)?;
+            let _held = std::fs::File::open(p)?;
+            // (The link pointed at the next pipe, which it then waits to open, as osmium did.)
+            while std::fs::read_link(p).map(|l| l == first).unwrap_or(false) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let got = std::fs::read(p)?;
+            ensure!(got.is_empty(), "nothing fed: {}", got.len());
+            ensure!(std::fs::File::open(p).is_err(), "a later open fails");
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("cat") && format!("{e:#}").contains("failed"), "{e:#}");
+    }
+
+    /// Task #1189: a read moving no bytes past the stall bound fails `TimedOut`, saying which end
+    /// stalled: the NAS sending none, or the reader taking none.
+    #[test]
+    fn a_stalled_stream_fails_in_time() {
+        let d = tempfile::tempdir().unwrap();
+        let src = bytes_file(d.path(), 1 << 20);
+        let ssh = fake_ssh(d.path());
+        let stall = std::time::Duration::from_secs(1);
+        let t = std::time::Instant::now();
+        let e = stream_bounded(ssh("STALL"), stall, &src, d.path(), |p| {
+            drop(std::fs::read(p));
+            Ok(())
+        })
+        .unwrap_err();
+        store::testkit::ended_before(t, std::time::Duration::from_secs(600), "STALL");
+        assert!(buildstore::records::nas::timed_out(&e), "{e:#}");
+        assert!(format!("{e:#}").contains("the NAS sent none"), "{e:#}");
+        let e = stream_bounded(ssh(""), stall, &src, d.path(), |p| {
+            let f = std::fs::File::open(p)?;
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(f);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(buildstore::records::nas::timed_out(&e), "{e:#}");
+        assert!(format!("{e:#}").contains("osmium took none"), "{e:#}");
     }
 
     #[test]
