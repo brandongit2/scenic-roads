@@ -414,7 +414,7 @@ async function run() {
       // found none while the reading went on, after a publish restarted the agent.)
       // (The status line is the view's own reading flag, said: "· reading" while it is; an error
       // ends the wait at once, the checks below then say it.)
-      const catsRead = `(() => { const t = document.querySelector(".cat-status")?.textContent || ""; return /^Can't read/.test(t) || /catalogues? kept/.test(t) && !/reading/.test(t); })()`;
+      const catsRead = `(() => { const t = document.querySelector(".cat-status")?.textContent || ""; return /^Can't read/.test(t) || /catalogues? in the map's log/.test(t) && !/reading/.test(t); })()`;
       await until(catsRead, 600000);
       const marks = await js(`document.querySelectorAll("#mappane .cat-tl g.mk").length`);
       check("ages: the timeline marks the catalogues in its span", marks > 0, `${marks} marks; ${await js(`document.querySelector(".cat-status")?.textContent`)}`);
