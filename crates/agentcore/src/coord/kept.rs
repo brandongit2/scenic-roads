@@ -10,8 +10,8 @@
 //!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once), and the
 //!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`), the members' messages to
 //!   the lead (crate::coord::inbox: `inbox/<member>`), the answers' lease and the members'
-//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`), the map's
-//!   head (`map-head`: `MAP_HEAD`), and the NAS budget's probes (`nas-probes`, `PROBES`);
+//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`), and the NAS
+//!   budget's probes (`nas-probes`, `PROBES`);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -20,13 +20,11 @@
 //! The members it keeps (`Heard`) are for leases by their holder's word (§6, step 2: crate::coord::held).
 
 use super::{Cost, Floor};
-use crate::pool::nas::Nas;
 use crate::pool::store::{self, Docs, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
 /// A member as the lead last heard it (`member/<host>`): the protocol pieces its app speaks, and
 /// when (unix seconds).
@@ -47,14 +45,8 @@ pub struct Beat {
 }
 
 /// The NAS budget's probes, the lead's prober's (crate::coord's `nas_prober`): the last day's, so
-/// a restart keeps the day's best, and a lead taking another's backup up too
-/// (crate::agent::pool's `load_backup`).
+/// a restart keeps the day's best.
 pub const PROBES: &str = "nas-probes";
-
-/// The map's head as the lead last kept it (a `seq`, docs/maplog.md §4.5): what a lead with no map
-/// log of its own (moved to another Mac, its disk lost) numbers its first map past, carried to it by
-/// the store's backup (crate::agent::pool's `took_up`), as the NAS keeps no copy of the map.
-pub const MAP_HEAD: &str = "map-head";
 
 /// A member's `Heard` (and its `Beat`) is saved again once its time moved this far (its beats come every 10 s; the
 /// 12-h rule needs no finer).
@@ -64,7 +56,6 @@ const HEARD_SAVE_S: u64 = 60;
 pub struct Kept {
     store: OnceLock<Arc<Store>>,
     m: Mutex<Mirror>,
-    backing: std::sync::atomic::AtomicBool,
 }
 
 /// What was last submitted, by document.
@@ -77,8 +68,6 @@ struct Mirror {
     members: BTreeMap<String, Heard>,
     /// When each member's beat was last saved (unix s).
     beats: BTreeMap<String, u64>,
-    /// The map's head as kept (`MAP_HEAD`).
-    map_head: u64,
 }
 
 /// The coordinator's state as its store holds it.
@@ -120,26 +109,6 @@ impl Loaded {
             members: of_prefix(docs, "member/"),
         }
     }
-
-    /// As a lead's state for the next (`PoolState`): what a lead taking up another's backup loads
-    /// (crate::agent::pool's `took_up`).
-    pub fn pool_state(self) -> super::PoolState {
-        let (pause, pause_at) = self.pause.unwrap_or_default();
-        super::PoolState {
-            leases: self.leases,
-            costs: self.costs,
-            floors: self.floors,
-            disks: self.disks,
-            job_disks: BTreeMap::new(),
-            job_peaks: self.job_disks,
-            fills: self.fills,
-            disks_v: super::DISKS_V,
-            failed: Vec::new(),
-            pause,
-            pause_at,
-            members: self.members,
-        }
-    }
 }
 
 /// The changes from `was` to `now` under `prefix`, `was` made `now`.
@@ -173,25 +142,8 @@ impl Kept {
         m.leases = of_prefix(&docs, "lease/");
         (m.costs, m.floors, m.disks) = (loaded.costs.clone(), loaded.floors.clone(), loaded.disks.clone());
         m.members = loaded.members.clone();
-        m.map_head = docs.get(MAP_HEAD).and_then(Value::as_u64).unwrap_or(0);
         drop(m);
         self.store.set(store).ok();
-    }
-
-    /// The map's head as kept (`MAP_HEAD`; 0: none).
-    pub fn map_head(&self) -> u64 {
-        self.m.lock().unwrap_or_else(|e| e.into_inner()).map_head
-    }
-
-    /// The map's head kept as `seq` when it's past the one kept (a head is never taken back).
-    pub fn keep_map_head(&self, seq: u64) {
-        let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
-        if seq <= m.map_head {
-            return;
-        }
-        m.map_head = seq;
-        drop(m);
-        self.submit([(MAP_HEAD.to_string(), Value::from(seq))].into(), Vec::new());
     }
 
     pub fn store(&self) -> Option<&Arc<Store>> {
@@ -345,14 +297,6 @@ impl Kept {
     /// Whether change `seq` is on disk within `store::DURABLE_WAIT` (true without a store).
     pub fn durable(&self, seq: u64) -> bool {
         self.store.get().is_none_or(|s| s.wait(seq, store::DURABLE_WAIT))
-    }
-
-    /// Backs the store up to the NAS each `store::backup_every`, as `member` (started once).
-    pub fn back_up(&self, nas: Arc<dyn Nas + Send + Sync>, member: &str, every: Duration) {
-        let Some(s) = self.store.get() else { return };
-        if !self.backing.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            store::back_up(s, nas, member, every);
-        }
     }
 
     pub fn stop(&self) {

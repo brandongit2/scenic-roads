@@ -8021,12 +8021,6 @@ impl Agent {
         // (The Catalogues map: the map's log followed, the lead's in process; asked each loop, so it
         // misses no batch.)
         let here = self.maplog.here(self.o.the_plan, &self.o.home);
-        // (The map's head kept in the pool's store as it moves on; a log not started here (the lead
-        // moved to this Mac, its disk lost) goes past the head kept: docs/maplog.md §4.5.)
-        match here.feed.head() {
-            Some(h) => coord.keep_map_head(h),
-            None => here.set_floor(coord.map_head()),
-        }
         let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
@@ -8799,8 +8793,7 @@ impl Agent {
 
     /// What the lead keeps written besides its records (docs/pool.md §12): GC's queue told of the
     /// records saved (`saved`: this step's are on the NAS), the raw tiles' and pyramids' archives its
-    /// records hold named in their stores' indexes, its coordinator's store's backup started
-    /// (crate::pool::store::back_up), its history's new events.
+    /// records hold named in their stores' indexes, its history's new events.
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
         // (The forecast's files the plan handed over, written below.)
         let (fc_bytes, fc_entry) = std::mem::take(&mut self.fc_pending);
@@ -8829,8 +8822,6 @@ impl Agent {
         }
         let Some(co) = &self.coord else { return };
         let epoch = run.gates.leads.unwrap_or(0);
-        // (Its store backed up to the NAS by a thread of its own, crate::pool::store::back_up.)
-        co.back_up(run.side.shared_nas());
         // The page's files: to its coordinator, which serves every Mac's page from memory
         // (`/pool/view`, docs/coordination.md step 4).
         let regions = self.plan.view.get().regions_view.clone();
@@ -16059,11 +16050,9 @@ mod pool_tests {
         );
         // The writer isn't named any more (its file as it was), its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
-        // (The coordinator's store's backup, by its own thread each `store::backup_every` (a test's
-        // shorter), once the lead's step has started it.)
-        until(&mut a, |a| {
-            a.pooled().and_then(|p| p.gates.leads).is_some() && r.join(crate::pool::store::BACKUP_PATH).exists()
-        });
+        // (Its coordinator's store on its own disk alone: nothing of it on the NAS.)
+        until(&mut a, |a| a.pooled().and_then(|p| p.gates.leads).is_some());
+        assert!(!r.join("state/lead").exists());
         // (Task #1119 review: its contact kept in its folder, readable by its user alone (the pool's
         // token), and on the NAS where an older app finds the lead, the same: coordwire::OLD_CONTACT.)
         let kept = coordwire::lead::saved(&home).expect("its lead.json");
@@ -18023,17 +18012,13 @@ mod pool_tests {
         assert!(!a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
         assert!(w.iter().any(|w| w.why == UNPUBLISHED), "{w:?}");
         assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut w));
-        // Caught up: the catalogue; the sweep only on a step whose read of the declaration found it
-        // the lead.
+        // Caught up: the catalogue, and the sweep.
         a.pooled().unwrap().gates.caught_up = true;
         a.seen_pool();
         assert!(
             a.try_start(0, job("catalog"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()),
             "would start (dry run)"
         );
-        assert!(!a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
-        a.pooled().unwrap().gates.vouched = true;
-        a.seen_pool();
         assert!(a.try_start(0, job("gc"), &c, Some(&store::nasfs::NasRoot::local_for_test(&r)), &mut Vec::new()));
         // Other work as before.
         a.pooled().unwrap().gates = pool::Gates::default();

@@ -144,7 +144,7 @@ impl Lease {
         now.saturating_duration_since(self.began())
     }
 
-    /// Its job began before its lease (taken up at a lead's restart or from another lead's state, or held
+    /// Its job began before its lease (taken up at a lead's restart, or held
     /// again for a job running at its agent's take-over): what its beats measure is of part of
     /// its run, the lead not having heard the rest.
     pub fn taken_up(&self) -> bool {
@@ -418,17 +418,15 @@ impl Leases {
         }
     }
 
-    /// The jobs' leases as `save` writes them, for a lead after this one (docs/pool.md §7.5): each
-    /// with its epoch and when it was granted.
+    /// The jobs' leases as `save` writes them, for the store (docs/pool.md §7.5): each with its
+    /// epoch and when it was granted.
     pub fn snapshot(&self) -> serde_json::Value {
         serde_json::to_value(self.saved()).unwrap_or_default()
     }
 
-    /// Takes the jobs' leases of `snapshot` (another lead's: the owner moved the lead here), each
-    /// live for a whole `ttl` from `now` (its worker beats again once it reaches this one), in
-    /// place of those it had: that lead's state is the leases out (one this coordinator's folder
-    /// kept from when its Mac led before, ended since under another lead, would hold its targets
-    /// out of offers until it lapsed); ids go on from the highest it knew or is given.
+    /// Takes the jobs' leases of `snapshot` (its store's, as a restart opens it), each live for a
+    /// whole `ttl` from `now` (its worker beats again once it reaches this one), in place of those
+    /// it had; ids go on from the highest it knew or is given.
     pub fn restore(&mut self, v: &serde_json::Value, now: Instant) -> anyhow::Result<usize> {
         let s: Saved = serde_json::from_value(v.clone())?;
         self.by_id.clear();
@@ -444,23 +442,6 @@ impl Leases {
             self.by_id.insert(x.id, x);
         }
         Ok(n)
-    }
-
-    /// The tasks' leases (a broker's own: kept across a take-up of another lead's jobs' leases,
-    /// docs/pool.md §8).
-    pub fn tasks(&self) -> Vec<Lease> {
-        self.by_id.values().filter(|l| matches!(l.work, Work::Task { .. })).cloned().collect()
-    }
-
-    /// Puts a lease `tasks` gave back, as it was; false when its id is taken now (by a lease
-    /// restored: it isn't put back).
-    pub fn put_back(&mut self, l: Lease) -> bool {
-        if self.by_id.contains_key(&l.id) {
-            return false;
-        }
-        self.next = self.next.max(l.id + 1);
-        self.by_id.insert(l.id, l);
-        true
     }
 
     pub fn live(&self, now: Instant) -> impl Iterator<Item = &Lease> {
@@ -638,10 +619,9 @@ impl Leases {
         if let Work::Job { step, targets } = &work {
             self.granted.push((worker.to_string(), self.epoch, id));
             // (A lapsed lease of any of its targets, still kept, ends: it is the new one's to hold.
-            // Kept, a restart or the next lead's take-up of this state gave it a whole TTL again, or
-            // its member's word held it: two live leases of one target. Task #1038, the pool's
-            // simulator's seed 241: a lead's own job's lease lapsed while its Mac slept, its target
-            // granted again, and the next lead took both up from its backup.)
+            // Kept, a restart gave it a whole TTL again, or its member's word held it: two live
+            // leases of one target. Task #1038, the pool's simulator's seed 241: a lead's own job's
+            // lease lapsed while its Mac slept, its target granted again, and a take-up held both.)
             let over = |l: &Lease| match &l.work {
                 Work::Job { step: s, targets: ts } => {
                     s == step && ts.iter().any(|t| targets.iter().any(|u| u.0 == t.0))
@@ -1190,8 +1170,8 @@ mod tests {
     }
 
     /// Task #1038 (the pool's simulator, seed 241 of every fault): a lease that lapsed (its holder
-    /// asleep) and whose target was granted again is gone from the state kept: a restart or the
-    /// next lead's take-up gives it no TTL again beside the new one.
+    /// asleep) and whose target was granted again is gone from the state kept: a restart gives it
+    /// no TTL again beside the new one.
     #[test]
     fn a_lapsed_lease_whose_target_is_granted_again_is_gone() {
         let t0 = Instant::now();
@@ -1209,7 +1189,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lease_says_its_epoch_and_another_lead_takes_it_up() {
+    fn a_lease_says_its_epoch_and_a_restart_takes_it_up() {
         // (docs/pool.md §7.5: leases `<epoch>-<n>`, wall-clock times, saved under the key `term`.)
         let t0 = Instant::now();
         let mut a = Leases::new(Duration::from_secs(600));
@@ -1221,7 +1201,7 @@ mod tests {
         assert!(l.granted_at > 1_700_000_000);
         let snap = a.snapshot();
         assert!(snap.to_string().contains("\"term\":4"), "{snap}");
-        // Another lead, in epoch 5: its jobs' leases (not the task's), each live a whole ttl; its own
+        // Restarted, in epoch 5: its jobs' leases (not the task's), each live a whole ttl; its own
         // ids go on past them.
         let t1 = t0 + Duration::from_secs(900);
         let mut b = Leases::new(Duration::from_secs(600));
@@ -1234,29 +1214,24 @@ mod tests {
         assert!(b.restore(&serde_json::json!({"leases": 3}), t1).is_err());
     }
 
-    /// Task #1103: a job run's id is unique across a lead move, though the lease numbers of two
-    /// leads may meet. The lead before grants a lease after its last backup; the next, its clock
-    /// behind, takes that backup up and goes on from the backup's next number, the very one: their
-    /// runs' ids differ by their epochs. And a lead whose saved state is lost and whose clock was
-    /// set back gives no number its history names (`past`).
+    /// Task #1103: a job run's id is unique across a restart, its leases taken up keeping theirs; and
+    /// a lead whose saved state is lost and whose clock was set back gives no number its history
+    /// names (`past`).
     #[test]
-    fn a_job_id_is_never_given_twice_across_a_lead_move_or_a_lost_state() {
+    fn a_job_id_is_never_given_twice_across_a_restart_or_a_lost_state() {
         use jobrt::jobid::JobId;
         let (t0, wall) = (Instant::now(), std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000));
         let ttl = Duration::from_secs(600);
         let mut a = Leases::load(None, ttl, t0, wall);
         a.epoch = 4;
         let first = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
-        let backup = a.snapshot();
         let after = a.grant("m2", job(&[("6/1/2", "k2")]), t0);
         let mut b = Leases::load(None, ttl, t0, wall - Duration::from_secs(60));
         b.epoch = 5;
-        b.restore(&backup, t0).unwrap();
+        b.restore(&a.snapshot(), t0).unwrap();
         let mine = b.grant("m4", job(&[("6/2/2", "k3")]), t0);
-        assert_eq!(mine, after, "the same lease number");
-        let (ja, jb) = (a.job_of(after).unwrap(), b.job_of(mine).unwrap());
-        assert_ne!(ja, jb);
-        assert_eq!((ja.to_string(), jb.to_string()), (format!("4-{after}"), format!("5-{mine}")));
+        assert!(mine > after, "past every lease taken up");
+        assert_eq!(b.job_of(mine).unwrap().to_string(), format!("5-{mine}"));
         assert_eq!(b.job_of(first), Some(JobId { epoch: 4, n: first }), "a lease taken up keeps its run's id");
         // A lead's state lost and its clock set back an hour: past what its history names.
         let mut c = Leases::load(None, ttl, t0, wall - Duration::from_secs(3600));

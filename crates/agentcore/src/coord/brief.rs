@@ -152,7 +152,7 @@ mod tests {
         let mem = crate::pool::nas::Mem::default();
         let mut saved = r.clone();
         saved.seq -= 1;
-        saved.save(&mem, &|_| Ok(()), None).unwrap();
+        saved.save(&mem, &|_| Ok(())).unwrap();
         let on_nas = mem.read(crate::pool::records::ONE_BRIEF).unwrap().unwrap();
         let s = Served::of(&saved).unwrap();
         assert_eq!(*s.held.json, on_nas, "the NAS's bytes");

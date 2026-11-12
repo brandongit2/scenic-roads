@@ -198,10 +198,9 @@ pub fn after(run: &mut Run, out: &Out, home: &Path, coord: Option<&crate::coord:
     let now = run.side.now();
     let dir = home.join("pool");
     let me = run.side.member().id.clone();
-    // The lead it is, for its members' beats' answers (docs/coordination.md steps 8a, 8c): only as
-    // this step's own read of the declaration found it (`Out::vouched`).
+    // The lead it is, for its members' beats' answers (docs/coordination.md steps 8a, 8c).
     if let Some(c) = coord {
-        c.set_led(out.leads.filter(|_| out.vouched).map(|e| (e, run.side.member().clone())));
+        c.set_led(out.leads.map(|e| (e, run.side.member().clone())));
         // The records' brief it serves (docs/coordination.md step 8d): as last saved whole, on its
         // disk and the NAS's one path; none once it no longer leads.
         let d = run.side.driver();
@@ -673,7 +672,7 @@ mod tests {
     #[test]
     fn the_leads_events_in_the_history() {
         let events = [
-            Event::TookUp { epoch: 842, how: "its own records".into(), another: false },
+            Event::TookUp { epoch: 842, how: "its own records".into() },
             Event::SteppedDown { epoch: 842, why: "another member is the declared lead".into() },
             Event::Merged { applied: vec![], overtaken: 0, refused: 0, done: vec![] },
         ];
@@ -811,12 +810,11 @@ mod tests {
         }
 
         /// docs/coordination.md steps 8a, 8c: the lead's agent tells its coordinator it leads after
-        /// each step (`after`), and its beats' answers say it, only while that step's own read of
-        /// the declaration found it the lead (`Out::vouched`). Its declaration unreadable, it keeps
-        /// its view and leads on, but its answers say no lead, so its members read the declaration
-        /// themselves and find an owner's move; moved, it steps down and says none.
+        /// each step (`after`), and its beats' answers say it while it leads. Its declaration
+        /// unreadable, it keeps its view and leads on; declared another (the owner moved the lead
+        /// by hand), it leads nothing and says none.
         #[test]
-        fn the_lead_s_answers_say_it_leads_only_as_its_own_step_read_it() {
+        fn the_lead_s_answers_say_it_leads_while_it_leads() {
             let d = tempfile::tempdir().unwrap();
             let (mut a, b) = pool(d.path());
             let (c, _port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "");
@@ -837,22 +835,20 @@ mod tests {
             };
             (c.set_epoch(1), c.set_member(Some(&a.id())));
             let o = go(&mut a);
-            assert_eq!((o.leads, o.vouched), (Some(1), true), "{:?}", o.events);
+            assert_eq!(o.leads, Some(1), "{:?}", o.events);
             assert_eq!(said(), Some(a.id()));
-            // Its declaration not readable (a share failing it): it leads on, its answers say none.
+            // Its declaration not readable (a share failing it): it leads on, and says so.
             let decl = d.path().join("nas").join(lead::LEAD);
             let kept = std::fs::read(&decl).unwrap();
             std::fs::remove_file(&decl).unwrap();
             std::fs::create_dir(&decl).unwrap();
             let o = go(&mut a);
-            assert_eq!((o.leads, o.vouched), (Some(1), false), "{:?}", o.events);
-            assert_eq!(said(), None);
+            assert_eq!(o.leads, Some(1), "{:?}", o.events);
+            assert_eq!(said(), Some(a.id()));
             std::fs::remove_dir(&decl).unwrap();
             std::fs::write(&decl, &kept).unwrap();
-            assert!(go(&mut a).vouched);
-            assert_eq!(said(), Some(a.id()));
-            // The owner moves the lead to B: A steps down, and says none.
-            let to_b = lead::Declared { member: b.id(), host: "b".into(), since: 1 };
+            // The owner declares B: A leads nothing, and says none.
+            let to_b = lead::Declared { member: b.id(), host: "b".into() };
             std::fs::write(&decl, serde_json::to_vec(&to_b).unwrap()).unwrap();
             assert_eq!(go(&mut a).leads, None);
             assert_eq!(said(), None);

@@ -14,12 +14,11 @@
 //!   change in memory is never left out of the files.
 //! - **The epoch** (§4.3): bumped and made durable as the store opens, before anything is answered.
 //! - **Recovery** (§4.4): opening loads the snapshot and replays the log; a torn last line (a crash
-//!   mid-append: never answered) is cut. `restore` rebuilds a lost store from the NAS backup, its
-//!   epoch past the backup's by `RESTORE_EPOCHS`.
-//! - **The backup** (`back_up`): the snapshot written whole to the NAS (`BACKUP_PATH`) each
-//!   `backup_every` while it changed, off the writer's thread and every handler's.
+//!   mid-append: never answered) is cut.
+//!
+//! Its files are the lead's alone, on its own disk: nothing of them goes to the NAS. A lead moved
+//! to another Mac by hand takes them with it (docs/pool.md §6.1).
 
-use crate::pool::nas::Nas;
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,36 +37,13 @@ pub const COMPACT_BYTES: u64 = 10 << 20;
 pub const COMPACT_AGE: Duration = Duration::from_secs(3600);
 /// A handler waits this long for its change to be durable; past it, 503 (§4.1).
 pub const DURABLE_WAIT: Duration = Duration::from_secs(2);
-/// The store's backup on the NAS (§3.2).
-pub const BACKUP_PATH: &str = "state/lead/store.json";
-/// How often it's written while the store changes: 10 min; 200 ms in a unit test
-/// (`buildstore::out::testing`).
-pub fn backup_every() -> Duration {
-    if buildstore::out::testing() {
-        Duration::from_millis(200)
-    } else {
-        Duration::from_secs(600)
-    }
-}
-/// A store restored from the backup starts this many epochs past it: no job id repeats (§4.4; jobrt::jobid).
-pub const RESTORE_EPOCHS: u64 = 1000;
-
-/// The whole state at a `seq` (the snapshot's file, and the backup's, which also names its writer
-/// and when).
+/// The whole state at a `seq` (the snapshot's file).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub epoch: u64,
     pub seq: u64,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub member: String,
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub at: u64,
     #[serde(default)]
     pub docs: Docs,
-}
-
-fn is_zero(n: &u64) -> bool {
-    *n == 0
 }
 
 /// One change, a line of the log.
@@ -182,41 +158,6 @@ impl Store {
         Ok(s)
     }
 
-    /// Rebuilds the store in `dir` from `backup` (the NAS's, `BACKUP_PATH`), in place of whatever is
-    /// there, its epoch `RESTORE_EPOCHS` past the backup's; then opens it. Run by the simulator's
-    /// disk replacement alone: the owner's command for it is planned (task #1159).
-    pub fn restore(dir: &Path, backup: &Snapshot) -> Result<Arc<Store>> {
-        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        // (Its position and epoch past whatever is still in `dir`: a crash after the snapshot's
-        // rename and before the old segments go leaves lines its replay skips, never one applied
-        // over the backup, nor an epoch line taking the epoch back. A log that can't be read goes
-        // before the snapshot is written.)
-        let (mut seq, mut epoch) = (backup.seq, backup.epoch);
-        if let Some(old) =
-            std::fs::read(dir.join(SNAPSHOT)).ok().and_then(|b| serde_json::from_slice::<Snapshot>(&b).ok())
-        {
-            (seq, epoch) = (seq.max(old.seq), epoch.max(old.epoch));
-        }
-        let read = seglog::read::<Line>(dir, "pool store (restored over)", |l| {
-            seq = seq.max(l.seq);
-            epoch = epoch.max(l.epoch.unwrap_or(0));
-            Ok(())
-        });
-        if read.is_err() {
-            for first in seglog::segments(dir)? {
-                std::fs::remove_file(dir.join(seglog::segment_name(first)))?;
-            }
-            seglog::sync_dir(dir)?;
-        }
-        let snap =
-            Snapshot { epoch: epoch + RESTORE_EPOCHS, seq, member: String::new(), at: 0, docs: backup.docs.clone() };
-        seglog::write_durable(&dir.join(SNAPSHOT), &serde_json::to_vec(&snap)?)?;
-        for first in seglog::segments(dir)? {
-            std::fs::remove_file(dir.join(seglog::segment_name(first)))?;
-        }
-        Store::open(dir)
-    }
-
     /// Whether `dir` holds a store (a snapshot or a log).
     pub fn exists(dir: &Path) -> bool {
         dir.join(SNAPSHOT).exists() || seglog::segments(dir).is_ok_and(|s| !s.is_empty())
@@ -264,36 +205,6 @@ impl Store {
 
     pub fn epoch(&self) -> u64 {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).state.epoch
-    }
-
-    /// The epoch, raised past `past` first when it isn't (a line of the log, durable before it
-    /// answers): a lead's take-up leads an epoch past the records it starts from
-    /// (crate::pool::driver::Io::epoch: another lead's after the owner moved the lead, or the
-    /// pool's last term at the move from terms, docs/coordination.md step 8c). An error when the
-    /// line isn't on disk within `DURABLE_WAIT`.
-    pub fn raise_epoch(&self, past: u64) -> Result<u64> {
-        let seq = {
-            let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
-            // (Already past: durable all the same before it answers. A raise whose wait timed out
-            // is in memory alone until its line is written, and its retry lands here.)
-            if m.state.epoch > past {
-                let (epoch, seq) = (m.state.epoch, m.state.seq);
-                drop(m);
-                ensure!(self.wait(seq, DURABLE_WAIT), "the store's epoch {epoch} isn't on its disk");
-                return Ok(epoch);
-            }
-            let l = Line { seq: m.state.seq + 1, epoch: Some(past + 1), ..Default::default() };
-            match line_bytes(&l) {
-                Ok(b) => m.pending.extend_from_slice(&b),
-                Err(_) => m.compact = true,
-            }
-            m.pending_n += 1;
-            m.state.apply(&l);
-            self.work.notify_all();
-            l.seq
-        };
-        ensure!(self.wait(seq, DURABLE_WAIT), "the store's epoch {} isn't on its disk", past + 1);
-        Ok(past + 1)
     }
 
     /// The state with every change submitted.
@@ -425,51 +336,6 @@ fn compact(dir: &Path, snap: &Snapshot) -> Result<Appender> {
     Ok(a)
 }
 
-/// Writes `snap` (a store's snapshot, naming its writer and when) to the NAS (`BACKUP_PATH`), unless
-/// it's at `backed` (the `seq` last backed up): the `seq` backed up now.
-pub fn back_up_once(snap: &Snapshot, nas: &dyn Nas, backed: u64) -> Result<u64> {
-    if snap.seq != backed {
-        nas.write_whole(BACKUP_PATH, &serde_json::to_vec(snap)?)?;
-    }
-    Ok(snap.seq)
-}
-
-/// Writes `store`'s snapshot to the NAS (`BACKUP_PATH`) each `every` while it changed, as `member`,
-/// on a thread of its own, until the store stops or is dropped (and once more as it stops).
-pub fn back_up(store: &Arc<Store>, nas: Arc<dyn Nas + Send + Sync>, member: &str, every: Duration) {
-    let (w, member) = (Arc::downgrade(store), member.to_string());
-    std::thread::Builder::new()
-        .name("pool-store-backup".into())
-        .spawn(move || {
-            let mut backed = 0;
-            loop {
-                let Some(s) = w.upgrade() else { return };
-                let stopped = {
-                    let m = s.m.lock().unwrap_or_else(|e| e.into_inner());
-                    let m = s.work.wait_timeout_while(m, every, |m| !m.stop).unwrap_or_else(|e| e.into_inner()).0;
-                    m.stop
-                };
-                let snap = Snapshot { member: member.clone(), at: crate::coord::wall_now(), ..s.snapshot() };
-                drop(s);
-                match back_up_once(&snap, &*nas, backed) {
-                    Ok(seq) => backed = seq,
-                    Err(e) => eprintln!("pool store: its backup on the NAS: {e:#}"),
-                }
-                if stopped {
-                    return;
-                }
-            }
-        })
-        .map_err(|e| eprintln!("pool store: its backup: {e}"))
-        .ok();
-}
-
-/// The backup on the NAS, if there is one.
-pub fn read_backup(nas: &dyn Nas) -> Result<Option<Snapshot>> {
-    let Some(b) = nas.read(BACKUP_PATH)? else { return Ok(None) };
-    Ok(Some(serde_json::from_slice(&b).context(BACKUP_PATH)?))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,21 +350,6 @@ mod tests {
         let n = s.submit(set(k, v), Vec::new());
         assert!(s.wait(n, Duration::from_secs(10)));
         n
-    }
-
-    /// docs/coordination.md step 8c: a take-up raises the epoch past the records it starts from,
-    /// durably: a restart bumps it on from there, and a raise below it changes nothing.
-    #[test]
-    fn the_epoch_raised_past_a_take_ups_records_stays_past_them() {
-        let d = tempfile::tempdir().unwrap();
-        let s = Store::open(d.path()).unwrap();
-        assert_eq!(s.epoch(), 1);
-        assert_eq!(s.raise_epoch(840).unwrap(), 841, "past the pool's last term");
-        assert_eq!(s.raise_epoch(12).unwrap(), 841, "already past");
-        assert_eq!(s.raise_epoch(841).unwrap(), 842);
-        s.stop();
-        drop(s);
-        assert_eq!(Store::open(d.path()).unwrap().epoch(), 843);
     }
 
     #[test]
@@ -606,66 +457,5 @@ mod tests {
         s.stop();
         drop(s);
         assert_eq!(Store::open(d.path()).unwrap().snapshot().docs, want);
-    }
-
-    /// The backup on the NAS rebuilds a lost store, its epoch far past the backup's.
-    #[test]
-    fn store_restores_from_the_backup() {
-        let d = tempfile::tempdir().unwrap();
-        let nas_dir = d.path().join("nas");
-        std::fs::create_dir_all(&nas_dir).unwrap();
-        let nas: Arc<dyn Nas + Send + Sync> = Arc::new(store::nasfs::NasRoot::local_for_test(&nas_dir));
-        let s = Store::open(&d.path().join("lead")).unwrap();
-        put(&s, "settings/brokers", json!("on"));
-        back_up(&s, nas.clone(), "mini", Duration::from_millis(20));
-        store::testkit::eventually("the backup on the NAS", || {
-            read_backup(nas.as_ref()).ok().flatten().is_some_and(|b| b.docs.contains_key("settings/brokers"))
-        });
-        let epoch = s.epoch();
-        s.stop();
-        drop(s);
-        // (The lead's disk lost.)
-        std::fs::remove_dir_all(d.path().join("lead")).unwrap();
-        let b = read_backup(nas.as_ref()).unwrap().unwrap();
-        assert_eq!(b.member, "mini");
-        let back = Store::restore(&d.path().join("lead"), &b).unwrap();
-        assert_eq!(back.snapshot().docs.get("settings/brokers"), Some(&json!("on")));
-        assert!(back.epoch() > epoch + RESTORE_EPOCHS);
-    }
-
-    /// A restore over a store still on disk, its log past the backup (or a crash after the
-    /// restore's snapshot and before the old segments went): the old lines never come back over the
-    /// backup's documents, and the epoch stays past every one the old store had.
-    #[test]
-    fn a_restore_over_a_log_past_the_backup_skips_it() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("lead");
-        let s = Store::open(&dir).unwrap();
-        put(&s, "a", json!(1));
-        let backup = s.snapshot();
-        put(&s, "a", json!(2));
-        put(&s, "b", json!(3));
-        s.stop();
-        drop(s);
-        // (Reopened once more: its epoch past the backup's by 2, in the log alone.)
-        let s = Store::open(&dir).unwrap();
-        let old_epoch = s.epoch();
-        s.stop();
-        drop(s);
-        // (The old segments kept, as a crash before their removal would.)
-        let segs: Vec<(u64, Vec<u8>)> = seglog::segments(&dir)
-            .unwrap()
-            .into_iter()
-            .map(|f| (f, std::fs::read(dir.join(seglog::segment_name(f))).unwrap()))
-            .collect();
-        let back = Store::restore(&dir, &backup).unwrap();
-        back.stop();
-        drop(back);
-        for (f, b) in segs {
-            std::fs::write(dir.join(seglog::segment_name(f)), b).unwrap();
-        }
-        let s = Store::open(&dir).unwrap();
-        assert_eq!(s.snapshot().docs, backup.docs);
-        assert!(s.epoch() > old_epoch + RESTORE_EPOCHS, "{} vs {old_epoch}", s.epoch());
     }
 }

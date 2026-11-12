@@ -2,10 +2,10 @@
 //! role read from the declaration (docs/roles.md §1: a change restarts it into the new one), its
 //! coordinator while it leads (crate::coord, in process: offered the plan's work, its own jobs
 //! granted by `ask_own`, told what its driver's step came to as `agent::lead::after` and
-//! `agent::pool`'s step tell it, its store backed up to the NAS), its member's beat to the lead
+//! `agent::pool`'s step tell it), its member's beat to the lead
 //! (crate::agent::beat::ToLead::post_on over the network) and its asks (`LeaseCalls::ask`), its
 //! jobs (a few minutes each, a hand-off each as it ends; stopped when the lead says their lease
-//! isn't its), and its restarts (an update, a crash, its disk replaced).
+//! isn't its), and its restarts (an update, a crash).
 
 use super::*;
 use crate::agent::beat::ToLead;
@@ -35,8 +35,6 @@ const P_REUSE: f64 = 0.3;
 const GC_CHUNK: usize = 20;
 /// A job's run (s).
 const JOB_S: (u64, u64) = (60, 900);
-/// The lead's store backed up this often (s: `pool::store::backup_every`).
-const BACKUP_S: u64 = 600;
 /// The memory, cores and disk each Mac asks with (MB, cores, MB): room for any job.
 const MEM_MB: u64 = 16_000;
 const CORES: u32 = 8;
@@ -75,15 +73,13 @@ pub(super) struct Mac {
     /// Its jobs' hand-offs handed to a step whose state isn't saved yet: in their jobs' folders
     /// still (crate::agent::pool::job_dir), handed again after a crash.
     unsaved: Vec<Entry>,
-    /// Leading: its coordinator took another lead's state up once in this process (`Run::led`).
+    /// Leading: it took the records up once in this process (`Run::led`).
     took: bool,
     /// The Mac whose coordinator it reaches: the declared lead's, as it last read the declaration;
     /// kept on its disk (coordwire::lead's `SAVED`), so a restart with the NAS away still has it.
     lead: Option<usize>,
     /// Its beat's last post failed.
     failing: bool,
-    /// Leading: its store's backup's `seq` last written, and when (the run's time).
-    backed: (u64, u64),
     /// Leading: GC's queue (opened on its map log's folder as its coordinator starts), and the
     /// records it last published the map of.
     gc: Option<Arc<store::map::gc::GcQueue>>,
@@ -114,7 +110,6 @@ impl Mac {
             took: false,
             lead: None,
             failing: false,
-            backed: (0, 0),
             gc: None,
             published: None,
             briefs: Briefs::default(),
@@ -189,9 +184,6 @@ impl Mac {
             w.macs[k].epoch = c.shared.lock().unwrap().keep.store().map_or(0, |s| s.epoch());
             w.macs[k].coord = Some(Arc::new(c));
             w.macs[k].clock = Some(clock);
-            // (What it knew of its leases stays: its store keeps every lease it answered, a restart
-            // or a crash notwithstanding; only a disk replaced (`World::restore`) or another's
-            // backup taken up replaces it.)
             w.seen_coord(k);
             w.count("lead coordinators started");
             let e = w.macs[k].epoch;
@@ -199,42 +191,31 @@ impl Mac {
             Ok(())
         })??;
         (self.gc, self.published) = (gc, None);
-        self.backed = (0, self.sim.quiet(|w| w.t)?);
         Ok(())
     }
 
-    /// Restarts its process: its coordinator stopped (`clean`: backed up first, as its stop
-    /// writes it; or gone with a crash), its memory gone but its saved state, or that lost too
-    /// (`Cfg::lose`, its disk replaced); its role read again.
+    /// Restarts its process: its coordinator stopped (`clean`) or gone with a crash, its memory
+    /// gone but its saved state, or that lost too (`Cfg::lose`: the records on its disk kept); its
+    /// role read again.
     fn restart(&mut self, clean: bool) -> Result<()> {
         let k = self.k;
-        if clean && self.role == Role::Lead {
-            self.back_up(true);
-        }
         let keeps: BTreeSet<String> =
             self.saved.mine.keys().cloned().chain(self.unsaved.iter().filter_map(Entry::key)).collect();
         let lost = self.sim.quiet(|w| {
             w.stop_coord(k, clean);
             w.running.retain(|_, r| r.mac != k);
-            let lost = std::mem::take(&mut w.macs[k].lose) || (w.cfg.lose && w.rng.chance(0.3));
+            let lost = w.cfg.lose && w.rng.chance(0.3);
             if lost {
                 w.state_lost(&keeps);
-                w.macs[k].local = None;
-                w.disk_lost.insert(k, w.t);
                 w.count("saved states lost");
             }
             w.macs[k].crashed = false;
             w.count("restarts");
-            // (A new process finds itself declared afresh: its take-up's wait counts from now.)
-            let now = w.awake_clock(k);
-            if let Some(m) = w.moved.as_mut().filter(|m| m.0 == k) {
-                m.1 = now;
-            }
             lost
         })?;
         let saved = if lost { Saved::default() } else { self.saved.clone() };
         if lost {
-            // (Their jobs' folders gone with its disk or state.)
+            // (Their jobs' folders gone with its state.)
             self.unsaved.clear();
         }
         self.me.app = self.sim.quiet(|w| app(w.macs[k].app))?;
@@ -260,7 +241,7 @@ impl Mac {
         if crashed || app_now != self.me.app {
             self.restart(!crashed)?;
         }
-        // Its role, read again: another (the owner moved the lead) restarts it into that one.
+        // Its role, read again: another restarts it into that one.
         let role = lead::role(&self.sim, Some(&self.me.id));
         if role != Role::Unknown && role != self.role && !self.sim.quiet(|w| w.macs[k].crashed)? {
             self.sim.note(|| format!("mac{k}'s role is now {role:?}: its agent restarts"));
@@ -353,7 +334,7 @@ impl Mac {
         }
         // A job reading the records: the one path's.
         if self.rng.chance(P_READ) {
-            if let Ok(Some(r)) = records::load_one(&self.sim) {
+            if let Ok(Some(r)) = buildstore::records::load_one::<Records>(&self.sim) {
                 if let Err(why) = consistent(&r) {
                     self.sim.op(|w, me| {
                         w.wrong(format!("mac{me} read epoch {}'s records at {}, not consistent: {why}", r.epoch, r.seq))
@@ -366,21 +347,12 @@ impl Mac {
 
     /// The lead's agent after its step (crate::agent::pool's step, `took_up`, `lead::after`): its
     /// coordinator told what the step came to, the plan's work offered, its own slot's job asked
-    /// for, its store backed up when due, its contact published.
+    /// for, its contact published.
     fn lead_after(&mut self, out: &Out, faulting: bool, checked: u64) -> Result<()> {
         let k = self.k;
         let (me, h) = (self.me.clone(), self.handoffs.clone());
-        // (Another Mac's lead before it left its store's backup: taken up once a process.)
-        let took = out.events.iter().find_map(|e| match e {
-            Event::TookUp { another, .. } => Some(*another),
-            _ => None,
-        });
-        let first = took.is_some() && !std::mem::replace(&mut self.took, true);
-        let backup = if first && took == Some(true) {
-            crate::pool::store::read_backup(&self.sim).ok().flatten().filter(|b| b.member != me.host)
-        } else {
-            None
-        };
+        let took = out.events.iter().any(|e| matches!(e, Event::TookUp { .. }));
+        let first = took && !std::mem::replace(&mut self.took, true);
         let own: Vec<u64> = self.running.iter().map(|j| j.n).collect();
         let records = self.driver.records().cloned();
         let saved_records = self.driver.saved_records();
@@ -388,7 +360,6 @@ impl Mac {
             leads: out.leads,
             duties: out.duties,
             caught_up: out.caught_up,
-            vouched: out.vouched,
             held: out.held.clone(),
         };
         let ask = faulting && self.running.is_empty() && self.rng.chance(P_ASK);
@@ -396,7 +367,7 @@ impl Mac {
         let q = self.gc.clone();
         let publish = saved_records
             .filter(|s| records.as_ref().is_some_and(|r| (r.epoch, r.seq) == *s) && self.published != Some(*s));
-        let collect = out.duties && out.vouched && self.rng.chance(P_GC);
+        let collect = out.duties && out.caught_up && self.rng.chance(P_GC);
         let poll = self.rng.chance(P_MAP);
         let granted = self.sim.alive(|w| -> Result<Option<crate::coord::Grant>> {
             let Some(c) = w.macs[k].coord.clone() else { return Ok(None) };
@@ -407,25 +378,13 @@ impl Mac {
                     c.set_epoch(*epoch);
                 }
             }
-            if let Some(b) = &backup {
-                match crate::agent::pool::load_backup(&c, b) {
-                    Ok(n) => {
-                        // (Its table now that lead's: what it held before, in its own store, is
-                        // gone from it, as a lease that lead never held.)
-                        w.known[k] = c.live_jobs().into_iter().map(|(e, n, _, _)| (e, n)).collect();
-                        w.count("lead states taken up from another's backup");
-                        w.note(|| format!("mac{k}'s coordinator took up {n} leases from {}'s backup", b.member));
-                    }
-                    Err(e) => w.wrong(format!("mac{k} can't take up {}'s backup: {e:#}", b.member)),
-                }
-            }
             if first {
                 c.drop_workers(&crate::agent::slot_workers(&me.host), &own);
             }
             if let Some(e) = out.leads {
                 c.set_epoch(e);
             }
-            c.set_led(out.leads.filter(|_| out.vouched).map(|e| (e, me.clone())));
+            c.set_led(out.leads.map(|e| (e, me.clone())));
             match &records {
                 Some(r) if saved_records == Some((r.epoch, r.seq)) => c.set_brief(Some(r)),
                 Some(_) => {}
@@ -472,32 +431,7 @@ impl Mac {
         if let Some(g) = granted {
             self.start_job(g, k)?;
         }
-        // Its store backed up each `BACKUP_S`.
-        if self.sim.quiet(|w| w.t)? >= self.backed.1 + BACKUP_S {
-            self.back_up(false);
-        }
         Ok(())
-    }
-
-    /// Its store's snapshot to the NAS (crate::pool::store::back_up_once), as a stop writes it
-    /// (`stopping`: whether it changed or not since).
-    fn back_up(&mut self, stopping: bool) {
-        let k = self.k;
-        let Ok(Some(snap)) = self.sim.alive(|w| {
-            let c = w.macs[k].coord.clone()?;
-            let s = c.shared.lock().unwrap().keep.store().cloned()?;
-            Some(crate::pool::store::Snapshot { member: host(k), at: w.clock(k), ..s.snapshot() })
-        }) else {
-            return;
-        };
-        let backed = if stopping { u64::MAX } else { self.backed.0 };
-        match crate::pool::store::back_up_once(&snap, &self.sim, backed) {
-            Ok(seq) => {
-                self.backed = (seq, self.sim.quiet(|w| w.t).unwrap_or(0));
-                self.sim.count("lead stores backed up");
-            }
-            Err(e) => self.sim.note(|| format!("mac{k}'s backup: {e:#}")),
-        }
     }
 
     /// A member's agent after its step: its beat to its lead (the leases its jobs hold, the
@@ -679,7 +613,6 @@ impl Mac {
             Event::TookUp { how, .. } => {
                 let kind = match how.as_str() {
                     "its own records" => "take-ups from its own records",
-                    h if h.starts_with("the one path's") => "take-ups from the one path's records",
                     _ => "take-ups from today's files",
                 };
                 self.sim.count(kind);
@@ -691,14 +624,7 @@ impl Mac {
                     w.applied(k, e, applied);
                 })?;
             }
-            Event::Waits { what: "take up the records", why } => {
-                self.sim.count("take-ups tried again");
-                // (Records older than the one path's brief: the Mac that led its epoch has them.)
-                let led = why.split("the Mac that led epoch ").nth(1).and_then(|r| r.split(':').next()?.parse().ok());
-                if let Some(e) = led {
-                    self.sim.quiet(|w| w.waits_on(k, e))?;
-                }
-            }
+            Event::Waits { what: "take up the records", .. } => self.sim.count("take-ups tried again"),
             Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
             _ => {}
         }

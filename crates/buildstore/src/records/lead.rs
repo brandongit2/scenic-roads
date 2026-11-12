@@ -15,7 +15,8 @@ pub const LEAD: &str = "state/build/lead-member.json";
 
 /// The declared lead: the one member that leads, its store's epoch the records' and the leases'
 /// number (docs/coordination.md §4.3). Written once with create-new (`declare`) by the first Mac in
-/// a new pool; moved to another Mac by the owner, by hand.
+/// a new pool; moved to another Mac by the owner, by hand (docs/pool.md §6.1). (A `since` an older
+/// app wrote is read past.)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Declared {
     /// Its member id.
@@ -23,9 +24,6 @@ pub struct Declared {
     /// Its host name: a label.
     #[serde(default)]
     pub host: String,
-    /// When it was declared (unix seconds, by the declaring Mac's clock).
-    #[serde(default)]
-    pub since: u64,
 }
 
 /// The declared lead; None when there's no declaration yet (or it can't be read whole: being made).
@@ -63,8 +61,8 @@ pub fn role_of(lead: Option<&str>, me: Option<&str>) -> Role {
 
 /// Declares `me` the lead when no lead is declared yet (create-new: one declaration, but for the
 /// owner's hand): the declaration there now, this one or an earlier.
-pub fn declare(nas: &dyn Nas, me: &Member, now: u64) -> Result<Option<Declared>> {
-    let d = serde_json::to_vec_pretty(&Declared { member: me.id.clone(), host: me.host.clone(), since: now })?;
+pub fn declare(nas: &dyn Nas, me: &Member) -> Result<Option<Declared>> {
+    let d = serde_json::to_vec_pretty(&Declared { member: me.id.clone(), host: me.host.clone() })?;
     if let Created::Unwritten(e) = nas.create_new(LEAD, &d)? {
         // (Its create made the file and its bytes didn't land: no other create can win it.)
         nas.write_whole(LEAD, &d).with_context(|| format!("{e:#}"))?;

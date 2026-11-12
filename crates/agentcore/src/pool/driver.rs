@@ -22,8 +22,7 @@
 //!
 //! - **does its NAS operations through `Io`** (crate::pool::nas::Nas, two clocks, its own disk's
 //!   copy of the records and its store's epoch): the lead's declaration read, the records' save
-//!   (about 14 MB), a take-up's read of the one path; never a listing, never a sleep, no thread of
-//!   its own. Hand-offs come and go by HTTP (crate::coord::handoffs): the lead merges them from
+//!   (about 14 MB); never a listing, never a sleep, no thread of its own. Hand-offs come and go by HTTP (crate::coord::handoffs): the lead merges them from
 //!   memory;
 //! - **reads the clocks itself**, where a decision needs the time: the agent passes no time in;
 //! - **takes what was heard since the last step** (`Heard`): the members' messages to it, the
@@ -33,8 +32,7 @@
 //!   (best effort: a message lost is made up for); the pool's fields of this Mac's heartbeat, to
 //!   write with the rest of it, stamped as it's written; the epoch it leads, if it leads, and what
 //!   it may do as that now: grant jobs and plan (`duties`); publish a catalogue only while its
-//!   records reflect what's handed off (`caught_up`), and sweep (GC) only on a step whose own read
-//!   of the declaration found it the lead (`vouched`); the hand-offs to acknowledge; and what
+//!   records reflect what's handed off (`caught_up`); the hand-offs to acknowledge; and what
 //!   happened (`Event`s: epochs taken up and stepped down from; errors), for the history and the
 //!   log;
 //! - **never fails**: an error stops only the duty that met it (said in an `Event::Failed`), and
@@ -61,20 +59,17 @@
 //! leads until the owner writes it; in a new pool (no records saved at the one path), the first Mac
 //! in it declares itself, once, with create-new.
 //!
-//! The lead takes up the records once a process (`take_up`): from its own, kept on its disk (step
-//! 8b), unless the one path holds newer ones (another lead saved them: the owner moved the lead
-//! here, or away and back), or it has none (its disk's copy lost); then from the one path's, read
-//! once `STALE_S` has passed since this process found itself declared, so that the last save the
-//! lead before it acknowledged is in them (that lead acknowledges only while a read of the
-//! declaration after its save still names it: `lead_step`). Its epoch is raised past the records'
-//! it starts from, so (epoch, seq) orders every snapshot, and job ids (jobrt::jobid) order, across the owner's
-//! moves (and past the pool's last term, at the move from terms). It leads until the declaration
-//! names another member, read each step.
+//! The lead takes up the records once a process (`take_up`), from its own, kept on its disk (step
+//! 8b: `Io::kept`); in a new pool, from today's files. It never takes up the one path's: the lead
+//! is moved to another Mac by hand, its agent stopped and its folders copied (docs/pool.md §6.1),
+//! and a lead whose disk lost its records doesn't lead. Its records are numbered on in its
+//! store's epoch, which is past theirs (a store whose epoch isn't, not the one that saved them,
+//! leads nothing). It leads while the declaration names it, read each step: an old lead started
+//! again after a hand move leads nothing.
 //!
 //! A member learns its lead from its lead's beat answer while one came lately (`Heard::lead_says`,
-//! docs/coordination.md step 8a), with no NAS call; without one (a lead not leading, or none
-//! answering: the owner may have moved the lead here) it reads the declaration, as the lead does
-//! every step.
+//! docs/coordination.md step 8a), with no NAS call; without one it reads the declaration, as the
+//! lead does every step.
 
 use super::beat::Beat;
 use super::journal::{Entry, Mine};
@@ -86,29 +81,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// The longest a read is taken to stay stale (s). Measured (task #645, tools/check/nas-probe.py, two
-/// Macs, 24 Oct, idle share, 570 trials): another Mac's rename over a file was read within 1.1 s,
-/// a new file opened within 0.12 s; a stat or listing kept a removed file, and a listing missed a
-/// new one, up to 33.5 s (macOS's SMB attribute and folder caches, ~30 s). 600 s is 18 times that
-/// tail, with room for a share under load (task #630 saw one name stale for 40 minutes: past any
-/// such bound). A take-up that reads the one path waits this
-/// long awake after its process found itself declared, so the last save the lead before it
-/// acknowledged is in what it reads.
-pub const STALE_S: u64 = 600;
 /// A lead saves its records again, changed or not, once this long awake has passed since its last
 /// save reached the NAS (s), so that an older save landing late over the one path (records::ONE)
 /// stays there this long at most (docs/coordination.md step 8b). Within one process a write past
 /// its deadline holds back the next to its path until it ends (crate::agent::nasread's
-/// `InFlight`); one an earlier process left running as it stopped, or a lead's before the owner
-/// moved it, may land after any: readers read it meanwhile, and a take-up passes over it (its
-/// lead's own copy is newer).
-pub const RESAVE_S: u64 = STALE_S;
-/// A lead grants and plans (`Out::duties`) only while a read of the declaration found it the lead
-/// less than this long ago, by both its clocks (s): one whose reads fail (a hung or slow share)
-/// stops before a lead the owner declared meanwhile takes up, `STALE_S` after first finding itself
-/// declared, so two leads never grant at once (as a stale read lasts `STALE_S` at most; the
-/// owner's edit read stale by the old lead counts from that read).
-pub const VOUCH_S: u64 = STALE_S / 2;
+/// `InFlight`); one an earlier process left running as it stopped may land after any: readers read
+/// it meanwhile.
+pub const RESAVE_S: u64 = 600;
 
 /// What the driver needs of the world: the NAS's operations, this Mac's clocks, its own copy of
 /// the records it leads, and its store's epoch.
@@ -126,10 +105,9 @@ pub trait Io: Nas {
     /// notwithstanding.
     fn keep(&self, records: &[u8]) -> anyhow::Result<()>;
     /// The epoch of this Mac's store (its coordinator's: docs/coordination.md §4.3, bumped as it
-    /// opens), raised past `past` first, durably, when it isn't: what a take-up leads, its records
-    /// and its leases numbered by it. An error when there's no store open (not the lead's process
-    /// yet) or it can't be raised (its disk failing).
-    fn epoch(&self, past: u64) -> anyhow::Result<u64>;
+    /// opens): what a take-up leads, its records and its leases numbered by it. An error when
+    /// there's no store open (not the lead's process yet).
+    fn epoch(&self) -> anyhow::Result<u64>;
 }
 
 /// A message between members, over the pool's API.
@@ -190,8 +168,7 @@ pub struct Heard {
     /// A member: the lead its lead's beat answered it is (crate::coord::held::Answer::leading),
     /// that answer fresh (within crate::coord::beats::PAGE_AWAY_S: crate::coord::beats::Beats::
     /// lead_says). Its lead is learnt from it, and the NAS's declaration isn't read; None (a lead
-    /// not leading, none answering lately: the owner may have moved the lead) reads it
-    /// (docs/coordination.md step 8a).
+    /// not leading, none answering lately) reads it (docs/coordination.md step 8a).
     pub lead_says: Option<Member>,
 }
 
@@ -205,17 +182,10 @@ pub struct Out {
     pub beat: Beat,
     /// The epoch it leads in.
     pub leads: Option<u64>,
-    /// Leading, this step's own read of the declaration found it the lead. Only then do its
-    /// coordinator's beat answers say it leads (crate::agent::lead::after,
-    /// `held::Answer::leading`), which its members take in place of the NAS (docs/coordination.md
-    /// step 8a): a lead whose share fails that read, keeping its last view, says nothing, so its
-    /// members read the declaration and find an owner's move. And only then does its agent sweep
-    /// (GC): no other lead declared.
-    pub vouched: bool,
     /// Leading, whether it may grant jobs and plan now (its member's lock known held).
     pub duties: bool,
     /// Leading, its records reflect what's handed off: every hand-off posted it, and its own jobs',
-    /// is merged and saved. A catalogue waits for it (and `duties`); GC too (and `vouched`).
+    /// is merged and saved. A catalogue waits for it (and `duties`); GC too.
     pub caught_up: bool,
     /// Leading: the hand-offs its check holds (`records::HOLD`: from a member on a newer app), with
     /// why: neither merged nor refused, merged again every step until the check takes or refuses
@@ -239,10 +209,7 @@ pub struct Out {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// Took up the records in epoch `epoch`, from where `how` says: its coordinator grants in it.
-    /// `another`: records another Mac's lead saved (the one path's, `Records::lead` not this
-    /// member): its coordinator takes up that lead's state, its store's backup (crate::agent::pool's
-    /// `took_up`); else its own store holds its state.
-    TookUp { epoch: u64, how: String, another: bool },
+    TookUp { epoch: u64, how: String },
     /// No longer leads (in epoch `epoch`): why.
     SteppedDown { epoch: u64, why: String },
     /// Hand-offs merged: applied, passed over (an older lease's), refused (`done`: the applied ones'
@@ -269,12 +236,6 @@ pub struct Saved {
     /// starts from older ones, whose saves acknowledged hand-offs no member keeps now.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub records: Option<(u64, u64)>,
-    /// The declaration it last took the records up under (its `since`, lead::Declared): a take-up
-    /// under another (the owner declared it anew: moved the lead away and back) waits `STALE_S`
-    /// from its own records too, the lead between maybe granting still. None: none known (a state
-    /// of before task #1038 takes up at once, as before).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub led_under: Option<u64>,
 }
 
 /// The records this Mac leads.
@@ -290,12 +251,6 @@ struct Lead {
     saved_at: u64,
     /// The hand-offs its check holds (`records::HOLD`), with why: merged again every step.
     held: BTreeMap<String, String>,
-    /// Its clocks (wall, awake) at its last step whose read of the declaration found it the lead
-    /// (`VOUCH_S`); None before one.
-    vouched_at: Option<(u64, u64)>,
-    /// The declaration it leads under (its `since`): its saves write the brief, and it
-    /// acknowledges, only while the declaration is that one (`records::Under`).
-    under: Option<u64>,
 }
 
 /// A member's part in the pool, one step at a time (see the module's doc: the contract).
@@ -306,31 +261,14 @@ pub struct Driver {
     lock: Option<MemberLock>,
     stopped: Option<String>,
     saved: Saved,
-    /// Its saved state is its own: what it saved leading before is known.
-    known: bool,
     lead: Option<Lead>,
     /// A take-up tried and not kept on its disk: its records as tried (numbered on, in its epoch).
     taking: Option<Records>,
-    /// Its records as it last led, for its next take-up to start from (it stepped down: the
-    /// declaration named another member a while).
-    spare: Option<Records>,
-    /// Declared and not leading: since when (awake clock) this process has found itself declared,
-    /// under which declaration (its `since`), and the moment (awake clock) before which its
-    /// take-up waits (`STALE_S`). A read that fails keeps them; one that finds another
-    /// declaration, or another member, starts them again.
-    declared_at: Option<u64>,
-    declared_under: Option<u64>,
-    wait_until: Option<u64>,
     /// The lead's declaration as last read (lead::declared), or as its lead's answer said it: the
     /// member that leads; and that member as last known (its app known only from its answer, or
     /// when it's this Mac).
     declared: Option<String>,
     lead_member: Option<Member>,
-    /// The declaration's `since` as last read naming this member (`Saved::led_under`).
-    declared_since: Option<u64>,
-    /// The declaration this process made naming it (its `since`: a new pool's first Mac,
-    /// `lead::declare`).
-    declared_itself: Option<u64>,
 }
 
 impl Driver {
@@ -350,25 +288,12 @@ impl Driver {
     }
 
     fn without(me: Member, saved: Saved) -> Driver {
-        let known = saved.member == me.id;
-        let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine, ..Default::default() } };
-        Driver {
-            me,
-            lock: None,
-            stopped: None,
-            saved,
-            known,
-            lead: None,
-            taking: None,
-            spare: None,
-            declared_at: None,
-            declared_under: None,
-            wait_until: None,
-            declared: None,
-            lead_member: None,
-            declared_since: None,
-            declared_itself: None,
-        }
+        let saved = if saved.member == me.id {
+            saved
+        } else {
+            Saved { member: me.id.clone(), mine: saved.mine, ..Default::default() }
+        };
+        Driver { me, lock: None, stopped: None, saved, lead: None, taking: None, declared: None, lead_member: None }
     }
 
     /// What to keep for the next process: saved after every step that changed it, before that
@@ -454,7 +379,6 @@ impl Driver {
             out.stop = Some(why.clone());
             return out;
         }
-        let start = (io.now(), io.awake());
         // Its jobs' hand-offs, kept whole; those an app before task #1125 wrote to the NAS's journal
         // read back whole.
         for e in heard.entries {
@@ -488,69 +412,25 @@ impl Driver {
             }
         }
         // Who leads: its lead's word (of another member) in place of the NAS's declaration.
-        // (`told`: this step learnt who leads, by a read or its lead's word; a read that fails
-        // tells nothing.)
-        let (mine, read, told) = match heard.lead_says.filter(|m| m.id != self.me.id) {
+        let (mine, read) = match heard.lead_says.filter(|m| m.id != self.me.id) {
             Some(m) => {
                 self.declared = Some(m.id.clone());
                 self.lead_member = Some(m);
-                (false, false, true)
+                (false, false)
             }
-            None => {
-                let (mine, read) = self.declare(io, &mut out);
-                (mine, read, read)
-            }
+            None => self.declare(io, &mut out),
         };
-        // A lead leads while it's declared; the declared lead, not leading, takes the records up.
+        // A lead leads while it's declared (an old lead started again after the owner moved the lead
+        // by hand leads nothing); the declared lead, not leading, takes the records up.
         if self.lead.is_some() && !mine {
             let why =
                 if self.declared.is_some() { "another member is the declared lead" } else { "no lead is declared" };
-            self.step_down(&mut out, why);
-        }
-        // A lead no read has named for `VOUCH_S` steps down (by either clock), whatever this step's
-        // read says: the owner may have moved the lead meanwhile, the next taking up and granting,
-        // and moved it back. It takes the records up again once a read names it, this step's too:
-        // its own, unless another lead saved since (then `STALE_S` after that read, once that lead
-        // has stopped granting). (Task #1038, the simulator's seed 20001: a lead whose reads failed, then asleep past
-        // `VOUCH_S`, its first read on waking naming it, led on in its old epoch and saved over the
-        // records of the lead between, losing what that one acknowledged.)
-        let lapsed = |l: &Lead| {
-            l.vouched_at
-                .is_none_or(|(w, a)| start.0.saturating_sub(w) >= VOUCH_S || start.1.saturating_sub(a) >= VOUCH_S)
-        };
-        // A lead whose read names it under another declaration than it took up under: the owner
-        // moved the lead away and back unread (asleep, or its reads failing), the lead between
-        // maybe granting still. It steps down and takes up anew, `STALE_S` on (`take_up`'s `anew`).
-        // (Task #1038, the simulator's seed 1364.)
-        if mine && read && self.lead.as_ref().is_some_and(|l| l.under.is_some() && l.under != self.declared_since) {
-            self.step_down(&mut out, "declared anew: the owner moved the lead away and back");
-        }
-        if self.lead.as_ref().is_some_and(lapsed) {
-            self.step_down(
-                &mut out,
-                &format!(
-                    "no read of the declaration has named it the lead in the last {VOUCH_S} s: it may not lead now"
-                ),
-            );
-        }
-        // A take-up's wait: kept through a read that fails, which tells nothing (task #1154: one
-        // started again by every failed read needs 30 good reads in a row, and on a share failing
-        // a read in five that's hours with no lead); started again by a read naming another
-        // member, or this one under another declaration than the wait began under (the owner moved
-        // the lead away and back meanwhile, the lead between maybe granting till `VOUCH_S` after
-        // its last read naming it: the wait counts from the read naming this member again). The
-        // take-up itself needs this step's read naming it.
-        if self.lead.is_none()
-            && told
-            && (!mine || (self.declared_at.is_some() && self.declared_under != self.declared_since))
-        {
-            (self.declared_at, self.declared_under, self.wait_until) = (None, None, None);
+            if let Some(l) = self.lead.take() {
+                out.events.push(Event::SteppedDown { epoch: l.epoch, why: why.to_string() });
+            }
         }
         if mine && read && self.lead.is_none() {
             self.take_up(io, &mut out);
-        }
-        if let Some(l) = self.lead.as_mut().filter(|_| read) {
-            l.vouched_at = Some(start);
         }
         if self.lead.is_some() {
             self.lead_step(io, &mut out, heard.handed, &heard.named_raw, check);
@@ -576,25 +456,10 @@ impl Driver {
                 }),
             }
         }
-        let end = (io.now(), io.awake());
         out.beat = self.beat(io);
         if let Some(l) = &self.lead {
             out.leads = Some(l.epoch);
-            out.vouched = read;
-            // (Its last read naming it `VOUCH_S` old or more: it may not lead now, the owner's move
-            // unread. No grants or plans until a read names it again.)
-            let (wall, awake) = end;
-            out.duties = l
-                .vouched_at
-                .is_some_and(|(w, a)| wall.saturating_sub(w) < VOUCH_S && awake.saturating_sub(a) < VOUCH_S);
-            if !out.duties {
-                out.events.push(Event::Waits {
-                    what: "grant jobs",
-                    why: format!(
-                        "no read of the declaration has named it the lead in the last {VOUCH_S} s: it may not lead now"
-                    ),
-                });
-            }
+            out.duties = true;
             out.caught_up = !l.dirty;
             out.held = l.held.iter().map(|(k, w)| (k.clone(), w.clone())).collect();
         }
@@ -602,35 +467,25 @@ impl Driver {
         // again.)
         if let Some(why) = unsure {
             out.events.push(Event::Failed { what: "check the member's lock", why });
-            (out.duties, out.caught_up, out.vouched) = (false, false, false);
+            (out.duties, out.caught_up) = (false, false);
         }
         out
     }
 
-    fn step_down(&mut self, out: &mut Out, why: &str) {
-        if let Some(l) = self.lead.take() {
-            out.events.push(Event::SteppedDown { epoch: l.epoch, why: why.to_string() });
-            self.spare = Some(l.records);
-        }
-    }
-
     /// Whether this Mac is the declared lead (lead::declared), read each step (the last read kept
-    /// when one fails), with whether it was read (`Out::vouched`). None declared: in a new pool (no
+    /// when one fails), with whether it was read. None declared: in a new pool (no
     /// records saved at the one path, nor its brief) the first Mac declares itself, once, with
     /// create-new; past that no Mac declares itself (the owner writes the declaration, and until
     /// then no one leads).
     fn declare(&mut self, io: &dyn Io, out: &mut Out) -> (bool, bool) {
         let read = match lead::declared(io) {
             Ok(Some(d)) => {
-                self.declared_since = (d.member == self.me.id).then_some(d.since);
                 self.know(Some(Member { id: d.member, host: d.host, app: String::new() }));
                 true
             }
             Ok(None) => match io.exists(records::ONE).and_then(|one| Ok(one || io.exists(records::ONE_BRIEF)?)) {
-                Ok(false) => match lead::declare(io, &self.me, io.now()) {
+                Ok(false) => match lead::declare(io, &self.me) {
                     Ok(d) => {
-                        self.declared_since = d.as_ref().filter(|d| d.member == self.me.id).map(|d| d.since);
-                        self.declared_itself = self.declared_since;
                         self.know(d.map(|d| Member { id: d.member, host: d.host, app: String::new() }));
                         true
                     }
@@ -667,13 +522,10 @@ impl Driver {
         });
     }
 
-    /// The records it kept on its own disk leading (`Io::kept`), when its saved state is its own
-    /// (another member's folder's, or one set aside, says nothing of what it led); one that can't be
-    /// read is said, and counts as none.
+    /// The records kept on this Mac's disk leading (`Io::kept`: its own, or copied in with its
+    /// folder as the owner moved the lead here by hand); one that can't be read is said, and counts
+    /// as none.
     fn kept(&self, io: &dyn Io, out: &mut Out) -> Option<Records> {
-        if !self.known {
-            return None;
-        }
         match io.kept().and_then(|b| b.map(|b| serde_json::from_slice::<Records>(&b)).transpose().map_err(Into::into)) {
             Ok(r) => r,
             Err(e) => {
@@ -683,178 +535,76 @@ impl Driver {
         }
     }
 
-    /// Takes up the records (§6.2), this Mac the declared lead and not leading. It starts from its
-    /// own (an earlier try's, its records as it last led, or kept on its disk: docs/coordination.md
-    /// step 8b), none older than it saved last (`Saved::records`), unless the one path's are newer
-    /// (another lead saved them: the owner moved the lead) or it has none (its disk's copy lost):
-    /// then from the one path's, read again once `STALE_S` has passed since this process found
-    /// itself declared, so the last save the lead before it acknowledged is in them; with none
-    /// there nor a brief, and none saved by this Mac before (a new pool), today's files. It leads its store's epoch, raised
-    /// past theirs (`Io::epoch`), its first snapshot saved. Not readable yet, or not kept on its
-    /// disk: tried again next step, numbered on. Kept and not written to the NAS: it leads all the
-    /// same, its NAS files written at its next step, nothing acknowledged until then.
+    /// Takes up the records (§6.2), this Mac the declared lead and not leading: from its own (an
+    /// earlier try's, or kept on its disk: docs/coordination.md step 8b), none older than it saved
+    /// last (`Saved::records`); with none, in a new pool (no records at the one path nor its brief,
+    /// none saved by this Mac before), today's files. It leads its store's epoch (`Io::epoch`),
+    /// past theirs, its first snapshot saved. Not readable yet, or not kept on its disk: tried
+    /// again next step, numbered on. Kept and not written to the NAS: it leads all the same, its
+    /// NAS files written at its next step, nothing acknowledged until then.
     fn take_up(&mut self, io: &dyn Io, out: &mut Out) {
-        let awake = io.awake();
-        if self.declared_at.is_none() {
-            (self.declared_at, self.declared_under) = (Some(awake), self.declared_since);
-        }
-        let since = self.declared_at.unwrap_or(awake);
-        if self.wait_until.is_some_and(|w| awake < w) {
-            return;
-        }
+        let wait = |out: &mut Out, why: String| out.events.push(Event::Waits { what: "take up the records", why });
         // (No store to lead an epoch of yet: its agent's coordinator starts after its first step.)
-        if let Err(e) = io.epoch(0) {
-            return out.events.push(Event::Waits { what: "take up the records", why: format!("its epoch: {e:#}") });
-        }
-        let waited = awake.saturating_sub(since) >= STALE_S;
-        let wait = |me: &mut Driver, out: &mut Out, why: &str| {
-            me.wait_until = Some(since + STALE_S);
-            out.events.push(Event::Waits {
-                what: "take up the records",
-                why: format!(
-                    "{why}: read in {} s, once the last save of a lead before it can't read stale",
-                    since + STALE_S - awake
-                ),
-            });
+        let epoch = match io.epoch() {
+            Ok(e) => e,
+            Err(e) => return wait(out, format!("its epoch: {e:#}")),
         };
-        // (Nor from records older than those it saved last: a stale read, or its disk's copy
-        // restored from a backup.)
-        let saved = self.saved.records.filter(|_| self.known);
-        // (Declared anew since it last took up: the owner moved the lead away and back, the lead
-        // between granting until `VOUCH_S` after its last read naming it. Task #1038, the
-        // simulator's seed 20055: a lead moved back took up its own records at once, a late save
-        // of its own over the one path's leaving none newer, beside the lead between.)
-        let anew = self.known && self.saved.led_under.is_some_and(|u| Some(u) != self.declared_since);
-        let retry = self.taking.is_some();
+        let saved = self.saved.records;
         let own = match &self.taking {
             Some(r) => Some(r.clone()),
-            None => self.spare.clone().or_else(|| self.kept(io, out)),
-        }
-        .filter(|r| saved.is_none_or(|s| (r.epoch, r.seq) >= s));
-        // (The brief read first: a save writes it after its snapshot, so one landing meanwhile
-        // leaves the snapshot read no older than the brief.)
-        let mark = match records::brief_mark(io) {
-            Ok(m) => m,
-            Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
+            None => self.kept(io, out),
         };
-        let one = match records::load_one(io) {
-            Ok(o) => o,
-            Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
-        };
-        // (Only records following the one path's brief (`records::follows`): its snapshot, a later
-        // save of its epoch, or an epoch taken up from them. Others are a save landed late over the
-        // one path (an earlier lead's, left running as it stopped or as the owner moved the lead;
-        // or a take-up's that never reached the NAS before the brief's lead took up, of a higher
-        // epoch or not), whose lead may have acknowledged what they lack; or a stale read. The
-        // fence the terms' own paths were, before step 8c. Tried again: a stale read passes; else
-        // the Mac whose records the brief is of has them on its disk, and leads from them once
-        // declared again.)
-        let follows = |r: &Records| mark.as_ref().is_none_or(|m| records::follows(r, m));
-        let had_own = own.is_some();
-        // (The newest epoch the NAS shows, followed or not: the take-up's is past it.)
-        let seen = one.as_ref().map(|o| o.epoch).max(mark.as_ref().map(|m| m.epoch)).unwrap_or(0);
-        let (own, one) = match (&mark, own.filter(follows), one) {
-            (Some(m), None, Some(o)) if !follows(&o) => {
-                let how = if (o.epoch, o.seq) < (m.epoch, m.seq) { "older than" } else { "taken up from none of" };
-                return out.events.push(Event::Waits {
-                    what: "take up the records",
-                    why: format!(
-                        "the newest records read are {}, {how} the one path's brief ({m}) or its later saves: a save \
-                         landed late over the one path, or a stale read (tried again; if this lasts, the records are \
-                         on the disk of the Mac that led epoch {}: declare it again)",
-                        o.mark(),
-                        m.epoch
-                    ),
-                });
+        let (mut r, how) = match own {
+            Some(r) => (r, "its own records"),
+            None if saved.is_some() => {
+                return wait(out, "its records aren't on its disk, and it saved records before: tried again".into())
             }
-            (_, own, one) => (own, one.filter(follows)),
-        };
-        let (base, how) = match (own, one) {
-            (Some(r), Some(o)) if (o.epoch, o.seq) > (r.epoch, r.seq) => {
-                if !waited {
-                    return wait(self, out, "the one path's records are newer than its own: another lead saved them");
-                }
-                (o, "the one path's records, newer than its own")
-            }
-            (Some(_), _) if anew && !waited => {
-                return wait(self, out, "declared anew since it last led: the lead before may grant still");
-            }
-            (Some(r), _) => (r, "its own records"),
-            (None, Some(_)) if !waited => {
-                let why = if had_own {
-                    "the one path's records are newer than its own: another lead saved them"
-                } else {
-                    "no records of its own: the one path's"
-                };
-                return wait(self, out, why);
-            }
-            (None, Some(o)) => (o, "the one path's records"),
-            // (A new pool: no records saved, nor by this Mac before. Declared by the owner, not by
-            // this process: the Mac declared before may have taken today's files up and be
-            // granting, its save not landed yet; it waits as for the one path's. Task #1038, the
-            // simulator's seed 1887: the owner moved a new pool's lead seconds in, and both took
-            // today's files up at once in epoch 1, granting the same target.)
-            (None, None)
-                if (self.declared_itself.is_none() || self.declared_itself != self.declared_since) && !waited =>
-            {
-                return wait(self, out, "a new pool, declared by the owner: the Mac declared before may lead");
-            }
-            (None, None) if saved.is_some() => {
-                return out.events.push(Event::Waits {
-                    what: "take up the records",
-                    why: format!("{} can't be read, and this Mac saved records before: tried again", records::ONE),
-                })
-            }
-            (None, None) => match io.exists(records::ONE_BRIEF) {
+            None => match io.exists(records::ONE).and_then(|one| Ok(one || io.exists(records::ONE_BRIEF)?)) {
                 Ok(false) => match Records::today(io) {
                     Ok(r) => (r, "today's files: the pool's first"),
-                    Err(e) => {
-                        return out
-                            .events
-                            .push(Event::Waits { what: "take up the records", why: format!("today's files: {e:#}") })
-                    }
+                    Err(e) => return wait(out, format!("today's files: {e:#}")),
                 },
                 Ok(true) => {
-                    return out.events.push(Event::Waits {
-                        what: "take up the records",
-                        why: format!("{} can't be read, its brief there: tried again", records::ONE),
-                    })
+                    return wait(
+                        out,
+                        format!(
+                            "the pool's records ({}) aren't on this Mac's disk: a lead moved by hand takes the lead's \
+                             folders with it (docs/pool.md §6.1)",
+                            records::ONE
+                        ),
+                    )
                 }
-                Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
+                Err(e) => return wait(out, format!("{e:#}")),
             },
         };
-        // (Another Mac's lead's records: taken up from the one path, of another lead's epoch, or
-        // of one of before the records named it.)
-        let another = how.starts_with("the one path's") && base.lead.as_deref() != Some(self.me.id.as_str());
-        let mut r = base;
-        // (Never from records older than those its lead last saved: a stale read's. What their
-        // saves acknowledged is on no member's disk any more: docs/coordination.md step 6.)
+        // (Never from records older than those it saved last: its disk's copy rolled back. What
+        // their saves acknowledged is on no member's disk any more: docs/coordination.md step 6.)
         if let Some((e, seq)) = saved.filter(|s| (r.epoch, r.seq) < *s) {
-            let why = records::Older(format!(
-                "the newest records read are epoch {}'s at {}, older than epoch {e}'s at {seq}, which it saved \
-                 (a stale read: tried again)",
-                r.epoch, r.seq
-            ));
-            return out.events.push(Event::Waits { what: "take up the records", why: why.to_string() });
+            return wait(
+                out,
+                format!(
+                    "its records are epoch {}'s at {}, older than epoch {e}'s at {seq}, which it saved",
+                    r.epoch, r.seq
+                ),
+            );
         }
-        // Its epoch: past theirs, and past what it saved (an earlier try's is its own already).
-        let epoch = if retry { Ok(r.epoch) } else { io.epoch(r.epoch.max(saved.map_or(0, |s| s.0)).max(seen)) };
-        let epoch = match epoch {
-            Ok(e) => e,
-            Err(e) => {
-                return out.events.push(Event::Waits { what: "take up the records", why: format!("its epoch: {e:#}") })
-            }
-        };
+        // (Its store numbered them, or the store before it on this disk: a store whose epoch isn't
+        // past theirs is another's, whose job ids would come again.)
+        if r.epoch > epoch {
+            return wait(
+                out,
+                format!(
+                    "its store's epoch {epoch} isn't past its records' ({}): its coordinator's store isn't the one that \
+                     saved them (a lead moved by hand takes the lead's folders with it, docs/pool.md §6.1)",
+                    r.epoch
+                ),
+            );
+        }
         if r.epoch != epoch {
-            // (Today's files are of no epoch: nothing to follow.)
-            if r.epoch > 0 {
-                r.from.push(r.mark());
-            }
-            (r.epoch, r.seq, r.lead) = (epoch, 0, Some(self.me.id.clone()));
+            (r.epoch, r.seq) = (epoch, 0);
         }
         // (Nothing merged yet: its members post it their hand-offs once they know it leads.)
-        let under = records::Under { member: &self.me.id, since: self.declared_since };
-        let dirty = match r.save(io, &|b| io.keep(b), Some(under)) {
+        let dirty = match r.save(io, &|b| io.keep(b)) {
             Ok(()) => {
                 self.saved.records = Some((r.epoch, r.seq));
                 false
@@ -872,33 +622,14 @@ impl Driver {
             }
         };
         self.taking = None;
-        self.spare = None;
-        (self.declared_at, self.declared_under, self.wait_until) = (None, None, None);
-        // (Its saved state is its own from here: what it saves leading, and the declaration it led
-        // under, are this process's. Task #1038, the simulator's seed 1364: a process started from
-        // no state of its own took the lead up, slept past `VOUCH_S` while the owner moved the lead
-        // away and back, and took up its own records at once, not `anew`, beside the lead between.)
-        self.known = true;
-        if self.declared_since.is_some() {
-            self.saved.led_under = self.declared_since;
-        }
-        out.events.push(Event::TookUp { epoch, how: how.to_string(), another });
-        self.lead = Some(Lead {
-            epoch,
-            since: io.now(),
-            records: r,
-            dirty,
-            saved_at: io.awake(),
-            held: BTreeMap::new(),
-            vouched_at: None,
-            under: self.declared_since,
-        });
+        out.events.push(Event::TookUp { epoch, how: how.to_string() });
+        self.lead =
+            Some(Lead { epoch, since: io.now(), records: r, dirty, saved_at: io.awake(), held: BTreeMap::new() });
     }
 
     /// The lead's step: merge what members posted it (`handed`) and its own jobs' hand-offs, take off
     /// the raw archives the agent named, save, acknowledge.
     fn lead_step(&mut self, io: &dyn Io, out: &mut Out, handed: Vec<Entry>, named_raw: &[String], check: Check) {
-        let me = self.me.id.clone();
         // (Held whole: members' posted by HTTP, and its own jobs', by key.)
         let whole: BTreeMap<String, Entry> =
             handed.into_iter().chain(self.saved.mine.entries().cloned()).filter_map(|e| Some((e.key()?, e))).collect();
@@ -930,7 +661,7 @@ impl Driver {
         // (Saved again unchanged `RESAVE_S` on: an older save landed late over the one path stays
         // that long at most. That save failing leaves nothing unsaved: tried again next step.)
         if l.dirty || io.awake().saturating_sub(l.saved_at) >= RESAVE_S {
-            match l.records.save(io, &|b| io.keep(b), Some(records::Under { member: &me, since: l.under })) {
+            match l.records.save(io, &|b| io.keep(b)) {
                 Ok(()) => {
                     (l.dirty, l.saved_at) = (false, io.awake());
                     self.saved.records = Some((l.records.epoch, l.records.seq));
@@ -950,30 +681,6 @@ impl Driver {
         let named: Vec<String> = whole.into_keys().filter(|k| l.records.handles(k)).collect();
         if named.is_empty() {
             return;
-        }
-        let under = records::Under { member: &me, since: l.under };
-        // (Only while the declaration, read after the save, still names it: the owner moved the
-        // lead, the next lead may have read its records before this save, and what's acknowledged
-        // is on no member's disk then. Its take-up reads them `STALE_S` after finding itself
-        // declared, so a save this read follows is in what it reads (`take_up`). Not acknowledged
-        // now: next step, while it still leads; else its members keep them for the next lead.)
-        match lead::declared(io) {
-            Ok(Some(d)) if under.names(&d) => {}
-            Ok(d) => {
-                let who = d.map_or("no member".to_string(), |d| if d.host.is_empty() { d.member } else { d.host });
-                return out.events.push(Event::Waits {
-                    what: "acknowledge hand-offs",
-                    why: format!(
-                        "the declaration names {who} after its save, not as it took the lead up: its next lead has them"
-                    ),
-                });
-            }
-            Err(err) => {
-                return out.events.push(Event::Failed {
-                    what: "acknowledge hand-offs",
-                    why: format!("whether it's still the declared lead after its save: {err:#}"),
-                })
-            }
         }
         self.saved.mine.acked_all(&named);
         out.merged = named;
@@ -1030,7 +737,7 @@ mod tests {
         /// them fails.
         local: std::cell::RefCell<Option<Vec<u8>>>,
         local_fails: Cell<bool>,
-        /// Its store's epoch (`Io::epoch`: 0, none open yet; raised past a take-up's records).
+        /// Its store's epoch (`Io::epoch`: 1 as it first opens, one more each restart).
         store: Cell<u64>,
     }
 
@@ -1047,7 +754,7 @@ mod tests {
                 gone: Default::default(),
                 local: Default::default(),
                 local_fails: Cell::new(false),
-                store: Cell::new(0),
+                store: Cell::new(1),
             }
         }
 
@@ -1110,10 +817,7 @@ mod tests {
             *self.local.borrow_mut() = Some(records.to_vec());
             Ok(())
         }
-        fn epoch(&self, past: u64) -> Result<u64> {
-            if self.store.get() <= past {
-                self.store.set(past + 1);
-            }
+        fn epoch(&self) -> Result<u64> {
             Ok(self.store.get())
         }
     }
@@ -1141,7 +845,7 @@ mod tests {
 
     /// The one path's records, as read now.
     fn one(mem: &Mem) -> Records {
-        records::load_one(mem).unwrap().unwrap()
+        buildstore::records::load_one(mem).unwrap().unwrap()
     }
 
     fn entry(member: &str, epoch: u64, n: u64, t: &str) -> Entry {
@@ -1263,83 +967,22 @@ mod tests {
             ib.pass(600);
             assert_eq!(step(&mut b, &ib, able()).leads, None);
         }
-        // A back, posted it: asleep past `VOUCH_S`, it takes up again from its own records (no other
-        // lead saved since) in a new epoch, and merges it, acknowledged.
+        // A back, posted it: it merges it in its epoch, acknowledged.
         ia.wall.set(ib.now());
         let handed = b.mine().entries().cloned().collect();
         let o = step(&mut a, &ia, Heard { handed, ..able() });
-        assert_eq!((o.leads, o.merged.clone()), (Some(2), vec![key.clone()]), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
+        assert_eq!((o.leads, o.merged.clone()), (Some(1), vec![key.clone()]), "{:?}", o.events);
         assert!(one(&mem).handles(&key), "{:?}", o.events);
         ib.pass(20);
         step(&mut b, &ib, Heard { merged: o.merged, ..able() });
         assert_eq!(b.mine().unacked(), 0, "dropped once its lead's saved records name it");
     }
 
-    /// docs/coordination.md step 8c: the owner moves the lead (another Mac in the mini's place): A
-    /// steps down at its next step, its read of the declaration naming B; B, finding itself
-    /// declared, takes up A's records from the one path once A's last save can't read stale
-    /// (`STALE_S`), its epoch past theirs; and A, declared again later (moved back while it was
-    /// stopped), takes up B's, newer than its own disk's copy.
-    #[test]
-    fn the_owners_edit_of_the_declaration_moves_the_lead() {
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        ia.store.set(40);
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(40));
-        ia.pass(20);
-        step(&mut a, &ia, Heard { handed: vec![entry(B, 40, 1, "6-1-1")], ..able() });
-        step(&mut b, &ib, able());
-        declare(&mem, B);
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert!(
-            o.leads.is_none()
-                && o.events
-                    .iter()
-                    .any(|e| matches!(e, Event::SteppedDown { epoch: 40, why } if why.contains("declared"))),
-            "{:?}",
-            o.events
-        );
-        ib.pass(20);
-        let o = step(&mut b, &ib, able());
-        assert_eq!(o.leads, None, "waits `STALE_S` after finding itself declared: {:?}", o.events);
-        ib.pass(STALE_S - 20);
-        assert_eq!(step(&mut b, &ib, able()).leads, None);
-        ib.pass(20);
-        let o = step(&mut b, &ib, able());
-        assert_eq!(o.leads, Some(41), "past A's epoch: {:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { another: true, .. })), "A's records: A's state");
-        assert_eq!(b.records().unwrap().keys.recorded("unit", "6-1-1"), Some("k1"), "from A's records");
-        ib.pass(20);
-        step(&mut b, &ib, Heard { handed: vec![entry(A, 41, 2, "6-1-2")], ..able() });
-        assert_eq!((one(&mem).epoch, one(&mem).keys.recorded("unit", "6-1-2")), (41, Some("k2")));
-        // Moved back while A's agent was stopped: its own disk's copy is older than the one path's.
-        declare(&mem, A);
-        ia.restart();
-        ia.wall.set(ib.now());
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert!(
-            o.leads.is_none()
-                && o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("newer than its own"))),
-            "{:?}",
-            o.events
-        );
-        ia.pass(STALE_S);
-        let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, Some(42), "{:?}", o.events);
-        assert_eq!(a.records().unwrap().keys.recorded("unit", "6-1-2"), Some("k2"), "B's records, not its own");
-    }
-
     /// docs/coordination.md step 8a, measured: a member's step learns its lead from its lead's beat
     /// answer (`Heard::lead_says`) with no NAS call, where it reads the declaration each step; with
-    /// no word from its lead (lately, or ever: an older lead), it reads the declaration, so it
-    /// learns of the owner's move of the lead to it. No member ever reads a term (step 8c).
+    /// no word from its lead (lately, or ever: an older lead), it reads the declaration. Declared
+    /// itself with none of the lead's folders on its disk (a hand move half done), it leads
+    /// nothing. No member ever reads a term (step 8c).
     #[test]
     fn a_member_learns_its_lead_from_its_answer_with_no_nas_call() {
         let mem = Mem::default();
@@ -1364,19 +1007,21 @@ mod tests {
             assert_eq!((o.leads, b.declared(), b.lead().map(|l| l.app.as_str())), (None, Some(A), Some(V2)));
         }
         assert!(nb.take().is_empty(), "no NAS call in 30 steps");
-        // The owner moves the lead to B. While A's answers say it leads, B leads nothing; once B
-        // hears no word (A stepped down, or away), it reads the declaration, and takes the lead up
-        // `STALE_S` on.
+        // The owner declares B, A's folders not copied to it. While A's answers say it leads, B
+        // leads nothing; once B hears no word, it reads the declaration, and takes nothing up: the
+        // pool's records aren't on its disk.
         declare(&mem, B);
         ib.pass(20);
         assert_eq!(b.step(&nb, says(), &any).leads, None);
         assert_eq!(b.declared(), Some(A));
         ib.pass(20);
-        b.step(&nb, able(), &any);
-        assert_eq!(b.declared(), Some(B));
-        ib.pass(STALE_S);
         let o = b.step(&nb, able(), &any);
-        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert_eq!((o.leads, b.declared()), (None, Some(B)), "{:?}", o.events);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("aren't on this Mac's disk"))),
+            "{:?}",
+            o.events
+        );
         let calls = nb.take();
         assert!(
             calls.iter().all(|c| !c.contains("terms") && !c.contains("/term/") && !c.contains("lead.json")),
@@ -1385,26 +1030,24 @@ mod tests {
     }
 
     /// docs/coordination.md step 8c, a lead restart: its agent's store opens in a new epoch; the
-    /// lead takes up from the records it kept on its own disk, reading the one path once (its
-    /// records not newer: an earlier process's save that landed late over it is passed over) and
-    /// no term; its take-up's save puts the newest back, in the new epoch. Its disk's copy lost, it
-    /// takes up the one path's once `STALE_S` has passed, nothing it saved lost.
+    /// lead takes up from the records it kept on its own disk, reading the one path not at all
+    /// (an earlier process's save that landed late over it is passed over) and no term; its
+    /// take-up's save puts the newest back, in the new epoch. Its disk's copy lost, it leads
+    /// nothing: a lost lead disk isn't taken up from the NAS.
     #[test]
     fn a_restarted_lead_takes_up_from_its_own_disk_in_a_new_epoch() {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        // (The move from terms: the lead declared, its records numbered by the pool's last term, its
-        // store's epoch below it.)
         declare(&mem, A);
         let last = Records { epoch: 840, seq: 7, ..Records::today(&mem).unwrap() };
         *ia.local.borrow_mut() = Some(serde_json::to_vec(&last).unwrap());
         mem.write_whole(records::ONE, &serde_json::to_vec(&last).unwrap()).unwrap();
         let saved = Saved { member: A.into(), records: Some((840, 7)), ..Default::default() };
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), saved);
-        ia.store.set(121);
+        ia.store.set(841);
         let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, Some(841), "past the pool's last term: {:?}", o.events);
+        assert_eq!(o.leads, Some(841), "{:?}", o.events);
         let e = entry(A, 841, 1, "6-1-1");
         let key = e.key().unwrap();
         ia.pass(20);
@@ -1413,7 +1056,7 @@ mod tests {
         // An earlier save lands late over the one path.
         let late = serde_json::to_vec(&Records { epoch: 841, seq: 1, ..Default::default() }).unwrap();
         mem.write_whole(records::ONE, &late).unwrap();
-        // Restarted: from its own disk's copy, the one path read once.
+        // Restarted: from its own disk's copy.
         ia.restart();
         let io = Logged(&ia, Default::default());
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
@@ -1421,36 +1064,30 @@ mod tests {
         let o = a.step(&io, able(), &any);
         assert_eq!(o.leads, Some(842), "{:?}", o.events);
         assert!(a.records().unwrap().handles(&key), "its own disk's records");
-        assert!(o
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::TookUp { epoch: 842, how, another: false } if how == "its own records")));
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { epoch: 842, how } if how == "its own records")));
         let calls = io.take();
-        eprintln!("a restart's step, its records on its disk: {calls:#?}");
         let read = |c: &&String| c.starts_with("read ") || c.starts_with("stat ") || c.starts_with("list ");
-        assert_eq!(calls.iter().filter(read).filter(|c| c.contains("records.json")).count(), 1, "{calls:#?}");
+        assert!(!calls.iter().filter(read).any(|c| c.contains("records")), "{calls:#?}");
         assert!(!calls.iter().any(|c| c.contains("terms") || c.contains("/term/")), "{calls:#?}");
         let now: Records = buildstore::records::now(&mem).unwrap();
         assert_eq!((now.epoch, now.handles(&key)), (842, true), "the take-up's save over the late one");
-        // Its disk's copy lost: the one path's, once `STALE_S` has passed.
-        let ib = Mac::new(&mem);
-        ib.wall.set(ia.now());
-        ib.awake.set(ia.awake());
-        ib.store.set(ia.store.get() + 1);
+        // Its disk's copy lost: it leads nothing, however long.
+        ia.restart();
+        *ia.local.borrow_mut() = None;
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        ib.pass(20);
-        assert_eq!(step(&mut a, &ib, able()).leads, None);
-        ib.pass(STALE_S);
-        let o = step(&mut a, &ib, able());
-        assert_eq!(o.leads, Some(843), "{:?}", o.events);
-        assert!(a.records().unwrap().handles(&key));
+        for _ in 0..40 {
+            ia.pass(600);
+            let o = step(&mut a, &ia, able());
+            assert_eq!(o.leads, None, "{:?}", o.events);
+        }
     }
 
+    /// What a save acknowledged is on no member's disk now (docs/coordination.md step 6): a lead
+    /// whose disk's copy is older than the records it saved last (rolled back) waits for them
+    /// rather than lose it; and a store whose epoch isn't past its records' (not the store that
+    /// saved them) leads nothing.
     #[test]
     fn a_take_up_never_starts_from_records_older_than_it_saved() {
-        // (docs/coordination.md step 6) What a save acknowledged is on no member's disk now: a
-        // restart whose disk's copy is lost and whose read of the one path is stale waits for them
-        // rather than lose it.
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
@@ -1462,29 +1099,20 @@ mod tests {
         step(&mut a, &ia, Heard { handed: vec![e], ..able() });
         let saved = a.saved();
         assert_eq!(saved.records, Some((1, one(&mem).seq)));
-        // (The one path read stale: an older save's; or not there at all.)
-        let newest = mem.read(records::ONE).unwrap().unwrap();
-        mem.write_whole(
-            records::ONE,
-            &serde_json::to_vec(&Records { epoch: 1, seq: 1, ..Default::default() }).unwrap(),
-        )
-        .unwrap();
-        let ib = Mac::new(&mem);
-        ib.wall.set(ia.now() + 20);
-        ib.awake.set(ia.awake() + 20);
-        ib.store.set(2);
-        let mut b = Driver::unlocked(member(A, "Mac-mini", V1), saved);
-        step(&mut b, &ib, able());
-        ib.pass(STALE_S);
-        let o = step(&mut b, &ib, able());
+        let newest = ia.local.borrow().clone();
+        *ia.local.borrow_mut() = Some(serde_json::to_vec(&Records { epoch: 1, seq: 1, ..Default::default() }).unwrap());
+        ia.restart();
+        let mut b = Driver::unlocked(member(A, "Mac-mini", V1), saved.clone());
+        ia.pass(20);
+        let o = step(&mut b, &ia, able());
         assert_eq!(o.leads, None, "{:?}", o.events);
         assert!(o
             .events
             .iter()
             .any(|e| matches!(e, Event::Waits { what: "take up the records", why } if why.contains("older"))));
-        mem.0.borrow_mut().remove(records::ONE);
-        ib.pass(20);
-        let o = step(&mut b, &ib, able());
+        *ia.local.borrow_mut() = None;
+        ia.pass(20);
+        let o = step(&mut b, &ia, able());
         assert!(
             o.leads.is_none()
                 && o.events
@@ -1493,360 +1121,24 @@ mod tests {
             "never today's files: {:?}",
             o.events
         );
-        mem.write_whole(records::ONE, &newest).unwrap();
-        ib.pass(20);
-        let o = step(&mut b, &ib, able());
+        *ia.local.borrow_mut() = newest.clone();
+        ia.pass(20);
+        let o = step(&mut b, &ia, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(b.records().unwrap().handles(&key));
-    }
-
-    #[test]
-    fn a_lead_moved_mid_step_acknowledges_nothing() {
-        // (Task #878 step 6 review) The owner moves the lead to B while A's step merges a hand-off:
-        // the declaration names B before A's save lands. A, reading the declaration before its
-        // brief and after its save, writes no brief and acknowledges nothing (its member keeps it,
-        // for B); B takes up only `STALE_S` after finding itself declared, from A's last save.
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        let b = std::cell::RefCell::new(Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default()));
-        step(&mut b.borrow_mut(), &ib, able());
-        let e = entry(B, 1, 5, "6-1-5");
-        let key = e.key().unwrap();
-        ia.pass(20);
-        ib.wall.set(ia.now());
-        let race = Racing {
-            mac: &ia,
-            stale: BTreeMap::new(),
-            before: std::cell::RefCell::new(Some((
-                records::ONE.to_string(),
-                Box::new(|| {
-                    declare(&mem, B);
-                    let o = step(&mut b.borrow_mut(), &ib, able());
-                    assert_eq!(o.leads, None, "{:?}", o.events);
-                }),
-            ))),
-        };
-        let o = a.step(&race, Heard { handed: vec![e], ..able() }, &any);
-        assert!(one(&mem).handles(&key));
-        assert!(o.merged.is_empty(), "nothing acknowledged: {:?}", o.events);
-        // (Its save wrote the one path, not its brief: the declaration names B, task #1038.)
+        // Its records with another store (epoch 1, behind them): nothing led.
+        let ib = Mac::new(&mem);
+        *ib.local.borrow_mut() = ia.local.borrow().clone();
+        let mut c = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let o = step(&mut c, &ib, able());
         assert!(
-            o.events
-                .iter()
-                .any(|e| matches!(e, Event::Failed { what: "save the records", why } if why.contains("its brief not"))),
+            o.leads.is_none()
+                && o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("isn't past"))),
             "{:?}",
             o.events
         );
-        drop(race);
-        ia.pass(20);
-        assert_eq!(step(&mut a, &ia, able()).leads, None, "A steps down");
-        let mut b = b.into_inner();
-        ib.pass(STALE_S - 30);
-        assert_eq!(step(&mut b, &ib, able()).leads, None);
-        ib.pass(30);
-        let o = step(&mut b, &ib, able());
-        assert_eq!(o.leads, Some(2), "{:?}", o.events);
-        assert!(b.records().unwrap().handles(&key), "A's last save");
     }
 
-    /// docs/coordination.md step 8c: B is declared; A's read of the declaration is stale, so it
-    /// merges, saves and acknowledges a hand-off (its member drops it). B, taking up `STALE_S` after
-    /// finding itself declared, reads that save: nothing lost.
-    #[test]
-    fn a_moved_lead_s_last_acknowledgement_is_in_the_next_lead_s_records() {
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        step(&mut b, &ib, able());
-        let was = mem.read(lead::LEAD).unwrap();
-        declare(&mem, B);
-        ib.pass(20);
-        assert_eq!(step(&mut b, &ib, able()).leads, None, "waits");
-        let e = entry(B, 1, 5, "6-1-5");
-        let key = e.key().unwrap();
-        ia.wall.set(ib.now());
-        let stale = Racing { mac: &ia, stale: [(lead::LEAD.to_string(), was)].into(), before: Default::default() };
-        let o = a.step(&stale, Heard { handed: vec![e], ..able() }, &any);
-        assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged, stale: {:?}", o.events);
-        ib.pass(STALE_S);
-        let o = step(&mut b, &ib, able());
-        assert_eq!(o.leads, Some(2), "{:?}", o.events);
-        assert!(b.records().unwrap().handles(&key), "in B's records");
-    }
-
-    /// docs/coordination.md step 8c (8b's per-term paths' case): A's save, left running as the
-    /// owner moved the lead to B, lands at the one path after B saved and acknowledged a hand-off.
-    /// C, declared next, never takes up from it (the one path's brief is B's, newer): it waits; B,
-    /// declared again, leads on from its own, and its save puts the hand-off back on the one path.
-    #[test]
-    fn a_late_save_of_an_earlier_lead_never_hides_a_later_one() {
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        let late = mem.read(records::ONE).unwrap().unwrap();
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        let mut c = Driver::unlocked(member(C, "M4", V2), Saved::default());
-        declare(&mem, B);
-        step(&mut b, &ib, able());
-        ib.pass(STALE_S);
-        assert_eq!(step(&mut b, &ib, able()).leads, Some(2));
-        let e = entry(B, 2, 1, "6-1-5");
-        let key = e.key().unwrap();
-        ib.pass(20);
-        let o = step(&mut b, &ib, Heard { handed: vec![e], ..able() });
-        assert_eq!(o.merged, std::slice::from_ref(&key), "acknowledged: {:?}", o.events);
-        // A's write lands; the owner moves the lead to C.
-        mem.write_whole(records::ONE, &late).unwrap();
-        declare(&mem, C);
-        ib.pass(20);
-        assert_eq!(step(&mut b, &ib, able()).leads, None, "B steps down");
-        step(&mut c, &ic, able());
-        ic.pass(STALE_S);
-        let o = step(&mut c, &ic, able());
-        assert_eq!(o.leads, None, "C waits: {:?}", o.events);
-        assert!(
-            o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("brief"))),
-            "{:?}",
-            o.events
-        );
-        // Declared again, B leads from its own records, and saves them over A's.
-        declare(&mem, B);
-        ib.pass(20);
-        let o = step(&mut b, &ib, able());
-        assert!(o.leads.is_some_and(|e| e > 2), "{:?}", o.events);
-        assert!(one(&mem).handles(&key), "the hand-off back on the one path");
-    }
-
-    /// A lead whose reads of the declaration fail (a hung share) leads on, but grants and plans
-    /// only while one named it less than `VOUCH_S` ago: the owner may have moved the lead, and the
-    /// next lead takes up `STALE_S` after finding itself declared, so the two never grant at once.
-    /// Past `VOUCH_S` it steps down, and takes up again once a read names it: from its own records
-    /// when no other lead saved since (task #1038: one that led on and granted again at its first
-    /// read, the lead moved away and back meanwhile, granted beside the lead between).
-    #[test]
-    fn a_lead_whose_declaration_reads_fail_stops_granting_before_a_next_lead_could() {
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.duties), (Some(1), true));
-        *ia.fail.borrow_mut() = Some(lead::LEAD.into());
-        ia.down.set(true);
-        ia.pass(VOUCH_S - 20);
-        let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.vouched, o.duties), (Some(1), false, true), "{:?}", o.events);
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.duties), (None, false), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::SteppedDown { epoch: 1, .. })), "{:?}", o.events);
-        ia.down.set(false);
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.vouched, o.duties), (Some(2), true, true), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
-    }
-
-    /// Task #1038 (the simulator's seed 88): A leads; the owner moves the lead to B while A's reads
-    /// fail; B takes up, saves and grants; the owner moves it back to A while B's reads fail. A,
-    /// stepped down at `VOUCH_S`, reads itself declared again: B's records on the one path are
-    /// newer than its own, so it takes up only `STALE_S` after that read, when B (granting until
-    /// `VOUCH_S` after its last read naming it) has stopped.
-    #[test]
-    fn a_lead_moved_away_and_back_while_its_reads_failed_waits_for_the_next_to_stop() {
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        *ia.fail.borrow_mut() = Some(lead::LEAD.into());
-        ia.down.set(true);
-        declare(&mem, B);
-        ib.pass(20);
-        assert_eq!(step(&mut b, &ib, able()).leads, None);
-        ib.pass(STALE_S);
-        ia.pass(STALE_S + 20);
-        assert_eq!(step(&mut a, &ia, able()).leads, None, "A steps down past `VOUCH_S`");
-        let o = step(&mut b, &ib, able());
-        assert!(o.leads.is_some_and(|e| e > 1) && o.duties, "{:?}", o.events);
-        // Moved back to A while B's reads fail: B grants on till `VOUCH_S` after its last read.
-        declare(&mem, A);
-        ia.down.set(false);
-        *ib.fail.borrow_mut() = Some(lead::LEAD.into());
-        ib.down.set(true);
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, None, "the one path's newer: A waits `STALE_S`: {:?}", o.events);
-        ib.pass(VOUCH_S - 30);
-        assert!(step(&mut b, &ib, able()).duties, "B still grants");
-        ia.pass(VOUCH_S);
-        assert_eq!(step(&mut a, &ia, able()).leads, None, "A still waits while B may grant");
-        ia.pass(STALE_S - VOUCH_S);
-        let o = step(&mut a, &ia, able());
-        assert!(o.leads.is_some_and(|e| e > 2) && o.duties, "{:?}", o.events);
-    }
-
-    /// Task #1038 (the simulator's seed 20055): a lead restarted under the declaration it led under
-    /// takes up its own records at once; one the owner moved away and back (declared anew) waits
-    /// `STALE_S` though its own records are the newest it finds (the lead between's take-up saved
-    /// over by a late save of its own), the lead between granting until `VOUCH_S` after its last
-    /// read naming it.
-    #[test]
-    fn a_lead_declared_anew_waits_before_taking_up_its_own_records() {
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let declare_at = |to: &str, since: u64| {
-            mem.write_whole(lead::LEAD, format!("{{\"member\": \"{to}\", \"since\": {since}}}").as_bytes()).unwrap()
-        };
-        declare_at(A, 100);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        // (A new pool declared by the owner: `STALE_S` before today's files are taken up.)
-        assert_eq!(step(&mut a, &ia, able()).leads, None);
-        ia.pass(STALE_S);
-        assert!(step(&mut a, &ia, able()).leads.is_some());
-        assert_eq!(a.saved().led_under, Some(100));
-        ia.restart();
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert!(o.leads.is_some(), "restarted under its declaration: at once: {:?}", o.events);
-        // Moved to B and back: declared anew.
-        declare_at(B, 200);
-        declare_at(A, 300);
-        ia.restart();
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        ia.pass(20);
-        let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, None, "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("declared anew"))));
-        ia.pass(STALE_S);
-        let o = step(&mut a, &ia, able());
-        assert!(o.leads.is_some(), "{:?}", o.events);
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
-        assert_eq!(a.saved().led_under, Some(300));
-    }
-
-    /// Task #1038 (the simulator's seed 1364): a lead that reads itself declared under another
-    /// declaration than it took up under (the owner moved the lead away and back while it slept, or
-    /// its reads failed) steps down at once, however recent its last read, and takes up its own
-    /// records only `STALE_S` on: the lead between may grant still. So too a process started from
-    /// no state of its own (a new pool's first, or its state lost), which had taken up at once.
-    #[test]
-    fn a_lead_declared_anew_while_leading_steps_down_and_waits() {
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let declare_at = |to: &str, since: u64| {
-            mem.write_whole(lead::LEAD, format!("{{\"member\": \"{to}\", \"since\": {since}}}").as_bytes()).unwrap()
-        };
-        declare_at(A, 100);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        // (A new pool declared by the owner: `STALE_S` before today's files are taken up.)
-        assert_eq!(step(&mut a, &ia, able()).leads, None);
-        ia.pass(STALE_S);
-        assert!(step(&mut a, &ia, able()).leads.is_some());
-        // Moved to B and back within a minute, unread.
-        declare_at(B, 200);
-        declare_at(A, 300);
-        ia.pass(60);
-        let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, None, "{:?}", o.events);
-        assert!(
-            o.events.iter().any(|e| matches!(e, Event::SteppedDown { why, .. } if why.contains("declared anew"))),
-            "{:?}",
-            o.events
-        );
-        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("declared anew"))));
-        ia.pass(STALE_S);
-        let o = step(&mut a, &ia, able());
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
-        assert_eq!(a.saved().led_under, Some(300));
-    }
-
-    /// Task #1154: a take-up's `STALE_S` wait is kept through reads of the declaration that fail
-    /// (they tell nothing): on a share failing every other read, the declared lead takes up at the
-    /// first read naming it once `STALE_S` has passed; it had started its wait again at each failed
-    /// read and never led. A read naming it under another declaration than the wait began under
-    /// (the owner moved the lead away and back while its reads failed) starts the wait again.
-    #[test]
-    fn a_take_ups_wait_is_kept_through_failed_reads_and_started_again_by_a_new_declaration() {
-        let mem = Mem::default();
-        setup(&mem);
-        let declare_at = |to: &str, since: u64| {
-            mem.write_whole(lead::LEAD, format!("{{\"member\": \"{to}\", \"since\": {since}}}").as_bytes()).unwrap()
-        };
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        declare_at(A, 100);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, None);
-        ia.pass(STALE_S);
-        assert!(step(&mut a, &ia, able()).leads.is_some());
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
-        // Every other read fails: B finds itself declared, then waits through them.
-        let flaky = |b: &mut Driver, n: u64| {
-            ib.pass(20);
-            *ib.fail.borrow_mut() = Some(lead::LEAD.into());
-            ib.down.set(n % 2 == 1);
-            let o = step(b, &ib, able());
-            ib.down.set(false);
-            o
-        };
-        declare_at(B, 200);
-        assert_eq!(flaky(&mut b, 0).leads, None);
-        let found = ib.awake.get();
-        let mut n = 1;
-        let took = loop {
-            let o = flaky(&mut b, n);
-            if o.leads.is_some() {
-                break ib.awake.get();
-            }
-            assert!(n < 100, "B never takes up: {:?}", o.events);
-            n += 1;
-        };
-        assert!(
-            took >= found + STALE_S && took <= found + STALE_S + 40,
-            "{} s after finding itself declared",
-            took - found
-        );
-        // A new waiting lead: C; while its reads fail the owner moves the lead to A and back to C.
-        let ic = Mac::new(&mem);
-        ic.awake.set(ib.awake.get());
-        let mut c = Driver::unlocked(member(C, "MacBook-Pro", V2), Saved::default());
-        declare_at(C, 300);
-        assert_eq!(step(&mut c, &ic, able()).leads, None);
-        *ic.fail.borrow_mut() = Some(lead::LEAD.into());
-        ic.down.set(true);
-        ic.pass(STALE_S / 2);
-        assert_eq!(step(&mut c, &ic, able()).leads, None, "a failed read: it waits on");
-        declare_at(A, 400);
-        declare_at(C, 500);
-        ic.down.set(false);
-        ic.pass(20);
-        let anew = ic.awake.get();
-        assert_eq!(step(&mut c, &ic, able()).leads, None);
-        ic.pass(STALE_S / 2);
-        let o = step(&mut c, &ic, able());
-        assert_eq!(o.leads, None, "its wait started again at the new declaration: {:?}", o.events);
-        ic.pass(anew + STALE_S - ic.awake.get());
-        let o = step(&mut c, &ic, able());
-        assert!(o.leads.is_some(), "{:?}", o.events);
-    }
-
-    /// docs/coordination.md step 8b, as on 9 Nov at 20:40Z: a lead whose take-up's NAS write fails
-    /// (past its deadline, or refused while an earlier one still runs) leads on from the records
-    /// kept on its disk, acknowledging nothing and not caught up (no catalogue, no GC) until a save
-    /// reaches the NAS. Not kept on its disk, it doesn't lead yet, and takes the records up at a
-    /// later step, numbered on.
     #[test]
     fn a_lead_whose_take_up_s_nas_save_fails_leads_on() {
         let mem = Mem::default();
@@ -1859,7 +1151,7 @@ mod tests {
         ia.restart();
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
         let o = step(&mut a, &ia, able());
-        assert_eq!((o.leads, o.vouched, o.caught_up), (Some(2), true, false), "{:?}", o.events);
+        assert_eq!((o.leads, o.caught_up), (Some(2), false), "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "save the records", .. })));
         let e = entry(A, 2, 1, "6-1-1");
         let key = e.key().unwrap();
@@ -1889,75 +1181,11 @@ mod tests {
         assert!(a.records().unwrap().handles(&key));
     }
 
-    /// Task #1038 (the simulator's seed 20058): another Mac's take-up that never reached the NAS
-    /// lands over the one path late, in a higher epoch than this lead's, taken up from none of its
-    /// records: this lead's take-up (a restart) passes it over for its own, which hold what it
-    /// acknowledged. It had taken the one path's, newer by number, and lost them.
-    #[test]
-    fn a_late_take_up_of_a_higher_epoch_never_hides_the_briefs_records() {
-        let mem = Mem::default();
-        setup(&mem);
-        let ia = Mac::new(&mem);
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
-        let e = entry(B, 1, 5, "6-1-5");
-        let key = e.key().unwrap();
-        ia.pass(20);
-        let o = step(&mut a, &ia, Heard { handed: vec![e], ..able() });
-        assert_eq!(o.merged, vec![key.clone()], "acknowledged");
-        // B's take-up of today's files, in epoch 1002, lands late.
-        let late = Records { epoch: 1002, seq: 1, lead: Some(B.into()), ..Default::default() };
-        mem.write_whole(records::ONE, &serde_json::to_vec(&late).unwrap()).unwrap();
-        ia.restart();
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
-        for _ in 0..STALE_S / 20 + 2 {
-            ia.pass(20);
-            step(&mut a, &ia, able());
-        }
-        assert!(a.leads().is_some_and(|e| e > 1002), "{:?}", a.leads());
-        assert!(a.records().unwrap().handles(&key), "what it acknowledged");
-        assert_eq!(a.records().unwrap().from.iter().map(|m| m.epoch).collect::<Vec<_>>(), vec![1], "from its own");
-    }
-
-    /// Task #1038 (the simulator's seed 1887): in a new pool, only the Mac that declared itself
-    /// takes today's files up at once. The owner moving the lead seconds in, the next Mac finds no
-    /// records yet (the first lead's save not landed) and waits `STALE_S` as for the one path's,
-    /// the first lead stepping down meanwhile: it had taken today's files up at once, and both
-    /// granted.
-    #[test]
-    fn a_new_pools_lead_moved_by_the_owner_waits_for_the_first_ones_records() {
-        let mem = Mem::default();
-        setup(&mem);
-        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        // A declares itself and takes today's files up; its save not on the NAS yet.
-        *ia.wfail.borrow_mut() = Some("records".into());
-        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
-        let o = step(&mut a, &ia, able());
-        assert_eq!(o.leads, Some(1), "{:?}", o.events);
-        assert!(!mem.exists(records::ONE).unwrap());
-        // The owner moves the lead to B.
-        mem.write_whole(lead::LEAD, format!("{{\"member\": \"{B}\", \"since\": {}}}", T0 + 5).as_bytes()).unwrap();
-        let mut b = Driver::unlocked(member(B, "MacBook", V2), Saved::default());
-        let o = step(&mut b, &ib, able());
-        assert_eq!(o.leads, None, "{:?}", o.events);
-        assert!(o
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::Waits { why, .. } if why.contains("declared by the owner"))));
-        // A reads the move and steps down; then B takes up.
-        *ia.wfail.borrow_mut() = None;
-        ia.pass(20);
-        assert_eq!(step(&mut a, &ia, able()).leads, None);
-        ib.pass(STALE_S);
-        let o = step(&mut b, &ib, able());
-        assert!(o.leads.is_some(), "{:?}", o.events);
-    }
-
     /// The first take-up waits for its agent's store (none before its coordinator starts), and
     /// in a new pool takes today's files up at once, declaring itself; a lead whose saved state is
-    /// lost takes the one path's up once `STALE_S` has passed.
+    /// lost takes up the records on its disk.
     #[test]
-    fn a_take_up_waits_for_its_store_and_a_lost_state_for_the_one_path() {
+    fn a_take_up_waits_for_its_store_and_a_lost_state_takes_up_its_disks_records() {
         let mem = Mem::default();
         mem.write_whole("state/build/manifest.json", br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         let ia = Mac::new(&mem);
@@ -1989,7 +1217,7 @@ mod tests {
             fn keep(&self, records: &[u8]) -> Result<()> {
                 self.0.keep(records)
             }
-            fn epoch(&self, _: u64) -> Result<u64> {
+            fn epoch(&self) -> Result<u64> {
                 anyhow::bail!("no coordinator's store in this process")
             }
         }
@@ -2002,14 +1230,13 @@ mod tests {
         assert_eq!(o.leads, Some(1), "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how.contains("today's files"))));
         assert_eq!(one(&mem).manifest.len(), 1);
-        // Its saved state lost (a new member file: another id) on the same Mac.
+        // Its saved state lost on the same Mac: its records on its disk taken up at once.
         ia.pass(20);
         ia.restart();
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
-        assert_eq!(step(&mut a, &ia, able()).leads, None, "waits");
-        ia.pass(STALE_S);
         let o = step(&mut a, &ia, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
     }
 
     #[test]
@@ -2098,58 +1325,6 @@ mod tests {
         assert_eq!(a.mine().unacked(), 0, "dropped once saved");
     }
 
-    /// A Mac whose reads of `stale` paths answer as they were (their bytes; None: not there), and
-    /// whose first whole write of a path holding `before.0` runs `before.1` first.
-    struct Racing<'a> {
-        mac: &'a Mac<'a>,
-        stale: BTreeMap<String, Option<Vec<u8>>>,
-        before: std::cell::RefCell<Option<(String, Box<dyn FnOnce() + 'a>)>>,
-    }
-
-    impl Nas for Racing<'_> {
-        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-            self.mac.create_new(path, bytes)
-        }
-        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
-            let hit = self.before.borrow().as_ref().is_some_and(|(p, _)| path.contains(p.as_str()));
-            if hit {
-                let (_, f) = self.before.borrow_mut().take().unwrap();
-                f();
-            }
-            self.mac.write_whole(path, bytes)
-        }
-        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-            match self.stale.get(path) {
-                Some(b) => Ok(b.clone()),
-                None => self.mac.read(path),
-            }
-        }
-        fn exists(&self, path: &str) -> Result<bool> {
-            match self.stale.get(path) {
-                Some(b) => Ok(b.is_some()),
-                None => self.mac.exists(path),
-            }
-        }
-    }
-
-    impl Io for Racing<'_> {
-        fn now(&self) -> u64 {
-            self.mac.now()
-        }
-        fn awake(&self) -> u64 {
-            self.mac.awake()
-        }
-        fn kept(&self) -> Result<Option<Vec<u8>>> {
-            self.mac.kept()
-        }
-        fn keep(&self, records: &[u8]) -> Result<()> {
-            self.mac.keep(records)
-        }
-        fn epoch(&self, past: u64) -> Result<u64> {
-            self.mac.epoch(past)
-        }
-    }
-
     /// A Mac's NAS calls noted in order ("read <path>", "stat …", "write …", "create …", "list …").
     struct Logged<'a>(&'a Mac<'a>, std::cell::RefCell<Vec<String>>);
 
@@ -2194,8 +1369,8 @@ mod tests {
         fn keep(&self, records: &[u8]) -> Result<()> {
             self.0.keep(records)
         }
-        fn epoch(&self, past: u64) -> Result<u64> {
-            self.0.epoch(past)
+        fn epoch(&self) -> Result<u64> {
+            self.0.epoch()
         }
     }
 

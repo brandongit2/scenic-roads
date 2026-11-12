@@ -2987,31 +2987,18 @@ impl Coordinator {
         self.shared.lock().unwrap().asks.settings.clone()
     }
 
-    /// The map's head as its store keeps it (kept::MAP_HEAD; 0: none).
-    pub fn map_head(&self) -> u64 {
-        self.shared.lock().unwrap().keep.map_head()
-    }
-
-    /// The map's head kept as `seq`, past the one kept (the lead's log's, each loop; another
-    /// lead's, from its store's backup at a take-up).
-    pub fn keep_map_head(&self, seq: u64) {
-        let keep = self.shared.lock().unwrap().keep.clone();
-        keep.keep_map_head(seq);
-    }
-
     /// The epoch the leases it grants now are in (docs/pool.md §7.5, docs/coordination.md §4.3; 0:
     /// the pool off): its agent's driver's take-up's (crate::agent::pool::took_up).
     pub fn set_epoch(&self, epoch: u64) {
         self.shared.lock().unwrap().leases.epoch = epoch;
     }
 
-    /// Its store's epoch, raised past `past` first when it isn't, durably (crate::pool::store::
-    /// Store::raise_epoch): its agent's driver's take-up's (crate::pool::driver::Io::epoch). An
-    /// error with no store open (not the lead's coordinator, or not yet).
-    pub fn raise_epoch(&self, past: u64) -> Result<u64> {
+    /// Its store's epoch (crate::pool::store, bumped as it opens): what its agent's driver leads
+    /// (crate::pool::driver::Io::epoch). An error with no store open (not the lead's coordinator,
+    /// or not yet).
+    pub fn store_epoch(&self) -> Result<u64> {
         let keep = self.shared.lock().unwrap().keep.clone();
-        let store = keep.store().ok_or_else(|| anyhow::anyhow!("no store open"))?;
-        store.raise_epoch(past)
+        Ok(keep.store().ok_or_else(|| anyhow::anyhow!("no store open"))?.epoch())
     }
 
     /// The epoch its agent's driver leads in and its member now (None: it leads none), for the
@@ -3230,24 +3217,12 @@ impl Coordinator {
         self.shared.lock().unwrap().catalogues.is_some()
     }
 
-    /// Its state as another lead takes it up (`load_pool_state`): the jobs' leases (each with its
-    /// epoch and when it was granted), what each target cost, the workers' failures (when, by this
-    /// Mac's wall clock), the pause. Taken under the lock. (The tests' look: a lead takes another's
-    /// up from its store's backup, crate::coord::kept::Loaded::pool_state.)
+    /// Its state, the tests' look: the jobs' leases (each with its epoch and when it was granted),
+    /// what each target cost, the workers' failures (when, by this Mac's wall clock), the pause.
+    /// Taken under the lock.
     #[cfg(test)]
     pub fn pool_state(&self) -> PoolState {
         pool_state_of(&self.shared.lock().unwrap())
-    }
-
-    /// Backs its store up to the NAS each `pool::store::backup_every` from now on, off every
-    /// handler's thread (docs/coordination.md §3.2): each lead's step says so.
-    pub fn back_up(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>) {
-        self.back_up_every(nas, crate::pool::store::backup_every());
-    }
-
-    pub fn back_up_every(&self, nas: Arc<dyn crate::pool::nas::Nas + Send + Sync>, every: Duration) {
-        let keep = self.shared.lock().unwrap().keep.clone();
-        keep.back_up(nas, &self.me, every);
     }
 
     /// Opens its store (`kept`; none for a viewer): one found is its state, in place of what its start
@@ -3304,93 +3279,6 @@ impl Coordinator {
     /// The members holding leases while away (`held::away`): member, leases, last heard (unix s).
     pub fn away(&self) -> Vec<(String, usize, u64)> {
         held::away(&self.shared.lock().unwrap())
-    }
-
-    /// Takes the NAS budget's probes of another lead's backup (`probes`, `kept::PROBES`'s) into its
-    /// store, those it holds kept: its prober merges them in as it saves next.
-    pub fn take_probes(&self, probes: &serde_json::Value) {
-        let Ok(theirs) = serde_json::from_value::<jobrt::budget::nas::Probes>(probes.clone()) else { return };
-        let keep = self.shared.lock().unwrap().keep.clone();
-        let mut all = keep.probes().unwrap_or_default();
-        all.merge(&theirs, unix_now());
-        if let Ok(v) = serde_json::to_value(&all) {
-            keep.put(kept::PROBES, v);
-        }
-    }
-
-    /// Takes up `p`, the state of the lead before it (another Mac's, from its store's backup: the
-    /// owner moved the lead here): its leases over these, its costs and failures added, its pause if
-    /// it's the later.
-    pub fn load_pool_state(&self, p: &PoolState) -> Result<usize> {
-        let mut s = self.shared.lock().unwrap();
-        let (now, unix) = (s.now(), unix_now());
-        // (A broker's own tasks' leases kept: its workers go on with them, docs/pool.md §8. One whose
-        // id a restored lease has is lapsed, its task offered again.)
-        let kept = if s.brokers.is_some() { s.leases.tasks() } else { Vec::new() };
-        let n = s.leases.restore(&p.leases, now)?;
-        for l in kept {
-            let id = l.id;
-            if !s.leases.put_back(l) {
-                eprintln!("coordinator: task lease {id}'s id is a lease taken up: its task offered again");
-                s.tasks.lapsed(id);
-            }
-        }
-        // (Its measures, each in place of a floor kept here that the other lead had none of: its
-        // measure took that floor's place there.)
-        for k in p.costs.keys().filter(|k| !old_shape(k)) {
-            if !p.floors.contains_key(k) {
-                s.floors.remove(k);
-            }
-        }
-        // (Nor an old step shape's measures, `old_shape`: a lead's state kept them past the
-        // folder's drop, and they came back with every take-up: the `trees 3/x/y` at 30–37 GB.)
-        s.costs.extend(p.costs.iter().filter(|(k, _)| !old_shape(k)).map(|(k, v)| (k.clone(), v.clone())));
-        s.needs_rev += 1;
-        let floors: Vec<(String, Floor)> =
-            p.floors.iter().filter(|(k, _)| !old_shape(k)).map(|(k, v)| (k.clone(), *v)).collect();
-        s.add_floors(&floors);
-        // (Nor, from a state of before `DISKS_V`, pack's and lo's targets' disks: each lead's state
-        // had kept those of before task #396, and brought them back with every take-up.)
-        let (_, gone) = JOB_DISKS_V4;
-        let stale = |k: &str| p.disks_v < DISKS_V && gone.contains(&crate::agent::memguard::step_of_key(k));
-        let disks: Vec<(String, u64)> =
-            p.disks.iter().filter(|(k, _)| !old_shape(k) && !stale(k)).map(|(k, v)| (k.clone(), *v)).collect();
-        s.add_disks(&disks);
-        // (Its jobs' disks: a step's runs where none are kept here; an older lead's single peak
-        // only within reason of its targets' measures, `stale_peak`. Fills only of the caches there
-        // are, as `job_disks_load` reads them.)
-        for (c, mb) in p.fills.iter().filter(|(c, _)| crate::needs::CACHES.iter().any(|(n, _)| n == *c)) {
-            s.fills.entry(c.clone()).or_insert(*mb);
-        }
-        for (step, v) in &p.job_peaks {
-            if !s.job_disks.contains_key(step) {
-                s.job_disks.insert(step.clone(), v.clone());
-            }
-        }
-        for (step, mb) in &p.job_disks {
-            if !s.job_disks.contains_key(step) && !stale_peak(&s.disks, step, *mb) {
-                s.add_job_disk(step, *mb);
-            }
-        }
-        for (w, k, at, n) in &p.failed {
-            let at = now.checked_sub(Duration::from_secs(unix.saturating_sub(*at))).unwrap_or(now);
-            s.failed.insert((w.clone(), k.clone()), (at, *n));
-        }
-        if p.pause_at >= s.pause_at {
-            set_pause(&mut s, p.pause.clone(), p.pause_at);
-        }
-        // (The members' words, each heard later there than here: an away member's leases held by
-        // its word, as they were there.)
-        let here = s.keep.members();
-        for (m, h) in &p.members {
-            if here.get(m).is_none_or(|o| o.at < h.at) {
-                s.keep.heard(m, h.speaks.clone(), h.at);
-            }
-        }
-        held::refresh(&mut s);
-        s.save_leases();
-        s.save_costs();
-        Ok(n)
     }
 
     /// The history's events after number `seq` (the pool's history per writer: docs/pool.md §7.5).
@@ -3459,52 +3347,32 @@ fn pool_state_of(s: &Shared) -> PoolState {
         job_disks: s.job_disks.keys().map(|k| (k.clone(), s.job_p90(k))).collect(),
         job_peaks: s.job_disks.clone(),
         fills: s.fills.clone(),
-        disks_v: DISKS_V,
         failed,
         pause: s.paused.clone(),
         pause_at: s.pause_at,
-        members: s.keep.members(),
     }
 }
 
-/// The coordinator's state as a lead takes up another's (`Coordinator::pool_state`; from the NAS
-/// backup of the store of the Mac that led before it, `kept::Loaded::pool_state`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// The coordinator's state, the tests' look (`Coordinator::pool_state`).
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PoolState {
-    #[serde(default)]
     pub leases: serde_json::Value,
-    #[serde(default)]
     pub costs: BTreeMap<String, Cost>,
     /// The targets' floors (crate::agent::memguard: cost key → floor).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub floors: BTreeMap<String, Floor>,
     /// The targets' disk floors (cost key → MB).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub disks: BTreeMap<String, u64>,
-    /// The 90th percentile of the disk each step's last jobs took (step → MB), for an older reader.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// The 90th percentile of the disk each step's last jobs took (step → MB).
     pub job_disks: BTreeMap<String, u64>,
     /// The disk each step's last jobs took (step → MB, oldest first: `Shared::job_disks`).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub job_peaks: BTreeMap<String, Vec<u64>>,
     /// What filling each shared cache takes (cache → MB: `Shared::fills`).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub fills: BTreeMap<String, u64>,
-    /// The generation of its `disks` (`DISKS_V`; 0, of before it).
-    #[serde(default)]
-    pub disks_v: u32,
     /// (worker, cost key, when it last failed: unix seconds, how many times).
-    #[serde(default)]
     pub failed: Vec<(String, String, u64, u32)>,
-    #[serde(default)]
     pub pause: Option<jobrt::control::Pause>,
-    #[serde(default)]
     pub pause_at: u64,
-    /// The members as the lead before last heard them (`kept::Heard`, by host): what each speaks,
-    /// so the leases of one away now go by its word here too (crate::coord::held), not lapsing
-    /// after `TTL` with their targets granted again (task #1038).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub members: BTreeMap<String, kept::Heard>,
 }
 
 /// The owner's cancel (jobrt::control::Cancel) taken up in `s`: `Coordinator::cancel`, and the
@@ -3602,7 +3470,7 @@ fn app_when(v: &str) -> String {
 /// the best of the last day's probes, held shut while the NAS's own disk load read each round is
 /// over the owner's target (nas::Loop); off, the limits are let go. A probe that fails leaves them.
 /// The probes are kept in its store (`kept::PROBES`) and read once it's open (the day's best
-/// outlive a restart, and a change of lead through the store's backup).
+/// outlive a restart).
 fn nas_prober(
     shared: Arc<Mutex<Shared>>,
     root: Arc<Mutex<Option<store::nasfs::NasRoot>>>,
@@ -3657,8 +3525,7 @@ fn nas_prober(
                                 p.creates_s
                             );
                             probes.add(p);
-                            // (Not before the kept ones are read: never over them. With what the
-                            // store holds now: a backup taken up meanwhile, agent::pool's `load_backup`.)
+                            // (Not before the kept ones are read: never over them.)
                             if loaded {
                                 probes.merge(&keep.probes().unwrap_or_default(), unix_now());
                                 if let Ok(v) = serde_json::to_value(&probes) {
@@ -3904,15 +3771,10 @@ const JOB_DISKS: &str = "job-disks-v6.json";
 
 /// The file before `JOB_DISKS` (task #396's v5: its runs all of `pack` and `lo` as they run now),
 /// kept whole; read once with `pack`'s and `lo`'s targets' disk measures (`JOB_DISKS_V4`'s gone
-/// steps') dropped again: every take-up of a lead's state (`load_pool_state`) had brought back
+/// steps') dropped again: every take-up of a lead's state had brought back
 /// those of before task #396 (51–68 GB, the whole base packs' copy counted in), which no Mac's
 /// room for jobs fits, and their z6 tiles were never granted (task #657: 9 of `pack` on 25 Oct).
 const JOB_DISKS_V5: &str = "job-disks-v5.json";
-
-/// The generation of the disk measures a lead's state carries (`PoolState::disks_v`): 6 since
-/// `JOB_DISKS`'s v6. A state of before it (0: none said) brings no `pack`'s nor `lo`'s targets'
-/// disks to a take-up (`load_pool_state`).
-pub const DISKS_V: u32 = 6;
 
 /// The file before `JOB_DISKS` (task #392's v4: each step's last runs, step → MB), and the steps
 /// whose runs in it and in the files before it (`JOB_DISKS_BEFORE`), and whose targets' disk
@@ -6761,103 +6623,6 @@ mod tests {
         assert!(c.away().is_empty());
     }
 
-    /// Task #1038 (the pool's simulator, seed 20029): a lead taking up another's state (the owner
-    /// moved the lead, its store's backup read) takes the members' words with its leases, so a
-    /// member away holds its lease there as it did at the lead before: its target is granted to no
-    /// one after `TTL` (the new lead had never heard it, and let its lease lapse as an older
-    /// member's: its job ran twice).
-    #[test]
-    fn a_lead_taking_up_anothers_state_holds_an_away_members_lease_by_its_word() {
-        let (_d, c, w) = start();
-        measure_units(&c, 1);
-        unit_offer(&c, "6/1/1");
-        let g = w.ask(&ask(8192)).unwrap().expect("granted");
-        c.member_beat(&word("m1", &[g.lease]));
-        let p = c.pool_state();
-        assert!(p.members.contains_key("m1"), "{:?}", p.members);
-        let (_d2, next, _w2) = start();
-        let clock = store::clock::Virtual::new();
-        next.shared.lock().unwrap().clock = clock.clone();
-        measure_units(&next, 1);
-        assert_eq!(next.load_pool_state(&p).unwrap(), 1);
-        let other = client::Client::at(_w2.urls(), next.contact.token.clone(), "m6");
-        for _ in 0..6 {
-            clock.advance(Duration::from_secs(1800));
-            assert!(next.expire().is_empty(), "nothing lapses");
-            unit_offer(&next, "6/1/1");
-            assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
-        }
-        assert_eq!(next.away().iter().map(|a| (a.0.as_str(), a.1)).collect::<Vec<_>>(), [("m1", 1)]);
-    }
-
-    /// Task #1119: the NAS budget's probes are kept in the lead's store, not on the NAS: a lead
-    /// taking another's backup up has its probes beside its own, the day-old let go.
-    #[test]
-    fn the_nas_probes_ride_the_store_to_the_next_lead() {
-        use jobrt::budget::nas::{Probe, Probes, KEEP_S};
-        let (_d, c, _w) = start();
-        let now = unix_now();
-        let theirs = Probes(vec![
-            Probe { at: now - KEEP_S - 10, bytes_s: 99e6, ..Default::default() },
-            Probe { at: now - 60, bytes_s: 86e6, ..Default::default() },
-        ]);
-        let keep = c.shared.lock().unwrap().keep.clone();
-        keep.put(kept::PROBES, serde_json::to_value(&theirs).unwrap());
-        let store = keep.store().cloned().unwrap();
-        let b = crate::pool::store::Snapshot { member: "m1".into(), at: wall_now(), ..store.snapshot() };
-        let (_d2, next, _w2) = start();
-        let mine = Probes(vec![Probe { at: now - 30, bytes_s: 50e6, ..Default::default() }]);
-        let nk = next.shared.lock().unwrap().keep.clone();
-        nk.put(kept::PROBES, serde_json::to_value(&mine).unwrap());
-        crate::agent::pool::load_backup(&next, &b).unwrap();
-        let got = nk.probes().unwrap();
-        assert_eq!(got.0.iter().map(|p| p.bytes_s).collect::<Vec<_>>(), [86e6, 50e6], "both kept, the day-old let go");
-        assert_eq!(got.limits(None).unwrap().bytes_s, 86e6, "the day's best");
-    }
-
-    /// Task #1038 (the pool's simulator, seed 10054): the lead before, a member now, holds its own
-    /// slots' leases by its word at the lead taking up its backup (agent::pool::load_backup): its
-    /// job's target is granted to no one while it's away, as a member's.
-    #[test]
-    fn the_lead_befores_own_job_is_held_by_its_word_at_the_next() {
-        let (_d, c, w) = start();
-        measure_units(&c, 1);
-        unit_offer(&c, "6/1/1");
-        // (Its own slot's job: worker m1, the lead before, never heard by a beat.)
-        w.ask(&ask(8192)).unwrap().expect("granted");
-        let store = c.shared.lock().unwrap().keep.store().cloned().unwrap();
-        let b = crate::pool::store::Snapshot { member: "m1".into(), at: wall_now(), ..store.snapshot() };
-        let (_d2, next, w2) = start();
-        let clock = store::clock::Virtual::new();
-        next.shared.lock().unwrap().clock = clock.clone();
-        measure_units(&next, 1);
-        assert_eq!(crate::agent::pool::load_backup(&next, &b).unwrap(), 1);
-        let other = client::Client::at(w2.urls(), next.contact.token.clone(), "m6");
-        for _ in 0..4 {
-            clock.advance(Duration::from_secs(1800));
-            assert!(next.expire().is_empty(), "nothing lapses");
-            unit_offer(&next, "6/1/1");
-            assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
-        }
-    }
-
-    /// Task #1119: the map's head the lead keeps in its store (kept::MAP_HEAD), never taken back,
-    /// goes with its backup to the lead the owner moves it to: a map log started there goes past it.
-    #[test]
-    fn the_maps_head_is_kept_and_taken_up_with_the_backup() {
-        let (_d, c, _w) = start();
-        assert_eq!(c.map_head(), 0);
-        c.keep_map_head(2717);
-        c.keep_map_head(2700);
-        assert_eq!(c.map_head(), 2717, "never back");
-        let store = c.shared.lock().unwrap().keep.store().cloned().unwrap();
-        let b = crate::pool::store::Snapshot { member: "m1".into(), at: wall_now(), ..store.snapshot() };
-        assert_eq!(b.docs[kept::MAP_HEAD], 2717);
-        let (_d2, next, _w2) = start();
-        crate::agent::pool::load_backup(&next, &b).unwrap();
-        assert_eq!(next.map_head(), 2717);
-    }
-
     /// Task #1038 (the pool's simulator, seed 37): a member's beat sent before its ask and taken
     /// after the grant, past `OMIT_GRACE` (held on its way), lists what it held before: it releases
     /// nothing; its next beat, sent after, leaving the lease out, ends it.
@@ -7871,7 +7636,7 @@ mod tests {
         assert!(w.ask(&on(old)).unwrap().is_none());
         assert!(c.hold("unit", &[("6/55/25".into(), "k".into())]).is_none());
         assert_eq!(c.holds().len(), 1);
-        assert!(c.pool_state().leases["holds"][0]["newer_than"] == old, "carried to the next lead");
+        assert!(c.pool_state().leases["holds"][0]["newer_than"] == old, "kept with the leases");
         // Kept across a restart on the same app; released by a restart on a newer one, whose
         // workers (on the lead's app) get it again.
         c.stop();
@@ -8504,23 +8269,6 @@ mod tests {
         assert!(mem_of(&c, "bld-fetch", "6/1/1").is_none_or(|mb| mb < 43_000));
     }
 
-    #[test]
-    fn a_take_up_holds_the_terms_leases_alone() {
-        let (_d, c, _w) = start();
-        // A lease this coordinator's folder kept from a term its Mac led before, ended since under
-        // another lead; the term taken up holds another.
-        let old = c.hold("trees", &[("6/33/22".into(), "k".into())]).unwrap();
-        let p = PoolState {
-            leases: serde_json::json!({ "next": old + 5, "leases": [{ "id": old + 3, "term": 3, "granted_at": 0, "worker": "m1", "work": { "Job": { "step": "terrain-hi", "targets": [["6/33/22", "k2"]] } }, "progress": null }] }),
-            ..Default::default()
-        };
-        assert_eq!(c.load_pool_state(&p).unwrap(), 1);
-        assert!(c.held("trees").is_empty(), "the old lease is gone");
-        assert!(c.held("terrain-hi").contains("6/33/22"));
-        // (Ids go on past both.)
-        assert!(c.hold("slope-hi", &[("3/1/1".into(), "k".into())]).unwrap() >= old + 5);
-    }
-
     /// Task #657: the scheduler's look-ups kept (`Sched::offered`, `measured_of`, the Book's NAS
     /// rates) grant as they'd grant worked out afresh. Two coordinators take one random run of
     /// offers, measures (costs, floors, disk floors), asks, finishes, failures and lapses; before
@@ -8827,93 +8575,6 @@ mod tests {
         }
         assert!(grants > 40 && reordered > 20, "the run granted {grants} jobs, {reordered} asks' offers reordered");
         assert!(refusals.contains(&sched::Rule::Cores) && refusals.contains(&sched::Rule::Room), "{refusals:?}");
-    }
-
-    /// Task #657: a term's state of before `DISKS_V` brings back no `pack`'s nor `lo`'s targets'
-    /// disks (those of before task #396, the whole base packs' copy counted in: 9 z6 tiles at
-    /// 51–68 GB no Mac's room fitted, never granted) and no fill of a cache there isn't; one of
-    /// `DISKS_V` brings its own; a lead's folder of v5 drops them once.
-    #[test]
-    fn a_take_up_brings_back_no_disks_of_before_the_halos_own() {
-        let (_d, c, _w) = start();
-        let mut p = PoolState {
-            disks: [
-                (cost_key("pack", "6/16/20"), 67_875),
-                (cost_key("lo", "3/0/1"), 42_971),
-                (cost_key("peaks", "6/1/1"), 900),
-            ]
-            .into(),
-            fills: [("base packs".to_string(), 67_985), (buildstore::localread::CACHE.to_string(), 900)].into(),
-            leases: serde_json::json!({ "next": 1, "leases": [] }),
-            ..Default::default()
-        };
-        c.load_pool_state(&p).unwrap();
-        let disks = c.disks();
-        assert_eq!(
-            (disks.get("pack 6/16/20"), disks.get("lo 3/0/1"), disks.get("peaks 6/1/1")),
-            (None, None, Some(&900))
-        );
-        assert_eq!((c.fill_mb("base packs"), c.fill_mb(buildstore::localread::CACHE)), (0, 900));
-        assert_eq!(c.pool_state().disks_v, DISKS_V, "a state written now says its generation");
-        p.disks_v = DISKS_V;
-        p.disks = [(cost_key("pack", "6/16/20"), 1_300)].into();
-        c.load_pool_state(&p).unwrap();
-        assert_eq!(c.disks().get("pack 6/16/20"), Some(&1_300), "a state of now brings its own");
-        // A lead's folder of v5: its runs kept whole, pack's and lo's targets' disks dropped once.
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(JOB_DISKS_V5), r#"{"pack":[1915,1892],"peaks":[1300]}"#).unwrap();
-        let mut d: BTreeMap<String, u64> = [
-            (cost_key("pack", "6/16/20"), 67_875),
-            (cost_key("lo", "3/0/1"), 42_971),
-            (cost_key("peaks", "6/1/1"), 900),
-        ]
-        .into();
-        let (m, _) = job_disks_load(dir.path(), &mut d);
-        assert_eq!(m, [("pack".to_string(), vec![1915, 1892]), ("peaks".to_string(), vec![1300])].into());
-        assert_eq!(d, [(cost_key("peaks", "6/1/1"), 900)].into());
-        assert!(dir.path().join(JOB_DISKS).exists());
-        let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
-        job_disks_load(dir.path(), &mut d);
-        assert_eq!(d.len(), 1, "not dropped again");
-    }
-
-    #[test]
-    fn a_take_up_keeps_the_newer_of_a_floor_and_a_measure() {
-        let (_d, c, _w) = start();
-        let f = |mb: u64| Floor { mb, alone: true, v: 0 };
-        c.add_floors(&[(cost_key("peaks", "6/1/1"), f(9000)), (cost_key("peaks", "6/1/2"), f(9000))]);
-        // The other lead measured 6/1/1 (its floor gone there), and saw a higher floor for 6/1/3.
-        let p = PoolState {
-            costs: [(
-                cost_key("peaks", "6/1/1"),
-                Cost { peak_mb: 3000, secs: 60, worker: None, v: 0, ..Default::default() },
-            )]
-            .into(),
-            floors: [(cost_key("peaks", "6/1/3"), f(7000))].into(),
-            leases: serde_json::json!({ "next": 1, "leases": [] }),
-            ..Default::default()
-        };
-        c.load_pool_state(&p).unwrap();
-        assert_eq!((floor_of(&c, "peaks", "6/1/1"), mem_of(&c, "peaks", "6/1/1")), (None, Some(3000)));
-        // An old step shape's measures in a term's state aren't taken up (`old_shape`).
-        let old =
-            |mb: u64| Cost { peak_mb: mb, secs: 60, worker: None, v: cost_version("trees"), ..Default::default() };
-        let p = PoolState {
-            costs: [(cost_key("trees", "3/1/3"), old(37_450)), (cost_key("trees", "6/4/14"), old(1_360))].into(),
-            floors: [(cost_key("trees", "3/2/3"), f(36_000))].into(),
-            disks: [(cost_key("terrain-hi", "3/1/1"), 9_000)].into(),
-            leases: serde_json::json!({ "next": 1, "leases": [] }),
-            ..Default::default()
-        };
-        c.load_pool_state(&p).unwrap();
-        let costs = c.shared.lock().unwrap().costs.clone();
-        assert!(!costs.contains_key("trees 3/1/3") && costs.contains_key("trees 6/4/14"), "{costs:?}");
-        assert_eq!(floor_of(&c, "trees", "3/2/3"), None);
-        assert!(!c.disks().contains_key("terrain-hi 3/1/1"));
-        assert_eq!(
-            (floor_of(&c, "peaks", "6/1/2").map(|f| f.mb), floor_of(&c, "peaks", "6/1/3").map(|f| f.mb)),
-            (Some(9000), Some(7000))
-        );
     }
 
     /// A resumable job offered to the worker whose Mac holds its progress (crate::agent::resume):
@@ -14147,57 +13808,6 @@ mod tests {
         // Off again: refused as before.
         c.set_brokers(None);
         assert_eq!(status(&post("/api/swarm", "{}")), 403);
-    }
-
-    /// A broker that takes the lead keeps its own tasks' leases as it takes up the term's jobs'
-    /// (docs/pool.md §8: a handover drops no task); switched off, the term's leases replace them,
-    /// as before.
-    #[test]
-    fn a_broker_taking_the_lead_keeps_its_tasks_leases() {
-        for on in [true, false] {
-            let (d, c, w) = start();
-            if on {
-                c.set_brokers(Some(brokers::Brokers::default()));
-            }
-            let root = d.path().join("job");
-            std::fs::create_dir_all(&root).unwrap();
-            let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
-            let offer = task::Offer {
-                owner: 42,
-                kind: "tail".into(),
-                spec: serde_json::json!({ "unit": "6/1/1" }),
-                root,
-                inputs: Default::default(),
-                mem_mb: 100,
-                ahead: None,
-            };
-            job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
-            let page = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
-            let g = page
-                .ask(&Ask {
-                    worker: "ipad".into(),
-                    kind: "native".into(),
-                    can: vec!["tail".into()],
-                    mem_mb: 1000,
-                    cores: 4,
-                    ..Default::default()
-                })
-                .unwrap()
-                .unwrap();
-            // Another lead's state: a job's lease.
-            let other = {
-                let mut l = lease::Leases::new(TTL);
-                l.grant(
-                    "m1",
-                    Work::Job { step: "slope-hi".into(), targets: vec![("3/2/2".into(), "k".into())] },
-                    Instant::now(),
-                );
-                PoolState { leases: l.snapshot(), ..Default::default() }
-            };
-            assert_eq!(c.load_pool_state(&other).unwrap(), 1);
-            assert_eq!(page.beat(g.lease, None).unwrap(), on, "its task's lease kept only with the switch on");
-            assert_eq!(c.held("slope-hi").len(), 1);
-        }
     }
 
     /// Task #882 step 3: a member's broker runs no phase sharer (the lead's reads the timings log at

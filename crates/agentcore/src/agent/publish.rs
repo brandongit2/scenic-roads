@@ -284,18 +284,11 @@ pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
     pub gc: std::sync::Arc<store::map::gc::GcQueue>,
     head: std::sync::Arc<super::bus::Snap<Option<std::sync::Weak<store::catalogue::Catalogue>>>>,
-    /// The `seq` a log started here goes past (`set_floor`): the map's head as the pool last kept it.
-    floor: std::sync::atomic::AtomicU64,
 }
 
 impl Default for Here {
     fn default() -> Here {
-        Here {
-            feed: Default::default(),
-            gc: Default::default(),
-            head: super::bus::Snap::new(None),
-            floor: Default::default(),
-        }
+        Here { feed: Default::default(), gc: Default::default(), head: super::bus::Snap::new(None) }
     }
 }
 
@@ -332,18 +325,10 @@ impl Here {
         self.head.set(Some(std::sync::Arc::downgrade(&cat)));
     }
 
-    /// The map's head as the pool kept it (`seq`: the lead's store, crate::coord::kept's
-    /// `map-head`, carried to the next lead by its backup): a log started on a lead with none (a
-    /// lead moved to another Mac, a lost disk) is numbered past it (docs/maplog.md §4.5), so the
-    /// map's numbers go on and no client holds a map newer than the lead's. Raised, never lowered.
-    pub fn set_floor(&self, seq: u64) {
-        self.floor.fetch_max(seq, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// The `seq` a log started now goes past: the floor set, and the newest `seq` a client asked
-    /// from (a map server, a mirror: store::map::feed::Feed::asked_past).
+    /// The `seq` a log started now goes past: the newest a client asked from (a map server, a
+    /// mirror: store::map::feed::Feed::asked_past), so no client holds a map newer than the lead's.
     fn floor(&self) -> u64 {
-        self.floor.load(std::sync::atomic::Ordering::Relaxed).max(self.feed.asked_past())
+        self.feed.asked_past()
     }
 }
 
@@ -538,7 +523,7 @@ impl Writer {
         use anyhow::Context;
         let here = self.here.clone();
         let log = self.open()?;
-        // (Numbered past the head; a log started here past the pool's floor, `Here::set_floor`.)
+        // (Numbered past the head; a log started here past its clients' maps, `Here::floor`.)
         cat.n = cat.n.max(if log.map().is_empty() { here.floor() } else { log.map().seq } + 1);
         let cat = &*cat;
         let wrote = if log.map().is_empty() {
@@ -671,30 +656,21 @@ mod tests {
         assert_eq!((taken.n, again.log.as_ref().unwrap().map().seq), (last.n + 2, last.n + 2));
     }
 
-    /// Task #1119: a log started on a lead with none (a lead moved to another Mac, a lost disk: no
-    /// NAS snapshot to start from) is numbered past the map's head as the pool kept it, and past
-    /// the newest `seq` a client asked from, so the map's numbers go on.
+    /// Task #1119: a log started on a lead with none (no NAS snapshot to start from) is numbered
+    /// past the newest `seq` a client asked from, so the map's numbers go on.
     #[test]
-    fn a_new_log_is_numbered_past_the_pools_head_and_its_clients() {
+    fn a_new_log_is_numbered_past_its_clients() {
         let d = tempfile::tempdir().unwrap();
         let chain = recorded();
         let here = std::sync::Arc::new(Here::default());
         // (The servers ask from their maps while there's none here: 503, the seq noted.)
         here.feed.changes(chain[0].n + 40, Some("server/m1"), 1);
-        here.set_floor(chain[0].n + 20);
-        here.set_floor(chain[0].n + 5);
         let mut w = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());
         w.publish(chain[0].clone(), false, std::time::SystemTime::now());
         assert_eq!(here.feed.head(), Some(chain[0].n + 41), "past the client's map");
         // (Once there's a log, the head goes on from it.)
         w.publish(chain[1].clone(), false, std::time::SystemTime::now());
         assert_eq!(here.feed.head(), Some(chain[0].n + 42));
-        let d2 = tempfile::tempdir().unwrap();
-        let here = std::sync::Arc::new(Here::default());
-        here.set_floor(chain[0].n + 20);
-        let mut w = Writer::new(crate::agent::seam::for_tests(), d2.path().join(MAPLOG), here.clone());
-        w.publish(chain[0].clone(), false, std::time::SystemTime::now());
-        assert_eq!(here.feed.head(), Some(chain[0].n + 21), "past the pool's head");
     }
 
     /// The `catalog` step's post (`POSTED`) is taken and appended whole; one taken and not appended

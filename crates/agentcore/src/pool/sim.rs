@@ -9,9 +9,7 @@
 //! **Real:** the driver; the lead's coordinator (`Coordinator::in_process`: every request answered
 //! by its own `route` and its store's durability wait, `answer_json`, as over HTTP; its grants by
 //! its scheduler, its own jobs' by `ask_own`, released by beats, `held::beat`; hand-offs taken into
-//! its store, `handoffs::Handoffs`; its epoch raised, `Store::raise_epoch`; another lead's state
-//! taken up from the backup, `load_pool_state`; its store backed up, `store::back_up_once`, and
-//! restored, `Store::restore`, on a real folder); the member's beat (`agent::beat::ToLead::post_on`:
+//! its store, `handoffs::Handoffs`, on a real folder, its epoch bumped as it opens); the member's beat (`agent::beat::ToLead::post_on`:
 //! its body, the lead's answer into `coord::beats::Beats`, the hand-offs it lacks posted) on
 //! coordwire's client (`Client::through`: its rounds and errors, `LeaseCalls`' asks), the
 //! grants' wire types; the records' brief a job opens (crate::agent::brief::Briefs::fresh: the
@@ -23,13 +21,13 @@
 //! cursors' TTL (`CURSOR_TTL_S`, 6 h) as they are.
 //!
 //! **Modelled** (`mac`): the agent's loop around them (its slots and jobs, when it asks and beats,
-//! its role read from the declaration and its restart into a new one, `agent::pool::took_up`'s and
-//! `epochs`' few lines, `lead::after`'s calls), the jobs (a few minutes each, their hand-offs
+//! its role read from the declaration and its restart into a new one, `agent::pool::took_up`'s
+//! few lines, `lead::after`'s calls), the jobs (a few minutes each, their hand-offs
 //! drawn: now and then taking their targets' files as their brief names them, `Handoff::reused`),
 //! the map's publishing (a batch of the map's log after each save of the records, `World::publish`)
 //! and the map servers' asks of the lead's feed (`World::map_poll`), the `gc` job (a chunk now and
 //! then, removed at once), the network (`World::call`), the NAS (below), the clocks, the owner
-//! (moving the lead, restoring its disk). The store's files are written without their `fsync` (`seglog::UNSYNCED`):
+//! (installing apps). The store's files are written without their `fsync` (`seglog::UNSYNCED`):
 //! a crash is the files cut by the simulator itself.
 //!
 //! The NAS's model (`World`): create-new is atomic on the server, and the file's bytes land a step
@@ -47,10 +45,8 @@
 //! lost (the request done); a Mac cut off from the others for minutes to hours (`Cfg::partitions`),
 //! or hearing no answer while heard (`Cfg::one_way`); the lead's process killed while a request's
 //! change is on its way to its store (`Cfg::kills`: the line landed, torn or not, unanswered), any
-//! Mac's process crashing (`Cfg::crashes`), the lead's disk replaced and its store restored from
-//! the NAS backup (`Cfg::restores`), and the owner moving the lead (`Cfg::moves`: to another Mac, or
-//! back to the one before; as the lead's save is under way, landing after the next lead's; or to a
-//! Mac while the lead's reads fail, so it stops granting at `driver::VOUCH_S`).
+//! Mac's process crashing (`Cfg::crashes`). (The owner's moving the lead, by hand with its agent
+//! stopped, isn't modelled: docs/pool.md §6.1.)
 //!
 //! Each Mac runs in a thread of its own, but one at a time: every NAS operation, request and look at
 //! a clock waits for the Mac's turn, and after each the schedule (`World::after`) says whose turn
@@ -60,11 +56,11 @@
 //! alone, caught up, its records at the one path must name every hand-off owed, and no take-up may
 //! have been made in the run's last ten minutes. Checked throughout: no target under two live leases
 //! (the jobs running, all Macs', and each coordinator's table), two leads never granting at once,
-//! no job id (a lease's, jobrt::jobid) granted twice across every lead, restart and move, every
+//! no job id (a lease's, jobrt::jobid) granted twice across every restart, every
 //! hand-off merged once or refused with why (never applied again once acknowledged),
 //! acknowledgements only of what a saved snapshot names, §4's epoch and
-//! records invariants (a save landed late over the one path, not following its brief, fenced as a
-//! take-up fences it: `records::follows`), a job's brief never older than the one its lease was granted from (from the
+//! records invariants (a save landed late over the one path, older than one landed, read until the
+//! next and not taken for its epoch's), a job's brief never older than the one its lease was granted from (from the
 //! same coordinator), GC removing no name the records it saw name nor one a map server heard within
 //! the cursor TTL serves, and no records naming a name GC removed (but another disk's queue's,
 //! docs/maplog.md §7.2's limit, counted).
@@ -72,7 +68,7 @@
 mod mac;
 mod place;
 
-use super::driver::{self, Io};
+use super::driver::Io;
 use super::journal::Entry;
 use super::lead;
 use super::nas::{Created, Nas};
@@ -134,29 +130,13 @@ const P_KILL: f64 = 0.01;
 /// With `Cfg::crashes`: per step, that the Mac's process crashes (its memory gone, its saved state
 /// and disk kept).
 const P_CRASH: f64 = 0.0003;
-/// With `Cfg::restores`: per step of the declared lead, that its disk is replaced and its store
-/// restored from the NAS backup.
-const P_RESTORE: f64 = 0.0005;
-/// With `Cfg::moves`: per step, that the owner moves the lead; per save of the lead's records'
-/// temporary file, that the owner moves it right then and the lead's Mac sleeps past the next
-/// lead's take-up (its rename landing after that lead's save).
-const P_MOVE: f64 = 0.0005;
-const P_MOVE_MIDSAVE: f64 = 0.004;
 /// Per step: that the turn stays with the Mac that has it.
 const P_KEEP: f64 = 0.85;
-/// How long the declared lead's take-up waits on records another Mac holds (a late save over the
-/// one path older than its brief) before the owner declares that Mac again, as the wait says to (s).
-const OWNER_S: u64 = 1200;
 /// How long the run's end must have seen no take-up (s).
 const QUIET_S: u64 = 600;
 /// At most how long a run goes on past its end while its lead still merges what the faults left,
 /// or isn't caught up yet (s).
 const MERGING_S: u64 = 3600;
-/// With `Cfg::move_at`: how long (awake) after the owner's move, or its process's restart since,
-/// the declared lead takes up at most (s): `STALE_S`, and twenty of its loops for the reads that
-/// fail.
-const TAKE_UP_S: u64 = driver::STALE_S + 20 * LOOP_S;
-
 /// What a run is.
 #[derive(Clone, Copy, Debug)]
 struct Cfg {
@@ -187,10 +167,6 @@ struct Cfg {
     flaky: f64,
     /// The Macs sleep now and then.
     sleeps: bool,
-    /// The owner moves the lead at these times (s), each to the next Mac, the lead before
-    /// left awake and reading: each declared lead's take-up checked to come within `TAKE_UP_S`
-    /// of its move, awake (task #1154).
-    move_at: &'static [u64],
     /// Now and then an operation the share stalls on for minutes: its step minutes long.
     stalls: bool,
     /// Requests dropped, delayed (some arriving after the client gave up), answers lost.
@@ -203,14 +179,10 @@ struct Cfg {
     kills: bool,
     /// Any Mac's process crashing now and then.
     crashes: bool,
-    /// The lead's disk replaced, its store restored from the NAS backup.
-    restores: bool,
-    /// The owner moving the lead.
-    moves: bool,
     /// How many Macs (0: two to four, by the seed).
     macs: usize,
-    /// Mac 1 asleep for seven hours from five minutes after the lead's first take-up (`STALE_S` in:
-    /// a declaration the owner wrote, as the run's is): its map server unheard past GC's cursor
+    /// Mac 1 asleep for seven hours from five minutes in, after the lead's first take-up: its map
+    /// server unheard past GC's cursor
     /// TTL (store::map::gc::CURSOR_TTL_S), its member's hand-offs kept past the grace.
     nap: bool,
 }
@@ -231,15 +203,12 @@ impl Cfg {
             fails: false,
             flaky: 0.0,
             sleeps: true,
-            move_at: &[],
             stalls: false,
             net: false,
             partitions: false,
             one_way: false,
             kills: false,
             crashes: false,
-            restores: false,
-            moves: false,
             macs: 0,
             nap: false,
         }
@@ -269,23 +238,12 @@ impl Cfg {
         c.one_way = r.chance(0.25);
         c.kills = r.chance(0.35);
         c.crashes = r.chance(0.3);
-        c.restores = r.chance(0.25);
-        c.moves = r.chance(0.4);
         c
     }
 
     /// Every knob on: the faults of docs/coordination.md step 9 at once.
     fn all(seed: u64) -> Cfg {
-        Cfg {
-            net: true,
-            partitions: true,
-            one_way: true,
-            kills: true,
-            crashes: true,
-            restores: true,
-            moves: true,
-            ..Cfg::mixed(seed)
-        }
+        Cfg { net: true, partitions: true, one_way: true, kills: true, crashes: true, ..Cfg::mixed(seed) }
     }
 }
 
@@ -342,15 +300,13 @@ struct MacW {
     /// Its coordinator, while its agent runs as the lead, and that coordinator's clock.
     coord: Option<Arc<Coordinator>>,
     /// Its coordinator's store's epoch, as its driver last had it (`Io::epoch`), and as its last
-    /// raise left it: that epoch, the newest epoch landed at the one path and the newest taken up
+    /// take-up read it: that epoch, the newest epoch landed at the one path and the newest taken up
     /// then (a take-up's step may end long after, its Mac asleep midway).
     epoch: u64,
     raised: Option<(u64, Option<u64>, Option<u64>)>,
     clock: Option<Arc<store::clock::Virtual>>,
-    /// Its process died (killed, crashed, its disk replaced): every operation fails until its
-    /// thread restarts it; whether its saved state went with it (`lose`), and its disk.
+    /// Its process died (killed, crashed): every operation fails until its thread restarts it.
     crashed: bool,
-    lose: bool,
     /// The keys of the hand-offs its driver keeps (`Saved::mine`), as of its last step saved.
     mine: BTreeSet<String>,
     /// Its disk's map log, as the lead's agent keeps it (modelled: crate::agent::publish): the
@@ -440,33 +396,28 @@ struct World {
     /// hand-offs the one path's records lacked when it last went on.
     end: u64,
     behind: Option<usize>,
-    /// The declared lead's take-up waited past its config's end, or the owner declared again the
-    /// Mac a take-up waited on: its take-ups must settle by the run's own end, not its config's.
+    /// The declared lead's take-up waited past its config's end: its take-ups must settle by the
+    /// run's own end, not its config's.
     waited: bool,
-    /// The declared lead, and the one before it (the owner's moves).
+    /// The declared lead.
     declared: usize,
-    before: Option<usize>,
     /// The take-ups, by epoch: by which Mac, and when; the Mac that led each epoch.
     took: BTreeMap<u64, (usize, u64)>,
     leaders: BTreeMap<u64, usize>,
     /// Each epoch's last snapshot landed at the one path: its number, and the hand-offs it names.
     landed: BTreeMap<u64, (u64, BTreeSet<String>)>,
-    /// Every hand-off made, by key; those a lead acknowledged, in which epoch, and by which Mac.
+    /// Every hand-off made, by key; those a lead acknowledged, and in which epoch.
     made: BTreeMap<String, Made>,
     acked: BTreeMap<String, u64>,
-    acked_by: BTreeMap<String, usize>,
     /// The hand-offs each Mac's coordinator's store holds (taken, not yet merged), as last seen.
     stored: Vec<BTreeSet<String>>,
     /// Every lease seen granted (epoch, id): its worker and targets.
     granted: BTreeMap<(u64, u64), (String, Vec<String>)>,
-    /// The leases each Mac's coordinator's store has held (cleared as its disk is replaced, and
-    /// replaced as it takes up another's backup).
-    known: Vec<BTreeSet<(u64, u64)>>,
     /// The jobs running, by lease (epoch, id).
     running: BTreeMap<(u64, u64), Running>,
     /// The epochs whose lead was seen caught up.
     caught: BTreeSet<u64>,
-    /// Until when the share answers none of each Mac's reads (`Cfg::fails`, a move's).
+    /// Until when the share answers none of each Mac's reads (`Cfg::fails`).
     away: Vec<u64>,
     /// Until when each Mac is cut off from the others, and hears no answer.
     cut: Vec<u64>,
@@ -484,24 +435,10 @@ struct World {
     grant_marks: BTreeMap<(u64, u64), (usize, u64, Option<(u64, u64)>)>,
     /// The brief last served over the network: by which coordinator (its Mac, its number).
     served: Option<(usize, u64)>,
-    /// `Cfg::move_at`'s moves made, and the last one's Mac and its awake clock then (or at its
-    /// process's restart since: an app installed), and whether no snapshot had landed then, until
-    /// it takes up.
-    fixed_moves: usize,
-    moved: Option<(usize, u64, bool)>,
     /// The hand-offs a landed snapshot refused for a name GC removed.
     gc_refused: BTreeSet<String>,
-    /// Since when the declared lead's take-up has waited on the records of the Mac that led an
-    /// epoch (`OWNER_S`), and that epoch.
-    stuck: Option<(u64, u64)>,
-    /// The epoch the declared lead's take-up last waited on (`waits_on`), until it leads; and the
-    /// Macs whose records on their own disk were lost (their saved state or their disk), each since
-    /// when.
-    waits: Option<u64>,
-    disk_lost: BTreeMap<usize, u64>,
-    /// The epochs each Mac led (epoch, Mac), and those two Macs led (`repeats`).
+    /// The epochs each Mac led (epoch, Mac).
     led_by: BTreeSet<(u64, usize)>,
-    repeated: BTreeSet<u64>,
     /// The run's folder (each Mac's under it), kept until the run ends.
     _dir: tempfile::TempDir,
     wrong: Vec<String>,
@@ -534,8 +471,8 @@ fn content(t: &str, k: &str) -> String {
 }
 
 /// The declaration naming Mac `k`.
-fn declaration(k: usize, since: u64) -> Vec<u8> {
-    serde_json::to_vec(&lead::Declared { member: id(k), host: host(k), since }).unwrap()
+fn declaration(k: usize) -> Vec<u8> {
+    serde_json::to_vec(&lead::Declared { member: id(k), host: host(k) }).unwrap()
 }
 
 /// Whether records are self-consistent (invariant 4): each unit's key and its file in the manifest
@@ -618,7 +555,6 @@ impl World {
                     raised: None,
                     clock: None,
                     crashed: false,
-                    lose: false,
                     mine: BTreeSet::new(),
                     map_seq: 0,
                     feed: store::map::feed::Feed::new(),
@@ -629,8 +565,8 @@ impl World {
             })
             .collect();
         let mut files = BTreeMap::new();
-        // Mac 0 the declared lead, at first: the owner's declaration (its take-up waits `STALE_S`).
-        files.insert(lead::LEAD.to_string(), declaration(0, T0));
+        // Mac 0 the declared lead: the owner's declaration.
+        files.insert(lead::LEAD.to_string(), declaration(0));
         // Today's records: one unit built.
         files.insert(
             "state/build/manifest.json".to_string(),
@@ -659,16 +595,13 @@ impl World {
             behind: None,
             waited: false,
             declared: 0,
-            before: None,
             took: BTreeMap::new(),
             leaders: BTreeMap::new(),
             landed: BTreeMap::new(),
             made: BTreeMap::new(),
             acked: BTreeMap::new(),
-            acked_by: BTreeMap::new(),
             stored: vec![BTreeSet::new(); n],
             granted: BTreeMap::new(),
-            known: vec![BTreeSet::new(); n],
             running: BTreeMap::new(),
             caught: BTreeSet::new(),
             away: vec![0; n],
@@ -680,14 +613,8 @@ impl World {
             polled: BTreeMap::new(),
             grant_marks: BTreeMap::new(),
             served: None,
-            fixed_moves: 0,
-            moved: None,
             gc_refused: BTreeSet::new(),
-            stuck: None,
-            waits: None,
-            disk_lost: BTreeMap::new(),
             led_by: BTreeSet::new(),
-            repeated: BTreeSet::new(),
             _dir: dir,
             wrong: Vec::new(),
             counts: BTreeMap::new(),
@@ -739,36 +666,6 @@ impl World {
         self.count("steps");
         let dt = self.rng.below(2);
         self.advance(self.t + dt);
-        // The owner, as the waiting take-up says: the Mac whose records the brief is of declared
-        // again.
-        if let Some((since, e)) = self.stuck.filter(|&(since, _)| self.t >= since + OWNER_S) {
-            self.stuck = None;
-            match self.leaders.get(&e).copied().filter(|&k| k != self.declared && !self.macs[k].gone) {
-                Some(k) => {
-                    let waited = self.t - since;
-                    self.note(|| {
-                        format!(
-                            "the owner declares mac{k} again: the records of epoch {e} are on its disk ({waited} s)"
-                        )
-                    });
-                    self.count("leads moved by the owner to the Mac with the newest records");
-                    self.move_lead_to(k);
-                    // (Its take-up, `STALE_S` on, may come past the run's end: the run's own end
-                    // then, its take-ups' quiet ten minutes counted from there.)
-                    self.waited = true;
-                }
-                None => self.note(|| format!("the owner can't declare epoch {e}'s lead again")),
-            }
-        }
-        if let Some(&at) = self.cfg.move_at.get(self.fixed_moves).filter(|&&at| self.t >= at) {
-            self.fixed_moves += 1;
-            let to = (self.declared + 1) % self.macs.len();
-            let from = self.declared;
-            self.note(|| format!("the owner moves the lead from mac{from} to mac{to} (at {at} s)"));
-            self.move_lead_to(to);
-            self.count("leads moved");
-            self.moved = Some((to, self.awake_clock(to), self.landed.is_empty()));
-        }
         if self.faulting() {
             self.faults(me);
         }
@@ -817,8 +714,7 @@ impl World {
     /// At the run's end: whether it goes on ten minutes more, its lead still merging what the
     /// faults left (the one path's records lack hand-offs, fewer than when it last went on, the
     /// first time any), or not caught up yet, or the declared lead not leading yet (its take-up
-    /// waiting: on the Mac that has the newest records, `OWNER_S`, then `STALE_S` once declared
-    /// again); for `MERGING_S` at most.
+    /// waiting); for `MERGING_S` at most.
     fn goes_on(&mut self) -> bool {
         let Some(&h) = self.took.keys().next_back() else { return false };
         let r = self.files.get(records::ONE).and_then(|b| serde_json::from_slice::<Records>(b).ok());
@@ -861,11 +757,7 @@ impl World {
     }
 
     fn faults(&mut self, me: usize) {
-        if self.cfg.nap
-            && me == 1
-            && self.t >= driver::STALE_S + 300
-            && !self.counts.contains_key("Macs asleep seven hours")
-        {
+        if self.cfg.nap && me == 1 && self.t >= 300 && !self.counts.contains_key("Macs asleep seven hours") {
             self.sleep(1, 7 * 3600);
             self.count("Macs asleep seven hours");
         }
@@ -920,14 +812,6 @@ impl World {
         if self.cfg.crashes && self.rng.chance(P_CRASH) && !self.macs[me].gone {
             self.crash(me, "its process crashes");
         }
-        let d = self.declared;
-        if self.cfg.restores && d == me && self.rng.chance(P_RESTORE) {
-            self.restore(d);
-        }
-        // The owner.
-        if self.cfg.moves && self.rng.chance(P_MOVE) {
-            self.move_lead(false);
-        }
     }
 
     /// Whose turn is next: this Mac's again, most often, while it can run; else another's that can
@@ -954,7 +838,7 @@ impl World {
         }
     }
 
-    // The owner's and the processes' events.
+    // The processes' events.
 
     /// Mac `k`'s process dies (`why`): its coordinator gone with it (its store as its files are),
     /// its jobs with it; every operation of it fails until its thread restarts it.
@@ -982,100 +866,6 @@ impl World {
             s.kill();
         }
         drop(c);
-    }
-
-    /// The owner replaces lead `k`'s disk (docs/coordination.md §4.4): its process gone, its agent's
-    /// folder with its saved state and records, its store restored from the NAS backup
-    /// (`Store::restore`, as the owner's planned `scenic lead restore` would: task #1159), or none
-    /// when there's no backup.
-    fn restore(&mut self, k: usize) {
-        self.crash(k, "its disk is replaced");
-        self.macs[k].lose = true;
-        self.macs[k].local = None;
-        self.disk_lost.insert(k, self.t);
-        std::fs::remove_dir_all(&self.macs[k].dir).ok();
-        self.stored[k].clear();
-        // (Its leases now the backup's: one granted since is a lease it never held.)
-        self.known[k].clear();
-        // (Its map log and GC's queue with it: a new disk's start afresh, docs/maplog.md §7.2.)
-        let m = &mut self.macs[k];
-        (m.map_seq, m.feed, m.gen) = (0, store::map::feed::Feed::new(), m.gen + 1);
-        let backup = self.files.get(crate::pool::store::BACKUP_PATH).cloned();
-        let snap = backup.and_then(|b| serde_json::from_slice::<crate::pool::store::Snapshot>(&b).ok());
-        match snap {
-            Some(b) => match crate::pool::store::Store::restore(&self.macs[k].dir.join("coord/store"), &b) {
-                Ok(s) => {
-                    s.stop();
-                    self.count("lead stores restored from the backup");
-                    self.note(|| format!("mac{k}'s store restored from {}'s backup at epoch {}", b.member, b.epoch));
-                }
-                Err(e) => self.wrong(format!("mac{k}'s store can't be restored from the backup: {e:#}")),
-            },
-            None => self.note(|| format!("mac{k}'s disk replaced with no backup on the NAS")),
-        }
-    }
-
-    /// The owner declares Mac `to` the lead (docs/pool.md §6.1).
-    fn move_lead_to(&mut self, to: usize) {
-        let old = self.declared;
-        (self.declared, self.before) = (to, Some(old));
-        let since = self.clock(to);
-        self.files.insert(lead::LEAD.to_string(), declaration(to, since));
-        self.writes.insert(lead::LEAD.to_string(), (usize::MAX, self.t));
-    }
-
-    /// Epoch `e` led by two Macs, the first's take-up never on the NAS (no snapshot of it landed).
-    fn repeats(&mut self, e: u64) {
-        if self.repeated.insert(e) {
-            self.count("epochs repeated: a lead's take-up never reached the NAS");
-            self.note(|| format!("epoch {e} repeated: a lead's take-up never reached the NAS"));
-        }
-    }
-
-    /// Mac `me`, the declared lead, waits to take up: on the records of the Mac that led epoch `e`.
-    fn waits_on(&mut self, me: usize, e: u64) {
-        if me == self.declared {
-            self.waits = Some(e);
-        }
-        if me == self.declared && self.stuck.is_none() {
-            self.stuck = Some((self.t, e));
-        }
-    }
-
-    /// The owner moves the lead (docs/pool.md §6.1): to the one before it now and then, else to
-    /// another Mac awake, by editing the declaration. `midsave`: as the lead's save is under way
-    /// (its Mac then sleeps past the next lead's take-up). Now and then the lead's reads fail from
-    /// then on for longer than `STALE_S`, so it can't read the move and stops granting at `VOUCH_S`.
-    fn move_lead(&mut self, midsave: bool) {
-        let old = self.declared;
-        let others: Vec<usize> = (0..self.macs.len()).filter(|&k| k != old && !self.macs[k].gone).collect();
-        if others.is_empty() {
-            return;
-        }
-        let to = match self.before.filter(|b| others.contains(b)) {
-            Some(b) if self.rng.chance(0.4) => {
-                self.count("leads moved back");
-                b
-            }
-            _ => others[self.rng.below(others.len() as u64) as usize],
-        };
-        self.declared = to;
-        self.before = Some(old);
-        let since = self.clock(to);
-        self.files.insert(lead::LEAD.to_string(), declaration(to, since));
-        self.writes.insert(lead::LEAD.to_string(), (usize::MAX, self.t));
-        self.count("leads moved");
-        self.note(|| format!("the owner moves the lead from mac{old} to mac{to}"));
-        if midsave {
-            let d = driver::STALE_S + self.rng.range(120, 900);
-            self.count("leads moved mid-save");
-            self.sleep(old, d);
-        } else if self.rng.chance(0.3) {
-            let d = driver::STALE_S + self.rng.range(60, 900);
-            self.away[old] = self.away[old].max(self.t + d);
-            self.count("leads moved with their reads failing");
-            self.note(|| format!("the share answers none of mac{old}'s reads for {d} s"));
-        }
     }
 
     // The network.
@@ -1211,7 +1001,6 @@ impl World {
         let jobs = c.live_jobs();
         let mut by_target: BTreeMap<&str, (u64, u64)> = BTreeMap::new();
         for (e, n, worker, targets) in &jobs {
-            self.known[k].insert((*e, *n));
             for t in targets {
                 if let Some((e2, n2)) = by_target.insert(t, (*e, *n)) {
                     self.wrong(format!("mac{k}'s coordinator holds {t} under two live leases: {e2}-{n2} and {e}-{n}"));
@@ -1251,33 +1040,18 @@ impl World {
 
     /// Mac `me` starts a job of lease (`epoch`, `n`) over `targets`, granted by Mac `by`'s
     /// coordinator: none of them under another job's live lease, its id never another's.
-    ///
-    /// But one: a lease the granting coordinator's store never held (its restarts keep what it
-    /// held; its disk replaced, or another's backup taken up, starts it again), of an earlier epoch's
-    /// lead, granted after the last backup of that lead's store this one took up (the owner moved
-    /// the lead from a Mac asleep or cut off, or restored the lead's disk from its backup): no lead
-    /// can know of it, and its job runs beside the new one until its Mac is heard from (its beat
-    /// listing a lease the lead doesn't know, which the answer releases). The work is done twice;
-    /// the merge takes the later lease's, by lease order (docs/coordination.md §4.4, §6.1). Counted,
-    /// and the records checked as ever.
     fn starts(&mut self, me: usize, by: usize, epoch: u64, n: u64, worker: &str, targets: &[String]) {
         let mut doubled = Vec::new();
         for (l, r) in &self.running {
             if let Some(t) = r.targets.iter().find(|t| targets.contains(t)) {
-                let w = format!(
+                doubled.push(format!(
                     "{t} under two live leases: mac{}'s {}-{} and mac{me}'s {epoch}-{n} (granted by mac{by})",
                     r.mac, l.0, l.1
-                );
-                doubled.push((*l, w));
+                ));
             }
         }
-        for (l, w) in doubled {
-            if l.0 < epoch && !self.known[by].contains(&l) {
-                self.count("jobs doubled: a lease the granting lead never held");
-                self.note(|| format!("{w}: mac{by}'s coordinator never held {}-{}", l.0, l.1));
-            } else {
-                self.wrong(w);
-            }
+        for w in doubled {
+            self.wrong(w);
         }
         match self.granted.get(&(epoch, n)) {
             Some((w, ts)) if w != worker || ts != targets => {
@@ -1388,20 +1162,10 @@ impl World {
         self.note(|| format!("mac{me}'s create of {path}: its bytes don't land"));
     }
 
-    fn write_tmp(&mut self, me: usize, tmp: &str, path: &str, b: &[u8]) {
+    fn write_tmp(&mut self, tmp: &str, b: &[u8]) {
         self.files.insert(tmp.to_string(), b.to_vec());
         self.tmps.insert(tmp.to_string(), self.t);
         self.midway = true;
-        // (The owner moves the lead as its save is under way: its rename lands after the next
-        // lead's take-up saved.)
-        if path == records::ONE
-            && self.cfg.moves
-            && self.faulting()
-            && me == self.declared
-            && self.rng.chance(P_MOVE_MIDSAVE)
-        {
-            self.move_lead(true);
-        }
     }
 
     fn rename(&mut self, me: usize, tmp: &str, path: &str) -> bool {
@@ -1449,21 +1213,14 @@ impl World {
             if let Err(why) = consistent(&r) {
                 self.wrong(format!("epoch {e}'s records at {} aren't consistent: {why}", r.seq));
             }
-            // (A save landed late over the one path, not following the brief there
-            // (`records::follows`): no take-up starts from it, nor reader trusts it past the lead's
-            // next save. Counted; not taken for its epoch's records.)
-            let brief =
-                self.files.get(records::ONE_BRIEF).and_then(|b| serde_json::from_slice::<records::Mark>(b).ok());
-            if let Some(m) = brief.filter(|m| !records::follows(&r, m)) {
-                self.count("late saves the brief fences");
-                return self
-                    .note(|| format!("mac{me}'s save of {} landed late, past the brief ({m}): fenced", r.mark()));
+            // (A save landed late over the one path, older than one landed: read until the lead's
+            // next save (`driver::RESAVE_S`), never taken up (its lead's own copy is newer). Counted;
+            // not taken for its epoch's records.)
+            let newest = self.landed.iter().next_back().map(|(&e, &(seq, _))| (e, seq));
+            if newest.is_some_and(|n| (r.epoch, r.seq) < n) {
+                self.count("late saves over the one path");
+                return self.note(|| format!("mac{me}'s save of epoch {e}'s at {} landed late", r.seq));
             }
-            // (An epoch two Macs led: the first's take-up never reached the NAS, so the next one's,
-            // past no snapshot or backup of it, repeated its number (docs/pool.md §4 invariant 2's
-            // limit). Its two leads' snapshots aren't compared with each other; what either
-            // acknowledged is checked as ever.)
-            let repeated = self.repeated.contains(&e);
             // (Its own epoch: one it led, or its take-up's, raised and saving before it leads.)
             let own = self.led_by.contains(&(e, me)) || self.macs[me].raised.is_some_and(|r| r.0 == e);
             if !own || e > self.macs[me].epoch {
@@ -1482,7 +1239,7 @@ impl World {
             if let Some(k) = handled.iter().find(|k| !self.made.contains_key(*k)) {
                 self.wrong(format!("epoch {e}'s records name {k}, which no job handed off"));
             }
-            if let Some((seq, was)) = self.landed.get(&e).filter(|_| !repeated) {
+            if let Some((seq, was)) = self.landed.get(&e) {
                 let back = (r.seq <= *seq).then(|| format!("epoch {e}'s records went from {seq} to {}", r.seq));
                 let lost =
                     was.difference(&handled).next().map(|k| format!("epoch {e}'s records at {} lost {k}", r.seq));
@@ -1504,8 +1261,7 @@ impl World {
                 ));
             }
             // (No content name GC removed: but one another disk's queue removed, which this lead's
-            // queue never knew of, docs/maplog.md §7.2's limit of a lead moved or its disk
-            // replaced, found only by the uploads' check.)
+            // queue never knew of, docs/maplog.md §7.2's limit, found only by the uploads' check.)
             let gen = self.macs[me].gen;
             for n in r.manifest.values() {
                 match self.removed.get(n) {
@@ -1666,7 +1422,6 @@ impl World {
     fn ack(&mut self, me: usize, epoch: u64, keys: &[String]) {
         for key in keys {
             self.acked.entry(key.clone()).or_insert(epoch);
-            self.acked_by.entry(key.clone()).or_insert(me);
             self.count("hand-offs acknowledged");
             if !self.landed.get(&epoch).is_some_and(|(_, h)| h.contains(key)) {
                 self.wrong(format!("mac{me} acknowledged {key} as epoch {epoch}'s before a snapshot of it named it"));
@@ -1684,19 +1439,12 @@ impl World {
         }
     }
 
-    /// Lead `me` applied `keys` in epoch `e`: none it acknowledged in it or an epoch before
-    /// (merged once). Another Mac's acknowledgement: `me` leads records of a lineage the brief
-    /// fences (an epoch whose take-up, or whose number, another Mac's passed: invariant 2's
-    /// limit), which no later lead takes up; counted, and the records that follow the brief
-    /// checked for it as ever.
+    /// Lead `me` applied `keys` in epoch `e`: none acknowledged in it or an epoch before (merged
+    /// once).
     fn applied(&mut self, me: usize, e: u64, keys: &[String]) {
         for k in keys {
             if let Some(&at) = self.acked.get(k).filter(|&&at| at <= e) {
-                if self.acked_by.get(k) == Some(&me) {
-                    self.wrong(format!("mac{me} applied {k} again in epoch {e}, acknowledged in epoch {at}"));
-                } else {
-                    self.count("hand-offs another lead acknowledged, applied again in fenced records");
-                }
+                self.wrong(format!("mac{me} applied {k} again in epoch {e}, acknowledged in epoch {at}"));
             }
         }
     }
@@ -1717,19 +1465,15 @@ impl World {
 
     fn leads(&mut self, me: usize, e: Option<u64>) {
         if let Some(e) = e {
-            // (Another Mac led this epoch's number: its take-up's raise, or this one's, reached
-            // no NAS file the other's raise read (docs/pool.md §4 invariant 2's limit). Each
-            // raise is checked as of its time below; the records tell the two apart by their
-            // lead, `Records::lead`.)
             if self.led_by.iter().any(|&(k, o)| k == e && o != me) {
-                self.repeats(e);
+                self.wrong(format!("mac{me} leads epoch {e}, which another Mac led"));
             }
             self.led_by.insert((e, me));
             if e <= self.macs[me].led {
                 self.wrong(format!("mac{me} leads epoch {e} after epoch {}", self.macs[me].led));
             }
-            // (As of its epoch's raise: what landed and was taken up since, its step under way, is
-            // the fences' to keep out of what it does.)
+            // (As of its take-up's read of its epoch: what landed and was taken up since, its step
+            // under way, is no other lead's.)
             let (landed, took) = match self.macs[me].raised {
                 Some((r, landed, took)) if r == e => (landed, took),
                 _ => (
@@ -1737,35 +1481,14 @@ impl World {
                     self.took.keys().next_back().copied(),
                 ),
             };
-            let repeated = self.repeated.contains(&e);
-            if let Some(last) = landed.filter(|&k| k >= e && !(repeated && k == e)) {
+            if let Some(last) = landed.filter(|&k| k >= e) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past the records' epoch {last}"));
             }
-            // (A take-up none of whose snapshots followed the brief, its records fenced (its Mac
-            // moved from mid-take-up, asleep: invariant 2's limit), led nothing anyone takes up.)
-            if let Some(last) = took.filter(|&k| k >= e && !(repeated && k == e) && self.landed.contains_key(&k)) {
+            if let Some(last) = took.filter(|&k| k >= e && self.landed.contains_key(&k)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past epoch {last} taken up before"));
-            }
-            if let Some((d, at, today)) = self.moved.filter(|m| m.0 == me) {
-                self.moved = None;
-                let took = self.awake_clock(me) - at;
-                // (A new pool's, no snapshot landed at the move: a take-up of today's files reads
-                // half a dozen files more in its step, any failing its try; counted, not bounded.)
-                self.count(match took {
-                    _ if today => "take-ups after a move: of today's files, not bounded",
-                    t if t <= driver::STALE_S + 5 * LOOP_S => "take-ups after a move: within STALE_S and 5 loops",
-                    t if t <= driver::STALE_S + 10 * LOOP_S => "take-ups after a move: within STALE_S and 10 loops",
-                    _ => "take-ups after a move: later",
-                });
-                if took > TAKE_UP_S && !today {
-                    self.wrong(format!(
-                        "mac{d} took up {took} s (awake) after the owner declared it, past {TAKE_UP_S} s"
-                    ));
-                }
             }
             self.leaders.insert(e, me);
             self.took.insert(e, (me, self.t));
-            (self.stuck, self.waits) = (None, None);
             self.macs[me].led = e;
             self.count("take-ups");
             self.note(|| format!("mac{me} leads epoch {e}"));
@@ -1806,29 +1529,7 @@ impl World {
             ));
         }
         let d = self.declared;
-        if let Some((k, at, _)) = self.moved.filter(|m| m.0 == d) {
-            let waited = self.awake_clock(k) - at;
-            self.wrong(format!("mac{k}, declared {waited} s (awake) before the end, never took up"));
-        }
-        // (The declared lead's take-up waiting on records the one path's brief is of, which no Mac
-        // has: their lead's own disk's copy lost (its saved state or its disk) after it led them,
-        // and the one path written over by a late save (another lead's, fenced). Two faults with
-        // no copy left: the take-up waits for good, saying so, and the owner decides (docs/pool.md
-        // §4 invariant 5's limit). Counted, the end's checks of the lead and the hand-offs not made.)
-        let gone = self.waits.filter(|_| self.macs[d].leads.is_none()).and_then(|e| {
-            let by: Vec<usize> = self.led_by.iter().filter(|l| l.0 == e).map(|l| l.1).collect();
-            by.iter()
-                .all(|m| self.disk_lost.get(m).is_some_and(|&at| self.took.get(&e).is_some_and(|t| at >= t.1)))
-                .then_some(e)
-        });
-        if let Some(e) = gone {
-            self.count("runs ending on records lost with their lead's disk, a late save over the one path");
-            return self.note(|| {
-                format!("the declared lead mac{d} waits on epoch {e}'s records, lost with their lead's disk")
-            });
-        }
-        // (Its own last take-up's epoch: another Mac's after it may be one whose take-up never
-        // reached the NAS before, its records fenced, numbered higher: invariant 2's limit.)
+        // (Its own last take-up's epoch.)
         let last = self.led_by.iter().filter(|&&(_, m)| m == d).map(|&(e, _)| e).max();
         for k in 0..self.macs.len() {
             let leads = self.macs[k].leads;
@@ -1838,7 +1539,6 @@ impl World {
             if k == d && leads.is_some() && leads == last && !self.macs[k].caught {
                 self.wrong(format!("the lead mac{d} isn't caught up at the end"));
             }
-            // (A Mac gone for good never wakes to read the move: it leads nothing.)
             if k != d && leads.is_some() && !self.macs[k].gone {
                 self.wrong(format!("mac{k} leads {leads:?} at the end, mac{d} declared"));
             }
@@ -2009,7 +1709,7 @@ impl Nas for Sim {
         let tmp = format!("{path}.mac{}.tmp", self.me);
         self.op(|w, me| {
             w.slow(me);
-            w.write_tmp(me, &tmp, path, bytes)
+            w.write_tmp(&tmp, bytes)
         })?;
         for _ in 0..BUSY_TRIES {
             if self.op(|w, me| w.rename(me, &tmp, path))? {
@@ -2065,18 +1765,14 @@ impl Io for Sim {
         self.alive(|w| w.macs[me].local = Some(records.to_vec()))
     }
 
-    /// The store's epoch, raised past `past` and past another Mac's backup by `RESTORE_EPOCHS`
-    /// (crate::agent::pool::epochs: its backup read through the NAS, the raise in this Mac's turn).
-    fn epoch(&self, past: u64) -> Result<u64> {
+    /// The store's epoch (as crate::agent::pool's, its coordinator's `store_epoch`, in this Mac's
+    /// turn).
+    fn epoch(&self) -> Result<u64> {
         let me = self.me;
-        let past = match crate::pool::store::read_backup(self) {
-            Ok(Some(b)) if b.member != host(me) => past.max(b.epoch + crate::pool::store::RESTORE_EPOCHS),
-            Ok(_) | Err(_) => past,
-        };
         self.alive(|w| {
             let c = w.macs[me].coord.clone().ok_or_else(|| anyhow!("no coordinator's store in this process"))?;
             w.tick(me);
-            let e = c.raise_epoch(past)?;
+            let e = c.store_epoch()?;
             let landed = w.landed.keys().filter(|&&k| k != e).next_back().copied();
             w.macs[me].raised = Some((e, landed, w.took.keys().next_back().copied()));
             w.macs[me].epoch = e;
@@ -2190,13 +1886,11 @@ fn var(name: &str, or: u64) -> u64 {
 
 /// Each kind of take-up and fault, and what the knobs bring, that the default runs must see at
 /// least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 31] = [
+const KINDS: [&str; 25] = [
     "hand-offs outside their step's outputs, refused by every lead",
     "take-ups from its own records",
-    "take-ups from the one path's records",
     "sleeps",
     "busy renames",
-    "take-ups tried again",
     "lost answers",
     "Macs gone for good",
     "operation seconds",
@@ -2208,7 +1902,6 @@ const KINDS: [&str; 31] = [
     "hand-offs acknowledged",
     "acknowledgements heard",
     "leases granted",
-    "jobs stopped, their leases not the lead's",
     "requests dropped",
     "requests delayed",
     "requests arriving late",
@@ -2217,9 +1910,6 @@ const KINDS: [&str; 31] = [
     "one-way links",
     "leads killed mid-append",
     "processes crashed",
-    "lead stores restored from the backup",
-    "leads moved",
-    "leads moved with their reads failing",
     "jobs not started: the lead away",
     "hand-offs reusing files on the NAS",
 ];
@@ -2305,10 +1995,9 @@ fn a_run_goes_on_only_while_its_lead_merges() {
 #[test]
 fn every_fault_at_once_keeps_the_invariants() {
     // docs/coordination.md step 9's faults all on: drops, delays and lost answers, one-way links,
-    // partitions, the lead killed mid-append, crashes, the lead's disk restored from its backup,
-    // the lead moved (back, mid-save, its reads failing), with the NAS's.
+    // partitions, the lead killed mid-append, crashes, with the NAS's.
     let counts = check_all(10_000..10_000 + var("POOL_SIM_SEEDS", 60), Cfg::all);
-    for what in ["leads killed mid-append", "lead stores restored from the backup", "leads moved", "Macs cut off"] {
+    for what in ["leads killed mid-append", "processes crashed", "Macs cut off"] {
         assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {counts:?}");
     }
 }
@@ -2344,35 +2033,10 @@ fn gc_keeps_its_grace_and_cursors_through_hours_away() {
     }
 }
 
-#[test]
-fn the_lead_moves_and_moves_back() {
-    // The owner's moves alone, often (docs/pool.md §6.1): to another Mac, back to the one before,
-    // as the lead's save is under way (its rename landing after the next lead's save: the take-up's
-    // brief fence, `records::brief_mark`), and with the lead's reads failing past `STALE_S` (it
-    // stops granting at `VOUCH_S`). Two leads never grant at once; nothing acknowledged is lost.
-    let counts = check_all(20_000..20_000 + var("POOL_SIM_SEEDS", 60), |_| Cfg {
-        moves: true,
-        faults: 7200,
-        end: 8700,
-        ..Cfg::pool()
-    });
-    for what in [
-        "leads moved",
-        "leads moved back",
-        "leads moved with their reads failing",
-        "take-ups from the one path's records",
-    ] {
-        assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {counts:?}");
-    }
-}
-
-/// A share whose reads fail now and then, each on its own at `rate` (task #1154), and the owner
-/// moving the lead twice, its Macs awake: each declared lead takes up within `TAKE_UP_S` (awake) of
-/// its move (but a take-up of today's files, no snapshot landed yet: it reads half a dozen files
-/// more, any failing its try), and two leads never grant at once. The first move comes once the
-/// pool's first lead has mostly taken up (an app upgrade restarting it can hold that back).
+/// A share whose reads fail now and then, each on its own at `rate` (task #1154), its Macs awake:
+/// the declared lead leads, and its records name every hand-off owed.
 fn flaky_reads(rate: f64) -> Cfg {
-    Cfg { flaky: rate, sleeps: false, move_at: &[1800, 3300], faults: 4500, end: 6000, ..Cfg::pool() }
+    Cfg { flaky: rate, sleeps: false, faults: 4500, end: 6000, ..Cfg::pool() }
 }
 
 /// `flaky_reads`'s runs at 5 % and 20 % of reads failing, `n` seeds each.
@@ -2381,7 +2045,7 @@ fn check_flaky(n: u64) {
         let started = std::time::Instant::now();
         let counts = check_all(30_000..30_000 + n, |_| flaky_reads(rate));
         eprintln!("{n} schedules of {rate} of reads failing in {:.0} s\n{counts:#?}", started.elapsed().as_secs_f64());
-        for what in ["reads failing now and then", "leads moved", "take-ups from the one path's records"] {
+        for what in ["reads failing now and then", "take-ups from its own records"] {
             assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {counts:?}");
         }
     }
@@ -2415,7 +2079,7 @@ fn the_knobs_one_at_a_time() {
     // #repro: POOL_SIM_SEEDS schedules (1,000) with each knob alone, and how many went wrong.
     let n = var("POOL_SIM_SEEDS", 1000);
     let p = Cfg::pool();
-    let knobs: [(&str, Cfg); 20] = [
+    let knobs: [(&str, Cfg); 18] = [
         ("none", p),
         ("a Mac leaving", Cfg { leave: true, ..p }),
         ("stale 60 s", Cfg { stale: 60, ..p }),
@@ -2433,8 +2097,6 @@ fn the_knobs_one_at_a_time() {
         ("one-way links", Cfg { one_way: true, ..p }),
         ("kills mid-append", Cfg { kills: true, ..p }),
         ("crashes", Cfg { crashes: true, ..p }),
-        ("restores from the backup", Cfg { restores: true, ..p }),
-        ("lead moves", Cfg { moves: true, ..p }),
         ("every fault", Cfg::all(0)),
     ];
     for (name, cfg) in knobs {
@@ -2470,7 +2132,7 @@ fn every_seed_runs_the_same_every_time() {
 fn a_seeds_events() {
     // #repro: POOL_SIM_SEED's events, its knobs as by default, or as POOL_SIM_KNOBS lists them
     // (none: "plain"; "all", "leave", "downgrade", "cuts", "slow", "lose", "fails", "stalls", "net",
-    // "partitions", "one-way", "kills", "crashes", "restores", "moves", "skew=<s>", "stale=<s>";
+    // "partitions", "one-way", "kills", "crashes", "skew=<s>", "stale=<s>";
     // "flaky=<rate>": `flaky_reads`' runs at that rate),
     // its faults POOL_SIM_MINUTES long (40), to look into one.
     let seed = var("POOL_SIM_SEED", 0);
@@ -2493,8 +2155,6 @@ fn a_seeds_events() {
                 "one-way" => Cfg { one_way: true, ..c },
                 "kills" => Cfg { kills: true, ..c },
                 "crashes" => Cfg { crashes: true, ..c },
-                "restores" => Cfg { restores: true, ..c },
-                "moves" => Cfg { moves: true, ..c },
                 _ => c,
             },
         }),

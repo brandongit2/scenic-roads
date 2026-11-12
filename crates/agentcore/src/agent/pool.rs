@@ -8,8 +8,8 @@
 //!   for `QUIET_S` (a plan, a job being stopped, a share slow to answer): `Run::tick`, every `TICK_S`
 //!   while the loop stays busy. A tick does what's the pool's alone: the driver's step (its
 //!   heartbeat and mail with it), the history, the view (`VIEW`), whether the
-//!   coordinator grants. What's the agent's (its jobs, its coordinator's start and stop, the state a
-//!   take-up loads: `Run::pending_took_up`) waits for its loop's next step. One step at a
+//!   coordinator grants. What's the agent's (its jobs, its coordinator's start and stop, a first
+//!   take-up's leases of before: `Run::pending_took_up`) waits for its loop's next step. One step at a
 //!   time, each file of the pool's written by the run alone.
 //! - **One process per member** (`Side::open`): the member's id (crate::pool::member_id, in the
 //!   agent's folder), its lock in the app's folder (crate::pool::MemberLock), and the driver made
@@ -87,9 +87,9 @@ pub fn read_view(home: &Path) -> Option<PoolFile> {
 /// A NAS the driver's steps and the agent's threads share.
 pub type SharedNas = Arc<dyn Nas + Send + Sync>;
 
-/// Its coordinator's store's epoch, raised past a take-up's records first (crate::pool::driver::
-/// Io::epoch): the lead's agent's (`Run::step`, through `epochs`).
-pub type Epochs = Arc<dyn Fn(u64) -> Result<u64> + Send + Sync>;
+/// Its coordinator's store's epoch (crate::pool::driver::Io::epoch): the lead's agent's
+/// (`Run::step`, from its coordinator).
+pub type Epochs = Arc<dyn Fn() -> Result<u64> + Send + Sync>;
 
 /// The driver's world: a NAS, this process's clocks (the awake one, `Instant`, stops while the
 /// Mac sleeps), the agent's pool folder `dir`, where it keeps the records it leads (`RECORDS`), and
@@ -140,42 +140,23 @@ impl Io for Clocked<'_> {
     fn keep(&self, records: &[u8]) -> Result<()> {
         // (Its rename made durable too, the folder flushed, before the NAS has them: a power cut
         // after a save acknowledged on the NAS never leaves an older copy here, which a take-up
-        // would start from without reading the NAS.)
+        // starts from.)
         store::seglog::write_durable(&self.dir.join(RECORDS), records)
     }
-    fn epoch(&self, past: u64) -> Result<u64> {
-        self.epochs.context("no coordinator's store in this process")?(past)
+    fn epoch(&self) -> Result<u64> {
+        self.epochs.context("no coordinator's store in this process")?()
     }
 }
 
 /// No coordinator's store in a real process until its coordinator starts (`Run::step` gives its
-/// `epochs`); a unit test's side, which runs none, numbers its own, in memory, past a take-up's
-/// records as a store's are.
-fn own_epochs() -> Option<Epochs> {
+/// `epochs`); a unit test's side, which runs none, opens a store of its own in its pool folder `dir`
+/// for its epoch, bumped as each of its processes opens it, as a coordinator's is.
+fn own_epochs(dir: &Path) -> Option<Epochs> {
     if !cfg!(test) {
         return None;
     }
-    let n = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    Some(Arc::new(move |past: u64| Ok(n.fetch_max(past + 1, std::sync::atomic::Ordering::SeqCst).max(past + 1))))
-}
-
-/// `Epochs` from coordinator `c`, on the NAS `nas`, of the Mac `host`: its store's epoch raised past
-/// `past`, and past the store's backup on the NAS by `RESTORE_EPOCHS` when another Mac wrote it (the
-/// owner moved the lead here: its leases, which `took_up` loads, were granted in epochs up to the
-/// backup's and a restart or more after it, as a restored store's are, docs/coordination.md §4.4).
-/// A backup that can't be read is said, and passed over.
-pub fn epochs(c: Arc<crate::coord::Coordinator>, nas: SharedNas, host: String) -> Epochs {
-    Arc::new(move |past: u64| {
-        let past = match crate::pool::store::read_backup(&*nas) {
-            Ok(Some(b)) if b.member != host => past.max(b.epoch + crate::pool::store::RESTORE_EPOCHS),
-            Ok(_) => past,
-            Err(e) => {
-                eprintln!("pool: the lead's store's backup, for its epoch: {e:#}");
-                past
-            }
-        };
-        c.raise_epoch(past)
-    })
+    let s = crate::pool::store::Store::open(&dir.join("test-epochs")).ok()?;
+    Some(Arc::new(move || Ok(s.epoch())))
 }
 
 /// The messages after number `last` (from its posts, crate::coord::inbox, or its lead's answers), in
@@ -396,7 +377,7 @@ impl Side {
             beats_at: None,
             ahead: 0,
             clock: store::clock::real(),
-            epochs: own_epochs(),
+            epochs: own_epochs(dir),
         }))
     }
 
@@ -415,7 +396,7 @@ impl Side {
         &*self.nas
     }
 
-    /// The same, for a thread of its own (the coordinator's store's backup, crate::pool::store::back_up).
+    /// The same, shared.
     pub fn shared_nas(&self) -> SharedNas {
         self.nas.clone()
     }
@@ -539,6 +520,11 @@ impl Side {
         };
         self.driver = Some(Driver::new(self.me.clone(), saved, lock));
         self.written = written;
+        // (A test's own epochs: its store opened again, as a new process's coordinator's is.)
+        if cfg!(test) {
+            self.epochs = None;
+            self.epochs = own_epochs(&self.dir);
+        }
         Ok(())
     }
 
@@ -597,7 +583,7 @@ impl Side {
         }
         if let Err(e) = kept {
             out.events.push(Event::Failed { what: "save the member's state", why: format!("{e:#}") });
-            (out.duties, out.caught_up, out.vouched) = (false, false, false);
+            (out.duties, out.caught_up) = (false, false);
             out.send.clear();
             return out;
         }
@@ -963,12 +949,8 @@ pub struct Gates {
     pub leads: Option<u64>,
     /// Leading: grant jobs and plan.
     pub duties: bool,
-    /// Leading: its records reflect what's handed off (a catalogue may go out).
+    /// Leading: its records reflect what's handed off (a catalogue may go out, and a sweep run).
     pub caught_up: bool,
-    /// Leading: its step's own read of the declaration found it the lead (a sweep may run, caught
-    /// up).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub vouched: bool,
     /// Leading: the entries it holds, with why (`check_from`: from a member on a newer app,
     /// outside this app's write-sets), neither merged nor refused until it runs that app.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -977,7 +959,7 @@ pub struct Gates {
 
 impl Gates {
     fn of(o: &Out) -> Gates {
-        Gates { leads: o.leads, duties: o.duties, caught_up: o.caught_up, vouched: o.vouched, held: o.held.clone() }
+        Gates { leads: o.leads, duties: o.duties, caught_up: o.caught_up, held: o.held.clone() }
     }
 
     /// A catalogue may be published now.
@@ -985,14 +967,13 @@ impl Gates {
         self.duties && self.caught_up
     }
 
-    /// A sweep (GC) may run now: on a step whose read of the declaration found it the lead, caught
-    /// up.
+    /// A sweep (GC) may run now: caught up.
     pub fn sweep(&self) -> bool {
-        self.duties && self.caught_up && self.vouched
+        self.duties && self.caught_up
     }
 }
 
-/// The steps that are sweeps (GC: the lead's, once vouched for and caught up).
+/// The steps that are sweeps (GC: the lead's, once caught up).
 pub const SWEEPS: [&str; 1] = ["gc"];
 /// The steps that publish (a catalogue: the lead's, once caught up).
 pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
@@ -1032,7 +1013,7 @@ pub struct Run {
     /// hosts), for the history's joins and leaves (crate::agent::lead::membership).
     pub in_touch: Option<(u64, BTreeMap<String, String>)>,
     /// This process led before (a take-up after it, its member declared again, keeps its
-    /// coordinator's state; its first loads another Mac's: `took_up`).
+    /// coordinator's leases; its first drops its own host's of before: `took_up`).
     pub led: bool,
     /// The build page's asks for the next step, and this Mac's conditions for its heartbeat.
     pub asks: Vec<driver::Ask>,
@@ -1050,8 +1031,8 @@ pub struct Run {
     /// The awake time (its driver's clock, s) of its last step, and of the agent's loop's last.
     last_step: Option<u64>,
     last_full: Option<u64>,
-    /// Take-ups a tick made whose coordinator's part is the agent's (`took_up`: another Mac's state
-    /// loaded, its own host's leases from before dropped), at its loop's next step.
+    /// Take-ups a tick made whose coordinator's part is the agent's (`took_up`: its own host's
+    /// leases from before dropped), at its loop's next step.
     pub pending_took_up: Vec<Event>,
     /// Tasks brokered by every member: when the members' brokers were last read from their
     /// heartbeats, and this Mac's last given to its own (`tend_brokers`).
@@ -1268,15 +1249,13 @@ pub fn lead_answered(answered: Option<&crate::coord::client::Answered>, lead: Op
 }
 
 /// What the coordinator answers asks for jobs with, by the gates (None: it grants): its take-up's
-/// state not loaded yet (`pending`), its member's lock or the declaration not read lately (`driver::VOUCH_S`), or
-/// no longer leading.
+/// leases of before not seen to yet (`pending`), its member's lock not known held, or no longer
+/// leading.
 pub fn moving(g: &Gates, pending: bool) -> Option<String> {
     match () {
         _ if g.leads.is_some() && pending => Some("taking the records up".into()),
         _ if g.leads.is_some() && g.duties => None,
-        _ if g.leads.is_some() => {
-            Some("not sure it leads: its member's lock, or the declaration, not read lately".into())
-        }
+        _ if g.leads.is_some() => Some("not sure it leads: its member's lock not checked".into()),
         _ => Some("no longer leads".into()),
     }
 }
@@ -1365,7 +1344,7 @@ impl Run {
     /// that's the pool's alone. The build page's asks taken; the driver's step, its heartbeat and
     /// mail with it; the history and the view; the coordinator told whether it grants. Its first
     /// take-up in this process is left to the loop's next step for the coordinator's part
-    /// (`pending_took_up`: another Mac's state, its leases), the coordinator granting nothing until
+    /// (`pending_took_up`: its own host's leases of before), the coordinator granting nothing until
     /// then; a change of this process's part is the loop's too (its next
     /// step's `change_part`). None when there was nothing to step (no NAS).
     pub fn tick(&mut self) -> Option<Out> {
@@ -1579,7 +1558,8 @@ impl Run {
             co.set_inbox(Some(self.side.inbox()));
             co.set_beats(Some(self.side.http_beats()));
             co.set_handoffs(Some(self.side.handoffs()));
-            self.side.epochs = Some(epochs(co.clone(), self.side.shared_nas(), self.side.member().host.clone()));
+            let co = co.clone();
+            self.side.epochs = Some(Arc::new(move || co.store_epoch()));
         }
         // (The members heard by HTTP known at once: their mail read, their messages sent.)
         for h in self.side.http.fresh(self.side.now()) {
@@ -1726,34 +1706,10 @@ impl Run {
     }
 }
 
-/// Another Mac's lead's state, from its store's backup `b` (the owner moved the lead here), taken
-/// up by coordinator `c`: its leases, measures and pause, the map's head, and the members' words; and that Mac's
-/// own, a member now (it speaks held leases as they do: the jobs of its own slots held by its word
-/// here, not lapsing after `TTL` and granted again while they run: task #1038, the pool's
-/// simulator's seed 10054). How many leases.
-pub fn load_backup(c: &crate::coord::Coordinator, b: &crate::pool::store::Snapshot) -> anyhow::Result<usize> {
-    let mut st = crate::coord::kept::Loaded::of(&b.docs).pool_state();
-    if !b.member.is_empty() {
-        let speaks = vec![crate::coord::held::SPEAKS.to_string()];
-        st.members.entry(b.member.clone()).or_insert(crate::coord::kept::Heard { speaks, at: b.at });
-    }
-    // (The NAS budget's probes too: the day's best, merged in by the prober as it saves next.)
-    if let Some(p) = b.docs.get(crate::coord::kept::PROBES) {
-        c.take_probes(p);
-    }
-    // (The map's head it kept: a map log started here goes past it, docs/maplog.md §4.5.)
-    if let Some(h) = b.docs.get(crate::coord::kept::MAP_HEAD).and_then(serde_json::Value::as_u64) {
-        c.keep_map_head(h);
-    }
-    c.load_pool_state(&st)
-}
-
 /// A take-up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
-/// grants from now in that epoch; at this process's first, another Mac's state, when the store's
-/// backup on the NAS is another Mac's (the owner moved the lead here: its leases, so every job out
-/// goes on renewing), loaded, and its own host's leases from before dropped (its jobs ended with
-/// the process that ran them), but those of the jobs this process runs (`keep`). A take-up after
-/// one in this process (its member declared again) keeps what it has: it's newer than the files.
+/// grants from now in that epoch; at this process's first, its own host's leases from before dropped
+/// (its jobs ended with the process that ran them), but those of the jobs this process runs
+/// (`keep`). A take-up after one in this process (its member declared again) keeps what it has.
 ///
 /// `events`: a step's, with those a tick left it (`Run::pending_took_up`); `leads`: the epoch the
 /// last step says this member leads in.
@@ -1767,33 +1723,10 @@ pub fn took_up(
 ) {
     let Some(c) = coord else { return };
     for e in events {
-        let Event::TookUp { epoch, another, .. } = e else { continue };
+        let Event::TookUp { epoch, .. } = e else { continue };
         c.set_epoch(*epoch);
-        if std::mem::replace(&mut run.led, true) || !another {
+        if std::mem::replace(&mut run.led, true) {
             continue;
-        }
-        // (Its own store holds its state (crate::coord::kept); another Mac's lead before it, the lead
-        // moved by the owner, left its store's backup on the NAS: taken up. Not when it took up its
-        // own records: that backup is older than its own state, which it would replace. Task #1038,
-        // the pool's simulator's seed 935: a lead killed mid-grant restarted, took up its own
-        // records, and replaced its leases with an older lead's backup, granting their targets
-        // again.)
-        let backup = match crate::pool::store::read_backup(run.side.nas()) {
-            Ok(b) => b.filter(|b| b.member != host),
-            Err(e) => {
-                eprintln!("pool: the lead's store's backup: {e:#}");
-                None
-            }
-        };
-        if let Some(b) = backup {
-            match load_backup(c, &b) {
-                Ok(n) => eprintln!(
-                    "pool: epoch {epoch}'s coordinator took up {n} lease{} from {}'s store",
-                    if n == 1 { "" } else { "s" },
-                    b.member
-                ),
-                Err(e) => eprintln!("pool: the coordinator's state for epoch {epoch}: {e:#}"),
-            }
         }
         for l in c.drop_workers(&crate::agent::slot_workers(host), keep) {
             eprintln!("pool: {}'s lease ended with the process before this one", l.what());
@@ -3497,17 +3430,117 @@ mod tests {
         };
         assert_eq!(out.leads, Some(2));
         assert!(
-            took.iter()
-                .any(|e| matches!(e, Event::TookUp { epoch: 2, how, another: false } if how == "its own records")),
+            took.iter().any(|e| matches!(e, Event::TookUp { epoch: 2, how } if how == "its own records")),
             "{took:?}"
         );
         let (cb, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
-        // (Another Mac's older backup on the NAS, none of these leases in it: a take-up of its own
-        // records keeps its own store's, task #1038's seed 935.)
-        let old = crate::pool::store::Snapshot { epoch: 1, seq: 1, member: "b".into(), ..Default::default() };
-        crate::pool::store::back_up_once(&old, a.side.nas(), 0).unwrap();
         took_up(&mut a, Some(&cb), &took, out.leads, "a", &[]);
         let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.job_of(*id).map_or(0, |j| j.epoch) != 1).collect();
         assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not taken up: {lost:?}", granted.len());
+    }
+
+    /// docs/pool.md §6.1: the lead moved by hand. A leads and grants a job; its agent stopped, its
+    /// coordinator's folder (`coord/`) and its records (`pool/records.json`) copied to B's agent's
+    /// folder, the declaration edited to name B: B's coordinator opens the copied store as its own
+    /// (its epoch one past A's, A's lease in it) and B takes up A's records in that epoch, with no
+    /// code of its own for a move. A started again, declared no more, leads nothing.
+    #[test]
+    fn a_lead_moved_by_hand_leads_from_its_copied_folders() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let nas = || store::nasfs::NasRoot::local_for_test(&r);
+        let (ha, hb) = (d.path().join("a/agent"), d.path().join("b/agent"));
+        // B a member first: its own member id, its agent's folder.
+        let b_id = side(&nas(), &hb).member().id.clone();
+        // A leads, its coordinator on its folder, and grants a job.
+        let mut a = Run::new(crate::agent::seam::for_tests(), side(&nas(), &ha), Role::Member, Gates::default());
+        let (ca, port) = crate::coord::start_for_test(&ha.join("coord"), "a", "development");
+        let ca = Arc::new(ca);
+        a.cx = Cx { root: Some(nas()), home: ha.clone(), coord: Some(ca.clone()), ..Default::default() };
+        tick_until(&mut [&mut a], |r| r[0].gates.caught_up);
+        let a_epoch = a.gates.leads.expect("A leads");
+        // (Its loop's part of the take-up, as the agent's step does it after a tick's.)
+        let took = std::mem::take(&mut a.pending_took_up);
+        took_up(&mut a, Some(&ca), &took, Some(a_epoch), "a", &[]);
+        ca.set_moving_as_of(moving(&a.gates, false), crate::coord::wall_now());
+        let cost = crate::coord::Cost {
+            peak_mb: 100,
+            secs: 60,
+            v: crate::coord::cost_version("unit"),
+            sizes: [("threads".to_string(), 1)].into(),
+            ..Default::default()
+        };
+        ca.add_costs(&[("6/7/1".to_string(), cost)]);
+        let o =
+            crate::coord::Offer { step: "unit".into(), targets: vec![("6/7/1".into(), "k".into(), 100)], job: None };
+        ca.offer("p", vec![o]);
+        let w =
+            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], ca.contact.token.clone(), "m9");
+        let ask = crate::coord::Ask {
+            kind: "native".into(),
+            can: vec!["unit".into()],
+            mem_mb: 8192,
+            cores: 8,
+            app: Some("development".into()),
+            want: 1,
+            ..Default::default()
+        };
+        let lease = w.ask(&ask).unwrap().expect("granted").lease;
+        let a_records = a.side.driver().records().unwrap().clone();
+        // The owner's hand move: A's agent stopped, its folders copied, the declaration edited.
+        ca.stop();
+        drop((a, ca));
+        let copy = |from: &Path, to: &Path| {
+            for e in walkdir(from) {
+                let dest = to.join(e.strip_prefix(from).unwrap());
+                std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                std::fs::copy(&e, &dest).unwrap();
+            }
+        };
+        copy(&ha.join("coord"), &hb.join("coord"));
+        std::fs::copy(ha.join("pool").join(RECORDS), hb.join("pool").join(RECORDS)).unwrap();
+        let decl = serde_json::json!({ "member": b_id, "host": "b" });
+        std::fs::write(r.join(crate::pool::lead::LEAD), decl.to_string()).unwrap();
+        // B: its coordinator on the copied folder, its driver taking up the copied records.
+        let mut b = Run::new(crate::agent::seam::for_tests(), side(&nas(), &hb), Role::Member, Gates::default());
+        let (cb, _) = crate::coord::start_for_test(&hb.join("coord"), "b", "development");
+        let cb = Arc::new(cb);
+        b.cx = Cx { root: Some(nas()), home: hb.clone(), coord: Some(cb.clone()), ..Default::default() };
+        let mut took = Vec::new();
+        let end = Instant::now() + WATCHDOG;
+        let out = loop {
+            let out = b.step();
+            took.extend(out.events.iter().filter(|e| matches!(e, Event::TookUp { .. })).cloned());
+            if out.leads.is_some() {
+                break out;
+            }
+            assert!(Instant::now() < end, "B doesn't lead: {:?}", out.events);
+            std::thread::sleep(Duration::from_millis(30));
+        };
+        assert_eq!(out.leads, Some(a_epoch + 1), "its store's epoch, one past A's: {took:?}");
+        assert!(took.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")), "{took:?}");
+        let rb = b.side.driver().records().unwrap();
+        assert_eq!((&rb.manifest, &rb.keys.unit), (&a_records.manifest, &a_records.keys.unit), "A's records");
+        assert_eq!(cb.job_of(lease).map(|j| j.epoch), Some(a_epoch), "A's lease in the store it opened");
+        // A's agent started again: the declaration names B, so it leads nothing.
+        let mut a = Run::new(crate::agent::seam::for_tests(), side(&nas(), &ha), Role::Member, Gates::default());
+        for _ in 0..3 {
+            let o = a.step();
+            assert_eq!((o.leads, a.side.driver().declared()), (None, Some(b_id.as_str())), "{:?}", o.events);
+        }
+    }
+
+    /// Every file under `dir`.
+    fn walkdir(dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walkdir(&p));
+            } else {
+                out.push(p);
+            }
+        }
+        out
     }
 }

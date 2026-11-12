@@ -102,7 +102,7 @@ mod tests {
             buildstore::records::Member { id: "m-000000000000000a".into(), host: "mini".into(), app: "x".into() };
         let role = |me: Option<&str>| buildstore::records::lead::role(&nas, me);
         assert_eq!(role(Some(&lead.id)), Role::Unknown, "none declared yet");
-        buildstore::records::lead::declare(&nas, &lead, 1).unwrap();
+        buildstore::records::lead::declare(&nas, &lead).unwrap();
         let (other, mine) = (role(Some("m-000000000000000b")), role(Some(&lead.id)));
         assert_eq!((other, mine), (Role::Member, Role::Lead));
         // A member that isn't the declared lead, without a name: it retires.

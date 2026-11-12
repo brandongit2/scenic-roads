@@ -65,7 +65,7 @@ pub const SPANS: &str = "spans";
 /// What a member's beat says: its app neither writes nor reads the map's snapshots on the NAS
 /// (`map/`, task #1119: the lead's log alone holds the map) and checks the NAS by `inputs/`
 /// (crate::agent::NAS_CHECK). The NAS's `map/` may be removed once every member's beat says it (the
-/// lead keeps what each says: its store's `member/<host>`, kept::Heard, in its backup too): an app
+/// lead keeps what each says: its store's `member/<host>`, kept::Heard): an app
 /// before it stats `map/` to tell the NAS answers, and sees the NAS away without it. The word goes
 /// with that folder.
 pub const NAS_CHECK: &str = "nas-check-inputs";
