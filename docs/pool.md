@@ -3109,7 +3109,9 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   caught up, the one path naming every hand-off owed (but the double fault's, docs/coordination.md
   §5.3, and a Mac gone for good's), its take-ups settled (the run going on while the declared
   lead's take-up waits); with reads failing now and then, each declared lead taking up within
-  `STALE_S` and 20 loops (awake) of the owner's move or its process's restart (`TAKE_UP_S`). Counted, not wrong, as §4's limits: two Macs leading one epoch number, a
+  `STALE_S` and 20 loops (awake) of the owner's move or its process's restart (`TAKE_UP_S`; a
+  new pool's take-up of today's files apart, counted: it reads half a dozen files more in its
+  step, any failing its try). Counted, not wrong, as §4's limits: two Macs leading one epoch number, a
   take-up finished late with its records fenced, a hand-off another lead acknowledged applied
   again into fenced records, a job doubled by a lease its granting lead never held (its state
   taken up from a backup without it), and a run ending on records lost with their lead's disk
