@@ -56,6 +56,15 @@ rely on the agent.
 - **No hand-kept figures:** a step's requirements are measured, enforced where used, or derived from
   the code.
 
+## Screenshots
+
+- **Proof screenshots are full resolution, saved to a file:** the real capture at 2× pixel density,
+  never the downscaled preview a screenshot tool hands back to you (it is shrunk to fit your image
+  budget, and `scale` shrinks it more). Use headless Chrome's `--screenshot` with
+  `--force-device-scale-factor=2`, `Page.captureScreenshot` over Chrome's debugging protocol, or
+  `screencapture` for a native window, and report the files' paths.
+- **On the map, press I to hide the UI** when the panels hide what you need to see.
+
 ## Outside services
 
 - Requests identify themselves as `scenic-roads/0.1 (personal offline map)`, with no contact
