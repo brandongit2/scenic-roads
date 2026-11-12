@@ -1249,26 +1249,6 @@ fn copy_keep(p: &Path, scratch: &Path) -> Result<PathBuf> {
     Ok(d)
 }
 
-/// Whether the NAS has a planet newer than `have` (a pass date), and its path and date.
-pub fn newer_planet(
-    root: &store::nasfs::NasRoot,
-    have: Option<&str>,
-) -> Result<Option<(store::nasfs::NasPath, String)>> {
-    let dir = root.join("sources/osm");
-    let mut dates: Vec<String> = dir
-        .read_dir()?
-        .into_iter()
-        .map(|e| e.name)
-        .filter(|n| n.len() == 10 && n.as_bytes()[4] == b'-' && dir.join(n).join("planet.osm.pbf").exists())
-        .collect();
-    dates.sort();
-    let Some(last) = dates.pop() else { return Ok(None) };
-    if have.is_some_and(|h| h >= last.as_str()) {
-        return Ok(None);
-    }
-    Ok(Some((dir.join(&last).join("planet.osm.pbf"), last)))
-}
-
 /// Puts into the pass's extracts the ferry ways its filtered planet lacks. The 2026-09-28 pass's was
 /// filtered without `w/route=ferry`: it has a ferry way only where another of the filter's tags
 /// kept it (a route relation's member, a `wikidata` tag, …), so its extracts lack the rest

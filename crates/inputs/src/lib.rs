@@ -1,6 +1,6 @@
 //! The declared inputs and the steps that read them first (docs/crates.md, task #916 step 6d): the
 //! inputs folders' gate and what it takes in (inputs), the elevation datasets and their zoom rule
-//! (dem), the map's rules and credits (rules), the OSM pass (osmpass), the region downloads' files
+//! (dem), the map's rules and credits (rules), the OSM pass (osmpass) and its planet (planet), the region downloads' files
 //! (areafiles), the rail feeds and their counts (rail), the lake fill (lakefill) and the water
 //! (water). Pipeline re-exports them at their old paths.
 
@@ -9,6 +9,7 @@ pub mod dem;
 pub mod inputs;
 pub mod lakefill;
 pub mod osmpass;
+pub mod planet;
 pub mod rail;
 pub mod rules;
 pub mod water;

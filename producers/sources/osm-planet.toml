@@ -1,0 +1,28 @@
+name = "Planet OSM, 2026-09-28"
+what = "Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries"
+credit = "© OpenStreetMap contributors (the planet of 2026-09-28); basemap schema by OpenMapTiles"
+licence = "ODbL-1.0"
+licence_url = "https://www.openstreetmap.org/copyright"
+source = "https://planet.openstreetmap.org/"
+territory = "world"
+notes = "The OSM pass's planet (crate::planet): fetched once into sources/osm/<version>/planet.osm.pbf by the planet-fetch step, checked against its MD5, then read by the pass. A new planet is a new version here, with its URLs: the files are named planet-<yymmdd>.osm.pbf, published weekly; the main site keeps about a year of them, the mirrors less."
+
+[data]
+role = "osm-planet"
+format = "osm-pbf"
+kind = "data"
+# The planet of `version`, from each in turn: the mirrors first, the main site last (its usage
+# policy asks large downloads to go to a mirror).
+urls = [
+  "https://ftpmirror.your.org/pub/openstreetmap/pbf/planet-260928.osm.pbf",
+  "https://ftp.fau.de/osm-planet/pbf/planet-260928.osm.pbf",
+  "https://ftp5.gwdg.de/pub/misc/openstreetmap/planet.openstreetmap.org/pbf/planet-260928.osm.pbf",
+  "https://planet.openstreetmap.org/pbf/planet-260928.osm.pbf",
+]
+# The planet's date: the pass's, and the folder it's kept in.
+version = "2026-09-28"
+refresh = "pinned"
+
+[data.params]
+# Its MD5, as the main site publishes it beside the file ("<hex>  <name>").
+md5 = "https://planet.openstreetmap.org/pbf/planet-260928.osm.pbf.md5"

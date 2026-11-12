@@ -1106,6 +1106,7 @@ dependencies = [
  "i_overlay",
  "jobrt",
  "libc",
+ "md-5",
  "names",
  "osmpbf",
  "png",

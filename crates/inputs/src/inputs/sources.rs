@@ -38,7 +38,9 @@ const ORPHAN: &str = "src-orphan";
 
 /// The roles a source is read in, each with the formats it may be in and the placeholders its URL
 /// template may hold: the app's slots, each read by one step's generic code.
-pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
+pub const ROLES: [(&str, &[&str], &[&str]); 17] = [
+    // (The OSM pass's planet: crate::planet. Its `version` the planet's date, its MD5 `params.md5`.)
+    (OSM_PLANET, &["osm-pbf"], &[]),
     // (Land cover on the analysis grid: trees::landcover. 3° tiles by their south-west corner.)
     (LAND_COVER, &["geotiff"], &["{tile}"]),
     // (Canopy height and cover: trees::trees, scenic-metrics' canopy step. By an index of 10° squares.)
@@ -79,6 +81,7 @@ pub const ROLES: [(&str, &[&str], &[&str]); 16] = [
 /// The roles any number of sources take (each read with the others, by its own `params.code`).
 pub const MANY: [&str; 2] = [DEPTH, GEOID];
 
+pub const OSM_PLANET: &str = "osm-planet";
 pub const LAND_COVER: &str = "land-cover";
 pub const CANOPY: &str = "canopy";
 pub const LEAF_EUROPE: &str = "leaf-type-europe";
@@ -211,6 +214,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
             }
             if data.role == GEOID {
                 why.extend(crate::dem::geoid::params_problems(&data));
+            }
+            if data.role == OSM_PLANET {
+                why.extend(crate::planet::params_problems(&data));
             }
         }
     }
@@ -898,7 +904,8 @@ pub mod declared_before {
 }
 
 #[cfg(any(test, feature = "testkit"))]
-pub const STAGED: [(&str, &[u8]); 16] = [
+pub const STAGED: [(&str, &[u8]); 17] = [
+    ("osm-planet.toml", include_bytes!("../../../../producers/sources/osm-planet.toml")),
     ("overture-buildings.toml", include_bytes!("../../../../producers/sources/overture-buildings.toml")),
     ("ghsl-built-h.toml", include_bytes!("../../../../producers/sources/ghsl-built-h.toml")),
     ("ghsl-tiles.geojson", include_bytes!("../../../../producers/sources/ghsl-tiles.geojson")),

@@ -347,7 +347,7 @@ pub fn run(out: &mut buildstore::out::Out, date: &str, ids: &BTreeSet<Id>) -> Re
         let e = Extract::read(&out.root().join(&name).read().with_context(|| format!("read {name}"))?)?;
         all.extend(e.ids());
     }
-    let planet = out.root().join(format!("sources/osm/{date}/planet.osm.pbf"));
+    let planet = crate::planet::path(out.root(), date);
     let filtered = out.get(&format!("sources/osm/{date}/filtered")).map(|n| out.root().join(n));
     // (Each scan's ranges kept as pieces, task #897: by the ids, the filtered planet's name and the
     // planet's fingerprint (no manifest name: `planet_print`), what the scans read.)

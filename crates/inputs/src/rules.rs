@@ -79,6 +79,8 @@ const CANADA: &[[f64; 4]] = &[[-141.1, 41.6, -52.5, 83.2]];
 /// crate::inputs::credits; the heritage registers' since #138). The app's own (the colour ramps it
 /// ships) are the app's: web/src/ui/strip.ts.
 pub const CREDITS: &[Credit] = &[
+    // (Until the planet's declaration is accepted: its description replaces it then, as the same
+    // `what`: crate::inputs::credits.)
     Credit {
         what: "Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries",
         source: "OpenStreetMap (Geofabrik extracts); basemap schema by OpenMapTiles",
