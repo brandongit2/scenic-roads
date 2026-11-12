@@ -212,8 +212,14 @@ mod tests {
         let base = format!("http://{}", l.local_addr().unwrap());
         let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let a = asked.clone();
+        // (store::spawn::accept takes a listener that doesn't block; the connection then does.)
+        l.set_nonblocking(true).unwrap();
         std::thread::spawn(move || loop {
-            let Ok((mut s, _)) = store::spawn::accept(&l) else { continue };
+            let Ok((mut s, _)) = store::spawn::accept(&l) else {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                continue;
+            };
+            s.set_nonblocking(false).ok();
             let mut req = Vec::new();
             let mut b = [0u8; 1];
             while s.read(&mut b).is_ok_and(|n| n == 1) {
