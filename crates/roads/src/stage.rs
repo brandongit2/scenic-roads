@@ -138,8 +138,8 @@ impl Source<'_> {
         match self {
             Source::Manifest(out, None) => out.get(logical).map(|c| Place::Nas(out.path(c))),
             Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| {
-                let r = reading.clone();
-                match blobs.get_counted(out.root(), c, Arc::new(move |k, len| r.copied(k, len))) {
+                let (r, part) = (reading.clone(), reading.part());
+                match blobs.get_counted(out.root(), c, Arc::new(move |k, len| r.copied(part, k, len))) {
                     Ok(l) => Place::Local(l),
                     Err(e) => {
                         eprintln!("stage: {c} not copied here ({e}); read from the NAS");
@@ -267,7 +267,7 @@ impl<'a> LayerReader<'a> {
 /// a slow read is told from a stuck one (task #1156: a z6 tile's staging read its packs at 6 MB/s
 /// for 26 minutes, and said nothing).
 #[derive(Debug, Default)]
-pub struct Reading {
+struct Reading {
     parts: AtomicU64,
     packs: AtomicU64,
     ended: AtomicU64,
@@ -278,6 +278,13 @@ pub struct Reading {
     sized: AtomicBool,
     now: std::sync::Mutex<(String, bool)>,
     bytes: AtomicU64,
+    /// How many parts have begun: a copy's bytes count for the part it began in alone (a copy
+    /// past its deadline goes on writing its temporary name, store::blobs::Blobs::get, after the
+    /// staging has gone on to the NAS's file and on to other parts).
+    begun: AtomicU64,
+    /// The most `done` has said (an f64's bits): its counts are read one by one as a part ends, so
+    /// a share read across that end could say a part more, then less.
+    said: AtomicU64,
 }
 
 impl Reading {
@@ -289,6 +296,7 @@ impl Reading {
 
     /// Part `what` begins (`tiles`: counted in tiles, else in bytes), taking `of` (more as it's known).
     fn begin(&self, what: &str, tiles: bool, of: u64) {
+        self.begun.fetch_add(1, Relaxed);
         self.at.store(0, Relaxed);
         self.of.store(of, Relaxed);
         self.sized.store(false, Relaxed);
@@ -306,8 +314,18 @@ impl Reading {
         self.bytes.fetch_add(k, Relaxed);
     }
 
-    /// `k` bytes of a pack `len` long copied here (`Source::file`): the copy is the part's.
-    fn copied(&self, k: u64, len: u64) {
+    /// The part under way (`copied`'s `part`).
+    fn part(&self) -> u64 {
+        self.begun.load(Relaxed)
+    }
+
+    /// `k` bytes of a pack `len` long copied here (`Source::file`) for part `part` (`part`): the
+    /// copy is that part's, its bytes from the NAS; a later part's share takes none of them.
+    fn copied(&self, part: u64, k: u64, len: u64) {
+        if part != self.part() {
+            self.bytes.fetch_add(k, Relaxed);
+            return;
+        }
         if !self.sized.swap(true, Relaxed) {
             self.more(len);
         }
@@ -328,20 +346,23 @@ impl Reading {
         self.begin("", false, 0);
     }
 
-    /// Its share done (0–1): its parts ended, the one under way by how far it is.
-    pub fn done(&self) -> f64 {
+    /// Its share done (0–1): its parts ended, the one under way by how far it is; never less than
+    /// it said before.
+    fn done(&self) -> f64 {
         let parts = self.parts.load(Relaxed);
         if parts == 0 {
             return 0.0;
         }
         let (at, of) = (self.at.load(Relaxed), self.of.load(Relaxed));
         let now = if of > 0 { (at as f64 / of as f64).min(1.0) } else { 0.0 };
-        ((self.ended.load(Relaxed) as f64 + now) / parts as f64).min(1.0)
+        let d = ((self.ended.load(Relaxed) as f64 + now) / parts as f64).min(1.0);
+        // (A non-negative f64's bits order as it does.)
+        f64::from_bits(self.said.fetch_max(d.to_bits(), Relaxed).max(d.to_bits()))
     }
 
     /// Its log line, `took` into it: "12 of 31 parts (28 packs, 3 grids' tiles), 2154 MB from the
     /// NAS in 340s (6.3 MB/s); now layers/terrain/hi/6-31-19, 410 of 1210 MB".
-    pub fn line(&self, took: std::time::Duration) -> String {
+    fn line(&self, took: std::time::Duration) -> String {
         let (parts, packs) = (self.parts.load(Relaxed), self.packs.load(Relaxed));
         let mb = self.bytes.load(Relaxed) as f64 / 1e6;
         let mut l = format!(
@@ -364,7 +385,7 @@ impl Reading {
 }
 
 /// How often staging logs how far it is (`Reading::line`).
-pub const LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+const LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The z6 tile's stage that stages these layers (crate::unit's `STAGES`).
 pub const STAGE: &str = "staging layers from the packs";
@@ -771,10 +792,11 @@ mod tests {
         assert_eq!(r.done(), 0.0);
         r.plan(3, 1);
         r.begin("layers/terrain/hi/6-31-19", false, 0);
+        let own = r.part();
         assert_eq!(r.done(), 0.0);
-        r.copied(250 << 20, 1000 << 20);
+        r.copied(own, 250 << 20, 1000 << 20);
         assert_eq!(r.done(), 0.25 / 4.0);
-        r.copied(250 << 20, 1000 << 20);
+        r.copied(own, 250 << 20, 1000 << 20);
         assert_eq!(r.done(), 0.5 / 4.0);
         let line = r.line(std::time::Duration::from_secs(100));
         assert!(
@@ -782,14 +804,17 @@ mod tests {
             "{line}"
         );
         assert!(line.ends_with("now layers/terrain/hi/6-31-19, 524 of 1048 MB"), "{line}");
-        r.copied(500 << 20, 1000 << 20);
+        r.copied(own, 500 << 20, 1000 << 20);
         r.end();
         assert_eq!(r.done(), 1.0 / 4.0);
-        // A neighbour's strip from the NAS, by its spans.
+        // A neighbour's strip from the NAS, by its spans; a copy of the part before still going (past
+        // its deadline) counts its bytes from the NAS, but nothing of this part's share.
         r.begin("layers/terrain/hi/6-32-19", false, 0);
         r.more(400);
         r.read(100);
-        assert_eq!(r.done(), 1.25 / 4.0);
+        let before = r.bytes.load(Relaxed);
+        r.copied(own, 10 << 20, 1000 << 20);
+        assert_eq!((r.done(), r.bytes.load(Relaxed)), (1.25 / 4.0, before + (10 << 20)));
         r.read(300);
         r.end();
         // A pack here already: nothing to read, its part ended when opened.
@@ -804,6 +829,11 @@ mod tests {
         assert_eq!(r.done(), 3.25 / 4.0);
         assert_eq!(r.bytes.load(Relaxed), before + 1000);
         assert!(r.line(std::time::Duration::from_secs(100)).ends_with("now grid-class's tiles, 2 of 8"));
+        // (Its share never goes back, though its counts are read one by one as a part ends.)
+        r.ended.fetch_add(1, Relaxed);
+        assert_eq!(r.done(), 1.0);
+        r.ended.fetch_sub(1, Relaxed);
+        assert_eq!(r.done(), 1.0);
         r.end();
         assert_eq!(r.done(), 1.0);
     }

@@ -79,9 +79,10 @@ fn end_of_run(log: &Path) -> (String, bool) {
 }
 
 /// Says how far a job is, for the agent (`progress`): `progress: <done>/<total> <unit>` on stderr,
-/// which goes to the job's log. The unit stays the same for the job's (or its part's) whole
-/// course: the time left is measured from the pace in it (a word in brackets after it, as in
-/// `steps (what's being done)`, may change).
+/// which goes to the job's log. The time left is measured from the pace in its unit (a word in
+/// brackets after it, as in `steps (what's being done)`, may change): a new unit, or a new
+/// total, measures its pace afresh, as a new part does (the agent's job view; the lead's lease
+/// pace begins a part of its own: depth's zooms, then its floor's `tiles shaded`).
 pub fn report(done: u64, total: u64, unit: &str) {
     eprintln!("progress: {}/{total} {unit}", done.min(total));
 }

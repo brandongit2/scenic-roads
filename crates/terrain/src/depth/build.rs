@@ -1051,7 +1051,7 @@ pub(super) fn build_hi_keeping(
 }
 
 /// The unit the floor's shading says its progress in (`shading_over`): its pyramid's tiles.
-pub const SHADED: &str = "tiles shaded";
+const SHADED: &str = "tiles shaded";
 
 /// The floor's shading (the `depth-shade` layer: crate::slope_pack's pyramid, as the terrain's)
 /// of a job's depth tiles `made`, from zoom `top` down: at each place's finest stored level each
