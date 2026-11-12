@@ -353,6 +353,7 @@ pub fn view(
     let mut gaps = Vec::new();
     let mut last_t = 0u64;
     let mut kind = String::new();
+    let (mut exit_ok, mut end_ok) = (None, None);
     // (The job's start first: every time is from it.)
     for l in &lines {
         if let Stored::Job(Line::Head { start_us: s, parent: None, kind: k, .. }) = l {
@@ -419,6 +420,13 @@ pub fn view(
                 );
             }
             Stored::Job(Line::Event(e)) => {
+                // (How it ended: its agent's word, else the last end said, the job's own after
+                // its child programs'.)
+                match (e.e.as_str(), e.ok) {
+                    ("exit", Some(ok)) => exit_ok = Some(ok),
+                    ("end", Some(ok)) => end_ok = Some(ok),
+                    _ => {}
+                }
                 let when = e.t.map(t).or(e.at.map(|ms| ms as f64 / 1000.0));
                 if let Some(x) = e.t {
                     last_t = last_t.max(e.t1.unwrap_or(x));
@@ -447,7 +455,7 @@ pub fn view(
     spans.sort_by(|a, b| a["t0"].as_f64().partial_cmp(&b["t0"].as_f64()).unwrap_or(std::cmp::Ordering::Equal));
     let end = (!running).then(|| t(last_t));
     let m = meta.clone().unwrap_or_default();
-    let root = serde_json::json!({ "id": "job", "parent": null, "kind": "job", "name": if m.name.is_empty() { kind.clone() } else { m.name.clone() }, "t0": t(0), "t1": end, "status": if running { "running" } else { "ok" }, "attrs": {} });
+    let root = serde_json::json!({ "id": "job", "parent": null, "kind": "job", "name": if m.name.is_empty() { kind.clone() } else { m.name.clone() }, "t0": t(0), "t1": end, "status": match (running, exit_ok.or(end_ok)) { (true, _) => "running", (false, Some(false)) => "fail", _ => "ok" }, "attrs": {} });
     spans.insert(0, root);
     serde_json::json!({
         "job": job,

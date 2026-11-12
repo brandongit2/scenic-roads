@@ -868,7 +868,8 @@ the lead): 400 for a malformed id, 503 off the lead, else:
 ```
 
 Every time is unix seconds (ms precision). `spans` is in the dev jobs' run shape (tools/devtools'
-`GET /api/jobs/runs/<id>`): the run itself first (`id` "job", `kind` "job"), then by start; `kind`
+`GET /api/jobs/runs/<id>`): the run itself first (`id` "job", `kind` "job", `status` `running`,
+`fail` when its agent's `exit` (else its last `end`) says not ok, else `ok`), then by start; `kind`
 `phase` (the main thread's lane) or `beside` (another thread's); `parent` "job" for a top-level
 span; `status` `ok`, `running` (said open, the job running) or `cut` (open as it ended, or as its
 word ended: its `t1` the last time heard); `attrs` `{th, n, busy_s, cpu_s, nas_s, net_s, disk_s,

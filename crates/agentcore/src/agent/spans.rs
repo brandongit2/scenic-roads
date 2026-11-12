@@ -398,6 +398,7 @@ mod tests {
         let v = view(&store, job);
         assert_eq!(v["legacy"], false);
         assert_eq!(v["running"], false);
+        assert_eq!(v["spans"][0]["status"], "ok");
         let names: Vec<&str> = v["spans"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
         assert_eq!(names, ["unit 6/1/1", "sampling", "x"], "the job, then by their starts: {v}");
         let sampling = &v["spans"][1];
@@ -486,6 +487,7 @@ mod tests {
         assert!(sent as u64 <= LOG_HEAD + LOG_TAIL + 1000 && (sent as u64) < total, "{sent}");
         let v = view(&store, job);
         assert_eq!(v["gaps"].as_array().unwrap().len(), 1, "{}", v["gaps"]);
+        assert_eq!(v["spans"][0]["status"], "fail", "lost: the run's own span failed");
         assert!(v["events"]
             .as_array()
             .unwrap()
