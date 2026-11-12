@@ -151,27 +151,38 @@ Checked by the simulator (§13):
    lock, §5). A lead grants and plans only while a read of the declaration named it less than
    `driver::VOUCH_S` (5 minutes) ago: one whose reads fail stops before a lead the owner declared
    meanwhile takes up (`STALE_S` after finding itself declared), so two never grant at once; one
-   unvouched that long steps down, and a lead declared anew waits `STALE_S` before taking up even
-   its own records (§6.1).
+   unvouched that long steps down, and a lead declared anew (the declaration's `since` not the one
+   it took up under) steps down and waits `STALE_S` before taking up even its own records (§6.1).
+   In a new pool only the Mac that declared itself takes today's files up at once.
 2. Each take-up leads an epoch past every earlier one's and past the records it starts from
    (`Io::epoch`, the store's epoch raised durably, its retry too), so (epoch, seq) orders every
    snapshot, and lease ids order, across restarts and the owner's moves. Across a move it is past
    what the NAS shows of the lead before (the one path, its brief, and the store's backup by
-   `RESTORE_EPOCHS`); a lead before whose take-up never reached the NAS (every save and backup
-   failing) may have granted in an epoch the next one repeats (not covered: its leases' hand-offs
-   are taken by lease order, at worst a job built again).
+   `RESTORE_EPOCHS`), followed or not (§6.2); a lead before whose take-up never reached the NAS
+   (every save and backup failing) may have granted in an epoch the next one repeats or passes
+   (not covered: its leases' hand-offs are taken by lease order, at worst a job built again). Its
+   records landing late are fenced (invariant 5): each snapshot names the Mac whose take-up began
+   its epoch (`Records::lead`), so two Macs' epochs of one number are told apart.
 3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, a lead
    never takes up from records older than those it saved, nor a moved lead before its
    predecessor's last acknowledged save can be read (§6.2, §7.3).
 4. Each records snapshot is one file written whole.
 5. A late write of an earlier save never sends the lead back: it takes up from the records it
    kept on its own disk (§6.2), reading the NAS's only when they're newer (another lead saved them)
-   or it has none; and never from records older than the one path's brief (`records::brief_mark`):
-   a save writes its brief only once its snapshot is whole at the one path, so a snapshot older
-   than the brief beside it is an earlier lead's write that landed late over a newer save (what the
-   terms' own paths fenced before #878 step 8c). Such a take-up waits, saying so: the records the
-   brief is of are on the disk of the Mac that saved them, which leads from them once declared
-   again. At the one path, readers read a late write until the lead's next save
+   or it has none; and only from records following the one path's brief (`records::follows`): the
+   snapshot it is of, a later save of its epoch's lead, or epochs taken up from them
+   (`Records::from`, every snapshot its epochs were taken up from). A save writes its brief only
+   once its snapshot is whole at the one path, and only after a read of the declaration finds the
+   one its lead took up under (`records::Under`; a read that fails writes none), so records not
+   following the brief are a write that landed
+   late over a newer save (an earlier lead's; or a take-up's that never reached the NAS before the
+   next lead's, its epoch higher or not: task #1038), what the terms' own paths fenced before
+   #878 step 8c; a brief landing late is followed by the records after it. Such a take-up waits,
+   saying so: the records the brief is of are on the disk of the Mac that saved them, which leads
+   from them once declared again. Not covered: that Mac's own copy lost too (its saved state or
+   its disk) after a late save over the one path, the brief's records are on no Mac and the
+   take-up waits for good, saying so; the owner decides (the simulator counts such runs; task
+   #1152). At the one path, readers read a late write until the lead's next save
    (`driver::RESAVE_S`, 10 minutes, at most).
 
 ## 5. Roles
@@ -219,15 +230,18 @@ re-exported as `crate::pool::lead`):
   acknowledged save can't read stale (§6.2), its coordinator loading the old lead's store's
   backup with its leases and the members' words (§7.5: an away member's leases held by its word
   there too, task #1038). Nothing in the app does it.
-- **Moved away and back** (task #1038): a lead takes up at once from its own records only under
-  the declaration it last took up under (`Saved::led_under`, the declaration's `since`); declared
-  anew, it waits `STALE_S` from finding itself declared whatever records it finds, since the lead
-  between may grant until `VOUCH_S` after its last read naming it (a late save of its own over the
-  one path, its brief too, can leave nothing newer to see). A lead no read has named for `VOUCH_S`
-  (its reads failing, or its Mac asleep) steps down at its next step whatever that step's read
-  says, and takes up again: at once from its own records when the declaration is the one it led
-  under and no other lead saved since, else `STALE_S` after that read. Its coordinator grants
-  nothing from its start until its pool's step says it leads (`agent::UNSTEPPED`).
+- **Moved away and back** (task #1038): a lead leads under one declaration, the one it took up
+  under (`Saved::led_under`, the declaration's `since`). Reading itself declared under another
+  (the owner moved the lead away and back while it slept or its reads failed), it steps down; its
+  saves write the brief, and it acknowledges, only while the declaration is that one
+  (`records::Under`). A lead takes up at once from its own records only under the declaration it
+  last took up under; declared anew, it waits `STALE_S` from finding itself declared whatever
+  records it finds, since the lead between may grant until `VOUCH_S` after its last read naming
+  it. A lead no read has named for `VOUCH_S` (its reads failing, or its Mac asleep) steps down at
+  its next step whatever that step's read says, and takes up again: at once from its own records
+  when the declaration is the one it led under and no other lead saved since, else `STALE_S`
+  after that read. Its coordinator grants nothing from its start until its pool's step says it
+  leads (`agent::UNSTEPPED`).
 
 **The epoch** is the lead's coordinator's store's (docs/coordination.md §4.3), bumped as the store
 opens, so once a process; a take-up raises it past the records it starts from
@@ -275,10 +289,15 @@ becomes 841).
   one path once: when that's newer by (epoch, seq) than its own (another lead saved: the owner
   moved the lead, possibly away and back), or it has none of its own (its disk's copy lost), it
   waits until `STALE_S` (10 min awake) has passed since this process first found itself declared,
-  reads the one path again and takes that up. With no one path, no brief and nothing saved before
-  (a new pool) it takes today's files (`manifest.json`, `jobs.json`, `pending.json`) at once. Never
-  from records older than those it saved last (`records::Older`: a stale read, tried again). It
-  then raises its epoch past theirs, numbers them (epoch, 0) and saves them. The lead before it
+  reads the one path again and takes that up. Only records following the one path's brief count
+  (§4 invariant 5; else it waits, naming the Mac that led the brief's epoch). With no one path, no
+  brief and nothing saved before (a new pool) it takes today's files (`manifest.json`, `jobs.json`,
+  `pending.json`): at once when this process declared itself, else `STALE_S` on, the first Mac
+  declared perhaps leading already. Never from records older than those it saved last
+  (`records::Older`: a stale read, tried again). It then raises its epoch past theirs and past the
+  newest epoch the one path and its brief show, numbers them (epoch, 0), notes the snapshot they
+  were taken up from (`Records::from`) and itself as the epoch's lead (`Records::lead`), and saves
+  them. The lead before it
   acknowledges a hand-off only while a read of the declaration after its save still names it: so
   whatever it acknowledged, which no member keeps any more, is in the records its successor reads.
   The history says how (`Event::TookUp`): "its own records", "the one path's records, newer than
@@ -311,7 +330,8 @@ becomes 841).
 - **The coordinator's state** is in its store on its own disk (docs/coordination.md §4, task #878:
   `agent/coord/store/`): a restart opens it, so it keeps its leases. Its backup on the NAS
   (`state/lead/store.json`, §7.5) is what a take-up loads when another Mac led before it
-  (`took_up`: the backup another Mac's).
+  (`took_up`: the backup another Mac's, and the take-up of another lead's records, `Event::TookUp`'s
+  `another`; a take-up of its own records keeps its own store's, task #1038).
 
 ### 6.3 With the lead gone
 
@@ -1346,11 +1366,14 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   request that made it is answered (a grant is never answered before it's durable); a restart, an
   update's or a crash's, opens the store, its leases back unconfirmed (test
   `agent::pool::tests::the_leads_restart_keeps_its_leases`). Renewals aren't saved (a loaded lease
-  gets a fresh deadline).
+  gets a fresh deadline). A lapsed lease stays in the table (a member's word may hold it again)
+  until its target is granted again, which ends it (`Leases::grant_at`; task #1038: kept, a restart
+  or the next lead's take-up gave it a fresh deadline beside the new lease).
 - **Its backup on the NAS** (`state/lead/store.json`, the store's snapshot whole) is written by a
   thread of its own each `pool::store::backup_every` (10 min) while the store changed, started by
   the lead's step, never on a handler's path. The owner's move of the lead (§6.1) takes it up there
-  (`took_up`, the backup naming another member): a lease granted since it is unknown to the new lead,
+  (`took_up`, the backup naming another member, the take-up of that lead's records): a lease
+  granted since it is unknown to the new lead,
   its worker's next renewal refused, its job stopped and its targets out again (the work, never the
   records: the merge's lease order, §6.5).
 - Workers are a member id and an agent instance; a take-up drops only instances that no longer
@@ -3051,29 +3074,46 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
 
 ## 13. Testing
 
-- **The simulator** (`crate::pool`'s `sim`, in the crate's tests; seeded, repeatable): two to four
-  Macs run the real driver, step by step, against a model of the share (atomic create-new whose
-  bytes may land late or never, delayed renames, stale reads, outages, busy renames, lost answers,
-  slow and stalling operations) and of the hand-offs' HTTP path (a member's beat lists what it
-  keeps, the lead's answer says what it lacks and what its saved records name, the posts into its
-  store; posts and answers lost, the lead's store lost with its saved state, its memory of what it
-  answered merged lost at each restart), with skewed clocks, sleeps, restarts, app upgrades and
-  rollbacks, members leaving. Mac 0 is the declared lead, its store's epoch bumped at each restart
-  and raised past a take-up's records: any other Mac leading is wrong, as is any file
-  under `state/journal/` (the pool's NAS has no listing nor removal since task #1125's review:
-  `records::nas::Nas` lost both, their last callers the journal's). It checks §4's invariants at every step (epochs strictly rising at
-  each take-up and past every other landed records' epoch; each epoch's snapshots at the one path
-  never going back or losing a hand-off, none both applying and refusing one; an acknowledgement
-  only of a hand-off a landed snapshot of its epoch names; no snapshot of an epoch at or after an
-  acknowledgement's lacking it; a lead caught up only with every hand-off its step was given
-  named), and at the end that the declared lead leads, caught up, the one path naming every
-  hand-off made (but those a lost saved state took before any post, those posted whose member's
-  saved state and then the lead's store were both lost before a merge, the one loss two faults
-  make with no journal, and those a Mac gone for good still holds), and no take-up in the run's
-  last ten minutes. 2,000 seeds by default; longer runs are opt-in (task #1125's review: 20,000
-  mixed seeds, and 5,000 of four hours' faults, none wrong). It never moves the lead (#1038).
-- **Not modelled:** torn reads, other I/O errors, the member lock, a wall clock set while awake, GC,
-  the coordinator (the driver's and modules' own tests cover these).
+- **The simulator** (`crate::pool`'s `sim`, in the crate's tests; seeded, repeatable; task #1038,
+  docs/coordination.md step 9): two to four Macs, any of which may be the declared lead, each in a
+  thread of its own and one at a time. **Real:** the driver; the lead's coordinator in process
+  (`Coordinator::in_process`: its routes, scheduler, lease table, hand-offs' registry, its store on
+  a folder of its own with its durability wait, epoch raises, the backup taken up and restored);
+  the member's beat on coordwire's client over a network fake (`Client::through`); the records'
+  brief a job opens (`Briefs::fresh`, `GET /pool/brief`); GC on the lead (its queue, the map's
+  feed and its clients' cursors, `/gc/chunk` and `/gc/gone`, the merge's refusal) with its grace
+  (1 h) and cursor TTL (6 h). **Modelled:** the agent's loop around them (`sim::mac`: its slots,
+  asks, beats, role and restarts), the jobs and their hand-offs, the map's publishing and the map
+  servers' asks, the owner, the clocks, and the share: create-new whose bytes land late or never,
+  renames landing late (a Mac asleep between), busy renames, stale reads (`Cfg::stale`), outages,
+  lost answers, slow and stalling operations. **Faults** (each a knob, mixed by the seed, or all
+  at once): requests dropped, delayed past the client's time (done then, unanswered), answers lost;
+  Macs cut off for minutes to hours, one-way links; the lead killed mid-append (its log's last line
+  torn or whole); crashes; the lead's disk replaced and its store restored from the NAS backup;
+  skewed clocks, sleeps, app upgrades, development builds and rollbacks, saved states lost,
+  members leaving for good; the owner moving the lead (to another Mac, back, mid-save, while the
+  lead's reads fail) and declaring again the Mac a waiting take-up names (after 20 min). **Checked
+  at every step:** no target under two live leases (the jobs running and each coordinator's
+  table), two coordinators never granting at once, no lease id granted twice, every hand-off merged
+  once or refused with why, acknowledgements only of what a landed snapshot names and no landed
+  snapshot following the brief lacking one, §4's epoch and records invariants, a job's brief never
+  older than the one its lease was granted from, GC removing no name the records it saw name nor
+  one a map server heard within the TTL serves; at the end, the declared lead leading alone and
+  caught up, the one path naming every hand-off owed (but the double fault's, docs/coordination.md
+  §5.3, and a Mac gone for good's), its take-ups settled (the run going on while the declared
+  lead's take-up waits). Counted, not wrong, as §4's limits: two Macs leading one epoch number, a
+  take-up finished late with its records fenced, a hand-off another lead acknowledged applied
+  again into fenced records, a job doubled by a lease its granting lead never held (its state
+  taken up from a backup without it), and a run ending on records lost with their lead's disk
+  after a late save over the one path (task #1152). Runs: 160 mixed seeds, 60 of every
+  fault, 60 of the lead's moves and 12 of GC through hours away in the suite; by hand
+  (`#[ignore]`): 2,000 mixed and 2,000 every-fault seeds, 2,000 of four hours' faults, each knob
+  alone, and each of 400 seeds run twice for the same events (11 Nov, task #1038: all but the knobs
+  alone run, none wrong; 45, 65 and 85 s on the M4).
+- **Not modelled by the simulator:** the HTTP transport itself (coordwire's client is driven
+  through `Client::through`), the agent's real loop, planning and jobs (`sim::mac` stands in), torn
+  reads and other I/O errors of the share, the member lock, a wall clock set while awake, the map
+  server's own reads, more than four Macs.
 - **The placement simulator** (`sim::place`, in the crate's tests, a few seconds a run): N
   Macs, each with its memory, cores and disk, work a plan through the lead's real coordinator on a
   simulated clock, every job by grant. The plan is offered in its order, the steps kept to the lead
