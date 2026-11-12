@@ -17,9 +17,9 @@ use std::time::{Duration, Instant};
 /// mount the share by (the password comes from the Keychain).
 ///
 /// At home the share is mounted by the NAS's LAN name (Bonjour, `.local`): the bare name resolves
-/// through Tailscale's DNS to its tailnet address when Tailscale runs, and the NAS's Tailscale
-/// (userspace networking) is CPU-bound: SMB writes through it ran at 12 MB/s on 2026-10-03, and an
-/// SSH stream at half the LAN's rate. Away from home only the build agent mounts it, by the bare
+/// through Tailscale's DNS to its tailnet address when Tailscale runs, and the tunnel is slower
+/// than the LAN: SMB writes through it ran at 12 MB/s on 2026-10-03, and an SSH stream at half the
+/// LAN's rate. Away from home only the build agent mounts it, by the bare
 /// name (`tunnel_url`), and it remounts by the LAN name once home (`at_home`).
 pub const HOST: &str = "fishandchips";
 pub const LAN_HOST: &str = "fishandchips.local";
@@ -273,21 +273,50 @@ fn c_string(chars: &[std::os::raw::c_char]) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Whether an smbfs `f_mntfromname` (`//[domain;][user@]host[:port]/share[/path]`, percent-encoded)
-/// names `share` on a host matching `host_hint`.
-fn matches_from(from: &str, host_hint: &str, share: &str) -> bool {
-    let Some(rest) = from.strip_prefix("//") else { return false };
-    let Some((authority, path)) = rest.split_once('/') else { return false };
+/// An smbfs `f_mntfromname` (`//[domain;][user@]host[:port]/share[/path]`, percent-encoded): its
+/// host and share, decoded and lowercased.
+fn from_parts(from: &str) -> Option<(String, String)> {
+    let rest = from.strip_prefix("//")?;
+    let (authority, path) = rest.split_once('/')?;
     let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
     let host = match host.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or(v6),
         None => host.split(':').next().unwrap_or(host),
     };
-    let host = percent_decode(host).to_lowercase();
-    let hint = host_hint.to_lowercase();
-    let host_ok = !hint.is_empty() && (host == hint || host.strip_prefix(&hint).is_some_and(|r| r.starts_with('.')));
     let first = path.split('/').next().unwrap_or("");
-    host_ok && percent_decode(first).to_lowercase() == share.to_lowercase()
+    Some((percent_decode(host).to_lowercase(), percent_decode(first).to_lowercase()))
+}
+
+/// Whether `host` (lowercased) matches `host_hint`: the host itself, or it followed by a dot.
+fn host_matches(host: &str, host_hint: &str) -> bool {
+    let hint = host_hint.to_lowercase();
+    !hint.is_empty() && (host == hint || host.strip_prefix(&hint).is_some_and(|r| r.starts_with('.')))
+}
+
+/// Whether an smbfs `f_mntfromname` names `share` on a host matching `host_hint`.
+fn matches_from(from: &str, host_hint: &str, share: &str) -> bool {
+    from_parts(from).is_some_and(|(host, first)| host_matches(&host, host_hint) && first == share.to_lowercase())
+}
+
+/// How SMB mounts `froms` reach the NAS, of any of its shares: (some by its LAN name or Bonjour's
+/// service name, some by another name: the bare one, which Tailscale's DNS sends through the
+/// tunnel).
+fn routes_of<'a>(froms: impl IntoIterator<Item = &'a str>) -> (bool, bool) {
+    let mut by = (false, false);
+    for (host, _) in froms.into_iter().filter_map(from_parts).filter(|(h, _)| host_matches(h, HOST)) {
+        if host_matches(&host, LAN_HOST) || host.ends_with("._smb._tcp.local") {
+            by.0 = true;
+        } else {
+            by.1 = true;
+        }
+    }
+    by
+}
+
+/// How this Mac's SMB mounts of the NAS reach it now (`routes_of`): each route mounted holds a
+/// live session on the NAS.
+pub fn mounted_routes() -> (bool, bool) {
+    routes_of(smb_mounts().iter().map(|m| m.from.as_str()))
 }
 
 fn percent_decode(s: &str) -> String {
@@ -486,6 +515,15 @@ mod tests {
         assert!(by_lan_name(&m("//brandontsang@fishandchips.local/personal")));
         assert!(by_lan_name(&m("//brandontsang@FISHANDCHIPS._smb._tcp.local/Personal")));
         assert!(!by_lan_name(&m("//brandontsang@fishandchips/personal")));
+        // Every share's mount, by route.
+        assert_eq!(routes_of(["//brandontsang@fishandchips.local/personal"]), (true, false));
+        assert_eq!(routes_of(["//me@FISHANDCHIPS._smb._tcp.local/home", "//me@other/personal"]), (true, false));
+        assert_eq!(routes_of(["//brandontsang@fishandchips/home"]), (false, true));
+        assert_eq!(
+            routes_of(["//me@fishandchips.tail23e9f2.ts.net/personal", "//me@fishandchips.local/x"]),
+            (true, true)
+        );
+        assert_eq!(routes_of(["//me@fishandchipsx/personal", "//me@other.local/personal"]), (false, false));
         assert!(matches_from("//me@[fe80::1]/data", "fe80::1", "data"));
         assert!(!matches_from("//me@nas/personal", "", "personal"));
         assert_eq!(percent_decode("a%2Fb%zz%4"), "a/b%zz%4");

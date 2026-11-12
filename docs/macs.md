@@ -253,12 +253,14 @@ installed by `tools/app/install.sh`, updated by the updater).
   connected a share before the Mac was last seen at home, so an address the LAN has since given
   another Mac is never taken for this one's. A session through Tailscale comes from this Mac's
   tailnet address (the NAS's Tailscale is a TUN device, and DSM lists a tunnelled client by that
-  address: seen 11 Nov), one of its addresses at home and away. A tailnet address is one Mac's
-  alone, never given to another, so every one the Mac has had in its agent's run counts as its own,
-  with no time limit. The
-  live session is never dropped: the map server, Finder and the agent's own beats keep or reopen files
-  on the share within seconds, so a kick would only swap it for a fresh one while their open
-  handles fail. When:
+  address: seen 11 Nov), one of its addresses at home and away. A tailnet address is one device's
+  for as long as it stays in the tailnet, so every one the Mac has had in its agent's run counts as
+  its own, with no time limit. A live session is never dropped: the newest of the Mac's is kept,
+  and the newest of each route its mounts of the NAS hold as the drop is made (a mount by the LAN
+  name, from a LAN address; one by the bare name, Finder's say, through Tailscale, from the tailnet
+  address). The map server, Finder and the agent's own beats keep or reopen files on the share
+  within seconds, so a kick would only swap it for a fresh one while their open handles fail.
+  When:
   - at the agent's start, once the share answers: the sessions of its addresses now that last
     connected a share before the start, but the newest (the live one: a dead session stopped before
     the one replacing it began; DSM's time is when a connection last connected a share, not when
@@ -273,8 +275,8 @@ installed by `tools/app/install.sh`, updated by the updater).
     the "home again" remount done): the same as at the start, as of then, with every tailnet
     address it has had. The remount's forced unmount usually ends the tunnelled session (the
     tunnel still works at home), but one it didn't end, or one a sleep or a dropped tunnel left
-    behind while away, holds its leases just as a LAN session left behind on leaving does; the new
-    LAN session is the newest, so kept;
+    behind while away, holds its leases just as a LAN session left behind on leaving does. The new
+    LAN session is kept as its route's newest;
   - with the self-heal's remount: the same as at the start, as of the remount (another address's,
     one a reconnect left behind); the remount itself ends the live one.
 

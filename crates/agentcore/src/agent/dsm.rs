@@ -29,9 +29,9 @@
 //! connected before it was last seen at home, so an address the LAN has since given another Mac is
 //! never taken for this one's. A session through Tailscale comes from the Mac's tailnet address
 //! (the NAS's Tailscale is a TUN device: DSM's `from` is the client's own address, verified 11 Nov),
-//! which is among its addresses now at home and away; a tailnet address is one Mac's alone and
-//! never given to another, so the tailnet addresses it had earlier in the agent's run count as its
-//! own too, with no time limit.
+//! which is among its addresses now at home and away; a tailnet address is one device's for as long
+//! as it stays in the tailnet, so the tailnet addresses it had earlier in the agent's run count as
+//! its own too, with no time limit.
 //!
 //! **When** (`Watch`): at the agent's start, once the NAS answers (its keys read), the sessions of
 //! its addresses now last connected before the start but the newest (the live one: a dead session
@@ -42,12 +42,14 @@
 //! once the share is mounted by its LAN name after it was mounted through Tailscale (home again),
 //! the same as at the start as of then, with every tailnet address it has had (a tunnelled session
 //! the forced unmount didn't end, or one a sleep or a dropped tunnel left behind away, holds its
-//! leases as a left LAN one does; the new LAN session is the newest, so kept).
-//! The live session is never kicked: the server, Finder and the agent's own beats hold or reopen
-//! files on the share within seconds, so a kick only swaps it for a fresh one while their open
-//! handles go stale (task #567's review). A failure (DSM unreachable, no keys, refused) is a
-//! warning in the log and never stops the agent; one that didn't reach DSM is tried again each
-//! minute for half an hour (a Mac that just left may have no network yet).
+//! leases as a left LAN one does).
+//! A live session is never kicked: the newest of them all is kept, and the newest of each route
+//! this Mac's mounts of the NAS hold as the drop is made (`Held`: one by the LAN name, from a LAN
+//! address; one by the bare name, Finder's say, from the tailnet one). The server, Finder and the
+//! agent's own beats hold or reopen files on the share within seconds, so a kick only swaps it for
+//! a fresh one while their open handles go stale (task #567's review). A failure (DSM unreachable,
+//! no keys, refused) is a warning in the log and never stops the agent; one that didn't reach DSM
+//! is tried again each minute for half an hour (a Mac that just left may have no network yet).
 
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
@@ -173,8 +175,8 @@ pub struct Home {
 /// Which of this Mac's sessions a drop ends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mine {
-    /// Its addresses now: their sessions last connected before `before` (Unix s), but the newest of
-    /// them all (the live one).
+    /// Its addresses now: their sessions last connected before `before` (Unix s), but the live ones
+    /// (`pick`).
     pub now: Vec<IpAddr>,
     pub before: u64,
     /// Away from home: the addresses it had there, their sessions last connected before it was last seen
@@ -196,10 +198,27 @@ impl Mine {
     }
 }
 
+/// The routes this Mac's mounts of the NAS hold as a drop is made (store::nas::mounted_routes): each
+/// holds a live session, by the LAN name from a LAN address, by the bare name from its tailnet one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Held {
+    pub lan: bool,
+    pub tunnel: bool,
+}
+
+impl Held {
+    /// This Mac's now.
+    pub fn now() -> Held {
+        let (lan, tunnel) = store::nas::mounted_routes();
+        Held { lan, tunnel }
+    }
+}
+
 /// Of `l`'s connections, this Mac's to drop (`m`): SMB, of the share's user `user` and the share
 /// `share` (none holding Time Machine: a kick ends every share of the connection), from its
-/// addresses (task #567: never another Mac's, its LAN or its tailnet address), never the live one.
-pub fn pick(l: &Listing, user: &str, share: &str, m: &Mine, now: u64) -> Vec<Conn> {
+/// addresses (task #567: never another Mac's, its LAN or its tailnet address), never a live one:
+/// the newest of them all, and the newest of each route a mount holds now (`held`).
+pub fn pick(l: &Listing, user: &str, share: &str, m: &Mine, held: Held, now: u64) -> Vec<Conn> {
     let ours = |c: &&Conn| {
         let shares = || c.descr.split(',').map(str::trim);
         c.protocol == "SMB"
@@ -211,11 +230,21 @@ pub fn pick(l: &Listing, user: &str, share: &str, m: &Mine, now: u64) -> Vec<Con
     let connected = |c: &Conn| l.connected(c, now);
     let on_now: Vec<&Conn> =
         l.conns.iter().filter(ours).filter(|c| c.addr().is_some_and(|a| m.now.contains(&a))).collect();
-    let newest = on_now.iter().filter_map(|c| Some((connected(c)?, c.pid))).max().map(|(_, pid)| pid);
+    let newest = |route: &dyn Fn(&IpAddr) -> bool| {
+        let on = on_now.iter().filter(|c| c.addr().is_some_and(|a| route(&a)));
+        on.filter_map(|c| Some((connected(c)?, c.pid))).max().map(|(_, pid)| pid)
+    };
+    let mut live = vec![newest(&|_| true)];
+    if held.lan {
+        live.push(newest(&|a| !tailscale(a)));
+    }
+    if held.tunnel {
+        live.push(newest(&tailscale));
+    }
     let mut out: Vec<Conn> = on_now
         .into_iter()
         .filter(|c| connected(c).is_some_and(|b| b < m.before))
-        .filter(|c| Some(c.pid) != newest)
+        .filter(|c| !live.contains(&Some(c.pid)))
         .cloned()
         .collect();
     if let Some(h) = &m.home {
@@ -382,10 +411,10 @@ impl Api {
 
     /// Logged in, this Mac's sessions `m` listed and kicked, logged out (whatever happened between);
     /// the ones that ended.
-    pub fn drop_mine(&self, k: &Keys, m: &Mine, now: u64) -> Result<Vec<Conn>, Failed> {
+    pub fn drop_mine(&self, k: &Keys, m: &Mine, held: Held, now: u64) -> Result<Vec<Conn>, Failed> {
         let sid = self.login(k)?;
         let r = (|| {
-            let drop = pick(&self.list(&sid)?, store::nas::smb_user(), store::nas::SHARE, m, now);
+            let drop = pick(&self.list(&sid)?, store::nas::smb_user(), store::nas::SHARE, m, held, now);
             if drop.is_empty() {
                 return Ok(drop);
             }
@@ -629,7 +658,7 @@ fn run(api: fn() -> Api, rx: Receiver<Ask>) {
         if mine.is_empty() {
             continue;
         }
-        match api().drop_mine(k, &mine, super::jobs::now_s()) {
+        match api().drop_mine(k, &mine, Held::now(), super::jobs::now_s()) {
             Ok(d) if d.is_empty() => {}
             Ok(d) => eprintln!(
                 "agent: DSM: {}: ended this Mac's SMB sessions {}",
@@ -696,8 +725,9 @@ mod tests {
         assert!(parse_keys("NAS_DSM_USER=u\n").is_none());
     }
 
-    /// Only this Mac's: its addresses (not another Mac's, LAN or tailnet), the share's user, the share (no connection holding Time Machine); those last connected before
-    /// the start, never the live (newest) one.
+    /// Only this Mac's: its addresses (not another Mac's, LAN or tailnet), the share's user, the
+    /// share (no connection holding Time Machine); those last connected before the start, never the
+    /// live (newest) one.
     #[test]
     fn only_this_macs_stale_sessions_are_picked() {
         let l = Listing {
@@ -717,10 +747,10 @@ mod tests {
         let start = NOW - 10 * 60;
         let m = Mine { now: vec![ip("192.168.2.15"), ip("100.70.85.80")], before: start, home: None };
         // (1 and 2 last connected before the start; 8 after it, the newest: live, kept.)
-        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1, 2]);
+        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, Held::default(), NOW)), vec![1, 2]);
         // Asked after every one of them (a remount): the newest is still the live one, kept.
         let m = Mine { before: NOW, ..m };
-        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1, 2]);
+        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, Held::default(), NOW)), vec![1, 2]);
     }
 
     /// Away: the addresses it had at home, their sessions last connected before it was last seen
@@ -737,12 +767,12 @@ mod tests {
         };
         let left_at = NOW - 3 * 3600; // 12:00 on the NAS's clock
         let m = Mine { now: vec![], before: 0, home: Some(Home { addrs: vec![ip("192.168.2.15")], at: left_at }) };
-        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1]);
+        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, Held::default(), NOW)), vec![1]);
         // Holding that address again (home, a blip): nothing.
         let mut back = m.clone();
         back.refresh(&[ip("192.168.2.15")]);
         assert!(back.is_empty());
-        assert!(pick(&l, "brandontsang", "personal", &back, NOW).is_empty());
+        assert!(pick(&l, "brandontsang", "personal", &back, Held::default(), NOW).is_empty());
     }
 
     /// Through Tailscale (the NAS's Tailscale a TUN device): a session comes from the Mac's tailnet
@@ -761,12 +791,23 @@ mod tests {
         // Away: its addresses now are a hotel's LAN one and its tailnet one; the live session is
         // the newest, tunnelled.
         let m = Mine { now: vec![ip("10.0.0.7"), ip("100.70.85.80")], before: NOW, home: None };
-        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1]);
+        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, Held::default(), NOW)), vec![1]);
         // Home again, mounted by the LAN name since: the tunnelled ones are older, both dropped.
         let mut home = l.clone();
         home.conns.push(conn(4, "192.168.2.15", "personal", "2026/11/11 14:59:30"));
         let m = Mine { now: vec![ip("192.168.2.15"), ip("100.70.85.80")], before: NOW, home: None };
-        assert_eq!(pids(&pick(&home, "brandontsang", "personal", &m, NOW)), vec![1, 3]);
+        let lan = Held { lan: true, tunnel: false };
+        assert_eq!(pids(&pick(&home, "brandontsang", "personal", &m, lan, NOW)), vec![1, 3]);
+        // Another mount by the bare name (Finder's) holds a tunnelled session too: its newest is
+        // live, kept.
+        let both = Held { lan: true, tunnel: true };
+        assert_eq!(pids(&pick(&home, "brandontsang", "personal", &m, both, NOW)), vec![1]);
+        // And one it connected after the LAN mount: newest of them all, the LAN one still kept
+        // while the LAN name is mounted.
+        home.conns.push(conn(5, "100.70.85.80", "home, personal", "2026/11/11 14:59:40"));
+        assert_eq!(pids(&pick(&home, "brandontsang", "personal", &m, lan, NOW)), vec![1, 3]);
+        // (Without the routes held, the newest alone: the live LAN one would go.)
+        assert_eq!(pids(&pick(&home, "brandontsang", "personal", &m, Held::default(), NOW)), vec![1, 3, 4]);
     }
 
     /// Mounted by the LAN name after a mount through Tailscale (home again): a drop of its
@@ -981,7 +1022,7 @@ mod tests {
         }));
         let api = Api::at(&serve(fake.clone()));
         let m = Mine { now: vec![ip("192.168.2.15")], before: NOW - 600, home: None };
-        let d = api.drop_mine(&keys(), &m, NOW).unwrap();
+        let d = api.drop_mine(&keys(), &m, Held::default(), NOW).unwrap();
         assert_eq!(pids(&d), vec![1]);
         let f = fake.write().unwrap();
         assert_eq!(pids(&f.conns), vec![2, 3, 4]);
@@ -1007,10 +1048,10 @@ mod tests {
         }));
         let api = Api::at(&serve(fake.clone()));
         let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, home: None };
-        assert_eq!(pids(&api.drop_mine(&keys(), &m, NOW).unwrap()), vec![1]);
+        assert_eq!(pids(&api.drop_mine(&keys(), &m, Held::default(), NOW).unwrap()), vec![1]);
         assert_eq!(fake.read().unwrap().asked.len(), 5, "login, list, kick, list, logout");
         // All refused: the error.
-        let e = api.drop_mine(&keys(), &m, NOW).unwrap_err();
+        let e = api.drop_mine(&keys(), &m, Held::default(), NOW).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("105"), "{e}");
         assert!(fake.write().unwrap().sessions.is_empty(), "logged out after a failure too");
     }
@@ -1022,12 +1063,12 @@ mod tests {
         let api = Api::at(&serve(fake));
         let bad = parse_keys("NAS_DSM_USER=scenic-sessions\nNAS_DSM_PASS=wrong\n").unwrap();
         let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, home: None };
-        let e = api.drop_mine(&bad, &m, NOW).unwrap_err();
+        let e = api.drop_mine(&bad, &m, Held::default(), NOW).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("wrong password"), "{e}");
         let closed = store::spawn::listen("127.0.0.1:0").unwrap();
         let base = format!("http://{}", closed.local_addr().unwrap());
         drop(closed);
-        assert!(matches!(Api::at(&base).drop_mine(&keys(), &m, NOW), Err(Failed::Unreached(_))));
+        assert!(matches!(Api::at(&base).drop_mine(&keys(), &m, Held::default(), NOW), Err(Failed::Unreached(_))));
     }
 
     /// TLS that fails (here a server that doesn't speak it; a lapsed certificate fails the same
@@ -1051,7 +1092,7 @@ mod tests {
             }
         });
         let m = Mine { now: vec![ip("192.168.2.15")], before: NOW, home: None };
-        let e = Api::at(&base).drop_mine(&keys(), &m, NOW).unwrap_err();
+        let e = Api::at(&base).drop_mine(&keys(), &m, Held::default(), NOW).unwrap_err();
         assert!(matches!(e, Failed::Refused(_)) && e.to_string().contains("certificate"), "{e}");
     }
 }
