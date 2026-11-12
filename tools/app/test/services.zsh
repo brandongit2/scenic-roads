@@ -53,7 +53,8 @@ chmod +x $box/bin/caddy
 # Versions, each an app folder holding services/ (services_stage of this checkout), changed so each
 # can be told apart: the board page's index carries the version, the Caddyfile a mark.
 n=0
-version() {  # version <name> [devtools: ok|exit|migrate] [caddy: ok|BROKEN|NORUN]: its services.zsh's path
+version() {  # version <name> [devtools: ok|exit|migrate|late|same] [caddy: ok|BROKEN|NORUN]: its services.zsh's path
+  # (late: migrates, then ends 3 s later, not answering; same: the running version's dev tools.)
   local v=20260101-$(( ++n ))000-$1 s
   s=$box/app/$v/services
   services_stage $repo $s >/dev/null || { no "stage $1" "services_stage failed"; exit 1 }
@@ -64,6 +65,11 @@ version() {  # version <name> [devtools: ok|exit|migrate] [caddy: ok|BROKEN|NORU
 const d = process.argv[process.argv.indexOf('--data') + 1];
 new DatabaseSync(d + '/jobs.db').exec('PRAGMA user_version = 99');
 process.exit(3);" > $s/devtools/tools/devtools/server.mjs ;;
+    late) print -r -- "import { DatabaseSync } from 'node:sqlite';
+const d = process.argv[process.argv.indexOf('--data') + 1];
+new DatabaseSync(d + '/jobs.db').exec('PRAGMA user_version = 99');
+setTimeout(() => process.exit(3), 3000);" > $s/devtools/tools/devtools/server.mjs ;;
+    same) rm -rf $s/devtools && cp -R $H/devtools/$(readlink $H/devtools/current) $s/devtools ;;
   esac
   { print -r -- "# mark $1"; [[ ${3:-ok} == ok ]] || print -r -- "# ${3}"; cat $repo/tools/caddy/Caddyfile } > $s/caddy/Caddyfile.new
   mv $s/caddy/Caddyfile.new $s/caddy/Caddyfile
@@ -118,10 +124,11 @@ elif [[ $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.d
 else ok "setup devtools: from the checkout's, its data kept where it is"; fi
 [[ $(uv) == 1 ]] || no "jobs.db" "user_version $(uv), not 1"
 
+print -rl -- '# an older names file' other.test > $box/names
 run $v1 setup caddy
 if (( rc )); then no "setup caddy" "exit $rc: $out"
 elif [[ $(mark) != one ]]; then no "setup caddy" "serves $(mark), not one"
-elif [[ $(grep -v '^#' $box/names) != svc.test ]]; then no "setup caddy" "names: $(<$box/names)"
+elif [[ $(grep -v '^#' $box/names) != $'svc.test\nother.test' ]]; then no "setup caddy" "names (its first, the others kept): $(<$box/names)"
 elif [[ $(<$H/version) != ${v1:h:h:t} ]]; then no "setup caddy" "version $(<$H/version)"
 elif [[ $(plutil -extract ProgramArguments.3 raw -o - $box/LaunchAgents/$prefix.caddy.plist) != $H/caddy/Caddyfile ]]; then no "setup caddy" "the plist doesn't run services/caddy"
 elif [[ $out != *"devtools: at "*" already"* ]]; then no "setup caddy" "the dev tools restarted too: $out"
@@ -193,5 +200,43 @@ version seven; v7=$REPLY
 run $v7 update
 (( rc == 0 )) && [[ $(page) == "<!-- ${v7:h:h:t} -->" && $(mark) == seven && $(items) == 1 ]] && ok "an unloaded job loaded again" \
   || no "an unloaded job loaded again" "exit $rc, page $(page), mark $(mark): $out"
+
+# The dev tools unchanged since the running version's: left running, Caddy updated.
+version eight same; v8=$REPLY
+p0=$(pid devtools)
+run $v8 update
+(( rc == 0 )) && [[ $(pid devtools) == $p0 && $(readlink $H/devtools/current) == ${v7:h:h:t} && $(mark) == eight && $(<$H/version) == ${v8:h:h:t} ]] \
+  && ok "dev tools unchanged: not restarted" \
+  || no "dev tools unchanged: not restarted" "exit $rc, pid $p0 → $(pid devtools), current $(readlink $H/devtools/current), mark $(mark): $out"
+
+# The databases not copied (their folder not writable): nothing switched.
+version nine; v9=$REPLY
+chmod a-w $H/devtools/backup
+run $v9 update
+chmod u+w $H/devtools/backup
+if (( rc != 1 )); then no "no copy of the databases" "exit $rc: $out"
+elif [[ $(pid devtools) != $p0 || $(readlink $H/devtools/current) != ${v7:h:h:t} || $(page) != "<!-- ${v7:h:h:t} -->" ]]; then
+  no "no copy of the databases" "pid $p0 → $(pid devtools), current $(readlink $H/devtools/current): $out"
+else ok "no copy of the databases: nothing switched"; fi
+
+# A run cut short after its switch (killed while the new version, which changed jobs.db's form,
+# starts): the next run goes on from it, back to the version before, the copy taken before put back.
+version ten late; v10=$REPLY
+zsh $v10 update > $box/cut.log 2>&1 &
+cut=$!
+for (( i = 0; i < 100; i++ )); do [[ $(uv) == 99 ]] && break; sleep 0.1; done
+kill $cut 2>/dev/null; wait $cut 2>/dev/null
+if [[ $(uv) != 99 || ! -f $H/devtools/backup/pending ]]; then no "a run cut short" "not cut after the switch: uv $(uv): $(<$box/cut.log)"
+else
+  run $v10 update
+  if (( rc != 1 )); then no "a run cut short" "exit $rc: $out"
+  elif [[ $(uv) != 1 || $(readlink $H/devtools/current) != ${v7:h:h:t} || -f $H/devtools/backup/pending ]]; then
+    no "a run cut short" "uv $(uv), current $(readlink $H/devtools/current): $out"
+  else
+    for (( i = 0; i < 50; i++ )); do [[ $(page) == "<!-- ${v7:h:h:t} -->" ]] && break; sleep 0.2; done
+    [[ $(page) == "<!-- ${v7:h:h:t} -->" && $(items) == 1 ]] && ok "a run cut short: the next goes back to the version before it, its database put back" \
+      || no "a run cut short" "page $(page), items $(items): $out"
+  fi
+fi
 
 exit $failed

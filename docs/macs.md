@@ -234,16 +234,22 @@ laid out as in the repo, with the build page's modules the dashboard serves), an
   agent runs that version's `services.zsh update`, unless `services/version` says it's done or
   `services/failed` that it was tried. So Caddy's routes change only once the coordinator that
   serves them is up (#1101: a Caddyfile pulled ahead of the app answered 403 at /build/ for
-  minutes). The dev tools go first: this version's copy in `services/devtools/<version>/`,
-  `current` pointed at it, the job restarted (`launchctl kickstart -k`: it stays loaded, so a run cut
-  short leaves launchd running one or the other) and checked: a new process answering the board's and
-  the dashboard's APIs within 30 s. Their databases are copied first, while the old one runs
-  (SQLite's `.backup`, to `services/devtools/backup/`); a version that doesn't answer is put back,
-  with a database's copy too when it changed that database's form (its `user_version` or
-  `schema_version`), the job stopped meanwhile. Then Caddy: the new Caddyfile validated with the
+  minutes). The dev tools go first, left running when this version's files are the running
+  copy's (most releases don't change them). Else their databases are copied, while the old version
+  runs (`VACUUM INTO`, one read transaction, checked by `quick_check`, to
+  `services/devtools/backup/`: the size of the databases, ~0.5 GB, one set kept; a copy failing
+  changes nothing), this version's copy put in `services/devtools/<version>/`, `current` pointed
+  at it, the job restarted (`launchctl kickstart -k`: it stays loaded) and checked: a new process
+  answering the board's and the dashboard's APIs within 30 s. A version that doesn't answer is put
+  back, with a database's copy too when it changed that database's form (its `user_version` or
+  `schema_version`), the job stopped meanwhile: what was written to that database since the copy,
+  seconds, is lost then. A run cut short after the switch (the agent's job stopped with it, a
+  power cut) leaves `services/devtools/backup/pending`, and the next run goes on from it: the
+  version before and the copies taken before it. Then Caddy: the new Caddyfile validated with the
   job's settings, put in `services/caddy/Caddyfile`, Caddy restarted and checked (a new process
-  answering HTTPS within 10 s), else the one before put back. A failure goes to the agent's log, and
-  the agent doesn't try that version again; `services.zsh update` by hand does.
+  answering HTTPS within 10 s), else the last one seen serving put back. A failure goes to the
+  agent's log, and the agent doesn't try that version again; `services.zsh update` by hand does.
+  One run at a time (`services/lock`), setup's too.
 - **The board's data stays where it was**: the data folder its setup names (on the Mac mini, the
   git checkout's `tools/devtools/`: `taskboard.db` and `jobs.db`, untracked).
 - **Tested** in a sandbox (`SCENIC_SERVICES_SANDBOX`, `tools/app/test/services.zsh`, run with

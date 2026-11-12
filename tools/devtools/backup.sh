@@ -9,12 +9,15 @@ dest=/Volumes/personal/projects/scenic-roads/state/devtools
 [ -d /Volumes/personal/projects ] || { echo "$(date -u +%FT%TZ) devtools backup: NAS not mounted" >&2; exit 1; }
 mkdir -p "$dest"
 day=$(date +%F)
-tmp=$(mktemp -t devtools)
-trap 'rm -f "$tmp" "$dest"/*.db.part' EXIT
+tmpd=$(mktemp -d -t devtools)
+tmp=$tmpd/copy.db
+trap 'rm -rf "$tmpd"; rm -f "$dest"/*.db.part' EXIT
 for name in taskboard jobs; do
   [ -f "$data/$name.db" ] || continue
-  # .backup to a local file, checked, then one copy: the NAS takes few small writes well (docs/macs.md).
-  /usr/bin/sqlite3 "$data/$name.db" ".backup '$tmp'"
+  # A local copy, checked, then one copy: the NAS takes few small writes well (docs/macs.md). VACUUM
+  # INTO reads the database in one transaction (.backup starts again at each write by the server).
+  rm -f "$tmp"
+  /usr/bin/sqlite3 "$data/$name.db" "VACUUM INTO '$tmp'"
   ok=$(/usr/bin/sqlite3 "$tmp" "PRAGMA quick_check")
   [ "$ok" = ok ] || { echo "$(date -u +%FT%TZ) devtools backup: $name: quick_check: $ok" >&2; exit 1; }
   cp -X "$tmp" "$dest/$name-$day.db.part"   # -X: the NAS refuses macOS's provenance xattrs (as publish.sh)

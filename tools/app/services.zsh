@@ -20,26 +20,30 @@
 # LaunchAgent runs now, if anything: the dev tools' node and data folder (`--data`, else its
 # working folder: on the Mac mini, the git checkout's tools/devtools, where the board's data is);
 # Caddy's program, name (~/.config/scenic/names), certificate and key (else `caddy` on the PATH,
-# ~/certs/map.crt and map.key). Caddy's setup also writes the name to ~/.config/scenic/names, which
-# the map server and the agent read (coordwire::net::names).
+# ~/certs/map.crt and map.key). Caddy's setup also writes the name first in ~/.config/scenic/names (its
+# other names kept), which the map server and the agent read (coordwire::net::names).
 #
 # update, for each service set up, the dev tools first:
-# - the dev tools: this version's copy put in <home>/services/devtools/<version>/, `current`
-#   pointed at it, the job restarted (launchctl kickstart -k: it stays loaded, so a run stopped part
-#   way leaves launchd running one or the other) and checked: a new process answering the board's
-#   and the dashboard's APIs within 30 s. Their databases are copied first (SQLite's .backup, while
-#   the old one runs: no stop for it) to devtools/backup/. A version that doesn't answer is put
-#   back, and when it changed a database's form (its user_version or schema_version: a change of a
-#   database's form sets its user_version, README.md) that database's copy goes back too, the job
-#   stopped meanwhile (what was written between the copy and the restart, a few seconds, is lost
-#   then, and only then). The two versions' copies are kept, the others removed.
+# - the dev tools: left as they are when they answer at this version, or at a copy whose files are
+#   the same (most releases don't change them). Else their databases copied first, while the old version
+#   runs (VACUUM INTO, consistent, checked; to devtools/backup/; a copy failing, nothing changes);
+#   this version's copy put in <home>/services/devtools/<version>/, `current` pointed at it, the job
+#   restarted (launchctl kickstart -k: it stays loaded, so a run stopped part way leaves launchd
+#   running one or the other) and checked: a new process answering the board's and the dashboard's
+#   APIs within 30 s. A version that doesn't answer is put back, and when it changed a database's
+#   form (its user_version or schema_version: a change of a database's form sets its user_version,
+#   README.md) that database's copy goes back too, the job stopped meanwhile (what was written
+#   between the copy and the restart, seconds, is lost then, and only then). A run cut short between
+#   the switch and its end (the agent's job stopped, a power cut) leaves devtools/backup/pending (the
+#   version it came from) beside the copies: the next run goes on from them. The two versions'
+#   copies are kept, the others removed.
 # - Caddy: this version's Caddyfile checked (caddy validate, with the job's names), put in
 #   <home>/services/caddy/Caddyfile, Caddy restarted and checked (a new process answering HTTPS on
-#   its port within 10 s); else the one before put back.
-# A service already at this version, running, is left as it is (--reload: every service's jobs
-# loaded again from their plists, as setup does for its own). The versions
-# done are in <home>/services/version; one that failed in `failed`, which the agent doesn't try
-# again (a run by hand does). One run at a time (<home>/services/lock).
+#   its port within 10 s); else the last one seen serving (Caddyfile.before) put back.
+# A service at this version, running (Caddy answering HTTPS), is left as it is (--reload: every
+# service's jobs loaded again from their plists, as setup does for its own). The versions done are
+# in <home>/services/version; one that failed in `failed`, which the agent doesn't try again (a run
+# by hand does). One run at a time, setup's too (<home>/services/lock).
 #
 # SCENIC_SERVICES_SANDBOX=<dir> (tools/app/test/services.zsh, and a trial on the Mac mini): <dir>
 # holds the home, the LaunchAgents' plists and the names file, the labels are
@@ -87,6 +91,10 @@ else
 fi
 mkdir -p $H $agents $logs
 say() { print -r -- "services: $(strftime %T $EPOCHSECONDS) $*" }
+
+# One run at a time, setup's included (its plist and settings written under the lock too).
+touch $H/lock
+zsystem flock -t 0 -f lockfd $H/lock 2>/dev/null || { say "another run holds $H/lock"; exit 1; }
 
 # ---- launchd ---------------------------------------------------------------------------------------
 loaded() { launchctl print $domain/$1 >/dev/null 2>&1 }
@@ -190,15 +198,16 @@ elif [[ $cmd == setup && $svc == caddy ]]; then
   typeset -A PLIST_ENV=(SCENIC_MAP_NAME $name SCENIC_CERT $cert SCENIC_KEY $key SCENIC_HTTPS_PORT $https_port)
   PLIST_LOG=$logs/caddy.log plist $label $plist $caddy run --config "$H/caddy/Caddyfile" --adapter caddyfile
   unset PLIST_ENV
+  # (Its first line; the other names it held stay after it.)
+  others=(${(f)"$(grep -v '^#' $names_file 2>/dev/null | grep -vxF -- $name || true)"})
   mkdir -p ${names_file:h}
-  printf '# Written by services.zsh setup caddy: the names Caddy serves this Mac under.\n%s\n' $name > $names_file
+  { print -r -- "# Written by services.zsh setup caddy: the names Caddy serves this Mac under."
+    print -rl -- $name $others } > $names_file.tmp && mv -f $names_file.tmp $names_file
   say "caddy set up: $label (https://$name:$https_port, $caddy)"
   opt[reload]=$svc cmd=update
 fi
 
 # ---- update ----------------------------------------------------------------------------------------
-touch $H/lock
-zsystem flock -t 0 -f lockfd $H/lock 2>/dev/null || { say "another run holds $H/lock"; exit 1; }
 failed=()
 
 # The form of each database in the data folder: its user_version and schema_version, one line each.
@@ -231,28 +240,51 @@ link() {  # link <folder> <target>: <folder>/current pointed at <target> (a new 
   ln -sfh $2 $1/current.tmp && mv -fh $1/current.tmp $1/current
 }
 
+# (Each step's failure is checked where it's run: a function called under `||`, as each update is,
+# runs with errexit off.)
 update_devtools() {
   local label plist backup_label backup_plist node data port
   source $H/devtools/setup
-  local d=$H/devtools v=$version prev was f0 f1 db
-  prev=$(readlink $d/current 2>/dev/null || true)
+  local d=$H/devtools v=$version b=$H/devtools/backup cur prev was f0 f1 db
+  cur=$(readlink $d/current 2>/dev/null || true)
+  prev=$cur
+  # A run cut short after its switch (the agent's job stopped, a power cut) left `pending`: the
+  # version it switched from, its databases' copies and their forms in backup/ taken before it.
+  # This run goes on from there: that version the one to go back to, those copies the ones to put
+  # back.
+  [[ -f $b/pending ]] && prev=$(<$b/pending)
+  if ! reloads devtools && [[ -n $cur && -n $(pid_of $label) ]] && answers $port \
+      && { [[ $cur == $v ]] || diff -rq $from/devtools $d/$cur >/dev/null 2>&1 }; then
+    rm -f $b/pending
+    [[ $cur == $v ]] && say "devtools: at $v already" || say "devtools: $v's are $cur's, running: left as they are"
+    return 0
+  fi
   if [[ ! -d $d/$v ]]; then
-    rm -rf $d/$v.tmp; cp -RX $from/devtools $d/$v.tmp && mv $d/$v.tmp $d/$v
+    rm -rf $d/$v.tmp && cp -RX $from/devtools $d/$v.tmp && mv $d/$v.tmp $d/$v \
+      || { say "devtools: $v not copied to $d/$v"; rm -rf $d/$v.tmp; return 1 }
   fi
-  if [[ $prev == $v ]] && ! reloads devtools && [[ -n $(pid_of $label) ]] && answers $port; then
-    say "devtools: at $v already"; return 0
+  if [[ ! -f $b/pending ]]; then
+    # A copy of each database, consistent, while the old version runs: VACUUM INTO reads it in one
+    # transaction (.backup starts again at each write by another process, and the board's are
+    # written all the time), checked. Any failing, nothing is switched.
+    mkdir -p $b && rm -f $b/*.db(N) $b/*.tmp(N) $b/forms || { say "devtools: can't clear $b"; return 1 }
+    for db in $data/*.db(N); do
+      if ! /usr/bin/sqlite3 $db "VACUUM INTO '$b/${db:t}.tmp'" \
+          || [[ $(/usr/bin/sqlite3 $b/${db:t}.tmp 'PRAGMA quick_check') != ok ]] \
+          || ! mv -f $b/${db:t}.tmp $b/${db:t}; then
+        say "devtools: no good copy of ${db:t} in $b: $v not installed"; rm -f $b/*.tmp(N); return 1
+      fi
+    done
+    forms $data > $b/forms.tmp && mv -f $b/forms.tmp $b/forms \
+      && print -r -- $prev > $b/pending.tmp && mv -f $b/pending.tmp $b/pending \
+      || { say "devtools: can't write $b's forms: $v not installed"; return 1 }
   fi
-  # (A copy of each database, consistent, while the old version runs.)
-  mkdir -p $d/backup
-  for db in $data/*.db(N); do
-    /usr/bin/sqlite3 $db ".backup '$d/backup/${db:t}.tmp'" && mv -f $d/backup/${db:t}.tmp $d/backup/${db:t}
-  done
-  f0=$(forms $data)
+  f0=$(<$b/forms)
   was=$(pid_of $label || true)
-  link $d $v
-  restart devtools $label $plist
+  link $d $v && restart devtools $label $plist
   if up $label "$was" 150 answers $port; then
     say "devtools: $v answers on :$port (was ${prev:-none})"
+    rm -f $b/pending
     loaded $backup_label && ! reloads devtools || restart devtools $backup_label $backup_plist
     for f in $d/<->-*(N/); do [[ ${f:t} == ($v|$prev) ]] || rm -rf $f; done
     return 0
@@ -262,21 +294,23 @@ update_devtools() {
   if [[ -n $prev ]]; then link $d $prev; else rm -f $d/current; fi
   if [[ $f1 != $f0 ]]; then
     # (It changed a database's form: the copies back, with the job stopped.)
-    gone $label
-    for db in $d/backup/*.db(N); do
+    gone $label || { say "devtools: $label won't stop: its databases not put back ($b/pending kept)"; return 1 }
+    for db in $b/*.db(N); do
       [[ $(grep "^${db:t} " <<< $f0) == $(grep "^${db:t} " <<< $f1) ]] && continue
-      cp -X $db $data/${db:t}.restore && rm -f $data/${db:t}-wal $data/${db:t}-shm && mv -f $data/${db:t}.restore $data/${db:t}
-      say "devtools: ${db:t} put back as it was before $v (its form had changed)"
+      if cp -X $db $data/${db:t}.restore && rm -f $data/${db:t}-wal $data/${db:t}-shm && mv -f $data/${db:t}.restore $data/${db:t}; then
+        say "devtools: ${db:t} put back as it was before $v (its form had changed)"
+      else
+        say "devtools: ${db:t} NOT put back ($b/pending kept: the next run tries again)"; return 1
+      fi
     done
-    [[ -n $prev ]] && launchctl bootstrap $domain $plist
-  elif [[ -n $prev ]]; then
+  fi
+  rm -f $b/pending
+  if [[ -n $prev ]]; then
     was=$(pid_of $label || true)
-    launchctl kickstart -k $domain/$label
+    restart devtools $label $plist
+    up $label "$was" 150 answers $port && say "devtools: $prev answers again" || say "devtools: $prev doesn't answer either"
   else
     gone $label  # (No version before it to run: stopped, not left failing.)
-  fi
-  if [[ -n $prev ]]; then
-    up $label "$was" 150 answers $port && say "devtools: $prev answers again" || say "devtools: $prev doesn't answer either"
   fi
   return 1
 }
@@ -286,18 +320,25 @@ update_caddy() {
   source $H/caddy/setup
   local d=$H/caddy new=$from/caddy/Caddyfile was code p
   check_env() { SCENIC_MAP_NAME=$name SCENIC_CERT=$cert SCENIC_KEY=$key SCENIC_HTTPS_PORT=$https_port "$@" }
+  tls() { [[ $(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' --resolve $name:$https_port:127.0.0.1 https://$name:$https_port/) != 000 ]] }
   if ! check_env $caddy validate --config $new --adapter caddyfile > $d/validate.log 2>&1; then
     say "caddy: $version's Caddyfile doesn't validate: $(tail -3 $d/validate.log)"; return 1
   fi
-  if cmp -s $new $d/Caddyfile && ! reloads caddy && [[ -n $(pid_of $label) ]]; then
+  if cmp -s $new $d/Caddyfile && ! reloads caddy && [[ -n $(pid_of $label) ]] && tls; then
+    rm -f $d/Caddyfile.before
     say "caddy: at $version's Caddyfile already"; return 0
   fi
-  tls() { [[ $(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' --resolve $name:$https_port:127.0.0.1 https://$name:$https_port/) != 000 ]] }
-  [[ -f $d/Caddyfile ]] && cp -X $d/Caddyfile $d/Caddyfile.before
-  cp -X $new $d/Caddyfile.tmp && mv -f $d/Caddyfile.tmp $d/Caddyfile
+  # (The one to go back to: the Caddyfile last seen serving. A Caddyfile.before is left only by a
+  # run cut short, whose own Caddyfile wasn't checked: that one stays.)
+  if [[ -f $d/Caddyfile && ! -f $d/Caddyfile.before ]]; then
+    cp -X $d/Caddyfile $d/Caddyfile.before.tmp && mv -f $d/Caddyfile.before.tmp $d/Caddyfile.before \
+      || { say "caddy: can't keep the Caddyfile before"; return 1 }
+  fi
+  cp -X $new $d/Caddyfile.tmp && mv -f $d/Caddyfile.tmp $d/Caddyfile || { say "caddy: can't write $d/Caddyfile"; return 1 }
   was=$(pid_of $label || true)
   restart caddy $label $plist
   if up $label "$was" 50 tls; then
+    rm -f $d/Caddyfile.before
     code=()
     for p in / /build/ /dev/; do
       code+=("$p $(curl -sk --max-time 5 -o /dev/null -w '%{http_code}' --resolve $name:$https_port:127.0.0.1 https://$name:$https_port$p)")
@@ -309,7 +350,7 @@ update_caddy() {
   if [[ -f $d/Caddyfile.before ]]; then
     mv -f $d/Caddyfile.before $d/Caddyfile
     was=$(pid_of $label || true)
-    launchctl kickstart -k $domain/$label
+    restart caddy $label $plist
     up $label "$was" 50 tls && say "caddy: the Caddyfile before serves again" || say "caddy: the Caddyfile before doesn't serve either"
   fi
   return 1
