@@ -14,13 +14,14 @@
 //!   lost it (no end said, not running here, its facts older than `LOST_AFTER`) is ended as lost;
 //!   files older than `KEEP` (a lead that never took them: an app before spans) go.
 
+use super::bus::Snap;
 use crate::coord::jobspans::{Ack, Chunk, Meta};
 use jobrt::jobid::JobId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The folder in the agent's.
@@ -59,9 +60,9 @@ struct Sent {
 pub struct Shipper {
     dir: PathBuf,
     /// The jobs running here as the agent's loop last said (`running`), and when.
-    running: Mutex<(BTreeSet<JobId>, bool)>,
+    running: Arc<Snap<(BTreeSet<JobId>, bool)>>,
     /// The lead's own store, while this Mac leads (`ship_local`).
-    local: Mutex<Option<Arc<crate::coord::jobspans::Store>>>,
+    local: Arc<Snap<Option<Arc<crate::coord::jobspans::Store>>>>,
 }
 
 fn now_s() -> u64 {
@@ -71,7 +72,7 @@ fn now_s() -> u64 {
 impl Shipper {
     /// The shipper of the agent in `home`.
     pub fn new(home: &Path) -> Arc<Shipper> {
-        Arc::new(Shipper { dir: home.join(DIR), running: Default::default(), local: Mutex::new(None) })
+        Arc::new(Shipper { dir: home.join(DIR), running: Snap::new(Default::default()), local: Snap::new(None) })
     }
 
     fn file(&self, job: JobId, ext: &str) -> PathBuf {
@@ -124,12 +125,12 @@ impl Shipper {
     /// ended, started `LOST_AFTER` ago, was lost by its agent (its Mac down, its agent crashed
     /// before it said): ended so.
     pub fn running(&self, jobs: BTreeSet<JobId>) {
-        *self.running.lock().unwrap() = (jobs, true);
+        self.running.set((jobs, true));
     }
 
     /// This Mac's store to ship to while it leads (`ship_local`); None as it stops leading.
     pub fn lead_store(&self, s: Option<Arc<crate::coord::jobspans::Store>>) {
-        *self.local.lock().unwrap() = s;
+        self.local.set(s);
     }
 
     /// The jobs with files here, by id.
@@ -162,7 +163,7 @@ impl Shipper {
     pub fn chunks(&self, max: usize) -> Vec<Chunk> {
         let mut out = Vec::new();
         let mut left = max;
-        let (running, said) = self.running.lock().unwrap().clone();
+        let (running, said) = self.running.get().as_ref().clone();
         for job in self.jobs() {
             let Some(mut f) = self.facts(job) else { continue };
             let age = now_s().saturating_sub(f.meta.start);
@@ -212,7 +213,7 @@ impl Shipper {
     /// The lead's own jobs' spans to its store (while this Mac leads, `lead_store`): what it lacks,
     /// taken and acknowledged at once.
     pub fn ship_local(&self) {
-        let Some(store) = self.local.lock().unwrap().clone() else { return };
+        let Some(store) = self.local.get().as_ref().clone() else { return };
         // (Its own disk: no beat's bound, but a chunk's.)
         let chunks = self.chunks(crate::coord::jobspans::CHUNK_MAX);
         if !chunks.is_empty() {
