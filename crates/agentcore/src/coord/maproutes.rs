@@ -150,7 +150,7 @@ mod tests {
         let nas = d.path().join("nas");
         std::fs::create_dir_all(&nas).unwrap();
         c.set_root(Some(&store::nasfs::NasRoot::local_for_test(nas.clone())));
-        let _hung = crate::agent::nasread::fake::hang(&nas);
+        let _hung = store::deadline::fake::hang(&nas);
         let (start, bs) = chain(4);
         feed.start(Arc::new(start), 1, &[], Default::default());
         for (m, b) in &bs[..2] {

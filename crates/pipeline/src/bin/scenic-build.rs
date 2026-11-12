@@ -192,7 +192,13 @@ fn main() -> std::process::ExitCode {
             return code;
         }
     }
-    build_main(args).report()
+    let r = build_main(args);
+    let ok = r.is_ok();
+    // (Its error in its log first: its agent reads it once it takes the job as ended.)
+    let code = r.report();
+    // (Its end said to its agent first when its exit may not end: jobrt::control::ending.)
+    jobrt::control::ending(if ok { 0 } else { 1 });
+    code
 }
 
 fn build_main(args: Vec<String>) -> Result<()> {

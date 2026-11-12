@@ -15,20 +15,21 @@
 //! then mapped as a whole file is (crate::basepack::Sect::open_only, only the sections read named):
 //! the bytes not read are zeros and take no room. Neighbouring ranges are read as one (`GAP`), in
 //! reads of `READ` bytes at most, `READERS` at once (each taking its turn of the process's NAS
-//! limit, store::aimd), each given up after `STALL` without a byte
-//! (`watched`: a stuck SMB read fails the job rather than holding it for good). Sections read
+//! limit, store::aimd), each a store::deadline call given up after `store::deadline::LONG` without
+//! a byte (`watched`: a stuck SMB read fails the job rather than holding it for good). Sections read
 //! whole are checked against their XXH3; ranges can't be (a file's sections are checksummed whole).
 
 use crate::basepack::{BasePack, Sect, Span};
 use crate::hipack::{meets, Bounds};
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use roadcore::scenic::Sample;
 use roadcore::WayRec;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use store::deadline::{Progress, LONG};
 use store::sys::PosIo;
 
 /// Ways per chunk of the way index.
@@ -128,41 +129,17 @@ pub fn index_path(cache: &Path, content: &str) -> PathBuf {
     cache.join(format!("{content}.idx"))
 }
 
-/// How long a read of the NAS may go without a byte before the job gives up on it (Task #380: an
-/// SMB read can hang in the kernel for many minutes): its error, the job failed, its lease back.
-pub const STALL: Duration = Duration::from_secs(120);
-
-/// `f` on a thread of its own, given a count of the bytes it has read to add to; its result,
-/// unless that count stays the same for `stall`: then an error at once, the thread left to its
-/// read (it ends with it, or with the process).
+/// `f`, a NAS read that says it moved (`Progress::add`, its bytes), as a store::deadline call:
+/// given up after `deadline` without a byte (an error at once, the read left to the kernel), never
+/// for its length. The caller's wait is a wait on the NAS (store::waits: a job's `waited_ms`
+/// counts its base packs' copies, task #896 review).
 pub fn watched<T: Send + 'static>(
-    stall: Duration,
+    deadline: Duration,
     what: &str,
-    f: impl FnOnce(&AtomicU64) -> Result<T> + Send + 'static,
+    f: impl FnOnce(&Progress) -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    // (The caller blocks on the NAS read for as long as this takes: a wait on the NAS, store::waits,
-    // so a job's `waited_ms` counts its base packs' copies, task #896 review.)
     let _nas = store::waits::nas();
-    let progress = Arc::new(AtomicU64::new(0));
-    let (tx, rx) = std::sync::mpsc::channel();
-    let p = progress.clone();
-    std::thread::Builder::new().name("basepart-read".into()).spawn(move || {
-        let _ = tx.send(f(&p));
-    })?;
-    let (mut seen, mut since) = (0, Instant::now());
-    loop {
-        match rx.recv_timeout(Duration::from_millis(200).min(stall)) {
-            Ok(r) => return r,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => bail!("{what}: its reader ended without a word"),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-        }
-        let now = progress.load(Ordering::Relaxed);
-        if now != seen {
-            (seen, since) = (now, Instant::now());
-        } else if since.elapsed() >= stall {
-            bail!("{what}: no byte read in {stall:?} (the NAS's read stuck?): given up");
-        }
-    }
+    store::deadline::watched(&what, &"read", deadline, Vec::new(), move |p| Ok(f(p)))?
 }
 
 /// A source file being copied in part to a sparse local one of its size.
@@ -173,14 +150,13 @@ struct Copy {
     len: u64,
     ranges: Vec<(u64, u64)>,
     read: Read,
-    stall: Duration,
 }
 
 impl Copy {
-    fn new(src: &Path, dst: &Path, stall: Duration) -> Result<Copy> {
+    fn new(src: &Path, dst: &Path) -> Result<Copy> {
         let name = src.display().to_string();
         let s = src.to_owned();
-        let (src, len) = watched(stall, &format!("open {name}"), move |_| {
+        let (src, len) = watched(LONG, &format!("open {name}"), move |_| {
             let f = File::open(&s).with_context(|| format!("open {}", s.display()))?;
             let len = f.metadata()?.len();
             Ok((f, len))
@@ -193,18 +169,18 @@ impl Copy {
             .open(dst)
             .with_context(|| format!("create {}", dst.display()))?;
         dst.set_len(len)?;
-        Ok(Copy { src: Arc::new(src), dst: Arc::new(dst), name, len, ranges: Vec::new(), read: Read::default(), stall })
+        Ok(Copy { src: Arc::new(src), dst: Arc::new(dst), name, len, ranges: Vec::new(), read: Read::default() })
     }
 
     /// Bytes `[off, off + len)` of the source, read now (not copied).
     fn get(&mut self, off: u64, len: usize) -> Result<Vec<u8>> {
         ensure!(off + len as u64 <= self.len, "a read past the end of the file");
         let src = self.src.clone();
-        let b = watched(self.stall, &format!("read {}", self.name), move |p| {
+        let b = watched(LONG, &format!("read {}", self.name), move |p| {
             let mut b = vec![0u8; len];
             for (k, c) in b.chunks_mut(READ).enumerate() {
                 store::aimd::nas_read(c.len() as u64, || src.read_exact_at(c, off + (k * READ) as u64))?;
-                p.fetch_add(c.len() as u64, Ordering::Relaxed);
+                p.add(c.len() as u64);
             }
             Ok(b)
         })?;
@@ -249,7 +225,7 @@ impl Copy {
             .flat_map(|&(a, b)| (a..b).step_by(READ).map(move |at| (at, ((b - at) as usize).min(READ))))
             .collect();
         let (src, dst) = (self.src.clone(), self.dst.clone());
-        let r = watched(self.stall, &format!("read {}", self.name), move |p| {
+        let r = watched(LONG, &format!("read {}", self.name), move |p| {
             let next = std::sync::atomic::AtomicUsize::new(0);
             let done: Vec<Result<Read>> = std::thread::scope(|s| {
                 let hs: Vec<_> = (0..READERS.min(pieces.len()))
@@ -262,7 +238,7 @@ impl Copy {
                                 let Some(&(at, n)) = pieces.get(k) else { return Ok(r) };
                                 store::aimd::nas_read(n as u64, || src.read_exact_at(&mut buf[..n], at))?;
                                 dst.write_all_at(&buf[..n], at)?;
-                                p.fetch_add(n as u64, Ordering::Relaxed);
+                                p.add(n as u64);
                                 r += Read { bytes: n as u64, reads: 1 };
                             }
                         })
@@ -320,20 +296,8 @@ pub fn open(
     to: [&Path; 2],
     boxes: Option<&[Bounds]>,
 ) -> Result<(BasePack, Read)> {
-    open_watched(base, roads, index, to, boxes, STALL)
-}
-
-/// `open`, its NAS reads given up after `stall` without a byte (`watched`).
-pub fn open_watched(
-    base: &Path,
-    roads: &Path,
-    index: &Path,
-    to: [&Path; 2],
-    boxes: Option<&[Bounds]>,
-    stall: Duration,
-) -> Result<(BasePack, Read)> {
     let [bdst, rdst] = to;
-    let mut c = Copy::new(base, bdst, stall)?;
+    let mut c = Copy::new(base, bdst)?;
     let l = layout(&mut c)?;
     let sec = |n: &str| l.sections.get(n).copied();
     let (woff, wlen, _) = sec("ways").context("no section ways")?;
@@ -451,7 +415,7 @@ pub fn open_watched(
     c.flush()?;
     let mut read = c.read;
     // The road values: a record a way.
-    let mut rc = Copy::new(roads, rdst, stall)?;
+    let mut rc = Copy::new(roads, rdst)?;
     let rl = layout(&mut rc)?;
     let (roff, rlen, _) = rl.sections.get("roads").copied().context("no section roads in the road values")?;
     ensure!(rlen == nways as u64 * 24, "road values out of step with the base pack");

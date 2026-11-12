@@ -1440,7 +1440,7 @@ pub(crate) mod tests {
         let (c, pv) = lead_and_view(d.path(), now);
         let pv = Arc::new(pv);
         pv.touch_at(now);
-        let hung = super::super::nasread::fake::hang(&d.path().join("nas"));
+        let hung = store::deadline::fake::hang(&d.path().join("nas"));
         let nas = {
             let pv = pv.clone();
             let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));

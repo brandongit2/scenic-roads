@@ -36,7 +36,9 @@ impl Blobs {
 
     /// A whole local copy of `content` (under the NAS root `root`), copied first if it isn't here;
     /// held by this process (crate::cachefile: room-making leaves it until the job lets go) and
-    /// marked used.
+    /// marked used. The copy a crate::deadline call (`LONG`, counted from its last byte copied),
+    /// its temporary name held while it's held (a late copy writes only that name, which the
+    /// cache's room-making removes as any left by a stopped copy).
     pub fn get(&self, root: &crate::nasfs::NasRoot, content: &str) -> io::Result<PathBuf> {
         let local = self.path_of(content);
         // (Raw: crate::sys::copy_data's copy, its bytes counted as they're read, crate::nasfs's
@@ -44,12 +46,27 @@ impl Blobs {
         let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
             let _w = crate::waits::nas();
+            let (s, t) = (src.clone(), tmp.to_path_buf());
             // (Under a turn of the process's NAS limit, crate::aimd, as nasfs's copies are.)
-            let (n, _) = crate::nasfs::copying_turn(
-                || crate::sys::copy_data_held(&src, tmp, &mut crate::nasfs::copy_counter()),
+            let (n, want) = crate::nasfs::copying_turn(
+                || {
+                    crate::deadline::watched(
+                        &src.display(),
+                        &"copy",
+                        crate::deadline::LONG,
+                        vec![t.clone()],
+                        move |m| {
+                            let mut count = crate::nasfs::copy_counter();
+                            let (n, _) = crate::sys::copy_data_held(&s, &t, &mut |k, h| {
+                                count(k, h);
+                                m.add(k);
+                            })?;
+                            Ok((n, fs::metadata(&s)?.len()))
+                        },
+                    )
+                },
                 crate::aimd::nas_congested,
             )?;
-            let want = fs::metadata(&src)?.len();
             if n != want {
                 return Err(io::Error::other(format!("{}: copied {n} of {want} bytes", src.display())));
             }

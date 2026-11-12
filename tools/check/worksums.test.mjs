@@ -370,12 +370,16 @@ test('regions: a virtual list\'s window', () => {
 
 test('settings: an answer lacking a setting shows "not set" for it alone, the others as said', async () => {
   const { macRows, poolRows } = await import('../../web/buildpage/settings.js');
-  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, default_mb: 2048, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null }, sweep_margin: { bytes: 10 * 2 ** 30, default: 10 * 2 ** 30, set: false } };
-  assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off', '10.0 GB']);
+  const live = { mac: 'm1', in_use: { cores: 2, of: 10, set: false, default: 2 }, memory: { mb: 10240, default_mb: 2048, total_mb: 16384, set: true, by: 'x' }, room: { bytes: null, free: null, disk: null }, sweep_margin: { bytes: 10 * 2 ** 30, default: 10 * 2 ** 30, set: false }, nas_held: { n: 32, default: 32, max: 1000, set: false } };
+  assert.deepEqual(macRows(live).map((r) => r.now), ['2 of 10 cores', '10.0 GB', 'off', '10.0 GB', '32 calls']);
   assert.ok(macRows(live).every((r) => r.input));
   const rows = macRows({ mac: 'm1', memory: live.memory });
-  assert.deepEqual(rows.map((r) => [r.key, r.now, !!r.input]), [['in_use', 'not set', false], ['memory', '10.0 GB', true], ['room', 'not set', false], ['sweep_margin', 'not set', false]]);
-  assert.deepEqual(macRows({}).map((r) => r.now), ['not set', 'not set', 'not set', 'not set']);
+  assert.deepEqual(rows.map((r) => [r.key, r.now, !!r.input]), [['in_use', 'not set', false], ['memory', '10.0 GB', true], ['room', 'not set', false], ['sweep_margin', 'not set', false], ['nas_held', 'not set', false]]);
+  assert.deepEqual(macRows({}).map((r) => r.now), ['not set', 'not set', 'not set', 'not set', 'not set']);
+  // (Task #1141: the NAS calls held, set: who set it, and its bounds.)
+  const held = macRows({ nas_held: { n: 8, default: 32, max: 1000, set: true, by: 'the build page', at: 1 } })[4];
+  assert.deepEqual([held.now, held.input.min, held.input.max], ['8 calls', 1, 1000]);
+  assert.match(held.note, /set by the build page/);
   // (The margin without the room's answer: shown and settable, no upper bound.)
   const m = macRows({ sweep_margin: { bytes: 4 * 2 ** 30, default: 10 * 2 ** 30, set: true, by: 'x' } })[3];
   assert.deepEqual([m.now, m.input.max], ['4.0 GB', null]);

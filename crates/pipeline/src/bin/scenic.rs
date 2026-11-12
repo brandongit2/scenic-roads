@@ -1371,9 +1371,25 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     bail!("the redo wasn't merged into the records in 15 minutes: `scenic status` shows its job; a lead that changed meanwhile may have lost the ask (ask again: `scenic redo {step} {} --run`)", todo.join(" "))
 }
 
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    use std::process::Termination;
+    let r = cli_main();
+    let ok = r.is_ok();
+    // (Its error in its log first: a job's agent reads it once it takes the job as ended.)
+    let code = r.report();
+    // (A job's end said to its agent first when its exit may not end: jobrt::control::ending.)
+    jobrt::control::ending(if ok { 0 } else { 1 });
+    code
+}
+
+fn cli_main() -> Result<()> {
     // (Its command line checked first: `--help` or a flag it doesn't know runs nothing.)
     let cli = cli::Cli::parse();
+    // This Mac's cap on the NAS calls a process holds past their deadline (the build page's "NAS
+    // calls held", store::deadline): as set in the agent's folder; a job's is given it by its agent.
+    if std::env::var_os(store::deadline::CAP_ENV).is_none() {
+        store::deadline::set_cap(store::deadline::cap_in(&home_or_default(&None)));
+    }
     match cli.cmd {
         None => status(&cli.status, None),
         Some(Cmd::Status(a)) => status(&a.places, a.flags.then(|| a.since.unwrap_or(now_s().saturating_sub(6 * 3600)))),
@@ -1591,7 +1607,7 @@ fn main() -> Result<()> {
             // (A step stopped as the build pauses: the task exits as paused, given back by its
             // agent, not failed.)
             if r.as_ref().is_err_and(jobrt::control::is_paused) {
-                std::process::exit(jobrt::control::PAUSED_EXIT);
+                jobrt::control::exit(jobrt::control::PAUSED_EXIT);
             }
             r.map(|_| ())
         }

@@ -266,6 +266,9 @@ pub struct Running {
     pub adopted: bool,
     /// An adopted job's group ended without a status (killed while no agent tended it).
     pub vanished: bool,
+    /// It said its end itself while its exit hadn't ended (jobrt::control::ending: NAS calls of its
+    /// left in the kernel): what of it still runs is the agent's to stop (`stop`).
+    pub said_end: bool,
     caffeinate: Option<store::spawn::Detached>,
     pub pgid: i32,
     /// Its group's head's start time (`process_start`, 0 when unknown): with `started`, what tells
@@ -382,6 +385,8 @@ impl Running {
         std::fs::remove_file(&status).ok();
         let mut c = store::spawn::command("/bin/sh");
         c.args(["-c", HEAD, "sh"]).arg(&status);
+        // (And the job's, to say its end itself when its exit may not end: jobrt::control::ending.)
+        c.env(jobrt::control::STATUS_ENV, &status);
         c.args(["/usr/sbin/taskpolicy", "-c", "utility"]);
         if let Some(profile) = sandbox {
             c.args(["/usr/bin/sandbox-exec", "-p", profile]);
@@ -425,6 +430,7 @@ impl Running {
             status,
             adopted: false,
             vanished: false,
+            said_end: false,
             caffeinate,
             pgid,
             leader_start,
@@ -472,11 +478,17 @@ impl Running {
         }
     }
 
-    /// Its exit status once it has finished: its child's; an adopted job's from its status file,
+    /// Its exit status once it has finished: its child's, or the one the job wrote itself while its
+    /// exit doesn't end (jobrt::control::ending: `said_end`); an adopted job's from its status file,
     /// or, its group gone without one (killed while no agent tended it: `vanished`), as killed.
     pub fn poll(&mut self) -> Result<Option<ExitStatus>> {
         if let Some(c) = self.child.as_mut() {
-            return Ok(c.try_wait()?);
+            if let Some(st) = c.try_wait()? {
+                return Ok(Some(st));
+            }
+            let said = read_status(&self.status);
+            self.said_end |= said.is_some();
+            return Ok(said);
         }
         if let Some(st) = read_status(&self.status) {
             return Ok(Some(st));
@@ -651,6 +663,7 @@ pub fn adopt(record: &Path) -> Option<(Running, serde_json::Value)> {
             status,
             adopted: true,
             vanished: false,
+            said_end: false,
             caffeinate,
             pgid,
             leader_start: rec.leader_start,
@@ -1151,6 +1164,36 @@ mod tests {
         assert!(a.caffeinate.is_none());
         assert_eq!(a.poll().unwrap().and_then(|s| s.code()), Some(4));
         a.stop(Duration::from_secs(1));
+    }
+
+    /// Task #1141: a job whose work failed past a NAS deadline says its end itself (as
+    /// jobrt::control::ending writes it, to the path its agent gave it) and then never finishes
+    /// exiting, as a process whose thread is stuck in an SMB call doesn't: its agent takes the
+    /// status it said as its end, at once, and stops what of it still runs.
+    #[test]
+    fn a_job_that_said_its_end_has_ended_though_its_exit_hasnt() {
+        let d = tempfile::tempdir().unwrap();
+        // (`exec`: the sleep is the job's process, as a stuck exit leaves the job's own.)
+        let cmd = r#"printf '1\n' > "$SCENIC_JOB_STATUS.said.tmp" && mv "$SCENIC_JOB_STATUS.said.tmp" "$SCENIC_JOB_STATUS"; exec /bin/sleep 3600"#;
+        let mut r = Running::start(
+            spec(&["/bin/sh", "-c", cmd]),
+            1,
+            &[],
+            d.path().join("log"),
+            &d.path().join("job.json"),
+            None,
+            None,
+        )
+        .unwrap();
+        let t = Instant::now();
+        let st = wait_for(&mut r, "its end, as it said it", |r| r.poll().unwrap());
+        assert!(t.elapsed() < Duration::from_secs(60), "taken at once, not when its exit ends");
+        assert_eq!(st.code(), Some(1));
+        assert!(r.said_end, "said by the job, its process still there");
+        assert!(jobrt::sys::signal_group(r.pgid, Signal::Probe), "the job's process still runs");
+        let pgid = r.pgid;
+        assert!(r.stop(Duration::from_secs(1)).is_none(), "what of it ran, stopped");
+        assert!(!jobrt::sys::signal_group(pgid, Signal::Probe));
     }
 
     #[test]

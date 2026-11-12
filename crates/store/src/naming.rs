@@ -155,6 +155,12 @@ pub enum Source<'a> {
 /// never overwritten (one with the wrong size is an error to resolve by hand, not a file to replace).
 ///
 /// On the NAS this blocks on the share: callers that must stay responsive run it in the I/O pool.
+/// Each of its calls on the share (the stat, the folder made, the open, each `CHUNK` written, the
+/// sync, the read-back, the rename, the temporary file's removal) is a crate::deadline call
+/// (`LONG`, a read-back counted from its last byte), the temporary name held while one is held: a
+/// late write lands only in this process's temporary name, which a later upload of the same name
+/// can't write meanwhile, and which GC sweeps once abandoned; a late exclusive rename lands only
+/// the same content-named bytes.
 pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src: Source<'_>) -> Result<String> {
     write_atomic_as(root, logical, ext, src, None)
 }
@@ -202,7 +208,9 @@ fn write_atomic_as(
         return Ok(name);
     }
     if let Some(dir) = dest.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        let d = dir.to_path_buf();
+        on_nas(dir, "make", vec![d.clone()], move |_| fs::create_dir_all(&d))
+            .with_context(|| format!("create {}", dir.display()))?;
     }
     let tmp = TmpFile(tmp_path(&dest));
     let mut writes = 0;
@@ -231,7 +239,8 @@ fn write_atomic_as(
         ensure!(writes < WRITE_TRIES, "{what}, the source unchanged; {writes} writes read back wrong running");
         eprintln!("{what}, the source unchanged: written again");
     }
-    match rename_no_replace(&tmp.0, &dest) {
+    let (from, to) = (tmp.0.clone(), dest.clone());
+    match on_nas(&dest, "rename", vec![from.clone(), to.clone()], move |_| rename_no_replace(&from, &to)) {
         Ok(()) => {
             tmp.keep();
             Ok(name)
@@ -242,9 +251,21 @@ fn write_atomic_as(
     }
 }
 
+/// `f`, a call on the share at `on` (`op` naming it), as a crate::deadline call (`LONG`): one that
+/// changes the share names the paths it changes (`changes`).
+fn on_nas<T: Send + 'static>(
+    on: &Path,
+    op: &'static str,
+    changes: Vec<PathBuf>,
+    f: impl FnOnce(&crate::deadline::Progress) -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    crate::deadline::watched(&on.display(), &op, crate::deadline::LONG, changes, f)
+}
+
 /// Whether `dest` exists with `size` bytes; an error when it exists with another size.
 fn present(dest: &Path, size: u64) -> Result<bool> {
-    match fs::metadata(dest) {
+    let d = dest.to_path_buf();
+    match on_nas(dest, "stat", Vec::new(), move |_| fs::metadata(&d)) {
         Ok(m) if m.is_file() && m.len() == size => Ok(true),
         Ok(m) if !m.is_file() => bail!("{} exists and isn't a file", dest.display()),
         Ok(m) => bail!(
@@ -258,17 +279,26 @@ fn present(dest: &Path, size: u64) -> Result<bool> {
 }
 
 fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
-    let mut out = OpenOptions::new().write(true).create(true).truncate(true).open(tmp)?;
-    // (Past the client's cache: a write returns once its bytes went to the share, so the bytes
-    // counted moved are the share's and the closing sync has no backlog to flush unseen: an
-    // upload's progress is judged by them, pipeline's `Out::settle`.)
-    no_cache(&out)?;
+    let t = tmp.to_path_buf();
+    let out = on_nas(tmp, "open", vec![t.clone()], move |_| {
+        let out = OpenOptions::new().write(true).create(true).truncate(true).open(&t)?;
+        // (Past the client's cache: a write returns once its bytes went to the share, so the
+        // bytes counted moved are the share's and the closing sync has no backlog to flush unseen:
+        // an upload's progress is judged by them, pipeline's `Out::settle`.)
+        no_cache(&out)?;
+        Ok(std::sync::Arc::new(out))
+    })?;
+    // (Each piece a call of its own, the piece's bytes its own: never the whole upload copied.)
+    let put = |c: &[u8]| -> io::Result<()> {
+        let (f, owned, t) = (out.clone(), c.to_vec(), tmp.to_path_buf());
+        on_nas(tmp, "write", vec![t], move |_| (&*f).write_all(&owned))
+    };
     // (Each write's bytes counted the NAS's as it goes, so a long upload's job is seen moving by
     // its beats, task #990; the file made is its caller's to count, as it lands.)
     match src {
         Source::Bytes(b) => {
             for c in b.chunks(CHUNK) {
-                out.write_all(c)?;
+                put(c)?;
                 crate::nasio::written(c.len() as u64);
             }
         }
@@ -283,13 +313,14 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(e) => return Err(e),
                 };
-                out.write_all(&buf[..n])?;
+                put(&buf[..n])?;
                 crate::nasio::written(n as u64);
                 count_moved(n);
             }
         }
     }
-    out.sync_all()?;
+    let (f, t) = (out.clone(), tmp.to_path_buf());
+    on_nas(tmp, "sync", vec![t], move |_| f.sync_all())?;
     #[cfg(test)]
     if faults::take() {
         faults::damage(tmp)?;
@@ -301,10 +332,25 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
 /// with `F_NOCACHE`, which the Mac's SMB client reads from the server (the cached range dropped
 /// first), never from its pages.
 fn reread(path: &Path) -> io::Result<(String, u64)> {
-    let f = File::open(path)?;
-    no_cache(&f)?;
-    let size = f.metadata()?.len();
-    Ok((hash16_reader(f)?, size))
+    let p = path.to_path_buf();
+    on_nas(path, "read back", Vec::new(), move |m| {
+        let f = File::open(&p)?;
+        no_cache(&f)?;
+        let size = f.metadata()?.len();
+        Ok((hash16_reader(Moving(f, m))?, size))
+    })
+}
+
+/// A reader saying each read's bytes moved (crate::deadline: a long read-back that goes on never
+/// ends for its length).
+struct Moving<'a, R>(R, &'a crate::deadline::Progress);
+
+impl<R: Read> Read for Moving<'_, R> {
+    fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+        let n = self.0.read(b)?;
+        self.1.add(n as u64);
+        Ok(n)
+    }
 }
 
 /// Tests' fault in `write_atomic`'s writes: this thread's next writes left damaged.
@@ -407,7 +453,9 @@ impl TmpFile {
 
 impl Drop for TmpFile {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        // (A call within its deadline: one held, or refused, leaves the name for GC's sweep.)
+        let p = self.0.clone();
+        let _ = on_nas(&self.0, "remove", vec![p.clone()], move |_| fs::remove_file(&p));
     }
 }
 

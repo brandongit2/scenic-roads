@@ -2,16 +2,15 @@
 //! can stay stuck in the kernel for many minutes while the same file reads at once from a shell
 //! (18 Oct: 17 minutes in `resume::on`, no heartbeat meanwhile); the loop must keep beating.
 //!
-//! Each call runs on a thread of a small pool while the caller waits a deadline at most. Three
-//! pools, so one kind of call stuck can't starve another: the switches' reads (`read_switch`), the
-//! records' reads (`read`, `read_to_string`, and `Deadlined`'s reads and stats), and the writes
-//! (`write`, and `Deadlined`'s writes and creates). A call past its deadline
-//! returns `ErrorKind::TimedOut` to the caller, which takes it as it takes any call that fails now
-//! (its own "can't read" path), and is logged once per path per streak (a call on that path that
-//! answers ends the streak). The thread stuck in it is left to it and counts as busy until it
-//! returns; while every thread of a pool is busy, a call to it fails at once (also `TimedOut`), so
-//! stuck threads never pile up past a pool's size. A healthy share answers well inside the
-//! deadline: the result is the call's own, as before.
+//! Each call is a store::deadline call (the one mechanism every NAS call of the process goes
+//! through), waited for `DEADLINE` at most. A call past its deadline returns
+//! `ErrorKind::TimedOut` to the caller, which takes it as it takes any call that fails now (its own
+//! "can't read" path), and is logged once per path per streak (a call on that path that answers
+//! ends the streak). The call is left to the kernel; the process's calls held there are capped
+//! (store::deadline's cap, the build page's "NAS calls held"), a call at the cap failing at once
+//! (also `TimedOut`), so stuck threads never pile up. A write left there holds its path: another
+//! write to it is refused at once until it ends (a late write would land over the newer). A
+//! healthy share answers well inside the deadline: the result is the call's own, as before.
 //!
 //! A plan running past `beat::LOOP_STUCK` (the one stall threshold the agent's parts are held to)
 //! is logged with its phase and the process sampled (crate::agent::plan); the round's phases are
@@ -22,230 +21,19 @@ use crate::pool::nas::{Created, Nas};
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use store::deadline;
 use store::nasfs::NasPath;
 
 /// How long a small read or write may take before its caller goes on without it.
-pub const DEADLINE: Duration = Duration::from_secs(20);
-/// The switches' readers (`threads`).
-const SWITCH_READERS: usize = 2;
-/// The records' readers.
-const READERS: usize = 4;
-/// The writers.
-const WRITERS: usize = 4;
+pub const DEADLINE: Duration = deadline::SHORT;
 
-/// A pool's threads: `n`; 64 in a unit test (`buildstore::out::testing`), whose process runs many
-/// agents at once, each a Mac's, sharing the pools.
-fn threads(n: usize) -> usize {
-    if buildstore::out::testing() {
-        64
-    } else {
-        n
-    }
-}
-
-/// The threads of the three pools, together (the status's `nas_threads`).
-pub fn threads_in_all() -> usize {
-    threads(SWITCH_READERS) + threads(READERS) + threads(WRITERS)
-}
-
-type Job = Box<dyn FnOnce() + Send>;
-
-/// A small pool of threads, `n` at most busy at once.
-pub struct Calls {
-    n: usize,
-    busy: Arc<AtomicUsize>,
-    /// Its calls that passed their deadline or were refused, every thread busy (`missed`).
-    missed: AtomicU64,
-    tx: Mutex<Sender<Job>>,
-}
-
-impl Calls {
-    pub fn new(name: &str, n: usize) -> Calls {
-        let (tx, rx) = mpsc::channel::<Job>();
-        let rx = Arc::new(Mutex::new(rx));
-        for i in 0..n {
-            let rx: Arc<Mutex<Receiver<Job>>> = rx.clone();
-            std::thread::Builder::new()
-                .name(format!("{name}-{i}"))
-                .spawn(move || loop {
-                    let job = match rx.lock() {
-                        Ok(r) => r.recv(),
-                        Err(_) => return,
-                    };
-                    match job {
-                        Ok(job) => job(),
-                        Err(_) => return,
-                    }
-                })
-                .expect("spawn a NAS call thread");
-        }
-        Calls { n, busy: Arc::new(AtomicUsize::new(0)), missed: AtomicU64::new(0), tx: Mutex::new(tx) }
-    }
-
-    /// `f` run on a thread of the pool, its result if it returns within `deadline`; else
-    /// `TimedOut` (also at once while every thread is busy). `what` names the call in the error.
-    pub fn call<T: Send + 'static>(
-        &self,
-        what: &Path,
-        deadline: Duration,
-        f: impl FnOnce() -> T + Send + 'static,
-    ) -> io::Result<T> {
-        // A thread taken, or none free: fail fast.
-        if self.busy.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |b| (b < self.n).then_some(b + 1)).is_err() {
-            self.missed.fetch_add(1, Ordering::Relaxed);
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("{}: every NAS thread for it is stuck in an earlier call", what.display()),
-            ));
-        }
-        // (The slow-NAS fake's: a test's hung share holds the call, `fake::hang`; past the fake's
-        // own deadline when it has one, `Hung::deadline`.)
-        #[cfg(test)]
-        let (f, deadline) = {
-            let (gate, short) = fake::gate(what).unzip();
-            let deadline = short.flatten().map_or(deadline, |d| d.min(deadline));
-            let f = move || {
-                if let Some(g) = gate {
-                    while !g.load(Ordering::SeqCst) {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                }
-                f()
-            };
-            (f, deadline)
-        };
-        let (rtx, rrx) = mpsc::sync_channel(1);
-        let busy = self.busy.clone();
-        let job: Job = Box::new(move || {
-            let r = f();
-            busy.fetch_sub(1, Ordering::SeqCst);
-            rtx.send(r).ok();
-        });
-        if self.tx.lock().map_err(|_| io::Error::other("NAS threads poisoned"))?.send(job).is_err() {
-            self.busy.fetch_sub(1, Ordering::SeqCst);
-            return Err(io::Error::other("NAS threads gone"));
-        }
-        rrx.recv_timeout(deadline).map_err(|_| {
-            self.missed.fetch_add(1, Ordering::Relaxed);
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("{}: no answer from the NAS in {} s", what.display(), deadline.as_secs()),
-            )
-        })
-    }
-
-    /// The threads busy now (stuck ones included).
-    pub fn busy(&self) -> usize {
-        self.busy.load(Ordering::SeqCst)
-    }
-
-    /// Its calls missed so far: past their deadline, or refused with every thread busy.
-    pub fn missed(&self) -> u64 {
-        self.missed.load(Ordering::Relaxed)
-    }
-}
-
-/// The slow-NAS fake (docs/agent-parts.md §7): every call on a path under a test's folder held
-/// until the test lets the share answer again (`Hung` dropped), as a share stuck in the kernel
-/// holds them. Only in tests.
-#[cfg(test)]
-pub(crate) mod fake {
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    use std::time::Duration;
-
-    type Gate = (PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>, Option<Duration>);
-    static HUNG: Mutex<Vec<Gate>> = Mutex::new(Vec::new());
-
-    thread_local! {
-        /// The calls this thread made that a hung share held (`held_here`).
-        static HELD_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    }
-
-    /// The share hung under `prefix` while this lives; it counts the calls it held (`held`).
-    pub struct Hung(PathBuf, Arc<AtomicBool>, Arc<AtomicUsize>);
-
-    impl Hung {
-        /// The calls under its prefix that came while it hung.
-        pub fn held(&self) -> usize {
-            self.2.load(Ordering::SeqCst)
-        }
-
-        /// Its calls given up after `d` at most, not their own deadline (`DEADLINE`, 20 s): a
-        /// test whose loop goes round on the hung share needn't wait out minutes of real deadlines
-        /// (a_job_is_reaped_while_the_nas_hangs took 225 s, #969). Only where the claim isn't how
-        /// long the loop is stuck: an answer from control's watcher (its sweep off), the reaper.
-        pub fn deadline(self, d: Duration) -> Hung {
-            let mut h = HUNG.lock().unwrap_or_else(|e| e.into_inner());
-            for g in h.iter_mut().filter(|g| g.0 == self.0 && Arc::ptr_eq(&g.1, &self.1)) {
-                g.3 = Some(d);
-            }
-            drop(h);
-            self
-        }
-    }
-
-    /// The calls this thread made that a hung share held, so far: a test's "it made no NAS
-    /// call", whatever the deadline.
-    pub fn held_here() -> usize {
-        HELD_HERE.with(|c| c.get())
-    }
-
-    impl Drop for Hung {
-        fn drop(&mut self) {
-            self.1.store(true, Ordering::SeqCst);
-            HUNG.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .retain(|(p, g, _, _)| !(p == &self.0 && Arc::ptr_eq(g, &self.1)));
-        }
-    }
-
-    /// Every NAS call on a path under `prefix` hangs until the answer is dropped.
-    pub fn hang(prefix: &Path) -> Hung {
-        let (g, n) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicUsize::new(0)));
-        HUNG.lock().unwrap_or_else(|e| e.into_inner()).push((prefix.to_path_buf(), g.clone(), n.clone(), None));
-        Hung(prefix.to_path_buf(), g, n)
-    }
-
-    /// The gate a call on `what` waits on, if it's hung, and the fake's deadline for it if set.
-    pub(super) fn gate(what: &Path) -> Option<(Arc<AtomicBool>, Option<Duration>)> {
-        let h = HUNG.lock().unwrap_or_else(|e| e.into_inner());
-        let (_, g, n, d) = h.iter().find(|(p, _, _, _)| what.starts_with(p))?;
-        n.fetch_add(1, Ordering::SeqCst);
-        HELD_HERE.with(|c| c.set(c.get() + 1));
-        Some((g.clone(), *d))
-    }
-}
-
-static SWITCH_CALLS: OnceLock<Calls> = OnceLock::new();
-static RECORD_CALLS: OnceLock<Calls> = OnceLock::new();
-static WRITE_CALLS: OnceLock<Calls> = OnceLock::new();
-
-fn switches() -> &'static Calls {
-    SWITCH_CALLS.get_or_init(|| Calls::new("nas-switch", threads(SWITCH_READERS)))
-}
-
-fn records() -> &'static Calls {
-    RECORD_CALLS.get_or_init(|| Calls::new("nas-read", threads(READERS)))
-}
-
-fn writers() -> &'static Calls {
-    WRITE_CALLS.get_or_init(|| Calls::new("nas-write", threads(WRITERS)))
-}
-
-/// The process's NAS calls through the three pools (the live store's, crate::agent::live): those in
-/// flight now (stuck ones included) and those missed so far (`Calls::missed`).
+/// The process's NAS calls (crate::agent::live): those in flight now (held ones included) and
+/// those missed so far (past their deadline, or refused at the cap).
 pub fn calls() -> (usize, u64) {
-    [&SWITCH_CALLS, &RECORD_CALLS, &WRITE_CALLS]
-        .iter()
-        .filter_map(|c| c.get())
-        .fold((0, 0), |(b, m), c| (b + c.busy(), m + c.missed()))
+    (deadline::in_flight(), deadline::missed())
 }
 
 /// The paths whose calls are timing out now (logged once per streak).
@@ -268,180 +56,128 @@ fn note(p: &Path, timed_out: bool, e: Option<&io::Error>) {
     }
 }
 
-/// A call's result, flattened and noted.
-fn noted<T>(p: &Path, r: io::Result<io::Result<T>>) -> io::Result<T> {
-    match r {
-        Ok(r) => {
-            note(p, false, None);
-            r
-        }
-        Err(e) => {
-            note(p, true, Some(&e));
-            Err(e)
-        }
-    }
+/// Whether a call's error is its deadline's (past it, or refused at the cap or on a held path).
+fn missed(e: &io::Error) -> bool {
+    deadline::past_deadline(e) || deadline::refused(e)
 }
 
-/// A NAS path as its calls' label (their errors, the streaks' and in-flight keys): never opened.
+/// A call's result, noted: its deadline's error a timeout of `p`'s, anything else an answer.
+fn noted<T>(p: &Path, r: io::Result<T>) -> io::Result<T> {
+    match &r {
+        Err(e) if missed(e) => note(p, true, Some(e)),
+        _ => note(p, false, None),
+    }
+    r
+}
+
+/// A NAS path as its calls' label (their errors, the streaks' and the held writes' keys): never
+/// opened.
 fn label(p: &NasPath) -> PathBuf {
     PathBuf::from(p.display().to_string())
 }
 
-/// A switch file at `p` as text, read within `DEADLINE` on the switches' own readers.
+/// `f`, a read of what's under `p`, within `deadline` (`TimedOut` past it), noted.
+fn read_under<T: Send + 'static>(
+    p: &NasPath,
+    deadline: Duration,
+    f: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    let p = &label(p);
+    noted(p, deadline::call(&p.display(), &"read", deadline, f))
+}
+
+/// A switch file at `p` as text, read within `DEADLINE`.
 pub fn read_switch(p: &NasPath) -> io::Result<String> {
-    let (owned, p) = (p.clone(), &label(p));
-    noted(p, switches().call(p, DEADLINE, move || owned.read_to_string()))
+    let owned = p.clone();
+    read_under(p, DEADLINE, move || owned.read_to_string())
 }
 
 /// The file at `p`, read within `DEADLINE` (`TimedOut` past it).
 pub fn read(p: &NasPath) -> io::Result<Vec<u8>> {
-    let (owned, p) = (p.clone(), &label(p));
-    noted(p, records().call(p, DEADLINE, move || owned.read()))
+    let owned = p.clone();
+    read_under(p, DEADLINE, move || owned.read())
 }
 
 /// The file at `p` as text, read within `DEADLINE` (`TimedOut` past it).
 pub fn read_to_string(p: &NasPath) -> io::Result<String> {
-    let (owned, p) = (p.clone(), &label(p));
-    noted(p, records().call(p, DEADLINE, move || owned.read_to_string()))
+    let owned = p.clone();
+    read_under(p, DEADLINE, move || owned.read_to_string())
 }
 
-/// `f`, a write of `p`, run on the writers within `DEADLINE` (an error past it).
+/// `f`, a write of `p`, within `DEADLINE` (an error past it); refused at once while an earlier
+/// write to `p` is held in the kernel.
 pub fn write(p: &NasPath, f: impl FnOnce() -> anyhow::Result<()> + Send + 'static) -> anyhow::Result<()> {
     let p = &label(p);
-    let held = InFlight::take(p)?;
-    match writers().call(p, DEADLINE, move || {
-        let _held = held;
-        f()
-    }) {
-        Ok(r) => {
-            note(p, false, None);
-            r
-        }
-        Err(e) => {
-            note(p, true, Some(&e));
-            Err(e.into())
-        }
-    }
+    noted(p, deadline::writing(&p.display(), &"write", DEADLINE, vec![p.clone()], move || Ok(f())))?
 }
 
-/// A write's path while the write runs: a second write to it is refused (`TimedOut`) until the
-/// first ends on its thread, not when its caller stopped waiting (two writes to one path would share
-/// its temporary name). Released as dropped: at the call's end, or with a call never run.
-struct InFlight(PathBuf);
-
-fn in_flight() -> &'static Mutex<BTreeSet<PathBuf>> {
-    static S: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
-    S.get_or_init(Default::default)
-}
-
-impl InFlight {
-    fn take(p: &Path) -> io::Result<InFlight> {
-        let mut s = in_flight().lock().map_err(|_| io::Error::other("in-flight writes poisoned"))?;
-        if !s.insert(p.to_path_buf()) {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("{}: an earlier write to it still runs", p.display()),
-            ));
-        }
-        Ok(InFlight(p.to_path_buf()))
-    }
-}
-
-impl Drop for InFlight {
-    fn drop(&mut self) {
-        if let Ok(mut s) = in_flight().lock() {
-            s.remove(&self.0);
-        }
-    }
-}
-
-/// A NAS whose every call runs under a deadline: its reads and stats on the records' readers, its
-/// writes and creates on the writers. The pool's driver and its member's
-/// opening go through it (crate::agent::pool).
+/// A NAS whose every call is a deadline call (`DEADLINE`); its writes and creates hold their path
+/// while held. The pool's driver and its member's opening go through it (crate::agent::pool).
 pub struct Deadlined {
     inner: Arc<dyn Nas + Send + Sync>,
-    reads: &'static Calls,
-    writes: &'static Calls,
     deadline: Duration,
 }
 
 impl Deadlined {
     pub fn new(inner: Arc<dyn Nas + Send + Sync>) -> Deadlined {
-        Deadlined { inner, reads: records(), writes: writers(), deadline: DEADLINE }
+        Deadlined { inner, deadline: DEADLINE }
     }
 
-    /// With pools and deadlines of its own (a test's).
-    pub fn with(
-        inner: Arc<dyn Nas + Send + Sync>,
-        reads: &'static Calls,
-        writes: &'static Calls,
-        deadline: Duration,
-    ) -> Deadlined {
-        Deadlined { inner, reads, writes, deadline }
+    /// With a deadline of its own (a test's).
+    pub fn with(inner: Arc<dyn Nas + Send + Sync>, deadline: Duration) -> Deadlined {
+        Deadlined { inner, deadline }
     }
 
     fn run<T: Send + 'static>(
         &self,
-        calls: &Calls,
+        writes: bool,
         path: &str,
-        deadline: Duration,
         f: impl FnOnce(&(dyn Nas + Send + Sync)) -> anyhow::Result<T> + Send + 'static,
     ) -> anyhow::Result<T> {
         let inner = self.inner.clone();
         let p = Path::new(path);
-        // (A write: refused while an earlier one to its path still runs, `InFlight`.)
-        // (Its path on this NAS: a test's Macs in one process write the same paths on NASes of
-        // their own.)
-        let key = PathBuf::from(format!("{:p}", Arc::as_ptr(&self.inner) as *const ())).join(path);
-        let held = if std::ptr::eq(calls, self.reads) { None } else { Some(InFlight::take(&key)?) };
-        match calls.call(p, deadline, move || {
-            let _held = held;
-            f(&*inner)
-        }) {
-            Ok(r) => {
-                note(p, false, None);
-                r
-            }
-            Err(e) => {
-                note(p, true, Some(&e));
-                Err(e.into())
-            }
-        }
+        // (A write's key: its path on this NAS: a test's Macs in one process write the same paths
+        // on NASes of their own.)
+        let keys = if writes {
+            vec![PathBuf::from(format!("{:p}", Arc::as_ptr(&self.inner) as *const ())).join(path)]
+        } else {
+            Vec::new()
+        };
+        noted(p, deadline::writing(&p.display(), &"call", self.deadline, keys, move || Ok(f(&*inner))))?
     }
 }
 
 impl Nas for Deadlined {
     fn create_new(&self, path: &str, bytes: &[u8]) -> anyhow::Result<Created> {
         let (p, b) = (path.to_string(), bytes.to_vec());
-        self.run(self.writes, path, self.deadline, move |n| n.create_new(&p, &b))
+        self.run(true, path, move |n| n.create_new(&p, &b))
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
         let (p, b) = (path.to_string(), bytes.to_vec());
-        self.run(self.writes, path, self.deadline, move |n| n.write_whole(&p, &b))
+        self.run(true, path, move |n| n.write_whole(&p, &b))
     }
 
     fn read(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let p = path.to_string();
-        self.run(self.reads, path, self.deadline, move |n| n.read(&p))
+        self.run(false, path, move |n| n.read(&p))
     }
 
     fn read_fresh(&self, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let p = path.to_string();
-        self.run(self.reads, path, self.deadline, move |n| n.read_fresh(&p))
+        self.run(false, path, move |n| n.read_fresh(&p))
     }
 
     fn exists(&self, path: &str) -> anyhow::Result<bool> {
         let p = path.to_string();
-        self.run(self.reads, path, self.deadline, move |n| n.exists(&p))
+        self.run(false, path, move |n| n.exists(&p))
     }
 }
 
 /// `f`, a read of what's under `p` (a few small files, a folder listed), run within `DEADLINE`
 /// (`TimedOut` past it), noted as a read of `p` is.
 pub fn with<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
-    let p = &label(p);
-    noted(p, records().call(p, DEADLINE, f))
+    read_under(p, DEADLINE, f)
 }
 
 /// How long a big read may take (the build's keys: the manifest and its records): 5 min, 20 s in a
@@ -456,14 +192,13 @@ fn big_read_deadline() -> Duration {
 
 /// `with`, for a big read of what's under `p` (the build's keys), within `big_read_deadline`.
 pub fn with_big<T: Send + 'static>(p: &NasPath, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
-    let p = &label(p);
-    noted(p, records().call(p, big_read_deadline(), f))
+    read_under(p, big_read_deadline(), f)
 }
 
 /// How long the NAS takes to list folder `p` (the latency series, crate::agent::live: a listing,
-/// which macOS's SMB client asks the server for, where a stat may come from its cache), on
-/// the records' readers within `DEADLINE`: None when it didn't answer in time, or when the last
-/// probe is still stuck in its call (never two at once, so a hung share holds one reader at most).
+/// which macOS's SMB client asks the server for, where a stat may come from its cache), within
+/// `DEADLINE`: None when it didn't answer in time, or when the last probe is still stuck in its
+/// call (never two at once, so a hung share holds one call at most).
 pub fn probe(p: &NasPath) -> Option<Duration> {
     static PROBING: AtomicBool = AtomicBool::new(false);
     /// Clears `PROBING` as the call's closure is dropped: once it ran, or refused unrun.
@@ -477,10 +212,10 @@ pub fn probe(p: &NasPath) -> Option<Duration> {
         return None;
     }
     let (owned, done) = (p.clone(), Done);
-    let r = records().call(&label(p), DEADLINE, move || {
+    let r = deadline::call(&label(p).display(), &"list", DEADLINE, move || {
         let _done = done;
         let t = std::time::Instant::now();
-        owned.read_dir().is_ok().then(|| t.elapsed())
+        Ok(owned.read_dir().is_ok().then(|| t.elapsed()))
     });
     r.ok().flatten()
 }
@@ -549,6 +284,7 @@ pub fn clock(s: u64) -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use std::sync::mpsc::{self, Receiver};
     use std::time::Instant;
 
     /// Task #923: the plan's phases, on their thread, neither end nor replace the loop's: the
@@ -614,65 +350,6 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn leak(c: Calls) -> &'static Calls {
-        Box::leak(Box::new(c))
-    }
-
-    #[test]
-    fn a_call_that_never_returns_times_out_within_the_deadline() {
-        let r = Calls::new("t", 2);
-        let (hold, gate) = mpsc::channel::<()>();
-        let gate = Arc::new(Mutex::new(gate));
-        let t = Instant::now();
-        let g = gate.clone();
-        let e = r
-            .call(Path::new("/nas/state/pool/resume"), Duration::from_millis(200), move || {
-                g.lock().unwrap().recv().ok();
-            })
-            .unwrap_err();
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        store::testkit::ended_before(
-            t,
-            Duration::from_secs(60),
-            "the stuck call ends at its deadline, not when the share answers",
-        );
-        // The stuck thread stays busy; another still answers.
-        assert_eq!(r.busy(), 1);
-        assert_eq!(r.call(Path::new("x"), Duration::from_secs(5), || 7).unwrap(), 7);
-        // Every thread stuck: fail fast, nothing more spawned.
-        let g2 = gate.clone();
-        let _ = r.call(Path::new("y"), Duration::from_millis(100), move || {
-            g2.lock().unwrap().recv().ok();
-        });
-        assert_eq!(r.busy(), 2);
-        let t = Instant::now();
-        let e = r.call(Path::new("z"), Duration::from_secs(30), || ()).unwrap_err();
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        store::testkit::ended_before(t, Duration::from_secs(30), "refused at once, not at its deadline");
-        // Task #517: two past their deadline, one refused.
-        assert_eq!(r.missed(), 3);
-        // The share answers again: the threads free.
-        drop(hold);
-        store::testkit::eventually("the threads free", || r.busy() == 0);
-        assert_eq!(r.call(Path::new("x"), Duration::from_secs(5), || 1).unwrap(), 1);
-    }
-
-    /// The slow-NAS fake: a call under the hung folder held past its deadline, one elsewhere
-    /// answered; the share answering again frees the thread.
-    #[test]
-    fn the_slow_nas_fake_hangs_its_folder_alone() {
-        let d = tempfile::tempdir().unwrap();
-        let r = leak(Calls::new("fake", 2));
-        let hung = fake::hang(d.path());
-        let e = r.call(&d.path().join("state/status.json"), Duration::from_millis(200), || 1).unwrap_err();
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        assert_eq!(r.busy(), 1);
-        assert_eq!(r.call(Path::new("/elsewhere/x"), Duration::from_secs(5), || 2).unwrap(), 2);
-        drop(hung);
-        store::testkit::eventually("the hung call answers", || r.busy() == 0);
-        assert_eq!(r.call(&d.path().join("state/status.json"), Duration::from_secs(5), || 3).unwrap(), 3);
-    }
-
     #[test]
     fn a_healthy_read_is_the_read() {
         let d = tempfile::tempdir().unwrap();
@@ -698,6 +375,7 @@ pub(crate) mod tests {
     #[test]
     fn stuck_writes_time_out_and_leave_reads_and_switches_answering() {
         let d = tempfile::tempdir().unwrap();
+        let _cap = store::deadline::cap_for_test(store::deadline::CAP_DEFAULT);
         std::fs::create_dir_all(d.path().join("state/pool/terms")).unwrap();
         std::fs::write(d.path().join("state/pool/terms/1.json"), "{}").unwrap();
         let (hold, gate) = mpsc::channel::<()>();
@@ -706,35 +384,27 @@ pub(crate) mod tests {
             stuck: "state/pool/members".into(),
             gate: Arc::new(Mutex::new(gate)),
         };
-        let (reads, writes) = (leak(Calls::new("tr", 2)), leak(Calls::new("tw", 2)));
-        let n = Deadlined::with(Arc::new(stuck), reads, writes, Duration::from_secs(4));
+        let n = Deadlined::with(Arc::new(stuck), Duration::from_secs(4));
         // The heartbeat's write stuck: an error within its deadline; a second write to that path
-        // refused at once while the first still runs (never two at once on one temporary name).
+        // refused at once while the first is held (a late write would land over the newer).
         let t = Instant::now();
         assert!(n.write_whole("state/pool/members/m.json", b"{}").is_err());
         store::testkit::ended_before(t, Duration::from_secs(60), "the stuck write ends at its deadline");
-        assert_eq!(writes.busy(), 1);
         let t = Instant::now();
         let e = n.write_whole("state/pool/members/m.json", b"{}").unwrap_err();
-        assert!(buildstore::records::nas::timed_out(&e) && format!("{e}").contains("still runs"), "{e:#}");
-        store::testkit::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
-        assert_eq!(writes.busy(), 1, "no second thread on it");
-        // Another path's write takes the other writer; then every writer is stuck: at once.
-        assert!(n.write_whole("state/pool/members/o.json", b"{}").is_err());
-        assert_eq!(writes.busy(), 2);
-        let t = Instant::now();
-        assert!(n.write_whole("state/pool/members/p.json", b"{}").is_err());
+        assert!(buildstore::records::nas::timed_out(&e) && format!("{e}").contains("still in the kernel"), "{e:#}");
         store::testkit::ended_before(t, Duration::from_secs(4), "refused at once, not at the write deadline");
         // The reads go on.
         assert!(n.exists("state/pool/terms/1.json").unwrap());
         assert_eq!(n.read("state/pool/terms/1.json").unwrap().unwrap(), b"{}");
-        // And a switch, on its own readers.
+        // And a switch.
         std::fs::write(d.path().join("sw"), "on").unwrap();
         assert_eq!(read_switch(&store::nasfs::NasPath::local_for_test(&d.path().join("sw"))).unwrap(), "on");
-        // The share answers: the path's write ends on its thread, and the path is free again.
+        // The share answers: the path's write ends, and the path is free again.
         drop(hold);
-        store::testkit::eventually("the path's write ends", || writes.busy() == 0);
-        n.write_whole("state/pool/members/m.json", b"{\"a\":1}").unwrap();
+        store::testkit::eventually("the path's write ends", || {
+            n.write_whole("state/pool/members/m.json", b"{\"a\":1}").is_ok()
+        });
         assert_eq!(std::fs::read(d.path().join("state/pool/members/m.json")).unwrap(), b"{\"a\":1}");
     }
 

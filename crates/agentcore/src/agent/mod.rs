@@ -4292,6 +4292,9 @@ impl Agent {
         // Stopped jobs' groups still there after their stop: killed again (task #987).
         self.outlived.retain_mut(jobs::Outlived::kill_again);
         self.orphans.retain(jobs::Group::kill_again);
+        // This Mac's cap on the NAS calls a process holds past their deadline (the build page's
+        // "NAS calls held", store::deadline): this process's from this round, a job's as it starts.
+        store::deadline::set_cap(store::deadline::cap_in(&self.o.home));
         nasread::phase("the NAS's mount");
         let slept = self.sleep.slept();
         let home = self.mac.at_home();
@@ -5067,6 +5070,12 @@ impl Agent {
             self.slots[k].drain_since = None;
             self.slots[k].mem_drain = None;
             self.slots[k].mem_drain_alone = false;
+            // (A job that said its end before its exit ended, NAS calls of its left in the kernel,
+            // jobrt::control::ending: what of it still runs stopped, a member that won't go killed
+            // again each round, jobs::Outlived.)
+            if let Some(r) = self.slots[k].running.as_mut().filter(|r| r.said_end) {
+                self.outlived.extend(r.stop(Duration::from_secs(1)));
+            }
             self.slots[k].running = None;
             self.slots[k].yields = None;
             std::fs::remove_file(self.record_path(k)).ok();
@@ -7043,6 +7052,9 @@ impl Agent {
         env.push((::offload::WAITING_ENV.into(), waiting.to_string_lossy().into_owned()));
         // Where it reports NAS calls stuck busy (crate::agent::heal).
         env.push((store::whole::STUCK_ENV.into(), self.stuck_log().to_string_lossy().into_owned()));
+        // The most of its NAS calls it may hold past their deadline (store::deadline): this Mac's
+        // setting as the job starts.
+        env.push((store::deadline::CAP_ENV.into(), store::deadline::cap().to_string()));
         // Its connections out through the proxy (Wikimedia's metered by the pool's budget), this
         // Mac's own direct, and no other way out (the sandbox).
         let sandbox = match &self.proxy {
@@ -10438,7 +10450,7 @@ mod tests {
         let before = std::fs::read(&shared).unwrap();
         a.beat.tick_every(TEST_BEAT);
         a.beat.spawn();
-        let hung = nasread::fake::hang(&root).deadline(Duration::from_millis(2500));
+        let hung = store::deadline::fake::hang(&root).deadline(Duration::from_millis(2500));
         let seen = beats_while(a.o.home.join("status.json"), Duration::from_secs(5), || {
             a.round().ok();
         });
@@ -10562,7 +10574,7 @@ mod tests {
         a.beat.spawn();
         // (Each hung call given up after HUNG_DEADLINE: the answer is the watcher's however long
         // the loop is stuck, and the last round ends soon after the pause's.)
-        let hung = nasread::fake::hang(&root).deadline(HUNG_DEADLINE);
+        let hung = store::deadline::fake::hang(&root).deadline(HUNG_DEADLINE);
         a_job_running(&mut a);
         // (Asked 2 s in, the rounds going on in the hung calls, as the other pauses here; 3 s of
         // rounds at least, not 8, #1112: they go on until it's answered whatever their least.)
@@ -10620,7 +10632,7 @@ mod tests {
     }
 
     /// The hung-NAS fake's deadline in the tests whose claim isn't how long the loop is stuck on
-    /// it (`nasread::fake::Hung::deadline`; the real one, `nasread::DEADLINE`, is 20 s a call).
+    /// it (`store::deadline::fake::Hung::deadline`; the real one, `nasread::DEADLINE`, is 20 s a call).
     pub(super) const HUNG_DEADLINE: Duration = Duration::from_millis(250);
 
     /// A job of `secs` seconds started in slot `k` (a unit job of target `target`), published.
@@ -10652,7 +10664,7 @@ mod tests {
         a.spawn_jobs_part();
         a.control.spawn();
         // (Each hung call given up after HUNG_DEADLINE: the wake is the reaper's, no round running.)
-        let hung = nasread::fake::hang(&root).deadline(HUNG_DEADLINE);
+        let hung = store::deadline::fake::hang(&root).deadline(HUNG_DEADLINE);
         a_real_job(&mut a, 0, "6/1/2", 1);
         let t = Instant::now();
         // (No round runs meanwhile: woken for the end at all is the reaper's telling: #910.)
@@ -10839,15 +10851,15 @@ mod tests {
         // (Each hung call given up after 1 s: the grant made none, by its count, and the pause's
         // answer is the watcher's however long the loop is stuck. Not `HUNG_DEADLINE`: the rounds
         // through its shorter calls start the granted job in the 2 s before the pause is asked.)
-        let hung = nasread::fake::hang(&root).deadline(Duration::from_secs(1));
+        let hung = store::deadline::fake::hang(&root).deadline(Duration::from_secs(1));
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let view = a.plan.view.get();
-        let (t, held) = (Instant::now(), nasread::fake::held_here());
+        let (t, held) = (Instant::now(), store::deadline::fake::held_here());
         let mut w = Vec::new();
         let got = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
         store::testkit::ended_before(t, nasread::DEADLINE, "a grant on a hung NAS");
-        assert_eq!(nasread::fake::held_here(), held, "the grant waited on no NAS call");
+        assert_eq!(store::deadline::fake::held_here(), held, "the grant waited on no NAS call");
         assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), [n], "{w:?}");
         for (k, _, _) in got {
             a.end_lease(k, Outcome::Interrupted, &[], "the test");
@@ -17079,7 +17091,7 @@ mod pool_tests {
         m.round().unwrap();
         // (Each held call given up after the tests' short deadline, not the real 20 s the brief's
         // reader below waited out, #1112: "held" is the fake's count, whatever the deadline.)
-        let hung = nasread::fake::hang(
+        let hung = store::deadline::fake::hang(
             &store::nasfs::NasRoot::local_for_test(&r).join(crate::pool::records::ONE_BRIEF).unchecked_path(),
         )
         .deadline(super::tests::HUNG_DEADLINE);

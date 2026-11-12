@@ -24,7 +24,7 @@ const SERIES = ["nas_read_mbs", "nas_write_mbs", "net_in_mbs", "net_out_mbs", "n
   "build_cores_max", "mem_floor_gb", "disk_room_gb", "disk_reserved_gb", "nas_ms", "nas_calls", "nas_missed", "jobs",
   // (The lead's alone, summed over the pool; missing from the others' answers: nas.js.)
   "pool_nas_read_mbs", "pool_nas_write_mbs", "pool_nas_files_s", "pool_nas_creates_s", "pool_nas_listed_s", "pool_nas_stats_s",
-  "pool_nas_calls", "pool_nas_missed", "pool_nas_threads", "nas_disk_busy_pct"];
+  "pool_nas_calls", "pool_nas_missed", "pool_nas_held_cap", "nas_disk_busy_pct"];
 
 let cfg = null;
 // Per host: {series, step, now, mac, at (ms), error, asking, url (the address that answered)}.

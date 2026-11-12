@@ -1148,8 +1148,8 @@ pub struct Capacity {
     /// live store's newest): the lead sums the members' (`Coordinator::nas_view`). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_traffic: Option<[f64; 7]>,
-    /// Its NAS calls now (crate::agent::live::Store::calls_now: in flight, missed a second, its
-    /// threads): the lead sums the members' into its live store (task #634). None: not measured.
+    /// Its NAS calls now (crate::agent::live::Store::calls_now: in flight, missed a second, its cap
+    /// of calls held): the lead sums the members' into its live store (task #634). None: not measured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nas_calls: Option<[f64; 3]>,
     /// Its room at its quietest sustained state over the last 48 hours (crate::agent::live::Store::best,
@@ -4488,11 +4488,12 @@ fn route(
         "/api/settings" => {
             // The owner's settings from the build page (docs/coordinator.md §7): `{}` reads them;
             // `{"in_use": <cores> | "off"}`, `{"memory": <GB> | "off"}`, `{"room": <GB> | "off"}`,
-            // `{"sweep_margin": <GB> | "off"}` set this Mac's, `{"nas_room": <GB> | "off"}`,
+            // `{"sweep_margin": <GB> | "off"}`, `{"nas_held": <calls> | "off"}` set this Mac's,
+            // `{"nas_room": <GB> | "off"}`,
             // `{"batch_minutes": <minutes> | "off"}` and `{"overdue_factor": <times> | "off"}` the
             // pool's (the latter two asked of the lead with this Mac's agent's next beat), each through
-            // the same function as its `scenic` command (crate::agent::settings; the sweep's margin has
-            // none). Answered with them as they stand.
+            // the same function as its `scenic` command (crate::agent::settings; the sweep's margin and
+            // the NAS calls held have none). Answered with them as they stand.
             use crate::agent::settings;
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let Some((home, root)) = shared.lock().unwrap().settings.clone() else {
@@ -4525,6 +4526,9 @@ fn route(
             }
             if let Some(v) = said("sweep_margin")? {
                 settings::set_sweep_margin(&home, &v, &by)?;
+            }
+            if let Some(v) = said("nas_held")? {
+                settings::set_nas_held(&home, &v, &by)?;
             }
             if let Some(v) = said("nas_room")? {
                 let root =

@@ -136,14 +136,16 @@ pub const NAS_TRAFFIC: [&str; 7] =
 /// The pool's NAS traffic on the lead, each `NAS_TRAFFIC` series summed over the members'
 /// (`POOL` then its name; crate::coord::Capacity::nas_traffic), every 10 s.
 pub const POOL: &str = "pool_";
-/// This process's NAS calls under their deadlines (crate::agent::nasread::calls): in flight now,
-/// and missed over the second (past their deadline, or refused with every thread busy).
+/// This process's NAS calls under their deadlines (crate::agent::nasread::calls, store::deadline):
+/// in flight now, and missed over the second (past their deadline, or refused at the cap of calls
+/// held).
 pub const NAS_CALLS: &str = "nas_calls";
 pub const NAS_MISSED: &str = "nas_missed";
 /// The pool's NAS calls on the lead, every 10 s (`record_pool_calls`; task #634): the members'
 /// calls in flight, those missed a second (each member's mean over its last `CALLS_SPAN`), and
-/// their NAS call threads, each summed over the members saying them (crate::coord::Capacity::nas_calls).
-pub const POOL_CALLS: [&str; 3] = ["pool_nas_calls", "pool_nas_missed", "pool_nas_threads"];
+/// their caps of calls held past their deadline (store::deadline::cap), each summed over the
+/// members saying them (crate::coord::Capacity::nas_calls).
+pub const POOL_CALLS: [&str; 3] = ["pool_nas_calls", "pool_nas_missed", "pool_nas_held_cap"];
 /// The span a member's missed calls are averaged over for its lead (s): longer than the asks
 /// between its capacities, so no second's misses fall between two.
 pub const CALLS_SPAN: u64 = 30;
@@ -286,7 +288,7 @@ pub struct Ask {
 }
 
 /// This Mac's size, the charts' scales (`mac` in an answer): its cores, its efficiency cores, its
-/// memory (GB), its NAS call threads and the owner's idleness counted away (s). Read once.
+/// memory (GB) and the owner's idleness counted away (s). Read once.
 fn mac() -> &'static serde_json::Value {
     static MAC: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     MAC.get_or_init(|| {
@@ -294,8 +296,6 @@ fn mac() -> &'static serde_json::Value {
             "cores": inputs::inputs::pace::cores(),
             "cores_e": jobrt::sys::efficiency_cores(),
             "mem_gb": jobrt::sys::memsize().map(|b| round(b as f64 / GB)),
-            // (Its NAS call threads, crate::agent::nasread: the most calls in flight at once.)
-            "nas_threads": crate::agent::nasread::threads_in_all(),
             // (How long without a touch makes the owner away.)
             "away_s": super::cond::AWAY_S,
         })
@@ -439,14 +439,15 @@ impl Store {
     }
 
     /// This Mac's NAS calls for its lead (crate::coord::Capacity::nas_calls) at `now`: in flight
-    /// (the newest second's), missed a second over the last `CALLS_SPAN`, and its NAS call threads.
+    /// (the newest second's), missed a second over the last `CALLS_SPAN`, and its cap of calls held
+    /// past their deadline (store::deadline::cap).
     /// None before the sampler's first second.
     pub fn calls_now(&self, now: u64) -> Option<[f64; 3]> {
         let s = self.series.lock().ok()?;
         let calls = s.get(NAS_CALLS)?.latest(now.saturating_sub(5), now)?;
         let p = s.get(NAS_MISSED).map(|m| m.points(0, 1, now.saturating_sub(CALLS_SPAN), now)).unwrap_or_default();
         let missed = if p.is_empty() { 0.0 } else { p.iter().map(|x| x[2]).sum::<f64>() / p.len() as f64 };
-        Some([calls, missed, mac()["nas_threads"].as_f64().unwrap_or(0.0)])
+        Some([calls, missed, store::deadline::cap() as f64])
     }
 
     /// Series `name`'s newest mean by the second, when one is within `fresh_s` of `now`.

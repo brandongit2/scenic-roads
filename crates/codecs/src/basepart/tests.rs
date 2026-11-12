@@ -208,23 +208,25 @@ fn bad_boxes_are_worked_out_again() {
     assert_eq!(std::fs::read(&boxes).unwrap(), kept);
 }
 
-/// A read that brings no byte for its stall time is given up (Task #380: a stuck SMB read), its
-/// thread left to it; one that keeps bringing bytes runs on past it; a quick one's result is its own.
+/// A read that brings no byte for its deadline is given up (Task #380: a stuck SMB read), left
+/// to the kernel; one that keeps bringing bytes runs on past it; a quick one's result is its own.
 #[test]
 fn a_stuck_read_is_given_up() {
     let stall = std::time::Duration::from_millis(300);
     let t0 = std::time::Instant::now();
-    let e = watched(stall, "read x", |_| -> Result<()> {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let e = watched(stall, "read x", move |_| -> Result<()> {
+        rx.recv().ok();
         Ok(())
     })
     .unwrap_err();
-    store::testkit::ended_before(t0, std::time::Duration::from_secs(60), "given up at its stall time");
-    assert!(format!("{e:#}").contains("no byte read"), "{e:#}");
+    store::testkit::ended_before(t0, std::time::Duration::from_secs(60), "given up at its deadline");
+    assert!(format!("{e:#}").contains("read x: read: no answer"), "{e:#}");
+    drop(tx);
     let slow = watched(stall, "read y", |p| {
         for _ in 0..8 {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            p.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            p.add(1);
         }
         Ok(7)
     });

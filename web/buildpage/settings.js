@@ -1,8 +1,8 @@
 // The owner's settings on the build page (the Machines tab; docs/coordinator.md §7): this page's Mac's
-// in-use share, memory floor, disk room target and dev sweep margin, a block per Mac, each set on
+// in-use share, memory floor, disk room target, dev sweep margin and NAS calls held, a block per Mac, each set on
 // that Mac, and the pool's NAS reserve and batch length. Read and set through
 // `/api/settings`, which sets each through the same function as its `scenic` command
-// (`scenic in-use`, `memory`, `room`, `nas-room`, `pool set batch-minutes`; the sweep's margin has none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
+// (`scenic in-use`, `memory`, `room`, `nas-room`, `pool set batch-minutes`; the sweep's margin and the NAS calls held have none). Changed only when a person presses Set or Off, or lets go of a chart limit dragged (putSetting, from live.js).
 
 import { h } from "./dom.js";
 
@@ -178,6 +178,11 @@ export function macRows(s) {
       now: gb(s.sweep_margin.bytes),
       note: `tools/dev/sweep-targets.sh frees the agents' build caches on ${s.mac || "this Mac"} once free space falls below the room target plus this${s.sweep_margin.set ? by(s.sweep_margin) : " (the default)"}`,
       input: { min: 1, max: s.room?.disk ? Math.floor(s.room.disk / GiB) - 1 : null, step: 1, placeholder: "GB", offTitle: `Back to the default (${gb(s.sweep_margin.default)})` },
+    })),
+    guarded("nas_held", "NAS calls held", () => ({
+      now: `${s.nas_held.n} calls`,
+      note: `the most NAS calls one process on ${s.mac || "this Mac"} (a job, the agent, the CLI) leaves in the kernel past their deadline; at it, its next call fails at once${s.nas_held.set ? by(s.nas_held) : ` (the default, ${s.nas_held.default})`}; a job takes it as it starts`,
+      input: { min: 1, max: s.nas_held.max, step: 1, placeholder: "calls", offTitle: `Back to the default (${s.nas_held.default})` },
     })),
   ];
 }

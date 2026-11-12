@@ -1,8 +1,9 @@
 //! The owner's settings (docs/coordinator.md §7): this Mac's in-use share (crate::agent::share), memory
 //! floor (crate::agent::memfloor) and disk room target (crate::agent::room::Target), the pool's
 //! NAS reserve (buildstore::room::NAS_RESERVE), batch length and overdue factor (the lead's
-//! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), and the dev sweep's margin
-//! (`SWEEP_MARGIN`). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
+//! settings `batch-minutes` and `overdue-factor`, crate::coord::asks), the dev sweep's margin
+//! (`SWEEP_MARGIN`), and the NAS calls a process of this Mac holds past their deadline
+//! (store::deadline's cap, `set_nas_held`). Each is set through one function here, whoever asks: `scenic in-use`, `scenic
 //! memory`, `scenic room`, `scenic nas-room`, `scenic pool set batch-minutes|overdue-factor`, and the
 //! build page's
 //! POST /api/settings (crate::coord), which reads them back with `view` (the sweep's margin: the
@@ -116,6 +117,33 @@ pub fn set_sweep_margin(home: &Path, what: &str, by: &str) -> Result<Option<room
     Ok(Some(t))
 }
 
+/// The most NAS calls a process may hold past their deadline (`set_nas_held`).
+pub const NAS_HELD_MAX: usize = 1000;
+
+/// Sets this Mac's cap on the NAS calls a process holds in the kernel past their deadline
+/// (store::deadline: its file in `home`, read by its agent each round and given to each job as it
+/// starts): `what` calls (1 to `NAS_HELD_MAX`), or "off": the default again
+/// (store::deadline::CAP_DEFAULT).
+pub fn set_nas_held(home: &Path, what: &str, by: &str) -> Result<Option<usize>> {
+    let p = home.join(store::deadline::CAP_FILE);
+    if what == "off" {
+        match std::fs::remove_file(&p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => return Ok(None),
+        }
+    }
+    let n: usize = what
+        .trim()
+        .parse()
+        .ok()
+        .filter(|n| (1..=NAS_HELD_MAX).contains(n))
+        .with_context(|| format!("the NAS calls held: 1 to {NAS_HELD_MAX} calls or off, not {what}"))?;
+    anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+    let v = serde_json::json!({ "n": n, "by": by, "at": super::jobs::now_s() });
+    store::whole::write(&p, &serde_json::to_vec(&v)?)?;
+    Ok(Some(n))
+}
+
 /// Sets the pool's NAS reserve under the project folder `root`: `what` in GB, or "off".
 pub fn set_nas_room(root: &store::nasfs::NasRoot, what: &str, by: &str) -> Result<Option<room::Target>> {
     if what == "off" {
@@ -225,6 +253,10 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
     let sh = share::read(home);
     let cores = cores();
     let margin = sweep_margin(home);
+    let held: Option<serde_json::Value> = std::fs::read(home.join(store::deadline::CAP_FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .filter(|_| store::deadline::cap_in(home).is_some());
     serde_json::json!({
         "in_use": {
             "cores": share::cores(sh.as_ref(), cores),
@@ -249,6 +281,14 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "set": margin.is_some(),
             "by": margin.as_ref().map(|m| m.by.clone()),
             "at": margin.as_ref().map(|m| m.at),
+        },
+        "nas_held": {
+            "n": store::deadline::cap_in(home).unwrap_or(store::deadline::CAP_DEFAULT),
+            "default": store::deadline::CAP_DEFAULT,
+            "max": NAS_HELD_MAX,
+            "set": held.is_some(),
+            "by": held.as_ref().map(|h| h["by"].clone()),
+            "at": held.as_ref().map(|h| h["at"].clone()),
         },
         "nas_room": root.map(|r| target_view(room::nas_reserve(r), room::nas_free(r).ok(), None)),
         "batch": batch_view(home),
@@ -312,6 +352,33 @@ mod tests {
         let gone = h.join("nope");
         assert!(set_room(&gone, "2", "t").is_err() && set_memory(&gone, "2", "t").is_err());
         assert!(set_sweep_margin(&gone, "2", "t").is_err());
+    }
+
+    /// Task #1141: the NAS calls held, set from the build page: 1 to `NAS_HELD_MAX` or off, read
+    /// back by store::deadline (what the agent applies and gives its jobs) and in the view.
+    #[test]
+    fn the_nas_calls_held_are_set_and_read_back() {
+        let d = tempfile::tempdir().unwrap();
+        let h = d.path();
+        let v = view(h, None);
+        assert_eq!(
+            (v["nas_held"]["n"].as_u64(), v["nas_held"]["set"].as_bool()),
+            (Some(store::deadline::CAP_DEFAULT as u64), Some(false))
+        );
+        for bad in ["0", "1001", "x", "-3", "2.5"] {
+            assert!(set_nas_held(h, bad, "t").is_err(), "{bad}");
+        }
+        assert!(set_nas_held(&h.join("nope"), "8", "t").is_err(), "no agent");
+        assert_eq!(set_nas_held(h, " 8 ", "the build page").unwrap(), Some(8));
+        assert_eq!(store::deadline::cap_in(h), Some(8));
+        let v = view(h, None);
+        assert_eq!(
+            (v["nas_held"]["n"].as_u64(), v["nas_held"]["set"].as_bool(), v["nas_held"]["by"].as_str()),
+            (Some(8), Some(true), Some("the build page"))
+        );
+        assert_eq!(set_nas_held(h, "off", "t").unwrap(), None);
+        assert_eq!(store::deadline::cap_in(h), None);
+        assert!(set_nas_held(h, "off", "t").unwrap().is_none(), "off twice");
     }
 
     /// Task #927 review: the batch length is set from the build page as from `scenic pool set`: an

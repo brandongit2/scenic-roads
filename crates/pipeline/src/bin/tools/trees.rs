@@ -47,7 +47,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
     if let Err(e) = &r {
         if jobrt::control::is_paused(e) {
             eprintln!("trees: {e:#}");
-            std::process::exit(jobrt::control::PAUSED_EXIT);
+            jobrt::control::exit(jobrt::control::PAUSED_EXIT);
         }
     }
     r

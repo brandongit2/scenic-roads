@@ -88,10 +88,11 @@ function paint() {
   words(parts.resp.v, [ms == null ? "no build on the lead now" : fmt(ms, "ms"), [mt?.name, mt?.proto, mt && `${tb(mt.free)} free`].filter(Boolean).join(" · ")],
     ms != null && ms > 1000 ? "bad" : ms != null && ms > 200 ? "warn" : "");
 
-  // Requests waiting: the pool's calls in flight, against their threads.
-  const calls = at("pool_nas_calls"), threads = at("pool_nas_threads");
-  draw(parts.wait.c, { ...pool, unit: "", refs: threads ? [{ v: threads, label: `${fmt(threads)} threads` }] : [], series: [{ points: s.pool_nas_calls, colour: acc, label: "waiting", unit: "" }] });
-  words(parts.wait.v, [calls == null ? "not measured" : threads ? `${fmt(calls)} of ${fmt(threads)}` : fmt(calls), "calls in flight, every Mac's"], calls != null && threads && calls >= threads ? "warn" : "");
+  // Requests waiting: the pool's calls in flight, against the most the Macs hold past their
+  // deadline (their caps, summed: a call at a Mac's cap is refused).
+  const calls = at("pool_nas_calls"), cap = at("pool_nas_held_cap");
+  draw(parts.wait.c, { ...pool, unit: "", refs: cap ? [{ v: cap, label: `${fmt(cap)} held at most` }] : [], series: [{ points: s.pool_nas_calls, colour: acc, label: "waiting", unit: "" }] });
+  words(parts.wait.v, [calls == null ? "not measured" : fmt(calls), "calls in flight, every Mac's"], calls != null && cap && calls >= cap ? "warn" : "");
 
   // Timed out: a minute's, and the range's count (a point's mean a second times what it stands for).
   const perMin = (s.pool_nas_missed || []).map((p) => [p[0], p[1] * 60, p[2] * 60, p[3] * 60]);

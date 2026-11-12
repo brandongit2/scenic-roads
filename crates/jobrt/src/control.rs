@@ -615,7 +615,48 @@ pub fn stop_paused(step: &str) -> ! {
     eprintln!("{step}: paused at a safe point; the rest goes on when the build does");
     // (Its timings kept, as a run that didn't finish.)
     crate::timings::finish(false);
-    std::process::exit(PAUSED_EXIT)
+    exit(PAUSED_EXIT)
+}
+
+/// Where a job's agent has its exit status written (its group's head writes it as the job ends;
+/// the job itself first when its exit may not end, `ending`).
+pub const STATUS_ENV: &str = "SCENIC_JOB_STATUS";
+
+/// The job is ending with exit code `code`: when it leaves NAS calls in the kernel past their
+/// deadline (store::deadline::held), its exit may never end (the kernel ends a process once each
+/// of its threads has left its call, and an SMB call can stay there for hours), nor its group's
+/// head write its status: the status is written here first (`STATUS_ENV`, as the head writes it),
+/// which its agent takes as the job's end (agentcore's jobs::Running::poll), stopping what of it
+/// still runs. Whether it was written.
+pub fn ending(code: i32) -> bool {
+    let held = store::deadline::held();
+    let Some(p) = std::env::var_os(STATUS_ENV) else { return false };
+    held > 0 && say_end(Path::new(&p), code, held)
+}
+
+/// `ending`'s status written to `p`, whole (a temporary name, renamed), and said in the log.
+fn say_end(p: &Path, code: i32, held: usize) -> bool {
+    let tmp = p.with_extension("said.tmp");
+    let r = std::fs::write(&tmp, format!("{code}\n")).and_then(|()| std::fs::rename(&tmp, p));
+    match r {
+        Ok(()) => {
+            eprintln!("job: ending ({code}) with {held} NAS calls left in the kernel past their deadline: its end said to its agent first");
+            true
+        }
+        Err(e) => {
+            eprintln!(
+                "job: ending ({code}) with {held} NAS calls left in the kernel: its end not said ({}: {e})",
+                p.display()
+            );
+            false
+        }
+    }
+}
+
+/// Exits with `code`, the job's end said first when its exit may not end (`ending`).
+pub fn exit(code: i32) -> ! {
+    ending(code);
+    std::process::exit(code)
 }
 
 /// Notes `target` of `step` done: its outputs are saved (in the manifest, or the hand-off).
@@ -1158,6 +1199,20 @@ mod tests {
         assert!(over_bound(12.0).is_none());
         let s = over_bound(SAFE_GAP_BOUND_S as f64 + 1.0).unwrap();
         assert!(s.contains("over the bound") && s.contains(&SAFE_GAP_BOUND_S.to_string()), "{s}");
+    }
+
+    /// Task #1141: a job ending with NAS calls left in the kernel says its end itself, in its
+    /// group's head's form; one with none leaves it to its head.
+    #[test]
+    fn a_job_with_calls_held_says_its_end() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("job.status");
+        assert!(say_end(&p, 1, 3));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "1\n");
+        assert!(!p.with_extension("said.tmp").exists());
+        assert!(!say_end(&d.path().join("gone/job.status"), 1, 3), "a status it can't write");
+        // (No calls held in this test's process: nothing said.)
+        assert!(store::deadline::held() > 0 || !ending(1));
     }
 
     #[test]
