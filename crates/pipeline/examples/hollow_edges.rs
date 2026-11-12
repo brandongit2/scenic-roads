@@ -119,9 +119,10 @@ fn probe(
             break;
         }
         // (Each level's points with data: how far the nearest data at ~4 m lies, searched to 3 km,
-        // and how far inside the tile they are.)
+        // and how far inside the tile they are. `HOLLOW_TRUTH_M`: the data read at other than ~4 m.)
+        let truth_m: f64 = std::env::var("HOLLOW_TRUTH_M").ok().and_then(|m| m.parse().ok()).unwrap_or(4.0);
         let fine = (0..tif.images().len())
-            .filter(|&l| tif.transform(l).is_ok_and(|g| g[1].abs() * unit <= 4.0))
+            .filter(|&l| tif.transform(l).is_ok_and(|g| g[1].abs() * unit <= truth_m))
             .max()
             .unwrap_or(0);
         let gf = tif.transform(fine)?;
