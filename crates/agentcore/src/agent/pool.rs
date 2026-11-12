@@ -933,7 +933,7 @@ pub fn check_from(
 /// An event in words, for the log.
 pub fn said(e: &Event) -> String {
     match e {
-        Event::TookUp { epoch, how } => format!("took up the records in epoch {epoch}, from {how}"),
+        Event::TookUp { epoch, how, .. } => format!("took up the records in epoch {epoch}, from {how}"),
         Event::SteppedDown { epoch, why } => format!("no longer leads (epoch {epoch}): {why}"),
         Event::Merged { applied, overtaken, refused, .. } => format!(
             "merged {} entr{} ({overtaken} passed over, {refused} refused)",
@@ -1768,13 +1768,17 @@ pub fn took_up(
 ) {
     let Some(c) = coord else { return };
     for e in events {
-        let Event::TookUp { epoch, .. } = e else { continue };
+        let Event::TookUp { epoch, another, .. } = e else { continue };
         c.set_epoch(*epoch);
-        if std::mem::replace(&mut run.led, true) {
+        if std::mem::replace(&mut run.led, true) || !another {
             continue;
         }
         // (Its own store holds its state (crate::coord::kept); another Mac's lead before it, the lead
-        // moved by the owner, left its store's backup on the NAS: taken up.)
+        // moved by the owner, left its store's backup on the NAS: taken up. Not when it took up its
+        // own records: that backup is older than its own state, which it would replace. Task #1038,
+        // the pool's simulator's seed 935: a lead killed mid-grant restarted, took up its own
+        // records, and replaced its leases with an older lead's backup, granting their targets
+        // again.)
         let backup = match crate::pool::store::read_backup(run.side.nas()) {
             Ok(b) => b.filter(|b| b.member != host),
             Err(e) => {
@@ -3526,10 +3530,15 @@ mod tests {
         };
         assert_eq!(out.leads, Some(2));
         assert!(
-            took.iter().any(|e| matches!(e, Event::TookUp { epoch: 2, how } if how == "its own records")),
+            took.iter()
+                .any(|e| matches!(e, Event::TookUp { epoch: 2, how, another: false } if how == "its own records")),
             "{took:?}"
         );
         let (cb, _) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
+        // (Another Mac's older backup on the NAS, none of these leases in it: a take-up of its own
+        // records keeps its own store's, task #1038's seed 935.)
+        let old = crate::pool::store::Snapshot { epoch: 1, seq: 1, member: "b".into(), ..Default::default() };
+        crate::pool::store::back_up_once(&old, a.side.nas(), 0).unwrap();
         took_up(&mut a, Some(&cb), &took, out.leads, "a", &[]);
         let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_epoch(*id) != 1).collect();
         assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not taken up: {lost:?}", granted.len());

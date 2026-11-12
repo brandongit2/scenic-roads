@@ -239,7 +239,10 @@ pub struct Out {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
     /// Took up the records in epoch `epoch`, from where `how` says: its coordinator grants in it.
-    TookUp { epoch: u64, how: String },
+    /// `another`: records another Mac's lead saved (the one path's, `Records::lead` not this
+    /// member): its coordinator takes up that lead's state, its store's backup (crate::agent::pool's
+    /// `took_up`); else its own store holds its state.
+    TookUp { epoch: u64, how: String, another: bool },
     /// No longer leads (in epoch `epoch`): why.
     SteppedDown { epoch: u64, why: String },
     /// Hand-offs merged: applied, passed over (an older lease's), refused (`done`: the applied ones'
@@ -802,6 +805,9 @@ impl Driver {
                 Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
             },
         };
+        // (Another Mac's lead's records: taken up from the one path, of another lead's epoch, or
+        // of one of before the records named it.)
+        let another = how.starts_with("the one path's") && base.lead.as_deref() != Some(self.me.id.as_str());
         let mut r = base;
         // (Never from records older than those its lead last saved: a stale read's. What their
         // saves acknowledged is on no member's disk any more: docs/coordination.md step 6.)
@@ -858,7 +864,7 @@ impl Driver {
         if self.declared_since.is_some() {
             self.saved.led_under = self.declared_since;
         }
-        out.events.push(Event::TookUp { epoch, how: how.to_string() });
+        out.events.push(Event::TookUp { epoch, how: how.to_string(), another });
         self.lead = Some(Lead {
             epoch,
             since: io.now(),
@@ -1289,6 +1295,7 @@ mod tests {
         ib.pass(20);
         let o = step(&mut b, &ib, able());
         assert_eq!(o.leads, Some(41), "past A's epoch: {:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { another: true, .. })), "A's records: A's state");
         assert_eq!(b.records().unwrap().keys.recorded("unit", "6-1-1"), Some("k1"), "from A's records");
         ib.pass(20);
         step(&mut b, &ib, Heard { handed: vec![entry(A, 41, 2, "6-1-2")], ..able() });
@@ -1397,7 +1404,10 @@ mod tests {
         let o = a.step(&io, able(), &any);
         assert_eq!(o.leads, Some(842), "{:?}", o.events);
         assert!(a.records().unwrap().handles(&key), "its own disk's records");
-        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { epoch: 842, how } if how == "its own records")));
+        assert!(o
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::TookUp { epoch: 842, how, another: false } if how == "its own records")));
         let calls = io.take();
         eprintln!("a restart's step, its records on its disk: {calls:#?}");
         let read = |c: &&String| c.starts_with("read ") || c.starts_with("stat ") || c.starts_with("list ");

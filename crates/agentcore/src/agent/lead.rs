@@ -429,7 +429,7 @@ pub fn notes(events: &[Event], me: &str, now: u64) -> Vec<history::Event> {
     let mut out = Vec::new();
     for e in events {
         let note = match e {
-            Event::TookUp { epoch, how } => format!("took the records up in epoch {epoch}, from {how}"),
+            Event::TookUp { epoch, how, .. } => format!("took the records up in epoch {epoch}, from {how}"),
             Event::SteppedDown { epoch, why } => format!("stepped down (epoch {epoch}): {why}"),
             _ => continue,
         };
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn the_leads_events_in_the_history() {
         let events = [
-            Event::TookUp { epoch: 842, how: "its own records".into() },
+            Event::TookUp { epoch: 842, how: "its own records".into(), another: false },
             Event::SteppedDown { epoch: 842, why: "another member is the declared lead".into() },
             Event::Merged { applied: vec![], overtaken: 0, refused: 0, done: vec![] },
         ];
