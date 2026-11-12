@@ -753,8 +753,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let mut needs: BTreeSet<Id> = BTreeSet::new();
     trace("land");
     // 1. Land, in waves by what outlines name.
-    let said = &ctx.progress;
-    said.begin(Step::Land, ids.len());
+    let progress = &ctx.progress;
+    progress.begin(Step::Land, ids.len());
     let mut left: Vec<String> = ids.clone();
     while !left.is_empty() {
         let (wave, rest): (Vec<String>, Vec<String>) = left.into_iter().partition(|id| {
@@ -782,7 +782,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let res: Vec<(String, Result<Made, Vec<Problem>>)> = wave
             .iter()
             .map(|id| {
-                let _one = said.one_on_drop();
+                let _one = progress.one_on_drop();
                 let make = || {
                     let mut more = BTreeSet::new();
                     let m = make_land(id, folder, ctx, data, &made, &others, out, &held, &mut more);
@@ -840,7 +840,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let mut done_w: BTreeSet<String> = BTreeSet::new();
     let mut left: Vec<String> =
         ids.iter().filter(|id| made.contains_key(*id) && !rests.contains(id)).cloned().collect();
-    said.begin(Step::Water, left.len());
+    progress.begin(Step::Water, left.len());
     while !left.is_empty() {
         let (wave, rest): (Vec<String>, Vec<String>) = left
             .into_iter()
@@ -861,7 +861,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         let res: Vec<(String, Result<TArea, Vec<Problem>>)> = wave
             .iter()
             .map(|id| {
-                let _one = said.one_on_drop();
+                let _one = progress.one_on_drop();
                 trace(&format!("water of {id} begins"));
                 let make = || {
                     let mut more = BTreeSet::new();
@@ -910,9 +910,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     trace("lakes");
     // 3. Lakes: a region's own unless another's water names them.
     let lake_cells: BTreeSet<Cell> = made.values().flat_map(|m| m.lakes.cells.keys().copied()).collect();
-    said.begin(Step::Lakes, lake_cells.len());
+    progress.begin(Step::Lakes, lake_cells.len());
     let lake_cuts: Vec<(String, Cell, Area)> = pace::par_map(lake_cells.into_iter().collect(), |c| {
-        let _one = said.one_on_drop();
+        let _one = progress.one_on_drop();
         let mine: Vec<(&String, Area)> =
             made.iter().map(|(id, m)| (id, m.lakes.get(c))).filter(|(_, a)| !a.is_empty()).collect();
         let waters: Vec<(&String, Area)> =
@@ -939,7 +939,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .collect()
     });
     // 3b. One coastline: what lies in no region between a region's coast and the coastline's.
-    coast(data, folder, &mut made, &others, said);
+    coast(data, folder, &mut made, &others, progress);
     // Each region's area by cell: land, water, lakes.
     // (Fanned out over (region, cell) pairs, not regions: one large region still uses every thread
     // allowed, its cells' unions being the work.)
@@ -952,9 +952,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         })
         .collect();
     let mut areas: BTreeMap<String, TArea> = made.keys().map(|id| (id.clone(), TArea::default())).collect();
-    said.begin(Step::Areas, pairs.len());
+    progress.begin(Step::Areas, pairs.len());
     for (id, c, a) in pace::par_map(pairs, |(id, m, c)| {
-        let _one = said.one_on_drop();
+        let _one = progress.one_on_drop();
         (id, c, m.land.get(c).union(&m.water.get(c)).union(&m.lakes.get(c)))
     }) {
         areas.get_mut(id).unwrap().set(c, a);
@@ -968,9 +968,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     drop(made);
     trace("hand-outs");
     // 4. Hand-outs.
-    said.begin(Step::HandOuts, ids.len());
+    progress.begin(Step::HandOuts, ids.len());
     for id in &ids {
-        let _one = said.one_on_drop();
+        let _one = progress.one_on_drop();
         let Some(g) = folder.regions[id].1.hand_out.clone() else { continue };
         if !areas.contains_key(id) {
             continue;
@@ -996,9 +996,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
         // where it goes.
         let comps = components(&mine);
-        said.item(comps.len());
+        progress.item(comps.len());
         let moves: Vec<(String, BTreeMap<Cell, Area>)> = pace::par_map(comps, |comp| {
-            let _part = said.part_on_drop();
+            let _part = progress.part_on_drop();
             let km2: f64 = comp.values().map(geom::area_km2).sum();
             let mut edge: Vec<f64> = vec![0.0; theirs.len()];
             for (c, p) in &comp {
@@ -1050,12 +1050,12 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let mut all: BTreeMap<String, TArea> = others;
     all.extend(areas);
     if cover {
-        slivers(&ids, folder, &lands, rules.sliver_km2, &mut all, said);
+        slivers(&ids, folder, &lands, rules.sliver_km2, &mut all, progress);
     }
     drop(lands);
     trace("the cells' fills and the cover check");
     let rest_id = rests.first().map(|s| (*s).clone());
-    let zones = if cover { zones(data, said) } else { TArea::default() };
+    let zones = if cover { zones(data, progress) } else { TArea::default() };
     let rest = cells_pass(
         folder,
         data,
@@ -1067,11 +1067,11 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         rules.sliver_km2,
         &mut out.problems,
         &mut out.fit,
-        said,
+        progress,
     );
     drop(zones);
     if cover {
-        fit_after(&all, rest_id.as_ref().map(|id| (id, &rest)), &mut out.fit, said);
+        fit_after(&all, rest_id.as_ref().map(|id| (id, &rest)), &mut out.fit, progress);
         for ((a, b), k) in &out.fit.after_overlaps {
             if *k > HAIR_KM2 {
                 out.problems.push(Problem {
@@ -1106,9 +1106,9 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     trace_gaps("at the end", data, |c| all.values().map(|t| t.get(c)).filter(|a| !a.is_empty()).collect());
     trace("stored");
     // 6. Stored: every region with water, and the rest (those without, as they resolved).
-    said.begin(Step::Stored, all.len());
+    progress.begin(Step::Stored, all.len());
     for (id, t) in &all {
-        let _one = said.one_on_drop();
+        let _one = progress.one_on_drop();
         if rest_id.as_ref() == Some(id) {
             continue;
         }
