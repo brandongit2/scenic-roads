@@ -315,8 +315,11 @@ pub struct Driver {
     /// declaration named another member a while).
     spare: Option<Records>,
     /// Declared and not leading: since when (awake clock) this process has found itself declared,
-    /// and the moment (awake clock) before which its take-up waits (`STALE_S`).
+    /// under which declaration (its `since`), and the moment (awake clock) before which its
+    /// take-up waits (`STALE_S`). A read that fails keeps them; one that finds another
+    /// declaration, or another member, starts them again.
     declared_at: Option<u64>,
+    declared_under: Option<u64>,
     wait_until: Option<u64>,
     /// The lead's declaration as last read (lead::declared), or as its lead's answer said it: the
     /// member that leads; and that member as last known (its app known only from its answer, or
@@ -359,6 +362,7 @@ impl Driver {
             taking: None,
             spare: None,
             declared_at: None,
+            declared_under: None,
             wait_until: None,
             declared: None,
             lead_member: None,
@@ -484,13 +488,18 @@ impl Driver {
             }
         }
         // Who leads: its lead's word (of another member) in place of the NAS's declaration.
-        let (mine, read) = match heard.lead_says.filter(|m| m.id != self.me.id) {
+        // (`told`: this step learnt who leads, by a read or its lead's word; a read that fails
+        // tells nothing.)
+        let (mine, read, told) = match heard.lead_says.filter(|m| m.id != self.me.id) {
             Some(m) => {
                 self.declared = Some(m.id.clone());
                 self.lead_member = Some(m);
-                (false, false)
+                (false, false, true)
             }
-            None => self.declare(io, &mut out),
+            None => {
+                let (mine, read) = self.declare(io, &mut out);
+                (mine, read, read)
+            }
         };
         // A lead leads while it's declared; the declared lead, not leading, takes the records up.
         if self.lead.is_some() && !mine {
@@ -524,15 +533,21 @@ impl Driver {
                 ),
             );
         }
-        if mine && read {
-            if self.lead.is_none() {
-                self.take_up(io, &mut out);
-            }
-        } else if self.lead.is_none() {
-            // (Named another, or not read this step: the declaration may have named another
-            // meanwhile, which may have led and granted till `VOUCH_S` after its last read naming
-            // it; a take-up waits for a read naming this member again, and `STALE_S` after it.)
-            (self.declared_at, self.wait_until) = (None, None);
+        // A take-up's wait: kept through a read that fails, which tells nothing (task #1154: one
+        // started again by every failed read needs 30 good reads in a row, and on a share failing
+        // a read in five that's hours with no lead); started again by a read naming another
+        // member, or this one under another declaration than the wait began under (the owner moved
+        // the lead away and back meanwhile, the lead between maybe granting till `VOUCH_S` after
+        // its last read naming it: the wait counts from the read naming this member again). The
+        // take-up itself needs this step's read naming it.
+        if self.lead.is_none()
+            && told
+            && (!mine || (self.declared_at.is_some() && self.declared_under != self.declared_since))
+        {
+            (self.declared_at, self.declared_under, self.wait_until) = (None, None, None);
+        }
+        if mine && read && self.lead.is_none() {
+            self.take_up(io, &mut out);
         }
         if let Some(l) = self.lead.as_mut().filter(|_| read) {
             l.vouched_at = Some(start);
@@ -680,7 +695,10 @@ impl Driver {
     /// same, its NAS files written at its next step, nothing acknowledged until then.
     fn take_up(&mut self, io: &dyn Io, out: &mut Out) {
         let awake = io.awake();
-        let since = *self.declared_at.get_or_insert(awake);
+        if self.declared_at.is_none() {
+            (self.declared_at, self.declared_under) = (Some(awake), self.declared_since);
+        }
+        let since = self.declared_at.unwrap_or(awake);
         if self.wait_until.is_some_and(|w| awake < w) {
             return;
         }
@@ -855,7 +873,7 @@ impl Driver {
         };
         self.taking = None;
         self.spare = None;
-        (self.declared_at, self.wait_until) = (None, None);
+        (self.declared_at, self.declared_under, self.wait_until) = (None, None, None);
         // (Its saved state is its own from here: what it saves leading, and the declaration it led
         // under, are this process's. Task #1038, the simulator's seed 1364: a process started from
         // no state of its own took the lead up, slept past `VOUCH_S` while the owner moved the lead
@@ -1754,6 +1772,71 @@ mod tests {
         let o = step(&mut a, &ia, able());
         assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
         assert_eq!(a.saved().led_under, Some(300));
+    }
+
+    /// Task #1154: a take-up's `STALE_S` wait is kept through reads of the declaration that fail
+    /// (they tell nothing): on a share failing every other read, the declared lead takes up at the
+    /// first read naming it once `STALE_S` has passed; it had started its wait again at each failed
+    /// read and never led. A read naming it under another declaration than the wait began under
+    /// (the owner moved the lead away and back while its reads failed) starts the wait again.
+    #[test]
+    fn a_take_ups_wait_is_kept_through_failed_reads_and_started_again_by_a_new_declaration() {
+        let mem = Mem::default();
+        setup(&mem);
+        let declare_at = |to: &str, since: u64| {
+            mem.write_whole(lead::LEAD, format!("{{\"member\": \"{to}\", \"since\": {since}}}").as_bytes()).unwrap()
+        };
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        declare_at(A, 100);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, None);
+        ia.pass(STALE_S);
+        assert!(step(&mut a, &ia, able()).leads.is_some());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        // Every other read fails: B finds itself declared, then waits through them.
+        let flaky = |b: &mut Driver, n: u64| {
+            ib.pass(20);
+            *ib.fail.borrow_mut() = Some(lead::LEAD.into());
+            ib.down.set(n % 2 == 1);
+            let o = step(b, &ib, able());
+            ib.down.set(false);
+            o
+        };
+        declare_at(B, 200);
+        assert_eq!(flaky(&mut b, 0).leads, None);
+        let found = ib.awake.get();
+        let mut n = 1;
+        let took = loop {
+            let o = flaky(&mut b, n);
+            if o.leads.is_some() {
+                break ib.awake.get();
+            }
+            assert!(n < 100, "B never takes up: {:?}", o.events);
+            n += 1;
+        };
+        assert!(took >= found + STALE_S && took <= found + STALE_S + 40, "{} s after finding itself declared", took - found);
+        // A new waiting lead: C; while its reads fail the owner moves the lead to A and back to C.
+        let ic = Mac::new(&mem);
+        ic.awake.set(ib.awake.get());
+        let mut c = Driver::unlocked(member(C, "MacBook-Pro", V2), Saved::default());
+        declare_at(C, 300);
+        assert_eq!(step(&mut c, &ic, able()).leads, None);
+        *ic.fail.borrow_mut() = Some(lead::LEAD.into());
+        ic.down.set(true);
+        ic.pass(STALE_S / 2);
+        assert_eq!(step(&mut c, &ic, able()).leads, None, "a failed read: it waits on");
+        declare_at(A, 400);
+        declare_at(C, 500);
+        ic.down.set(false);
+        ic.pass(20);
+        let anew = ic.awake.get();
+        assert_eq!(step(&mut c, &ic, able()).leads, None);
+        ic.pass(STALE_S / 2);
+        let o = step(&mut c, &ic, able());
+        assert_eq!(o.leads, None, "its wait started again at the new declaration: {:?}", o.events);
+        ic.pass(anew + STALE_S - ic.awake.get());
+        let o = step(&mut c, &ic, able());
+        assert!(o.leads.is_some(), "{:?}", o.events);
     }
 
     /// docs/coordination.md step 8b, as on 9 Nov at 20:40Z: a lead whose take-up's NAS write fails

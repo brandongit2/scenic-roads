@@ -152,6 +152,10 @@ const QUIET_S: u64 = 600;
 /// At most how long a run goes on past its end while its lead still merges what the faults left,
 /// or isn't caught up yet (s).
 const MERGING_S: u64 = 3600;
+/// With `Cfg::move_at`: how long (awake) after the owner's move, or its process's restart since,
+/// the declared lead takes up at most (s): `STALE_S`, and twenty of its loops for the reads that
+/// fail.
+const TAKE_UP_S: u64 = driver::STALE_S + 20 * LOOP_S;
 
 /// What a run is.
 #[derive(Clone, Copy, Debug)]
@@ -178,6 +182,15 @@ struct Cfg {
     lose: bool,
     /// Now and then a Mac whose reads the share doesn't answer for a while.
     fails: bool,
+    /// Each read and stat failing on its own at this rate (0: none): the share failing now and
+    /// then, beside `fails`'s outages (task #1154).
+    flaky: f64,
+    /// The Macs sleep now and then.
+    sleeps: bool,
+    /// The owner moves the lead at these times (s), each to the next Mac, the lead before
+    /// left awake and reading: each declared lead's take-up checked to come within `TAKE_UP_S`
+    /// of its move, awake (task #1154).
+    move_at: &'static [u64],
     /// Now and then an operation the share stalls on for minutes: its step minutes long.
     stalls: bool,
     /// Requests dropped, delayed (some arriving after the client gave up), answers lost.
@@ -216,6 +229,9 @@ impl Cfg {
             op_s: (0, 0),
             lose: false,
             fails: false,
+            flaky: 0.0,
+            sleeps: true,
+            move_at: &[],
             stalls: false,
             net: false,
             partitions: false,
@@ -443,7 +459,8 @@ struct World {
     stored: Vec<BTreeSet<String>>,
     /// Every lease seen granted (epoch, id): its worker and targets.
     granted: BTreeMap<(u64, u64), (String, Vec<String>)>,
-    /// The leases each Mac's coordinator has held in its process (cleared as one starts).
+    /// The leases each Mac's coordinator's store has held (cleared as its disk is replaced, and
+    /// replaced as it takes up another's backup).
     known: Vec<BTreeSet<(u64, u64)>>,
     /// The jobs running, by lease (epoch, id).
     running: BTreeMap<(u64, u64), Running>,
@@ -467,6 +484,10 @@ struct World {
     grant_marks: BTreeMap<(u64, u64), (usize, u64, Option<(u64, u64)>)>,
     /// The brief last served over the network: by which coordinator (its Mac, its number).
     served: Option<(usize, u64)>,
+    /// `Cfg::move_at`'s moves made, and the last one's Mac and its awake clock then (or at its
+    /// process's restart since: an app installed), until it takes up.
+    fixed_moves: usize,
+    moved: Option<(usize, u64)>,
     /// The hand-offs a landed snapshot refused for a name GC removed.
     gc_refused: BTreeSet<String>,
     /// Since when the declared lead's take-up has waited on the records of the Mac that led an
@@ -658,6 +679,8 @@ impl World {
             polled: BTreeMap::new(),
             grant_marks: BTreeMap::new(),
             served: None,
+            fixed_moves: 0,
+            moved: None,
             gc_refused: BTreeSet::new(),
             stuck: None,
             waits: None,
@@ -735,6 +758,15 @@ impl World {
                 }
                 None => self.note(|| format!("the owner can't declare epoch {e}'s lead again")),
             }
+        }
+        if let Some(&at) = self.cfg.move_at.get(self.fixed_moves).filter(|&&at| self.t >= at) {
+            self.fixed_moves += 1;
+            let to = (self.declared + 1) % self.macs.len();
+            let from = self.declared;
+            self.note(|| format!("the owner moves the lead from mac{from} to mac{to} (at {at} s)"));
+            self.move_lead_to(to);
+            self.count("leads moved");
+            self.moved = Some((to, self.awake_clock(to)));
         }
         if self.faulting() {
             self.faults(me);
@@ -843,7 +875,7 @@ impl World {
             self.note(|| format!("the share answers none of mac{me}'s reads for {d} s"));
         }
         let p = if std::mem::take(&mut self.midway) { P_SLEEP_MIDWAY } else { P_SLEEP };
-        if self.rng.chance(p) && !self.macs[me].gone {
+        if self.cfg.sleeps && self.rng.chance(p) && !self.macs[me].gone {
             let d = match self.rng.below(10) {
                 0..=5 => self.rng.range(5, 90),
                 6..=8 => self.rng.range(90, 900),
@@ -1310,6 +1342,10 @@ impl World {
             self.count("reads the share didn't answer");
             bail!("{path}: the share doesn't answer");
         }
+        if self.cfg.flaky > 0.0 && self.faulting() && self.rng.chance(self.cfg.flaky) {
+            self.count("reads failing now and then");
+            bail!("{path}: the share didn't answer this read");
+        }
         Ok(())
     }
 
@@ -1706,6 +1742,18 @@ impl World {
             if let Some(last) = took.filter(|&k| k >= e && !(repeated && k == e) && self.landed.contains_key(&k)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past epoch {last} taken up before"));
             }
+            if let Some((d, at)) = self.moved.filter(|m| m.0 == me) {
+                self.moved = None;
+                let took = self.awake_clock(me) - at;
+                self.count(match took {
+                    t if t <= driver::STALE_S + 5 * LOOP_S => "take-ups after a move: within STALE_S and 5 loops",
+                    t if t <= driver::STALE_S + 10 * LOOP_S => "take-ups after a move: within STALE_S and 10 loops",
+                    _ => "take-ups after a move: later",
+                });
+                if took > TAKE_UP_S {
+                    self.wrong(format!("mac{d} took up {took} s (awake) after the owner declared it, past {TAKE_UP_S} s"));
+                }
+            }
             self.leaders.insert(e, me);
             self.took.insert(e, (me, self.t));
             (self.stuck, self.waits) = (None, None);
@@ -1749,6 +1797,10 @@ impl World {
             ));
         }
         let d = self.declared;
+        if let Some((k, at)) = self.moved.filter(|m| m.0 == d) {
+            let waited = self.awake_clock(k) - at;
+            self.wrong(format!("mac{k}, declared {waited} s (awake) before the end, never took up"));
+        }
         // (The declared lead's take-up waiting on records the one path's brief is of, which no Mac
         // has: their lead's own disk's copy lost (its saved state or its disk) after it led them,
         // and the one path written over by a late save (another lead's, fenced). Two faults with
@@ -2301,6 +2353,37 @@ fn the_lead_moves_and_moves_back() {
     ] {
         assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {counts:?}");
     }
+}
+
+/// A share whose reads fail now and then, each on its own at `rate` (task #1154), and the owner
+/// moving the lead twice, its Macs awake: each declared lead takes up within `TAKE_UP_S` (awake) of
+/// its move, and two leads never grant at once.
+fn flaky_reads(rate: f64) -> Cfg {
+    Cfg { flaky: rate, sleeps: false, move_at: &[900, 2400], faults: 3600, end: 5100, ..Cfg::pool() }
+}
+
+/// `flaky_reads`'s runs at 5 % and 20 % of reads failing, `n` seeds each.
+fn check_flaky(n: u64) {
+    for rate in [0.05, 0.2] {
+        let started = std::time::Instant::now();
+        let counts = check_all(30_000..30_000 + n, |_| flaky_reads(rate));
+        eprintln!("{n} schedules of {rate} of reads failing in {:.0} s\n{counts:#?}", started.elapsed().as_secs_f64());
+        for what in ["reads failing now and then", "leads moved", "take-ups from the one path's records"] {
+            assert!(counts.get(what).is_some_and(|&n| n >= 3), "{what}: {counts:?}");
+        }
+    }
+}
+
+#[test]
+fn a_share_failing_reads_now_and_then_leaves_a_lead() {
+    check_flaky(var("POOL_SIM_SEEDS", 20));
+}
+
+#[test]
+#[ignore]
+fn a_share_failing_reads_now_and_then_leaves_a_lead_through_thousands_of_schedules() {
+    // #repro: POOL_SIM_SEEDS schedules (2,000) at each rate.
+    check_flaky(var("POOL_SIM_SEEDS", 2000));
 }
 
 #[test]

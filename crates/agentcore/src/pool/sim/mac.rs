@@ -224,6 +224,11 @@ impl Mac {
             }
             w.macs[k].crashed = false;
             w.count("restarts");
+            // (A new process finds itself declared afresh: its take-up's wait counts from now.)
+            let now = w.awake_clock(k);
+            if let Some(m) = w.moved.as_mut().filter(|m| m.0 == k) {
+                m.1 = now;
+            }
             lost
         })?;
         let saved = if lost { Saved::default() } else { self.saved.clone() };
