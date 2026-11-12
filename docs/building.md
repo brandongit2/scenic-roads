@@ -281,7 +281,14 @@ from the first (`edit_held`).
   work isn't this Mac's now. A job of several parts says them (`parts: <i>
   [names]`) and the status lists them, done, under way and to come. A long part says how far it is;
   osmium's `--progress` counts. A `unit` job's z6 tile counts by its stages, each weighted by its learned
-  time (`unit-stages.json`). A part's time left comes from its own pace; a stuck part shows as such.
+  time (`unit-stages.json`), a stage partly by how far it is: a program's by its own progress lines,
+  the packs' staging by its reads (`roads::stage::Reading`: each pack it reads and each grid's
+  tiles, the one under way by its NAS bytes or tiles), also logged every 30 s
+  (`staging layers from the packs: 12 of 31 parts …, 2154 MB from the NAS in 340s (6.3 MB/s); now …`).
+  Work in a job's own process says how far it is every 5 s beside it (`jobrt::jobs::saying`: the
+  staging, a depth level's blocks and the floor's shading, terrain-hi's, terrain-lo's and
+  terrain-deep's tiles), so the slow and stuck flags (docs/pool.md §10) judge it by its progress
+  while it works. A part's time left comes from its own pace; a stuck part shows as such.
 - **The heartbeat's resources:** each Mac's memory, cores and load, disk free and droppable caches,
   NAS latency and free space; its build caches (`caches`) and room target (`caches.room`).
 - **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run

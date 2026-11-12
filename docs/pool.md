@@ -2452,7 +2452,10 @@ asks passed on are one-shot: the lead's store keeps them (below).
     its step's usual longest wait for progress, back from its last beat, judged only once its part
     under way is that old: a window that long holds a working job's progress however bursty its
     line (terrain-hi says its tiles a few hundred at a time, after minutes of sampling), and one
-    with none in it is at a rate of nothing (a copy before its first tile, a retry loop). Its
+    with none in it is at a rate of nothing (a copy before its first tile, a retry loop). A long
+    stretch of work in a job's own process moves its line as it goes (docs/building.md §2: a unit's
+    staging by the packs it reads, task #1156, where its line had sat for 26 minutes as the staging
+    read at 6 MB/s, flagged at 0 z6 tiles a minute), so it is judged on its rate. Its
     step's usual rate in a unit is the 10th percentile, over its jobs kept that ended well, of each
     one's progress in that unit over the time its parts in it took (`rates` on its "done" or "end"
     event, units a second); its usual wait the 90th percentile of each one's longest stretch from

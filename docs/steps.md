@@ -93,7 +93,8 @@ makes the same bytes on every Mac.
     - **terrain-deep**, a run per z10 tile whose places reach past z12 (`terrain_deep::levels`, near
       the coverage), from the start (it reads no built tile): its tiles z13–16 by the rule, its deep
       pack, and its mid (`work/terrain-deep-mid/10-x-y`: its z13 tiles' means before rounding).
-      A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each. A tile
+      A z10 tile, not its z6 tile: up to 5,440 tiles and GBs of a fine dataset's reads each (its
+      progress its tiles made, said every 5 s). A tile
       of the band is kept only where some of its pixels came from a dataset reaching its zoom
       (`terrain_zoom::reaching`, the sampler's sources by pixel); one that would only upsample
       a coarser dataset isn't, and its parent's quarter there is its own sample: so the next
@@ -378,7 +379,9 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   the stored levels scaled up, feathering, gaps filled), tiles encoded, the coarser levels from
   the finer (depth-lo: z8 from the z9 tiles first, and the z9 shading read), the floor's shading
   and the packs written. Its progress moves within a zoom, by its blocks
-  done and the grids of the block under way sampled, said every 5 s.
+  done and the grids of the block under way sampled, said every 5 s; then the floor's shading
+  says its pyramid's tiles (`tiles shaded`, every 5 s: a z6 tile's takes up to half an hour after
+  its zooms).
 - **The water's reads:** a level's blocks share the water tiles their margins overlap
   (`depth::build::WaterCache`), and a z14 tile's polygons, the basemap's deepest, are read and
   decoded once for its 4 z15 and 16 z16 descendants, across the two levels, shared among them and
