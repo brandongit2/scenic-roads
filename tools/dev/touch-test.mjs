@@ -794,13 +794,22 @@ async function run() {
       await until(`${jobs}.length > 0`, 20000);
       let jc = null;
       const nJobs = await js(`${jobs}.length`);
-      for (let k = 0; k < Math.min(nJobs, 15); k++) {
+      // (#1105) A job there is a link to its page: under the pointer, a real link over it (a tap
+      // opens it in a new tab, so a phone's job cards aren't read by tapping them).
+      if (nJobs) {
+        const link = await js(`(() => { const w = document.querySelector(".panel:not([hidden]) .sched .lanewrap"); w.scrollIntoView({ block: "center" }); for (const s of ${jobs}.slice(0, 30)) { const e = document.elementFromPoint(s.x, s.y); e?.dispatchEvent(new PointerEvent("pointermove", { clientX: s.x, clientY: s.y, pointerType: "mouse", bubbles: true })); const a = w.querySelector("a.seglink:not([hidden])"); if (a) return [a.getAttribute("href"), a.target]; } return null; })()`);
+        if (!link) console.log("INFO jobs: no job in view has a page (packed, or from before job ids)");
+        else check("jobs: a job in the schedule links to its page, in a new tab (#1105)", /^job\/\d+-\d+$/.test(link[0]) && link[1] === "_blank", link.join(" "));
+        if (!PHONE) await mouse(2, 2);
+      }
+      for (let k = 0; k < (PHONE ? 0 : Math.min(nJobs, 15)); k++) {
         const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${jobs}[${k}]; return s ? [s.x, s.y] : null; })()`));
         if (!PHONE) await mouse(2, 2);
         if (c && !c.none && c.map > 0) { jc = c; break; }
       }
-      const ended = jc ? 0 : await js(`(async () => { const tail = await fetch("/api/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/api/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
-      if (!jc && !ended) console.log("INFO jobs card: no finished or running job of a tiled step in the last 6 h (the live build's state), its map not checked");
+      if (PHONE) console.log("INFO jobs card: a phone's tap on a job opens its page; its card is a mouse's (#1105)");
+      const ended = jc || PHONE ? 0 : await js(`(async () => { const tail = await fetch("/api/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()); const h = await fetch("/api/history", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ since: Math.max(0, (tail.seq || 0) - 5000), max: 5000 }) }).then((r) => r.json()); const from = Date.now() / 1000 - 6 * 3600; return (h.events || []).filter((e) => ["end", "done"].includes(e.kind) && e.ok !== false && e.t >= from && ${JSON.stringify(tiled)}.includes(e.step)).length; })()`);
+      if (PHONE) { /* (said above) */ } else if (!jc && !ended) console.log("INFO jobs card: no finished or running job of a tiled step in the last 6 h (the live build's state), its map not checked");
       else if (!jc) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, `the history has ${ended} finished jobs of tiled steps in 6 h, none shown in 20 s`);
       else if (jc.none) check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", false, "no card shown on a job's box");
       else check("jobs card: a job's named as the code names it, a world map of its tiles, the map cards' layout (#794)", !jc.wide && jc.w <= 282 && steps.has(String(jc.title).split(/[ :]/)[0]) && jc.map > 0 && jc.map <= 280, `${jc.kick} / ${jc.title}, map ${jc.map} px`);

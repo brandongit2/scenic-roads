@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
+import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, segHref, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { h } from "./dom.js";
 import { n, pad, plural } from "./words.js";
@@ -961,7 +961,9 @@ function goneCard(w) {
 // it over anything that has one, never catching the pointer itself (pointer-events none), and goes
 // as the pointer leaves what it's about (into anything else, off the map, out of the window); a
 // click or a tap pins it where it is, with a close button, its words made again at each render
-// while what it's about is still shown (by its key). A pinned card is modal (#627, owner 21 Oct):
+// while what it's about is still shown (by its key). Not the schedule's (task #1105): a job there
+// is a link to its page, its card the hover's alone; a tap on a segment of no page (one to come,
+// several packed) shows its card as a hover's, gone with the next tap or scroll. A pinned card is modal (#627, owner 21 Oct):
 // a clear veil under it takes every click and scroll behind it, a click on it only letting the
 // card go; the card itself scrolls and stays live. Escape or the close button let it go too.
 const cards = new Map();
@@ -1031,7 +1033,6 @@ function pinCard(key, x, y, also = "") {
   pin.x = x;
   pin.y = y;
   pin.el = h("div", { class: "card-tip pinned", role: "dialog", "aria-modal": "true" }, close, h("div", "cb", cardOf(key)(also)));
-  tl?.pin(key);
   // (The veil: a click on it lets the card go and nothing else; a wheel or a touch's drag there
   // moves nothing. The page under it can't scroll while the card is up.)
   pin.veil = h("div", { class: "card-veil" });
@@ -1054,7 +1055,6 @@ function unpin() {
   // (A card opened from a button (the header's asks): the focus back on it, if it's still there.)
   if (pin.back?.isConnected && !pin.back.disabled) pin.back.focus();
   pin.key = pin.el = pin.veil = pin.back = null;
-  tl?.pin(null);
 }
 // (After a render: the pinned card's words again, from what's shown now; kept as they were, said
 // to be over, when it's gone.)
@@ -1082,9 +1082,14 @@ function wireCards() {
   document.addEventListener("pointerout", (e) => { if (!e.relatedTarget || at(e.relatedTarget).card !== at(e.target).card) hideHover(); });
   document.documentElement.addEventListener("mouseleave", hideHover);
   window.addEventListener("blur", hideHover);
-  const act = (e) => {
+  const act = (e, tap = false) => {
     if (pin.el?.contains(e.target) || pin.veil?.contains(e.target)) return;
     const d = at(e.target), key = d.card;
+    if (e.target instanceof Element && e.target.closest(".sched .lanewrap")) {
+      if (tap && key && cardOf(key)) showHover(key, e.clientX, e.clientY, d.also);
+      else hideHover();
+      return;
+    }
     if (key && cardOf(key)) pinCard(key, e.clientX, e.clientY, d.also);
     else unpin();
   };
@@ -1099,7 +1104,7 @@ function wireCards() {
     if (!d || e.pointerType !== "touch" || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10 || e.timeStamp - d.t > 800) return;
     if (e.target instanceof Element && e.target.closest("canvas.wmap, a, button, input, select, label, summary, .card-veil")) return;
     tapped = performance.now();
-    act(e);
+    act(e, true);
   });
   document.addEventListener("pointercancel", () => { down = null; });
   document.addEventListener("click", (e) => { if (performance.now() - tapped > 1000) act(e); });
@@ -1205,6 +1210,7 @@ function runCard(m, r, kind, laneName) {
       ["memory", j.mem_mb ? `${(j.mem_mb / 1024).toFixed(1)} GB` : null],
       ["threads", j.threads ?? null],
       ["part", parts ? `${at + 1} of ${parts}: ${j.parts[at]}` : null],
+      ["job", j.job ? `${j.job} (click: its page)` : null],
     ], inside(j, m.now, m.fc));
   }
   if (kind === "past") {
@@ -1217,6 +1223,7 @@ function runCard(m, r, kind, laneName) {
       ["stage", S.stage(r.step)],
       ["on", laneName(r.lane)],
       ["when", `${clock(r.from)}–${clock(r.until)}`],
+      ["job", several ? "zoom in for each job's page" : r.job ? `${r.job} (click: its page)` : "from before job ids: no page"],
     ]);
   }
   // (One job as the forecast's run of the scheduler grants it (`runJobs`), its targets
@@ -1368,7 +1375,7 @@ function schedule(m) {
   const tracks = [];
   const segment = (track, r, kind, key, job = null) => {
     cards.set(key, () => runCard(m, r, kind, laneName));
-    const s = track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, job });
+    const s = track.add({ key, from: r.from, until: r.until, colour: S.colour(r.step), kind, failed: kind === "past" && !r.ok, step: r.step, r, job, href: segHref(r, kind) });
     segs.set(key, s);
     if (job != null) jobSegs.set(job, s);
     if (S.stage(r.step)) stagesSeen.add(S.stage(r.step));
@@ -1435,7 +1442,7 @@ function schedule(m) {
   const legend = h("div", "legend", stages.map((g) => lg(`lg stage ${g}`, h("i", { style: { background: stageColour(g) } }), g)),
     h("span", "keys", KEYS.filter(([k]) => kinds.has(k)).map(([k, cls, text]) => lg(`lg kind ${k}`, h("i", cls), text))),
     Object.keys(outs).length ? h("span", null, h("i", { class: "rmark" }), "a region all on the map") : null,
-    h("span", "hint", "a job hovered: red arrows from what it waits on and to what waits on it"),
+    h("span", "hint", "a job hovered: red arrows from what it waits on and to what waits on it · clicked: its page"),
     h("span", "hint", "drag to move · pinch or ⌥ scroll to zoom"));
   legend.addEventListener("pointerover", (e) => { if (e.pointerType !== "touch") tl.hover(e.target.closest?.("[data-lg]")?.dataset.lg || null); });
   legend.addEventListener("pointerleave", () => tl.hover(null));

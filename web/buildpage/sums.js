@@ -47,7 +47,8 @@ export function macSlot(name, hosts = []) {
 }
 
 // The jobs that ended at or after `from`, as the history has them, as runs {lane, step, from, until,
-// n, ok, targets, seq}, by start: a lead's job's end (kind "end": its worker the slot) and a
+// n, ok, targets, seq, job}, by start (`job` its run's id, null from before task #1103): a lead's
+// job's end (kind "end": its worker the slot) and a
 // worker's leased job's ("done", "fail": its worker the Mac, no slot; put on the first of its Mac's
 // lanes free by then). `t` is the end, `secs` how long it ran. Lanes are named by `hosts` (macSlot).
 // An event without its time or step is passed over; one given twice (by its seq), once. Each run's
@@ -67,7 +68,7 @@ export function pastRuns(events, from, hosts = []) {
     const key = e.kind === "end" ? `${e.worker} ${e.step}` : null;
     const after = (key ? started.get(key) : leases.get(e.job)) || [];
     if (key) started.delete(key);
-    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, targets: e.targets || [], seq: e.seq, after };
+    const r = { lane: slotName(host, slot - 1), step: e.step, from: e.t - e.secs, until: e.t, n: (e.targets || []).length, ok: e.ok !== false, targets: e.targets || [], seq: e.seq, after, job: e.job ?? null };
     (e.kind === "end" ? out : leased).push(r);
     if (e.kind !== "end") r.host = host;
   }
@@ -100,6 +101,12 @@ export function packRuns(runs, gap) {
   }
   return out;
 }
+
+// A job run's page (task #1105), from the build page's folder: `job/<epoch>-<n>`; null without an id.
+export const jobHref = (id) => (id ? `job/${encodeURIComponent(id)}` : null);
+// A schedule segment's page: a packed past run's when it's one job, a running job's (its status's
+// `job`, the run's id).
+export const segHref = (r, kind) => jobHref(kind === "past" ? (r.parts?.length === 1 ? r.parts[0].job : null) : kind === "running" ? r.job?.job : null);
 
 // The schedule's lanes grouped by Mac: each host of `hosts` in order with its slots' lanes among
 // `names` (by slot number); then each other lane's host (its name less the slot's number: a Mac

@@ -12,6 +12,7 @@
 // The page's address keeps what's open (?range=24h&run=<id>&kind=test). Live: the app's event
 // stream says when a Mac sent more.
 import { createTimeline } from "../lib/buildpage/timeline.js";
+import { lineage, pack, spanLanes, spanTree } from "../lib/buildpage/runlanes.js";
 import { h, token } from "../lib/buildpage/dom.js";
 import { pad } from "../lib/buildpage/words.js";
 
@@ -76,18 +77,6 @@ matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => { h
 // memorystatus_level) at 50 % none, at 10 % all.
 const loadHeat = (load, ncpu) => (load == null ? null : heat(load / (2 * (ncpu || 8))));
 const memHeat = (free) => (free == null ? null : heat((50 - free) / 40));
-
-// Rows of [from, until] items that don't overlap (by `gap` s), in time order: [[item…]…].
-function pack(items, gap, from = (x) => x.from, until = (x) => x.until) {
-  const rows = [], ends = [];
-  for (const it of [...items].sort((a, b) => from(a) - from(b))) {
-    let i = ends.findIndex((e) => e + gap <= from(it));
-    if (i < 0) { i = rows.length; rows.push([]); ends.push(-Infinity); }
-    rows[i].push(it);
-    ends[i] = Math.max(until(it), from(it) + gap);
-  }
-  return rows;
-}
 
 // ---- state, kept in the address ---------------------------------------------------------------------
 const q = new URLSearchParams(location.search);
@@ -288,9 +277,9 @@ function hookCards(t, runOf) {
     const r = runOf(key);
     if (e.pointerType === "touch" || (e.pointerType === "" && matchMedia("(pointer: coarse)").matches)) {
       pinned = key;
-      t.pin(key);
+      t.select(key);
       const c = cards.get(key)();
-      if (r) c.push(h("button", { type: "button", onclick: () => { hideTip(); t.pin(null); openRun(r.id); } }, "Open the run"));
+      if (r) c.push(h("button", { type: "button", onclick: () => { hideTip(); t.select(null); openRun(r.id); } }, "Open the run"));
       showTip(c, e.clientX, e.clientY, true);
       return;
     }
@@ -312,25 +301,17 @@ async function openRun(id) {
 }
 function runRelations(key) {
   const s = runSpans.get(key);
-  if (!s) return null;
+  if (!s || !runTree) return null;
   // (A span pointed at: it, what it's part of and what's part of it.)
-  const on = new Set([key]);
-  for (let p = s.parent; p && runSpans.has(`s ${p}`); p = runSpans.get(`s ${p}`).parent) on.add(`s ${p}`);
-  const down = (id) => { for (const k of kids.get(id) || []) { on.add(`s ${k.id}`); down(k.id); } };
-  down(s.id);
-  return { on: [...on].map((k) => runSegs.get(k)).filter(Boolean), arrows: [] };
+  return { on: [...lineage(runTree, s.id)].map((id) => runSegs.get(`s ${id}`)).filter(Boolean), arrows: [] };
 }
-let kids = new Map();
+let runTree = null;
 function renderRun() {
   if (!runData) return;
   const { run, spans, samples, macs, now } = runData;
   const t0 = run.t0 ?? Math.min(...spans.map((s) => s.t0)), t1 = run.t1 ?? now;
-  kids = new Map();
-  for (const s of spans) (kids.get(s.parent) || kids.set(s.parent, []).get(s.parent)).push(s);
-  const depth = new Map([[run.id, 0]]);
-  const depthOf = (s) => { if (depth.has(s.id)) return depth.get(s.id); const d = (s.parent && s.parent !== run.id && runSpansById.get(s.parent) ? depthOf(runSpansById.get(s.parent)) : 0) + 1; depth.set(s.id, d); return d; };
-  const runSpansById = new Map(spans.map((s) => [s.id, s])), byId = runSpansById;
-  spans.forEach(depthOf);
+  runTree = spanTree(spans, run.id);
+  const { byId, kids } = runTree;
   $("run-title").textContent = run.name || run.id;
   const pad = Math.max(2, (t1 - t0) * 0.02);
   if (!runTl) {
@@ -344,34 +325,23 @@ function renderRun() {
   runSegs = new Map(); runSpans = new Map(); dropCards("s", "x");
   const lanes = h("div", "lanes"), tracks = [];
   const track = (cls) => { const t = runTl.track(); if (cls) t.el.classList.add(cls); tracks.push(t); return t; };
-  // The run itself, then a lane a kind at each depth.
+  // The run itself, then a lane a kind at each depth (runlanes.js; those too short to see at this
+  // zoom, and cargo test's tests, marks at their ends, share one row: they may touch).
   const top = track();
   top.add({ key: `s ${run.id}`, from: t0, until: t1, colour: colourOf(classOf(run)), kind: run.status === "running" && run.lost == null ? "running" : "past", failed: bad(run) });
   const ranOn = [...new Set([run, ...spans].flatMap((s) => [s.mac, s.on]))].filter(Boolean);
   cards.set(`s ${run.id}`, () => [h("b", null, run.name), facts(runFacts(run, now, macs, ranOn))]);
   lanes.append(h("div", "ln", "the run"), top.el);
-  const maxDepth = Math.max(0, ...depth.values());
-  for (let d = 1; d <= maxDepth; d++) {
-    const at = spans.filter((s) => depth.get(s.id) === d && s.t0 != null);
-    const ks = [...new Set(at.map((s) => s.kind))].sort((a, b) => (KIND_ORDER.indexOf(a) + 1 || 99) - (KIND_ORDER.indexOf(b) + 1 || 99));
-    for (const k of ks) {
-      const mine = at.filter((s) => s.kind === k);
-      // (Those too short to see at this zoom, and cargo test's tests, marks at their ends, share one row:
-      // they may touch. The rest packed, a row each at once.)
-      const short = (s) => s.attrs?.untimed || (s.t1 != null && s.t1 - s.t0 < gap);
-      const marks = mine.filter(short), timed = mine.filter((s) => !short(s));
-      [...(marks.length ? [marks] : []), ...pack(timed, gap, (s) => s.t0, (s) => s.t1 ?? now)].forEach((row, i) => {
-        const t = track();
-        for (const s of row) {
-          const key = `s ${s.id}`, untimed = s.attrs?.untimed;
-          const seg = t.add({ key, from: s.t0, until: s.t1 ?? now, colour: colourOf(k), kind: untimed ? "mark" : s.status === "running" && s.lost == null ? "running" : "past", failed: bad(s) });
-          runSegs.set(key, seg); runSpans.set(key, s);
-          cards.set(key, () => [h("b", null, s.name), facts([["kind", s.kind], s.parent !== run.id && byId.get(s.parent) ? ["in", byId.get(s.parent).name] : null, ["status", h("span", statusClass(s), statusText(s))], untimed ? ["ended", clock(s.t1)] : ["began", clock(s.t0)], ["took", untimed ? "– (cargo test says when a test ended, not when it began)" : s.t1 != null ? dur(s.t1 - s.t0) : `${dur(now - s.t0)} so far`],
-            s.mac !== run.mac || s.on !== s.mac ? ["Mac", whereRan(s, macs)] : null, ...Object.entries(s.attrs || {}).filter(([a]) => a !== "untimed" && a !== "ran_on").map(([a, v]) => [a, Array.isArray(v) ? `${v.length}: ${v.slice(0, 40).join(", ")}${v.length > 40 ? "…" : ""}` : v])])]);
-        }
-        lanes.append(h("div", { class: "ln", title: k }, i ? "" : `${"· ".repeat(d - 1)}${k} (${mine.length})`), t.el);
-      });
-    }
+  const add = (t, s) => {
+    const key = `s ${s.id}`, untimed = s.attrs?.untimed;
+    const seg = t.add({ key, from: s.t0, until: s.t1 ?? now, colour: colourOf(s.kind), kind: untimed ? "mark" : s.status === "running" && s.lost == null ? "running" : "past", failed: bad(s) });
+    runSegs.set(key, seg); runSpans.set(key, s);
+    cards.set(key, () => [h("b", null, s.name), facts([["kind", s.kind], s.parent !== run.id && byId.get(s.parent) ? ["in", byId.get(s.parent).name] : null, ["status", h("span", statusClass(s), statusText(s))], untimed ? ["ended", clock(s.t1)] : ["began", clock(s.t0)], ["took", untimed ? "– (cargo test says when a test ended, not when it began)" : s.t1 != null ? dur(s.t1 - s.t0) : `${dur(now - s.t0)} so far`],
+      s.mac !== run.mac || s.on !== s.mac ? ["Mac", whereRan(s, macs)] : null, ...Object.entries(s.attrs || {}).filter(([a]) => a !== "untimed" && a !== "ran_on").map(([a, v]) => [a, Array.isArray(v) ? `${v.length}: ${v.slice(0, 40).join(", ")}${v.length > 40 ? "…" : ""}` : v])])]);
+  };
+  for (const r of spanLanes(runTl, runTree, { gap, now, order: KIND_ORDER, add, label: (k, d, n) => `${"· ".repeat(d - 1)}${k} (${n})` })) {
+    tracks.push(r.track);
+    lanes.append(h("div", { class: "ln", title: r.title }, r.label), r.track.el);
   }
   // The Macs' load and memory over it: the run's Mac and the test Mac.
   for (const [mac, ss] of Object.entries(samples)) {
@@ -396,7 +366,7 @@ function renderRun() {
   const whole = Math.max(1e-3, t1 - t0);
   // (A test named with its suite.)
   const label = (s) => (s.kind === "test" && byId.get(s.parent) ? `${byId.get(s.parent).name} › ${s.name}` : s.name);
-  const row = (s, d, scale) => h("tr", { class: "pick", onpointerenter: () => runTl.hover(`s ${s.id}`), onpointerleave: () => runTl.hover(null), onclick: () => { runTl.pin(`s ${s.id}`); } },
+  const row = (s, d, scale) => h("tr", { class: "pick", onpointerenter: () => runTl.hover(`s ${s.id}`), onpointerleave: () => runTl.hover(null), onclick: () => { runTl.select(`s ${s.id}`); } },
     h("td", { class: "nm", title: label(s) }, h("span", statusClass(s), bad(s) ? "✗ " : ""), label(s)), h("td", "dim", s.kind), h("td", "num", s.attrs?.untimed ? "–" : dur(d)),
     scale ? h("td", "barcell", h("div", { class: "bar", style: { width: `${Math.max(0.5, (100 * d) / scale)}%`, background: colourOf(s.kind) } })) : null);
   const byKind = new Map();

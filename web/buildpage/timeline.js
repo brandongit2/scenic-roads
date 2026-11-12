@@ -12,12 +12,19 @@
 // under the pointer, or between the fingers. Opens 12 h either side of now, now in the middle; the
 // view moves with now.
 //
-// A segment ({key, from, until, colour, kind: past|running|next|mark, failed}) pointed at (or its
-// card pinned: a tap's) is `active`: `relations(key)` (dash.js) names the segments it waits on and
-// those waiting on it ({on, arrows, tiles}); red arrows, straight and square-cornered, run from
-// each it waits on to it and from it to each waiting; everything else dims. `onLit(tiles)` hands
-// its tiles to the map. A legend item's hover is a key like any other. The segment under the
-// pointer is its canvas's `data-card` (dash.js's cards find it there).
+// A segment ({key, from, until, colour, kind: past|running|next|mark, failed, href}) pointed at (or
+// selected: `select`, a job page's span clicked) is `active`: `relations(key)` (dash.js) names the
+// segments it waits on and those waiting on it ({on, arrows, tiles}); red arrows, straight and
+// square-cornered, run from each it waits on to it and from it to each waiting; everything else
+// dims. `onLit(tiles)` hands its tiles to the map. A legend item's hover is a key like any other.
+// The segment under the pointer is its canvas's `data-card` (dash.js's cards find it there). One
+// with an `href` (a job's page, task #1105) has a real link over it while it's under the pointer
+// (or a finger's tap): a click opens it in a new tab, and Cmd-click, a middle click and the
+// context menu's copy work as on any link; a drag that starts on it still moves the view.
+//
+// A track may be drawn by its own `draw(g, r, w, h)` (a job page's chart of its Mac's CPU: the 2D
+// context, the view {t0, t1, span}, its width and height in px). `ticks(t0, t1, most)` names the
+// axis's labels ([{t, label, day}]; by default local times, a day's name at midnight).
 import { timeTicks } from "./chartmath.js";
 import { SCHED_MIN_SPAN, viewPan, viewRange, viewZoom } from "./sums.js";
 
@@ -30,9 +37,19 @@ export const SPAN0 = 86400;
 const LOOK = { past: [0.8, 1], next: [0.4, 1], running: [1, 0], mark: [0.75, 1] };
 const DIM = 0.14;
 
+// The axis's labels by default: local times (chartmath.js timeTicks), a day's name at midnight and
+// when the ticks are a day or more apart.
+function localTicks(t0, t1, most) {
+  const days = (t1 - t0) / most >= 43200;
+  return timeTicks(t0, t1, most).map((t) => {
+    const day = days || t.label === "00:00";
+    return { t: t.t, label: day ? DAYS[new Date((t.t + 7200) * 1000).getDay()] : t.label, day };
+  });
+}
+
 // (`minSpan`, `span0`: its least width and its width at first, s; the dev job dashboard's own,
-// tools/devtools.)
-export function createTimeline({ relations = () => null, onLit = () => {}, onRepack = () => {}, minSpan = SCHED_MIN_SPAN, span0 = SPAN0 } = {}) {
+// tools/devtools, and a job page's; `archived`: its archive sign at the domain's left end, the schedule's.)
+export function createTimeline({ relations = () => null, onLit = () => {}, onRepack = () => {}, minSpan = SCHED_MIN_SPAN, span0 = SPAN0, ticks = localTicks, archived = true } = {}) {
   const el = document.createElement("div");
   el.className = "lanewrap";
   const axis = document.createElement("div");
@@ -51,13 +68,19 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
   archive.setAttribute("role", "img");
   archive.setAttribute("aria-label", "Older history is in the archive, not shown here");
   archive.hidden = true;
+  // (The link over the segment with an `href` under the pointer: one, moved to it.)
+  const link = document.createElement("a");
+  link.className = "seglink";
+  link.target = "_blank";
+  link.draggable = false;
+  link.hidden = true;
 
   let view = { c: 0, span: span0 };
   let dom = { now: 0, lo: 0, hi: 1 }; // the domain and now (unix s), as dash.js last rendered it
   let geo = { x0: 0, w: 0 }; // the tracks' column: its left in `el` and its width (px)
   let packed = 0; // the span its segments were packed at
   let tracks = []; // [{el, canvas, segs}]
-  let hoverKey = null, pinKey = null, activeKey = null, rel = null, under = null;
+  let hoverKey = null, selKey = null, activeKey = null, rel = null, under = null;
 
   const range = () => viewRange(view, dom.now, dom.lo, dom.hi, minSpan);
   // (A pointer's x as a share of the tracks' width.)
@@ -102,10 +125,11 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
     cap.hidden = nx < 0 || nx > geo.w;
     cap.style.left = `${(geo.x0 + nx).toFixed(1)}px`;
     // At the domain's left end: the archive's sign.
-    archive.hidden = r.t0 > dom.lo + r.span / geo.w;
+    archive.hidden = !archived || r.t0 > dom.lo + r.span / geo.w;
     archive.style.left = `${geo.x0}px`;
     drawAxis(r.t0, r.t1, x);
     drawArrows(r);
+    placeLink(r);
     // (Zoomed far from where it was packed: packed again once the zoom rests.)
     if (packed && (r.span / packed > 1.6 || packed / r.span > 1.6)) {
       clearTimeout(repackTimer);
@@ -125,6 +149,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
       const g = c.getContext("2d");
       g.setTransform(dpr, 0, 0, dpr, 0, 0);
       g.clearRect(0, 0, w, hh);
+      if (t.draw) t.draw(g, r, w, hh);
       for (const s of t.segs) {
         if (s.until < r.t0 - r.span / w * 2 || s.from > r.t1 + r.span / w * 2) continue;
         const [a, b] = span(s, r), [alpha, inset] = LOOK[s.kind] || LOOK.past;
@@ -140,22 +165,19 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
       g.globalAlpha = 1;
     }
   }
-  // A dense time axis: a tick at each round time (chartmath.js timeTicks, by local time, midnight
-  // a day's name), smaller ones between, none crowding the now line (its cap says "now").
+  // A dense time axis: a tick at each round time (`ticks`), smaller ones between, none crowding
+  // the now line (its cap says "now").
   function drawAxis(t0, t1, x) {
-    const most = Math.max(4, Math.round(geo.w / 70));
+    // (Labels as wide as they need: ~70 px a time of day, more for a job page's T+05:01.158.)
+    const most = Math.max(4, Math.round(geo.w / (ticks === localTicks ? 70 : 85)));
     const kids = [];
-    for (const t of timeTicks(t0, t1, most * 4)) { const b = document.createElement("b"); b.style.left = `${x(t.t).toFixed(1)}px`; kids.push(b); }
-    // (Ticks a day or more apart are days, named, whatever hour local midnight falls at after a
-    // clock change.)
-    const days = (t1 - t0) / most >= 43200;
-    for (const t of timeTicks(t0, t1, most)) {
+    for (const t of ticks(t0, t1, most * 4)) { const b = document.createElement("b"); b.style.left = `${x(t.t).toFixed(1)}px`; kids.push(b); }
+    for (const t of ticks(t0, t1, most)) {
       // (None crowding the now line, nor cut by either end.)
-      if (Math.abs(x(t.t) - x(dom.now)) < 34 || x(t.t) < 16 || x(t.t) > geo.w - 16) continue;
+      if ((!cap.hidden && Math.abs(x(t.t) - x(dom.now)) < 34) || x(t.t) < 16 || x(t.t) > geo.w - 16) continue;
       const s = document.createElement("span");
-      const day = days || t.label === "00:00";
-      s.textContent = day ? DAYS[new Date((t.t + 7200) * 1000).getDay()] : t.label;
-      if (day) s.className = "day";
+      s.textContent = t.label;
+      if (t.day) s.className = "day";
       s.style.left = `${x(t.t).toFixed(1)}px`;
       kids.push(s);
     }
@@ -201,11 +223,24 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
     }
     for (const x of tracks) if (x !== t || !found) { delete x.canvas.dataset.card; x.canvas.style.cursor = ""; }
     if (found) { t.canvas.dataset.card = found.key; t.canvas.style.cursor = "pointer"; }
-    if (found !== under) { under = found; later(); }
+    if (found !== under) { under = found; placeLink(range()); later(); }
     return found;
   }
+  // The link over the segment under the pointer, when it has one: as wide as it's drawn in view.
+  function placeLink(r) {
+    const s = under?.href ? under : null;
+    if (!s) { if (!link.hidden) { link.hidden = true; link.removeAttribute("href"); } return; }
+    const [a, b] = span(s, r), left = Math.max(0, a - 1), right = Math.min(geo.w, b + 1);
+    if (right <= left) { link.hidden = true; return; }
+    if (link.parentNode !== s.track.el) s.track.el.append(link);
+    if (link.getAttribute("href") !== s.href) link.setAttribute("href", s.href);
+    link.dataset.card = s.key;
+    link.style.left = `${left.toFixed(1)}px`;
+    link.style.width = `${(right - left).toFixed(1)}px`;
+    link.hidden = false;
+  }
   function activate(force = false) {
-    const key = hoverKey ?? pinKey;
+    const key = hoverKey ?? selKey;
     if (key === activeKey && !force) return;
     activeKey = key;
     rel = key ? relations(key) : null;
@@ -223,7 +258,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
   el.addEventListener("pointerleave", (e) => {
     if (e.pointerType === "touch") return;
     for (const x of tracks) delete x.canvas.dataset.card;
-    if (under) { under = null; later(); }
+    if (under) { under = null; placeLink(range()); later(); }
     if (hoverKey) { hoverKey = null; activate(); }
   });
 
@@ -261,7 +296,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
   const gesture = () => !!(drag?.moved || pinch || gesturing);
   el.addEventListener("pointerdown", (e) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    if (e.target instanceof Element && e.target.closest("button, a, input, select")) return;
+    if (e.target instanceof Element && e.target.closest("button, a:not(.seglink), input, select")) return;
     // (What a tap lands on: its card's key on the canvas before the page's tap reads it.)
     hit(e);
     if (e.isPrimary) { ptrs.clear(); pinch = null; }
@@ -295,6 +330,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
       el.classList.add("panning");
       hoverKey = null;
       under = null;
+      placeLink(range());
       activate();
     }
     setView(viewPan(drag.v, (-dx / geo.w) * range().span, dom.now, dom.lo, dom.hi, minSpan));
@@ -311,7 +347,8 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
   };
   el.addEventListener("pointerup", up);
   el.addEventListener("pointercancel", up);
-  // (A mouse's drag ends in a click on what it let go over: not a card's pin.)
+  // (A mouse's drag ends in a click on what it let go over: not a link's opening, nor a span's
+  // selection.)
   el.addEventListener("click", (e) => { if (eatClick) { eatClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
   new ResizeObserver(() => measure()).observe(el);
   function measure() {
@@ -322,11 +359,16 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
 
   const api = {
     el, axis, archive,
+    // The time under a client x (unix s), for a page's own cards over a drawn track.
+    at: (clientX) => { const r = range(); return r.t0 + frac(clientX) * r.span; },
+    // The view on [t0, t1], `now` the domain's (a job page's whole run as it grows).
+    show(t0, t1, now) { setView({ c: (t0 + t1) / 2 - now, span: t1 - t0 }); },
     // The view's times now, before a render places its segments (dash.js).
     range: (now, lo, hi) => { dom = { now, lo, hi }; return range(); },
-    // A track: its element (dash.js puts it in the grid) and its segments, added by `add`.
-    track() {
-      const t = { el: document.createElement("div"), canvas: document.createElement("canvas"), segs: [] };
+    // A track: its element (dash.js puts it in the grid) and its segments, added by `add`; `draw`,
+    // its own drawing under them.
+    track(draw = null) {
+      const t = { el: document.createElement("div"), canvas: document.createElement("canvas"), segs: [], draw };
       t.el.className = "track";
       t.el.append(t.canvas);
       t.add = (s) => { s.track = t; t.segs.push(s); return s; };
@@ -336,6 +378,7 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
     // the view's span; what was active found again.
     placed(lanes, trs, span) {
       el.replaceChildren(lanes, cap, svg, archive);
+      link.hidden = true;
       tracks = trs;
       colours = new Map();
       under = null;
@@ -358,8 +401,9 @@ export function createTimeline({ relations = () => null, onLit = () => {}, onRep
       }
       return out;
     },
-    // A card pinned (a segment's: a tap on a touch screen) or let go.
-    pin(key) { pinKey = key; activate(); },
+    // A segment selected (a job page's span clicked: it and what it's in lit while nothing's
+    // hovered), or none.
+    select(key) { selKey = key; activate(); },
     // A legend item pointed at (its key; null: none).
     hover(key) { if (gesture()) return; hoverKey = key; activate(); },
   };

@@ -9,7 +9,7 @@
 //   /api/stream   an event stream telling open pages which collection changed
 // The pages' addresses are relative (`../api/…`), so the app works under a proxy's path (tools/caddy's
 // /dev/). The dashboard's timeline is the build page's own (web/buildpage/timeline.js and what it imports,
-// served from the checkout at /lib/buildpage/), as are its elements and words (dom.js, words.js).
+// served from the checkout at /lib/buildpage/), as are its elements and words (dom.js, words.js) and a run's lanes (runlanes.js).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -23,7 +23,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
 // The build page's modules the dashboard imports (its timeline, and that's; its elements and words).
 const PAGE_DIR = path.join(here, "../../web/buildpage");
-const PAGE_LIB = new Set(["timeline.js", "sums.js", "chartmath.js", "dom.js", "words.js"]);
+const PAGE_LIB = new Set(["timeline.js", "runlanes.js", "sums.js", "chartmath.js", "dom.js", "words.js"]);
 
 export function makeServer({ board: boardStore, jobs: jobsStore }) {
   // ---- change notices: which collection changed, to every open page (a burst sent once) ----------
