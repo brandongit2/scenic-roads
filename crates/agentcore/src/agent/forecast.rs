@@ -512,6 +512,26 @@ pub fn step_sums(
     sums
 }
 
+/// What a region's target of `step` takes (`cost_table`'s `cost`): its own run at the lead's pace
+/// (`at`), known, where it ran the way its step runs now (crate::needs::Book::own: the measure the
+/// coordinator sizes its jobs by), else `per`, its step's time a target; its memory `peak_mb`.
+/// (Task #1165: the table had known any run of a target, so 155 of 165 terrain-deep targets on 12
+/// Nov were known at 0-8 s from runs of cost version 0 that found no tiffs, and the forecast saw 17-18
+/// of their jobs a Mac in 5 minutes where the lead granted 2.)
+pub fn target_cost(
+    book: &crate::needs::Book,
+    step: &str,
+    target: &str,
+    at: &dyn Fn(&crate::coord::Cost, &str) -> f64,
+    per: &dyn Fn(&str) -> f64,
+    peak_mb: u64,
+) -> Cost {
+    match book.own(step, target) {
+        Some(c) => Cost { secs: at(c, step), known: true, peak_mb },
+        None => Cost { secs: per(step), known: false, peak_mb },
+    }
+}
+
 /// What each target of the regions takes, by step, then target.
 pub type CostTable = BTreeMap<String, BTreeMap<String, Cost>>;
 
@@ -4552,11 +4572,16 @@ mod tests {
     }
 
     /// A recorded forecast (SCENIC_FORECAST_RECORD: a forecast-input.json) timed. For profiling at live scale (unset: nothing);
-    /// SCENIC_FORECAST_OUT and SCENIC_TOCOME_OUT write its forecast and its `/api/tocome` answer.
+    /// SCENIC_FORECAST_OUT and SCENIC_TOCOME_OUT write its forecast and its `/api/tocome` answer;
+    /// with SCENIC_FORECAST_RECOST, its cost table made again by this build's rule first
+    /// (crate::agent::fccheck::recost).
     #[test]
     fn recorded_timing() {
         let Ok(p) = std::env::var("SCENIC_FORECAST_RECORD") else { return };
-        let r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+        let mut r = Record::from_bytes(&std::fs::read(p).unwrap()).unwrap();
+        if std::env::var("SCENIC_FORECAST_RECOST").is_ok() {
+            crate::agent::fccheck::recost(crate::agent::seam::for_tests(), &mut r.input);
+        }
         let limit: u64 = std::env::var("SCENIC_FORECAST_LIMIT_S").ok().and_then(|s| s.parse().ok()).unwrap_or(15);
         let mb = || jobrt::sys::footprint().unwrap_or(0) >> 20;
         let base = mb();

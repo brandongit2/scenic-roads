@@ -307,8 +307,8 @@ from the first (`edit_held`).
   overlays each once its cadence has passed since it last went (the low zooms by the map log's mark of their batches, docs/maplog.md §6.5; the
   others by `LastCatalogue`'s runs), or once no z6 tile or
   terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
-  Each target takes its last run's time at the lead's pace, else its step's mean, else a first
-  guess; each machine at its measured speed (half the lead's until measured). Run three times for
+  Each target takes its own run's time at the lead's pace (a run of the way its step runs now, as
+  the coordinator sizes it: docs/pool.md §7.7), else its step's mean, else a first guess; each machine at its measured speed (half the lead's until measured). Run three times for
   a range. It says when each step, region and everything will be done, when each region is all on
   the map, when each cadenced publish may next go, and each machine's schedule, or why there's no
   finish.

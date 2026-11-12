@@ -796,6 +796,15 @@ impl<'a> Book<'a> {
         (c.secs as f64 / self.pace(c.worker.as_deref(), step)).round() as u64
     }
 
+    /// Target `target` of `step`'s own run, its measure for every reader (its memory, its time, the
+    /// coordinator's sizing, the forecast's cost table): its cost the way its step runs now
+    /// (crate::coord::cost_version). One of an older way says nothing of it (task #1165: the
+    /// forecast took terrain-deep runs of cost version 0, 0-8 s runs that found no tiffs, as known,
+    /// where the coordinator sized the same targets by the step's runs at minutes a target).
+    pub fn own(&self, step: &str, target: &str) -> Option<&'a Cost> {
+        self.costs.get(&cost_key(step, target)).filter(|c| c.v >= self.the_plan.cost_version(step))
+    }
+
     fn floor(&self, key: &str) -> Option<&Floor> {
         self.floors.and_then(|f| f.get(key))
     }
@@ -1073,7 +1082,7 @@ impl<'a> Book<'a> {
         };
         let key = cost_key(step, target);
         let floor = self.current_floor(step, &key);
-        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= self.the_plan.cost_version(step)) {
+        if let Some(c) = self.own(step, target) {
             return (c.peak_mb.max(floor.unwrap_or(0)), From::Measured);
         }
         if let Some(f) = floor {
@@ -1171,7 +1180,7 @@ impl<'a> Book<'a> {
     ) -> Option<(u64, bool)> {
         let md = self.model(step, Measure::Secs);
         let mac = worker.map(crate::paces::mac_of).filter(|m| md.macs.contains(*m));
-        let own = self.costs.get(key).filter(|c| c.v >= self.the_plan.cost_version(step));
+        let own = self.own(step, target);
         let Some(mac) = mac else {
             if let Some(c) = own {
                 let other = worker.is_some_and(|w| c.worker.as_deref() != Some(w));
@@ -1229,11 +1238,10 @@ impl<'a> Book<'a> {
     /// of their mean: what an update's drain waits for a target under way (crate::agent's
     /// `update_wait`), where a long tail's long jobs must not be cut short.
     pub fn secs_p90(&self, step: &str, target: &str, threads: u32, worker: Option<&str>) -> Option<u64> {
-        let key = cost_key(step, target);
-        let v = self.the_plan.cost_version(step);
-        if let Some(c) = self.costs.get(&key).filter(|c| c.v >= v) {
+        if let Some(c) = self.own(step, target) {
             return Some(c.secs);
         }
+        let key = cost_key(step, target);
         let md = self.model(step, Measure::Secs);
         let s = self.fitted(&md, &key, threads).or_else(|| self.step_p90(step))?;
         Some((s as f64 * self.pace(worker, step)).round() as u64)

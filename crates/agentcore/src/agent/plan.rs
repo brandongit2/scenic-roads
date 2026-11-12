@@ -2205,16 +2205,11 @@ impl Planner {
         // else its step's fit or largest, else `peak`'s first guess.)
         let book = crate::needs::Book::new(self.o.the_plan, &costs);
         let need_mb = |step: &str, t: &str| book.need(step, t, 0, peak(step, t)).mem_mb;
-        let cost = |step: &str, t: &str| -> Cost {
-            match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => Cost { secs: at_lead(c, step), known: true, peak_mb: need_mb(step, t) },
-                None => Cost { secs: per(step), known: false, peak_mb: need_mb(step, t) },
-            }
-        };
+        let cost = |step: &str, t: &str| forecast::target_cost(&book, step, t, &at_lead, &per, need_mb(step, t));
         // (A drop: its own run's measure, else its step's drops', else any step's drops', else as a
         // target of its step until a drop has run: crate::needs::DROPS, Book::drop_need.)
         let drop_cost = |step: &str, t: &str| -> Cost {
-            match costs.get(&crate::coord::cost_key(step, t)).filter(|c| crate::needs::is_drop(c)) {
+            match book.own(step, t).filter(|c| crate::needs::is_drop(c)) {
                 Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
                 None => match book.drop_need(step) {
                     Some((secs, mb)) => Cost { secs: secs as f64, known: true, peak_mb: mb },

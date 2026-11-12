@@ -503,29 +503,37 @@ impl Rooms {
 
 /// Record input `inp` as code 4 makes it (task #926): each Mac's pace at each step from `events`
 /// to its time (crate::paces, against its first lane's Mac, the lead), the scheduler's; and its
-/// shared steps' costs put at the lead's pace by it as the lead does (`forecast::at_lead`,
-/// `step_sums`), from the scheduler's measures: a measured target's by its own, one not measured
-/// by its step's mean. A cost its record doesn't hold the measures of (no scheduler, a step none
-/// of whose targets it holds) stays as recorded, as does a Mac's whose pace isn't known (taken
-/// at its lane's recorded speed, as the record made it).
+/// shared steps' costs made again by it (`recost`).
 fn repace(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecast::Input, events: &[Event]) {
     let Some(lead) = inp.machines.first().map(|m| m.mac.clone().unwrap_or_else(|| m.name.clone())) else { return };
     let Some(st) = inp.sched.as_mut() else { return };
     st.paces = crate::paces::Paces::of(events, &lead, inp.now).with_starts(the_plan, events, &st.costs, inp.now);
+    recost(the_plan, inp);
+}
+
+/// Record input `inp`'s shared steps' costs made as the lead makes them now (`forecast::target_cost`),
+/// from its scheduler's measures, at the lead's pace by its paces (`forecast::at_lead`,
+/// `step_sums`): a target's own run of the way its step runs now (crate::needs::Book::own, as the
+/// coordinator sizes it), known; else its step's mean. A cost its record doesn't hold the measures
+/// of (no scheduler, a step none of whose targets it holds, a step none of whose runs is of the
+/// way it runs now: its time) stays as recorded, as does a Mac's whose pace isn't known (taken at
+/// its lane's recorded speed, as the record made it). The replay of an archived input (`replay`;
+/// forecast's `recorded_timing` with SCENIC_FORECAST_RECOST) so runs this build's cost table.
+pub fn recost(the_plan: &'static dyn crate::agent::seam::Plan, inp: &mut forecast::Input) {
+    let Some(st) = inp.sched.as_ref() else { return };
     let speeds: BTreeMap<String, f64> = inp.machines.iter().map(|m| (m.name.clone(), m.speed)).collect();
     let speed = |w: Option<&str>| w.and_then(|w| speeds.get(w)).copied().unwrap_or(1.0);
     let at = |c: &crate::coord::Cost, step: &str| forecast::at_lead(c, step, &st.paces, &speed);
     let sums = forecast::step_sums(the_plan, &st.costs, &at);
-    let costs = &st.costs;
-    let put = |step: &str, target: &str, c: &mut forecast::Cost| match costs.get(&crate::coord::cost_key(step, target))
-    {
-        Some(m) if c.known => c.secs = at(m, step),
-        None if !c.known => {
-            if let Some(s) = sums.get(step).filter(|s| s.1 > 0.0) {
-                c.secs = s.0 / s.1;
-            }
+    let book = crate::needs::Book::new(the_plan, &st.costs);
+    let held: std::collections::BTreeSet<&str> =
+        st.costs.keys().map(|k| crate::agent::memguard::step_of_key(k)).collect();
+    let put = |step: &str, target: &str, c: &mut forecast::Cost| {
+        if held.contains(step) {
+            let was = c.secs;
+            let per = |s: &str| sums.get(s).filter(|x| x.1 > 0.0).map_or(was, |x| x.0 / x.1);
+            *c = forecast::target_cost(&book, step, target, &at, &per, c.peak_mb);
         }
-        _ => {}
     };
     for (step, ts) in inp.costs.iter_mut() {
         for (t, c) in ts.iter_mut() {

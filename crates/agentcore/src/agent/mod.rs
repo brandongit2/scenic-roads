@@ -17590,6 +17590,60 @@ mod pool_tests {
         assert_eq!(back.forecast(crate::agent::seam::for_tests()), fc);
     }
 
+    /// Task #1165: the forecast's cost table knows a target's own run as the coordinator sizes it
+    /// (crate::needs::Book::own): one of an older way of its step (terrain-deep's cost version 0,
+    /// 0-s runs that found no tiffs) leaves it to its step's mean, as the grants leave it to the
+    /// step's runs; a drop's own drop of an older way leaves it to its step's drops'.
+    #[test]
+    fn the_forecast_knows_a_targets_run_only_of_the_way_its_step_runs_now() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        let co = crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0;
+        let v = crate::coord::cost_version("terrain-deep");
+        let run = |secs: u64, v: u32, sizes: &[(&str, u64)]| crate::coord::Cost {
+            peak_mb: 1000,
+            secs,
+            worker: None,
+            v,
+            sizes: sizes.iter().map(|(k, n)| (k.to_string(), *n)).collect(),
+        };
+        let key = |t: &str| crate::coord::cost_key("terrain-deep", t);
+        let mut runs: Vec<(String, crate::coord::Cost)> =
+            (0..20).map(|i| (key(&format!("10/{i}/0")), run(100, v, &[]))).collect();
+        runs.push((key("10/99/0"), run(0, v - 1, &[("tiffs", 0)])));
+        runs.push((key("10/98/0"), run(10, v, &[])));
+        runs.push((key("10/97/0"), run(0, v - 1, &[(crate::needs::DROPS, 1)])));
+        runs.push((key("10/96/0"), run(2, v, &[(crate::needs::DROPS, 1)])));
+        co.add_costs(&runs);
+        a.coord = Some(std::sync::Arc::new(co));
+        let regions = [crate::agent::seam::RegionLeft {
+            id: "a".into(),
+            own_terrain_deep: vec!["10/99/0".into(), "10/98/0".into()],
+            ..Default::default()
+        }];
+        let drops = [("terrain-deep".to_string(), "10/97/0".to_string())];
+        let rec = a.planner().forecast_record(
+            &[],
+            &regions,
+            &drops,
+            &[],
+            Default::default(),
+            None,
+            &Default::default(),
+            &|_, _| 0,
+        );
+        let c = &rec.input.costs["terrain-deep"];
+        let (old, now) = (c["10/99/0"], c["10/98/0"]);
+        assert!(!old.known, "a run of an older way isn't its measure: {old:?}");
+        assert!(now.known, "{now:?}");
+        // (Its step's mean of the runs the way it runs now, at the same pace as its own run's.)
+        let mean = (20.0 * 100.0 + 10.0) / 21.0;
+        assert!((old.secs / now.secs - mean / 10.0).abs() < 0.01, "{old:?} {now:?}");
+        let drop = &rec.input.drops.iter().find(|j| j.1 == "10/97/0").unwrap().2;
+        assert_eq!((drop.secs, drop.known), (2.0, true), "its step's drops' of the way it runs now");
+    }
+
     #[test]
     fn a_new_lead_s_own_member_status_gives_it_no_second_lanes() {
         // (Task #816: just after a change of lead the lead's own status, from while it was a

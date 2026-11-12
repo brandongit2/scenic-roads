@@ -794,7 +794,7 @@ impl Sched {
     /// when none of its step's has run the way it runs now.
     pub(super) fn target_most(&self, step: &str, target: &str, worker: &str, threads: u32) -> Option<u64> {
         let (s, _) = self.secs_on(step, target, worker, threads)?;
-        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= self.the_plan.cost_version(step));
+        let own = self.book().own(step, target).is_some();
         if own || self.drops.contains(&(step.to_string(), target.to_string())) {
             return Some(s);
         }
@@ -863,11 +863,7 @@ impl Sched {
         if !self.drops.contains(&(step.to_string(), target.to_string())) {
             return None;
         }
-        let own = self
-            .costs
-            .get(&cost_key(step, target))
-            .is_some_and(|c| c.v >= self.the_plan.cost_version(step) && crate::needs::is_drop(c));
-        if own {
+        if b.own(step, target).is_some_and(crate::needs::is_drop) {
             return None;
         }
         let rev = self.rev();
@@ -1753,11 +1749,11 @@ impl Sched {
     /// the threads a job runs on now: past those it was measured at, that spreads the peak thinner
     /// than any thread of it is.
     fn per_thread_mb<'t>(&self, step: &str, targets: impl IntoIterator<Item = &'t str>, peak_mb: u64) -> (u64, u32) {
-        let v = self.the_plan.cost_version(step);
+        let b = self.book();
         let measured = targets
             .into_iter()
             .map(|t| {
-                let c = self.costs.get(&cost_key(step, t)).filter(|c| c.v >= v)?;
+                let c = b.own(step, t)?;
                 c.sizes.get("threads").map(|&n| n as u32).filter(|&n| n > 0)
             })
             .collect::<Option<Vec<u32>>>()

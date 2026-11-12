@@ -1664,7 +1664,15 @@ alone (`Sched::sizing_threads`, the grant rule's):
   0.92), where the step's mean, 25 s, sized 30 empty targets and 30 full ones alike at about 12 minutes;
 - **else** its step's model at this Mac's pace (above).
 Every one of these reads only runs of the way its step runs now (`coord::cost_version`): a target's
-own run, its source's, the bins, the fits, the Macs said to have runs and the jobs' starts. After
+own run, its source's, the bins, the fits, the Macs said to have runs and the jobs' starts. A target's
+own run is read by one rule wherever it's read (`needs::Book::own`): its time and memory here, its
+time at its threads (`Sched::target_most`, `per_thread_mb`), a drop's own drop (`Sched::drop_of`),
+and the forecast's cost table (`forecast::target_cost`: known at the lead's pace, else its step's
+mean), so the forecast times the jobs the grants size. Replayed with its table made by the rule
+(`fccheck::recost`), the archived input of 12 Nov 02:39 UTC, whose table had known 155 of its 165
+terrain-deep targets at 0-8 s from runs of cost version 0, foresees 5 terrain-deep jobs on the M4,
+2 on the mini and 2 on the M1 in the 293 s to the next plan (the lead granted 2, 5 and 2), where
+it had foreseen 18, 5 and 17. After
 task #929's merge raised slope-deep's, terrain-deep's and the terrain steps' versions, every one
 of their targets' last runs counts for nothing, as in the threads granted (§7.1, `crate::uses`).
 The one place an older way enters is the step's mean while the way it runs now has fewer than
@@ -1898,7 +1906,9 @@ inputs before it and its own (`forecast::Noted`), each step's pace from the hist
 capped (below; a record of code 2 on holds its `busy_s` capped already), the record's lanes, each
 lane's speed with its Mac's code 2 hold taken off, the build's pause and each Mac's time by
 step read from the history (code 3, below), and each Mac's pace at each step read from the history
-(`fccheck::repace`, code 4 below). Old and new differ by what the code now does and the one before
+(`fccheck::repace`, code 4 below), the record's cost table made again from its scheduler's
+measures as the lead makes it now (`fccheck::recost`: a target known by its own run of the way its
+step runs now, Batch length in §7.7). Old and new differ by what the code now does and the one before
 didn't (`Input::code`): the tables below ran their own code's pair. The inputs from `--split` (default a day before the last) are the test
 set, scored apart from those before it (train): what the model was chosen on is never what it's
 scored on. The terms' files held a term's last input alone (81 over 24-27 Oct: a run took ~12 min
@@ -1927,8 +1937,8 @@ forecast's order 66 % of pairs. Its largest sources:
   1,022 lanes said busy 4 h or more, those whose job the history shows were free after a quarter of
   that or less (median), those said busy a day or more after 0.2 %; nearly all the MacBook Pro's.
   Its lanes sat blocked in the run meanwhile.
-- **Steps' costs.** A target's cost is its last measure (an earlier build's, at its worker's pace)
-  or its step's mean; jobs started within 30 min of a forecast took, of the time the forecast gave
+- **Steps' costs.** A target's cost is its own run of the way its step runs now (at its worker's
+  pace) or its step's mean; jobs started within 30 min of a forecast took, of the time the forecast gave
   them (geometric means): terrain-hi 0.47, terrain-deep 0.38, unit 0.41, bldtiles 0.16; pack 2.5,
   pois 2.4, terrain-lo 1.9 (what a job takes whatever its targets: few targets each). It drifts
   by the half day (terrain-deep 0.13 to 1.21).
@@ -2046,8 +2056,8 @@ a member's lane's job under way is timed at it; a Mac without one is at the lead
 other slots too (with no paces at all, a record before code 4, each at its speed as before). Each step's pace (code 2's) reads a job's time at the
 lead's pace by its Mac's pace at the step too. The replay of a record before it works the paces
 out from the history at the record's time and puts the record's shared steps' costs at the lead's
-pace by them from the record's own measures (`repace`: a measured target's own, one not measured
-its step's mean; a cost the record holds no measure of stays).
+pace by them from the record's own measures (`repace`, by `recost`: a target's own run of the way
+its step runs now, else its step's mean; a cost the record holds no measure of stays).
 
 **The backtest, code 3 against 4** (69 inputs, 30 Oct 00:00 to 1 Nov; test from 31 Oct 00:00 UTC:
 29 inputs, 1,154 jobs, 15,748 end samples; train: 40 inputs, 2,214 jobs). Minutes, median / p90 of
