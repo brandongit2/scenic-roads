@@ -402,6 +402,9 @@ impl Mac {
             if let Some(b) = &backup {
                 match crate::agent::pool::load_backup(&c, b) {
                     Ok(n) => {
+                        // (Its table now that lead's: what it held before, in its own store, is
+                        // gone from it, as a lease that lead never held.)
+                        w.known[k] = c.live_jobs().into_iter().map(|(e, n, _, _)| (e, n)).collect();
                         w.count("lead states taken up from another's backup");
                         w.note(|| format!("mac{k}'s coordinator took up {n} leases from {}'s backup", b.member));
                     }

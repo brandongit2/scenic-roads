@@ -435,9 +435,10 @@ struct World {
     leaders: BTreeMap<u64, usize>,
     /// Each epoch's last snapshot landed at the one path: its number, and the hand-offs it names.
     landed: BTreeMap<u64, (u64, BTreeSet<String>)>,
-    /// Every hand-off made, by key; those a lead acknowledged, in which epoch.
+    /// Every hand-off made, by key; those a lead acknowledged, in which epoch, and by which Mac.
     made: BTreeMap<String, Made>,
     acked: BTreeMap<String, u64>,
+    acked_by: BTreeMap<String, usize>,
     /// The hand-offs each Mac's coordinator's store holds (taken, not yet merged), as last seen.
     stored: Vec<BTreeSet<String>>,
     /// Every lease seen granted (epoch, id): its worker and targets.
@@ -642,6 +643,7 @@ impl World {
             landed: BTreeMap::new(),
             made: BTreeMap::new(),
             acked: BTreeMap::new(),
+            acked_by: BTreeMap::new(),
             stored: vec![BTreeSet::new(); n],
             granted: BTreeMap::new(),
             known: vec![BTreeSet::new(); n],
@@ -1621,6 +1623,7 @@ impl World {
     fn ack(&mut self, me: usize, epoch: u64, keys: &[String]) {
         for key in keys {
             self.acked.entry(key.clone()).or_insert(epoch);
+            self.acked_by.entry(key.clone()).or_insert(me);
             self.count("hand-offs acknowledged");
             if !self.landed.get(&epoch).is_some_and(|(_, h)| h.contains(key)) {
                 self.wrong(format!("mac{me} acknowledged {key} as epoch {epoch}'s before a snapshot of it named it"));
@@ -1638,13 +1641,19 @@ impl World {
         }
     }
 
-    /// Lead `me` applied `keys` in epoch `e`: none acknowledged in it or an epoch before (merged
-    /// once: a lead of an earlier epoch, moved from and leading on with its reads failing, merges
-    /// into records no later lead takes up).
+    /// Lead `me` applied `keys` in epoch `e`: none it acknowledged in it or an epoch before
+    /// (merged once). Another Mac's acknowledgement: `me` leads records of a lineage the brief
+    /// fences (an epoch whose take-up, or whose number, another Mac's passed: invariant 2's
+    /// limit), which no later lead takes up; counted, and the records that follow the brief
+    /// checked for it as ever.
     fn applied(&mut self, me: usize, e: u64, keys: &[String]) {
         for k in keys {
             if let Some(&at) = self.acked.get(k).filter(|&&at| at <= e) {
-                self.wrong(format!("mac{me} applied {k} again in epoch {e}, acknowledged in epoch {at}"));
+                if self.acked_by.get(k) == Some(&me) {
+                    self.wrong(format!("mac{me} applied {k} again in epoch {e}, acknowledged in epoch {at}"));
+                } else {
+                    self.count("hand-offs another lead acknowledged, applied again in fenced records");
+                }
             }
         }
     }
