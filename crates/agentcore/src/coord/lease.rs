@@ -597,8 +597,24 @@ impl Leases {
     pub fn grant_at(&mut self, worker: &str, work: Work, now: Instant, granted_at: u64) -> u64 {
         let id = self.next;
         self.next += 1;
-        if matches!(work, Work::Job { .. }) {
+        if let Work::Job { step, targets } = &work {
             self.granted.push((worker.to_string(), self.epoch, id));
+            // (A lapsed lease of any of its targets, still kept, ends: it is the new one's to hold.
+            // Kept, a restart or the next lead's take-up of this state gave it a whole TTL again, or
+            // its member's word held it: two live leases of one target. Task #1038, the pool's
+            // simulator's seed 241: a lead's own job's lease lapsed while its Mac slept, its target
+            // granted again, and the next lead took both up from its backup.)
+            let over = |l: &Lease| match &l.work {
+                Work::Job { step: s, targets: ts } => {
+                    s == step && ts.iter().any(|t| targets.iter().any(|u| u.0 == t.0))
+                }
+                Work::Task { .. } => false,
+            };
+            let gone: Vec<u64> = self.by_id.values().filter(|l| over(l) && !self.lasts(l, now)).map(|l| l.id).collect();
+            for g in gone {
+                self.cancels.remove(&g);
+                self.by_id.remove(&g);
+            }
         }
         self.by_id.insert(
             id,
@@ -1131,6 +1147,25 @@ mod tests {
         assert!(back.of(a).unwrap().unconfirmed);
         let (gone, _) = back.word("m1", &BTreeSet::new(), far, grace);
         assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [a]);
+    }
+
+    /// Task #1038 (the pool's simulator, seed 241 of every fault): a lease that lapsed (its holder
+    /// asleep) and whose target was granted again is gone from the state kept: a restart or the
+    /// next lead's take-up gives it no TTL again beside the new one.
+    #[test]
+    fn a_lapsed_lease_whose_target_is_granted_again_is_gone() {
+        let t0 = Instant::now();
+        let mut a = Leases::new(Duration::from_secs(600));
+        let old = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
+        let other = a.grant("m1", job(&[("6/1/2", "k2")]), t0);
+        let t1 = t0 + Duration::from_secs(900);
+        let new = a.grant("m2", job(&[("6/1/1", "k3")]), t1);
+        assert!(a.of(old).is_none(), "ended");
+        assert!(a.of(other).is_some(), "another target's, lapsed, kept as before");
+        let mut b = Leases::new(Duration::from_secs(600));
+        b.restore(&a.snapshot(), t1).unwrap();
+        let live: Vec<u64> = b.live(t1).map(|l| l.id).collect();
+        assert!(live.contains(&new) && !live.contains(&old), "{live:?}");
     }
 
     #[test]
