@@ -490,7 +490,6 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/api/rides", get(query::rides))
         .route("/api/raillines", get(query::lines))
         .route("/api/layer/{name}", get(layer_h))
-        .route("/api/names", get(names_h))
         .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list))
         .route("/api/regions/outlines", get(regions::outlines))
@@ -1059,63 +1058,6 @@ async fn catalogue_h(State(s): State<S>) -> Response {
         "depth": cat.meta.get("depth"),
     });
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
-}
-
-/// Display names for a batch of names at points: `?n=<name>&at=lon,lat` repeated, each optionally
-/// with `en=<own English>`, `k=road|settlement|other` (other when not given) and `l=<languages OSM
-/// gives the name, comma-separated>` before its `at`.
-async fn names_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
-    let mut out = Vec::new();
-    let (mut name, mut own, mut kind, mut langs): (Option<String>, Option<String>, names::Kind, Vec<names::Lang>) =
-        (None, None, names::Kind::Other, Vec::new());
-    for kv in q.as_deref().unwrap_or("").split('&') {
-        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        let v = urlencoding_decode(v);
-        match k {
-            "n" => name = Some(v),
-            "en" => own = Some(v),
-            "k" => kind = names::Kind::parse(&v).unwrap_or(names::Kind::Other),
-            "l" => langs = v.split(',').filter_map(names::Lang::parse).collect(),
-            "at" => {
-                let p: Vec<f64> = v.split(',').filter_map(|x| x.parse().ok()).collect();
-                if let (Some(n), true) = (name.take(), p.len() == 2) {
-                    let d = s.names.display(
-                        std::mem::replace(&mut kind, names::Kind::Other),
-                        &n,
-                        own.take().as_deref().filter(|x| !x.is_empty()),
-                        &std::mem::take(&mut langs),
-                        p[0],
-                        p[1],
-                    );
-                    out.push(serde_json::json!({"main": d.main, "sub": d.sub}));
-                }
-            }
-            _ => {}
-        }
-    }
-    Json(out).into_response()
-}
-
-fn urlencoding_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => {
-                if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16) {
-                    out.push(v);
-                    i += 2;
-                } else {
-                    out.push(b'%');
-                }
-            }
-            c => out.push(c),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 pub use inview::Region;

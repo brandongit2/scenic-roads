@@ -1023,8 +1023,6 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   is the stored terrain tile, with its ETag; one with sea, made from a stored terrain tile, has its
   own (that tile's and the water version's). Under the current water version (`w=`), either is
   cached for good.
-- `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=`, `k=road|settlement|other`,
-  `l=` before its `at`): `[{main, sub}]`.
 - `/api/build`: the agent's status (this Mac's when it leads, else the lead's heartbeat, or this
   member's `helper.json` when that is ten minutes stale), `pool`, and `offline:
   {world, regions, bytes, here, nas}` (null without a mirror).

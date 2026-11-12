@@ -68,15 +68,6 @@ impl Kind {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Kind> {
-        match s {
-            "road" => Some(Kind::Road),
-            "settlement" => Some(Kind::Settlement),
-            "other" => Some(Kind::Other),
-            _ => None,
-        }
-    }
-
     /// The kind of a place by its OSM `place` value (OpenMapTiles' `class` in its `place` layer):
     /// settlements city to hamlet and their parts; anything else (a country, a state, an island, a
     /// locality) is other.
@@ -1107,9 +1098,6 @@ mod tests {
         assert_eq!(Kind::of_place("isolated_dwelling"), Kind::Settlement);
         assert_eq!(Kind::of_place("island"), Kind::Other);
         assert_eq!(Kind::of_place("locality"), Kind::Other);
-        assert_eq!(Kind::parse("road"), Some(Kind::Road));
-        assert_eq!(Kind::parse(Kind::Settlement.as_str()), Some(Kind::Settlement));
-        assert_eq!(Kind::parse("place"), None);
     }
 
     #[test]
