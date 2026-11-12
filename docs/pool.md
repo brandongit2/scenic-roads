@@ -1050,13 +1050,13 @@ since wanted 5 job(s) and got 0, 2 offered unit; held back by memory ×2 (live: 
 now; the forecast takes each Mac at its sustained best), cores ×1; the last: cores: 0.5 of 8
 left, a job of unit takes 1.0`. Before the lines said why, 68 of the 125 the lead logged between
 23:00 and 08:00 UTC on 11–12 Nov said fewer; from the lead's log (no refusal was logged then):
-35 were Macs granted other steps (most a MacBook granted slope-deep for terrain-deep, or `peaks`
-and `pack` for `unit` and `slope-hi`: placement's order, above, which the run now follows, or
-the work not listed yet), 18 Macs granted nothing in the span (asks held or refused: 13 of them
-within a quarter of an hour of a lead restart into an update, the members updating after it),
-17 fewer of the step (short `peaks` jobs, 0.2–0.9 min each, foreseen in tens a few minutes, the
-lead's and members' loops asking every 13–400 s); 49 of the 70 (two more since 08:50) came
-within 15 minutes of one of the night's 13 lead restarts.
+35 were Macs granted other steps (24 of them a MacBook, granted slope-deep for terrain-deep, or
+`peaks` and `pack` for `unit` and `slope-hi`: placement's order, above, which the run now
+follows, or the work not listed yet), 16 Macs granted nothing in the span (asks held or refused:
+11 of them within a quarter of an hour of a lead restart into an update, the members updating
+after it), 17 fewer of the step (most short `peaks` jobs, 0.2–0.9 min each, foreseen by the tens
+in a few minutes, where the agents' loops took 13–400 s a round); 47 of the 68 came within 15
+minutes of one of the night's 13 lead restarts.
 
 Rows of note: `trees`/`terrain-hi`/`slope-hi` per z6 tile with `*-lo` assemblies per z3 tile,
 `terrain-deep`/`slope-deep` per z10 tile (docs/steps.md);
