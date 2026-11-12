@@ -18,9 +18,10 @@
 //! (the target's area: terrain, slope, trees and their assemblies, the z6 tiles' elevations), `fetched`
 //! (pyramids-fill: the tiles it asked of the network, what weighs its time, agentcore::needs::PER_WORK), and,
 //! where the job wrote to the NAS through its `Out` (crate::out), `wrote` (the bytes of the files
-//! it made there), `creates` (how many) and `read_back` (the bytes its uploads read back to check
-//! them, store::naming's `write_atomic`: store::nasio's `ReadBack`, NAS reads kept out of `bytes`,
-//! which says what the step read, task #1142), and its NAS metadata work (`meta`: `listed`, `stats`,
+//! it made there) and `creates` (how many), `read_back` (always, 0 too: the bytes uploads read
+//! back to check them while it ran, store::naming's `write_atomic`: store::nasio's `ReadBack`, NAS
+//! reads kept out of `bytes`, which says what the step read, task #1142; an upload put off reads
+//! back beside the next target's work, so in its line), and its NAS metadata work (`meta`: `listed`, `stats`,
 //! `deletes`, task #451): with `bytes`, the target's NAS weight
 //! (agentcore::needs::Book::nas, jobrt::budget::nas).
 
@@ -75,13 +76,6 @@ fn grew(at: &store::nasio::Counts, now: &store::nasio::Counts) -> (u64, u64, u64
     let d = |c: Count| now[c as usize].saturating_sub(at[c as usize]);
     let back = d(Count::ReadBack);
     (d(Count::ReadBytes).saturating_sub(back) + d(Count::Local), d(Count::Local), d(Count::Tiffs), back)
-}
-
-/// Adds `n` bytes read back to measures `m` (`read_back`, none when none).
-fn add_back(m: &mut BTreeMap<String, u64>, n: u64) {
-    if n > 0 {
-        *m.entry("read_back".into()).or_default() += n;
-    }
 }
 
 /// A target begins: its measures start again.
@@ -197,7 +191,10 @@ pub fn take() -> BTreeMap<String, u64> {
     let (read, local, tiffs, back) = grew(&s.at, &store::nasio::own());
     let mut m = std::mem::take(&mut s.m);
     *m.entry("bytes".into()).or_default() += read;
-    add_back(&mut m, back);
+    // (Said with `bytes` always, 0 too: a line without it is from before it was measured, whose
+    // `wrote` agentcore::needs counts read back. A target's uploads put off read back beside the
+    // next target's work, so in its line: a line that left it out would count them twice.)
+    *m.entry("read_back".into()).or_default() += back;
     if local > 0 {
         *m.entry("local".into()).or_default() += local;
     }
@@ -254,7 +251,7 @@ pub fn measured<T>(f: impl FnOnce() -> T) -> (T, Taken) {
 /// target's whole time, the tail's included).
 pub fn add_to(m: &mut BTreeMap<String, u64>, t: Taken) {
     *m.entry("bytes".into()).or_default() += t.bytes;
-    add_back(m, t.read_back);
+    *m.entry("read_back".into()).or_default() += t.read_back;
     if t.local > 0 {
         *m.entry("local".into()).or_default() += t.local;
     }
@@ -347,7 +344,7 @@ mod tests {
 
     /// Task #1142: what the uploads read back is the NAS's reads (store::nasio's `ReadBytes`), kept
     /// out of `bytes` (what the step read: its time's measure) and measured as `read_back`, which
-    /// the job's NAS weight counts (agentcore::needs::Book::nas).
+    /// the job's NAS weight counts (agentcore::needs::Book::nas); said with `bytes`, 0 too.
     #[test]
     fn read_backs_are_measured_apart() {
         let mut at = [0u64; store::nasio::SLOTS];
@@ -362,6 +359,12 @@ mod tests {
         assert!(m["read_back"] >= 4000, "{m:?}");
         let ((), t) = measured(|| store::nasio::read_back(300));
         assert!(t.read_back >= 300, "{t:?}");
+        // (Said with `bytes` always: only a line from before it was measured leaves it out.)
+        begin();
+        assert!(take().contains_key("read_back"));
+        let mut m = BTreeMap::new();
+        add_to(&mut m, Taken::default());
+        assert_eq!(m.get("read_back"), Some(&0));
     }
 
     /// The cost lines' numbers as before the counts moved to store::nasio: `bytes` the NAS's reads

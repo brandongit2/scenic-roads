@@ -857,6 +857,49 @@ fn wait_for_nas(root: &store::nasfs::NasRoot) -> Result<()> {
     Ok(())
 }
 
+/// The temporary file an attempt appends to, closed checked however the attempt ends (a write the
+/// share lost comes back at the close alone, store::sys::close): one whose close fails is removed,
+/// so the next attempt starts afresh instead of going on from bytes the share may not hold.
+struct Appending<'a> {
+    f: Option<store::nasfs::NasFile>,
+    tmp: &'a NasPath,
+}
+
+impl Appending<'_> {
+    /// Its close, its error the attempt's (the file removed).
+    fn close(mut self) -> std::io::Result<()> {
+        let r = self.f.take().map_or(Ok(()), |f| f.close());
+        if r.is_err() {
+            self.tmp.remove_file().ok();
+        }
+        r
+    }
+}
+
+impl std::ops::Deref for Appending<'_> {
+    type Target = store::nasfs::NasFile;
+    fn deref(&self) -> &store::nasfs::NasFile {
+        self.f.as_ref().expect("open until closed")
+    }
+}
+
+impl std::ops::DerefMut for Appending<'_> {
+    fn deref_mut(&mut self) -> &mut store::nasfs::NasFile {
+        self.f.as_mut().expect("open until closed")
+    }
+}
+
+impl Drop for Appending<'_> {
+    fn drop(&mut self) {
+        if let Some(f) = self.f.take() {
+            if let Err(e) = f.close() {
+                eprintln!("bld-fetch: {}: close: {e}; its bytes fetched again", self.tmp.display());
+                self.tmp.remove_file().ok();
+            }
+        }
+    }
+}
+
 /// How a download's attempt ended.
 enum Attempt {
     /// The file whole in its temporary file.
@@ -920,7 +963,7 @@ fn fetch(http: &Http, job: &Job, root: &store::nasfs::NasRoot, prog: &Progress) 
             counted += have as i64;
             let mut got = have;
             let mut f = match tmp.open_with(std::fs::OpenOptions::new().create(true).append(true)) {
-                Ok(f) => f,
+                Ok(f) => Appending { f: Some(f), tmp: &tmp },
                 Err(e) => return io(e),
             };
             while got < size {

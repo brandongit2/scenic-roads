@@ -64,7 +64,8 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
   content-named bytes (docs/nas-access.md §6). Every other NAS writer closes its file checked too:
   `store::whole`'s writes and copies (a lost write of their temporary file written again, as
   here), a `NasFile` (`close`), an in-place write, a create-new, the server's I/O pool's writes,
-  `store::sys::copy_data` and the NAS budget's probe. An unchanged file keeps its name, so a
+  `store::sys::copy_data`, the NAS budget's probe and `bld-fetch`'s appends (a partial download
+  whose close fails removed, fetched afresh). An unchanged file keeps its name, so a
   rebuild uploads only what changed; one already there is reused as it is, nothing written to it,
   and named in the job's hand-off (`Handoff::reused`), which the merge checks against GC's deletions
   (docs/maplog.md §7.4). One the manifest already names under the same logical name takes one look

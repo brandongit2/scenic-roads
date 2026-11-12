@@ -190,18 +190,20 @@ change of this process to any of them is refused at once (`deadline::writing`). 
   OS error, ETIMEDOUT or EIO, at its open, a write, its sync or its close) is written again, as a
   whole write's temporary file is (`whole::lost_write`); one past its deadline is never: its
   `TimedOut` has no OS code, and its temporary name stays held.
-
-**Every NAS writer closes its file checked** (`store::sys::close`, task #1142): the Mac's SMB
-client keeps a pageout's write error for the close alone (its fsync doesn't return it), and a
-dropped `File` ignores the close's result. Content-named uploads, whole writes and copies, a
-`NasFile` (`close`: a writer ends with it; a drop only logs the error), an in-place `write`, a
-create-new, the I/O pool's writes, `sys::copy_data` and the NAS budget's probe.
 - **Create-new** (the pool protocol's): past its deadline its caller can't tell made from not made,
   as with a lost answer, which the protocol already takes (`Created`); never retried here.
 - **Renames** hold both names. **Removes** (`remove_file`, `remove_dir`, `remove_dir_all`, a
   temporary file's) are idempotent: a late one removes what was to be removed; a later write of
   this process to the name waits out the hold, so a late remove never takes a newer file of this
   process's. **Folders made** (`create_dir_all`) and **touches** (`set_modified`) are idempotent.
+
+**Every NAS writer closes its file checked** (`store::sys::close`, task #1142): the Mac's SMB
+client keeps a pageout's write error for the close alone (its fsync doesn't return it), and a
+dropped `File` ignores the close's result. Content-named uploads, whole writes and copies, a
+`NasFile` (`close`: a writer ends with it; a drop only logs the error), an in-place `write`, a
+create-new, the I/O pool's writes, `sys::copy_data`, the NAS budget's probe and `bld-fetch`'s
+appends (one whose close fails is removed, so its next attempt starts afresh instead of going on
+from bytes the share may not hold).
 
 **Still under no deadline**, each a library's or a program's own reading: a `File` taken out of
 the type (`NasFile::into_file`, `Loc::open`: a library that wants a `File`, such as a TIFF's or a
