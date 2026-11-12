@@ -1310,9 +1310,13 @@ pixel's centre lies inside it further than an overview's reach from its edge (3 
 pixels, `OVERVIEW_REACH`: a resampling reaches past the pixel, and HRDEM's lidar mosaics' overviews
 hold data up to 2 pixels from the patch beside a tile, whose runs then found nothing). Every other
 tile is read again so at 1/1024 (~40 m), and holds data where a valid pixel lies so far inside it,
-else where a valid pixel meeting the tile (its edges included) has under it a pixel of the full
-resolution with data meeting the tile (one of the full resolution itself, where no level is
-finer). The plan reads it, and terrain-deep's and slope-deep's runs: a terrain-deep target whose every source reaching
+else where a valid pixel meeting the tile (any part of it, its edges included) has under it a
+pixel of the full resolution with data meeting the tile (one of the full resolution itself, where
+no level is finer). A pixel is valid as the sampler takes it (a value equal to the file's nodata,
+whatever height it could be, is none to a run too). So a tile is hollow only where no pixel of the
+full resolution with data meets it, as long as an overview's pixel is valid wherever one under it
+is (an average's, or a wider kernel's ignoring nodata; a nearest-neighbour overview could miss an
+island narrower than ~40 m). The plan reads it, and terrain-deep's and slope-deep's runs: a terrain-deep target whose every source reaching
 past z12 is hollow there is never run, or, with an earlier run's outputs named, dropped once its
 key moves (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the
 hollow tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those

@@ -1137,3 +1137,28 @@ fn data_an_overview_shows_only_near_a_tiles_edge_is_confirmed_at_the_full_resolu
     let (h, _) = run([edge + 0.02, edge + 0.04]);
     assert!(h.tiles == vec![west] && h.edge.is_empty(), "{h:?}");
 }
+
+/// Task #1089 review: a pixel meets a tile's outline where any part of it does, not only where a
+/// point of a grid over the tile falls in it: an outline turned to the files' grid (a conic
+/// projection's, HRDEM's) cuts pixels along its sides in corners narrower than any such grid's step,
+/// and the tile's own data there must still be read at the full resolution.
+#[test]
+fn a_pixel_meets_an_outline_by_a_corner_or_a_point_of_it() {
+    // (A square of side 100 turned 30° about the origin.)
+    let (s, c) = (0.5f64, 0.75f64.sqrt());
+    let ring: Vec<(f64, f64)> = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+        .iter()
+        .map(|&(x, y)| (x * c - y * s, x * s + y * c))
+        .collect();
+    let g = |x0: f64, y0: f64| [x0, 1.0, 0.0, y0, 0.0, -1.0];
+    // (Just above its south side, 30° up from the origin: a pixel whose top-left corner alone is
+    // inside, its centre outside.)
+    let (ex, ey) = (50.0 * c, 50.0 * s);
+    let p = g(ex - 0.4, ey + 0.05);
+    assert!(!in_ring(&ring, (p[0] + 0.5, p[3] - 0.5)) && in_ring(&ring, (p[0], p[3])));
+    assert!(pixel_meets(&ring, &p, 0, 0));
+    // (Its corner at the origin inside a pixel none of whose own corners is inside.)
+    assert!(pixel_meets(&ring, &g(-0.5, 0.2), 0, 0));
+    // (Beside it, outside: not.)
+    assert!(!pixel_meets(&ring, &g(ex + 2.0, ey - 0.5), 0, 0));
+}

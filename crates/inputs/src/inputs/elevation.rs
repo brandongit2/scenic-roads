@@ -297,13 +297,14 @@ pub struct Hollow {
 /// the tiles where a finer read finds no data (`Hollow::tiles`, `Measured::hollow`). Each file
 /// meeting one is read over the tile's box in the files' units at the coarsest of its levels whose
 /// pixels are no wider than `HOLLOW_PX`'s first share of a tile's side (its full resolution where
-/// none is), a sparse block read as the sampler reads it (its nodata, else 0) without a read. A
-/// tile holds data there where a valid pixel's centre lies inside it further than an overview's
+/// none is), a sparse block read as the sampler reads it (its nodata, else 0) without a read, and a
+/// pixel valid as the sampler takes it (`dem::generic::valid`: a value equal to the file's nodata
+/// is none, whatever height it could be, and none to a run either). A tile holds data there where a valid pixel's centre lies inside it further than an overview's
 /// reach (`OVERVIEW_REACH`) from its outline in the files' units. Every other tile is read again at
-/// the second share, and holds data so too; else where a valid pixel meets the tile itself (at
-/// its points no further apart than half a pixel, its edges included), some pixel of its full
-/// resolution under that one meeting the tile holds data (a pixel of the full resolution itself,
-/// where no level is finer). So the tile's own data is found to the full resolution's pixel, and
+/// the second share, and holds data so too; else where, under a valid pixel meeting the tile
+/// (`pixel_meets`, its edges included), a valid pixel of its full resolution meets it too (that
+/// pixel itself, where no level is finer). So the tile's own data is found to the full resolution's
+/// pixel (an overview's pixel being valid wherever one under it is: below), and
 /// a pixel near its edge holding the ground next door's (in a mosaic of lidar patches, HRDEM, the
 /// patch beside it: task #1089, those tiles' runs found nothing) isn't taken for it. A tile some
 /// file holds data in isn't read further. A footprint narrower than a tile (which presence takes
@@ -385,37 +386,34 @@ pub fn hollow_of(
             let b = roadcore::geo::tile_box(PACK_Z, presence[i][0], presence[i][1]);
             let ring = native_ring(&native, b);
             let (ww, wh) = ((c1 - c0) as i64, (r1 - r0) as i64);
-            let valid = |c: i64, r: i64| crate::dem::generic::valid(px[(r * ww + c) as usize], nodata);
-            // (Some pixel of the box holds data: one further inside the tile than an overview's
-            // reach holds the tile's own.)
+            // (Its valid pixels: one whose centre lies further inside the tile than an overview's
+            // reach holds the tile's own data; else those meeting the tile at all.)
             let reach = OVERVIEW_REACH * gt[1].abs();
-            let deep = (0..wh).any(|r| {
-                (0..ww).any(|c| {
-                    let p =
-                        (gt[0] + (c0 as f64 + c as f64 + 0.5) * gt[1], gt[3] + (r0 as f64 + r as f64 + 0.5) * gt[5]);
-                    valid(c, r) && in_ring(&ring, p) && ring_distance(&ring, p) > reach
-                })
-            });
+            let half_diagonal = 0.5 * (gt[1] * gt[1] + gt[5] * gt[5]).sqrt();
+            let mut hits: Vec<(u32, u32)> = Vec::new();
+            let mut deep = false;
+            'px: for r in 0..wh {
+                for c in 0..ww {
+                    if !crate::dem::generic::valid(px[(r * ww + c) as usize], nodata) {
+                        continue;
+                    }
+                    let (c, r) = (c0 + c as u32, r0 + r as u32);
+                    let p = (gt[0] + (c as f64 + 0.5) * gt[1], gt[3] + (r as f64 + 0.5) * gt[5]);
+                    let d = ring_distance(&ring, p);
+                    if in_ring(&ring, p) {
+                        if d > reach {
+                            deep = true;
+                            break 'px;
+                        }
+                        hits.push((c, r));
+                    } else if d <= half_diagonal && pixel_meets(&ring, &gt, c, r) {
+                        hits.push((c, r));
+                    }
+                }
+            }
             if deep {
                 data[i].store(true, Relaxed);
                 continue;
-            }
-            // (Else those meeting the tile itself: at its points no further apart than half a
-            // pixel, each in the files' units, the tile's edges among them.)
-            let k = ((2.0 * (nb[2] - nb[0]).max(nb[3] - nb[1]) / gt[1].abs()).ceil() as usize).max(2);
-            let mut hits: BTreeSet<(u32, u32)> = BTreeSet::new();
-            for j in 0..=k {
-                for q in 0..=k {
-                    let (x, y) =
-                        native(b[0] + q as f64 / k as f64 * (b[2] - b[0]), b[1] + j as f64 / k as f64 * (b[3] - b[1]));
-                    let (c, r) = (
-                        ((x - gt[0]) / gt[1]).floor() as i64 - c0 as i64,
-                        ((y - gt[3]) / gt[5]).floor() as i64 - r0 as i64,
-                    );
-                    if (0..ww).contains(&c) && (0..wh).contains(&r) && valid(c, r) {
-                        hits.insert((c0 + c as u32, r0 + r as u32));
-                    }
-                }
             }
             if hits.is_empty() {
                 continue;
@@ -448,13 +446,8 @@ pub fn hollow_of(
 }
 
 /// Whether, under pixels `hits` (column, row) of `t`'s level `level`, a pixel of its full resolution
-/// with data meets the tile of outline `ring` (in the files' units): its centre or a corner inside.
-fn full_holds(
-    t: &buildstore::geotiff::Tiff,
-    level: usize,
-    hits: &BTreeSet<(u32, u32)>,
-    ring: &[(f64, f64)],
-) -> Result<bool> {
+/// with data meets the tile of outline `ring` (in the files' units: `pixel_meets`).
+fn full_holds(t: &buildstore::geotiff::Tiff, level: usize, hits: &[(u32, u32)], ring: &[(f64, f64)]) -> Result<bool> {
     let (g, g0) = (t.transform(level)?, t.transform(0)?);
     let img = t.level(0)?.clone();
     let nodata = t.nodata();
@@ -472,21 +465,25 @@ fn full_holds(
             continue;
         }
         let px = t.read_window(0, c0, r0, c1 - c0, r1 - r0)?;
-        let at = |c: f64, r: f64| (g0[0] + c * g0[1], g0[3] + r * g0[5]);
         for (n, &v) in px.iter().enumerate() {
-            if !crate::dem::generic::valid(v, nodata) {
-                continue;
-            }
-            let (c, r) = ((c0 + n as u32 % (c1 - c0)) as f64, (r0 + n as u32 / (c1 - c0)) as f64);
-            if [(0.5, 0.5), (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
-                .iter()
-                .any(|&(dc, dr)| in_ring(ring, at(c + dc, r + dr)))
-            {
+            let (c, r) = (c0 + n as u32 % (c1 - c0), r0 + n as u32 / (c1 - c0));
+            if crate::dem::generic::valid(v, nodata) && pixel_meets(ring, &g0, c, r) {
                 return Ok(true);
             }
         }
     }
     Ok(false)
+}
+
+/// Whether pixel `c`, `r` of transform `g` meets the tile of outline `ring` (in the files' units):
+/// its centre or a corner inside it, or one of its points inside the pixel. (Exact for a pixel
+/// smaller than the outline's sides: a side crossing the pixel leaves a corner of it inside.)
+fn pixel_meets(ring: &[(f64, f64)], g: &[f64; 6], c: u32, r: u32) -> bool {
+    let at = |dc: f64, dr: f64| (g[0] + (c as f64 + dc) * g[1], g[3] + (r as f64 + dr) * g[5]);
+    let ((xa, ya), (xb, yb)) = (at(0.0, 0.0), at(1.0, 1.0));
+    let (x0, x1, y0, y1) = (xa.min(xb), xa.max(xb), ya.min(yb), ya.max(yb));
+    [(0.5, 0.5), (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].iter().any(|&(dc, dr)| in_ring(ring, at(dc, dr)))
+        || ring.iter().any(|&(x, y)| (x0..=x1).contains(&x) && (y0..=y1).contains(&y))
 }
 
 /// Box `b`'s outline (w, s, e, n, degrees) in the files' units (`native`): eight points a side, in
