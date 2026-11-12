@@ -830,7 +830,19 @@ line one of the job's (as written) or the lead's own (`coord::jobspans::Own`): `
 to}`, `{k: "at", s, l}` (after each frame), `{k: "done", at}` (unix ms), `{k: "rec", rec}` (the
 timings' record, as `/work/done` or the lead's own job's end brings it). A chunk is taken from where
 the lead has the job to: one posted again adds nothing. Kept for good, as the history is (docs/pool.md
-§7.5); size a month: *planned* (measured below once the pool runs with spans).
+§7.5); nothing removes them.
+
+**Measured** (12 Nov, the M4, real jobs by hand with saves handed off, `coord::jobspans::tests::
+sizes_on_the_lead` for the lead's size): terrain-deep 10/914/378 (100 s, 169 s CPU): 1,955 lines,
+198 KB written, 37 KB on the lead, the spans' own cost 83 ms (0.05 % of its CPU; its CPU 169.3 s
+with spans, 169.2 s without); slope-deep 10/906/404 (72 s, 107 s CPU): 762 lines (727 of them
+waits), 9 KB on the lead, 2 ms; unit 6/50/31 (131 s, 83 s CPU, with a child program's spans; it
+failed on a grid a by-hand scratch lacks, after most of its steps): 192 lines, 5 KB, 5 ms. About 19
+bytes a line on the lead. A month: the pool's last fortnight ran 57,000 jobs and 4,300 job-hours a
+month, 12,800 of them terrain-deep (mean 6,500 timings' spans a job: ~55 KB each, 0.7 GB) and 4,400
+depth (35,000 a job, most merged: up to the 40,000-line bound, ~0.2-0.8 MB each, 1-3 GB), the rest
+~10 KB a job (0.4 GB): **about 2-4 GB a month**, mostly depth's; a figure derived from these runs,
+to be checked against `agent/coord/jobs/` once the pool runs with spans.
 
 **`GET /api/job/<epoch>-<n>`** (the lead's coordinator; no key, any page; a member's port sends it to
 the lead): 400 for a malformed id, 503 off the lead, else:
