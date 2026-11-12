@@ -571,12 +571,45 @@ pub fn nas_name(seq: u64) -> String {
     format!("{seq}{SUFFIX}")
 }
 
-/// The NAS folder of the map the `catalog` step would publish while publishing is held for review
-/// (`inputs/hold-catalog`): `map-held/<seq>.json.zst`, a snapshot of it whole, `seq` the batch's it
-/// would be (docs/maplog.md §6.4). No server reads it; lifting the hold publishes the map then.
-pub const HELD_DIR: &str = "map-held";
+/// The `seq`s of the snapshots in the local folder `dir` (the lead's held maps), newest first.
+pub fn seqs_in_dir(dir: &std::path::Path) -> Result<Vec<u64>> {
+    let mut seqs: Vec<u64> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd.flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(SUFFIX)?.parse().ok()).collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+    };
+    seqs.sort_unstable_by(|a, b| b.cmp(a));
+    Ok(seqs)
+}
 
-/// The `seq`s of the snapshots in `dir` (`map/`, `map-held/`), newest first.
+/// The newest snapshot in the local folder `dir` that reads (one damaged or half written passed
+/// over, said), and its file; None when there's none.
+pub fn newest_in_dir(dir: &std::path::Path) -> Result<Option<(Map, std::path::PathBuf)>> {
+    for seq in seqs_in_dir(dir)? {
+        let p = dir.join(nas_name(seq));
+        match std::fs::read(&p).map_err(anyhow::Error::from).and_then(|b| Snapshot::decode(&b)) {
+            Ok((m, _)) => return Ok(Some((m, p))),
+            Err(e) => eprintln!("maplog: {} passed over: {e:#}", p.display()),
+        }
+    }
+    Ok(None)
+}
+
+/// Writes the map whole into the local folder `dir` (`<seq>.json.zst`, made if missing; a
+/// temporary name renamed into place), then removes all but the newest `NAS_KEPT` there.
+pub fn write_in_dir(dir: &std::path::Path, m: &Map) -> Result<()> {
+    let b = Snapshot::of(m, &BTreeMap::new()).encode()?;
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    crate::whole::write(&dir.join(nas_name(m.seq)), &b)?;
+    for s in seqs_in_dir(dir)?.into_iter().skip(NAS_KEPT) {
+        if let Err(e) = std::fs::remove_file(dir.join(nas_name(s))) {
+            eprintln!("maplog: can't remove {}: {e}", dir.join(nas_name(s)).display());
+        }
+    }
+    Ok(())
+}
+
+/// The `seq`s of the snapshots in `dir` (`map/`), newest first.
 pub fn seqs_in(dir: &crate::nasfs::NasPath) -> Result<Vec<u64>> {
     let mut seqs: Vec<u64> = match dir.list() {
         Ok(names) => names.iter().filter_map(|n| n.strip_suffix(SUFFIX)?.parse().ok()).collect(),
@@ -587,7 +620,7 @@ pub fn seqs_in(dir: &crate::nasfs::NasPath) -> Result<Vec<u64>> {
     Ok(seqs)
 }
 
-/// The newest snapshot in `dir` (`map/` of a NAS or a test root, `map-held/`) that reads (one
+/// The newest snapshot in `dir` (`map/` of a NAS or a test root) that reads (one
 /// damaged or half written is passed over, said); None when there's none.
 pub fn newest_in(dir: &crate::nasfs::NasPath) -> Result<Option<Map>> {
     for seq in seqs_in(dir)? {
@@ -612,7 +645,7 @@ pub fn write_nas_snapshot(root: &NasRoot, m: &Map) -> Result<u64> {
     write_snapshot_in(root, NAS_DIR, m)
 }
 
-/// `write_nas_snapshot` into `root`'s folder `name` (`NAS_DIR`, `HELD_DIR`), the newest
+/// `write_nas_snapshot` into `root`'s folder `name` (`NAS_DIR`), the newest
 /// `NAS_KEPT` kept there.
 pub fn write_snapshot_in(root: &NasRoot, name: &str, m: &Map) -> Result<u64> {
     let dir = root.join(name);

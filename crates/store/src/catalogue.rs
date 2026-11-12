@@ -18,8 +18,8 @@ pub use coverage::Coverage;
 /// the JSON keys naming it. It keeps its old spelling (task #547: stored in the history and job logs,
 /// and the pool runs mixed app versions): only the Rust names around it say "catalogue".
 pub const NAME: &str = "catalog";
-/// The step's job while publishing is held for review (the pool's setting `hold-catalog`): its map goes to the
-/// NAS's `map-held/` (crate::map::HELD_DIR), not the log.
+/// The step's job while publishing is held for review (the pool's `hold-catalog`): its map goes to
+/// the lead's held maps (`--held`, agentcore's agent::publish::HELD), not the log.
 pub const HELD_NAME: &str = "catalog-held";
 
 /// The catalogue format version written. (2, task #449: `markdata` may name one bundle of every

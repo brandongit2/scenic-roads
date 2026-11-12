@@ -5859,6 +5859,9 @@ mod http {
                 super::jobspans::record_in(&dir.join("timings.jsonl"), job)
             }))
         })));
+        // (The newest map held for review, from this agent's folder.)
+        let shared = ctx.shared.clone();
+        let routes = routes.route("/map/held", get(move || held_map(shared.clone())));
         // (A test's handler that waits on a blocking task for good: a stop returns all the same.)
         #[cfg(test)]
         let routes = routes.route("/work/test-block", get(test_block));
@@ -6288,6 +6291,36 @@ mod http {
         let mut r = next.run(req).await;
         allow(&mut r);
         r
+    }
+
+    /// `GET /map/held`: the newest map held for review (the pool's `hold-catalog`: this agent's held
+    /// maps, crate::agent::publish::HELD), whole, as `/map/snapshot` gives the map (zstd JSON,
+    /// store::map::Snapshot; its `seq` in `X-Map-Seq`). 404 while none is held here.
+    async fn held_map(shared: Arc<Mutex<Shared>>) -> Response {
+        let home = shared.lock().unwrap_or_else(|e| e.into_inner()).settings.as_ref().map(|s| s.0.clone());
+        let Some(home) = home else {
+            return error(StatusCode::SERVICE_UNAVAILABLE, "this Mac's agent hasn't said where its folder is yet");
+        };
+        let dir = crate::agent::publish::held_dir(&home);
+        let newest = tokio::task::spawn_blocking(move || -> Result<Option<(u64, Vec<u8>)>> {
+            let Some(seq) = store::map::seqs_in_dir(&dir)?.first().copied() else { return Ok(None) };
+            Ok(Some((seq, std::fs::read(dir.join(store::map::nas_name(seq)))?)))
+        })
+        .await;
+        match newest {
+            Ok(Ok(Some((seq, b)))) => (
+                [
+                    (header::CONTENT_TYPE, "application/zstd".to_string()),
+                    (header::CACHE_CONTROL, "no-store".to_string()),
+                    (header::HeaderName::from_static("x-map-seq"), seq.to_string()),
+                ],
+                b,
+            )
+                .into_response(),
+            Ok(Ok(None)) => error(StatusCode::NOT_FOUND, "no map is held for review here"),
+            Ok(Err(e)) => error(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        }
     }
 
     async fn page(file: &str) -> Response {

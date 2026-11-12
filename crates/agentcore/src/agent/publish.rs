@@ -251,6 +251,17 @@ pub const MAPLOG: &str = "maplog";
 /// The map the `catalog` step posts, in the log's folder (`--post`), and the one the writer took.
 pub const POSTED: &str = "posted.json.zst";
 const TAKEN: &str = "posted.taken.json.zst";
+/// The maps the `catalog` step would have published while publishing is held for review (the
+/// pool's `hold-catalog`: the `catalog-held` job's `--held`), in the log's folder: `held/<seq>.json.zst`
+/// each whole, `seq` the batch's it would be, the newest three (store::map::write_in_dir). Never on
+/// the NAS; no server follows them: the lead's coordinator serves the newest for review
+/// (`GET /map/held`), the plan reads its regions, and lifting the hold publishes the map then.
+pub const HELD: &str = "held";
+
+/// The held maps' folder (`HELD`) in the agent's folder `home`.
+pub fn held_dir(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(MAPLOG).join(HELD)
+}
 /// How often the map is written whole: the lead's snapshot and the NAS's (docs/maplog.md §4.4).
 const SNAPSHOT_EVERY_S: u64 = 3600;
 /// What a batch's `why` says of a map made with the low zooms (store::map::Batch::says), and

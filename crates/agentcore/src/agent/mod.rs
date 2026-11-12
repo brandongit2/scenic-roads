@@ -9915,7 +9915,7 @@ mod tests {
             last = now;
         }
         // A held map's folder made.
-        std::fs::create_dir_all(root.join(store::map::HELD_DIR)).unwrap();
+        std::fs::create_dir_all(publish::held_dir(&home)).unwrap();
         let now = a.planner().plan_seen(&store::nasfs::NasRoot::local_for_test(&root));
         assert_ne!(now, last);
         last = now;
@@ -10041,7 +10041,7 @@ mod tests {
         for st in steps::TABLE.iter() {
             let step = st.name.to_string();
             // (gc and backup: `scenic`'s, their commands checked as the plan makes them.)
-            // (catalog-held: `catalogue --held --ready …`, as the plan makes it.)
+            // (catalog-held: `catalogue --held <dir> --ready …`, as the plan makes it.)
             let scenics = crate::cli::command("scenic").unwrap().find_subcommand(&step).is_some();
             let takes = crate::cli::build::takes_targets(&step);
             if (scenics && takes.is_none()) || step == "catalog-held" {

@@ -127,6 +127,25 @@ mod tests {
         (start, out)
     }
 
+    /// Task #1119: the map held for review is on the lead's disk (crate::agent::publish::HELD), its
+    /// newest served whole by the coordinator for review (`/map/held`), 404 while none is held.
+    #[test]
+    fn the_newest_held_map_is_served_from_the_leads_disk() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, w, _feed) = lead(d.path());
+        let home = d.path().join("home");
+        c.set_settings(&home, None);
+        assert!(w.get_bytes("/map/held").unwrap_err().to_string().contains("404"));
+        let (start, bs) = chain(3);
+        let dir = crate::agent::publish::held_dir(&home);
+        for m in [&start, &bs[0].0, &bs[1].0] {
+            store::map::write_in_dir(&dir, m).unwrap();
+        }
+        let (m, _) = store::map::Snapshot::decode(&w.get_bytes("/map/held").unwrap()).unwrap();
+        assert_eq!(m, bs[1].0);
+        assert_eq!(store::map::newest_in_dir(&dir).unwrap().unwrap().0, bs[1].0);
+    }
+
     fn lead(d: &std::path::Path) -> (crate::coord::Coordinator, Client, Arc<Feed>) {
         let (c, port) = crate::coord::start_for_test(&d.join("a"), "m4", "");
         let w = Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "server/m1");

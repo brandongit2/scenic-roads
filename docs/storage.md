@@ -26,8 +26,6 @@ work/          build intermediates, not served
 cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
 map/           <seq>.json.zst: the map whole (every file it reads, by content name), the lead's
                hourly snapshot of its log, the newest three (docs/maplog.md §4.4)
-map-held/      <seq>.json.zst: the map the catalog step would publish, kept back for review (while
-               inputs/hold-catalog exists), the newest three
 catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: read by nothing; the
                gc job removes them once every member's app checks the NAS by map/ (step 9)
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;

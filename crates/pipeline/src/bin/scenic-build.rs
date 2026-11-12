@@ -517,11 +517,12 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let (pieces, ways) = ::inputs::osmpass::patch_ferries(&mut out, &date, &scratch, &near)?;
             eprintln!("patch-ferries: {pieces} pieces of the {date} pass gained {ways} ferry ways");
         }
-        // catalogue [--held] [--ready <ids>] [--post <file>]: the map built from the records,
+        // catalogue [--held <dir>] [--ready <ids>] [--post <file>]: the map built from the records,
         // posted whole to the lead's agent (`--post`, its agent's: agentcore::agent::publish::POSTED),
-        // which appends its batch to the map's log (docs/maplog.md §6.7); held, it goes to the NAS's
-        // map-held/, which no server reads (a build to compare before it's switched to:
-        // inputs/hold-catalog);
+        // which appends its batch to the map's log (docs/maplog.md §6.7); held, it goes into the
+        // lead's agent's held maps instead (`--held`, agentcore::agent::publish::HELD), which no
+        // server follows (a build to compare before it's switched to: the pool's setting
+        // hold-catalog);
         // `--ready`, the regions it records as built (comma-separated; the agent's plan says which),
         // the others as the last catalogue had them (without it: every region as its recipe is now);
         // `--building`, the regions still building with their z6 tiles built of their total (the
@@ -553,10 +554,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 })
                 .transpose()?
                 .unwrap_or_default();
-            let has = |f: &str| flag(&args, f);
             catalogue(
                 &mut out,
-                has("--held"),
+                opt(&args, "--held").map(PathBuf::from).as_deref(),
                 ready.as_ref(),
                 &building,
                 opt(&args, "--post").map(PathBuf::from).as_deref(),
@@ -1970,19 +1970,20 @@ fn served_global(l: &str) -> bool {
 
 /// The map built from the records (docs/maplog.md §6.7), as a catalogue: posted whole to `post`
 /// (the lead's agent's `maplog/posted.json.zst`, which appends its batch: agentcore::agent::publish),
-/// or, `held`, written to the NAS's `map-held/` for review. Its number is the map's next; each
+/// or, held, written into the folder `held` for review (the lead's agent's held maps). Its number
+/// is the map's next; each
 /// file's size the records' or the map's (the same content name, the same bytes), the NAS looked at
 /// for a file neither has. `now`: its moment (seconds since the epoch), its `created` and its meta's
 /// `built`.
 fn catalogue(
     out: &mut Out,
-    held: bool,
+    held: Option<&Path>,
     ready: Option<&BTreeMap<String, Option<String>>>,
     building: &BTreeMap<String, buildstore::coverage::Tiles>,
     post: Option<&Path>,
     now: u64,
 ) -> Result<agentcore::pubtimes::CatalogueStats> {
-    anyhow::ensure!(held || post.is_some(), "a map is published by posting it to the lead's agent (--post)");
+    anyhow::ensure!(held.is_some() || post.is_some(), "a map is published by posting it to the lead's agent (--post)");
     // (Stored phase name: old spelling, task #547.)
     let p = phase("sorting the manifest's files into the catalog's");
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
@@ -2101,10 +2102,9 @@ fn catalogue(
     // first held one goes by the served one).
     let map = coordwire::map_now(out.root()).context("the map now")?;
     let seq = map.as_ref().map_or(0, |m| m.seq);
-    let held_last = if held {
-        store::map::newest_in(&out.root().join(store::map::HELD_DIR)).context("the last held map")?
-    } else {
-        None
+    let held_last = match held {
+        Some(dir) => store::map::newest_in_dir(dir).context("the last held map")?.map(|(m, _)| m),
+        None => None,
     };
     let last: Option<store::catalogue::Catalogue> =
         held_last.or(map).map(|m| m.catalogue()).transpose().context("the map as a catalogue")?;
@@ -2240,7 +2240,7 @@ fn catalogue(
     let catalogue: store::catalogue::Catalogue = serde_json::from_value(cat)?;
     catalogue.validate().with_context(|| format!("map {n}"))?;
     match post {
-        Some(to) if !held => {
+        Some(to) if held.is_none() => {
             // (Whole, under a temporary name renamed into place: the agent takes it once the job
             // has ended, agentcore::agent::publish::MapLog.)
             let b = catalogue.encode()?;
@@ -2251,9 +2251,9 @@ fn catalogue(
             eprintln!("posted map {n} ({} bytes) to {}", b.len(), to.display());
         }
         _ => {
-            let m = store::map::Map::of(&catalogue)?;
-            store::map::write_snapshot_in(out.root(), store::map::HELD_DIR, &m)?;
-            eprintln!("held map {n} written to {}/{}", store::map::HELD_DIR, store::map::nas_name(n));
+            let dir = held.context("held, or posted")?;
+            store::map::write_in_dir(dir, &store::map::Map::of(&catalogue)?)?;
+            eprintln!("held map {n} written to {}", dir.join(store::map::nas_name(n)).display());
         }
     }
     // (What it did, for publishing's times (agentcore::pubtimes): its phases once written, the
@@ -7047,13 +7047,13 @@ mod tests {
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
     }
 
-    /// The step run on `root` (`held`, or posting to `root`'s `posted.json.zst`): what it says of
-    /// itself.
+    /// The step run on `root` (`held`: into `root`'s `held/`, as into the lead's agent's held
+    /// maps; or posting to `root`'s `posted.json.zst`): what it says of itself.
     fn run_catalogue(root: &std::path::Path, held: bool) -> agentcore::pubtimes::CatalogueStats {
         let mut out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(root), &root.join("scratch")).unwrap();
-        let post = root.join("posted.json.zst");
-        super::catalogue(&mut out, held, None, &Default::default(), Some(&post), NOW).unwrap()
+        let (post, dir) = (root.join("posted.json.zst"), root.join("held"));
+        super::catalogue(&mut out, held.then_some(dir.as_path()), None, &Default::default(), Some(&post), NOW).unwrap()
     }
 
     /// The map the step posted, published as a lead without its log would serve it (the NAS's
@@ -7081,7 +7081,7 @@ mod tests {
         let post = home.join(agentcore::agent::publish::MAPLOG).join(agentcore::agent::publish::POSTED);
         let run = || {
             let mut out = buildstore::out::Out::unbound(&nas, &root.join("scratch")).unwrap();
-            super::catalogue(&mut out, false, None, &Default::default(), Some(&post), NOW).unwrap()
+            super::catalogue(&mut out, None, None, &Default::default(), Some(&post), NOW).unwrap()
         };
         let mut log = agentcore::agent::publish::MapLog::default();
         let here = log.here(pipeline::agent::theplan::the_plan(), &home, &nas);
@@ -7108,8 +7108,9 @@ mod tests {
         }
     }
 
-    /// Held for review (inputs/hold-catalog): the step writes the map it would publish whole to the
-    /// NAS's `map-held/`, numbered as the next batch, and posts nothing; the hold lifted, the step's
+    /// Held for review (the pool's setting hold-catalog): the step writes the map it would publish
+    /// whole to the folder it's given (the lead's agent's held maps), numbered as the next batch, and
+    /// posts nothing; the hold lifted, the step's
     /// next run publishes that map as one batch (made again from the records: the same map).
     #[test]
     fn a_held_batch_is_appended_whole_when_the_hold_lifts() {
@@ -7131,7 +7132,7 @@ mod tests {
         let held = run_catalogue(root, true);
         assert_eq!(held.n, 2);
         assert!(!root.join("posted.json.zst").exists());
-        let (m, _) = store::map::Snapshot::decode(&std::fs::read(root.join("map-held/2.json.zst")).unwrap()).unwrap();
+        let (m, _) = store::map::Snapshot::decode(&std::fs::read(root.join("held/2.json.zst")).unwrap()).unwrap();
         let held_map = m.catalogue().unwrap();
         assert_eq!(held_map.files.len(), 3);
         assert_eq!(store::map::newest_nas(&nas).unwrap().unwrap().seq, one.n, "the map served stays");

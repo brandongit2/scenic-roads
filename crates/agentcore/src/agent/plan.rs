@@ -1094,8 +1094,9 @@ impl Planner {
             serde_json::to_string(&p.gates).unwrap_or_default().hash(&mut h);
         }
         serde_json::to_string(&self.inp.pause).unwrap_or_default().hash(&mut h);
-        // (The held maps' folder, and the map's head; publishing's switches are the pool's, below.)
-        stat(&mut h, (&root.join(store::map::HELD_DIR)).into());
+        // (The held maps' folder on this Mac, and the map's head; publishing's switches are the
+        // pool's, below.)
+        stat(&mut h, (&publish::held_dir(&self.o.home)).into());
         self.inp.map.as_ref().and_then(|m| m.feed.head()).hash(&mut h);
         // (The owner's redo asks: one taken or done.)
         stat(&mut h, (&self.o.home.join(redo::ASKS)).into());
@@ -1662,7 +1663,7 @@ impl Planner {
         // The regions the map has (or the held catalogue's, when catalogues are held for review) and
         // how long ago it went out: what the plan publishes regions by.
         let map = self.map_now(root);
-        let (on_map, since_publish) = self.on_map(root, held, map.as_deref(), &recipes);
+        let (on_map, since_publish) = self.on_map(held, map.as_deref(), &recipes);
         // (The map's, held ones aside.)
         self.catalogue_seen.set(map.as_deref().map(seen));
         let way = publish::Publishing {
@@ -2021,14 +2022,16 @@ impl Planner {
         // targets granted as many as fit a quarter of an hour, `offer_plan`; the pyramids' fill a z6
         // tile, `build::job_of`.)
         for w in plan.into_iter().map(|w| self.o.the_plan.job_of(w)) {
-            // Held for review: the map goes to the NAS's map-held/ (no server reads it), once.
+            // Held for review: the map goes to this agent's held maps (publish::held_dir: no server
+            // follows them; the coordinator's `/map/held` serves the newest for review), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalogue_held.as_deref() == Some(k.as_str()) {
                     waiting.push(Waiting {
                         step: None,
                         what: "publish".into(),
-                        why: "held for review (the pool's setting hold-catalog); its map is in map-held/".into(),
+                        why: "held for review (the pool's setting hold-catalog); its map is on the lead's disk (/map/held)"
+                            .into(),
                     });
                     continue;
                 }
@@ -2037,6 +2040,7 @@ impl Planner {
                     "catalog",
                     vec![
                         "--held".into(),
+                        publish::held_dir(&self.o.home).to_string_lossy().into_owned(),
                         "--ready".into(),
                         ready_arg.clone(),
                         "--building".into(),
@@ -2879,13 +2883,12 @@ impl Planner {
     }
 
     /// The regions the map has (`map`, as `map_now` gives it), or the newest held map's while
-    /// publishing is held for review (`held`, once `map-held/` has one: store::map::HELD_DIR), by
+    /// publishing is held for review (`held`, once this agent's held maps have one: publish::held_dir), by
     /// id: whether as its recipe is now (same outline entries); and how long ago it went out
     /// (seconds: its batch's time, the held one's). Its regions taken once per `seq`; none (nothing
     /// on the map: every region new) when there's none, or it can't be read now.
     pub(super) fn on_map(
         &self,
-        root: &NasRoot,
         held: bool,
         map: Option<&store::catalogue::Catalogue>,
         recipes: &[recipes::Recipe],
@@ -2908,15 +2911,13 @@ impl Planner {
         let mut cached = self.last_catalogue.borrow_mut();
         let mut at = None;
         // (The held maps, once there are any: the newest read whole once.)
-        let held_dir = root.join(store::map::HELD_DIR);
+        let held_dir = publish::held_dir(&self.o.home);
         let newest_held =
-            if held { store::map::seqs_in(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
+            if held { store::map::seqs_in_dir(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
         if let Some(n) = newest_held {
-            let key = (store::map::HELD_DIR.to_string(), n);
+            let key = (publish::HELD.to_string(), n);
             if cached.as_ref().is_none_or(|c| c.0 != key) {
-                let read = held_dir
-                    .join(store::map::nas_name(n))
-                    .read()
+                let read = std::fs::read(held_dir.join(store::map::nas_name(n)))
                     .map_err(anyhow::Error::from)
                     .and_then(|b| store::map::Snapshot::decode(&b))
                     .and_then(|(m, _)| m.catalogue());

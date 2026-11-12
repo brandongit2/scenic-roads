@@ -539,7 +539,9 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
    The catalogue is the map: the step (`scenic-build catalog --post <file>`) builds it from the
    records, each file's size the records' or the map's, and posts it to the lead's agent, which
    appends it to the map's log (docs/maplog.md §6.7). While the pool's `hold-catalog` is on, the map it
-   would publish goes to the NAS's `map-held/<seq>.json.zst` instead, and nothing is published.
+   would publish goes to the lead's disk instead (`maplog/held/<seq>.json.zst` in its agent's folder,
+   the newest three; its coordinator serves the newest for review, `GET /map/held`), and nothing is
+   published.
 6. **Daily:** backup and GC.
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture

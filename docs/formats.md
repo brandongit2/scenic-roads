@@ -574,8 +574,9 @@ log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting th
 - `files`' sizes: the records' (from each file's job's hand-off) or the map's (the same content
   name, the same bytes); the step looks at the NAS only for a file neither has.
 - GC: a file goes once neither the map a client holds nor the records name it, by the lead's GC
-  queue (docs/maplog.md §7, docs/storage.md). While publishing is held (`inputs/hold-catalog`), the map the step
-  would publish is written whole to `map-held/<seq>.json.zst` (a snapshot, the newest three kept).
+  queue (docs/maplog.md §7, docs/storage.md). While publishing is held (the pool's `hold-catalog`), the map the
+  step would publish is written whole to the lead's `maplog/held/<seq>.json.zst` (a snapshot, the
+  newest three kept; `catalogue --held <dir>`).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
@@ -656,7 +657,9 @@ publishing.json         the lead's record of its catalogues {held_at, ran}: when
                         (agent::publish::LastCatalogue); when the last went out, and the last with
                         the low zooms, are the map log's (docs/maplog.md §6.5)
 maplog/                 the lead's map log (docs/maplog.md: snapshot.json.zst with its cursors and
-                        marks, segments of batches)
+                        marks, segments of batches); held/<seq>.json.zst, the maps held for review
+                        while the pool's `hold-catalog` is on (agent::publish::HELD, the newest
+                        three; the coordinator's `GET /map/held` serves the newest)
 catalogues-view.json.zst  the build page's Catalogues map as followed (agent::cataloguesview: its
                         entries, `seq`, tile keys' and `f/` names' hashes)
 clear-request.json      the owner's ask to clear build caches ({by, at, level: caches | deep}, agent::room::ClearRequest;
