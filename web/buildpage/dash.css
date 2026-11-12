@@ -532,7 +532,8 @@ body.jp { --side: 320px; --head: 40px; --foot: 32px; }
 .jp .ll .lt { color: var(--dim); }
 .jp .ll .lx { white-space: pre-wrap; overflow-wrap: anywhere; }
 .jfoot { position: fixed; left: 0; right: 0; bottom: 0; height: var(--foot); z-index: 10; display: flex; align-items: center; gap: 10px; padding: 0 16px env(safe-area-inset-bottom); background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-top: 1px solid var(--line); font-size: var(--fs-s); }
-.jfoot #mode { padding: 1px 10px; font-size: var(--fs-s); }
+.jfoot #mode { padding: 1px 10px; font-size: var(--fs-s); white-space: nowrap; flex: none; }
+.jfoot #mode-said { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jfoot #mode[aria-pressed="true"] { border-color: var(--info-line); color: var(--primary-fg); background: var(--primary-bg); }
 .jfoot #live { margin-left: auto; display: flex; gap: 6px; align-items: center; white-space: nowrap; color: var(--dim); }
 .jfoot #live i { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
