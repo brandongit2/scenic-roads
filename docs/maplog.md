@@ -6,10 +6,11 @@ the time in small steps it can resume. No catalogue is written or read since ste
 lands, docs/storage.md (GC) and the code are what is true of GC.
 
 **Built (steps 1 and 2):** `store::map` (entries ⇄ `Catalogue`, batches, the digest, applying a
-batch, the NAS snapshot) and `store::map::log` (the store: `snapshot.json.zst` and segments of
+batch, a snapshot) and `store::map::log` (the store: `snapshot.json.zst` and segments of
 `fsync`ed lines, in the lead agent's `maplog/` folder), written by `agent::publish::MapLog` on a
-thread of its own (since step 6, the map the `catalog` step posts: §6.7). The lead's snapshot and
-`map/<seq>.json.zst` are written when the log starts and then once an hour while batches come.
+thread of its own (since step 6, the map the `catalog` step posts: §6.7). The lead's snapshot is
+written when the log starts and then once an hour while batches come; the NAS holds no copy of the
+map (task #1119, §4.4).
 Where it departs from this doc:
 
 - **No snapshot at a clean stop** (§4.4): the lead's log replays its segments on a start instead.
@@ -38,7 +39,7 @@ most; a `since` older than those, or past the head, is told to reset), the curso
 the log's snapshot) and the snapshot made once per `seq`; no NAS, no disk. A long poll looks each
 50 ms whether a batch came. The map server (on the Mac mini alone, task #874) follows it
 (`crates/server/src/maplog.rs`, docs/macs.md): batches applied in place to its own map (no reader holds it), the catalogue made of
-it handed over whole; the NAS's snapshot with the lead away; its map kept in
+it handed over whole; with the lead away, the map it holds (none: none); its map kept in
 `~/Library/Caches/scenic/map/`. Where it departs from §5 and §6.1:
 
 - **Wherever the server runs:** the Mac mini alone since #874, so no gate of its own. Its map
@@ -58,7 +59,7 @@ it handed over whole; the NAS's snapshot with the lead away; its map kept in
   beside its feed: the catalogue it last checked equal to the map, else one made of the map
   (`Here::catalogue`), kept only while a reader holds it (15 MB beside the map since #1092, made again in ~0.1 s, so a
   plan may make it twice); the plan's `map_now`. Without the lead's log (a lead whose log hasn't
-  started, a dry run) the newest NAS snapshot, read once a `seq` (§5.2). The status's catalogue is
+  started, a dry run, a member) none. The status's catalogue is
   its `seq` and its batch's time; the plan's regions on the map (`on_map`), its map tiles' owners
   (`pubtimes::PlannedNotes`) and the page's regions (`regionsview`) read that catalogue. `served`'s
   per-folder cache and its `read_n_from` are gone.
@@ -119,17 +120,18 @@ temporary name renamed into place); at the job's end the agent's writer takes it
 `posted.taken.json.zst`), diffs it against the map, appends the batch and lets the file go (one
 taken and not appended when the agent stopped is appended when the log opens again). Its `seq` is
 the step's number, the map's next (the head's next if that's taken). The step reads the map from the
-lead (`coordwire::map_now`: `GET /map/snapshot` from the coordinator; the NAS's newest snapshot
-with no coordinator or none open yet), as names-todo and `scenic` status do; each file's size is the
+lead (`coordwire::map_now`: `GET /map/snapshot` from the coordinator; none with no coordinator or
+none open yet, but on a root that isn't the NAS, a test root's own `map/`), as names-todo and
+`scenic status` do; each file's size is the
 records' or the map's, the NAS looked at for the rest (the `catalog-stats:` line's `stated`). Held
 for review (the pool's `hold-catalog`), the step writes the map it would publish whole to the lead's
 disk (`--held`: its agent's `maplog/held/<seq>.json.zst`, a snapshot, the newest three kept; the
 coordinator serves the newest, `GET /map/held`) and posts nothing; the plan reads its regions from
 there; the hold lifted,
 the step's next run publishes that map as one batch (made again from the records). The map server
-serves the map alone: the map this Mac kept (`current.json.zst`), else the NAS's newest snapshot, at
-its start (before it answers), then the lead's batches; a `--root` server or a test reads the root's
-newest snapshot. GC removes by its queue on the lead since step 8b (§7.3). Where it departs from §6.7: the map is
+serves the map alone: the map this Mac kept (`current.json.zst`; none kept, none) at its start
+(before it answers), then the lead's batches; a `--root` server or a test reads the root's
+newest snapshot (its `map/`). GC removes by its queue on the lead since step 8b (§7.3). Where it departs from §6.7: the map is
 posted as a file the job leaves for its agent, not a `POST /map/publish`: the job runs on the lead,
 and the agent takes it when the job ends, which a request would only make sooner.
 
@@ -185,9 +187,8 @@ needs none of them (§4.1).
 ## 3. Where it lives: on the lead
 
 The map and its log are kept by the lead's agent on its own disk, beside the pool store of
-docs/coordination.md (#878), and served by its coordinator (port 8090) over HTTP. The NAS keeps a
-whole snapshot of the map now and then (§4.4), for readers that can't reach the lead and for
-recovery.
+docs/coordination.md (#878), and served by its coordinator (port 8090) over HTTP. The NAS keeps no
+copy of it (§4.4).
 
 Why the lead, not the NAS:
 
@@ -206,7 +207,8 @@ Why the lead, not the NAS:
 
 What it costs: with the lead down nothing new is published anyway (publishing is the lead's), so
 clients keep the map they hold, which is what happens today when the catalogue job stops. A Mac
-that starts with no saved map and no lead reads the NAS snapshot (§5.2). A lead disk lost is §4.5.
+that starts with no saved map and no lead serves none until the lead answers (§5.2). A lead disk
+lost, or the lead moved to another Mac, is §4.5.
 
 The log is its own store (`agent/maplog/`), not a part of the pool store (docs/coordination.md
 §4); whether to fold it in is open decision 1.
@@ -256,8 +258,8 @@ One publish is one batch, appended and `fsync`ed before it's answered:
 - An empty change makes no batch (today's `catalogue_key` rule: nothing changed, nothing written).
 
 The log lives in segments, `agent/maplog/<first seq>.jsonl`, a new one each 10,000 batches or
-64 MB; a segment whose batches are all older than the oldest kept cursor (§5.4) *and* older than
-the newest NAS snapshot is removed.
+64 MB; a segment whose batches are all older than the oldest kept cursor (§5.4) *and* covered by
+the lead's snapshot is removed.
 
 ### 4.3 The digest
 
@@ -276,25 +278,35 @@ sum to the same, a 2^-128 chance for hashes that behave as random (XXH3 isn't ke
 is adversarial). The hashed bytes are injective: key, a zero byte, then JSON, which holds no raw
 zero byte. A stronger check at the same incremental cost isn't needed.
 
-### 4.4 The NAS snapshot
+### 4.4 No copy on the NAS
 
-The lead writes the whole map to `map/<seq>.json.zst` (zstd with its checksum, temporary name, then
-rename) once an hour while batches come, and at a clean stop: one whole write an hour (34 MB: the
-NAS's `map/1601` to `1607`, 6 Nov) instead of one create a minute plus a whole one each `whole_due`. It keeps the newest three. Who
-reads it: a server with no saved map that can't reach the lead, the CLI on a Mac without the lead
-(`scenic catalogs`), the lead rebuilding a lost disk (§4.5), and the tools that write test roots
-(`lakefill catalog-add`, `coastcheck`, `layers.rs`' tests), which write a snapshot where they wrote
-a catalogue.
+The NAS holds no copy of the map (task #1119, the owner's call of 10 Nov): normal operation never
+read one, a lead restarting reads its own snapshot (§4.5), and what a copy covered costs nothing
+lasting without it. A map server with no saved map and no lead serves none until the lead answers
+(§5.2); `scenic status` without the lead says it doesn't know the map; a lead with no log of its
+own computes the map from the records at its next `catalog` run (§4.5). The tools that write test
+roots (`lakefill catalog-add`, `coastcheck`, `layers.rs`' tests) write the root's map with the same
+snapshot writer into the root's `map/<seq>.json.zst` (`store::map::write_root_map`, refused on the
+NAS), which a `--root` server and a job on that root read (`store::map::root_map`,
+`coordwire::map_now` on a root that isn't the NAS). The NAS's old `map/` folder, which apps before
+#1119 wrote and stat to tell the NAS answers, goes once every Mac's beat says
+`coord::beats::NAS_CHECK` (docs/storage.md).
 
 ### 4.5 Recovery
 
 - **The lead restarts:** its log is on its disk; it loads the newest local snapshot (`agent/maplog/
-  snapshot.json.zst`, written as the NAS one is) and replays the segments after it. A torn last line
-  is dropped: it was never answered.
-- **The lead's disk is lost:** the map comes back from the newest NAS snapshot. Batches after it are
-  lost, which costs nothing lasting: the next `catalog` run computes the map from the records (as it
-  does today) and the batch it appends is the difference. Clients ahead of the restored `seq` are
-  told to reset (§5.2). The GC queue is rebuilt as §7.5 says.
+  snapshot.json.zst`, written when the log starts and hourly) and replays the segments after it. A
+  torn last line is dropped: it was never answered.
+- **The lead's disk is lost, or the owner moves the lead to another Mac** (no log there): the next
+  `catalog` run computes the map from the records (as it does every run) and seeds a new log with
+  it, which costs nothing lasting: the map is the records'; only what the last map alone kept is
+  lost until it's built again (a region whose outline changed since it was built, its tiles not yet
+  remade, leaves the map until they are: §6.7's `ready`), and the first map's sizes the NAS gives.
+  Its number goes past the map's head as the pool kept it (the lead's store's `map-head`, carried
+  to the next lead by the store's backup, `agent::pool::load_backup`) and past the newest `seq` a
+  client asked from (`Feed::asked_past`: the map servers and mirrors ask every few seconds), so the
+  map's numbers go on and a client's map is never newer than the lead's (`publish::Here::set_floor`;
+  the servers never take an older map, §6.1). The GC queue is rebuilt as §7.5 says.
 
 ## 5. Clients
 
@@ -319,8 +331,8 @@ after a catalogue (docs/macs.md) goes; the long poll does its job on every Mac.
 ### 5.2 When the lead can't be reached
 
 The client keeps the map it holds and tries again each 10 s (logged once). One with no map at all
-(a fresh Mac, a lost cache) reads the newest NAS snapshot and goes on from its `seq` once the lead
-answers. Nothing reads the log from the NAS: there is none there.
+(a fresh Mac, a lost cache) serves none until the lead answers, then takes its snapshot. Nothing of
+the map is on the NAS.
 
 ### 5.3 What a client keeps
 
@@ -341,7 +353,6 @@ its snapshot, not `fsync`ed per request). The clients:
 | each Mac's mirror sync (step 7b) | `mirror/<host>` | yes, while it copies a `seq`'s files |
 | the lead's agent (plan, status, page views) | in process | no: it reads names, not files |
 | a job leased with files of the map as inputs (names-todo, regions' checks) | its lease | yes, until it ends (§7.2) |
-| the NAS snapshot | `snapshot` | yes: a reader may start from it |
 
 A client unheard for `CURSOR_TTL` (6 hours, `store::map::gc::CURSOR_TTL_S`) is dropped from the
 set: a laptop's map server runs on demand and quits 30 minutes after its last use (docs/roles.md
@@ -359,14 +370,9 @@ and a reset of the mirror's cursor waits for the server to catch up (§6.2). A m
 (`mirror/<host>`) is reset too whenever the lead didn't hold its cursor, its `since` within the log
 or not (`store::map::feed::MIRROR`): one never heard (a new Mac, the switch, a cursor lost with a
 lead restart), unheard `CURSOR_TTL`, or held at one `seq` behind the head that long (an Update that
-never gets through, its files missing or no room, holds GC `CURSOR_TTL` at most). The NAS
-snapshot's cursor (`snapshot`) is the lead's own, noted as it writes a snapshot (on a publish, an
-hour or more apart): it holds whenever it was noted, since the snapshots kept hold their files
-whether the build publishes or not (`store::map::feed::SNAPSHOT`); a reader of the newest
-(`newest_nas`: a server with no map and no lead, `lakefill`, `coastcheck`) may be an hour of
-publishes behind the head. It is saved and restored with the others, so whatever stops writing
-the NAS snapshots (#1119 drops them) drops this cursor with them: left, it would hold every name
-freed after it for good.
+never gets through, its files missing or no room, holds GC `CURSOR_TTL` at most). The cursor an
+app before #1119 noted for the NAS's snapshots (`snapshot`), in a log saved with it, is dropped as
+the log opens (`Feed::start`): left, it would hold every name freed after it for good.
 
 The cursors are the lead's memory, saved with its snapshot (hourly, `SNAPSHOT_EVERY_S`) and
 restored at its start. A restart loses only what was heard since: a cursor that moved on is
@@ -392,7 +398,7 @@ files for its logical names, as today. The page's switch to a new map stays keye
   `mirror-start`/`mirror-end` events ride on its own client's requests (`&copying=<seq>`,
   `&synced=<seq>`: §6.2).
 - `main.rs`'s start (read the newest local catalogue, else the NAS's) → the saved map, else the
-  lead's snapshot, else the NAS snapshot.
+  lead's snapshot once it answers.
 
 ### 6.2 The mirror and offline downloads (`store::mirror`, `server/src/downloads.rs`)
 
@@ -526,10 +532,10 @@ from the agent.
 
 | Reader | Today | Instead |
 | --- | --- | --- |
-| `scenic catalogs` (`cli/scenic.rs`), `cli/build.rs`, `cli/progs.rs` | list and read `catalog/` | the agent's map or `GET /map/…`; the NAS snapshot without a lead |
+| `scenic catalogs` (`cli/scenic.rs`), `cli/build.rs`, `cli/progs.rs` | list and read `catalog/` | the agent's map or `GET /map/…`; nothing without a lead (`scenic status` says so) |
 | `pubtimes` | reads catalogues for their times | the log's batches |
 | `coverage.rs`, `areafiles.rs`, `stage.rs`, `layers.rs`, `places.rs`, `summary.rs`, `marks.rs`, `depth`, `polar.rs`, `rail.rs`, `ovconv.rs`, … | take a `Catalogue` value | unchanged: they get it from the client |
-| `lakefill catalog-add`, `coastcheck`, test roots (`layers.rs`, `agent/mod.rs` tests, `downloads/tests.rs`) | write a catalogue into a test root | write a NAS snapshot (`map/<seq>.json.zst`) into it; the server under test starts from it |
+| `lakefill catalog-add`, `coastcheck`, test roots (`layers.rs`, `agent/mod.rs` tests, `downloads/tests.rs`) | write a catalogue into a test root | write the root's map (`map/<seq>.json.zst`, `store::map::write_root_map`) into it; the server under test starts from it |
 | `scenic-build`'s `catalogue::keep_read_in`, the server's, `scenic`'s | the kept chain ends | the client's saved map (§5.3) |
 | `pool/sim/place.rs` | the step's name | the step's name |
 
@@ -578,7 +584,7 @@ running missed is the orphan sweep's (§7.5), as is the queue lost with a lead d
 taken and not merged isn't indexed until the merge takes it: a reused name is either held by a
 lease granted before it was freed (the third rule), or refused at the merge (§7.4); one the merge
 takes holds its names from then until the records after it are seen (`GcQueue::bringing`, step
-8b). The NAS snapshot is a client (`snapshot`, its cursor the oldest of the snapshots kept there).
+8b).
 Deletions are kept for the merge's refusal while a lease up to theirs may still be handed off (§7.4).
 The grace keeps no hand-off safe, so its length doesn't bound one: a member asleep or a lead down
 for longer than the grace, holding a hand-off whose job reused a file freed under its lease, finds
@@ -792,7 +798,7 @@ and the Macs go with step 9, GC's with steps 8a and 8b.
    the cursor set (§7.2). Longer costs room (a day's freed files, 50 to 240 GB, per day of grace).
 3. **`CURSOR_TTL`:** 6 hours for a client that stops asking (task #1134). Shorter frees sooner; a
    Mac away longer resets from the snapshot either way and loses nothing (its mirror is its own).
-   The NAS snapshot's cursor never lapses (§5.4).
+   No cursor is the lead's own: the NAS keeps no snapshot (§4.4).
 4. **The orphan sweep over SSH:** listing on the NAS itself (`find -printf`, one call a folder,
    seconds for the whole share) instead of SMB listings, if the lead (the Mac mini) can use SSH
    unattended; today's GC verifies uploads over SSH only where it can. Proposed: SMB, chunked, which
@@ -813,14 +819,14 @@ steps left.
 
 | Who | Where | What it reads now | Left |
 | --- | --- | --- | --- |
-| The map server's sync | `crates/server/src/maplog.rs:73` (`spawn`), `:323` (the long poll), `:232` (`Map::catalogue` each batch); its start `crates/server/src/data.rs:128` (`store::map::newest_nas`) | the lead's `/map/changes`, its saved map, the NAS's snapshot | nothing |
+| The map server's sync | `crates/server/src/maplog.rs:73` (`spawn`), `:323` (the long poll), `:232` (`Map::catalogue` each batch); its start: the saved map (a `--root`'s own, `store::map::root_map`) | the lead's `/map/changes`, its saved map | nothing |
 | The mirror and offline downloads | `crates/store/src/mirror.rs:643` (`Mirror::sync`, given the catalogue made of the map), `crates/server/src/downloads.rs` (`keep_lists`; `once`, its cursor told each round: `Plan::copies_from`, `Downloads::resync`), `crates/server/src/maplog.rs` (`MirrorLink`) | each download's own list against the map served; its cursor `mirror/<host>` | nothing (7b built) |
 | The map app | `web/src/catalogue.ts:107` (`/api/catalog` each minute, its own Mac's server) | the server's map as a catalogue status | nothing |
 | Consistency of tile sets | the gate picks a batch's contents; `crates/pipeline/src/bin/scenic-build.rs:500` (the `catalog` step posts its map); `crates/agentcore/src/agent/publish.rs:67` (`MapLog`, one batch appended whole); clients swap a batch in whole | the batch | nothing |
 | Publish history and ages | `crates/agentcore/src/agent/cataloguesview.rs:322` (`CataloguesView`), built only on the lead (`crates/agentcore/src/agent/mod.rs:7728`, `tend_pageview`); adoptions and the mirrors' rounds noted there (`publish_marks`); `crates/agentcore/src/pubtimes.rs:414` (the history's `catalog` events), the mirrors' `mirror-start`/`mirror-end` events | the lead's feed in process | nothing |
 | `/api/catalogs` | `crates/agentcore/src/coord/mod.rs:4900`; a member's port sends it to the lead (`crates/agentcore/src/coord/memberpage.rs:56`) | the view above | nothing |
 | `scenic catalogs` | `crates/agentcore/src/cli/scenic.rs:274` | the view this Mac's agent kept (`cataloguesview::KEPT`) | nothing |
-| publish.rs and coordwire | `crates/coordwire/src/lib.rs:39` (`map_now`: `/map/snapshot`, else the NAS's newest), `publish.rs:67` (`MapLog`), `:95` (`Here`: the head's catalogue, made of the map while read) | the lead's log | nothing |
+| publish.rs and coordwire | `crates/coordwire/src/lib.rs:39` (`map_now`: `/map/snapshot`; a test root's own map with no lead), `publish.rs:67` (`MapLog`), `:95` (`Here`: the head's catalogue, made of the map while read) | the lead's log | nothing |
 | gc.rs and the queue | `crates/agentcore/src/agent/gc.rs:841` (`run`), `:903` (`drain`: the queue's chunks), `:935` (`remove_told`), `:1052` (`orphan_walk`), `:1156` (`inputs_walk`), `:50` (`Lead`), `:219` (`by_the_queue`); `crates/agentcore/src/coord/mod.rs:4527` (`/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing`); `crates/agentcore/src/agent/gcqueue.rs:42` (`refusal`); `crates/agentcore/src/agent/plan.rs:1132` (`gc_work`); `crates/store/src/map/gc.rs:452` (`GcQueue::chunk`), `:539` (`bringing`), `:27` (`GRACE_S`) | GC's queue on the lead (the map's names, the records', what a hand-off brings) | nothing |
 | The plan, names-todo, regions | `crates/agentcore/src/agent/plan.rs:2214` (`map_now`), `crates/landmarks/src/namestodo.rs:405` (`inputs_key`, keyed by the log's marks), `regionsview`, `builtview` | the head's catalogue (`Here`) | nothing |
 | The menu app | `tools/status/main.swift:445`-`467` | the status's regions' `map_at` alone | nothing: it never read catalogues |
@@ -850,7 +856,7 @@ in the upload path (`crates/buildstore/src/out.rs:412`), the one per-file write 
 **How the lead serves it.** The lead's coordinator (port 8090, `crates/agentcore/src/coord/maproutes.rs:40`)
 answers `/map/changes` and `/map/snapshot` from the feed in memory (§3, coordination.md §2 rule 3:
 never the NAS), with the build's key; a long poll looks each 50 ms for a batch. With the lead away,
-clients keep their map, and one with none reads the NAS's snapshot (§5.2).
+clients keep their map, and one with none serves none until the lead answers (§5.2).
 
 ### 11.3 What's left, each step alone
 
@@ -877,7 +883,8 @@ that `CURSOR_TTL` (6 hours) drops once the server has quit or the laptop is away
 holds GC up for long. #874
 retired the laptops' servers, a regression #882 step 7a mended: a laptop's server runs on demand,
 started by its menu bar, and its cursors exist only while it runs (docs/roles.md §8.3). A lead moved
-to another Mac starts its log from the NAS's snapshot and loses its queue (§4.5; the orphan sweep
+to another Mac starts its log from the records at its next `catalog` run, numbered past the head
+the pool kept, and loses its queue (§4.5; the orphan sweep
 finds what it held, within twice `ORPHAN_AGE`); #882's fixed lead makes that rare, which is what
 8b relies on.
 
@@ -932,7 +939,7 @@ The gate's 1,077 are the inputs sweep's (§7.6), by the indexes that hold them.
    switch and the catalogues, in the one release (deleting the switch alone would have turned the map
    off on a hiccup with nothing to fall back on).
 2. **The laptops' offline map is kept** (the owner's): it follows the log and its snapshot (the map
-   kept in `~/Library/Caches/scenic/map/current.json.zst`, else the NAS's snapshot), never a
+   kept in `~/Library/Caches/scenic/map/current.json.zst`), never a
    catalogue.
 3. **No catalogue kept for downloads.** #883 step 5 kept the last three catalogues on the Mac for a
    download whose list wasn't written; at step 6 no Mac had a download pinned at another `seq` than

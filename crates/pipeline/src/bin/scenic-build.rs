@@ -2103,7 +2103,7 @@ fn catalogue(
     let map = coordwire::map_now(out.root()).context("the map now")?;
     let seq = map.as_ref().map_or(0, |m| m.seq);
     let held_last = match held {
-        Some(dir) => store::map::newest_in_dir(dir).context("the last held map")?.map(|(m, _)| m),
+        Some(dir) => store::map::newest_in(dir).context("the last held map")?.map(|(m, _)| m),
         None => None,
     };
     let last: Option<store::catalogue::Catalogue> =
@@ -2252,8 +2252,8 @@ fn catalogue(
         }
         _ => {
             let dir = held.context("held, or posted")?;
-            store::map::write_in_dir(dir, &store::map::Map::of(&catalogue)?)?;
-            eprintln!("held map {n} written to {}", dir.join(store::map::nas_name(n)).display());
+            store::map::write_in(dir, &store::map::Map::of(&catalogue)?)?;
+            eprintln!("held map {n} written to {}", dir.join(store::map::snapshot_name(n)).display());
         }
     }
     // (What it did, for publishing's times (agentcore::pubtimes): its phases once written, the
@@ -3934,10 +3934,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let (date, cov, regions) = pass_and_coverage(out, args)?;
     // Global-source layers: as this build's manifest has them now (what the z6 tile keys hash: a
     // terrain job of the same plan is published only with its catalogue, at the end), or another
-    // root's published map (a pilot builds against the real one: its newest NAS snapshot).
+    // root's published map (a pilot builds against the real one: the lead's map, coordwire::map_now).
     let pilot = match opt(args, "--layers-root").map(store::nasfs::NasRoot::from_arg) {
         Some(r) => {
-            let c = store::map::newest_nas(&r)?.context("no map for the global-source layers")?.catalogue()?;
+            let c = coordwire::map_now(&r)?.context("no map for the global-source layers")?.catalogue()?;
             Some((r, c))
         }
         None => None,
@@ -7056,8 +7056,8 @@ mod tests {
         super::catalogue(&mut out, held.then_some(dir.as_path()), None, &Default::default(), Some(&post), NOW).unwrap()
     }
 
-    /// The map the step posted, published as a lead without its log would serve it (the NAS's
-    /// snapshot, what the next run reads with no coordinator: coordwire::map_now).
+    /// The map the step posted, published as the lead would serve it (the test root's map, what the
+    /// next run reads with no coordinator: coordwire::map_now).
     fn publish_posted(root: &std::path::Path) -> store::catalogue::Catalogue {
         let p = root.join("posted.json.zst");
         let c = store::catalogue::Catalogue::decode(&std::fs::read(&p).unwrap()).unwrap();
@@ -7084,22 +7084,23 @@ mod tests {
             super::catalogue(&mut out, None, None, &Default::default(), Some(&post), NOW).unwrap()
         };
         let mut log = agentcore::agent::publish::MapLog::default();
-        let here = log.here(pipeline::agent::theplan::the_plan(), &home, &nas);
+        let here = log.here(pipeline::agent::theplan::the_plan(), &home);
         let first = run();
         assert!(post.exists(), "posted");
-        log.published(pipeline::agent::theplan::the_plan(), &home, &nas, false);
+        log.published(pipeline::agent::theplan::the_plan(), &home, false);
         store::testkit::eventually("the map's log takes the post", || here.feed.head() == Some(first.n));
         let c = here.catalogue().unwrap();
         assert_eq!((c.n, c.files["layers/roads/hi/6-1-2"].size), (1, 3));
-        // (Its NAS snapshot, at the log's start.)
-        store::testkit::eventually("the map's snapshot", || root.join("map/1.json.zst").exists());
+        // (The log writes nothing to the NAS: no snapshot there.)
+        assert!(!root.join("map").exists());
+        // (The lead's map as the next run reads it: here, with no coordinator, the root's.)
+        store::testkit::map_root(&root, &c);
         let mut out = buildstore::out::Out::unbound(&nas, &root.join("scratch")).unwrap();
         out.put_bytes("layers/roads/hi/6-1-3", "pack", b"three").unwrap();
         out.save().unwrap();
-        // (The lead's map read without a coordinator: its NAS snapshot, at 1.)
         let second = run();
         assert_eq!((second.n, second.files, second.stated), (2, 2, 0));
-        log.published(pipeline::agent::theplan::the_plan(), &home, &nas, true);
+        log.published(pipeline::agent::theplan::the_plan(), &home, true);
         store::testkit::eventually("the next batch", || here.feed.head() == Some(2));
         assert!(here.catalogue().unwrap().files.contains_key("layers/roads/hi/6-1-3"));
         assert!(!post.exists(), "taken");
@@ -7135,7 +7136,7 @@ mod tests {
         let (m, _) = store::map::Snapshot::decode(&std::fs::read(root.join("held/2.json.zst")).unwrap()).unwrap();
         let held_map = m.catalogue().unwrap();
         assert_eq!(held_map.files.len(), 3);
-        assert_eq!(store::map::newest_nas(&nas).unwrap().unwrap().seq, one.n, "the map served stays");
+        assert_eq!(store::map::root_map(root).unwrap().unwrap().seq, one.n, "the map served stays");
         // The hold lifted: the next map is the held one, whole, as one batch over the map served.
         run_catalogue(root, false);
         let two = publish_posted(root);

@@ -504,7 +504,8 @@ ancestor's neighbours' edges; nearest for classes).
 
 ## Catalogue (the map, as its readers take it)
 
-The map (docs/maplog.md: the lead's log of it, `map/<seq>.json.zst` its snapshots on the NAS) is
+The map (docs/maplog.md: the lead's log of it, on the lead's disk alone; a test root's
+`map/<seq>.json.zst`) is
 read as a catalogue: `store::map::Map::catalogue` makes this value of it (`n` its `seq`, `created`
 its batch's time). The `catalog` step posts the map it builds in this form, zstd with its content
 checksum, to the lead's agent (`maplog/posted.json.zst`, docs/maplog.md §6.7). No catalogue file is

@@ -1,13 +1,12 @@
 //! The map and its log (docs/maplog.md §4): the current name → file map as flat entries, the
-//! batches that change it, its multiset digest, and the whole map as a snapshot (the lead's own and
-//! the hourly one on the NAS, `map/<seq>.json.zst`). The log store on the lead's disk is `log`.
+//! batches that change it, its multiset digest, and the whole map as a snapshot (the lead's own, a
+//! held one, a test root's). The log store on the lead's disk is `log`.
 //!
 //! Readers don't see entries: `Map::catalogue` gives today's `crate::catalogue::Catalogue` (`n` the
 //! map's `seq`, `created` its batch's time), and `entries` turns a catalogue into entries, the two
 //! exact inverses (tests: on test catalogues and a recorded chain of real ones).
 
 use crate::catalogue::{Catalogue, Coverage, FileRef, Layer};
-use crate::nasfs::NasRoot;
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,9 +26,13 @@ pub type Entries = BTreeMap<String, Val>;
 /// A layer's sections kept as entries of their own (`l/<layer>/<section>/<tile>`), not in its head.
 const LAYER_SECTIONS: [&str; 5] = ["lo", "hi", "deep", "native_zoom", "polar"];
 
-/// The NAS folder of the map's snapshots (§4.4) and how many of the newest are kept.
-pub const NAS_DIR: &str = "map";
-pub const NAS_KEPT: usize = 3;
+/// The folder of a root's map (a test root's, a `--root`'s: a folder laid out as the project
+/// folder), its snapshots whole (`map/<seq>.json.zst`), as the test tools and the tests write it and
+/// a `--root` server or a job on such a root reads it (`root_map`). Never on the NAS: the NAS's map
+/// is the lead's alone (docs/maplog.md §4.4). And how many snapshots a folder of them keeps (a
+/// root's map, the lead's held maps).
+pub const ROOT_DIR: &str = "map";
+pub const KEPT: usize = 3;
 const SUFFIX: &str = ".json.zst";
 
 /// One entry's hash: XXH3-128 over its key, a zero byte and its value's canonical JSON (`Val`:
@@ -508,7 +511,7 @@ pub struct Heard {
     pub at: u64,
 }
 
-/// The whole map as stored: the lead's snapshot and the NAS's (§4.4, §4.5). Written from the map
+/// The whole map as stored: the lead's snapshot, a held one, a root's (§4.4, §4.5). Written from the map
 /// it borrows (`of`), never a copy of it.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot<E = Entries, C = BTreeMap<String, Cursor>> {
@@ -566,13 +569,13 @@ impl Snapshot {
     }
 }
 
-/// `map/<seq>.json.zst`'s name.
-pub fn nas_name(seq: u64) -> String {
+/// A snapshot's name in a folder of them (`<seq>.json.zst`).
+pub fn snapshot_name(seq: u64) -> String {
     format!("{seq}{SUFFIX}")
 }
 
-/// The `seq`s of the snapshots in the local folder `dir` (the lead's held maps), newest first.
-pub fn seqs_in_dir(dir: &std::path::Path) -> Result<Vec<u64>> {
+/// The `seq`s of the snapshots in the local folder `dir`, newest first.
+pub fn seqs_in(dir: &std::path::Path) -> Result<Vec<u64>> {
     let mut seqs: Vec<u64> = match std::fs::read_dir(dir) {
         Ok(rd) => rd.flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(SUFFIX)?.parse().ok()).collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -584,9 +587,9 @@ pub fn seqs_in_dir(dir: &std::path::Path) -> Result<Vec<u64>> {
 
 /// The newest snapshot in the local folder `dir` that reads (one damaged or half written passed
 /// over, said), and its file; None when there's none.
-pub fn newest_in_dir(dir: &std::path::Path) -> Result<Option<(Map, std::path::PathBuf)>> {
-    for seq in seqs_in_dir(dir)? {
-        let p = dir.join(nas_name(seq));
+pub fn newest_in(dir: &std::path::Path) -> Result<Option<(Map, std::path::PathBuf)>> {
+    for seq in seqs_in(dir)? {
+        let p = dir.join(snapshot_name(seq));
         match std::fs::read(&p).map_err(anyhow::Error::from).and_then(|b| Snapshot::decode(&b)) {
             Ok((m, _)) => return Ok(Some((m, p))),
             Err(e) => eprintln!("maplog: {} passed over: {e:#}", p.display()),
@@ -596,69 +599,29 @@ pub fn newest_in_dir(dir: &std::path::Path) -> Result<Option<(Map, std::path::Pa
 }
 
 /// Writes the map whole into the local folder `dir` (`<seq>.json.zst`, made if missing; a
-/// temporary name renamed into place), then removes all but the newest `NAS_KEPT` there.
-pub fn write_in_dir(dir: &std::path::Path, m: &Map) -> Result<()> {
+/// temporary name renamed into place), then removes all but the newest `KEPT` there.
+pub fn write_in(dir: &std::path::Path, m: &Map) -> Result<()> {
     let b = Snapshot::of(m, &BTreeMap::new()).encode()?;
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    crate::whole::write(&dir.join(nas_name(m.seq)), &b)?;
-    for s in seqs_in_dir(dir)?.into_iter().skip(NAS_KEPT) {
-        if let Err(e) = std::fs::remove_file(dir.join(nas_name(s))) {
-            eprintln!("maplog: can't remove {}: {e}", dir.join(nas_name(s)).display());
+    crate::whole::write(&dir.join(snapshot_name(m.seq)), &b)?;
+    for s in seqs_in(dir)?.into_iter().skip(KEPT) {
+        if let Err(e) = std::fs::remove_file(dir.join(snapshot_name(s))) {
+            eprintln!("maplog: can't remove {}: {e}", dir.join(snapshot_name(s)).display());
         }
     }
     Ok(())
 }
 
-/// The `seq`s of the snapshots in `dir` (`map/`), newest first.
-pub fn seqs_in(dir: &crate::nasfs::NasPath) -> Result<Vec<u64>> {
-    let mut seqs: Vec<u64> = match dir.list() {
-        Ok(names) => names.iter().filter_map(|n| n.strip_suffix(SUFFIX)?.parse().ok()).collect(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
-    };
-    seqs.sort_unstable_by(|a, b| b.cmp(a));
-    Ok(seqs)
+/// The map of the root `root` (a test root, a `--root`: `ROOT_DIR`'s newest snapshot); None when
+/// it holds none.
+pub fn root_map(root: &std::path::Path) -> Result<Option<Map>> {
+    Ok(newest_in(&root.join(ROOT_DIR))?.map(|(m, _)| m))
 }
 
-/// The newest snapshot in `dir` (`map/` of a NAS or a test root) that reads (one
-/// damaged or half written is passed over, said); None when there's none.
-pub fn newest_in(dir: &crate::nasfs::NasPath) -> Result<Option<Map>> {
-    for seq in seqs_in(dir)? {
-        let p = dir.join(nas_name(seq));
-        match p.read().map_err(anyhow::Error::from).and_then(|b| Snapshot::decode(&b)) {
-            Ok((m, _)) => return Ok(Some(m)),
-            Err(e) => eprintln!("maplog: {} passed over: {e:#}", p.display()),
-        }
-    }
-    Ok(None)
-}
-
-/// `newest_in` the NAS's `map/` (`root`'s).
-pub fn newest_nas(root: &NasRoot) -> Result<Option<Map>> {
-    newest_in(&root.join(NAS_DIR))
-}
-
-/// Writes the map whole to the NAS (`map/<seq>.json.zst`, a temporary name renamed into place: §4.4),
-/// then removes all but the newest `NAS_KEPT` there. Once an hour at most (the lead's caller). The
-/// oldest `seq` kept there: a reader may start from it (GC's `snapshot` holder, docs/maplog.md §5.4).
-pub fn write_nas_snapshot(root: &NasRoot, m: &Map) -> Result<u64> {
-    write_snapshot_in(root, NAS_DIR, m)
-}
-
-/// `write_nas_snapshot` into `root`'s folder `name` (`NAS_DIR`), the newest
-/// `NAS_KEPT` kept there.
-pub fn write_snapshot_in(root: &NasRoot, name: &str, m: &Map) -> Result<u64> {
-    let dir = root.join(name);
-    let b = Snapshot::of(m, &BTreeMap::new()).encode()?;
-    dir.join(nas_name(m.seq)).write_whole_made(&b).with_context(|| format!("write {name}/{}", nas_name(m.seq)))?;
-    let seqs = seqs_in(&dir)?;
-    let oldest = seqs.iter().take(NAS_KEPT).min().copied().unwrap_or(m.seq).min(m.seq);
-    for s in seqs.into_iter().skip(NAS_KEPT) {
-        if let Err(e) = dir.join(nas_name(s)).remove_file() {
-            eprintln!("maplog: can't remove {name}/{}: {e}", nas_name(s));
-        }
-    }
-    Ok(oldest)
+/// Writes `m` as the map of the root `root` (`ROOT_DIR`): never the NAS's, whose map is the lead's.
+pub fn write_root_map(root: &std::path::Path, m: &Map) -> Result<()> {
+    ensure!(!crate::nasfs::is_live_path(root), "a test root's map, not the NAS's: {}", root.display());
+    write_in(&root.join(ROOT_DIR), m)
 }
 
 #[cfg(test)]

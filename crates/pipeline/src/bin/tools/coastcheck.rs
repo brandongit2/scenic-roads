@@ -32,8 +32,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             // water-build's tiles as the water layer's packs (terrain::layers' scopes) in a test
             // root, and its map one newer with them (its `map/<seq>.json.zst`). Never the NAS's.
             anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
-            let nas = store::nasfs::NasRoot::from_arg(&root);
-            let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
+            let mut cat = store::map::root_map(&root)?.context("no map in the root")?.catalogue()?;
             let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
             for z in 0..=inputs::water::STORED_MAXZ {
                 let zd = tiles.join(z.to_string());
@@ -97,7 +96,7 @@ pub fn main(args: Vec<String>) -> Result<()> {
             }
             cat.layers.insert("water".into(), layer);
             cat.n += 1;
-            store::map::write_nas_snapshot(&nas, &store::map::Map::of(&cat)?)?;
+            store::map::write_root_map(&root, &store::map::Map::of(&cat)?)?;
             eprintln!("coastcheck: map {} in {}", cat.n, root.display());
             Ok(())
         }

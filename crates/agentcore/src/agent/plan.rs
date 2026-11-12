@@ -426,9 +426,6 @@ pub(super) struct Planner {
     /// outline entries by id and its time (unix seconds).
     #[allow(clippy::type_complexity)]
     pub(super) last_catalogue: std::cell::RefCell<Option<((String, u64), (BTreeMap<String, Vec<String>>, u64))>>,
-    /// The newest NAS snapshot of the map read (`map_now`, without the lead's log): its `seq`, and its
-    /// catalogue (None: it didn't read).
-    pub(super) nas_map: std::cell::RefCell<Option<(u64, Option<std::sync::Arc<store::catalogue::Catalogue>>)>>,
     /// The regions the last plan would publish as built (seam::Planned::ready), for the checklist.
     pub(super) ready: std::cell::RefCell<Vec<String>>,
     /// The last plan's forecast (crate::agent::forecast), for the status.
@@ -533,7 +530,6 @@ impl Planner {
             piece_sizes: Default::default(),
             queued: Default::default(),
             last_catalogue: Default::default(),
-            nas_map: Default::default(),
             ready: Default::default(),
             forecast: Default::default(),
             departed: Default::default(),
@@ -1662,7 +1658,7 @@ impl Planner {
         }
         // The regions the map has (or the held catalogue's, when catalogues are held for review) and
         // how long ago it went out: what the plan publishes regions by.
-        let map = self.map_now(root);
+        let map = self.map_now();
         let (on_map, since_publish) = self.on_map(held, map.as_deref(), &recipes);
         // (The map's, held ones aside.)
         self.catalogue_seen.set(map.as_deref().map(seen));
@@ -2134,36 +2130,10 @@ impl Planner {
         Published { last, low, drawing, adopted: adopted(&cursors) }
     }
 
-    /// The map now as a catalogue (docs/maplog.md §6.5): the lead's log's (`Inputs::map`), else the
-    /// newest NAS snapshot's (`map/<seq>.json.zst`: a lead whose log hasn't started, a dry run; §5.2),
-    /// read once a `seq`, within the NAS readers' deadline. None: neither.
-    pub(super) fn map_now(&self, root: &NasRoot) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
-        if let Some(c) = self.inp.map.as_ref().and_then(|h| h.catalogue()) {
-            return Some(c);
-        }
-        let dir = root.join(store::map::NAS_DIR);
-        let listed = {
-            let d = dir.clone();
-            nasread::with(&dir, move || d.list()).ok()?
-        };
-        let seq = listed.iter().filter_map(|n| n.strip_suffix(".json.zst")?.parse::<u64>().ok()).max()?;
-        let mut kept = self.nas_map.borrow_mut();
-        if let Some((_, c)) = kept.as_ref().filter(|k| k.0 == seq) {
-            return c.clone();
-        }
-        let read = nasread::read(&dir.join(&store::map::nas_name(seq)))
-            .map_err(anyhow::Error::from)
-            .and_then(|b| store::map::Snapshot::decode(&b))
-            .and_then(|(m, _)| m.catalogue());
-        let cat = match read {
-            Ok(c) => Some(std::sync::Arc::new(c)),
-            Err(e) => {
-                eprintln!("agent: the NAS's map at {seq}: {e:#}");
-                None
-            }
-        };
-        *kept = Some((seq, cat.clone()));
-        cat
+    /// The map now as a catalogue (docs/maplog.md §6.5): the lead's log's (`Inputs::map`); None
+    /// without it (not the lead, a dry run, a log not started yet): the NAS keeps no copy.
+    pub(super) fn map_now(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
+        self.inp.map.as_ref().and_then(|h| h.catalogue())
     }
 
     /// The map log's marks (store::map::log::Log::marks): none without the lead's log.
@@ -2840,7 +2810,7 @@ impl Planner {
         regions: &[recipes::Recipe],
     ) {
         self.take_regions();
-        let cat = self.map_now(root);
+        let cat = self.map_now();
         let key: RegionsKey = (a.version.clone(), cat.as_ref().map(|c| c.n));
         if self.regions_making.borrow().is_some() || self.regions_tried.borrow().as_ref() == Some(&key) {
             return;
@@ -2913,11 +2883,11 @@ impl Planner {
         // (The held maps, once there are any: the newest read whole once.)
         let held_dir = publish::held_dir(&self.o.home);
         let newest_held =
-            if held { store::map::seqs_in_dir(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
+            if held { store::map::seqs_in(&held_dir).ok().and_then(|ns| ns.first().copied()) } else { None };
         if let Some(n) = newest_held {
             let key = (publish::HELD.to_string(), n);
             if cached.as_ref().is_none_or(|c| c.0 != key) {
-                let read = std::fs::read(held_dir.join(store::map::nas_name(n)))
+                let read = std::fs::read(held_dir.join(store::map::snapshot_name(n)))
                     .map_err(anyhow::Error::from)
                     .and_then(|b| store::map::Snapshot::decode(&b))
                     .and_then(|(m, _)| m.catalogue());

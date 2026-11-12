@@ -1454,10 +1454,10 @@ pub fn find_root(mount: bool) -> Option<NasRoot> {
     NasRoot::find(mount)
 }
 
-/// The folder whose stat says the NAS answers (`answers`): the map's snapshots (docs/maplog.md
-/// §4.4), there while the map is. (An app before #883 step 9 stats `catalog/` instead, which is
-/// why that step's removal waits for every member's app: crate::agent::gc::OLD_CATALOGUES.)
-pub const NAS_CHECK: &str = store::map::NAS_DIR;
+/// The folder whose stat says the NAS answers (`answers`): the inputs (docs/inputs.md), there for
+/// good, as the build reads them. (An app before task #1119 stats `map/`, the map's NAS snapshots
+/// it wrote, instead: that folder stays until every member's beat says `coord::beats::NAS_CHECK`.)
+pub const NAS_CHECK: &str = "inputs";
 
 /// Whether `root` answers: a stat of `NAS_CHECK`, on **nas**'s look worker under its deadline
 /// (crate::agent::nas: one look at a time, a hung one left to the kernel).
@@ -5104,9 +5104,9 @@ impl Agent {
                 let (n, data) = (cat_stats.as_ref().map(|c| c.n), cat_stats.and_then(|c| serde_json::to_value(c).ok()));
                 // (Its map posted, appended to the map's log: crate::agent::publish::MapLog; its
                 // batch says whether it went out with the low zooms made. A held one posts none.)
-                if let Some(root) = root.filter(|_| self.keeps_publishing()) {
+                if self.keeps_publishing() {
                     let low = self.plan.view.get().catalogue_low;
-                    self.maplog.published(self.o.the_plan, &self.o.home, root, low);
+                    self.maplog.published(self.o.the_plan, &self.o.home, low);
                 }
                 self.note(crate::coord::history::Event {
                     worker: Some(self.host.clone()),
@@ -8013,7 +8013,13 @@ impl Agent {
         let Some(coord) = self.coord.clone().filter(|_| self.keeps_publishing()) else { return };
         // (The Catalogues map: the map's log followed, the lead's in process; asked each loop, so it
         // misses no batch.)
-        let here = self.maplog.here(self.o.the_plan, &self.o.home, root);
+        let here = self.maplog.here(self.o.the_plan, &self.o.home);
+        // (The map's head kept in the pool's store as it moves on; a log not started here (the lead
+        // moved to this Mac, its disk lost) goes past the head kept: docs/maplog.md §4.5.)
+        match here.feed.head() {
+            Some(h) => coord.keep_map_head(h),
+            None => here.set_floor(coord.map_head()),
+        }
         let keep = self.o.home.join(cataloguesview::KEPT);
         let cv = self
             .catalogues_view
@@ -10345,9 +10351,9 @@ mod tests {
         c.coverage = serde_json::json!({ "regions": [{ "id": "a", "name": "Alpha", "outline": ["osm:5"],
             "shapes": { "osm:5": [[[[50.0, 0.5], [50.1, 0.5], [50.1, 0.6], [50.0, 0.6], [50.0, 0.5]]]] } }] })
         .into();
-        // (The map as a lead without its log reads it: the NAS's snapshot, docs/maplog.md §5.2.)
-        let nas = store::nasfs::NasRoot::local_for_test(root);
-        store::map::write_nas_snapshot(&nas, &store::map::Map::of(&c).unwrap()).unwrap();
+        // (The map as the lead reads it: its log's.)
+        let here = ag.maplog.here(crate::agent::seam::for_tests(), &home.path().join("home"));
+        here.feed.start(std::sync::Arc::new(store::map::Map::of(&c).unwrap()), c.n, &[], Default::default());
         ag.planner().regions_view(&store::nasfs::NasRoot::local_for_test(root), &a, &recipes);
         settle(&mut ag);
         let v = ag.planner().regions_view.borrow().as_ref().unwrap().1.clone();
@@ -17410,18 +17416,19 @@ mod pool_tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         assert!(lead.try_start(0, catalogue, &cond, Some(&root), &mut Vec::new()));
         store::testkit::eventually("the job ends", || lead.tend(0, &cond, Some(&root), 0).unwrap());
-        // (On the log's own thread: its log seeded at that map, and the NAS's snapshot.)
-        let nas_snap = r.join(store::map::NAS_DIR).join(store::map::nas_name(c.n));
-        store::testkit::eventually(&format!("the log writes the map at {}", c.n), || nas_snap.exists());
+        // (On the log's own thread: its log seeded at that map, its snapshot on the lead's disk alone.)
+        let snap = d.path().join("l/agent").join(publish::MAPLOG).join(store::map::log::SNAPSHOT);
+        store::testkit::eventually(&format!("the log writes the map at {}", c.n), || snap.exists());
+        assert!(!r.join(store::map::ROOT_DIR).exists(), "nothing of the map on the NAS");
         let log = store::map::log::Log::open(&d.path().join("l/agent").join(publish::MAPLOG)).unwrap();
         assert_eq!(log.map().seq, c.n);
         log.map().check_is(&c).unwrap();
         // (Step 3: the lead's coordinator answers the servers from the log's feed.)
         lead.round().unwrap();
         assert!(lead.coord.as_ref().is_some_and(|c| c.has_maplog()), "the map's routes answer");
-        assert_eq!(lead.maplog.here(crate::agent::seam::for_tests(), &lead.o.home, &root).feed.head(), Some(c.n));
+        assert_eq!(lead.maplog.here(crate::agent::seam::for_tests(), &lead.o.home).feed.head(), Some(c.n));
         // (Step 4: and the plan reads the map from it, the catalogue checked equal to it.)
-        assert_eq!(*lead.planner().map_now(&root).unwrap(), c);
+        assert_eq!(*lead.planner().map_now().unwrap(), c);
     }
 
     /// Two agents' tests at once, each turning its viewer into a coordinator and back on its own

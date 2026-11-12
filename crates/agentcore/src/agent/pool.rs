@@ -1737,7 +1737,7 @@ impl Run {
 }
 
 /// Another Mac's lead's state, from its store's backup `b` (the owner moved the lead here), taken
-/// up by coordinator `c`: its leases, measures and pause, and the members' words; and that Mac's
+/// up by coordinator `c`: its leases, measures and pause, the map's head, and the members' words; and that Mac's
 /// own, a member now (it speaks held leases as they do: the jobs of its own slots held by its word
 /// here, not lapsing after `TTL` and granted again while they run: task #1038, the pool's
 /// simulator's seed 10054). How many leases.
@@ -1750,6 +1750,10 @@ pub fn load_backup(c: &crate::coord::Coordinator, b: &crate::pool::store::Snapsh
     // (The NAS budget's probes too: the day's best, merged in by the prober as it saves next.)
     if let Some(p) = b.docs.get(crate::coord::kept::PROBES) {
         c.take_probes(p);
+    }
+    // (The map's head it kept: a map log started here goes past it, docs/maplog.md §4.5.)
+    if let Some(h) = b.docs.get(crate::coord::kept::MAP_HEAD).and_then(serde_json::Value::as_u64) {
+        c.keep_map_head(h);
     }
     c.load_pool_state(&st)
 }

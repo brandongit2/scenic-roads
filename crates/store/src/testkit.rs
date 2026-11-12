@@ -269,12 +269,12 @@ pub fn recorded_chain() -> Vec<crate::catalogue::Catalogue> {
         .collect()
 }
 
-/// Writes `cat` as the map of a test root (`root`, laid out as the NAS's project folder): the NAS
-/// snapshot a reader starts from (`map/<seq>.json.zst`, crate::map::write_nas_snapshot; `seq` its
-/// `n`).
+/// Writes `cat` as the map of a test root (`root`, laid out as the NAS's project folder): its
+/// `map/<seq>.json.zst` (crate::map::write_root_map; `seq` its `n`), which a reader on that root
+/// takes with no lead (coordwire::map_now, a `--root` server).
 pub fn map_root(root: &std::path::Path, cat: &crate::catalogue::Catalogue) {
     let m = crate::map::Map::of(cat).expect("a test catalogue is a map");
-    crate::map::write_nas_snapshot(&crate::nasfs::NasRoot::local_for_test(root), &m).expect("the test root's map");
+    crate::map::write_root_map(root, &m).expect("the test root's map");
 }
 
 #[cfg(test)]

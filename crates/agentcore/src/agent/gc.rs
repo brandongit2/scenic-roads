@@ -1693,8 +1693,8 @@ mod tests {
         };
         let lead = InProcess { q: &back, now: Cell::new(now_s()) };
         // (The share lost first, its mount gone: no file is found, and none counts as gone.)
-        let map_dir = root.join(crate::agent::NAS_CHECK);
-        fs::rename(&map_dir, root.join("map-away")).unwrap();
+        let check_dir = root.join(crate::agent::NAS_CHECK);
+        fs::rename(&check_dir, root.join("check-away")).unwrap();
         let e = format!("{:#}", run(&nas, &asked, &Ways { remove: &counting, ..ways_for_tests(&lead) }).unwrap_err());
         assert!(e.contains("doesn't answer"), "{e}");
         assert_eq!(back.removing_now(), [due[CHUNK_NAMES].clone()], "nothing said gone");
@@ -1703,7 +1703,7 @@ mod tests {
             "the rest let go but still marked: the killed run may have removed them"
         );
         tried.take();
-        fs::rename(root.join("map-away"), &map_dir).unwrap();
+        fs::rename(root.join("check-away"), &check_dir).unwrap();
         let r = run(&nas, &asked, &Ways { remove: &counting, ..ways_for_tests(&lead) }).unwrap();
         assert_eq!((r.chunks, r.removed, r.gone_already), (1, 20, 30), "{r:?}");
         let tried = tried.take();
@@ -1830,7 +1830,7 @@ mod tests {
         for f in lost.iter().chain([&kept]) {
             put(root, f, ORPHAN_AGE_S / 86400 + 10);
         }
-        // (The restored lead: its map from the NAS's snapshot, a queue file of nothing.)
+        // (A new lead (moved, its disk lost): its map from the records, a queue file of nothing.)
         let fresh = tempfile::tempdir().unwrap();
         let (q, _) = queue_of(fresh.path(), &[], &[kept, "layers/a/hi/6-1-1.4444444444444444.pack"], now_s());
         let lead = InProcess { q: &q, now: Cell::new(now_s()) };

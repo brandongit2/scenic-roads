@@ -192,13 +192,17 @@ fn a_batch_of_a_catalogue_is_its_entries_batch() {
 }
 
 #[test]
-fn a_snapshot_reads_back_and_the_nas_keeps_three() {
+fn a_snapshot_reads_back_and_a_root_keeps_three() {
     let d = tempfile::tempdir().unwrap();
-    let root = NasRoot::local_for_test(d.path());
     for n in 1..=5 {
-        write_nas_snapshot(&root, &Map::of(&sample(n)).unwrap()).unwrap();
+        write_root_map(d.path(), &Map::of(&sample(n)).unwrap()).unwrap();
     }
-    let mut names: Vec<String> = std::fs::read_dir(d.path().join(NAS_DIR))
+    assert_eq!(root_map(d.path()).unwrap().unwrap().catalogue().unwrap(), sample(5));
+    assert!(
+        write_root_map(std::path::Path::new("/Volumes/x"), &Map::of(&sample(1)).unwrap()).is_err(),
+        "never the NAS"
+    );
+    let mut names: Vec<String> = std::fs::read_dir(d.path().join(ROOT_DIR))
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();

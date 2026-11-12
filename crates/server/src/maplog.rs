@@ -12,8 +12,8 @@
 //! The map is kept on this Mac (`current.json.zst` in its cache folder, ~/Library/Caches/scenic/map),
 //! written at most every 10 minutes, and read at a start: a start away from the lead and the NAS
 //! serves it (the offline map). With the lead away it keeps the map it holds, asking again each
-//! `retry`; holding none (or an older one than the NAS's), it takes the newest NAS snapshot
-//! (`map/<seq>.json.zst`).
+//! `retry`; holding none, it serves none until the lead answers (the NAS keeps no copy of the map:
+//! docs/maplog.md §5.2).
 
 use crate::data::Data;
 use anyhow::{bail, Context, Result};
@@ -27,8 +27,6 @@ use store::map::{Map, Snapshot};
 const SAVED: &str = "current.json.zst";
 /// The saved map written at most this often by a resident server (`Config::save_every`).
 pub(crate) const SAVE_EVERY: Duration = Duration::from_secs(600);
-/// The NAS's snapshots looked at at most this often.
-const NAS_EVERY: Duration = Duration::from_secs(600);
 
 /// Where the lead is.
 #[derive(Clone, Debug)]
@@ -83,13 +81,10 @@ impl Config {
 }
 
 /// Follows the log on a thread of its own, for good: first, before it returns, the map this Mac
-/// kept, else the NAS's newest snapshot, served.
+/// kept served (none kept: none until the lead answers).
 pub fn spawn(d: Arc<Data>, cfg: Config) {
     let mut f = Follower::new(d, cfg);
     f.start();
-    if f.map.is_none() {
-        f.from_nas();
-    }
     std::thread::Builder::new().name("maplog".into()).spawn(move || f.run()).ok();
 }
 
@@ -106,7 +101,6 @@ pub(crate) struct Follower {
     link: Link,
     map: Option<Map>,
     saved: Option<(u64, Instant)>,
-    nas_looked: Option<Instant>,
     /// The map's last `seq` handed on.
     handed: u64,
     away: bool,
@@ -115,7 +109,7 @@ pub(crate) struct Follower {
 impl Follower {
     pub(crate) fn new(d: Arc<Data>, cfg: Config) -> Follower {
         let link = Link::new(d.clone(), &cfg);
-        Follower { d, cfg, link, map: None, saved: None, nas_looked: None, handed: 0, away: false }
+        Follower { d, cfg, link, map: None, saved: None, handed: 0, away: false }
     }
 
     fn run(mut self) {
@@ -169,7 +163,6 @@ impl Follower {
                     eprintln!("maplog: the lead doesn't answer ({why}); asked again each {:?}", self.cfg.retry);
                     self.away = true;
                 }
-                self.from_nas();
                 false
             }
         };
@@ -212,25 +205,6 @@ impl Follower {
                 self.adopt(m);
             }
             Err(e) => eprintln!("maplog: the lead's snapshot: {e:#}"),
-        }
-    }
-
-    /// The newest NAS snapshot, when this server holds no map or an older one (at most each
-    /// `NAS_EVERY` while it holds one).
-    fn from_nas(&mut self) {
-        if self.map.is_some() && self.nas_looked.is_some_and(|t| t.elapsed() < NAS_EVERY) {
-            return;
-        }
-        // (Read only while the NAS is: a mount left from home holds no thread, crate::data.)
-        let Some(root) = self.d.nas_root().filter(|_| self.d.online()) else { return };
-        self.nas_looked = Some(Instant::now());
-        match store::map::newest_nas(&root) {
-            Ok(Some(m)) if self.map.as_ref().is_none_or(|h| h.seq < m.seq) => {
-                eprintln!("maplog: the NAS's map at {} (the lead away)", m.seq);
-                self.adopt(m);
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("maplog: the NAS's map: {e:#}"),
         }
     }
 

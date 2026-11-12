@@ -358,11 +358,10 @@ mod tests {
         c2.files.remove(fine);
         c2.files.remove(hi);
         let d = tempfile::tempdir().unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let here = Arc::new(super::super::publish::Here::default());
         let mut w =
             super::super::publish::Writer::new(crate::agent::seam::for_tests(), d.path().join("maplog"), here.clone());
-        w.publish(Some(&root), c1, false, std::time::SystemTime::now());
+        w.publish(c1, false, std::time::SystemTime::now());
         let cv = CataloguesView::new(crate::agent::seam::for_tests(), here.feed.clone(), None);
         assert!(cv.names().is_none(), "nothing read yet");
         cv.refresh();
@@ -378,7 +377,7 @@ mod tests {
         assert_eq!(p["terrain-deep"], [0, 1], "10/5/6 never named");
         assert_eq!(p["terrain-hi"], [0]);
         assert!(!p.contains_key("pack"), "a work step's files aren't told");
-        w.publish(Some(&root), c2, false, std::time::SystemTime::now());
+        w.publish(c2, false, std::time::SystemTime::now());
         cv.refresh();
         let (n, names) = cv.names().unwrap();
         assert_eq!(n, 2);

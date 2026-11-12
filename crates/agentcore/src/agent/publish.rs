@@ -253,7 +253,7 @@ pub const POSTED: &str = "posted.json.zst";
 const TAKEN: &str = "posted.taken.json.zst";
 /// The maps the `catalog` step would have published while publishing is held for review (the
 /// pool's `hold-catalog`: the `catalog-held` job's `--held`), in the log's folder: `held/<seq>.json.zst`
-/// each whole, `seq` the batch's it would be, the newest three (store::map::write_in_dir). Never on
+/// each whole, `seq` the batch's it would be, the newest three (store::map::write_in). Never on
 /// the NAS; no server follows them: the lead's coordinator serves the newest for review
 /// (`GET /map/held`), the plan reads its regions, and lifting the hold publishes the map then.
 pub const HELD: &str = "held";
@@ -262,7 +262,7 @@ pub const HELD: &str = "held";
 pub fn held_dir(home: &std::path::Path) -> std::path::PathBuf {
     home.join(MAPLOG).join(HELD)
 }
-/// How often the map is written whole: the lead's snapshot and the NAS's (docs/maplog.md §4.4).
+/// How often the map is written whole: the lead's snapshot (the log compacted, docs/maplog.md §4.4).
 const SNAPSHOT_EVERY_S: u64 = 3600;
 /// What a batch's `why` says of a map made with the low zooms (store::map::Batch::says), and
 /// the log's watch of it: when they last went out (Publishing::since_low).
@@ -284,11 +284,18 @@ pub struct Here {
     pub feed: std::sync::Arc<store::map::feed::Feed>,
     pub gc: std::sync::Arc<store::map::gc::GcQueue>,
     head: std::sync::Arc<super::bus::Snap<Option<std::sync::Weak<store::catalogue::Catalogue>>>>,
+    /// The `seq` a log started here goes past (`set_floor`): the map's head as the pool last kept it.
+    floor: std::sync::atomic::AtomicU64,
 }
 
 impl Default for Here {
     fn default() -> Here {
-        Here { feed: Default::default(), gc: Default::default(), head: super::bus::Snap::new(None) }
+        Here {
+            feed: Default::default(),
+            gc: Default::default(),
+            head: super::bus::Snap::new(None),
+            floor: Default::default(),
+        }
     }
 }
 
@@ -324,19 +331,32 @@ impl Here {
     fn checked(&self, cat: std::sync::Arc<store::catalogue::Catalogue>) {
         self.head.set(Some(std::sync::Arc::downgrade(&cat)));
     }
+
+    /// The map's head as the pool kept it (`seq`: the lead's store, crate::coord::kept's
+    /// `map-head`, carried to the next lead by its backup): a log started on a lead with none (a
+    /// lead moved to another Mac, a lost disk) is numbered past it (docs/maplog.md §4.5), so the
+    /// map's numbers go on and no client holds a map newer than the lead's. Raised, never lowered.
+    pub fn set_floor(&self, seq: u64) {
+        self.floor.fetch_max(seq, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The `seq` a log started now goes past: the floor set, and the newest `seq` a client asked
+    /// from (a map server, a mirror: store::map::feed::Feed::asked_past).
+    fn floor(&self) -> u64 {
+        self.floor.load(std::sync::atomic::Ordering::Relaxed).max(self.feed.asked_past())
+    }
 }
 
 impl MapLog {
     /// The map as the agent and the coordinator's `/map/` routes read it: the thread started (its log
     /// in `home`'s `maplog/`, opened at once, so a lead started again answers before its next
-    /// publish; its snapshots written to `root`).
+    /// publish).
     pub fn here(
         &mut self,
         the_plan: &'static dyn crate::agent::seam::Plan,
         home: &std::path::Path,
-        root: &store::nasfs::NasRoot,
     ) -> std::sync::Arc<Here> {
-        self.start(the_plan, home, root);
+        self.start(the_plan, home);
         self.here.clone().expect("started")
     }
 
@@ -349,19 +369,18 @@ impl MapLog {
         &mut self,
         the_plan: &'static dyn crate::agent::seam::Plan,
         home: &std::path::Path,
-        root: &store::nasfs::NasRoot,
     ) -> &std::sync::mpsc::SyncSender<bool> {
         let here = self.here.get_or_insert_with(Default::default).clone();
         self.tx.get_or_insert_with(|| {
             let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
-            let (dir, root) = (home.join(MAPLOG), root.clone());
+            let dir = home.join(MAPLOG);
             let started = std::thread::Builder::new().name("maplog".into()).spawn(move || {
                 let mut w = Writer::new(the_plan, dir, here);
                 w.open_guarded();
                 // (A post taken and not appended, or posted and not told of: the agent stopped.)
-                w.take_posted(&root, false);
+                w.take_posted(false);
                 for low in rx {
-                    w.take_posted(&root, low);
+                    w.take_posted(low);
                 }
             });
             if let Err(e) = started {
@@ -373,14 +392,8 @@ impl MapLog {
 
     /// The `catalog` step's job ended, its map posted (made with the low zooms: `low`): its batch, on
     /// the log's thread (started the first time, its log in `home`'s `maplog/`).
-    pub fn published(
-        &mut self,
-        the_plan: &'static dyn crate::agent::seam::Plan,
-        home: &std::path::Path,
-        root: &store::nasfs::NasRoot,
-        low: bool,
-    ) {
-        match self.start(the_plan, home, root).try_send(low) {
+    pub fn published(&mut self, the_plan: &'static dyn crate::agent::seam::Plan, home: &std::path::Path, low: bool) {
+        match self.start(the_plan, home).try_send(low) {
             Ok(()) => {}
             Err(std::sync::mpsc::TrySendError::Full(_)) => {
                 eprintln!("maplog: a post waits already: the next batch takes the newest")
@@ -462,7 +475,7 @@ impl Writer {
     /// The maps posted (`POSTED`) appended, in turn: one taken before and not appended (the agent
     /// stopped meanwhile), then the newest posted, taken (renamed `TAKEN`, so a post that comes
     /// meanwhile waits for the next), read and appended, then let go. Each failure logged loudly.
-    pub(crate) fn take_posted(&mut self, root: &store::nasfs::NasRoot, low: bool) {
+    pub(crate) fn take_posted(&mut self, low: bool) {
         let (posted, taken) = (self.dir.join(POSTED), self.dir.join(TAKEN));
         for take in [false, true] {
             if take {
@@ -481,7 +494,7 @@ impl Writer {
                 Err(e) => Err(e.into()),
             };
             match cat {
-                Ok(c) => self.publish_guarded(Some(root), c, low && take, now()),
+                Ok(c) => self.publish_guarded(c, low && take, now()),
                 Err(e) => eprintln!("maplog: MISMATCH: the map posted can't be read: {e:#}; no batch"),
             }
             std::fs::remove_file(&taken).ok();
@@ -489,15 +502,9 @@ impl Writer {
     }
 
     /// `publish`, a panic in it logged (the log dropped, opened again from its disk next time).
-    fn publish_guarded(
-        &mut self,
-        root: Option<&store::nasfs::NasRoot>,
-        cat: store::catalogue::Catalogue,
-        low: bool,
-        now: std::time::SystemTime,
-    ) {
+    fn publish_guarded(&mut self, cat: store::catalogue::Catalogue, low: bool, now: std::time::SystemTime) {
         let n = cat.n;
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.publish(root, cat, low, now)));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.publish(cat, low, now)));
         if let Err(p) = r {
             let why = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned());
             eprintln!("maplog: MISMATCH at map {n}: the writer panicked: {}", why.unwrap_or_default());
@@ -505,16 +512,10 @@ impl Writer {
         }
     }
 
-    /// `cat`'s batch (made with the low zooms: `low`), the map checked against it, and the snapshots
-    /// (to `root`) when an hour has passed since the last (`now`); each failure and mismatch logged
+    /// `cat`'s batch (made with the low zooms: `low`), the map checked against it, and the lead's
+    /// snapshot when an hour has passed since the last (`now`); each failure and mismatch logged
     /// loudly.
-    pub(crate) fn publish(
-        &mut self,
-        root: Option<&store::nasfs::NasRoot>,
-        mut cat: store::catalogue::Catalogue,
-        low: bool,
-        now: std::time::SystemTime,
-    ) {
+    pub(crate) fn publish(&mut self, mut cat: store::catalogue::Catalogue, low: bool, now: std::time::SystemTime) {
         let n = cat.n;
         match self.append(&mut cat, low) {
             Ok(w) => {
@@ -523,9 +524,7 @@ impl Writer {
                     eprintln!("maplog: the map posted as {n} is {}: {n} was taken", cat.n);
                 }
                 self.here.checked(std::sync::Arc::new(cat));
-                if let Some(root) = root {
-                    self.snapshots(root, now, w == Wrote::Seeded);
-                }
+                self.snapshot(now, w == Wrote::Seeded);
             }
             Err(e) => eprintln!("maplog: MISMATCH at map {n}: {e:#}"),
         }
@@ -539,9 +538,8 @@ impl Writer {
         use anyhow::Context;
         let here = self.here.clone();
         let log = self.open()?;
-        if !log.map().is_empty() {
-            cat.n = cat.n.max(log.map().seq + 1);
-        }
+        // (Numbered past the head; a log started here past the pool's floor, `Here::set_floor`.)
+        cat.n = cat.n.max(if log.map().is_empty() { here.floor() } else { log.map().seq } + 1);
         let cat = &*cat;
         let wrote = if log.map().is_empty() {
             log.seed(store::map::Map::of(cat)?)?;
@@ -571,9 +569,10 @@ impl Writer {
         Ok(wrote)
     }
 
-    /// The lead's snapshot (the log compacted) and the NAS's (`map/<seq>.json.zst`), when the last
-    /// was written an hour or more before `now`, or the log just started (`started`).
-    fn snapshots(&mut self, root: &store::nasfs::NasRoot, now: std::time::SystemTime, started: bool) {
+    /// The lead's snapshot (the log compacted, its cursors with it), when the last was written an
+    /// hour or more before `now`, or the log just started (`started`). Nothing goes to the NAS: a
+    /// lead restarted reads its own (docs/maplog.md §4.5).
+    fn snapshot(&mut self, now: std::time::SystemTime, started: bool) {
         let Some(log) = self.log.as_mut() else { return };
         let due = started
             || log.snapshot_at().is_none_or(|t| now.duration_since(t).is_ok_and(|d| d.as_secs() >= SNAPSHOT_EVERY_S));
@@ -583,15 +582,6 @@ impl Writer {
         log.set_cursors(self.here.feed.cursors());
         if let Err(e) = log.compact() {
             eprintln!("maplog: compacting the log: {e:#}");
-        }
-        let map = log.map();
-        match store::map::write_nas_snapshot(root, &map) {
-            Ok(oldest) => {
-                eprintln!("maplog: the map at {} written to the NAS", map.seq);
-                // (A reader may start from the oldest kept: it holds its files, docs/maplog.md §5.4.)
-                self.here.feed.note_snapshot(oldest, unix(now));
-            }
-            Err(e) => eprintln!("maplog: writing the map's snapshot to the NAS: {e:#}"),
         }
     }
 }
@@ -637,28 +627,29 @@ mod tests {
     #[test]
     fn the_log_s_map_is_each_catalogue() {
         let d = tempfile::tempdir().unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let chain = recorded();
         let here = std::sync::Arc::new(Here::default());
         let mut w = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());
         let t0 = std::time::SystemTime::now();
+        let snapshot = d.path().join(MAPLOG).join(store::map::log::SNAPSHOT);
         for (i, c) in chain.iter().enumerate() {
-            w.publish(Some(&root), c.clone(), false, t0);
+            w.publish(c.clone(), false, t0);
             let m = w.log.as_ref().unwrap().map();
             assert_eq!((m.seq, m.catalogue().unwrap()), (c.n, c.clone()));
             // (What the agent reads: the catalogue checked, not one made again.)
             assert_eq!(*here.catalogue().unwrap(), *c);
             if i == 0 {
-                // (Started: the NAS's snapshot at once.)
-                assert!(d.path().join(format!("nas/map/{}.json.zst", c.n)).exists());
+                // (Started: the lead's snapshot at once.)
+                assert!(snapshot.exists());
             }
         }
-        // The NAS's snapshot only hourly: none since the first, then one an hour on.
-        let snaps = || std::fs::read_dir(d.path().join("nas/map")).unwrap().count();
-        assert_eq!(snaps(), 1);
+        // The lead's snapshot only hourly: the first's, then one an hour on.
+        let at = || std::fs::metadata(&snapshot).unwrap().modified().unwrap();
+        let first = at();
         let last = chain.last().unwrap();
-        w.snapshots(&root, t0 + std::time::Duration::from_secs(SNAPSHOT_EVERY_S + 5), false);
-        assert!(d.path().join(format!("nas/map/{}.json.zst", last.n)).exists());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        w.snapshot(t0 + std::time::Duration::from_secs(SNAPSHOT_EVERY_S + 5), false);
+        assert!(at() > first, "written again an hour on");
         // Reopened (an agent restarted), the log goes on from where it was.
         let here = std::sync::Arc::new(Here::default());
         let mut again = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());
@@ -681,13 +672,38 @@ mod tests {
         assert_eq!((taken.n, again.log.as_ref().unwrap().map().seq), (last.n + 2, last.n + 2));
     }
 
+    /// Task #1119: a log started on a lead with none (a lead moved to another Mac, a lost disk: no
+    /// NAS snapshot to start from) is numbered past the map's head as the pool kept it, and past
+    /// the newest `seq` a client asked from, so the map's numbers go on.
+    #[test]
+    fn a_new_log_is_numbered_past_the_pools_head_and_its_clients() {
+        let d = tempfile::tempdir().unwrap();
+        let chain = recorded();
+        let here = std::sync::Arc::new(Here::default());
+        // (The servers ask from their maps while there's none here: 503, the seq noted.)
+        here.feed.changes(chain[0].n + 40, Some("server/m1"), 1);
+        here.set_floor(chain[0].n + 20);
+        here.set_floor(chain[0].n + 5);
+        let mut w = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());
+        w.publish(chain[0].clone(), false, std::time::SystemTime::now());
+        assert_eq!(here.feed.head(), Some(chain[0].n + 41), "past the client's map");
+        // (Once there's a log, the head goes on from it.)
+        w.publish(chain[1].clone(), false, std::time::SystemTime::now());
+        assert_eq!(here.feed.head(), Some(chain[0].n + 42));
+        let d2 = tempfile::tempdir().unwrap();
+        let here = std::sync::Arc::new(Here::default());
+        here.set_floor(chain[0].n + 20);
+        let mut w = Writer::new(crate::agent::seam::for_tests(), d2.path().join(MAPLOG), here.clone());
+        w.publish(chain[0].clone(), false, std::time::SystemTime::now());
+        assert_eq!(here.feed.head(), Some(chain[0].n + 21), "past the pool's head");
+    }
+
     /// The `catalog` step's post (`POSTED`) is taken and appended whole; one taken and not appended
     /// (the agent stopped between) is appended when the log's thread starts again, before a newer
     /// post; a post read once is let go (never appended again over a newer map).
     #[test]
     fn a_posted_map_is_appended_once() {
         let d = tempfile::tempdir().unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
         let chain = recorded();
         let dir = d.path().join(MAPLOG);
         std::fs::create_dir_all(&dir).unwrap();
@@ -696,11 +712,11 @@ mod tests {
         let here = std::sync::Arc::new(Here::default());
         let mut w = Writer::new(crate::agent::seam::for_tests(), dir.clone(), here.clone());
         post(&chain[0], POSTED);
-        w.take_posted(&root, false);
+        w.take_posted(false);
         assert_eq!(here.feed.head(), Some(chain[0].n));
         assert!(!dir.join(POSTED).exists() && !dir.join(TAKEN).exists(), "let go");
         // (Nothing posted: nothing appended.)
-        w.take_posted(&root, false);
+        w.take_posted(false);
         assert_eq!(here.feed.head(), Some(chain[0].n));
         // Taken, the agent stopped; a newer one posted since: both, in turn.
         post(&chain[1], TAKEN);
@@ -708,7 +724,7 @@ mod tests {
         let here = std::sync::Arc::new(Here::default());
         let mut w = Writer::new(crate::agent::seam::for_tests(), dir.clone(), here.clone());
         w.open_guarded();
-        w.take_posted(&root, true);
+        w.take_posted(true);
         assert_eq!(*here.catalogue().unwrap(), chain[2]);
         assert_eq!(here.feed.marks()[LOW_WATCH].seq, chain[2].n, "the newest went out with the low zooms");
         assert!(!dir.join(POSTED).exists() && !dir.join(TAKEN).exists());

@@ -27,11 +27,9 @@ pub const WAIT_S: u64 = 30;
 pub const MIRROR: &str = "mirror/";
 /// A map server's cursor's name, before its host (crates/server's maplog; docs/maplog.md §6.1).
 pub const SERVER: &str = "server/";
-/// The NAS snapshot's cursor (docs/maplog.md §4.4, §5.4): the oldest snapshot kept there, noted by
-/// the lead as it writes one (`note_snapshot`); never unheard, as it asks nothing (gc's `floor`).
-/// Saved and restored with the other cursors: whatever stops writing the NAS snapshots must drop
-/// it too, or it holds every name freed after it for good.
-pub const SNAPSHOT: &str = "snapshot";
+/// The cursor an app before task #1119 noted for the NAS's snapshots, which no app writes now:
+/// dropped as a log saved with it opens (`start`), as it would hold every name freed after it.
+const OLD_SNAPSHOT: &str = "snapshot";
 
 #[derive(Default)]
 struct Inner {
@@ -46,6 +44,9 @@ struct Inner {
     snap: Option<(u64, Arc<Vec<u8>>)>,
     /// The log's marks (super::log::Log::marks) as its writer last said.
     marks: BTreeMap<String, Mark>,
+    /// The newest `seq` a client asked from (`changes`), map or none: what a log started here goes
+    /// past (`asked_past`).
+    asked: u64,
 }
 
 /// The lead's map, as its routes answer it.
@@ -97,12 +98,12 @@ impl Feed {
     pub fn start(&self, map: Arc<Map>, base: u64, held: &[Batch], cursors: BTreeMap<String, Cursor>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut kept = std::mem::take(&mut g.cursors);
-        for (k, c) in cursors {
+        for (k, c) in cursors.into_iter().filter(|(k, _)| k != OLD_SNAPSHOT) {
             // (A cursor heard since the snapshot was written kept as heard.)
             kept.entry(k).and_modify(|h| *h = if h.heard >= c.heard { h.clone() } else { c.clone() }).or_insert(c);
         }
-        let marks = std::mem::take(&mut g.marks);
-        *g = Inner { map: Some(map), base, cursors: kept, marks, ..Default::default() };
+        let (marks, asked) = (std::mem::take(&mut g.marks), g.asked);
+        *g = Inner { map: Some(map), base, cursors: kept, marks, asked, ..Default::default() };
         for b in held {
             hold(&mut g, b);
         }
@@ -148,6 +149,7 @@ impl Feed {
     /// seconds since 1970): never waits (the route's long poll asks again when `gen` moves).
     pub fn changes(&self, since: u64, client: Option<&str>, now: u64) -> Changes {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        g.asked = g.asked.max(since);
         let Some(head) = g.map.as_ref().map(|m| m.seq) else { return Changes::NotReady };
         let mut unheld = false;
         if let Some(c) = client.filter(|c| !c.is_empty() && c.len() <= 120) {
@@ -198,11 +200,11 @@ impl Feed {
         }
     }
 
-    /// The NAS snapshot's cursor (`SNAPSHOT`) set to `seq`, the oldest kept there, at `now`, by the
-    /// lead itself: a holder that asks no `changes` (docs/maplog.md §5.4).
-    pub fn note_snapshot(&self, seq: u64, now: u64) {
-        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.cursors.insert(SNAPSHOT.to_string(), Cursor { seq, heard: now, at: now, ..Default::default() });
+    /// The newest `seq` a client asked from (a map server, a mirror), with a map here or none yet: a
+    /// lead with no log of its own (moved to another Mac, its disk lost) numbers its first map past
+    /// it, so a client's map is never newer than the lead's (docs/maplog.md §4.5).
+    pub fn asked_past(&self) -> u64 {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).asked
     }
 
     /// The clients' cursors as last heard (saved with the log's snapshot).

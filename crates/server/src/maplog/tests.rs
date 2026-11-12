@@ -134,7 +134,7 @@ fn until(what: &str, ok: impl FnMut() -> bool) {
 }
 
 /// A server follows a sequence of publishes from the lead's log alone (no map on its NAS) and
-/// serves the same tiles, byte for byte, as a server given each map whole (its NAS's snapshot); it
+/// serves the same tiles, byte for byte, as a server given each map whole (a `--root`'s map); it
 /// follows each by the lead's push, not its poll's end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_follows_publishes_and_serves_byte_identical_tiles() {
@@ -227,56 +227,55 @@ fn a_lead_restart_mid_poll() {
     stop.store(true, Ordering::SeqCst);
 }
 
-/// The lead away: a server with no map takes the NAS's newest snapshot (none there: nothing
-/// served); a map it holds is kept, a newer NAS snapshot taken.
+/// The lead away and no map kept here: nothing is served, whatever the NAS holds (it keeps no copy
+/// of the map, task #1119); the lead answering, its map is taken and served.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_nas_snapshot_is_used_while_the_lead_is_down() {
+async fn with_no_map_kept_nothing_is_served_until_the_lead_answers() {
     let (nas, home, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let root = store::nasfs::NasRoot::local_for_test(nas.path().to_owned());
     let b = data(home.path(), nas.path());
     // (No lead: a port nothing listens on.)
     let dead = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut f = Follower::new(b.clone(), config(format!("http://127.0.0.1:{dead}"), cache.path(), 0));
-    // Neither the lead nor a snapshot: nothing.
-    assert!(!f.round());
-    assert_eq!((f.seq(), b.catalogue().n), (None, 0));
-    // A snapshot on the NAS: taken and served.
-    let one = publish(&[nas.path()], 1);
-    store::map::write_nas_snapshot(&root, &Map::of(&one).unwrap()).unwrap();
-    let mut f = Follower::new(b.clone(), config(format!("http://127.0.0.1:{dead}"), cache.path(), 0));
-    assert!(!f.round());
-    assert_eq!((f.seq(), b.catalogue().n), (Some(1), 1));
-    // A newer one: taken too, the tiles its own.
+    f.start();
+    for _ in 0..2 {
+        assert!(!f.round());
+        assert_eq!((f.seq(), b.catalogue().n), (None, 0));
+    }
+    // The lead answers: its map taken, the tiles its own.
+    let (feed, lead_dir) = (Feed::new(), tempfile::tempdir().unwrap());
+    let mut log = Log::open(lead_dir.path()).unwrap();
     let three = publish(&[nas.path()], 3);
-    store::map::write_nas_snapshot(&root, &Map::of(&three).unwrap()).unwrap();
-    let mut f = Follower::new(b.clone(), config(format!("http://127.0.0.1:{dead}"), cache.path(), 0));
-    assert!(!f.round());
+    append(&mut log, &feed, &three);
+    let lead = FakeLead::on(0, feed.clone());
+    let mut f = Follower::new(b.clone(), config(lead.url(), cache.path(), 0));
+    assert!(f.round());
     assert_eq!((f.seq(), b.catalogue().n), (Some(3), 3));
     assert_eq!(*b.catalogue(), three);
-    let want = tile(&data(tempfile::tempdir().unwrap().path(), nas.path()), home.path()).await;
-    assert_eq!(want.0, 200);
-    assert_eq!(tile(&b, home.path()).await, want);
+    assert_eq!(tile(&b, home.path()).await.0, 200);
 }
 
 /// A server on demand (docs/roles.md §8.3, 7a) keeps the map each time it moves: started on the map
-/// this Mac kept, it takes the NAS's newer one with the lead away and keeps it at once, so a later
-/// start away from both serves the map its downloads were copied for. A resident one keeps the
-/// newer map only `SAVE_EVERY` after its start.
+/// this Mac kept, it follows the lead to a newer one and keeps it at once, so a later start away
+/// from the lead serves the map its downloads were copied for. A resident one keeps the newer map
+/// only `SAVE_EVERY` after its start.
 #[test]
 fn a_server_on_demand_keeps_the_map_as_it_moves() {
     let nas = tempfile::tempdir().unwrap();
-    let root = store::nasfs::NasRoot::local_for_test(nas.path().to_owned());
-    let dead = store::spawn::listen("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let kept = |folder: &Path| Snapshot::decode(&std::fs::read(folder.join(SAVED)).unwrap()).unwrap().0.seq;
     let one = Map::of(&publish(&[nas.path()], 1)).unwrap();
+    let (feed, lead_dir) = (Feed::new(), tempfile::tempdir().unwrap());
+    let mut log = Log::open(lead_dir.path()).unwrap();
+    for k in 1..=3 {
+        append(&mut log, &feed, &publish(&[nas.path()], k));
+    }
+    let lead = FakeLead::on(0, feed.clone());
     for (save_every, want) in [(Duration::ZERO, 3), (SAVE_EVERY, 1)] {
         let (home, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         std::fs::write(cache.path().join(SAVED), Snapshot::of(&one, &Default::default()).encode().unwrap()).unwrap();
-        store::map::write_nas_snapshot(&root, &Map::of(&publish(&[nas.path()], 3)).unwrap()).unwrap();
-        let cfg = Config { save_every, ..config(format!("http://127.0.0.1:{dead}"), cache.path(), 0) };
+        let cfg = Config { save_every, ..config(lead.url(), cache.path(), 0) };
         let mut f = Follower::new(data(home.path(), nas.path()), cfg);
         f.start();
-        assert!(!f.round());
+        assert!(f.round());
         assert_eq!(f.seq(), Some(3));
         assert_eq!(kept(cache.path()), want, "kept with save_every {save_every:?}");
     }
@@ -284,8 +283,7 @@ fn a_server_on_demand_keeps_the_map_as_it_moves() {
 
 /// The offline map (docs/maplog.md §5.3; kept on the laptops, owner's decision): a server started
 /// with neither the lead nor the NAS serves the map this Mac kept (its cache folder's
-/// `current.json.zst`), byte for byte; with none kept, the NAS's newest snapshot once the NAS is
-/// there. No catalogue is read.
+/// `current.json.zst`), byte for byte; with none kept, nothing. No catalogue is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_the_map_kept_here_is_served() {
     let (nas, home, cache) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -328,15 +326,13 @@ async fn offline_the_map_kept_here_is_served() {
     assert_eq!(*away.catalogue(), two);
     assert_eq!(tile(&away, home2.path()).await, want);
     stop.store(true, Ordering::SeqCst);
-    // None kept: the NAS's newest snapshot, at the start.
+    // None kept: nothing, the lead away.
     let (cache2, home3) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    store::testkit::map_root(nas.path(), &two);
     let c = data(home3.path(), nas.path());
     let mut g = Follower::new(c.clone(), config(format!("http://127.0.0.1:{dead}"), cache2.path(), 0));
     g.start();
-    assert_eq!(g.seq(), None, "nothing kept here");
-    g.from_nas();
-    assert_eq!((g.seq(), c.catalogue().n), (Some(2), 2));
+    assert!(!g.round());
+    assert_eq!((g.seq(), c.catalogue().n), (None, 0), "nothing kept here");
 }
 
 /// A lead restored behind the map held (its log at 1, the server's map at 2): the server resets to

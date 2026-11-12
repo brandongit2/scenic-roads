@@ -139,11 +139,11 @@ mod tests {
         let (start, bs) = chain(3);
         let dir = crate::agent::publish::held_dir(&home);
         for m in [&start, &bs[0].0, &bs[1].0] {
-            store::map::write_in_dir(&dir, m).unwrap();
+            store::map::write_in(&dir, m).unwrap();
         }
         let (m, _) = store::map::Snapshot::decode(&w.get_bytes("/map/held").unwrap()).unwrap();
         assert_eq!(m, bs[1].0);
-        assert_eq!(store::map::newest_in_dir(&dir).unwrap().unwrap().0, bs[1].0);
+        assert_eq!(store::map::newest_in(&dir).unwrap().unwrap().0, bs[1].0);
     }
 
     fn lead(d: &std::path::Path) -> (crate::coord::Coordinator, Client, Arc<Feed>) {

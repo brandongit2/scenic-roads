@@ -171,8 +171,7 @@ fn declaration(d: &Declaration) -> Result<inputs::inputs::sources::Source> {
 
 fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
     anyhow::ensure!(!root.starts_with("/Volumes"), "a test root, not the NAS's");
-    let nas = store::nasfs::NasRoot::from_arg(root);
-    let mut cat = store::map::newest_nas(&nas)?.context("no map in the root")?.catalogue()?;
+    let mut cat = store::map::root_map(root)?.context("no map in the root")?.catalogue()?;
     let name = fill.file_name().context("a fill file")?.to_string_lossy().into_owned();
     let hash = name.trim_start_matches("lakefill.").trim_end_matches(".sect");
     let logical = format!("{}test", inputs::lakefill::PREFIX);
@@ -190,7 +189,7 @@ fn catalogue_add(root: &Path, fill: &Path) -> Result<()> {
     );
     cat.global.insert("lakefill".into(), logical);
     cat.n += 1;
-    store::map::write_nas_snapshot(&nas, &store::map::Map::of(&cat)?)?;
+    store::map::write_root_map(root, &store::map::Map::of(&cat)?)?;
     eprintln!("lakefill: map {} with {content}", cat.n);
     Ok(())
 }

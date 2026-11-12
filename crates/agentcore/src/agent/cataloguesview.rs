@@ -654,8 +654,7 @@ mod tests {
             Log { d, w, here }
         }
         fn publish(&mut self, c: &store::catalogue::Catalogue) {
-            let root = store::nasfs::NasRoot::local_for_test(self.d.path().join("nas"));
-            self.w.publish(Some(&root), c.clone(), false, std::time::SystemTime::now());
+            self.w.publish(c.clone(), false, std::time::SystemTime::now());
             assert_eq!(self.here.feed.head(), Some(c.n), "catalogue {} in the log", c.n);
         }
         fn source(&self) -> Arc<dyn Source> {

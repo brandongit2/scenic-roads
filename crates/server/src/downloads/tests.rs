@@ -457,7 +457,7 @@ async fn a_new_catalogue_copies_nothing_until_the_download_is_updated() {
     // A region over 31/21 and 32/21 (London to Kent), still building: catalogue 1 has 31/21's files
     // alone; catalogue 2 32/21's too, and 31/21's roads made again.
     let full = catalogue(&root);
-    std::fs::remove_dir_all(nas.path().join(store::map::NAS_DIR)).unwrap();
+    std::fs::remove_dir_all(nas.path().join(store::map::ROOT_DIR)).unwrap();
     let se = rect(-0.3, 51.4, 0.3, 51.6);
     let coverage = |built: u32| {
         json!({"recorded": true, "regions": [

@@ -126,8 +126,9 @@ impl Data {
         match o.nas_root {
             Some(root) => {
                 d.set_nas(Some(root), false);
-                // (A folder laid out as the NAS's, served as it is: its newest map snapshot, read
-                // once. This Mac's server follows the lead's log instead: crate::maplog::spawn.)
+                // (A folder laid out as the NAS's, served as it is: its own map (`map/`, a test
+                // root's), read once. This Mac's server follows the lead's log instead:
+                // crate::maplog::spawn.)
                 d.serve_root_map();
             }
             None => d.find_nas(),
@@ -139,11 +140,11 @@ impl Data {
         self.cat.read().unwrap().clone()
     }
 
-    /// The newest map snapshot of the NAS (or the folder laid out as it: `Options::nas_root`)
-    /// served, when it's newer than the map served; whether one was read.
+    /// The map of the folder laid out as the NAS's (`Options::nas_root`, a `--root`: its
+    /// store::map::root_map) served, when it's newer than the map served; whether one was read.
     pub fn serve_root_map(&self) -> bool {
         let Some(root) = self.nas_root() else { return false };
-        match store::map::newest_nas(&root).and_then(|m| m.map(|m| m.catalogue()).transpose()) {
+        match store::map::root_map(&root.unchecked_path()).and_then(|m| m.map(|m| m.catalogue()).transpose()) {
             Ok(Some(c)) => {
                 self.set_map(Arc::new(c));
                 true
@@ -161,7 +162,7 @@ impl Data {
 
     /// The map's catalogue (crate::maplog) served from now on: swapped whole when its number moves
     /// on, the generation with it; never back to an older one (a lead's snapshot behind the map
-    /// held, a lead restored from an older NAS snapshot).
+    /// held).
     pub fn set_map(&self, c: Arc<Catalogue>) {
         let mut cur = self.cat.write().unwrap();
         if c.n > cur.n {
@@ -1098,7 +1099,7 @@ mod tests {
             store::catalogue::FileRef { file: c.clone(), size: b.len() as u64, ..Default::default() },
         );
         let open = |home: &std::path::Path, cat: &Catalogue| {
-            std::fs::remove_dir_all(nas.path().join(store::map::NAS_DIR)).ok();
+            std::fs::remove_dir_all(nas.path().join(store::map::ROOT_DIR)).ok();
             store::testkit::map_root(nas.path(), cat);
             Data::open(Options {
                 home: home.to_owned(),

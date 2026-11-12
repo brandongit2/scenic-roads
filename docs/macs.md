@@ -110,8 +110,7 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   installed (a laptop), it first starts the app's `server --on-demand` (its output appended to
   `~/Library/Logs/scenic/server.log`) and waits for it, up to two minutes. That server answers this
   Mac's loopback alone (127.0.0.1 and `::1`), is never retired, follows the map's log and copies and
-  Updates the downloads while it runs (from the NAS's snapshot and its saved map with the Mac mini
-  away), and quits 30 minutes after its last use (a request, or a copy of the mirror's under way).
+  Updates the downloads while it runs (from its saved map with the Mac mini away), and quits 30 minutes after its last use (a request, or a copy of the mirror's under way).
   It keeps its map in `~/Library/Caches/scenic/map` each time the map moves (a resident server:
   every 10 minutes at most), so a start away from the Mac mini and the NAS serves the map its
   downloads were copied for. Away from the NAS it serves what's downloaded and nothing else (#985,
@@ -362,15 +361,14 @@ installed by `tools/app/install.sh`, updated by the updater).
   log's, nothing else (no catalogue is read). A thread follows the log over HTTP (`GET
   /map/changes`, a 30-s long poll, its cursor `server/<host>`), applying each answer's batches to
   its own map (checked by their digest; the map takes ~0.5–1.5 GB) and the lead's snapshot on a
-  reset; with the lead away, the NAS's newest `map/<seq>.json.zst` when it holds none or an older
-  one. Each map is handed to the server as one catalogue, swapped whole, never an older one than
+  reset; with the lead away, the map it holds (none: none until the lead answers). Each map is handed to the server as one catalogue, swapped whole, never an older one than
   served. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst` (at most every 10
   minutes) and read at a start, before the server answers: a start away from the lead and the NAS
   serves it (the laptops' offline map, kept: owner's decision, 1 Nov; their server runs on demand,
   #882 step 7a: Mac apps, above). The lead's contact is kept
   beside it (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a
-  cold start (the NAS's snapshot). A server started on a folder laid out as the NAS's (`--root`)
-  serves that folder's newest snapshot.
+  cold start (nothing served until the lead answers). A server started on a folder laid out as the
+  NAS's (`--root`) serves that folder's own map (its `map/`).
 - **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
   `packs`), so a new catalogue re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of

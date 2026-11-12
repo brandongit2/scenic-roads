@@ -604,7 +604,7 @@ mod measure {
                 cat.layers.insert(name, serde_json::from_value(serde_json::to_value(&lo).unwrap()).unwrap());
             }
             cat.validate().unwrap();
-            std::fs::remove_dir_all(root.join(store::map::NAS_DIR)).ok();
+            std::fs::remove_dir_all(root.join(store::map::ROOT_DIR)).ok();
             store::testkit::map_root(&root, &cat);
         }
 

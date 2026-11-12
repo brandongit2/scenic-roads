@@ -83,7 +83,7 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
     let cur = |seq: u64, heard: u64| Cursor { seq, heard, at: heard, ..Default::default() };
     let late = T0 + GRACE_S;
     let all_past: BTreeMap<String, Cursor> =
-        [("server/m4".to_string(), cur(2, late)), ("snapshot".to_string(), cur(2, late))].into();
+        [("server/m4".to_string(), cur(2, late)), ("mirror/m4".to_string(), cur(2, late))].into();
     let due = |c: &BTreeMap<String, Cursor>, lease: Option<u64>, now: u64| {
         q.due(&Holders { cursors: c, oldest_lease: lease, now })
     };
@@ -111,12 +111,12 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
 
 /// Task #1134: a laptop's map server, on demand, asks while it runs and then quits, its cursor
 /// left behind at the map it was at; the lead's queue held 54,575 names (all but 1,029) behind
-/// the M1's, unheard 4 days, for its 7-day TTL, while the mini's server and mirror and the NAS
-/// snapshot were long past them. Unheard `CURSOR_TTL_S` (hours), it holds nothing; asking again,
-/// it holds again from its `seq`. The NAS snapshot's cursor, which the lead notes as it writes one
-/// (on a publish, so hours apart when the build publishes nothing), holds however long ago.
+/// the M1's, unheard 4 days, for its 7-day TTL, while the mini's server and mirror were long past
+/// them. Unheard `CURSOR_TTL_S` (hours), it holds nothing; asking again, it holds again from its
+/// `seq`. Task #1119: the cursor an older app noted for the NAS's snapshots (`snapshot`), restored
+/// from a log saved with it, is dropped as the log opens: it holds nothing.
 #[test]
-fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_snapshots_always() {
+fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_old_snapshots_none() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack")]);
     let q = GcQueue::default();
@@ -127,10 +127,11 @@ fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_snapshots_always() {
     q.batch(&b2, T0);
     q.batch(&b3, T0);
     let feed = store::map::feed::Feed::new();
-    feed.start(std::sync::Arc::new(m3), 1, &[b2, b3], BTreeMap::new());
-    // The M1's server at map 1, then gone; the mini's long-polling at the head; the snapshot at 3.
+    let old = Cursor { seq: 1, heard: T0, at: T0, ..Default::default() };
+    feed.start(std::sync::Arc::new(m3), 1, &[b2, b3], [("snapshot".to_string(), old)].into());
+    assert!(!feed.cursors().contains_key("snapshot"), "the old NAS snapshot's cursor dropped");
+    // The M1's server at map 1, then gone; the mini's long-polling at the head.
     feed.changes(1, Some("server/m1"), T0);
-    feed.note_snapshot(3, T0);
     let due_at = |now: u64| {
         feed.changes(3, Some("server/mini"), now);
         q.due(&Holders { cursors: &feed.cursors(), oldest_lease: None, now })
@@ -138,15 +139,13 @@ fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_snapshots_always() {
     let both = vec!["a.1.pack".to_string(), "a.2.pack".to_string()];
     assert!(due_at(T0 + GRACE_S).is_empty(), "the M1's cursor at 1 holds both");
     assert!(due_at(T0 + CURSOR_TTL_S - 1).is_empty(), "heard within the TTL");
-    assert_eq!(due_at(T0 + CURSOR_TTL_S), both, "unheard the TTL: nothing held, the snapshot's at 3 neither");
+    assert_eq!(due_at(T0 + CURSOR_TTL_S), both, "unheard the TTL: nothing held");
     assert!(CURSOR_TTL_S <= 6 * 3600, "hours, not days: each hour keeps an hour's freed files");
     // Back, at 1 still: it holds them again until it moves on.
     feed.changes(1, Some("server/m1"), T0 + CURSOR_TTL_S + 5);
     assert!(due_at(T0 + CURSOR_TTL_S + 10).is_empty());
-    // The snapshot's cursor, noted at 2 long ago, holds what map 2 names: a.2, never a.1.
     feed.changes(3, Some("server/m1"), T0 + CURSOR_TTL_S + 20);
-    feed.note_snapshot(2, T0);
-    assert_eq!(due_at(T0 + 9 * CURSOR_TTL_S), vec!["a.1.pack".to_string()], "the snapshot's never lapses");
+    assert_eq!(due_at(T0 + CURSOR_TTL_S + 30), both);
 }
 
 fn entry(n: u64, content: &str) -> Entry {

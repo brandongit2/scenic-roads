@@ -35,10 +35,11 @@ pub const POOL_EPOCH: &str = "x-pool-epoch";
 pub const POOL_MEMBER: &str = "x-pool-member";
 
 /// The map now, for a job or a command (docs/maplog.md §6.7, §6.10): the lead's (`GET
-/// /map/snapshot` from its coordinator, found as `lead::find` says); the NAS's
-/// newest snapshot (up to an hour behind) when there's no coordinator or it holds no map yet (503);
-/// None when there's no map at all. A coordinator that fails otherwise is an error: a job that
-/// publishes or lists from the map never goes by an older one than the lead's while the lead runs.
+/// /map/snapshot` from its coordinator, found as `lead::find` says); None when
+/// there's no coordinator or it holds no map yet (503): the NAS keeps no copy of the map. A root
+/// that isn't the NAS (a test root, a local copy laid out as the project folder) holds its own,
+/// read when no lead answers there (store::map::root_map). A coordinator that fails otherwise is an
+/// error: a job that publishes or lists from the map never goes by an older one than the lead's.
 pub fn map_now(root: &store::nasfs::NasRoot) -> anyhow::Result<Option<store::map::Map>> {
     use anyhow::Context;
     let home = lead::this_macs_agent();
@@ -47,7 +48,11 @@ pub fn map_now(root: &store::nasfs::NasRoot) -> anyhow::Result<Option<store::map
             return Ok(Some(store::map::Snapshot::decode(&b).context("the lead's map")?.0));
         }
     }
-    store::map::newest_nas(root)
+    let dir = root.unchecked_path();
+    if store::nasfs::is_live_path(&dir) {
+        return Ok(None);
+    }
+    store::map::root_map(&dir)
 }
 
 /// Its unit tests' process is offline from its start (buildstore::fetch::go_offline), and the

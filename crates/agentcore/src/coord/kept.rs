@@ -9,9 +9,9 @@
 //!   `beat/<member>` (its last beat's heartbeat and status, crate::coord::beats: `Beat`, saved each
 //!   `HEARD_SAVE_S` at most, so a lead's restart has the members for the page at once), and the
 //!   owner's asks (crate::coord::asks: `hold/<member>`, `settings`), the members' messages to
-//!   the lead (crate::coord::inbox: `inbox/<member>`), and the answers' lease and the members'
-//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`), and the NAS
-//!   budget's probes (`nas-probes`, `PROBES`);
+//!   the lead (crate::coord::inbox: `inbox/<member>`), the answers' lease and the members'
+//!   resume progress (crate::coord::budgets: `answers-lease`, `progress/<member>`), the map's
+//!   head (`map-head`: `MAP_HEAD`), and the NAS budget's probes (`nas-probes`, `PROBES`);
 //! - each save submits what changed since the last (`Mirror`), never the whole state;
 //! - opened by `Coordinator::start_on` after the coordinator's start: a store found is the truth (the
 //!   files start read are a store's first fill alone: an agent before the store's); none, it's
@@ -51,6 +51,11 @@ pub struct Beat {
 /// (crate::agent::pool's `load_backup`).
 pub const PROBES: &str = "nas-probes";
 
+/// The map's head as the lead last kept it (a `seq`, docs/maplog.md §4.5): what a lead with no map
+/// log of its own (moved to another Mac, its disk lost) numbers its first map past, carried to it by
+/// the store's backup (crate::agent::pool's `took_up`), as the NAS keeps no copy of the map.
+pub const MAP_HEAD: &str = "map-head";
+
 /// A member's `Heard` (and its `Beat`) is saved again once its time moved this far (its beats come every 10 s; the
 /// 12-h rule needs no finer).
 const HEARD_SAVE_S: u64 = 60;
@@ -72,6 +77,8 @@ struct Mirror {
     members: BTreeMap<String, Heard>,
     /// When each member's beat was last saved (unix s).
     beats: BTreeMap<String, u64>,
+    /// The map's head as kept (`MAP_HEAD`).
+    map_head: u64,
 }
 
 /// The coordinator's state as its store holds it.
@@ -166,8 +173,25 @@ impl Kept {
         m.leases = of_prefix(&docs, "lease/");
         (m.costs, m.floors, m.disks) = (loaded.costs.clone(), loaded.floors.clone(), loaded.disks.clone());
         m.members = loaded.members.clone();
+        m.map_head = docs.get(MAP_HEAD).and_then(Value::as_u64).unwrap_or(0);
         drop(m);
         self.store.set(store).ok();
+    }
+
+    /// The map's head as kept (`MAP_HEAD`; 0: none).
+    pub fn map_head(&self) -> u64 {
+        self.m.lock().unwrap_or_else(|e| e.into_inner()).map_head
+    }
+
+    /// The map's head kept as `seq` when it's past the one kept (a head is never taken back).
+    pub fn keep_map_head(&self, seq: u64) {
+        let mut m = self.m.lock().unwrap_or_else(|e| e.into_inner());
+        if seq <= m.map_head {
+            return;
+        }
+        m.map_head = seq;
+        drop(m);
+        self.submit([(MAP_HEAD.to_string(), Value::from(seq))].into(), Vec::new());
     }
 
     pub fn store(&self) -> Option<&Arc<Store>> {

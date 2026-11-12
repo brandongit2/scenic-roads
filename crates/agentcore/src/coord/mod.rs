@@ -2987,6 +2987,18 @@ impl Coordinator {
         self.shared.lock().unwrap().asks.settings.clone()
     }
 
+    /// The map's head as its store keeps it (kept::MAP_HEAD; 0: none).
+    pub fn map_head(&self) -> u64 {
+        self.shared.lock().unwrap().keep.map_head()
+    }
+
+    /// The map's head kept as `seq`, past the one kept (the lead's log's, each loop; another
+    /// lead's, from its store's backup at a take-up).
+    pub fn keep_map_head(&self, seq: u64) {
+        let keep = self.shared.lock().unwrap().keep.clone();
+        keep.keep_map_head(seq);
+    }
+
     /// The epoch the leases it grants now are in (docs/pool.md §7.5, docs/coordination.md §4.3; 0:
     /// the pool off): its agent's driver's take-up's (crate::agent::pool::took_up).
     pub fn set_epoch(&self, epoch: u64) {
@@ -6303,8 +6315,8 @@ mod http {
         };
         let dir = crate::agent::publish::held_dir(&home);
         let newest = tokio::task::spawn_blocking(move || -> Result<Option<(u64, Vec<u8>)>> {
-            let Some(seq) = store::map::seqs_in_dir(&dir)?.first().copied() else { return Ok(None) };
-            Ok(Some((seq, std::fs::read(dir.join(store::map::nas_name(seq)))?)))
+            let Some(seq) = store::map::seqs_in(&dir)?.first().copied() else { return Ok(None) };
+            Ok(Some((seq, std::fs::read(dir.join(store::map::snapshot_name(seq)))?)))
         })
         .await;
         match newest {
@@ -6832,6 +6844,23 @@ mod tests {
             unit_offer(&next, "6/1/1");
             assert!(other.ask(&Ask { worker: "m6".into(), ..ask(8192) }).unwrap().is_none(), "never granted again");
         }
+    }
+
+    /// Task #1119: the map's head the lead keeps in its store (kept::MAP_HEAD), never taken back,
+    /// goes with its backup to the lead the owner moves it to: a map log started there goes past it.
+    #[test]
+    fn the_maps_head_is_kept_and_taken_up_with_the_backup() {
+        let (_d, c, _w) = start();
+        assert_eq!(c.map_head(), 0);
+        c.keep_map_head(2717);
+        c.keep_map_head(2700);
+        assert_eq!(c.map_head(), 2717, "never back");
+        let store = c.shared.lock().unwrap().keep.store().cloned().unwrap();
+        let b = crate::pool::store::Snapshot { member: "m1".into(), at: wall_now(), ..store.snapshot() };
+        assert_eq!(b.docs[kept::MAP_HEAD], 2717);
+        let (_d2, next, _w2) = start();
+        crate::agent::pool::load_backup(&next, &b).unwrap();
+        assert_eq!(next.map_head(), 2717);
     }
 
     /// Task #1038 (the pool's simulator, seed 37): a member's beat sent before its ask and taken
