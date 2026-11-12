@@ -21,7 +21,7 @@
 # Commands are read as test-guard.py reads them (shellwords.py), the scripts of sh/bash/zsh -c and
 # eval too; what a script run by the command does is not seen, nor a `cd` in a subshell, `( … )`,
 # which the line's later commands are taken to be in too.
-import hashlib, json, os, re, subprocess, sys
+import glob, hashlib, json, os, re, subprocess, sys
 from datetime import datetime
 from shellwords import strip_heredocs, segments, substitutions, tokens, command
 
@@ -91,26 +91,33 @@ def proj_dir():
     return os.path.dirname(os.path.dirname(t)) if os.path.basename(t) == "subagents" else t
 
 
-def session_start(s):
-    """When the Claude Code process running session s started (epoch seconds), None when none runs it.
-    Claude Code keeps <config>/sessions/<pid>.json for each process it runs (removed as it exits);
-    one whose pid is gone, or now another process (its start time not procStart), is stale. Without
-    that folder liveness can't be told: 0, as if a process has run it all along."""
+def live_sessions():
+    """{session id: when the Claude Code process running it started (epoch seconds)} for each live
+    process, from Claude Code's <config>/sessions/<pid>.json (removed as the process exits). A record
+    whose pid is gone, or now another process's (its start time, ps's lstart in the C locale and UTC
+    as Claude Code takes it, isn't the record's procStart), is stale; a live pid whose start ps can't
+    tell counts. None without that folder: liveness can't be told."""
     reg = os.path.join(os.path.dirname(os.path.dirname(proj_dir())), "sessions")
-    if not os.path.isdir(reg): return 0
-    starts = []
+    if not os.path.isdir(reg): return None
+    live = {}
     for f in os.listdir(reg):
+        if not f.endswith(".json"): continue
         try:
             with open(os.path.join(reg, f)) as h: r = json.load(h)
-            if not f.endswith(".json") or r.get("sessionId") != s: continue
-            ps = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(r["pid"]))], capture_output=True, text=True,
-                                env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
+            s, pid, start = r["sessionId"], int(r["pid"]), (r.get("startedAt") or 0) / 1000
+            os.kill(pid, 0)
+        except PermissionError:
+            pass   # (alive, another user's)
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             continue
-        if ps.returncode or not ps.stdout.strip(): continue
-        if r.get("procStart") and ps.stdout.split() != str(r["procStart"]).split(): continue
-        starts.append((r.get("startedAt") or 0) / 1000)
-    return min(starts) if starts else None
+        try:
+            ps = subprocess.run(["/bin/ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                                env={**os.environ, "TZ": "UTC", "LC_ALL": "C"}).stdout.split()
+        except OSError:
+            ps = []
+        if ps and r.get("procStart") and ps != str(r["procStart"]).split(): continue
+        live[s] = min(start, live.get(s, start))
+    return live
 
 
 def last_entry(j):
@@ -143,25 +150,26 @@ def interrupted(e):
 
 
 def running(a):
-    """Whether subagent a runs: its session (<proj>/<session>/subagents/agent-<a>.*) has a live Claude
-    Code process, the agent's transcript has an entry since that process started (one cut off by a
-    restart has none), the last isn't an interruption (TaskStop) and the meta doesn't say finished.
-    An agent no transcript here names runs nowhere this can see: False; without the transcripts
-    folder (no transcript_path in the input) nothing can be told: True."""
+    """Whether subagent a runs: some copy of its files (<projects>/<project>/<session>/subagents/
+    agent-<a>.*, in any project: a resumed or forked session copies its agents' files) is of a
+    session a live Claude Code process runs, and that copy's transcript has an entry since the
+    process started (one cut off by a restart has none), the last isn't an interruption (TaskStop's)
+    and its meta doesn't say finished. An agent no transcript names runs nowhere this can see: False;
+    without the transcripts folder (no transcript_path in the input) nothing can be told: True."""
     proj = proj_dir()
     if not (proj and os.path.isdir(proj)): return True
-    for s in os.listdir(proj):
-        base = os.path.join(proj, s, "subagents", "agent-%s" % a)
-        if not (os.path.exists(base + ".meta.json") or os.path.exists(base + ".jsonl")): continue
+    live = live_sessions()
+    for sub in {os.path.dirname(f) for f in glob.glob(os.path.join(os.path.dirname(proj), "*", "*", "subagents", "agent-%s.*" % a))}:
+        base, s = os.path.join(sub, "agent-%s" % a), os.path.basename(os.path.dirname(sub))
         try:
             with open(base + ".meta.json") as f:
-                if json.load(f).get("finished") is True: return False
+                if json.load(f).get("finished") is True: continue
         except (OSError, ValueError, AttributeError):
             pass
-        start = session_start(s)
-        if start is None: return False
+        start = 0 if live is None else live.get(s)
+        if start is None: continue
         e = last_entry(base + ".jsonl")
-        return e is None or (stamp(e) >= start and not interrupted(e))
+        if e is None or (stamp(e) >= start and not interrupted(e)): return True
     return False
 
 

@@ -232,21 +232,26 @@ the command or `export`ed earlier on the line), else where an earlier `cd`, `pus
   other session writes there. Only the PM (or the agent itself) removes or moves one.
 - a worktree a subagent made (a `git worktree add <path>` the guard saw, of a path not there yet,
   recorded in `.git/worktree-owners/`): that subagent's while it runs.
+- every other checkout of the repo (the main checkout, the PM's `int-*` worktrees, those made
+  before #980 too): the main session's. Main sessions are told from subagents only, not by session
+  id, so a resumed, forked or compacted PM keeps its worktrees.
 
-An agent runs (#1153) while all of these hold, from what Claude Code keeps in its config folder
-(`~/.claude`): its session has a live process (`sessions/<pid>.json` names the session, the pid is
-alive and its start time is the record's `procStart`, so a reused pid doesn't count); its transcript
+An agent runs (#1153) while, for some copy of its files in Claude Code's config folder (`~/.claude`;
+resumed and forked sessions copy their agents' files, so one agent can be under several sessions,
+in any project), all of these hold: that copy's session has a live process (`sessions/<pid>.json`
+names the session, the pid is alive and its start time, `ps -o lstart=` in the C locale and UTC as
+Claude Code takes it, is the record's `procStart`, so a reused pid doesn't count); its transcript
 (`projects/<project>/<session>/subagents/agent-<id>.jsonl`) has an entry stamped since that process
 started (`startedAt`; an agent cut off by a restart of its session has none); that last entry isn't
 Claude Code's interruption mark (`[Request interrupted by user…`, what TaskStop leaves; an agent
 resumed by SendMessage writes past it); and its `agent-<id>.meta.json` doesn't say `finished: true`.
 No age limit: an agent waiting quietly for an hour on a background run still runs, and the files'
-modification times aren't read (Claude Code rewrites old transcripts' wholesale). An agent no
+modification times aren't read (Claude Code rewrites old transcripts wholesale). An agent no
 transcript names runs nowhere the guard can see; without a `sessions` folder, or a hook input
-without `transcript_path`, the guard can't tell and takes the agent to run.
-- every other checkout of the repo (the main checkout, the PM's `int-*` worktrees, those made
-  before #980 too): the main session's. Main sessions are told from subagents only, not by session
-  id, so a resumed, forked or compacted PM keeps its worktrees.
+without `transcript_path`, the guard can't tell and takes the agent to run. A process that switches
+to another session (`/clear`) rewrites its record to name the new one only: an agent of the old
+session still running then would count as stopped.
+
 To look at or test a running agent's commit, make a worktree of your own (`git worktree add <scratch
 folder> <commit>`). A write whose folder the guard can't tell (a variable not set on the line, a
 substitution other than `$(pwd)`, `cd -`, a `popd` past the line's `pushd`s) is refused: write the

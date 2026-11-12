@@ -15,7 +15,7 @@ mkdir -p $r/tools/dev; cd $r
 g init -q -b main .
 cp $here/../git-guard.py $here/../shellwords.py $here/../shell-guard.sh $r/tools/dev/
 print x > README.md; g add -A; g commit -m b0
-for a in aaa bbb fff ddd abc; do g worktree add -q $W/agent-$a -b br-$a; done
+for a in aaa bbb fff ddd abc bcd cde; do g worktree add -q $W/agent-$a -b br-$a; done
 mkdir -p $tmp/other; git -C $tmp/other init -q
 proj=$tmp/projects/p; mkdir -p $proj $tmp/sessions
 # session <session> <pid> [<seconds ago>]: Claude Code's record of the process running it, started
@@ -165,6 +165,17 @@ session s0 $s0; kill $s0; wait $s0 2>/dev/null   # (s0 ended without removing it
 check ok - s1 $r "git worktree remove --force $W/agent-abc"
 check ok - s1 $r "git -C $tmp/abc-own reset --hard"   # (made by abc, which no longer runs)
 check $no ccc s1 $r "git -C $tmp/abc-own reset --hard"   # (still not another subagent's to write in)
+# One agent's files under several sessions (resumed and forked sessions copy them), in any project
+# (a session started in another folder): it runs while any copy's session runs it.
+for s in s0 sa sb sc; do agent bcd $s 1; done; agent bcd sb 2 finished; agent bcd sd 1
+check ok - s1 $r "git -C $W/agent-bcd reset --hard"   # (no process runs s0, sa-sd)
+agent bcd s1 1
+check "its agent (bcd) is still running" - s1 $r "git worktree remove --force $W/agent-bcd"
+sleep 1000 & s2=$!; session s2 $s2
+proj=$tmp/projects/q agent cde s2 1
+check "its agent (cde) is still running" - s1 $r "git worktree remove --force $W/agent-cde"
+kill $s2; wait $s2 2>/dev/null
+check ok - s1 $r "git worktree remove --force $W/agent-cde"
 session s1 $live   # (s1 restarted: its process started now, after ddd's last entry)
 check ok - s1 $r "git worktree remove --force $W/agent-ddd"
 
