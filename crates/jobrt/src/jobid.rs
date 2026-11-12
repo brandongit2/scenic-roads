@@ -6,10 +6,11 @@
 //!
 //! Never given twice: the epoch goes up at each start of the lead's store and past every epoch a
 //! take-up finds (agentcore's pool::driver::Io::epoch), and within an epoch the store's numbers
-//! only count up (agentcore's coord::lease::Leases::load: from past the time in milliseconds, the
-//! saved leases and the history's highest). Epoch 0 is no lead's: a coordinator out of the pool, a
-//! hand-off drained from one, and a record from before job ids, which named its run by the lease's
-//! number alone (a JSON number where the id is a string: read as `0-<n>`).
+//! only count up (agentcore's coord::lease::Leases: from past the time in milliseconds, the saved
+//! leases, those taken up and the highest its history names, `load`, `restore`, `past`). Epoch 0 is
+//! no lead's: a coordinator out of the pool, a hand-off drained from one, and a history event from
+//! before job ids, which named its run by the lease's number alone (agentcore's
+//! coord::history::Event::job: read as `0-<n>`).
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// A job run's id, `<epoch>-<n>`, ordered by both (later grants are greater).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JobId {
     /// The epoch its lease was granted in (0: none, see the module's doc).
     pub epoch: u64,
@@ -51,17 +52,7 @@ impl Serialize for JobId {
 
 impl<'de> Deserialize<'de> for JobId {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<JobId, D::Error> {
-        // (A record from before job ids: its lease's number alone, epoch 0.)
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Said {
-            Id(String),
-            Legacy(u64),
-        }
-        match Said::deserialize(d)? {
-            Said::Id(s) => s.parse().map_err(serde::de::Error::custom),
-            Said::Legacy(n) => Ok(JobId { epoch: 0, n }),
-        }
+        String::deserialize(d)?.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -79,11 +70,8 @@ mod tests {
         let mut v = [JobId { epoch: 3, n: 1 }, JobId { epoch: 2, n: 10 }, JobId { epoch: 2, n: 9 }];
         v.sort();
         assert_eq!(v.map(|l| l.to_string()), ["2-9", "2-10", "3-1"]);
-    }
-
-    #[test]
-    fn a_record_from_before_names_its_run_by_its_lease_number_in_epoch_0() {
-        assert_eq!(serde_json::from_str::<JobId>("1791328399374").unwrap(), JobId { epoch: 0, n: 1791328399374 });
-        assert!(serde_json::from_str::<JobId>("\"1791328399374\"").is_err());
+        // (A lease's number alone is no job id: only a history event from before them names one so,
+        // agentcore's coord::history::Event::job.)
+        assert!(serde_json::from_str::<JobId>("1791328399374").is_err());
     }
 }

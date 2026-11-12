@@ -1998,14 +1998,16 @@ impl Coordinator {
         }
     }
 
-    /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them,
-    /// or (a job of no targets, like buildings, either side) any job of the step; its id.
+    /// `hold_for` a new run (a test's own job).
+    #[cfg(test)]
     pub fn hold(&self, step: &str, targets: &[(String, String)]) -> Option<u64> {
         self.hold_for(step, targets, None)
     }
 
-    /// `hold`, for job run `job` when it began under another lease (its own lapsed or lost while
-    /// it ran on, crate::agent): its id kept (crate::coord::lease::Lease::job).
+    /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them,
+    /// or (a job of no targets, like buildings, either side) any job of the step; its id. For job
+    /// run `job` when it began under another lease (its own lapsed or lost while it ran on,
+    /// crate::agent): its id kept (crate::coord::lease::Lease::job).
     pub fn hold_for(&self, step: &str, targets: &[(String, String)], job: Option<jobrt::jobid::JobId>) -> Option<u64> {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
@@ -5162,6 +5164,7 @@ fn route(
                                 peak_mb: d.peak_mb,
                                 secs: d.secs as u64,
                                 worker: Some(d.worker.clone()),
+                                job: Some(l.job()),
                                 v: 0,
                                 ..Default::default()
                             },
@@ -5169,10 +5172,10 @@ fn route(
                         s.needs_rev += 1;
                         s.save_costs();
                     }
-                    let job = s.leases.finish(d.lease, &d.worker, now).map(|l| l.job());
+                    s.leases.finish(d.lease, &d.worker, now);
                     s.history.add(history::Event {
                         worker: Some(d.worker.clone()),
-                        job,
+                        job: Some(l.job()),
                         step: Some(kind),
                         targets: unit.into_iter().collect(),
                         secs: Some(d.secs.round()),
@@ -7530,6 +7533,8 @@ mod tests {
             kept.iter().map(|r| (r.kind.as_str(), r.host.as_str())).collect::<Vec<_>>(),
             [("unit", "m1"), ("gc", "m4")]
         );
+        // (Task #1103: a record that names no run, an older job's, kept under its lease's.)
+        assert_eq!(kept[0].job, Some(jobrt::jobid::JobId { epoch: g.epoch, n: g.lease }));
         // Asked from another Mac: a kind's last runs.
         let (code, v) = w.post_json("/api/timings", &serde_json::json!({ "kind": "unit", "last": 5 })).unwrap();
         assert_eq!(code, 200);
@@ -12467,6 +12472,9 @@ mod tests {
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));
         assert!(!w.beat(g.lease, None).unwrap(), "the lease ended with its hand-off");
+        // (Task #1103: its cost kept with the run that measured it, its lease's.)
+        let run = jobrt::jobid::JobId { epoch: g.epoch, n: g.lease };
+        assert!(c.shared.lock().unwrap().costs.values().any(|c| c.secs == 300 && c.job == Some(run)));
         // Done: not offered again before the plan shows it, nor after under the same key; again
         // under a new key.
         assert!(w.ask(&ask(4096)).unwrap().is_none());

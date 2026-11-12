@@ -46,7 +46,7 @@ pub struct Event {
     /// own from its "start" to its "end", a cancel, a task. Under the key `lease` in an event from
     /// before job ids, its lease's number alone, read as `0-<n>` (epoch 0: the one it was granted in
     /// unsaid); an app before them reads none from an event since.
-    #[serde(default, alias = "lease", skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "lease", deserialize_with = "job_or_lease", skip_serializing_if = "Option::is_none")]
     pub job: Option<jobrt::jobid::JobId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
@@ -449,6 +449,21 @@ pub struct Row {
     /// By worker: the seconds of the hour it was working.
     pub busy_s: BTreeMap<String, u64>,
     pub paused_s: u64,
+}
+
+/// An event's `job` (`Event::job`): a job id, or under `lease` in an event from before job ids,
+/// its lease's number alone (a JSON number), read as `0-<n>`.
+fn job_or_lease<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<jobrt::jobid::JobId>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Said {
+        Id(jobrt::jobid::JobId),
+        Lease(u64),
+    }
+    Ok(Option::<Said>::deserialize(d)?.map(|s| match s {
+        Said::Id(j) => j,
+        Said::Lease(n) => jobrt::jobid::JobId { epoch: 0, n },
+    }))
 }
 
 fn now_s() -> u64 {

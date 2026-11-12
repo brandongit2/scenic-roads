@@ -772,7 +772,10 @@ impl Held {
             Held::Own(0) => None,
             Held::Own(n) => Some(JobId { epoch, n }),
             Held::Leased { lease, .. } => Some(JobId { epoch: 0, n: lease }),
-            Held::Pooled { id, epoch, .. } => Some(JobId { epoch, n: id }),
+            // (Its folder is its run's, `pool::job_dir`, whatever lease holds it now.)
+            Held::Pooled { id, epoch, ref dir, .. } => {
+                Some(dir.file_name().and_then(|d| d.to_str()?.parse().ok()).unwrap_or(JobId { epoch, n: id }))
+            }
         }
     }
 }
@@ -5126,7 +5129,7 @@ impl Agent {
             if let Some(r) = self.slots[k].running.as_mut().filter(|r| r.said_end) {
                 self.outlived.extend(r.stop(Duration::from_secs(1)));
             }
-            self.slots[k].running = None;
+            (self.slots[k].running, self.slots[k].job) = (None, None);
             self.slots[k].yields = None;
             std::fs::remove_file(self.record_path(k)).ok();
             return Ok(true);
@@ -5605,6 +5608,7 @@ impl Agent {
                 let why = format!("the lead's records' brief can't be had now ({why}): given back, not started");
                 waiting.push(Waiting { step: step_of(&spec.id), what: what.clone(), why: why.clone() });
                 self.end_lease(k, Outcome::Interrupted, &[], &why);
+                self.slots[k].job = None;
                 return false;
             }
         };
@@ -5612,7 +5616,8 @@ impl Agent {
             // It couldn't even start (a missing program, a full disk): retried later.
             eprintln!("agent: can't start {id}: {e:#}");
             self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
-            self.finished(&id, self.slots[k].job, &what, false, 0, format!("couldn't start: {e:#}"));
+            let job = self.slots[k].job.take();
+            self.finished(&id, job, &what, false, 0, format!("couldn't start: {e:#}"));
             return false;
         }
         true
@@ -7720,7 +7725,7 @@ impl Agent {
         self.save();
         let s = &mut self.slots[k];
         (s.drain_since, s.mem_drain, s.mem_drain_alone, s.update_wait) = (None, None, false, None);
-        s.running = None;
+        (s.running, s.job) = (None, None);
         s.yields = None;
         std::fs::remove_file(self.record_path(k)).ok();
     }
