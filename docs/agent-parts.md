@@ -1,6 +1,6 @@
 # The agent in parts
 
-**Built (task #871, steps 0–7 of §7), but the pool part (§4.6), which waits for #878.** This doc
+**Built (task #871, steps 0–7 of §7; the pool part's HTTP, §4.6, by #878).** This doc
 says how the build agent's single serial loop (`crate::agent::Agent::run` and `step`,
 crates/agentcore/src/agent/mod.rs, as it was) became independent parts, each split by what it waits
 on; docs/pool.md §7.8 and §11 and docs/building.md §2 say the same as built. §1 and the parts
@@ -47,7 +47,7 @@ they talk only by the named channels and snapshots of §3.
 | **dsm** | this Mac's stale SMB sessions on the NAS, dropped through DSM's web API (`agent::dsm`, docs/macs.md) | DSM, 10 s a request | the loop's asks: the start, leaving home, the share on the LAN name again after Tailscale, the heal's remount; one that didn't reach DSM again each minute for 30 min |
 | **jobs** | the slots, their child processes, leases held, the memory and disk guards | children's exits, control's orders, grants | each child event, and every 2 s |
 | **plan** (lead only) | the plan, the offers, the grants, the gate, the checklist and counts | the records snapshot, the CPU | triggered by changes (§4.4); a 5-min fallback |
-| **pool** (until #878) | the pool driver: the declaration, the records, member heartbeats | the NAS, through **nas** | its 1-s tick (`pool::Ticker`, today) |
+| **pool** | the pool driver: the declaration, the lead's records and merges, the pool heartbeat | the lead's answers (by **beat**); on the lead, the NAS through **nas** | the round's step about every 20 s, its own thread's (`pool::Ticker`) after 25 s without one |
 
 The existing side threads (forecast, phase sums, region sync, hints, sampler, live, caches) become
 workers of **plan** or **jobs** with the same in/out shape: a request in, a snapshot out.
@@ -98,7 +98,7 @@ This replaces `asks`' 250-ms poll and the loop's `sync_hold`, `adopt_hold`, `hol
 answers each ask (`control::answer_hold`) as soon as it is applied, and sends `ControlMsg` to
 **jobs** (drain / resume / stop / cancel) and `Changed` to **beat**.
 
-**Another member's hold** goes to the lead (`/pool/hold`, docs/coordination.md step 5), queued on
+**Another member's hold** goes to the lead (`/pool/hold`, docs/coordination.md §5), queued on
 this Mac's disk and sent with its beat; this Mac's own comes back in the beat's answer.
 
 **Failure:** a request it can't parse is answered with the error at once (HTTP 400, or the answer
@@ -113,8 +113,10 @@ within a second; the hold's stage (asked, pausing, paused, resuming) comes from 
 - every 10 s on a steady timer, whatever the others are doing;
 - at once (debounced 200 ms) on a `Changed` from **control** or a `JobEvent`.
 
-The local copy is written directly (this Mac's disk). The shared copy goes through **nas**'s Writes
-pool under its deadline (`state/status.json` today; to the lead by HTTP with #878).
+The local copy is written directly (this Mac's disk). A member's goes to the lead in its beat
+(`POST /pool/beat`, by a poster thread of its own that takes the newest each time it's free); the
+lead's goes to the NAS (`state/status.json`) under `nasread`'s deadline, by
+a writer thread started with the first body to share, so a member runs none.
 
 **The BEATING rule, kept as an ordering by construction.** Today `nasread::BEATING` is a lock the
 loop holds from its `say` to its writes, so the asks thread's or the watchdog's rewrite never lands
@@ -219,7 +221,7 @@ plan before it and an old cancel drops none of its grants. A plan past `beat::LO
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
 channel (`plan::Out`) for the lead's pool step. Not done: a plan's errors stay waiting lines (`plan`
 returns jobs, not a result); the pool's own run is still locked by the pool's ops (`pool::try_lock`:
-`lost_lead`, the broker made on the run, the page's acts, the members' clock) until #878.
+`lost_lead`, the broker made on the run, the page's acts, the members' clock).
 
 ### 4.5 jobs
 
@@ -278,11 +280,28 @@ In line (a single loop's, a dry run's) the loop takes cancels and members' asks 
 loop's, for steps 6–7: the slots themselves (their starts, `tend`, the memory and disk guards, the
 ramp, `save_hands`, grants by channel).
 
-### 4.6 pool (until #878)
+### 4.6 pool
 
-The pool driver keeps its thread (`pool::Ticker`) but reads `Conditions` and `HoldView` snapshots
-instead of the agent's fields, and does its NAS calls through **nas**. Its gates (`pool_step`'s
-`gates`: leads, duties) become `PoolView`, which **plan** and **jobs** read.
+**Owns** the pool's driver (crate::pool::driver, run by crate::agent::pool's `Run` under one lock):
+the member's saved state and its hand-offs, the lead's records, take-up and merges. It is stepped
+by the round about every 20 s and by its own thread (`pool::Ticker`) whenever the round hasn't
+stepped it for `QUIET_S` (25 s), so a long plan or a slow share never stops it.
+
+- **On a member** a step takes its lead from the last answer to its beat (`Answer::leading`,
+  under `PAGE_AWAY_S`, 35 s, old) and makes no NAS call; with no fresh answer it reads the
+  declaration (docs/pool.md §6.1). It composes the pool heartbeat (`Heartbeat`) for **beat**.
+- **On the lead** a step reads the declaration, takes the records up when it must, merges what its
+  coordinator took and its own jobs' hand-offs, saves the records (its disk, then the NAS's one
+  path, under `nasread`'s deadlines), and tells its coordinator what it may grant
+  (`agent::pool::moving`, docs/pool.md §6.5).
+- **Its HTTP is beat's:** **beat**'s poster carries the heartbeat, the leases the round listed and
+  the hand-offs' keys to the lead, posts the hand-offs and asks the lead lacks or hasn't taken,
+  and puts the answer in the pool's registry (crate::coord::beats): the lead, the leases released,
+  this Mac's hold, the settings' generation, the hand-offs merged. The pool's step and the round
+  read the registry; **pool** itself sends nothing.
+
+Its gates (`pool_step`'s `gates`: `leads`, `duties`, `caught_up`, `vouched`) are `PoolView`,
+which **plan** and **jobs** read.
 
 ## 5. Ordering guarantees
 
@@ -305,16 +324,13 @@ instead of the agent's fields, and does its NAS calls through **nas**. Its gates
 
 - **#881 (the mini as fixed lead, no election: landed).** **plan** runs only on the mini; on the M1
   and M4 it never starts. The handover and takeover machinery and the settle gate are gone from
-  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties`, `caught_up` and `vouched` (no re-assertion since
-  docs/coordination.md step 8c).
-- **#878 (pool coordination by HTTP on the lead).** When it lands, **pool** shrinks to an HTTP
-  client: a member's heartbeat, mail and holds are posts to the lead's endpoint, and **beat**'s
-  shared write goes there too. **nas** then serves only the jobs' and the plan's data reads. The
-  channels and snapshots don't change: `PoolView` is filled from HTTP answers instead of NAS reads.
-  Built so far: the heartbeat, mail, holds and settings, and (step 6, task #1125) the jobs'
-  hand-offs, posted by **beat**'s poster alone: **pool** neither writes nor lists the NAS's journal,
-  and runs no listing thread; **beat**'s NAS writer thread starts only with a first status to share
-  (the lead's `state/status.json`), so a member runs none.
+  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties`, `caught_up` and
+  `vouched`.
+- **#878 (pool coordination by HTTP on the lead: landed).** **pool** is the HTTP client of §4.6:
+  a member's heartbeat, status, held leases, hand-offs, mail, holds and settings go to the lead by
+  **beat**'s poster, and its answers fill `PoolView`. The channels and snapshots didn't change.
+  The pool's NAS calls left are the lead's (its records' saves, its status, the declaration's
+  reads) and a member's declaration read while its lead doesn't answer.
 - **docs/readiness.md (#879)**: §4.4; **plan** owns calling it, nothing else.
 
 ## 7. Migration
@@ -338,14 +354,14 @@ in tests.
 
 Steps 2 and 3 matter most to the owner (the 5-min Pause, the heartbeat) and depend only on step 1.
 Step 4 can go before or after 5. Step 6 carries `PoolView`'s gates as #881 left them (no settle).
-Left after step 7: the pool part (§4.6, with #878), and the ad-hoc `Mutex`es in tests/no_shared_mutex.rs's
+Left after step 7: the ad-hoc `Mutex`es in tests/no_shared_mutex.rs's
 list (the views' and live measures' caches, the memory sampler's, the round's two statics), each
 for the part that owns it.
 
 ## 8. Open decisions
 
-1. **The beat's period:** 10 s proposed (today a beat every 20 s at best, minutes at worst). The
-   NAS write per Mac every 10 s is small; with #878 it's an HTTP post.
+1. **The beat's period:** 10 s proposed (a beat every 20 s at best, minutes at worst, before).
+   A member's beat is an HTTP post to the lead; the lead's status one NAS write every 10 s.
 2. **The file asks' future:** keep the watcher for old CLIs indefinitely, or drop the files once
    every caller posts to the endpoint (one app version later).
 3. **Watcher:** FSEvents (needs a run loop thread, a `fsevent` binding) vs kqueue on the folder
