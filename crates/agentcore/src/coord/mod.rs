@@ -17,8 +17,9 @@
 //! an older build in the manifest. The token, the jobs' leases and what each z6 tile cost are kept on
 //! this Mac's disk, so the agent restarting (a new app) is a pause to every worker, nothing more.
 //!
-//! Workers find it in `state/coordinator.json` on the NAS: its addresses (Tailscale's first, then
-//! the LAN's) and the token the Macs' agents carry. Its addresses: the workers' under `/work/`, the
+//! Workers find it as coordwire::lead says (the lead each Mac's agent keeps, from its beats'
+//! answers, `Coordinator::reach`; else the declared lead's host's addresses): its addresses
+//! (Tailscale's first, then the LAN's) and the token the Macs' agents carry. Its addresses: the workers' under `/work/`, the
 //! build page at its root and the page's data and the owner's asks under `/api/` (`API`), asked with
 //! no key: it reads the build and takes the owner's asks (pausing, settings), never work. It answers
 //! this Mac, its LAN and the
@@ -50,7 +51,7 @@ pub mod task;
 pub use broker::{Broker, Brokering};
 // How workers reach the coordinator, and the headers its answers carry: the client side's
 // (coordwire, task #916 step 6c).
-pub use coordwire::{contact_path, Contact, POOL_EPOCH, POOL_MEMBER};
+pub use coordwire::{Contact, POOL_EPOCH, POOL_MEMBER};
 
 use crate::agent::memguard::Floor;
 use anyhow::Result;
@@ -64,7 +65,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The coordinator's port.
-pub const PORT: u16 = 8090;
+pub const PORT: u16 = coordwire::lead::PORT;
 /// The address a coordinator (or a member's broker, or viewer) listens on: every interface, for
 /// the other Macs; loopback alone in a unit test (`buildstore::out::testing`), whose members are in
 /// the same process and reach it at 127.0.0.1 (coordwire::net::urls): a freshly built test binary is no
@@ -461,6 +462,9 @@ pub struct Shared {
     /// leases are granted in and `pool_member` is said (`held::Answer::leading`), so a member learns
     /// its lead without the NAS (docs/coordination.md steps 8a, 8c).
     pub led: Option<(u64, crate::pool::Member)>,
+    /// Its addresses and page as its agent last asked (`Coordinator::reach`): what its beats'
+    /// answers give the members while it leads.
+    pub reach: Option<held::Reach>,
     /// The records' brief its agent last saved whole while leading (`Coordinator::set_brief`),
     /// served by `GET /pool/brief` (crate::coord::brief, docs/coordination.md step 8d); None
     /// before the first save, or not leading.
@@ -1789,6 +1793,7 @@ impl Coordinator {
             min_app: None,
             pool_member: None,
             led: None,
+            reach: None,
             brief: None,
             inbox: None,
             handoffs: None,
@@ -1976,36 +1981,16 @@ impl Coordinator {
         self.shared.lock().unwrap().dir.join("journal")
     }
 
-    /// Publishes how to reach it on the NAS, when what's there differs (written whole), and the
-    /// build page's address here (it moves to HTTPS once `tailscale serve` proxies the coordinator).
-    pub fn publish(&self, root: &store::nasfs::NasRoot) -> Result<()> {
+    /// How to reach it: its addresses, its page over HTTPS when `tailscale serve` proxies it (it may
+    /// come or go), the pool's token. Its agent keeps it as this Mac's lead's (coordwire::lead's
+    /// `save`), and its beats' answers give the members its addresses and page while it leads
+    /// (`held::Answer::reach`); the build page's address here written too.
+    pub fn reach(&self) -> Contact {
         self.write_page();
-        // (With the page's HTTPS address as it is now: `tailscale serve` may come or go.)
         let mut contact = self.contact.clone();
-        {
-            contact.page = http::served_https(self.port);
-        }
-        let there = contact_path(root).read().ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
-        if there.as_ref() != Some(&contact) {
-            contact_path(root).write_whole(serde_json::to_vec_pretty(&contact)?)?;
-        }
-        Ok(())
-    }
-
-    /// Takes it off the NAS (the agent stopping, or its Mac no longer leading), when it's this
-    /// one's: its addresses, not only its token (the pool's, the same on every lead: a lead the
-    /// owner moved away from while it was frozen would take the new lead's contact off).
-    pub fn unpublish(&self, root: &store::nasfs::NasRoot) {
-        self.unpublish_unless(root, &|| false);
-    }
-
-    /// `unpublish`, unless `published` says the contact was published again meanwhile (asked just
-    /// before the remove: a removal that waited on a hung share doesn't take a fresh contact off).
-    pub fn unpublish_unless(&self, root: &store::nasfs::NasRoot, published: &dyn Fn() -> bool) {
-        let there = contact_path(root).read().ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
-        if there.is_some_and(|c| c.token == self.contact.token && c.urls == self.contact.urls) && !published() {
-            contact_path(root).remove_file().ok();
-        }
+        contact.page = http::served_https(self.port);
+        self.shared.lock().unwrap().reach = Some(held::Reach { urls: contact.urls.clone(), page: contact.page.clone() });
+        contact
     }
 
     /// `hold_for` a new run (a test's own job).
@@ -7266,50 +7251,24 @@ mod tests {
         w.ask(&ask(4096)).unwrap();
     }
 
+    /// Task #1119: a lead's beats' answers say how to reach it (its addresses, its page) once its
+    /// agent asked (`reach`), and only while it leads.
     #[test]
-    fn unpublish_leaves_another_leads_contact_of_the_same_token() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("nas");
-        std::fs::create_dir_all(root.join("state")).unwrap();
-        let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
-        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        // The next lead's contact, the pool's token the same, its addresses its own.
-        let next = Contact {
-            urls: vec!["http://MacBook-Pro-de-Brandon.local:18091".into()],
-            token: c.contact.token.clone(),
-            page: None,
-        };
-        contact_path(&store::nasfs::NasRoot::local_for_test(&root)).write(serde_json::to_vec(&next).unwrap()).unwrap();
-        c.unpublish(&store::nasfs::NasRoot::local_for_test(&root));
-        assert!(contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "the next lead's contact stays");
-        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        c.unpublish(&store::nasfs::NasRoot::local_for_test(&root));
-        assert!(!contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "its own goes");
-    }
-
-    #[test]
-    fn an_unpublish_overtaken_by_a_publish_leaves_the_contact() {
-        // (An unpublish begun on a hung share, the contact published again before its remove: the
-        // fresh contact stays. The agent counts its publications: `publish_gen`.)
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("nas");
-        std::fs::create_dir_all(root.join("state")).unwrap();
-        let (c, _) = start_for_test(&d.path().join("a"), "m4", "");
-        let gens = std::sync::atomic::AtomicU64::new(1);
-        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        let at = gens.load(std::sync::atomic::Ordering::SeqCst);
-        // Published again meanwhile.
-        gens.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        c.publish(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        c.unpublish_unless(&store::nasfs::NasRoot::local_for_test(&root), &|| {
-            gens.load(std::sync::atomic::Ordering::SeqCst) != at
-        });
-        assert!(contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "the fresh contact stays");
-        let at = gens.load(std::sync::atomic::Ordering::SeqCst);
-        c.unpublish_unless(&store::nasfs::NasRoot::local_for_test(&root), &|| {
-            gens.load(std::sync::atomic::Ordering::SeqCst) != at
-        });
-        assert!(!contact_path(&store::nasfs::NasRoot::local_for_test(&root)).exists(), "not published since: it goes");
+    fn a_leads_answers_say_how_to_reach_it() {
+        let (_d, c, _w) = start();
+        let b = held::Beat { member: "m-0000000000000001".into(), speaks: vec![held::SPEAKS.into()], ..Default::default() };
+        assert_eq!(c.member_beat(&b).reach, None, "not leading: nothing");
+        let contact = c.reach();
+        let m = crate::pool::Member { id: "m-00000000000000aa".into(), host: "m6".into(), app: "dev".into() };
+        {
+            let mut s = c.shared.lock().unwrap();
+            let e = s.leases.epoch;
+            s.led = Some((e, m.clone()));
+            s.pool_member = Some(m.id.clone());
+        }
+        let a = c.member_beat(&b);
+        assert_eq!(a.leading.map(|l| l.id), Some(m.id));
+        assert_eq!(a.reach, Some(held::Reach { urls: contact.urls, page: None }));
     }
 
     /// #666 (25 Oct, the mini: its loop stuck ~10 min on the NAS lost a worldwide job at 56 %, and a
@@ -14027,7 +13986,6 @@ mod tests {
             p.parent().unwrap().create_dir_all().unwrap();
             p.write(b).unwrap();
         };
-        put("state/status.json", br#"{"host":"m4","beat":1,"forecast":null,"helpers":[]}"#);
         let done = crate::coord::history::Event {
             seq: 40,
             t: now - 15,

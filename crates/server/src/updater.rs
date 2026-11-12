@@ -100,10 +100,9 @@ impl Updater {
                 loop {
                     if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
                         last = Some(std::time::Instant::now());
-                        if let Some(root) = data.nas_root() {
-                            if let Err(e) = coordwire::releases::check(&me.home, &root, &running) {
-                                eprintln!("app update: {e:#}");
-                            }
+                        // (The NAS not needed: the lead this Mac's agent keeps is reached without it.)
+                        if let Err(e) = coordwire::releases::check(&me.home, data.nas_root().as_ref(), &running) {
+                            eprintln!("app update: {e:#}");
                         }
                     }
                     if me.pending(&running) && now().saturating_sub(LAST_REQUEST.load(Ordering::Relaxed)) >= 60 {

@@ -352,7 +352,7 @@ pub fn is_member_leftover(rel: &str) -> bool {
     }
     let between =
         |pre: &str, suf: &str| rel.len() > pre.len() + suf.len() && rel.starts_with(pre) && rel.ends_with(suf);
-    // The lead's: its status (crate::agent::LEAD_STATUS's copy), its backups' local copy
+    // The lead's: its status (other Macs ask its coordinator for it), its backups' local copy
     // (agent::plan's `backup` job), GC's depth keep, its catalogues' record, its pageview's waits,
     // the inputs' listing (agent::plan), the map log (agent::publish), the plan's stall samples, and
     // what its own jobs' targets cost (`Agent::costs_path`, a slot's: `costs.jsonl`,

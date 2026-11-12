@@ -280,6 +280,12 @@ pub fn served_https(port: u16) -> Option<String> {
     if buildstore::out::testing() {
         return None;
     }
+    https_in(&tailscale_json(&["serve", "status", "--json"])?, port)
+}
+
+/// What Tailscale's command line says to `args` (a `--json` one), bounded to 3 s: a stuck daemon
+/// mustn't hold up whoever asks. None: no Tailscale, or no answer.
+pub fn tailscale_json(args: &[&str]) -> Option<serde_json::Value> {
     let cli = [
         "/opt/homebrew/bin/tailscale",
         "/usr/local/bin/tailscale",
@@ -287,10 +293,9 @@ pub fn served_https(port: u16) -> Option<String> {
     ]
     .into_iter()
     .find(|p| Path::new(p).exists())?;
-    // (Bounded: a stuck daemon mustn't hold up whoever asks.)
     let mut child = store::spawn::spawn(
         store::spawn::command(cli)
-            .args(["serve", "status", "--json"])
+            .args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null()),
     )
@@ -306,7 +311,7 @@ pub fn served_https(port: u16) -> Option<String> {
     }
     let mut out = Vec::new();
     std::io::Read::read_to_end(&mut child.stdout.take()?, &mut out).ok()?;
-    https_in(&serde_json::from_slice(&out).ok()?, port)
+    serde_json::from_slice(&out).ok()
 }
 
 /// `served_https` from what `tailscale serve status --json` says.

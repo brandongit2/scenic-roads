@@ -39,7 +39,7 @@ pub fn status(home: &Path, now: u64) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::beat::{Handle, LoopView, NasWrite, ToLead};
+    use crate::agent::beat::{Handle, LoopView, ToLead};
     use crate::agent::bus::Snap;
     use crate::agent::jobs::now_s;
     use crate::agent::{Status, Verdict};
@@ -51,9 +51,9 @@ mod tests {
     const X: &str = "m-000000000000000a";
 
     /// A member's agent folder in `d`, beating the lead's coordinator at `port` (with key `token`)
-    /// from its own beat thread, its NAS copy written by `nas`; its registry keeping the lead's
-    /// line where the agent's pool side keeps it.
-    fn member(d: &Path, port: u16, token: &str, nas: NasWrite) -> (Handle, ToLead) {
+    /// from its own beat thread; its registry keeping the lead's line where the agent's pool side
+    /// keeps it.
+    fn member(d: &Path, port: u16, token: &str) -> (Handle, ToLead) {
         let home = d.join("member");
         std::fs::create_dir_all(&home).unwrap();
         let beats = Arc::new(Beats::default());
@@ -65,7 +65,6 @@ mod tests {
         });
         let mut h = Handle::new(home, Snap::new(HoldState::default()));
         h.never_tick();
-        h.write_nas_by(nas);
         h.spawn();
         let to = ToLead {
             urls: vec![format!("http://127.0.0.1:{port}")],
@@ -80,14 +79,13 @@ mod tests {
         (h, to)
     }
 
-    /// One beat of the member's loop: its status (`jobs` its running job), its NAS copy at `nas`.
+    /// One beat of the member's loop: its status (`jobs` its running job).
     fn publish(h: &mut Handle, to: &ToLead, d: &Path, jobs: Vec<crate::agent::JobView>) {
         let mut status = Status { host: "m1".into(), beat: now_s(), ..Default::default() };
         status.set_jobs(jobs, true);
         h.publish(LoopView {
             status,
             local: d.join("member/helper.json"),
-            shared: Some(store::nasfs::NasPath::local_for_test(&d.join("nas/state/helpers/m1.json"))),
             lead: Some(to.clone()),
             hold_at: 0,
             at: Instant::now(),
@@ -105,7 +103,7 @@ mod tests {
         c.set_said("mini", said.clone(), Vec::new());
         let pause = jobrt::control::Pause::new(jobrt::control::Mode::Drain, "the build page");
         c.set_pause(Some(pause.clone()), pause.at);
-        let (mut h, to) = member(d.path(), port, &c.contact.token, Arc::new(|_, _| Ok(())));
+        let (mut h, to) = member(d.path(), port, &c.contact.token);
         publish(&mut h, &to, d.path(), Vec::new());
         store::testkit::eventually("the lead's line kept", || d.path().join("member").join(LEAD_VIEW).exists());
         let m = status(&d.path().join("member"), now_s());
@@ -120,22 +118,14 @@ mod tests {
         c.stop();
     }
 
-    /// docs/roles.md §5 step 5, with the slow-NAS fake: every write of the member's NAS copy hangs
-    /// until the share answers. Its menu still shows its own status, its job, and the lead's line,
-    /// each as fresh as its last beat; and its answer is had from its own disk, the NAS untouched.
+    /// docs/roles.md §5 step 5: a member's menu shows its own status, its job, and the lead's line,
+    /// each as fresh as its last beat, from its own disk (no beat writes the NAS, task #1119).
     #[test]
-    fn menu_works_with_the_nas_hung() {
-        let (answers, asked) = (store::testkit::Signal::new(), store::testkit::Signal::new());
-        let (a, k) = (answers.clone(), asked.clone());
-        let hung: NasWrite = Arc::new(move |_, _| {
-            k.set();
-            a.wait("the share answers");
-            Ok(())
-        });
+    fn menu_follows_the_members_beats() {
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
-        let (mut h, to) = member(d.path(), port, &c.contact.token, hung);
+        let (mut h, to) = member(d.path(), port, &c.contact.token);
         let job = |id: &str| crate::agent::JobView {
             job: None,
             id: id.into(),
@@ -165,8 +155,6 @@ mod tests {
             assert_eq!(m["status"]["jobs"][0]["id"], format!("unit 6/1/{i}"), "{m}");
             assert!(m["log"].as_str().is_some_and(|l| l.ends_with(&format!("unit-6-1-{i}.log"))), "{m}");
         }
-        assert!(asked.is_set() && !answers.is_set(), "the NAS's copy asked, and hung throughout");
-        answers.set();
         c.stop();
     }
 

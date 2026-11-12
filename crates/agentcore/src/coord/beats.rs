@@ -154,6 +154,8 @@ struct Inner {
     /// (crate::agent::spans), once its agent said.
     lead_spans: bool,
     spans: Option<std::sync::Arc<crate::agent::spans::Shipper>>,
+    /// On a member: how that lead said to reach it (`Answer::reach`), for its agent to keep.
+    reach: Option<(String, super::held::Reach)>,
 }
 
 /// The registry, shared by a member's pool side, its agent's beat and (on the lead) its coordinator.
@@ -183,6 +185,7 @@ impl Default for Beats {
                 lead_answered: None,
                 lead_root: false,
                 leading: None,
+                reach: None,
                 lead_asks: false,
                 hold: None,
                 settings: None,
@@ -252,6 +255,9 @@ impl Beats {
         g.lead_answered = Some((now, a.speaks.iter().any(|w| w == PAGE)));
         g.lead_root = a.speaks.iter().any(|w| w == ROOT);
         g.leading = a.leading.clone().map(|m| (m, now));
+        if let (Some(m), Some(r)) = (&a.leading, &a.reach) {
+            g.reach = Some((m.id.clone(), r.clone()));
+        }
         if takes {
             let before = std::mem::take(&mut g.heard);
             for h in &a.members {
@@ -275,6 +281,14 @@ impl Beats {
         g.lead_view = LeadView { at: now, lead: a.lead.clone() };
         drop(g);
         self.save_lead_view();
+    }
+
+    /// The lead its last answer named, with how that lead said to reach it (`Answer::reach`, the
+    /// last one that said it for that lead); None while no answer named one, or none said how.
+    pub fn lead_reach(&self) -> Option<(crate::pool::Member, super::held::Reach)> {
+        let g = self.inner.lock().unwrap();
+        let (m, _) = g.leading.clone()?;
+        g.reach.clone().filter(|(id, _)| *id == m.id).map(|(_, r)| (m, r))
     }
 
     /// The lead's line as its last answer carried it, and when (`LEAD_VIEW`).

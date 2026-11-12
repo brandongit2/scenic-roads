@@ -79,16 +79,17 @@ pub struct Chunk {
     pub tops: BTreeSet<String>,
 }
 
-/// `Lead` by the lead's coordinator, reached as the NAS says (`state/coordinator.json`): the `gc`
-/// job's. No coordinator, or one that doesn't answer (not the lead, an older app), and nothing is
+/// `Lead` by the lead's coordinator, found as coordwire::lead says (the lead this Mac's agent
+/// keeps, else the declared one's): the `gc` job's. No coordinator, or one that doesn't answer (not the lead, an older app), and nothing is
 /// removed.
 pub struct TheLead(Result<crate::coord::client::Client, String>);
 
 impl TheLead {
-    pub fn from_nas(root: &store::nasfs::NasRoot) -> TheLead {
-        TheLead(match crate::coord::client::Client::from_nas(root, &store::sys::host_name()) {
+    pub fn find(root: &store::nasfs::NasRoot) -> TheLead {
+        let home = coordwire::lead::this_macs_agent();
+        TheLead(match crate::coord::client::Client::to_lead(home.as_deref(), Some(root), &store::sys::host_name()) {
             Ok(Some(c)) => Ok(c),
-            Ok(None) => Err("no lead's coordinator (state/coordinator.json)".into()),
+            Ok(None) => Err("no lead's coordinator (none declared, none kept by this Mac's agent)".into()),
             Err(e) => Err(format!("{e:#}")),
         })
     }

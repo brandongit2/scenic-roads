@@ -1999,13 +1999,15 @@ pub fn append_history(
     Ok(())
 }
 
-/// The agents' statuses: the lead's (`state/status.json`), then the members' as the lead has them
-/// (its `helpers`: their beats, crate::coord::beats), each with where it's from.
+/// The agents' statuses: the lead's (asked of its coordinator, coordwire::lead::status), then the
+/// members' as the lead has them (its `helpers`: their beats, crate::coord::beats), each with where
+/// it's from.
 fn statuses(root: &store::nasfs::NasRoot) -> Vec<(String, super::Status)> {
-    let read = |p: &store::nasfs::NasPath| p.read().ok().and_then(|b| serde_json::from_slice::<super::Status>(&b).ok());
-    let Some(mut lead) = read(&root.join("state/status.json")) else { return Vec::new() };
+    let home = coordwire::lead::this_macs_agent();
+    let Some(v) = coordwire::lead::status(home.as_deref(), Some(root)) else { return Vec::new() };
+    let Ok(mut lead) = serde_json::from_value::<super::Status>(v) else { return Vec::new() };
     let members = std::mem::take(&mut lead.helpers);
-    std::iter::once(("state/status.json".to_string(), lead))
+    std::iter::once(("the lead's coordinator".to_string(), lead))
         .chain(members.into_iter().map(|h| ("the lead's view".to_string(), h)))
         .collect()
 }

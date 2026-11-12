@@ -623,7 +623,6 @@ pub(crate) mod tests {
         beat.publish(super::super::beat::LoopView {
             status: st,
             local: local.clone(),
-            shared: None,
             lead: None,
             hold_at: 0,
             at: std::time::Instant::now(),

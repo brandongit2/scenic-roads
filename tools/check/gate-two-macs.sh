@@ -27,7 +27,8 @@
 #   gate-two-macs.sh wait <dir> <folder> <regex> [<s>]  waits (300 s) until `scenic inputs` says it
 #   gate-two-macs.sh page-accept <folder> <unit> [<id>]  the build page's Accept (Accept All with no
 #                                               id): its POST to the lead's coordinator, as a page
-#                                               (PAGE_PORT=<port>: to that Mac's own page, as its
+#                                               (LEAD_HOME=<the lead's agent folder>: where it is;
+#                                               PAGE_PORT=<port>: to that Mac's own page, as its
 #                                               menu bar's panel)
 #   gate-two-macs.sh menu-accept <dir> <unit> <id>…  the menu bar item's Accept: its ask file in this
 #                                               Mac's agent's folder, as the item writes it (or run
@@ -173,9 +174,10 @@ f = next(p for t in range(e, 0, -1) for p in [f"term/{t}/brief.json", f"term/{t}
   page-accept)
     r=${2:?the scratch folder}; u=${3:?the unit}; id=${4:-}
     # (A Mac's own page, as the menu bar's panel loads it, PAGE_PORT=<its agent's port>: on a member
-    # its agent passes the ask on; else the lead's coordinator's, as a page elsewhere asks.)
+    # its agent passes the ask on; else the lead's coordinator's, as a page elsewhere asks, at the
+    # address its agent keeps, LEAD_HOME=<the lead's agent folder>: lead.json, coordwire::lead.)
     if [[ -n ${PAGE_PORT:-} ]]; then url=http://127.0.0.1:$PAGE_PORT
-    else url=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["urls"][0])' $r/state/coordinator.json); fi
+    else url=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["urls"][0])' ${LEAD_HOME:?the lead\'s agent folder}/lead.json); fi
     body=$([[ -n $id ]] && print -r -- "{\"unit\": \"$u\", \"accept\": [\"$id\"]}" || print -r -- "{\"unit\": \"$u\", \"all\": true}")
     curl -sS -X POST -H 'Content-Type: application/json' -d "$body" $url/api/inputs
     print

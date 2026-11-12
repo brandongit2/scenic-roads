@@ -77,7 +77,8 @@ pub(super) struct Mac {
     unsaved: Vec<Entry>,
     /// Leading: its coordinator took another lead's state up once in this process (`Run::led`).
     took: bool,
-    /// The Mac whose coordinator it reaches (the contact on the NAS, as it last read it).
+    /// The Mac whose coordinator it reaches: the declared lead's, as it last read the declaration;
+    /// kept on its disk (coordwire::lead's `SAVED`), so a restart with the NAS away still has it.
     lead: Option<usize>,
     /// Its beat's last post failed.
     failing: bool,
@@ -243,7 +244,7 @@ impl Mac {
         self.sim.quiet(|w| w.macs[k].mine = mine)?;
         (self.beats, self.handoffs) = (Arc::new(Beats::default()), Arc::new(Handoffs::default()));
         self.running.clear();
-        (self.took, self.lead, self.failing) = (false, None, false);
+        (self.took, self.failing) = (false, false);
         (self.gc, self.published, self.briefs) = (None, None, Briefs::default());
         if self.leads.take().is_some() {
             self.sim.quiet(|w| w.leads(k, None))?;
@@ -471,13 +472,9 @@ impl Mac {
         if let Some(g) = granted {
             self.start_job(g, k)?;
         }
-        // Its store backed up each `BACKUP_S`, its contact published.
+        // Its store backed up each `BACKUP_S`.
         if self.sim.quiet(|w| w.t)? >= self.backed.1 + BACKUP_S {
             self.back_up(false);
-        }
-        let contact = format!("{{\"mac\": {k}}}").into_bytes();
-        if Nas::read(&self.sim, CONTACT).ok().flatten().as_deref() != Some(&contact[..]) {
-            Nas::write_whole(&self.sim, CONTACT, &contact).ok();
         }
         Ok(())
     }
@@ -508,12 +505,10 @@ impl Mac {
     /// aren't its stopped, and its free slot's ask.
     fn member_after(&mut self, out: &Out, faulting: bool) -> Result<()> {
         let k = self.k;
-        // (Its lead's coordinator: where the contact on the NAS says.)
-        if let Ok(Some(b)) = Nas::read(&self.sim, CONTACT) {
-            self.lead = serde_json::from_slice::<serde_json::Value>(&b)
-                .ok()
-                .and_then(|v| v["mac"].as_u64())
-                .map(|m| m as usize);
+        // (Its lead's coordinator: the declared lead's host (coordwire::lead::find; no NAS file
+        // says where the lead is, task #1119), the one it kept while the declaration can't be read.)
+        if let Ok(Some(d)) = lead::declared(&self.sim) {
+            self.lead = (0..self.sim.quiet(|w| w.macs.len())?).find(|&m| host(m) == d.host);
         }
         let Some(to) = self.lead else { return Ok(()) };
         if self.rng.chance(P_MAP) {

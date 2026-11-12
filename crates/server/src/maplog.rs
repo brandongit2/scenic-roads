@@ -23,9 +23,8 @@ use std::time::{Duration, Instant};
 use store::map::feed::Answer;
 use store::map::{Map, Snapshot};
 
-/// The saved map, and the lead's contact kept for a start away from the NAS.
+/// The saved map.
 const SAVED: &str = "current.json.zst";
-const LEAD_KEPT: &str = "lead.json";
 /// The saved map written at most this often by a resident server (`Config::save_every`).
 pub(crate) const SAVE_EVERY: Duration = Duration::from_secs(600);
 /// The NAS's snapshots looked at at most this often.
@@ -34,8 +33,8 @@ const NAS_EVERY: Duration = Duration::from_secs(600);
 /// Where the lead is.
 #[derive(Clone, Debug)]
 pub enum Lead {
-    /// As the NAS says (`state/coordinator.json`), kept on this Mac.
-    FromNas,
+    /// As coordwire::lead finds it: the lead this Mac's agent keeps, else the declared one's.
+    Found,
     /// At fixed addresses (tests).
     #[cfg_attr(not(test), allow(dead_code))]
     At { urls: Vec<String>, token: String },
@@ -61,12 +60,12 @@ pub struct Config {
 }
 
 impl Config {
-    /// This Mac's: the lead as the NAS says, the map kept in ~/Library/Caches/scenic/map.
+    /// This Mac's: the lead as this Mac finds it (coordwire::lead), the map kept in ~/Library/Caches/scenic/map.
     pub fn this_mac() -> Config {
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         Config {
             cache: Some(home.join("Library/Caches/scenic/map")),
-            lead: Lead::FromNas,
+            lead: Lead::Found,
             wait_s: store::map::feed::WAIT_S,
             retry: Duration::from_secs(10),
             client: format!("server/{}", crate::data::host()),
@@ -300,42 +299,29 @@ impl Follower {
     }
 }
 
-/// The way to the lead's coordinator: its addresses and key, fixed or as the NAS says.
+/// The way to the lead's coordinator: its addresses and key, fixed or as this Mac finds it.
 struct Link {
     d: Arc<Data>,
     lead: Lead,
-    /// Where the lead's contact is kept for a start away from the NAS.
-    cache: Option<PathBuf>,
     contact: Option<coordwire::Contact>,
 }
 
 impl Link {
     fn new(d: Arc<Data>, cfg: &Config) -> Link {
-        Link { d, lead: cfg.lead.clone(), cache: cfg.cache.clone(), contact: None }
+        Link { d, lead: cfg.lead.clone(), contact: None }
     }
 
-    /// The lead's addresses and key: fixed, or as the NAS says (kept on this Mac), read again
-    /// after the lead didn't answer.
+    /// The lead's addresses and key: fixed, or as this Mac finds it (coordwire::lead: the lead its
+    /// agent keeps, which needs no NAS, else the declared one's), found again after the lead didn't
+    /// answer.
     fn contact(&mut self) -> Option<coordwire::Contact> {
         if let Lead::At { urls, token } = &self.lead {
             return Some(coordwire::Contact { urls: urls.clone(), token: token.clone(), page: None });
         }
         if self.contact.is_none() {
-            let kept = self.cache.as_ref().map(|d| d.join(LEAD_KEPT));
-            let from_nas =
-                self.d.nas_root().filter(|_| self.d.online()).and_then(|r| coordwire::contact_path(&r).read().ok());
-            let read = from_nas.as_deref().and_then(|b| serde_json::from_slice::<coordwire::Contact>(b).ok());
-            if let (Some(c), Some(k)) = (&read, &kept) {
-                // (Written only when it changed: this is read again each `retry` while the lead's away.)
-                if let (Some(dir), Ok(b)) = (k.parent(), serde_json::to_vec(c)) {
-                    if std::fs::read(k).ok().as_deref() != Some(&b[..]) {
-                        std::fs::create_dir_all(dir).ok();
-                        keep_private(k, &b);
-                    }
-                }
-            }
-            self.contact =
-                read.or_else(|| kept.and_then(|k| std::fs::read(k).ok()).and_then(|b| serde_json::from_slice(&b).ok()));
+            let root = self.d.nas_root().filter(|_| self.d.online());
+            let home = coordwire::lead::this_macs_agent();
+            self.contact = coordwire::lead::find(home.as_deref(), root.as_ref()).ok().flatten();
         }
         self.contact.clone()
     }
@@ -371,7 +357,7 @@ impl Link {
                 Err(e) => why = format!("{url}: {e}"),
             }
         }
-        // (Read from the NAS again next time: the lead may have moved, or made a new key.)
+        // (Found again next time: the lead may have moved, or made a new key.)
         self.contact = None;
         Err(why)
     }
@@ -429,23 +415,6 @@ impl MirrorLink {
             self.synced = Some(n);
             self.tell(since, n);
         }
-    }
-}
-
-/// A file only this user reads (it holds the build's key).
-fn keep_private(path: &std::path::Path, b: &[u8]) {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let tmp = path.with_extension("tmp");
-    let w = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .and_then(|mut f| f.write_all(b));
-    if w.is_ok() {
-        std::fs::rename(&tmp, path).ok();
     }
 }
 

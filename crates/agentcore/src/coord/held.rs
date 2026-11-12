@@ -161,6 +161,19 @@ pub struct Answer {
     /// What it has of each job whose spans the beat carried (crate::coord::jobspans::Ack).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<super::jobspans::Ack>,
+    /// With `leading`: how its member reaches it (its addresses and page), kept on the member's Mac
+    /// as its lead's (coordwire::lead: no NAS file says it, task #1119). Left out by a lead before
+    /// it: the member keeps what it found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reach: Option<Reach>,
+}
+
+/// A lead's addresses and build page (`Answer::reach`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Reach {
+    pub urls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
 }
 
 /// The build in a line, from the lead (`Answer::lead`): its Mac, its app, the build's state as its
@@ -239,6 +252,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         .clone()
         .filter(|(e, m)| !s.broker && *e == s.leases.epoch && s.pool_member.as_deref() == Some(m.id.as_str()))
         .map(|(_, m)| m);
+    a.reach = a.leading.as_ref().and(s.reach.clone());
     // (A beat sent before a request the lead took from it since lists what it held then: it
     // releases nothing.)
     let stale = b.sent.is_some_and(|x| !newest(s, &b.member, x));

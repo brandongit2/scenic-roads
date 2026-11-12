@@ -1,7 +1,7 @@
 //! A worker's side of the coordinator (a member's agent, a job offering tasks). It finds the
-//! coordinator in `state/coordinator.json` on the NAS and reads that again whenever it can't reach
-//! it, or the token is refused: the lead may have restarted, moved networks, or made a new
-//! token.
+//! coordinator as crate::lead says (the lead this Mac's agent keeps, the declared one's addresses)
+//! and finds it again whenever it can't reach it, or the token is refused: the lead may have
+//! restarted, moved networks, or made a new token.
 //!
 //! Its connections are kept alive (`Agents`): one HTTP client for the whole process, pooling its
 //! connections to each address, so a member beating every second uses one connection, not one a
@@ -23,8 +23,9 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub struct Client {
-    /// Where the contact is read from again (None: fixed addresses, in tests).
-    root: Option<store::nasfs::NasRoot>,
+    /// Where the contact is found again (`crate::lead::find`'s agent's folder and NAS; None: fixed
+    /// addresses, in tests).
+    from: Option<(Option<std::path::PathBuf>, Option<store::nasfs::NasRoot>)>,
     contact: Mutex<Contact>,
     /// This worker's name.
     pub worker: String,
@@ -431,12 +432,17 @@ fn connect_phase(e: &ureq::Error) -> bool {
 }
 
 impl Client {
-    /// The coordinator as the NAS says to reach it; None when there's none (no file), an error when
-    /// the file can't be read now (an SMB hiccup: not the same as none).
-    pub fn from_nas(root: &store::nasfs::NasRoot, worker: &str) -> Result<Option<Client>> {
-        let Some(c) = read_contact(root)? else { return Ok(None) };
+    /// The lead's coordinator as crate::lead finds it from the agent's folder `home` and the NAS
+    /// `root` (either may be missing: no agent on this Mac, the share away); None when there's none,
+    /// an error when the NAS can't be read now and nothing is saved here.
+    pub fn to_lead(
+        home: Option<&std::path::Path>,
+        root: Option<&store::nasfs::NasRoot>,
+        worker: &str,
+    ) -> Result<Option<Client>> {
+        let Some(c) = crate::lead::find(home, root)? else { return Ok(None) };
         Ok(Some(Client {
-            root: Some(root.clone()),
+            from: Some((home.map(|h| h.to_path_buf()), root.cloned())),
             contact: Mutex::new(c),
             worker: worker.to_string(),
             answered: Mutex::new(None),
@@ -451,7 +457,7 @@ impl Client {
     /// A coordinator at fixed addresses.
     pub fn at(urls: Vec<String>, token: String, worker: &str) -> Client {
         Client {
-            root: None,
+            from: None,
             contact: Mutex::new(Contact { urls, token, page: None }),
             worker: worker.to_string(),
             answered: Mutex::new(None),
@@ -647,10 +653,10 @@ impl Client {
         let mut silent = None;
         for fresh in [false, true] {
             if fresh {
-                let Some(root) = &self.root else { break };
-                match read_contact(root) {
+                let Some((home, root)) = &self.from else { break };
+                match crate::lead::find(home.as_deref(), root.as_ref()) {
                     Ok(Some(c)) => *self.contact.lock().unwrap() = c,
-                    Ok(None) => bail!("the lead's coordinator is gone (no {})", super::contact_path(root).display()),
+                    Ok(None) => bail!("no lead's coordinator to reach (none declared, none kept here)"),
                     Err(e) => return Err(e),
                 }
             }
@@ -787,14 +793,6 @@ impl Client {
 }
 
 /// The contact on the NAS: None when there's no file, an error when it can't be read now.
-fn read_contact(root: &store::nasfs::NasRoot) -> Result<Option<Contact>> {
-    match super::contact_path(root).read() {
-        Ok(b) => Ok(Some(serde_json::from_slice(&b).context("the coordinator's contact")?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).context("read the coordinator's contact"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

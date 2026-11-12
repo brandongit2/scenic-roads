@@ -74,12 +74,15 @@ pub fn rollback(c: &Client, current: &str, previous: &str) -> Result<Asked> {
     asked(ROLLBACK, c.post_json(ROLLBACK, &serde_json::json!({ "current": current, "previous": previous }))?)
 }
 
-/// One check of this Mac's app against the lead's releases (jobrt::appupdate::check), the lead
-/// reached as the NAS's contact says; with no lead there, nothing. The NAS's releases stand in while
-/// the lead holds none (the rollout's).
-pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result<Option<String>> {
-    let Some(lead) = Client::from_nas(root, &store::sys::host_name())? else { return Ok(None) };
-    jobrt::appupdate::check(home, &lead, Some(&jobrt::appupdate::NasReleases(root)), running)
+/// One check of this Mac's app (in the app's folder `home`) against the lead's releases
+/// (jobrt::appupdate::check), the lead found as crate::lead says: the one its agent keeps (no NAS
+/// needed), else the declared one's; with none, nothing. The NAS's releases stand in while the lead
+/// holds none (the rollout's), with the NAS there.
+pub fn check(home: &Path, root: Option<&store::nasfs::NasRoot>, running: &str) -> Result<Option<String>> {
+    let agent = (!buildstore::out::testing()).then(|| home.join("agent"));
+    let Some(lead) = Client::to_lead(agent.as_deref(), root, &store::sys::host_name())? else { return Ok(None) };
+    let nas = root.map(jobrt::appupdate::NasReleases);
+    jobrt::appupdate::check(home, &lead, nas.as_ref().map(|n| n as &dyn jobrt::appupdate::Source), running)
 }
 
 /// Checks every five minutes on a thread of its own, from a program run from an installed
@@ -89,10 +92,10 @@ pub fn spawn(home: PathBuf, root: Option<store::nasfs::NasRoot>) {
     std::thread::Builder::new()
         .name("app-update".into())
         .spawn(move || loop {
-            if let Some(r) = root.clone().or_else(|| store::nasfs::NasRoot::find(false)) {
-                if let Err(e) = check(&home, &r, &running) {
-                    eprintln!("app update: {e:#}");
-                }
+            // (The NAS's not needed: the lead this Mac's agent keeps is reached without it.)
+            let r = root.clone().or_else(|| store::nasfs::NasRoot::find(false));
+            if let Err(e) = check(&home, r.as_ref(), &running) {
+                eprintln!("app update: {e:#}");
             }
             std::thread::sleep(Duration::from_secs(300));
         })

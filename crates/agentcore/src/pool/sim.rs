@@ -100,8 +100,6 @@ const TARGETS: [&str; 5] = ["6-1-0", "6-1-1", "6-1-2", "6-1-3", "6-1-4"];
 const STEP: &str = "unit";
 /// A development build's app number.
 const DEV: u64 = u64::MAX;
-/// Where the lead's coordinator says it is (`state/coordinator.json`: which Mac).
-const CONTACT: &str = "state/coordinator.json";
 /// A request's time at the client (s, docs/coordination.md §5.2): a later answer is lost to it.
 const CLIENT_S: u64 = 15;
 

@@ -96,13 +96,21 @@ fn ago(t: u64) -> String {
     }
 }
 
+/// The lead's coordinator, as coordwire::lead finds it: the lead this Mac's agent keeps, else the
+/// declared one's on the NAS `root`.
+fn lead_client(root: Option<&store::nasfs::NasRoot>) -> Result<Option<agentcore::coord::client::Client>> {
+    let home = coordwire::lead::this_macs_agent();
+    agentcore::coord::client::Client::to_lead(home.as_deref(), root, &store::sys::host_name())
+}
+
 /// `scenic releases`: the lead's releases (coordwire::releases), and publish.sh's asks of it. Exit
 /// 3: refused as the lead's releases stand (what is live printed as JSON); 4: a lead on an app
 /// before them.
 fn releases(a: &cli::Releases) -> Result<()> {
     use coordwire::releases::{self as rel, Asked};
-    let c = agentcore::coord::client::Client::from_nas(&root(&a.root, false)?, &store::sys::host_name())?
-        .context("no lead's coordinator to ask (no state/coordinator.json)")?;
+    // (The NAS not needed: the lead this Mac's agent keeps is reached without it.)
+    let c = lead_client(root(&a.root, false).ok().as_ref())?
+        .context("no lead's coordinator to ask (none declared, none kept by this Mac's agent)")?;
     let done = |asked: Asked| -> Result<()> {
         match asked {
             Asked::Done(l) => {
@@ -159,7 +167,7 @@ fn timings(a: &cli::Timings) -> Result<()> {
     } else {
         let asked = (|| -> Result<Vec<RunRec>> {
             let root = root(&a.places.root, false)?;
-            let c = agentcore::coord::client::Client::from_nas(&root, &store::sys::host_name())?
+            let c = lead_client(Some(&root))?
                 .context("no coordinator to ask")?;
             let (code, v) = c.post_api("timings", &serde_json::json!({ "kind": kind, "last": last }))?;
             anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
@@ -921,15 +929,9 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         .and_then(|h| std::fs::read_to_string(h.join("coord/page")).ok())
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty());
-    let contact = root
-        .as_ref()
-        .and_then(|r| agentcore::coord::contact_path(r).read().ok())
-        .and_then(|b| serde_json::from_slice::<agentcore::coord::Contact>(&b).ok());
-    let page = match (page, contact) {
-        (Some(p), _) => Some(p),
-        (None, Some(c)) => c.urls.first().map(|u| format!("{u}/")),
-        _ => None,
-    };
+    // (Else the lead's, as this Mac's agent keeps it: its page, else its first address.)
+    let lead = own_home.as_deref().and_then(coordwire::lead::saved).map(|k| k.contact);
+    let page = page.or_else(|| lead.and_then(|c| c.page.or_else(|| c.urls.first().map(|u| format!("{u}/")))));
     // The build's page (its dashboard, and where a device helps).
     if let Some(p) = page {
         println!("Build page: {p} (open it on a device on the LAN or the tailnet)");
@@ -1386,7 +1388,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
         redo::note_cost(pipeline::agent::theplan::the_plan().cost_version(redo::STEP), t0);
         return Ok(());
     }
-    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+    let c = lead_client(Some(&r))?
         .context("no lead's coordinator to ask")?;
     let by = format!("scenic redo on {}", store::sys::host_name());
     let (code, v) = c.post_api("redo", &serde_json::json!({ "step": step, "targets": todo, "by": by }))?;
@@ -1502,7 +1504,7 @@ fn cli_main() -> Result<()> {
                     // A job's progress on a member's Mac given up (agentcore::agent::resume): the lead
                     // runs it wherever it fits from then. Told the lead (docs/coordination.md step
                     // 7), which keeps it.
-                    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                    let c = lead_client(Some(&r))?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) =
                         c.post_json("/pool/progress/release", &serde_json::json!({ "member": member, "job": job }))?;
@@ -1514,7 +1516,7 @@ fn cli_main() -> Result<()> {
                 Some(PoolCmd::Release { member, job: None }) => {
                     // A member's leases released by the owner (docs/coordination.md §6.1,
                     // agentcore::coord::held): its targets go to others.
-                    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                    let c = lead_client(Some(&r))?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json("/pool/release", &serde_json::json!({ "member": member }))?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
@@ -1580,7 +1582,7 @@ fn cli_main() -> Result<()> {
                     // The targets' floors the lead's coordinator keeps (agentcore::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
-                    let c = agentcore::coord::client::Client::from_nas(&r, &store::sys::host_name())?
+                    let c = lead_client(Some(&r))?
                         .context("no lead's coordinator to ask")?;
                     let (code, v) =
                         c.post_api("floors", &serde_json::json!({ "clear": clear, "step": step, "target": target }))?;
@@ -1683,7 +1685,7 @@ fn cli_main() -> Result<()> {
                 let asked = gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref(), old_catalogues };
                 // (Every removal marked deleted on the lead's GC queue first: gc::Lead.)
                 let root = root(&r.root, true)?;
-                let lead = gc::TheLead::from_nas(&root);
+                let lead = gc::TheLead::find(&root);
                 let r = gc::run(
                     &root,
                     &asked,
