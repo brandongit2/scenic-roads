@@ -1070,6 +1070,17 @@ pub fn kept_name(version: &str) -> String {
     format!("{}.{format}.cov", store::naming::hash16(version.as_bytes()))
 }
 
+/// Whether file `name` of the kept coverage's folder is of a newer format than this app's: a kept
+/// file (`kept_name`), its `.making` lock or temporary file, whose `.rdcov<n>.` says a format past
+/// `KEPT_MAGIC`'s. A newer app's, never swept by this one (task #1150's review: after an update
+/// that changes the format, a job the older app left running would otherwise take the newer app's
+/// file whenever no job of its held it, and the next one made it again, ~1.7 GB unbooked).
+pub fn kept_newer(name: &str) -> bool {
+    let format = |n: &str| -> Option<u32> { n[n.find(".rdcov")? + 6..].split('.').next()?.parse().ok() };
+    let mine = format(&kept_name("")).expect("KEPT_MAGIC is RDCOV<n>");
+    format(name).is_some_and(|f| f > mine)
+}
+
 /// The coverage's shapes as kept (`inputs::inputs::regions::read::accepted_coverage`): their
 /// source, country, buffer, whether water, rings (`Rings`), box, grid (`Grid`) and edge tree
 /// (`EdgeTree`), as held (task #807: the grids made again from the rings were 14 s of CPU a job),

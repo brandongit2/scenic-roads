@@ -302,9 +302,14 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
         Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Kept::Remote,
         Err(_) => Kept::Unread,
     };
-    if let Kept::Read(c) = read() {
-        sweep(&dir, &at);
-        return Ok(c);
+    match read() {
+        Kept::Read(c) => {
+            sweep(&dir, &at);
+            return Ok(c);
+        }
+        // (No lock file left on a network folder, never swept.)
+        Kept::Remote => return made(),
+        Kept::None | Kept::Unread => {}
     }
     // (One process of the Mac makes it at a time, the others waiting to read it in place: each
     // making its own at once held the whole coverage in its memory beside the others', a cost no
@@ -347,12 +352,14 @@ pub fn accepted_coverage(root: &store::nasfs::NasRoot, a: &Accepted, cache: Opti
 /// Deletes every file of the kept coverage's folder `dir` but `at` (the version just read in place)
 /// that no process holds (store::cachefile::try_remove), each time a coverage is read there, not
 /// only as a version is made (task #1150: a version a job still mapped when the next was made had
-/// stayed for good): another version's or format's file once the last process mapping it lets go,
-/// a `.making` lock whose maker is gone (one held or waited on stays: a waiter whose lock file goes
-/// takes the one named again, store::cachefile::making), a temporary file whose writer died.
+/// stayed for good): another version's or an older format's file once the last process mapping it
+/// lets go, a `.making` lock whose maker is gone (one held or waited on stays: a waiter whose lock
+/// file goes takes the one named again, store::cachefile::making), a temporary file whose writer
+/// died. A newer format's files are left (`buildstore::coverage::kept_newer`): a newer app's, never
+/// taken by the jobs this app leaves running after an update to it.
 fn sweep(dir: &Path, at: &Path) {
     for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-        if e.path() != at {
+        if e.path() != at && !buildstore::coverage::kept_newer(&e.file_name().to_string_lossy()) {
             store::cachefile::try_remove(&e.path());
         }
     }

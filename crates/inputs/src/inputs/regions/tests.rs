@@ -933,7 +933,7 @@ fn a_disabled_region_is_checked_and_named_but_never_built() {
 }
 
 #[test]
-fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds() {
+fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds_or_a_newer_app_wrote() {
     let f = fx();
     let d = job_root(&f, true);
     let nas = store::nasfs::NasRoot::local_for_test(d.path());
@@ -967,6 +967,10 @@ fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds() {
     std::fs::write(&orphan, b"").unwrap();
     let making = store::cachefile::making(&dir.join(buildstore::coverage::kept_name("newer"))).unwrap();
     std::fs::write(dir.join(format!("{kept}.99999.0.tmp")), b"").unwrap();
+    // (And a newer app's, of a format this one can't read, which it leaves; an older app's goes.)
+    let newer_format = format!("{}.rdcov999.cov", &kept[..16]);
+    store::cachefile::put(&dir.join(&newer_format), b"a newer app's").unwrap();
+    store::cachefile::put(&dir.join(format!("{}.rdcov006.cov", &kept[..16])), b"an older app's").unwrap();
     // Read again (as each job does): what no process holds goes; what's held stays.
     let again = read::accepted_coverage(&nas, &a, Some(cache.path())).unwrap();
     assert_eq!(again.fingerprint(box_a), made.fingerprint(box_a));
@@ -974,11 +978,14 @@ fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds() {
         kept.clone(),
         mapped_one.file_name().unwrap().to_string_lossy().into_owned(),
         format!("{}.making", buildstore::coverage::kept_name("newer")),
+        newer_format.clone(),
     ];
     want.sort();
     assert_eq!(names(), want);
     // Let go: the next read sweeps them.
     drop((mapped, making));
     read::accepted_coverage(&nas, &a, Some(cache.path())).unwrap();
-    assert_eq!(names(), [kept]);
+    let mut want = vec![kept, newer_format];
+    want.sort();
+    assert_eq!(names(), want);
 }

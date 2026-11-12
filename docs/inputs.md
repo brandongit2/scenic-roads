@@ -685,10 +685,12 @@ same file, the agent naming the cache folder to its jobs (`SCENIC_CACHE`), a fol
 own disk (a mapped NAS file faults with SIGBUS when the share drops: a cache on a network
 filesystem isn't mapped, the coverage made in memory as with no cache). Each read in place there
 (made or found) sweeps the folder: every other file no process holds is deleted
-(`store::cachefile::try_remove`; task #1150), so another version's or format's file goes once the
-last process mapping it lets go (mapping it holds it, its shared lock, while mapped: a job of an
-older app or version keeps its file until it's done), as does a `<name>.making` lock whose maker
-is gone and a temporary file whose writer died; room-making never empties the folder
+(`store::cachefile::try_remove`; task #1150), so another version's or an older format's file goes
+once the last process mapping it lets go (mapping it holds it, its shared lock, while mapped: a job
+of an older app or version keeps its file until it's done), as does a `<name>.making` lock whose
+maker is gone and a temporary file whose writer died; a newer format's files are left
+(`buildstore::coverage::kept_newer`: a newer app's, which the jobs an older app leaves running
+after an update never take from it); room-making never empties the folder
 (docs/macs.md). A version not kept yet is made by one process of the Mac at a time
 (`store::cachefile::making`, `<name>.making` locked, taken again if a sweep deleted it meanwhile),
 the others waiting, then reading it in place: since a job's memory
