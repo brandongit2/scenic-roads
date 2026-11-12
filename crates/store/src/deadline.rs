@@ -9,8 +9,9 @@
 //! - **A cap** (`cap`): the calls past their deadline still in the kernel (`held`) are at most
 //!   this many a process; while they're that many, a new call fails at once (`refused`), so stuck
 //!   threads never pile up. Each Mac's own setting, on the build page (crates/agentcore's
-//!   agent::settings, `CAP_FILE`); its agent gives it to its jobs (`CAP_ENV`), the CLI reads it.
-//!   Not set: `CAP_DEFAULT`.
+//!   agent::settings, `CAP_FILE`): its agent applies it each round and gives it to its jobs
+//!   (`CAP_ENV`), the CLI reads it as it starts, the map server follows it (`follow_cap`). Not
+//!   set: `CAP_DEFAULT`.
 //! - **Progress** (`watched`): a call that says it moved (`Progress::add`, a copy's bytes) has its
 //!   deadline counted from its last move, so a long copy that keeps moving never ends for its
 //!   length alone.
@@ -21,7 +22,8 @@
 //!   later call of this process on the same path could race it. (Why each class of call is safe to
 //!   leave: docs/nas-access.md §6.)
 //! - **Nested**: a call made on a helper (inside another call) runs there, inline: the outer
-//!   call's deadline holds it.
+//!   call's deadline holds it, and the paths it changes are the outer call's too (held with it
+//!   when it's left: a write inside a read-labelled call, or inside a wrapper keyed its own way).
 //! - **A job's exit**: a process that left calls in the kernel may never end its exit (the kernel
 //!   ends a process once each of its threads leaves its call); jobrt's `control::ending` writes the
 //!   job's status first, which its agent takes as its end.
@@ -34,7 +36,7 @@
 //! (crates/agentcore's agent::nasread). Not here: a `File` a library is given to read itself
 //! (docs/nas-access.md §6).
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fmt::Display;
 use std::io;
 use std::path::PathBuf;
@@ -111,6 +113,20 @@ pub fn cap_in(home: &std::path::Path) -> Option<usize> {
     v["n"].as_u64().map(|n| n as usize).filter(|&n| n > 0)
 }
 
+/// The cap kept as set in the agent's folder `home` (`cap_in`): read now, and again every 10 s on
+/// a thread of its own. For a long-lived process its agent doesn't start (the map server); the
+/// agent sets its own each round, a job takes its agent's as it starts.
+pub fn follow_cap(home: PathBuf) {
+    set_cap(cap_in(&home));
+    let again = move || loop {
+        std::thread::sleep(Duration::from_secs(10));
+        set_cap(cap_in(&home));
+    };
+    if let Err(e) = std::thread::Builder::new().name("nas calls held".into()).spawn(again) {
+        crate::retry::log(format_args!("the NAS calls held: its setting not followed ({e})"));
+    }
+}
+
 /// The calls past their deadline still in the kernel.
 pub fn held() -> usize {
     HELD.load(Ordering::Relaxed)
@@ -145,7 +161,9 @@ const LEFT: u8 = 2;
 struct Shared {
     state: AtomicU8,
     moved: AtomicU64,
-    keys: Vec<PathBuf>,
+    /// The paths it changes, and those of the calls made inside it (`run`): changed and read under
+    /// STUCK's lock.
+    keys: Mutex<Vec<PathBuf>>,
     /// (Test builds: the calling thread's own count of its calls held, `cap_for_test`.)
     #[cfg(any(test, feature = "testkit"))]
     mine: Option<Arc<AtomicUsize>>,
@@ -162,7 +180,7 @@ impl Drop for Ends {
         }
         // (Left: its caller counted it held, its keys stuck, under STUCK's lock.)
         let mut s = lock(&STUCK);
-        for k in &self.0.keys {
+        for k in lock(&self.0.keys).iter() {
             if let Some(i) = s.iter().position(|p| p == k) {
                 s.swap_remove(i);
             }
@@ -220,8 +238,9 @@ thread_local! {
     /// This thread's helper (its calls run there, one at a time): made at its first call, kept
     /// while its calls come back in time, given up with one that doesn't.
     static HELPER: RefCell<Option<mpsc::Sender<Job>>> = const { RefCell::new(None) };
-    /// Whether this thread is a helper (a call made here runs inline).
-    static ON_HELPER: Cell<bool> = const { Cell::new(false) };
+    /// On a helper, the call it's running (a call made inside it runs inline, its paths the
+    /// outer's too).
+    static OUTER: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };
 }
 
 /// A new helper thread: it runs the calls sent it, and ends once its sender is dropped and the
@@ -229,7 +248,6 @@ thread_local! {
 fn helper() -> io::Result<mpsc::Sender<Job>> {
     let (tx, rx) = mpsc::channel::<Job>();
     std::thread::Builder::new().name("nas call".into()).spawn(move || {
-        ON_HELPER.with(|h| h.set(true));
         for c in rx {
             c();
         }
@@ -298,17 +316,33 @@ fn run<T: Send + 'static>(
     }
     #[cfg(any(test, feature = "testkit"))]
     let mine = TEST_CAP.with(|c| c.borrow().clone());
+    if let Some(outer) = OUTER.with(|o| o.borrow().clone()) {
+        // (Inside another call: its deadline holds this one, and its paths are the outer's too,
+        // held with it if it's left, or at once when it already was.)
+        if !keys.is_empty() {
+            let mut s = lock(&STUCK);
+            lock(&outer.keys).extend(keys.iter().cloned());
+            if outer.state.load(Ordering::Acquire) == LEFT {
+                s.extend(keys.iter().cloned());
+                STUCK_N.store(s.len(), Ordering::Relaxed);
+            }
+        }
+        let own = Shared {
+            state: AtomicU8::new(RUNNING),
+            moved: AtomicU64::new(0),
+            keys: Mutex::new(Vec::new()),
+            #[cfg(any(test, feature = "testkit"))]
+            mine: None,
+        };
+        return f(&Progress(Arc::new(own)));
+    }
     let shared = Arc::new(Shared {
         state: AtomicU8::new(RUNNING),
         moved: AtomicU64::new(0),
-        keys,
+        keys: Mutex::new(keys),
         #[cfg(any(test, feature = "testkit"))]
         mine: mine.as_ref().map(|m| m.1.clone()),
     });
-    if ON_HELPER.with(|h| h.get()) {
-        // (Inside another call: its deadline holds this one.)
-        return f(&Progress(shared));
-    }
     #[cfg(any(test, feature = "testkit"))]
     let (held, cap) = match &mine {
         Some((n, m)) => (m.load(Ordering::Relaxed), *n),
@@ -344,7 +378,9 @@ fn run<T: Send + 'static>(
     let mut job: Job = Box::new(move || {
         // (The caller's retry's try is this call's too: a retry in it tries once, crate::retry.)
         let _a = nested.then(crate::retry::attempt);
+        OUTER.with(|o| *o.borrow_mut() = Some(ends.0.clone()));
         let r = f(&progress);
+        OUTER.with(|o| *o.borrow_mut() = None);
         drop(ends);
         let _ = tx.send(r);
     });
@@ -391,9 +427,9 @@ fn run<T: Send + 'static>(
                 Err(_) => return Err(io::Error::other(format!("{on}: {op}: its call panicked"))),
             }
         }
-        s.extend(shared.keys.iter().cloned());
+        s.extend(lock(&shared.keys).iter().cloned());
         STUCK_N.store(s.len(), Ordering::Relaxed);
-        drop(s);
+        // (Counted held under the lock its end takes to let it go, `Ends`: never let go first.)
         #[cfg(any(test, feature = "testkit"))]
         let held = match &shared.mine {
             Some(m) => m.fetch_add(1, Ordering::Relaxed) + 1,
@@ -401,6 +437,7 @@ fn run<T: Send + 'static>(
         };
         #[cfg(not(any(test, feature = "testkit")))]
         let held = HELD.fetch_add(1, Ordering::Relaxed) + 1;
+        drop(s);
         MISSED.fetch_add(1, Ordering::Relaxed);
         let said = format!(
             "{on}: {op}: no answer in {} s; left to the kernel ({held} of this process's calls there now)",
@@ -627,6 +664,77 @@ mod tests {
         crate::testkit::eventually("the path free again", || {
             writing(&"another", &"write", LONG, vec![p.clone()], || Ok(())).is_ok()
         });
+    }
+
+    /// A change made inside another call (on its helper) holds its path with the outer call: left
+    /// at its deadline, the outer holds the inner's path too (a write inside a read-labelled call,
+    /// or a wrapper keyed its own way, nasread's `Deadlined`); and a change the left call's helper
+    /// makes after it was left is held at once. Free again once the outer ends.
+    #[test]
+    fn a_change_inside_another_call_is_held_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (p, q) = (d.path().join("f"), d.path().join("g"));
+        let _cap = cap_for_test(CAP_DEFAULT);
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let (made_tx, made_rx) = mpsc::channel::<()>();
+        let (p2, q2) = (p.clone(), q.clone());
+        let e = call(&"outer", &"read", ms(300), move || {
+            writing(&p2.display(), &"write", LONG, vec![p2.clone()], || Ok(()))?;
+            // (Held here past the outer's deadline, then one change more, made after it was left.)
+            go_rx.recv().map_err(io::Error::other)?;
+            writing(&q2.display(), &"write", LONG, vec![q2.clone()], || Ok(()))?;
+            made_tx.send(()).map_err(io::Error::other)?;
+            go_rx.recv().map_err(io::Error::other)
+        })
+        .unwrap_err();
+        assert!(past_deadline(&e), "{e}");
+        let e = writing(&p.display(), &"write", LONG, vec![p.clone()], || Ok(())).unwrap_err();
+        assert!(refused(&e), "the inner write's path held with the outer: {e}");
+        go_tx.send(()).unwrap();
+        made_rx.recv().unwrap();
+        let e = writing(&q.display(), &"write", LONG, vec![q.clone()], || Ok(())).unwrap_err();
+        assert!(refused(&e), "a change made after the outer was left, held at once: {e}");
+        go_tx.send(()).unwrap();
+        crate::testkit::eventually("both paths free again", || {
+            writing(&"t", &"write", LONG, vec![p.clone(), q.clone()], || Ok(())).is_ok()
+        });
+    }
+
+    /// A call really held in the kernel (no fake): an open of a FIFO whose other end no one has
+    /// opened. A read's and a write's caller each get `TimedOut` at the deadline, the calls held;
+    /// the write holds its path; once the other ends open, both calls end and nothing is held.
+    #[test]
+    fn a_call_held_in_the_kernel_is_left_there() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let d = tempfile::tempdir().unwrap();
+        let fifo = |name: &str| {
+            let p = d.path().join(name);
+            let c = CString::new(p.as_os_str().as_bytes()).unwrap();
+            // SAFETY: mkfifo on a NUL-terminated path this test owns.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", io::Error::last_os_error());
+            p
+        };
+        let (r, w) = (fifo("r"), fifo("w"));
+        let cap = cap_for_test(CAP_DEFAULT);
+        let rr = r.clone();
+        let e = call(&r.display(), &"read", ms(300), move || std::fs::read(&rr)).unwrap_err();
+        assert!(past_deadline(&e), "{e}");
+        let ww = w.clone();
+        let e =
+            writing(&w.display(), &"write", ms(300), vec![w.clone()], move || std::fs::write(&ww, b"x")).unwrap_err();
+        assert!(past_deadline(&e), "{e}");
+        assert_eq!(cap.held(), 2, "both in the kernel");
+        let e = writing(&w.display(), &"write", LONG, vec![w.clone()], || Ok(())).unwrap_err();
+        assert!(refused(&e), "{e}");
+        // (The other ends: the reader's writer closes at once (its read sees the end), the
+        // writer's reader takes its byte.)
+        drop(std::fs::OpenOptions::new().write(true).open(&r).unwrap());
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut std::fs::File::open(&w).unwrap(), &mut got).unwrap();
+        assert_eq!(got, b"x");
+        crate::testkit::eventually("the held calls end", || cap.held() == 0);
+        writing(&w.display(), &"write", LONG, vec![w.clone()], || Ok(())).unwrap();
     }
 
     /// A call that says it moved has its deadline counted from its last move: a copy moving for
