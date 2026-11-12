@@ -105,8 +105,8 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
   without one, or not there; one it can't read keeps it serving), and the pool's declared lead
   (`state/build/lead-member.json`) read and naming another member than this Mac's (`agent/member`,
   read). Without the NAS, or with either unread, it serves.
-- **The offline map, on demand** (#882 step 7a, docs/roles.md §8.3): the menu bar's Open the Map on
-  This Mac opens http://localhost:7311 in the browser; where no server answers there and none is
+- **The offline map, on demand** (#882 step 7a, docs/roles.md §8.3): the menu bar's Open the map on
+  this Mac opens http://localhost:7311 in the browser; where no server answers there and none is
   installed (a laptop), it first starts the app's `server --on-demand` (its output appended to
   `~/Library/Logs/scenic/server.log`) and waits for it, up to two minutes. That server answers this
   Mac's loopback alone (127.0.0.1 and `::1`), is never retired, follows the map's log and copies and

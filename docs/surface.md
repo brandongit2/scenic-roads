@@ -82,8 +82,8 @@
   floor in a line (what's available and what compressing frees among it, the floor, what's reserved
   for its jobs, why no job starts: the brake, the floor, a give-back's cool-down; the memory brake
   first while it's on: docs/pool.md §7.1). Any click
-  opens its menu, which pauses and resumes the build, hands over the lead,
-  sets the disk room and clears the Mac's build caches (`scenic clean`). An action whose ask to the
+  opens its menu, which pauses and resumes the build and this Mac, cancels this Mac's jobs and
+  clears its build caches (`scenic clean`). An action whose ask to the
   agent can't be written says why in the state's place (the icon a problem) for a minute.
 - Every program checks its command line first (docs/building.md, "Command lines"): `--help`/`-h`
   prints usage; an unknown flag, a missing value or an extra argument is refused with usage (exit 2).

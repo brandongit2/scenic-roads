@@ -694,9 +694,10 @@ func clip(_ s: String, _ n: Int = 80) -> String {
 }
 
 /// `s` with its first letter lower case, for a phrase inside a sentence-case menu item ("Cancel
-/// building unit 6/1/1"); a first word in capitals (an acronym: "OSM pass") kept.
+/// building unit 6/1/1"); a first word with another capital (a name: "OSM pass", "OpenStreetMap
+/// pass") kept.
 func lowerFirst(_ s: String) -> String {
-    guard let f = s.first, f.isUppercase, !(s.dropFirst().first?.isUppercase ?? false) else { return s }
+    guard let f = s.first, f.isUppercase, !s.dropFirst().prefix(while: { !$0.isWhitespace }).contains(where: \.isUppercase) else { return s }
     return f.lowercased() + s.dropFirst()
 }
 

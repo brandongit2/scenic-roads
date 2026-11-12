@@ -744,8 +744,9 @@ func selfTest(_ dir: String) -> Never {
         && argsProblem(["--menu-proof", "--menu-proof"])?.contains("twice") == true
         && argsProblem(["--show", "menu"])?.contains("unknown") == true)
     // The menu's items in sentence case: a job's own words lower-cased after "Cancel", an acronym kept.
-    check("a phrase inside a menu item: its first letter lower case, an acronym kept", lowerFirst("Building unit 6/1/1") == "building unit 6/1/1"
-        && lowerFirst("OSM pass") == "OSM pass" && lowerFirst("x") == "x" && lowerFirst("") == "")
+    check("a phrase inside a menu item: its first letter lower case, a name kept", lowerFirst("Building unit 6/1/1") == "building unit 6/1/1"
+        && lowerFirst("OSM pass") == "OSM pass" && lowerFirst("OpenStreetMap pass") == "OpenStreetMap pass"
+        && lowerFirst("Reading the OpenStreetMap planet") == "reading the OpenStreetMap planet" && lowerFirst("x") == "x" && lowerFirst("") == "")
     // The hold ask's file, as control.rs's request_hold writes it (its tests read the same files).
     for (held, f) in [(true, "hold-request-pause.json"), (false, "hold-request-resume.json")] {
         let want = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent(f))).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? NSDictionary
