@@ -7,7 +7,14 @@
 //!   more than it got, so a slot of it is free) while work it could take waits. Work offered and free
 //!   to take (`Open`: targets not leased, of a step it may run): flagged with the refusal, which
 //!   says what in its capacity held the job back (memory and its floor, cores, disk, the NAS budget,
-//!   the grants, a cold start). None free, but the plan holds work of a step any Mac takes behind
+//!   the grants, a cold start). Refused for its room (crate::coord::sched's `Refused`, task #1170),
+//!   it names the first target past it (step and tile), what that needs (memory, disk) and what
+//!   this Mac is short of, each by how much ("lo 3/6/3 needs 12.7 GB of memory and 35.2 GB of disk:
+//!   disk short by 19.2 GB (46 GB free · 16 GB for jobs (30 GB room target))"), then how many of
+//!   the other targets offered are held by jobs, done, or in backoff after failing here; room held
+//!   for that target while this Mac's jobs end is said as the hold ("room held for a job of …").
+//!   Each Mac's flag says its own room, so the flags of the Macs together say what each lacks.
+//!   None free, but the plan holds work of a step any Mac takes behind
 //!   other work (`Status::waiting`'s entries with a step: slope-hi behind terrain-root): flagged
 //!   with those waits, and the wait of the step each names where that one waits too, never just
 //!   "nothing offered". Nothing left it could take: no flag.
@@ -444,7 +451,7 @@ mod tests {
     #[test]
     fn an_idle_mac_names_the_wait_its_work_is_held_behind() {
         let mut st = lead();
-        st.packing.insert("m1".into(), "nothing offered fits the room left (memory: 9 GB) or is free to take".into());
+        st.packing.insert("m1".into(), "nothing offered is free to take: 3 held by jobs".into());
         st.waiting = vec![
             wait("slope-hi", "wait for terrain-root: 3 z3 tiles not current"),
             wait("terrain-root", "waits for the lead's NAS budget"),

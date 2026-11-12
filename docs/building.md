@@ -151,6 +151,11 @@ from the first (`edit_held`).
     on a laptop) waits until the others read at the same time have gone, but only until what they
     freed in its place since its last use reaches its own bytes, the cost of copying it back (task
     #998: the M4 lost it to shortages of 0.3 to 19 GB and copied its 27 GB back 10 times in 16 days).
+  - **A finished step's whole copies** (the basemap's, the lakes' fill's and the depth sources'
+    packs' copies, the depth steps' shared cache) don't hold a later job off a member with a room
+    target: for a job of a step reading none of them, while no job there reads them, the lead
+    counts them free beside the member's disk (docs/pool.md §7.1, `sched`'s `Copies`), and the
+    member's room-making frees them for it in the order above (no hand `scenic clean` needed).
   - **Otherwise** nothing is emptied: a Mac keeps its caches while it has room, and frees them
     only when the disk is short of a job's room or of the owner's room target (`room::toward`), as
     far as that needs, in that order. A file no upcoming job reads isn't deleted while there's
@@ -549,7 +554,8 @@ available. Until work is done, the map serves the last catalogue.
 
 **Status.**
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions;
-  its flags: a Mac idle while work it could take waits, a job whose work stopped moving (stuck),
+  its flags: a Mac idle while work it could take waits (refused for its room, the first target
+  past it, what it needs and what the Mac is short of, each by how much), a job whose work stopped moving (stuck),
   a catalogue due that hasn't gone out, docs/pool.md
   §10, Flags; `--flags` alone, with the pool's warnings and the failures
   since a time, as tools/dev/health.sh reads them),

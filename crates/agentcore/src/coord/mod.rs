@@ -835,11 +835,10 @@ impl Shared {
                 let held = self.leases.held(&o.step, now);
                 let (mut h, mut d, mut b, mut big, mut fits) = (0, 0, 0, 0, 0);
                 for (t, k, size) in &o.targets {
-                    let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
                     match () {
                         _ if held.contains(t) => h += 1,
                         _ if self.done.get(&(o.step.clone(), t.clone())) == Some(k) => d += 1,
-                        _ if backoff => b += 1,
+                        _ if self.backoff(&a.worker, &o.step, t, now) => b += 1,
                         _ if self.peak_of(&o.step, t, *size, a.cores) <= a.mem_mb => fits += 1,
                         _ => big += 1,
                     }
@@ -1196,7 +1195,9 @@ pub struct Capacity {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub old_app: Vec<OldAppJob>,
     /// What it holds of each shared cache (crate::needs::CACHES, by name; task #392), measured on
-    /// its disk as it asks: the first job reading one is reserved its fill less that.
+    /// its disk as it asks: the first job reading one is reserved its fill less that; with a room
+    /// target, a job reading none counts them free on a member while no job of its reads them
+    /// (sched's `Copies`: its room-making frees them).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub caches: BTreeMap<String, CacheHere>,
     /// Its jobs' NAS traffic a second now (crate::agent::live::NAS_TRAFFIC's order and units, its
@@ -11506,6 +11507,110 @@ mod tests {
             let g = w.ask(&a).unwrap().expect("granted");
             assert_eq!(g.disk_mb, want, "{disk} MB of room");
         }
+    }
+
+    /// A member with a room target of 30 GB, 46 GB free (16 GB for jobs), holding `copies` MB of
+    /// the whole copies, asking for `want` jobs of `can` with `mem_mb` of memory (task #1170: the
+    /// M4 on 12 Nov, 28 GB of them, the depth steps done).
+    fn copies_ask(can: &[&str], mem_mb: u64, copies: u64, target_mb: u64, want: usize) -> Ask {
+        let caches = [(buildstore::localread::CACHE.to_string(), CacheHere { have_mb: copies })].into();
+        let disk = (46 << 10) - target_mb.min(46 << 10);
+        Ask {
+            want,
+            can: can.iter().map(|s| s.to_string()).collect(),
+            cap: Some(Capacity {
+                at: unix_now(),
+                cores: 8,
+                cores_free: 8,
+                disk_mb: disk,
+                free_mb: 46 << 10,
+                target_mb,
+                caches,
+                ..Default::default()
+            }),
+            ..every_ask("m1", can[0], mem_mb, disk)
+        }
+    }
+
+    /// Task #1170: the whole copies a member holds of a shared cache no job of its reads are freed
+    /// by its room-making for a job reading none of them, so a target that fits only once they go
+    /// (35.2 GB, 16 GB for jobs, 28 GB of copies) is granted, reserving its own disk; a second
+    /// beside it isn't counted what the first spent of them; a job reading them isn't counted them
+    /// (they're its cache, held by their own rule); a Mac with no room target counts none. Short
+    /// of room, the refusal names the target, what it needs and what the Mac is short of.
+    #[test]
+    fn a_target_fits_once_the_whole_copies_go() {
+        let lo = Some((4000, 36_045, 2000));
+        let offered = |c: &Coordinator| measured_offer(c, "pack", &[("6/1/1", lo), ("6/1/2", lo)]);
+        let (_d, c, w, _clock) = every((0, 0));
+        offered(&c);
+        let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+        // Without the copies: refused, the disk short by 19.2 GB.
+        assert!(w.ask(&copies_ask(&["pack"], 30_000, 0, 30 << 10, 1)).unwrap().is_none());
+        assert!(
+            why(&c).starts_with("pack 6/1/1 needs ")
+                && why(&c).ends_with(
+                    "of memory and 35.2 GB of disk: disk short by 19.2 GB (46 GB free · 16 GB for jobs (30 GB room target))"
+                ),
+            "{}",
+            why(&c)
+        );
+        // Short of memory too (the M1): both said, each by how much.
+        assert!(w.ask(&copies_ask(&["pack"], 1000, 0, 30 << 10, 1)).unwrap().is_none());
+        assert!(why(&c).contains(": memory short by ") && why(&c).contains("; disk short by 19.2 GB"), "{}", why(&c));
+        // With them: granted, its own disk reserved; the second not beside it (8.8 GB of them left).
+        let g = all_granted(&w, &copies_ask(&["pack"], 30_000, 28 << 10, 30 << 10, 2));
+        assert_eq!(g, [vec!["6/1/1".to_string()]], "{}", why(&c));
+        assert!(
+            why(&c).starts_with("pack 6/1/2 needs ")
+                && why(&c).ends_with(
+                    "disk short by 26.4 GB (46 GB free · 9 GB for jobs (30 GB room target), 8.8 GB of it whole copies room-making frees); of the other targets offered, 1 held by jobs"
+                ),
+            "{}",
+            why(&c)
+        );
+        // No room target: none counted.
+        let (_d, c, w, _clock) = every((0, 0));
+        offered(&c);
+        assert!(w.ask(&copies_ask(&["pack"], 30_000, 28 << 10, 0, 1)).unwrap().is_some_and(|g| g.disk_mb == 36_045));
+        let (_d, c, w, _clock) = every((0, 0));
+        offered(&c);
+        let mut no_target = copies_ask(&["pack"], 30_000, 28 << 10, 0, 1);
+        no_target.disk_mb = Some(16 << 10);
+        assert!(w.ask(&no_target).unwrap().is_none(), "{}", why(&c));
+        // A job reading them: its cache, its fill less what's held reserved, the copies not counted
+        // for its own output (20 GB, 16 GB for jobs).
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "depth", &[("6/1/1", Some((500, 20_000, 2000)))]);
+        c.add_job_run("depth", &["6/1/1".to_string()], 50_000);
+        assert_eq!(c.fill_mb(buildstore::localread::CACHE), 30_000);
+        assert!(w.ask(&copies_ask(&["depth"], 30_000, 28 << 10, 30 << 10, 1)).unwrap().is_none(), "{}", why(&c));
+        assert!(
+            why(&c).starts_with("depth 6/1/1 needs ")
+                && why(&c).contains("of memory and 20.8 GB of disk: disk short by 4.8 GB"),
+            "{}",
+            why(&c)
+        );
+    }
+
+    /// Task #1170: room held for the first offer refused for its room is the hold the status says
+    /// even with nothing offered after it to hold back (a lead whose last offer waited said only
+    /// the room left): the target it waits for named, and what it needs.
+    #[test]
+    fn a_room_wait_with_nothing_after_it_is_the_hold() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let m = Some((5000, 100, 2000));
+        measured_offer(&c, "pack", &[("6/1/1", m), ("6/1/2", m)]);
+        let a = Ask { want: 2, ..every_ask("m1", "pack", 9000, 100_000) };
+        assert_eq!(all_granted(&w, &a), [vec!["6/1/1".to_string()]]);
+        let why = c.refusals().get("m1").cloned().unwrap_or_default();
+        assert!(
+            why.starts_with("room held for a job of pack 6/1/2 (")
+                && why.ends_with("): nothing else offered is free to take or fits"),
+            "{why}"
+        );
+        let held = c.answers(0)["m1"][0].held.clone().map(|h| h.rule);
+        assert_eq!(held, Some(sched::Rule::Waiting));
     }
 
     /// The memory a step's runs of its earlier way took (`ran_before`).
