@@ -1676,7 +1676,9 @@ mod tests {
                 Ok(())
             })
             .unwrap_err();
-            // (What waiting would take: the fake's `sleep 600`.)
+            // (What waiting would take: the fake's `sleep 600`. With HANG_CAT the size's call
+            // answers inside the 1 s too; on a loaded Mac it may not, and then it's the call
+            // stopped: the same error, so the test holds, the cat's own stop untried that run.)
             store::testkit::ended_before(t, std::time::Duration::from_secs(600), mode);
             assert!(buildstore::records::nas::timed_out(&e), "{mode}: {e:#}");
             assert!(format!("{e:#}").contains("didn't start within 1 s"), "{mode}: {e:#}");

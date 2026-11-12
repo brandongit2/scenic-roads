@@ -662,8 +662,8 @@ mod tests {
     }
 
     /// Task #1155: a real stop (SIGSTOP, then SIGCONT, as the guards freeze a job) isn't counted
-    /// toward a call's deadline: a call held in the kernel (a FIFO's open), its process stopped in
-    /// the call and let go on by another 3 s or more later, is given up only after the stop and its
+    /// toward a call's deadline: a call held in the kernel (a FIFO's open), its process stopped as
+    /// the call starts and let go on by another 3 s or more later, is given up only after the stop and its
     /// deadline's run (the look the stop came in counted as asked at most).
     #[test]
     fn a_stop_isnt_counted_toward_a_deadline() {
@@ -689,10 +689,13 @@ mod tests {
         let r = fifo(d.path(), "r");
         let _cap = cap_for_test(CAP_DEFAULT);
         // (The stop is this process's own, made inside the call, so it always falls in it; the
-        // stopper only ends it, 3 s or more after its line, which waits in its stdin's pipe until
-        // its shell reads it: a shell's start at nice 20, as tests run, took 25 s on the loaded M4
-        // (#1157), and a late stopper only makes the stop longer.)
-        let script = r#"read a; sleep 3; kill -CONT "$1""#;
+        // stopper only ends it, 3 s or more after it sees it, its line waiting in its stdin's pipe
+        // until its shell reads it: a shell's start at nice 20, as tests run, took 25 s on the
+        // loaded M4 (#1157), and a late stopper only makes the stop longer. It waits for the stop
+        // itself, not 3 s from the line: a thread held off the CPU between the line and its stop
+        // would take a SIGCONT first and then stay stopped. Its loop ends too once this process
+        // is gone.)
+        let script = r#"read a; while ps -o stat= -p "$1" | grep -qv T; do sleep 0.1; done; sleep 3; kill -CONT "$1""#;
         let mut cmd = crate::spawn::command("/bin/sh");
         cmd.args(["-c", script, "sh"]).arg(std::process::id().to_string()).stdin(std::process::Stdio::piped());
         let mut child = crate::spawn::spawn(&mut cmd).unwrap();

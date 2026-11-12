@@ -874,28 +874,39 @@ impl Out {
 /// How long one call on the NAS (`verify`, `remove_on_nas`) may take: three minutes (the call's own
 /// authentication, and a NAS busy with others' work), in a test too; a test of a hung call gives
 /// its own thread's a short one (`short_nas_calls`). Its child's start is inside it, which on a
-/// loaded test Mac took 25 s for a `/bin/sh` (#1157): a short one for every test failed those
-/// whose stand-in answers.
+/// loaded test Mac took 25 s for a `/bin/sh` (#1157), so no test whose stand-in answers has a
+/// short one.
 pub fn nas_call_deadline() -> std::time::Duration {
-    SHORT_CALLS.get().unwrap_or(std::time::Duration::from_secs(180))
+    short_calls().unwrap_or(std::time::Duration::from_secs(180))
 }
 
 /// How long a call past its deadline has to end after SIGTERM before it's killed: 10 s; under a
 /// test's short deadline (`short_nas_calls`), 300 ms.
 fn nas_call_grace() -> std::time::Duration {
-    if SHORT_CALLS.get().is_some() {
+    if short_calls().is_some() {
         std::time::Duration::from_millis(300)
     } else {
         std::time::Duration::from_secs(10)
     }
 }
 
+/// This thread's short deadline (`short_nas_calls`): never one in a build without the testkit.
+fn short_calls() -> Option<std::time::Duration> {
+    #[cfg(feature = "testkit")]
+    return SHORT_CALLS.get();
+    #[cfg(not(feature = "testkit"))]
+    None
+}
+
+#[cfg(feature = "testkit")]
 std::thread_local! {
     static SHORT_CALLS: std::cell::Cell<Option<std::time::Duration>> = const { std::cell::Cell::new(None) };
 }
 
 /// A test's own deadline `d` for this thread's calls on the NAS (`nas_call_deadline`), for a test
-/// of a call that hangs: the real one until the guard is dropped. Unit tests only (`testing`).
+/// of a call that hangs: the real one until the guard is dropped. Unit tests only: the testkit
+/// feature, and `testing` (the feature reaches another crate's test-built binaries too).
+#[cfg(feature = "testkit")]
 pub fn short_nas_calls(d: std::time::Duration) -> ShortNasCalls {
     assert!(testing(), "a short NAS call deadline is a unit test's");
     SHORT_CALLS.set(Some(d));
@@ -903,8 +914,10 @@ pub fn short_nas_calls(d: std::time::Duration) -> ShortNasCalls {
 }
 
 /// `short_nas_calls`' guard: the real deadline again once dropped.
+#[cfg(feature = "testkit")]
 pub struct ShortNasCalls(());
 
+#[cfg(feature = "testkit")]
 impl Drop for ShortNasCalls {
     fn drop(&mut self) {
         SHORT_CALLS.set(None);

@@ -522,7 +522,7 @@ through their dev-dependency on store, `features = ["testkit"]`):
   own signal (its ready file or line, its exit, a state it reads under `eventually`), and a bound
   it hands the code under test with a child inside (an ssh's start bound, a call's deadline, a kill
   loop's, a stop's grace, `curl -m`) is `WATCHDOG`, or the real one when that is longer; a real
-  bound of a minute or more on a single start stands (out's `ssh_opened` probe, `SSH_START`).
+  bound of a minute or more on a single start stands (buildstore::nasssh's `SSH_START`).
   Only a test whose claim is the bound gives a short one, and then to a child that hangs, never to
   one that must answer in time (a hung NAS call: `buildstore::out::short_nas_calls`, this thread's
   calls only). A time compared with a child's start (a group's `started`) is read before the child
