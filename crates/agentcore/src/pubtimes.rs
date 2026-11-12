@@ -630,7 +630,7 @@ mod tests {
             step: Some(step.into()),
             targets: targets.iter().map(|s| s.to_string()).collect(),
             ok: Some(true),
-            job: lease.map(|n| jobrt::jobid::JobId { epoch: 3, n }),
+            job: lease.map(|n| jobrt::jobid::JobId { epoch: 0, n }),
             worker: Some("m1".into()),
             secs: Some(10.0),
             ..ev(kind, t)
@@ -795,7 +795,8 @@ mod tests {
     }
 
     /// Lease numbers may repeat across leads: a hand-off's merge is the one of its z6 tile, after
-    /// its job ended, at its lease's number.
+    /// its job ended, at its lease's number (events from before job ids, `same_run`); one naming
+    /// its run's whole id, at that id.
     #[test]
     fn a_hand_off_is_matched_by_its_unit_and_lease_across_terms() {
         let events = vec![
@@ -817,6 +818,15 @@ mod tests {
             m,
             [("6/1/1".to_string(), 100, Some(110)), ("6/2/2".into(), 200, Some(230)), ("6/1/1".into(), 300, Some(340))]
         );
+        // (A "done" naming its whole job id: another epoch's lease 5 isn't its merge.)
+        let run = |epoch| Some(jobrt::jobid::JobId { epoch, n: 5 });
+        let events = vec![
+            Event { job: run(3), ..job("done", 100, "unit", &["6/1/1"], None) },
+            merged(110, "2026-10-17/2-5", "unit", &["6/1/1"]),
+            merged(120, "2026-10-17/3-5", "unit", &["6/1/1"]),
+        ];
+        let (_, units) = chains(&events);
+        assert_eq!(units.iter().map(|u| u.merged).collect::<Vec<_>>(), [Some(120)]);
     }
 
     /// The tiles noted planned are known again from the history (a lead restarted or new), by tile
