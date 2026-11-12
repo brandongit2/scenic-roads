@@ -175,12 +175,12 @@ fn a_host_that_gave_no_answer_is_not_asked_again_for_a_while() {
     let url = "https://data.example.org/datasets/a.zip";
     let net = net::Net::new().with_down(Some(d.path().to_path_buf()));
     // Not noted: asked (and here, offline, refused as such: not a server's lack of answer).
-    let e = net.open(url, None, None).err().unwrap();
+    let e = net.open(url, None, None, None).err().unwrap();
     assert!(!is_unreachable(&e), "{e:#}");
     // Noted: an error at once, a server's lack of answer, naming why.
     note_down(Some(d.path()), url, "connection reset by peer");
     assert!(d.path().join("data.example.org").is_file());
-    let e = net.open("https://data.example.org/other.zip", None, None).err().unwrap();
+    let e = net.open("https://data.example.org/other.zip", None, None, None).err().unwrap();
     assert!(is_unreachable(&e) && format!("{e:#}").contains("connection reset by peer"), "{e:#}");
     // Another host: asked.
     assert!(down_check(Some(d.path()), "https://other.example.org/a.zip").is_ok());
@@ -407,24 +407,32 @@ impl RangeRead for Remote {
     }
 }
 
-/// Mirror folders, then the network (natively).
+/// Mirror folders, then the network (natively), what that fetches by range kept on this Mac's
+/// disk (`kept`).
 pub struct Fetcher {
     mirror: Option<PathBuf>,
     net: Option<(net::Net, Option<PathBuf>)>,
+    kept: Option<kept::Kept>,
 }
 
 impl Fetcher {
     /// A fetcher reading `mirror` first, then (natively, when `online`) the network, recording
     /// what that fetched into `record`.
     pub fn new(mirror: Option<PathBuf>, record: Option<PathBuf>, online: bool) -> Fetcher {
-        Fetcher { mirror, net: online.then(|| (net::Net::new(), record)) }
+        Fetcher { mirror, net: online.then(|| (net::Net::new(), record)), kept: None }
     }
 
-    /// From SCENIC_FETCH_MIRROR, SCENIC_FETCH_RECORD and SCENIC_FETCH_OFFLINE.
+    /// With the ranges it fetches kept on this Mac's disk (`kept::Kept`).
+    pub fn keeping(self, kept: Option<kept::Kept>) -> Fetcher {
+        Fetcher { kept, ..self }
+    }
+
+    /// From SCENIC_FETCH_MIRROR, SCENIC_FETCH_RECORD and SCENIC_FETCH_OFFLINE, keeping what it
+    /// fetches in the agent's cache (`SCENIC_CACHE`) under the job's room target (`kept::Kept::from_env`).
     pub fn from_env() -> Fetcher {
         let dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
         let offline = std::env::var("SCENIC_FETCH_OFFLINE").is_ok_and(|v| !v.is_empty() && v != "0");
-        Fetcher::new(dir("SCENIC_FETCH_MIRROR"), dir("SCENIC_FETCH_RECORD"), !offline)
+        Fetcher::new(dir("SCENIC_FETCH_MIRROR"), dir("SCENIC_FETCH_RECORD"), !offline).keeping(kept::Kept::from_env())
     }
 }
 
@@ -440,7 +448,7 @@ impl Fetch for Fetcher {
         }
         if let Some((n, record)) = &self.net {
             if local.as_ref().is_none_or(|l| l.have.is_some()) {
-                return n.open(url, local, record.as_deref());
+                return n.open(url, local, record.as_deref(), self.kept.as_ref());
             }
         }
         match local {
@@ -618,6 +626,8 @@ pub fn host_ceiling(host: &str) -> usize {
 pub const HOST_S3: usize = 64;
 pub const HOST_DEFAULT: usize = 16;
 
+pub mod kept;
+
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,
     //! doubling), small files whole (as their GSI fetch did: 8 tries, 2 s more each time); and
@@ -681,10 +691,12 @@ mod net {
         }
     }
 
-    /// Fetched blocks kept in memory, least recently used out first.
+    /// Fetched blocks kept in memory, least recently used out first, and the runs of blocks being
+    /// got now (`loading`: a reader wanting a block of one waits for it, never fetches it again).
     #[derive(Default)]
     struct Blocks {
         map: HashMap<u64, (Arc<[u8]>, u64)>,
+        loading: HashMap<u64, Arc<Flight>>,
         tick: u64,
         bytes: usize,
     }
@@ -713,38 +725,55 @@ mod net {
         }
     }
 
+    /// A run of blocks (`a..=b`) being got, by whichever reader comes to it first (`got`'s
+    /// initialisation), the others wanting any of its blocks waiting for it: two threads never
+    /// fetch the same blocks at once (task #1099: 2.8 % of a terrain-deep target's download was).
+    struct Flight {
+        a: u64,
+        b: u64,
+        got: std::sync::OnceLock<std::result::Result<Vec<Arc<[u8]>>, String>>,
+    }
+
     /// Counts the bytes fetched over the network (ranges and whole files) for a phase's count
     /// (jobrt::timings::fetched_bytes).
     fn fetched(n: usize) {
         jobrt::timings::fetched(n);
     }
 
-    /// A file's network side: the connection pool, the blocks fetched, where they're recorded.
+    /// A file's network side: the connection pool, the blocks fetched, where they're recorded, and
+    /// this Mac's disk's copy of the file's ranges (`kept`: None without a cache, or for a file
+    /// whose server names no version of it).
     pub struct Online {
         net: Net,
         record: Option<Recorder>,
         blocks: Mutex<Blocks>,
+        kept: Option<super::kept::Version>,
     }
 
     impl Online {
-        /// `len` bytes at `off` of the `size`-byte file at `url`: from the blocks in memory, the
-        /// missing ones fetched (a run of them in one request).
+        /// `len` bytes at `off` of the `size`-byte file at `url`: from the blocks in memory, else
+        /// from those being got (waited for), else got (`get_run`: a run of them at once).
         pub fn read(&self, url: &str, size: u64, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
             let (first, last) = (off / BLOCK, (off + len as u64 - 1) / BLOCK);
             let nblocks = size.div_ceil(BLOCK);
             let mut have: HashMap<u64, Arc<[u8]>> = HashMap::new();
-            let mut runs: Vec<(u64, u64)> = Vec::new();
+            let mut theirs: Vec<Arc<Flight>> = Vec::new();
+            let mut mine: Vec<Arc<Flight>> = Vec::new();
             {
                 let mut c = self.blocks.lock().unwrap();
+                let mut runs: Vec<(u64, u64)> = Vec::new();
                 for i in first..=last {
-                    match c.get(i) {
-                        Some(b) => {
-                            have.insert(i, b);
+                    if let Some(b) = c.get(i) {
+                        have.insert(i, b);
+                    } else if let Some(f) = c.loading.get(&i) {
+                        if !theirs.iter().any(|t| Arc::ptr_eq(t, f)) {
+                            theirs.push(f.clone());
                         }
-                        None => match runs.last_mut() {
+                    } else {
+                        match runs.last_mut() {
                             Some(r) if r.1 + 1 == i => r.1 = i,
                             _ => runs.push((i, i)),
-                        },
+                        }
                     }
                 }
                 // A small read takes the next blocks along (a file's directories, a tile list).
@@ -752,30 +781,59 @@ mod net {
                     if let Some(r) = runs.last_mut() {
                         if r.1 == last {
                             let want = (r.0 + READ_AHEAD / BLOCK - 1).min(nblocks - 1);
-                            while r.1 < want && !c.map.contains_key(&(r.1 + 1)) {
+                            let free = |c: &Blocks, i: u64| !c.map.contains_key(&i) && !c.loading.contains_key(&i);
+                            while r.1 < want && free(&c, r.1 + 1) {
                                 r.1 += 1;
                             }
                         }
                     }
                 }
+                for (a, b) in runs {
+                    let f = Arc::new(Flight { a, b, got: Default::default() });
+                    for i in a..=b {
+                        c.loading.insert(i, f.clone());
+                    }
+                    mine.push(f);
+                }
             }
-            for &(a, b) in &runs {
-                let (s, e) = (a * BLOCK, ((b + 1) * BLOCK).min(size));
-                let bytes =
-                    self.net.range(url, s, e).map_err(|e| IoError::Io(std::io::Error::other(format!("{e:#}"))))?;
-                if let Some(r) = &self.record {
-                    if let Err(e) = r.range(s, &bytes) {
-                        eprintln!("fetch: {url}: not recorded: {e:#}");
+            // (Its own runs first, then the others': a reader never waits while a run of its own
+            // is still to be got, so no two wait on each other.)
+            let mut failed = None;
+            for f in &mine {
+                let got = f.got.get_or_init(|| self.get_run(url, size, f.a, f.b));
+                let mut c = self.blocks.lock().unwrap();
+                for i in f.a..=f.b {
+                    if c.loading.get(&i).is_some_and(|g| Arc::ptr_eq(g, f)) {
+                        c.loading.remove(&i);
                     }
                 }
-                let mut c = self.blocks.lock().unwrap();
-                for (k, chunk) in bytes.chunks(BLOCK as usize).enumerate() {
-                    let i = a + k as u64;
-                    let block: Arc<[u8]> = Arc::from(chunk);
-                    if (first..=last).contains(&i) {
-                        have.insert(i, block.clone());
+                match got {
+                    Ok(blocks) => {
+                        for (i, block) in (f.a..).zip(blocks) {
+                            if (first..=last).contains(&i) {
+                                have.insert(i, block.clone());
+                            }
+                            c.put(i, block.clone());
+                        }
                     }
-                    c.put(i, block);
+                    Err(e) => failed = Some(e.clone()),
+                }
+            }
+            if let Some(e) = failed {
+                return Err(IoError::Io(std::io::Error::other(e)));
+            }
+            for f in &theirs {
+                match f.got.get_or_init(|| self.get_run(url, size, f.a, f.b)) {
+                    Ok(blocks) => {
+                        for (i, block) in (f.a..).zip(blocks) {
+                            if (first..=last).contains(&i) {
+                                have.insert(i, block.clone());
+                            }
+                        }
+                    }
+                    // (Another reader's run that failed: it may have stopped reading (a read ahead
+                    // given up, `cancellable`), so asked again as this reader's own.)
+                    Err(_) => return self.read(url, size, off, len),
                 }
             }
             let mut out = Vec::with_capacity(len);
@@ -786,6 +844,47 @@ mod net {
                 let s = if i == first { (off - i * BLOCK) as usize } else { 0 };
                 let e = if i == last { (off + len as u64 - i * BLOCK) as usize } else { b.len() };
                 out.extend_from_slice(&b[s..e]);
+            }
+            Ok(out)
+        }
+
+        /// Blocks `a..=b` of the `size`-byte file at `url`: those this Mac's disk keeps read there
+        /// (`kept`), the others fetched (each run of them in one request), recorded and kept there.
+        fn get_run(&self, url: &str, size: u64, a: u64, b: u64) -> std::result::Result<Vec<Arc<[u8]>>, String> {
+            let span = |i: u64| (i * BLOCK, ((i + 1) * BLOCK).min(size));
+            let on_disk = |i: u64| self.kept.as_ref().is_some_and(|k| k.has(span(i).0, span(i).1));
+            if let Some(k) = &self.kept {
+                k.refresh();
+            }
+            let mut out: Vec<Arc<[u8]>> = Vec::with_capacity((b - a + 1) as usize);
+            let mut i = a;
+            while i <= b {
+                if let Some((s, bytes)) = self.kept.as_ref().and_then(|k| k.read(span(i).0, span(i).1)) {
+                    // (The disk's run holding block i: its blocks up to b.)
+                    while i <= b && span(i).1 <= s + bytes.len() as u64 {
+                        let (bs, be) = span(i);
+                        out.push(Arc::from(&bytes[(bs - s) as usize..(be - s) as usize]));
+                        i += 1;
+                    }
+                    continue;
+                }
+                // (Fetched: the blocks up to b, or to the next one the disk has.)
+                let mut j = i;
+                while j < b && !on_disk(j + 1) {
+                    j += 1;
+                }
+                let (s, e) = (span(i).0, span(j).1);
+                let (bytes, version) = self.net.range(url, s, e).map_err(|e| format!("{e:#}"))?;
+                if let Some(r) = &self.record {
+                    if let Err(e) = r.range(s, &bytes) {
+                        eprintln!("fetch: {url}: not recorded: {e:#}");
+                    }
+                }
+                if let Some(k) = &self.kept {
+                    k.keep(s, &bytes, version.as_deref());
+                }
+                out.extend(bytes.chunks(BLOCK as usize).map(Arc::from));
+                i = j + 1;
             }
             Ok(out)
         }
@@ -903,6 +1002,12 @@ mod net {
         r.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
     }
 
+    /// The version of the file an answer is of, as its server names it: its ETag, else its
+    /// Last-Modified (what `If-Range` takes).
+    fn version(r: &ureq::http::Response<ureq::Body>) -> Option<String> {
+        header(r, "etag").or_else(|| header(r, "last-modified"))
+    }
+
     /// A Content-Range header's range (first and last byte) and the file's length.
     type ContentRange = (Option<(u64, u64)>, Option<u64>);
 
@@ -1017,15 +1122,18 @@ mod net {
         }
 
         /// `url`'s file: from the mirror's part of it (`local`) where that has the bytes, else
-        /// fetched, and recorded in `record`; None when the server has no such file.
+        /// fetched, and recorded in `record`; None when the server has no such file. What's
+        /// fetched is kept on this Mac's disk too (`kept`), by the file's version as its server
+        /// names it (none named: not kept).
         pub fn open(
             &self,
             url: &str,
             local: Option<Local>,
             record: Option<&Path>,
+            kept: Option<&super::kept::Kept>,
         ) -> Result<Option<Arc<dyn RangeRead>>> {
-            let (len, first) = match &local {
-                Some(l) => (l.len, Vec::new()),
+            let (len, first, version) = match &local {
+                Some(l) => (l.len, Vec::new(), None),
                 None => match self.head(url)? {
                     Some(h) => h,
                     None => {
@@ -1053,7 +1161,12 @@ mod net {
                 url: url.to_string(),
                 len,
                 local,
-                online: Some(Online { net: self.clone(), record, blocks: Mutex::new(blocks) }),
+                online: Some(Online {
+                    net: self.clone(),
+                    record,
+                    blocks: Mutex::new(blocks),
+                    kept: kept.zip(version).and_then(|(k, v)| k.version(url, len, &v)),
+                }),
             })))
         }
 
@@ -1103,8 +1216,9 @@ mod net {
             bail!("{url}{NO_ANSWER}{last}); tried 11 times")
         }
 
-        /// The file's length and first bytes; None when the server has no such file.
-        fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>)>> {
+        /// The file's length, its first bytes and its version as its server names it (`version`);
+        /// None when the server has no such file.
+        fn head(&self, url: &str) -> Result<Option<(u64, Vec<u8>, Option<String>)>> {
             let _w = store::waits::net();
             let slot = HostSlot::take(url);
             let mut forbidden = 0;
@@ -1125,7 +1239,7 @@ mod net {
                             Ok(b) if b.len() as u64 == READ_AHEAD.min(total) => {
                                 fetched(b.len());
                                 slot.read(b.len());
-                                Ok(Ok(Some((total, b))))
+                                Ok(Ok(Some((total, b, version(&r)))))
                             }
                             Ok(b) => Ok(Err(format!("{} of {} bytes", b.len(), READ_AHEAD.min(total)))),
                             Err(e) => Ok(Err(e.to_string())),
@@ -1136,12 +1250,13 @@ mod net {
                         let n: Option<u64> = header(&r, "content-length").and_then(|v| v.parse().ok());
                         ensure!(n.is_some_and(|n| n <= 64 << 20), "{url}: the server doesn't serve byte ranges");
                         match r.body_mut().with_config().limit(64 << 20).read_to_vec() {
-                            Ok(b) if Some(b.len() as u64) == n => Ok(Ok(Some((b.len() as u64, b)))),
+                            // (Held whole in memory: no version needed to keep its ranges.)
+                            Ok(b) if Some(b.len() as u64) == n => Ok(Ok(Some((b.len() as u64, b, None)))),
                             Ok(b) => Ok(Err(format!("{} of {n:?} bytes", b.len()))),
                             Err(e) => Ok(Err(e.to_string())),
                         }
                     }
-                    416 => Ok(Ok(Some((0, Vec::new())))),
+                    416 => Ok(Ok(Some((0, Vec::new(), None)))),
                     _ if says_none(&r, &mut forbidden) => Ok(Ok(None)),
                     403 => Ok(Err("status 403".into())),
                     c if transient(c) => {
@@ -1162,7 +1277,8 @@ mod net {
         /// goes on with (`If-Range`: the first answer's ETag, else its Last-Modified) and the bytes
         /// are checked against the first answer's length: a file changed meanwhile (the server
         /// answering it whole, 200, or another validator or length) is fetched again from the start.
-        pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<Vec<u8>> {
+        /// With the version the bytes are of (`version`; None: the server names none).
+        pub(super) fn range(&self, url: &str, s: u64, e: u64) -> Result<(Vec<u8>, Option<String>)> {
             const CHUNK: usize = 1 << 20;
             let _w = store::waits::net();
             let slot = HostSlot::take(url);
@@ -1201,7 +1317,7 @@ mod net {
                                 e - 1
                             );
                             let total = cr.and_then(|(_, t)| t);
-                            let validator = header(&r, "etag").or_else(|| header(&r, "last-modified"));
+                            let validator = version(&r);
                             match &first {
                                 None => first = Some((validator, total)),
                                 Some((v, t)) if *v != validator || *t != total => {
@@ -1243,7 +1359,7 @@ mod net {
                         // (Its bytes and time a sample of the host's latency: a range request's
                         // answer is the host's, as a tile's is.)
                         slot.read(out.len());
-                        return Ok(out);
+                        return Ok((out, first.and_then(|f| f.0)));
                     }
                     Err(why) => why,
                 };
@@ -1741,6 +1857,12 @@ mod tests {
     /// a whole 200 answer when it doesn't match) but closes the connection after `cut` bytes of
     /// each of its first `drops` answers (as a server dropping a long transfer does).
     fn dropping_server(file: Served, cut: usize, drops: usize) -> String {
+        server(file, cut, drops, None)
+    }
+
+    /// `dropping_server`, each answer to a range past a file's first 64 KB (not a file's opening)
+    /// held until `gate` is set, when one's given.
+    fn server(file: Served, cut: usize, drops: usize, gate: Option<store::testkit::Signal>) -> String {
         use std::io::{Read, Write};
         let l = store::spawn::listen("127.0.0.1:0").unwrap();
         l.set_nonblocking(true).unwrap();
@@ -1776,6 +1898,9 @@ mod tests {
             });
             if let Some(r) = range {
                 file.lock().unwrap().2.push(r);
+                if let Some(g) = gate.as_ref().filter(|_| r.0 >= READ_AHEAD_TEST) {
+                    g.wait("the test's gate");
+                }
             }
             let n = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let whole = range.is_none() || hdr("if-range:").is_some_and(|v| v != etag.to_ascii_lowercase());
@@ -1802,6 +1927,73 @@ mod tests {
         Arc::new(std::sync::Mutex::new((data, etag.to_string(), Vec::new())))
     }
 
+    /// A file's opening reads its first 64 KB (`net::Net::head`).
+    const READ_AHEAD_TEST: usize = 64 << 10;
+
+    /// The ranges asked of `file` past its opening's.
+    fn asked_past_head(file: &Served) -> Vec<(usize, usize)> {
+        file.lock().unwrap().2.iter().copied().filter(|r| r.0 >= READ_AHEAD_TEST).collect()
+    }
+
+    #[test]
+    fn blocks_being_fetched_are_waited_for_not_fetched_again() {
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let file = served(data.clone(), "\"v1\"");
+        let gate = store::testkit::Signal::new();
+        let url = server(file.clone(), usize::MAX, 0, Some(gate.clone()));
+        let r = Fetcher::new(None, None, true).open(&url).unwrap().unwrap();
+        // A reader's run of blocks asked of the server, its answer held.
+        let a = {
+            let r = r.clone();
+            std::thread::spawn(move || r.read_at(100_000, 50_000).unwrap())
+        };
+        store::testkit::eventually("the first reader's request", || !asked_past_head(&file).is_empty());
+        // A second reader of blocks in that run waits for it: no request of its own.
+        let b = {
+            let r = r.clone();
+            std::thread::spawn(move || r.read_at(110_000, 10_000).unwrap())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300)); // (absence)
+        assert_eq!(asked_past_head(&file).len(), 1, "{:?}", asked_past_head(&file));
+        gate.set();
+        assert_eq!(a.join().unwrap(), data[100_000..150_000]);
+        assert_eq!(b.join().unwrap(), data[110_000..120_000]);
+        assert_eq!(asked_past_head(&file).len(), 1, "one request for both");
+    }
+
+    #[test]
+    fn ranges_fetched_are_read_from_this_macs_disk_by_the_files_version() {
+        let d = tempfile::tempdir().unwrap();
+        let kept = kept::Kept::new(d.path(), 0);
+        let v1: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let file = served(v1.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), usize::MAX, 0);
+        let fetcher = || Fetcher::new(None, None, true).keeping(Some(kept.clone()));
+        // A job reads a range: fetched, and kept.
+        let r = fetcher().open(&url).unwrap().unwrap();
+        assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
+        assert_eq!(asked_past_head(&file), [(98_304, 163_839)]);
+        // A later job (a fetcher and file of its own) reads it from the disk, and fetches only
+        // what the disk lacks.
+        let r = fetcher().open(&url).unwrap().unwrap();
+        assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
+        assert_eq!(r.read_at(120_000, 100_000).unwrap(), v1[120_000..220_000]);
+        assert_eq!(asked_past_head(&file), [(98_304, 163_839), (163_840, 229_375)]);
+        // The file changed on the server: what's kept is the old one's, never read for it.
+        let v2: Vec<u8> = (0..300_000u32).map(|i| (i % 241) as u8).collect();
+        {
+            let mut f = file.lock().unwrap();
+            (f.0, f.1) = (v2.clone(), "\"v2\"".to_string());
+        }
+        let r = fetcher().open(&url).unwrap().unwrap();
+        assert_eq!(r.read_at(100_000, 50_000).unwrap(), v2[100_000..150_000]);
+        assert_eq!(asked_past_head(&file).len(), 3);
+        // Without a cache (a job run by hand): fetched each time, nothing kept.
+        let r = Fetcher::new(None, None, true).open(&url).unwrap().unwrap();
+        assert_eq!(r.read_at(100_000, 50_000).unwrap(), v2[100_000..150_000]);
+        assert_eq!(asked_past_head(&file).len(), 4);
+    }
+
     #[test]
     fn a_dropped_transfer_goes_on_from_where_it_stopped() {
         let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
@@ -1811,12 +2003,12 @@ mod tests {
         let url = dropping_server(file.clone(), 100_000, 2);
         // (Its retries' 2 s waits on a virtual clock.)
         let fast = || net::Net::new().with_clock(store::clock::Virtual::new());
-        let got = fast().range(&url, 1000, 251_000).unwrap();
+        let got = fast().range(&url, 1000, 251_000).unwrap().0;
         assert_eq!(got, data[1000..251_000]);
         assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (201_000, 250_999)]);
         // A whole-file read through the fetcher's own path (the same server, dropping once).
         let url = dropping_server(served(data.clone(), "\"v1\""), 50_000, 1);
-        let r = fast().open(&url, None, None).unwrap().unwrap();
+        let r = fast().open(&url, None, None, None).unwrap().unwrap();
         assert_eq!(r.read_at(200_000, 100_000).unwrap(), data[200_000..300_000]);
     }
 
@@ -1837,7 +2029,11 @@ mod tests {
             (f.0, f.1) = (n2, "\"v2\"".to_string());
         });
         let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
-        assert_eq!(got, v2[1000..251_000]);
+        assert_eq!(
+            got,
+            (v2[1000..251_000].to_vec(), Some("\"v2\"".to_string())),
+            "the new file's bytes, and its version"
+        );
         assert_eq!(
             file.lock().unwrap().2,
             [(1000, 250_999), (101_000, 250_999), (1000, 250_999)],
@@ -1854,7 +2050,7 @@ mod tests {
             let mut f = swap.lock().unwrap();
             (f.0, f.1) = (n2, "\"same\"".to_string());
         });
-        let got = net::Net::new().range(&url, 1000, 251_000).unwrap();
+        let got = net::Net::new().range(&url, 1000, 251_000).unwrap().0;
         assert_eq!(got, shorter[1000..251_000]);
     }
 

@@ -1399,6 +1399,11 @@ a row's and a column's, the rest a point's: the same bits as `Projection::projec
   (`fetch::host_ceiling`): Amazon S3's 64 (it states 5,500 GETs a second a prefix), every other
   host's 16 (`HOST_DEFAULT`, every host's fixed cap before): the hosts read live are free services
   that publish no limit (GSI's among them, task #665 review).
+  A fetched file's bytes are got in 16 KB blocks, held in memory (16 MB a file), and a run of
+  blocks one thread is getting is waited for by another wanting any of them, not fetched again;
+  what the network gave is kept on this Mac's disk (`blobs/net/` in the agent's cache, by the
+  file's version as its server names it, only past the room target: buildstore::fetch::kept, task
+  #1099) and read there by a later read of it, in the job or a later one here.
 - **Heights brought to EGM2008** (step 3, crate::dem::geoid), each dataset's before the blend (A's
   and B's alike): the conversions are declared sources (§6.9, role `geoid`, any number), each
   linking two references by `params.from` and `to`: a separation grid (`geoid-grid`: one GeoTIFF in

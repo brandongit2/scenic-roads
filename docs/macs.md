@@ -67,13 +67,18 @@ docs/pool.md §6.1), every other takes work from the lead's coordinator. Below, 
     Overture release) or a window not yet covered (DEM points not sampled before, WorldCover tiles
     the packs lack).
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`): what room-making or a clear empties is a
-  copy of what the NAS keeps, or made from it, refilled from the NAS, never the internet.
+  copy of what the NAS keeps, or made from it, refilled from the NAS, never the internet; or a
+  range a job fetched (`blobs/net/`, below), fetched again only as a job reads it.
   - **The cheap ones** (emptied for room, cleared; kept after a build while the disk has room): canopy squares
     (`chm10/`), raw terrain tiles and archive copies (`aws-terrarium/`),
     copies of record files staging reads (`blobs/`: hi packs, roadside buildings' z8 tiles; with the
     basemap, the lakes' fill and the depth sources' packs the depth's and water's steps read, the stored GLO-30 tiles
     and fill masks a terrain or polar terrain job reads half or more of, task #689: buildstore::localread; and the
-    canopy rows the trees read of the NAS's squares, `trees::squares::RowsCache`), pageview month indexes (`items/months/`).
+    canopy rows the trees read of the NAS's squares, `trees::squares::RowsCache`; and the ranges the
+    fetcher fetched of remote files, `blobs/net/<host>/<path>/<length>.<version>/<start>-<end>`, by the
+    file's version as its server names it, kept only while the disk has them free past the room
+    target and read by the jobs after on this Mac rather than fetched again: buildstore::fetch::kept,
+    task #1099), pageview month indexes (`items/months/`).
   - **Cleared too, on the owner's ask:** the pack cache (`base/`, the base packs' way indexes for
     pack(T) and lo), the
     retired caches, local copies the summits and peaks jobs

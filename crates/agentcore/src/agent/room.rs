@@ -8,10 +8,12 @@
 //! so the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10°
 //! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
 //! (`aws-terrarium/`, read once per terrain run), the copies of the records' files staging
-//! reads (`blobs/`, store::blobs), and the pageview months' indexes (`items/months/`, ~600 MB each,
+//! reads (`blobs/`, store::blobs; with the ranges the fetcher keeps, `blobs/net/`,
+//! buildstore::fetch::kept), and the pageview months' indexes (`items/months/`, ~600 MB each,
 //! read once per items or heritage run: landmarks::pageviews's copies, which it marks used as it reads
 //! them). They fill again from the NAS (`sources/canopy/`, `sources/aws-terrarium/`, the store,
-//! `sources/pageviews/`), never from the internet.
+//! `sources/pageviews/`), never from the internet; the fetched ranges by the fetch a job makes
+//! anyway, as it reads one that's gone.
 //! - Canopy squares, copies of the records' files and pageview months not read in the last hour go
 //!   first, each by its own use, the least recently used first. A copy of a recorded file goes
 //!   without asking the NAS (the records name only files it has). One listing of the NAS's canopy
@@ -145,7 +147,8 @@ fn ns(t: SystemTime) -> u128 {
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
-/// (store::blobs), which the NAS has by construction: they go without asking it.
+/// (store::blobs), which the NAS has by construction, and of ranges fetched (`blobs/net/`,
+/// buildstore::fetch::kept), fetched again as they're read: they go without asking it.
 const CHEAP: [(&str, &str); 4] =
     [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
 
@@ -428,7 +431,7 @@ pub fn words(kind: &str) -> &str {
     match kind {
         "canopy" => "canopy squares",
         "terrain" => "raw terrain tiles",
-        "blobs" => "copies of the records' files",
+        "blobs" => "copies of the records' files and fetched ranges",
         "months" => "pageview months",
         "base" => "base packs",
         "retired" => "caches no code reads any more (room::RETIRED)",
