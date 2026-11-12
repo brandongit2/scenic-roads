@@ -132,8 +132,8 @@ Common rules:
 - **Handing back:** a job's saves, done record and costs go back as one hand-off, posted by its
   member to the lead and merged by the lead (docs/pool.md §7.3). A task's files go back to the
   broker that offered it; a hand-back for a gone lease is refused (410).
-- **Restarts:** leases and costs are kept in the lead's store on its disk (backed up to the NAS,
-  `state/lead/store.json`), the token in `state/coord/` (docs/pool.md §7.5); a
+- **Restarts:** leases and costs are kept in the lead's store on its disk, the token in
+  `state/coord/` (docs/pool.md §7.5); a
   worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.
 - **Failures:** a worker's failed z6 tile isn't offered to it for an hour, doubling; a task out of
   memory goes only to workers sparing more; after two other failures the job runs it.

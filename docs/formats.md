@@ -1292,8 +1292,7 @@ class, id) within a tile. The client sends the id with the clicked point.
   - The members' mail to the lead goes by HTTP (`POST /pool/mail {from, to, msgs}`): each
     sender's last 64 messages, `[[n, msg], …]`, `msg` one of `{"Cancel": …}`, `{"Retry": …}`; the
     lead sends none.
-  - `state/lead/store.json`: the lead's store's backup (`agentcore::pool::store::Snapshot`, `{epoch,
-    seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
+  - `state/coord/token`;
     `state/coord/history-archive/<day>.tar` (a ustar of `<day>/<member>.jsonl`: the history's
     events of a finished day, the lead's take-ups and step-downs as `kind: term`, packed from the
     lead's `agent/coord/history.jsonl` by GC; `state/coord/history/<day>/` the days an older app

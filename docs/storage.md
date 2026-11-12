@@ -37,13 +37,15 @@ settings/      profiles.json: read and written by no app since task #1119 (an ol
 state/         build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history's archive (a tar a finished day: the history
                itself is the lead's, on its disk), the forecasts' and forecast inputs' archives),
-               lead/ (the lead's store's backup), pool/nas-probe/ (the NAS budget's probe's own
-               folders: it measures the share), live-archive/ (each Mac's live measures, a file a
+               pool/nas-probe/ (the NAS budget's probe's own folders: it measures the share),
+               live-archive/ (each Mac's live measures, a file a
                day), backups/;
                coord/history/ (the days an app before task #1119 wrote: GC packs each into the
                archive and removes it as it passes the week, the last on 19 Nov);
                coordinator.json (the lead's contact, written for the apps before task #1119 alone,
                read by no app since: docs/coordination.md §9);
+               lead/store.json (the lead's store's old backup, read by no app: the PM's to remove
+               once the lead runs an app since task #1183, which writes it no more, §9);
                what no app since task #1119 reads or writes, the PM's to remove once every Mac runs
                one (§9): status.json, pool/nas-probes.json, tmp/ (empty), logs/ (the
                NAS's planet fetch's and an old bld-fetch's logs, of 2 and 6 Oct); taskboard/ (copies

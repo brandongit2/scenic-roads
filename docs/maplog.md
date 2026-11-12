@@ -209,7 +209,7 @@ Why the lead, not the NAS:
 What it costs: with the lead down nothing new is published anyway (publishing is the lead's), so
 clients keep the map they hold, which is what happens today when the catalogue job stops. A Mac
 that starts with no saved map and no lead serves none until the lead answers (§5.2). A lead disk
-lost, or the lead moved to another Mac, is §4.5.
+lost is §4.5; a lead moved by hand takes its log with it (`agent/maplog/`, docs/pool.md §6.1).
 
 The log is its own store (`agent/maplog/`), not a part of the pool store (docs/coordination.md
 §4); whether to fold it in is open decision 1.
@@ -298,16 +298,16 @@ NAS), which a `--root` server and a job on that root read (`store::map::root_map
 - **The lead restarts:** its log is on its disk; it loads the newest local snapshot (`agent/maplog/
   snapshot.json.zst`, written when the log starts and hourly) and replays the segments after it. A
   torn last line is dropped: it was never answered.
-- **The lead's disk is lost, or the owner moves the lead to another Mac** (no log there): the next
+- **The lead moved by hand** (docs/pool.md §6.1): its `agent/maplog/` is copied with it, so the new
+  lead opens the log, its snapshot and GC's queue as a restart does.
+- **The lead's disk is lost** (no log there): the next
   `catalog` run computes the map from the records (as it does every run) and seeds a new log with
   it, which costs nothing lasting: the map is the records'; only what the last map alone kept is
   lost until it's built again (a region whose outline changed since it was built, its tiles not yet
   remade, leaves the map until they are: §6.7's `ready`), and the first map's sizes the NAS gives.
-  Its number goes past the map's head as the pool kept it (the lead's store's `map-head`, carried
-  to the next lead by the store's backup, `agent::pool::load_backup`) and past the newest `seq` a
-  client asked from (`Feed::asked_past`: the map servers and mirrors ask every few seconds), so the
-  map's numbers go on and a client's map is never newer than the lead's (`publish::Here::set_floor`;
-  the servers never take an older map, §6.1). The GC queue is rebuilt as §7.5 says.
+  Its number goes past the newest `seq` a client asked from (`Feed::asked_past`: the map servers
+  and mirrors ask every few seconds), so the map's numbers go on and a client's map is never newer
+  than the lead's (`publish::Here::floor`; the servers never take an older map, §6.1). The GC queue is rebuilt as §7.5 says.
 
 ## 5. Clients
 
@@ -592,8 +592,8 @@ for longer than the grace, holding a hand-off whose job reused a file freed unde
 it refused at the merge and its targets done again, never the records naming a deleted file
 (`a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused`: the mark kept while the
 member is forgotten, its lease owed until a beat of its says otherwise). Two limits: the marks are
-the lead's queue's, so a lead moved to another Mac, which starts an empty queue (§4.5, §11.3: #882's
-fixed lead), refuses nothing the old one deleted, and a reused file missing is then found only by
+the lead's queue's, so a lead whose disk is lost, which starts an empty queue (§4.5), refuses
+nothing the old queue deleted, and a reused file missing is then found only by
 the uploads' check (`verify_pending`, said, not mended); and a reused name freed during a long
 job is due once its lease ends, before its hand-off is posted and merged (a beat, and the merge's
 wait for the records' save), so a chunk then refuses it and its targets are done again: a redo,
@@ -883,10 +883,9 @@ that `CURSOR_TTL` (6 hours) drops once the server has quit or the laptop is away
 holds GC up for long. #874
 retired the laptops' servers, a regression #882 step 7a mended: a laptop's server runs on demand,
 started by its menu bar, and its cursors exist only while it runs (docs/roles.md §8.3). A lead moved
-to another Mac starts its log from the records at its next `catalog` run, numbered past the head
-the pool kept, and loses its queue (§4.5; the orphan sweep
-finds what it held, within twice `ORPHAN_AGE`); #882's fixed lead makes that rare, which is what
-8b relies on.
+by hand takes its log and queue with it (§4.5); a lead whose disk is lost starts its log from the
+records at its next `catalog` run and loses its queue (the orphan sweep finds what it held, within
+twice `ORPHAN_AGE`), which #882's fixed lead makes rare, as 8b relies on.
 
 ### 11.4 What frees the 890 GB
 

@@ -57,7 +57,7 @@ on one disk.
 | A member's heartbeat, its agent's status, the leases it holds, its hand-offs' keys, its capacity and resume progress | `POST /pool/beat` every 10 s and on a change, from **beat**'s poster thread (agent-parts.md §4.2) | each member's last in memory (`crate::coord::beats`), forgotten after 20 min unheard (`beats::FORGET_S`); in the store its heartbeat and when heard (`beat/<member>`, saved each minute at most), its words (`member/<host>`), its progress (`progress/<member>`) | none |
 | Who leads | the beat's answer (`leading`: its member, host and app) | — | the declaration, `state/build/lead-member.json`, read by a member only while no answer came within `PAGE_AWAY_S` (35 s), by the lead every step (pool.md §6.1) |
 | The epoch | every answer's `x-pool-epoch`, `x-pool-member` | the store's (§4.3) | none |
-| Jobs' leases | `/work/ask`, `/work/beat`, `/work/done`, `/work/fail`, `/work/cancel`, `/work/in/`, `/work/out/` (coordinator.md); `POST /pool/release` (the owner's) | `leases`, `lease/<id>` | the store's backup |
+| Jobs' leases | `/work/ask`, `/work/beat`, `/work/done`, `/work/fail`, `/work/cancel`, `/work/in/`, `/work/out/` (coordinator.md); `POST /pool/release` (the owner's) | `leases`, `lease/<id>` | none |
 | Hand-offs | `POST /pool/handoff` for each the beat's answer says the lead lacks | `handoff/<key>` until a saved records snapshot names it | none |
 | Mail to the lead (a page's `Cancel`, `Retry`) | `POST /pool/mail` | `inbox/<member>` | none; the lead sends none |
 | Holds (another Mac's pause) | `POST /pool/hold`; the held member's in its beat's answer (`hold`) | `hold/<member>`, the later `at` winning | none |
@@ -74,16 +74,13 @@ on one disk.
 ### 3.2 On the NAS
 
 On the NAS, as bulk, archive or rebuild data (nothing the lead alone reads: its contact, its status,
-the NAS budget's probes and the history are its own, §3.1, task #1119):
+its store, the NAS budget's probes and the history are its own, §3.1, task #1119):
 
-- **The store's backup** `state/lead/store.json`: the store's snapshot written whole every
-  `backup_every` (10 min) while it changed and at a clean stop; a few MB. Read by a take-up when
-  another Mac wrote it (the owner moved the lead, pool.md §7.5).
 - **History archives** `state/coord/history-archive/<day>.tar`, one big file a day: the lead's
   history's finished days (its member's file in each), packed by the daily `gc` job from its
-  coordinator's `history.jsonl` (`--history`, `agent::histarchive`). A lead whose disk is lost, or
-  the lead moved to another Mac, loses the history since the last run (today's, at most a day and a
-  half's); the page's history starts again from the new lead's events.
+  coordinator's `history.jsonl` (`--history`, `agent::histarchive`). A lead whose disk is lost
+  loses the history since the last run (today's, at most a day and a half's); a lead moved by hand
+  takes it with its `coord/` (pool.md §6.1).
 - **The token** `state/coord/token`: read at every agent's start (`agent::pool::seed`), and made
   there, create-new, only by an agent finding none (the first one's stays).
 - **Read-only inputs** (`inputs/`, `inputs/keys.env`).
@@ -125,12 +122,11 @@ snapshot from memory), so a change in memory is never left out of the files.
 ### 4.3 The epoch
 
 A counter in the store, bumped and `fsync`ed as the store opens (right after the coordinator
-starts listening, before the agent asks anything of it): it is what the lead leads. A take-up
-raises it past the records it starts from (`Store::raise_epoch`, a durable line, its retry after a
-timed-out raise too; `pool::driver::Io::epoch`), and past the NAS backup's by `RESTORE_EPOCHS`
-(1000) when another Mac wrote that (the owner moved the lead: its leases may be of epochs up to a
-restart past its last backup: `agent::pool::epochs`). So the records' (epoch, seq) and job ids
-`<epoch>-<n>` (the leases' runs, pool.md §7.5) order across restarts and moves. Every answer says `x-pool-epoch` (0 from a member's
+starts listening, before the agent asks anything of it): it is what the lead leads
+(`pool::driver::Io::epoch`, `Coordinator::store_epoch`). Its records were saved in an epoch of
+this store, so it is past theirs; a store that isn't (not the one that saved them) leads nothing.
+So the records' (epoch, seq) and job ids `<epoch>-<n>` (the leases' runs, pool.md §7.5) order
+across restarts, and across a hand move, which copies the store (pool.md §6.1). Every answer says `x-pool-epoch` (0 from a member's
 broker) and `x-pool-member`. Records and lease JSON keep the key `term` for the epoch's value.
 
 ### 4.4 Recovery
@@ -139,19 +135,12 @@ broker) and `x-pool-member`. Records and lease JSON keep the key `term` for the 
   listen. A torn last line (a crash mid-append) is dropped: it was never answered. Every lease
   comes back with a fresh deadline, unconfirmed; each member's first beat lists the leases it
   holds, confirming them, and those of that member it doesn't list are released (§6.1).
-- **The lead moved** (the owner's edit of the declaration): the new lead's take-up loads the old
-  lead's backup, its leases and the members' words (`agent::pool::took_up`, `load_backup`). A
-  lease granted after that backup is unknown to the new lead: its holder's next beat is answered
-  released and its job stops (work doubled at most, never the records: lease order, pool.md §6.5).
-- **The lead's disk lost** (`agent/` deleted, the disk replaced): a coordinator finding no store
-  makes a new one, and the take-up starts from the NAS's one path (pool.md §6.2); a backup naming
-  this member (its id kept) isn't loaded, so the leases out are unknown: each member's next beat
-  is answered released and its jobs stop. Members re-post every hand-off the new lead lacks (§5.3).
-  *Planned:* `Store::restore` (built and tested, `store_restores_from_the_backup`: the store
-  rebuilt from the backup, its epoch past it by `RESTORE_EPOCHS`; the simulator's disk
-  replacement runs it) run by an owner's command, `scenic lead restore`, with the leases a
-  member's beat lists that the lead doesn't know adopted as granted (task #1159); no command runs
-  it today.
+- **The lead moved by hand** (pool.md §6.1): the new Mac's coordinator opens the copied store as
+  a restart does, its own host's leases of before dropped, the old lead's slots' leases held by
+  that Mac's word once it beats as a member.
+- **The lead's disk lost** (its store and its records): not handled. A coordinator finding no store
+  makes a new one, and its driver, its records gone, leads nothing, saying so (pool.md §4,
+  invariant 5); the owner decides.
 
 ## 5. The protocol
 
@@ -307,8 +296,8 @@ tailnet is §7.3's first case.
 | two members can't reach each other, both reach the lead | nothing changes: members don't talk to each other for coordination. |
 | the lead hears a member but the member doesn't hear the answers (one-way) | the member's posts are taken but it sees failures: it re-sends (idempotent) and starts nothing new; its leases stay live by its beats. Seen as reached by the lead, not reaching it (`Beat::reach`). |
 
-There is never a second lead to disagree with: only the declared lead grants, and only while a read
-of the declaration named it within `driver::VOUCH_S` (pool.md §4, invariant 1).
+There is never a second lead to disagree with: only the declared lead grants (pool.md §4,
+invariant 1), and a move of the lead stops the old one's agent first (pool.md §6.1).
 
 ## 8. The steps of #878
 
@@ -318,7 +307,7 @@ Mac didn't say the new piece's word in its beat, and was deleted by the rule for
 
 | # | What it built | Tests (the main ones) |
 | --- | --- | --- |
-| 1 | the store (§4), the coordinator's state in it, its NAS backup; the handlers' rule | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `store_restores_from_the_backup`, `coord_handlers_never_touch_the_nas` |
+| 1 | the store (§4), the coordinator's state in it; the handlers' rule | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `coord_handlers_never_touch_the_nas` |
 | 2 | leases by the holder's word (§6) | `a_partitioned_member_s_target_is_never_regranted`, `an_away_member_s_leases_go_after_12_h`, `a_crash_before_the_answer_releases_the_grant`, `the_owner_releases_a_member_s_leases` |
 | 3 | one beat by HTTP: heartbeat and status, the others' heartbeats in the answer | `beats_reach_the_lead_and_each_member_hears_the_other`, `the_lead_answers_each_member_with_the_others` |
 | 4 | the build page's view by HTTP (`/pool/view`) | `the_page_shows_the_lead_s_view_while_the_history_waits`, `a_page_asking_with_the_lead_down_gets_the_last_view_with_its_age` |
@@ -327,7 +316,7 @@ Mac didn't say the new piece's word in its beat, and was deleted by the rule for
 | 7 | the Wikimedia budget and the answers' lease from the lead, resume progress in the beat (`crate::coord::budgets`) | `the_wiki_budget_holds_across_three_macs`, `the_answers_lease_is_one_holders`, `the_budget_waits_for_the_lead_while_it_is_down` |
 | 8a | a member learns its lead from the beat's answer, not the NAS | `a_member_learns_its_lead_from_its_answer_with_no_nas_call`, `a_member_takes_its_lead_from_a_fresh_answer_alone` |
 | 8b | the lead's records on its own disk, then one path on the NAS | `a_lead_whose_take_up_s_nas_save_fails_leads_on`, `a_late_save_over_the_one_path_is_saved_over` |
-| 8c | no terms: the lead leads its store's epoch (§4.3); `publish.sh --rollback` refuses to go back past it (`tools/app/rollback-floor`, `878-8c`) | `a_reader_reads_the_one_path_alone`, `a_save_writes_the_one_path_and_its_brief_alone`, `the_epoch_raised_past_a_take_ups_records_stays_past_them`, `a_late_save_of_an_earlier_lead_never_hides_a_later_one`, `a_lead_whose_declaration_reads_fail_stops_granting_before_a_next_lead_could` |
+| 8c | no terms: the lead leads its store's epoch (§4.3); `publish.sh --rollback` refuses to go back past it (`tools/app/rollback-floor`, `878-8c`) | `a_reader_reads_the_one_path_alone`, `a_save_writes_the_one_path_and_its_brief_alone`, `a_restarted_lead_takes_up_from_its_own_disk_in_a_new_epoch`, `a_lead_moved_by_hand_leads_from_its_copied_folders` |
 | 8d | the records' brief by HTTP (`GET /pool/brief`, crate::agent::brief): agents and their jobs read it from the lead | `the_brief_is_answered_by_its_tag`, `a_member_has_the_leads_brief_by_its_tag`, `a_members_job_has_the_leads_brief_or_waits_for_the_lead` |
 | 9 | the simulator over the network (pool.md §13) | its invariants at every step, over 2,000 seeds a sweep |
 | 10 | these docs | — |
@@ -351,6 +340,9 @@ old coordination folders are gone):
   6 Oct), and `settings/` (the map's profiles, which an older map server reads and writes; and once
   a daily backup lists `mac/profiles.json`); `map/` once every Mac's beat says `nas-check-inputs`
   (docs/maplog.md §4.4);
+- **remove** once the lead runs an app since task #1183 (which writes it no more; no app reads it:
+  only a lead taking up another Mac's state did): `state/lead/store.json`, the lead's store's old
+  backup, and the `state/lead/` folder;
 - **still written, for older apps**: `state/coordinator.json`, the lead's contact, which an app
   before #1119 finds the lead by (its agent, its map server, and its updater, which so reaches the
   new app: an older lead's agent took the file off as it stopped for its own update). At #642's rule
@@ -371,11 +363,9 @@ PM, 30 Oct, with what was built:
    keep the NAS's copy.
 3. **The store is a JSON log plus a JSON snapshot:** no new dependency, readable by hand, a few MB
    (against SQLite: a new dependency, fewer hand-written recovery paths).
-4. **The store is backed up to the NAS every 10 min** (`backup_every`): it bounds what's lost with
-   the lead's disk to the owner's settings since (everything else the members re-send).
-5. **History: members' events in the beat, to one file on the lead.** Not built: no member's events reach
+4. **History: members' events in the beat, to one file on the lead.** Not built: no member's events reach
    the lead (its broker's stay on its Mac; task #1160). The lead's own events are its coordinator's
    file on its disk (`history.jsonl`), which the page's view reads every 12 s (`pageview::EVERY`,
    no NAS read since task #1119); each finished day is packed into the NAS's archive by GC.
-6. **A switch was deleted only once it read on for every member;** one still off anywhere became a
+5. **A switch was deleted only once it read on for every member;** one still off anywhere became a
    setting (`/pool/settings`).

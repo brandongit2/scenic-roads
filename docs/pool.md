@@ -39,7 +39,7 @@ Where state lives:
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`agentcore::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
-| The coordinator's state | the lead's disk: `agent/coord/store/` (backup on the NAS, `state/lead/store.json`) | | opens it (§6.2, §7.5) |
+| The coordinator's state | the lead's disk: `agent/coord/store/` | | opens it (§6.2, §7.5) |
 | The coordinator's token; its history's archive; its contact | NAS: `state/coord/token`, `state/coord/history-archive/`; each Mac's agent's `lead.json` (coordwire::lead) | | uses them |
 | The lead's own (its catalogues' record, daily jobs' last runs; the map's log, docs/maplog.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
 
@@ -54,9 +54,9 @@ The share is SMB 3 on a Synology. The design assumes:
 - **Reads can be stale** (macOS's SMB caches). Measured between two Macs on an idle share (task
   #645, 570 trials): a file renamed over was read new within 1.1 s (median 0.02 s), a new file
   opened within 0.12 s; a stat or a folder listing still showed a removed file for up to 33.5 s
-  (median 2.4 s; about one in five near 30 s) and a listing missed a new one for up to 3.1 s.
-  `driver::STALE_S` takes 10 minutes, for a share under load; one name stale for 40 minutes
-  (task #630) is past any such bound.
+  (median 2.4 s; about one in five near 30 s) and a listing missed a new one for up to 3.1 s; one
+  name stayed stale for 40 minutes (task #630). The pool's protocol takes up no record from the
+  NAS, so no read's staleness can lose what it acknowledged.
 - **Renaming over a file another SMB session has open fails** (EBUSY) for as long as it's held:
   `store::whole::rename_over` retries for 5 s. The server can hold a file for hours with no process
   on either Mac having it open;
@@ -150,42 +150,19 @@ The share is SMB 3 on a Synology. The design assumes:
 Checked by the simulator (§13):
 
 1. Only the declared lead leads (no member ever does), and one process of it at a time (the member
-   lock, §5). A lead grants and plans only while a read of the declaration named it less than
-   `driver::VOUCH_S` (5 minutes) ago: one whose reads fail stops before a lead the owner declared
-   meanwhile takes up (`STALE_S` after finding itself declared), so two never grant at once; one
-   unvouched that long steps down, and a lead declared anew (the declaration's `since` not the one
-   it took up under) steps down and waits `STALE_S` before taking up even its own records (§6.1).
-   In a new pool only the Mac that declared itself takes today's files up at once.
-2. Each take-up leads an epoch past every earlier one's and past the records it starts from
-   (`Io::epoch`, the store's epoch raised durably, its retry too), so (epoch, seq) orders every
-   snapshot, and job ids (`<epoch>-<n>`, §7.5) order, across restarts and the owner's moves. Across a move it is past
-   what the NAS shows of the lead before (the one path, its brief, and the store's backup by
-   `RESTORE_EPOCHS`), followed or not (§6.2); a lead before whose take-up never reached the NAS
-   (every save and backup failing) may have granted in an epoch the next one repeats or passes
-   (not covered: its leases' hand-offs are taken by lease order, at worst a job built again). Its
-   records landing late are fenced (invariant 5): each snapshot names the Mac whose take-up began
-   its epoch (`Records::lead`), so two Macs' epochs of one number are told apart.
-3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, a lead
-   never takes up from records older than those it saved, nor a moved lead before its
-   predecessor's last acknowledged save can be read (§6.2, §7.3).
+   lock, §5). A lead whose read of the declaration names another member leads nothing (an old lead
+   started again after the owner moved the lead by hand, §6.1).
+2. Each take-up leads its store's epoch, past the records it starts from (its store numbered
+   them, bumped since as it opened: a store whose epoch isn't past them isn't the one that saved
+   them, and leads nothing), so (epoch, seq) orders every snapshot, and job ids (`<epoch>-<n>`,
+   §7.5) order, across restarts and a hand move.
+3. No accepted hand-off is lost: its member keeps it until a saved snapshot names it, and a lead
+   never takes up from records older than those it saved (§6.2, §7.3).
 4. Each records snapshot is one file written whole.
 5. A late write of an earlier save never sends the lead back: it takes up from the records it
-   kept on its own disk (§6.2), reading the NAS's only when they're newer (another lead saved them)
-   or it has none; and only from records following the one path's brief (`records::follows`): the
-   snapshot it is of, a later save of its epoch's lead, or epochs taken up from them
-   (`Records::from`, every snapshot its epochs were taken up from). A save writes its brief only
-   once its snapshot is whole at the one path, and only after a read of the declaration finds the
-   one its lead took up under (`records::Under`; a read that fails writes none), so records not
-   following the brief are a write that landed
-   late over a newer save (an earlier lead's; or a take-up's that never reached the NAS before the
-   next lead's, its epoch higher or not: task #1038); a brief landing late is followed by the
-   records after it. Such a take-up waits,
-   saying so: the records the brief is of are on the disk of the Mac that saved them, which leads
-   from them once declared again. Not covered: that Mac's own copy lost too (its saved state or
-   its disk) after a late save over the one path, the brief's records are on no Mac and the
-   take-up waits for good, saying so; the owner decides (the simulator counts such runs; task
-   #1152). At the one path, readers read a late write until the lead's next save
-   (`driver::RESAVE_S`, 10 minutes, at most).
+   kept on its own disk (§6.2), never the NAS's. At the one path, readers read a late write until
+   the lead's next save (`driver::RESAVE_S`, 10 minutes, at most). Not covered: the lead's disk
+   lost (its records and its store): it leads nothing, saying so, and the owner decides.
 
 ## 5. Roles
 
@@ -208,15 +185,16 @@ Checked by the simulator (§13):
 re-exported as `crate::pool::lead`):
 
 ```json
-{ "member": "m-3f9c…", "host": "Mac-mini-de-Brandon", "since": 1791300000 }
+{ "member": "m-3f9c…", "host": "Mac-mini-de-Brandon" }
 ```
+
+(A `since` an older app wrote is read past.)
 
 - **Read every step** by the lead (`lead::declared`; a read that fails keeps the last), and by a
   member only while no answer of its lead's within `PAGE_AWAY_S` (35 s) said who leads
-  (`Answer::leading`: its member id, host and app; §9): with one, the
-  member takes that member for the declared lead (a lead steps down at its next step once it
-  isn't, and its answers then say no one; nor do they while its step couldn't read the declaration:
-  `Out::vouched`). A member it doesn't name never leads (`Driver::step`'s `declare`).
+  (`Answer::leading`: its member id, host and app; §9): with one, the member takes that member for
+  the declared lead. A member it doesn't name never leads (`Driver::step`'s `declare`); a lead it
+  no longer names leads nothing from its next step.
 - **Made once** with create-new: in a new pool (no records at the one path nor its brief), by the
   first Mac in it, which declares itself (`lead::declare`); otherwise by the owner, by hand. With
   none there and records saved, no Mac leads (a lead steps down: "no lead is declared") and the
@@ -224,34 +202,36 @@ re-exported as `crate::pool::lead`):
   records then (`records::now`), and `out::check_writer` refuses every direct save of them.
 - **Why a file and not a setting on each Mac:** one place every Mac reads, so two Macs can't each
   think they're the lead; written once with create-new, so no Mac's process replaces it. No member
-  id is named in code.
-- **Moving the lead** (the mini replaced) is the owner's edit of that file, by hand, naming the new
-  Mac's member id (`scenic pool status` lists them) and setting `since` to the current unix time
-  (`date +%s`): a move away and back is told apart only by `since` (below), so an edit that keeps
-  the old `since` makes a move back look like no move at all: at its next step the old lead steps down
-  ("another member is the declared lead"), and the new one takes the records up from the one
-  path `STALE_S` (10 min) after it first found itself declared, once the old one's last
-  acknowledged save can't read stale (§6.2), its coordinator loading the old lead's store's
-  backup with its leases and the members' words (§7.5: an away member's leases held by its word
-  there too, task #1038). Nothing in the app does it.
-- **Moved away and back** (task #1038): a lead leads under one declaration, the one it took up
-  under (`Saved::led_under`, the declaration's `since`). Reading itself declared under another
-  (the owner moved the lead away and back while it slept or its reads failed), it steps down; its
-  saves write the brief, and it acknowledges, only while the declaration is that one
-  (`records::Under`). A lead takes up at once from its own records only under the declaration it
-  last took up under; declared anew, it waits `STALE_S` from finding itself declared whatever
-  records it finds, since the lead between may grant until `VOUCH_S` after its last read naming
-  it. A lead no read has named for `VOUCH_S` (its reads failing, or its Mac asleep) steps down at
-  its next step whatever that step's read says, and takes up again: at once from its own records
-  when the declaration is the one it led under and no other lead saved since, else `STALE_S`
-  after that read. Its coordinator grants nothing from its start until its pool's step says it
+  id is named in code. Its coordinator grants nothing from its start until its pool's step says it
   leads (`agent::UNSTEPPED`).
 
+**Moving the lead** (the mini replaced) is done by hand, outside the app, which has no move of its
+own: the lead's state is its agent's folder (`~/Library/Application Support/scenic/agent/`) on its
+own disk, and the new Mac takes a copy of it.
+
+1. Stop the old lead's agent (`launchctl bootout gui/$(id -u)/<the agent's label>`, or quit it
+   from the status app), and the new Mac's.
+2. Copy from the old lead's agent's folder to the new Mac's: `coord/` (the coordinator's store,
+   its history, its timings) but its `jobs-token`, and `maplog/` (the map's log) whole, and
+   `pool/records.json` (the records it saved last: what the new lead takes up), each over what the
+   new Mac has. Not the rest: `member` (each Mac's own id), `lead.json`, `coord/jobs-token` (each
+   Mac's own jobs' token, which its jobs running across the stop hold), the per-slot files and the
+   rest of `pool/` (its saved state as a member, its mail) stay each Mac's.
+3. Edit the declaration to name the new Mac's member id (`scenic pool status` lists them; the
+   host is a label).
+4. Start the new Mac's agent, then the old one's: the new lead's coordinator opens the copied
+   store as its own (its epoch one past the old lead's, every lease in it, the leases of the new
+   Mac's own slots of before dropped as at any restart, §7.5), and its driver takes up the copied
+   records in that epoch. The old lead, declared no more, is a member: its jobs, taken over by its
+   agent as at an update, beat the new lead, which holds their leases by its word. Members find
+   the new lead by the declaration as their old one stops answering (docs/coordination.md §3.1).
+
+The pool's token (`coord/workers-token`) is the same on every Mac; `coord/page` (where its page
+is served) is written again as its coordinator starts. A lead whose disk lost its records or its store isn't moved this way and doesn't lead
+(§4 invariant 5): the owner decides.
+
 **The epoch** is the lead's coordinator's store's (docs/coordination.md §4.3), bumped as the store
-opens, so once a process; a take-up raises it past the records it starts from
-(`pool::store::Store::raise_epoch`, durable before it answers), and past the NAS backup's epoch by
-`RESTORE_EPOCHS` (1000) when the backup is another Mac's (the owner moved the lead:
-`agent::pool::epochs`). The records' snapshots are numbered (epoch, seq), their JSON key still
+opens, so once a process; a take-up leads it, its records numbered on in it. The records' snapshots are numbered (epoch, seq), their JSON key still
 `term` (older apps read them); a lease's job run is named `<epoch>-<n>` (its job id, §7.5).
 
 - No app writes the old term folders (`state/build/term/<E>/`, their `forecast-input.json` alone
@@ -284,35 +264,20 @@ opens, so once a process; a take-up raises it past the records it starts from
   the NAS, tried each step.
 - **Taking the records up** (`driver::take_up`, once a process, or again after the declaration
   names it once more): it needs its store (its epoch: the agent's first step runs before its
-  coordinator starts, so it waits a step). It starts from its own records (an earlier try's, those
-  it led last in this process, or its disk's copy), none older than `Saved::records`. It reads the
-  one path once: when that's newer by (epoch, seq) than its own (another lead saved: the owner
-  moved the lead, possibly away and back), or it has none of its own (its disk's copy lost), it
-  waits until `STALE_S` (10 min awake) has passed since this process first found itself declared,
-  reads the one path again and takes that up. The wait is kept through reads of the declaration
-  that fail (they tell nothing; task #1154: started again by each, a share failing one read in
-  five left no lead for hours), and started again by a read naming another member, or this one
-  under another declaration (its `since`) than it began under; the take-up itself needs that
-  step's read naming it. Only records following the one path's brief count
-  (§4 invariant 5; else it waits, naming the Mac that led the brief's epoch). With no one path, no
-  brief and nothing saved before (a new pool) it takes today's files (`manifest.json`, `jobs.json`,
-  `pending.json`): at once when this process declared itself, else `STALE_S` on, the first Mac
-  declared perhaps leading already. Never from records older than those it saved last
-  (`records::Older`: a stale read, tried again). It then raises its epoch past theirs and past the
-  newest epoch the one path and its brief show, numbers them (epoch, 0), notes the snapshot they
-  were taken up from (`Records::from`) and itself as the epoch's lead (`Records::lead`), and saves
-  them. The lead before it
-  acknowledges a hand-off only while a read of the declaration after its save still names it: so
-  whatever it acknowledged, which no member keeps any more, is in the records its successor reads.
-  The history says how (`Event::TookUp`): "its own records", "the one path's records, newer than
-  its own", "the one path's records", "today's files: the pool's first".
+  coordinator starts, so it waits a step). It starts from its own records (an earlier try's, or its
+  disk's copy, `agent/pool/records.json`), none older than `Saved::records`; it never reads the
+  one path for them. With none of its own: in a new pool (no one path, no brief and nothing saved
+  before) it takes today's files (`manifest.json`, `jobs.json`, `pending.json`); else it waits,
+  saying so (a lead moved by hand without its records, or its disk lost). A store whose epoch isn't
+  past its records' waits too (not the store that saved them). It numbers them (epoch, 0) in its
+  store's epoch and saves them. The history says how (`Event::TookUp`): "its own records", "today's
+  files: the pool's first".
 - **Merging**: it merges what members posted it and its own jobs' hand-offs, from memory, in (epoch,
   lease) order (`records::merge`). It is **caught up** (`caught_up`) once every hand-off it was
   given is merged and saved; catalogues and GC wait for that. It reads and lists nothing on the
   NAS for them.
 - **Acknowledgements** (`journal::Mine`): a lead acknowledges a hand-off once a saved snapshot names
-  it (in its beat's answer, `merged`), and only while its read of the declaration after that save
-  still names it; the member drops it.
+  it (in its beat's answer, `merged`); the member drops it.
 - **Readers** (the jobs' `Out`, the agent's plan and status, GC, the Mac mini's map server, the CLI
   and the checks) read the one path's snapshot alone (`Records::now`, buildstore::records::now: one
   NAS call). Before the pool (no declaration) they read today's files `manifest.json`, `jobs.json`,
@@ -332,10 +297,7 @@ opens, so once a process; a take-up raises it past the records it starts from
 - **Today's files** are the records before the pool: a new pool's first take-up is made from them.
   No lead writes them.
 - **The coordinator's state** is in its store on its own disk (docs/coordination.md §4:
-  `agent/coord/store/`): a restart opens it, so it keeps its leases. Its backup on the NAS
-  (`state/lead/store.json`, §7.5) is what a take-up loads when another Mac led before it
-  (`took_up`: the backup another Mac's, and the take-up of another lead's records, `Event::TookUp`'s
-  `another`; a take-up of its own records keeps its own store's, task #1038).
+  `agent/coord/store/`): a restart opens it, so it keeps its leases. Nothing of it is on the NAS.
 
 ### 6.3 With the lead gone
 
@@ -378,9 +340,7 @@ alone named go to GC.
 There is no re-assertion: the lead leads one epoch a process, and nothing else makes one. It steps
 down when its step's read of the declaration names another member ("another member is the declared
 lead") or none ("no lead is declared"), and when another process holds its member's lock (§5).
-Its records as it led are kept in memory, for a take-up if the declaration names it again. It
-sweeps (GC) only on a step whose own read of the declaration found it the lead, caught up
-(`Out::vouched`, `Gates::vouched`), so no other lead is declared while it removes files.
+Declared again, it takes up its records on its disk.
 
 ### 6.7 Clocks and wakefulness
 
@@ -1422,34 +1382,24 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   `agent::pool::tests::the_leads_restart_keeps_its_leases`). Renewals aren't saved (a loaded lease
   gets a fresh deadline). A lapsed lease stays in the table (a member's word may hold it again)
   until its target is granted again, which ends it (`Leases::grant_at`; task #1038: kept, a restart
-  or the next lead's take-up gave it a fresh deadline beside the new lease).
+  gave it a fresh deadline beside the new lease).
 - **Job ids** (task #1103; jobrt::jobid, docs/formats.md, Job ids): each job run is named by the
   lease it was first granted under, `<epoch>-<n>` (`Lease::job`): what its spans are kept by on the
   lead (task #1104, docs/formats.md, Job spans; `GET /api/job/<id>`), and what a job's page on the
   build page keys a run by (`job/<id>`, task #1105). Never given twice: each start of the lead's
-  store and each take-up leads an epoch past every earlier one's (§4, invariant 2), and within an
+  store leads an epoch past every earlier one's (§4, invariant 2), and within an
   epoch the store's lease numbers only go up, from past the time in milliseconds, its saved next,
   every lease it takes up and the highest number its history names (`Leases::load`, `restore`,
   `past`), so a lead whose state is lost and whose clock was set back gives none again (test
-  `coord::tests::a_restart_with_its_state_lost_gives_no_number_its_history_names`). Two leads'
-  numbers may meet (the next goes on from the backup, which a lease granted after it passed); their
-  epochs tell them apart (`coord::lease::tests::a_job_id_is_never_given_twice_across_a_lead_move_or_a_lost_state`),
-  and the simulator checks every coordinator's grants of a run, across restarts and moves (§13). Not
-  covered, as invariant 2 says: a lead whose take-up never reached the NAS, whose epoch the next may
-  repeat. A job its agent's successor takes over keeps its id, and so does one whose lease is held
+  `coord::tests::a_restart_with_its_state_lost_gives_no_number_its_history_names`); the epochs
+  tell numbers that meet apart (`coord::lease::tests::a_job_id_is_never_given_twice_across_a_restart_or_a_lost_state`),
+  and the simulator checks every coordinator's grants of a run, across restarts (§13). A job its agent's successor takes over keeps its id, and so does one whose lease is held
   again under a new number (its own lapsed while it ran on, or ended with a lead's restart:
   `Coordinator::hold_for`, the lease's `job`; test
   `agent::tests::a_job_survives_its_agents_restart_taken_over_by_the_next`); a paused job resumed,
   a failed one tried again, is a new run under a new lease. The id goes with the run into every
   record of it (docs/formats.md, Job ids), and into its job's environment (`SCENIC_JOB`). A record
   from before it names its run by the lease's number alone, read as `0-<n>`.
-- **Its backup on the NAS** (`state/lead/store.json`, the store's snapshot whole) is written by a
-  thread of its own each `pool::store::backup_every` (10 min) while the store changed, started by
-  the lead's step, never on a handler's path. The owner's move of the lead (§6.1) takes it up there
-  (`took_up`, the backup naming another member, the take-up of that lead's records): a lease
-  granted since it is unknown to the new lead,
-  its worker's next renewal refused, its job stopped and its targets out again (the work, never the
-  records: the merge's lease order, §6.5).
 - Workers are a member id and an agent instance; a take-up drops only instances that no longer
   exist.
 - **What a job waited on** (task #791): the lead's coordinator writes on each "start" and "lease"
@@ -1458,7 +1408,7 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   history after each forecast, `history::Waits`, worked out on the forecast's thread; what an
   earlier forecast's waited on and finished since is kept), the one of that step that finished
   last. Only jobs that finished after the forecast before the one naming the item are named
-  (after the history's load for the first): a job from before a restart, a lead change or a
+  (after the history's load for the first): a job from before a restart or a
   `scenic redo` is never named, so a start then names fewer rather than an older job. A few
   numbers an event (one per step waited on, ~10 bytes each: some 2 to 6 % on the lead's
   history.jsonl, ~8,600 starts and leases in its 5.2 MB on 27 Oct); events before it have none,
@@ -1470,8 +1420,8 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   `state/coord/history-archive/<day>.tar` (member `<day>/<member>.jsonl`, the declared lead's), by
   the `gc` job's daily duties (`--history`), so the lead alone, outside its loop and the pool's lock
   (`agent::histarchive`, task #531): the day's lines merged into what its tar holds (a line there
-  already not again), so a day finished is on the NAS by the next run, and a lead's disk lost, or
-  the lead moved to another Mac, loses the history since then. The day folders an app before task
+  already not again), so a day finished is on the NAS by the next run, and a lead's disk lost loses
+  the history since then (a lead moved by hand takes its history with its `coord/`, §6.1). The day folders an app before task
   #1119 wrote (`state/coord/history/<day>/`, a file per writer) are packed the old way as each
   passes the week, then removed: its files read whole and merged into
   what the day's tar holds already (a late write, an old day's event appended after the day was
@@ -1559,7 +1509,7 @@ never correctness, politeness or work.
 | jobs on one Mac | a job is granted beside others only if their measured memory, disk and cores fit (packing, §7.2; one only waiting on a worker by what it holds and no cores, §7.2, A job waiting on a worker; one leaving the cores idle by its measures and no cores, §7.2, A job leaving the cores idle), and only while every member reports the new app (§7.1, Mixed versions); a cold start by its provisional need (§7.7) |
 | raw tiles | `store::cachefile`'s locks; packing deletes only tiles no job holds; a job reopens its shard's archives when the index changed (`RawTiles::get`, `refresh_shard`; a shard is the z6 tile, z3 tile or `root` whose archives hold a tile: docs/macs.md) |
 | Wikimedia budget | `crate::budget`: one budget for the pool, enforced at egress. Every job's connections go through its agent's proxy (`crate::budget::proxy`, `HTTPS_PROXY`; its clients served on an event loop of two threads, what blocks (a token waited for, a connection opened) on at most 16 more, at most four waiting for each class's token at once: task #908), the job sandboxed (`sandbox-exec`) to deny any other way out. A metered connection takes a token first, of a ten-second window's: from the lead, one a take (`POST /pool/budget/take`, its windows counted in memory by its clock, docs/coordination.md §3.1). `wiki` four requests a second; `query` (WDQS, QLever) one query per two seconds of query time. A 429 told to the proxy (`POST /hold`, `budget::seen`; not QLever's 429 for a query past its time limit, which is no ask to wait: landmarks' wikiask asks such a batch again in halves) holds every Mac (told the lead, each Mac stopping at its next token). The budget, our User-Agent and the back-off are how the APIs and data downloads it carries are asked politely: they read no robots.txt, which is for crawlers (docs/inputs.md §6.9). The lead away (or not known yet, as an agent starts), a Mac takes nothing, asking again each window (a share of its own would add to what the lead gives the Macs that reach it). Lint: `tests/budgets.rs` |
-| NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' too unless the pool's setting `nas-budget` says `off` (on while not set; the lead's, `/pool/settings`, §12). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read, less those of this Mac's own disk or its page cache (`local`, task #551; a NAS file copied whole counts what of it this Mac's page cache held as the copy began, `mincore` over a mapping never read, of the copy's own descriptor, `store::sys::resident`; a file of no more than one copy read, 1 MB, isn't asked: mapping a NAS file is a round trip of its own, 15-19 ms; task #939: slope-deep copied its z6 tile's terrain hi pack, about 200 MB, once a target, every copy after the first from the cache in a second or less (a second copy of a 233 MB pack took 0.05 s, en0 receiving 5 MB), counted as the NAS's), plus `wrote` and `read_back` (what its uploads read back to check them, task #1142: each verified upload reads its whole file back, store::naming's `write_atomic`; a line without `read_back`, from before it was measured, counts its `wrote`, every file costin counts made having been read back whole, so no `cost_v` was bumped for it), and `creates`, each over its wall time, a halo step's (`pack`, `lo`) `wrote` and `read_back` alone, its job's read rate (`nas_read` over `nas_secs`: what the job read of the halo's base packs from the NAS and the time that took, on each of its targets; a measure without `nas_secs`, task #396's first, counts no reads) in place of its `bytes` (the halo's base packs' files); its own run's, else its step's 90th percentile of each, each run weighed by its time (the rate its runs stay under 90 % of the time they run: counted run by run, slope-deep's thousands of one-second runs made it 248 MB/s, three times the NAS, task #939), its runs the way it runs now (`cost_v`: an earlier way's count for nothing), each put at the lead's pace by its Mac's and the percentile taken at the pace of the Mac it's weighed for (the asker's, the lease's; an aged target's held room at the lead's: `Book::nas_for`, Each Mac's pace below); none measured, 0, but a step known to load the NAS (`NAS_STEPS`: `unit`, `pack`, `lo`, `gc`, whose deletes load it, and `planet-fetch`, whose download is written to the NAS and read back) weighs the whole, task #499 review), and its metadata work (task #451: `listed`, `stats`, `deletes` from `costin::meta`, the folder entries it listed and the files it statted and deleted (renames counted as deletes), each over its wall time; counted by GC's walks, which note a cost line `gc gc` in their job's costs file, and the inputs step's inputs-folder listing), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job of several targets, what they move over their times together, as it runs them one after another (each target's rate times its time: its own run's, else its time as its step's model predicts it on that Mac; `Sched::job_nas`, `NasWeigher::job`, task #939: weighed by its heaviest target, a slope-deep job of 52 targets weighed the whole NAS for 32 minutes while it moved 12 MB/s), and a job with a target of no measured rate or no known time, its heaviest target's (a job of no targets of its own, its lease's, its step's). A target joins a member's batch (`pick_every`) only while the job it makes still fits. **A leased job that has run past its predicted time** (its targets' times for its worker summed, `Sched::secs_of`; a target of no known time counting `OWN_AGE`) weighs instead what its job has moved on the NAS (bytes read, its uploads' read-backs among them, and written, files made, its metadata work: its processes' counts, carried by each lease beat, `agent::jobs::Live`), by the same limits: the greater of its mean rate since its lease's first beat (`Lease::mean`: what it moved from that beat's view to the newest over the time between; a beat counts what its job moved since it began, and a lease taken up at a lead's restart or held again at an agent's take-over is younger than its job, task #991: put over the lease's own time, on 6 Nov a 5 MB/s download taken over 5 hours in weighed two thirds of the NAS, and the lead granted itself nothing beside it on an idle NAS) and its rate over its last minute or so of beats (`Lease::lately`, `WINDOW`), so a job quiet early and heavy late is weighed by its heavy stretch within a minute or two, and one pausing between heavy stretches keeps its mean (`Sched::job_weight`, task #925: a slope-deep batch of 30 targets weighed at the whole by their runs on the other MacBook, where each read its 280 MB of terrain in 2 to 22 seconds, ran 52 minutes on the M1 at about 3 MB/s, and while it ran the lead granted no other job anywhere in the pool). A beat that doesn't say all it moved (an older agent's says its bytes alone) leaves it weighed by its targets. Within its predicted time its targets' weight stands, so a job not yet at its heavy reads is never weighed light; past it, a burst a job's targets didn't predict can overcommit the NAS for up to two minutes, and the gate on the NAS's own load below holds new grants meanwhile. The forecast weighs leased jobs by their targets alone. **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`, 4 streams at once (`STREAMS`, task #534: on 21 Oct one stream measured 5 creates/s and 25 MB/s where four made 41 creates/s and eight 57 MB/s, so a single stream set limits a fifth to a half of the NAS's): in each, 12 files of 4 KB made, then in each one of 16 MB written, synced and read back past the cache; the 48 small files deleted one by one, and a kept folder of its own (`<host>-meta` beside the probe's folders, 48 files, never removed by the stale-folder clean-up) listed and its files statted, measured only once it has gone unwritten 5 minutes so the answers come from the NAS, not this Mac's SMB cache of what it just wrote (missing or young: made, and 0 this probe; a 0 weighs nothing and the day's best is kept), in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left, so it's kept: the day's best passes over it, and dropping it would leave a lead started on a busy NAS no limits). The probes are kept in the lead's store (`nas-probes`, `coord::kept::PROBES`: saved every 30 minutes by the lead's prober alone, so in the store's NAS backup too) and read once the store is open, so a restart, or a new lead on another Mac taking that backup up (`agent::pool::load_backup`, merged with its own), keeps the day's best (task #603: on 23 Oct a restart under load cut the limits from 86 MB/s to 66.5 and inflated every weight). **The gate on the NAS's own load** (`nas::Loop`, task #534): every 10 s the lead reads each disk's busy share from the Synology over SNMPv3 (`crate::budget::snmp`, SYNOLOGY-STORAGEIO-MIB `storageIOLA`, the one SNMP reader, for the build page's figures too; its keys `NAS_SNMP_USER` and `NAS_SNMP_AUTH` from the project's `inputs/keys.env` (a value with whitespace or `#` is refused, as net-snmp's conf can't carry it: no usable keys, the gate open; the coordinator logs it once, naming the key, never its value), handed to `snmpget` in a private `snmp.conf` (0600, in a 0700 folder under the temp folder, `SNMPCONFPATH`; made once per lead, removed when its coordinator stops, and a stopped process's folder left behind (`scenic-snmp-<pid>`, pid gone) removed as a new session starts; `~/.snmp` untouched), never on a command line, never logged; a poll killed after 8 s) and smooths the busiest disk's (a new reading weighs 0.3: about half a minute's memory). Once that load is over the target the budget is held, and it reopens only when the load is below the target less 3 points (`nas::BAND`, so a load hovering at the target doesn't open and shut it every reading) (`Limits::held`): a job that weighs anything is granted, the lead's or a member's, only beside leased jobs that weigh nothing (`Limits::open`, on top of every rule above; the lead's own jobs asking to go alone (`pick_own`) count the members' jobs alone as the leased ones, so while held a job of the lead's own may still go beside the lead's other own jobs, as intended: the whole-budget rules bind them by weight as ever; weights and room are the probes' as ever, so a held NAS never admits a job an unheld one refuses), whatever loads the NAS (an outside repack counts); jobs running go on. Held, the lead's waiting lines say so: a line for the NAS ("held by NAS load (91 % > target 85 %)") and each target held back for the budget names it too (`Coordinator::nas_held`, `agent::nas_wait_lines`). With no keys or no answer, the gate is open (the probes' limits alone). **The target** is the owner's, pool-wide: the pool's setting `nas-target` (its share, 30–95, with who set it and when), kept by the lead in its store (`settings`, docs/coordination.md §3.1), set by `scenic nas-target [<percent> | off]` on any Mac (asked of its agent, which sends it to the lead; off: the default; with none, how it stands as the agent last had it); the lead alone enforces it. Not set, 85 % (`DEFAULT_TARGET_PCT`): never 100, after #451's stall at a NAS held busy, and above the 65–80 % an outside repack alone kept the disks at on 21 Oct, so the pool still works beside one. `scenic pool nas-probe [--dir <folder>]` runs one. (The NAS's space is apart: the owner's NAS reserve, `scenic nas-room`, docs/building.md.) **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back), or, once it has waited 10 minutes for the budget alone and no leased job weighs the whole, if it weighs the whole itself or more than the leased jobs together (`Limits::fits_job`, `OWN_AGE`: the members' jobs never starve it; it waits for heavier work to end, never for lighter; once it's in the leased jobs outweigh any other, so aged ones don't pile up); the lead's own within the whole, or while nothing leased weighs anything, or, once it has waited 10 minutes for the budget alone, while no leased job weighs the whole and the lead's own leased jobs leave it room within the whole (its every-step targets, `pick_every`: `Limits::fits_own_target`); a planned job of the lead's own (`own_nas_fits`) also, not waiting, once it weighs the whole itself while no leased job weighs the whole (`Limits::fits_own_job`; both `OWN_AGE`, the wait timed from when it was first held back and forgotten once granted: members' small jobs never hold it back for good, and the lead's own aged jobs don't pile up past the budget; the simulator checks each start of the lead's own against the same rule, with the waits as the coordinator kept them); **an aged target holds its room** (`Shared::nas_reserved`, task #444): of the targets held back for the budget alone for 10 minutes or more (and passed over in the last two minutes), the one held back first has its weight kept free: no other job weighing anything is granted, a member's or the lead's, unless the leased jobs, it and that one fit within the whole, so a target weighing less than the whole but more than the room left (depth-lo's) goes as the leased jobs end instead of waiting behind a stream of smaller ones; it never lets the budget past the whole, the reserved target itself aside (by `fits_job`'s, `fits_own_target`'s or `fits_own_job`'s aged path), and the reserved target always has a way in once no leased job weighing the whole runs (task #603: on 23 Oct a pack of 946 aged beside the M4's terrain of 103 could pass no rule, a member's aged path then taking only whole ones and the lead's every-step targets none, and the room held for it stopped every other job for 41-62 minutes); a target is noted waiting only when its asker would take it but for the budget (its measured memory and disk fit, or a cold start it's the one to make), so one no asker can take never holds room; a step's grant restarts the waits of its other aged targets weighing no more than the job granted, weighed by the NAS's own limits whoever asked (task #552: it isn't starved, it just took room; else a step granted target by target holds the reservation for good, each grant handing it to its next target, as 52 units aged an hour did on 22 Oct while every other step and the lead's slots waited); a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch, unless `off`, holds the members' too (`nas`). Switched `off`, the members' jobs are not held and the lead's own are held by their own weights alone (`Shared::nas_room_heaviest`: a member's unheld jobs no longer keep the lead idle). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`), once each (`agent::nas_wait_lines`); an ask granted fewer jobs than it wanted, with nothing else offered fitting its room, while targets it would take wait for the budget says so first in its refusal ("the NAS budget: 4 targets it would take wait for the NAS's room; else lo 3/6/3 needs …", `Sched::nas_waits_at`, task #931: on 4 Nov each slope-deep job weighed the whole NAS by its targets' runs (their reads a median 2.2 times the NAS's probed rate), the pool ran them mostly one at a time, and the idle Macs' refusals named only their memory). **The clean-up waits for a quiet NAS** (`QUIET_STEPS`: `gc`; task #451, after GC beside two depth-lo jobs held the NAS at 34 % IO wait and all three stalled): it starts only beside leased jobs weighing nothing, or within the whole with them by its measured weight (`Limits::fits_quiet`), and the room held for an aged target. Its wait isn't noted (it holds no room) until it has been held back 24 hours since it was last granted (`QUIET_AGE`, `Shared::quiet_since`, kept in memory: a new coordinator counts afresh): then it goes as an aged job of the lead's own (`fits_own_job`, its wait noted, its room held). Unmeasured the way it runs now (none of its runs of its step's `cost_v`), it isn't held for a quiet NAS: it weighs the whole, as any unmeasured step known to load the NAS, and goes as the lead's own such jobs do, beside no leased job weighing the whole (`fits_own_job`), never past the gate on the NAS's own load, so its first run measures it and nothing else weighing anything is granted beside it meanwhile (task #1000: GC's step 8b ran no longer as the daily job, whose last run weighed the whole NAS by its reads, and held for a quiet NAS a busy pool never had, it never ran; task #1001: its runs hashing the pending uploads, 813 GB in 4,844 s, weighed it the whole NAS again: `gc`'s `cost_v` 2, the uploads checked by their sizes, puts those runs away). Its weight is its deletes, folder entries listed and files statted a second over the probes' rates for them, its bytes next to none; the probes delete 4 KB files, the clean-up larger ones. Running, it yields at its next safe point (each removal of its queue's, each folder of its sweeps, each batch of the pending uploads' check; `control::draining`, its cost line noted first, ending as paused) when a target held back for the budget `OWN_AGE` doesn't fit beside the leased jobs but would without it (`Coordinator::nas_yield`, asked by the agent each loop). **Inside a job** (task #1096, the owner's of 10 Nov): no allowance is handed out; each process holds its own reads in flight on the NAS to a limit it finds as TCP finds its window (`store::aimd::NAS`: from 2, decided once a window on its reads' median latency over their size class's best lately (never under 2 ms; this Mac's cache's answers no samples): doubled until its first halving and one more a window after while near it, halved past three times it or when a read times out on the share, 1 to 16; every read of a stored file, a pack, a mid or a whole copy takes its turn), so the processes and Macs reading the NAS settle into shares between them and a quiet one holds nothing; the weights above still count what each job moves. (The lead's smoothed SNMP load is not passed to the readers: it would ride the beat's answer to the agent and then to each job, which no channel carries today.) **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`, `planet-fetch`; none is offered to members). Not held to it: tasks |
+| NAS and network budget | `crate::budget::nas`: the lead's own jobs always; the members' too unless the pool's setting `nas-budget` says `off` (on while not set; the lead's, `/pool/settings`, §12). A job's **NAS weight** is its share of the NAS in thousandths: its targets' measured rate (`needs::Book::nas`: `bytes` read, less those of this Mac's own disk or its page cache (`local`, task #551; a NAS file copied whole counts what of it this Mac's page cache held as the copy began, `mincore` over a mapping never read, of the copy's own descriptor, `store::sys::resident`; a file of no more than one copy read, 1 MB, isn't asked: mapping a NAS file is a round trip of its own, 15-19 ms; task #939: slope-deep copied its z6 tile's terrain hi pack, about 200 MB, once a target, every copy after the first from the cache in a second or less (a second copy of a 233 MB pack took 0.05 s, en0 receiving 5 MB), counted as the NAS's), plus `wrote` and `read_back` (what its uploads read back to check them, task #1142: each verified upload reads its whole file back, store::naming's `write_atomic`; a line without `read_back`, from before it was measured, counts its `wrote`, every file costin counts made having been read back whole, so no `cost_v` was bumped for it), and `creates`, each over its wall time, a halo step's (`pack`, `lo`) `wrote` and `read_back` alone, its job's read rate (`nas_read` over `nas_secs`: what the job read of the halo's base packs from the NAS and the time that took, on each of its targets; a measure without `nas_secs`, task #396's first, counts no reads) in place of its `bytes` (the halo's base packs' files); its own run's, else its step's 90th percentile of each, each run weighed by its time (the rate its runs stay under 90 % of the time they run: counted run by run, slope-deep's thousands of one-second runs made it 248 MB/s, three times the NAS, task #939), its runs the way it runs now (`cost_v`: an earlier way's count for nothing), each put at the lead's pace by its Mac's and the percentile taken at the pace of the Mac it's weighed for (the asker's, the lease's; an aged target's held room at the lead's: `Book::nas_for`, Each Mac's pace below); none measured, 0, but a step known to load the NAS (`NAS_STEPS`: `unit`, `pack`, `lo`, `gc`, whose deletes load it, and `planet-fetch`, whose download is written to the NAS and read back) weighs the whole, task #499 review), and its metadata work (task #451: `listed`, `stats`, `deletes` from `costin::meta`, the folder entries it listed and the files it statted and deleted (renames counted as deletes), each over its wall time; counted by GC's walks, which note a cost line `gc gc` in their job's costs file, and the inputs step's inputs-folder listing), each over the NAS's limit, added: one combined weight, at most the whole (1000); a job of several targets, what they move over their times together, as it runs them one after another (each target's rate times its time: its own run's, else its time as its step's model predicts it on that Mac; `Sched::job_nas`, `NasWeigher::job`, task #939: weighed by its heaviest target, a slope-deep job of 52 targets weighed the whole NAS for 32 minutes while it moved 12 MB/s), and a job with a target of no measured rate or no known time, its heaviest target's (a job of no targets of its own, its lease's, its step's). A target joins a member's batch (`pick_every`) only while the job it makes still fits. **A leased job that has run past its predicted time** (its targets' times for its worker summed, `Sched::secs_of`; a target of no known time counting `OWN_AGE`) weighs instead what its job has moved on the NAS (bytes read, its uploads' read-backs among them, and written, files made, its metadata work: its processes' counts, carried by each lease beat, `agent::jobs::Live`), by the same limits: the greater of its mean rate since its lease's first beat (`Lease::mean`: what it moved from that beat's view to the newest over the time between; a beat counts what its job moved since it began, and a lease taken up at a lead's restart or held again at an agent's take-over is younger than its job, task #991: put over the lease's own time, on 6 Nov a 5 MB/s download taken over 5 hours in weighed two thirds of the NAS, and the lead granted itself nothing beside it on an idle NAS) and its rate over its last minute or so of beats (`Lease::lately`, `WINDOW`), so a job quiet early and heavy late is weighed by its heavy stretch within a minute or two, and one pausing between heavy stretches keeps its mean (`Sched::job_weight`, task #925: a slope-deep batch of 30 targets weighed at the whole by their runs on the other MacBook, where each read its 280 MB of terrain in 2 to 22 seconds, ran 52 minutes on the M1 at about 3 MB/s, and while it ran the lead granted no other job anywhere in the pool). A beat that doesn't say all it moved (an older agent's says its bytes alone) leaves it weighed by its targets. Within its predicted time its targets' weight stands, so a job not yet at its heavy reads is never weighed light; past it, a burst a job's targets didn't predict can overcommit the NAS for up to two minutes, and the gate on the NAS's own load below holds new grants meanwhile. The forecast weighs leased jobs by their targets alone. **The limits** are measured: the lead's coordinator probes the NAS every 30 minutes, whatever the switch says (`probe`, 4 streams at once (`STREAMS`, task #534: on 21 Oct one stream measured 5 creates/s and 25 MB/s where four made 41 creates/s and eight 57 MB/s, so a single stream set limits a fifth to a half of the NAS's): in each, 12 files of 4 KB made, then in each one of 16 MB written, synced and read back past the cache; the 48 small files deleted one by one, and a kept folder of its own (`<host>-meta` beside the probe's folders, 48 files, never removed by the stale-folder clean-up) listed and its files statted, measured only once it has gone unwritten 5 minutes so the answers come from the NAS, not this Mac's SMB cache of what it just wrote (missing or young: made, and 0 this probe; a 0 weighs nothing and the day's best is kept), in a folder of its own under `state/pool/nas-probe/<host>-<pid>`, all removed after; as it starts, the coordinator removes its host's folders a stopped process left, never another host's) and takes the best of the last day's probes (a probe under the build's load measures what's left, so it's kept: the day's best passes over it, and dropping it would leave a lead started on a busy NAS no limits). The probes are kept in the lead's store (`nas-probes`, `coord::kept::PROBES`: saved every 30 minutes by the lead's prober alone) and read once the store is open, so a restart keeps the day's best (task #603: on 23 Oct a restart under load cut the limits from 86 MB/s to 66.5 and inflated every weight). **The gate on the NAS's own load** (`nas::Loop`, task #534): every 10 s the lead reads each disk's busy share from the Synology over SNMPv3 (`crate::budget::snmp`, SYNOLOGY-STORAGEIO-MIB `storageIOLA`, the one SNMP reader, for the build page's figures too; its keys `NAS_SNMP_USER` and `NAS_SNMP_AUTH` from the project's `inputs/keys.env` (a value with whitespace or `#` is refused, as net-snmp's conf can't carry it: no usable keys, the gate open; the coordinator logs it once, naming the key, never its value), handed to `snmpget` in a private `snmp.conf` (0600, in a 0700 folder under the temp folder, `SNMPCONFPATH`; made once per lead, removed when its coordinator stops, and a stopped process's folder left behind (`scenic-snmp-<pid>`, pid gone) removed as a new session starts; `~/.snmp` untouched), never on a command line, never logged; a poll killed after 8 s) and smooths the busiest disk's (a new reading weighs 0.3: about half a minute's memory). Once that load is over the target the budget is held, and it reopens only when the load is below the target less 3 points (`nas::BAND`, so a load hovering at the target doesn't open and shut it every reading) (`Limits::held`): a job that weighs anything is granted, the lead's or a member's, only beside leased jobs that weigh nothing (`Limits::open`, on top of every rule above; the lead's own jobs asking to go alone (`pick_own`) count the members' jobs alone as the leased ones, so while held a job of the lead's own may still go beside the lead's other own jobs, as intended: the whole-budget rules bind them by weight as ever; weights and room are the probes' as ever, so a held NAS never admits a job an unheld one refuses), whatever loads the NAS (an outside repack counts); jobs running go on. Held, the lead's waiting lines say so: a line for the NAS ("held by NAS load (91 % > target 85 %)") and each target held back for the budget names it too (`Coordinator::nas_held`, `agent::nas_wait_lines`). With no keys or no answer, the gate is open (the probes' limits alone). **The target** is the owner's, pool-wide: the pool's setting `nas-target` (its share, 30–95, with who set it and when), kept by the lead in its store (`settings`, docs/coordination.md §3.1), set by `scenic nas-target [<percent> | off]` on any Mac (asked of its agent, which sends it to the lead; off: the default; with none, how it stands as the agent last had it); the lead alone enforces it. Not set, 85 % (`DEFAULT_TARGET_PCT`): never 100, after #451's stall at a NAS held busy, and above the 65–80 % an outside repack alone kept the disks at on 21 Oct, so the pool still works beside one. `scenic pool nas-probe [--dir <folder>]` runs one. (The NAS's space is apart: the owner's NAS reserve, `scenic nas-room`, docs/building.md.) **Enforced at grant** (`coord`'s `pick_every` and `pick_own`, so `pack` too, the lead's own jobs among them): a member's target is granted only while the weights of every job leased in the pool (the lead's own among them) leave room for its own within the whole (1000), or while no other member's job weighs anything (the lead's own alone never hold it back), or, once it has waited 10 minutes for the budget alone and no leased job weighs the whole, if it weighs the whole itself or more than the leased jobs together (`Limits::fits_job`, `OWN_AGE`: the members' jobs never starve it; it waits for heavier work to end, never for lighter; once it's in the leased jobs outweigh any other, so aged ones don't pile up); the lead's own within the whole, or while nothing leased weighs anything, or, once it has waited 10 minutes for the budget alone, while no leased job weighs the whole and the lead's own leased jobs leave it room within the whole (its every-step targets, `pick_every`: `Limits::fits_own_target`); a planned job of the lead's own (`own_nas_fits`) also, not waiting, once it weighs the whole itself while no leased job weighs the whole (`Limits::fits_own_job`; both `OWN_AGE`, the wait timed from when it was first held back and forgotten once granted: members' small jobs never hold it back for good, and the lead's own aged jobs don't pile up past the budget; the simulator checks each start of the lead's own against the same rule, with the waits as the coordinator kept them); **an aged target holds its room** (`Shared::nas_reserved`, task #444): of the targets held back for the budget alone for 10 minutes or more (and passed over in the last two minutes), the one held back first has its weight kept free: no other job weighing anything is granted, a member's or the lead's, unless the leased jobs, it and that one fit within the whole, so a target weighing less than the whole but more than the room left (depth-lo's) goes as the leased jobs end instead of waiting behind a stream of smaller ones; it never lets the budget past the whole, the reserved target itself aside (by `fits_job`'s, `fits_own_target`'s or `fits_own_job`'s aged path), and the reserved target always has a way in once no leased job weighing the whole runs (task #603: on 23 Oct a pack of 946 aged beside the M4's terrain of 103 could pass no rule, a member's aged path then taking only whole ones and the lead's every-step targets none, and the room held for it stopped every other job for 41-62 minutes); a target is noted waiting only when its asker would take it but for the budget (its measured memory and disk fit, or a cold start it's the one to make), so one no asker can take never holds room; a step's grant restarts the waits of its other aged targets weighing no more than the job granted, weighed by the NAS's own limits whoever asked (task #552: it isn't starved, it just took room; else a step granted target by target holds the reservation for good, each grant handing it to its next target, as 52 units aged an hour did on 22 Oct while every other step and the lead's slots waited); a cold job of its own waits for the lead's jobs to end (§7.2) only when it would fit with the members' jobs alone. **The lead's own jobs are always held to it**, whatever the switch says (the limits probed: `nas_own`); the switch, unless `off`, holds the members' too (`nas`). Switched `off`, the members' jobs are not held and the lead's own are held by their own weights alone (`Shared::nas_room_heaviest`: a member's unheld jobs no longer keep the lead idle). The rest wait for a job to end; a target held back for over 30 minutes is a waiting line in the lead's status (`Coordinator::nas_waits`), once each (`agent::nas_wait_lines`); an ask granted fewer jobs than it wanted, with nothing else offered fitting its room, while targets it would take wait for the budget says so first in its refusal ("the NAS budget: 4 targets it would take wait for the NAS's room; else lo 3/6/3 needs …", `Sched::nas_waits_at`, task #931: on 4 Nov each slope-deep job weighed the whole NAS by its targets' runs (their reads a median 2.2 times the NAS's probed rate), the pool ran them mostly one at a time, and the idle Macs' refusals named only their memory). **The clean-up waits for a quiet NAS** (`QUIET_STEPS`: `gc`; task #451, after GC beside two depth-lo jobs held the NAS at 34 % IO wait and all three stalled): it starts only beside leased jobs weighing nothing, or within the whole with them by its measured weight (`Limits::fits_quiet`), and the room held for an aged target. Its wait isn't noted (it holds no room) until it has been held back 24 hours since it was last granted (`QUIET_AGE`, `Shared::quiet_since`, kept in memory: a new coordinator counts afresh): then it goes as an aged job of the lead's own (`fits_own_job`, its wait noted, its room held). Unmeasured the way it runs now (none of its runs of its step's `cost_v`), it isn't held for a quiet NAS: it weighs the whole, as any unmeasured step known to load the NAS, and goes as the lead's own such jobs do, beside no leased job weighing the whole (`fits_own_job`), never past the gate on the NAS's own load, so its first run measures it and nothing else weighing anything is granted beside it meanwhile (task #1000: GC's step 8b ran no longer as the daily job, whose last run weighed the whole NAS by its reads, and held for a quiet NAS a busy pool never had, it never ran; task #1001: its runs hashing the pending uploads, 813 GB in 4,844 s, weighed it the whole NAS again: `gc`'s `cost_v` 2, the uploads checked by their sizes, puts those runs away). Its weight is its deletes, folder entries listed and files statted a second over the probes' rates for them, its bytes next to none; the probes delete 4 KB files, the clean-up larger ones. Running, it yields at its next safe point (each removal of its queue's, each folder of its sweeps, each batch of the pending uploads' check; `control::draining`, its cost line noted first, ending as paused) when a target held back for the budget `OWN_AGE` doesn't fit beside the leased jobs but would without it (`Coordinator::nas_yield`, asked by the agent each loop). **Inside a job** (task #1096, the owner's of 10 Nov): no allowance is handed out; each process holds its own reads in flight on the NAS to a limit it finds as TCP finds its window (`store::aimd::NAS`: from 2, decided once a window on its reads' median latency over their size class's best lately (never under 2 ms; this Mac's cache's answers no samples): doubled until its first halving and one more a window after while near it, halved past three times it or when a read times out on the share, 1 to 16; every read of a stored file, a pack, a mid or a whole copy takes its turn), so the processes and Macs reading the NAS settle into shares between them and a quiet one holds nothing; the weights above still count what each job moves. (The lead's smoothed SNMP load is not passed to the readers: it would ride the beat's answer to the agent and then to each job, which no channel carries today.) **Downloads:** a job of a fetching step (steps table kind `Fetch`) counts one, capped pool-wide by the switch's `downloads <n>` (no cap without it): the lead's own fetching steps (`bld-fetch`, `rail-feeds`, `planet-fetch`; none is offered to members). Not held to it: tasks |
 | a pass's answers | `crate::answers`: a lease around each sync (renewed every 150 s, lapsing after 10 min), the lead's (asked through the agent's proxy, `/pool/lease/answers`; in the lead's store); on a Mac a reader/writer lock (`answers::Local`) |
 | write-set | `agent::steps::writes`, enforced by `Out` and the merge (§7.3). Raw archives, answers and `bld-fetch`'s sources are outside the manifest, each written whole under its module's names |
 | targets per job | as many as fit the batch length of measured time on the Mac (the pool's `batch-minutes`, else 15: `Sched::batch_len`, Batch length below), the lead's and a member's alike; a step kept to the lead in one job |
@@ -2961,7 +2911,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   10 s into `pool_nas_calls`, `pool_nas_missed` and `pool_nas_held_cap`
   (task #634; memory only, like every series). The lead's status says the rest (`nas`, `coord::NasView`): the
   day's probes as its prober keeps them (in its store, `nas-probes`, read as it opens and saved
-  there, so in the store's backup too), the limits they give, the gate's smoothed load, target and
+  there), the limits they give, the gate's smoothed load, target and
   whether it holds, the disks' last reading (finite values alone), the pool's traffic summed, and
   the NAS's mount (`mount: {name, proto, free}`: the server's name and protocol from what the
   project folder's filesystem mounts, `//user@fishandchips.local/personal` giving `fishandchips`
@@ -3181,45 +3131,34 @@ z6 tile's job.
   #1038): two to four Macs, any of which may be the declared lead, each in a
   thread of its own and one at a time. **Real:** the driver; the lead's coordinator in process
   (`Coordinator::in_process`: its routes, scheduler, lease table, hand-offs' registry, its store on
-  a folder of its own with its durability wait, epoch raises, the backup taken up and restored);
+  a folder of its own with its durability wait, its epoch bumped as it opens);
   the member's beat on coordwire's client over a network fake (`Client::through`); the records'
   brief a job opens (`Briefs::fresh`, `GET /pool/brief`); GC on the lead (its queue, the map's
   feed and its clients' cursors, `/gc/chunk` and `/gc/gone`, the merge's refusal) with its grace
   (1 h) and cursor TTL (6 h). **Modelled:** the agent's loop around them (`sim::mac`: its slots,
   asks, beats, role and restarts), the jobs and their hand-offs, the map's publishing and the map
-  servers' asks, the owner, the clocks, and the share: create-new whose bytes land late or never,
+  servers' asks, the owner's app installs, the clocks, and the share: create-new whose bytes land late or never,
   renames landing late (a Mac asleep between), busy renames, stale reads (`Cfg::stale`), outages,
   lost answers, slow and stalling operations. **Faults** (each a knob, mixed by the seed, or all
   at once): requests dropped, delayed past the client's time (done then, unanswered), answers lost;
   Macs cut off for minutes to hours, one-way links; the lead killed mid-append (its log's last line
-  torn or whole); crashes; the lead's disk replaced and its store restored from the NAS backup;
-  skewed clocks, sleeps, app upgrades, development builds and rollbacks, saved states lost,
-  members leaving for good; the owner moving the lead (to another Mac, back, mid-save, while the
-  lead's reads fail) and declaring again the Mac a waiting take-up names (after 20 min); reads
-  failing each on its own, at 5 % or 20 % (`Cfg::flaky`, task #1154). **Checked
+  torn or whole); crashes; skewed clocks, sleeps, app upgrades, development builds and rollbacks,
+  saved states lost (the records on the Mac's disk kept), members leaving for good; reads failing
+  each on its own, at 5 % or 20 % (`Cfg::flaky`, task #1154). The owner's hand move of the lead
+  (§6.1) isn't modelled: the agent's test of it is below. **Checked
   at every step:** no target under two live leases (the jobs running and each coordinator's
   table), two coordinators never granting at once, no job id granted twice, every hand-off merged
   once or refused with why, acknowledgements only of what a landed snapshot names and no landed
-  snapshot following the brief lacking one, §4's epoch and records invariants, a job's brief never
+  snapshot (but a late one, older than one landed, counted) lacking one, §4's epoch and records
+  invariants, a job's brief never
   older than the one its lease was granted from, GC removing no name the records it saw name nor
   one a map server heard within the TTL serves; at the end, the declared lead leading alone and
   caught up, the one path naming every hand-off owed (but the double fault's, docs/coordination.md §5.3, and
   a Mac gone for good's), its take-ups settled (the run going on while the declared
-  lead's take-up waits); with reads failing now and then, each declared lead taking up within
-  `STALE_S` and 20 loops (awake) of the owner's move or its process's restart (`TAKE_UP_S`; a
-  new pool's take-up of today's files apart, counted: it reads half a dozen files more in its
-  step, any failing its try). Counted, not wrong, as §4's limits: two Macs leading one epoch number, a
-  take-up finished late with its records fenced, a hand-off another lead acknowledged applied
-  again into fenced records, a job doubled by a lease its granting lead never held (its state
-  taken up from a backup without it), and a run ending on records lost with their lead's disk
-  after a late save over the one path (task #1152). Runs: 160 mixed seeds, 60 of every
-  fault, 60 of the lead's moves and 12 of GC through hours away in the suite; by hand
-  (`#[ignore]`): 2,000 mixed and 2,000 every-fault seeds, 2,000 of four hours' faults, each knob
-  alone, and each of 400 seeds run twice for the same events (11 Nov, task #1038 and its review on
-  main cb0fba66: all run, none wrong; the first three 45, 65 and 85 s on a quiet M4). Reads
-  failing now and then: 20 seeds at each of 5 % and 20 % in the suite, 2,000 of each by hand (12
-  Nov, task #1154: none wrong; of the 7,926 bounded take-ups after a move, 7,496 within `STALE_S`
-  and 5 loops, 21 past 10, none past `TAKE_UP_S`).
+  lead's take-up waits). Runs: 160 mixed seeds, 60 of every fault and 12 of GC through hours away
+  in the suite, and 20 seeds at each of 5 % and 20 % of reads failing; by hand (`#[ignore]`):
+  2,000 mixed and 2,000 every-fault seeds, 2,000 of four hours' faults, 2,000 at each rate of
+  failing reads, each knob alone, and each of 400 seeds run twice for the same events.
 - **Not modelled by the simulator:** the HTTP transport itself (coordwire's client is driven
   through `Client::through`), the agent's real loop, planning and jobs (`sim::mac` stands in), torn
   reads and other I/O errors of the share, the member lock, a wall clock set while awake, the map
@@ -3271,9 +3210,9 @@ z6 tile's job.
   gone keeps its jobs' hand-offs and waits (`pool::driver::tests::a_member_never_leads`,
   `with_the_lead_gone_a_member_keeps_its_jobs_hand_offs_and_waits`,
   `agent::lead::tests::runs::a_member_never_claims_the_lead_and_waits_for_it`); the lead's restart
-  keeps its leases (`agent::pool::tests::the_leads_restart_keeps_its_leases`); the owner's move of
-  the lead (`pool::driver::tests::the_owners_edit_of_the_declaration_moves_the_lead`); hand-offs by
-  HTTP. Each piece of the protocol has its own tests (docs/coordination.md §8).
+  keeps its leases (`agent::pool::tests::the_leads_restart_keeps_its_leases`); the owner's hand
+  move of the lead, its folders copied to another member's
+  (`agent::pool::tests::a_lead_moved_by_hand_leads_from_its_copied_folders`); hand-offs by HTTP. Each piece of the protocol has its own tests (docs/coordination.md §8).
 - **Two Macs on the real NAS** (`tools/check/pool-two-macs.sh`): the real agents on a scratch
   folder of the NAS, jobs played by a script. Planned: load.
 - **The share itself** (`tools/check/nas-probe.py <peer> <scratch folder>`, run on one Mac, which

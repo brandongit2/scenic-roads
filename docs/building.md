@@ -424,8 +424,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   target is never built twice at once. A worker's failed z6 tile isn't offered to it for an hour,
   doubling.
 - **The coordinator's state** (leases, costs, the pause) is in the store on the lead's disk
-  (`agent/coord/store/`, backed up to the NAS as `state/lead/store.json` every 10 min,
-  docs/coordination.md §4); the workers' token and accepted devices are the pool's
+  (`agent/coord/store/`, docs/coordination.md §4); the workers' token and accepted devices are the pool's
   (`state/coord/`); the history is the lead's coordinator's file on its disk (`agent/coord/history.jsonl`, the week's), each finished day packed into one tar in `state/coord/history-archive/` by GC (docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<epoch>-<id>` it saves into `agent/pool/jobs/<epoch>-<id>/`
   (`SCENIC_HANDOFF`, `buildstore::handoff`), then as an entry (its done record and costs) kept by its

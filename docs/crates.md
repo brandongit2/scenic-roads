@@ -589,7 +589,7 @@ The choices, against the alternatives:
   `Recorded`, which reads only the term, manifest, pending and sizes) and the brief
   (`BriefOf`: pool's `Brief`, and `read_manifest`'s manifest alone). Pool re-exports all of it at
   its old paths; `Records::{load, newest, now}` and `Brief::now` are one-line calls of these. The
-  writing (save, merge, take_up, making terms) stays in pool. No second copy of the choice. (There
+  writing (save, merge, the take-up) stays in pool. No second copy of the choice. (There
   are no terms (task #1124): `records::term` is
   `records::lead` (`LEAD`, `Declared`, `declared`, `declare`, the role, the app rule), re-exported
   as `pool::lead`, and the choice is the one path's alone (`load_one`, `now`, `brief_now`,
@@ -1090,8 +1090,7 @@ commit; re-exports at the old paths as before.
         command (`cli::check_command`), the jobs' check of each command and `test_groups` (the
         reaper of a test's job groups); the pool's loopback mail addresses and `open_backoff`;
         coord's `LOOPBACK_WAITS`; net's `names`, `urls`, `lan_urls`, `served_https` (#1110: the
-        coordinator's own calls too, not only the agent's); the store's `backup_every`
-        (was `BACKUP_EVERY`).
+        coordinator's own calls too, not only the agent's).
       - **Safety:** `testing()` is true exactly where pipeline's `cfg(test)` applied. It turns true
         only by `go_testing`, called only from a lib.rs's `#[cfg(test)]` `TEST_START` (or in
         buildstore's own unit tests, its initial value), so only in some crate's unit tests; of the
