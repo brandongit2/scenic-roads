@@ -1,10 +1,12 @@
 //! The app on this Mac (docs/macs.md, The updater): every Mac runs it from a local copy of the
 //! published app (`<home>/app/<version>/`, `<home>/app/current` pointing at it). When the NAS's
-//! `app/current.json` names another version, it's copied here (each file checked by its SHA-256)
-//! and `current` is pointed at it; the program that checked restarts into it by its own rule (the
-//! agent by its update drain, the map server once the map has been idle a minute). A copy is
-//! complete before it's used: files go to a folder of the copier's own, `<version>.<pid>.tmp/`,
-//! which is renamed (a copier that finds the version there already drops its own).
+//! live manifest (`app/releases/current.json`, `LIVE`) names another version, its archive
+//! (`app/releases/<version>.tgz`, one file) is copied here, checked by its SHA-256 and unpacked,
+//! and every file unpacked is checked by its own; then `current` is pointed at it, and the program
+//! that checked restarts into it by its own rule (the agent by its update drain, the map server
+//! once the map has been idle a minute). A copy is complete before it's used: it's unpacked in a
+//! folder of the copier's own, `<version>.<pid>.tmp/`, whose app is renamed into place (a copier
+//! that finds the version there already drops its own).
 //!
 //! Every Mac's agent checks (`spawn`, from `scenic agent`); the Mac mini's map server checks too
 //! (crates/server/src/updater.rs), so the map updates while the agent there is stopped. One check
@@ -14,28 +16,35 @@
 //! the two never write one folder or link, and a version a program runs from is never pruned
 //! (`running_versions`).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// The NAS's record of the published app.
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+/// The NAS's manifest of the live version (tools/app/lib.zsh's app_manifest, written last by a
+/// publish); `previous.json` beside it is the one before, for `publish.sh --rollback`.
+pub const LIVE: &str = "app/releases/current.json";
+
+/// The NAS's manifest of a published version. (Its `files`, the list alone, is for the updaters
+/// before #1148, which copied a version's folder file by file: not read here.)
+#[derive(serde::Deserialize, Clone, Debug)]
 pub struct Current {
     pub version: String,
-    /// Paths relative to the version's folder.
-    pub files: Vec<String>,
-    /// Each file's SHA-256 (hex), checked after the copy (absent in older manifests).
-    #[serde(default)]
-    pub sha256: std::collections::BTreeMap<String, String>,
+    /// Each file's SHA-256 (hex), by its path in the version's folder: the version's files, all of
+    /// them, each checked once unpacked.
+    pub sha256: BTreeMap<String, String>,
+    /// The SHA-256 (hex) of the version's archive, `app/releases/<version>.tgz`, checked before
+    /// it's unpacked.
+    pub archive_sha256: String,
 }
 
 /// How long a `<version>.tmp/` folder goes untouched before it's a leftover: no copy in progress
-/// (an updater's, or `tools/app/install.sh`'s rsync) pauses that long.
+/// (an updater's, or `tools/app/install.sh`'s) pauses that long.
 const STALE_COPY: Duration = Duration::from_secs(3600);
 
-/// Whether bytes are a program: a Mach-O binary or a script.
-fn executable(b: &[u8]) -> bool {
-    b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) || b.starts_with(&[0xca, 0xfe, 0xba, 0xbe]) || b.starts_with(b"#!")
+fn sha256(b: &[u8]) -> String {
+    use sha2::Digest;
+    format!("{:x}", sha2::Sha256::digest(b))
 }
 
 /// The version the running program was started from (its folder's name under `<home>/app/`; a
@@ -61,8 +70,8 @@ pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result
     if lock.try_lock().is_err() {
         return Ok(None);
     }
-    let Ok(bytes) = root.join("app/current.json").read() else { return Ok(None) };
-    let cur: Current = serde_json::from_slice(&bytes).context("app/current.json")?;
+    let Ok(bytes) = root.join(LIVE).read() else { return Ok(None) };
+    let cur: Current = serde_json::from_slice(&bytes).context(LIVE)?;
     if cur.version.is_empty() || cur.version.contains('/') {
         return Ok(None);
     }
@@ -74,39 +83,15 @@ pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result
     if !dest.exists() {
         let tmp = dir.join(format!("{}.{}.tmp", cur.version, std::process::id()));
         std::fs::remove_dir_all(&tmp).ok();
-        for f in &cur.files {
-            if f.contains("..") {
-                bail!("bad path in app/current.json: {f}");
-            }
-            let b = root
-                .join("app")
-                .join(&cur.version)
-                .join(f)
-                .read()
-                .with_context(|| format!("app {}: {f}", cur.version))?;
-            if let Some(want) = cur.sha256.get(f) {
-                use sha2::Digest;
-                let got = format!("{:x}", sha2::Sha256::digest(&b));
-                if &got != want {
-                    bail!("app {}: {f} doesn't match its SHA-256 (copied {got}, published {want})", cur.version);
-                }
-            }
-            let p = tmp.join(f);
-            std::fs::create_dir_all(p.parent().context("a file's folder")?)?;
-            std::fs::write(&p, &b)?;
-            if executable(&b) {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))?;
-            }
-        }
+        let r = copy(root, &cur, &tmp);
         // (Another copier, an older server's updater, may have finished first: a rename onto
         // its full folder fails, and its copy is used.)
-        if let Err(e) = std::fs::rename(&tmp, &dest) {
-            std::fs::remove_dir_all(&tmp).ok();
-            if !dest.is_dir() {
-                return Err(e).with_context(|| format!("app {}: rename its copy", cur.version));
-            }
-        }
+        let r = r.and_then(|app| match std::fs::rename(&app, &dest) {
+            Err(e) if !dest.is_dir() => Err(e).with_context(|| format!("app {}: rename its copy", cur.version)),
+            _ => Ok(()),
+        });
+        std::fs::remove_dir_all(&tmp).ok();
+        r?;
     }
     // Point `current` at it (a new link of this copier's own renamed over the old one).
     let tmp_link = dir.join(format!("current.{}.tmp", std::process::id()));
@@ -116,6 +101,49 @@ pub fn check(home: &Path, root: &store::nasfs::NasRoot, running: &str) -> Result
     eprintln!("app {} ready", cur.version);
     prune(home, &cur.version, running);
     Ok(Some(cur.version))
+}
+
+/// The version's archive copied into `tmp` (a new folder) and checked, then unpacked in
+/// `tmp/app` (tar keeps the files' modes: the programs' too) and every file checked: the folder
+/// unpacked, with the manifest's files alone, each matching its SHA-256.
+fn copy(root: &store::nasfs::NasRoot, cur: &Current, tmp: &Path) -> Result<PathBuf> {
+    let v = &cur.version;
+    let (archive, app) = (tmp.join("app.tgz"), tmp.join("app"));
+    std::fs::create_dir_all(&app)?;
+    root.join(format!("app/releases/{v}.tgz")).copy_to_local(&archive).with_context(|| format!("app {v}: its archive"))?;
+    let got = sha256(&std::fs::read(&archive)?);
+    ensure!(got == cur.archive_sha256, "app {v}: its archive doesn't match its SHA-256 (copied {got}, published {})", cur.archive_sha256);
+    // (bsdtar, macOS's: it refuses a path that is absolute or climbs with "..".)
+    let out = store::spawn::output(store::spawn::command("/usr/bin/tar").arg("-xzf").arg(&archive).arg("-C").arg(&app))
+        .context("run tar")?;
+    ensure!(out.status.success(), "app {v}: tar couldn't unpack its archive: {}", String::from_utf8_lossy(&out.stderr).trim());
+    let mut found = BTreeMap::new();
+    files_in(&app, "", &mut found)?;
+    for (f, want) in &cur.sha256 {
+        let Some(p) = found.remove(f) else { bail!("app {v}: {f} isn't in its archive") };
+        let got = sha256(&std::fs::read(&p)?);
+        ensure!(&got == want, "app {v}: {f} doesn't match its SHA-256 (unpacked {got}, published {want})");
+    }
+    ensure!(found.is_empty(), "app {v}: its archive holds files its manifest doesn't: {:?}", found.keys().collect::<Vec<_>>());
+    Ok(app)
+}
+
+/// Every file in a folder's tree by its path from `dir` (folders followed; anything else, a link
+/// among it, refused).
+fn files_in(dir: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) -> Result<()> {
+    for e in std::fs::read_dir(dir)? {
+        let e = e?;
+        let name = format!("{prefix}{}", e.file_name().to_string_lossy());
+        let t = e.file_type()?;
+        if t.is_dir() {
+            files_in(&e.path(), &format!("{name}/"), out)?;
+        } else if t.is_file() {
+            out.insert(name, e.path());
+        } else {
+            bail!("{name}: neither a file nor a folder");
+        }
+    }
+    Ok(())
 }
 
 /// Checks every five minutes on a thread of its own, from a program run from an installed
@@ -360,62 +388,108 @@ mod tests {
         assert!(app.join("20261003-0000-ccccccc").exists(), "the one to roll back to");
     }
 
-    #[test]
-    fn a_new_version_is_copied_checked_and_made_current() {
-        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        std::fs::create_dir_all(home.path().join("app/20261001-0000-aaaaaaa")).unwrap();
-        std::os::unix::fs::symlink("20261001-0000-aaaaaaa", home.path().join("app/current")).unwrap();
-        let v = "20261002-0000-bbbbbbb";
-        std::fs::create_dir_all(nas.path().join("app").join(v).join("web")).unwrap();
-        std::fs::write(nas.path().join("app").join(v).join("scenic"), b"#!/bin/sh\n").unwrap();
-        std::fs::write(nas.path().join("app").join(v).join("web/index.html"), b"x").unwrap();
-        use sha2::Digest;
-        let sha = |b: &[u8]| format!("{:x}", sha2::Sha256::digest(b));
-        let cur = serde_json::json!({"version": v, "files": ["scenic", "web/index.html"],
-            "sha256": {"scenic": sha(b"#!/bin/sh\n"), "web/index.html": sha(b"x")}});
-        std::fs::write(nas.path().join("app/current.json"), cur.to_string()).unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(nas.path());
-        // Another check holding the lock: skipped.
-        let held = std::fs::File::create(home.path().join("app/update.lock")).unwrap();
-        held.lock().unwrap();
-        assert_eq!(check(home.path(), &root, "20261001-0000-aaaaaaa").unwrap(), None);
-        drop(held);
-        assert_eq!(check(home.path(), &root, "20261001-0000-aaaaaaa").unwrap().as_deref(), Some(v));
-        assert_eq!(std::fs::read_link(home.path().join("app/current")).unwrap().to_str(), Some(v));
+    /// A version published to the stand-in NAS as publish.sh publishes it (lib.zsh's app_pack and
+    /// app_manifest): its files, the programs among them executable, packed in
+    /// `app/releases/<v>.tgz`, and its manifest made live; `tweak` changes the manifest first.
+    fn publish(nas: &Path, v: &str, files: &[(&str, &[u8])], tweak: impl FnOnce(&mut serde_json::Value)) {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(home.path().join("app").join(v).join("scenic")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o111, 0o111);
+        let src = nas.join("staging").join(v);
+        for (f, b) in files {
+            std::fs::create_dir_all(src.join(f).parent().unwrap()).unwrap();
+            std::fs::write(src.join(f), b).unwrap();
+            let mode = if b.starts_with(b"#!") { 0o755 } else { 0o644 };
+            std::fs::set_permissions(src.join(f), std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let rel = nas.join("app/releases");
+        std::fs::create_dir_all(&rel).unwrap();
+        let archive = rel.join(format!("{v}.tgz"));
+        let st = store::spawn::status(
+            store::spawn::command("/usr/bin/tar").arg("-czf").arg(&archive).arg("-C").arg(&src).arg("."),
+        )
+        .unwrap();
+        assert!(st.success());
+        let sha: serde_json::Map<String, serde_json::Value> =
+            files.iter().map(|(f, b)| (f.to_string(), sha256(b).into())).collect();
+        let mut cur = serde_json::json!({"version": v, "files": files.iter().map(|(f, _)| *f).collect::<Vec<_>>(),
+            "sha256": sha, "archive_sha256": sha256(&std::fs::read(&archive).unwrap())});
+        tweak(&mut cur);
+        std::fs::write(nas.join(LIVE), cur.to_string()).unwrap();
+    }
+
+    fn current(home: &Path) -> String {
+        std::fs::read_link(home.join("app/current")).unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_new_version_is_unpacked_checked_and_made_current() {
+        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (home, n) = (home.path(), nas.path());
+        let a = "20261001-0000-aaaaaaa";
+        std::fs::create_dir_all(home.join("app").join(a)).unwrap();
+        std::os::unix::fs::symlink(a, home.join("app/current")).unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(n);
+        // Nothing published yet: nothing to do.
+        assert_eq!(check(home, &root, a).unwrap(), None);
+        let v = "20261002-0000-bbbbbbb";
+        let app: &[(&str, &[u8])] =
+            &[("scenic", b"#!/bin/sh\n"), ("web/index.html", b"x"), ("fonts/Noto Sans Regular/0-255.pbf", b"g")];
+        publish(n, v, app, |_| {});
+        // Another check holding the lock: skipped.
+        let held = std::fs::File::create(home.join("app/update.lock")).unwrap();
+        held.lock().unwrap();
+        assert_eq!(check(home, &root, a).unwrap(), None);
+        drop(held);
+        assert_eq!(check(home, &root, a).unwrap().as_deref(), Some(v));
+        assert_eq!(current(home), v);
+        assert_eq!(std::fs::read(home.join("app").join(v).join("fonts/Noto Sans Regular/0-255.pbf")).unwrap(), b"g");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |f: &str| std::fs::metadata(home.join("app").join(v).join(f)).unwrap().permissions().mode();
+        assert_eq!(mode("scenic") & 0o111, 0o111, "a program stays one");
+        assert_eq!(mode("web/index.html") & 0o111, 0);
         // No copier's folder or link left behind.
-        let left: Vec<_> = std::fs::read_dir(home.path().join("app"))
+        let left: Vec<_> = std::fs::read_dir(home.join("app"))
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(left.is_empty(), "{left:?}");
+        // In place: nothing more to do.
+        assert_eq!(check(home, &root, v).unwrap(), None);
         // A version an older server's updater copied first: used as it is, this copy dropped.
         let u = "20261002-0000-uuuuuuu";
-        std::fs::create_dir_all(nas.path().join("app").join(u)).unwrap();
-        std::fs::write(nas.path().join("app").join(u).join("scenic"), b"#!/bin/sh\n").unwrap();
-        let cur_u = serde_json::json!({"version": u, "files": ["scenic"]});
-        std::fs::write(nas.path().join("app/current.json"), cur_u.to_string()).unwrap();
-        std::fs::create_dir_all(home.path().join("app").join(u)).unwrap();
-        std::fs::write(home.path().join("app").join(u).join("scenic"), b"#!/bin/sh\n").unwrap();
-        assert_eq!(check(home.path(), &root, v).unwrap().as_deref(), Some(u));
-        assert_eq!(std::fs::read_link(home.path().join("app/current")).unwrap().to_str(), Some(u));
-        let cur = serde_json::json!({"version": v, "files": ["scenic", "web/index.html"],
-            "sha256": {"scenic": sha(b"#!/bin/sh\n"), "web/index.html": sha(b"x")}});
-        std::fs::write(nas.path().join("app/current.json"), cur.to_string()).unwrap();
-        assert_eq!(check(home.path(), &root, v).unwrap().as_deref(), Some(v));
-        // In place: nothing more to do.
-        assert_eq!(check(home.path(), &root, "20261001-0000-aaaaaaa").unwrap(), None);
-        // A file that doesn't match its SHA-256: refused, `current` left as it was.
+        publish(n, u, &[("scenic", b"#!/bin/sh\n")], |_| {});
+        std::fs::create_dir_all(home.join("app").join(u)).unwrap();
+        std::fs::write(home.join("app").join(u).join("theirs"), b"").unwrap();
+        assert_eq!(check(home, &root, v).unwrap().as_deref(), Some(u));
+        assert_eq!(current(home), u);
+        assert!(home.join("app").join(u).join("theirs").exists());
+        // Refused, `current` left as it was, nothing left behind: an archive that isn't its
+        // manifest's; a file that doesn't match its SHA-256; a file the manifest names that the
+        // archive lacks; one the archive holds that the manifest doesn't name.
         let w = "20261003-0000-ccccccc";
-        std::fs::create_dir_all(nas.path().join("app").join(w)).unwrap();
-        std::fs::write(nas.path().join("app").join(w).join("scenic"), b"other").unwrap();
-        let cur = serde_json::json!({"version": w, "files": ["scenic"], "sha256": {"scenic": sha(b"#!/bin/sh\n")}});
-        std::fs::write(nas.path().join("app/current.json"), cur.to_string()).unwrap();
-        assert!(check(home.path(), &root, v).is_err());
-        assert_eq!(std::fs::read_link(home.path().join("app/current")).unwrap().to_str(), Some(v));
+        let refused: [(&str, Box<dyn FnOnce(&mut serde_json::Value)>); 4] = [
+            ("its archive doesn't match", Box::new(|c| c["archive_sha256"] = sha256(b"other").into())),
+            ("scenic doesn't match", Box::new(|c| c["sha256"]["scenic"] = sha256(b"other").into())),
+            ("dem/step.py isn't in its archive", Box::new(|c| c["sha256"]["dem/step.py"] = sha256(b"").into())),
+            ("files its manifest doesn't", Box::new(|c| drop(c["sha256"].as_object_mut().unwrap().remove("web/index.html")))),
+        ];
+        for (why, tweak) in refused {
+            publish(n, w, app, tweak);
+            let e = format!("{:#}", check(home, &root, u).unwrap_err());
+            assert!(e.contains(why), "{why}: {e}");
+            assert_eq!(current(home), u);
+            assert!(!home.join("app").join(w).exists());
+            let left: Vec<_> = std::fs::read_dir(home.join("app"))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".tmp"))
+                .collect();
+            assert!(left.is_empty(), "{why}: {left:?}");
+        }
+        // Once right, it goes in.
+        publish(n, w, app, |_| {});
+        assert_eq!(check(home, &root, u).unwrap().as_deref(), Some(w));
     }
 }

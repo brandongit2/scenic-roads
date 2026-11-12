@@ -1,7 +1,8 @@
 #!/bin/zsh
-# Install the published app on this Mac (once; after that it updates itself): copy app/<current
-# version>/ from the NAS, point ~/Library/Application Support/scenic/app/current at it, set up the
-# map server on the Mac that serves the map (the Mac mini: the one tools/caddy/install.sh gave the
+# Install the published app on this Mac (once; after that it updates itself): unpack the live
+# version's archive from the NAS (app/releases), point ~/Library/Application
+# Support/scenic/app/current at it, set up the map server on the Mac that serves the map (the Mac
+# mini: the one tools/caddy/install.sh gave the
 # map's name, ~/.config/scenic/names; its run file, its launchd job started; on any other Mac an
 # old one is removed), and copy Scenic.app to /Applications.
 # Opening Scenic then starts this Mac's build service (its agent, a member of the pool:
@@ -22,7 +23,7 @@ case $#:${1:-} in
   1:-h|1:--help) print -r -- $usage; exit 0 ;;
   *) print -ru2 -- "install.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
 esac
-source ${0:A:h}/lib.zsh  # (app_programs, stop_program)
+source ${0:A:h}/lib.zsh  # (live_version, stop_program)
 NAS=/Volumes/personal/projects/scenic-roads
 HOME_S="$HOME/Library/Application Support/scenic"
 uid=$(id -u)
@@ -52,14 +53,20 @@ if [[ -z $uv ]]; then
   echo "uv not found: the agent's unit builds need it (https://docs.astral.sh/uv/)" >&2
   exit 1
 fi
-version=$(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")
+live=$NAS/app/releases/current.json
+version=$(live_version $live) || { echo "no release on the NAS ($live)" >&2; exit 1; }
 mkdir -p "$HOME_S/app" "$HOME_S/run" "$HOME/Library/Logs/scenic" "$HOME/Library/LaunchAgents"
 if [[ ! -d "$HOME_S/app/$version" ]]; then
-  rsync -a "$NAS/app/$version/" "$HOME_S/app/$version.tmp/"
-  for b in $app_programs; do
-    if [[ -f "$HOME_S/app/$version.tmp/$b" ]]; then chmod +x "$HOME_S/app/$version.tmp/$b"; fi
-  done
-  mv "$HOME_S/app/$version.tmp" "$HOME_S/app/$version"
+  # The version's archive copied here and checked by its SHA-256 (the manifest's), then unpacked
+  # (tar keeps the programs' modes) beside its folder and moved in.
+  tmp="$HOME_S/app/$version.tmp"
+  rm -rf "$tmp"; mkdir -p "$tmp/app"
+  cp -X "$NAS/app/releases/$version.tgz" "$tmp/app.tgz"
+  want=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["archive_sha256"])' $live)
+  [[ $(shasum -a 256 < "$tmp/app.tgz") == "$want "* ]] || { echo "$version.tgz doesn't match its SHA-256" >&2; exit 1; }
+  tar -xzf "$tmp/app.tgz" -C "$tmp/app"
+  mv "$tmp/app" "$HOME_S/app/$version"
+  rm -rf "$tmp"
 fi
 # The Python steps' environment for this version's lock file, made if no installed version has it
 # yet (in $HOME_S/pyenv/, shared by the versions with that lock; the version's folder untouched).

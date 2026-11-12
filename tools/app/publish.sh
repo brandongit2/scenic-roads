@@ -2,18 +2,19 @@
 # Publish the app (docs/building.md §2, App publishing): build the server and the web app, run the
 # tests (the server's routes among them, on a fixture map: crates/server/tests/serves.rs, run against
 # the release server too), then send it in one stream to the NAS's Mac (the Mac mini, on the NAS's
-# LAN: tools/app/lib.zsh's nas_send and nas_install), which writes it to the NAS (app/<version>/)
-# and points app/current.json at it. Every Mac's agent copies it within
-# five minutes (jobrt::appupdate) and restarts into it by its update drain; the Mac mini's map
-# server, the only one, restarts into it once the map has been idle a minute.
+# LAN: tools/app/lib.zsh's nas_send and nas_install), which writes it to the NAS as one archive
+# (app/releases/<version>.tgz) and points app/releases/current.json at it. Every Mac's agent unpacks
+# it within five minutes (jobrt::appupdate) and restarts into it by its update drain; the Mac mini's
+# map server, the only one, restarts into it once the map has been idle a minute.
 #
 #   tools/app/publish.sh              build, test, publish
-#   tools/app/publish.sh --rollback   point app/current.json back at the previous version, unless
-#                                     it's before the live one's rollback floor (tools/app/rollback-floor)
+#   tools/app/publish.sh --rollback   point app/releases/current.json back at the previous version,
+#                                     unless it's before the live one's rollback floor
+#                                     (tools/app/rollback-floor)
 #
 # Any Mac that reaches the NAS's Mac may publish, at home or away (its own NAS mount plays no part),
 # and two publishes may run at once: each builds and tests in its own tree beside the other, and
-# only the install on the NAS's Mac (app/<version>/, app/current.json) holds the lock on the NAS
+# only the install on the NAS's Mac (app/releases/) holds the lock on the NAS
 # (app/publish.lock), the second waiting for the first's. A publish is only ever of a clean tree whose
 # commit is on origin's main (no -dirty versions), and installs only over a live version its commit
 # contains (fast-forward).
@@ -45,7 +46,7 @@ cleanup=("rm -rf $sb")
 # publish.sh's own status.)
 # (tools/app/lib.zsh's at_end: zsh runs no EXIT trap when errexit stops it inside a function.)
 # (Or, when the NAS's Mac had the go-ahead and its answer was lost, "publish: FAILED, unknown
-# whether <version> went live …": its app/current.json says.)
+# whether <version> went live …": its app/releases/current.json says.)
 published=
 on_exit() {
   local rc=$? c
@@ -53,7 +54,7 @@ on_exit() {
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
     if [[ ${nas_state:-} == unknown ]]; then
-      echo "publish: FAILED, unknown whether $version went live: the NAS's Mac had the go-ahead, then didn't answer (its app/current.json says; exit $rc)"
+      echo "publish: FAILED, unknown whether $version went live: the NAS's Mac had the go-ahead, then didn't answer (its app/releases/current.json says; exit $rc)"
     else echo "publish: FAILED, nothing published (exit $rc)"; fi
     c=$djstep_name; step "" 1; dj_end $djrun fail exit $rc ${c:+failed_in} ${c:+$c}
   else
@@ -92,7 +93,7 @@ dj_attr $djrun head $head
 # unreachable, or without the NAS, stops the publish here, before the build.
 step "NAS's Mac"
 bounded 60 on_nas_mac nas_current $NAS </dev/null > $sb/current.json \
-  || { echo "can't read app/current.json on the NAS's Mac ($nas_host): unreachable, or without the NAS"; exit 1; }
+  || { echo "can't read the live manifest on the NAS's Mac ($nas_host): unreachable, or without the NAS"; exit 1; }
 [[ -s $sb/current.json ]] || rm $sb/current.json
 began=$(live_version $sb/current.json || true)
 fast_forward $sb/current.json $head || exit 1
@@ -274,38 +275,38 @@ codesign -s "$sign_id" -i local.scenic.agent --force target/release/scenic
 # /Applications replaces itself with it.
 zsh tools/status/bundle.sh $sb $version "$sign_id" >/dev/null
 step stage
-# The app's folder put together here ($sb/send/app): the server, and the agent with the programs its
+# The app's folder put together here ($sb/app): the server, and the agent with the programs its
 # jobs run (each Mac runs them from there): the pipeline's binaries, and the Python steps (dem/, run
 # with uv) with their lock file. (The step programs a job or task runs are scenic-build's tools:
 # `scenic-build tool <name>`, #917.) Every copy leaves the extended attributes behind (cp -X, and
-# the archive below): the NAS refuses macOS's provenance one when it differs from the folder's.
-app=$sb/send/app
-mkdir -p $app/web $app/fonts $app/dem
+# the archives below): the NAS refuses macOS's provenance one when it differs from the folder's.
+app=$sb/app
+mkdir -p $app/web $app/fonts $app/dem $sb/send
 cp -X target/release/$^app_programs $app/
 git ls-files dem | while read f; do cp -X "$f" "$app/$f"; done
 cp -RX "$sb/Scenic.app" "$app/"  # (Scenic.app, signed above)
 rsync -a web/dist-publish/ $app/web/
-# The fonts: this checkout's data/fonts, else the NAS's app/fonts (read on the NAS's Mac).
-if [[ -d $repo/data/fonts ]]; then rsync -a $repo/data/fonts/ $app/fonts/
-else
-  bounded 300 on_nas_mac nas_fonts $NAS </dev/null | tar -x -C $app/fonts \
-    || { echo "no fonts folder (data/fonts, or the NAS's app/fonts through the NAS's Mac)"; exit 1; }
-fi
-# The manifest (app/current.json's content), made here from what is sent: the NAS's Mac checks what
-# received against it. With the NAS's planet fetch (DSM's Task Scheduler runs it daily), which it
-# installs when it differs. One gzipped stream, its size and SHA-256 checked on arrival.
-app_manifest $app $version > $sb/send/manifest.json
+# The fonts: this checkout's data/fonts (scripts/fonts.sh makes them).
+[[ -d $repo/data/fonts ]] || { echo "no fonts folder: make $repo/data/fonts with scripts/fonts.sh"; exit 1; }
+rsync -a $repo/data/fonts/ $app/fonts/
+# The version's archive (its one file on the NAS, app/releases/<version>.tgz) and its manifest
+# (app/releases/current.json's content: every file's SHA-256 and the archive's), made here from what
+# is sent: the NAS's Mac checks what it received against it. With the NAS's planet fetch (DSM's Task
+# Scheduler runs it daily), which it installs when it differs. One stream, its size and SHA-256
+# checked on arrival.
+app_pack $app $sb/send/app.tgz
+app_manifest $app $version $sb/send/app.tgz > $sb/send/manifest.json
 cp -X tools/nas/fetch-planet.sh $sb/send/
-COPYFILE_DISABLE=1 tar -czf $sb/app.tgz --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app manifest.json fetch-planet.sh
-dj_attr $djrun upload_bytes $(stat -f %z $sb/app.tgz)
-# The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the archive received whole
-# and checked, the order checked, the app written beside its folder; then under the lock on the
-# NAS, the one part two publishes can't run at once (waited for while another publish installs; one
+COPYFILE_DISABLE=1 tar -cf $sb/upload.tar --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $sb/send app.tgz manifest.json fetch-planet.sh
+dj_attr $djrun upload_bytes $(stat -f %z $sb/upload.tar)
+# The install, on the NAS's Mac (lib.zsh's nas_send and nas_install): the upload received whole and
+# checked, the order checked, the archive written beside its name; then under the lock on the NAS,
+# the one part two publishes can't run at once (waited for while another publish installs; one
 # older than six hours, or whose process is gone, taken over; freed only by its holder), the order
 # checked again (the publish that went in meanwhile may be newer, or a rollback since); then on this
-# side's go-ahead, app/<version>/, the planet fetch, previous.json and current.json. Nothing goes in
-# on a failure before the go-ahead.
+# side's go-ahead, app/releases/<version>.tgz, the planet fetch, previous.json and current.json.
+# Nothing goes in on a failure before the go-ahead.
 step install
-nas_send $NAS $version $head "$began" $sb/app.tgz "$from" || exit $?
+nas_send $NAS $version $head "$began" $sb/upload.tar "$from" || exit $?
 published=$version
 echo "published $version"

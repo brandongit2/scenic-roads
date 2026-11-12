@@ -256,83 +256,120 @@ rm -f $prev
 
 # The install through the NAS's Mac (nas_send, nas_install, nas_rollback): this Mac named the NAS's
 # Mac, so it runs here (on_nas_mac without ssh), in the stand-in repository, its incoming folder in a
-# stand-in home, on a stand-in NAS root. (The ssh path: the end-to-end run, docs/building.md.)
-N=$tmp/nas2; mkdir -p $N/app; hm=$tmp/home; inc=$hm/Library/Caches/scenic-publish/incoming
+# stand-in home, on a stand-in NAS root. (The ssh path: the end-to-end run, docs/building.md.) The
+# stand-in NAS starts in the old layout (a folder per version, app/current.json), as the NAS was
+# before #1148: the first release writes both, the next ones app/releases alone.
+N=$tmp/nas2; R=$N/app/releases; hm=$tmp/home; inc=$hm/Library/Caches/scenic-publish/incoming
 here=$(scutil --get LocalHostName)
-mk() {  # <version> <name> [<manifest's version>]: an app's archive, $tmp/<name>.tgz
+mk() {  # <version> <name> [<manifest's version>]: an app's upload, $tmp/<name>.tar
   local s=$tmp/$2; rm -rf $s; mkdir -p $s/app/web
-  print -r -- $1 > $s/app/server; print w > $s/app/web/index.html; print planet > $s/fetch-planet.sh
-  zsh -c "source ${(q)lib}; app_manifest $s/app ${3:-$1}" > $s/manifest.json
-  COPYFILE_DISABLE=1 tar -czf $tmp/$2.tgz --no-xattrs --no-mac-metadata -C $s app manifest.json fetch-planet.sh
+  print -r -- $1 > $s/app/server; chmod 755 $s/app/server; print w > $s/app/web/index.html; print planet > $s/fetch-planet.sh
+  zsh -c "source ${(q)lib}; app_pack $s/app $s/app.tgz; app_manifest $s/app ${3:-$1} $s/app.tgz" > $s/manifest.json
+  COPYFILE_DISABLE=1 tar -cf $tmp/$2.tar --no-xattrs --no-mac-metadata -C $s app.tgz manifest.json fetch-planet.sh
 }
-ns() {  # <version> <commit> <began> <archive> [<settings>]: nas_send's output, then "rc=<status> state=<its state>"
+ns() {  # <version> <commit> <began> <upload> [<settings>]: nas_send's output, then "rc=<status> state=<its state>"
   (cd $g && HOME=$hm zsh -c "set -euo pipefail; source ${(q)lib}; nas_mac=$here; nas_repo=${(q)g}; $5
     nas_send $N $1 $2 '$3' $4 'test 1' && rc=0 || rc=\$?; echo rc=\$rc state=\$nas_state" 2>&1)
 }
-ni() {  # <archive> <args after nas_install's NAS root...>: nas_install itself, the archive its stdin
+ni() {  # <upload> <args after nas_install's NAS root...>: nas_install itself, the upload its stdin
   (cd $g && HOME=$hm zsh -euo pipefail -c "source ${(q)lib}; nas_install $N ${(j: :)${(q)@:2}}" < $1 2>&1)
+}
+rb() {  # nas_rollback's output, through the NAS's Mac
+  (cd $g && HOME=$hm zsh -c "set -euo pipefail; source ${(q)lib}; nas_mac=$here; nas_repo=${(q)g}; on_nas_mac nas_rollback $N 'test 1'" 2>&1)
 }
 sum() { local s=$(shasum -a 256 $1); print -r -- ${s%% *}; }
 lv() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }  # (lib.zsh's live_version)
-# (Nothing half-written: no version folder but the live ones, no .tmp, no lock, no incoming archive.)
-clean() { [[ -z $(ls $N/app | grep -vxF -e current.json -e previous.json ${@/#/-e}) && -z $(ls $inc 2>/dev/null) ]]; }
-V1=20261111-0001-$B V2=20261111-0002-$C V0=20261111-0003-$A
-mkdir -p $inc; zsh -c 'exit 0' & dp=$!; wait $dp; print x > $inc/$dp.tgz  # (a gone receiver's)
+V9=20261110-0009-$A V1=20261111-0001-$B V2=20261111-0002-$C V0=20261111-0003-$A
+# (Nothing half-written: in app/ the old layout's two versions alone, in app/releases the archives
+# of the versions named alone, no .tmp, no lock, no incoming upload.)
+clean() {
+  [[ -z $(ls $N/app | grep -vxF -e current.json -e previous.json -e releases -e $V9 -e $V1) \
+    && -z $(ls $R | grep -vxF -e current.json -e previous.json ${${@/%/.tgz}/#/-e}) && -z $(ls $inc 2>/dev/null) ]]
+}
+# The old layout, live.
+mkdir -p $N/app/$V9; print -r -- $V9 > $N/app/$V9/server
+print -r -- "{\"version\": \"$V9\", \"files\": [\"server\"], \"sha256\": {}}" > $N/app/current.json
+mkdir -p $inc; zsh -c 'exit 0' & dp=$!; wait $dp; print x > $inc/$dp.tar  # (a gone receiver's)
+out=$(rb)
+[[ $out == *'no previous version'* && $(lv $N/app/current.json) == $V9 && ! -e $R ]] \
+  && ok "nas_rollback: before the first release, on the old layout" || no "nas_rollback old layout" "$out"
 mk $V1 v1
-out=$(ns $V1 $B '' $tmp/v1.tgz)
-if [[ $out != *'sent '*' MB to '*$'\nrc=0 state=live' ]]; then no "nas_send first install" "$out"
-elif [[ $(<$N/app/$V1/server) != $V1 || $(<$N/app/current.json) != "$(<$tmp/v1/manifest.json)" || -e $N/app/previous.json ]]; then no "nas_send first install" "app: $(ls -R $N)"
-elif [[ $(<$N/nas/fetch-planet.sh) != planet ]]; then no "nas_send first install" "no fetch-planet.sh"
-elif ! clean $V1; then no "nas_send first install" "left: $(ls $N/app) / $(ls $inc)"
-else ok "nas_send: installed through the NAS's Mac, a gone receiver's archive removed"; fi
+out=$(ns $V1 $B $V9 $tmp/v1.tar)
+if [[ $out != *'sent '*' MB to '*$'\nrc=0 state=live' ]]; then no "nas_send first release" "$out"
+elif [[ $(<$R/current.json) != "$(<$tmp/v1/manifest.json)" || -e $R/previous.json || $(sum $R/$V1.tgz) != $(sum $tmp/v1/app.tgz) ]]; then no "nas_send first release" "releases: $(ls -R $R)"
+elif [[ $(<$N/app/$V1/server) != $V1 || ! -x $N/app/$V1/server || $(<$N/app/current.json) != "$(<$tmp/v1/manifest.json)" || $(lv $N/app/previous.json) != $V9 ]]; then no "nas_send first release" "old layout: $(ls -R $N/app)"
+elif [[ $(<$N/nas/fetch-planet.sh) != planet ]]; then no "nas_send first release" "no fetch-planet.sh"
+elif ! clean $V1; then no "nas_send first release" "left: $(ls $N/app) / $(ls $R) / $(ls $inc)"
+else ok "nas_send: the first release, through the NAS's Mac, in both layouts; a gone receiver's upload removed"; fi
+# Right after the first release, no rollback: none before it in app/releases.
+out=$(rb)
+[[ $out == *'no previous version'* && $(lv $R/current.json) == $V1 && $(lv $N/app/current.json) == $V1 ]] \
+  && ok "nas_rollback: none past the first release" || no "nas_rollback first release" "$out"
 mk $V2 v2
-out=$(ns $V2 $C $V1 $tmp/v2.tgz)
-[[ $out == *'rc=0 state=live' && $(lv $N/app/current.json) == $V2 && $(lv $N/app/previous.json) == $V1 && $out != *fetch-planet* ]] && clean $V1 $V2 \
-  && ok "nas_send: the next version, the last one previous, fetch-planet.sh unchanged" || no "nas_send next" "$out"
+out=$(ns $V2 $C $V1 $tmp/v2.tar)
+[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == $V1 && $out != *fetch-planet* ]] \
+  && [[ $(lv $N/app/current.json) == $V1 && ! -e $N/app/$V2 ]] && clean $V1 $V2 \
+  && ok "nas_send: the next release, app/releases alone, the last one previous, fetch-planet.sh unchanged" || no "nas_send next" "$out / $(ls $N/app)"
 mk $V0 v0
-out=$(ns $V0 $A $V2 $tmp/v0.tgz)
-[[ $out == *'older than the live version'*'rc=1 state=' && $(lv $N/app/current.json) == $V2 ]] && clean $V1 $V2 \
+out=$(ns $V0 $A $V2 $tmp/v0.tar)
+[[ $out == *'older than the live version'*'rc=1 state=' && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
   && ok "nas_install: an older commit refused, nothing written" || no "nas_install older" "$out"
-# An upload cut short, or not the one sent; an app not its manifest's; no go-ahead: nothing goes in.
+# An upload cut short, or not the one sent; an app not its manifest's (its version, a file, the
+# archive's SHA-256); no go-ahead: nothing goes in.
 mk 20261111-0004-$C v3
-b3=$(stat -f %z $tmp/v3.tgz); s3=$(sum $tmp/v3.tgz)
-out=$(ni $tmp/v3.tgz 20261111-0004-$C $C $V2 $(( b3 + 10 )) $s3 'test 1')
+b3=$(stat -f %z $tmp/v3.tar); s3=$(sum $tmp/v3.tar)
+out=$(ni $tmp/v3.tar 20261111-0004-$C $C $V2 $(( b3 + 10 )) $s3 'test 1')
 [[ $out == *'ended short'* ]] && clean $V1 $V2 && ok "nas_install: an upload cut short installs nothing" || no "nas_install short" "$out"
-out=$(ni $tmp/v3.tgz 20261111-0004-$C $C $V2 $b3 ${s3/a/b} 'test 1')
-[[ $out == *"SHA-256 isn't the one sent"* ]] && clean $V1 $V2 && ok "nas_install: another archive installs nothing" || no "nas_install sha" "$out"
+out=$(ni $tmp/v3.tar 20261111-0004-$C $C $V2 $b3 ${s3/a/b} 'test 1')
+[[ $out == *"SHA-256 isn't the one sent"* ]] && clean $V1 $V2 && ok "nas_install: another upload installs nothing" || no "nas_install sha" "$out"
 mk 20261111-0005-$C v4 20261111-0099-$C
-out=$(ns 20261111-0005-$C $C $V2 $tmp/v4.tgz)
-[[ $out == *"isn't its manifest's"*'rc=1 state=' && $(lv $N/app/current.json) == $V2 ]] && clean $V1 $V2 \
-  && ok "nas_install: an app not its manifest's installs nothing" || no "nas_install manifest" "$out"
-out=$(ni $tmp/v3.tgz 20261111-0004-$C $C $V2 $b3 $s3 'test 1')
-[[ $out == *'@@ready'*'no go-ahead'* && $(lv $N/app/current.json) == $V2 ]] && clean $V1 $V2 \
+out=$(ns 20261111-0005-$C $C $V2 $tmp/v4.tar)
+[[ $out == *"isn't its manifest's"*'rc=1 state=' && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
+  && ok "nas_install: an app not its manifest's version installs nothing" || no "nas_install manifest" "$out"
+for what in file archive; do
+  mk 20261111-0005-$C v4
+  if [[ $what == file ]]; then print other > $tmp/v4/app/web/index.html; zsh -c "source ${(q)lib}; app_pack $tmp/v4/app $tmp/v4/app.tgz"
+  else print -n x >> $tmp/v4/app.tgz; fi
+  COPYFILE_DISABLE=1 tar -cf $tmp/v4.tar --no-xattrs --no-mac-metadata -C $tmp/v4 app.tgz manifest.json fetch-planet.sh
+  out=$(ns 20261111-0005-$C $C $V2 $tmp/v4.tar)
+  [[ $out == *"isn't its manifest's"*'rc=1 state=' && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
+    && ok "nas_install: an app whose $what isn't its manifest's installs nothing" || no "nas_install manifest $what" "$out"
+done
+out=$(ni $tmp/v3.tar 20261111-0004-$C $C $V2 $b3 $s3 'test 1')
+[[ $out == *'@@ready'*'no go-ahead'* && $(lv $R/current.json) == $V2 ]] && clean $V1 $V2 \
   && ok "nas_install: no go-ahead, nothing installed" || no "nas_install go-ahead" "$out"
-# Another publish's install under way: the app written meanwhile, the lock waited for (saying so
-# once), then installed.
+# Another publish's install under way: the archive written meanwhile, the lock waited for (saying
+# so once), then installed.
 mk 20261111-0006-$C v5
 print -r -- "other 1 now" > $N/app/publish.lock
-ns 20261111-0006-$C $C $V2 $tmp/v5.tgz 'export nas_lock_poll=0.1' > $tmp/wait.out & wp=$!
+ns 20261111-0006-$C $C $V2 $tmp/v5.tar 'export nas_lock_poll=0.1' > $tmp/wait.out & wp=$!
 upon waiting $tmp/wait.out
-[[ -f $N/app/20261111-0006-$C.tmp/server ]] && written=1 || written=
+[[ -s $R/20261111-0006-$C.tgz.tmp ]] && written=1 || written=
 sleep 0.5; rm -f $N/app/publish.lock; wait $wp
 out=$(<$tmp/wait.out)
-[[ -n $written && $(grep -c waiting <<< $out) == 1 && $out == *'(other 1 now'*'rc=0 state=live' && $(lv $N/app/current.json) == 20261111-0006-$C ]] \
-  && ok "nas_install waits for another publish's lock, its app written meanwhile" || no "nas_install lock wait" "$out"
+[[ -n $written && $(grep -c waiting <<< $out) == 1 && $out == *'(other 1 now'*'rc=0 state=live' && $(lv $R/current.json) == 20261111-0006-$C ]] \
+  && ok "nas_install waits for another publish's lock, its archive written meanwhile" || no "nas_install lock wait" "$out"
 # The NAS's Mac unreachable: nothing sent, nothing changed.
-out=$(ns 20261111-0007-$C $C 20261111-0006-$C $tmp/v3.tgz 'nas_mac=none; nas_host=nas-mac.invalid')
-[[ $out == *"can't reach the NAS's Mac (nas-mac.invalid)"*'rc=1 state=' && $(lv $N/app/current.json) == 20261111-0006-$C ]] \
+out=$(ns 20261111-0007-$C $C 20261111-0006-$C $tmp/v3.tar 'nas_mac=none; nas_host=nas-mac.invalid')
+[[ $out == *"can't reach the NAS's Mac (nas-mac.invalid)"*'rc=1 state=' && $(lv $R/current.json) == 20261111-0006-$C ]] \
   && ok "nas_send: the NAS's Mac unreachable, nothing sent" || no "nas_send unreachable" "$out"
-# nas_rollback: back to the previous version, through the NAS's Mac.
-out=$(cd $g && HOME=$hm zsh -c "set -euo pipefail; source ${(q)lib}; nas_mac=$here; nas_repo=${(q)g}; on_nas_mac nas_rollback $N 'test 1'" 2>&1)
-[[ $out == "rolled back to $V2" && $(lv $N/app/current.json) == $V2 && $(lv $N/app/previous.json) == 20261111-0006-$C && ! -e $N/app/publish.lock ]] \
-  && ok "nas_rollback through the NAS's Mac" || no "nas_rollback" "$out"
+# nas_rollback: back to the previous version, through the NAS's Mac (the old layout's untouched).
+out=$(rb)
+[[ $out == "rolled back to $V2" && $(lv $R/current.json) == $V2 && $(lv $R/previous.json) == 20261111-0006-$C && ! -e $N/app/publish.lock ]] \
+  && [[ $(lv $N/app/current.json) == $V1 ]] && ok "nas_rollback through the NAS's Mac" || no "nas_rollback" "$out"
 
 # The go-ahead, then the publishing Mac gone (its reader closed as "@@ready" came): installed all the
 # same, the lock freed.
-out=$( { cat $tmp/v3.tgz; sleep 0.5; print go; } | (cd $g && HOME=$hm zsh -euo pipefail -c "source ${(q)lib}; nas_install $N 20261111-0004-$C $C $V2 $b3 $s3 'test 1'" 2>&1; print -r -- "rc=$?" > $tmp/gone.rc) \
+out=$( { cat $tmp/v3.tar; sleep 0.5; print go; } | (cd $g && HOME=$hm zsh -euo pipefail -c "source ${(q)lib}; nas_install $N 20261111-0004-$C $C $V2 $b3 $s3 'test 1'" 2>&1; print -r -- "rc=$?" > $tmp/gone.rc) \
   | { while IFS= read -r l; do print -r -- $l; [[ $l != @@ready ]] || break; done; } )
-[[ $out == *@@ready && $(<$tmp/gone.rc) == rc=0 && $(lv $N/app/current.json) == 20261111-0004-$C && $(lv $N/app/previous.json) == $V2 ]] \
+[[ $out == *@@ready && $(<$tmp/gone.rc) == rc=0 && $(lv $R/current.json) == 20261111-0004-$C && $(lv $R/previous.json) == $V2 ]] \
   && clean $V1 $V2 20261111-0006-$C 20261111-0004-$C && ok "nas_install: the go-ahead, then the connection gone: installed, the lock freed" \
-  || no "nas_install gone after go" "$out / $(<$tmp/gone.rc) / $(ls $N/app)"
+  || no "nas_install gone after go" "$out / $(<$tmp/gone.rc) / $(ls $R)"
+
+# A NAS with no app yet: the first release goes to app/releases alone (no old layout to keep up).
+N=$tmp/nas3; R=$N/app/releases; mkdir -p $N/app
+out=$(ns $V1 $B '' $tmp/v1.tar)
+[[ $out == *'rc=0 state=live' && $(lv $R/current.json) == $V1 && -z $(ls $N/app | grep -vx releases) ]] \
+  && ok "nas_send: a first release on an empty NAS, app/releases alone" || no "nas_send empty NAS" "$out / $(ls $N/app)"
 
 exit $failed
