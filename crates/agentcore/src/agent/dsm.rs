@@ -27,15 +27,22 @@
 //! (`own_addrs`), and, away from home, the LAN addresses it had at home (`home-addresses.json` in
 //! the agent's folder, written while at home), used for 24 hours at most and only for sessions last
 //! connected before it was last seen at home, so an address the LAN has since given another Mac is
-//! never taken for this one's. Sessions through Tailscale can't be told apart: the NAS's Tailscale
-//! runs in userspace and every tunnelled client shows as 127.0.0.1, so they are never dropped.
+//! never taken for this one's. A session through Tailscale comes from the Mac's tailnet address
+//! (the NAS's Tailscale is a TUN device: DSM's `from` is the client's own address, verified 11 Nov),
+//! which is among its addresses now at home and away; a tailnet address is one Mac's alone and
+//! never given to another, so the tailnet addresses it had earlier in the agent's run count as its
+//! own too, with no time limit.
 //!
 //! **When** (`Watch`): at the agent's start, once the NAS answers (its keys read), the sessions of
 //! its addresses now last connected before the start but the newest (the live one: a dead session
 //! stopped before the session replacing it began, so the live one connected last); with the
 //! self-heal's remount (crate::agent::heal), the same as of the remount; on leaving home (at home:
 //! yes, then no), those of the addresses it had at home (the share can't be unmounted cleanly by
-//! then: the LAN is gone, so an unmount ends nothing on the NAS; only DSM, over Tailscale, can).
+//! then: the LAN is gone, so an unmount ends nothing on the NAS; only DSM, over Tailscale, can);
+//! once the share is mounted by its LAN name after it was mounted through Tailscale (home again),
+//! the same as at the start as of then, with every tailnet address it has had (a tunnelled session
+//! the forced unmount didn't end, or one a sleep or a dropped tunnel left behind away, holds its
+//! leases as a left LAN one does; the new LAN session is the newest, so kept).
 //! The live session is never kicked: the server, Finder and the agent's own beats hold or reopen
 //! files on the share within seconds, so a kick only swaps it for a fresh one while their open
 //! handles go stale (task #567's review). A failure (DSM unreachable, no keys, refused) is a
@@ -191,8 +198,7 @@ impl Mine {
 
 /// Of `l`'s connections, this Mac's to drop (`m`): SMB, of the share's user `user` and the share
 /// `share` (none holding Time Machine: a kick ends every share of the connection), from its
-/// addresses (task #567: never another Mac's, never a tunnelled one, which shows as the NAS's own
-/// loopback), never the live one.
+/// addresses (task #567: never another Mac's, its LAN or its tailnet address), never the live one.
 pub fn pick(l: &Listing, user: &str, share: &str, m: &Mine, now: u64) -> Vec<Conn> {
     let ours = |c: &&Conn| {
         let shares = || c.descr.split(',').map(str::trim);
@@ -412,6 +418,7 @@ impl Api {
 pub enum Why {
     Start,
     Left,
+    Lan,
     Remount,
 }
 
@@ -420,6 +427,7 @@ impl Why {
         match self {
             Why::Start => "the agent started",
             Why::Left => "this Mac left home",
+            Why::Lan => "the share mounted by its LAN name again",
             Why::Remount => "the self-heal's remount",
         }
     }
@@ -432,6 +440,9 @@ pub struct Seen {
     pub home: bool,
     /// The NAS's project folder answers.
     pub nas: bool,
+    /// The share is mounted by the NAS's LAN name (store::nas::lan_mounted): with `nas`, false is
+    /// a mount through Tailscale.
+    pub lan: bool,
     /// This Mac's addresses now (store::nas::own_addrs).
     pub addrs: Vec<IpAddr>,
 }
@@ -451,6 +462,10 @@ pub struct Watch {
     /// Whether the start's drop was asked.
     start_asked: bool,
     was_home: Option<bool>,
+    /// The share was last seen mounted through Tailscale (not by the LAN name).
+    tunnelled: bool,
+    /// Every tailnet address this Mac has had in the agent's run.
+    tailnet: Vec<IpAddr>,
     /// The LAN addresses as last seen at home, and the file they're kept in.
     home: Option<Home>,
     file: PathBuf,
@@ -462,7 +477,16 @@ impl Watch {
     pub fn new(started: u64, dir: &std::path::Path) -> Watch {
         let file = dir.join(HOME_FILE);
         let home = std::fs::read(&file).ok().and_then(|b| serde_json::from_slice::<Home>(&b).ok());
-        Watch { started, start_asked: false, was_home: None, written: home.clone(), home, file }
+        Watch {
+            started,
+            start_asked: false,
+            was_home: None,
+            tunnelled: false,
+            tailnet: Vec::new(),
+            written: home.clone(),
+            home,
+            file,
+        }
     }
 
     /// The remembered home addresses to use away at `now`: within `HOME_FOR`.
@@ -473,6 +497,11 @@ impl Watch {
     /// The drops due this round.
     pub fn round(&mut self, s: &Seen) -> Vec<(Why, Mine)> {
         let mut out = Vec::new();
+        for a in s.addrs.iter().filter(|a| tailscale(a)) {
+            if !self.tailnet.contains(a) {
+                self.tailnet.push(*a);
+            }
+        }
         if s.home {
             let addrs: Vec<IpAddr> = s.addrs.iter().filter(|a| !tailscale(a)).copied().collect();
             if !addrs.is_empty() {
@@ -502,6 +531,13 @@ impl Watch {
             }
         }
         self.was_home = Some(s.home);
+        if s.nas && !s.lan {
+            self.tunnelled = true;
+        } else if s.nas && s.lan && std::mem::take(&mut self.tunnelled) {
+            let mut now = s.addrs.clone();
+            now.extend(self.tailnet.iter().filter(|a| !s.addrs.contains(a)));
+            out.push((Why::Lan, Mine { now, before: s.now, home: None }));
+        }
         out
     }
 
@@ -660,8 +696,7 @@ mod tests {
         assert!(parse_keys("NAS_DSM_USER=u\n").is_none());
     }
 
-    /// Only this Mac's: its addresses (not another Mac's, nor a tunnelled one's 127.0.0.1), the
-    /// share's user, the share (no connection holding Time Machine); those last connected before
+    /// Only this Mac's: its addresses (not another Mac's, LAN or tailnet), the share's user, the share (no connection holding Time Machine); those last connected before
     /// the start, never the live (newest) one.
     #[test]
     fn only_this_macs_stale_sessions_are_picked() {
@@ -671,7 +706,7 @@ mod tests {
                 conn(1, "192.168.2.15", "personal", "2026/11/08 09:09:51"),
                 conn(2, "192.168.2.15", "home, personal", "2026/11/11 14:30:00"),
                 conn(3, "192.168.2.33", "personal", "2026/11/11 06:58:17"),
-                conn(4, "127.0.0.1", "personal", "2026/11/11 10:00:00"),
+                conn(4, "100.101.4.7", "personal", "2026/11/11 10:00:00"),
                 conn(5, "192.168.2.15", "Time Machine", "2026/11/04 09:45:06"),
                 Conn { who: "someone".into(), ..conn(6, "192.168.2.15", "personal", "2026/11/01 00:00:00") },
                 Conn { protocol: "HTTP/HTTPS".into(), ..conn(7, "192.168.2.15", "personal", "2026/11/01 00:00:00") },
@@ -710,8 +745,64 @@ mod tests {
         assert!(pick(&l, "brandontsang", "personal", &back, NOW).is_empty());
     }
 
+    /// Through Tailscale (the NAS's Tailscale a TUN device): a session comes from the Mac's tailnet
+    /// address, one of its own. A stale tunnelled one is dropped, the newest kept whichever address
+    /// it is on, and another Mac's tailnet address is never picked.
+    #[test]
+    fn tunnelled_sessions_are_this_macs_by_its_tailnet_address() {
+        let l = Listing {
+            systime: SYSTIME.into(),
+            conns: vec![
+                conn(1, "100.70.85.80", "personal", "2026/11/10 18:00:00"),
+                conn(2, "100.101.4.7", "personal", "2026/11/10 18:00:00"),
+                conn(3, "100.70.85.80", "personal", "2026/11/11 14:59:00"),
+            ],
+        };
+        // Away: its addresses now are a hotel's LAN one and its tailnet one; the live session is
+        // the newest, tunnelled.
+        let m = Mine { now: vec![ip("10.0.0.7"), ip("100.70.85.80")], before: NOW, home: None };
+        assert_eq!(pids(&pick(&l, "brandontsang", "personal", &m, NOW)), vec![1]);
+        // Home again, mounted by the LAN name since: the tunnelled ones are older, both dropped.
+        let mut home = l.clone();
+        home.conns.push(conn(4, "192.168.2.15", "personal", "2026/11/11 14:59:30"));
+        let m = Mine { now: vec![ip("192.168.2.15"), ip("100.70.85.80")], before: NOW, home: None };
+        assert_eq!(pids(&pick(&home, "brandontsang", "personal", &m, NOW)), vec![1, 3]);
+    }
+
+    /// Mounted by the LAN name after a mount through Tailscale (home again): a drop of its
+    /// addresses as of then, with every tailnet address it had in the run (one Tailscale holds no
+    /// longer too), once; never while the share stays on the LAN or was never tunnelled.
+    #[test]
+    fn the_watch_asks_once_the_share_is_on_the_lan_again() {
+        let d = tempfile::tempdir().unwrap();
+        let mut w = Watch::new(1000, d.path());
+        let lan = |now, addrs: &[&str]| Seen {
+            now,
+            home: true,
+            nas: true,
+            lan: true,
+            addrs: addrs.iter().map(|a| ip(a)).collect(),
+        };
+        let away =
+            Seen { now: 1020, home: false, nas: true, lan: false, addrs: vec![ip("10.0.0.7"), ip("100.70.85.80")] };
+        assert_eq!(w.round(&lan(1000, &["192.168.2.15"]))[0].0, Why::Start);
+        assert!(w.round(&lan(1010, &["192.168.2.15"])).is_empty(), "on the LAN, never tunnelled");
+        assert!(w.round(&away).iter().all(|(why, _)| *why == Why::Left));
+        // Home, still on the tunnel (the remount waits for idle), then not mounted for a round:
+        // nothing yet.
+        assert!(w.round(&Seen { home: true, now: 1040, ..away }).is_empty());
+        let unmounted = Seen { now: 1050, home: true, nas: false, lan: false, addrs: vec![ip("192.168.2.15")] };
+        assert!(w.round(&unmounted).is_empty());
+        let a = w.round(&lan(1060, &["192.168.2.15"]));
+        assert_eq!(
+            a,
+            vec![(Why::Lan, Mine { now: vec![ip("192.168.2.15"), ip("100.70.85.80")], before: 1060, home: None })]
+        );
+        assert!(w.round(&lan(1080, &["192.168.2.15", "100.70.85.80"])).is_empty(), "once");
+    }
+
     fn seen(now: u64, home: bool, nas: bool) -> Seen {
-        Seen { now, home, nas, addrs: vec![ip("192.168.2.15"), ip("100.70.85.80")] }
+        Seen { now, home, nas, lan: false, addrs: vec![ip("192.168.2.15"), ip("100.70.85.80")] }
     }
 
     #[test]
@@ -883,7 +974,7 @@ mod tests {
             conns: vec![
                 conn(1, "192.168.2.15", "personal", "2026/11/08 09:09:51"),
                 conn(2, "192.168.2.33", "personal", "2026/11/11 06:58:17"),
-                conn(3, "127.0.0.1", "personal", "2026/11/11 10:00:00"),
+                conn(3, "100.101.4.7", "personal", "2026/11/11 10:00:00"),
                 conn(4, "192.168.2.15", "personal", "2026/11/11 14:59:00"),
             ],
             ..Default::default()

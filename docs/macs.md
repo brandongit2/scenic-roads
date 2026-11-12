@@ -252,7 +252,10 @@ installed by `tools/app/install.sh`, updated by the updater).
   agent's folder, written while at home), for 24 hours at most and only for sessions that last
   connected a share before the Mac was last seen at home, so an address the LAN has since given
   another Mac is never taken for this one's. A session through Tailscale comes from this Mac's
-  tailnet address (the NAS's Tailscale is a TUN device), one of its addresses like any other. The
+  tailnet address (the NAS's Tailscale is a TUN device, and DSM lists a tunnelled client by that
+  address: seen 11 Nov), one of its addresses at home and away. A tailnet address is one Mac's
+  alone, never given to another, so every one the Mac has had in its agent's run counts as its own,
+  with no time limit. The
   live session is never dropped: the map server, Finder and the agent's own beats keep or reopen files
   on the share within seconds, so a kick would only swap it for a fresh one while their open
   handles fail. When:
@@ -266,14 +269,20 @@ installed by `tools/app/install.sh`, updated by the updater).
     on the NAS (no word reaches it), and the share is mounted again through Tailscale at once; only
     DSM, reached through Tailscale, can end the session the NAS still holds. A drop that doesn't
     reach DSM (no network yet) is tried again each minute for half an hour;
+  - once the share is mounted by its LAN name after it was mounted through Tailscale (home again,
+    the "home again" remount done): the same as at the start, as of then, with every tailnet
+    address it has had. The remount's forced unmount usually ends the tunnelled session (the
+    tunnel still works at home), but one it didn't end, or one a sleep or a dropped tunnel left
+    behind while away, holds its leases just as a LAN session left behind on leaving does; the new
+    LAN session is the newest, so kept;
   - with the self-heal's remount: the same as at the start, as of the remount (another address's,
     one a reconnect left behind); the remount itself ends the live one.
 
   Pausing from the menu bar drops nothing: the session left behind on leaving is the live one,
   which the drop on leaving ends; a Mac carried away asleep keeps its session on the NAS until it
   wakes and its agent sees it has left. A failure (DSM not reached, no keys, refused) is a warning
-  in the agent's log and stops nothing. By hand still: a Mac that doesn't come back, a session
-  through Tailscale, and the certificate's renewal on the NAS.
+  in the agent's log and stops nothing. By hand still: a Mac that doesn't come back, and the
+  certificate's renewal on the NAS.
 - **Settings that shorten a dead client's hold** (the owner applies them; nothing in the repo
   changes system settings). They are server-wide trade-offs:
   - Synology, DSM Control Panel → File Services → SMB → Advanced settings:
@@ -309,8 +318,8 @@ installed by `tools/app/install.sh`, updated by the updater).
 
     These keep this Mac from hanging on the NAS; they can't shorten what the server keeps for a
     dead Mac. A Mac's agent drops its own dead sessions (above); one still held by a Mac that
-    doesn't come back, or through Tailscale: DSM → Resource Monitor → Connections, disconnect that
-    Mac; the agent's warning names the file.
+    doesn't come back: DSM → Resource Monitor → Connections, disconnect that Mac (its LAN or
+    tailnet address); the agent's warning names the file.
 - **NAS access** goes through a bounded I/O pool with timeouts. An overrun trips the breaker (offline
   banner) only when a quick probe also fails. Files are read in 1 MB pieces with handles kept open,
   never mmapped; base packs and hidata in 256 KB pages, or whole sections for scans.

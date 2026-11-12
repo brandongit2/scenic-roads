@@ -4135,10 +4135,11 @@ impl Agent {
     }
 
     /// This Mac's stale SMB sessions on the NAS dropped through DSM (crate::agent::dsm) as the
-    /// round sees it: at the start, on leaving home (`home`).
-    fn tend_dsm(&mut self, home: bool, root: Option<&NasRoot>) {
+    /// round sees it: at the start, on leaving home (`home`), once the share is mounted by its LAN
+    /// name (`lan`) after it was mounted through Tailscale.
+    fn tend_dsm(&mut self, home: bool, lan: bool, root: Option<&NasRoot>) {
         let Some(d) = &self.dsm else { return };
-        let seen = dsm::Seen { now: now_s(), home, nas: root.is_some(), addrs: store::nas::own_addrs() };
+        let seen = dsm::Seen { now: now_s(), home, nas: root.is_some(), lan, addrs: store::nas::own_addrs() };
         for (why, mine) in self.dsm_watch.round(&seen) {
             d.ask(why, mine, root.cloned());
         }
@@ -4310,8 +4311,9 @@ impl Agent {
             self.last_root = root.clone();
         }
         nasread::phase("this Mac's settings");
-        let home = cond::home(home, root.is_some() && self.mac.lan_mounted());
-        self.tend_dsm(home, root.as_ref());
+        let lan = root.is_some() && self.mac.lan_mounted();
+        let home = cond::home(home, lan);
+        self.tend_dsm(home, lan, root.as_ref());
         // The owner's asks and settings as control took them up (crate::agent::asks; in line for
         // an agent whose parts don't run): the room target, the in-use share, the memory floor.
         self.control.look();
