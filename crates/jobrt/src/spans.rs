@@ -210,8 +210,8 @@ pub(crate) struct Rec {
     parent: Option<String>,
     /// The lane its main thread's spans are on (a child's: its parent span's).
     main_th: String,
-    /// The threads but the main one, in the order they first opened a span.
-    lanes: Vec<std::thread::ThreadId>,
+    /// The threads but the main one, numbered in the order they first opened a span.
+    lanes: HashMap<std::thread::ThreadId, u32>,
     next: u64,
     children: u64,
     /// Spans waiting to merge, by (parent, lane, name).
@@ -281,7 +281,7 @@ impl Rec {
             prefix,
             parent: parent.clone(),
             main_th,
-            lanes: Vec::new(),
+            lanes: HashMap::new(),
             next: 0,
             children: 0,
             pend: HashMap::new(),
@@ -327,13 +327,8 @@ impl Rec {
         if main {
             return 0;
         }
-        match self.lanes.iter().position(|&t| t == id) {
-            Some(i) => i as u32 + 1,
-            None => {
-                self.lanes.push(id);
-                self.lanes.len() as u32
-            }
-        }
+        let n = self.lanes.len() as u32 + 1;
+        *self.lanes.entry(id).or_insert(n)
     }
 
     fn th(&self, lane: u32) -> String {

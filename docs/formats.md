@@ -800,7 +800,9 @@ and as the run ends. Times are µs from the job's start (`h`'s `start_us`, unix 
   from the first's start to the last's end, `n` of them, `busy` their time together. Waits of a kind
   within a gap (2 ms at first, `WAIT_GAP0_NS`) likewise: `n` waits, `busy` µs waited. Each 2000
   lines (`STEP`) doubles both; past 40,000 (`LINES_MAX`) only the main thread's top-level spans and
-  the events are written (an event `thinned` says so). Safe points a second apart are one event.
+  the events are written (an event `thinned` says so). Each program counts its own lines: a child
+  program's are bounded apart from its job's. Safe points a second apart are one event. A retry
+  storm's notes past 200 a second (store::waits' `NOTES_MAX`) are one event saying how many more.
 - Events (`e`): `retry` (store::retry's line), `safe` (`n` safe points from `t` to `t1`), `pausing`
   (asked to stop at its next safe point), `paused`, `error` (the job's error), `thinned`, `end`
   (`ok`: the job's own word), `exit` (its agent's, `at` unix ms: `ok`, how it ended, `lost` when its
@@ -808,12 +810,14 @@ and as the run ends. Times are µs from the job's start (`h`'s `start_us`, unix 
 - Beside it its agent keeps `<id>.json` (`agent::spans::Facts`: `meta` (`coord::jobspans::Meta`:
   `{name, step, targets, worker, host, start, log_from}`, `log_from` the log's length as this run
   began), its log's path, `ended`) and `<id>.sent` (`{s, l, meta}`: what the lead has). All three go
-  once the lead has all of it; any after 14 days.
+  once the lead has all of it; any after 14 days (`agent::spans::KEEP`, said in the agent's log).
 
 **To the lead:** a member's beat (`POST /pool/beat`) carries `spans: [Chunk]`, at most 512 KB a
 beat (`agent::spans::BEAT_MAX`), to a lead whose last answer said `spans` (`coord::beats::SPANS`;
-an older lead's doesn't, and gets none); the answer's `spans: [Ack]` say what it has. The lead's
-own jobs' go to its store every 10 s.
+an older lead's doesn't, and gets none); the answer's `spans: [Ack]` say what it has. The beat
+after one that failed carries none, and each failed beat that carried them quarters the bound (to
+16 KB, `BEAT_MIN`; doubled again by each that gets through), so a slow link never holds up the
+leases' beat. The lead's own jobs' go to its store every 10 s.
 
 ```
 Chunk {job, meta?, s_at, s, l_at, l, end?}    the spans file from byte s_at (whole lines), the run's log from byte l_at
@@ -826,11 +830,15 @@ A run's log goes whole up to 1.25 MB; past that its first 1 MB (`LOG_HEAD`) as i
 **On the lead** (`agent/coord/jobs/<epoch>/<n / 10000>/<epoch>-<n>.zst`): zstd frames, one a chunk
 (level 3), the whole file compressed again as one frame (level 9) once its last chunk is in; each
 line one of the job's (as written) or the lead's own (`coord::jobspans::Own`): `{k: "job", …Meta}`,
-`{k: "log", at, text}` (the log from byte `at` of the run's), `{k: "gap", of: "spans" | "log", from,
-to}`, `{k: "at", s, l}` (after each frame), `{k: "done", at}` (unix ms), `{k: "rec", rec}` (the
-timings' record, as `/work/done` or the lead's own job's end brings it). A chunk is taken from where
-the lead has the job to: one posted again adds nothing. Kept for good, as the history is (docs/pool.md
-§7.5); nothing removes them.
+`{k: "log", at, text}` (the log from byte `at` of the run's), `{k: "gap", of: "log", from, to}` (the
+log's middle left out), `{k: "at", s, l}` (after each frame), `{k: "done", at}` (unix ms), `{k: "rec",
+rec}` (the timings' record, as `/work/done` or the lead's own job's end brings it). A chunk is taken
+from where the lead has the job to: one posted again adds nothing; one from past it (a lead that
+took over mid-job) isn't taken, and its agent, told where the lead has it to, sends it again from
+there, so the new lead has the whole run. The answer says only what's written: a frame that fails
+moves nothing. Nothing removes the files, as nothing removes the history's (docs/pool.md §7.5), but
+they stay on the Mac that held the lead: a later lead answers `legacy` for the jobs an earlier one
+kept (planned: task #1172).
 
 **Measured** (12 Nov, the M4, real jobs by hand with saves handed off, `coord::jobspans::tests::
 sizes_on_the_lead` for the lead's size): terrain-deep 10/914/378 (100 s, 169 s CPU): 1,955 lines,
@@ -856,7 +864,7 @@ the lead): 400 for a malformed id, 503 off the lead, else:
  events: [{kind, t, t1, n, ok, text}],
  log: {lines: [{t, text}], bytes},
  gaps: [{of, from, to}]}
-{job, legacy: true, record, history, now}   no spans kept (from before them, or an older app's)
+{job, legacy: true, record, history, now}   no spans kept here (from before them, an older app's, or kept by an earlier lead)
 ```
 
 Every time is unix seconds (ms precision). `spans` is in the dev jobs' run shape (tools/devtools'

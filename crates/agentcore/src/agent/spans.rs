@@ -26,8 +26,11 @@ use std::time::Duration;
 
 /// The folder in the agent's.
 pub const DIR: &str = "spans";
-/// The most a beat carries, every job's spans and logs together (bytes).
+/// The most a beat carries, every job's spans and logs together (bytes); after a beat carrying
+/// them failed, a quarter of what it carried, down to `BEAT_MIN`, doubled again with each beat that
+/// gets through (`Shipper::beat_bound`).
 pub const BEAT_MAX: usize = 512 << 10;
+pub const BEAT_MIN: usize = 16 << 10;
 /// Of a run's log, at most this much from its start and this much of its end.
 pub const LOG_HEAD: u64 = 1 << 20;
 pub const LOG_TAIL: u64 = 256 << 10;
@@ -63,6 +66,8 @@ pub struct Shipper {
     running: Arc<Snap<(BTreeSet<JobId>, bool)>>,
     /// The lead's own store, while this Mac leads (`ship_local`).
     local: Arc<Snap<Option<Arc<crate::coord::jobspans::Store>>>>,
+    /// The most the next beat carries (`beat_bound`).
+    bound: std::sync::atomic::AtomicUsize,
 }
 
 fn now_s() -> u64 {
@@ -72,7 +77,24 @@ fn now_s() -> u64 {
 impl Shipper {
     /// The shipper of the agent in `home`.
     pub fn new(home: &Path) -> Arc<Shipper> {
-        Arc::new(Shipper { dir: home.join(DIR), running: Snap::new(Default::default()), local: Snap::new(None) })
+        Arc::new(Shipper {
+            dir: home.join(DIR),
+            running: Snap::new(Default::default()),
+            local: Snap::new(None),
+            bound: BEAT_MAX.into(),
+        })
+    }
+
+    /// The most the next beat carries (`BEAT_MAX`, less after beats that failed carrying spans).
+    pub fn beat_bound(&self) -> usize {
+        self.bound.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A beat carrying spans answered (`ok`) or not: the next's bound doubled, or quartered.
+    pub fn beat_went(&self, ok: bool) {
+        let b = self.beat_bound();
+        let next = if ok { (b * 2).min(BEAT_MAX) } else { (b / 4).max(BEAT_MIN) };
+        self.bound.store(next, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn file(&self, job: JobId, ext: &str) -> PathBuf {
@@ -168,6 +190,10 @@ impl Shipper {
             let Some(mut f) = self.facts(job) else { continue };
             let age = now_s().saturating_sub(f.meta.start);
             if age > KEEP.as_secs() {
+                eprintln!(
+                    "agent: job {job}'s spans and log dropped here, {} days old, the lead lacking some of them",
+                    KEEP.as_secs() / 86_400
+                );
                 self.forget(job);
                 continue;
             }
@@ -387,6 +413,25 @@ mod tests {
         assert_eq!(&b[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
         // No file: legacy.
         assert_eq!(view(&store, JobId { epoch: 3, n: 1 })["legacy"], true);
+    }
+
+    /// A beat carrying spans that failed: the next carries a quarter, down to `BEAT_MIN`; each that
+    /// gets through doubles it back to `BEAT_MAX`.
+    #[test]
+    fn a_failed_beat_carries_less_next() {
+        let d = tempfile::tempdir().unwrap();
+        let sh = Shipper::new(d.path());
+        assert_eq!(sh.beat_bound(), BEAT_MAX);
+        sh.beat_went(false);
+        assert_eq!(sh.beat_bound(), BEAT_MAX / 4);
+        for _ in 0..10 {
+            sh.beat_went(false);
+        }
+        assert_eq!(sh.beat_bound(), BEAT_MIN);
+        for _ in 0..10 {
+            sh.beat_went(true);
+        }
+        assert_eq!(sh.beat_bound(), BEAT_MAX);
     }
 
     /// A log's bytes that aren't UTF-8 go as `?`, one each, so the lead's count of where it has the

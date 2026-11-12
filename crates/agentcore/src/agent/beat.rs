@@ -213,19 +213,23 @@ impl ToLead {
         if !self.beats.lead_takes() && age >= crate::coord::held::OMIT_GRACE / 2 {
             return failing;
         }
-        // (Its jobs' spans the lead lacks, to a lead that takes them: crate::agent::spans.)
-        let ship = self.beats.spans_out();
+        // (Its jobs' spans the lead lacks, to a lead that takes them: crate::agent::spans. Never
+        // on the beat after one that failed, and less of them after each that failed carrying
+        // them: a slow link never keeps the leases' beat from getting through.)
+        let ship = self.beats.spans_out().filter(|_| !failing);
         let b = crate::coord::held::Beat {
             held_age_s: age.as_secs_f64().ceil() as u64,
             handoffs: self.beats.handoff_keys(),
             sent: Some(crate::coord::held::sent()),
-            spans: ship.as_ref().map(|s| s.chunks(super::spans::BEAT_MAX)).unwrap_or_default(),
+            spans: ship.as_ref().map(|s| s.chunks(s.beat_bound())).unwrap_or_default(),
             ..b.clone()
         };
+        let carried = !b.spans.is_empty();
         match c.pool_beat(&b) {
             Ok(Some(a)) => {
                 if let Some(s) = &ship {
                     s.acked(&a.spans);
+                    s.beat_went(true);
                 }
                 self.beats.answered(&a, now);
                 self.send_asks(c);
@@ -239,6 +243,9 @@ impl ToLead {
             Err(e) => {
                 if !failing {
                     eprintln!("agent: its beat to the lead: {e:#}");
+                }
+                if let Some(s) = ship.as_ref().filter(|_| carried) {
+                    s.beat_went(false);
                 }
                 true
             }
@@ -774,8 +781,9 @@ mod tests {
     }
 
     /// Task #1104: a member's jobs' spans go with its beats once the lead has said it takes them (not
-    /// before: an older lead would read past them, and they'd go again with every beat), from where
-    /// the lead's answer says it has them: once there, nothing more goes.
+    /// before: an older lead would read past them, and they'd go again with every beat), never on
+    /// the beat after one that failed, from where the lead's answer says it has them: once there,
+    /// nothing more goes.
     #[test]
     fn a_member_s_beats_carry_its_jobs_spans_to_a_lead_that_takes_them() {
         let d = tempfile::tempdir().unwrap();
@@ -791,6 +799,9 @@ mod tests {
         let store = c.jobspans().unwrap();
         assert!(!beat_once(&x));
         assert!(store.read(job).is_none(), "the lead hadn't said it takes them yet");
+        // (The beat after one that failed carries none: a slow link's beats get through.)
+        assert!(!x.post(&x.body(&Status::default()), true));
+        assert!(store.read(job).is_none(), "none after a failed beat");
         assert!(!beat_once(&x));
         assert!(store.read(job).is_some_and(|l| !l.is_empty()), "sent once it said");
         assert!(sh.chunks(super::super::spans::BEAT_MAX).is_empty(), "the lead has them: nothing more to send");

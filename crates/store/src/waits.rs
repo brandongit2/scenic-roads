@@ -116,11 +116,14 @@ struct Intervals {
     open: [Option<Interval>; KINDS],
     /// Those ended, for `take`.
     done: Vec<Interval>,
-    /// The notes made (`note`): when (ns since `base`), what, the line.
+    /// The notes made (`note`): when (ns since `base`), what, the line; and those past `NOTES_MAX`,
+    /// counted.
     notes: Vec<(u64, &'static str, String)>,
+    past: u64,
 }
 
-/// The most notes kept between two `take`s (a retry storm's: the rest counted in the last).
+/// The most notes kept between two `take`s (a retry storm's: the rest counted, one note saying how
+/// many).
 const NOTES_MAX: usize = 200;
 
 impl Intervals {
@@ -377,6 +380,7 @@ pub fn intervals_from(base: Instant, gap_ns: u64) {
                 open: [None; KINDS],
                 done: Vec::new(),
                 notes: Vec::new(),
+                past: 0,
             };
             // (A kind waited on now: from now.)
             for k in 0..KINDS {
@@ -408,6 +412,8 @@ pub fn note(what: &'static str, line: String) {
         let t = iv.at(now);
         if iv.notes.len() < NOTES_MAX {
             iv.notes.push((t, what, line));
+        } else {
+            iv.past += 1;
         }
     }
 }
@@ -432,6 +438,10 @@ pub fn take(all: bool) -> (Vec<Interval>, Vec<(u64, &'static str, String)>) {
         }
     }
     iv.done.sort_by_key(|i| i.t0);
+    if iv.past > 0 {
+        let n = std::mem::take(&mut iv.past);
+        iv.notes.push((t, "retry", format!("{n} more notes since the last {NOTES_MAX}, not kept one by one")));
+    }
     (std::mem::take(&mut iv.done), std::mem::take(&mut iv.notes))
 }
 
@@ -699,6 +709,13 @@ mod tests {
             assert!(i.busy >= 10_000_000 && i.busy <= i.t1 - i.t0, "{i:?}");
         }
         assert_eq!(notes.iter().map(|n| (n.1, n.2.as_str())).collect::<Vec<_>>(), [("retry", "a read: EIO")]);
+        // (A storm's notes past `NOTES_MAX` counted, said in one.)
+        for _ in 0..NOTES_MAX + 3 {
+            note("retry", "again".into());
+        }
+        let (_, notes) = take(false);
+        assert_eq!(notes.len(), NOTES_MAX + 1);
+        assert!(notes[NOTES_MAX].2.starts_with("3 more notes"), "{:?}", notes[NOTES_MAX]);
         // No gap: two calls, two intervals; one open as the job ends, cut there.
         set_gap(0);
         for _ in 0..2 {

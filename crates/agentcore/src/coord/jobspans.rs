@@ -6,13 +6,17 @@
 //!   from where the lead's last answer said it has them (`Ack`), while the lead says it takes them
 //!   (`beats::SPANS`); the lead's own agent hands its jobs' to `take` the same way
 //!   (crate::agent::spans). A chunk is taken from where the lead has the job to: what it has again is
-//!   passed over, so a beat posted twice adds nothing; one from past it (the lead's file lost, a log's
-//!   middle left out on purpose: crate::agent::spans::LOG_HEAD) is kept with the gap said. The
-//!   job's timings' record comes in as it's kept (`record`, crate::coord::keep_timings).
+//!   passed over, so a beat posted twice adds nothing; one from past it (a lead that took over
+//!   mid-job, its file lost) isn't taken, and the answer saying where the lead has it to, its agent
+//!   sends it again from there (it keeps a job's files until the lead has all). A log's middle left
+//!   out on purpose (crate::agent::spans::LOG_HEAD) is kept with the gap said. What the answer says
+//!   the lead has moves only once it's written. The job's timings' record comes in as it's kept
+//!   (`record`, crate::coord::keep_timings).
 //! - **Kept:** `jobs/<epoch>/<n / 10000>/<epoch>-<n>.zst`, zstd frames appended one after another, a
 //!   frame a chunk (`Stored` lines: the job's own lines as it wrote them, the lead's beside them);
-//!   once the job's last chunk is in, the file is compressed again as one frame. Kept as long as the
-//!   history is (for good: docs/pool.md §7.5); a month's size is docs/formats.md's.
+//!   once the job's last chunk is in, the file is compressed again as one frame. Never removed, as
+//!   the history isn't (docs/pool.md §7.5), but on this Mac alone: a later lead lacks them (planned:
+//!   task #1172); a month's size is docs/formats.md's.
 //! - **Out:** `view`: the job's facts, its record, its history's events, its spans in the dev jobs'
 //!   shape (`{id, parent, kind, name, t0, t1, status, attrs}`, tools/devtools' run view), its waits,
 //!   events and log lines on the same axis (unix s). A job with no file is from before spans, or ran
@@ -97,7 +101,8 @@ pub enum Own {
     /// Its log's bytes from `at` (from `Meta::log_from`).
     #[serde(rename = "log")]
     Log { at: u64, text: String },
-    /// Bytes left out between two chunks: of the spans file (`of` "spans") or the log.
+    /// Bytes of the log left out between two chunks (`of` "log": its middle, past
+    /// crate::agent::spans::LOG_HEAD).
     #[serde(rename = "gap")]
     Gap { of: String, from: u64, to: u64 },
     /// Where the lead has it to, after the frame's chunk.
@@ -190,8 +195,11 @@ impl Store {
             let _g = lock_of(job);
             let mut h = self.have(job);
             if !h.done {
-                match self.append(&c, &mut h) {
-                    Ok(()) => {}
+                // (What it has moves only once the frame is written: an answer never says the lead
+                // has what it failed to keep, so its agent sends it again.)
+                let mut next = h;
+                match self.append(&c, &mut next) {
+                    Ok(()) => h = next,
                     Err(e) => eprintln!("coordinator: keeping job {job}'s spans: {e:#}"),
                 }
             }
@@ -212,19 +220,23 @@ impl Store {
             lines.push(own(&Own::Facts(m.clone())));
             h.meta = true;
         }
-        // (The spans from where the lead has them: a chunk's lines start where the lead's end.)
+        // (The spans from where the lead has them: a chunk's lines start where the lead's end. One
+        // from past it (a lead that took over mid-job, its file lost) isn't taken: the answer says
+        // where the lead has them to, and its agent, which keeps them until the lead has all, sends
+        // them from there.)
         let s_end = c.s_at + c.s.len() as u64;
-        if s_end > h.s && !c.s.is_empty() {
-            if c.s_at > h.s {
-                lines.push(own(&Own::Gap { of: "spans".into(), from: h.s, to: c.s_at }));
-            }
-            let from = h.s.saturating_sub(c.s_at) as usize;
+        let s_ahead = c.s_at > h.s;
+        if s_end > h.s && !c.s.is_empty() && !s_ahead {
+            let from = (h.s - c.s_at) as usize;
             let text = c.s.get(from..).unwrap_or("");
             lines.extend(text.lines().filter(|l| !l.trim().is_empty()).map(str::to_string));
             h.s = s_end;
         }
+        // (The log likewise, but the gap its agent leaves on purpose, past the head it sent:
+        // crate::agent::spans::LOG_HEAD. A lead with none of it is sent it from its start.)
         let l_end = c.l_at + c.l.len() as u64;
-        if l_end > h.l && !c.l.is_empty() {
+        let l_ahead = c.l_at > h.l && h.l == 0;
+        if l_end > h.l && !c.l.is_empty() && !l_ahead {
             if c.l_at > h.l {
                 lines.push(own(&Own::Gap { of: "log".into(), from: h.l, to: c.l_at }));
             }
@@ -234,7 +246,7 @@ impl Store {
             lines.push(own(&Own::Log { at: c.l_at.max(h.l), text: text.to_string() }));
             h.l = l_end;
         }
-        if c.end {
+        if c.end && !s_ahead && !l_ahead {
             lines.push(own(&Own::Done { at: unix_ms() }));
             h.done = true;
         }
@@ -535,6 +547,38 @@ pub fn record_in(log: &Path, job: JobId) -> Option<jobrt::timings::RunRec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chunk(job: JobId, s_at: u64, s: &str, l_at: u64, l: &str, end: bool) -> Chunk {
+        Chunk { job, meta: Some(Meta::default()), s_at, s: s.into(), l_at, l: l.into(), end }
+    }
+
+    /// A chunk from past what the lead has (a lead taking over mid-job: its agent's last answer was
+    /// the old lead's) isn't taken, its end neither: the answer says where the lead has it to, so
+    /// its agent sends it from there, and the lead ends with the whole of it, no gap. A log's gap
+    /// past a head the lead has is kept, said. A frame that can't be written moves nothing: the
+    /// answer never says the lead has what it failed to keep.
+    #[test]
+    fn a_chunk_past_what_the_lead_has_is_sent_again_from_there_and_a_failed_write_acks_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path().join("jobs"));
+        let job = JobId { epoch: 2, n: 5 };
+        let (a, b) = ("{\"k\":\"l\",\"t\":0,\"at\":0}\n", "{\"k\":\"l\",\"t\":1,\"at\":9}\n");
+        let ack = store.take(vec![chunk(job, a.len() as u64, b, 40, "tail\n", true)]);
+        assert_eq!((ack[0].s, ack[0].l, ack[0].done), (0, 0, false), "{ack:?}");
+        assert!(store.read(job).is_none_or(|l| !l.iter().any(|x| matches!(x, Stored::Job(_)))));
+        let ack = store.take(vec![chunk(job, 0, &format!("{a}{b}"), 0, "head\n", false)]);
+        assert_eq!((ack[0].s, ack[0].l), ((a.len() + b.len()) as u64, 5));
+        let ack = store.take(vec![chunk(job, ack[0].s, "", 40, "tail\n", true)]);
+        assert!(ack[0].done, "{ack:?}");
+        let v = view(Some(&store), job, Vec::new(), || None);
+        assert_eq!(v["gaps"], serde_json::json!([{ "of": "log", "from": 5, "to": 40 }]));
+        assert_eq!(v["log"]["lines"].as_array().unwrap().len(), 2);
+        // (Its folder a file: nothing can be written.)
+        let bad = Store::new(d.path().join("blocked"));
+        std::fs::write(d.path().join("blocked"), "").unwrap();
+        let ack = bad.take(vec![chunk(job, 0, a, 0, "head\n", true)]);
+        assert_eq!((ack[0].s, ack[0].l, ack[0].meta, ack[0].done), (0, 0, false, false));
+    }
 
     /// A benchmark, run by hand (`-- --ignored`): each job's spans file and log in
     /// `SCENIC_SPANS_MEASURE` (`<dir>/<tag>/spans.ndjson` and `<dir>/<tag>/log`, as a measuring run
