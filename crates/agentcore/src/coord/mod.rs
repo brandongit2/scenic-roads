@@ -10835,21 +10835,69 @@ mod tests {
     /// for their measure and nothing more goes; past it, for what they keep busy, and a fourth goes.
     #[test]
     fn a_running_job_counts_for_the_cores_it_keeps_busy_now() {
-        let g = three_terrain_deep_then_a_fourth(true).expect("past their first target: 7.5 of 12 busy, a fourth goes");
+        let g =
+            three_terrain_deep_then_a_fourth(true).0.expect("past their first target: 7.5 of 12 busy, a fourth goes");
         assert!(g.more.is_empty(), "one past their threads at a time");
+    }
+
+    /// Task #1094: the forecast counts a held job as the lead does. The lead's state as recorded
+    /// (`sched_state`, as written with its forecast) says the cores each job keeps busy now
+    /// (`Leased::busy_tenths`): a scheduler made from it (`Sched::from_state`, the forecast's) grants
+    /// the fourth job the lead grants, and `State::cores_left` takes the load outside the pool off
+    /// as the lead does (10 busy, the jobs' 7.5: two outside). A record without them (an older
+    /// app's) counts the jobs at their measure: no fourth, and no load outside seen. An older app
+    /// reading the new record passes the field over.
+    #[test]
+    fn the_forecast_counts_held_jobs_at_the_cores_they_keep_busy() {
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OlderLeased {
+            worker: String,
+            step: String,
+            targets: Vec<(String, String)>,
+            threads: u32,
+            #[serde(default)]
+            granted_at: u64,
+        }
+        let (real, st, clock, ask) = three_terrain_deep_then_a_fourth(true);
+        let real = real.expect("the lead grants a fourth");
+        let json = serde_json::to_value(&st).unwrap();
+        let st: sched::State = serde_json::from_value(json.clone()).unwrap();
+        assert!(st.leases.iter().all(|l| l.busy_tenths == Some(25)), "{:?}", st.leases);
+        let older: Vec<OlderLeased> = serde_json::from_value(json["leases"].clone()).unwrap();
+        assert_eq!(older.len(), 3, "an older app reads the leases");
+        let mut was = json.clone();
+        for l in was["leases"].as_array_mut().unwrap() {
+            l.as_object_mut().unwrap().remove("busy_tenths");
+        }
+        let was: sched::State = serde_json::from_value(was).unwrap();
+        assert!(was.leases.iter().all(|l| l.busy_tenths.is_none()));
+        let grants = |st: &sched::State| {
+            let mut s = sched::Sched::from_state(crate::agent::seam::for_tests(), st, clock, Duration::from_secs(3600));
+            s.set_offers(st.offers.clone());
+            s.pack(&ask, &st.offers, false, clock).0.len()
+        };
+        assert_eq!(grants(&st), 1 + real.more.len(), "the forecast grants what the lead grants");
+        assert_eq!(grants(&was), 0, "a record without: their measure");
+        let the_plan = crate::agent::seam::for_tests();
+        let mut loaded = ask.clone();
+        loaded.cap.as_mut().unwrap().cores_free = 2;
+        assert_eq!(st.cores_left(the_plan, &loaded), 10, "two busy outside the pool");
+        assert_eq!(was.cores_left(the_plan, &loaded), 12, "their measure, 11.4, hides them");
     }
 
     /// Task #1091: a member on an older app, its beats saying no CPU time, has its jobs counted for
     /// their measure past their first target too, never for none: no fourth.
     #[test]
     fn a_job_whose_beats_say_no_cpu_time_counts_for_its_measure() {
-        assert!(three_terrain_deep_then_a_fourth(false).is_none());
+        assert!(three_terrain_deep_then_a_fourth(false).0.is_none());
     }
 
     /// Three slope-hi jobs of a measure of 3.8 cores granted a Mac of 12, their beats (saying their
     /// CPU time if `says_cpu`) 0.2 busy each while on their first target, then 2.5 past it: the
-    /// grants a fourth ask has then. Reading their first target, it has none.
-    fn three_terrain_deep_then_a_fourth(says_cpu: bool) -> Option<Grant> {
+    /// grants a fourth ask has then, the lead's state just before it (`sched_state`) and its clock,
+    /// and the ask. Reading their first target, it has none.
+    fn three_terrain_deep_then_a_fourth(says_cpu: bool) -> (Option<Grant>, sched::State, sched::Clock, Ask) {
         let (_d, c, w, clock) = every((0, 0));
         let ts: Vec<String> = (1..=12).map(|i| format!("6/1/{i}")).collect();
         for t in &ts {
@@ -10918,7 +10966,10 @@ mod tests {
             beat(2.5, 0);
         }
         beat(2.5, 1);
-        w.ask(&ask(8, leases.clone())).unwrap()
+        let now = c.shared.lock().unwrap().now();
+        let st = c.sched_state();
+        let a = ask(8, leases.clone());
+        (w.ask(&a).unwrap(), st, sched::Clock { now, unix: unix_of(now) }, a)
     }
 
     /// Disk reservations (task #242): a grant carries its job's measured disk, which its agent

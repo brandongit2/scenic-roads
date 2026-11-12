@@ -630,7 +630,8 @@ below decides. The rule is `Sched::pack_need` and `need_cores` (a job's step, ta
 and its Mac's cores for jobs; `Sched::lease_cores` the two for one job): the live scheduler's
 packing and the forecast's (it runs that packing on the scheduler as recorded, `sched::State`,
 which carries the uses; its grants say their threads) go through it; `State::cores_left` counts a
-held job's busy cores from the same uses, else the cost book. The whole-run use hides a step's
+held job's busy cores as the lead counted them (`Leased::busy_tenths`, below), else from the same
+uses, else the cost book. The whole-run use hides a step's
 phases: pack keeps 0.1–0.9 of a core busy over its run, so 1 thread, but draws its road and rail
 tiles on 4–5.5 cores, which at 1 thread makes its long runs at least 1.3–1.6 times as long (2
 threads: 1.2 at most, 3: 1.07); trees' program ran at 1.2 cores (at least 1.16 times at 1).
@@ -721,10 +722,14 @@ lease's first beat and over its last minute or so of beats (`Lease::cores_mean`,
 stretch, one quiet a moment between busy stretches for its mean), in place of its measure; before
 that, or where its beats say no CPU time (an older agent's), its measure, so a job still reading
 its first target isn't counted as using nothing. The packing, a re-grant's count of its Mac's
-other jobs and placement's `swamped` count it so; the forecast doesn't (`State::cores_left` and
-its packing of the leases as recorded, which carry no beats, count each running job for its
-measure), so where jobs keep less busy than their measure the lead grants a Mac more than the
-forecast foresaw, and logs "the grants departed from the forecast". A step's measure is its busiest thread count's
+other jobs and placement's `swamped` count it so, and the forecast too (task #1094): the
+scheduler's state as recorded carries no beats, so each lease in it says the cores its job keeps
+busy as the lead counts it (`sched::Leased::busy_tenths`, tenths; left out until its run says
+it), which the forecast's scheduler counts it for (`Lease::busy_said`, while no beat of its own
+says) and `State::cores_left` takes off its Mac's cores; a record without it (an older app's)
+counts the job for its measure, and an older app reading a newer record passes it over. So a Mac
+whose jobs keep less busy than their measure is granted what the forecast foresaw (where the grants
+depart from it, the lead logs "the grants departed from the forecast"). A step's measure is its busiest thread count's
 over the window's runs: on 10 Nov it counted the M4's three terrain-deep jobs at 3.8 cores each
 (266 runs at 5 threads on 8–9 Nov kept 3.75 busy; the 4-thread runs since, beside each other on a
 busier NAS, 2.4–2.8), 11.4 of the 12 it had while in use, and a fourth was refused ("cores: 0.6 of
@@ -733,7 +738,9 @@ A job's threads stay within the cores left plus those it leaves idle
 (its grant less its busy cores). **Past the cores its jobs' threads leave, a Mac climbs one job
 at a time** (task #688 review, `coord::SETTLE`): an ask is granted at most one job that fits only
 by busy cores, and none until a minute has passed since its last grant (the span of the cores
-busy its capacity reports) or while those pass its jobs' busy cores by more than a core.
+busy its capacity reports; a job older than its lease, taken up at a lead's restart or from a
+record as the forecast's are, since it began) or while those pass its jobs' busy cores by more
+than a core.
 So the M4 takes four terrain-hi jobs by their threads at once, then one a minute up to what its
 memory, disk and the NAS budget hold, and stops climbing as soon as jobs keep more busy than their
 runs said (a run's busy cores read low where it waited on a busy NAS). Cores busy past the jobs' by more than a core (the minute's rounding up) come off

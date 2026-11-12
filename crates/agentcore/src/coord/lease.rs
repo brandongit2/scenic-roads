@@ -73,6 +73,11 @@ pub struct Lease {
     /// afresh, those ended before gone), its views counted on from the last (in memory alone).
     #[serde(skip)]
     cpu_carry: u64,
+    /// The cores (tenths) a record said its job kept busy (crate::coord::sched::Leased::busy_tenths;
+    /// in memory alone): what a scheduler made from the record counts it for (crate::coord::sched's
+    /// `busy_now`) while no beat of its own says.
+    #[serde(skip)]
+    pub busy_said: Option<u32>,
     /// Its job's stillness as its worker's beats show it (docs/pool.md §10, Flags; in memory
     /// alone, a lead restarted counts from its load): the last beat heard, the last at which its
     /// work moved (None: none yet, counted from its grant: `Lease::still`), and the longest stretch
@@ -633,6 +638,7 @@ impl Leases {
                 window: Default::default(),
                 first: None,
                 cpu_carry: 0,
+                busy_said: None,
                 heard: None,
                 moved: None,
                 still_most: 0,
@@ -645,6 +651,13 @@ impl Leases {
             },
         );
         id
+    }
+
+    /// Notes the cores (tenths) a record said lease `id`'s job kept busy (`Lease::busy_said`).
+    pub fn set_busy_said(&mut self, id: u64, tenths: Option<u32>) {
+        if let Some(l) = self.by_id.get_mut(&id) {
+            l.busy_said = tenths;
+        }
     }
 
     /// Notes the threads lease `id`'s job was granted.

@@ -466,15 +466,17 @@ pub fn outside_cores(a: &Ask, ours: u32) -> u32 {
 /// agent's), None: it counts for its measure (`need_cores`), so a job still reading its first
 /// target isn't counted as using nothing. A step's measure is its busiest thread count's over the
 /// window's runs (crate::uses): on 10 Nov it counted the M4's terrain-deep jobs at 3.8 cores each,
-/// from runs at 5 threads two days before, while they kept 2.2–3.5 busy at 4.
+/// from runs at 5 threads two days before, while they kept 2.2–3.5 busy at 4. A lease of a
+/// scheduler made from a record (`Sched::from_state`, the forecast's), no beat of its own saying,
+/// counts for what the record's lead counted it for (`Leased::busy_tenths`, task #1094).
 fn busy_now(l: &Lease, secs: Option<u64>, now: Instant) -> Option<u32> {
     let started = l.live.as_ref().is_some_and(|v| v.targets_done > 0)
         || l.ran(now).as_secs() > secs.unwrap_or(jobrt::budget::nas::OWN_AGE.as_secs());
-    if !started {
-        return None;
-    }
-    let cores = l.cores_mean()?.max(l.cores_lately().unwrap_or(0.0));
-    Some(((cores * 10.0).round() as u32).max(1))
+    let beats = || {
+        let cores = l.cores_mean()?.max(l.cores_lately().unwrap_or(0.0));
+        Some(((cores * 10.0).round() as u32).max(1))
+    };
+    started.then(beats).flatten().or(l.busy_said)
 }
 
 /// The threads a job wanting `threads` and counting for `busy` tenths of a core is granted where
@@ -1379,7 +1381,10 @@ impl Sched {
         // ask, and none while its Mac's load hasn't had `SETTLE` to show its last grant or shows
         // load past its jobs' busy cores by more than a core (the minute's whole cores): the jobs go up one at a time, each measured by the load
         // before the next, so jobs busier than their runs said (or #690's reads in parallel) stop
-        // the climb within a minute instead of a whole ask's worth landing at once.)
+        // the climb within a minute instead of a whole ask's worth landing at once. A job older
+        // than its lease (`Lease::taken_up`: read back at a lead's restart, or from a record, the
+        // forecast's) has had its load show since it began (task #1094: the forecast held back
+        // the overcommit the lead made, its record's leases all granted that instant).)
         let mut by_threads = needs
             .iter()
             .zip(&jobs)
@@ -1387,7 +1392,7 @@ impl Sched {
                 left.saturating_sub(if n.waits || n.idle { 0 } else { self.need_cores(st, n, total).0 })
             })
             .saturating_sub(outside);
-        let settled = mine.iter().all(|l| now.saturating_duration_since(l.granted) >= SETTLE);
+        let settled = mine.iter().all(|l| now.saturating_duration_since(l.granted.min(l.began())) >= SETTLE);
         let unexplained = a.cap.as_ref().is_some_and(|c| {
             let kept = if c.in_use { c.kept_cores } else { 0 };
             c.cores.saturating_sub(c.cores_free).saturating_sub(kept) > ours + 1
@@ -2417,9 +2422,11 @@ fn is_zero(n: &u64) -> bool {
 
 impl State {
     /// The cores `a`'s Mac has past those busy outside the pool as its ask says (`outside_cores`,
-    /// past the cores the jobs it holds here count for: each its step's use on the Mac's busy cores
-    /// (crate::uses), else its targets' most kept busy (crate::needs::Cores::busy_tenths), summed in
-    /// tenths, within its threads, else its threads): the forecast's room for its jobs (task #684).
+    /// past the cores the jobs it holds here count for: each the cores the lead counted it as
+    /// keeping busy now (`Leased::busy_tenths`, task #1094), else its step's use on the Mac's busy
+    /// cores (crate::uses), else its targets' most kept busy (crate::needs::Cores::busy_tenths),
+    /// summed in tenths, within its threads, else its threads): the forecast's room for its jobs
+    /// (task #684).
     pub fn cores_left(&self, the_plan: &'static dyn crate::agent::seam::Plan, a: &Ask) -> u32 {
         let b = crate::needs::Book::new(the_plan, &self.costs);
         let ours: u32 = self
@@ -2427,10 +2434,12 @@ impl State {
             .iter()
             .filter(|l| l.worker == a.worker)
             .map(|l| {
-                let ts: Vec<String> = l.targets.iter().map(|t| t.0.clone()).collect();
-                let c =
-                    self.uses.cores(&l.step, crate::paces::mac_of(&l.worker)).or_else(|| book_cores(&b, &l.step, &ts));
-                c.and_then(|c| c.busy_tenths).map_or(l.threads * 10, |c| c.min(l.threads * 10))
+                let measured = || {
+                    let ts: Vec<String> = l.targets.iter().map(|t| t.0.clone()).collect();
+                    let mac = crate::paces::mac_of(&l.worker);
+                    self.uses.cores(&l.step, mac).or_else(|| book_cores(&b, &l.step, &ts)).and_then(|c| c.busy_tenths)
+                };
+                l.busy_tenths.or_else(measured).map_or(l.threads * 10, |c| c.min(l.threads * 10))
             })
             .sum();
         let ours = tenths_to_cores(ours);
@@ -2453,6 +2462,12 @@ pub struct Leased {
     /// weighs, `Backfill`), not just started.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub granted_at: u64,
+    /// The cores its job keeps busy now, in tenths, as the lead counts it (`busy_now`, task #1091),
+    /// once its run says it: what the forecast's scheduler counts it for (`Lease::busy_said`) and
+    /// `State::cores_left` takes off (task #1094). None (not said yet, or a record before task #1094):
+    /// its measure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_tenths: Option<u32>,
 }
 
 /// A worker's last ask (`State::workers`): the ask, whether it ran an older app (`Worker::old`),
@@ -2483,10 +2498,15 @@ impl Sched {
                 .filter_map(|l| {
                     // (Its job's start when it's older than its lease: `Lease::began`, task #992.)
                     let granted_at = l.granted_at.min(clock.unix.saturating_sub(l.ran(now).as_secs()));
-                    match l.work {
-                        Work::Job { step, targets } => {
-                            Some(Leased { granted_at, worker: l.worker, step, targets, threads: l.threads })
-                        }
+                    match &l.work {
+                        Work::Job { step, targets } => Some(Leased {
+                            granted_at,
+                            busy_tenths: self.held_need(&l, step, targets, now).busy_now,
+                            worker: l.worker.clone(),
+                            step: step.clone(),
+                            targets: targets.clone(),
+                            threads: l.threads,
+                        }),
                         Work::Task { .. } => None,
                     }
                 })
@@ -2551,6 +2571,7 @@ impl Sched {
                 leases.grant_at(&l.worker, Work::Job { step: l.step.clone(), targets: l.targets.clone() }, now, at);
             leases.began_at(id, at, clock.unix, now);
             leases.set_threads(id, l.threads);
+            leases.set_busy_said(id, l.busy_tenths);
         }
         let workers = s
             .workers

@@ -3087,6 +3087,7 @@ mod tests {
             targets: vec![("6/9/9".into(), "k".into())],
             threads: 1,
             granted_at: 1_000_000 - 7200,
+            busy_tenths: None,
         }];
         let cap = Capacity { mem_mb: 16_000, build_mb: 16_000, cores: 8, cores_free: 8, ..Default::default() };
         st.workers = vec![Asked {
@@ -3967,6 +3968,7 @@ mod tests {
             targets: ts.iter().map(|t| (t.clone(), "k".to_string())).collect(),
             threads: 2,
             granted_at: 0,
+            busy_tenths: None,
         };
         let packs: Vec<String> = regions[0].packs.iter().map(|p| p.0.clone()).take(5).collect();
         let st = State {
