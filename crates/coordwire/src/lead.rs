@@ -1,5 +1,5 @@
-//! How a Mac finds the lead's coordinator (docs/coordination.md §3.2, task #1119); nothing on the
-//! NAS says where it is.
+//! How a Mac finds the lead's coordinator (docs/coordination.md §3.1, task #1119); nothing it reads
+//! on the NAS says where it is (the lead's `crate::OLD_CONTACT` is for the apps before alone).
 //!
 //! - Each Mac's agent keeps its lead's contact in its folder (`SAVED`, `<agent home>/lead.json`):
 //!   the lead's agent its own coordinator's, a member's as each beat's answer says it (`leading`,
@@ -93,7 +93,8 @@ pub fn declared(root: &store::nasfs::NasRoot, token: &str) -> Result<Option<Know
 
 /// How to reach the lead now: the one the agent of `home` keeps, while the declaration names it or
 /// can't be read (no NAS: the saved one alone), the declared host's addresses after its own; else
-/// the declared lead's. None: neither.
+/// the declared lead's. None: neither, or a root that answers declares no lead (whatever is kept
+/// here).
 pub fn find(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Result<Option<Contact>> {
     let kept = home.and_then(saved);
     let Some(root) = root else { return Ok(kept.map(|k| k.contact)) };
@@ -114,7 +115,11 @@ pub fn find(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Result
             Some(k.contact)
         }
         (_, Some(d)) => Some(d.contact),
-        (k, None) => k.map(|k| k.contact),
+        // (No lead declared on a root that answers (its `inputs/` there): none. A lead kept here is
+        // another pool's then: a test's or a dev agent's job on a scratch root, or a command on a
+        // local copy laid out as the project folder, reads this Mac's own agent's lead.json, the
+        // real pool's. A share whose mount went stale reads as no file at all: the kept one.)
+        (k, None) => k.filter(|_| !root.join("inputs").metadata().is_ok_and(|m| m.is_dir())).map(|k| k.contact),
     })
 }
 
@@ -229,7 +234,8 @@ mod tests {
     }
 
     /// Task #1119: the saved lead first, the declared host's addresses after it; a saved lead the
-    /// declaration no longer names gives way to the declared one; no NAS, the saved one alone.
+    /// declaration no longer names gives way to the declared one; no NAS, the saved one alone; a
+    /// root that declares none, none (review: a scratch root's job never reaches the real lead).
     #[test]
     fn the_lead_is_found_saved_then_declared() {
         let d = tempfile::tempdir().unwrap();
@@ -251,6 +257,18 @@ mod tests {
         announce(&root, "h-m-2", Some(vec!["http://127.0.0.1:3".into()]));
         assert_eq!(find(Some(&home), Some(&root)).unwrap().unwrap().urls, ["http://127.0.0.1:3"], "the lead moved");
         assert_eq!(find(None, Some(&root)).unwrap().unwrap().token, "tok", "no agent here: the NAS's token");
+        std::fs::remove_file(nas.join(buildstore::records::lead::LEAD)).unwrap();
+        assert_eq!(
+            find(Some(&home), Some(&root)).unwrap().unwrap().urls,
+            ["http://127.0.0.1:2"],
+            "a share gone stale: the kept"
+        );
+        std::fs::create_dir_all(nas.join("inputs")).unwrap();
+        assert_eq!(
+            find(Some(&home), Some(&root)).unwrap(),
+            None,
+            "a root that answers declaring no lead: not the one kept here"
+        );
         announce(&root, "h-m-1", None);
         announce(&root, "h-m-2", None);
     }

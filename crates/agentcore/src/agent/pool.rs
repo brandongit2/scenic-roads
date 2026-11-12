@@ -1938,8 +1938,9 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
     out
 }
 
-/// The pool's copy of the workers' token (§8: the same on every member).
-pub const TOKEN: &str = "state/coord/token";
+/// The pool's copy of the workers' token (§8: the same on every member): coordwire::lead's, which
+/// a process with no agent's copy reads.
+pub use coordwire::lead::TOKEN;
 
 /// The lead's token made the pool's on the NAS (`TOKEN`) when none is there (create-new: the first
 /// one's stays), so a Mac with no lead's contact of its own finds the lead with it (coordwire::lead).

@@ -69,7 +69,7 @@ on one disk.
 | The records | — | `agent/pool/records.json`, the lead's disk copy | `state/build/records.json`, written whole each save (pool.md §6.2) |
 | GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/maplog.md §7) | the lead's GC queue | — |
 | The history | `/api/history` (the page's; the CLI's on another Mac) | the coordinator's `history.jsonl` (the last week's), which the page's view reads (pool.md §7.5) | each finished day packed into the archive by the daily `gc` job, `state/coord/history-archive/<day>.tar` |
-| How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | none: with no `lead.json` (a new Mac) or one naming another member than the declaration, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`) |
+| How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | read for it by no app since task #1119: with no `lead.json` (a new Mac) or one naming another member than the declaration, or a root that doesn't answer, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`); a root that answers and declares no lead, none. The lead still writes `state/coordinator.json` each 5 min while it leads (`coordwire::OLD_CONTACT`, when it differs), for the apps before #1119 alone, whose agents, map servers and updaters find the lead by it (§9) |
 
 ### 3.2 On the NAS
 
@@ -343,12 +343,22 @@ old coordination folders are gone):
   `agent::fccheck::inputs` reads for the backtest where the forecast inputs' archive
   (`state/coord/forecast-inputs/`, from 4 Nov) lacks them, until the archive covers them or the
   check no longer reads term folders;
-- **remove** (task #1119: what the lead alone wrote, now on its disk or asked of it):
-  `state/status.json` and its `status.json.<host>.<pid>.<n>.tmp` asides, `state/coordinator.json`,
-  `state/pool/nas-probes.json`, `state/tmp/` (empty), `state/logs/` (logs of 2 and 6 Oct), and
-  `settings/` (the map's profiles, once a daily backup lists `mac/profiles.json`); `map/` once every
-  Mac's beat says `nas-check-inputs` (docs/maplog.md §4.4). `state/coord/history/<day>/` goes by
-  itself: the `gc` job packs each day into the archive and removes it as it passes the week.
+- **remove** (task #1119: what the lead alone wrote, now on its disk or asked of it), once every
+  Mac runs an app since #1119 (#642's rule: each Mac's updater's `app/releases/live.json` written by
+  such an app a day ago; an older app reads them): `state/status.json` and its
+  `status.json.<host>.<pid>.<n>.tmp` asides (an older `scenic status` and map server show the lead's
+  status by it), `state/pool/nas-probes.json`, `state/tmp/` (empty), `state/logs/` (logs of 2 and
+  6 Oct), and `settings/` (the map's profiles, which an older map server reads and writes; and once
+  a daily backup lists `mac/profiles.json`); `map/` once every Mac's beat says `nas-check-inputs`
+  (docs/maplog.md §4.4);
+- **still written, for older apps**: `state/coordinator.json`, the lead's contact, which an app
+  before #1119 finds the lead by (its agent, its map server, and its updater, which so reaches the
+  new app: an older lead's agent took the file off as it stopped for its own update). At #642's rule
+  above, a change of its own deletes `coordwire::OLD_CONTACT`, `keep_old_contact` and its call in
+  the agent's pool step, then the file.
+
+`state/coord/history/<day>/` goes by itself: the `gc` job packs each day into the archive and
+removes it as it passes the week.
 
 ## 10. Decisions
 

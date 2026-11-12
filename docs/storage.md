@@ -31,8 +31,9 @@ map/           <seq>.json.zst: the map's snapshots that apps before task #1119 w
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
                current.json (the live one's manifest: {version, sha256, archive_sha256}),
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
-settings/      profiles.json: read and written by nothing: the map's server keeps its settings profiles
-               on its own Mac (Backups, below); the PM's to remove
+settings/      profiles.json: read and written by no app since task #1119 (an older map server's): the
+               map's server keeps its settings profiles on its own Mac (Backups, below); the PM's to
+               remove once every Mac runs a newer app (docs/coordination.md §9)
 state/         build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history's archive (a tar a finished day: the history
                itself is the lead's, on its disk), the forecasts' and forecast inputs' archives),
@@ -41,8 +42,10 @@ state/         build/ (the records, their brief, the lead's declaration),
                day), backups/;
                coord/history/ (the days an app before task #1119 wrote: GC packs each into the
                archive and removes it as it passes the week, the last on 19 Nov);
-               what no app reads or writes since task #1119, the PM's to remove (docs/coordination.md
-               §9): status.json, coordinator.json, pool/nas-probes.json, tmp/ (empty), logs/ (the
+               coordinator.json (the lead's contact, written for the apps before task #1119 alone,
+               read by no app since: docs/coordination.md §9);
+               what no app since task #1119 reads or writes, the PM's to remove once every Mac runs
+               one (§9): status.json, pool/nas-probes.json, tmp/ (empty), logs/ (the
                NAS's planet fetch's and an old bld-fetch's logs, of 2 and 6 Oct); taskboard/ (copies
                of the task board's database from its moves, 21 Oct and 5 Nov: the owner's); and the
                old coordination files no app writes (journal/, the terms' folders: §9)

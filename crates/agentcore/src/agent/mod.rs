@@ -4506,7 +4506,7 @@ impl Agent {
         // (In the pool, only while this Mac leads, and not while the pool's step is taken for hung
         // (`pool_skipped`): its contact kept here as this Mac's lead's (coordwire::lead), each
         // 5 min (its page over HTTPS may come or go); its beats' answers give the members its
-        // addresses meanwhile. No NAS file says where the lead is (task #1119).)
+        // addresses meanwhile. No app since task #1119 reads the NAS for where the lead is.)
         let leading = self.pool_seen.as_ref().is_some_and(|p| p.gates.leads.is_some()) && self.pool_hung.is_none();
         let me = self.pool_seen.as_ref().and_then(|p| p.lead.as_ref()).and_then(|v| v.lead.clone());
         if let (Some(c), true) = (&self.coord, leading) {
@@ -4519,6 +4519,11 @@ impl Agent {
                         eprintln!("agent: the pool's token on the NAS: {e:#}");
                     }
                     coordwire::lead::announce(r, &me.host, Some(contact.urls.clone()));
+                    // (Where an app before #1119 finds the lead, till every Mac runs this one:
+                    // coordwire::OLD_CONTACT.)
+                    if let Err(e) = coordwire::keep_old_contact(r, &contact) {
+                        eprintln!("agent: the lead's contact for older apps on the NAS: {e:#}");
+                    }
                 }
                 let k = coordwire::lead::Known { member: me.member, host: me.host, contact };
                 match coordwire::lead::save(&self.o.home, &k) {
@@ -16057,6 +16062,21 @@ mod pool_tests {
         until(&mut a, |a| {
             a.pooled().and_then(|p| p.gates.leads).is_some() && r.join(crate::pool::store::BACKUP_PATH).exists()
         });
+        // (Task #1119 review: its contact kept in its folder, readable by its user alone (the pool's
+        // token), and on the NAS where an older app finds the lead, the same: coordwire::OLD_CONTACT.)
+        let kept = coordwire::lead::saved(&home).expect("its lead.json");
+        assert_eq!(
+            (kept.member.as_str(), kept.contact.urls.clone()),
+            (me.as_str(), a.coord.as_ref().unwrap().reach().urls)
+        );
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(home.join(coordwire::lead::SAVED)).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        }
+        let old: crate::coord::Contact =
+            serde_json::from_slice(&std::fs::read(r.join(coordwire::OLD_CONTACT)).unwrap()).unwrap();
+        assert_eq!(old, kept.contact, "the older apps' contact is the lead's own");
         // (Its history on its own disk alone, task #1119, with its coordinator's start, which mends
         // the runs across a restart as read: task #988.)
         assert!(!r.join("state/coord/history").exists(), "no history on the NAS");

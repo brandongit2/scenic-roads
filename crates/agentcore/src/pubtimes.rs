@@ -575,9 +575,9 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
 }
 
 /// The build's history of the last `days` days: the NAS's archive (`state/coord/history-archive/
-/// <day>.tar`, a finished day packed by GC: agent::histarchive), with the lead's own (`local`, its
-/// coordinator's file, on the lead; elsewhere, or with no file there, asked of the lead's
-/// coordinator, `/api/history`: the last week's); duplicates once; the runs of jobs across a lead's
+/// <day>.tar`, a finished day packed by GC: agent::histarchive), with the lead's own: the file
+/// `local` (this Mac's coordinator's, or one named) and, with the root given, the lead's coordinator's
+/// asked (`/api/history`: the last week's); duplicates once; the runs of jobs across a lead's
 /// restart mended (crate::coord::history::mend_runs).
 pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
@@ -588,9 +588,13 @@ pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, 
     if let Some(r) = root {
         out.extend(archived(r, since, days));
     }
-    match local.and_then(|l| std::fs::read_to_string(l).ok()) {
-        Some(t) => out.extend(lines(&t)),
-        None => out.extend(asked_of_the_lead(root).into_iter().filter(|e| e.t >= since)),
+    if let Some(t) = local.and_then(|l| std::fs::read_to_string(l).ok()) {
+        out.extend(lines(&t));
+    }
+    // (Asked of the lead too whenever the pool's root is given: a file here is the lead's only while
+    // this Mac leads, and a Mac that led before keeps its old one. Its lines twice are kept once.)
+    if root.is_some() {
+        out.extend(asked_of_the_lead(root).into_iter().filter(|e| e.t >= since));
     }
     let mut seen = BTreeSet::new();
     out.retain(|e| seen.insert(serde_json::to_string(&Event { seq: 0, ..e.clone() }).unwrap_or_default()));

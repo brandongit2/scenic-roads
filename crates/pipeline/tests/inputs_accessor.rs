@@ -71,6 +71,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/agentcore/src/agent/backup.rs", "FOLDERS", "[\"inputs\",", "the backups: every inputs folder and the acceptances, by design (§4.9)"),
     ("crates/agentcore/src/agent/mod.rs", "finished", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/agentcore/src/agent/mod.rs", "NAS_CHECK", "\"inputs\"", "the NAS check: the inputs folder's stat (it's there for good), nothing read"),
+    ("crates/coordwire/src/lead.rs", "find", "root.join(\"inputs\")", "whether a root declaring no lead answers: the inputs folder's stat, as the NAS check, nothing read"),
     ("crates/agentcore/src/agent/room.rs", "is_member_leftover", "\"inputs-listing\",", "the lead's inputs listing named as a leftover a member removes (docs/roles.md §3.5), never read"),
     ("crates/agentcore/src/agent/plan.rs", "take", "\"inputs \"", "the `inputs` step's job ids"),
     ("crates/agentcore/src/cli/build.rs", "STEPS", "s(\"inputs", "the `inputs` step's name and usage"),
