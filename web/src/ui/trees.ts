@@ -3,6 +3,7 @@ import { LEAF_CLASSES, TREE_PALETTES, TREE_VARS, treeColour, treeVarDef, type Tr
 import type { Store } from '../state';
 import { Slider, pct } from './controls';
 import { h } from './dom';
+import { inUse } from './settingprofiles';
 import { RampSelect } from './rampselect';
 
 export class TreeSection {
@@ -54,7 +55,7 @@ export class TreeSection {
     });
     this.maskCol = h('input', { type: 'color' });
     this.maskCol.addEventListener('input', () => T({ maskColour: this.maskCol.value }));
-    this.op = new Slider({ label: 'Opacity', min: 0.05, max: 1, step: 0.05, reset: 0.55, get: () => store.s.trees.opacity, set: (opacity) => T({ opacity }), fmt: pct });
+    this.op = new Slider({ label: 'Opacity', min: 0.05, max: 1, step: 0.05, reset: () => inUse().trees.opacity, get: () => store.s.trees.opacity, set: (opacity) => T({ opacity }), fmt: pct });
     this.legend = h('div', { class: 'tint-bar' });
     this.ticks = h('div', { class: 'tint-ticks' });
     this.note = h('div', { class: 'faint note tree-note' });

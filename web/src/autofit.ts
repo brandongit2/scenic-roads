@@ -66,6 +66,11 @@ export type Pair = [number, number];
 /** Pairs by metric key; a metric not in it has the layer's default. */
 export type PerMetric<K extends string = string> = Partial<Record<K, Pair>>;
 
+/** The percentiles of a scenic metric not listed in scenicFits (a link's fpm, a profile's scenicFits):
+ * the sparse stores' own default, a part of their meaning (they list only the metrics that differ), so
+ * not a profile's setting and not the seed's: changing it changes what stored profiles and links say. */
+export const FIT_DEFAULT: Pair = [80, 99.9];
+
 /** A screen-widths fit's default: the best 15 screen widths of line in view to the best 1. */
 export const FIT_LEN_DEFAULT: Pair = [15, 1];
 /** A valid screen-widths fit: more, then fewer, both above 0. */

@@ -142,8 +142,11 @@ the World zoomed out, a region, or the view). The map supports Chrome and Safari
   entry or profile: **G** Street View, **M** Google Maps, **O** OpenStreetMap.
 - **Settings** persist in the browser, and the URL carries them, so a link shares the view. A
   **settings profile** (the menu atop the panel) is every setting of the panel, shared by everyone
-  using the map. Defaults are `defaults` in `web/src/state.ts`; Reset to defaults is at the foot of
-  the panel.
+  using the map. A link or first load naming no profile opens the Default profile (starred in the
+  menu); a link's own settings go on top of the profile it names. A new server's Default holds
+  `web/default-profile.json`, which is also what the map shows when the server can't be reached or
+  has no profile (nothing is saved then); Reset to defaults, at the foot of the panel, goes back to
+  the Default profile.
 
 ## How the scenic metrics are computed
 

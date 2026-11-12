@@ -8,6 +8,7 @@ import { lookOfScale, railFreshLook, scaleOfLook, type RailState, type Store } f
 import { WeightGrid } from './controls';
 import { h } from './dom';
 import { PresetBar } from './presets';
+import { inUse } from './settingprofiles';
 import { ScaleControls } from './scale';
 
 const COLOURS: [RailColour, string, string][] = [
@@ -71,8 +72,8 @@ export class RailCard {
         best: () => ({ freq: 'busiest', viaduct: 'highest', drama: 'highest', curvy: 'twistiest' } as Partial<Record<string, string>>)[store.s.rail.metric] ?? 'best',
       },
       measure: 'rail length',
-      fadeDefault: 0.4,
-      spanDefault: 0.6,
+      fadeDefault: () => inUse().rail.lowFade,
+      spanDefault: () => inUse().rail.lowSpan,
       onPreview: (k) => this.onPalettePreview(k),
     });
     this.presetBar = new PresetBar(store, {

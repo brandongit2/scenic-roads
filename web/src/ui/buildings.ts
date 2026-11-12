@@ -3,7 +3,8 @@
 // height comes from) and the plain colour, the heritage tint, opacity, height scale.
 import { HEIGHT_DOMAIN, SOURCES, heightColour, type BuildingColour, type BuildingState, type HeightLook } from '../buildings';
 import type { Dist } from '../roads/stats';
-import { defaults, type ScaleFields, type Store } from '../state';
+import type { ScaleFields, Store } from '../state';
+import { inUse } from './settingprofiles';
 import { ColourPick, Slider, pct } from './controls';
 import { h } from './dom';
 import { ScaleControls } from './scale';
@@ -49,12 +50,12 @@ export class BuildingSection {
       ['source', 'Source', 'Coloured by where the height comes from: measured, from floors, or estimated (and how)'],
     ], (k) => B({ colour: k as BuildingColour }), this.colourBtns);
     this.plain = new ColourPick({
-      label: 'Plain colour', reset: defaults.buildings.plain, get: () => store.s.buildings.plain, set: (plain) => B({ plain }),
+      label: 'Plain colour', reset: () => inUse().buildings.plain, get: () => store.s.buildings.plain, set: (plain) => B({ plain }),
       title: 'The buildings’ colour when plain, near and far; by height, the low end fades toward it and the highlight’s misses take it',
     });
-    this.op = new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: 0.85, get: () => store.s.buildings.opacity, set: (opacity) => B({ opacity }), fmt: pct, title: 'Under 100 %, roads behind a building show through it faintly (and the buildings take two passes to draw)' });
+    this.op = new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: () => inUse().buildings.opacity, get: () => store.s.buildings.opacity, set: (opacity) => B({ opacity }), fmt: pct, title: 'Under 100 %, roads behind a building show through it faintly (and the buildings take two passes to draw)' });
     this.scale = new Slider({
-      label: 'Height', min: 1, max: 3, step: 0.1, reset: 1, get: () => store.s.buildings.scale || 1, set: (scale) => B({ scale }),
+      label: 'Height', min: 1, max: 3, step: 0.1, reset: () => inUse().buildings.scale || 1, get: () => store.s.buildings.scale || 1, set: (scale) => B({ scale }),
       fmt: (v) => `${v.toFixed(1)}×`, title: 'Heights × this (true heights at 1×)', disabled: () => store.s.buildings.scale === 0,
     });
     this.withTerrain = h('input', { type: 'checkbox' });
@@ -70,8 +71,8 @@ export class BuildingSection {
       metric: () => ({ domain: HEIGHT_DOMAIN, step: 1, fmt: (v: number) => `${Math.round(v)} m`, hiPlus: true }),
       noun: 'buildings',
       measure: 'buildings',
-      fadeDefault: 0.6,
-      spanDefault: 0.4,
+      fadeDefault: () => inUse().buildings.height.lowFade,
+      spanDefault: () => inUse().buildings.height.lowSpan,
       colourAt: (v) => [heightColour(v, H(), this.look, store.s.buildings.plain), 1],
       onPreview: (k) => this.onPalettePreview(k),
     });

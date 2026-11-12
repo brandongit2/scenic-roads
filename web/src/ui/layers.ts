@@ -4,11 +4,12 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, FOAM_RANGE, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, ROAD_LOOK_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, defaults, type AppState, type RailState, type RoadLook, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DENSITY_KINDS, FOAM_RANGE, FOG_RANGE, LABEL_KINDS, LINE_KINDS, OVERLAYS, PERSP_RANGE, ROAD_LOOK_RANGE, SPACING_RANGE, STOP_SIZE_RANGE, TIES_RANGE, WEIGHT_RANGE, type AppState, type RailState, type RoadLook, type ContourLook, type FogLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import type { LabelLook } from '../labellook';
 import { h } from './dom';
+import { inUse } from './settingprofiles';
 import { fmt } from '../fmt';
 import { WidthGrid } from './widthgrid';
 import { ScaleControls } from './scale';
@@ -134,7 +135,7 @@ export class LayersCard {
   onTintPreview: (key: string | null) => void = () => {};
   /** A stop's filters were opened: their histograms are wanted (filtersOpen). */
   onFiltersOpen: () => void = () => {};
-  /** Every setting back to the app's defaults (confirmed). */
+  /** Every setting back to the default profile's (confirmed). */
   onReset: () => void = () => {};
 
   /** `cards`: how each layer is coloured (colour.ts, rail.ts, ferry.ts, stops.ts), shown in its
@@ -225,23 +226,23 @@ export class LayersCard {
     this.rail.title = 'Tracks used by passenger services (OSM route relations), plus trams, metros, funiculars and heritage lines';
     this.railSection = [railGroups, ...this.railFreq.nodes];
     const railOpRow = sl({
-      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.rail.opacity, title: 'Opacity of the rail lines and their stop dots',
+      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: () => inUse().rail.opacity, title: 'Opacity of the rail lines and their stop dots',
       get: () => S().rail.opacity, set: (opacity) => this.store.set({ rail: { ...S().rail, opacity } }), fmt: pct, disabled: () => !S().rail.on,
     });
     const R = (p: Partial<RailState>) => this.store.set({ rail: { ...S().rail, ...p } });
     const railOff = () => !S().rail.on;
     const tiesRow = sl({
-      label: 'Cross-ties', min: TIES_RANGE[0], max: TIES_RANGE[1], step: 0.1, reset: defaults.rail.ties,
+      label: 'Cross-ties', min: TIES_RANGE[0], max: TIES_RANGE[1], step: 0.1, reset: () => inUse().rail.ties,
       title: 'Length of the ties across the rail lines, × the line\u2019s thickness: the same on screen at any zoom while the line keeps its thinnest; none zoomed out past zoom 9, nor on lines thinner than a pixel. ×1: none to see',
       get: () => S().rail.ties, set: (ties) => R({ ties }), fmt: (v) => `${v.toFixed(1)}×`, disabled: railOff,
     });
     const stopSizeRow = sl({
-      label: 'Size', min: Math.log2(STOP_SIZE_RANGE[0]), max: Math.log2(STOP_SIZE_RANGE[1]), step: 0.05, reset: defaults.rail.stopSize,
+      label: 'Size', min: Math.log2(STOP_SIZE_RANGE[0]), max: Math.log2(STOP_SIZE_RANGE[1]), step: 0.05, reset: () => inUse().rail.stopSize,
       title: 'Size of the stop dots (they also grow with the zoom and the line weight)', scale: { to: Math.log2, from: (p) => +(2 ** p).toFixed(2) },
       get: () => S().rail.stopSize, set: (stopSize) => R({ stopSize }), fmt: (v) => `${v.toFixed(2)}×`, disabled: railOff,
     });
     const stopContrastRow = sl({
-      label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: defaults.rail.stopContrast,
+      label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: () => inUse().rail.stopContrast,
       title: 'How much a stop\u2019s size follows its line\u2019s stop spacing: intercity stations large, tram stops small. 0: all stops the same size',
       get: () => S().rail.stopContrast, set: (stopContrast) => R({ stopContrast }), fmt: pct, disabled: railOff,
     });
@@ -264,7 +265,7 @@ export class LayersCard {
     this.ferryDashed = cb((v) => this.store.set({ ferry: { ...this.store.s.ferry, dashed: v } }));
     this.ferry.title = 'Passenger ferries, car ferries included (OSM ferry routes). Car ferries are also part of the road network (Roads → Car ferries).';
     const ferryOpRow = sl({
-      label: 'Opacity', min: 0.05, max: 1, step: 0.05, reset: defaults.ferry.opacity, title: 'Opacity of the ferry lines and their terminal dots',
+      label: 'Opacity', min: 0.05, max: 1, step: 0.05, reset: () => inUse().ferry.opacity, title: 'Opacity of the ferry lines and their terminal dots',
       get: () => S().ferry.opacity, set: (opacity) => this.store.set({ ferry: { ...S().ferry, opacity } }), fmt: pct, disabled: () => !S().ferry.on,
     });
     this.ferrySection = [
@@ -275,7 +276,7 @@ export class LayersCard {
     const ferryDashedRow = tog(this.ferryDashed, 'Dashed lines', '', 'tog', 'Ferry lines dashed, as on paper maps');
     // Line weights: the global one scales every line on the map; each kind's is relative to it.
     const lwRow = (key: 'global' | LineKind, label: string, help: string, sub = false) => sl({
-      label, min: WEIGHT_RANGE[0], max: WEIGHT_RANGE[1], step: 0.05, reset: 1, title: help, cls: key === 'global' ? 'lw top' : sub ? 'lw sub' : 'lw',
+      label, min: WEIGHT_RANGE[0], max: WEIGHT_RANGE[1], step: 0.05, reset: () => inUse().lineWeights[key], title: help, cls: key === 'global' ? 'lw top' : sub ? 'lw sub' : 'lw',
       get: () => S().lineWeights[key], set: (v) => this.store.set({ lineWeights: { ...S().lineWeights, [key]: v } }), fmt: (v) => `${v.toFixed(2)}×`,
     });
     // Each kind's weight in its layer's section; the global one and the map's own lines in Map.
@@ -319,8 +320,8 @@ export class LayersCard {
       },
       noun: 'terrain',
       measure: 'land area',
-      fadeDefault: 0.6,
-      spanDefault: 0.3,
+      fadeDefault: () => inUse().terrain.tintScales[TS().tintVar].lowFade,
+      spanDefault: () => inUse().terrain.tintScales[TS().tintVar].lowSpan,
       follow: {
         label: 'Match roads', title: 'Follow the road colours\' range (roads coloured by elevation, or by grade for slope)', caption: 'Following the road colours\' range',
         available: () => this.tintMatchAvailable(), on: () => TS().tintMatch, set: (on) => T({ tintMatch: on }),
@@ -359,42 +360,42 @@ export class LayersCard {
     const noFog = () => !TS().sky || !TS().on;
     const fogRows = [
       sl({
-        label: 'Starts at', min: FOG_RANGE[0], max: FOG_RANGE[1], step: 0.01, reset: defaults.terrain.fog.start, cls: 'sub',
+        label: 'Starts at', min: FOG_RANGE[0], max: FOG_RANGE[1], step: 0.01, reset: () => inUse().terrain.fog.start, cls: 'sub',
         title: 'No fog nearer than this: 0 the map’s centre, 100 % the horizon',
         get: () => F().start, set: (start) => setF({ start, end: Math.max(F().end, start + 0.01) }), fmt: pct, disabled: noFog,
       }),
       sl({
-        label: 'Full at', min: FOG_RANGE[0], max: FOG_RANGE[1], step: 0.01, reset: defaults.terrain.fog.end, cls: 'sub',
+        label: 'Full at', min: FOG_RANGE[0], max: FOG_RANGE[1], step: 0.01, reset: () => inUse().terrain.fog.end, cls: 'sub',
         title: 'The fog at its full strength from this far: 0 the map’s centre, 100 % the horizon (it thickens between, faster toward the end)',
         get: () => F().end, set: (end) => setF({ end, start: Math.min(F().start, end - 0.01) }), fmt: pct, disabled: noFog,
       }),
       sl({
-        label: 'Strength', min: 0, max: 1, step: 0.05, reset: defaults.terrain.fog.opacity, cls: 'sub',
+        label: 'Strength', min: 0, max: 1, step: 0.05, reset: () => inUse().terrain.fog.opacity, cls: 'sub',
         title: 'How much the fog hides at its fullest: 0 none, 100 % only the fog’s colour',
         get: () => F().opacity, set: (opacity) => setF({ opacity }), fmt: pct, disabled: noFog,
       }),
       sl({
-        label: 'Horizon blend', min: 0, max: 1, step: 0.05, reset: defaults.terrain.fog.horizonBlend, cls: 'sub',
+        label: 'Horizon blend', min: 0, max: 1, step: 0.05, reset: () => inUse().terrain.fog.horizonBlend, cls: 'sub',
         title: 'How far into the fog it starts to turn to the horizon’s colour: 0 at once, 100 % never',
         get: () => F().horizonBlend, set: (horizonBlend) => setF({ horizonBlend }), fmt: pct, disabled: noFog,
       }),
     ];
     const noShade = () => !TS().hillshade;
     const exRow = sl({
-      label: 'Height ×', min: 1, max: 15, step: 0.25, reset: defaults.terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
+      label: 'Height ×', min: 1, max: 15, step: 0.25, reset: () => inUse().terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
       get: () => TS().exaggeration, set: (exaggeration) => T({ exaggeration }), fmt: (v) => `${v.toFixed(2).replace(/\.?0+$/, '')}×`, disabled: () => !TS().on,
     });
     const lightRow = sl({
-      label: 'Light from', min: 0, max: 359, step: 1, reset: defaults.terrain.light, title: 'Direction the light comes from', cls: 'sub',
+      label: 'Light from', min: 0, max: 359, step: 1, reset: () => inUse().terrain.light, title: 'Direction the light comes from', cls: 'sub',
       get: () => TS().light, set: (light) => T({ light }), fmt: (v) => `${Math.round(v)}° ${compass(v)}`, disabled: noShade,
     });
     const shadeRow = sl({
-      label: 'Strength', min: 0, max: 1, step: 0.05, reset: defaults.terrain.shade, title: 'How dark the shading gets', cls: 'sub',
+      label: 'Strength', min: 0, max: 1, step: 0.05, reset: () => inUse().terrain.shade, title: 'How dark the shading gets', cls: 'sub',
       get: () => TS().shade, set: (shade) => T({ shade }), fmt: (v) => v.toFixed(2), disabled: noShade,
     });
     // Emphasis in log space: −1 … 1 → curve 3 … 0.33.
     const curveRow = sl({
-      label: 'Emphasis', min: -1, max: 1, step: 0.05, reset: 1, title: 'Left: more colour steps in the lowlands · right: more in the highlands',
+      label: 'Emphasis', min: -1, max: 1, step: 0.05, reset: () => inUse().terrain.tintCurve, title: 'Left: more colour steps in the lowlands · right: more in the highlands',
       scale: { to: (c) => -Math.log(c) / Math.log(3), from: (p) => +(3 ** -p).toFixed(3) },
       get: () => TS().tintCurve, set: (tintCurve) => T({ tintCurve }),
       fmt: (c) => {
@@ -403,50 +404,50 @@ export class LayersCard {
       },
     });
     const tintOpRow = sl({
-      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.terrain.tintOpacity, title: 'Opacity of the tint',
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: () => inUse().terrain.tintOpacity, title: 'Opacity of the tint',
       get: () => TS().tintOpacity, set: (tintOpacity) => T({ tintOpacity }), fmt: pct,
     });
     // Contour lines: interval, width and perspective, opacity, colour, labels, the rings left out.
     const contourRows = [
       sl({
-        label: 'Interval', min: -2, max: 2, step: 1, reset: 0,
+        label: 'Interval', min: -2, max: 2, step: 1, reset: () => inUse().terrain.contour.density,
         title: 'Closer or wider lines: the minor / major interval at this zoom (finer as you zoom in)',
         get: () => C().density, set: (density) => setC({ density }),
         fmt: (v) => `${contourInterval(Math.floor(S().view?.zoom ?? 12), v).join(' / ')} m`,
       }),
       sl({
-        label: 'Width', min: 0.25, max: 3, step: 0.05, reset: 1, title: 'Width of the lines (the global line weight applies on top)',
+        label: 'Width', min: 0.25, max: 3, step: 0.05, reset: () => inUse().terrain.contour.weight, title: 'Width of the lines (the global line weight applies on top)',
         get: () => C().weight, set: (weight) => setC({ weight }), fmt: (v) => `${v.toFixed(2)}×`,
       }),
       sl({
-        label: 'Perspective', min: 0, max: 1, step: 0.05, reset: 1,
+        label: 'Perspective', min: 0, max: 1, step: 0.05, reset: () => inUse().terrain.contour.perspective,
         title: 'Tilted, how much the lines narrow with distance: 0 the same width everywhere, 100 % as if drawn on the ground',
         get: () => C().perspective, set: (perspective) => setC({ perspective }), fmt: pct,
       }),
       sl({
-        label: 'Major lines', min: 0, max: 1, step: 0.02, reset: defaults.terrain.contour.major, title: 'Opacity of every fifth line (the labelled ones)',
+        label: 'Major lines', min: 0, max: 1, step: 0.02, reset: () => inUse().terrain.contour.major, title: 'Opacity of every fifth line (the labelled ones)',
         get: () => C().major, set: (major) => setC({ major }), fmt: pct,
       }),
       sl({
-        label: 'Minor lines', min: 0, max: 1, step: 0.02, reset: defaults.terrain.contour.minor, title: 'Opacity of the lines between',
+        label: 'Minor lines', min: 0, max: 1, step: 0.02, reset: () => inUse().terrain.contour.minor, title: 'Opacity of the lines between',
         get: () => C().minor, set: (minor) => setC({ minor }), fmt: pct,
       }),
       sl({
-        label: 'Hide rings', min: 0, max: 24, step: 1, reset: defaults.terrain.contour.ring,
+        label: 'Hide rings', min: 0, max: 24, step: 1, reset: () => inUse().terrain.contour.ring,
         title: 'Leave out closed rings smaller than this across (at their tile\'s scale): specks of flat land a hair above an interval',
         get: () => C().ring, set: (ring) => setC({ ring }), fmt: (v) => (v > 0 ? `< ${v} px` : 'none'),
       }),
       sl({
-        label: 'Label size', min: 0.5, max: 2.5, step: 0.05, reset: defaults.terrain.contour.labelSize, title: 'Size of the contour labels (Labels → Label size applies on top)',
+        label: 'Label size', min: 0.5, max: 2.5, step: 0.05, reset: () => inUse().terrain.contour.labelSize, title: 'Size of the contour labels (Labels → Label size applies on top)',
         get: () => C().labelSize, set: (labelSize) => setC({ labelSize }), fmt: (v) => `${v.toFixed(2)}×`, disabled: () => !C().labels,
       }),
     ];
     const labelOpRow = sl({
-      label: 'Label opacity', min: 0, max: 1, step: 0.05, reset: defaults.labelOpacity, cls: 'lw', title: 'Opacity of every label on the map',
+      label: 'Label opacity', min: 0, max: 1, step: 0.05, reset: () => inUse().labelOpacity, cls: 'lw', title: 'Opacity of every label on the map',
       get: () => S().labelOpacity, set: (labelOpacity) => this.store.set({ labelOpacity }), fmt: pct,
     });
     const labelSizeRow = sl({
-      label: 'Label size', min: 0.6, max: 1.8, step: 0.05, reset: defaults.labelSize, cls: 'lw', title: 'Size of every label on the map (contour labels: their own size on top, under Terrain)',
+      label: 'Label size', min: 0.6, max: 1.8, step: 0.05, reset: () => inUse().labelSize, cls: 'lw', title: 'Size of every label on the map (contour labels: their own size on top, under Terrain)',
       get: () => S().labelSize, set: (labelSize) => this.store.set({ labelSize }), fmt: (v) => `${v.toFixed(2)}×`,
     });
     // Water: its colour, and the shading along the coasts (coast.ts).
@@ -458,7 +459,7 @@ export class LayersCard {
       return e;
     };
     this.land = new ColourPick({
-      label: 'Land colour', reset: defaults.land, get: () => S().land, set: (land) => this.store.set({ land }),
+      label: 'Land colour', reset: () => inUse().land, get: () => S().land, set: (land) => this.store.set({ land }),
       title: 'The base map’s land: its background, and the land the water’s edges blend into',
     });
     this.water = {
@@ -471,26 +472,25 @@ export class LayersCard {
       rivers: cb((rivers) => setW({ rivers })),
       foamCol: colour('Colour of the whitewater', (c) => setW({ foamColour: c })),
     };
-    const d = defaults.water;
     const roadOpRow = sl({
-      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.roadOpacity, title: 'Opacity of the roads, in every display type',
+      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: () => inUse().roadOpacity, title: 'Opacity of the roads, in every display type',
       get: () => S().roadOpacity, set: (roadOpacity) => this.store.set({ roadOpacity }), fmt: pct,
     });
     // Widths with distance in tilted views (roads/layer.ts; rail lines too).
     const P = (patch: Partial<AppState['roadPersp']>) => this.store.set({ roadPersp: { ...S().roadPersp, ...patch } });
     const perspRows = [
       sl({
-        label: 'Perspective', min: PERSP_RANGE.strength[0], max: PERSP_RANGE.strength[1], step: 0.05, reset: defaults.roadPersp.strength,
+        label: 'Perspective', min: PERSP_RANGE.strength[0], max: PERSP_RANGE.strength[1], step: 0.05, reset: () => inUse().roadPersp.strength,
         title: 'Tilted views: how lines thin with distance. 100 %: true perspective (a road twice as far is half as wide); 0 %: by the zoom style curve only (distant roads stay thicker)',
         get: () => S().roadPersp.strength, set: (strength) => P({ strength }), fmt: pct,
       }),
       sl({
-        label: 'Near size cap', min: PERSP_RANGE.cap[0], max: PERSP_RANGE.cap[1], step: 0.1, reset: defaults.roadPersp.cap, cls: 'sub',
+        label: 'Near size cap', min: PERSP_RANGE.cap[0], max: PERSP_RANGE.cap[1], step: 0.1, reset: () => inUse().roadPersp.cap, cls: 'sub',
         title: 'Tilted views: the widest a line grows near the camera, × its width at the view centre',
         get: () => S().roadPersp.cap, set: (cap) => P({ cap }), fmt: (v) => `${v.toFixed(1)}×`,
       }),
       sl({
-        label: 'Far fade', min: PERSP_RANGE.fade[0], max: PERSP_RANGE.fade[1], step: 0.05, reset: defaults.roadPersp.fade, cls: 'sub',
+        label: 'Far fade', min: PERSP_RANGE.fade[0], max: PERSP_RANGE.fade[1], step: 0.05, reset: () => inUse().roadPersp.fade, cls: 'sub',
         title: 'Tilted views: distant lines thinned further, so they fade into the haze (through their pixel coverage) rather than stay dense; scaled by Perspective (none at 0 %)',
         get: () => S().roadPersp.fade, set: (fade) => P({ fade }), fmt: pct,
       }),
@@ -500,20 +500,20 @@ export class LayersCard {
     const RL = () => S().roadLook;
     const setRL = (patch: Partial<RoadLook>) => this.store.set({ roadLook: { ...RL(), ...patch } });
     this.widthGrid = new WidthGrid(() => RL().widths, (widths) => setRL({ widths }));
-    const LR = ROAD_LOOK_RANGE, dl = defaults.roadLook;
+    const LR = ROAD_LOOK_RANGE;
     const casingRows = [
       sl({
-        label: 'Casing from', min: LR.casingFrom[0], max: LR.casingFrom[1], step: 0.25, reset: dl.casingFrom,
+        label: 'Casing from', min: LR.casingFrom[0], max: LR.casingFrom[1], step: 0.25, reset: () => inUse().roadLook.casingFrom,
         title: 'The zoom roads get their casing (the dark edge around them; under Map, its colour and the classes cased are the Map settings’)',
         get: () => RL().casingFrom, set: (casingFrom) => setRL({ casingFrom }), fmt: (z) => `z${+z.toFixed(2)}`,
       }),
       sl({
-        label: 'Casing width', min: LR.casingWidth[0], max: LR.casingWidth[1], step: 0.05, reset: dl.casingWidth, cls: 'sub',
+        label: 'Casing width', min: LR.casingWidth[0], max: LR.casingWidth[1], step: 0.05, reset: () => inUse().roadLook.casingWidth, cls: 'sub',
         title: 'Width of the casing, × the style’s (0: none)', get: () => RL().casingWidth, set: (casingWidth) => setRL({ casingWidth }),
         fmt: (v) => (v ? `${v.toFixed(2)}×` : 'none'),
       }),
       sl({
-        label: 'Tunnels', min: LR.tunnel[0], max: LR.tunnel[1], step: 0.05, reset: dl.tunnel,
+        label: 'Tunnels', min: LR.tunnel[0], max: LR.tunnel[1], step: 0.05, reset: () => inUse().roadLook.tunnel,
         title: 'Colour strength of roads in tunnels (lower: fainter, toward the background)', get: () => RL().tunnel, set: (tunnel) => setRL({ tunnel }), fmt: pct,
       }),
     ];
@@ -523,7 +523,7 @@ export class LayersCard {
     const minZoomBox = h('details', { class: 'wtab-box' }, h('summary', { title: 'The zoom each road class shows from, zooming in (whatever its colour); below it, hidden' }, 'Shown from zoom'));
     for (const c of [8, 7, 6, 5, 4, 3, 2, 1, 0, 9]) {
       minZoomBox.append(sl({
-        label: CLASS_LABELS[c], min: LR.minZoom[0], max: LR.minZoom[1], step: 0.5, reset: 0, cls: 'sub',
+        label: CLASS_LABELS[c], min: LR.minZoom[0], max: LR.minZoom[1], step: 0.5, reset: () => inUse().roadLook.minZoom[c], cls: 'sub',
         title: `${CLASS_LABELS[c]}: shown from this zoom`, get: () => RL().minZoom[c],
         set: (z) => setRL({ minZoom: RL().minZoom.map((x, i) => (i === c ? z : x)) }), fmt: (z) => (z ? `z${z}` : 'all'),
       }));
@@ -533,16 +533,16 @@ export class LayersCard {
     this.pointOutline.addEventListener('input', () => this.store.set({ pointOutline: this.pointOutline.value }));
     const pointOutlineRow = h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Colour'), this.pointOutline);
     const pointOutlineOpRow = sl({
-      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.pointOutlineOpacity, cls: 'sub',
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: () => inUse().pointOutlineOpacity, cls: 'sub',
       title: 'Opacity of the outline of the rail stops, ferry terminals, stops & sights and heritage sites (× each layer\u2019s opacity)',
       get: () => S().pointOutlineOpacity, set: (pointOutlineOpacity) => this.store.set({ pointOutlineOpacity }), fmt: pct,
     });
     const boundOpRow = sl({
-      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.boundaryOpacity, cls: 'sub', title: 'Opacity of the boundary lines',
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: () => inUse().boundaryOpacity, cls: 'sub', title: 'Opacity of the boundary lines',
       get: () => S().boundaryOpacity, set: (boundaryOpacity) => this.store.set({ boundaryOpacity }), fmt: pct, disabled: () => !S().layers.boundaries,
     });
     const poiOpRow = sl({
-      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.poiOpacity,
+      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: () => inUse().poiOpacity,
       title: 'Dots, areas and their labels (labels also follow Label opacity). Sizes and fades along the landmark score (Prominence)',
       get: () => S().poiOpacity, set: (poiOpacity) => this.store.set({ poiOpacity }), fmt: pct,
     });
@@ -562,19 +562,19 @@ export class LayersCard {
     };
     const noLabels = () => !S().layers.places;
     const spacingRow = sl({
-      label: 'Label spacing', min: Math.log2(SPACING_RANGE[0]), max: Math.log2(SPACING_RANGE[1]), step: 0.01, reset: DEFAULT_DENSITY.px, cls: 'lw',
+      label: 'Label spacing', min: Math.log2(SPACING_RANGE[0]), max: Math.log2(SPACING_RANGE[1]), step: 0.01, reset: () => inUse().labelDensity.px, cls: 'lw',
       title: 'A label shows once the nearest label of its kind that matters more is this far away on screen: wider, fewer labels',
       scale: { to: Math.log2, from: (p) => Math.round(2 ** p) },
       get: () => S().labelDensity.px, set: (px) => setDensity({ px }), fmt: (px) => `${px} px`, disabled: noLabels,
     });
     const densityRows = DENSITY_KINDS.map(([k, label, help]) => sl({
-      label, min: -2, max: 2, step: 0.25, reset: 1, cls: 'sub', title: `${help}: more or fewer than the spacing gives`,
+      label, min: -2, max: 2, step: 0.25, reset: () => inUse().labelDensity.kinds[k], cls: 'sub', title: `${help}: more or fewer than the spacing gives`,
       scale: { to: Math.log2, from: (p) => 2 ** p },
       get: () => S().labelDensity.kinds[k], set: (f) => setDensity({ kinds: { ...S().labelDensity.kinds, ...pending?.kinds, [k]: f } }),
       fmt: (f) => `×${+f.toFixed(f < 1 ? 2 : 1)}`, disabled: noLabels,
     }));
     const horizonRow = sl({
-      label: 'Toward horizon', min: 0, max: 1, step: 0.05, reset: DEFAULT_DENSITY.horizon, cls: 'lw',
+      label: 'Toward horizon', min: 0, max: 1, step: 0.05, reset: () => inUse().labelDensity.horizon, cls: 'lw',
       title: 'In a tilted view, labels thin out with distance beyond the centre, where the ground is foreshortened',
       get: () => S().labelDensity.horizon, set: (horizon) => setDensity({ horizon }), fmt: pct, disabled: noLabels,
     });
@@ -582,28 +582,28 @@ export class LayersCard {
 
     this.water.shadeBox.append(
       sl({
-        label: 'Width', min: 2, max: 80, step: 1, reset: d.width, title: 'How far the shading reaches from the shore (px at the view centre; tilted, narrower further off)',
+        label: 'Width', min: 2, max: 80, step: 1, reset: () => inUse().water.width, title: 'How far the shading reaches from the shore (px at the view centre; tilted, narrower further off)',
         get: () => W().width, set: (width) => setW({ width }), fmt: (v) => `${v} px`,
       }),
       sl({
-        label: 'Strength', min: 0, max: 1, step: 0.02, reset: d.strength, title: 'Opacity of the shading at the shore',
+        label: 'Strength', min: 0, max: 1, step: 0.02, reset: () => inUse().water.strength, title: 'Opacity of the shading at the shore',
         get: () => W().strength, set: (strength) => setW({ strength }), fmt: pct,
       }),
       sl({
-        label: 'Falloff', min: 0.5, max: 4, step: 0.05, reset: d.falloff, title: 'How it fades across the band: low stays strong further out, high hugs the shore',
+        label: 'Falloff', min: 0.5, max: 4, step: 0.05, reset: () => inUse().water.falloff, title: 'How it fades across the band: low stays strong further out, high hugs the shore',
         get: () => W().falloff, set: (falloff) => setW({ falloff }), fmt: (v) => (v < 0.95 ? 'broad' : v > 2.95 ? 'tight' : v.toFixed(1)),
       }),
       row('Colour', this.water.shadeCol),
       sl({
-        label: 'Shoreline', min: 0, max: 1, step: 0.02, reset: d.shore, title: 'A thin line right along the shore',
+        label: 'Shoreline', min: 0, max: 1, step: 0.02, reset: () => inUse().water.shore, title: 'A thin line right along the shore',
         get: () => W().shore, set: (shore) => setW({ shore }), fmt: pct,
       }),
       sl({
-        label: 'Ripples', min: 0, max: 8, step: 1, reset: d.ripples, title: 'Lines following the coast within the band, as on engraved maps',
+        label: 'Ripples', min: 0, max: 8, step: 1, reset: () => inUse().water.ripples, title: 'Lines following the coast within the band, as on engraved maps',
         get: () => W().ripples, set: (ripples) => setW({ ripples }), fmt: (v) => (v ? String(v) : 'none'),
       }),
       sl({
-        label: 'Ripple lines', min: 0, max: 1, step: 0.02, reset: d.rippleStrength, title: 'Opacity of the ripple lines',
+        label: 'Ripple lines', min: 0, max: 1, step: 0.02, reset: () => inUse().water.rippleStrength, title: 'Opacity of the ripple lines',
         get: () => W().rippleStrength, set: (rippleStrength) => setW({ rippleStrength }), fmt: pct, disabled: () => W().ripples === 0,
       }),
       tog(this.water.lakes, 'Lakes & rivers', '', 'tog', 'Shade lake and river shores too, not only the sea\'s'),
@@ -612,19 +612,19 @@ export class LayersCard {
     const FR = FOAM_RANGE;
     const foamRows = [
       sl({
-        label: 'Whitewater', min: 0, max: 1, step: 0.05, reset: d.foam, title: 'Opacity of the whitewater where the water is steepest: rapids, cascades and falls, from the terrain beneath the water (0: none)',
+        label: 'Whitewater', min: 0, max: 1, step: 0.05, reset: () => inUse().water.foam, title: 'Opacity of the whitewater where the water is steepest: rapids, cascades and falls, from the terrain beneath the water (0: none)',
         get: () => W().foam, set: (foam) => setW({ foam }), fmt: (v) => (v ? pct(v) : 'none'),
       }),
       sl({
-        label: 'From slope', min: FR.from[0], max: FR.from[1], step: 1, reset: d.foamFrom, cls: 'sub', title: 'The steepness beneath the water the whitewater starts at',
+        label: 'From slope', min: FR.from[0], max: FR.from[1], step: 1, reset: () => inUse().water.foamFrom, cls: 'sub', title: 'The steepness beneath the water the whitewater starts at',
         get: () => W().foamFrom, set: (foamFrom) => setW({ foamFrom, foamTo: Math.max(W().foamTo, foamFrom + 1) }), fmt: (v) => `${v} %`, disabled: () => !W().foam,
       }),
       sl({
-        label: 'Full at', min: FR.to[0], max: FR.to[1], step: 1, reset: d.foamTo, cls: 'sub', title: 'The steepness beneath the water it is full at (the slope layer counts to 400 %; zoomed out, a pixel holds the mean of the ground beneath it, so a fall narrower than a pixel shows fainter)',
+        label: 'Full at', min: FR.to[0], max: FR.to[1], step: 1, reset: () => inUse().water.foamTo, cls: 'sub', title: 'The steepness beneath the water it is full at (the slope layer counts to 400 %; zoomed out, a pixel holds the mean of the ground beneath it, so a fall narrower than a pixel shows fainter)',
         get: () => W().foamTo, set: (foamTo) => setW({ foamTo, foamFrom: Math.min(W().foamFrom, foamTo - 1) }), fmt: (v) => `${v} %`, disabled: () => !W().foam,
       }),
       sl({
-        label: 'Water cover', min: FR.cover[0], max: FR.cover[1], step: 0.05, reset: d.foamCover, cls: 'sub', title: 'Shown only where the water covers this much of a pixel or more, fading in to whole: a shore pixel\'s steepness is its bank\'s (0: everywhere, by the water\'s share)',
+        label: 'Water cover', min: FR.cover[0], max: FR.cover[1], step: 0.05, reset: () => inUse().water.foamCover, cls: 'sub', title: 'Shown only where the water covers this much of a pixel or more, fading in to whole: a shore pixel\'s steepness is its bank\'s (0: everywhere, by the water\'s share)',
         get: () => W().foamCover, set: (foamCover) => setW({ foamCover }), fmt: pct, disabled: () => !W().foam,
       }),
       row('Colour', this.water.foamCol, 'row sub'),
@@ -911,7 +911,7 @@ export class LayersCard {
   /** Reset to defaults, asked again in place before it happens. */
   private resetRow() {
     const ask = h('div', { class: 'reset-ask' });
-    const btn = h('button', { class: 'pill wide', title: 'Every setting back to the app\u2019s defaults (asks first)' }, 'Reset to defaults\u2026');
+    const btn = h('button', { class: 'pill wide', title: 'Every setting back to the default profile\u2019s (asks first)' }, 'Reset to defaults\u2026');
     const close = () => {
       ask.hidden = true;
       btn.hidden = false;
@@ -919,7 +919,7 @@ export class LayersCard {
     btn.addEventListener('click', () => {
       const own = presets.custom || railPresets.custom;
       ask.replaceChildren(
-        h('div', { class: 'muted' }, `Every setting goes back to the app\u2019s defaults: colours, layers, filters, labels, weights${own ? ', the preset lists (your own presets go too)' : ''} and the panels\u2019 layout. The map stays where it is.`),
+        h('div', { class: 'muted' }, `Every setting goes back to the default profile\u2019s: colours, layers, filters, labels, weights${own ? ', the preset lists (your own presets go too)' : ''} and the panels\u2019 layout. The map stays where it is.`),
         h('div', { class: 'pills' },
           h('button', { class: 'pill on', onclick: () => this.onReset() }, 'Reset everything'),
           h('button', { class: 'pill', onclick: close }, 'Cancel')),

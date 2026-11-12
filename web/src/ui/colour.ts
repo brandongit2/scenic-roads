@@ -8,6 +8,7 @@ import type { Store } from '../state';
 import { h } from './dom';
 import { WeightGrid } from './controls';
 import { PresetBar } from './presets';
+import { inUse } from './settingprofiles';
 import { RoadMapEditor } from './roadmap';
 import { ScaleControls } from './scale';
 
@@ -49,8 +50,8 @@ export class ColourCard {
       },
       noun: 'roads',
       measure: 'road length',
-      fadeDefault: 0.7,
-      spanDefault: 0.6,
+      fadeDefault: () => inUse().lowFade,
+      spanDefault: () => inUse().lowSpan,
       fixedCaption: () => (store.s.mode === 'relief' ? 'Lowest → highest road in view' : null),
       len: { active: () => isScenic(store.s.mode), get: () => pairOf(store.s.fitLens, store.s.mode, FIT_LEN_DEFAULT),
         set: (v) => store.set({ fitLens: withPair(store.s.fitLens, store.s.mode, v, FIT_LEN_DEFAULT) }),

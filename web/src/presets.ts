@@ -116,14 +116,12 @@ export class PresetList {
   }
 }
 
-/** The app's default preset: the file's `default`, else its first. */
+/** A built-in list's preset the file calls its `default`, else its first (a link from before the
+ * rail's preset was named is read as this preset when it carries its weights). */
 const defaultOf = (list: Preset[], id: string | undefined) => list.find((p) => p.id === id) ?? list[0];
 
 export const presets = new PresetList('presets.roads', COMPONENTS, builtin.presets, { key: 'weightPresets' });
 export const BUILTIN: Preset[] = presets.builtin;
-export const DEFAULT_PRESET = defaultOf(BUILTIN, builtin.default).id;
-export const DEFAULT_WEIGHTS = defaultOf(BUILTIN, builtin.default).w;
 
 export const railPresets = new PresetList('presets.rail', RAIL_COMPONENTS, railBuiltin.presets, { key: 'railWeightPresets', noDef: ['freq'] });
 export const RAIL_DEFAULT_PRESET = defaultOf(railPresets.builtin, railBuiltin.default).id;
-export const RAIL_DEFAULT_WEIGHTS = defaultOf(railPresets.builtin, railBuiltin.default).w;

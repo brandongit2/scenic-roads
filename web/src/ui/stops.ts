@@ -2,7 +2,8 @@
 // (the settings panel's Stops & sights section, ui/layers.ts, which has the kinds shown, their
 // filters and the opacity).
 import type { Dist } from '../roads/stats';
-import { OVERLAYS, defaults, type AppState, type Store } from '../state';
+import { OVERLAYS, type AppState, type Store } from '../state';
+import { inUse } from './settingprofiles';
 import * as prefs from '../prefs';
 import { Slider } from './controls';
 import { h } from './dom';
@@ -33,19 +34,19 @@ export class StopsCard {
       noun: 'landmarks',
       measure: 'landmarks',
       rank: { get: () => store.s.landmarks.top, set: (top) => L({ top }) },
-      fadeDefault: defaults.landmarks.lowFade,
-      spanDefault: defaults.landmarks.lowSpan,
+      fadeDefault: () => inUse().landmarks.lowFade,
+      spanDefault: () => inUse().landmarks.lowSpan,
       onPreview: () => {},
     });
     this.sliders = [
       new Slider({
-        label: 'Fame ↔ rarity', min: 0, max: 1, step: 0.05, reset: defaults.landmarks.balance,
+        label: 'Fame ↔ rarity', min: 0, max: 1, step: 0.05, reset: () => inUse().landmarks.balance,
         title: 'What makes a landmark prominent: how well known it is (Wikipedia pageviews) or how rare it is nearby (distance to a better-known one of its kind)',
         get: () => store.s.landmarks.balance, set: (balance) => L({ balance }),
         fmt: (b) => (b <= 0 ? 'fame' : b >= 1 ? 'rarity' : `${Math.round((1 - b) * 100)}:${Math.round(b * 100)}`),
       }),
       new Slider({
-        label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: defaults.poiEmphasis,
+        label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: () => inUse().poiEmphasis,
         title: 'How much dot size varies along the scale. 0: all dots the same size',
         get: () => store.s.poiEmphasis, set: (poiEmphasis) => store.set({ poiEmphasis }), fmt: (v) => `${Math.round(v * 100)} %`,
       }),

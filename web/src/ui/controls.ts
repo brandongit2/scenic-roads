@@ -16,8 +16,8 @@ export interface SliderOpts {
   set: (v: number) => void;
   /** The value as written beside the slider. */
   fmt: (v: number) => string;
-  /** Double-click: back to this. */
-  reset?: number;
+  /** Double-click: back to this (the profile in use's value: read when it is used). */
+  reset?: () => number;
   title?: string;
   /** Row class (layout variants: 'lw', 'lw dens', 'sub'…). */
   cls?: string;
@@ -35,10 +35,10 @@ export class Slider {
 
   constructor(private o: SliderOpts) {
     const from = o.scale?.from ?? ((p: number) => p);
-    this.input = h('input', { type: 'range', min: o.min, max: o.max, step: o.step, title: `${o.title ?? o.label}${o.reset !== undefined ? ' (double-click: default)' : ''}` });
+    this.input = h('input', { type: 'range', min: o.min, max: o.max, step: o.step, title: `${o.title ?? o.label}${o.reset !== undefined ? ' (double-click: the profile\u2019s)' : ''}` });
     this.out = h('output');
     this.input.addEventListener('input', () => o.set(from(Number(this.input.value))));
-    if (o.reset !== undefined) onDouble(this.input, () => o.set(o.reset!));
+    if (o.reset !== undefined) onDouble(this.input, () => o.set(o.reset!()));
     this.el = h('div', { class: `row ${o.cls ?? ''}`.trim(), title: o.title }, h('span', { class: 'muted' }, o.label), this.input, this.out);
   }
 
@@ -50,23 +50,23 @@ export class Slider {
   }
 }
 
-/** A labelled colour row: the picker, and a button back to the default (shown while it differs). */
+/** A labelled colour row: the picker, and a button back to the profile's colour (shown while it differs). */
 export class ColourPick {
   readonly el: HTMLDivElement;
   readonly input: HTMLInputElement;
   private reset: HTMLButtonElement;
 
-  constructor(private o: { label: string; get: () => string; set: (v: string) => void; reset: string; title?: string; cls?: string }) {
+  constructor(private o: { label: string; get: () => string; set: (v: string) => void; reset: () => string; title?: string; cls?: string }) {
     this.input = h('input', { type: 'color', title: o.title ?? o.label });
     this.input.addEventListener('input', () => o.set(this.input.value));
-    this.reset = h('button', { class: 'colour-reset', title: `Back to the default (${o.reset})`, onclick: () => o.set(o.reset) }, '\u21ba');
+    this.reset = h('button', { class: 'colour-reset', title: 'Back to the profile\u2019s colour', onclick: () => o.set(o.reset()) }, '\u21ba');
     this.el = h('div', { class: `row colour-row ${o.cls ?? ''}`.trim(), title: o.title }, h('span', { class: 'muted' }, o.label), this.input, this.reset);
   }
 
   sync() {
     const v = this.o.get();
     this.input.value = v;
-    this.reset.style.visibility = v.toLowerCase() === this.o.reset.toLowerCase() ? 'hidden' : 'visible';
+    this.reset.style.visibility = v.toLowerCase() === this.o.reset().toLowerCase() ? 'hidden' : 'visible';
   }
 }
 

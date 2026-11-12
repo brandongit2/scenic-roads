@@ -4,7 +4,9 @@
 //! `mac/profiles.json`). A laptop's server on demand (its offline map) keeps a list of its own, in
 //! its own home. `settings` is the web app's own (its state without the camera: state.ts
 //! `profileSettings`); the server only checks that it is an object. Before any profile is saved the
-//! list is one, `base` ("Default"), whose settings are `{}`: the app's defaults.
+//! list is one, `base` ("Default"), holding the seed, `web/default-profile.json`: the one definition
+//! of a Default profile's settings, which the web app reads too (state.ts `seed`: it fills a setting
+//! a profile lacks, and is the settings when the server can't be reached).
 //!
 //!   GET    /api/profiles               the list, the default's id, and whether it can be changed now
 //!   POST   /api/profiles               {name, settings, id?}: a new profile (`id`: one deleted, back
@@ -26,13 +28,24 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The first profile: the app's defaults.
+/// The first profile: the seed.
 pub const BASE_ID: &str = "base";
 const BASE_NAME: &str = "Default";
 const MAX_NAME: usize = 60;
 /// A profile's settings, serialised, at most (the app's are ~10 KB).
 const MAX_SETTINGS: usize = 256 * 1024;
 const MAX_PROFILES: usize = 200;
+
+/// A Default profile's settings: the web app's seed, the file the app is built with.
+const SEED: &str = include_str!("../../../web/default-profile.json");
+
+/// The seed's settings.
+fn seed() -> Map<String, Value> {
+    match serde_json::from_str(SEED) {
+        Ok(Value::Object(m)) => m,
+        _ => unreachable!("web/default-profile.json is a JSON object (tested)"),
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Profile {
@@ -53,7 +66,7 @@ impl Default for List {
         List {
             v: 1,
             default: BASE_ID.into(),
-            profiles: vec![Profile { id: BASE_ID.into(), name: BASE_NAME.into(), settings: Map::new() }],
+            profiles: vec![Profile { id: BASE_ID.into(), name: BASE_NAME.into(), settings: seed() }],
         }
     }
 }
@@ -211,8 +224,8 @@ impl Profiles {
         }
     }
 
-    /// The list and whether it can be changed now (not while its file doesn't read: the app's
-    /// defaults served meanwhile).
+    /// The list and whether it can be changed now (not while its file doesn't read: the seed's Default
+    /// served meanwhile).
     pub fn list(&self) -> (List, bool) {
         match self.read() {
             Ok(l) => (l.unwrap_or_default(), true),
@@ -332,14 +345,15 @@ mod tests {
         let nas = tempfile::tempdir().unwrap();
         let home = tempfile::tempdir().unwrap();
         let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
-        // Nothing saved yet: one profile, the app's defaults, the default.
+        // Nothing saved yet: one profile, the seed, the default.
         let (st, v) = call(&s, "GET", "/api/profiles", None).await;
         assert_eq!(st, StatusCode::OK);
         assert_eq!(
             (v["default"].as_str(), names(&v), v["writable"].as_bool()),
             (Some(BASE_ID), vec!["Default".to_string()], Some(true))
         );
-        assert_eq!(v["profiles"][0]["settings"], json!({}));
+        assert_eq!(v["profiles"][0]["settings"], serde_json::from_str::<Value>(SEED).unwrap());
+        assert!(v["profiles"][0]["settings"]["terrain"]["exaggeration"].is_number());
         // Add.
         let (st, v) =
             call(&s, "POST", "/api/profiles", Some(json!({"name": " Scenic night ", "settings": {"mode": "score"}})))
@@ -406,7 +420,7 @@ mod tests {
         assert_eq!(names(&v), ["Default", "Night"]);
         let file = home.path().join(jobrt::PROFILES);
         std::fs::write(&file, b"{\"v\":1,").unwrap();
-        // The app's defaults are served, read-only; a change is refused and the file left as it is.
+        // The seed is served, read-only; a change is refused and the file left as it is.
         let (_, v) = call(&s, "GET", "/api/profiles", None).await;
         assert_eq!((names(&v), v["writable"].as_bool()), (vec!["Default".to_string()], Some(false)));
         let (st, _) = call(&s, "POST", "/api/profiles", Some(json!({"name": "Day", "settings": {}}))).await;
@@ -418,6 +432,20 @@ mod tests {
             .filter(|n| n.contains("profiles"))
             .collect();
         assert_eq!(left, [jobrt::PROFILES], "no temporary file left");
+    }
+
+    #[test]
+    fn a_new_default_is_the_web_apps_seed_and_a_change_writes_it_with_the_new_profile() {
+        let home = tempfile::tempdir().unwrap();
+        let p = Profiles::new(home.path());
+        let (l, writable) = p.list();
+        assert!(writable);
+        assert_eq!(Value::Object(l.profiles[0].settings.clone()), serde_json::from_str::<Value>(SEED).unwrap());
+        assert!(!l.profiles[0].settings.is_empty());
+        let (next, _) = p.change(Op::Add { id: None, name: "Night".into(), settings: Map::new() }).unwrap();
+        let on_disk = List::parse(&std::fs::read(home.path().join(jobrt::PROFILES)).unwrap()).unwrap();
+        assert_eq!(on_disk, next);
+        assert_eq!(on_disk.profiles[0].settings, l.profiles[0].settings);
     }
 
     #[test]

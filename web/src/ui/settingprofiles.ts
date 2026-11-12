@@ -7,7 +7,7 @@
 // and delete offer Undo in a snackbar at the map's bottom left. The last item saves the current
 // settings as a new profile.
 import * as prefs from '../prefs';
-import { fromProfile, overrides, profileSettings, type AppState, type LinkBase, type Store } from '../state';
+import { fromProfile, overrides, profileSettings, seed, type AppState, type LinkBase, type Store } from '../state';
 import { h, toast } from './dom';
 
 export interface ProfileItem {
@@ -26,15 +26,17 @@ export interface Listing {
   id?: string;
 }
 
-/** The list before the server has answered, or when it can't: the app's defaults alone. */
-export const FALLBACK: Listing = { default: 'base', profiles: [{ id: 'base', name: 'Default', settings: {} }], writable: false };
+/** The list when the server doesn't answer, or answers none: the Default profile alone, holding the
+ * seed (state.ts), which is also what the server seeds a new Default from (profiles.rs). Not
+ * writable: nothing is saved while the server can't be had. */
+export const FALLBACK: Listing = { default: 'base', profiles: [{ id: 'base', name: 'Default', settings: profileSettings(seed) }], writable: false };
 
 export async function fetchProfiles(): Promise<Listing> {
   try {
     const r = await fetch('/api/profiles', { cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const l = (await r.json()) as Listing;
-    return l.profiles?.length ? l : FALLBACK;
+    return l.profiles?.some((p) => p.id === l.default) ? l : FALLBACK;
   } catch (e) {
     console.warn('profiles', e);
     return FALLBACK;
@@ -64,6 +66,12 @@ const ICON = {
   starOn: '<path d="M8 2.2l1.8 3.7 4 .6-2.9 2.8.7 4L8 11.4l-3.6 1.9.7-4L2.2 6.5l4-.6z" fill="currentColor"/>',
   trash: '<path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>',
 };
+
+let current: () => AppState = () => seed;
+
+/** The settings of the profile in use, as the profile has them (not the map's now): what a control's
+ * reset (double-click, or its arrow) goes back to. */
+export const inUse = (): AppState => current();
 
 type Edit = { kind: 'add' } | { kind: 'rename'; id: string };
 
@@ -144,6 +152,7 @@ export class Profiles {
         this.renderButton();
       });
     });
+    current = () => this.state(this.active);
     this.renderButton();
   }
 
@@ -168,8 +177,9 @@ export class Profiles {
     return s;
   }
 
-  /** Makes `id` the profile in use, without changing the settings (a link's or the saved ones). */
-  use(id: string) {
+  /** Makes `id` the profile in use (the default when it names none, or one that's gone), without
+   * changing the settings (a link's or the saved ones). */
+  use(id: string | null) {
     this.active = this.has(id) ? id : this.def;
     prefs.save('profile', this.active);
     this.renderButton();
@@ -218,7 +228,7 @@ export class Profiles {
     this.onChange();
   }
 
-  /** Back to the app's defaults (Reset), the default profile in use. */
+  /** Back to the default profile (Reset). */
   reset() {
     this.active = this.def;
     prefs.save('profile', this.def);

@@ -14,7 +14,7 @@ import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from '../rail';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from '../roads/layer';
 import { distFromSamples, viewStatsGen, type Dist, type ViewStats } from '../roads/stats';
 import { isScenic, modeDef } from '../scenic';
-import { ROAD_WEIGHT, classMask, defaults, groupMask, lineWeight, railMask, roadLenM, surfaceMask, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Store } from '../state';
+import { ROAD_WEIGHT, classMask, groupMask, lineWeight, railMask, roadLenM, surfaceMask, tollMask, unnamedHideClasses, unnamedHideGroups, seed, type AppState, type Store } from '../state';
 import { tasks, type Task } from '../tasks';
 import { cdfOf, fadeAlpha, passes, scaleU } from '../ui/scale';
 import type { InViewExtra } from '../ui/stats';
@@ -38,7 +38,7 @@ const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
 const cssOfRgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
 
 /** The road layer's share of the settings' road look (AppState.roadLook; the width table aside:
- * config.ts setWidths). Rail keeps the defaults'. */
+ * config.ts setWidths). Rail keeps the seed's (no profile holds a rail road look). */
 function roadLookStyle(s: AppState): Pick<RoadStyle, 'minZoom' | 'casingFrom' | 'casingWidth' | 'tunnelFade' | 'bridgeCasing' | 'dashUnpaved'> {
   const l = s.roadLook;
   return { minZoom: [...l.minZoom], casingFrom: l.casingFrom, casingWidth: l.casingWidth, tunnelFade: l.tunnel, bridgeCasing: l.bridgeCasing, dashUnpaved: l.dashUnpaved };
@@ -138,7 +138,7 @@ export class RoadsRail implements FramePart {
     })();
     const rails = (this.rails = new RoadLayer(
       // Drawn as railways (a thin line with cross-ties: the layer's rail pattern), cased when zoomed in.
-      { ...roads.style, ...roadLookStyle(defaults), minZoom: [], classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
+      { ...roads.style, ...roadLookStyle(seed), minZoom: [], classMask: 0x7c00, casingMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false, opacity: 1 },
       {
         id: 'rails',
         rail: true,

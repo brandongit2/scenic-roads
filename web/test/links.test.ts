@@ -1,7 +1,7 @@
 // node web/test/links.test.ts (tools/dev/check.sh's web part): links as a profile plus overrides
 // (src/state.ts toHash/fromHash, task #819). A link names its profile and carries only the settings
 // that differ from it; read back over the same profile it gives the same settings, every one a
-// link can carry; older links (no profile) still read over the defaults.
+// link can carry; a link naming no profile reads over the base it is given (the default profile).
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 
@@ -25,7 +25,7 @@ registerHooks({
 const st = await import('../src/state.ts');
 const { MAP_SCHEMES, presetLook, presetOfLook } = await import('../src/mapschemes.ts');
 const preset = (k: string) => MAP_SCHEMES.find((m) => m.key === k)!;
-const { defaults, fromHash, toHash, linkFields, fromProfile, profileSettings } = st;
+const { seed, fromHash, toHash, linkFields, fromProfile, profileSettings } = st;
 type AppState = typeof defaults;
 
 const same = (a: AppState, b: AppState, buildings = true) => assert.deepEqual(Object.fromEntries(linkFields(a, buildings)), Object.fromEntries(linkFields(b, buildings)));
@@ -33,7 +33,7 @@ const params = (h: string) => new URLSearchParams(h.slice(1));
 
 /** A profile far from the defaults: most kinds of setting changed. */
 function night(): AppState {
-  const s = structuredClone(defaults);
+  const s = structuredClone(seed);
   s.palette = 'magma';
   s.equalize = true;
   s.groups = s.groups.map((_, i) => i % 2 === 0);
@@ -118,7 +118,7 @@ const changes: [string, (s: AppState) => void][] = [
   ['road look', (s) => (s.roadLook = { ...s.roadLook, minZoom: s.roadLook.minZoom.map((z, i) => (i < 2 ? 11.5 : z)), casingFrom: 11, casingWidth: 1.75, tunnel: 0.7, bridgeCasing: !s.roadLook.bridgeCasing, dashUnpaved: !s.roadLook.dashUnpaved })],
   ['road widths', (s) => (s.roadLook = { ...s.roadLook, widths: s.roadLook.widths.map((r, c) => (c === 8 ? r.map((v) => v * 1.5) : r)) })],
 ];
-for (const b of [base.s, defaults]) {
+for (const b of [base.s, seed]) {
   for (const [what, f] of changes) {
     const s = structuredClone(b);
     f(s);
@@ -126,7 +126,7 @@ for (const b of [base.s, defaults]) {
     try {
       same(fromHash(h, true, b), s);
     } catch (e) {
-      throw new Error(`${what} over ${b === defaults ? 'the defaults' : 'the profile'}: ${h}\n${(e as Error).message}`);
+      throw new Error(`${what} over ${b === seed ? 'the defaults' : 'the profile'}: ${h}\n${(e as Error).message}`);
     }
     assert.ok([...params(h).keys()].length > 1, `${what}: nothing in ${h}`);
   }
@@ -135,10 +135,10 @@ for (const b of [base.s, defaults]) {
 // A link's water from before the whitewater (ten fields) keeps the whitewater's defaults; a full
 // steepness at or under the start is moved past it.
 {
-  const old = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0');
+  const old = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0', true, seed);
   assert.equal(old.water.colour, '#123456');
-  for (const k of ['foam', 'foamFrom', 'foamTo', 'foamCover', 'foamColour'] as const) assert.equal(old.water[k], defaults.water[k]);
-  const w = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0,0.8,30,10,0.75,cee0ec').water;
+  for (const k of ['foam', 'foamFrom', 'foamTo', 'foamCover', 'foamColour'] as const) assert.equal(old.water[k], seed.water[k]);
+  const w = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0,0.8,30,10,0.75,cee0ec', true, seed).water;
   assert.deepEqual([w.foamFrom, w.foamTo], [30, 31]);
 }
 
@@ -146,14 +146,14 @@ for (const b of [base.s, defaults]) {
 // (now the range from 0) in dp=; saved settings alike.
 {
   const tail = '1,0.45,315,1,8fae7d,0,zoom,10,5,1,9ec3dc,1,0.55,0';
-  const fit = fromHash(`#map=5/46/-71&dp=1,quiet,fit,900,${tail}`).depth;
+  const fit = fromHash(`#map=5/46/-71&dp=1,quiet,fit,900,${tail}`, true, seed).depth;
   assert.deepEqual([fit.scale, fit.colours.palette, fit.colours.auto, fit.colours.range], ['log', 'quiet', true, [0, 900]]);
-  const lin = fromHash(`#map=5/46/-71&dp=1,nautical,linear,40,${tail}`).depth;
+  const lin = fromHash(`#map=5/46/-71&dp=1,nautical,linear,40,${tail}`, true, seed).depth;
   assert.deepEqual([lin.scale, lin.colours.auto, lin.colours.range], ['linear', false, [0, 40]]);
-  const saved = st.fromSaved({ depth: { ...defaults.depth, colours: undefined, palette: 'quiet', scale: 'fit', max: 120 } }).depth;
+  const saved = st.fromSaved({ depth: { ...seed.depth, colours: undefined, palette: 'quiet', scale: 'fit', max: 120 } }, seed).depth;
   assert.deepEqual([saved.scale, saved.colours.palette, saved.colours.auto, saved.colours.range], ['log', 'quiet', true, [0, 120]]);
   // A link over a profile carrying dp= alone keeps the profile's colour scale.
-  const p = structuredClone(defaults);
+  const p = structuredClone(seed);
   p.depth.colours = { ...p.depth.colours, auto: true, palette: 'quiet' };
   const s = structuredClone(p);
   s.depth = { ...s.depth, opacity: 0.5 };
@@ -162,16 +162,19 @@ for (const b of [base.s, defaults]) {
   assert.deepEqual(fromHash(h, true, p).depth.colours, p.depth.colours);
 }
 
-// Older links: no profile, each setting where it differs from the defaults, the palette in p=.
+// Older links: no profile named, each setting where it differs from the default profile (given as
+// the base), the palette in p=.
 {
-  const s = fromHash('#map=5/46/-71&p=magma&eq=1&gb=0');
-  assert.equal(s.palette, 'magma');
+  const s = fromHash('#map=5/46/-71&p=cividis&eq=1&gb=0', true, base.s);
+  assert.equal(s.palette, 'cividis');
   assert.equal(s.equalize, true);
   assert.equal(s.globe, false);
-  same(fromHash(toHash(s, true), true), s);
-  // With no profile named, the link stays relative to the defaults (and its palette in pa=).
-  assert.equal(params(toHash(s, true)).get('pa'), 'magma');
-  assert.equal(params(toHash(s, true)).get('p'), null);
+  assert.equal(s.terrain.exaggeration, base.s.terrain.exaggeration);
+  assert.equal(s.rail.on, base.s.rail.on);
+  // A bare link is the base, whole.
+  same(fromHash('#map=5/46/-71', true, base.s), base.s);
+  assert.equal(params(toHash(s, true, base)).get('pa'), 'cividis');
+  assert.equal(params(toHash(s, true, base)).get('p'), 'k3f9-scenic-night');
 }
 
 // The Map look and road look exactly back from a link (each colour, opacity, zoom), over a profile
@@ -182,31 +185,31 @@ for (const b of [base.s, defaults]) {
   s.roadMap.fill[0] = '#abcdef12';
   s.roadMap.cats.speed[3] = '#fedcba';
   s.roadLook = { ...s.roadLook, minZoom: s.roadLook.minZoom.map((_, i) => i / 2), widths: s.roadLook.widths.map((r) => r.map((v) => v + 0.125)) };
-  for (const b of [base.s, defaults]) {
+  for (const b of [base.s, seed]) {
     const back = fromHash(toHash(s, true, { id: 'k3f9', name: 'x', s: b }), true, b);
     assert.deepEqual(back.roadMap, s.roadMap);
     assert.deepEqual(back.roadLook, s.roadLook);
   }
-  const old = fromHash('#map=5/46/-71&ms=os');
+  const old = fromHash('#map=5/46/-71&ms=os', true, seed);
   assert.equal(presetOfLook(old.roadMap)?.key, 'os');
   // A preset cases the road classes, not ferries (as the Map styles did before #820: 0x1ff).
   const { lookUniforms } = await import('../src/mapschemes.ts');
   for (const m of MAP_SCHEMES) assert.equal(lookUniforms(presetLook(m)).casedMask, 0x1ff, m.key);
   // An unknown preset or a malformed look leaves the defaults'.
-  assert.deepEqual(fromHash('#ms=nope&rm=class,zz,zz,1,a,b,c,d').roadMap.fill, defaults.roadMap.fill);
+  assert.deepEqual(fromHash('#ms=nope&rm=class,zz,zz,1,a,b,c,d', true, seed).roadMap.fill, seed.roadMap.fill);
   // A look colouring by what the app no longer has (the signed routes, removed by #853), linked,
   // saved or as a preset's name: the default look, whole.
-  const signed = toHash({ ...structuredClone(s), roadMap: { ...s.roadMap, kind: 'network' as never } }, true);
+  const signed = toHash({ ...structuredClone(s), roadMap: { ...s.roadMap, kind: 'network' as never } }, true, { id: 'base', name: 'Default', s: seed });
   assert.match(signed, /rm=network,/);
-  assert.deepEqual(fromHash(signed, true).roadMap, defaults.roadMap);
-  assert.deepEqual(fromHash('#map=5/46/-71&ms=network').roadMap, defaults.roadMap);
-  assert.deepEqual(st.fromSaved({ roadMap: { ...s.roadMap, kind: 'network' } }).roadMap, defaults.roadMap);
-  assert.deepEqual(st.fromSaved({ mapScheme: 'network' }).roadMap, defaults.roadMap);
-  assert.deepEqual(fromHash('#rx=1.2,3&wd=1,2').roadLook, defaults.roadLook);
+  assert.deepEqual(fromHash(signed, true, seed).roadMap, seed.roadMap);
+  assert.deepEqual(fromHash('#map=5/46/-71&ms=network', true, seed).roadMap, seed.roadMap);
+  assert.deepEqual(st.fromSaved({ roadMap: { ...s.roadMap, kind: 'network' } }, seed).roadMap, seed.roadMap);
+  assert.deepEqual(st.fromSaved({ mapScheme: 'network' }, seed).roadMap, seed.roadMap);
+  assert.deepEqual(fromHash('#rx=1.2,3&wd=1,2', true, seed).roadLook, seed.roadLook);
   // Out-of-range values clamped.
-  assert.equal(fromHash(`#rx=${new Array(10).fill(40).join('_')},99,-1,0,1,1`).roadLook.casingFrom, st.ROAD_LOOK_RANGE.casingFrom[1]);
+  assert.equal(fromHash(`#rx=${new Array(10).fill(40).join('_')},99,-1,0,1,1`, true, seed).roadLook.casingFrom, st.ROAD_LOOK_RANGE.casingFrom[1]);
   // Saved before the Map look: its preset (mapScheme); and in a profile, the look itself.
-  assert.equal(presetOfLook(st.fromSaved({ mapScheme: 'neon' }).roadMap)?.key, 'neon');
+  assert.equal(presetOfLook(st.fromSaved({ mapScheme: 'neon' }, seed).roadMap)?.key, 'neon');
   const kept = fromProfile(JSON.parse(JSON.stringify(profileSettings(s))));
   assert.deepEqual(kept.roadMap, s.roadMap);
   assert.deepEqual(kept.roadLook, s.roadLook);
@@ -221,8 +224,26 @@ for (const b of [base.s, defaults]) {
   const back = fromProfile(kept);
   same(back, s);
   assert.equal(back.view, null);
-  // The first profile's settings are {}: the defaults.
-  same(fromProfile({}), defaults);
+  // A profile holding nothing: the seed.
+  same(fromProfile({}), seed);
+}
+
+// The seed is the one definition of a Default profile's settings (default-profile.json, which the
+// server seeds a new Default from too): whole, so that a profile holding nothing is the seed; the
+// settings it gives back are the file's, and a save or a link missing a setting takes the profile's
+// (not the seed's).
+{
+  const file = JSON.parse((await import('node:fs')).readFileSync(new URL('../default-profile.json', import.meta.url), 'utf8'));
+  assert.deepEqual(profileSettings(seed), file);
+  same(fromProfile(file), seed);
+  assert.deepEqual(st.fromSaved(null, base.s), base.s);
+  assert.deepEqual(st.fromSaved({ palette: 'cividis' }, base.s), { ...base.s, palette: 'cividis' });
+  const partial = profileSettings(base.s);
+  delete partial.terrain;
+  assert.deepEqual(st.fromSaved(partial, base.s).terrain, base.s.terrain);
+  assert.notDeepEqual(base.s.terrain, seed.terrain);
+  // A broken value in a save is the profile's, not the seed's.
+  assert.deepEqual(st.fromSaved({ landmarks: { top: 'x' } }, base.s).landmarks.top, base.s.landmarks.top);
 }
 
 console.log('links: ok');

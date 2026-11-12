@@ -27,7 +27,7 @@ import { applyTrees } from './trees';
 import { Depth } from './depth';
 import { heritageChanged, heritagePoints, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, switchBuildings } from './buildings';
 import * as prefs from './prefs';
-import { Store, cleanRoadLook, defaults, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, toHash, type AppState } from './state';
+import { Store, cleanRoadLook, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, seed, toHash, type AppState } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setTerrainAreas, switchContours } from './terrain';
@@ -101,8 +101,24 @@ async function main() {
   // Terrain, slope and tree tiles are images: more of them at once than MapLibre's default 16, now
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
+  // (An address from when the map had a key, `#k=…`: the key dropped, the view kept.)
+  if (/(^#|&)k=/.test(location.hash)) {
+    const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
+    history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
+  }
+  // The profile in use: the link's (one it names that's gone, or a link naming none: the default
+  // profile; the link's settings are laid over it), else the last session's. The self-benchmark and
+  // the eval modes take the seed: fixed settings, whatever the server's profiles.
+  const listing = await profilesReady;
+  const known = (id: string | null): id is string => !!id && listing.profiles.some((p) => p.id === id);
+  const hasLink = !BENCH && location.hash.length > 1;
+  const linkPid = hasLink ? profileIdOf(location.hash) : null;
+  const lastPid = prefs.load<string | null>('profile', null);
+  const activePid = hasLink ? (known(linkPid) ? linkPid : listing.default) : known(lastPid) ? lastPid : listing.default;
+  const linkBase = fromProfile(listing.profiles.find((p) => p.id === activePid)!.settings);
+  const saved = fromSaved(prefs.load('state', null), linkBase);
   // The opening view, before the metadata: only `bd=` in a link depends on it, not the view.
-  const pre = BENCH ? fromHash(benchHash(), false) : location.hash.length > 1 ? fromHash(location.hash, false) : fromSaved(prefs.load('state', null));
+  const pre = BENCH ? fromHash(benchHash(), false, seed) : hasLink ? fromHash(location.hash, false, linkBase) : saved;
   const v = pre.view;
   // (Eval mode: the map fills the window, the panels under it.)
   if (EVAL || CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
@@ -160,12 +176,6 @@ async function main() {
   let hasBuildings = !!meta.layers?.buildings;
   // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
   // only with the buildings: without, the saved settings stay.)
-  // (An address from when the map had a key, `#k=…`: the key dropped, the view kept.)
-  if (/(^#|&)k=/.test(location.hash)) {
-    const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
-    history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
-  }
-  const saved = fromSaved(prefs.load('state', null));
   // Widths edited before they were a setting (this browser's own save, applied under every link):
   // into the saved settings, written at once (nothing else may save before the save is dropped).
   const oldWidths = BENCH ? null : prefs.load<number[][] | null>('roadWidths', null);
@@ -176,26 +186,15 @@ async function main() {
     }
     prefs.save('roadWidths', null);
   }
-  // The profile in use: the link's (one it names that's gone: the default, said), else the last
-  // session's. A link naming none (older links) carries its settings over the app's defaults.
-  const listing = await profilesReady;
-  const known = (id: string | null): id is string => !!id && listing.profiles.some((p) => p.id === id);
-  const hasLink = !BENCH && location.hash.length > 1;
-  const linkPid = hasLink ? profileIdOf(location.hash) : null;
   if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
-  const lastPid = prefs.load<string | null>('profile', null);
-  const activePid = hasLink ? (known(linkPid) ? linkPid : listing.default) : known(lastPid) ? lastPid : listing.default;
-  const linkBase = hasLink && !linkPid ? defaults : fromProfile(listing.profiles.find((p) => p.id === activePid)?.settings ?? {});
   // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
-  const linked = BENCH ? fromHash(benchHash(), hasBuildings) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  const linked = BENCH ? fromHash(benchHash(), hasBuildings, seed) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // (A link without widths of its own, opened the session the widths moved in: they apply, as before.)
   if (oldWidths && hasLink && !/(^#|&)wd=/.test(location.hash)) linked.roadLook = cleanRoadLook({ ...linked.roadLook, widths: oldWidths });
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
-  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : CMP ? cmpState(fromHash(location.hash, hasBuildings)) : linked);
+  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings, seed)) : CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
   profiles.use(activePid);
-  // (The opening tilt for 3D terrain was chosen before the profiles arrived.)
-  if (!v && pre.terrain.on && !store.s.terrain.on) map.jumpTo({ pitch: 0 });
   history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())); // the address bar holds the restored state
   // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
   setLandColour(store.s.land);
@@ -1121,13 +1120,13 @@ async function main() {
     }
   });
 
-  // Reset to defaults: every saved preference and preset list cleared, the state the defaults with
-  // the map where it is (the address bar and the saved state too, so that nothing pending brings
-  // the old back), and the page loaded again for the panels' own preferences.
+  // Reset to defaults: every saved preference and preset list cleared, the state the default
+  // profile's with the map where it is (the address bar and the saved state too, so that nothing
+  // pending brings the old back), and the page loaded again for the panels' own preferences.
   layers.onReset = () => {
     prefs.clearAll();
     profiles.reset();
-    store.set({ ...structuredClone(defaults), view: store.s.view });
+    store.set({ ...profiles.base().s, view: store.s.view });
     history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base()));
     prefs.save('state', { ...store.s, selected: null });
     location.reload();
@@ -1136,9 +1135,9 @@ async function main() {
   // Pasted / edited links: apply the new state without a reload.
   window.addEventListener('hashchange', () => {
     const pid = profileIdOf(location.hash);
-    // (A profile that's gone: the default, as at the start.)
-    if (pid) profiles.use(pid);
-    const next = fromHash(location.hash, hasBuildings, pid ? profiles.base().s : defaults);
+    // (A link naming none, or a profile that's gone: the default profile, as at the start.)
+    profiles.use(pid);
+    const next = fromHash(location.hash, hasBuildings, profiles.base().s);
     const { view, buildings, ...rest } = next;
     store.set(hasBuildings ? { ...rest, buildings } : rest);
     if (view) map.jumpTo({ center: [view.lng, view.lat], zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });

@@ -43,8 +43,8 @@ export interface ScaleOpts {
   noun: string;
   /** "road length", "rail length"…: what the histogram and shares measure. */
   measure: string;
-  fadeDefault: number;
-  spanDefault: number;
+  fadeDefault: () => number;
+  spanDefault: () => number;
   /** A fixed caption instead of the auto-fit controls, no dragging (e.g. relief). */
   fixedCaption?: () => string | null;
   /** Auto-fit to ranks in view (the low end at the n-th best, the top at the m-th) instead of
@@ -212,14 +212,14 @@ export class ScaleControls {
     this.pal = new RampSelect(o.palettes?.items ?? PALETTE_ITEMS, o.palettes?.css ?? ((k) => paletteCss(k)), (k) => o.set({ palette: k }), (k) => o.onPreview(k));
     this.palRow = h('div', { class: 'pal-row' }, h('span', { class: 'muted' }, 'Colours'), this.pal.el);
 
-    this.fade = h('input', { type: 'range', min: 0, max: 1, step: 0.05, title: `How transparent ${o.noun} at the low end of the colour scale become (double-click: default)` });
+    this.fade = h('input', { type: 'range', min: 0, max: 1, step: 0.05, title: `How transparent ${o.noun} at the low end of the colour scale become (double-click: the profile\u2019s)` });
     this.fadeOut = h('output');
-    this.span = h('input', { type: 'range', min: 0.1, max: 1, step: 0.05, title: 'How far up the scale the fade reaches (double-click: default)' });
+    this.span = h('input', { type: 'range', min: 0.1, max: 1, step: 0.05, title: 'How far up the scale the fade reaches (double-click: the profile\u2019s)' });
     this.spanOut = h('output');
     this.fade.addEventListener('input', () => o.set({ lowFade: Number(this.fade.value) }));
-    onDouble(this.fade, () => o.set({ lowFade: o.fadeDefault }));
+    onDouble(this.fade, () => o.set({ lowFade: o.fadeDefault() }));
     this.span.addEventListener('input', () => o.set({ lowSpan: Number(this.span.value) }));
-    onDouble(this.span, () => o.set({ lowSpan: o.spanDefault }));
+    onDouble(this.span, () => o.set({ lowSpan: o.spanDefault() }));
     this.fadeRow = h('div', { class: 'fade' },
       h('span', { class: 'muted' }, 'Fade low end'), this.fade, this.fadeOut,
       h('span', { class: 'muted' }, 'Fade span'), this.span, this.spanOut,

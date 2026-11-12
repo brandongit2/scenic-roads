@@ -1,4 +1,5 @@
-import { CASING_Z, DEFAULT_WIDTHS, GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
+import seedJson from '../default-profile.json';
+import { DEFAULT_WIDTHS, GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
 import { RAIL_COMPONENTS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from './rail';
 import { CAT_KINDS, MAP_KINDS, MAP_SCHEMES, presetLook, type RoadMapLook } from './mapschemes';
 import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetric } from './ferry';
@@ -7,15 +8,13 @@ import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from '.
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
 import { DEPTH_DEFAULTS, DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
-import { LAND_COLOUR, PLAIN } from './basecolours';
 import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
-import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
+import { BUILTIN, RAIL_DEFAULT_PRESET, presets, railPresets, sameWeights } from './presets';
 import { MODES, addedWeights, isScenic, migrateWeights, modeDef, type Mode } from './scenic';
 import {
-  FIT_LEN_DEFAULT, fitLensOfSaved, pairOf, pairsField, pairsOfField, perMetric, samePair, unitsField, unitsOfField, unitsOfSaved, validFit, validFitLen,
+  FIT_DEFAULT, FIT_LEN_DEFAULT, fitLensOfSaved, pairOf, pairsField, pairsOfField, perMetric, samePair, unitsField, unitsOfField, unitsOfSaved, validFit, validFitLen,
   withPair, type FitUnits, type Pair, type PerMetric,
 } from './autofit';
-import { STOP_CONTRAST } from './raildraw';
 
 export type { Mode };
 
@@ -364,11 +363,11 @@ export function scaleOfLook(l: MetricLook): ScaleFields {
 }
 
 /** A rail or ferry metric's look the first time it is picked (ui/rail.ts, ui/ferry.ts): the
- * defaults' for the layer's default metric (the ride score, sailings a day), else a fresh one. */
+ * seed's for the layer's seed metric (the ride score, sailings a day), else a fresh one. */
 export const railFreshLook = (m: RailMetric): MetricLook =>
-  m === defaults.rail.metric ? lookOfScale(defaults.rail) : freshLook(railMetricDef(m).range, 0.4);
+  m === seed.rail.metric ? lookOfScale(seed.rail) : freshLook(railMetricDef(m).range, 0.4);
 export const ferryFreshLook = (m: FerryMetric): MetricLook =>
-  m === defaults.ferry.metric ? lookOfScale(defaults.ferry) : { ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] };
+  m === seed.ferry.metric ? lookOfScale(seed.ferry) : { ...freshLook(ferryMetricDef(m).range, 0), fit: [0, 100] };
 
 /** The metrics but the one shown, their palettes and percentiles in a link value (rail,
  * ferries): `key_palette_lo_hi` for each whose differ from its look when first picked, the palette
@@ -525,8 +524,8 @@ export interface AppState {
   /** Auto-fit percentiles of the roads in view (low, high), 0–100: the display type's, or for a
    * scenic metric its own (the other scenic metrics' in scenicFits). */
   fit: [number, number];
-  /** The other scenic metrics' percentiles (the active one's is `fit`; a metric not in it has the
-   * defaults'). */
+  /** The other scenic metrics' percentiles (the active one's is `fit`; a metric not in it has
+   * FIT_DEFAULT). */
   scenicFits: PerMetric<Mode>;
   /** Each scenic metric's screen-widths auto-fit: the best this much road in view, in screen widths
    * (road as long as the view is wide at its centre): the scale's low end at the first, full colour
@@ -653,7 +652,6 @@ const clampWeight = (v: number) => Math.min(WEIGHT_RANGE[1], Math.max(WEIGHT_RAN
 export const lineWeight = (s: AppState, kind: LineKind) => s.lineWeights.global * s.lineWeights[kind];
 /** Line widths with distance (AppState.roadPersp). */
 export type RoadPersp = { strength: number; cap: number; fade: number };
-export const DEFAULT_PERSP: RoadPersp = { strength: 1, cap: 3, fade: 0.3 };
 /** Slider limits: [min, max] of each. */
 export const PERSP_RANGE = { strength: [0, 1], cap: [1, 8], fade: [0, 1] } as const;
 const clampPersp = (p: RoadPersp): RoadPersp => Object.fromEntries((['strength', 'cap', 'fade'] as const)
@@ -690,8 +688,7 @@ export function cleanRoadLook(l: RoadLook): RoadLook {
 const HEX8 = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
 /** A Map look with every colour valid (else the default look's there); one colouring by what the
  * app doesn't offer (a kind not in MAP_KINDS: an old link's or save's "network"), the default look. */
-function cleanMapLook(l: RoadMapLook): RoadMapLook {
-  const d = defaults.roadMap;
+function cleanMapLook(l: RoadMapLook, d: RoadMapLook): RoadMapLook {
   if (!MAP_KINDS.some(([k]) => k === l.kind)) return structuredClone(d);
   const col = (v: string[], dv: string[], re: RegExp) => dv.map((x, i) => (typeof v[i] === 'string' && re.test(v[i]) ? v[i].toLowerCase() : x));
   return {
@@ -705,106 +702,11 @@ function cleanMapLook(l: RoadMapLook): RoadMapLook {
 /** Road widths at weight 1 (roads/layer.ts WIDTHS × this). */
 export const ROAD_WEIGHT = 0.5;
 
-// The defaults (as set up in the app on 2026-09-30): scenic score in PuBuGn over the top fifth of
-// the roads in view, with Big vistas; no unnamed service roads, no roads under 500 m; rail by ride
-// score (My preset), ferries by sailings a day; the tree mask; the slope tint; landmarks and
-// heritage on.
-export const defaults: AppState = {
-  mode: 'score',
-  looks: {},
-  scales: {},
-  palette: 'pubugn',
-  auto: true,
-  range: [0, 100],
-  fit: [80, 99.9],
-  scenicFits: {},
-  fitLens: {},
-  fitUnits: {},
-  equalize: false,
-  weights: [...DEFAULT_WEIGHTS],
-  preset: DEFAULT_PRESET,
-  groups: new Array(NGROUP).fill(true),
-  unnamed: GROUPS.map((g) => g.key !== 'service'),
-  roadLen: [0.5, 0],
-  roadLenOn: true,
-  roadMap: presetLook(MAP_SCHEMES.find((m) => m.key === 'blueprint')!),
-  roadLook: {
-    minZoom: new Array(NROAD).fill(0), casingFrom: CASING_Z[0], casingWidth: 1, tunnel: 0.45, bridgeCasing: true, dashUnpaved: true,
-    widths: DEFAULT_WIDTHS.map((r) => [...r]),
-  },
-  rail: {
-    on: true, groups: new Array(NRAIL).fill(true), colour: 'metric', metric: 'rscore', looks: {},
-    ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
-    weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLens: {}, fitUnits: {},
-    ties: 2.5, stopSize: 1, stopContrast: STOP_CONTRAST,
-  },
-  trees: {
-    on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
-    cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
-  },
-  depth: structuredClone(DEPTH_DEFAULTS),
-  // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
-  // By height: auto-fit to the buildings in view, the low ones faded toward the plain colour.
-  buildings: {
-    on: true, flat: false, colour: 'plain', plain: PLAIN, opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
-    height: scaleOfLook({ ...freshLook([0, 100], 0.6), fit: [5, 99.5], lowSpan: 0.4, thrValue: 50 }), heritage: true,
-  },
-  ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'metric', metric: 'freq', looks: {},
-    ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
-    opacity: 0.9, dashed: true, single: '#8fc8ff',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLens: {}, fitUnits: {} },
-  surface: { paved: true, unpaved: true },
-  toll: { free: true, toll: true },
-  lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
-  roadOpacity: 1,
-  roadPersp: { ...DEFAULT_PERSP },
-  boundaryOpacity: 1,
-  pointOutline: '#0b0e13',
-  pointOutlineOpacity: 1,
-  routeGlow: false,
-  lowFade: 0.8,
-  lowSpan: 0.6,
-  labelOpacity: 0.5,
-  labelSize: 1,
-  labelLooks: {},
-  land: LAND_COLOUR,
-  water: {
-    colour: '#0c1622', shade: true, width: 28, strength: 0.22, falloff: 1.8, shadeColour: '#4f7fa8',
-    shore: 0.25, ripples: 0, rippleStrength: 0.35, lakes: false, rivers: true,
-    foam: 0.8, foamFrom: 8, foamTo: 50, foamCover: 0.75, foamColour: '#cee0ec',
-  },
-  labelDensity: { ...DEFAULT_DENSITY, kinds: { ...DEFAULT_DENSITY.kinds } },
-  poiOpacity: 0.7,
-  poiEmphasis: 1,
-  landmarks: { palette: 'oslo', auto: true, range: [0, 1], fit: [70, 99.9], equalize: false, lowFade: 0.8, lowSpan: 0.4, threshold: { on: false, dir: 'above', value: 0.5 }, balance: 0.3, top: [250, 10] },
-  globe: true,
-  occlude: true,
-  layers: { roads: true, water: true, boundaries: true, places: true },
-  boundaryLevels: [true, true, true],
-  labelKinds: Object.fromEntries(LABEL_KINDS.map(([k]) => [k, true])) as Record<LabelKind, boolean>,
-  // Every stop and sight, heritage sites and districts and Indigenous lands (not parks, biospheres & co.).
-  overlays: Object.fromEntries(OVERLAYS.map(([k]) => [k, k !== 'parks' && k !== 'special'])) as Record<OverlayKey, boolean>,
-  heritageOff: [],
-  stopFilters: {},
-  stopUnknown: { waterfall: false },
-  terrain: {
-    on: true, exaggeration: 3, hillshade: true, method: 'combined', light: 315, shade: 0.45,
-    tint: true, tintVar: 'slope', tintOpacity: 0.1, tintBands: 0, tintCurve: 1, tintMatch: false,
-    tintScales: {
-      elev: { palette: 'atlas', auto: true, range: [0, 1900], fit: [1, 99], equalize: false, lowFade: 0, lowSpan: 0.5, threshold: { on: false, dir: 'above', value: 1000 } },
-      slope: { palette: 'plasma_r', auto: false, range: [10, 70], fit: [2, 98], equalize: false, lowFade: 1, lowSpan: 0.1, threshold: { on: false, dir: 'above', value: 30 } },
-    },
-    contours: false,
-    contour: { weight: 1, minor: 0.16, major: 0.34, colour: '#a9b6c8', density: 0, perspective: 1, labels: true, ring: 6, labelSize: 1 },
-    sky: true,
-    fog: { start: 0.02, end: 0.45, opacity: 0.9, colour: '#0b0e13', horizonColour: '#1b2432', horizonBlend: 0.6 },
-  },
-  threshold: { on: false, dir: 'above', value: 60 },
-  selected: null,
-  stretch: null,
-  view: null,
-};
+// The seed: the one definition of a Default profile's settings (default-profile.json, which the map
+// server also seeds a new Default from: crates/server/src/profiles.rs). It fills what a profile
+// doesn't hold (a setting added since it was saved), and is the settings when no profile can be had
+// (the server unreachable, or its list empty). No other code holds a setting's value.
+export const seed: AppState = { ...(seedJson as unknown as Omit<AppState, 'view' | 'selected' | 'stretch'>), view: null, selected: null, stretch: null };
 
 type Listener = (s: AppState, changed: Set<keyof AppState>) => void;
 
@@ -840,12 +742,12 @@ export class Store {
     const looks = { ...s.looks, [modeGroup(s.mode)]: lookOf(s) };
     const scales = { ...s.scales, [s.mode]: { auto: s.auto, range: [...s.range], thrValue: s.threshold.value } as Scale };
     const d = modeDef(mode);
-    const lk = looks[modeGroup(mode)] ?? (modeGroup(mode) === modeGroup(defaults.mode) ? lookOf(defaults) : FRESH_LOOK);
+    const lk = looks[modeGroup(mode)] ?? (modeGroup(mode) === modeGroup(seed.mode) ? lookOf(seed) : FRESH_LOOK);
     const sc = scales[mode] ?? { auto: d.auto, range: [...d.range] as [number, number], thrValue: d.thrDefault };
     // A scenic metric's percentiles are its own: the one left keeps its, the one picked brings its.
-    let scenicFits = isScenic(s.mode) ? withPair(s.scenicFits, s.mode, s.fit, defaults.fit) : s.scenicFits;
-    const fit = isScenic(mode) ? pairOf(scenicFits, mode, defaults.fit) : [...lk.fit] as Pair;
-    if (isScenic(mode)) scenicFits = withPair(scenicFits, mode, defaults.fit, defaults.fit);
+    let scenicFits = isScenic(s.mode) ? withPair(s.scenicFits, s.mode, s.fit, FIT_DEFAULT) : s.scenicFits;
+    const fit = isScenic(mode) ? pairOf(scenicFits, mode, FIT_DEFAULT) : [...lk.fit] as Pair;
+    if (isScenic(mode)) scenicFits = withPair(scenicFits, mode, FIT_DEFAULT, FIT_DEFAULT);
     this.set({
       mode, looks, scales, scenicFits,
       palette: lk.palette, fit, equalize: lk.equalize, lowFade: lk.lowFade, lowSpan: lk.lowSpan,
@@ -854,8 +756,7 @@ export class Store {
   }
 }
 
-/** A display type's colours the first time it is picked, unless it is the default one (whose are
- * the defaults'). */
+/** A display type's colours the first time it is picked, unless it is the seed's (whose are the seed's). */
 const FRESH_LOOK: Look = { palette: 'viridis', fit: [1, 99], equalize: false, lowFade: 0.7, lowSpan: 0.6, thrOn: false, thrDir: 'above' };
 
 function lookOf(s: AppState): Look {
@@ -931,8 +832,8 @@ export function groupMask(s: AppState): number {
 // ---- URL hash ------------------------------------------------------------------------------
 // #map=zoom/lat/lng/bearing/pitch&p=<profile id>-<name>&m=score&pa=viridis&r=lo,hi&eq=1&pr=vistas&wt=…
 //  &g=11111&sf=pu&lw=1,1,1,1,1,1,1&l=rwbp&o=<overlay bits>&t3=…&t=a500&s=<way>,<lng>,<lat>: each setting
-//  only where it differs from the profile's (older links: no p=, each where it differs from the
-//  defaults; p=<palette>, hl=<levels>)
+//  only where it differs from the profile's (older links: no p=, over the default profile;
+//  p=<palette>, hl=<levels>)
 
 const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
@@ -969,8 +870,8 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   // Percentiles: the display type's (fp); the scenic metrics' each their own: their base in fp
   // while a scenic metric is shown, else in fpb, and fpm those with another.
   const scen = isScenic(s.mode);
-  const fitAt = (k: Mode) => (k === s.mode ? s.fit : pairOf(s.scenicFits, k, defaults.fit));
-  const fpm = pairsField(fitAt, ROAD_FIT_KEYS, defaults.fit);
+  const fitAt = (k: Mode) => (k === s.mode ? s.fit : pairOf(s.scenicFits, k, FIT_DEFAULT));
+  const fpm = pairsField(fitAt, ROAD_FIT_KEYS, FIT_DEFAULT);
   const fpBase = scen ? fpm.base : s.fit;
   p.set('fp', `${fpBase[0]},${fpBase[1]}`);
   p.set('fpb', scen ? '' : `${fpm.base[0]},${fpm.base[1]}`);
@@ -1101,17 +1002,17 @@ export function overrides(s: AppState, base: AppState, buildings: boolean): Map<
 }
 
 /** The state as a link (the address bar's hash): the camera, the profile (`p=`), the settings that
- * differ from the profile's (no profile: from the app's defaults), the selection. `buildings`:
+ * differ from the profile's, the selection. `buildings`:
  * whether the catalogue has the 3D buildings; without them their settings stay out of links. */
-export function toHash(s: AppState, buildings: boolean, base?: LinkBase): string {
+export function toHash(s: AppState, buildings: boolean, base: LinkBase): string {
   const p = new URLSearchParams();
   if (s.view) {
     const v = s.view;
     const extra = v.bearing || v.pitch || v.elev ? `/${v.bearing.toFixed(1)}/${v.pitch.toFixed(1)}${v.elev ? `/${Math.round(v.elev)}` : ''}` : '';
     p.set('map', `${v.zoom.toFixed(2)}/${v.lat.toFixed(5)}/${v.lng.toFixed(5)}${extra}`);
   }
-  if (base) p.set('p', profileParam(base.id, base.name));
-  for (const [k, v] of overrides(s, base?.s ?? defaults, buildings)) p.set(k, v);
+  p.set('p', profileParam(base.id, base.name));
+  for (const [k, v] of overrides(s, base.s, buildings)) p.set(k, v);
   // The selected way's OSM id and a point on it.
   if (s.selected !== null) p.set('s', `${s.selected.way},${s.selected.at.map((v) => v.toFixed(5)).join(',')}`);
   if (s.selected !== null && s.stretch) {
@@ -1122,10 +1023,10 @@ export function toHash(s: AppState, buildings: boolean, base?: LinkBase): string
 }
 
 
-/** The state a link gives: `base` (the profile it names; older links: the defaults) with the
+/** The state a link gives: `base` (the profile it names, else the default profile) with the
  * settings it carries (`buildings`: whether the catalogue has the 3D buildings; without, their
  * `bd=` is left out, as `toHash` leaves it out). */
-export function fromHash(hash: string, buildings = true, base: AppState = defaults): AppState {
+export function fromHash(hash: string, buildings: boolean, base: AppState): AppState {
   const s: AppState = { ...structuredClone(base), view: null, selected: null, stretch: null };
   const p = new URLSearchParams(hash.replace(/^#/, ''));
   const map = p.get('map')?.split('/').map(Number);
@@ -1161,9 +1062,9 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   if (p.has('fp') || p.has('fpb') || p.has('fpm') || p.has('m')) {
     const fp = pctPair('fp');
     const fpm = pairsOfField(p.get('fpm'), ROAD_FIT_KEYS, validFit);
-    const fitBase: Pair = (isScenic(s.mode) ? fp : pctPair('fpb')) ?? defaults.fit;
-    s.fit = isScenic(s.mode) ? pairOf(fpm, s.mode, fitBase) : fp ?? defaults.fit;
-    s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, defaults.fit);
+    const fitBase: Pair = (isScenic(s.mode) ? fp : pctPair('fpb')) ?? FIT_DEFAULT;
+    s.fit = isScenic(s.mode) ? pairOf(fpm, s.mode, fitBase) : fp ?? FIT_DEFAULT;
+    s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, FIT_DEFAULT);
   }
   // Screen widths: fl every scenic metric's but those flm lists (older links: every one's).
   if (p.has('fl') || p.has('flm')) {
@@ -1179,7 +1080,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   const wt = migrateWeights(p.get('wt')?.split(',').map(Number));
   if (pr !== null) s.preset = pr === 'custom' ? '' : pr;
   if (wt) s.weights = wt;
-  else if (pr) s.weights = [...(presets.get(pr)?.w ?? BUILTIN.find((b) => b.id === pr)?.w ?? DEFAULT_WEIGHTS)]; // older links
+  else if (pr) s.weights = [...(presets.get(pr)?.w ?? BUILTIN.find((b) => b.id === pr)?.w ?? base.weights)]; // older links
   const g = p.get('g');
   if (g && g.length === NGROUP) s.groups = [...g].map((c) => c === '1');
   const un = p.get('un');
@@ -1196,7 +1097,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
     s.roadMap = cleanMapLook({
       kind: rmv[0] as RoadMapLook['kind'], fill: cols(rmv[1]), casing: cols(rmv[2]), cased: [...rmv[3]].map((c) => c === '1'),
       cats: Object.fromEntries(CAT_KINDS.map((k, i) => [k, cols(rmv[4 + i])])) as RoadMapLook['cats'],
-    });
+    }, base.roadMap);
   }
   const rxv = p.get('rx')?.split(',');
   if (rxv && rxv.length === 6) {
@@ -1238,7 +1139,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
     // Older links: the rail card's line weight.
     if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
   }
-  // Ties and stop dots (older links: the defaults; and the stops' outline, now the map's).
+  // Ties and stop dots (older links: the base; and the stops' outline, now the map's).
   const rk = p.get('rk')?.split(',');
   if (rk) {
     const n = (v: string | undefined, d: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -1417,7 +1318,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   const cl = p.get('cl')?.split(',');
   if (cl && cl.length >= 8) {
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
-    const d = defaults.terrain.contour;
+    const d = base.terrain.contour;
     s.terrain = {
       ...s.terrain,
       contour: {
@@ -1432,7 +1333,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   if (fg && fg.length >= 6) {
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
     const hex = (v: string, d: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v.toLowerCase()}` : d);
-    const d = defaults.terrain.fog;
+    const d = base.terrain.fog;
     s.terrain = {
       ...s.terrain,
       fog: {
@@ -1462,7 +1363,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   if (wa && wa.length >= 10) {
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
     const hex = (v: string, d: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v.toLowerCase()}` : d);
-    const d = defaults.water;
+    const d = base.water;
     s.water = {
       colour: hex(wa[0], d.colour), shade: wa[1] !== '0', width: Math.round(n(wa[2], d.width, 2, 80)), strength: n(wa[3], d.strength, 0, 1),
       falloff: n(wa[4], d.falloff, 0.5, 4), shadeColour: hex(wa[5], d.shadeColour), shore: n(wa[6], d.shore, 0, 1),
@@ -1485,7 +1386,7 @@ export function fromHash(hash: string, buildings = true, base: AppState = defaul
   if (p.get('pe') && pe >= 0 && pe <= 1) s.poiEmphasis = pe;
   const lmv = p.get('lm')?.split(',');
   if (lmv && lmv.length >= 12) {
-    const d = defaults.landmarks;
+    const d = base.landmarks;
     const num = (x: string, dv: number, lo: number, hi: number) => (x !== '' && Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : dv);
     const r0 = num(lmv[2], d.range[0], 0, 1), r1 = num(lmv[3], d.range[1], 0, 1);
     s.landmarks = {
@@ -1535,11 +1436,12 @@ function migrateOutline(s: AppState, o: Record<string, unknown>): Pick<AppState,
 }
 
 /**
- * State saved in localStorage, merged onto the defaults key by key (unknown or mistyped
- * values are dropped, so older saves keep working after new settings are added).
+ * State saved in localStorage, merged onto `base` (the profile in use) key by key (unknown or mistyped
+ * values are dropped, so older saves keep working after new settings are added; a value broken or
+ * missing is the profile's).
  */
-export function fromSaved(o: unknown): AppState {
-  const s: AppState = structuredClone(defaults);
+export function fromSaved(o: unknown, base: AppState): AppState {
+  const s: AppState = structuredClone(base);
   if (!o || typeof o !== 'object') return s;
   const src = o as Record<string, unknown>;
   const merge = (dst: Record<string, unknown>, from: Record<string, unknown>) => {
@@ -1564,7 +1466,7 @@ export function fromSaved(o: unknown): AppState {
   if (rsw) rest.rail = { ...rs, weights: rsw };
   merge(s as unknown as Record<string, unknown>, rest);
   s.labelLooks = cleanLooks(rest.labelLooks);
-  // Each metric's auto-fit unit (merge() only keeps keys the defaults have); saved before the unit
+  // Each metric's auto-fit unit (merge() only keeps keys the base has); saved before the unit
   // per metric, the layer's (fitUnit) for each of its metrics.
   s.fitUnits = unitsOfSaved(src, ROAD_FIT_KEYS);
   s.rail.fitUnits = unitsOfSaved(src.rail as Record<string, unknown> | undefined, RAIL_FIT_KEYS);
@@ -1578,7 +1480,7 @@ export function fromSaved(o: unknown): AppState {
   // Saved before the point outline was the map's: the rail stops' outline, once.
   const oldR = rest.rail as Record<string, unknown> | undefined;
   if (oldR && 'stopOutline' in oldR && !('pointOutline' in rest)) Object.assign(s, migrateOutline(s, oldR));
-  s.pointOutline = HEX.test(s.pointOutline) ? s.pointOutline.toLowerCase() : defaults.pointOutline;
+  s.pointOutline = HEX.test(s.pointOutline) ? s.pointOutline.toLowerCase() : base.pointOutline;
   s.pointOutlineOpacity = Math.min(1, Math.max(0, s.pointOutlineOpacity));
   if (!rest.lineWeights) {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
@@ -1607,40 +1509,40 @@ export function fromSaved(o: unknown): AppState {
     const v = sc[m.key];
     if (v && typeof v.auto === 'boolean' && pair(v.range) && num(v.thrValue)) s.scales[m.key] = { auto: v.auto, range: v.range, thrValue: v.thrValue! };
   }
-  if (!MODES.some((m) => m.key === s.mode)) s.mode = defaults.mode;
-  // The other scenic metrics' percentiles (merge() only keeps keys the defaults have); saved
+  if (!MODES.some((m) => m.key === s.mode)) s.mode = base.mode;
+  // The other scenic metrics' percentiles (merge() only keeps keys the base has); saved
   // before they were per metric, the scenic metrics' one set (fit while one was shown, else
   // their display type's look) for each.
   const others = ROAD_FIT_KEYS.filter((k) => k !== s.mode);
   const sf = src.scenicFits;
   if (sf && typeof sf === 'object' && !Array.isArray(sf)) {
     const m = sf as Record<string, unknown>;
-    s.scenicFits = perMetric(others, (k) => (pair(m[k]) && validFit(m[k] as Pair) ? (m[k] as Pair) : defaults.fit), defaults.fit);
+    s.scenicFits = perMetric(others, (k) => (pair(m[k]) && validFit(m[k] as Pair) ? (m[k] as Pair) : FIT_DEFAULT), FIT_DEFAULT);
   } else {
-    const shared = isScenic(s.mode) ? s.fit : s.looks.scenic?.fit ?? defaults.fit;
-    s.scenicFits = perMetric(others, () => shared, defaults.fit);
+    const shared = isScenic(s.mode) ? s.fit : s.looks.scenic?.fit ?? FIT_DEFAULT;
+    s.scenicFits = perMetric(others, () => shared, FIT_DEFAULT);
   }
   // Saved before the Map look: the preset it was.
   const oldMs = MAP_SCHEMES.find((m) => m.key === src.mapScheme);
   if (oldMs && !src.roadMap) s.roadMap = presetLook(oldMs, s.roadMap);
-  s.roadMap = cleanMapLook(s.roadMap);
+  s.roadMap = cleanMapLook(s.roadMap, base.roadMap);
   s.roadLook = cleanRoadLook(s.roadLook);
   const lt = s.landmarks.top as unknown;
-  s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : defaults.landmarks.top;
-  s.rail.colour = colourOf(s.rail.colour, RAIL_COLOURS, RAIL_COLOURS_WERE, defaults.rail.colour);
+  s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : base.landmarks.top;
+  s.rail.colour = colourOf(s.rail.colour, RAIL_COLOURS, RAIL_COLOURS_WERE, base.rail.colour);
   s.rail = clampRailLook(s.rail);
-  if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = defaults.rail.metric;
-  s.ferry.colour = colourOf(s.ferry.colour, FERRY_COLOURS, FERRY_COLOURS_WERE, defaults.ferry.colour);
-  if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = defaults.buildings.colour;
+  if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = base.rail.metric;
+  s.ferry.colour = colourOf(s.ferry.colour, FERRY_COLOURS, FERRY_COLOURS_WERE, base.ferry.colour);
+  if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = base.buildings.colour;
   s.buildings.opacity = Math.min(1, Math.max(0.1, s.buildings.opacity));
   s.buildings.scale = Math.min(3, Math.max(0, s.buildings.scale));
   // (Saved by an app from before the height scale and the heritage tint.)
   const bh = s.buildings.height as Partial<ScaleFields> | undefined;
   if (!bh || typeof bh.palette !== 'string' || !pair(bh.range) || !pair(bh.fit) || typeof bh.auto !== 'boolean' || !num(bh.lowFade) || !num(bh.lowSpan) || typeof bh.threshold !== 'object') {
-    s.buildings.height = { ...defaults.buildings.height };
+    s.buildings.height = { ...base.buildings.height };
   }
-  if (!HEX.test(s.buildings.plain)) s.buildings.plain = defaults.buildings.plain;
-  if (!HEX.test(s.land)) s.land = defaults.land;
+  if (!HEX.test(s.buildings.plain)) s.buildings.plain = base.buildings.plain;
+  if (!HEX.test(s.land)) s.land = base.land;
   // Depth saved before its colour scale: the palette, 'fit' as a third scale (now Auto) and the
   // ramp's end (now its range).
   const sd = (rest.depth ?? {}) as { palette?: unknown; scale?: unknown; max?: unknown; colours?: unknown };
@@ -1651,19 +1553,19 @@ export function fromSaved(o: unknown): AppState {
   }
   if (s.depth.scale !== 'linear') s.depth.scale = 'log';
   s.depth.colours = cleanDepthColours(s.depth.colours);
-  if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = defaults.buildings.heritage;
-  if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = defaults.ferry.metric;
-  // Stops & sights filters (merge() only keeps keys the defaults have).
+  if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = base.buildings.heritage;
+  if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = base.ferry.metric;
+  // Stops & sights filters (merge() only keeps keys the base has).
   const sfv = (rest.stopFilters ?? {}) as Record<string, Partial<StopFilter>>;
   s.stopFilters = {};
   for (const d of STOP_FILTERS) {
     const v = sfv[d.key];
     if (v && typeof v.on === 'boolean' && Number.isFinite(v.min) && Number.isFinite(v.max)) s.stopFilters[d.key] = { on: v.on, min: v.min!, max: v.max! };
   }
-  // (None saved: the defaults'.)
-  const suv = (rest.stopUnknown ?? defaults.stopUnknown) as Record<string, unknown>;
+  // (None saved: the base's.)
+  const suv = (rest.stopUnknown ?? base.stopUnknown) as Record<string, unknown>;
   s.stopUnknown = Object.fromEntries(OVERLAYS.filter(([k]) => typeof suv[k] === 'boolean').map(([k]) => [k, suv[k] as boolean]));
-  // Per-metric colour settings of rail and ferries (merge() only keeps keys the defaults have).
+  // Per-metric colour settings of rail and ferries (merge() only keeps keys the base has).
   const rl = ((rest.rail as { looks?: Record<string, unknown> } | undefined)?.looks ?? {}) as Record<string, unknown>;
   s.rail.looks = {};
   for (const m of RAIL_METRICS) {
@@ -1679,6 +1581,19 @@ export function fromSaved(o: unknown): AppState {
   // Saved before the ferry metric scale existed: its range in the metric's units.
   if (!(s.ferry.range[1] > s.ferry.range[0])) s.ferry.range = [...ferryMetricDef(s.ferry.metric).range];
   if (!(s.rail.range[1] > s.rail.range[0])) s.rail.range = [...railMetricDef(s.rail.metric).range];
+  // The settings rebuilt above from the save alone: a save holding none of one (not even an older
+  // form of it) has the profile's.
+  const holds = (o: unknown, ...ks: string[]) => !!o && typeof o === 'object' && ks.some((k) => k in o);
+  const keep = <T,>(from: T): T => structuredClone(from);
+  if (!holds(src, 'labelLooks')) s.labelLooks = keep(base.labelLooks);
+  if (!holds(src, 'fitUnits', 'fitUnit')) s.fitUnits = keep(base.fitUnits);
+  if (!holds(src, 'fitLens', 'fitLen')) s.fitLens = keep(base.fitLens);
+  if (!holds(src, 'stopFilters')) s.stopFilters = keep(base.stopFilters);
+  for (const k of ['rail', 'ferry'] as const) {
+    if (!holds(src[k], 'fitUnits', 'fitUnit')) s[k].fitUnits = keep(base[k].fitUnits);
+    if (!holds(src[k], 'fitLens', 'fitLen')) s[k].fitLens = keep(base[k].fitLens);
+    if (!holds(src[k], 'looks')) s[k].looks = keep(base[k].looks);
+  }
   const v = view as AppState['view'];
   if (v && [v.zoom, v.lat, v.lng].every(Number.isFinite)) {
     s.view = { zoom: v.zoom, lat: v.lat, lng: v.lng, bearing: Number(v.bearing) || 0, pitch: Number(v.pitch) || 0, elev: Number(v.elev) || 0 };
@@ -1693,8 +1608,8 @@ export function profileSettings(s: AppState): Record<string, unknown> {
   return JSON.parse(JSON.stringify(rest)) as Record<string, unknown>;
 }
 
-/** The state a profile's settings give (merged onto the defaults as saved state is: `{}` is the
- * defaults), with no camera or selection. */
+/** The state a profile's settings give (merged onto the seed as saved state is: `{}` is the
+ * seed), with no camera or selection. */
 export function fromProfile(o: unknown): AppState {
-  return { ...fromSaved(o), view: null, selected: null, stretch: null };
+  return { ...fromSaved(o, seed), view: null, selected: null, stretch: null };
 }

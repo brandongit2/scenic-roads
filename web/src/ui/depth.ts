@@ -3,10 +3,11 @@
 // depths in view, the range, auto-fit and equalisation, the ramp), and the depth contours with
 // their labels; and the 3D floor's switch (depth.ts).
 import type { Dist } from '../roads/stats';
-import { DEPTH_DEFAULTS, DEPTH_DOMAIN, DEPTH_PALETTES, depthColour, rgba, type DepthState } from '../depthlook';
+import { DEPTH_DOMAIN, DEPTH_PALETTES, depthColour, rgba, type DepthState } from '../depthlook';
 import type { ScaleFields, Store } from '../state';
 import { ColourPick, Slider, pct } from './controls';
 import { h } from './dom';
+import { inUse } from './settingprofiles';
 import { ScaleControls, scaleU } from './scale';
 
 const COMPASS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -59,8 +60,8 @@ export class DepthSection {
       metric: () => ({ domain: DEPTH_DOMAIN, step: 1, fmt: (v: number) => (v >= 1000 ? `${+(v / 1000).toFixed(2)} km` : `${Math.round(v)} m`), hiPlus: true, spacing: S().scale }),
       noun: 'water',
       measure: 'water area',
-      fadeDefault: 0,
-      spanDefault: DEPTH_DEFAULTS.colours.lowSpan,
+      fadeDefault: () => inUse().depth.colours.lowFade,
+      spanDefault: () => inUse().depth.colours.lowSpan,
       palettes: { items: DEPTH_PALETTES, css: (k) => this.gradient(k) },
       // (As 'rgb(…)': the scale's strip adds the alpha.)
       colourAt: (v) => [`rgb(${depthColour(C().palette, this.position(v)).map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255)).join(',')})`, 1],
@@ -69,13 +70,13 @@ export class DepthSection {
     const scales = seg([['linear', 'Linear', 'Colour in proportion to depth'], ['log', 'Log', 'More colours in the shallows, where most of the detail is']],
       (k) => D({ scale: k as DepthState['scale'] }), this.scaleBtns);
     this.sliders = [
-      new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: DEPTH_DEFAULTS.opacity, get: () => S().opacity, set: (opacity) => D({ opacity }), fmt: pct }),
-      new Slider({ label: 'Shading', min: 0, max: 1, step: 0.05, reset: DEPTH_DEFAULTS.shade, get: () => S().shade, set: (shade) => D({ shade }), fmt: (v) => (v ? pct(v) : 'off'), title: 'How strongly the floor is shaded' }),
-      new Slider({ label: 'Light from', min: 0, max: 359, step: 1, reset: DEPTH_DEFAULTS.light, get: () => S().light, set: (light) => D({ light }), fmt: (v) => `${Math.round(v)}° ${COMPASS[Math.round(v / 45) % 8]}`, title: 'Where the light comes from (map north)' }),
+      new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: () => inUse().depth.opacity, get: () => S().opacity, set: (opacity) => D({ opacity }), fmt: pct }),
+      new Slider({ label: 'Shading', min: 0, max: 1, step: 0.05, reset: () => inUse().depth.shade, get: () => S().shade, set: (shade) => D({ shade }), fmt: (v) => (v ? pct(v) : 'off'), title: 'How strongly the floor is shaded' }),
+      new Slider({ label: 'Light from', min: 0, max: 359, step: 1, reset: () => inUse().depth.light, get: () => S().light, set: (light) => D({ light }), fmt: (v) => `${Math.round(v)}° ${COMPASS[Math.round(v / 45) % 8]}`, title: 'Where the light comes from (map north)' }),
     ];
     this.dry = h('input', { type: 'checkbox' });
     this.dry.addEventListener('change', () => D({ dry: this.dry.checked }));
-    const dryCol = new ColourPick({ label: 'Drying', get: () => S().dryColour, set: (dryColour) => D({ dryColour }), reset: DEPTH_DEFAULTS.dryColour, title: 'The colour of water that dries at low tide' });
+    const dryCol = new ColourPick({ label: 'Drying', get: () => S().dryColour, set: (dryColour) => D({ dryColour }), reset: () => inUse().depth.dryColour, title: 'The colour of water that dries at low tide' });
     this.note = h('div', { class: 'faint note' }, DepthSection.NOTE);
     // Contours.
     this.contours = h('input', { type: 'checkbox' });
@@ -89,11 +90,11 @@ export class DepthSection {
     this.labels.addEventListener('change', () => D({ labels: this.labels.checked }));
     this.floor = h('input', { type: 'checkbox' });
     this.floor.addEventListener('change', () => D({ floor: this.floor.checked }));
-    const lineCol = new ColourPick({ label: 'Colour', get: () => S().colour, set: (colour) => D({ colour }), reset: DEPTH_DEFAULTS.colour });
+    const lineCol = new ColourPick({ label: 'Colour', get: () => S().colour, set: (colour) => D({ colour }), reset: () => inUse().depth.colour });
     this.colours = [dryCol, lineCol];
     const lineSliders = [
-      new Slider({ label: 'Weight', min: 0.4, max: 3, step: 0.1, reset: DEPTH_DEFAULTS.weight, get: () => S().weight, set: (weight) => D({ weight }), fmt: (v) => `${v.toFixed(1)}×` }),
-      new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: DEPTH_DEFAULTS.lineOpacity, get: () => S().lineOpacity, set: (lineOpacity) => D({ lineOpacity }), fmt: pct }),
+      new Slider({ label: 'Weight', min: 0.4, max: 3, step: 0.1, reset: () => inUse().depth.weight, get: () => S().weight, set: (weight) => D({ weight }), fmt: (v) => `${v.toFixed(1)}×` }),
+      new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: () => inUse().depth.lineOpacity, get: () => S().lineOpacity, set: (lineOpacity) => D({ lineOpacity }), fmt: pct }),
     ];
     this.sliders.push(...lineSliders);
     const tog = (input: HTMLInputElement, label: string, title = '') => h('label', { class: 'tog', title }, input, h('span', {}, label));
