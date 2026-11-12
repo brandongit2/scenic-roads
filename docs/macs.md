@@ -136,7 +136,7 @@ the members' in its own (its agent's `status.json`, `helpers`, which other Macs 
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
 (docs/pool.md §6, task #881), with room for more at once (its memory floor 4 GB by default). It also hosts the dev tools app, the task board and the dev job dashboard
-(`tools/devtools`, http://mac-mini-de-brandon:8077, with its nightly NAS backup), and Caddy, both
+(`tools/devtools`, http://mac-mini-de-brandon:8077), and Caddy, both
 shipped with the app and installed by its agent (Services, below), and is the map's address for the phone, the iPad and devices
 away from home: https://map.brandontsang.net (Devices). It publishes the app (`ssh m6 'cd
 ~/projets/scenic-roads && tools/app/publish.sh'`, docs/building.md, App publishing) and is the NAS's
@@ -217,10 +217,11 @@ and codesign.
 - The app reads the current and the previous form of every file kind.
 
 **Services** (the Mac mini: `tools/app/services.zsh`): the dev tools app (`tools/devtools`, the
-task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtools`) and Caddy (`tools/caddy`, `local.scenic.caddy`)
-ship in every release, in the app's `services/` (the script, `caddy/Caddyfile`, and `devtools/`
-laid out as in the repo, with the build page's modules the dashboard serves), and run from
-`~/Library/Application Support/scenic/services/`, not from a git checkout.
+task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtools`) and Caddy
+(`tools/caddy`, `local.scenic.caddy`) ship in every release, in the app's `services/` (the
+script, `caddy/Caddyfile`, and `devtools/` laid out as in the repo, with the build page's modules
+the dashboard serves), and run from `~/Library/Application Support/scenic/services/`, not from a
+git checkout. The dev tools' data has no copy off the mini.
 - **Set up once per service**, by hand, from the installed app:
   `~/Library/Application\ Support/scenic/app/current/services/services.zsh setup devtools`, then
   `… setup caddy`. Each writes its LaunchAgent and its settings (`services/<service>/setup`), taking
@@ -246,7 +247,10 @@ laid out as in the repo, with the build page's modules the dashboard serves), an
   power cut) leaves `services/devtools/backup/pending`, and the next run goes on from it: the
   version before and the copies taken before it. Then Caddy: the new Caddyfile validated with the
   job's settings, put in `services/caddy/Caddyfile`, Caddy restarted and checked (a new process
-  answering HTTPS within 10 s), else the last one seen serving put back. A failure goes to the
+  answering HTTPS within 10 s), else the last one seen serving put back. Each run where the dev
+  tools are set up also unloads a backup job an older release set up
+  (`local.scenic.devtools-backup`) and deletes its plist (failing, the run fails; the update is
+  done all the same). A failure goes to the
   agent's log, and the agent doesn't try that version again; `services.zsh update` by hand does.
   One run at a time (`services/lock`), setup's too.
 - **The board's data stays where it was**: the data folder its setup names (on the Mac mini, the

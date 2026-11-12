@@ -139,13 +139,20 @@ else ok "setup caddy: from the checkout's, the dev tools left running"; fi
 run $v1 setup caddy --bogus x
 (( rc == 2 )) && ok "setup refuses an unknown option" || no "setup refuses an unknown option" "exit $rc"
 
-# An existing backup job (here put back by hand) is unloaded and its plist deleted by update too.
+# An existing backup job (here put back by hand) is unloaded and its plist deleted by update too,
+# the dev tools left running; a plist alone (not loaded) deleted as well.
 old $prefix.devtools-backup $data /bin/sleep 600
 launchctl bootstrap gui/$UID $REPLY
 run $v1 update
 if (( rc )); then no "update drops a backup job" "exit $rc: $out"
 elif launchctl print gui/$UID/$prefix.devtools-backup >/dev/null 2>&1 || [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "update drops a backup job" "still there"
-else ok "update: an existing backup job is booted out and its plist deleted"; fi
+elif [[ $out != *"devtools: at "*" already"* ]]; then no "update drops a backup job" "the dev tools restarted: $out"
+else ok "update: an existing backup job is booted out and its plist deleted, the dev tools left running"; fi
+old $prefix.devtools-backup $data /bin/sleep 600
+run $v1 update
+if (( rc )); then no "update drops a backup job's plist" "exit $rc: $out"
+elif [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "update drops a backup job's plist" "still there"
+else ok "update: a backup job's plist, not loaded, deleted"; fi
 
 # ---- update -----------------------------------------------------------------------------------------
 version two; v2=$REPLY
@@ -156,6 +163,7 @@ elif [[ $(page) != "<!-- ${v2:h:h:t} -->" || $(mark) != two ]]; then no "update"
 elif [[ $(items) != 1 ]]; then no "update" "items $(items), not 1"
 elif [[ $order != *devtools* ]]; then no "update" "Caddy before the dev tools: $out"
 elif [[ $(<$H/version) != ${v2:h:h:t} ]]; then no "update" "version $(<$H/version)"
+elif [[ $out == *"backup job"* ]]; then no "update" "a backup job named, with none there: $out"
 else ok "update: the dev tools, then Caddy, the data kept"; fi
 p0=$(pid devtools) c0=$(pid caddy)
 run $v2 update

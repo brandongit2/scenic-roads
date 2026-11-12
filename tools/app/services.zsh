@@ -1,8 +1,9 @@
 #!/bin/zsh
 # The services the Mac mini runs beside the app (docs/macs.md, Services): the dev tools app
-# (tools/devtools: the task board and the dev job dashboard, on :8077) and Caddy (tools/caddy: the map's name on the tailnet). Every release ships them in the app's
-# services/ folder (tools/app/lib.zsh's services_stage: this script, caddy/Caddyfile, and devtools/
-# laid out as in the repo), and the Mac's agent keeps them at the version it runs
+# (tools/devtools: the task board and the dev job dashboard, on :8077) and Caddy (tools/caddy: the
+# map's name on the tailnet). Every release ships them in the app's services/ folder
+# (tools/app/lib.zsh's services_stage: this script, caddy/Caddyfile, and devtools/ laid out as in
+# the repo), and the Mac's agent keeps them at the version it runs
 # (agentcore::agent::services): once its coordinator listens on this Mac's port, it runs this
 # version's `services.zsh update`, so Caddy's routes change only once the coordinator serving them
 # is up, and only on a Mac where a service was set up.
@@ -39,6 +40,8 @@
 # - Caddy: this version's Caddyfile checked (caddy validate, with the job's names), put in
 #   <home>/services/caddy/Caddyfile, Caddy restarted and checked (a new process answering HTTPS on
 #   its port within 10 s); else the last one seen serving (Caddyfile.before) put back.
+# Where the dev tools are set up, a backup job an older release set up (<prefix>.devtools-backup)
+# is unloaded and its plist deleted (failing, the run fails; the update is done all the same).
 # A service at this version, running (Caddy answering HTTPS), is left as it is (--reload: every
 # service's jobs loaded again from their plists, as setup does for its own). The versions done are
 # in <home>/services/version; one that failed in `failed`, which the agent doesn't try again (a run
@@ -104,12 +107,14 @@ gone() {  # gone <label>: unloaded, waited for until launchd has let it go
   for (( i = 0; i < 100; i++ )); do loaded $1 || return 0; sleep 0.1; done
   say "$1 still loaded after 10 s"; return 1
 }
-# no_old_backup: a dev tools backup job (local.scenic.devtools-backup) isn't kept: unloaded, its
-# plist deleted, if there is one. Setup and update both do it.
-no_old_backup() {
+# no_backup_job: the dev tools have no backup job: one an older release set up
+# (<prefix>.devtools-backup, a nightly copy to the NAS) unloaded and its plist deleted; nothing
+# done on a Mac without it.
+no_backup_job() {
   local l=$prefix.devtools-backup
-  gone $l || return 1
-  rm -f $agents/$l.plist
+  loaded $l || [[ -e $agents/$l.plist ]] || return 0
+  if gone $l && rm -f $agents/$l.plist; then say "devtools: backup job $l removed"; return 0; fi
+  say "devtools: backup job $l not removed"; return 1
 }
 # reloads <service>: its jobs are to be loaded again from their plists (setup's of it, --reload's).
 reloads() { [[ ${opt[reload]:-} == (all|$1) ]] }
@@ -172,7 +177,6 @@ if [[ $cmd == setup && $svc == devtools ]]; then
   port=${opt[--port]:-${${${i:#0}:+${old[i+1]}}:-8077}}
   [[ $port == <1-65535> ]] || bad "setup devtools: --port $port isn't a port"
   plist=$agents/$label.plist
-  no_old_backup || exit 1
   write_setup devtools label plist node data port
   app="$H/devtools/current/tools/devtools"
   PLIST_LOG=$logs/devtools.log plist $label $plist $node "$app/server.mjs" --host :: --port $port --data $data
@@ -244,7 +248,6 @@ link() {  # link <folder> <target>: <folder>/current pointed at <target> (a new 
 update_devtools() {
   local label plist node data port
   source $H/devtools/setup
-  no_old_backup || return 1
   local d=$H/devtools v=$version b=$H/devtools/backup cur prev was f0 f1 db
   cur=$(readlink $d/current 2>/dev/null || true)
   prev=$cur
@@ -359,6 +362,8 @@ any=
 for s in devtools caddy; do
   [[ -f $H/$s/setup ]] || continue
   any=1
+  # (The dev tools' backup job removed apart: its failing is reported, the update done all the same.)
+  if [[ $s == devtools ]]; then no_backup_job || failed+=(devtools-backup); fi
   update_$s || failed+=($s)
 done
 [[ -n $any ]] || { say "nothing set up in $H"; exit 1; }

@@ -26,7 +26,8 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
 - **The dev job dashboard** (`/jobs/`, below): `jobs.mjs` its API (`/api/jobs/…`) and file,
   `jobs.db`; `public/jobs/` the page.
 - The pages' addresses are relative (`../api/…`), so the app works under a proxy's path.
-- The data is not in git: it lives on the M6 (its data folder, `--data`), and is not backed up.
+- The data is not in git: it lives on the M6 (its data folder, `--data`), with no copy elsewhere
+  (an update's copy before it switches versions stays on the M6, below).
 - **A change of a database's form sets its `PRAGMA user_version`** (or changes its schema, which
   SQLite's `schema_version` counts): the M6's update puts a database back as it was when a version
   that changed its form doesn't start (tools/app/services.zsh).

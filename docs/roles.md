@@ -372,7 +372,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Plan, checklist, regions' states, gate, inputs watch, redo | the mini (steps 1–2) | the mini | grants by `/work/ask` |
 | Coordinator, pool store, hand-off merge, the map's log and feed, publishing, GC, backup, catalogue/prune and the other `LEAD_ONLY` steps | the mini | the mini | `/pool/*`, `/work/*`, `/map/*` |
 | Map server (tiles, place search, region areas, profiles, accepted versions, names) and its mirror | the mini (#874); a laptop's on demand (step 7a) | the same | devices: map.brandontsang.net; a laptop's own: http://localhost:7311 |
-| Caddy, dev tools app and its backup | the mini | the mini | — |
+| Caddy, dev tools app | the mini | the mini | — |
 
 So the owner's split already holds in what runs: the laptops run jobs, their broker, the beat and
 the menu bar's local status, with what those need of their own Mac (control, the NAS's mount, the
