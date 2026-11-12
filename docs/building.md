@@ -272,8 +272,8 @@ from the first (`edit_held`).
   before the restart is gone with the old coordinator's memory: it runs that one itself.
 - **The heartbeat:** written by the agent's beat (`agent::beat`, docs/agent-parts.md §4.2) on a
   timer of its own, every 10 s whatever the loop waits on, and at once when the loop publishes a
-  new view or this Mac's hold changes: locally, and to the NAS (`state/status.json`) by a writer
-  thread of its own under nasread's deadline (a hung share holds neither). The loop publishes what
+  new view or this Mac's hold changes, in the agent's folder alone (`status.json`; the lead's asked
+  of its coordinator by other Macs: no copy on the NAS, task #1119). The loop publishes what
   it composed each round; the beat stamps it, says the hold as it stands, and how old the loop's
   part is (`loop_age_s`). The owner's asks of the Mac (its pause alone, the app's quit, the room
   target, in-use share and memory floor) are taken up the moment their files change by the
@@ -413,8 +413,10 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 - **The same app** (docs/pool.md §6.1): a member on another app than the lead's gets nothing (409,
   why in words), since its work would be recorded under keys another app's code made. Its jobs under
   way go on.
-- **The contact:** `state/coordinator.json`, the coordinator's addresses and the agents' token
-  (the build page needs none: docs/coordinator.md §7), removed when the agent stops.
+- **The contact:** each Mac's agent keeps its lead's (`lead.json`: the coordinator's addresses and
+  the agents' token; the build page needs none: docs/coordinator.md §7), the lead's agent its own,
+  a member's from its beats' answers; with none, the declared lead's host's addresses
+  (`coordwire::lead`, docs/pool.md §7.5).
 - **Leases:** ten minutes on the coordinator's clock, renewed by a beat each minute (those the lead's running jobs hold never lapse: docs/pool.md §7.6); a lapsed lease's
   work is offered again, its "lapse" in the history saying why (no word from its worker for ten
   minutes: `coord::lapse_why`). A member's job that fails saying nothing goes to the lead with a
@@ -424,7 +426,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
 - **The coordinator's state** (leases, costs, the pause) is in the store on the lead's disk
   (`agent/coord/store/`, backed up to the NAS as `state/lead/store.json` every 10 min,
   docs/coordination.md §4); the workers' token and accepted devices are the pool's
-  (`state/coord/`); the history is each writer's own file per day (`state/coord/history/`; days older than a week one tar each in `state/coord/history-archive/`, docs/pool.md §7.5).
+  (`state/coord/`); the history is the lead's coordinator's file on its disk (`agent/coord/history.jsonl`, the week's), each finished day packed into one tar in `state/coord/history-archive/` by GC (docs/pool.md §7.5).
 - **Every job hands off:** under a lease `<epoch>-<id>` it saves into `agent/pool/jobs/<epoch>-<id>/`
   (`SCENIC_HANDOFF`, `buildstore::handoff`), then as an entry (its done record and costs) kept by its
   member and posted to the lead by HTTP (docs/coordination.md §5.3). The lead merges entries

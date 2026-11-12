@@ -113,10 +113,9 @@ within a second; the hold's stage (asked, pausing, paused, resuming) comes from 
 - every 10 s on a steady timer, whatever the others are doing;
 - at once (debounced 200 ms) on a `Changed` from **control** or a `JobEvent`.
 
-The local copy is written directly (this Mac's disk). A member's goes to the lead in its beat
+It is written directly, on this Mac's disk alone. A member's goes to the lead in its beat
 (`POST /pool/beat`, by a poster thread of its own that takes the newest each time it's free); the
-lead's goes to the NAS (`state/status.json`) under `nasread`'s deadline, by
-a writer thread started with the first body to share, so a member runs none.
+lead's is asked of its coordinator by other Macs (`/pool/view`; no copy on the NAS, task #1119).
 
 **The BEATING rule, kept as an ordering by construction.** Today `nasread::BEATING` is a lock the
 loop holds from its `say` to its writes, so the asks thread's or the watchdog's rewrite never lands

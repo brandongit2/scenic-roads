@@ -64,22 +64,26 @@ on one disk.
 | Pool settings | `POST /pool/settings`; their generation in each beat's answer (`settings_gen`) | `settings`, each with `by` and `at` | none |
 | Resume progress released | `POST /pool/progress/release`, carried back in the beat's answer | `progress/<member>` | none |
 | The Wikimedia budget, the answers' lease | `POST /pool/budget/take`, `/pool/budget/hold`, `/pool/lease/answers` from each agent's proxy | windows and tokens given in memory; `budget-hold`, `answers-lease` | none |
-| The build page's view | `POST /pool/view` | in memory: the coordinator's view, its agent's status, the forecast's input, the regions | the lead's `state/status.json` (`scenic status` and the map server read it) |
+| The build page's view | `POST /pool/view` | in memory: the coordinator's view, its agent's status (its `status.json`, which other Macs' `scenic status`, `scenic pool status` and map servers ask it for: `coordwire::lead::status`), the forecast's input, the regions | none |
 | The records' brief | `GET /pool/brief` (`ETag` its (epoch, seq)) | the last save's, gzipped, in memory | `state/build/brief.json`, written each save for the map server and the CLI |
 | The records | — | `agent/pool/records.json`, the lead's disk copy | `state/build/records.json`, written whole each save (pool.md §6.2) |
 | GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/maplog.md §7) | the lead's GC queue | — |
-| The history | `/api/history` (the page's) | the coordinator's `history.jsonl` | the lead appends its events to its member's file, `state/coord/history/<day>/<member>.jsonl`, which the page's view reads (pool.md §7.5) |
+| The history | `/api/history` (the page's; the CLI's on another Mac) | the coordinator's `history.jsonl` (the last week's), which the page's view reads (pool.md §7.5) | each finished day packed into the archive by the daily `gc` job, `state/coord/history-archive/<day>.tar` |
+| How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | none: with no `lead.json` (a new Mac) or one naming another member than the declaration, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`) |
 
 ### 3.2 On the NAS
 
-Still on the NAS though only the lead writes them, planned to move with task #1119:
-`state/coordinator.json` (the lead's contact: members find its coordinator by it),
-`state/status.json`, `state/pool/nas-probes.json`. Also on the NAS, as bulk or rebuild data:
+On the NAS, as bulk, archive or rebuild data (nothing the lead alone reads: its contact, its status,
+the NAS budget's probes and the history are its own, §3.1, task #1119):
 
 - **The store's backup** `state/lead/store.json`: the store's snapshot written whole every
   `backup_every` (10 min) while it changed and at a clean stop; a few MB. Read by a take-up when
   another Mac wrote it (the owner moved the lead, pool.md §7.5).
-- **History archives** `state/coord/history-archive/<day>.tar`, one big file a day.
+- **History archives** `state/coord/history-archive/<day>.tar`, one big file a day: the lead's
+  history's finished days (its member's file in each), packed by the daily `gc` job from its
+  coordinator's `history.jsonl` (`--history`, `agent::histarchive`). A lead whose disk is lost, or
+  the lead moved to another Mac, loses the history since the last run (today's, at most a day and a
+  half's); the page's history starts again from the new lead's events.
 - **The token** `state/coord/token`: read at every agent's start (`agent::pool::seed`), and made
   there, create-new, only by an agent finding none (the first one's stays).
 - **Read-only inputs** (`inputs/`, `inputs/keys.env`).
@@ -316,8 +320,8 @@ Mac didn't say the new piece's word in its beat, and was deleted by the rule for
 | --- | --- | --- |
 | 1 | the store (§4), the coordinator's state in it, its NAS backup; the handlers' rule | `store_recovers_after_a_torn_append`, `store_compaction_crash_between_snapshot_and_log`, `store_restores_from_the_backup`, `coord_handlers_never_touch_the_nas` |
 | 2 | leases by the holder's word (§6) | `a_partitioned_member_s_target_is_never_regranted`, `an_away_member_s_leases_go_after_12_h`, `a_crash_before_the_answer_releases_the_grant`, `the_owner_releases_a_member_s_leases` |
-| 3 | one beat by HTTP: heartbeat and status, the others' heartbeats in the answer | `beats_go_on_while_the_nas_hangs`, `the_lead_answers_each_member_with_the_others` |
-| 4 | the build page's view by HTTP (`/pool/view`) | `the_page_shows_the_lead_s_view_with_the_nas_hung`, `a_page_asking_with_the_lead_down_gets_the_last_view_with_its_age` |
+| 3 | one beat by HTTP: heartbeat and status, the others' heartbeats in the answer | `beats_reach_the_lead_and_each_member_hears_the_other`, `the_lead_answers_each_member_with_the_others` |
+| 4 | the build page's view by HTTP (`/pool/view`) | `the_page_shows_the_lead_s_view_while_the_history_waits`, `a_page_asking_with_the_lead_down_gets_the_last_view_with_its_age` |
 | 5 | mail, holds and settings by HTTP (`crate::coord::asks`, `coord::inbox`) | `a_remote_pause_reaches_the_member_in_one_beat`, `settings_survive_a_lead_restart`, `an_ask_while_the_lead_is_down_is_sent_when_it_returns`, `a_post_answered_survives_the_leads_crash` |
 | 6 | hand-offs by HTTP (`crate::coord::handoffs`), acknowledged once a saved snapshot names them | `a_hand_off_posted_twice_merges_once`, `a_lead_killed_after_taking_before_saving_loses_nothing`, `hand_offs_merge_with_the_nas_slow`, `a_hand_off_is_in_the_store_until_merged_and_answered_so` |
 | 7 | the Wikimedia budget and the answers' lease from the lead, resume progress in the beat (`crate::coord::budgets`) | `the_wiki_budget_holds_across_three_macs`, `the_answers_lease_is_one_holders`, `the_budget_waits_for_the_lead_while_it_is_down` |
@@ -331,22 +335,20 @@ Mac didn't say the new piece's word in its beat, and was deleted by the rule for
 ## 9. The NAS's leftover files
 
 No app writes these, and none reads them but as said below; they are the owner's to remove, as one job on the NAS over
-SSH (`rm -r`, `find … ! -name forecast-input.json -delete`; SMB removes file by file, and a held
-file's aside can't be removed for hours), never the agent's loop. Measured 11 Nov, read only:
+SSH (`rm -r`; SMB removes file by file, and a held file's aside can't be removed for hours), never
+the agent's loop. Measured 12 Nov, read only (the terms' other files, `state/coord/term/` and the
+old coordination folders are gone):
 
-- **keep**: `state/build/term/<E>/forecast-input.json`, E 232 to 673 (352 files, ~283 MB), which
+- **keep**: `state/build/term/<E>/forecast-input.json`, E 232 to 673 (352 folders, ~283 MB), which
   `agent::fccheck::inputs` reads for the backtest where the forecast inputs' archive
-  (`state/coord/forecast-inputs/`, from 4 Nov) lacks them: their folders stay with that file
-  alone, until the archive covers them or the check no longer reads term folders;
-- **remove**: every other file under `state/build/term/`, the folders of terms with no
-  `forecast-input.json`, `state/build/terms/` (840 files, ~5 MB), `state/build/lead.json`,
-  `state/coord/term/` whole (~1.3 GB): ~12 GB in all; and the old coordination folders:
-  `state/journal/` (an older app's saved keys are read back from it once, `Mine::read_back`, until
-  every Mac has run task #1125's app), `state/pool/members/`, `state/pool/mail/`,
-  `state/pool/holds/`, `state/pool/progress/`, `state/pool/wiki/`, `state/pool/answers.lease`,
-  `state/helpers/`, `state/build/pause.json`, and the switch files under `state/pool/`
-  (`placement`, `nas-budget`, `nas-target.json`, `resume`, `brokers`, `memory-guard`); the
-  Synology `@eaDir` folders go with them.
+  (`state/coord/forecast-inputs/`, from 4 Nov) lacks them, until the archive covers them or the
+  check no longer reads term folders;
+- **remove** (task #1119: what the lead alone wrote, now on its disk or asked of it):
+  `state/status.json` and its `status.json.<host>.<pid>.<n>.tmp` asides, `state/coordinator.json`,
+  `state/pool/nas-probes.json`, `state/tmp/` (empty), `state/logs/` (logs of 2 and 6 Oct), and
+  `settings/` (the map's profiles, once a daily backup lists `mac/profiles.json`); `map/` once every
+  Mac's beat says `nas-check-inputs` (docs/maplog.md §4.4). `state/coord/history/<day>/` goes by
+  itself: the `gc` job packs each day into the archive and removes it as it passes the week.
 
 ## 10. Decisions
 
@@ -362,8 +364,8 @@ PM, 30 Oct, with what was built:
 4. **The store is backed up to the NAS every 10 min** (`backup_every`): it bounds what's lost with
    the lead's disk to the owner's settings since (everything else the members re-send).
 5. **History: members' events in the beat, to one file on the lead.** Not built: no member's events reach
-   the lead or the NAS (its broker's stay on its Mac); the lead's own events go to its file on
-   the NAS, which the page's view reads every 12 s (`pageview::EVERY`), the one NAS read left on
-   a page's path (task #1160).
+   the lead (its broker's stay on its Mac; task #1160). The lead's own events are its coordinator's
+   file on its disk (`history.jsonl`), which the page's view reads every 12 s (`pageview::EVERY`,
+   no NAS read since task #1119); each finished day is packed into the NAS's archive by GC.
 6. **A switch was deleted only once it read on for every member;** one still off anywhere became a
    setting (`/pool/settings`).

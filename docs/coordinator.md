@@ -134,7 +134,7 @@ Common rules:
   broker that offered it; a hand-back for a gone lease is refused (410).
 - **Restarts:** leases and costs are kept in the lead's store on its disk (backed up to the NAS,
   `state/lead/store.json`), the token in `state/coord/` (docs/pool.md §7.5); a
-  worker rereads `state/coordinator.json` when it can't reach the coordinator or its token fails.
+  worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.
 - **Failures:** a worker's failed z6 tile isn't offered to it for an hour, doubling; a task out of
   memory goes only to workers sparing more; after two other failures the job runs it.
 - **Planned:** NAS outages extending leases; idle workers racing slow ones when the queue runs dry.

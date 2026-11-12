@@ -33,13 +33,19 @@ app/           releases/: the live app version's and the one before's, each one 
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
 settings/      profiles.json: read and written by nothing: the map's server keeps its settings profiles
                on its own Mac (Backups, below); the PM's to remove
-state/         status.json (the lead's heartbeat), coordinator.json (its contact),
-               build/ (the records, their brief, the lead's declaration),
-               coord/ (the token, the history and its archive, the forecast inputs' archive),
-               lead/ (the lead's store's backup), pool/ (`nas-probes.json`; `slots`
-               kept for older apps), backups/, logs/;
-               the old coordination files no app writes
-               (journal/, the terms' folders: docs/coordination.md §9, the owner's to remove)
+state/         build/ (the records, their brief, the lead's declaration),
+               coord/ (the token, the history's archive (a tar a finished day: the history
+               itself is the lead's, on its disk), the forecasts' and forecast inputs' archives),
+               lead/ (the lead's store's backup), pool/nas-probe/ (the NAS budget's probe's own
+               folders: it measures the share), live-archive/ (each Mac's live measures, a file a
+               day), backups/;
+               coord/history/ (the days an app before task #1119 wrote: GC packs each into the
+               archive and removes it as it passes the week, the last on 19 Nov);
+               what no app reads or writes since task #1119, the PM's to remove (docs/coordination.md
+               §9): status.json, coordinator.json, pool/nas-probes.json, tmp/ (empty), logs/ (the
+               NAS's planet fetch's and an old bld-fetch's logs, of 2 and 6 Oct); taskboard/ (copies
+               of the task board's database from its moves, 21 Oct and 5 Nov: the owner's); and the
+               old coordination files no app writes (journal/, the terms' folders: §9)
 ```
 
 **Immutable, content-named files.**

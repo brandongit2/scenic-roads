@@ -132,7 +132,7 @@ gives it (docs/building.md §2, The pool): any shared step's jobs that fit the m
 (docs/pool.md §7.2), else z6 tiles' tails (`docs/coordinator.md`). A z6 tile's predicted peak is the most its job's
 processes held together last time, else about ten times its extract, never under 3.7 GB nor below its
 floor (docs/pool.md §7.2). A member's status goes to the lead in its beat (docs/coordination.md §3.1), the lead listing
-the members' in its own (`state/status.json`, `helpers`).
+the members' in its own (its agent's `status.json`, `helpers`, which other Macs ask its coordinator for).
 
 **The Mac mini (M6, 32 GB, 1 TB)** is always on, at home and headless: the pool's lead, fixed
 (docs/pool.md §6, task #881), with room for more at once (its memory floor 4 GB by default). It also hosts the dev tools app, the task board and the dev job dashboard
@@ -197,8 +197,8 @@ and codesign.
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
 - **The updater** (`jobrt::appupdate`, `coordwire::releases`): every Mac's agent asks the lead
-  for its releases every five minutes (`GET /release/live` on its coordinator, found by the NAS's
-  `state/coordinator.json`, with the workers' key: docs/coordinator.md §10); for another version (a new one, or a rollback's) it
+  for its releases every five minutes (`GET /release/live` on its coordinator, found as this Mac's agent keeps
+  it (`lead.json`, `coordwire::lead`: no NAS needed, else the declared lead's host's addresses), with the workers' key: docs/coordinator.md §10); for another version (a new one, or a rollback's) it
   fetches the version's archive from the lead (`/release/<version>.tgz`), checks its SHA-256,
   unpacks it locally (tar keeps the programs' modes) and checks every file against its SHA-256,
   the folder holding the manifest's files alone; then it points `app/current` at it and restarts

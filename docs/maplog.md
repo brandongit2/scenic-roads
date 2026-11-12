@@ -49,8 +49,9 @@ it handed over whole; with the lead away, the map it holds (none: none); its map
 - **The catalogue is made from the map at each batch** (`Map::catalogue`), as the consumers still
   read a `Catalogue`.
 - **No save at a clean stop** (§5.3): at most every 10 minutes; a start asks the batches since.
-- **The lead's contact** is `state/coordinator.json`, kept on the Mac (`lead.json` in the cache
-  folder, the key in it, mode 600) for a start away from the NAS.
+- **The lead's contact** is the one this Mac's agent keeps (`coordwire::lead`: its folder's
+  `lead.json`, the key in it, mode 600; else the declared lead's host's addresses), so a start away
+  from the NAS reaches the lead.
 - **The CLI** (`scenic catalogs`) reads this Mac's agent's Catalogues map as it keeps it (step 4).
 
 **Built (step 4):** the agent and the build page read the map from the log, not catalogues:
@@ -650,7 +651,7 @@ Built (step 8b, `agent::gc`, the queue's side `store::map::gc`). Where it depart
   (GC's queue)"); the queue knows no sizes, so no bytes, and no status line of its own yet.
 - **The chunk of 200** is the design's; what bounds it: its names are refused to every hand-off
   while they're being removed, some 24 s of the share's deletions at the median of its probes
-  (8.4 a second, `state/pool/nas-probes.json`, 6 and 7 Nov), 80 s at the tenth percentile (2.5);
+  (8.4 a second, the NAS budget's probes of 6 and 7 Nov), 80 s at the tenth percentile (2.5);
   its two asks of the lead and one `fsync` there cost 12.5 ms (measured on the M4, 100 chunks
   through a lead's coordinator over HTTP, deletions free), noise beside 200 SMB calls. A yield
   doesn't wait for a chunk's end.
@@ -902,7 +903,7 @@ The gate's 1,077 are the inputs sweep's (§7.6), by the indexes that hold them.
   the listing of every folder before). On a private root (the M4's disk, through a lead's
   coordinator over HTTP, 20,000 files) the job drains 6,251 files a second; the chunks' own asks cost
   12.5 ms each, so on the NAS the job deletes as fast as one stream of SMB calls does: at the
-  probes' rates (`state/pool/nas-probes.json`, 64 probes, 6 and 7 Nov under the build's load: 8.4 a
+  probes' rates (the NAS budget's, 64 probes, 6 and 7 Nov under the build's load: 8.4 a
   second at the median, 2.5 at the tenth percentile, 3.7 at the last) the 24,999 take some 50 minutes
   of the job's time at the median, 1.9 hours at the last probe's rate, 2.8 hours at the tenth
   percentile.

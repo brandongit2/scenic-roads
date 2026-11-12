@@ -837,7 +837,7 @@ pub(crate) mod tests {
                 .collect();
             let mut v = serde_json::json!({
                 "status": status,
-                "view": json("state/coord/term/7/view.json").map_or(Value::Null, |v| v["view"].clone()),
+                "view": json("lead-view.json").map_or(Value::Null, |v| v["view"].clone()),
                 "pause": json("state/build/pause.json").unwrap_or(Value::Null),
                 "macs": macs,
                 "at": now_s(),
@@ -921,7 +921,7 @@ pub(crate) mod tests {
             "workers": [{ "name": "m1", "label": "M1", "kind": "native", "seen": now - 5, "fit": [] }],
             "tasks": { "done": 3 },
             "task_mb": { "tail": 400 } } });
-        put(root, "state/coord/term/7/view.json", view.to_string().as_bytes());
+        put(root, "lead-view.json", view.to_string().as_bytes());
         put(root, "state/build/term/7/forecast-input.json", &record(now).bytes().unwrap());
         let day = crate::pool::journal::day(now).unwrap();
         let ev =

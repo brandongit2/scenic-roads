@@ -1145,8 +1145,10 @@ class, id) within a tile. The client sends the id with the clicked point.
   view.tiles, near.i8, roadside.u8, samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst,
   basis.json `{v: SCENIC_V, basis: [[[x, y], hash16], …]}`).
 - **Workers** (docs/coordinator.md):
-  - `state/coordinator.json`: `{urls: [Tailscale's, then the LAN name's], token, page}`, while the
-    lead's agent runs (`page`: the build page over HTTPS when `tailscale serve` proxies it).
+  - Each Mac's agent's `lead.json` (`coordwire::lead::Known`, mode 600): `{member, host, urls:
+    [Tailscale's, then the LAN name's], token, page}`, the lead's own coordinator's on the lead,
+    a member's from its beats' answers (`reach`: `{urls, page}`; `page`: the build page over HTTPS
+    when `tailscale serve` proxies it).
   - On the lead, `agent/coord/`: `workers-token` (32 hex digits, mode 600); `page`; `store/` (the
     pool's store, `agentcore::pool::store`, docs/coordination.md §4: `snapshot.json`, `{epoch, seq,
     docs}`, written whole, and segments `<first seq>.jsonl`, one line per change after it, `{seq,
@@ -1223,7 +1225,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
     merged; `.bad` one set aside unparsed.
   - A member's status rides in its beat (docs/coordination.md §3.1); the lead's
-    `state/status.json` lists the members' as `helpers` and their heartbeats as `beats`.
+    status (its agent's `status.json`) lists the members' as `helpers` and their heartbeats as `beats`.
 - **The pool** (docs/pool.md):
   - `state/build/records.json` (`{term, seq, manifest,
     keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}}`; `term` the
@@ -1233,8 +1235,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     `state/build/brief.json`: `{term, seq, manifest, keys}` of that snapshot, written after it,
     read by readers of those alone (`Brief::now`). `manifest.json`, `jobs.json`, `pending.json`
     and `sizes.json` are the records before the pool (a new pool's first take-up is made from
-    them); no lead writes them. The terms' files (`state/build/terms/`, `state/build/lead.json`,
-    `state/build/term/<E>/`, `state/coord/term/<E>/`) are neither written nor read, but the terms'
+    them); no lead writes them. The terms' folders (`state/build/term/<E>/`) are neither written nor read, but their
     `forecast-input.json` (the backtest's; docs/coordination.md §9).
   - A job's hand-off, as a member keeps it (`agent/pool/saved.json`'s `mine.unwritten`, by key
     `<day>/<epoch>-<n>`) and posts it whole (`POST /pool/handoff {entry}`, kept in the lead's store
@@ -1263,15 +1264,17 @@ class, id) within a tile. The client sends the id with the clicked point.
     lead sends none.
   - `state/lead/store.json`: the lead's store's backup (`agentcore::pool::store::Snapshot`, `{epoch,
     seq, member, at, docs}`), each 10 min while it changed; `state/coord/token`;
-    `state/coord/history/<day>/<member>.jsonl` (history events, the lead's take-ups and step-downs as `kind: term`; days older than 7 are
-    `state/coord/history-archive/<day>.tar`, a ustar of `<day>/<member>.jsonl`);
+    `state/coord/history-archive/<day>.tar` (a ustar of `<day>/<member>.jsonl`: the history's
+    events of a finished day, the lead's take-ups and step-downs as `kind: term`, packed from the
+    lead's `agent/coord/history.jsonl` by GC; `state/coord/history/<day>/` the days an older app
+    wrote, packed as they pass the week);
     `state/coord/forecasts/<day>.jsonl.zst` (the lead's forecasts, The forecasts' archive above;
     days older than 7 in `state/coord/forecasts-archive/<YYYY-MM>.tar`);
     `state/coord/forecast-inputs/<day>.jsonl.zst` (the lead's forecast inputs, The forecast
     inputs' archive above; days before the last 7 removed).
   - Leases carry `term` (the epoch they were granted in; header `x-pool-epoch` on the lead's answers) and `granted_at`; `/work/done {…, journaled: true}`; `/work/done` and
     `/work/fail` carry `floors`, `disks` (`[[cost key, MB], …]`) and `job_disk_mb`.
-- **State:** `state/status.json` (the agent's heartbeat, at least every two minutes): conditions,
+- **State:** the agent's `status.json` in its folder (its heartbeat, at least every two minutes; the lead's asked of its coordinator, `/pool/view`): conditions,
   the job, `parts`/`part`, progress, `paused`/`pausing`, what waits, `pause`, `publishing`
   (agent::publish::PublishLine: `why`, `tiles`, `units`, `regions`, `low`, `wait_s`), `published`
   (agent::Published: `last` `{n, at}`, `low`, `drawing` by Mac, `adopted` by Mac `{n, at}`), the

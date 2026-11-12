@@ -40,7 +40,7 @@ Where state lives:
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
 | The coordinator's state | the lead's disk: `agent/coord/store/` (backup on the NAS, `state/lead/store.json`) | | opens it (§6.2, §7.5) |
-| The coordinator's token, history; its contact | NAS: `state/coord/`; `state/coordinator.json` | | uses them |
+| The coordinator's token; its history's archive; its contact | NAS: `state/coord/token`, `state/coord/history-archive/`; each Mac's agent's `lead.json` (coordwire::lead) | | uses them |
 | The lead's own (its catalogues' record, daily jobs' last runs; the map's log, docs/maplog.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
 
 ## 3. What the NAS gives us
@@ -62,8 +62,7 @@ The share is SMB 3 on a Synology. The design assumes:
   on either Mac having it open;
   renaming the held file away, and renaming into its free name, still work, but removing it fails
   until it's let go (a Mac killed with a file open: kill -9, Migration Assistant). So every
-  replaced file (`store::whole::write`/`copy`, `Nas::write_whole`: `state/status.json`,
-  the manifest, pending, sizes, records) falls back to `store::whole::rename_or_aside`: the old file renamed to
+  replaced file (`store::whole::write`/`copy`, `Nas::write_whole`: the manifest, pending, sizes, records) falls back to `store::whole::rename_or_aside`: the old file renamed to
   `<name>.<host>.<pid>.<n>.aside.tmp`, the new one renamed into place, then asides removed: each
   fallback removes up to 4 (the oldest first), finds any Mac's or process's asides of that file by
   listing its folder at most once a minute, and remembers at most 16 not yet removable. Listings
@@ -72,7 +71,7 @@ The share is SMB 3 on a Synology. The design assumes:
   (`store::whole::read`/`retried`: `Nas::read`/`read_fresh`) tries a busy read or open again for
   5 s, and never lists. The files that must never read as missing, all replaced by
   `whole::write` and never removed on purpose (`state/build/manifest.json`, `pending.json`,
-  `sizes.json`, `summaries.json`, the extents, `state/status.json`), are read with
+  `sizes.json`, `summaries.json`, the extents), are read with
   `whole::read_replaced` (`out::read_record`): missing with an aside beside it, it is tried again
   for 2 s, then the newest aside (by modification time) is read, the last version written whole,
   so a manifest is never taken as empty. An aside put aside (its status change time) more than a
@@ -255,9 +254,8 @@ opens, so once a process; a take-up raises it past the records it starts from
 `agent::pool::epochs`). The records' snapshots are numbered (epoch, seq), their JSON key still
 `term` (older apps read them); a lease's job run is named `<epoch>-<n>` (its job id, §7.5).
 
-- No app writes or reads the old term files (`state/build/terms/`, `state/build/lead.json`,
-  `state/build/term/<E>/`, `state/coord/term/<E>/`), but each term's `forecast-input.json` (§7.9:
-  `fccheck::inputs`); the rest are the owner's to remove (docs/coordination.md §9).
+- No app writes the old term folders (`state/build/term/<E>/`, their `forecast-input.json` alone
+  left: §7.9, `fccheck::inputs` reads them; docs/coordination.md §9).
 - There is no app rule: the lead leads whatever app it runs (a development build, a rollback).
   Records keep keys of steps an app doesn't know (`pool::records::Keys::other`), so a downgrade loses
   nothing it can avoid (docs/buildings3d.md §3.6).
@@ -1463,14 +1461,17 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   numbers an event (one per step waited on, ~10 bytes each: some 2 to 6 % on the lead's
   history.jsonl, ~8,600 starts and leases in its 5.2 MB on 27 Oct); events before it have none,
   and readers take none as nothing known. The build page's schedule draws its arrows from it.
-- **The history** is one file per writer, `state/coord/history/<day>/<member>.jsonl`, for the last
-  `history::DAYS` (7) days, the days the page view reads (`pageview` takes the same constant). A
-  lead's agent appends its coordinator's events from its first pass on, and with its first its
-  coordinator's start (its "agent" event: how `history::mend_runs` knows a restart; until task #988
-  the NAS's files had none, so their readers took the runs across a restart as written). A
-  day before them is packed as one tar, `state/coord/history-archive/<day>.tar` (members
-  `<day>/<member>.jsonl`), by the `gc` job's daily duties, so the lead alone, outside its loop and the
-  pool's lock (`agent::histarchive`, task #531). Per day: its files read whole and merged into
+- **The history** is the lead's coordinator's file on its disk (`<agent>/coord/history.jsonl`, the
+  last `history::DAYS` (7) days', its coordinator's start among them: its "agent" event, how
+  `history::mend_runs` knows a restart), which the page view reads (`pageview::LocalFiles`); no
+  copy on the NAS (task #1119). Each day before today is packed as one tar,
+  `state/coord/history-archive/<day>.tar` (member `<day>/<member>.jsonl`, the declared lead's), by
+  the `gc` job's daily duties (`--history`), so the lead alone, outside its loop and the pool's lock
+  (`agent::histarchive`, task #531): the day's lines merged into what its tar holds (a line there
+  already not again), so a day finished is on the NAS by the next run, and a lead's disk lost, or
+  the lead moved to another Mac, loses the history since then. The day folders an app before task
+  #1119 wrote (`state/coord/history/<day>/`, a file per writer) are packed the old way as each
+  passes the week, then removed: its files read whole and merged into
   what the day's tar holds already (a late write, an old day's event appended after the day was
   packed, is added to the tar, never written over it; a tar that can't be read is never
   replaced), the tar built in memory and written in one stream to a temporary name (one fsync),
@@ -1480,12 +1481,21 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   file is removed once an hour old. A day that fails (a folder holding anything but files, over
   512 MB, a deadline, an unreadable tar) is left as it is and said as a warning in the job's
   note. Every call goes through `nasread`'s deadlines. `pubtimes::load_history` (`scenic
-  status`, a lead's planned notes) reads a day's tar alongside its folder.
-- **The contact** `state/coordinator.json`: a stopping lead removes it only if it still names its
-  own addresses. A member reads it again when a request to the coordinator it has fails, and when
-  that coordinator last answered as a broker (epoch 0) or as another member than the lead its pool
-  view has (`x-pool-epoch`, `x-pool-member`): an old lead's coordinator kept on as its broker
-  answers every ask with nothing (task #815).
+  timings publish`, the forecast check) reads the days' tars and the lead's file (on another Mac,
+  asked of the lead: `/api/history`); a lead's planned notes after a change of lead, the tars.
+- **The contact** (`coordwire::lead`, task #1119): each Mac's agent keeps its lead's in its folder
+  (`lead.json`: member, host, addresses, token, page), the lead's agent its own coordinator's
+  (`Coordinator::reach`, each 5 minutes), a member's from its beats' answers (`reach`, while the
+  lead leads); every other process of the Mac (the CLI, the map server, the updater and `scenic
+  releases`, the `gc` job, the dev tools) finds the lead by it, with no NAS read, so an update
+  reaches a Mac whose share is away. With none kept, or one naming another member than the
+  declaration, the declared lead's host is reached by its tailnet addresses (`tailscale status`'s
+  device of that name: its computer name or DNS name, letters and digits alone) and its LAN name,
+  with the pool's token (`state/coord/token`); a kept contact of the declared lead has those
+  addresses after its own. A member finds it again when a request to the coordinator it has
+  fails, and when that coordinator last answered as a broker (epoch 0) or as another member than
+  the lead its pool view has (`x-pool-epoch`, `x-pool-member`): an old lead's coordinator kept on
+  as its broker answers every ask with nothing (task #815).
 - **Its port is free for the next:** children are started (`store::spawn`) only while no listener
   or connection is being made or closed, and one at a time, under one lock, so no child inherits a
   socket or another child's half-marked pipe (Darwin has no `pipe2`; task #900: two caffeinates held
@@ -1799,7 +1809,7 @@ keys (`with_big`):
   and the forecasts' archives, the latency probe (`probe`).
 - **The pool's NAS** (`Deadlined`, which the agent opens its member over): the driver's reads of
   the declaration and the one path, and its saves of the records and their brief.
-- **Writes** (`write`): the lead's heartbeat (`state/status.json`), the archives' appends. A write
+- **Writes** (`write`): the archives' appends. A write
   to a path (and a `Deadlined` write or create) is refused at once (a timeout) while an earlier
   write to it is held in the kernel: a late write would land over the newer. The path is free
   again once that write ends.
@@ -1822,19 +1832,16 @@ the plan's thread does the same with its own phases ("the plan's phase \"build::
 part's kept apart (`nasread::LOOP`, `nasread::PLAN`), so a plan's phase never ends or stretches the
 round's. These lines carry the time of day (UTC).
 
-The heartbeat (`state/status.json`, or a helper's file, and its copy in the agent's folder) is not
+The heartbeat (the agent's `status.json`, or a helper's `helper.json`, in its folder) is not
 the round's to write: the agent's beat writes it (crate::agent::beat, docs/agent-parts.md §4.2,
 task #871) every 10 s on a timer of its own and at once on a change, from the view the round last
 published, so a long round or a hung share leaves it beating (and the plan and the checklist,
 task #795's 94–212 s and 261 s, are off the round altogether). Its content is as of the loop's last view, with its age (`loop_age_s`); its
-time says the agent is alive. The beat is the only writer of either copy (the NAS's on a writer
-thread of its own that takes the newest body each time, under the deadline above), so no beat
-lands over a newer one (each a whole file put in place: a temporary file and a rename, one create a
-beat, so about one every 10 s a Mac, far under what SMB takes; written in place, a reader could
-read it half-written); once this Mac's part changed (it no longer leads, before its restart) it writes no shared beat (a body still
-waiting for the old path is dropped) until the
-loop composes one under the new part, so a former lead never rewrites `state/status.json` over
-the new lead's. A heartbeat goes out of touch when the beat itself stops (ten minutes,
+time says the agent is alive. The beat is its only writer, so no beat
+lands over a newer one (each a whole file put in place: a temporary file and a rename; written in
+place, a reader could read it half-written). No copy goes to the NAS (task #1119): the lead's is
+asked of its coordinator (`/pool/view`'s `status`, `coordwire::lead::status`) by `scenic status`,
+`scenic pool status` and the map servers. A heartbeat goes out of touch when the beat itself stops (ten minutes,
 `OUT_OF_TOUCH_S`, served as the status's `out_of_touch_s`). (The pool's heartbeat is kept by the
 pool's own thread, §6.7.) A member's beat goes to the lead too (`POST /pool/beat`, its own
 poster thread: docs/coordination.md §5.1), and nowhere else.
@@ -2473,7 +2480,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   the epoch it leads in (`leads`, while it leads). Sent in each member's beat to the lead every
   10 s (`POST /pool/beat`, §9), which answers with the others' (its own among them); a member not
   heard for twenty minutes is forgotten. Nothing on the NAS (`crate::coord::beats`).
-- **Build status**, written by the lead (`state/status.json`): the
+- **Build status**, written by the lead (its agent's `status.json`, asked of its coordinator by other Macs): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
   waits, what publishing does, publishing as it stands (`published`: the last catalogue and its
   kind, the map tiles being drawn by Mac, each Mac's adopted catalogue), recent jobs, pause, last
@@ -3163,9 +3170,7 @@ no longer switched: `state/pool/slots` isn't read, but stays `on` on the NAS whi
 read it (one reading it missing or `off` restarts to change part). `state/pool/enabled` and
 `state/pool/budgets` are read by no app.
 
-Planned: resuming the terrain's and the slope's z6 tiles (after #639); the lead-only files left on
-the NAS (`state/coordinator.json`, `state/status.json`, `state/pool/nas-probes.json`) moved off
-it (task #1119). Packing a terrain z6 tile's fetched raw tiles (`pack_raw_with`) stays inside that
+Planned: resuming the terrain's and the slope's z6 tiles (after #639). Packing a terrain z6 tile's fetched raw tiles (`pack_raw_with`) stays inside that
 z6 tile's job.
 
 ## 13. Testing

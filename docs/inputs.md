@@ -236,7 +236,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.7 Where it shows
 
-- **The status** (`state/status.json`, docs/building.md §2): `inputs`, one entry per unit
+- **The status** (the lead's agent's `status.json`, docs/building.md §2): `inputs`, one entry per unit
   (crate::inputs::view, the lead's):
   ```json
   {"unit": "heritage", "version": "sources/inputs/heritage/@index.7a…json", "state": "held",
