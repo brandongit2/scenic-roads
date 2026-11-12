@@ -517,7 +517,8 @@ struct Inner {
     held_set: Option<Vec<Option<u64>>>,
     trouble_set: Option<bool>,
     /// As a test sets them: the memory available and the swap in use (MB); or what a test's Mac has
-    /// available with no job running, less what its jobs hold (the agent's `test_idle_mb`).
+    /// available with no job running, less what its jobs hold (the agent's `test_idle_mb`). Either
+    /// available set, the swap is `swap_set`'s alone (none unset), never this Mac's.
     avail_set: Option<u64>,
     swap_set: Option<u64>,
     idle_set: Option<u64>,
@@ -859,12 +860,17 @@ impl Sampler {
             return None;
         }
         let set = g.avail_set.or(g.idle_set.map(|i| i.saturating_sub(held_mb)));
-        let (avail_mb, compress_mb) = match set {
-            Some(mb) => (mb, 0),
-            None => jobrt::sys::memory_available().map(|a| (a.total() >> 20, a.compressible >> 20))?,
+        // (A test's Mac, its memory available set: its swap the test's too, none unless set, as the
+        // agent's own reading of it counts none (crate::agent's `mem_reading`). This Mac's swap
+        // growing meanwhile, on a loaded Mac, had put the brake on for a test's figures, #1110.)
+        let (avail_mb, compress_mb, swap) = match set {
+            Some(mb) => (mb, 0, g.swap_set),
+            None => {
+                let a = jobrt::sys::memory_available()?;
+                (a.total() >> 20, a.compressible >> 20, g.swap_set.or_else(|| jobrt::sys::swap_used().map(|b| b >> 20)))
+            }
         };
         let now = std::time::Instant::now();
-        let swap = g.swap_set.or_else(|| jobrt::sys::swap_used().map(|b| b >> 20));
         if let Some(n) = swap {
             g.swap.push_back((now, n));
         }
@@ -1673,6 +1679,30 @@ mod tests {
         assert_eq!((step_of_key("6/1/1"), step_of_key("terrain 6/1/1")), ("unit", "terrain"));
         // (A key of no space that isn't a z6 tile is no z6 tile's: task #849.)
         assert_eq!((step_of_key("gc"), step_of_key("3/1/1")), ("gc", "3/1/1"));
+    }
+
+    #[test]
+    fn a_test_macs_reading_takes_no_swap_of_this_macs() {
+        // (Task #1110: a test's Mac, 14 GB available with no job running, its jobs holding 15 GB,
+        // the floor 2 GB, the brake off by its figures. This Mac's swap, growing meanwhile on a
+        // loaded Mac, had put the brake on and frozen the job.)
+        let s = Sampler::new(1);
+        s.set(2 << 10, 16 << 10);
+        s.set_test_idle(Some(14 << 10));
+        s.watch(0, Watch { pgid: 0, ..Default::default() });
+        s.set_test(Some(vec![Some(15 << 10)]), Some(false));
+        for _ in 0..3 {
+            s.tick();
+        }
+        // (No sample of this Mac's swap kept: one read would be, `swap_used` answering on a Mac.)
+        assert!(s.inner.lock().unwrap().swap.is_empty());
+        assert!(s.reading().is_some_and(|r| r.swap_grown_mb == 0 && !r.acts()) && !s.frozen(0), "{:?}", s.reading());
+        // (A test's swap, set: kept, as this Mac's is with its own available.)
+        s.set_test_mem(None, Some(100));
+        s.tick();
+        s.set_test_mem(None, Some(300));
+        s.tick();
+        assert_eq!(s.reading().map(|r| r.swap_grown_mb), Some(200));
     }
 
     #[test]
