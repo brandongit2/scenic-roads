@@ -597,7 +597,26 @@ pub fn download(url: &str, to: &Path, whole: &dyn Fn(&Path) -> bool, coming: &dy
     NET.download(url, to, whole, coming)
 }
 
-/// This process's one `net::Net` (`get`, `download`).
+/// `url`'s very large file (the OSM planet: ~95 GB) brought whole into `part`, on from the bytes
+/// `part` already holds (a run stopped part way, or another URL of the same file: a mirror), by
+/// this process's one `net::Net`: each request asks for the bytes past `part`'s end and appends
+/// what comes, so a transfer that breaks off, a body past its time (`RESUME_BODY`) or a job run
+/// again goes on where it stopped. True once `part` holds the whole file (its length the one the
+/// server gives; the caller checks its content); false when the server says it has none twice, a
+/// moment apart. A server answering whole (no ranges) writes `part` from its start; one whose
+/// file's length changes between answers, or is shorter than `part`, starts `part` over. Only a
+/// request that moves nothing counts against the retries (10, waiting 2 s, then twice as long
+/// each time, at most a minute), 429 and 5xx answers among them. `coming` is told the bytes held
+/// and the file's length, at most once a second.
+pub fn resume(url: &str, part: &store::nasfs::NasPath, coming: &dyn Fn(u64, u64)) -> Result<bool> {
+    NET.resume(url, part, coming)
+}
+
+/// How long one of `resume`'s requests receives its body before it's asked again from where it
+/// got to: a connection gone quiet is noticed within it.
+pub const RESUME_BODY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// This process's one `net::Net` (`get`, `download`, `resume`).
 static NET: std::sync::LazyLock<net::Net> = std::sync::LazyLock::new(net::Net::new);
 
 /// Requests to one host this process has in flight at most, whichever readers ask (the
@@ -1400,6 +1419,167 @@ mod net {
             })
         }
 
+        /// `super::resume`.
+        pub(super) fn resume(
+            &self,
+            url: &str,
+            part: &store::nasfs::NasPath,
+            coming: &dyn Fn(u64, u64),
+        ) -> Result<bool> {
+            use std::io::Read;
+            let _w = store::waits::net();
+            let mut slot = HostSlot::take(url);
+            slot.unmeasured();
+            down_check(self.down.as_deref(), url)?;
+            let held = || match part.metadata() {
+                Ok(m) => Ok(m.len()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(e) => Err(anyhow::Error::from(e).context(part.display().to_string())),
+            };
+            let (mut idle, mut requests, mut missing, mut forbidden) = (0u32, 0u32, 0u32, 0u32);
+            let mut proxy_left = self.proxy_wait();
+            // (The file's length as the first answer gave it: every later one must give the same.)
+            let mut total: Option<u64> = None;
+            let mut told = std::time::Instant::now();
+            loop {
+                if requests > 0 {
+                    let secs = if idle == 0 { 2 } else { (2u64 << (idle - 1)).min(60) };
+                    retry_wait(self.down.as_deref(), url, secs, &*self.clock)?;
+                }
+                cancelled(url)?;
+                crate::fetch::online(url)?;
+                requests += 1;
+                let from = held()?;
+                let r = (|| -> Result<std::result::Result<bool, String>> {
+                    let req = self
+                        .agent
+                        .get(url)
+                        .header("Range", format!("bytes={from}-"))
+                        .config()
+                        .timeout_global(None)
+                        .timeout_recv_response(Some(Duration::from_secs(60)))
+                        .timeout_recv_body(Some(super::RESUME_BODY))
+                        .build();
+                    let mut r = match req.call() {
+                        Ok(r) => r,
+                        Err(e) => return Ok(Err(e.to_string())),
+                    };
+                    let mut changed = |t: Option<u64>| -> Result<bool> {
+                        let was = total.replace(t.unwrap_or(0));
+                        Ok(was.is_some_and(|w| Some(w) != t))
+                    };
+                    let append = match r.status().as_u16() {
+                        206 => {
+                            let cr = header(&r, "content-range").as_deref().and_then(content_range);
+                            let Some((Some((a, _)), t)) = cr else {
+                                bail!("{url}: a range answer without its range ({cr:?})")
+                            };
+                            ensure!(a == from, "{url}: asked for bytes {from}-, answered from {a}");
+                            if t.is_none() || changed(t)? {
+                                part.remove_file().ok();
+                                total = None;
+                                return Ok(Err("the file's length changed (or wasn't given): from its start".into()));
+                            }
+                            true
+                        }
+                        // (Nothing past the bytes held: the part is the whole file, or longer than
+                        // it, then started over.)
+                        416 => {
+                            let t = header(&r, "content-range").as_deref().and_then(content_range).and_then(|c| c.1);
+                            if t == Some(from) {
+                                return Ok(Ok(true));
+                            }
+                            part.remove_file().ok();
+                            total = None;
+                            return Ok(Err(format!("{from} bytes held, the file's {t:?}: from its start")));
+                        }
+                        // (The whole file: a server that ignores ranges.)
+                        200 => {
+                            let t = header(&r, "content-length").and_then(|v| v.parse().ok());
+                            if t.is_none() {
+                                return Ok(Err("a whole answer without its length".into()));
+                            }
+                            changed(t)?;
+                            false
+                        }
+                        c if says_none(&r, &mut forbidden) && {
+                            missing += 1;
+                            missing == 2 || c == 403
+                        } =>
+                        {
+                            return Ok(Ok(false))
+                        }
+                        c => {
+                            if transient(c) {
+                                slot.congested();
+                            }
+                            return Ok(Err(format!("status {c}")));
+                        }
+                    };
+                    let want = total.unwrap_or(0);
+                    let start = if append { from } else { 0 };
+                    let mut o = std::fs::OpenOptions::new();
+                    o.write(true).create(true);
+                    if append {
+                        o.append(true);
+                    } else {
+                        o.truncate(true);
+                    }
+                    let on_disk = |e: std::io::Error| Ok(Err(format!("{}: {e}", part.display())));
+                    let mut f = match part.open_with(&o) {
+                        Ok(f) => f,
+                        Err(e) => return on_disk(e),
+                    };
+                    let mut body = r.body_mut().with_config().limit(u64::MAX).reader();
+                    let mut b = vec![0u8; 16 << 20];
+                    let mut n = 0u64;
+                    let ended = loop {
+                        let k = match body.read(&mut b) {
+                            Ok(0) => break None,
+                            Ok(k) => k,
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                            Err(e) => break Some(e.to_string()),
+                        };
+                        if let Err(e) = f.write_all(&b[..k]) {
+                            break Some(format!("{}: {e}", part.display()));
+                        }
+                        n += k as u64;
+                        fetched(k);
+                        if told.elapsed() >= Duration::from_secs(1) {
+                            told = std::time::Instant::now();
+                            coming(start + n, want);
+                        }
+                    };
+                    // (What came is kept, whatever ended it: the next request goes on from it.)
+                    if let Err(e) = f.close() {
+                        return on_disk(e);
+                    }
+                    coming(start + n, want);
+                    match ended {
+                        Some(why) => Ok(Err(why)),
+                        None if start + n == want => Ok(Ok(true)),
+                        None => Ok(Err(format!("{} of {want} bytes", start + n))),
+                    }
+                })()?;
+                let last = match r {
+                    Ok(done) => return Ok(done),
+                    Err(why) => why,
+                };
+                if held()? > from {
+                    // (It moved: on from here, after a breath.)
+                    idle = 0;
+                } else if self.proxy_back(url, &mut proxy_left)? {
+                    requests -= 1;
+                } else {
+                    idle += 1;
+                }
+                if idle > 10 {
+                    note_down(self.down.as_deref(), url, &last);
+                    bail!("{url}{NO_ANSWER}{last}); tried 11 times");
+                }
+            }
+        }
+
         /// The whole (small) file; None when the server says it has none (`says_none`, as
         /// `head`). Other answers are asked again: 8 tries, waiting 2,
         /// 4, 6 … s. Each attempt is held to `deadline` when one's given (the agent's own 90 s
@@ -1823,14 +2003,18 @@ mod tests {
             }
             let text = String::from_utf8_lossy(&req).to_ascii_lowercase();
             let hdr = |k: &str| text.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_string()));
-            let (data, etag) = {
+            let read = || {
                 let f = file.lock().unwrap();
                 (f.0.clone(), f.1.clone())
             };
-            let range = hdr("range: bytes=").map(|r| {
+            let (mut data, mut etag) = read();
+            let raw = hdr("range: bytes=").map(|r| {
                 let (a, b) = r.split_once('-').unwrap();
-                (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap())
+                (a.parse::<usize>().unwrap(), b.parse::<usize>().ok())
             });
+            // (An open range, `bytes=a-`, to the file's end.)
+            let to_end = |(a, b): (usize, Option<usize>), len: usize| (a, b.unwrap_or(usize::MAX).min(len.max(1) - 1));
+            let mut range = raw.map(|r| to_end(r, data.len()));
             let mut cut_gated = false;
             if let Some(r) = range {
                 file.lock().unwrap().2.push(r);
@@ -1838,9 +2022,17 @@ mod tests {
                     g.open.wait("the test's gate");
                     cut_gated = gated < g.cut;
                     gated += 1;
+                    // (The file as it is once let through: a test may have changed it meanwhile.)
+                    (data, etag) = read();
+                    range = raw.map(|r| to_end(r, data.len()));
                 }
             }
             let n = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if range.is_some_and(|r| r.0 >= data.len()) {
+                let head = format!("HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", data.len());
+                s.write_all(head.as_bytes()).ok();
+                continue;
+            }
             let whole = range.is_none() || hdr("if-range:").is_some_and(|v| v != etag.to_ascii_lowercase());
             let (a, b) = if whole { (0, data.len() - 1) } else { range.unwrap() };
             let body = &data[a..=b];
@@ -1991,6 +2183,69 @@ mod tests {
         let url = dropping_server(served(data.clone(), "\"v1\""), 50_000, 1);
         let r = fast().open(&url, None, None).unwrap().unwrap();
         assert_eq!(r.read_at(200_000, 100_000).unwrap(), data[200_000..300_000]);
+    }
+
+    /// A very large file (the planet, task #1120) brought into a part file on from what it holds:
+    /// a dropped transfer goes on from its end, no byte asked twice; a run stopped part way (a
+    /// part already there) asks only for the rest; a part already whole asks nothing past it; one
+    /// longer than the file, or a server whose file's length changes, starts it over.
+    #[test]
+    fn a_large_file_resumes_into_its_part_from_what_it_holds() {
+        let d = tempfile::tempdir().unwrap();
+        let part = store::nasfs::NasPath::local_for_test(d.path().join("planet.osm.pbf.part"));
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let fast = || net::Net::new().with_clock(store::clock::Virtual::new());
+        let told = std::sync::Mutex::new(Vec::new());
+        let coming = |got: u64, of: u64| told.lock().unwrap().push((got, of));
+        // Dropped twice after 100 KB: three requests, each from the part's end.
+        let file = served(data.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), 100_000, 2);
+        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
+        assert_eq!(file.lock().unwrap().2, [(0, 299_999), (100_000, 299_999), (200_000, 299_999)]);
+        assert_eq!(told.lock().unwrap().last(), Some(&(300_000, 300_000)));
+        // Whole already: one request, answered 416, nothing written.
+        let file = served(data.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), usize::MAX, 0);
+        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert_eq!(file.lock().unwrap().2, [(300_000, 299_999)]);
+        assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
+        // A run stopped part way: the rest alone.
+        std::fs::write(part.unchecked_path(), &data[..123_456]).unwrap();
+        let file = served(data.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), usize::MAX, 0);
+        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert_eq!(file.lock().unwrap().2, [(123_456, 299_999)]);
+        assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
+        // A part longer than the file (another file's): started over.
+        let mut long = data.clone();
+        long.extend_from_slice(b"more");
+        std::fs::write(part.unchecked_path(), &long).unwrap();
+        let file = served(data.clone(), "\"v1\"");
+        let url = dropping_server(file.clone(), usize::MAX, 0);
+        assert!(fast().resume(&url, &part, &coming).unwrap());
+        assert_eq!(file.lock().unwrap().2, [(300_004, 299_999), (0, 299_999)]);
+        assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), data);
+        // The file's length changed between answers (dropped after 100 KB, the next answer held
+        // while the file is swapped for a shorter one): from its start, the new file whole.
+        std::fs::remove_file(part.unchecked_path()).unwrap();
+        let file = served(data.clone(), "\"v1\"");
+        let gate = store::testkit::Signal::new();
+        let url = server(file.clone(), 100_000, 1, Some(Gate { open: gate.clone(), cut: 0 }));
+        let run = {
+            let (url, part) = (url.clone(), part.clone());
+            std::thread::spawn(move || fast().resume(&url, &part, &|_, _| {}).unwrap())
+        };
+        store::testkit::eventually("the second request", || file.lock().unwrap().2.len() == 2);
+        let other: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
+        {
+            let mut f = file.lock().unwrap();
+            (f.0, f.1) = (other.clone(), "\"v2\"".into());
+        }
+        gate.set();
+        assert!(run.join().unwrap());
+        assert_eq!(file.lock().unwrap().2, [(0, 299_999), (100_000, 299_999), (0, 199_999)]);
+        assert_eq!(std::fs::read(part.unchecked_path()).unwrap(), other);
     }
 
     #[test]
