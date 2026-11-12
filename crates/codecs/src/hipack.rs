@@ -65,25 +65,24 @@ pub fn ways_in(packs: &[&BasePack], within: Bounds) -> Result<Vec<Staged>> {
 
 /// The tiler's view of staged ways.
 pub fn way_inputs<'a>(packs: &[&'a BasePack], staged: &[Staged]) -> Result<Vec<WayIn<'a>>> {
-    staged
-        .iter()
-        .map(|s| {
-            let bp = packs[s.pack];
-            let w = &bp.ways()?[s.way as usize];
-            let r = bp.range(w);
-            Ok(WayIn {
-                rec: w,
-                id: w.id as u32,
-                verts: &bp.verts()?[r.clone()],
-                elev_dm: bp.elev()?.slice(r.clone()),
-                grade: &bp.grade()?[r.clone()],
-                drape: bp.drape().map(|d| &d[r.clone()]),
-                sc: bp.scenic().map(|a| &a[r.clone()]),
-                surface: bp.string(w.surface),
-                road_m: bp.road_vals()?[s.way as usize].len.round() as u32,
-            })
-        })
-        .collect()
+    staged.iter().map(|s| way_in(packs[s.pack], s.way)).collect()
+}
+
+/// The tiler's view of way `way` of `bp`.
+fn way_in(bp: &BasePack, way: u32) -> Result<WayIn<'_>> {
+    let w = &bp.ways()?[way as usize];
+    let r = bp.range(w);
+    Ok(WayIn {
+        rec: w,
+        id: w.id as u32,
+        verts: &bp.verts()?[r.clone()],
+        elev_dm: bp.elev()?.slice(r.clone()),
+        grade: &bp.grade()?[r.clone()],
+        drape: bp.drape().map(|d| &d[r.clone()]),
+        sc: bp.scenic().map(|a| &a[r.clone()]),
+        surface: bp.string(w.surface),
+        road_m: bp.road_vals()?[way as usize].len.round() as u32,
+    })
 }
 
 /// Road and rail tiles for zooms `zs` of the tiles under (zr, xr, yr), from `ways`.
@@ -93,19 +92,121 @@ pub fn tiles(
     xr: u32,
     yr: u32,
     zs: std::ops::RangeInclusive<u8>,
-    progress: bool,
 ) -> (Vec<Encoded>, Vec<Encoded>) {
     let (mut roads, mut rails) = (Vec::new(), Vec::new());
     for z in zs {
         let sh = z - zr;
         let keep = move |x: u32, y: u32| x >> sh == xr && y >> sh == yr;
-        let pieces = tiling::cut(z, ways, &keep, progress);
+        let pieces = tiling::cut(z, ways, &keep);
         let (rp, dp): (Vec<(u64, TileLine)>, Vec<(u64, TileLine)>) =
             pieces.into_iter().partition(|p| class::is_rail(p.1.style & 0x0f));
-        roads.extend(tiling::encode_zoom(z, 14, &dp));
-        rails.extend(tiling::encode_zoom(z, 14, &rp));
+        roads.extend(tiling::encode_zoom(z, 14, dp));
+        rails.extend(tiling::encode_zoom(z, 14, rp));
     }
     (roads, rails)
+}
+
+/// How many ways of `packs` have a bbox meeting `within` (`ways_in`'s, none kept).
+pub fn count_ways_in(packs: &[&BasePack], within: Bounds) -> Result<u64> {
+    packs
+        .par_iter()
+        .filter(|bp| meets(bp.extent, within))
+        .map(|bp| Ok(bp.bboxes()?.iter().filter(|bb| meets(**bb, within)).count() as u64))
+        .sum()
+}
+
+/// The most ways one tile's pieces are cut from at a time (`tiles_one_by_one`), more only to keep a
+/// way's copies together.
+const RUN: usize = 1 << 15;
+
+/// How far past a tile's edges (E7 units, ~1 m) a way's bbox may lie and its line still be cut into
+/// it: past the rounding of the tile's bounds to E7 (`tile_bounds`), which a line on the edge may
+/// fall either side of. A way this near that draws nothing in the tile adds no piece.
+const EDGE_E7: i32 = 10;
+
+/// Road and rail tiles `tiles` ((x, y) of zoom `z`, in key order, each under bounds `within`) as
+/// `tiles` draws them from `way_inputs(ways_in(packs, within))`, a tile at a time and each tile's
+/// ways a run at a time: a tile's ways (those of `within` whose bbox meets it) in draw order then
+/// by way id, `cut` a run of them, the pieces each run gives the tile fed to its `TileEnc`. As
+/// `cut` gives a tile's pieces by draw order, way, then along it, and each run holds whole ways
+/// (every copy of a way id with its draw order), the tile gets its pieces in the order a cut of all
+/// its ways at once gives them: the same tiles, holding a run's pieces and the tile's lines and
+/// dots, never all the tile's pieces. Tiles side by side; each with no pieces left out.
+pub fn tiles_one_by_one(
+    packs: &[&BasePack],
+    within: Bounds,
+    z: u8,
+    tiles: &[(u32, u32)],
+) -> Result<(Vec<Encoded>, Vec<Encoded>)> {
+    by_runs(packs, within, z, tiles, RUN)
+}
+
+/// `tiles_one_by_one`, its tiles' ways cut `run` at a time.
+pub(crate) fn by_runs(
+    packs: &[&BasePack],
+    within: Bounds,
+    z: u8,
+    tiles: &[(u32, u32)],
+    run: usize,
+) -> Result<(Vec<Encoded>, Vec<Encoded>)> {
+    let each: Vec<(Option<Encoded>, Option<Encoded>)> =
+        tiles.par_iter().map(|&(x, y)| one_tile(packs, within, z, x, y, run)).collect::<Result<_>>()?;
+    let (mut roads, mut rails) = (Vec::new(), Vec::new());
+    for (r, l) in each {
+        roads.extend(r);
+        rails.extend(l);
+    }
+    Ok((roads, rails))
+}
+
+/// `tiles_one_by_one`'s tile (x, y) of zoom `z`: its roads' and its rails'.
+fn one_tile(
+    packs: &[&BasePack],
+    within: Bounds,
+    z: u8,
+    x: u32,
+    y: u32,
+    run: usize,
+) -> Result<(Option<Encoded>, Option<Encoded>)> {
+    let tb = tile_bounds(z, x, y);
+    let tb = [tb[0] - EDGE_E7, tb[1] - EDGE_E7, tb[2] + EDGE_E7, tb[3] + EDGE_E7];
+    // (Its ways: (draw order, way id), pack, way.)
+    let mut ways: Vec<(u64, u32, u32)> = Vec::new();
+    for (pi, bp) in packs.iter().enumerate() {
+        if !(meets(bp.extent, within) && meets(bp.extent, tb)) {
+            continue;
+        }
+        let recs = bp.ways()?;
+        for (wi, bb) in bp.bboxes()?.iter().enumerate() {
+            if meets(*bb, within) && meets(*bb, tb) {
+                let w = &recs[wi];
+                let order = (u64::from(tiling::draw_key(tiling::style_of(w))) << 32) | u64::from(w.id as u32);
+                ways.push((order, pi as u32, wi as u32));
+            }
+        }
+    }
+    ways.par_sort_unstable_by_key(|w| w.0);
+    let (mut roads, mut rails) = (tiling::TileEnc::new(z, 14), tiling::TileEnc::new(z, 14));
+    let keep = move |tx: u32, ty: u32| tx == x && ty == y;
+    let mut at = 0;
+    while at < ways.len() {
+        let mut end = at.saturating_add(run).min(ways.len());
+        while end < ways.len() && ways[end].0 == ways[end - 1].0 {
+            end += 1;
+        }
+        let win: Vec<WayIn> =
+            ways[at..end].iter().map(|&(_, pi, wi)| way_in(packs[pi as usize], wi)).collect::<Result<_>>()?;
+        for (_, l) in tiling::cut(z, &win, &keep) {
+            if class::is_rail(l.style & 0x0f) {
+                rails.push(l);
+            } else {
+                roads.push(l);
+            }
+        }
+        at = end;
+    }
+    let key = roadcore::archive::tile_key(z, x, y);
+    Ok((roads.finish(key), rails.finish(key)))
 }
 
 pub use roadcore::packs::{here_extra as extra, point_key, End, Here, PSample, Part, RailInfo};

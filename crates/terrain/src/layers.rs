@@ -247,23 +247,57 @@ pub fn write_pack_local(
     root: (u8, u32, u32),
     tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>,
 ) -> Result<Option<LocalPack>> {
-    let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
-    let local = out.scratch_file(&format!("{logical}.pack"));
-    let meta = serde_json::json!({"layer": layer, "scope": scope, "root": format!("{}/{}/{}", root.0, root.1, root.2), "encoding": encoding});
-    let mut w = store::pack::PackWriter::create(&local, meta, gzip)?;
-    let (mut zmin, mut zmax, mut n) = (u8::MAX, 0u8, 0usize);
+    let mut w = LocalPackWriter::create(out, layer, encoding, gzip, scope, root)?;
     for (z, x, y, blob, raw) in tiles {
         w.add(z, x, y, &blob, raw)?;
-        zmin = zmin.min(z);
-        zmax = zmax.max(z);
-        n += 1;
     }
-    w.finish()?;
-    if n == 0 {
-        std::fs::remove_file(&local).ok();
-        return Ok(None);
+    w.finish()
+}
+
+/// `write_pack_local`'s pack with its tiles added as they come (in the order they're to be
+/// written), so they needn't all be made first.
+pub struct LocalPackWriter {
+    logical: String,
+    local: std::path::PathBuf,
+    w: store::pack::PackWriter,
+    zooms: (u8, u8),
+    n: usize,
+}
+
+impl LocalPackWriter {
+    /// Pack `layers/<layer>/<scope>/<root>` begun in the scratch folder.
+    pub fn create(
+        out: &Out,
+        layer: &str,
+        encoding: &str,
+        gzip: bool,
+        scope: &str,
+        root: (u8, u32, u32),
+    ) -> Result<Self> {
+        let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
+        let local = out.scratch_file(&format!("{logical}.pack"));
+        let meta = serde_json::json!({"layer": layer, "scope": scope, "root": format!("{}/{}/{}", root.0, root.1, root.2), "encoding": encoding});
+        let w = store::pack::PackWriter::create(&local, meta, gzip)?;
+        Ok(LocalPackWriter { logical, local, w, zooms: (u8::MAX, 0), n: 0 })
     }
-    Ok(Some(LocalPack { logical, local, zooms: (zmin, zmax) }))
+
+    /// The next tile.
+    pub fn add(&mut self, z: u8, x: u32, y: u32, blob: &[u8], raw: u32) -> Result<()> {
+        self.w.add(z, x, y, blob, raw)?;
+        self.zooms = (self.zooms.0.min(z), self.zooms.1.max(z));
+        self.n += 1;
+        Ok(())
+    }
+
+    /// The pack written; None (its file removed) when it has no tiles.
+    pub fn finish(self) -> Result<Option<LocalPack>> {
+        self.w.finish()?;
+        if self.n == 0 {
+            std::fs::remove_file(&self.local).ok();
+            return Ok(None);
+        }
+        Ok(Some(LocalPack { logical: self.logical, local: self.local, zooms: self.zooms }))
+    }
 }
 
 /// Split a tile archive into packs, keeping zooms up to `max_z`, saying how far it is as

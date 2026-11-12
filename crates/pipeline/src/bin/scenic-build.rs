@@ -1549,7 +1549,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>
         let p = phase("drawing road and rail tiles");
         let win = landing.after(out, |_| hipack::way_inputs(&near, &in_t))?;
         at(k, 0.25);
-        let (roads, rails) = hipack::tiles(&win, 6, t.x, t.y, 9..=14, false);
+        let (roads, rails) = hipack::tiles(&win, 6, t.x, t.y, 9..=14);
         drop(p);
         at(k, 0.6);
         // (Its packs' uploads put off: they go on beside its hidata's making and the next tile's
@@ -1644,57 +1644,77 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
         let qb = tile_bounds(q.z, q.x, q.y);
         let p = phase("gathering ways from the base packs");
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, qb)).collect();
-        let staged = hipack::ways_in(&near, qb)?;
+        let ways = hipack::count_ways_in(&near, qb)?;
         drop(p);
         buildstore::costin::set("units", near.len() as u64);
         buildstore::costin::add("bytes", near.iter().map(|bp| bp.bytes()).sum());
-        buildstore::costin::set("ways", staged.len() as u64);
+        buildstore::costin::set("ways", ways);
         reads.note();
-        if staged.is_empty() {
+        if ways == 0 {
             drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
             note_cost("lo", &q.slash(), c);
             jobrt::control::done("lo", &q.slash());
             continue;
         }
         let p = phase("drawing road and rail tiles");
-        let win = hipack::way_inputs(&near, &staged)?;
-        at(k, 0.3);
-        // (Each zoom drawn a piece kept, task #889: a resumed z3 tile draws only the zooms its last
-        // run didn't keep.)
+        // (Each run of LO_TILES tiles drawn a piece kept, task #889: a resumed z3 tile draws only
+        // those its last run didn't keep.)
         let id = jobrt::resume_log::job_id(
             "lo",
             &pipeline::agent::build::LO_V.to_string(),
             &q.slash(),
-            &[&jobrt::resume_log::names(out, near.iter().map(|bp| format!("base/{}", bp.unit.slash())))],
+            &[
+                &jobrt::resume_log::names(out, near.iter().map(|bp| format!("base/{}", bp.unit.slash()))),
+                &format!("{LO_TILES} tiles a piece"),
+            ],
         );
         let mut pieces =
             jobrt::resume_log::Pieces::open(&out.scratch, (q.z, q.x, q.y), "lo", &id, jobrt::resume_log::on());
-        let (mut roads, mut rails) = (Vec::new(), Vec::new());
+        // (The packs written as their tiles come, in key order: a zoom at a time, each by column
+        // then row, LO_TILES tiles at a time, task #1182; never the z3 tile's ways or pieces at
+        // once.)
+        let mut roads = layers::LocalPackWriter::create(out, "roads", "rt7", true, "lo", (3, q.x, q.y))?;
+        let mut rails = layers::LocalPackWriter::create(out, "rails", "rt7", true, "lo", (3, q.x, q.y))?;
+        let total: usize = (4..=8u8).map(|z| 1usize << (2 * (z - 3))).sum();
+        let (mut drawn, mut road_tiles) = (0usize, 0usize);
         for z in 4..=8u8 {
-            let kept = pieces
-                .piece((z, q.x, q.y), || {
-                    let (r, l) = hipack::tiles(&win, 3, q.x, q.y, z..=z, true);
-                    Ok(put_encoded(&[&r, &l]))
-                })
-                .and_then(|p| get_encoded(&p))
-                .map_err(|e| jobrt::control::stop_if_paused("lo", e))?;
-            let [r, l]: [Vec<codecs::tiling::Encoded>; 2] =
-                kept.try_into().map_err(|_| anyhow::anyhow!("a kept zoom: not two layers"))?;
-            roads.extend(r);
-            rails.extend(l);
-            at(k, 0.3 + 0.1 * f64::from(z - 3));
+            let sh = z - 3;
+            let ts: Vec<(u32, u32)> = ((q.x << sh)..((q.x + 1) << sh))
+                .flat_map(|x| ((q.y << sh)..((q.y + 1) << sh)).map(move |y| (x, y)))
+                .collect();
+            for run in ts.chunks(LO_TILES) {
+                let kept = pieces
+                    .piece((z, run[0].0, run[0].1), || {
+                        let (r, l) = hipack::tiles_one_by_one(&near, qb, z, run)?;
+                        Ok(put_encoded(&[&r, &l]))
+                    })
+                    .and_then(|p| get_encoded(&p))
+                    .map_err(|e| jobrt::control::stop_if_paused("lo", e))?;
+                let [r, l]: [Vec<codecs::tiling::Encoded>; 2] =
+                    kept.try_into().map_err(|_| anyhow::anyhow!("a kept run of tiles: not two layers"))?;
+                road_tiles += r.len();
+                for (enc, w) in [(&r, &mut roads), (&l, &mut rails)] {
+                    for e in enc {
+                        let (z, x, y) = (
+                            (e.key >> 58) as u8,
+                            ((e.key >> 29) & ((1 << 29) - 1)) as u32,
+                            (e.key & ((1 << 29) - 1)) as u32,
+                        );
+                        w.add(z, x, y, &e.gz, e.raw_len as u32)?;
+                    }
+                }
+                drawn += run.len();
+                at(k, 0.05 + 0.8 * drawn as f64 / total as f64);
+            }
         }
         drop(p);
-        at(k, 0.8);
         let p = phase("writing road and rail packs to the NAS");
-        for (layer, enc) in [("roads", &roads), ("rails", &rails)] {
-            let mut it = enc.iter().map(|e| {
-                let (z, x, y) =
-                    ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
-                (z, x, y, e.gz.clone(), e.raw_len as u32)
-            });
-            if layers::write_pack(out, layer, "rt7", true, "lo", (3, q.x, q.y), &mut it)?.is_none() {
-                drop_entries(out, &[format!("layers/{layer}/lo/{}", q.dash())])?;
+        for (layer, w) in [("roads", roads), ("rails", rails)] {
+            match w.finish()? {
+                Some(lp) => {
+                    out.put_file(&lp.logical, "pack", &lp.local)?;
+                }
+                None => drop_entries(out, &[format!("layers/{layer}/lo/{}", q.dash())])?,
             }
         }
         drop(p);
@@ -1707,14 +1727,18 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, pass: Option<String>, 
             q.slash(),
             k + 1,
             qs.len(),
-            staged.len(),
-            roads.len(),
+            ways,
+            road_tiles,
             t0.elapsed()
         );
     }
     jobrt::jobs::report(n, n, "zoomed-out tiles");
     Ok(())
 }
+
+/// The tiles of a zoom a lo piece draws and keeps (`lo`): a z3 tile's z4 and z5 tiles a piece
+/// each, its z6, z7 and z8 tiles in 4, 16 and 64.
+const LO_TILES: usize = 16;
 
 /// Lists of encoded tiles as a kept piece's payload (jobrt::resume_log::Put).
 fn put_encoded(lists: &[&[codecs::tiling::Encoded]]) -> Vec<u8> {
@@ -1726,7 +1750,6 @@ fn put_encoded(lists: &[&[codecs::tiling::Encoded]]) -> Vec<u8> {
             p.u64(e.key);
             p.bytes(&e.gz);
             p.u64(e.raw_len as u64);
-            p.u64(e.nverts as u64);
         }
     }
     p.0
@@ -1737,14 +1760,9 @@ fn get_encoded(p: &[u8]) -> Result<Vec<Vec<codecs::tiling::Encoded>>> {
     let mut g = jobrt::resume_log::Get(p);
     let lists = (0..g.count(8)?)
         .map(|_| {
-            (0..g.count(32)?)
+            (0..g.count(24)?)
                 .map(|_| {
-                    Ok(codecs::tiling::Encoded {
-                        key: g.u64()?,
-                        gz: g.bytes()?,
-                        raw_len: usize::try_from(g.u64()?)?,
-                        nverts: usize::try_from(g.u64()?)?,
-                    })
+                    Ok(codecs::tiling::Encoded { key: g.u64()?, gz: g.bytes()?, raw_len: usize::try_from(g.u64()?)? })
                 })
                 .collect::<Result<Vec<_>>>()
         })
@@ -4168,7 +4186,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let id = unit_resume_id(out, args, &pilot, &blobs, &date, u, &reach, &tools);
         let open = || jobrt::resume_log::Pieces::open(scratch, (6, u.x, u.y), "unit", &id, jobrt::resume_log::on());
         let mut pieces = open();
-        if pieces.kept(roads::unit::PREPARE).is_some() && pieces.folders_as_kept(&dirs) {
+        if pieces.kept(roads::unit::PREPARE) && pieces.folders_as_kept(&dirs) {
             eprintln!("unit {}: resumed where its last run stopped", u.slash());
         } else {
             pieces.finish();

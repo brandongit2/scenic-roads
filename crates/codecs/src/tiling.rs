@@ -5,7 +5,6 @@
 //! Used by `scenic-build pack`/`lo` (the ways of one tile, gathered from base packs), which
 //! describes each way with a `WayIn` and chooses which tiles to keep.
 
-use crate::count_bar;
 use det::Det;
 use flate2::{write::GzEncoder, Compression};
 use rayon::prelude::*;
@@ -227,13 +226,12 @@ pub struct WayIn<'a> {
 
 /// Simplify and clip every way at zoom `z`, keeping the pieces of tiles `keep(x, y)` accepts.
 /// Returns (tile key, line) pieces sorted by tile, draw order, then way id.
-pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), progress: bool) -> Vec<(u64, TileLine)> {
+pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync)) -> Vec<(u64, TileLine)> {
     let el2 = extent_log2(z);
     let ext = (1u64 << el2) as f64;
     let scale = (1u64 << z) as f64 * ext;
     let tol = DP_TOL_PX * ext / 256.0;
     let etol = elev_tol(z);
-    let pb = progress.then(|| count_bar(ways.len() as u64, format!("z{z} simplify + clip")));
     // (Each piece with its place along its way: the pieces come from the threads in any order, and
     // two of one way in one tile may start at the same point.)
     let mut pieces: Vec<(u64, u32, TileLine)> = ways
@@ -323,9 +321,6 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
                 }
                 acc.push((roadcore::archive::tile_key(z, tx, ty), seq, tl));
             });
-            if let Some(pb) = &pb {
-                pb.inc(1);
-            }
             acc
         })
         .reduce(Vec::new, |mut a, mut b| {
@@ -335,9 +330,6 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
             a.append(&mut b);
             a
         });
-    if let Some(pb) = pb {
-        pb.finish_and_clear();
-    }
     sort_pieces(&mut pieces);
     pieces.into_iter().map(|(k, _, t)| (k, t)).collect()
 }
@@ -372,140 +364,163 @@ struct Dot {
     colour: u32,
 }
 
-/// One encoded tile: key, gzip'd RT bytes, raw length, vertex count.
+/// One encoded tile: key, gzip'd RT bytes, raw length.
 pub struct Encoded {
     pub key: u64,
     pub gz: Vec<u8>,
     pub raw_len: usize,
-    pub nverts: usize,
 }
 
-/// Encode one zoom level's pieces (sorted by tile, draw order, way; see `cut`): per tile, the
-/// sub-pixel pieces merged into dots (below the max zoom), then RT-encoded and gzip'd.
-pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)]) -> Vec<Encoded> {
-    let el2 = extent_log2(z);
-    let ext = (1u64 << el2) as f64;
+/// Encode one zoom level's pieces (sorted by tile, draw order, way; see `cut`): each tile's
+/// (`TileEnc`), the tiles side by side.
+pub fn encode_zoom(z: u8, maxz: u8, pieces: Vec<(u64, TileLine)>) -> Vec<Encoded> {
     // Group by tile.
-    let mut groups: Vec<(u64, usize, usize)> = Vec::new();
-    let mut s = 0;
-    for i in 1..=pieces.len() {
-        if i == pieces.len() || pieces[i].0 != pieces[s].0 {
-            groups.push((pieces[s].0, s, i));
-            s = i;
+    let mut groups: Vec<(u64, Vec<TileLine>)> = Vec::new();
+    for (key, l) in pieces {
+        match groups.last_mut() {
+            Some((k, g)) if *k == key => g.push(l),
+            _ => groups.push((key, vec![l])),
         }
     }
-    let encoded: Vec<Encoded> = groups
-        .par_iter()
-        .map(|&(key, s, e)| {
-            // Features shorter than half a pixel are indistinguishable from dots. Below the max
-            // zoom (which is overzoomed, so must keep true geometry) collapse them onto a
-            // half-pixel grid, merged per style, keeping the summed true length and
-            // length-weighted elevation / grade. Dots are kept apart by road length (one bin per
-            // decade: finer bins cost ~1.3× more at z4–6), so the length filter roughly applies.
-            let collapse = z < maxz;
-            let half_px = ext / 512.0;
-            let mut owned: Vec<TileLine> = Vec::with_capacity(e - s);
-            // (cell, style, line flags, road length bin) -> merged dot
-            let mut dots: HashMap<([i32; 2], u8, u8, u8), Dot> = HashMap::new();
-            for p in &pieces[s..e] {
-                let l = &p.1;
-                let len: f64 = l
-                    .pts
-                    .windows(2)
-                    .map(|w| (((w[1][0] - w[0][0]) as f64).powi(2) + ((w[1][1] - w[0][1]) as f64).powi(2)).sqrt())
-                    .sum();
-                if !(collapse && len < half_px) && len != 0.0 {
-                    owned.push(l.clone());
-                    continue;
-                }
-                let n = l.pts.len() as f64;
-                let (mx, my) = l.pts.iter().fold((0.0, 0.0), |a, q| (a.0 + q[0] as f64 / n, a.1 + q[1] as f64 / n));
-                let cell = if collapse {
-                    [(mx / half_px).floor() as i32, (my / half_px).floor() as i32]
-                } else {
-                    [mx.round() as i32, my.round() as i32]
-                };
-                let em = l.elev.iter().map(|&v| v as f64).sum::<f64>() / n;
-                let gm = l.grade.iter().map(|&v| v as f64).sum::<f64>() / n;
-                let w = (l.true_len_dm.max(1)) as f64;
-                let hm = l.drape.iter().map(|&v| v as f64).sum::<f64>() / n;
-                let lbin = (l.road_m.max(1) as f64).dlog10() as u8;
-                let d = dots.entry((cell, l.style, l.flags, lbin)).or_insert(Dot {
-                    len: 0.0,
-                    e: 0.0,
-                    g: 0.0,
-                    h: 0.0,
-                    ch: [0.0; NCH],
-                    flags: 0,
-                    best: l.way,
-                    best_len: 0,
-                    road_m: l.road_m,
-                    attr: l.attr,
-                    colour: l.colour,
-                });
-                d.len += w;
-                d.e += em * w;
-                d.g += gm * w;
-                d.h += hm * w;
-                for c in 0..NCH {
-                    d.ch[c] += l.sc.iter().map(|v| v[c] as f64).sum::<f64>() / n * w;
-                }
-                d.flags |= l.sc.iter().fold(0u8, |a, v| a | v[ch::FLAGS]);
-                // The longest piece names the dot; ties go to the lower way id, so the result
-                // doesn't depend on the order pieces arrive in.
-                if l.true_len_dm > d.best_len || (l.true_len_dm == d.best_len && l.way < d.best) {
-                    d.best = l.way;
-                    d.best_len = l.true_len_dm;
-                    d.road_m = l.road_m;
-                    d.attr = l.attr;
-                    d.colour = l.colour;
-                }
+    groups
+        .into_par_iter()
+        .filter_map(|(key, ls)| {
+            let mut t = TileEnc::new(z, maxz);
+            for l in ls {
+                t.push(l);
             }
-            // Dots in a fixed order (the map's iteration order is random).
-            let mut dots: Vec<(([i32; 2], u8, u8, u8), Dot)> = dots.into_iter().collect();
-            dots.sort_unstable_by_key(|(k, _)| *k);
-            for ((cell, style, lflags, _), d) in dots {
-                let pt = if collapse {
-                    [
-                        ((cell[0] as f64 + 0.5) * half_px).round() as i32,
-                        ((cell[1] as f64 + 0.5) * half_px).round() as i32,
-                    ]
-                } else {
-                    cell
-                };
-                let sw = d.len;
-                let ev = (d.e / sw).round() as i32;
-                let gv = (d.g / sw).round().clamp(0.0, 255.0) as u8;
-                let hv = (d.h / sw).round().clamp(-500.0, 9000.0) as i16;
-                let mut cv = [0u8; NCH];
-                for c in 0..NCH {
-                    cv[c] = if c == ch::FLAGS { d.flags } else { (d.ch[c] / sw).round().clamp(0.0, 255.0) as u8 };
-                }
-                owned.push(TileLine {
-                    style,
-                    flags: lflags,
-                    way: d.best,
-                    true_len_dm: sw.round().min(u32::MAX as f64) as u32,
-                    road_m: d.road_m,
-                    attr: d.attr,
-                    colour: d.colour,
-                    pts: vec![pt, pt],
-                    elev: vec![ev, ev],
-                    grade: vec![gv, gv],
-                    drape: vec![hv, hv],
-                    sc: vec![cv, cv],
-                });
-            }
-            // Stable: pieces of one way keep their order along it.
-            owned.sort_by_key(|l| (draw_key(l.style), l.way));
-            let nverts: usize = owned.iter().map(|l| l.pts.len()).sum();
-            let raw = encode(&owned, el2);
-            let mut gz = GzEncoder::new(Vec::with_capacity(raw.len() / 2), Compression::new(6));
-            gz.write_all(&raw).unwrap();
-            Encoded { key, gz: gz.finish().unwrap(), raw_len: raw.len(), nverts }
+            t.finish(key)
         })
-        .collect();
-    encoded
+        .collect()
+}
+
+/// One tile's pieces encoded as they come, in `cut`'s order (draw order, way, then along it): the
+/// sub-pixel pieces merged into dots (below the max zoom), then, once all are in, RT-encoded and
+/// gzip'd. A tile's pieces may come a run of ways at a time (each way's pieces together), so a
+/// tile never needs all its ways' pieces at once: what it holds is its lines kept and its dots.
+pub struct TileEnc {
+    el2: u8,
+    /// Below the max zoom (which is overzoomed, so must keep true geometry).
+    collapse: bool,
+    half_px: f64,
+    owned: Vec<TileLine>,
+    /// (cell, style, line flags, road length bin) -> merged dot
+    dots: HashMap<([i32; 2], u8, u8, u8), Dot>,
+}
+
+impl TileEnc {
+    /// A tile of zoom `z`, `maxz` the deepest zoom drawn.
+    pub fn new(z: u8, maxz: u8) -> TileEnc {
+        let el2 = extent_log2(z);
+        let ext = (1u64 << el2) as f64;
+        TileEnc { el2, collapse: z < maxz, half_px: ext / 512.0, owned: Vec::new(), dots: HashMap::new() }
+    }
+
+    /// The next piece, in order.
+    pub fn push(&mut self, l: TileLine) {
+        // Features shorter than half a pixel are indistinguishable from dots. Below the max zoom
+        // collapse them onto a half-pixel grid, merged per style, keeping the summed true length
+        // and length-weighted elevation / grade. Dots are kept apart by road length (one bin per
+        // decade: finer bins cost ~1.3× more at z4–6), so the length filter roughly applies.
+        let (collapse, half_px) = (self.collapse, self.half_px);
+        let len: f64 = l
+            .pts
+            .windows(2)
+            .map(|w| (((w[1][0] - w[0][0]) as f64).powi(2) + ((w[1][1] - w[0][1]) as f64).powi(2)).sqrt())
+            .sum();
+        if !(collapse && len < half_px) && len != 0.0 {
+            self.owned.push(l);
+            return;
+        }
+        let n = l.pts.len() as f64;
+        let (mx, my) = l.pts.iter().fold((0.0, 0.0), |a, q| (a.0 + q[0] as f64 / n, a.1 + q[1] as f64 / n));
+        let cell = if collapse {
+            [(mx / half_px).floor() as i32, (my / half_px).floor() as i32]
+        } else {
+            [mx.round() as i32, my.round() as i32]
+        };
+        let em = l.elev.iter().map(|&v| v as f64).sum::<f64>() / n;
+        let gm = l.grade.iter().map(|&v| v as f64).sum::<f64>() / n;
+        let w = (l.true_len_dm.max(1)) as f64;
+        let hm = l.drape.iter().map(|&v| v as f64).sum::<f64>() / n;
+        let lbin = (l.road_m.max(1) as f64).dlog10() as u8;
+        let d = self.dots.entry((cell, l.style, l.flags, lbin)).or_insert(Dot {
+            len: 0.0,
+            e: 0.0,
+            g: 0.0,
+            h: 0.0,
+            ch: [0.0; NCH],
+            flags: 0,
+            best: l.way,
+            best_len: 0,
+            road_m: l.road_m,
+            attr: l.attr,
+            colour: l.colour,
+        });
+        d.len += w;
+        d.e += em * w;
+        d.g += gm * w;
+        d.h += hm * w;
+        for c in 0..NCH {
+            d.ch[c] += l.sc.iter().map(|v| v[c] as f64).sum::<f64>() / n * w;
+        }
+        d.flags |= l.sc.iter().fold(0u8, |a, v| a | v[ch::FLAGS]);
+        // The longest piece names the dot; ties go to the lower way id, so the result doesn't
+        // depend on the order pieces arrive in.
+        if l.true_len_dm > d.best_len || (l.true_len_dm == d.best_len && l.way < d.best) {
+            d.best = l.way;
+            d.best_len = l.true_len_dm;
+            d.road_m = l.road_m;
+            d.attr = l.attr;
+            d.colour = l.colour;
+        }
+    }
+
+    /// The tile, key `key`, encoded; None when no piece came.
+    pub fn finish(self, key: u64) -> Option<Encoded> {
+        let TileEnc { el2, collapse, half_px, mut owned, dots } = self;
+        if owned.is_empty() && dots.is_empty() {
+            return None;
+        }
+        // Dots in a fixed order (the map's iteration order is random).
+        let mut dots: Vec<(([i32; 2], u8, u8, u8), Dot)> = dots.into_iter().collect();
+        dots.sort_unstable_by_key(|(k, _)| *k);
+        for ((cell, style, lflags, _), d) in dots {
+            let pt = if collapse {
+                [((cell[0] as f64 + 0.5) * half_px).round() as i32, ((cell[1] as f64 + 0.5) * half_px).round() as i32]
+            } else {
+                cell
+            };
+            let sw = d.len;
+            let ev = (d.e / sw).round() as i32;
+            let gv = (d.g / sw).round().clamp(0.0, 255.0) as u8;
+            let hv = (d.h / sw).round().clamp(-500.0, 9000.0) as i16;
+            let mut cv = [0u8; NCH];
+            for c in 0..NCH {
+                cv[c] = if c == ch::FLAGS { d.flags } else { (d.ch[c] / sw).round().clamp(0.0, 255.0) as u8 };
+            }
+            owned.push(TileLine {
+                style,
+                flags: lflags,
+                way: d.best,
+                true_len_dm: sw.round().min(u32::MAX as f64) as u32,
+                road_m: d.road_m,
+                attr: d.attr,
+                colour: d.colour,
+                pts: vec![pt, pt],
+                elev: vec![ev, ev],
+                grade: vec![gv, gv],
+                drape: vec![hv, hv],
+                sc: vec![cv, cv],
+            });
+        }
+        // Stable: pieces of one way keep their order along it.
+        owned.sort_by_key(|l| (draw_key(l.style), l.way));
+        let raw = encode(&owned, el2);
+        let mut gz = GzEncoder::new(Vec::with_capacity(raw.len() / 2), Compression::new(6));
+        gz.write_all(&raw).unwrap();
+        Some(Encoded { key, gz: gz.finish().unwrap(), raw_len: raw.len() })
+    }
 }
 
 #[cfg(test)]

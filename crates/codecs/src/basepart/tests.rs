@@ -133,7 +133,7 @@ fn made_of(packs: &[&BasePack], t: TileId) -> Vec<Vec<u8>> {
         .flatten()
         .collect()];
     let win = hipack::way_inputs(packs, &in_t).unwrap();
-    let (roads, rails) = hipack::tiles(&win, 6, t.x, t.y, 9..=11, false);
+    let (roads, rails) = hipack::tiles(&win, 6, t.x, t.y, 9..=11);
     for e in roads.iter().chain(&rails) {
         out.push([e.key.to_le_bytes().to_vec(), e.gz.clone()].concat());
     }
@@ -250,3 +250,38 @@ fn a_watched_read_is_a_nas_wait() {
 }
 
 const BUSY_STALL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Task #1182: a z3 tile's zoomed-out tiles drawn a tile at a time, each tile's ways a run at a
+/// time (hipack::tiles_one_by_one, with runs of a few ways), are the bytes the z3 tile's ways cut
+/// all at once give (hipack::tiles), zoom by zoom; with the pack twice over too, each way id then
+/// in two packs (a way two units both hold).
+#[test]
+fn tiles_drawn_one_by_one_are_the_tiles_drawn_all_at_once() {
+    let d = tempfile::tempdir().unwrap();
+    let (base, roads) = make(d.path(), 3 * CHUNK + 5);
+    let bp = BasePack::open(&base, &roads).unwrap();
+    let again = BasePack::open(&base, &roads).unwrap();
+    let q = TileId { z: 3, x: 1, y: 2 };
+    let qb = tile_bounds(q.z, q.x, q.y);
+    let bytes = |es: &[crate::tiling::Encoded]| es.iter().map(|e| (e.key, e.gz.clone(), e.raw_len)).collect::<Vec<_>>();
+    for packs in [vec![&bp], vec![&bp, &again]] {
+        let in_q = hipack::ways_in(&packs, qb).unwrap();
+        let win = hipack::way_inputs(&packs, &in_q).unwrap();
+        for z in 4..=10u8 {
+            let (r, l) = hipack::tiles(&win, 3, q.x, q.y, z..=z);
+            assert!(!r.is_empty() && !l.is_empty(), "z{z}: roads and rails");
+            let sh = z - 3;
+            let ts: Vec<(u32, u32)> = ((q.x << sh)..((q.x + 1) << sh))
+                .flat_map(|x| ((q.y << sh)..((q.y + 1) << sh)).map(move |y| (x, y)))
+                .collect();
+            for run in [1, 7, usize::MAX] {
+                let (r1, l1) = hipack::by_runs(&packs, qb, z, &ts, run).unwrap();
+                assert!(
+                    bytes(&r1) == bytes(&r) && bytes(&l1) == bytes(&l),
+                    "z{z}, runs of {run}, {} packs",
+                    packs.len()
+                );
+            }
+        }
+    }
+}
