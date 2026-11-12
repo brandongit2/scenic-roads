@@ -194,7 +194,8 @@ struct Cfg {
     moves: bool,
     /// How many Macs (0: two to four, by the seed).
     macs: usize,
-    /// Mac 1 asleep from five minutes in for seven hours: its map server unheard past GC's cursor
+    /// Mac 1 asleep for seven hours from five minutes after the lead's first take-up (`STALE_S` in:
+    /// a declaration the owner wrote, as the run's is): its map server unheard past GC's cursor
     /// TTL (store::map::gc::CURSOR_TTL_S), its member's hand-offs kept past the grace.
     nap: bool,
 }
@@ -421,6 +422,9 @@ struct World {
     /// hand-offs the one path's records lacked when it last went on.
     end: u64,
     behind: Option<usize>,
+    /// Gone on past its config's end while the declared lead's take-up waited: its take-ups must
+    /// settle by the run's own end, not its config's.
+    waited: bool,
     /// The declared lead, and the one before it (the owner's moves).
     declared: usize,
     before: Option<usize>,
@@ -596,7 +600,7 @@ impl World {
             })
             .collect();
         let mut files = BTreeMap::new();
-        // Mac 0 the declared lead, at first.
+        // Mac 0 the declared lead, at first: the owner's declaration (its take-up waits `STALE_S`).
         files.insert(lead::LEAD.to_string(), declaration(0, T0));
         // Today's records: one unit built.
         files.insert(
@@ -624,6 +628,7 @@ impl World {
             drained: false,
             end: cfg.end,
             behind: None,
+            waited: false,
             declared: 0,
             before: None,
             took: BTreeMap::new(),
@@ -765,14 +770,20 @@ impl World {
 
     /// At the run's end: whether it goes on ten minutes more, its lead still merging what the
     /// faults left (the one path's records lack hand-offs, fewer than when it last went on, the
-    /// first time any), or not caught up yet; for `MERGING_S` at most.
+    /// first time any), or not caught up yet, or the declared lead not leading yet (its take-up
+    /// waiting: on the Mac that has the newest records, `OWNER_S`, then `STALE_S` once declared
+    /// again); for `MERGING_S` at most.
     fn goes_on(&mut self) -> bool {
         let Some(&h) = self.took.keys().next_back() else { return false };
         let r = self.files.get(records::ONE).and_then(|b| serde_json::from_slice::<Records>(b).ok());
         let lack = r.as_ref().map_or(0, |r| self.owed().filter(|(k, m)| !names(r, k, m.kind)).count());
         let behind = r.is_some() && self.macs.iter().any(|m| m.leads == Some(h) && !m.gone && !m.caught);
         let merging = lack > 0 && self.behind.is_none_or(|b| lack < b);
-        if !(merging || behind) || self.t >= self.cfg.end + MERGING_S {
+        let d = &self.macs[self.declared];
+        let waiting = !d.gone && d.leads.is_none();
+        // (Taken up since it waited: ten minutes more, to see the take-ups settle.)
+        let settling = self.waited && self.took.values().next_back().is_some_and(|&(_, at)| at + QUIET_S > self.t);
+        if !(merging || behind || waiting || settling) || self.t >= self.cfg.end + MERGING_S {
             return false;
         }
         self.behind = Some(lack);
@@ -780,9 +791,17 @@ impl World {
         if merging {
             self.count("ten minutes more, the lead merging");
             self.note(|| format!("the run goes on: the records lack {lack} hand-offs"));
-        } else {
+        } else if behind {
             self.count("ten minutes more, the lead not caught up");
             self.note(|| format!("the run goes on: epoch {h}'s lead isn't caught up"));
+        } else if settling && !waiting {
+            self.count("ten minutes more, the take-ups settling");
+            self.note(|| "the run goes on: the take-ups settling".to_string());
+        } else {
+            self.waited = true;
+            self.count("ten minutes more, the declared lead not leading yet");
+            let d = self.declared;
+            self.note(|| format!("the run goes on: the declared lead mac{d} doesn't lead yet"));
         }
         true
     }
@@ -796,7 +815,11 @@ impl World {
     }
 
     fn faults(&mut self, me: usize) {
-        if self.cfg.nap && me == 1 && self.t >= 300 && !self.counts.contains_key("Macs asleep seven hours") {
+        if self.cfg.nap
+            && me == 1
+            && self.t >= driver::STALE_S + 300
+            && !self.counts.contains_key("Macs asleep seven hours")
+        {
             self.sleep(1, 7 * 3600);
             self.count("Macs asleep seven hours");
         }
@@ -1366,9 +1389,20 @@ impl World {
             if let Err(why) = consistent(&r) {
                 self.wrong(format!("epoch {e}'s records at {} aren't consistent: {why}", r.seq));
             }
+            // (A save landed late over the one path, not following the brief there
+            // (`records::follows`): no take-up starts from it, nor reader trusts it past the lead's
+            // next save. Counted; not taken for its epoch's records.)
+            let brief =
+                self.files.get(records::ONE_BRIEF).and_then(|b| serde_json::from_slice::<records::Mark>(b).ok());
+            if let Some(m) = brief.filter(|m| !records::follows(&r, m)) {
+                self.count("late saves the brief fences");
+                return self
+                    .note(|| format!("mac{me}'s save of {} landed late, past the brief ({m}): fenced", r.mark()));
+            }
             // (An epoch two Macs led: the first's take-up never reached the NAS, so the next one's,
             // past no snapshot or backup of it, repeated its number (docs/pool.md §4 invariant 2's
-            // limit, at worst a job built again). Its snapshots aren't compared with each other.)
+            // limit). Its two leads' snapshots aren't compared with each other; what either
+            // acknowledged is checked as ever.)
             if self.leaders.get(&e).is_some_and(|&o| o != me) && !self.landed_by.contains(&(e, me)) {
                 self.repeats(e);
             }
@@ -1401,12 +1435,8 @@ impl World {
             if self.landed.keys().next_back().is_some_and(|&last| last > e) {
                 self.count("the one path's records landed late");
             }
-            let lost: Vec<String> = self
-                .acked
-                .iter()
-                .filter(|&(k, &at)| at <= e && !repeated && !handled.contains(k))
-                .map(|(k, _)| k.clone())
-                .collect();
+            let lost: Vec<String> =
+                self.acked.iter().filter(|&(k, &at)| at <= e && !handled.contains(k)).map(|(k, _)| k.clone()).collect();
             if let Some(k) = lost.first() {
                 self.wrong(format!(
                     "epoch {e}'s records at {} lack {k}, acknowledged in epoch {} ({} in all)",
@@ -1679,14 +1709,15 @@ impl World {
     }
 
     /// The checks at the end of a run: the declared lead leads, alone, caught up, its last take-up
-    /// before its config's end's last ten minutes, and the one path's records name every hand-off
+    /// before its config's end's last ten minutes (the run's own, when it went on while the
+    /// declared lead's take-up waited), and the one path's records name every hand-off
     /// owed.
     fn finish(&mut self) {
         let Some((&h, &(_, at))) = self.took.iter().next_back() else { return self.wrong("no take-up".into()) };
-        if at + QUIET_S > self.cfg.end {
+        let end = if self.waited { self.t } else { self.cfg.end };
+        if at + QUIET_S > end {
             self.wrong(format!(
-                "epoch {h} was taken up at {at} s, in the run's last ten minutes (of {} s) or after: the take-ups don't settle",
-                self.cfg.end
+                "epoch {h} was taken up at {at} s, in the run's last ten minutes (of {end} s) or after: the take-ups don't settle"
             ));
         }
         let d = self.declared;
@@ -2131,11 +2162,13 @@ fn the_pool_keeps_its_invariants_through_a_long_run() {
 #[test]
 fn a_run_goes_on_only_while_its_lead_merges() {
     // (The long run's: hours of faults with the lead asleep leave hundreds of hand-offs. The run
-    // goes on while its records lack fewer each ten minutes; a lead that merges none is wrong at
-    // the end, as before.)
+    // goes on while its records lack fewer each ten minutes, or while the declared lead's take-up
+    // waits; a lead that merges none is wrong at the end, as before.)
     let mut w = World::new(0, 4, Cfg::pool(), false);
     let (k1, k2) = ("2026-10-06/1-1".to_string(), "2026-10-06/1-2".to_string());
     w.took.insert(1, (0, 0));
+    let d = w.declared;
+    (w.macs[d].leads, w.macs[d].caught) = (Some(1), true);
     let m = Made { kind: Kind::Taken, mac: 1, posted: true, state_lost: false };
     w.made.insert(k1.clone(), m);
     w.made.insert(k2.clone(), m);
@@ -2154,6 +2187,10 @@ fn a_run_goes_on_only_while_its_lead_merges() {
     r.reflected.insert(k2);
     save(&mut w, &r);
     assert!(!w.goes_on(), "every hand-off named: the run ends");
+    w.macs[d].leads = None;
+    assert!(w.goes_on(), "the declared lead's take-up waiting: ten minutes more");
+    w.t = w.cfg.end + MERGING_S;
+    assert!(!w.goes_on(), "gone on as long as it may: the run ends");
 }
 
 #[test]
@@ -2170,7 +2207,7 @@ fn every_fault_at_once_keeps_the_invariants() {
 #[test]
 fn gc_keeps_its_grace_and_cursors_through_hours_away() {
     // GC on the lead (docs/maplog.md §7, tasks #1106, #1134) through hours of faults: three Macs,
-    // mac1 asleep seven hours from five minutes in (its map server unheard past CURSOR_TTL_S, 6 h),
+    // mac1 asleep seven hours from five minutes after the first take-up (its map server unheard past CURSOR_TTL_S, 6 h),
     // Macs cut off for up to six hours, the network's faults. A name is removed only past GRACE_S
     // (1 h), the records it saw naming none, nor any map server heard within the TTL; no records
     // name a removed name (but another disk's queue's, counted). A hand-off reusing a name removed
