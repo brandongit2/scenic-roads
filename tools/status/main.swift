@@ -1305,9 +1305,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Quitting (the menu bar item's menu; a logout, restart or shutdown): the build
-    /// service stopped. No job running: at once. A job running: asked, "Finish This Job First" (the
-    /// app quits once the service has stopped) or "Stop Now". A logout, restart or shutdown: "Stop
-    /// Now" without asking. On the lead the build waits for it (the lead is fixed, docs/pool.md §6).
+    /// service stopped. No job running: at once. A job running: asked, "Finish this job first" (the
+    /// app quits once the service has stopped) or "Stop now". A logout, restart or shutdown: "Stop
+    /// now" without asking. On the lead the build waits for it (the lead is fixed, docs/pool.md §6).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if mayQuit || !managing || build.blocked != nil { return .terminateNow }
         build.refresh()
@@ -1324,8 +1324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let a = NSAlert()
         a.messageText = jobs.count == 1 ? "A build job is running on this Mac" : "\(jobs.count) build jobs are running on this Mac"
         a.informativeText = jobsText(jobs) + "\n\nFinish this job first: nothing new is taken, and Scenic quits once it ends. Stop now: it's given back to the build, its work kept on this Mac's disk."
-        a.addButton(withTitle: "Finish This Job First")
-        a.addButton(withTitle: "Stop Now")
+        a.addButton(withTitle: "Finish this job first")
+        a.addButton(withTitle: "Stop now")
         a.addButton(withTitle: "Cancel")
         NSApp.activate()
         switch a.runModal() {
@@ -1619,8 +1619,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "Cancel the job building \(a[1])?"
         alert.informativeText = "It stops now and is given back to the build (not a failure), and its work under way is dropped: it runs again from the start" + (a[2] == "update" ? ", once the lead runs a newer app than this one." : ".")
-        alert.addButton(withTitle: "Cancel the Job")
-        alert.addButton(withTitle: "Keep It Running")
+        alert.addButton(withTitle: "Cancel the job")
+        alert.addButton(withTitle: "Keep it running")
         NSApp.activate()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"

@@ -11,9 +11,9 @@
   window, and its icon is built from `tools/status/icon`. Opening it starts this Mac's build service (the agent: the app's
   own launchd job, registered with SMAppService and listed under Scenic in Login Items; launchd
   restarts it after a crash, and it restarts itself into an update). Quitting stops it: at once with
-  no job running; with one, the app asks "Finish This Job First" (nothing new taken, the app quits
-  when it ends) or "Stop Now" (the job given back, its work kept on disk); a logout, restart or
-  shutdown takes Stop Now without asking. The lead quitting hands nothing over: the build waits for
+  no job running; with one, the app asks "Finish this job first" (nothing new taken, the app quits
+  when it ends) or "Stop now" (the job given back, its work kept on disk); a logout, restart or
+  shutdown takes Stop now without asking. The lead quitting hands nothing over: the build waits for
   it, the members finishing their jobs (`control::Quit`; the lead is fixed, docs/pool.md §6). The map server is no part of Scenic: a service of its own on the Mac mini
   alone (task #874). On an update Scenic copies the
   installed version's Scenic.app over itself and quits; a helper it starts (the new bundle's
