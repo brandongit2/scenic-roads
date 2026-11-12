@@ -1,11 +1,17 @@
-//! The history's old days, one tar a day (docs/pool.md §7.5, task #531): `state/coord/history/<day>/`
-//! folders hold a file per writer (two a day in October 2026, 17 KB-1.4 MB a day), one folder a
-//! day for good. A day the page view no longer reads (`history::DAYS`: today's and the six
-//! before) is packed into `state/coord/history-archive/<day>.tar` and its folder removed;
-//! `pubtimes::load_history` reads the tars for days it wants whose folders are gone.
+//! The history's days, one tar a day on the NAS (docs/pool.md §7.5, tasks #531, #1119):
+//! `state/coord/history-archive/<day>.tar`, a member a writer (`<day>/<member>.jsonl`), kept for
+//! good; `pubtimes::load_history` reads them.
 //!
 //! Run by the daily `gc` job (lead only, outside the agent's loop and the pool's lock), every NAS
-//! call under `nasread`'s deadlines. A day:
+//! call under `nasread`'s deadlines:
+//! - **The lead's history** (`run`'s `local`: its coordinator's `coord/history.jsonl`, on its own
+//!   disk, the last week's): each day before today packed under the declared lead's member, its
+//!   lines merged into what the day's tar holds (`merge_lines`: those already there not again), so
+//!   each finished day is on the NAS by the next run, and the lead's disk lost loses today's alone
+//!   (and those since the last run).
+//! - **The day folders an app before #1119 wrote** (`state/coord/history/<day>/`, a file per
+//!   writer): a day the page view no longer reads (`history::DAYS`) is packed and its folder
+//!   removed, until none is left (then this part finds nothing). A day:
 //! - its files read whole (one read each) and merged into what its tar already holds (`merge`:
 //!   a late write, an event of an old day appended after the day was packed, is added, never
 //!   written over the tar; a tar that can't be read is never replaced, the day waits, said);
@@ -50,9 +56,19 @@ pub fn cutoff(now: u64) -> Option<String> {
     journal::day(now.saturating_sub((DAYS - 1) * 86_400))
 }
 
-/// Archives every day folder before the cutoff. `between` runs before each day (a safe point).
-pub fn run(root: &store::nasfs::NasRoot, now: u64, dry_run: bool, between: &dyn Fn()) -> Result<Report> {
+/// Archives the lead's history (`local`: its coordinator's file) of every day before today's, then
+/// every day folder before the cutoff. `between` runs before each day (a safe point).
+pub fn run(
+    root: &store::nasfs::NasRoot,
+    local: Option<&Path>,
+    now: u64,
+    dry_run: bool,
+    between: &dyn Fn(),
+) -> Result<Report> {
     let mut rep = Report::default();
+    if let Some(f) = local {
+        archive_local(root, f, now, dry_run, between, &mut rep)?;
+    }
     let Some(cut) = cutoff(now) else { return Ok(rep) };
     let dir = root.join(DIR);
     let names = match list(&dir) {
@@ -74,6 +90,56 @@ pub fn run(root: &store::nasfs::NasRoot, now: u64, dry_run: bool, between: &dyn 
         }
     }
     Ok(rep)
+}
+
+/// The lead's history file `f`'s days before today's, each merged into its day's tar under the
+/// declared lead's member (none declared: nothing packed, said).
+fn archive_local(
+    root: &store::nasfs::NasRoot,
+    f: &Path,
+    now: u64,
+    dry_run: bool,
+    between: &dyn Fn(),
+    rep: &mut Report,
+) -> Result<()> {
+    let text = match std::fs::read_to_string(f) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("read {}", f.display())),
+    };
+    let Some(today) = journal::day(now) else { return Ok(()) };
+    let mut days: std::collections::BTreeMap<String, Vec<u8>> = Default::default();
+    for l in text.lines() {
+        let Ok(e) = serde_json::from_str::<crate::coord::history::Event>(l) else { continue };
+        let Some(day) = journal::day(e.t).filter(|d| *d < today) else { continue };
+        let b = days.entry(day).or_default();
+        b.extend_from_slice(l.as_bytes());
+        b.push(b'\n');
+    }
+    if days.is_empty() {
+        return Ok(());
+    }
+    let Some(lead) = buildstore::records::lead::declared(root)? else {
+        rep.warnings.push("the lead's history not archived: no lead declared".into());
+        return Ok(());
+    };
+    let arch = root.join(ARCHIVE);
+    if !dry_run {
+        sweep_tmp(&arch, rep);
+    }
+    for (day, b) in days {
+        between();
+        if dry_run {
+            continue;
+        }
+        let tar = arch.join(format!("{day}.tar"));
+        match merge_into_tar(&tar, vec![(format!("{day}/{}.jsonl", lead.member), b)], merge_lines) {
+            Ok(true) => rep.days_archived += 1,
+            Ok(false) => {}
+            Err(e) => rep.warnings.push(format!("history {day} not archived: {e:#}")),
+        }
+    }
+    Ok(())
 }
 
 fn list(dir: &NasPath) -> io::Result<Vec<String>> {
@@ -145,7 +211,7 @@ fn archive_day(folder: &NasPath, arch: &NasPath, day: &str, dry_run: bool, rep: 
     if dry_run {
         return Ok(());
     }
-    if merge_into_tar(&tar_path, members)? {
+    if merge_into_tar(&tar_path, members, merge)? {
         rep.days_archived += 1;
     }
     // The tar is whole: the folder goes, if it still lists what was packed.
@@ -165,7 +231,11 @@ fn archive_day(folder: &NasPath, arch: &NasPath, day: &str, dry_run: bool, rep: 
 /// the removals) is kept, never written over. A tar that can't be read is never replaced: an error,
 /// the caller's files kept. Built in memory, written in one stream to a temporary name (one fsync),
 /// read back and checked, then renamed into place. Whether it was written (false: it held them all).
-pub(crate) fn merge_into_tar(tar_path: &NasPath, members: Vec<(String, Vec<u8>)>) -> Result<bool> {
+pub(crate) fn merge_into_tar(
+    tar_path: &NasPath,
+    members: Vec<(String, Vec<u8>)>,
+    merge: fn(&[(String, Vec<u8>)], Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)>,
+) -> Result<bool> {
     let old = match nasread::read(tar_path) {
         Ok(t) => list_tar(&t).with_context(|| format!("{} unreadable, left as it is", tar_path.display()))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -200,11 +270,29 @@ pub(crate) fn merge_into_tar(tar_path: &NasPath, members: Vec<(String, Vec<u8>)>
     Ok(true)
 }
 
+/// The tar's members with `new`'s lines merged in, by name: each line a member doesn't hold yet
+/// appended to it, in order (the lead's history packed again as its day fills: a line packed
+/// before not again).
+fn merge_lines(old: &[(String, Vec<u8>)], new: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut m: std::collections::BTreeMap<String, Vec<u8>> = old.iter().cloned().collect();
+    for (name, b) in new {
+        let have = m.entry(name).or_default();
+        let held: std::collections::HashSet<Vec<u8>> = have.split(|&c| c == b'\n').map(<[u8]>::to_vec).collect();
+        for l in b.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+            if !held.contains(l) {
+                have.extend_from_slice(l);
+                have.push(b'\n');
+            }
+        }
+    }
+    m.into_iter().collect()
+}
+
 /// The tar's members with the folder's merged in, by name: a folder file that begins with the
 /// member's bytes (the same file, packed by a stopped run, maybe appended to since) takes its place;
 /// one the member ends with was merged by a run stopped before the removals; any other (a file
 /// begun again after its day was packed: a late write) is appended to it.
-fn merge(old: &[(String, Vec<u8>)], folder: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+pub(crate) fn merge(old: &[(String, Vec<u8>)], folder: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
     let mut m: std::collections::BTreeMap<String, Vec<u8>> = old.iter().cloned().collect();
     for (name, b) in folder {
         match m.get_mut(&name) {
@@ -243,7 +331,7 @@ mod tests {
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m2", "bb\n");
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &edge, "m1", "c\n");
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &keep, "m1", "d\n");
-        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         assert_eq!((rep.days_archived, rep.files_removed), (1, 2), "{rep:?}");
         assert!(rep.warnings.is_empty());
         assert!(!r.path().join(DIR).join(&old).exists());
@@ -257,7 +345,7 @@ mod tests {
         );
         assert_eq!(l[1].1, b"bb\n");
         // Again: nothing to do.
-        assert_eq!(run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap().days_archived, 0);
+        assert_eq!(run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap().days_archived, 0);
     }
 
     #[test]
@@ -265,7 +353,7 @@ mod tests {
         let r = tempfile::tempdir().unwrap();
         let old = day_of(9);
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m1", "a\n");
-        run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, true, &|| {}).unwrap();
+        run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, true, &|| {}).unwrap();
         assert!(r.path().join(DIR).join(&old).join("m1.jsonl").exists());
         assert!(!r.path().join(ARCHIVE).exists());
     }
@@ -279,7 +367,7 @@ mod tests {
         std::fs::create_dir_all(r.path().join(ARCHIVE)).unwrap();
         let tp = r.path().join(ARCHIVE).join(format!("{old}.tar"));
         std::fs::write(&tp, &tar).unwrap();
-        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         assert_eq!((rep.days_archived, rep.files_removed), (0, 1));
         assert_eq!(std::fs::read(&tp).unwrap(), tar);
         assert!(!r.path().join(DIR).join(&old).exists());
@@ -293,7 +381,7 @@ mod tests {
         std::fs::create_dir_all(r.path().join(ARCHIVE)).unwrap();
         let tp = r.path().join(ARCHIVE).join(format!("{old}.tar"));
         std::fs::write(&tp, b"cut short").unwrap();
-        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         assert_eq!(rep.warnings.len(), 1, "{rep:?}");
         assert_eq!(std::fs::read(&tp).unwrap(), b"cut short");
         assert!(r.path().join(DIR).join(&old).join("m1.jsonl").exists());
@@ -305,10 +393,10 @@ mod tests {
         let old = day_of(8);
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m1", "a\n");
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m2", "b\n");
-        run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m1", "later\n");
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m3", "new\n");
-        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         assert_eq!((rep.days_archived, rep.files_removed), (1, 2), "{rep:?}");
         assert!(!r.path().join(DIR).join(&old).exists());
         let t = list_tar(&std::fs::read(r.path().join(ARCHIVE).join(format!("{old}.tar"))).unwrap()).unwrap();
@@ -318,6 +406,37 @@ mod tests {
             (format!("{old}/m3.jsonl"), b"new\n".to_vec()),
         ];
         assert_eq!(t, want);
+    }
+
+    /// Task #1119: the lead's history, on its own disk, packed a day a tar under the declared lead
+    /// as each day ends (today's not yet), its lines merged: packed again, none doubled; a day's
+    /// later lines added.
+    #[test]
+    fn the_leads_history_is_packed_as_each_day_ends() {
+        let r = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(r.path());
+        std::fs::create_dir_all(r.path().join("state/build")).unwrap();
+        std::fs::write(r.path().join(buildstore::records::lead::LEAD), r#"{"member":"m-1","host":"h"}"#).unwrap();
+        let ev = |seq: u64, t: u64| {
+            serde_json::to_string(&crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("x") })
+                .unwrap()
+                + "\n"
+        };
+        let f = r.path().join("history.jsonl");
+        let (two, one) = (NOW - 2 * 86_400, NOW - 86_400);
+        std::fs::write(&f, ev(1, two) + &ev(2, one) + &ev(3, NOW)).unwrap();
+        let rep = run(&root, Some(&f), NOW, false, &|| {}).unwrap();
+        assert_eq!(rep.days_archived, 2, "{rep:?}");
+        let tar = |t: u64| {
+            let d = journal::day(t).unwrap();
+            list_tar(&std::fs::read(r.path().join(ARCHIVE).join(format!("{d}.tar"))).unwrap()).unwrap()
+        };
+        assert_eq!(tar(one), [(format!("{}/m-1.jsonl", journal::day(one).unwrap()), ev(2, one).into_bytes())]);
+        assert!(!r.path().join(ARCHIVE).join(format!("{}.tar", journal::day(NOW).unwrap())).exists(), "today's not yet");
+        assert_eq!(run(&root, Some(&f), NOW, false, &|| {}).unwrap().days_archived, 0, "packed again: nothing new");
+        std::fs::write(&f, ev(1, two) + &ev(2, one) + &ev(4, one + 60) + &ev(3, NOW)).unwrap();
+        assert_eq!(run(&root, Some(&f), NOW, false, &|| {}).unwrap().days_archived, 1);
+        assert_eq!(tar(one)[0].1, (ev(2, one) + &ev(4, one + 60)).into_bytes(), "the day's later line added once");
     }
 
     #[test]
@@ -344,7 +463,7 @@ mod tests {
         std::fs::write(&fresh, "y").unwrap();
         let f = std::fs::File::options().write(true).open(&stale).unwrap();
         f.set_modified(SystemTime::now() - Duration::from_secs(7200)).unwrap();
-        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         assert_eq!(rep.tmp_removed, 1);
         assert!(!stale.exists() && fresh.exists());
     }
@@ -355,7 +474,7 @@ mod tests {
         let old = day_of(8);
         put(&store::nasfs::NasRoot::local_for_test(r.path()), &old, "m1", "a\n");
         std::fs::create_dir(r.path().join(DIR).join(&old).join("sub")).unwrap();
-        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), NOW, false, &|| {}).unwrap();
+        let rep = run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap();
         assert_eq!(rep.warnings.len(), 1);
         assert!(r.path().join(DIR).join(&old).join("m1.jsonl").exists());
     }

@@ -717,6 +717,9 @@ pub struct Asked<'a> {
     /// Where its sweeps' passes are kept (`SWEEPS_FILE`, the agent's): each sweep runs when due and
     /// goes on where it reached. None (a run by hand): every sweep runs whole, nothing kept.
     pub sweeps: Option<&'a std::path::Path>,
+    /// The lead's history (its coordinator's `coord/history.jsonl`, the agent's): its finished days
+    /// packed into the NAS's archive (crate::agent::histarchive). None: none packed.
+    pub history: Option<&'a std::path::Path>,
 }
 
 /// What a run acts through: the plan (its write sets, the depth's layers), the lead, its safe
@@ -1213,7 +1216,7 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep:
     }
     std::fs::remove_dir_all(&scratch).ok();
     // The history's old days, one tar a day (task #531).
-    match super::histarchive::run(root, crate::agent::jobs::now_s(), dry_run, &yield_point) {
+    match super::histarchive::run(root, asked.history, crate::agent::jobs::now_s(), dry_run, &yield_point) {
         Ok(h) => {
             meta(h.listed, h.stats, h.files_removed as u64 + h.tmp_removed as u64 + h.days_archived as u64);
             rep.history_days_archived = h.days_archived;

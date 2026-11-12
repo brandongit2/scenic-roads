@@ -141,7 +141,9 @@ pub const JUST_BEGUN_S: u64 = 120;
 /// What the lead noted planned since the last catalogue (`planned_event`), by tile and key, and
 /// the served catalogue's z6 tiles as last read (`served_units`, once a catalogue). What it noted before
 /// a restart comes back from its coordinator's history (`begin`); before a change of lead, from
-/// the NAS's, read on a thread of its own (`seed_from_nas`) so a slow share never holds the plan.
+/// the NAS's archive of the history (its finished days: the lead before's day it moved on is on
+/// that lead's disk alone), read on a thread of its own (`seed_from_nas`) so a slow share never
+/// holds the plan.
 #[derive(Debug, Default)]
 pub struct PlannedNotes {
     began: u64,
@@ -171,8 +173,8 @@ impl PlannedNotes {
         !covered && now.saturating_sub(b) > JUST_BEGUN_S
     }
 
-    /// The NAS's history since its notes began (`root`), read on a thread; taken up by the
-    /// next `new_tiles`.
+    /// The NAS's archive of the history since its notes began (`root`), read on a thread; taken up
+    /// by the next `new_tiles`.
     pub fn seed_from_nas(&self, root: store::nasfs::NasRoot) {
         let (b, seed) = (self.began, self.seed.clone());
         let spawned = std::thread::Builder::new().name("planned-seed".into()).spawn(move || {
@@ -184,10 +186,10 @@ impl PlannedNotes {
         }
     }
 
-    /// What the NAS's history (`root`) says was noted planned since `b`.
+    /// What the NAS's archive of the history (`root`) says was noted planned since `b`.
     pub fn nas_noted(root: &store::nasfs::NasRoot, b: u64) -> BTreeSet<(String, String)> {
         let days = now_s().saturating_sub(b) / 86400 + 1;
-        planned_since(&load_history(Some(root), None, days), b)
+        planned_since(&archived(root, now_s().saturating_sub(days * 86400), days), b)
     }
 
     /// Of `tiles` (tile, key), those not noted yet (the NAS's seed taken up first, if it came).
@@ -572,48 +574,69 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
     o
 }
 
-/// The build's history: the NAS's (`state/coord/history/<day>/*.jsonl`, or the day's tar in
-/// `history-archive/` once GC packed it, the last `days` days',
-/// every writer's), else the lead's own (`local`, its coordinator's file); duplicates once; the
-/// runs of jobs across a lead's restart mended (crate::coord::history::mend_runs).
+/// The build's history of the last `days` days: the NAS's archive (`state/coord/history-archive/
+/// <day>.tar`, a finished day packed by GC: agent::histarchive), with the lead's own (`local`, its
+/// coordinator's file, on the lead; elsewhere, or with no file there, asked of the lead's
+/// coordinator, `/api/history`: the last week's); duplicates once; the runs of jobs across a lead's
+/// restart mended (crate::coord::history::mend_runs).
 pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, days: u64) -> Vec<Event> {
     let mut out: Vec<Event> = Vec::new();
     let since = now_s().saturating_sub(days * 86400);
-    let read = |p: store::nasfs::Loc<'_>| -> Vec<Event> {
-        p.read_to_string()
-            .map(|t| t.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.t >= since).collect())
-            .unwrap_or_default()
+    let lines = |t: &str| -> Vec<Event> {
+        t.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.t >= since).collect()
     };
-    if let Some(dir) = root.map(|r| r.join("state/coord/history")).filter(|d| d.is_dir()) {
-        for d in (0..=days).filter_map(|k| crate::pool::journal::day(since + k * 86400)) {
-            if let Ok(rd) = dir.join(&d).read_dir() {
-                for f in rd {
-                    out.extend(read((&f.path).into()));
-                }
-            }
-            // A day packed by GC (agent::histarchive); a folder and tar both there: duplicates once.
-            let tar = dir.with_file_name("history-archive").join(format!("{d}.tar"));
-            if let Ok(members) = tar.read().map_err(anyhow::Error::from).and_then(|t| codecs::tar::list_tar(&t)) {
-                for (_, b) in members {
-                    out.extend(
-                        String::from_utf8_lossy(&b)
-                            .lines()
-                            .filter_map(|l| serde_json::from_str::<Event>(l).ok())
-                            .filter(|e| e.t >= since),
-                    );
-                }
-            }
-        }
+    if let Some(r) = root {
+        out.extend(archived(r, since, days));
     }
-    if out.is_empty() {
-        if let Some(l) = local {
-            out.extend(read(l.into()));
-        }
+    match local.and_then(|l| std::fs::read_to_string(l).ok()) {
+        Some(t) => out.extend(lines(&t)),
+        None => out.extend(asked_of_the_lead(root).into_iter().filter(|e| e.t >= since)),
     }
     let mut seen = BTreeSet::new();
     out.retain(|e| seen.insert(serde_json::to_string(&Event { seq: 0, ..e.clone() }).unwrap_or_default()));
     out.sort_by_key(|e| (e.t, e.seq));
     crate::coord::history::mend_runs(&mut out);
+    out
+}
+
+/// The NAS's archive of the history (agent::histarchive), its days from `since` (unix s), `days` of
+/// them, events from `since` on.
+fn archived(root: &store::nasfs::NasRoot, since: u64, days: u64) -> Vec<Event> {
+    let arch = root.join(crate::agent::histarchive::ARCHIVE);
+    let mut out = Vec::new();
+    for d in (0..=days).filter_map(|k| crate::pool::journal::day(since + k * 86400)) {
+        let tar = arch.join(format!("{d}.tar"));
+        if let Ok(members) = tar.read().map_err(anyhow::Error::from).and_then(|t| codecs::tar::list_tar(&t)) {
+            for (_, b) in members {
+                let t = String::from_utf8_lossy(&b);
+                out.extend(t.lines().filter_map(|l| serde_json::from_str::<Event>(l).ok()).filter(|e| e.t >= since));
+            }
+        }
+    }
+    out
+}
+
+/// The lead's history as its coordinator answers it (`/api/history`, a page of events at a time):
+/// none when there's no lead to ask, or it doesn't answer.
+fn asked_of_the_lead(root: Option<&store::nasfs::NasRoot>) -> Vec<Event> {
+    let home = coordwire::lead::this_macs_agent();
+    let Ok(Some(c)) = crate::coord::client::Client::to_lead(home.as_deref(), root, &store::sys::host_name()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Event> = Vec::new();
+    let mut after = 0;
+    // (At most 200 pages of 5,000: a week's history, `history::KEEP_MAX`, ten times over.)
+    for _ in 0..200 {
+        let Ok((200, v)) = c.post_json("/api/history", &serde_json::json!({ "since": after, "max": 5000 })) else { break };
+        let page: Vec<Event> = serde_json::from_value(v["events"].clone()).unwrap_or_default();
+        let Some(last) = page.last().map(|e| e.seq) else { break };
+        let full = page.len() >= 5000;
+        out.extend(page);
+        if !full || last <= after {
+            break;
+        }
+        after = last;
+    }
     out
 }
 
@@ -873,16 +896,15 @@ mod tests {
         assert_eq!(new.len(), 1);
         n.note(&new);
         assert!(n.new_tiles(&[pair("6/1/2", "bbbbbbbbbbbbbbbb")]).is_empty());
-        // A new lead: its history begins after; the NAS's says what was noted.
+        // A new lead: its history begins after; the NAS's archive says what was noted.
         let d = tempfile::tempdir().unwrap();
         let t = now_s() - 300;
-        let dir = d.path().join("state/coord/history").join(crate::pool::journal::day(t).unwrap());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("m-a.jsonl"),
-            serde_json::to_string(&Event { t: t + 10, ..noted.clone() }).unwrap() + "\n",
-        )
-        .unwrap();
+        let day = crate::pool::journal::day(t + 10).unwrap();
+        let arch = d.path().join(crate::agent::histarchive::ARCHIVE);
+        std::fs::create_dir_all(&arch).unwrap();
+        let line = serde_json::to_string(&Event { t: t + 10, ..noted.clone() }).unwrap() + "\n";
+        let tar = codecs::tar::build(&[(format!("{day}/m-a.jsonl"), line.into_bytes())]).unwrap();
+        std::fs::write(arch.join(format!("{day}.tar")), tar).unwrap();
         let mut m = PlannedNotes::default();
         assert!(m.begin(t, &[ev("agent", t + 100)], t + 300));
         m.seed_from_nas(store::nasfs::NasRoot::local_for_test(d.path().to_path_buf()));
@@ -927,42 +949,28 @@ mod tests {
         assert_eq!(CatalogueStats::from_log("nothing"), None);
     }
 
+    /// Task #1119: the history is the NAS's archive (each finished day's tar) and the lead's own
+    /// file (its coordinator's, the week's), each event once.
     #[test]
-    fn the_history_from_the_nas_every_writers_once() {
-        let d = tempfile::tempdir().unwrap();
-        let t = now_s();
-        let day = crate::pool::journal::day(t).unwrap();
-        let dir = d.path().join("state/coord/history").join(&day);
-        std::fs::create_dir_all(&dir).unwrap();
-        let line = |e: &Event| serde_json::to_string(e).unwrap() + "\n";
-        let a = Event { seq: 1, ..ev("catalog", t) };
-        let b = Event { seq: 2, ..ev("merged", t + 1) };
-        std::fs::write(dir.join("m-a.jsonl"), line(&a) + &line(&b)).unwrap();
-        std::fs::write(dir.join("m-b.jsonl"), line(&Event { seq: 9, ..a.clone() })).unwrap();
-        let h = load_history(Some(&store::nasfs::NasRoot::local_for_test(d.path())), None, 2);
-        assert_eq!(h.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["catalog", "merged"]);
-        let local = d.path().join("h.jsonl");
-        std::fs::write(&local, line(&b)).unwrap();
-        assert_eq!(load_history(None, Some(&local), 2).len(), 1);
-    }
-
-    #[test]
-    fn the_history_reads_a_day_packed_by_gc() {
+    fn the_history_is_the_archive_and_the_leads_own_each_once() {
         let d = tempfile::tempdir().unwrap();
         let t = now_s() - 86400;
         let day = crate::pool::journal::day(t).unwrap();
         let line = |e: &Event| serde_json::to_string(e).unwrap() + "\n";
         let a = Event { seq: 1, ..ev("catalog", t) };
         let b = Event { seq: 2, ..ev("merged", t + 1) };
-        let arch = d.path().join("state/coord/history-archive");
+        let c = Event { seq: 3, ..ev("pause", now_s()) };
+        let arch = d.path().join(crate::agent::histarchive::ARCHIVE);
         std::fs::create_dir_all(&arch).unwrap();
         let members = vec![(format!("{day}/m-a.jsonl"), line(&a).into_bytes())];
         std::fs::write(arch.join(format!("{day}.tar")), codecs::tar::build(&members).unwrap()).unwrap();
-        // The folder there too (a run stopped before the removals), with a later line: each once.
-        let dir = d.path().join("state/coord/history").join(&day);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("m-a.jsonl"), line(&a) + &line(&b)).unwrap();
-        let h = load_history(Some(&store::nasfs::NasRoot::local_for_test(d.path())), None, 3);
-        assert_eq!(h.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["catalog", "merged"]);
+        let local = d.path().join("history.jsonl");
+        std::fs::write(&local, line(&a) + &line(&b) + &line(&c)).unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let h = load_history(Some(&root), Some(&local), 3);
+        assert_eq!(h.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), ["catalog", "merged", "pause"]);
+        let only = d.path().join("h.jsonl");
+        std::fs::write(&only, line(&b)).unwrap();
+        assert_eq!(load_history(None, Some(&only), 2).len(), 1, "the lead's own alone");
     }
 }

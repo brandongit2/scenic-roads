@@ -39,7 +39,7 @@
 //! older app reads it, so it stays on the NAS until none runs.)
 
 use crate::pool::driver::{self, Driver, Event, Heard, Io, Msg, Out, Saved};
-use crate::pool::journal::{self, Entry};
+use crate::pool::journal::Entry;
 use crate::pool::nas::{Created, Nas};
 use crate::pool::records::Records;
 use crate::pool::{Beat, Member, MemberLock};
@@ -1028,8 +1028,6 @@ pub struct Run {
     marks: Vec<(PathBuf, String)>,
     /// The page's regions as last handed to its coordinator (`/pool/view`): what they were made of.
     pub regions_handed: Option<super::RegionsKey>,
-    /// The history's last event written.
-    pub history_seq: u64,
     /// The members in touch at the lead's last read of their heartbeats (its time; their ids and
     /// hosts), for the history's joins and leaves (crate::agent::lead::membership).
     pub in_touch: Option<(u64, BTreeMap<String, String>)>,
@@ -1300,7 +1298,6 @@ impl Run {
             outbox_drained: false,
             marks: Vec::new(),
             regions_handed: None,
-            history_seq: 0,
             in_touch: None,
             led: false,
             asks: Vec::new(),
@@ -1372,7 +1369,7 @@ impl Run {
     /// then; a change of this process's part is the loop's too (its next
     /// step's `change_part`). None when there was nothing to step (no NAS).
     pub fn tick(&mut self) -> Option<Out> {
-        let root = self.cx.root.clone()?;
+        self.cx.root.as_ref()?;
         let home = self.cx.home.clone();
         let coord = self.cx.coord.clone();
         self.tend_brokers();
@@ -1390,7 +1387,7 @@ impl Run {
         if let (Some(c), Some(e), true) = (&coord, out.leads, self.pending_took_up.is_empty()) {
             c.set_epoch(e);
         }
-        super::lead::after(self, &out, &root, &home, coord.as_deref());
+        super::lead::after(self, &out, &home, coord.as_deref());
         if let Some(co) = &coord {
             co.set_moving_as_of(moving(&self.gates, !self.pending_took_up.is_empty()), checked);
         }
@@ -1966,32 +1963,6 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
                 }
             }
         }
-    }
-    Ok(())
-}
-
-/// The history's events appended to this member's file of their day,
-/// `state/coord/history/<day>/<member>.jsonl` (§7.5: one file per writer; merged for reading by
-/// time, writer and number). Through the share's path (an append: its one writer).
-pub fn append_history(
-    root: &store::nasfs::NasRoot,
-    member: &str,
-    events: &[crate::coord::history::Event],
-) -> Result<()> {
-    let mut by_day: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    for e in events {
-        let Some(day) = journal::day(e.t) else { continue };
-        let b = by_day.entry(day).or_default();
-        b.extend(serde_json::to_vec(e)?);
-        b.push(b'\n');
-    }
-    for (day, b) in by_day {
-        let p = root.join("state/coord/history").join(day).join(format!("{member}.jsonl"));
-        p.parent().unwrap().create_dir_all()?;
-        use std::io::Write;
-        p.open_with(std::fs::OpenOptions::new().create(true).append(true))
-            .and_then(|mut f| f.write_all(&b).and_then(|()| f.close()))
-            .with_context(|| format!("append to {}", p.display()))?;
     }
     Ok(())
 }
@@ -3273,29 +3244,6 @@ mod tests {
             ),
             Ok(())
         );
-    }
-
-    #[test]
-    fn the_history_per_writer() {
-        let d = tempfile::tempdir().unwrap();
-        let r = d.path();
-        let ev =
-            |seq: u64, t: u64| crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("start") };
-        append_history(
-            &store::nasfs::NasRoot::local_for_test(r),
-            "m-000000000000000a",
-            &[ev(1, 1_791_400_000), ev(2, 1_791_400_001)],
-        )
-        .unwrap();
-        append_history(&store::nasfs::NasRoot::local_for_test(r), "m-000000000000000a", &[ev(3, 1_791_500_000)])
-            .unwrap();
-        let day = |t| journal::day(t).unwrap();
-        let f = |t| {
-            std::fs::read_to_string(r.join("state/coord/history").join(day(t)).join("m-000000000000000a.jsonl"))
-                .unwrap()
-        };
-        assert_eq!(f(1_791_400_000).lines().count(), 2);
-        assert_eq!(f(1_791_500_000).lines().count(), 1);
     }
 
     /// Moves a run's clocks on `s` seconds (its driver's wall and awake clocks: `Side::ahead`).

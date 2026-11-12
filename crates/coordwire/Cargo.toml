@@ -24,3 +24,4 @@ testkit = []
 
 [dev-dependencies]
 tempfile = "3"
+store = { path = "../store", features = ["testkit"] }

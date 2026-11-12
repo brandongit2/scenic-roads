@@ -199,7 +199,8 @@ fn timings(a: &cli::Timings) -> Result<()> {
 }
 
 /// `scenic timings publish [--last N]`: publishing end to end (agentcore::pubtimes), from the
-/// build's history (the NAS's, else this Mac's coordinator's; `--file` a history file): each
+/// build's history (the NAS's archive and the lead's own: this Mac's coordinator's, else asked of
+/// the lead; `--file` a history file): each
 /// catalogue of the last N (10) and its z6 tiles, then the medians.
 fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::Places) -> Result<()> {
     use agentcore::pubtimes;
@@ -1675,7 +1676,7 @@ fn cli_main() -> Result<()> {
         }
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
-        Some(Cmd::Gc { dry_run, depth_keep, sweeps, root: r }) => {
+        Some(Cmd::Gc { dry_run, depth_keep, sweeps, history, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)
             let keep = depth_keep.as_deref().and_then(|p| {
                 gc::DepthKeep::read(p, now_s())
@@ -1685,7 +1686,8 @@ fn cli_main() -> Result<()> {
             });
             jobrt::timings::job("gc", || {
                 gc::set_way(pipeline::agent::theplan::the_plan().cost_version(gc::STEP));
-                let asked = gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref() };
+                let asked =
+                    gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref(), history: history.as_deref() };
                 // (Every removal marked deleted on the lead's GC queue first: gc::Lead.)
                 let root = root(&r.root, true)?;
                 let lead = gc::TheLead::find(&root);
@@ -2036,7 +2038,9 @@ fn forecast_check(
     let root = root(r, false)?;
     // (A day before `from` too: what each step's pace reads.)
     let days = now.saturating_sub(from) / 86_400 + 2;
-    let events = fccheck::dedup(agentcore::pubtimes::load_history(Some(&root), None, days));
+    // (The NAS's archive, and the lead's own: this Mac's coordinator's file, else asked of the lead.)
+    let own = app_home().join("agent/coord/history.jsonl");
+    let events = fccheck::dedup(agentcore::pubtimes::load_history(Some(&root), Some(&own), days));
     if let Some(split) = replay {
         let inputs = fccheck::inputs(&root, from, to);
         anyhow::ensure!(!inputs.is_empty(), "no forecast input recorded in the span");

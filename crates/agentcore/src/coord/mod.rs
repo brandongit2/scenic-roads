@@ -13507,14 +13507,16 @@ mod tests {
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
-        let nas = store::nasfs::NasRoot::local_for_test(&root);
         let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
-        pv.set_inputs(crate::agent::pageview::Inputs { root: Some(nas.clone()), ..Default::default() });
+        pv.set_inputs(crate::agent::pageview::Inputs {
+            history: crate::agent::pageview::tests::files(&["m-lead"]),
+            ..Default::default()
+        });
         pv.touch();
         assert!(crate::agent::pageview::tests::read(
             &pv,
             &root,
-            &crate::agent::pageview::NasFiles(nas.clone()),
+            &crate::agent::pageview::tests::Dir::at(&root),
             unix_now()
         ));
         c.set_pageview(pv);
@@ -14035,11 +14037,9 @@ mod tests {
         // This Mac's pageview, before it has read anything: no numbering.
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
-        let nas = store::nasfs::NasRoot::local_for_test(&root);
         let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
         pv.set_inputs(crate::agent::pageview::Inputs {
-            root: Some(nas.clone()),
-            members: vec!["m-lead".into()],
+            history: crate::agent::pageview::tests::files(&["m-lead"]),
             ..Default::default()
         });
         pv.touch();
@@ -14049,6 +14049,7 @@ mod tests {
         // After it read the lead's history, where job 40 is numbered anew.
         let now = unix_now();
         let day = crate::pool::journal::day(now).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
         let put = |p: &str, b: &[u8]| {
             let p = nas.join(p);
             p.parent().unwrap().create_dir_all().unwrap();
@@ -14062,8 +14063,8 @@ mod tests {
             ..crate::coord::history::Event::new("done")
         };
         let ev = serde_json::to_string(&done).unwrap() + "\n";
-        put(&format!("state/coord/history/{day}/m-lead.jsonl"), ev.as_bytes());
-        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::NasFiles(nas.clone()), now));
+        put(&format!("history/{day}/m-lead.jsonl"), ev.as_bytes());
+        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::tests::Dir::at(&root), now));
         let a = ask();
         let n = pv.history(0, 10).unwrap()["events"][0]["seq"].as_u64().unwrap();
         assert_ne!(n, 40);
@@ -14092,15 +14093,14 @@ mod tests {
         crate::agent::pageview::tests::fixture(&nas, now);
         let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
         pv.set_inputs(crate::agent::pageview::Inputs {
-            root: Some(nas.clone()),
-            members: vec!["m-a".into(), "m-b".into()],
+            history: crate::agent::pageview::tests::files(&["m-a", "m-b"]),
             ..Default::default()
         });
         pv.touch();
         c.set_pageview(pv.clone());
         // (Before the pageview's first run: the coordinator's.)
         assert_eq!(post(serde_json::json!({ "at": now }))["at"], 5);
-        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::NasFiles(nas.clone()), now));
+        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::tests::Dir::at(&root), now));
         crate::agent::pageview::tests::settle(&pv);
         let sw = pv.swarm().unwrap();
         let at = sw["agent"]["forecast"]["at"].as_u64().unwrap();

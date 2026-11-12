@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// The days of history the page reads (today's and the six before), kept in the day folders
-/// `state/coord/history/<day>/`; older days are packed one tar a day (crate::agent::histarchive).
+/// The days of history kept (today's and the six before), on the lead's disk (`history.jsonl`);
+/// each finished day is packed into the NAS's archive, a tar a day (crate::agent::histarchive).
 pub const DAYS: u64 = 7;
 /// How long events are kept (seconds), and the most kept (the lead's week to 4 Nov had 62,500,
 /// held ~75 MB in memory: the count bounds a busy week).

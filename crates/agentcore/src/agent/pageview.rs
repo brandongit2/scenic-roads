@@ -1,18 +1,18 @@
 //! The build page's data on the lead (docs/pool.md §10, task #409; the page is the lead's alone,
 //! docs/roles.md §3.3): `/api/swarm` and `/api/history` from its coordinator's view and the
-//! members' history files.
+//! history's file on its own disk.
 //!
 //! While a page has asked in the last `ASKED_FOR_S`, a thread of the agent (`spawn`) asks the
 //! view of the lead's coordinator, in process, every `LEAD_EVERY` (`tick_lead`, `Lead`): its
 //! status, its coordinator's view, the pause, the Macs' addresses (each member's broker: where a
 //! page reads its `/api/live`), and the forecast's input and the page's regions when their time
-//! changed. A view that can't be had leaves the last one, said with its age. Another thread reads the NAS
-//! (`tick`), every `EVERY` at most, by known name (never a folder listing): what the members'
-//! history files of the last `DAYS` days (`state/coord/history/<day>/<member>.jsonl`) gained since
-//! the last read (from the offset read up to; from the start again when a file is now shorter; a
-//! day older than yesterday once read, not again), `CHUNK_MAX` of a file a read at most, the week's
-//! events kept (`data` dropped: the page doesn't show it), `history::KEEP_MAX` at most. Every read
-//! is done before its state's lock is taken, so a slow NAS never holds up an answer. It keeps one
+//! changed. A view that can't be had leaves the last one, said with its age. Another thread reads the
+//! history's files (`tick`, `Inputs::history`: the lead's coordinator's `coord/history.jsonl`, on
+//! its own disk; no NAS read, task #1119), every `EVERY` at most: what each gained since the last
+//! read (from the offset read up to; from the start again when it's another file now, or shorter),
+//! `CHUNK_MAX` of a file a read at most, the week's events kept (`data` dropped: the page doesn't
+//! show it), `history::KEEP_MAX` at most. Every read is done before its state's lock is taken, so a
+//! slow disk never holds up an answer. It keeps one
 //! snapshot: the view, the history merged and numbered here
 //! (`epoch` names the numbering), and the forecast run here (`forecast::Record::forecast`) with its
 //! time brought to now, this Mac's own lanes as its slots are now (`Inputs::own`, worked out as the
@@ -21,7 +21,7 @@
 //! last one done, never waiting on it.
 
 use super::forecast::{Forecast, Record, SlotJob, ToCome};
-use crate::coord::history::{self, Event, History, DAYS};
+use crate::coord::history::{self, Event, History};
 use crate::coord::ViewAsk;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -31,8 +31,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// A page that asked this long ago (s) keeps the reads going; after it, nothing is read.
 pub const ASKED_FOR_S: u64 = 60;
-/// The NAS's files (the history's; the lead's on the older apps' path) are read again this often at
-/// most.
+/// The history's files are read again this often at most.
 pub const EVERY: Duration = Duration::from_secs(12);
 /// The lead's view is asked again this often at most (it answers from memory: docs/coordination.md
 /// step 4).
@@ -76,7 +75,7 @@ const HELPER_FRESH_S: u64 = 600;
 /// The most of a history file taken in a read (bytes); the rest is read the next time.
 pub const CHUNK_MAX: u64 = 4 << 20;
 
-/// Where the history's files are read: the NAS (`NasFiles`), or a test's.
+/// Where the history's files are read: this Mac's disk (`LocalFiles`), or a test's.
 pub trait Source {
     /// What it holds from byte `offset` on, and where that is: from the start (0) when it's now
     /// shorter than `offset` (made again); and which file it is (`FileId`).
@@ -112,15 +111,14 @@ fn head_of(b: &[u8]) -> Vec<u8> {
     b[..b.iter().position(|&c| c == b'\n').unwrap_or(b.len())].to_vec()
 }
 
-/// The NAS's files, each read under nasread's deadline (crate::agent::nasread).
-pub struct NasFiles(pub store::nasfs::NasRoot);
+/// This Mac's files, by path.
+pub struct LocalFiles;
 
-impl Source for NasFiles {
+impl Source for LocalFiles {
     fn read_from(&self, path: &str, offset: u64) -> Option<Chunk> {
-        let p = self.0.join(path);
-        super::nasread::with(&p.clone(), move || {
-            use std::io::{Read, Seek};
-            let mut f = p.open()?;
+        use std::io::{Read, Seek};
+        let r = (|| -> std::io::Result<Chunk> {
+            let mut f = std::fs::File::open(path)?;
             let m = f.metadata()?;
             let from = if m.len() < offset { 0 } else { offset };
             let mut head = vec![0u8; 512];
@@ -130,18 +128,18 @@ impl Source for NasFiles {
             let mut b = Vec::new();
             f.take(CHUNK_MAX).read_to_end(&mut b)?;
             Ok(Chunk { from, bytes: b, id: (ino(&m), head_of(&head)) })
-        })
-        .ok()
+        })();
+        r.ok()
     }
 }
 
-/// What the agent tells it, each loop, from what it holds (no NAS read): the project's root, the
-/// members' ids as the pool's driver knows them, this Mac's app, and its own
-/// lanes now (only while a page asks: `PageView::wanted`).
+/// What the agent tells it, each loop, from what it holds: the history's files (none: not in the
+/// pool), this Mac's app, and its own lanes now (only while a page asks: `PageView::wanted`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Inputs {
-    pub root: Option<store::nasfs::NasRoot>,
-    pub members: Vec<String>,
+    /// The history's files, each with its writer: the lead's coordinator's (`coord/history.jsonl`
+    /// in its agent's folder).
+    pub history: Vec<(String, String)>,
     pub app: String,
     pub own: Vec<OwnLane>,
     /// Where this Mac keeps the last run's waits across a restart (a local file: `KEEP_WAITS_S`).
@@ -311,10 +309,10 @@ impl PageView {
         now.saturating_sub(self.asked.load(Ordering::Relaxed)) < ASKED_FOR_S
     }
 
-    /// Whether it serves the page (the agent told it a root: in the pool). Not: the coordinator
-    /// answers from its memory, as out of the pool.
+    /// Whether it serves the page (the agent told it the history's files: in the pool). Not: the
+    /// coordinator answers from its memory, as out of the pool.
     pub fn active(&self) -> bool {
-        self.inputs.lock().unwrap().root.is_some()
+        !self.inputs.lock().unwrap().history.is_empty()
     }
 
     /// What the agent tells it (`Inputs`).
@@ -421,60 +419,48 @@ impl PageView {
     fn refresh(&self, src: &dyn Source, now: u64) {
         let inp = self.inputs.lock().unwrap().clone();
         let offsets = self.state.lock().unwrap().offsets.clone();
-        // The history: what each member's files of the last DAYS days gained.
+        // The history: what each of its files gained.
         let mut new: Vec<(u64, String, u64, Event)> = Vec::new();
         let mut read_to: BTreeMap<String, (u64, FileId, bool)> = BTreeMap::new();
-        let days: Vec<(u64, String)> = (0..DAYS)
-            .filter_map(|k| crate::pool::journal::day(now.saturating_sub(k * 86_400)).map(|d| (k, d)))
-            .collect();
         let week = now.saturating_sub(history::KEEP_S);
         let mut skipped = 0;
-        for (k, day) in &days {
-            for m in &inp.members {
-                let p = format!("state/coord/history/{day}/{m}.jsonl");
-                let kept = offsets.get(&p);
-                // (A day before yesterday, read already to its end: done with, kept as read.)
-                if *k >= 2 {
-                    if let Some(kk) = kept.filter(|kk| kk.2) {
-                        read_to.insert(p, kk.clone());
-                        continue;
-                    }
+        for (m, p) in &inp.history {
+            let p = p.clone();
+            let kept = offsets.get(&p);
+            let Some(mut c) = src.read_from(&p, kept.map_or(0, |k| k.0)) else {
+                if let Some(k) = kept {
+                    read_to.insert(p, k.clone());
                 }
-                let Some(mut c) = src.read_from(&p, kept.map_or(0, |k| k.0)) else {
-                    if let Some(k) = kept {
-                        read_to.insert(p, k.clone());
-                    }
-                    continue;
-                };
-                // (Another file in its place, written again whole: read from its start, what was
-                // taken in already passed over.)
-                if c.from > 0 && kept.is_some_and(|k| k.1 != c.id) {
-                    match src.read_from(&p, 0) {
-                        Some(again) => c = again,
-                        None => continue,
-                    }
+                continue;
+            };
+            // (Another file in its place, written again whole: read from its start, what was
+            // taken in already passed over.)
+            if c.from > 0 && kept.is_some_and(|k| k.1 != c.id) {
+                match src.read_from(&p, 0) {
+                    Some(again) => c = again,
+                    None => continue,
                 }
-                let (from, b) = (c.from, &c.bytes);
-                let all = (b.len() as u64) < CHUNK_MAX;
-                // (Whole lines alone: one being written is read next time.)
-                let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
-                    // (A whole chunk without a line's end: a line longer than CHUNK_MAX, never
-                    // whole; passed over, counted, so the file isn't stuck on it.)
-                    let to = if all { from } else { from + b.len() as u64 };
-                    skipped += u64::from(!all);
-                    read_to.insert(p, (to, c.id, all));
-                    continue;
-                };
-                for l in b[..end].split(|&c| c == b'\n') {
-                    if let Ok(mut e) = serde_json::from_slice::<Event>(l) {
-                        if e.t >= week {
-                            e.data = None;
-                            new.push((e.t, m.clone(), e.seq, e));
-                        }
-                    }
-                }
-                read_to.insert(p, (from + end as u64 + 1, c.id, all));
             }
+            let (from, b) = (c.from, &c.bytes);
+            let all = (b.len() as u64) < CHUNK_MAX;
+            // (Whole lines alone: one being written is read next time.)
+            let Some(end) = b.iter().rposition(|&c| c == b'\n') else {
+                // (A whole chunk without a line's end: a line longer than CHUNK_MAX, never
+                // whole; passed over, counted, so the file isn't stuck on it.)
+                let to = if all { from } else { from + b.len() as u64 };
+                skipped += u64::from(!all);
+                read_to.insert(p, (to, c.id, all));
+                continue;
+            };
+            for l in b[..end].split(|&c| c == b'\n') {
+                if let Ok(mut e) = serde_json::from_slice::<Event>(l) {
+                    if e.t >= week {
+                        e.data = None;
+                        new.push((e.t, m.clone(), e.seq, e));
+                    }
+                }
+            }
+            read_to.insert(p, (from + end as u64 + 1, c.id, all));
         }
         new.sort_by(|a, b| (a.0, &a.1, a.2).cmp(&(b.0, &b.1, b.2)));
         // (The newest KEEP_MAX alone: the most the history keeps.)
@@ -482,7 +468,7 @@ impl PageView {
         // Swapped in.
         let ran = {
             let mut st = self.state.lock().unwrap();
-            // (Days gone from the last DAYS: their offsets forgotten.)
+            // (Files no longer read: their offsets forgotten.)
             st.offsets = read_to;
             if skipped > 0 {
                 st.skipped += skipped;
@@ -765,8 +751,8 @@ pub fn local_forecast(
     r.forecast(the_plan)
 }
 
-/// The threads that read while a page asks, each second: the NAS's (`PageView::tick`, from `root`
-/// as the agent last told it) and the lead's view (`PageView::tick_lead`), apart so a hung NAS never
+/// The threads that read while a page asks, each second: the history's files (`PageView::tick`, as
+/// the agent last told them) and the lead's view (`PageView::tick_lead`), apart so a slow read never
 /// holds the view up.
 pub fn spawn(pv: Arc<PageView>) {
     let lead = pv.clone();
@@ -774,9 +760,8 @@ pub fn spawn(pv: Arc<PageView>) {
         .name("pageview".into())
         .spawn(move || loop {
             std::thread::sleep(Duration::from_secs(1));
-            let root = pv.inputs.lock().unwrap().root.clone();
-            if let Some(r) = root {
-                pv.tick(&NasFiles(r), now_s());
+            if pv.active() {
+                pv.tick(&LocalFiles, now_s());
             }
         })
         .ok();
@@ -804,7 +789,22 @@ pub(crate) mod tests {
     use std::sync::atomic::AtomicUsize;
 
     /// A folder's files, counted as read.
-    struct Dir(PathBuf, AtomicUsize);
+    pub(crate) struct Dir(pub PathBuf, pub AtomicUsize);
+
+    impl Dir {
+        pub(crate) fn at(p: &std::path::Path) -> Dir {
+            Dir(p.into(), AtomicUsize::new(0))
+        }
+    }
+
+    /// A test's history files, a file a day a writer for the last `DAYS` (by now): as the agent
+    /// tells the history's files (`Inputs::history`), each with its writer.
+    pub(crate) fn files(writers: &[&str]) -> Vec<(String, String)> {
+        (0..crate::coord::history::DAYS)
+            .filter_map(|k| crate::pool::journal::day(now_s().saturating_sub(k * 86_400)))
+            .flat_map(|d| writers.iter().map(move |m| (m.to_string(), format!("history/{d}/{m}.jsonl"))))
+            .collect()
+    }
 
     impl Source for Dir {
         fn read_from(&self, p: &str, offset: u64) -> Option<Chunk> {
@@ -928,10 +928,10 @@ pub(crate) mod tests {
             |seq: u64, t: u64, kind: &str| serde_json::to_string(&Event { seq, t, ..Event::new(kind) }).unwrap() + "\n";
         put(
             root,
-            &format!("state/coord/history/{day}/m-a.jsonl"),
+            &format!("history/{day}/m-a.jsonl"),
             (ev(1, now - 50, "start") + &ev(2, now - 20, "done")).as_bytes(),
         );
-        put(root, &format!("state/coord/history/{day}/m-b.jsonl"), ev(9, now - 30, "lease").as_bytes());
+        put(root, &format!("history/{day}/m-b.jsonl"), ev(9, now - 30, "lease").as_bytes());
         // (m-a heard by its beat: its heartbeat and status in the lead's; m-b, on an older app, on
         // the NAS.)
         let status = serde_json::json!({
@@ -950,8 +950,7 @@ pub(crate) mod tests {
 
     fn inputs(app: &str) -> Inputs {
         Inputs {
-            root: None,
-            members: vec!["m-a".into(), "m-b".into()],
+            history: files(&["m-a", "m-b"]),
             app: app.into(),
             own: Vec::new(),
             keep: None,
@@ -1043,7 +1042,7 @@ pub(crate) mod tests {
         // A line being written is left for next time; what's appended after is read from where it
         // stopped, numbered after what the page has (even when it happened earlier).
         let day = crate::pool::journal::day(now).unwrap();
-        let p = d.path().join(format!("state/coord/history/{day}/m-b.jsonl"));
+        let p = d.path().join(format!("history/{day}/m-b.jsonl"));
         let mut text = std::fs::read_to_string(&p).unwrap();
         text += &(serde_json::to_string(&Event { seq: 10, t: now - 40, ..Event::new("fail") }).unwrap() + "\n");
         text += r#"{"seq":11,"t":"#;
@@ -1181,7 +1180,7 @@ pub(crate) mod tests {
         };
         let lease = Event { seq: 41, t: now - 10, after: vec![40, 7], ..Event::new("lease") };
         let lines: String = [&done, &lease].iter().map(|e| serde_json::to_string(e).unwrap() + "\n").collect();
-        put(&root, &format!("state/coord/history/{day}/m-b.jsonl"), lines.as_bytes());
+        put(&root, &format!("history/{day}/m-b.jsonl"), lines.as_bytes());
         let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(inputs(""));
         pv.touch_at(now);
@@ -1209,7 +1208,7 @@ pub(crate) mod tests {
         rd(&pv, &src, now);
         let day = crate::pool::journal::day(now).unwrap();
         let line = serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("catalog") }).unwrap() + "\n";
-        std::fs::write(d.path().join(format!("state/coord/history/{day}/m-a.jsonl")), line).unwrap();
+        std::fs::write(d.path().join(format!("history/{day}/m-a.jsonl")), line).unwrap();
         pv.state.lock().unwrap().last = None;
         rd(&pv, &src, now);
         let h = pv.history(3, 10).unwrap();
@@ -1229,7 +1228,7 @@ pub(crate) mod tests {
         pv.touch_at(now);
         rd(&pv, &src, now);
         let day = crate::pool::journal::day(now).unwrap();
-        let p = d.path().join(format!("state/coord/history/{day}/m-a.jsonl"));
+        let p = d.path().join(format!("history/{day}/m-a.jsonl"));
         let ev =
             |seq: u64, t: u64, kind: &str| serde_json::to_string(&Event { seq, t, ..Event::new(kind) }).unwrap() + "\n";
         // (Its first event dropped as it's rewritten, one new before the old second, one after.)
@@ -1248,55 +1247,51 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_history_is_the_last_seven_days_an_old_day_read_once() {
-        // (Task #509) today's and the six days before; the eighth not; `data` dropped. (Task #901)
-        // On a clock of its own, never the wall's, at times of day round a UTC midnight: an event a
-        // minute into the day a week back was in the 7th day back's folder, unless the run fell in
-        // a day's last minute (then in the 6th's, read: the test failed).
+    fn the_history_is_the_last_weeks() {
+        // (Task #509) the events of the last week (`history::KEEP_S`), the older not; `data`
+        // dropped. (Task #901) On a clock of its own, never the wall's, at times of day round a
+        // UTC midnight. (Task #1119: one file, the lead's coordinator's, read again from where it
+        // was read to.)
         let midnight = 1_790_000_000 / 86_400 * 86_400;
         for now in [midnight - 1, midnight, midnight + 1, midnight + 43_200, midnight + 86_399] {
             let d = tempfile::tempdir().unwrap();
             let root = store::nasfs::NasRoot::local_for_test(d.path());
             fixture(&root, now);
             let today = now / 86_400 * 86_400;
-            for k in 1..=DAYS {
-                // (In the folder of day k back, at its first minute and its last.)
+            let mut text = String::new();
+            let mut want = Vec::new();
+            for k in (1..=crate::coord::history::DAYS).rev() {
                 let start = today - k * 86_400;
-                let day = crate::pool::journal::day(start).unwrap();
-                let text: String = [start + 60, start + 86_340]
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        let e = Event {
-                            seq: 100 + 2 * k + i as u64,
-                            t,
-                            note: format!("day {k}"),
-                            data: Some(serde_json::json!({ "big": 1 })),
-                            ..Event::new("task")
-                        };
-                        serde_json::to_string(&e).unwrap() + "\n"
-                    })
-                    .collect();
-                put(&root, &format!("state/coord/history/{day}/m-a.jsonl"), text.as_bytes());
+                for (i, t) in [start + 60, start + 86_340].into_iter().enumerate() {
+                    let e = Event {
+                        seq: 100 + 2 * k + i as u64,
+                        t,
+                        note: format!("day {k}"),
+                        data: Some(serde_json::json!({ "big": 1 })),
+                        ..Event::new("task")
+                    };
+                    text += &(serde_json::to_string(&e).unwrap() + "\n");
+                    if t >= now - history::KEEP_S {
+                        want.push(format!("day {k}"));
+                    }
+                }
             }
+            put(&root, "history/m-a.jsonl", text.as_bytes());
             let src = Dir(d.path().into(), AtomicUsize::new(0));
             let pv = PageView::of(crate::agent::seam::for_tests());
-            pv.set_inputs(inputs(""));
+            pv.set_inputs(Inputs { history: vec![("m-a".into(), "history/m-a.jsonl".into())], ..inputs("") });
             pv.touch_at(now);
             rd(&pv, &src, now);
             let h = pv.history(0, 1000).unwrap();
             let evs = h["events"].as_array().unwrap();
             let notes: Vec<&str> = evs.iter().filter_map(|e| e["note"].as_str()).collect();
-            let want: Vec<String> = (1..DAYS).rev().flat_map(|k| [format!("day {k}"), format!("day {k}")]).collect();
-            assert_eq!(notes, want, "at {now}: the 7th day back is past the week");
+            assert_eq!(notes, want, "at {now}: the week's alone");
             assert!(evs.iter().all(|e| e.get("data").is_none()));
-            // (A second read: m-a's five days before yesterday not read again; today's and
-            // yesterday's are, and m-b's missing files are tried again.)
+            // (A second read: the file once, from where it was read to.)
             let first = src.1.load(Ordering::Relaxed);
             pv.state.lock().unwrap().last = None;
             rd(&pv, &src, now);
-            let history = 2 * 2 + 5; // (today's and yesterday's of both; m-b's five missing old days)
-            assert_eq!(src.1.load(Ordering::Relaxed) - first, history, "at {now}: the history's files alone");
+            assert_eq!(src.1.load(Ordering::Relaxed) - first, 1, "at {now}: the history's file alone");
         }
     }
 
@@ -1317,7 +1312,7 @@ pub(crate) mod tests {
                 .collect();
             put(
                 &store::nasfs::NasRoot::local_for_test(d.path()),
-                &format!("state/coord/history/{day}/m-b.jsonl"),
+                &format!("history/{day}/m-b.jsonl"),
                 text.as_bytes(),
             );
         }
@@ -1345,7 +1340,7 @@ pub(crate) mod tests {
         let now = now_s();
         fixture(&store::nasfs::NasRoot::local_for_test(d.path()), now);
         let day = crate::pool::journal::day(now).unwrap();
-        let p = d.path().join(format!("state/coord/history/{day}/m-b.jsonl"));
+        let p = d.path().join(format!("history/{day}/m-b.jsonl"));
         let mut text = "x".repeat(CHUNK_MAX as usize + 10) + "\n";
         text += &(serde_json::to_string(&Event { seq: 1, t: now - 5, ..Event::new("pause") }).unwrap() + "\n");
         std::fs::write(&p, text).unwrap();
@@ -1395,7 +1390,7 @@ pub(crate) mod tests {
         };
         let lines =
             ev(1, now - 50, "start", None) + &ev(2, now - 20, "done", None) + &ev(3, now + 5, "done", Some("depth"));
-        put(&root, &format!("state/coord/history/{day}/m-a.jsonl"), lines.as_bytes());
+        put(&root, &format!("history/{day}/m-a.jsonl"), lines.as_bytes());
         let after_of = |keep: Option<PathBuf>| {
             let pv = PageView::of(crate::agent::seam::for_tests());
             pv.set_inputs(with_keep(keep));
@@ -1423,7 +1418,6 @@ pub(crate) mod tests {
         let c = Arc::new(c);
         let pv = PageView::of(crate::agent::seam::for_tests());
         pv.set_inputs(Inputs {
-            root: Some(store::nasfs::NasRoot::local_for_test(&d.join("nas"))),
             lead: LeadAt(Some(c.clone())),
             ..inputs("1.2.3")
         });
@@ -1431,24 +1425,20 @@ pub(crate) mod tests {
     }
 
     /// docs/coordination.md step 4: the page has the lead's view (its status, view, pause, forecast
-    /// and regions) while every NAS call hangs: the NAS's reads (the history's)
-    /// wait on their own thread, the view asked again and again meanwhile.
+    /// and regions) while the history's read waits: it waits on its own thread, the view asked
+    /// again and again meanwhile.
     #[test]
-    fn the_page_shows_the_lead_s_view_with_the_nas_hung() {
+    fn the_page_shows_the_lead_s_view_while_the_history_waits() {
         let d = tempfile::tempdir().unwrap();
         let now = now_s();
         let (c, pv) = lead_and_view(d.path(), now);
         let pv = Arc::new(pv);
         pv.touch_at(now);
-        let hung = store::deadline::fake::hang(&d.path().join("nas"));
+        let (go, wait) = std::sync::mpsc::channel::<()>();
         let nas = {
-            let pv = pv.clone();
-            let root = store::nasfs::NasRoot::local_for_test(&d.path().join("nas"));
-            std::thread::spawn(move || pv.tick(&NasFiles(root), now))
+            let (pv, root) = (pv.clone(), d.path().to_path_buf());
+            std::thread::spawn(move || pv.tick(&Slow(Dir::at(&root), Mutex::new(wait)), now))
         };
-        while hung.held() == 0 {
-            std::thread::sleep(Duration::from_millis(10));
-        }
         for k in 0..3 {
             c.set_pause(Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, &format!("m{k}"))), now + k);
             pv.state.lock().unwrap().lead_last = None;
@@ -1462,8 +1452,8 @@ pub(crate) mod tests {
             assert!(a["view_age_s"].as_u64().is_some_and(|s| s < 60));
             assert_eq!(pv.regions().unwrap()["catalog"], 3);
         }
-        assert!(!nas.is_finished(), "the NAS's read still hung");
-        drop(hung);
+        assert!(!nas.is_finished(), "the history's read still waits");
+        drop(go);
         nas.join().unwrap();
         // (The lead's status, the forecast's input and the regions sent only when they changed; the
         // page's status the one kept meanwhile.)

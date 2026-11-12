@@ -1316,7 +1316,7 @@ impl Planner {
         let sweeps = self.o.home.join(super::publish::MAPLOG).join(gc::SWEEPS_FILE);
         if let Some(what) = self.gc_work(&sweeps, have.as_deref()) {
             let keep = self.keep_depth_targets();
-            let mut cmd = vec![
+            let cmd = vec![
                 s(&me),
                 "gc".into(),
                 "--root".into(),
@@ -1325,6 +1325,8 @@ impl Planner {
                 s(&keep),
                 "--sweeps".into(),
                 s(&sweeps),
+                "--history".into(),
+                s(&self.o.home.join("coord/history.jsonl")),
             ];
             out.push(JobSpec {
                 id: "gc".into(),

@@ -1964,14 +1964,14 @@ impl Agent {
         } else {
             None
         };
-        if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
+        if let (Some(r), Some((out, _))) = (run.as_mut(), &first) {
             pool::took_up(r, coord.as_deref(), &out.events, out.leads, &store::sys::host_name(), &[]);
             // (The lead's events a member's process before this one kept, for this coordinator's
             // history; and this first step's.)
             if let Some(c) = &coord {
                 lead::replay(&o.home.join("pool"), c);
             }
-            lead::after(r, out, root, &o.home, coord.as_deref());
+            lead::after(r, out, &o.home, coord.as_deref());
         }
         // The build's pause as this agent last knew it (a member that can't reach the lead stays
         // as it was).
@@ -8082,10 +8082,9 @@ impl Agent {
                 self.page_acts = acts;
             }
         }
-        // (The members' ids, as the run holds them: no NAS read here. Their hosts are
-        // the pageview's to read, as it reads, while a page asks.)
+        // (The history's file, its coordinator's on this Mac's disk: the one writer, this lead.)
         let Some(p) = self.pool_seen.as_ref().filter(|_| self.pool.is_some()) else { return };
-        let members: Vec<String> = p.members.clone();
+        let history = vec![(p.member.clone(), self.o.home.join("coord/history.jsonl").display().to_string())];
         // (This Mac's lanes, only while a page asks: each slot's done targets are a read.)
         let own = if self.pageview.wanted(now_s()) {
             (0..self.slots.len())
@@ -8097,8 +8096,7 @@ impl Agent {
         // (The lead's view: its own coordinator's, in process.)
         let lead: std::sync::Arc<dyn pageview::Lead> = coord;
         self.pageview.set_inputs(pageview::Inputs {
-            root: Some(root.clone()),
-            members,
+            history,
             app: self.app.clone(),
             own,
             keep: Some(self.o.home.join("pageview-waits.json")),
@@ -8657,7 +8655,7 @@ impl Agent {
         let mut took = std::mem::take(&mut run.pending_took_up);
         took.extend(out.events.iter().filter(|e| matches!(e, crate::pool::driver::Event::TookUp { .. })).cloned());
         pool::took_up(&mut run, self.coord.as_deref(), &took, out.leads, &self.host, &keep);
-        lead::after(&mut run, &out, r, &home, self.coord.as_deref());
+        lead::after(&mut run, &out, &home, self.coord.as_deref());
         run.cx.coord = self.coord.clone();
         run.cx.broker = self.brokering();
         for e in &out.events {
@@ -8854,29 +8852,8 @@ impl Agent {
                 a.send(e, input);
             }
         }
-        let events = co.history_since(run.history_seq);
-        if run.history_seq == 0 {
-            // (From this process's start: what came before is in the coordinator's own history. But
-            // its coordinator's start ("agent", again on a take-up by the same coordinator: read
-            // once), which crate::coord::history::mend_runs knows a lead's restart by: the
-            // NAS's history had none, so its readers (forecast-check, the backtest's inputs) took
-            // the runs across a restart as written, task #988.)
-            let start: Vec<crate::coord::history::Event> =
-                events.iter().rev().find(|e| e.kind == "agent").cloned().into_iter().collect();
-            if let Err(e) = pool::append_history(root, &run.side.member().id, &start) {
-                eprintln!("agent: the history on the NAS: {e:#}");
-            }
-            run.history_seq = events.last().map_or(0, |e| e.seq).max(1);
-        } else if !events.is_empty() {
-            // (The lead's events are on the NAS already: crate::agent::lead appends them as they come.)
-            let last = events.last().map_or(run.history_seq, |e| e.seq);
-            // (Kind `term`: the lead's take-ups and step-downs, crate::agent::lead::notes.)
-            let events: Vec<crate::coord::history::Event> = events.into_iter().filter(|e| e.kind != "term").collect();
-            match pool::append_history(root, &run.side.member().id, &events) {
-                Ok(()) => run.history_seq = last,
-                Err(e) => eprintln!("agent: the history on the NAS: {e:#}"),
-            }
-        }
+        // (The history: its coordinator's own file, on this Mac's disk (`coord/history.jsonl`): no
+        // copy on the NAS, task #1119; the `gc` job packs its finished days into the NAS's archive.)
     }
 
     /// The newer app installed locally, when there's one (`newer_app`): its version.
@@ -16072,23 +16049,18 @@ mod pool_tests {
             !home.join("pool/jobs").join(&lease).exists(),
             "its folder removed once its saved state held the entry"
         );
-        // The writer isn't named any more (its file as it was), the coordinator's state of its term
-        // and its history are on the NAS, its heartbeat names it.
+        // The writer isn't named any more (its file as it was), its heartbeat names it.
         assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
         // (The coordinator's store's backup, by its own thread each `store::backup_every` (a test's
         // shorter), once the lead's step has started it.)
         until(&mut a, |a| {
             a.pooled().and_then(|p| p.gates.leads).is_some() && r.join(crate::pool::store::BACKUP_PATH).exists()
         });
-        assert!(std::fs::read_dir(r.join("state/coord/history"))
-            .unwrap()
-            .flatten()
-            .any(|day| day.path().join(format!("{me}.jsonl")).exists()));
-        // (With its coordinator's start, which mends the runs across a restart as read: task #988.)
-        assert!(std::fs::read_dir(r.join("state/coord/history")).unwrap().flatten().any(|day| {
-            std::fs::read_to_string(day.path().join(format!("{me}.jsonl")))
-                .is_ok_and(|s| s.lines().any(|l| l.contains(r#""kind":"agent""#)))
-        }));
+        // (Its history on its own disk alone, task #1119, with its coordinator's start, which mends
+        // the runs across a restart as read: task #988.)
+        assert!(!r.join("state/coord/history").exists(), "no history on the NAS");
+        assert!(std::fs::read_to_string(home.join("coord/history.jsonl"))
+            .is_ok_and(|s| s.lines().any(|l| l.contains(r#""kind":"agent""#))));
         assert!(!r.join("state/pool/members").exists(), "its heartbeat in its beats alone");
         let st = read_status(Some(&store::nasfs::NasRoot::local_for_test(&r)), &home).unwrap();
         let pv = st.pool.expect("the pool in its status");

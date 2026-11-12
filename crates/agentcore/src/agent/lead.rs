@@ -197,7 +197,6 @@ pub(crate) fn resolve(run: &Run, name: &str) -> Result<String, String> {
 pub fn after(
     run: &mut Run,
     out: &Out,
-    root: &store::nasfs::NasRoot,
     home: &Path,
     coord: Option<&crate::coord::Coordinator>,
 ) {
@@ -220,14 +219,14 @@ pub fn after(
     // The history.
     let notes = notes(&out.events, &run.side.member().host, now);
     if !notes.is_empty() {
-        note(&notes, coord, root, &me, &dir);
+        note(&notes, coord, &dir);
         run.controls.stale = true;
     }
     let leading = run.side.driver().declared() == Some(me.as_str());
     let host = run.side.member().host.clone();
     let joins = membership(&mut run.in_touch, &run.side.beats, run.side.beats_at, &me, &host, leading);
     if !joins.is_empty() {
-        note(&joins, coord, root, &me, &dir);
+        note(&joins, coord, &dir);
         run.controls.stale = true;
     }
     // The last change of lead, in words.
@@ -490,20 +489,10 @@ pub fn membership(
     out
 }
 
-/// The lead's events noted: appended to this member's history on the NAS (`root`) at once (a lead
-/// stepping down appends its coordinator's history no more: crate::agent's `pool_lead_files`
-/// leaves them out); and into this process's coordinator's history, when it has one, else kept in
-/// its pool folder `dir` for its next process's coordinator (`replay`).
-fn note(
-    events: &[history::Event],
-    coord: Option<&crate::coord::Coordinator>,
-    root: &store::nasfs::NasRoot,
-    member: &str,
-    dir: &Path,
-) {
-    if let Err(e) = super::pool::append_history(root, member, events) {
-        eprintln!("pool: the lead's events in the history on the NAS: {e:#}");
-    }
+/// The lead's events noted: into this process's coordinator's history (its file on this Mac's
+/// disk), when it has one, else kept in its pool folder `dir` for its next process's coordinator
+/// (`replay`).
+fn note(events: &[history::Event], coord: Option<&crate::coord::Coordinator>, dir: &Path) {
     if let Some(c) = coord {
         for e in events {
             c.note(e.clone());
@@ -749,7 +738,6 @@ mod tests {
             pub conds: Conds,
             pub run: Run,
             pub home: PathBuf,
-            pub root: store::nasfs::NasRoot,
         }
 
         pub(super) fn pool(d: &Path) -> (Mac, Mac) {
@@ -771,7 +759,7 @@ mod tests {
                 // unless a test says otherwise.)
                 run.prober.inline = true;
                 run.prober.probe = Arc::new(|_: &[String]| Ok(()));
-                Mac { conds: HOME, run, home, root: store::nasfs::NasRoot::local_for_test(r.clone()) }
+                Mac { conds: HOME, run, home }
             };
             let (mut a, mut b) = (mac("a"), mac("b"));
             assert_eq!(a.go().leads, Some(1));
@@ -803,7 +791,7 @@ mod tests {
                 self.run.conds = Some(self.conds);
                 self.run.tend_reach();
                 let out = self.run.step();
-                after(&mut self.run, &out, &self.root, &self.home, None);
+                after(&mut self.run, &out, &self.home, None);
                 out
             }
             pub fn id(&self) -> String {
@@ -841,7 +829,7 @@ mod tests {
                 a.run.conds = Some(a.conds);
                 a.run.tend_reach();
                 let out = a.run.step();
-                after(&mut a.run, &out, &a.root, &a.home, Some(&c));
+                after(&mut a.run, &out, &a.home, Some(&c));
                 out
             };
             let said = || {

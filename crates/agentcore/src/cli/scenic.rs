@@ -209,6 +209,10 @@ pub enum Cmd {
         /// due and goes on from the folder it reached. Without it every sweep runs whole
         #[arg(long, value_name = "FILE")]
         sweeps: Option<PathBuf>,
+        /// The lead's history (its coordinator's history.jsonl, the agent's): its finished days
+        /// packed into the NAS's archive (state/coord/history-archive/)
+        #[arg(long, value_name = "FILE")]
+        history: Option<PathBuf>,
         #[command(flatten)]
         root: Root,
     },

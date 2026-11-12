@@ -578,7 +578,7 @@ fn pack_month(
     if dry_run {
         return Ok(());
     }
-    histarchive::merge_into_tar(&arch.join(format!("{month}.tar")), members)?;
+    histarchive::merge_into_tar(&arch.join(format!("{month}.tar")), members, histarchive::merge)?;
     for (name, size) in files {
         let p = dir.join(name);
         let q = p.clone();
