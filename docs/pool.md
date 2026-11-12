@@ -1529,7 +1529,8 @@ from the manifest and reads nothing, a second or two where a build takes minutes
 lane-hours). Every step's drops run through one helper (`scenic-build`'s `run_drop`), whose cost
 line carries a `drops` measure (`needs::DROPS`, the packs dropped); such a run counts for nothing
 in its step's model (its priors, fits, time weight, the lead's `step_secs`), and a drop not yet
-measured itself is sized by its step's drops (`Book::drop_need`: their mean time, the 90th
+measured itself as a drop (its own run as a build before it became one says nothing of it: task
+#1087's hollow deep targets had each run) is sized by its step's drops (`Book::drop_need`: their mean time, the 90th
 percentile of their memory), before any of its step's ran by every step's drops (a drop of any
 step reads the manifest alone), and before any drop at all by its step's model, as a build: one
 job, after which it is measured (no figure is typed in for it). The scheduler marks them as

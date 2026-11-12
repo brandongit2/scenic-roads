@@ -7793,17 +7793,22 @@ mod tests {
     }
 
     /// A target offered under its step's "none" key (crate::agent::build::is_none_key) is a drop:
-    /// sized by its step's drops (crate::needs::Book::drop_need), never by its builds; until a drop
-    /// has run, by its step's model as before.
+    /// sized by its step's drops (crate::needs::Book::drop_need), never by its builds, its own run
+    /// as a build before it became a drop among them (task #1087: a hollow deep target that ran);
+    /// until a drop has run, by its step's model as before.
     #[test]
     fn a_drop_is_sized_by_its_steps_drops() {
         let (_d, c, _w) = start();
-        let none = crate::agent::steps::none_key("terrain-deep", "10/100/252").unwrap();
+        let none = |t: &str| crate::agent::steps::none_key("terrain-deep", t).unwrap();
         c.offer(
             "p",
             vec![Offer {
                 step: "terrain-deep".into(),
-                targets: vec![("10/100/252".into(), none, 7000), ("10/256/400".into(), "k".into(), 7000)],
+                targets: vec![
+                    ("10/100/252".into(), none("10/100/252"), 7000),
+                    ("10/256/400".into(), "k".into(), 7000),
+                    ("10/256/352".into(), none("10/256/352"), 7000),
+                ],
                 job: None,
             }],
         );
@@ -7825,9 +7830,11 @@ mod tests {
         put("10/100/250", 150, 2, true);
         assert_eq!(c.measured("terrain-deep", "10/100/252").unwrap().mem_mb, 150, "its step's drops'");
         assert_eq!(c.measured("terrain-deep", "10/256/400").unwrap().mem_mb, build, "a build as before");
+        assert_eq!(c.measured("terrain-deep", "10/256/352").unwrap().mem_mb, 150, "its own build's run isn't a drop's");
         let s = c.shared.lock().unwrap();
         assert_eq!(s.secs_of("terrain-deep", "10/100/252", "m1"), Some(2));
         assert_eq!(s.secs_of("terrain-deep", "10/256/400", "m1"), Some(236));
+        assert_eq!(s.secs_of("terrain-deep", "10/256/352", "m1"), Some(2));
     }
 
     #[test]

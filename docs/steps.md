@@ -117,9 +117,9 @@ makes the same bytes on every Mac.
       run, so neither reads a mid of another terrain or slope version, which they refuse. Its
       record is the "none" key; with nothing named it is then settled as one never run. Its z6
       tile's keys name its mids, so they move once when they go, and its runs then read none
-      there, as over a target never run. An app that doesn't drop it (one from before #1087) runs
-      it, writing its empty outputs again, under the "none" key it was given: current as a drop
-      all the same, until a version moves that key.
+      there, as over a target never run. One whose key can't be told now waits, as any target
+      does: a key unread for a moment never drops outputs that may be current. Only an app that
+      drops it is given the drop: a worker builds for a lead on its own app alone.
     - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 by the rule, its
       z12 tiles' quarters over its z10 tiles' deep mids, its hi pack, and its mid
       (`work/terrain-mid/6-x-y`: its z9 tiles' means). It waits for its own z10 tiles' terrain-deep

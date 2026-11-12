@@ -1352,25 +1352,31 @@ pub fn deep_outputs_named(m: &BTreeMap<String, String>, t: (u32, u32)) -> bool {
 /// where a run would take minutes to write an empty mid again (task #1087: 231-327 s each). One
 /// recorded under its key keeps its outputs, current as they are (a mid of the versions now); one
 /// recorded under its "none" key is current as a drop, its outputs gone (the target then in
-/// `deep_hollow`) or, run by an app that doesn't drop it, made again under its versions now.
+/// `deep_hollow`). One whose key can't be told now (`UNKNOWN`, slope-deep's None) waits as any
+/// target does, so a key unread for a moment never drops outputs that may be current. `tt` itself,
+/// not a copy, when no key moves.
 pub fn hollow_drops<'a>(tt: &'a TerrainTargets, done: &Keys) -> std::borrow::Cow<'a, TerrainTargets> {
-    if tt.deep_hollow_named.is_empty() {
+    let moved = |t: &String, k: Option<&String>, rec: &BTreeMap<String, String>| {
+        tt.deep_hollow_named.contains(t) && k.is_some_and(|k| k != UNKNOWN && rec.get(t) != Some(k))
+    };
+    let td: Vec<usize> = (0..tt.terrain_deep.len())
+        .filter(|&i| moved(&tt.terrain_deep[i].0, Some(&tt.terrain_deep[i].1), &done.terrain_deep))
+        .collect();
+    let sd: Vec<usize> = (0..tt.slope_deep.len())
+        .filter(|&i| moved(&tt.slope_deep[i].0, tt.slope_deep[i].1.as_ref(), &done.slope_deep))
+        .collect();
+    if td.is_empty() && sd.is_empty() {
         return std::borrow::Cow::Borrowed(tt);
     }
+    let none = |step: &str, t: &str| super::steps::none_key(step, t).expect("its versions declared");
     let mut out = tt.clone();
-    let drop_unless = |step: &str, t: &str, k: Option<&String>, rec: &BTreeMap<String, String>| match k {
-        Some(k) if rec.get(t) == Some(k) => None,
-        _ => super::steps::none_key(step, t),
-    };
-    for (t, k) in out.terrain_deep.iter_mut().filter(|(t, _)| tt.deep_hollow_named.contains(t)) {
-        if let Some(n) = drop_unless("terrain-deep", t, Some(&*k), &done.terrain_deep) {
-            *k = n;
-        }
+    for i in td {
+        let (t, k) = &mut out.terrain_deep[i];
+        *k = none("terrain-deep", t);
     }
-    for (t, k) in out.slope_deep.iter_mut().filter(|(t, _)| tt.deep_hollow_named.contains(t)) {
-        if let Some(n) = drop_unless("slope-deep", t, k.as_ref(), &done.slope_deep) {
-            *k = Some(n);
-        }
+    for i in sd {
+        let (t, k) = &mut out.slope_deep[i];
+        *k = Some(none("slope-deep", t));
     }
     std::borrow::Cow::Owned(out)
 }
@@ -7050,10 +7056,59 @@ mod tests {
     /// them while its keys hold (no key moves by the hollow tiles alone); once they move (as a
     /// version bump moves them) each of its two steps is a drop, not a run, first of the work and
     /// waiting on nothing, while its z6 tile's terrain-hi and slope-hi wait for them; dropped, it's
-    /// settled as one never run, and the plan comes to rest with nothing more of it. One an app
-    /// that doesn't drop it ran under its "none" key is current as a drop all the same.
+    /// settled as one never run, and the plan comes to rest with nothing more of it. One of its
+    /// drops alone done holds back only what reads the other.
     #[test]
     fn a_hollow_deep_target_with_outputs_is_dropped_not_run() {
+        // (`hollow_drops` alone: a key held stays, one moved is a drop, one unknown waits; no key
+        // moving, no copy.)
+        {
+            let ts = ["10/1/1", "10/1/2", "10/1/3", "10/1/4"];
+            let tt = TerrainTargets {
+                deep_hollow_named: ts[..3].iter().map(|t| t.to_string()).collect(),
+                terrain_deep: vec![
+                    (ts[0].into(), "k0".into()),
+                    (ts[1].into(), "k1".into()),
+                    (ts[2].into(), UNKNOWN.into()),
+                    (ts[3].into(), "k3".into()),
+                ],
+                slope_deep: vec![
+                    (ts[0].into(), Some("s0".into())),
+                    (ts[1].into(), Some("s1".into())),
+                    (ts[2].into(), None),
+                    (ts[3].into(), Some("s3".into())),
+                ],
+                ..Default::default()
+            };
+            let mut done = Keys::default();
+            for (t, k, s) in [(ts[0], "k0", "s0"), (ts[1], "k1", "s1"), (ts[3], "older", "older")] {
+                done.terrain_deep.insert(t.into(), k.into());
+                done.slope_deep.insert(t.into(), s.into());
+            }
+            assert!(matches!(hollow_drops(&tt, &done), std::borrow::Cow::Borrowed(_)), "no key moves");
+            done.terrain_deep.insert(ts[1].into(), "older".into());
+            done.slope_deep.insert(ts[1].into(), "older".into());
+            let h = hollow_drops(&tt, &done);
+            let none = |s: &str, t: &str| crate::agent::steps::none_key(s, t).unwrap();
+            assert_eq!(
+                h.terrain_deep,
+                vec![
+                    (ts[0].into(), "k0".into()),
+                    (ts[1].into(), none("terrain-deep", ts[1])),
+                    (ts[2].into(), UNKNOWN.into()),
+                    (ts[3].into(), "k3".into()),
+                ]
+            );
+            assert_eq!(
+                h.slope_deep,
+                vec![
+                    (ts[0].into(), Some("s0".into())),
+                    (ts[1].into(), Some(none("slope-deep", ts[1]))),
+                    (ts[2].into(), None),
+                    (ts[3].into(), Some("s3".into())),
+                ]
+            );
+        }
         use terrain::terrain_zoom::{Detail, Presence, Set as FineSet};
         let (c, reach, mut m, mut done) = three();
         let each = c.by_region();
@@ -7145,18 +7200,30 @@ mod tests {
         for s in ["terrain-hi", "slope-hi"] {
             assert!(!of(&p, s).iter().any(|(t, _)| *t == z6), "{s} {z6} waits for the drops");
         }
-        // An app that doesn't drop it runs it under its "none" key, its outputs written again:
-        // current as a drop, nothing waits for it.
-        let mut old = moved.clone();
-        old.record("terrain-deep", &[none("terrain-deep")]);
-        old.record("slope-deep", &[none("slope-deep")]);
-        let p = plan(&m, &old, &hollow);
-        assert!(of(&p, "terrain-deep").is_empty() && of(&p, "slope-deep").is_empty());
-        assert!(of(&p, "terrain-hi").iter().any(|(t, _)| *t == z6), "its z6 tile runs");
-        // Dropped: nothing of it named, settled as one never run ("with no data, not run"); what
-        // reads it run once (its mids read as none now), then at rest with no more of it.
+        // Its terrain-deep dropped alone (its slope-deep's drop failed or given back: no record, its
+        // outputs as they were): terrain-hi reads no mid of it now and runs; slope-hi still waits.
         let mut done = moved;
         terrain_did(&mut m, &mut done, &Work { step: "terrain-deep".into(), targets: vec![none("terrain-deep")] });
+        let p = plan(&m, &done, &hollow);
+        assert!(of(&p, "terrain-hi").iter().any(|(t, _)| *t == z6), "terrain-hi {z6} runs");
+        // (Every other step run until only slope-deep has work.)
+        for _ in 0..20 {
+            let p = plan(&m, &done, &hollow);
+            let Some(w) =
+                STEPS.iter().filter(|s| **s != "slope-deep").map(|s| (*s, of(&p, s))).find(|w| !w.1.is_empty())
+            else {
+                break;
+            };
+            terrain_did(&mut m, &mut done, &Work { step: w.0.into(), targets: w.1 });
+        }
+        let p = plan(&m, &done, &hollow);
+        // (Its neighbours' slope-deep too: their keys read its terrain-deep's outputs, which went.)
+        assert!(of(&p, "slope-deep").contains(&none("slope-deep")), "{:?}", of(&p, "slope-deep"));
+        assert!(done.terrain_hi.get(&z6).is_some_and(|k| k != "older"), "terrain-hi {z6} ran");
+        assert!(!of(&p, "slope-hi").iter().any(|(t, _)| *t == z6), "slope-hi {z6} waits for its drop");
+        assert_eq!(done.slope_hi.get(&z6).map(String::as_str), Some("older"));
+        // Dropped: nothing of it named, settled as one never run ("with no data, not run"); what
+        // reads it run once (its mids read as none now), then at rest with no more of it.
         terrain_did(&mut m, &mut done, &Work { step: "slope-deep".into(), targets: vec![none("slope-deep")] });
         assert!(!deep_outputs_named(&m, (u.x, u.y)), "its outputs dropped");
         let p = plan(&m, &done, &hollow);

@@ -780,12 +780,17 @@ impl Sched {
 
     /// What target `target` of `step` takes as a drop (`drops`) its own run hasn't measured: its
     /// step's drops' time and memory (crate::needs::Book::drop_need); None: no drop, or measured
-    /// itself, or none of its step's drops ran yet (its step's model stands).
+    /// itself as a drop, or none of its step's drops ran yet (its step's model stands). Its own
+    /// run as a build (a target that ran before it became a drop, task #1087's hollow deep targets)
+    /// says nothing of it.
     fn drop_of(&self, b: &crate::needs::Book, step: &str, target: &str) -> Option<(u64, u64)> {
         if !self.drops.contains(&(step.to_string(), target.to_string())) {
             return None;
         }
-        let own = self.costs.get(&cost_key(step, target)).is_some_and(|c| c.v >= self.the_plan.cost_version(step));
+        let own = self
+            .costs
+            .get(&cost_key(step, target))
+            .is_some_and(|c| c.v >= self.the_plan.cost_version(step) && crate::needs::is_drop(c));
         if own {
             return None;
         }
