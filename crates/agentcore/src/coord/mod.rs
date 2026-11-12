@@ -11420,7 +11420,7 @@ mod tests {
         assert!(w.ask(&a).unwrap().is_none());
         let why = c.refusals().get("m1").cloned().unwrap_or_default();
         assert!(
-            why.contains("(memory: 6.0 GB for a new job; disk: 21 GB free · 0 GB for jobs (20 GB room target))"),
+            why.ends_with("of disk: disk short by 0.1 GB (21 GB free · 0 GB for jobs (20 GB room target))"),
             "{why}"
         );
     }
