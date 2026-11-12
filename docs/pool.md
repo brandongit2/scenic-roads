@@ -3110,8 +3110,8 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   after a late save over the one path (task #1152). Runs: 160 mixed seeds, 60 of every
   fault, 60 of the lead's moves and 12 of GC through hours away in the suite; by hand
   (`#[ignore]`): 2,000 mixed and 2,000 every-fault seeds, 2,000 of four hours' faults, each knob
-  alone, and each of 400 seeds run twice for the same events (11 Nov, task #1038: all but the knobs
-  alone run, none wrong; 45, 65 and 85 s on the M4).
+  alone, and each of 400 seeds run twice for the same events (11 Nov, task #1038 and its review on
+  main cb0fba66: all run, none wrong; the first three 45, 65 and 85 s on a quiet M4).
 - **Not modelled by the simulator:** the HTTP transport itself (coordwire's client is driven
   through `Client::through`), the agent's real loop, planning and jobs (`sim::mac` stands in), torn
   reads and other I/O errors of the share, the member lock, a wall clock set while awake, the map
