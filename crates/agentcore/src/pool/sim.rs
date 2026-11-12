@@ -961,6 +961,8 @@ impl World {
         self.disk_lost.insert(k, self.t);
         std::fs::remove_dir_all(&self.macs[k].dir).ok();
         self.stored[k].clear();
+        // (Its leases now the backup's: one granted since is a lease it never held.)
+        self.known[k].clear();
         // (Its map log and GC's queue with it: a new disk's start afresh, docs/maplog.md §7.2.)
         let m = &mut self.macs[k];
         (m.map_seq, m.feed, m.gen) = (0, store::map::feed::Feed::new(), m.gen + 1);
@@ -1215,7 +1217,8 @@ impl World {
     /// Mac `me` starts a job of lease (`epoch`, `n`) over `targets`, granted by Mac `by`'s
     /// coordinator: none of them under another job's live lease, its id never another's.
     ///
-    /// But one: a lease the granting coordinator never held in its process, of an earlier epoch's
+    /// But one: a lease the granting coordinator's store never held (its restarts keep what it
+    /// held; its disk replaced, or another's backup taken up, starts it again), of an earlier epoch's
     /// lead, granted after the last backup of that lead's store this one took up (the owner moved
     /// the lead from a Mac asleep or cut off, or restored the lead's disk from its backup): no lead
     /// can know of it, and its job runs beside the new one until its Mac is heard from (its beat

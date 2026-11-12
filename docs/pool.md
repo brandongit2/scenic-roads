@@ -224,7 +224,9 @@ re-exported as `crate::pool::lead`):
   think they're the lead; written once with create-new, so no Mac's process replaces it. No member
   id is named in code.
 - **Moving the lead** (the mini replaced) is the owner's edit of that file, by hand, naming the new
-  Mac's member id (`scenic pool status` lists them): at its next step the old lead steps down
+  Mac's member id (`scenic pool status` lists them) and setting `since` to the current unix time
+  (`date +%s`): a move away and back is told apart only by `since` (below), so an edit that keeps
+  the old `since` makes a move back look like no move at all: at its next step the old lead steps down
   ("another member is the declared lead"), and the new one takes the records up from the one
   path `STALE_S` (10 min) after it first found itself declared, once the old one's last
   acknowledged save can't read stale (§6.2), its coordinator loading the old lead's store's

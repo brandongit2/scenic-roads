@@ -188,7 +188,9 @@ impl Mac {
             w.macs[k].epoch = c.shared.lock().unwrap().keep.store().map_or(0, |s| s.epoch());
             w.macs[k].coord = Some(Arc::new(c));
             w.macs[k].clock = Some(clock);
-            w.known[k].clear();
+            // (What it knew of its leases stays: its store keeps every lease it answered, a restart
+            // or a crash notwithstanding; only a disk replaced (`World::restore`) or another's
+            // backup taken up replaces it.)
             w.seen_coord(k);
             w.count("lead coordinators started");
             let e = w.macs[k].epoch;
