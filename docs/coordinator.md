@@ -291,9 +291,10 @@ Common rules:
   answer. An upload no install took is removed by a later change once an hour old.
 - **Rolled back** (`POST /release/rollback`, `scenic releases rollback`, publish.sh --rollback after
   its floor check): from the two releases as read (409 else), the one before made live and the
-  live one kept before it. An app rolled back to before task #1101 (20261111-0021-96c737d7) would
-  not reach this app's page or asks, nor this app its: it serves the page at `/work/` and its data
-  and asks at `/work/<name>`, which this app's coordinator refuses (`/work/` holds only the
-  workers' calls), and asks them there, where this app serves them at `/` and `/api/<name>` alone.
+  live one kept before it. An app from before task #1101 (which 20261111-0021-96c737d7 has) and
+  this app don't reach each other's build page or asks: the older serves the page at `/work/` and
+  its data and asks at `/work/<name>`, and asks them there; this app serves and asks them at `/`
+  and `/api/<name>` alone, and its coordinator refuses the page's old addresses (`/work/` holds
+  only the workers' calls).
 - **Planned:** nothing of it on the NAS once the rollout ends (docs/building.md, The NAS's `app/`
   until then).

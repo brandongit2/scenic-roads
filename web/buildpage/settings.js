@@ -36,8 +36,7 @@ export async function ask(call, m, st, body, path = "/api/settings") {
   for (const u of urls) {
     let r;
     try {
-      const post = (p) => fetch(`${u.replace(/\/$/, "")}${p}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
-      r = await post(path);
+      r = await fetch(`${u.replace(/\/$/, "")}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined });
     } catch (e) { last = e; continue; }
     st.url = u;
     const v = await r.json().catch(() => null);
