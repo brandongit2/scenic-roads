@@ -2357,9 +2357,11 @@ fn the_lead_moves_and_moves_back() {
 
 /// A share whose reads fail now and then, each on its own at `rate` (task #1154), and the owner
 /// moving the lead twice, its Macs awake: each declared lead takes up within `TAKE_UP_S` (awake) of
-/// its move, and two leads never grant at once.
+/// its move, and two leads never grant at once. The first move comes once the pool's first lead has
+/// taken up (an app upgrade restarting it can hold that back to 20 minutes in): a take-up of
+/// today's files reads half a dozen more, each of which may fail its try.
 fn flaky_reads(rate: f64) -> Cfg {
-    Cfg { flaky: rate, sleeps: false, move_at: &[900, 2400], faults: 3600, end: 5100, ..Cfg::pool() }
+    Cfg { flaky: rate, sleeps: false, move_at: &[1800, 3300], faults: 4500, end: 6000, ..Cfg::pool() }
 }
 
 /// `flaky_reads`'s runs at 5 % and 20 % of reads failing, `n` seeds each.
@@ -2457,13 +2459,15 @@ fn every_seed_runs_the_same_every_time() {
 fn a_seeds_events() {
     // #repro: POOL_SIM_SEED's events, its knobs as by default, or as POOL_SIM_KNOBS lists them
     // (none: "plain"; "all", "leave", "downgrade", "cuts", "slow", "lose", "fails", "stalls", "net",
-    // "partitions", "one-way", "kills", "crashes", "restores", "moves", "skew=<s>", "stale=<s>"),
+    // "partitions", "one-way", "kills", "crashes", "restores", "moves", "skew=<s>", "stale=<s>";
+    // "flaky=<rate>": `flaky_reads`' runs at that rate),
     // its faults POOL_SIM_MINUTES long (40), to look into one.
     let seed = var("POOL_SIM_SEED", 0);
     let cfg = match std::env::var("POOL_SIM_KNOBS") {
         Ok(knobs) => knobs.split(',').fold(Cfg::pool(), |c, k| match k.split_once('=') {
             Some(("skew", v)) => Cfg { skew: v.parse().unwrap_or(0), ..c },
             Some(("stale", v)) => Cfg { stale: v.parse().unwrap_or(30), ..c },
+            Some(("flaky", v)) => flaky_reads(v.parse().unwrap_or(0.2)),
             _ => match k {
                 "all" => Cfg::all(seed),
                 "leave" => Cfg { leave: true, ..c },
