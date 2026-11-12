@@ -6746,7 +6746,7 @@ mod tests {
         assert!(!w.beat(g.lease, None).unwrap());
     }
 
-    /// Mixed versions (docs/coordination.md §8): a member that doesn't say it speaks for its leases
+    /// Mixed versions (docs/coordination.md §6.1): a member that doesn't say it speaks for its leases
     /// keeps the old rule (they lapse after `TTL` unrenewed, and its beat releases nothing); a lead
     /// that doesn't take the beat answers 404, which a member takes as nothing to do.
     #[test]

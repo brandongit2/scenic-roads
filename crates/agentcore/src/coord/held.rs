@@ -13,7 +13,7 @@
 //!   before, and an older lead answers the beat 404 (the member goes on as before). Each member's
 //!   word is kept in the store (`kept::Heard`), so a lead's restart doesn't drop it.
 //! - **A member not heard from** keeps its leases (they never lapse): held by an away member after
-//!   `AWAY_S`, said in the status (`away`), and released after `AWAY_RELEASE_S` (12 h, the PM's
+//!   `AWAY_S` (`away`; no view says it yet: task #1158), and released after `AWAY_RELEASE_S` (12 h, the PM's
 //!   decision of 30 Oct: a repeat costs doubled work only, the merge refusing the old lease's
 //!   result) or by the owner (`scenic pool release <member>`, `POST /pool/release`).
 

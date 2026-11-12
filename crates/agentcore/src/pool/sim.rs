@@ -986,7 +986,8 @@ impl World {
 
     /// The owner replaces lead `k`'s disk (docs/coordination.md §4.4): its process gone, its agent's
     /// folder with its saved state and records, its store restored from the NAS backup
-    /// (`Store::restore`, the owner's `scenic lead restore`), or none when there's no backup.
+    /// (`Store::restore`, as the owner's planned `scenic lead restore` would: task #1159), or none
+    /// when there's no backup.
     fn restore(&mut self, k: usize) {
         self.crash(k, "its disk is replaced");
         self.macs[k].lose = true;

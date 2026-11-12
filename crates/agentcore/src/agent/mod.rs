@@ -911,7 +911,8 @@ pub struct Status {
     #[serde(default)]
     pub helpers: Vec<Status>,
     /// The members' heartbeats as the lead hears them by HTTP, its own among them (the lead's: every
-    /// Mac's page reads them here, docs/coordination.md step 3, until step 4 serves the view).
+    /// Mac's page reads them here, crate::agent::pageview, from the view the lead serves:
+    /// docs/coordination.md steps 3, 4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub beats: Vec<pool::Heartbeat>,
     /// The build's pause (jobrt::control), while it's paused, as this agent knows it.
@@ -9411,7 +9412,7 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     store::whole::write(p, bytes)
 }
 
-/// The heartbeat `b` written to `p` on the NAS, on the writers under a deadline (nasread::write).
+/// The heartbeat `b` written to `p` on the NAS, under nasread's write deadline (nasread::write).
 fn write_beat(p: &NasPath, b: Vec<u8>) -> Result<()> {
     let p2 = p.clone();
     nasread::write(p, move || write_replace_nas(&p2, &b))
@@ -16311,7 +16312,7 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
-    /// Placement (`state/pool/placement`, crate::agent::placement), with every step to every
+    /// Placement (the pool's setting `placement`, crate::agent::placement), with every step to every
     /// member: off, the lead's coordinator places as before and no job is told to offer ahead; on,
     /// the lead's coordinator is told (the forecast's slack), the member alone
     /// asking is drawn its target and takes it, its job told to offer its tasks ahead
@@ -16613,7 +16614,7 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
-    /// Tasks brokered by every member (`state/pool/brokers`, crate::agent::brokers), two agents in
+    /// Tasks brokered by every member (crate::agent::brokers), two agents in
     /// one process: the member runs a broker and gives its job its address; its heartbeat says
     /// where it is, and it answers a page from the lead's address (CORS); a worker takes the
     /// member's task straight from the member's broker, and the lead's own task from the lead,

@@ -2,7 +2,7 @@
 //! others read (`Snap`), and the typed messages they send each other on `std::sync::mpsc`
 //! channels (`ControlMsg`, `BeatMsg`). A part's own state is `&mut` inside its thread; anything
 //! another part needs it publishes here. No `Mutex` on shared state outside this module (and
-//! nasread's own pools): tests/no_shared_mutex.rs holds the agent's files to it, the ones not yet
+//! nasread's own: its streaks and phases): tests/no_shared_mutex.rs holds the agent's files to it, the ones not yet
 //! split counted until their step lands.
 
 use std::sync::{Arc, Mutex};

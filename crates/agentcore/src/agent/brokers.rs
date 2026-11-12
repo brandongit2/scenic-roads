@@ -1,6 +1,5 @@
-//! Tasks brokered by every member, members' pages talking to members directly (docs/pool.md §8, §9; §12
-//! phase 4's tenth batch). It acts only in the pool (its switch, `state/pool/brokers`, deleted with
-//! task #878 step 5: on everywhere; an older app still reads its file).
+//! Tasks brokered by every member, members' pages talking to members directly (docs/pool.md §8,
+//! §9). Always on, with no switch.
 //!
 //! - **Each member brokers its own jobs' tasks**: a member's agent runs a coordinator of its own
 //!   (its broker, on the pool's port, crate::coord::PORT) and gives its jobs its address, so their

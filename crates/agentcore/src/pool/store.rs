@@ -182,8 +182,9 @@ impl Store {
         Ok(s)
     }
 
-    /// Rebuilds the store in `dir` from `backup` (the NAS's, `BACKUP_PATH`: `scenic lead restore`),
-    /// in place of whatever is there, its epoch `RESTORE_EPOCHS` past the backup's; then opens it.
+    /// Rebuilds the store in `dir` from `backup` (the NAS's, `BACKUP_PATH`), in place of whatever is
+    /// there, its epoch `RESTORE_EPOCHS` past the backup's; then opens it. Run by the simulator's
+    /// disk replacement alone: the owner's command for it is planned (task #1159).
     pub fn restore(dir: &Path, backup: &Snapshot) -> Result<Arc<Store>> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         // (Its position and epoch past whatever is still in `dir`: a crash after the snapshot's

@@ -1,4 +1,4 @@
-//! The agent's part in the pool (docs/pool.md §12, phase 1's integration): what runs the pool's
+//! The agent's part in the pool (docs/pool.md §6, docs/agent-parts.md §4.6): what runs the pool's
 //! driver (crate::pool::driver) and does what it can't do itself. The driver's contract (its
 //! module's doc) says what that is; this module keeps it:
 //!
@@ -22,17 +22,18 @@
 //!   name them; leading, those its members posted it, merged by the driver.
 //! - **The members it knows**: those heard by their beats (crate::coord::beats: the lead's own, a
 //!   member's from its lead's answers), forgotten once not heard for `FORGET_AFTER`.
-//! - **The messages** between a member and the lead, by HTTP (docs/coordination.md step 5), each
-//!   numbered, the sender's last `KEPT` kept in its `mail.json`: to the lead by its coordinator's
-//!   `/pool/mail` (`post_mail`), into its store before it answers, those it hasn't taken posted
-//!   again while it answers the member's beats (none lost while it's down); from the lead in the
-//!   answer to the member's next beat (crate::coord::inbox's `to`), after the number the member
-//!   said it took. Best effort above that, as the driver's are (a message lost is made up for).
+//! - **The messages** from a member to the lead, by HTTP (docs/pool.md §9.1, docs/coordination.md
+//!   step 5), each numbered, the sender's last `KEPT` kept in its `mail.json`: to the lead's
+//!   coordinator's `/pool/mail` (`post_mail`), into its store before it answers, those it hasn't
+//!   taken posted again while it answers the member's beats (none lost while it's down); the lead
+//!   reads them by their numbers (`take_mail`), each once. The lead sends its members none: what it
+//!   tells a member is in its beat's answer (crate::coord::held::Answer).
 //! - **The heartbeat**: the driver's fields, the members it knows, composed each step for its
 //!   agent's beat (crate::agent::beat), stamped as it's sent.
-//! - **The merge's checks** (`check`): what phase 1 checks of a hand-off.
+//! - **The merge's checks** (`check`): what the lead checks of a hand-off as it merges it
+//!   (docs/pool.md §7.3).
 //!
-//! The pool is always on (§12 phase 4's thirteenth batch): every agent with the NAS leads or works
+//! The pool is always on (docs/pool.md §12): every agent with the NAS leads or works
 //! as a member: the declared lead (crate::pool::lead::declared, the Mac mini) leads, every other
 //! Mac is a member (task #881). (`state/pool/enabled`, the switch of before, is no longer read; an
 //! older app reads it, so it stays on the NAS until none runs.)
@@ -237,9 +238,9 @@ pub struct Heartbeat {
     /// whether it can lead now). Left out by apps before phase 3, and ignored by them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conds: Option<Conds>,
-    /// Its broker (docs/pool.md §8, crate::agent::brokers: `state/pool/brokers` on): where a page
-    /// reaches it, and how many of its jobs' tasks wait, of which kinds, how large. Left out with
-    /// the switch off, and by apps before it (ignored by them).
+    /// Its broker (docs/pool.md §8, crate::agent::brokers): where a page reaches it, and how many
+    /// of its jobs' tasks wait, of which kinds, how large. Left out by apps before it (ignored by
+    /// them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub broker: Option<crate::coord::brokers::Broker>,
     /// Always so: said for a lead on the app before task #1036, which reads a heartbeat without them

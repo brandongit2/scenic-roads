@@ -24,7 +24,7 @@
 //!   written to the Mac's disks (IOKit's block storage drivers' statistics) and by each job, as
 //!   rates; the proxy's bytes in and out and its requests asked, as rates; the sampler's own CPU time. Every 10 s the disk's free space and size. The battery, mains power and the
 //!   owner's idleness as the agent's loop reads them (each round, ~20 s; minutes apart when a round is slow). The NAS's latency every 5 s (`NAS_EVERY`), while a build runs (`set_nas`):
-//!   a listing of the project's folder through the records' readers (crate::agent::nasread::probe;
+//!   a listing of the project's folder under nasread's deadline (crate::agent::nasread::probe;
 //!   a stat would be answered from the SMB client's cache), never two at once.
 //! - **The build's limits** as the agent's loop reads them (each round, as the battery): the cores
 //!   the build may use now (all; while the owner uses the Mac, less those kept for them), the

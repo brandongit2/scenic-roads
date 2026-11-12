@@ -112,7 +112,7 @@ fn head_of(b: &[u8]) -> Vec<u8> {
     b[..b.iter().position(|&c| c == b'\n').unwrap_or(b.len())].to_vec()
 }
 
-/// The NAS's files, each read on the records' readers under their deadline (crate::agent::nasread).
+/// The NAS's files, each read under nasread's deadline (crate::agent::nasread).
 pub struct NasFiles(pub store::nasfs::NasRoot);
 
 impl Source for NasFiles {

@@ -1,6 +1,6 @@
 //! The agent's parts share nothing mutable but through `agentcore::agent::bus` (docs/agent-parts.md §3,
 //! task #871): no `Mutex<` in the agent's modules (crates/agentcore/src/agent/, the runtime's, and
-//! crates/pipeline/src/agent/, the plan's) outside bus.rs and nasread.rs (its own call pools). The files not yet split into parts keep the count they have, listed in `LEFT`, until
+//! crates/pipeline/src/agent/, the plan's) outside bus.rs and nasread.rs (its streaks and phases). The files not yet split into parts keep the count they have, listed in `LEFT`, until
 //! their migration step lands (§7): a file with more fails here, and so does one with fewer, so the
 //! list only shrinks and never goes stale. (A scan of the source's text, its comments and strings
 //! blanked.)
@@ -12,7 +12,7 @@ mod common;
 use common::*;
 use std::collections::BTreeMap;
 
-/// Where a `Mutex<` may be: the snapshots' own, and nasread's pools.
+/// Where a `Mutex<` may be: the snapshots' own, and nasread's (its streaks and phases).
 const OWN: &[&str] = &["bus.rs", "nasread.rs"];
 
 /// The files with a `Mutex<` still, and how many, until their step lands.
