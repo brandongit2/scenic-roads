@@ -663,6 +663,18 @@ mod net {
             })
         }
 
+        /// Takes run `f`'s blocks out of `loading` (those still its own): whether any were.
+        fn unload(&mut self, f: &Arc<Flight>) -> bool {
+            let mut any = false;
+            for i in f.a..=f.b {
+                if self.loading.get(&i).is_some_and(|g| Arc::ptr_eq(g, f)) {
+                    self.loading.remove(&i);
+                    any = true;
+                }
+            }
+            any
+        }
+
         fn put(&mut self, i: u64, b: Arc<[u8]>) {
             self.tick += 1;
             self.bytes += b.len();
@@ -748,43 +760,48 @@ mod net {
                 }
             }
             // (Its own runs first, then the others': a reader never waits while a run of its own
-            // is still to be got, so no two wait on each other.)
-            let mut failed = None;
-            for f in &mine {
-                let got = f.got.get_or_init(|| self.get_run(url, size, f.a, f.b));
+            // is still to be got, so no two wait on each other: getting a run waits on no other.)
+            for f in mine.iter().chain(&theirs) {
+                // (A run is got by whichever reader comes to it first: its own reader, or another
+                // wanting it before that reader reached it.)
+                let mut ran = false;
+                let got = f.got.get_or_init(|| {
+                    ran = true;
+                    self.get_run(url, size, f.a, f.b)
+                });
+                // (Its blocks taken out of `loading` once, by the first reader to see it got, and,
+                // got, kept in memory.)
                 let mut c = self.blocks.lock().unwrap();
-                for i in f.a..=f.b {
-                    if c.loading.get(&i).is_some_and(|g| Arc::ptr_eq(g, f)) {
-                        c.loading.remove(&i);
-                    }
-                }
+                let settled = c.unload(f);
                 match got {
                     Ok(blocks) => {
                         for (i, block) in (f.a..).zip(blocks) {
                             if (first..=last).contains(&i) {
                                 have.insert(i, block.clone());
                             }
-                            c.put(i, block.clone());
-                        }
-                    }
-                    Err(e) => failed = Some(e.clone()),
-                }
-            }
-            if let Some(e) = failed {
-                return Err(IoError::Io(std::io::Error::other(e)));
-            }
-            for f in &theirs {
-                match f.got.get_or_init(|| self.get_run(url, size, f.a, f.b)) {
-                    Ok(blocks) => {
-                        for (i, block) in (f.a..).zip(blocks) {
-                            if (first..=last).contains(&i) {
-                                have.insert(i, block.clone());
+                            if settled {
+                                c.put(i, block.clone());
                             }
                         }
                     }
-                    // (Another reader's run that failed: it may have stopped reading (a read ahead
-                    // given up, `cancellable`), so asked again as this reader's own.)
-                    Err(_) => return self.read(url, size, off, len),
+                    // (Its own failure: the reader's error. The mine it hasn't got yet are left
+                    // to whoever wants them: out of `loading`, a later reader gets them anew.)
+                    Err(e) if ran => {
+                        for g in &mine {
+                            c.unload(g);
+                        }
+                        return Err(IoError::Io(std::io::Error::other(e.clone())));
+                    }
+                    // (Another reader's failure: it may have stopped reading (a read ahead given
+                    // up, `cancellable`), so this one asks again, as its own: it's out of
+                    // `loading` now.)
+                    Err(_) => {
+                        for g in &mine {
+                            c.unload(g);
+                        }
+                        drop(c);
+                        return self.read(url, size, off, len);
+                    }
                 }
             }
             let mut out = Vec::with_capacity(len);
@@ -1778,13 +1795,14 @@ mod tests {
     }
 
     /// `dropping_server`, each answer to a range past a file's first 64 KB (not a file's opening)
-    /// held until `gate` is set, when one's given.
-    fn server(file: Served, cut: usize, drops: usize, gate: Option<store::testkit::Signal>) -> String {
+    /// held until `gate` is set, when one's given (`Gate`).
+    fn server(file: Served, cut: usize, drops: usize, gate: Option<Gate>) -> String {
         use std::io::{Read, Write};
         let l = store::spawn::listen("127.0.0.1:0").unwrap();
         l.set_nonblocking(true).unwrap();
         let url = format!("http://{}/z.zip", l.local_addr().unwrap());
         let served = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut gated = 0;
         std::thread::spawn(move || loop {
             let (mut s, _) = match store::spawn::accept(&l) {
                 Ok(c) => c,
@@ -1813,17 +1831,26 @@ mod tests {
                 let (a, b) = r.split_once('-').unwrap();
                 (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap())
             });
+            let mut cut_gated = false;
             if let Some(r) = range {
                 file.lock().unwrap().2.push(r);
                 if let Some(g) = gate.as_ref().filter(|_| r.0 >= READ_AHEAD_TEST) {
-                    g.wait("the test's gate");
+                    g.open.wait("the test's gate");
+                    cut_gated = gated < g.cut;
+                    gated += 1;
                 }
             }
             let n = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let whole = range.is_none() || hdr("if-range:").is_some_and(|v| v != etag.to_ascii_lowercase());
             let (a, b) = if whole { (0, data.len() - 1) } else { range.unwrap() };
             let body = &data[a..=b];
-            let send = if n < drops { body.len().min(cut) } else { body.len() };
+            let send = if cut_gated {
+                0
+            } else if n < drops {
+                body.len().min(cut)
+            } else {
+                body.len()
+            };
             let head = if whole {
                 format!(
                     "HTTP/1.1 200 OK\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1838,6 +1865,13 @@ mod tests {
             drop(s);
         });
         url
+    }
+
+    /// A test server's gate (`server`): its answers past a file's opening held until `open` is
+    /// set, the first `cut` of them then sent without their bytes (a dropped connection).
+    struct Gate {
+        open: store::testkit::Signal,
+        cut: usize,
     }
 
     fn served(data: Vec<u8>, etag: &str) -> Served {
@@ -1857,7 +1891,7 @@ mod tests {
         let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let file = served(data.clone(), "\"v1\"");
         let gate = store::testkit::Signal::new();
-        let url = server(file.clone(), usize::MAX, 0, Some(gate.clone()));
+        let url = server(file.clone(), usize::MAX, 0, Some(Gate { open: gate.clone(), cut: 0 }));
         let r = Fetcher::new(None, true).open(&url).unwrap().unwrap();
         // A reader's run of blocks asked of the server, its answer held.
         let a = {
@@ -1876,6 +1910,36 @@ mod tests {
         assert_eq!(a.join().unwrap(), data[100_000..150_000]);
         assert_eq!(b.join().unwrap(), data[110_000..120_000]);
         assert_eq!(asked_past_head(&file).len(), 1, "one request for both");
+    }
+
+    #[test]
+    fn a_reader_whose_run_another_failed_to_get_gets_it_itself() {
+        let data: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        let file = served(data.clone(), "\"v1\"");
+        let gate = store::testkit::Signal::new();
+        let url = server(file.clone(), usize::MAX, 0, Some(Gate { open: gate.clone(), cut: 1 }));
+        let r = Fetcher::new(None, true).open(&url).unwrap().unwrap();
+        // A reader reading ahead asks for a run, its answer held; a second reader waits for it.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let a = {
+            let (r, stop) = (r.clone(), stop.clone());
+            std::thread::spawn(move || cancellable(&stop, || r.read_at(100_000, 50_000)))
+        };
+        store::testkit::eventually("the first reader's request", || !asked_past_head(&file).is_empty());
+        let b = {
+            let r = r.clone();
+            std::thread::spawn(move || r.read_at(110_000, 10_000).unwrap())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300)); // (absence)
+        assert_eq!(asked_past_head(&file).len(), 1, "waiting, not asking");
+        // The first is stopped, its answer cut: it fails; the second asks for its own blocks.
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        gate.set();
+        assert!(a.join().unwrap().is_err(), "given up");
+        assert_eq!(b.join().unwrap(), data[110_000..120_000]);
+        assert_eq!(asked_past_head(&file).len(), 2);
+        // Nothing left being got: a later read of the first's run gets it.
+        assert_eq!(r.read_at(100_000, 50_000).unwrap(), data[100_000..150_000]);
     }
 
     #[test]

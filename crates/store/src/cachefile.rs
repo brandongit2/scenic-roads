@@ -523,6 +523,11 @@ pub fn scratch(path: &Path) -> io::Result<(PathBuf, File)> {
 /// (another process's copy made meanwhile wins: this one goes), held by this process (as `hold`);
 /// the temporary name goes either way. (A writer that put another file at `tmp`: that one.)
 pub fn publish(f: File, tmp: &Path, path: &Path) -> io::Result<()> {
+    publish_counted(f, tmp, path, true)
+}
+
+/// `publish`, its bytes counted as this process's (`written`) when `count`.
+fn publish_counted(f: File, tmp: &Path, path: &Path, count: bool) -> io::Result<()> {
     let r = (|| -> io::Result<()> {
         let f = match std::fs::metadata(tmp) {
             Ok(m) if id(&m) == id(&f.metadata()?) => f,
@@ -532,7 +537,9 @@ pub fn publish(f: File, tmp: &Path, path: &Path) -> io::Result<()> {
         };
         match std::fs::hard_link(tmp, path) {
             Ok(()) => {
-                count_written(f.metadata().map(|m| m.len()).unwrap_or(0));
+                if count {
+                    count_written(f.metadata().map(|m| m.len()).unwrap_or(0));
+                }
                 keep(f, path)
             }
             // (Another copy made meanwhile: that one's used.)
@@ -581,6 +588,22 @@ pub fn create_bytes(path: &Path, b: &[u8]) -> io::Result<()> {
         let mut f = File::options().write(true).truncate(true).open(t)?;
         f.write_all(b)
     })
+}
+
+/// `put`, not counted as this process's disk (`written`): a file made only into the room past the
+/// owner's room target, which room-making frees as any other (the fetcher's kept ranges,
+/// buildstore::fetch::kept). A job's disk is what it needs; this it never needs, so it never
+/// raises what a job is granted.
+pub fn put_spare(path: &Path, b: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let (tmp, mut f) = scratch(path)?;
+    if let Err(e) = f.write_all(b) {
+        std::fs::remove_file(&tmp).ok();
+        return Err(with(e, "fill", &tmp));
+    }
+    publish_counted(f, &tmp, path, false)?;
+    release(path);
+    Ok(())
 }
 
 /// Deletes the cache file at `path` unless a job holds it (an exclusive lock, not waited for; the
@@ -838,6 +861,20 @@ mod tests {
         let f = d.path().join("written");
         std::fs::write(&f, "123\n").unwrap();
         assert_eq!((read_written(&f), read_written(&d.path().join("none"))), (123, 0));
+    }
+
+    #[test]
+    fn a_spare_file_is_made_but_not_counted_nor_held() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("spare");
+        let n = 32 << 20;
+        let before = written();
+        put_spare(&p, &vec![7u8; n]).unwrap();
+        // (Other tests count theirs meanwhile, never this much.)
+        assert!(written() - before < n as u64, "not counted");
+        assert_eq!(std::fs::read(&p).unwrap().len(), n);
+        assert_eq!(try_remove(&p), Removed::Freed(n as u64), "not held: room-making may free it");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0, "no temporary file left");
     }
 
     #[test]

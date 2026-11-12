@@ -9,16 +9,21 @@
 //! ~1 %, isn't worth the NAS's room.
 //!
 //! - **Where:** the agent's cache (`SCENIC_CACHE`), `blobs/net/<host>/<path>/<length>.<hash16 of
-//!   the version>/<start>-<end>`: one file a range fetched (block-aligned byte offsets, the end
-//!   exclusive), under the file's version as its server names it (its ETag, else its
-//!   Last-Modified: `If-Range`'s validator), so bytes of one version are never read for another. A
-//!   file whose server names no version isn't kept.
-//! - **Made** through store::cachefile (`put`: a temporary name, named only if the name is free;
-//!   never written again), only while the disk has the range's bytes free past the owner's room
-//!   target (the job's, jobrt::room::job_target), as the whole copies are (crate::localread); a
-//!   range answered as another version than the one the file was opened at isn't kept.
-//! - **Read** under the cache's shared lock (store::cachefile::read: a range read whole), marked
-//!   used, its bytes counted as this Mac's disk's (store::nasio's `Local`). A process lists a
+//!   the URL and version>/<start>-<end>.<xxh3>`: one file a range fetched (block-aligned byte
+//!   offsets, the end exclusive, the hash of its bytes), under the file's version as its server
+//!   names it (its ETag, else its Last-Modified: `If-Range`'s validator), so bytes of one version
+//!   are never read for another, nor of one URL for another (the whole URL, its query too, is in
+//!   the hash). A file whose server names no version isn't kept.
+//! - **Made** through store::cachefile (`put_spare`: a temporary name, named only if the name is
+//!   free; never written again), only while the disk has the range's bytes free past the owner's
+//!   room target (the job's, jobrt::room::job_target), as the whole copies are
+//!   (crate::localread); a range answered as another version than the one the file was opened at
+//!   isn't kept. Not counted as the job's disk (store::cachefile::written): a job never needs
+//!   them, so they never raise what a step is granted.
+//! - **Read** under the cache's shared lock (store::cachefile::read: a range read whole), its bytes
+//!   checked against its name's hash (a file whose bytes never reached the disk, a Mac's crash
+//!   after its naming: deleted, fetched again), marked used, its bytes counted as this Mac's
+//!   disk's (store::range's `count_local`). A process lists a
 //!   version's folder as it first reads past what it holds in memory, and again when the folder has
 //!   changed, at most every `RELIST` (a range another process kept since then is fetched again:
 //!   never wrong, only missed).
@@ -68,7 +73,7 @@ impl Kept {
     pub fn version(&self, url: &str, len: u64, version: &str) -> Option<Version> {
         let dir = super::mirror_path(&self.dir, url)
             .ok()?
-            .join(format!("{len}.{}", store::naming::hash16(version.as_bytes())));
+            .join(format!("{len}.{}", store::naming::hash16(format!("{url}\n{version}").as_bytes())));
         Some(Version {
             dir,
             version: version.to_string(),
@@ -89,11 +94,11 @@ pub struct Version {
     listed: Mutex<Listed>,
 }
 
-/// The ranges a process knows its version's folder holds: start → end, and when and as of which
-/// change of the folder it was last listed.
+/// The ranges a process knows its version's folder holds: start → (end, the hash of its bytes), and
+/// when and as of which change of the folder it was last listed.
 #[derive(Default)]
 struct Listed {
-    runs: BTreeMap<u64, u64>,
+    runs: BTreeMap<u64, (u64, u64)>,
     at: Option<(Instant, Option<SystemTime>)>,
 }
 
@@ -113,8 +118,8 @@ impl Version {
         let _w = store::waits::disk();
         let mut runs = BTreeMap::new();
         for e in std::fs::read_dir(&self.dir).into_iter().flatten().flatten() {
-            if let Some((s, e)) = e.file_name().to_str().and_then(parse) {
-                runs.insert(s, e);
+            if let Some((s, e, h)) = e.file_name().to_str().and_then(parse) {
+                runs.insert(s, (e, h));
             }
         }
         // (What this process kept meanwhile stays known.)
@@ -124,10 +129,10 @@ impl Version {
         *l = Listed { runs, at: Some((Instant::now(), changed)) };
     }
 
-    /// The kept range holding bytes `s..e`, by what's listed (`refresh`).
-    fn holding(&self, s: u64, e: u64) -> Option<(u64, u64)> {
+    /// The kept range holding bytes `s..e`, by what's listed (`refresh`): its start, end and hash.
+    fn holding(&self, s: u64, e: u64) -> Option<(u64, u64, u64)> {
         let l = self.listed.lock().unwrap();
-        l.runs.range(..=s).next_back().map(|(&a, &b)| (a, b)).filter(|&(_, b)| b >= e)
+        l.runs.range(..=s).next_back().map(|(&a, &(b, h))| (a, b, h)).filter(|&(_, b, _)| b >= e)
     }
 
     /// Whether bytes `s..e` are kept, by what's listed.
@@ -136,23 +141,30 @@ impl Version {
     }
 
     /// The kept range holding bytes `s..e`: its start and its bytes; None when none is (or it's
-    /// gone since it was listed: forgotten).
+    /// gone since it was listed: forgotten; or its bytes aren't those it was named for: deleted).
     pub fn read(&self, s: u64, e: u64) -> Option<(u64, Vec<u8>)> {
-        let (a, b) = self.holding(s, e)?;
-        let p = self.dir.join(name(a, b));
+        let (a, b, h) = self.holding(s, e)?;
+        let p = self.dir.join(name(a, b, h));
         let got = {
             let _w = store::waits::disk();
             store::cachefile::read(&p).ok().flatten()
         };
-        match got {
-            Some(bytes) if bytes.len() as u64 == b - a => {
-                store::cachefile::touch(&p);
-                Some((a, bytes))
-            }
-            _ => {
-                self.listed.lock().unwrap().runs.remove(&a);
-                None
-            }
+        let whole = got.as_ref().is_some_and(|bytes| bytes.len() as u64 == b - a && store::naming::xxh3(bytes) == h);
+        self.forget_unless(whole, a, &p, got.is_some());
+        Some((a, got.filter(|_| whole)?))
+    }
+
+    /// When `whole`, marks kept range `p` used; else forgets it, and deletes it when it's `there`
+    /// (its bytes not what it was named for).
+    fn forget_unless(&self, whole: bool, a: u64, p: &Path, there: bool) {
+        if whole {
+            store::cachefile::touch(p);
+            return;
+        }
+        self.listed.lock().unwrap().runs.remove(&a);
+        if there {
+            eprintln!("fetch: {}: not the bytes it was named for: deleted", p.display());
+            store::cachefile::discard(p);
         }
     }
 
@@ -167,9 +179,10 @@ impl Version {
             return;
         }
         let _w = store::waits::disk();
-        match store::cachefile::put(&self.dir.join(name(s, e)), bytes) {
+        let h = store::naming::xxh3(bytes);
+        match store::cachefile::put_spare(&self.dir.join(name(s, e, h)), bytes) {
             Ok(()) => {
-                self.listed.lock().unwrap().runs.entry(s).or_insert(e);
+                self.listed.lock().unwrap().runs.entry(s).or_insert((e, h));
             }
             Err(err) => eprintln!("fetch: {}: a range not kept: {err}", self.dir.display()),
         }
@@ -188,16 +201,18 @@ impl Version {
     }
 }
 
-/// A kept range's file name: its start and end.
-fn name(s: u64, e: u64) -> String {
-    format!("{s}-{e}")
+/// A kept range's file name: its start, end and the hash of its bytes (store::naming::xxh3).
+fn name(s: u64, e: u64, h: u64) -> String {
+    format!("{s}-{e}.{h:016x}")
 }
 
-/// A kept range's start and end from its file name (a temporary file's isn't one).
-fn parse(n: &str) -> Option<(u64, u64)> {
-    let (s, e) = n.split_once('-')?;
+/// A kept range's start, end and hash from its file name (a temporary file's isn't one).
+fn parse(n: &str) -> Option<(u64, u64, u64)> {
+    let (range, h) = n.split_once('.')?;
+    let (s, e) = range.split_once('-')?;
     let (s, e) = (s.parse().ok()?, e.parse().ok()?);
-    (s < e).then_some((s, e))
+    let h = (h.len() == 16).then(|| u64::from_str_radix(h, 16).ok()).flatten()?;
+    (s < e).then_some((s, e, h))
 }
 
 #[cfg(test)]
@@ -226,15 +241,36 @@ mod tests {
         v2.refresh();
         assert!(v2.read(200, 300).is_none());
         // A file deleted (room-making) is forgotten, read as not kept.
-        std::fs::remove_file(
-            d.path()
-                .join(DIR)
-                .join("e.org/a/f.tif")
-                .join(format!("1000.{}", store::naming::hash16(b"\"v1\"")))
-                .join("200-300"),
-        )
-        .unwrap();
+        let file = |v: &Version| {
+            let f = std::fs::read_dir(&v.dir)
+                .unwrap()
+                .flatten()
+                .find(|e| parse(&e.file_name().to_string_lossy()).is_some());
+            f.unwrap().path()
+        };
+        std::fs::remove_file(file(&again)).unwrap();
         assert!(again.read(200, 300).is_none() && !again.has(200, 300));
+        // A file whose bytes aren't those it was named for (a crash before they reached the disk:
+        // zeros at its length) is deleted, read as not kept.
+        v1.keep(500, &bytes, Some("\"v1\""));
+        let p = file(&v1);
+        std::fs::write(&p, vec![0u8; 100]).unwrap();
+        assert!(v1.read(500, 600).is_none() && !v1.has(500, 600));
+        assert!(!p.exists(), "deleted");
+        // (A temporary file's name isn't a kept range's.)
+        assert!(parse("0-100.0123456789abcdef.123.4.tmp").is_none());
+        assert_eq!(parse("0-100.0123456789abcdef"), Some((0, 100, 0x0123456789abcdef)));
+    }
+
+    #[test]
+    fn urls_differing_in_their_query_keep_apart() {
+        let d = tempfile::tempdir().unwrap();
+        let k = Kept::new(d.path(), 0);
+        let a = k.version("https://e.org/f.tif?x=1", 1000, "\"v1\"").unwrap();
+        a.keep(0, &[1, 2, 3], Some("\"v1\""));
+        let b = k.version("https://e.org/f.tif?x=2", 1000, "\"v1\"").unwrap();
+        b.refresh();
+        assert!(!b.has(0, 3));
     }
 
     #[test]
