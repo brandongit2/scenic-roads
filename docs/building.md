@@ -618,7 +618,7 @@ LAN (`tools/app/lib.zsh`'s `on_nas_mac`: here when this is it, by its LocalHostN
 `ssh m6`, a fresh connection with keepalives, in its checkout `~/projets/scenic-roads`, whose git
 checks the order): the publishing Mac's own NAS mount plays no part. Away from home that mount is
 through Tailscale (each file several round trips of the link, and stale after a network change),
-and the app is ~840 files; so the app goes to the mini as one gzipped archive instead. (Measured from the M4 away, 11 Nov 2026: an
+and the app is ~840 files; so the app goes to the mini as one archive instead. (Measured from the M4 away, 11 Nov 2026: an
 app of 113 MB in 832 files, packed to 43 MB in 4.7 s, reached the mini in 4.5 s; the same files
 copied through the M4's mount had 699 written, 51 MB, when the copy failed on SMB timeouts after
 23 min. The NAS's ~1–3 file creates a second that day, from the mini too, set the mini's 11 min
@@ -641,23 +641,52 @@ to write them; later that day, with no file's time set (`tar -m`), the mini wrot
    and made from an ancestor (past one from before the shading's encoding and one that won't
    decode), each 200 with a body that decodes;
 5. signs the programs and Scenic.app;
-6. puts the app's folder together in a scratch folder, with its manifest (every file's SHA-256,
-   `app_manifest`) and `tools/nas/fetch-planet.sh`, and sends them as one archive to the NAS's Mac
-   (`nas_send`), whose `nas_install`:
-   receives it whole into `~/Library/Caches/scenic-publish/incoming/<pid>.tgz` and checks its size
-   and SHA-256 (an upload cut short installs nothing), unpacks it beside it and checks the app
-   against the manifest (on the mini's disk: nothing is read back from the NAS); checks the order;
-   writes the app beside its folder (`app/<version>.tmp`, no file's time set) and lists its files
-   back; takes the lock on the NAS (`app/publish.lock`, create-new; one over six hours old taken
-   over, as is one whose process on the NAS's Mac is gone), waiting while another publish holds it,
-   so the slow write runs beside another install, the lock held only to go live; checks the order
-   again; then, on the publishing Mac's go-ahead (asked for once all that passed; none within 5 min,
-   nothing goes in), whatever the connection or signals do next, moves it to `app/<version>/`,
+6. puts the app's folder together in a scratch folder and packs it as the version's archive (a
+   gzipped tar of its files, modes kept: `app_pack`), makes its manifest (every file's SHA-256 and
+   the archive's, `app_manifest`), and sends the archive, the manifest and
+   `tools/nas/fetch-planet.sh` in one tar to the NAS's Mac (`nas_send`), whose `nas_install`:
+   receives it whole into `~/Library/Caches/scenic-publish/incoming/<pid>.tar` and checks its size
+   and SHA-256 (an upload cut short installs nothing), unpacks it and the archive beside it and
+   checks the app against the manifest (on the mini's disk); checks the order; writes the archive
+   beside its name (`app/releases/<version>.tgz.tmp`) and checks the copy's SHA-256; takes the lock
+   on the NAS (`app/publish.lock`, create-new; one over six hours old taken over, as is one whose
+   process on the NAS's Mac is gone), waiting while another publish holds it, so the write runs
+   beside another install, the lock held only to go live; checks the order again; then, on the
+   publishing Mac's go-ahead (asked for once all that passed; none within 5 min, nothing goes in),
+   whatever the connection or signals do next, renames the archive to `app/releases/<version>.tgz`,
    copies `fetch-planet.sh` to the NAS's `nas/` when it differs, the old `current.json` to
-   `previous.json`, writes `current.json` (the manifest), and frees the lock. Its errors go to a
-   file beside the archive, shown as it ends (zsh ends at once on a write to a closed stderr, so a
-   lost connection would otherwise end it with the lock held). The archive and its unpacked copy
-   are removed as it ends, and any left by a receiver that's gone at the next install.
+   `previous.json` in `app/releases/`, writes `current.json` there (the manifest), and frees the
+   lock. Its errors go to a file beside the upload, shown as it ends (zsh ends at once on a write
+   to a closed stderr, so a lost connection would otherwise end it with the lock held). The upload
+   and its unpacked copy are removed as it ends, and any left by a receiver that's gone at the
+   next install.
+
+**The NAS's layout of the app** (#1148): each version is one file, `app/releases/<version>.tgz`,
+beside `app/releases/current.json` (the live version's manifest: `version`, `sha256` of each file,
+`archive_sha256`, and `files`, the list alone, for the updaters before #1148) and `previous.json`
+(the one before), so a publish writes three files to the NAS (the archive, `current.json` and
+`previous.json`; `fetch-planet.sh` too when it changed) where a version's folder was 840 files:
+the NAS creates 1–3 files a second when busy. Each Mac's updater copies the archive and unpacks it locally (docs/macs.md,
+The updater). Measured from the M1 at home through the mini to a scratch root on 12 Nov 2026, the same app
+(118 MB in 840 files; the archive 45 MB, sent in ~2 s): a whole install, upload to live, took 177 s
+and then 42 s in the folder layout, 15, 9 and 11 s as a release, and 46 s as the first release
+(both layouts); on the mini alone, writing the archive took 0.5–1.1 s and reading it back 0.7–2.4 s,
+against 15–43 s for the 840 files; the M1 copied the archive from the NAS in 5.5 s and unpacked it
+in 0.4 s.
+
+**The old layout, until every Mac runs the new app:** before #1148 each version was a folder,
+`app/<version>/`, and the live manifest `app/current.json` (`previous.json` beside it), which the
+updaters before #1148 read. The first release (a publish that finds no `app/releases/current.json`
+while `app/current.json` names a version: `lib.zsh`'s `live_dir`) writes both layouts: the folder
+too, and the manifest in both places, `app/releases/` first. Every later publish, rollback and
+check reads and writes `app/releases/` alone, so `app/current.json` stays on the first release
+for good: a Mac on an old updater, however long it was off, updates to that release once, and
+its updater from then on follows `app/releases/`. A rollback never goes past the first release:
+`app/releases/` has nothing before it (a version before it, whose updater reads `app/current.json`
+only, would go back to the first release at once). Old path, to delete once every Mac runs a
+release (each Mac's `~/Library/Application Support/scenic/app/current` names one): the NAS's
+`app/<version>/` folders, `app/current.json` and `app/previous.json`, `live_dir`'s fallback and
+the first release's folder write in `nas_install`, and the manifest's `files`.
 
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;
@@ -672,10 +701,10 @@ fetched): one of an older or diverged commit fails, saying so, as does one begun
 (`--rollback` no longer waits for a publish's build, only its install). Its last line is
 `published <version>` or `publish: FAILED …`: `FAILED, nothing published` when the NAS's Mac
 installed nothing (unreachable, the upload cut short, a check failed, no go-ahead), or, when the
-go-ahead was sent and the answer lost and `current.json`, read again, doesn't name the version,
+go-ahead was sent and the answer lost and the live manifest, read again, doesn't name the version,
 `FAILED, unknown whether <version> went live` (the NAS's Mac goes on once it has the go-ahead).
 
-`publish.sh --rollback` swaps `current.json` and `previous.json` on the NAS's Mac (`nas_rollback`, under the lock, not waiting for it; within 120 s), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
+`publish.sh --rollback` swaps `app/releases/current.json` and `previous.json` on the NAS's Mac (`nas_rollback`, under the lock, not waiting for it; within 120 s), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
 
 The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
 the keychains). An ssh session can't use the login keychain the desktop unlocked, so a Mac that

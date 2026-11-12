@@ -197,9 +197,14 @@ and codesign.
   constraint, the next, 30 s later, takes); `sandbox.sh clean <dir>`. A server started
   any other way (such as the desktop app's preview) waits on macOS's network-volume prompt; test
   servers run from the shell.
-- **The updater** (`jobrt::appupdate`): every Mac's agent checks the NAS's `app/current.json`
-  every five minutes, copies a newer app locally checking every file's SHA-256, points
-  `app/current` at it and restarts into it by its update drain; on the Mac mini the map server
+- **The updater** (`jobrt::appupdate`): every Mac's agent checks the NAS's
+  `app/releases/current.json` every five minutes; for a newer version it copies the version's
+  archive (`app/releases/<version>.tgz`, one file: docs/building.md, The NAS's layout of the app),
+  checks its SHA-256, unpacks it locally (tar keeps the programs' modes) and checks every file
+  against its SHA-256, the folder holding the manifest's files alone; then it points
+  `app/current` at it and restarts into it by its update drain. (The updaters before #1148 read
+  `app/current.json` and the version's folder, file by file: the first release is the last
+  written so, building.md's old layout.) On the Mac mini the map server
   checks too (so the map updates with the agent stopped), one check at a time (`app/update.lock`),
   and restarts into the new version once the map has been idle a minute. Each copier copies into a
   folder and a link of its own (`<version>.<pid>.tmp`, `current.<pid>.tmp`), so an updater that

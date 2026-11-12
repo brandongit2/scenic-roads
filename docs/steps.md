@@ -792,8 +792,8 @@ What no job makes, kept on the NAS with how it was made. Scripts run in `dem/` (
 - **Every inputs folder's `how/`** says how its input is made, pointing to `producers/<input>/`
   (docs/inputs.md §8); its README is kept in the repository as `producers/how/<box>/README.md`, and
   `inputs/README.md` as `producers/how/inputs-README.md`.
-- **Fonts** (`app/fonts/` on the NAS, `data/fonts` in a checkout): three Noto Sans styles' glyph
-  ranges, `scripts/fonts.sh <folder>`.
+- **Fonts** (`data/fonts` in a checkout, which publish.sh puts in each version's `fonts/`): three
+  Noto Sans styles' glyph ranges, `scripts/fonts.sh <folder>`.
 
 ## 12. Job keys
 

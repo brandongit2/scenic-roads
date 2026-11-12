@@ -30,7 +30,11 @@ map-held/      <seq>.json.zst: the map the catalog step would publish, kept back
                inputs/hold-catalog exists), the newest three
 catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: read by nothing; the
                gc job removes them once every member's app checks the NAS by map/ (step 9)
-app/           published app versions; current.json, previous.json
+app/           releases/: the published app versions, each one archive, <version>.tgz;
+               current.json (the live one's manifest: {version, files, sha256, archive_sha256}),
+               previous.json (docs/building.md, The NAS's layout of the app); publish.lock; the
+               old layout, until every Mac runs a release: <version>/ folders, current.json,
+               previous.json
 settings/      profiles.json: the map's settings profiles, shared by every user (crates/server/src/profiles.rs;
                the one file the map's server writes on the NAS)
 state/         status.json (the lead's heartbeat), coordinator.json (its contact),
