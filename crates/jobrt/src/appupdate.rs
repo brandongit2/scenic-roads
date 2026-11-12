@@ -346,7 +346,8 @@ mod tests {
         .unwrap();
         let mut out =
             std::io::BufRead::lines(std::io::BufReader::new(child.stdout.take().unwrap())).map_while(Result::ok);
-        let said = out.by_ref().any(|l| l == "stand-in running");
+        // (On the line the harness began with the test's name: `test … ... stand-in running`.)
+        let said = out.by_ref().any(|l| l.ends_with("stand-in running"));
         assert!(said, "the stand-in ended before it ran: {:?}", child.wait());
         assert_eq!(running_versions(&app), vec!["20261001-0000-aaaaaaa".to_string()]);
         prune(&d, "20261004-0000-eeeeeee", "20261004-0000-eeeeeee");
