@@ -479,6 +479,18 @@ mod tests {
         serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap()
     }
 
+    /// The status `f` wrote, its loop's age that of the view made at `at`, read before and after:
+    /// whatever the Mac took, never a number of seconds the test names (#1192: a process's first
+    /// write reads this Mac's name, `store::sys::host`, 2-3 s on the loaded test Mac).
+    fn age_said(at: Instant, local: &std::path::Path, f: impl FnOnce()) -> Status {
+        let before = at.elapsed().as_secs();
+        f();
+        let s = said(local);
+        let age = s.loop_age_s.expect("a loop's age");
+        assert!((before..=at.elapsed().as_secs()).contains(&age), "{age} s isn't the view's age");
+        s
+    }
+
     /// docs/coordination.md §8, step 3: two members' beats reach the lead, each of 20 (three
     /// minutes' at `EVERY`; the timer off, each beat a change's, so none is the timer's doing), and
     /// each member hears the other from the lead's answers. (No beat touches the NAS, task #1119.)
@@ -547,8 +559,8 @@ mod tests {
         let mut b = Handle::new(d.path().join("home"), hold.clone());
         std::fs::create_dir_all(d.path().join("home")).unwrap();
         let local = d.path().join("home/status.json");
-        b.publish(view(local.clone()));
-        assert!(said(&local).beat > 1 && said(&local).loop_age_s == Some(0));
+        let v = view(local.clone());
+        assert!(age_said(v.at, &local, || b.publish(v)).beat > 1);
         hold.set(HoldState { held: Some(Hold::new("a test")), at: 5 });
         b.changed();
         assert!(said(&local).held.is_some());
@@ -605,15 +617,15 @@ mod tests {
         let mut b = Handle::new(d.path().into(), Snap::new(HoldState::default()));
         let since = now_s().saturating_sub(LOOP_STUCK.as_secs() + 60);
         b.watch_plan(Arc::new(move || Some((since, "the regions' counts"))));
-        b.publish(view(local.clone()));
+        let v = view(local.clone());
+        let at = v.at;
+        b.publish(v);
         let s = said(&local);
         assert!(s.loop_age_s.unwrap() > LOOP_STUCK.as_secs(), "{s:?}");
         assert_eq!(s.loop_phase.as_deref(), Some("the plan: the regions' counts"));
-        // (No plan running: the round's fresh view, nothing stuck.)
+        // (No plan running: the round's view's age, nothing stuck.)
         b.watch_plan(Arc::new(|| None));
-        b.changed();
-        let s = said(&local);
-        assert_eq!((s.loop_age_s, s.loop_phase), (Some(0), None));
+        assert_eq!(age_said(at, &local, || b.changed()).loop_phase, None);
     }
 
     /// A member's beat to the lead's coordinator at `port`: its own heartbeat as member `id`, its
