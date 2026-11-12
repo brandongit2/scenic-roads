@@ -685,7 +685,14 @@ check reads and writes `app/releases/` alone, so `app/current.json` stays on the
 for good: a Mac on an old updater, however long it was off, updates to that release once, and
 its updater from then on follows `app/releases/`. A rollback never goes past the first release:
 `app/releases/` has nothing before it (a version before it, whose updater reads `app/current.json`
-only, would go back to the first release at once). Old path, to delete once every Mac runs a
+only, would go back to the first release at once). One process of the old app still running beside
+a new one fights it: an old updater points `app/current` back at the first release every five
+minutes while the new one points it at the live release. Only the Mac mini runs two updaters (its
+agent and its map server, which restarts into a new version once the map has been idle a minute),
+so publish the release after the first only once the mini's map server runs the first (its
+process's path under `app/<version>/`); else, until that server restarts, the mini's agent drains
+for an update at every flip. (Seen in the end-to-end run of 12 Nov 2026: an old updater on a home
+at the second release moved it back to the first.) Old path, to delete once every Mac runs a
 release (each Mac's `~/Library/Application Support/scenic/app/current` names one): the NAS's
 `app/<version>/` folders, `app/current.json` and `app/previous.json`, `live_dir`'s fallback and
 the first release's folder write in `nas_install`, and the manifest's `files`.
