@@ -290,6 +290,9 @@ struct Lead {
     /// Its clocks (wall, awake) at its last step whose read of the declaration found it the lead
     /// (`VOUCH_S`); None before one.
     vouched_at: Option<(u64, u64)>,
+    /// The declaration it leads under (its `since`): its saves write the brief, and it
+    /// acknowledges, only while the declaration is that one (`records::Under`).
+    under: Option<u64>,
 }
 
 /// A member's part in the pool, one step at a time (see the module's doc: the contract).
@@ -319,6 +322,9 @@ pub struct Driver {
     lead_member: Option<Member>,
     /// The declaration's `since` as last read naming this member (`Saved::led_under`).
     declared_since: Option<u64>,
+    /// The declaration this process made naming it (its `since`: a new pool's first Mac,
+    /// `lead::declare`).
+    declared_itself: Option<u64>,
 }
 
 impl Driver {
@@ -354,6 +360,7 @@ impl Driver {
             declared: None,
             lead_member: None,
             declared_since: None,
+            declared_itself: None,
         }
     }
 
@@ -499,6 +506,13 @@ impl Driver {
             l.vouched_at
                 .is_none_or(|(w, a)| start.0.saturating_sub(w) >= VOUCH_S || start.1.saturating_sub(a) >= VOUCH_S)
         };
+        // A lead whose read names it under another declaration than it took up under: the owner
+        // moved the lead away and back unread (asleep, or its reads failing), the lead between
+        // maybe granting still. It steps down and takes up anew, `STALE_S` on (`take_up`'s `anew`).
+        // (Task #1038, the simulator's seed 1364.)
+        if mine && read && self.lead.as_ref().is_some_and(|l| l.under.is_some() && l.under != self.declared_since) {
+            self.step_down(&mut out, "declared anew: the owner moved the lead away and back");
+        }
         if self.lead.as_ref().is_some_and(lapsed) {
             self.step_down(
                 &mut out,
@@ -598,6 +612,7 @@ impl Driver {
                 Ok(false) => match lead::declare(io, &self.me, io.now()) {
                     Ok(d) => {
                         self.declared_since = d.as_ref().filter(|d| d.member == self.me.id).map(|d| d.since);
+                        self.declared_itself = self.declared_since;
                         self.know(d.map(|d| Member { id: d.member, host: d.host, app: String::new() }));
                         true
                     }
@@ -705,6 +720,32 @@ impl Driver {
             Ok(o) => o,
             Err(e) => return out.events.push(Event::Waits { what: "take up the records", why: format!("{e:#}") }),
         };
+        // (Only records following the one path's brief (`records::follows`): its snapshot, a later
+        // save of its epoch, or an epoch taken up from them. Others are a save landed late over the
+        // one path (an earlier lead's, left running as it stopped or as the owner moved the lead;
+        // or a take-up's that never reached the NAS before the brief's lead took up, of a higher
+        // epoch or not), whose lead may have acknowledged what they lack; or a stale read. The
+        // fence the terms' own paths were, before step 8c. Tried again: a stale read passes; else
+        // the Mac whose records the brief is of has them on its disk, and leads from them once
+        // declared again.)
+        let follows = |r: &Records| mark.as_ref().is_none_or(|m| records::follows(r, m));
+        let had_own = own.is_some();
+        let (own, one) = match (&mark, own.filter(follows), one) {
+            (Some(m), None, Some(o)) if !follows(&o) => {
+                let how = if (o.epoch, o.seq) < (m.epoch, m.seq) { "older than" } else { "taken up from none of" };
+                return out.events.push(Event::Waits {
+                    what: "take up the records",
+                    why: format!(
+                        "the newest records read are {}, {how} the one path's brief ({m}) or its later saves: a save \
+                         landed late over the one path, or a stale read (tried again; if this lasts, the records are \
+                         on the disk of the Mac that led epoch {}: declare it again)",
+                        o.mark(),
+                        m.epoch
+                    ),
+                });
+            }
+            (_, own, one) => (own, one.filter(follows)),
+        };
         let (base, how) = match (own, one) {
             (Some(r), Some(o)) if (o.epoch, o.seq) > (r.epoch, r.seq) => {
                 if !waited {
@@ -717,10 +758,24 @@ impl Driver {
             }
             (Some(r), _) => (r, "its own records"),
             (None, Some(_)) if !waited => {
-                return wait(self, out, "no records of its own: the one path's");
+                let why = if had_own {
+                    "the one path's records are newer than its own: another lead saved them"
+                } else {
+                    "no records of its own: the one path's"
+                };
+                return wait(self, out, why);
             }
             (None, Some(o)) => (o, "the one path's records"),
-            // (A new pool: no records saved, nor by this Mac before.)
+            // (A new pool: no records saved, nor by this Mac before. Declared by the owner, not by
+            // this process: the Mac declared before may have taken today's files up and be
+            // granting, its save not landed yet; it waits as for the one path's. Task #1038, the
+            // simulator's seed 1887: the owner moved a new pool's lead seconds in, and both took
+            // today's files up at once in epoch 1, granting the same target.)
+            (None, None)
+                if (self.declared_itself.is_none() || self.declared_itself != self.declared_since) && !waited =>
+            {
+                return wait(self, out, "a new pool, declared by the owner: the Mac declared before may lead");
+            }
             (None, None) if saved.is_some() => {
                 return out.events.push(Event::Waits {
                     what: "take up the records",
@@ -746,23 +801,6 @@ impl Driver {
             },
         };
         let mut r = base;
-        // (Nor from records older than the one path's brief: a save landed late over the one path
-        // (an earlier lead's, left running as it stopped or as the owner moved the lead), over the
-        // newer snapshot the brief is of, whose lead may have acknowledged what they lack. The
-        // fence the terms' own paths were, before step 8c. Tried again: a stale read passes; else
-        // the Mac whose records the brief is of has them on its disk, and leads from them once
-        // declared again.)
-        if let Some((e, seq)) = mark.filter(|m| (r.epoch, r.seq) < *m) {
-            return out.events.push(Event::Waits {
-                what: "take up the records",
-                why: format!(
-                    "the newest records read are epoch {}'s at {}, older than the one path's brief (epoch {e}'s at \
-                     {seq}): a save landed late over the one path, or a stale read (tried again; if this lasts, the \
-                     records are on the disk of the Mac that led epoch {e}: declare it again)",
-                    r.epoch, r.seq
-                ),
-            });
-        }
         // (Never from records older than those its lead last saved: a stale read's. What their
         // saves acknowledged is on no member's disk any more: docs/coordination.md step 6.)
         if let Some((e, seq)) = saved.filter(|s| (r.epoch, r.seq) < *s) {
@@ -782,10 +820,15 @@ impl Driver {
             }
         };
         if r.epoch != epoch {
-            (r.epoch, r.seq) = (epoch, 0);
+            // (Today's files are of no epoch: nothing to follow.)
+            if r.epoch > 0 {
+                r.from.push(r.mark());
+            }
+            (r.epoch, r.seq, r.lead) = (epoch, 0, Some(self.me.id.clone()));
         }
         // (Nothing merged yet: its members post it their hand-offs once they know it leads.)
-        let dirty = match r.save(io, &|b| io.keep(b), Some(&self.me.id)) {
+        let under = records::Under { member: &self.me.id, since: self.declared_since };
+        let dirty = match r.save(io, &|b| io.keep(b), Some(under)) {
             Ok(()) => {
                 self.saved.records = Some((r.epoch, r.seq));
                 false
@@ -805,6 +848,11 @@ impl Driver {
         self.taking = None;
         self.spare = None;
         (self.declared_at, self.wait_until) = (None, None);
+        // (Its saved state is its own from here: what it saves leading, and the declaration it led
+        // under, are this process's. Task #1038, the simulator's seed 1364: a process started from
+        // no state of its own took the lead up, slept past `VOUCH_S` while the owner moved the lead
+        // away and back, and took up its own records at once, not `anew`, beside the lead between.)
+        self.known = true;
         if self.declared_since.is_some() {
             self.saved.led_under = self.declared_since;
         }
@@ -817,6 +865,7 @@ impl Driver {
             saved_at: io.awake(),
             held: BTreeMap::new(),
             vouched_at: None,
+            under: self.declared_since,
         });
     }
 
@@ -855,7 +904,7 @@ impl Driver {
         // (Saved again unchanged `RESAVE_S` on: an older save landed late over the one path stays
         // that long at most. That save failing leaves nothing unsaved: tried again next step.)
         if l.dirty || io.awake().saturating_sub(l.saved_at) >= RESAVE_S {
-            match l.records.save(io, &|b| io.keep(b), Some(&me)) {
+            match l.records.save(io, &|b| io.keep(b), Some(records::Under { member: &me, since: l.under })) {
                 Ok(()) => {
                     (l.dirty, l.saved_at) = (false, io.awake());
                     self.saved.records = Some((l.records.epoch, l.records.seq));
@@ -876,18 +925,21 @@ impl Driver {
         if named.is_empty() {
             return;
         }
+        let under = records::Under { member: &me, since: l.under };
         // (Only while the declaration, read after the save, still names it: the owner moved the
         // lead, the next lead may have read its records before this save, and what's acknowledged
         // is on no member's disk then. Its take-up reads them `STALE_S` after finding itself
         // declared, so a save this read follows is in what it reads (`take_up`). Not acknowledged
         // now: next step, while it still leads; else its members keep them for the next lead.)
         match lead::declared(io) {
-            Ok(Some(d)) if d.member == me => {}
+            Ok(Some(d)) if under.names(&d) => {}
             Ok(d) => {
                 let who = d.map_or("no member".to_string(), |d| if d.host.is_empty() { d.member } else { d.host });
                 return out.events.push(Event::Waits {
                     what: "acknowledge hand-offs",
-                    why: format!("the declaration names {who} after its save: its next lead has them"),
+                    why: format!(
+                        "the declaration names {who} after its save, not as it took the lead up: its next lead has them"
+                    ),
                 });
             }
             Err(err) => {
@@ -1629,6 +1681,9 @@ mod tests {
         };
         declare_at(A, 100);
         let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        // (A new pool declared by the owner: `STALE_S` before today's files are taken up.)
+        assert_eq!(step(&mut a, &ia, able()).leads, None);
+        ia.pass(STALE_S);
         assert!(step(&mut a, &ia, able()).leads.is_some());
         assert_eq!(a.saved().led_under, Some(100));
         ia.restart();
@@ -1648,6 +1703,43 @@ mod tests {
         ia.pass(STALE_S);
         let o = step(&mut a, &ia, able());
         assert!(o.leads.is_some(), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
+        assert_eq!(a.saved().led_under, Some(300));
+    }
+
+    /// Task #1038 (the simulator's seed 1364): a lead that reads itself declared under another
+    /// declaration than it took up under (the owner moved the lead away and back while it slept, or
+    /// its reads failed) steps down at once, however recent its last read, and takes up its own
+    /// records only `STALE_S` on: the lead between may grant still. So too a process started from
+    /// no state of its own (a new pool's first, or its state lost), which had taken up at once.
+    #[test]
+    fn a_lead_declared_anew_while_leading_steps_down_and_waits() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let declare_at = |to: &str, since: u64| {
+            mem.write_whole(lead::LEAD, format!("{{\"member\": \"{to}\", \"since\": {since}}}").as_bytes()).unwrap()
+        };
+        declare_at(A, 100);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        // (A new pool declared by the owner: `STALE_S` before today's files are taken up.)
+        assert_eq!(step(&mut a, &ia, able()).leads, None);
+        ia.pass(STALE_S);
+        assert!(step(&mut a, &ia, able()).leads.is_some());
+        // Moved to B and back within a minute, unread.
+        declare_at(B, 200);
+        declare_at(A, 300);
+        ia.pass(60);
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, None, "{:?}", o.events);
+        assert!(
+            o.events.iter().any(|e| matches!(e, Event::SteppedDown { why, .. } if why.contains("declared anew"))),
+            "{:?}",
+            o.events
+        );
+        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { why, .. } if why.contains("declared anew"))));
+        ia.pass(STALE_S);
+        let o = step(&mut a, &ia, able());
         assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { how, .. } if how == "its own records")));
         assert_eq!(a.saved().led_under, Some(300));
     }
@@ -1697,6 +1789,40 @@ mod tests {
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
         assert_eq!(a.records().unwrap().seq, 2, "numbered on from the try kept");
         assert!(a.records().unwrap().handles(&key));
+    }
+
+    /// Task #1038 (the simulator's seed 1887): in a new pool, only the Mac that declared itself
+    /// takes today's files up at once. The owner moving the lead seconds in, the next Mac finds no
+    /// records yet (the first lead's save not landed) and waits `STALE_S` as for the one path's,
+    /// the first lead stepping down meanwhile: it had taken today's files up at once, and both
+    /// granted.
+    #[test]
+    fn a_new_pools_lead_moved_by_the_owner_waits_for_the_first_ones_records() {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        // A declares itself and takes today's files up; its save not on the NAS yet.
+        *ia.wfail.borrow_mut() = Some("records".into());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, Some(1), "{:?}", o.events);
+        assert!(!mem.exists(records::ONE).unwrap());
+        // The owner moves the lead to B.
+        mem.write_whole(lead::LEAD, format!("{{\"member\": \"{B}\", \"since\": {}}}", T0 + 5).as_bytes()).unwrap();
+        let mut b = Driver::unlocked(member(B, "MacBook", V2), Saved::default());
+        let o = step(&mut b, &ib, able());
+        assert_eq!(o.leads, None, "{:?}", o.events);
+        assert!(o
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Waits { why, .. } if why.contains("declared by the owner"))));
+        // A reads the move and steps down; then B takes up.
+        *ia.wfail.borrow_mut() = None;
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, able()).leads, None);
+        ib.pass(STALE_S);
+        let o = step(&mut b, &ib, able());
+        assert!(o.leads.is_some(), "{:?}", o.events);
     }
 
     /// The first take-up waits for its agent's store (none before its coordinator starts), and

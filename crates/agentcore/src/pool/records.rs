@@ -346,6 +346,51 @@ pub struct Records {
     /// lease for one of them, merged later, changes nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub last: BTreeMap<String, BTreeMap<String, LeaseId>>,
+    /// The member whose take-up began its epoch (crate::pool::driver's take-up): two Macs may lead
+    /// one epoch number (docs/pool.md §4 invariant 2's limit), never one Mac twice. None: records of
+    /// before task #1038.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<String>,
+    /// The snapshots its epochs were taken up from, the oldest first: each take-up adds the one it
+    /// started from (none for today's files; none in records of before task #1038). A take-up's
+    /// fence (`follows`): a late brief of an earlier lead is followed too. A few dozen bytes a
+    /// take-up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<Mark>,
+}
+
+/// A snapshot: its epoch, its number there, and the member whose take-up began that epoch
+/// (`Records::lead`), as a brief says it (`brief_mark`) and a take-up notes what it started from
+/// (`Records::from`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mark {
+    #[serde(rename = "term")]
+    pub epoch: u64,
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<String>,
+}
+
+impl Mark {
+    /// Whether this snapshot is `b` or a later save of its epoch's lead (one not known on either
+    /// side: its epoch and seq alone).
+    fn at_or_after(&self, b: &Mark) -> bool {
+        let same = match (&self.lead, &b.lead) {
+            (Some(x), Some(y)) => x == y,
+            _ => true,
+        };
+        self.epoch == b.epoch && self.seq >= b.seq && same
+    }
+}
+
+impl std::fmt::Display for Mark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "epoch {}'s at {}", self.epoch, self.seq)?;
+        match &self.lead {
+            Some(l) => write!(f, " (of {l}'s take-up)"),
+            None => Ok(()),
+        }
+    }
 }
 
 /// A snapshot's manifest and keys alone (a quarter of its bytes: the unverified uploads, the sizes
@@ -412,19 +457,43 @@ pub fn load_one(nas: &dyn Nas) -> Result<Option<Records>> {
     buildstore::records::load_one(nas)
 }
 
-/// The (epoch, seq) of the one path's brief (`ONE_BRIEF`) as read now; None when there's none: a
-/// lead's take-up's fence (crate::pool::driver). A save writes its brief only once its snapshot is
-/// written whole at the one path, so a snapshot older than the brief there is one that landed late
-/// over a newer save's (an earlier lead's write left running): its brief's epoch and seq say so.
-pub fn brief_mark(nas: &dyn Nas) -> Result<Option<(u64, u64)>> {
-    #[derive(Deserialize)]
-    struct Mark {
-        term: u64,
-        seq: u64,
+/// The declaration a lead leads under: its member, and the declaration's `since` as it took the
+/// records up (None: not known, its member alone compared). Declared anew (the owner moved the
+/// lead away and back), it no longer names that lead: the lead between may have led meanwhile.
+#[derive(Clone, Copy, Debug)]
+pub struct Under<'a> {
+    pub member: &'a str,
+    pub since: Option<u64>,
+}
+
+impl Under<'_> {
+    /// Whether declaration `d` is the one this lead leads under.
+    pub fn names(&self, d: &buildstore::records::lead::Declared) -> bool {
+        d.member == self.member && self.since.is_none_or(|s| s == d.since)
     }
+}
+
+/// Whether records `r` follow the snapshot the one path's brief is of (`brief`), so hold all that
+/// its lead acknowledged: that snapshot or a later save of its epoch's lead, or epochs taken up
+/// from them (`Records::from`: a brief that landed late over a later lead's is followed too). Any other records are a save
+/// landed late over the one path, or a stale read: older than the brief, or of an epoch whose
+/// take-up never reached the NAS before the brief's lead took up (docs/pool.md §4 invariant 2's
+/// limit), numbered higher or not: what the brief's lead acknowledged is on that lead's disk.
+/// (Task #1038, the simulator's seed 20058: a new lead's take-up landed half an hour late, in a
+/// higher epoch, over the records the lead after it saved, and a take-up from it lost what that
+/// lead had acknowledged.)
+pub fn follows(r: &Records, brief: &Mark) -> bool {
+    r.mark().at_or_after(brief) || r.from.iter().any(|f| f.at_or_after(brief))
+}
+
+/// The snapshot the one path's brief (`ONE_BRIEF`) is of, as read now; None when there's none: a
+/// lead's take-up's fence (crate::pool::driver, `follows`). A save writes its brief only once its
+/// snapshot is written whole at the one path, and only while the declaration is the one its lead
+/// leads under, so a snapshot at the one path not following the brief is one that landed late
+/// over a newer save's (an earlier lead's write left running).
+pub fn brief_mark(nas: &dyn Nas) -> Result<Option<Mark>> {
     let Some(b) = nas.read(ONE_BRIEF)? else { return Ok(None) };
-    let m: Mark = serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {ONE_BRIEF}: {e}"))?;
-    Ok(Some((m.term, m.seq)))
+    Ok(Some(serde_json::from_slice(&b).map_err(|e| anyhow::anyhow!("parse {ONE_BRIEF}: {e}"))?))
 }
 
 impl Records {
@@ -452,13 +521,14 @@ impl Records {
     /// Saves them as the next snapshot (`seq` one more): kept by `keep` first (the lead's own
     /// disk, what its take-up starts from: docs/coordination.md step 8b), nothing written to the
     /// NAS unless that's done; then whole to the one path and its brief (`ONE`, `ONE_BRIEF`), the
-    /// brief only while the declaration (read between) still names `lead` (when given): a save
-    /// that lands late, its lead moved meanwhile, leaves the next lead's brief, so a take-up's
+    /// brief only while the declaration (read between) is still the one `lead` leads under (when
+    /// given; `Under`): a save that lands late, its lead moved meanwhile (away, or away and
+    /// back: seed 1364), leaves the next lead's brief, so a take-up's
     /// fence (`brief_mark`) sees the one path's records older than it (task #1038, the
     /// simulator: a lead asleep mid-save wrote both over the next lead's, and a take-up from them
     /// lost what that lead acknowledged). A read that fails writes it, as before. The number goes
     /// up even when a write fails, so no two versions that may land share one.
-    pub fn save(&mut self, nas: &dyn Nas, keep: Keep, lead: Option<&str>) -> std::result::Result<(), Unsaved> {
+    pub fn save(&mut self, nas: &dyn Nas, keep: Keep, lead: Option<Under>) -> std::result::Result<(), Unsaved> {
         if self.epoch < 1 {
             return Err(Unsaved::Kept(anyhow::anyhow!("records of no epoch")));
         }
@@ -472,26 +542,39 @@ impl Records {
     }
 
     /// Their NAS files, `b` the snapshot's bytes (`save`).
-    fn put(&self, nas: &dyn Nas, b: &[u8], lead: Option<&str>) -> Result<()> {
+    fn put(&self, nas: &dyn Nas, b: &[u8], lead: Option<Under>) -> Result<()> {
         // (Brief's fields, borrowed.)
         #[derive(Serialize)]
         struct B<'a> {
             term: u64,
             seq: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            lead: &'a Option<String>,
             manifest: &'a BTreeMap<String, String>,
             keys: &'a Keys,
         }
-        let brief =
-            serde_json::to_vec(&B { term: self.epoch, seq: self.seq, manifest: &self.manifest, keys: &self.keys })?;
+        let brief = serde_json::to_vec(&B {
+            term: self.epoch,
+            seq: self.seq,
+            lead: &self.lead,
+            manifest: &self.manifest,
+            keys: &self.keys,
+        })?;
         nas.write_whole(ONE, b)?;
         if let (Some(me), Ok(Some(d))) = (lead, buildstore::records::lead::declared(nas)) {
             anyhow::ensure!(
-                d.member == me,
-                "{ONE} written, its brief not: {} is the declared lead now (this save landed late)",
-                d.host
+                me.names(&d),
+                "{ONE} written, its brief not: {} is the declared lead now, declared at {} (this save landed late)",
+                d.host,
+                d.since
             );
         }
         nas.write_whole(ONE_BRIEF, &brief)
+    }
+
+    /// Which snapshot they are (`Mark`).
+    pub fn mark(&self) -> Mark {
+        Mark { epoch: self.epoch, seq: self.seq, lead: self.lead.clone() }
     }
 
     /// Whether hand-off `key` is in them: applied (or passed over), or refused.
@@ -738,18 +821,34 @@ mod tests {
         };
         lead("a");
         let mut next = Records { epoch: 1002, ..Default::default() };
-        next.save(&nas, &|_| Ok(()), Some("a")).unwrap();
-        assert_eq!(brief_mark(&nas).unwrap(), Some((1002, 1)));
+        next.save(&nas, &|_| Ok(()), Some(Under { member: "a", since: None })).unwrap();
+        assert_eq!(brief_mark(&nas).unwrap().map(|m| (m.epoch, m.seq)), Some((1002, 1)));
         lead("b");
         let mut late = Records { epoch: 1, seq: 7, ..Default::default() };
-        let err = late.save(&nas, &|_| Ok(()), Some("a")).unwrap_err();
+        let err = late.save(&nas, &|_| Ok(()), Some(Under { member: "a", since: None })).unwrap_err();
         assert!(matches!(err, Unsaved::Nas(_)), "{err}");
         assert_eq!(
             serde_json::from_slice::<Records>(&nas.read(ONE).unwrap().unwrap()).unwrap().epoch,
             1,
             "the one path's written"
         );
-        assert_eq!(brief_mark(&nas).unwrap(), Some((1002, 1)), "its brief not");
+        assert_eq!(brief_mark(&nas).unwrap().map(|m| (m.epoch, m.seq)), Some((1002, 1)), "its brief not");
+        // Moved back to a, declared anew (seed 1364): a's late save of its first lead writes no brief.
+        let d = "{\"member\": \"a\", \"host\": \"a\", \"since\": 300}";
+        nas.write_whole(buildstore::records::lead::LEAD, d.as_bytes()).unwrap();
+        let err = late.save(&nas, &|_| Ok(()), Some(Under { member: "a", since: Some(100) })).unwrap_err();
+        assert!(matches!(err, Unsaved::Nas(_)), "{err}");
+        assert_eq!(
+            brief_mark(&nas).unwrap().map(|m| (m.epoch, m.seq)),
+            Some((1002, 1)),
+            "declared anew: its brief not"
+        );
+        late.save(&nas, &|_| Ok(()), Some(Under { member: "a", since: Some(300) })).unwrap();
+        assert_eq!(
+            brief_mark(&nas).unwrap().map(|m| (m.epoch, m.seq)),
+            Some((1, 10)),
+            "under the declaration as it is: written"
+        );
     }
 
     #[test]
