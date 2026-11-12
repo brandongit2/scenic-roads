@@ -9,7 +9,6 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Counts `n` bytes read from this Mac's own disk (crate::nasio's `Local`: a mapped file's whole
 /// length as it is mapped, a plain local file's reads, `cachefile::read`'s).
@@ -252,13 +251,13 @@ impl RangeRead for PooledFile {
 }
 
 /// A file read with plain positioned reads (no pool, never mapped): for build steps, which may read
-/// the NAS directly. A NAS read runs on its calling thread's helper (`bounded`), waited for
-/// `read_deadline` at most (task #1139: SMB reads never answered held z6 tiles' staging in `pread`
-/// for 40 minutes and more, their jobs at no CPU and nothing ending them): past it the read fails
+/// the NAS directly. A NAS read is a crate::deadline call, waited for `deadline::for_bytes(LONG,
+/// len)` at most (task #1139: SMB reads never answered held z6 tiles' staging in `pread` for 40
+/// minutes and more, their jobs at no CPU and nothing ending them): past it the read fails
 /// (`TimedOut`, naming the file, not tried again), its descriptor is let go (the next read opens the
-/// file again) and the helper is left to the kernel, holding the descriptor and the read's buffer
+/// file again) and the call is left to the kernel, holding the descriptor and the read's buffer
 /// until the read returns, its result then dropped. Its opens (`open`, and again by its path) are
-/// waited for `READ_DEADLINE` the same way.
+/// waited for `deadline::LONG` the same way.
 /// Its reads are counted as this Mac's own disk's (`LOCAL`) when it's on one. A read that fails as
 /// a gone handle does (crate::retry::handle_gone: a dropped SMB session's handle stays dead, every
 /// read of it failing, task #1090) is tried again on the file opened again by its path, each try
@@ -276,141 +275,18 @@ pub struct PlainFile {
     /// (Tests: this many reads fail with this OS error first.)
     #[cfg(test)]
     faults: std::sync::Mutex<(u32, i32)>,
-    /// (Tests: the next read's thread waits on this before it reads, as a read never answered; and
-    /// a deadline of their own.)
-    #[cfg(test)]
-    stall: std::sync::Mutex<(Option<std::sync::mpsc::Receiver<()>>, Option<Duration>)>,
 }
 
-/// The longest a NAS read through a `PlainFile` is waited for: this, and a second more for each MB
-/// it reads (`read_deadline`: a 32 MB span on a share giving it 1 MB/s still ends). The NAS
-/// answers a read in milliseconds, a span of tens of MB in seconds; a read waits as long for its
-/// turn (crate::aimd::TAKE_WAIT).
-pub const READ_DEADLINE: Duration = Duration::from_secs(120);
-
-/// A NAS read of `len` bytes' deadline (`READ_DEADLINE`).
-pub fn read_deadline(len: usize) -> Duration {
-    READ_DEADLINE + Duration::from_secs((len >> 20) as u64)
-}
-
-/// How often a bounded call's caller looks (`bounded`). A look that comes back over `LATE` times
-/// later than asked counts as one look: the process was stopped (the agent's memory and disk guards
-/// freeze a job, SIGSTOP), and that time isn't the call's. (The Mac asleep isn't counted either:
-/// `Instant` is the uptime clock on macOS.) The rule only ever counts less than the time passed: a
-/// late look never ends a call sooner.
-const LOOK: Duration = Duration::from_secs(1);
-const LATE: u32 = 4;
-
-/// What a look that took `took`, asked to take `look`, counts toward a deadline (`LATE`).
-fn counted(took: Duration, look: Duration) -> Duration {
-    if took > look * LATE {
-        look
-    } else {
-        took
-    }
-}
-
-/// A call `bounded` runs on its caller's helper.
-type Call = Box<dyn FnOnce() + Send>;
-
-thread_local! {
-    /// This thread's helper for `bounded` (its calls run there, one at a time): made at its first
-    /// call, kept while its calls come back in time, given up with one that doesn't.
-    static HELPER: std::cell::RefCell<Option<std::sync::mpsc::Sender<Call>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// A new helper thread: it runs the calls sent it, and ends once its sender is dropped and the
-/// call it's in (if any) has come back.
-fn helper() -> io::Result<std::sync::mpsc::Sender<Call>> {
-    let (tx, rx) = std::sync::mpsc::channel::<Call>();
-    std::thread::Builder::new().name("nas call".into()).spawn(move || {
-        for c in rx {
-            c();
-        }
-    })?;
-    Ok(tx)
-}
-
-/// `f` on this thread's helper (`HELPER`), its result if it's back within `deadline` of the time
-/// this process ran (`LOOK`); else `TimedOut` with no OS code (`past_deadline`), the helper left to
-/// its call: its result, when it comes, goes nowhere (its channel's receiver is gone), and the next
-/// call here gets a new helper. (A helper a thread keeps, not a thread a call: a spawn a read cost
-/// 3 to 6 times a pread from the cache with 8 to 16 threads reading at once, on the M4.)
-fn bounded<T: Send + 'static>(
-    deadline: Duration,
-    look: Duration,
-    f: impl FnOnce() -> io::Result<T> + Send + 'static,
-) -> io::Result<T> {
-    use std::sync::mpsc::RecvTimeoutError;
-    let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    let mut call: Call = Box::new(move || {
-        let _ = tx.send(f());
-    });
-    let h = loop {
-        let h = match HELPER.with(|h| h.borrow_mut().take()) {
-            Some(h) => h,
-            None => helper()?,
-        };
-        match h.send(call) {
-            Ok(()) => break h,
-            // (Its helper ended, a call of its panicking: a new one.)
-            Err(std::sync::mpsc::SendError(c)) => call = c,
-        }
-    };
-    let mut waited = Duration::ZERO;
-    let r = loop {
-        let t = std::time::Instant::now();
-        match rx.recv_timeout(look.min(deadline.saturating_sub(waited))) {
-            Ok(r) => break r,
-            Err(RecvTimeoutError::Disconnected) => return Err(io::Error::other("its call panicked")),
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-        waited += counted(t.elapsed(), look);
-        if waited >= deadline {
-            // (Answered as the deadline came: taken.)
-            match rx.try_recv() {
-                Ok(r) => break r,
-                Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("no answer in {} s", deadline.as_secs_f64().round()),
-                    ))
-                }
-            }
-        }
-    };
-    HELPER.with(|c| *c.borrow_mut() = Some(h));
-    r
-}
-
-/// Whether `e` is `bounded`'s deadline passing (not an OS error's `TimedOut`).
-fn past_deadline(e: &io::Error) -> bool {
-    e.kind() == io::ErrorKind::TimedOut && e.raw_os_error().is_none()
-}
-
-/// `e`, past its deadline (`past_deadline`), said with what it was (`what`, naming the file) and
-/// logged; any other error as it is.
-fn said_past_deadline(e: io::Error, what: impl FnOnce() -> String) -> io::Error {
-    if !past_deadline(&e) {
-        return e;
-    }
-    let said = format!("{}: {e}", what());
-    crate::retry::log(format_args!("{said}"));
-    io::Error::new(io::ErrorKind::TimedOut, said)
-}
-
-/// `path` opened, its length, and whether it's on this Mac's own disk, within `READ_DEADLINE`
-/// (`bounded`: an open the share never answers would hold its job as a read would).
+/// `path` opened, its length, and whether it's on this Mac's own disk, within `deadline::LONG`
+/// (crate::deadline: an open the share never answers would hold its job as a read would).
 fn open_bounded(path: &Path) -> io::Result<(File, u64, bool)> {
     let p = path.to_path_buf();
-    bounded(READ_DEADLINE, LOOK, move || {
+    crate::deadline::call(&path.display(), &"open", crate::deadline::LONG, move || {
         let file = File::open(&p)?;
         let len = file.metadata()?.len();
         let local = network_fs(&file)?.is_none();
         Ok((file, len, local))
     })
-    .map_err(|e| said_past_deadline(e, || format!("{}: open", path.display())))
 }
 
 /// A PlainFile's descriptor (None: closed, `plain_open_cap`'s) and when it was read last.
@@ -522,13 +398,11 @@ impl PlainFile {
             local,
             #[cfg(test)]
             faults: std::sync::Mutex::new((0, 0)),
-            #[cfg(test)]
-            stall: std::sync::Mutex::new((None, None)),
         })
     }
 
-    /// One positioned read of `len` bytes at `off` of `f`: on the NAS, on a thread of its own within
-    /// `read_deadline` (the struct's doc), its descriptor let go past it.
+    /// One positioned read of `len` bytes at `off` of `f`: on the NAS, a crate::deadline call (the
+    /// struct's doc), its descriptor let go past its deadline.
     fn read_once(&self, f: Arc<File>, off: u64, len: usize) -> io::Result<Vec<u8>> {
         use crate::sys::PosIo;
         #[cfg(test)]
@@ -539,13 +413,6 @@ impl PlainFile {
                 return Err(io::Error::from_raw_os_error(g.1));
             }
         }
-        #[cfg(test)]
-        let (stall, deadline) = {
-            let mut g = self.stall.lock().unwrap();
-            (g.0.take(), g.1.unwrap_or_else(|| read_deadline(len)))
-        };
-        #[cfg(not(test))]
-        let deadline = read_deadline(len);
         let read = move |f: &File| {
             let mut b = vec![0u8; len];
             f.read_exact_at(&mut b, off).map(|_| b)
@@ -554,18 +421,14 @@ impl PlainFile {
             return read(&f);
         }
         let held = f.clone();
-        bounded(deadline, LOOK, move || {
-            #[cfg(test)]
-            if let Some(s) = stall {
-                s.recv().ok();
-            }
+        let deadline = crate::deadline::for_bytes(crate::deadline::LONG, len);
+        crate::deadline::call(&self.path.display(), &format_args!("read {len} bytes at {off}"), deadline, move || {
             read(&held)
         })
-        .map_err(|e| {
-            if past_deadline(&e) {
+        .inspect_err(|e| {
+            if crate::deadline::past_deadline(e) {
                 self.let_go(&f);
             }
-            said_past_deadline(e, || format!("{}: read {len} bytes at {off}; its handle let go", self.path.display()))
         })
     }
 
@@ -632,7 +495,7 @@ impl RangeRead for PlainFile {
         // (A NAS read takes its turn of the process's NAS limit, crate::aimd: its latency or its
         // failure tells the limit.)
         let mut turn = (!self.local).then(|| crate::aimd::NAS.take());
-        // (A read or open never answered (`bounded`'s `TimedOut`) is no gone handle: not tried
+        // (A read or open never answered (crate::deadline's `TimedOut`) is no gone handle: not tried
         // again.)
         let r = match self.handle().and_then(|f| self.read_once(f, off, len)) {
             Err(e) if crate::retry::handle_gone(&e) => {
@@ -853,8 +716,7 @@ mod tests {
         let mut f = PlainFile::open(&p).unwrap();
         f.local = false;
         assert_eq!(f.read_at(2, 5).unwrap(), b"23456", "a NAS read answered: as before");
-        let (release, stall) = std::sync::mpsc::channel::<()>();
-        *f.stall.lock().unwrap() = (Some(stall), Some(Duration::from_millis(300)));
+        let hung = crate::deadline::fake::hang(&p).deadline(Duration::from_millis(300));
         let held = lock(&f.slot.file).clone().unwrap();
         let t = std::time::Instant::now();
         let e = match f.read_at(0, 3) {
@@ -862,7 +724,7 @@ mod tests {
             r => panic!("{r:?}"),
         };
         // (Never answered, it would not end at all.) (bound ok: its own 300 ms deadline, not 120 s)
-        assert!(t.elapsed() < READ_DEADLINE / 2, "{:?}", t.elapsed());
+        assert!(t.elapsed() < crate::deadline::LONG / 2, "{:?}", t.elapsed());
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
         let said = e.to_string();
         assert!(said.contains(&p.display().to_string()) && said.contains("no answer"), "{said}");
@@ -870,43 +732,11 @@ mod tests {
         assert!(lock(&f.slot.file).is_none(), "its descriptor let go");
         assert!(Arc::strong_count(&held) >= 2, "the stuck read keeps its own");
         // The next read: the file opened again, and read.
-        f.stall.lock().unwrap().1 = None;
+        drop(hung);
         assert_eq!(f.read_at(7, 3).unwrap(), b"789");
         assert!(lock(&f.slot.file).as_ref().is_some_and(|h| !Arc::ptr_eq(h, &held)));
         let open = lock(&OPEN);
         assert_eq!(open.iter().filter(|w| w.upgrade().is_some_and(|o| Arc::ptr_eq(&o, &f.slot))).count(), 1);
-        drop(open);
-        drop(release);
-    }
-
-    /// A bounded call: its answer when it comes in time; past its deadline `TimedOut`; and a look
-    /// that came back far later than asked (the process stopped, the Mac asleep) counts as one.
-    #[test]
-    fn a_bounded_call_counts_the_time_the_process_ran() {
-        let ms = Duration::from_millis;
-        assert_eq!(bounded(ms(500), ms(10), || Ok(7)).unwrap(), 7);
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let e = bounded(ms(50), ms(10), move || rx.recv().map_err(io::Error::other)).unwrap_err();
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        assert!(past_deadline(&e) && !past_deadline(&io::Error::from_raw_os_error(libc::ETIMEDOUT)));
-        drop(tx);
-        // A thread's calls run on one helper, kept; the call past its deadline took it, and the
-        // next is a new one's. A call that panics loses its helper too, and the next goes on.
-        let here = || bounded(ms(500), ms(10), || Ok(std::thread::current().id())).unwrap();
-        let (a, b) = (here(), here());
-        assert!(a == b && a != std::thread::current().id());
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        bounded(ms(20), ms(10), move || rx.recv().map_err(io::Error::other)).unwrap_err();
-        let c = here();
-        assert!(c != a && here() == c);
-        drop(tx);
-        assert!(bounded::<()>(ms(500), ms(10), || panic!("(a test's panic)")).is_err());
-        assert!(here() != c);
-        // (A look as asked, or a little late, counts as it took; one back after the process was
-        // stopped (the guards' freeze, 30 minutes) counts as one look.)
-        assert_eq!(counted(LOOK, LOOK), LOOK);
-        assert_eq!(counted(ms(1300), LOOK), ms(1300));
-        assert_eq!(counted(Duration::from_secs(1800), LOOK), LOOK);
     }
 
     #[test]
