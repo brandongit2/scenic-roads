@@ -1796,8 +1796,7 @@ calls is a store::deadline call, under `nasread::DEADLINE` (`deadline::SHORT`) b
 keys (`with_big`):
 
 - **Reads** (`read`, `read_to_string`, `with`): the plan's and the page's NAS files, the history
-  and the forecasts' archives, the latency probe (`probe`); publishing's switch (`read_switch`,
-  `publish::Switches`: one that can't be read keeps its last value).
+  and the forecasts' archives, the latency probe (`probe`).
 - **The pool's NAS** (`Deadlined`, which the agent opens its member over): the driver's reads of
   the declaration and the one path, and its saves of the records and their brief.
 - **Writes** (`write`): the lead's heartbeat (`state/status.json`), the archives' appends. A write
