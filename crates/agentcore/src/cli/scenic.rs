@@ -286,6 +286,47 @@ pub enum Cmd {
     /// The input gate (docs/inputs.md §4): every gate unit, its accepted version, its state, what
     /// holds it, its acceptances (those no check raises any more marked stale)
     Inputs(Inputs),
+    /// The app's releases the lead keeps (docs/coordinator.md §10): the live one and the one before
+    /// (a lead on an app before them: exit 4); and tools/app/publish.sh's asks of the lead, a
+    /// release put live or rolled back
+    Releases(Releases),
+}
+
+#[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct Releases {
+    #[command(subcommand)]
+    pub cmd: Option<ReleasesCmd>,
+    /// As JSON (`{"current": <manifest>, "previous": <manifest>}`, each null when none)
+    #[arg(long)]
+    pub json: bool,
+    /// The NAS project folder, where the lead's contact is (default: the mounted share)
+    #[arg(long, value_name = "DIR", global = true)]
+    pub root: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ReleasesCmd {
+    /// A release uploaded and put live from the live version it was checked against: the lead
+    /// checks the archive and every file against the manifest (refused: exit 1), and that BASE is
+    /// still live (else exit 3, what is live printed as JSON)
+    Push {
+        /// The release's archive (tools/app/lib.zsh's app_pack)
+        archive: PathBuf,
+        /// Its manifest (app_manifest)
+        manifest: PathBuf,
+        /// The live version it was checked against, or none
+        #[arg(long)]
+        base: String,
+    },
+    /// The release before made live again, from the two as read (else exit 3, what is live printed
+    /// as JSON); publish.sh --rollback checks the floor first
+    Rollback {
+        /// The live version
+        current: String,
+        /// The one before it
+        previous: String,
+    },
 }
 
 /// `off`.

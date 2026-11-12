@@ -1,7 +1,7 @@
 //! The map server's app (docs/macs.md, The updater): it runs from a local copy of the published
 //! app (`<home>/app/<version>/`, through `<home>/app/current`, which the launcher runs). Every five
-//! minutes it checks for a newer one (jobrt::appupdate, which the agent runs too, one check at a
-//! time); once `current` names another version than its own, it exits when the map has been idle
+//! minutes it asks the lead for a newer one (coordwire::releases::check, jobrt::appupdate, which the
+//! agent runs too, one check at a time); once `current` names another version than its own, it exits when the map has been idle
 //! a minute, and the launcher starts the new one. A server on demand runs none of this (no launcher
 //! would start it again): it quits once unused (`quit_when_unused`), and its next start runs the
 //! newest app. Pruning keeps its version meanwhile (it runs
@@ -101,7 +101,7 @@ impl Updater {
                     if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
                         last = Some(std::time::Instant::now());
                         if let Some(root) = data.nas_root() {
-                            if let Err(e) = jobrt::appupdate::check(&me.home, &root, &running) {
+                            if let Err(e) = coordwire::releases::check(&me.home, &root, &running) {
                                 eprintln!("app update: {e:#}");
                             }
                         }

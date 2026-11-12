@@ -9375,6 +9375,11 @@ fn make_coordinator_on(
             // (Nothing granted until its pool's step says it may: it may not lead yet, its take-up
             // waiting, while the lead before it still grants, task #1038.)
             c.set_moving(Some(UNSTEPPED.into()));
+            // (Its Mac's releases, which its updater keeps as every Mac's does: served as the lead's,
+            // crate::coord::releases. The agent's folder is the app's home's `agent/`.)
+            if let Some(app) = o.home.parent() {
+                c.set_releases(app.join(jobrt::appupdate::RELEASES));
+            }
             Some(c)
         }
         Err(e) => {

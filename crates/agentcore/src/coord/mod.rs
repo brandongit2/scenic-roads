@@ -42,6 +42,7 @@ pub mod lease;
 pub mod maproutes;
 pub mod memberpage;
 pub mod oldpage;
+pub mod releases;
 pub mod sched;
 pub mod task;
 
@@ -563,6 +564,9 @@ pub struct Shared {
     /// and its member (`http::stamp`): no lead, so a member that kept its way here after a change
     /// of lead reads the lead's contact again.
     pub broker: bool,
+    /// The app's releases it keeps and serves (crate::coord::releases, its Mac's
+    /// `<home>/app/releases/`), as its agent set them (`set_releases`); None: none (a test's).
+    pub releases: Option<PathBuf>,
     /// Not the lead's (a member's broker, a viewer): where the build page is (the lead's, or this
     /// Mac's own page while the lead isn't reached: crate::coord::memberpage), as its agent last
     /// told (`set_page_at`).
@@ -1811,6 +1815,7 @@ impl Coordinator {
             tocome: None,
             viewer,
             broker: mode == Mode::Broker,
+            releases: None,
             page_at: Default::default(),
             settings: None,
             hold_wait: HOLD_WAIT,
@@ -3382,6 +3387,11 @@ impl Coordinator {
     /// Its port.
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The app's releases it keeps and serves as the lead (crate::coord::releases): its Mac's.
+    pub fn set_releases(&self, dir: std::path::PathBuf) {
+        self.shared.lock().unwrap().releases = Some(dir);
     }
 
     /// Tasks brokered by every member (docs/pool.md §8, crate::agent::brokers): the members in
@@ -5631,7 +5641,7 @@ mod http {
     use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
     use axum::middleware::Next;
     use axum::response::{IntoResponse, Response};
-    use axum::routing::{any, get, put};
+    use axum::routing::{any, get, post, put};
     use axum::{Json, Router};
     use std::net::SocketAddr;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -5792,7 +5802,13 @@ mod http {
             .route(crate::agent::gc::ORPHANS, any(json))
             .route("/pool/view", any(json))
             .route(super::brief::PATH, get(brief))
-            .route("/task/{*rest}", any(json));
+            .route("/task/{*rest}", any(json))
+            // The app's releases (crate::coord::releases, with the build's key).
+            .route(coordwire::releases::LIVE, get(super::releases::live))
+            .route(&format!("{}/{{version}}", coordwire::releases::UPLOAD), put(super::releases::upload))
+            .route(coordwire::releases::INSTALL, post(super::releases::install))
+            .route(coordwire::releases::ROLLBACK, post(super::releases::rollback))
+            .route("/release/{file}", get(super::releases::archive));
         // The build page at the root (its files; a proxy may serve it under a path: tools/caddy's
         // /build/, its addresses relative), its data and the owner's asks under /api/.
         for (n, _, _) in PAGE {
@@ -6322,7 +6338,12 @@ mod http {
     }
 
     /// A file streamed: whole, or the one range asked for (`bytes=a-b`).
-    async fn send_file(path: &Path, ctype: &'static str, size: Option<u64>, range: Option<&str>) -> Response {
+    pub(super) async fn send_file(
+        path: &Path,
+        ctype: &'static str,
+        size: Option<u64>,
+        range: Option<&str>,
+    ) -> Response {
         let mut f = match tokio::fs::File::open(path).await {
             Ok(f) => f,
             Err(e) => return error(StatusCode::NOT_FOUND, e),

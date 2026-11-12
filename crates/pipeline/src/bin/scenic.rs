@@ -96,6 +96,50 @@ fn ago(t: u64) -> String {
     }
 }
 
+/// `scenic releases`: the lead's releases (coordwire::releases), and publish.sh's asks of it. Exit
+/// 3: refused as the lead's releases stand (what is live printed as JSON); 4: a lead on an app
+/// before them.
+fn releases(a: &cli::Releases) -> Result<()> {
+    use coordwire::releases::{self as rel, Asked};
+    let c = agentcore::coord::client::Client::from_nas(&root(&a.root, false)?, &store::sys::host_name())?
+        .context("no lead's coordinator to ask (no state/coordinator.json)")?;
+    let done = |asked: Asked| -> Result<()> {
+        match asked {
+            Asked::Done(l) => {
+                eprintln!("the lead's releases: {:?}", l.versions());
+                Ok(())
+            }
+            Asked::Moved(l) => {
+                println!("{}", serde_json::to_string(&l)?);
+                eprintln!("refused: the lead's releases are {:?} now", l.versions());
+                std::process::exit(3)
+            }
+        }
+    };
+    match &a.cmd {
+        None => {
+            let Some(l) = rel::live(&c)? else {
+                eprintln!("the lead runs an app that keeps no releases (before task #1118)");
+                std::process::exit(4)
+            };
+            if a.json {
+                println!("{}", serde_json::to_string(&l)?);
+            } else {
+                let (cur, prev) = l.versions();
+                println!("live: {}\nbefore it: {}", cur.unwrap_or("none"), prev.unwrap_or("none"));
+            }
+            Ok(())
+        }
+        Some(cli::ReleasesCmd::Push { archive, manifest, base }) => {
+            let m: jobrt::appupdate::Manifest =
+                serde_json::from_slice(&std::fs::read(manifest).with_context(|| manifest.display().to_string())?)
+                    .with_context(|| manifest.display().to_string())?;
+            done(rel::push(&c, archive, &m, Some(base.as_str()).filter(|b| *b != "none"))?)
+        }
+        Some(cli::ReleasesCmd::Rollback { current, previous }) => done(rel::rollback(&c, current, previous)?),
+    }
+}
+
 /// `scenic timings`: the jobs' phases, summed by kind (jobrt::timings::summary).
 fn timings(a: &cli::Timings) -> Result<()> {
     use jobrt::timings::{read_log, summary, summary_text, RunRec};
@@ -1424,10 +1468,10 @@ fn cli_main() -> Result<()> {
                 eprintln!("agent: WARNING: SCENIC_TEST_DISK_EXTRA_MB: this agent counts {extra} MB more free on its disk than there is (the two-Mac test's alone, never a real agent's)");
             }
             jobrt::sys::raise_open_files();
-            // (Every Mac's app kept current from here, the map server's Mac too: jobrt::appupdate.)
+            // (Every Mac's app kept current from here, the map server's Mac too: coordwire::releases.)
             // (And its copies of old catalogues gone, docs/maplog.md §8 step 9.)
             if places.home.is_none() {
-                jobrt::appupdate::spawn(app_home(), o.root.clone());
+                coordwire::releases::spawn(app_home(), o.root.clone());
                 let user = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
                 for d in gc::remove_this_macs_catalogues(&app_home(), &user) {
                     eprintln!("agent: removed {} (an old catalogue's copy)", d.display());
@@ -1442,6 +1486,7 @@ fn cli_main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Releases(r)) => releases(&r),
         Some(Cmd::Pool(pool)) => {
             use cli::PoolCmd;
             // The pool (docs/pool.md): how it stands, and the owner's asks of its lead.

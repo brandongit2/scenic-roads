@@ -512,11 +512,15 @@ impl Client {
     }
 
     fn is_file(path: &str) -> bool {
-        path.starts_with("/work/in/") || path.starts_with("/work/out/") || path == "/map/snapshot"
+        path.starts_with("/work/in/")
+            || path.starts_with("/work/out/")
+            || path == "/map/snapshot"
+            || path.starts_with("/release/")
     }
 
     /// The HTTP client for a request to `path`: a file's (a task's input or output, `/work/in/`,
-    /// `/work/out/`, the map whole: `/map/snapshot`), or the other requests' (`Agents`).
+    /// `/work/out/`, the map whole: `/map/snapshot`, the app's releases: `/release/`, their checks
+    /// on the lead too), or the other requests' (`Agents`).
     fn agent(&self, path: &str) -> &ureq::Agent {
         if Self::is_file(path) {
             &self.agents.files

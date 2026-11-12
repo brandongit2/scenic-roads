@@ -1,13 +1,15 @@
 //! The coordinator's client side (docs/crates.md, task #916 step 6c): how a worker reaches the
 //! lead's coordinator (`Contact` on the NAS, the headers its answers carry), its client's transport
-//! (client), a task's side shared by its job and its worker (task), and the map now as a job or a
-//! command reads it from the lead (`map_now`); and what a Mac's services share about the network
+//! (client), a task's side shared by its job and its worker (task), the app's releases from the
+//! lead (releases: every Mac's updater, a publish), and the map now as a job or a command reads it
+//! from the lead (`map_now`); and what a Mac's services share about the network
 //! (net: who may connect, the addresses, the listener; step 7a, for the map server). The coordinator
 //! itself and the lease calls (they carry its own types) are agentcore's coord, which re-exports
 //! these at their old paths.
 
 pub mod client;
 pub mod net;
+pub mod releases;
 pub mod task;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
