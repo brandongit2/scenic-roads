@@ -102,6 +102,8 @@ old() {  # old <label> <working folder> <program> <arg>…: a LaunchAgent as the
 }
 old $prefix.devtools $data $node $data/server.mjs --host :: --port $port
 launchctl bootstrap gui/$UID $REPLY
+old $prefix.devtools-backup $data /bin/sleep 600   # (the nightly backup job an older release ran)
+launchctl bootstrap gui/$UID $REPLY
 old $prefix.caddy $co/caddy $box/bin/caddy run --config $co/caddy/Caddyfile --adapter caddyfile
 plutil -insert EnvironmentVariables -dictionary $REPLY
 plutil -insert EnvironmentVariables.SCENIC_MAP_NAME -string svc.test $REPLY
@@ -118,7 +120,8 @@ run $v1 setup devtools
 if (( rc )); then no "setup devtools" "exit $rc: $out"
 elif [[ $(page) != "<!-- ${v1:h:h:t} -->" ]]; then no "setup devtools" "the page isn't one's: $(page)"
 elif [[ $(items) != 1 ]]; then no "setup devtools" "items $(items), not the checkout's 1"
-elif ! launchctl print gui/$UID/$prefix.devtools-backup >/dev/null 2>&1; then no "setup devtools" "no backup job"
+elif launchctl print gui/$UID/$prefix.devtools-backup >/dev/null 2>&1 || [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "setup devtools" "the old backup job is still there"
+elif grep -q backup $H/devtools/setup; then no "setup devtools" "the setup file names a backup job: $(<$H/devtools/setup)"
 elif [[ $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist) != "[\"${node//\//\\/}\",\"${${H//\//\\/}}\\/devtools\\/current\\/tools\\/devtools\\/server.mjs\",\"--host\",\"::\",\"--port\",\"$port\",\"--data\",\"${data//\//\\/}\"]" ]]; then
   no "setup devtools" "the plist: $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist)"
 else ok "setup devtools: from the checkout's, its data kept where it is"; fi
@@ -135,6 +138,14 @@ elif [[ $out != *"devtools: at "*" already"* ]]; then no "setup caddy" "the dev 
 else ok "setup caddy: from the checkout's, the dev tools left running"; fi
 run $v1 setup caddy --bogus x
 (( rc == 2 )) && ok "setup refuses an unknown option" || no "setup refuses an unknown option" "exit $rc"
+
+# An existing backup job (here put back by hand) is unloaded and its plist deleted by update too.
+old $prefix.devtools-backup $data /bin/sleep 600
+launchctl bootstrap gui/$UID $REPLY
+run $v1 update
+if (( rc )); then no "update drops a backup job" "exit $rc: $out"
+elif launchctl print gui/$UID/$prefix.devtools-backup >/dev/null 2>&1 || [[ -e $box/LaunchAgents/$prefix.devtools-backup.plist ]]; then no "update drops a backup job" "still there"
+else ok "update: an existing backup job is booted out and its plist deleted"; fi
 
 # ---- update -----------------------------------------------------------------------------------------
 version two; v2=$REPLY

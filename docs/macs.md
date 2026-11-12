@@ -217,8 +217,7 @@ and codesign.
 - The app reads the current and the previous form of every file kind.
 
 **Services** (the Mac mini: `tools/app/services.zsh`): the dev tools app (`tools/devtools`, the
-task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtools`, and its nightly
-NAS backup `local.scenic.devtools-backup`, 03:30) and Caddy (`tools/caddy`, `local.scenic.caddy`)
+task board and the dev job dashboard on :8077, LaunchAgent `local.scenic.devtools`) and Caddy (`tools/caddy`, `local.scenic.caddy`)
 ship in every release, in the app's `services/` (the script, `caddy/Caddyfile`, and `devtools/`
 laid out as in the repo, with the build page's modules the dashboard serves), and run from
 `~/Library/Application Support/scenic/services/`, not from a git checkout.

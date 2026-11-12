@@ -99,8 +99,7 @@ The scan covers every item outside `#[cfg(test)]` code and outside store::nasfs.
 - an item names a NAS location literally (`/Volumes/`, the NAS's name, the project folder on the
   share, `smb://`) outside store::nas and `LITERALS` (none);
 - a script in tools/, dem/ or producers/ names the NAS and is not in `TOOLS` (decision D4: listed,
-  not migrated): tools/nas/, publish.sh, install.sh, remote-tests.sh, health.sh, the task board's
-  backup.sh, the status app, the two-Mac tests in tools/check/, and the producers' scripts.
+  not migrated): tools/nas/, publish.sh, install.sh, remote-tests.sh, health.sh, the status app, the two-Mac tests in tools/check/, and the producers' scripts.
 
 Each list fails when an entry matches nothing, so none can go stale. The test reads the repository's
 files, so it carries a `//! scans:` line (tools/dev/testing.md).

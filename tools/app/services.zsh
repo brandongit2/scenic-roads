@@ -1,7 +1,6 @@
 #!/bin/zsh
 # The services the Mac mini runs beside the app (docs/macs.md, Services): the dev tools app
-# (tools/devtools: the task board and the dev job dashboard, on :8077, and its nightly backup to the
-# NAS) and Caddy (tools/caddy: the map's name on the tailnet). Every release ships them in the app's
+# (tools/devtools: the task board and the dev job dashboard, on :8077) and Caddy (tools/caddy: the map's name on the tailnet). Every release ships them in the app's
 # services/ folder (tools/app/lib.zsh's services_stage: this script, caddy/Caddyfile, and devtools/
 # laid out as in the repo), and the Mac's agent keeps them at the version it runs
 # (agentcore::agent::services): once its coordinator listens on this Mac's port, it runs this
@@ -105,6 +104,13 @@ gone() {  # gone <label>: unloaded, waited for until launchd has let it go
   for (( i = 0; i < 100; i++ )); do loaded $1 || return 0; sleep 0.1; done
   say "$1 still loaded after 10 s"; return 1
 }
+# no_old_backup: a dev tools backup job (local.scenic.devtools-backup) isn't kept: unloaded, its
+# plist deleted, if there is one. Setup and update both do it.
+no_old_backup() {
+  local l=$prefix.devtools-backup
+  gone $l || return 1
+  rm -f $agents/$l.plist
+}
 # reloads <service>: its jobs are to be loaded again from their plists (setup's of it, --reload's).
 reloads() { [[ ${opt[reload]:-} == (all|$1) ]] }
 # restart <service> <label> <plist>: the job running again from its plist: kickstarted (killed and
@@ -115,8 +121,7 @@ restart() {
   else launchctl bootstrap $domain $3; fi
 }
 # plist <label> <plist> <program> <arg>…: a LaunchAgent's plist written (to a file of its own, then
-# moved in), started at load and kept alive unless PLIST_CALENDAR names a time (hour:minute), its
-# log PLIST_LOG.
+# moved in), started at load and kept alive, its log PLIST_LOG.
 plist() {
   local label=$1 file=$2 i=0 tmp=$2.tmp; shift 2
   rm -f $tmp
@@ -124,14 +129,8 @@ plist() {
   plutil -insert Label -string $label $tmp
   plutil -insert ProgramArguments -array $tmp
   for a; do plutil -insert ProgramArguments.$i -string "$a" $tmp; (( ++i )); done
-  if [[ -n ${PLIST_CALENDAR:-} ]]; then
-    plutil -insert StartCalendarInterval -dictionary $tmp
-    plutil -insert StartCalendarInterval.Hour -integer ${PLIST_CALENDAR%%:*} $tmp
-    plutil -insert StartCalendarInterval.Minute -integer ${PLIST_CALENDAR#*:} $tmp
-  else
-    plutil -insert RunAtLoad -bool true $tmp
-    plutil -insert KeepAlive -bool true $tmp
-  fi
+  plutil -insert RunAtLoad -bool true $tmp
+  plutil -insert KeepAlive -bool true $tmp
   if (( ${+PLIST_ENV} )); then
     plutil -insert EnvironmentVariables -dictionary $tmp
     local k; for k in ${(k)PLIST_ENV}; do plutil -insert EnvironmentVariables.$k -string "${PLIST_ENV[$k]}" $tmp; done
@@ -156,7 +155,7 @@ write_setup() {  # write_setup <service> <name>…: those variables' values
 }
 
 if [[ $cmd == setup && $svc == devtools ]]; then
-  label=$prefix.devtools backup_label=$prefix.devtools-backup
+  label=$prefix.devtools
   old=("${(@f)$(job_args $label || true)}")
   node=${opt[--node]:-${old[1]:-}}
   [[ -n $node ]] || bad "setup devtools: no --node, and no LaunchAgent $label to take it from"
@@ -172,12 +171,12 @@ if [[ $cmd == setup && $svc == devtools ]]; then
   i=${old[(Ie)--port]}
   port=${opt[--port]:-${${${i:#0}:+${old[i+1]}}:-8077}}
   [[ $port == <1-65535> ]] || bad "setup devtools: --port $port isn't a port"
-  plist=$agents/$label.plist backup_plist=$agents/$backup_label.plist
-  write_setup devtools label plist backup_label backup_plist node data port
+  plist=$agents/$label.plist
+  no_old_backup || exit 1
+  write_setup devtools label plist node data port
   app="$H/devtools/current/tools/devtools"
   PLIST_LOG=$logs/devtools.log plist $label $plist $node "$app/server.mjs" --host :: --port $port --data $data
-  PLIST_LOG=$logs/devtools.log PLIST_CALENDAR=3:30 plist $backup_label $backup_plist "$app/backup.sh" $data
-  say "devtools set up: $label (node $node, port $port, data $data), $backup_label (03:30)"
+  say "devtools set up: $label (node $node, port $port, data $data)"
   opt[reload]=$svc cmd=update
 elif [[ $cmd == setup && $svc == caddy ]]; then
   label=$prefix.caddy
@@ -243,8 +242,9 @@ link() {  # link <folder> <target>: <folder>/current pointed at <target> (a new 
 # (Each step's failure is checked where it's run: a function called under `||`, as each update is,
 # runs with errexit off.)
 update_devtools() {
-  local label plist backup_label backup_plist node data port
+  local label plist node data port
   source $H/devtools/setup
+  no_old_backup || return 1
   local d=$H/devtools v=$version b=$H/devtools/backup cur prev was f0 f1 db
   cur=$(readlink $d/current 2>/dev/null || true)
   prev=$cur
@@ -285,7 +285,6 @@ update_devtools() {
   if up $label "$was" 150 answers $port; then
     say "devtools: $v answers on :$port (was ${prev:-none})"
     rm -f $b/pending
-    loaded $backup_label && ! reloads devtools || restart devtools $backup_label $backup_plist
     for f in $d/<->-*(N/); do [[ ${f:t} == ($v|$prev) ]] || rm -rf $f; done
     return 0
   fi
