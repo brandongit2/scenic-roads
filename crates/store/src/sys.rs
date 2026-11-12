@@ -108,6 +108,65 @@ pub fn pid() -> u32 {
     0
 }
 
+/// How many times this process has been sent SIGCONT since its first call here: a stop and its
+/// thaw (SIGSTOP by the agent's memory or disk guard, or its pause, then SIGCONT) changes it, so a
+/// look at the clock that it changed over had the process stopped in it, and one it didn't change
+/// over didn't, however late it came back (a utility-priority job's timer on a loaded Mac).
+/// store::deadline's looks and buildstore::costin's stop watch count time stopped by it.
+///
+/// macOS's kqueue counts the signal as it is sent (EVFILT_SIGNAL, which counts it whatever its
+/// action), before the process runs again: a thread woken by the thaw always sees it (measured on
+/// the M4, task #1155). No handler is installed, so SIGCONT's own action and every other thread's
+/// calls are as they were (a handler interrupts the call of the thread it runs on, EINTR). The
+/// queue is this process's alone: a child, forked or spawned, never has a kqueue of its parent's.
+/// A SIGCONT sent before the first call isn't counted (no look of this process spanned it).
+/// Elsewhere, or with no queue (logged once): 0 always, and a stop counts as time run.
+pub fn continued() -> u64 {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::sync::{Mutex, OnceLock};
+        static QUEUE: OnceLock<Option<OwnedFd>> = OnceLock::new();
+        static SEEN: Mutex<u64> = Mutex::new(0);
+        let q = QUEUE.get_or_init(|| {
+            // SAFETY: kqueue takes no arguments; the descriptor is owned here, for the process's life.
+            let fd = unsafe { libc::kqueue() };
+            if fd < 0 {
+                eprintln!("store: no count of SIGCONTs ({}): a stop counts as time run", io::Error::last_os_error());
+                return None;
+            }
+            // SAFETY: a descriptor just made, owned by no one else.
+            let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+            let ev = libc::kevent {
+                ident: libc::SIGCONT as usize,
+                filter: libc::EVFILT_SIGNAL,
+                flags: libc::EV_ADD | libc::EV_CLEAR,
+                fflags: 0,
+                data: 0,
+                udata: std::ptr::null_mut(),
+            };
+            // SAFETY: one change, read from `ev`; no events asked for.
+            if unsafe { libc::kevent(fd.as_raw_fd(), &ev, 1, std::ptr::null_mut(), 0, std::ptr::null()) } != 0 {
+                eprintln!("store: no count of SIGCONTs ({}): a stop counts as time run", io::Error::last_os_error());
+                return None;
+            }
+            Some(fd)
+        });
+        let Some(q) = q else { return 0 };
+        let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: kevent is plain old data; one event at most is written to it.
+        let mut ev: libc::kevent = unsafe { std::mem::zeroed() };
+        let now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: no changes; at most one event, into `ev`; no wait.
+        if unsafe { libc::kevent(q.as_raw_fd(), std::ptr::null(), 0, &mut ev, 1, &now) } == 1 {
+            *seen += ev.data.max(1) as u64;
+        }
+        *seen
+    }
+    #[cfg(not(target_os = "macos"))]
+    0
+}
+
 /// Free bytes for an unprivileged user on the local filesystem holding `path`.
 pub fn disk_free(path: &Path) -> io::Result<u64> {
     #[cfg(unix)]

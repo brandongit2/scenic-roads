@@ -68,13 +68,13 @@ pub const CAP_ENV: &str = "SCENIC_NAS_HELD";
 /// The cap as set on the build page: `{"n": …, "by": …, "at": …}` in the agent's folder.
 pub const CAP_FILE: &str = "nas-held.json";
 
-/// How often a caller looks at its call. A look that comes back over `LATE` times later than asked
-/// counts as one look: the process was stopped (the agent's memory and disk guards freeze a job,
-/// SIGSTOP), and that time isn't the call's. (The Mac asleep isn't counted either: `Instant` is the
-/// uptime clock on macOS.) The rule only ever counts less than the time passed: a late look never
-/// ends a call sooner.
+/// How often a caller looks at its call. A look the process was stopped in (the agent's memory and
+/// disk guards freeze a job, and its pause stops one: SIGSTOP, then SIGCONT, which
+/// `sys::continued` counts) counts as asked at most: that time isn't the call's. Any other look
+/// counts as long as it took, however late it came back (a utility-priority job's timer on a
+/// loaded Mac), so a deadline is the time the process could run. (The Mac asleep isn't counted
+/// either: `Instant` is the uptime clock on macOS.)
 const LOOK: Duration = Duration::from_secs(1);
-const LATE: u32 = 4;
 
 /// The cap set in this process (0: not yet read, `cap`).
 static CAP: AtomicUsize = AtomicUsize::new(0);
@@ -289,10 +289,11 @@ pub fn watched<T: Send + 'static>(
     run(on, op, deadline, keys, f)
 }
 
-/// What a look that took `took`, asked to take `look`, counts toward a deadline (`LATE`).
-fn counted(took: Duration, look: Duration) -> Duration {
-    if took > look * LATE {
-        look
+/// What a look that took `took`, asked to take `look`, counts toward a deadline: as it took, or,
+/// the process `stopped` in it, as asked at most (`LOOK`).
+fn counted(took: Duration, look: Duration, stopped: bool) -> Duration {
+    if stopped {
+        took.min(look)
     } else {
         took
     }
@@ -397,8 +398,10 @@ fn run<T: Send + 'static>(
     };
     let (mut waited, mut moved) = (Duration::ZERO, 0);
     let r = loop {
-        let t = Instant::now();
-        match rx.recv_timeout(LOOK.min(deadline.saturating_sub(waited))) {
+        let look = LOOK.min(deadline.saturating_sub(waited));
+        // (The count read before the clock: a stop between them counts no time of the look's.)
+        let (conts, t) = (crate::sys::continued(), Instant::now());
+        match rx.recv_timeout(look) {
             Ok(r) => break r,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(io::Error::other(format!("{on}: {op}: its call panicked")))
@@ -410,7 +413,7 @@ fn run<T: Send + 'static>(
             (moved, waited) = (now, Duration::ZERO);
             continue;
         }
-        waited += counted(t.elapsed(), LOOK);
+        waited += counted(t.elapsed(), look, crate::sys::continued() != conts);
         if waited < deadline {
             continue;
         }
@@ -591,11 +594,101 @@ mod tests {
         assert_eq!(cap.held(), 1, "held while it's in the kernel");
         drop(hung);
         crate::testkit::eventually("the held call ends", || cap.held() == 0);
-        // (A look as asked, or a little late, counts as it took; one back after the process was
-        // stopped (the guards' freeze, 30 minutes) counts as one look.)
-        assert_eq!(counted(LOOK, LOOK), LOOK);
-        assert_eq!(counted(ms(1300), LOOK), ms(1300));
-        assert_eq!(counted(Duration::from_secs(1800), LOOK), LOOK);
+        // (A look counts as it took, however late (a utility-priority timer on a loaded Mac); one
+        // the process was stopped in (the guards' freeze, 30 minutes) as asked at most.)
+        assert_eq!(counted(LOOK, LOOK, false), LOOK);
+        assert_eq!(counted(Duration::from_secs(30), LOOK, false), Duration::from_secs(30));
+        assert_eq!(counted(Duration::from_secs(1800), LOOK, true), LOOK);
+        assert_eq!(counted(ms(300), LOOK, true), ms(300));
+    }
+
+    /// A FIFO at `name` in `d`, whose open waits in the kernel until its other end is opened.
+    fn fifo(d: &Path, name: &str) -> std::path::PathBuf {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let p = d.join(name);
+        let c = CString::new(p.as_os_str().as_bytes()).unwrap();
+        // SAFETY: mkfifo on a NUL-terminated path the test owns.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", io::Error::last_os_error());
+        p
+    }
+
+    /// Task #1155: a call held in the kernel (a FIFO's open) by a caller at utility priority, as a
+    /// job runs (`taskpolicy -c utility`), on a loaded Mac (twice its cores spinning at the default
+    /// priority over it), is given up at its deadline, within a second: every look counts as long
+    /// as it took, so a timer coming back late never stretches the deadline.
+    #[test]
+    fn a_stuck_call_at_utility_priority_on_a_loaded_mac_ends_at_its_deadline() {
+        let d = tempfile::tempdir().unwrap();
+        let r = fifo(d.path(), "r");
+        let _cap = cap_for_test(CAP_DEFAULT);
+        #[cfg(target_os = "macos")]
+        // SAFETY: sets only the calling thread's QoS class.
+        unsafe {
+            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let n = 2 * std::thread::available_parallelism().map_or(8, |n| n.get());
+        let load: Vec<_> = (0..n)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut x = 0u64;
+                    while !stop.load(Ordering::Relaxed) {
+                        for i in 0..10_000u64 {
+                            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(i));
+                        }
+                    }
+                })
+            })
+            .collect();
+        let deadline = Duration::from_secs(4);
+        let rr = r.clone();
+        let t = Instant::now();
+        let e = call(&r.display(), &"read", deadline, move || std::fs::read(&rr)).unwrap_err();
+        let took = t.elapsed();
+        stop.store(true, Ordering::Relaxed);
+        load.into_iter().for_each(|h| h.join().unwrap());
+        assert!(past_deadline(&e), "{e}");
+        assert!(took >= deadline && took < deadline + Duration::from_secs(1), "given up after {took:?}");
+        drop(std::fs::OpenOptions::new().write(true).open(&r).unwrap());
+    }
+
+    /// Task #1155: a real stop (SIGSTOP, then SIGCONT, as the guards freeze a job) isn't counted
+    /// toward a call's deadline: a call held in the kernel (a FIFO's open), its process stopped for
+    /// 3 s of its 3 s deadline by another process, is given up only after the stop and its
+    /// deadline's run (the look the stop came in counted as asked at most).
+    #[test]
+    fn a_stop_isnt_counted_toward_a_deadline() {
+        let d = tempfile::tempdir().unwrap();
+        let (r, go) = (fifo(d.path(), "r"), fifo(d.path(), "go"));
+        let _cap = cap_for_test(CAP_DEFAULT);
+        // (The stopper, once it reads a line: only its shell's builtins until the stop, so no
+        // program it starts holds it back: a shell's start at nice 20, as tests run, took 25 s on
+        // the loaded M4.)
+        let script = r#"read a < "$1"; kill -STOP "$2"; sleep 3; kill -CONT "$2""#;
+        let mut cmd = crate::spawn::command("/bin/sh");
+        cmd.args(["-c", script, "sh"]).arg(&go).arg(std::process::id().to_string());
+        let mut child = crate::spawn::spawn(&mut cmd).unwrap();
+        // (Opened once the stopper waits for its line; the line written 0.3 s into the call.)
+        let mut w = std::fs::OpenOptions::new().write(true).open(&go).unwrap();
+        let line = std::thread::spawn(move || {
+            std::thread::sleep(ms(300));
+            std::io::Write::write_all(&mut w, b"go\n").unwrap();
+        });
+        let deadline = Duration::from_secs(3);
+        let conts = crate::sys::continued();
+        let rr = r.clone();
+        let t = Instant::now();
+        let e = call(&r.display(), &"read", deadline, move || std::fs::read(&rr)).unwrap_err();
+        let took = t.elapsed();
+        line.join().unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(past_deadline(&e), "{e}");
+        assert!(crate::sys::continued() > conts, "the stop came during the call");
+        let stopped = Duration::from_secs(3);
+        assert!(took + LOOK >= deadline + stopped, "given up after {took:?}: the stop counted");
+        drop(std::fs::OpenOptions::new().write(true).open(&r).unwrap());
     }
 
     /// A thread's calls run on one helper, kept; the call past its deadline took it, and the next
@@ -705,17 +798,8 @@ mod tests {
     /// the write holds its path; once the other ends open, both calls end and nothing is held.
     #[test]
     fn a_call_held_in_the_kernel_is_left_there() {
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
         let d = tempfile::tempdir().unwrap();
-        let fifo = |name: &str| {
-            let p = d.path().join(name);
-            let c = CString::new(p.as_os_str().as_bytes()).unwrap();
-            // SAFETY: mkfifo on a NUL-terminated path this test owns.
-            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", io::Error::last_os_error());
-            p
-        };
-        let (r, w) = (fifo("r"), fifo("w"));
+        let (r, w) = (fifo(d.path(), "r"), fifo(d.path(), "w"));
         let cap = cap_for_test(CAP_DEFAULT);
         let rr = r.clone();
         let e = call(&r.display(), &"read", ms(300), move || std::fs::read(&rr)).unwrap_err();

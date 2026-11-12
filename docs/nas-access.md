@@ -134,10 +134,15 @@ unit jobs sat in `pread` for 40 minutes and more (task #1139), `scenic gc`'s que
 the server is made through `store::deadline`, one mechanism:
 
 - **The call** runs on a helper thread its calling thread keeps; the caller waits for it its
-  deadline at most, counting only the time the process ran (a look at it that comes back over four
-  times later than asked counts as one: the guards' freeze, SIGSTOP; `Instant` doesn't count the
-  Mac asleep). Past it the caller gets `TimedOut` (`deadline::past_deadline`), logged with the
-  path and the call; the helper is left to the kernel, its result going nowhere when it comes, and
+  deadline at most, counting only the time the process ran: it looks each second, and a look the
+  process was stopped in (the guards' freeze or a pause: SIGSTOP, then SIGCONT, which
+  `sys::continued` counts through a kqueue as the signal is sent, before the process runs again)
+  counts as asked at most; any other look counts as long as it took, however late it came back,
+  so a deadline is the time the process could run (`Instant` doesn't count the Mac asleep).
+  Measured on the M4 (task #1155): a utility-priority process's 1 s look came back in 1.05-1.15 s
+  at load 15, and at most 1.15 s and 1.23 s at load 120-130 with 140 utility or 60 default-priority
+  threads spinning; a look over a 6 s stop saw its SIGCONT at once. Past it the caller gets
+  `TimedOut` (`deadline::past_deadline`), logged with the path and the call; the helper is left to the kernel, its result going nowhere when it comes, and
   the caller's next call gets a new helper. A call made inside another (on a helper) runs there,
   under the outer one's deadline, and the paths it changes are the outer one's too (held with it
   when it's left, or at once when it already was: a write inside a read-labelled call, a remove

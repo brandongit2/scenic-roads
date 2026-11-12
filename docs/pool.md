@@ -113,7 +113,8 @@ The share is SMB 3 on a Synology. The design assumes:
   (no error, the call held in the kernel) fails instead of holding its job for good: every NAS
   call of a job is a store::deadline call (docs/nas-access.md §6), made on a helper thread its
   calling thread keeps and waited for its deadline at most, counting only the time the job ran (a
-  look at it that comes back over four times later than asked counts as one: the guards' freeze).
+  look at it the job was stopped in, the guards' freeze, counts as asked at most; any other as long
+  as it took).
   A `PlainFile`'s read is waited for `deadline::LONG` (120 s) and a second more a MB it reads, its
   opens (its first, and again by its path) for `LONG`; past it the read fails with `TimedOut`
   naming the file, not tried again, the NAS's I/O limit halves (store::aimd), its descriptor is let
@@ -587,8 +588,9 @@ and pass-sets reckon their room past it, and run by hand, without it, keep none.
 (`Grant::threads`), which the member's agent sets as `RAYON_NUM_THREADS` (the programs taking
 workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU time the target
 took (`cpu_ms`) and the time its process was stopped meanwhile (`paused_ms`: frozen by the memory
-or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that counts its own
-wakes coming late, task #697), and the wall time its process waited on the NAS, the network, the
+or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that wakes each second
+and counts the time since its last wake when a SIGCONT came meanwhile, `store::sys::continued`,
+tasks #697 and #1155), and the wall time its process waited on the NAS, the network, the
 disk or other work meanwhile (`waited_ms`, store::waits by the wall clock, task #870; where the
 run is timed). **A job is granted the threads its step keeps busy on its Mac** (task #947,
 `crate::uses`): a job holds its threads from its start to its end, so what it uses of them is its
