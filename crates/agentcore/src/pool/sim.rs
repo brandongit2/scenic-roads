@@ -1755,7 +1755,9 @@ impl World {
                     _ => "take-ups after a move: later",
                 });
                 if took > TAKE_UP_S && !today {
-                    self.wrong(format!("mac{d} took up {took} s (awake) after the owner declared it, past {TAKE_UP_S} s"));
+                    self.wrong(format!(
+                        "mac{d} took up {took} s (awake) after the owner declared it, past {TAKE_UP_S} s"
+                    ));
                 }
             }
             self.leaders.insert(e, me);

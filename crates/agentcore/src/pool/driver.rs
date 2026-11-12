@@ -1814,7 +1814,11 @@ mod tests {
             assert!(n < 100, "B never takes up: {:?}", o.events);
             n += 1;
         };
-        assert!(took >= found + STALE_S && took <= found + STALE_S + 40, "{} s after finding itself declared", took - found);
+        assert!(
+            took >= found + STALE_S && took <= found + STALE_S + 40,
+            "{} s after finding itself declared",
+            took - found
+        );
         // A new waiting lead: C; while its reads fail the owner moves the lead to A and back to C.
         let ic = Mac::new(&mem);
         ic.awake.set(ib.awake.get());
