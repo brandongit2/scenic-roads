@@ -10,11 +10,11 @@
 use std::path::{Path, PathBuf};
 
 /// The services' folder under the app's home.
-pub const DIR: &str = "services";
+const DIR: &str = "services";
 
 /// The script `update` runs, in version `v`'s folder under `home` (the app's home), when its
 /// services are set up and neither done nor tried at `v`.
-pub fn due(home: &Path, v: &str) -> Option<PathBuf> {
+fn due(home: &Path, v: &str) -> Option<PathBuf> {
     let d = home.join(DIR);
     let set_up = std::fs::read_dir(&d).ok()?.flatten().any(|e| e.path().join("setup").is_file());
     let at = |f: &str| std::fs::read_to_string(d.join(f)).is_ok_and(|s| s.trim() == v);
