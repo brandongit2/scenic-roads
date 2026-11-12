@@ -208,8 +208,8 @@ Why the lead, not the NAS:
 
 What it costs: with the lead down nothing new is published anyway (publishing is the lead's), so
 clients keep the map they hold, which is what happens today when the catalogue job stops. A Mac
-that starts with no saved map and no lead serves none until the lead answers (§5.2). A lead disk
-lost is §4.5; a lead moved by hand takes its log with it (`agent/maplog/`, docs/pool.md §6.1).
+that starts with no saved map and no lead serves none until the lead answers (§5.2). A lead with
+no log is §4.5; a lead moved by hand takes its log with it (`agent/maplog/`, docs/pool.md §6.1).
 
 The log is its own store (`agent/maplog/`), not a part of the pool store (docs/coordination.md
 §4); whether to fold it in is open decision 1.
@@ -300,7 +300,7 @@ NAS), which a `--root` server and a job on that root read (`store::map::root_map
   torn last line is dropped: it was never answered.
 - **The lead moved by hand** (docs/pool.md §6.1): its `agent/maplog/` is copied with it, so the new
   lead opens the log, its snapshot and GC's queue as a restart does.
-- **The lead's disk is lost** (no log there): the next
+- **No log on the lead's disk** (its `agent/maplog/` gone): the next
   `catalog` run computes the map from the records (as it does every run) and seeds a new log with
   it, which costs nothing lasting: the map is the records'; only what the last map alone kept is
   lost until it's built again (a region whose outline changed since it was built, its tiles not yet
@@ -581,7 +581,7 @@ it has grown to four times what it holds; it survives a lead restart. The holder
 alone: the map's content names from the log's map at the open and each batch, the records' (the
 manifest's and the pending uploads') from each records save the lead's agent makes; nothing is due
 until the records have been seen. The first records seen start the index: what a lead that wasn't
-running missed is the orphan sweep's (§7.5), as is the queue lost with a lead disk. A hand-off
+running missed is the orphan sweep's (§7.5), as is a queue lost with its log. A hand-off
 taken and not merged isn't indexed until the merge takes it: a reused name is either held by a
 lease granted before it was freed (the third rule), or refused at the merge (§7.4); one the merge
 takes holds its names from then until the records after it are seen (`GcQueue::bringing`, step
@@ -592,7 +592,7 @@ for longer than the grace, holding a hand-off whose job reused a file freed unde
 it refused at the merge and its targets done again, never the records naming a deleted file
 (`a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused`: the mark kept while the
 member is forgotten, its lease owed until a beat of its says otherwise). Two limits: the marks are
-the lead's queue's, so a lead whose disk is lost, which starts an empty queue (§4.5), refuses
+the lead's queue's, so a lead whose log is lost, which starts an empty queue (§4.5), refuses
 nothing the old queue deleted, and a reused file missing is then found only by
 the uploads' check (`verify_pending`, said, not mended); and a reused name freed during a long
 job is due once its lease ends, before its hand-off is posted and merged (a beat, and the merge's
@@ -695,13 +695,13 @@ nothing writes a reused file, and nothing goes by a file's time but the sweeps' 
 ### 7.5 What the queue can't see: orphans
 
 A file uploaded but never handed off (a job killed after its upload, a refused hand-off, a lead
-disk lost with its queue) was never held, so it's never queued. A slow **orphan sweep** finds them:
+log lost with its queue) was never held, so it's never queued. A slow **orphan sweep** finds them:
 it lists one folder per step (resuming from the folder it reached, kept in the log store), and
 queues a content-named file that nothing holds and that is older than `ORPHAN_AGE` (14 days: no job
 runs that long between its upload and its hand-off), with `freed_at` its mtime. It takes the same
 quiet room, after the queue's chunks; one pass of the share takes days, and that's fine: orphans
-are few. After a lead disk restore (§4.5), every name in the restored queue that was due is taken
-as deleted (the merge refuses it, §7.4), and the sweep queues what the lost queue held.
+are few. A lead whose log is lost starts an empty queue (§4.5), and the sweep queues what the lost
+queue held.
 
 Built (step 8b, `gc::orphan_walk`): the folders are the top folders of what the map and the records
 name (the lead's, `GcQueue::tops`), the removed steps' and the retired passes', walked a folder at
@@ -710,7 +710,7 @@ kept in `agent/maplog/gc-sweeps.json` after each, so a run stopped goes on after
 only the folders above it. Where it departs: a name is queued freed **when found**, not at its
 mtime: a lease granted before then holds it, and it waits its grace from then. A pass begins
 `ORPHAN_AGE` after the last ended, so an orphan goes within twice its age, and the share isn't
-listed daily. No lead disk is restored from anything (there's no copy of the queue): a lost disk
+listed daily. There's no copy of the queue: a lost log
 starts an empty queue, which the sweep fills. It removes a `.tmp` file 2 days old and a retired
 pass's other files as it meets them (§7.6).
 
@@ -883,7 +883,7 @@ that `CURSOR_TTL` (6 hours) drops once the server has quit or the laptop is away
 holds GC up for long. #874
 retired the laptops' servers, a regression #882 step 7a mended: a laptop's server runs on demand,
 started by its menu bar, and its cursors exist only while it runs (docs/roles.md §8.3). A lead moved
-by hand takes its log and queue with it (§4.5); a lead whose disk is lost starts its log from the
+by hand takes its log and queue with it (§4.5); a lead whose log is lost starts it again from the
 records at its next `catalog` run and loses its queue (the orphan sweep finds what it held, within
 twice `ORPHAN_AGE`), which #882's fixed lead makes rare, as 8b relies on.
 

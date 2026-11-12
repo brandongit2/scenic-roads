@@ -206,20 +206,32 @@ re-exported as `crate::pool::lead`):
   leads (`agent::UNSTEPPED`).
 
 **Moving the lead** (the mini replaced) is done by hand, outside the app, which has no move of its
-own: the lead's state is its agent's folder (`~/Library/Application Support/scenic/agent/`) on its
-own disk, and the new Mac takes a copy of it.
+own: the lead's state is in its agent's folder (`~/Library/Application Support/scenic/agent/`) on
+its own disk, and the new Mac takes it.
 
 1. Stop the old lead's agent (`launchctl bootout gui/$(id -u)/<the agent's label>`, or quit it
    from the status app), and the new Mac's.
-2. Copy from the old lead's agent's folder to the new Mac's: `coord/` (the coordinator's store,
-   its history, its timings) but its `jobs-token`, and `maplog/` (the map's log) whole, and
-   `pool/records.json` (the records it saved last: what the new lead takes up), each over what the
-   new Mac has. Not the rest: `member` (each Mac's own id), `lead.json`, `coord/jobs-token` (each
-   Mac's own jobs' token, which its jobs running across the stop hold), the per-slot files and the
-   rest of `pool/` (its saved state as a member, its mail) stay each Mac's.
-3. Edit the declaration to name the new Mac's member id (`scenic pool status` lists them; the
+2. Copy from the old lead's agent's folder to the new Mac's, each in place of what the new Mac has
+   there (its own `coord/store/` or `maplog/` removed first, not merged into: a store's log
+   segments it kept would be replayed over the copy's):
+   - `coord/` but its `jobs-token`: the coordinator's store (`coord/store/`), its history, its
+     timings, and the files a store's first fill reads;
+   - `maplog/`, whole: the map's log, its snapshot, GC's queue and its sweeps' places;
+   - `pool/records.json`: the records it saved last, which the new lead takes up;
+   - `publishing.json`: the catalogues' record (when one was first held back, the cadence-gated
+     steps' last runs).
+   Not the rest: `member` (each Mac's own id), `lead.json`, `coord/jobs-token` (each Mac's own
+   jobs' token, which its jobs running across the stop hold), the per-slot files and the rest of
+   `pool/` (its saved state as a member, its mail) stay each Mac's; what else only a lead writes
+   (`status.json`, the page view's waits, GC's depth keep, the inputs' listing, the backups' local
+   copy) is made again by the new lead.
+3. On the old lead, rename its `coord/store/`, `maplog/` and `pool/records.json` aside (for
+   example with a `.moved` suffix; remove them once the new lead leads). Then the old lead, started
+   again, can't lead from them even while its share shows it the declaration as it was (a stale
+   read, §3): with no records on its disk it takes nothing up (§6.2).
+4. Edit the declaration to name the new Mac's member id (`scenic pool status` lists them; the
    host is a label).
-4. Start the new Mac's agent, then the old one's: the new lead's coordinator opens the copied
+5. Start the new Mac's agent, then the old one's: the new lead's coordinator opens the copied
    store as its own (its epoch one past the old lead's, every lease in it, the leases of the new
    Mac's own slots of before dropped as at any restart, §7.5), and its driver takes up the copied
    records in that epoch. The old lead, declared no more, is a member: its jobs, taken over by its
@@ -227,8 +239,8 @@ own disk, and the new Mac takes a copy of it.
    the new lead by the declaration as their old one stops answering (docs/coordination.md §3.1).
 
 The pool's token (`coord/workers-token`) is the same on every Mac; `coord/page` (where its page
-is served) is written again as its coordinator starts. A lead whose disk lost its records or its store isn't moved this way and doesn't lead
-(§4 invariant 5): the owner decides.
+is served) is written again as its coordinator starts. A lead whose disk lost its records or its
+store isn't moved this way and doesn't lead (§4 invariant 5): the owner decides.
 
 **The epoch** is the lead's coordinator's store's (docs/coordination.md §4.3), bumped as the store
 opens, so once a process; a take-up leads it, its records numbered on in it. The records' snapshots are numbered (epoch, seq), their JSON key still
@@ -466,10 +478,8 @@ one work of a pass's z3 tiles (the low zooms' gate opens for a pass as a whole).
 job's disk is its own: the parts of its halo's base packs it reads from the NAS, into its scratch,
 and its output (task #396; docs/steps.md §8); their runs and targets' disks from when their
 jobs copied whole base packs into a cache of the Mac's are dropped once, as `job-disks-v5.json`
-is first written, and their targets' disks again as `job-disks-v6.json` is (task #657: each take-up
-of the coordinator's state had brought back those of 51–68 GB, which no Mac's room fitted; its state
-says its disks' generation, `disks_v`, and one of before it brings neither step's to a take-up;
-docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
+is first written, and their targets' disks again as `job-disks-v6.json` is (task #657: those of
+51–68 GB, which no Mac's room fitted; docs/formats.md). `depth-lo`'s (task #398, `coord::REMEASURED`): its job
 peaks and targets' measures past three times its targets' median and a GB (a 35 GB peak against
 65 MB targets, which kept it on the lead's Mac) are dropped each time the coordinator loads them,
 so it runs on any Mac by its measured use. **Shared caches** (task #392, `needs::CACHES`): `depth`, `depth-lo`, `terrain-water`, `lakefill` and `water` read the whole copies (task

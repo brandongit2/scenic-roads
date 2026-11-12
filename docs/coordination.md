@@ -2,8 +2,8 @@
 
 The lead (the Mac mini, docs/pool.md §6.1) holds the pool's coordination state in one store on its
 own disk and serves it over HTTP on its coordinator's port; the members talk to it alone, and
-nothing in coordination goes through the NAS. The NAS keeps the bulk data, the records' snapshots
-and the store's backup. docs/pool.md describes the pool end to end; this doc is the design of the
+nothing in coordination goes through the NAS. The NAS keeps the bulk data and the records'
+snapshots. docs/pool.md describes the pool end to end; this doc is the design of the
 lead's store and protocol (§4, §5), the leases' rule (§6), the failure modes (§7) and the decisions
 behind them (§10). docs/agent-parts.md's **pool** and **beat** parts are its client side. Built by
 task #878 (§8 indexes its steps, which the code's comments cite).
@@ -340,8 +340,8 @@ old coordination folders are gone):
   6 Oct), and `settings/` (the map's profiles, which an older map server reads and writes; and once
   a daily backup lists `mac/profiles.json`); `map/` once every Mac's beat says `nas-check-inputs`
   (docs/maplog.md §4.4);
-- **remove** once the lead runs an app since task #1183 (which writes it no more; no app reads it:
-  only a lead taking up another Mac's state did): `state/lead/store.json`, the lead's store's old
+- **remove** once the lead runs an app since task #1183 (which writes it no more; an older lead reads it at a take-up
+  only to pass over its own, and a member never): `state/lead/store.json`, the lead's store's old
   backup, and the `state/lead/` folder;
 - **still written, for older apps**: `state/coordinator.json`, the lead's contact, which an app
   before #1119 finds the lead by (its agent, its map server, and its updater, which so reaches the

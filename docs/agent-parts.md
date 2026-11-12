@@ -215,8 +215,8 @@ cancel can reach it later with a higher one. The lead's coordinator is the first
 (`Coordinator::plan_started`), and never below the time in ms (`coord::lease::Cancelled`), drops it
 from the offers standing, and leaves it out of every later offer of a plan no newer
 (`Leases::unoffered`); a newer plan's offers forget it. The notes are saved with the leases in
-the lead's store (and its NAS backup), so a restarted or new lead keeps them while they matter. Numbers are at least the
-time in ms (`plan::next_n`), so a lead started again, or another Mac leading, numbers past every
+the lead's store, so a restarted lead keeps them while they matter. Numbers are at least the
+time in ms (`plan::next_n`), so a lead started again, or moved to another Mac by hand, numbers past every
 plan before it and an old cancel drops none of its grants. A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
 channel (`plan::Out`) for the lead's pool step. Not done: a plan's errors stay waiting lines (`plan`
@@ -300,7 +300,7 @@ stepped it for `QUIET_S` (25 s), so a long plan or a slow share never stops it.
   this Mac's hold, the settings' generation, the hand-offs merged. The pool's step and the round
   read the registry; **pool** itself sends nothing.
 
-Its gates (`pool_step`'s `gates`: `leads`, `duties`, `caught_up`, `vouched`) are `PoolView`,
+Its gates (`pool_step`'s `gates`: `leads`, `duties`, `caught_up`) are `PoolView`,
 which **plan** and **jobs** read.
 
 ## 5. Ordering guarantees
@@ -324,8 +324,7 @@ which **plan** and **jobs** read.
 
 - **#881 (the mini as fixed lead, no election: landed).** **plan** runs only on the mini; on the M1
   and M4 it never starts. The handover and takeover machinery and the settle gate are gone from
-  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties`, `caught_up` and
-  `vouched`.
+  **pool** (docs/pool.md §6); `pool_step`'s gates left are `leads`, `duties` and `caught_up`.
 - **#878 (pool coordination by HTTP on the lead: landed).** **pool** is the HTTP client of §4.6:
   a member's heartbeat, status, held leases, hand-offs, mail, holds and settings go to the lead by
   **beat**'s poster, and its answers fill `PoolView`. The channels and snapshots didn't change.

@@ -915,7 +915,7 @@ pub fn check_from(
 /// An event in words, for the log.
 pub fn said(e: &Event) -> String {
     match e {
-        Event::TookUp { epoch, how, .. } => format!("took up the records in epoch {epoch}, from {how}"),
+        Event::TookUp { epoch, how } => format!("took up the records in epoch {epoch}, from {how}"),
         Event::SteppedDown { epoch, why } => format!("no longer leads (epoch {epoch}): {why}"),
         Event::Merged { applied, overtaken, refused, .. } => format!(
             "merged {} entr{} ({overtaken} passed over, {refused} refused)",

@@ -44,8 +44,9 @@ state/         build/ (the records, their brief, the lead's declaration),
                archive and removes it as it passes the week, the last on 19 Nov);
                coordinator.json (the lead's contact, written for the apps before task #1119 alone,
                read by no app since: docs/coordination.md §9);
-               lead/store.json (the lead's store's old backup, read by no app: the PM's to remove
-               once the lead runs an app since task #1183, which writes it no more, §9);
+               lead/store.json (the lead's store's old backup, which an older lead reads at a take-up
+               only to pass its own over: the PM's to remove once the lead runs an app since task
+               #1183, which writes it no more, docs/coordination.md §9);
                what no app since task #1119 reads or writes, the PM's to remove once every Mac runs
                one (§9): status.json, pool/nas-probes.json, tmp/ (empty), logs/ (the
                NAS's planet fetch's and an old bld-fetch's logs, of 2 and 6 Oct); taskboard/ (copies

@@ -48,6 +48,9 @@ pub struct Beat {
 /// a restart keeps the day's best.
 pub const PROBES: &str = "nas-probes";
 
+/// The store's documents no code keeps any more, deleted as it opens (`Kept::open`).
+const GONE: [&str; 1] = ["map-head"];
+
 /// A member's `Heard` (and its `Beat`) is saved again once its time moved this far (its beats come every 10 s; the
 /// 12-h rule needs no finer).
 const HEARD_SAVE_S: u64 = 60;
@@ -143,6 +146,12 @@ impl Kept {
         (m.costs, m.floors, m.disks) = (loaded.costs.clone(), loaded.floors.clone(), loaded.disks.clone());
         m.members = loaded.members.clone();
         drop(m);
+        // (Documents no code keeps any more, deleted: the map's head an app before task #1183 kept
+        // for a next lead.)
+        let gone: Vec<String> = GONE.iter().filter(|k| docs.contains_key(**k)).map(|k| k.to_string()).collect();
+        if !gone.is_empty() {
+            store.submit(Docs::new(), gone);
+        }
         self.store.set(store).ok();
     }
 

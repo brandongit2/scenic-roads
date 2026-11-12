@@ -12727,6 +12727,48 @@ mod tests {
         assert!(serde_json::to_string(&old).unwrap().contains(&format!(r#""job":"0-{}""#, ahead + 5)));
     }
 
+    /// Task #1183: the map's head an app before it kept in the store for a next lead (`map-head`)
+    /// is deleted as the store opens; the rest stays.
+    #[test]
+    fn a_document_no_code_keeps_is_deleted_as_the_store_opens() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let s = crate::pool::store::Store::open(&dir.join("store")).unwrap();
+        let seq = s.submit(
+            [("map-head".to_string(), serde_json::json!(2717)), ("settings".to_string(), serde_json::json!({}))].into(),
+            Vec::new(),
+        );
+        assert!(s.wait(seq, crate::pool::store::DURABLE_WAIT));
+        s.stop();
+        drop(s);
+        let (c, _) = start_for_test(&dir, "m4", "");
+        c.stop();
+        drop(c);
+        let s = crate::pool::store::Store::open(&dir.join("store")).unwrap();
+        assert_eq!((s.doc("map-head"), s.doc("settings")), (None, Some(serde_json::json!({}))));
+    }
+
+    /// A lead's folder of `JOB_DISKS_V5` (task #657): its runs kept whole, `pack`'s and `lo`'s
+    /// targets' disks dropped once, as `JOB_DISKS` is first written.
+    #[test]
+    fn a_folder_of_v5_drops_pack_and_lo_targets_disks_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(JOB_DISKS_V5), r#"{"pack":[1915,1892],"peaks":[1300]}"#).unwrap();
+        let mut d: BTreeMap<String, u64> = [
+            (cost_key("pack", "6/16/20"), 67_875),
+            (cost_key("lo", "3/0/1"), 42_971),
+            (cost_key("peaks", "6/1/1"), 900),
+        ]
+        .into();
+        let (m, _) = job_disks_load(dir.path(), &mut d);
+        assert_eq!(m, [("pack".to_string(), vec![1915, 1892]), ("peaks".to_string(), vec![1300])].into());
+        assert_eq!(d, [(cost_key("peaks", "6/1/1"), 900)].into());
+        assert!(dir.path().join(JOB_DISKS).exists());
+        let mut d: BTreeMap<String, u64> = [(cost_key("pack", "6/1/1"), 300)].into();
+        job_disks_load(dir.path(), &mut d);
+        assert_eq!(d.len(), 1, "not dropped again");
+    }
+
     /// A coordinator on every address holds its jobs' loopback address too: no process binds
     /// 127.0.0.1 on its port beside it (a test's coordinator once did, on the mini, and took the
     /// lead's jobs' requests, refusing their token: #906); its jobs reach it there.

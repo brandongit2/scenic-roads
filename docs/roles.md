@@ -351,7 +351,7 @@ one.) A member's threads (`sample`): `control`,
 `budgets-proxy`, `budgets-io` (2 on the M1, 17 on the M4: by the jobs' connections), `live-sampler`,
 `live-nas`, `memory-guard`, `app-update`. The lead's adds `plan`, `region-states`, `forecast`,
 `forecast-archive`, `pageview`, `pageview-lead`, `phase-shares`, `inputs-watch`, `maplog`,
-`pool-store`, `pool-store-backup`, three more `coordinator`. The members' NAS status copies
+`pool-store`, three more `coordinator`. The members' NAS status copies
 (`state/helpers/<host>.json`) were written at their agents' start alone (before the lead's first
 answer, #878 step 3's gate), none after; none at all since #1036 deleted the gate.
 
@@ -373,7 +373,7 @@ M4, the test Mac (tools/dev/testing.md). Dev tools, not services of the map or t
 | Menu bar | every Mac: this Mac's status and `lead-view.json` (step 5) | the same: the thin local status | the lead's line in the beat's answer |
 | Build page and its data: pageview, forecast and its archive, Catalogues map, built tiles, region steps, phase shares, history | the mini (step 4) | the mini | a member's port 307s to it (§3.3) |
 | Plan, checklist, regions' states, gate, inputs watch, redo | the mini (steps 1–2) | the mini | grants by `/work/ask` |
-| Coordinator, pool store and backup, hand-off merge, the map's log and feed, publishing, GC, backup, catalogue/prune and the other `LEAD_ONLY` steps | the mini | the mini | `/pool/*`, `/work/*`, `/map/*` |
+| Coordinator, pool store, hand-off merge, the map's log and feed, publishing, GC, backup, catalogue/prune and the other `LEAD_ONLY` steps | the mini | the mini | `/pool/*`, `/work/*`, `/map/*` |
 | Map server (tiles, place search, region areas, profiles, accepted versions, names) and its mirror | the mini (#874); a laptop's on demand (step 7a) | the same | devices: map.brandontsang.net; a laptop's own: http://localhost:7311 |
 | Caddy, dev tools app and its backup | the mini | the mini | — |
 
