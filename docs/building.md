@@ -387,7 +387,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   role's parts; when the owner moves the declaration, the agent restarts into its new role at once,
   its jobs handed over to the next process.
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
-  (`LEAD_ONLY`: catalogues, prune, `bld-fetch`, the OSM pass, GC, backup, input checks, …), the steps
+  (`LEAD_ONLY`: catalogues, prune, `bld-fetch`, `planet-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md
   §7.2) ranks the shared steps (`agent::steps::SHARED`): terrain's and slope's z6 tiles, tree cover's
   z6 tiles, roads (`unit`), the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
@@ -711,8 +711,7 @@ publish.sh's "NAS's Mac" step (`nas_current`), its `nas_send` of the release, an
 `nas_rollback`; lib.zsh's `live_dir`, `nas_current`, `nas_lock`/`nas_unlock`, `nas_install`'s
 release writes and `nas_rollback`; the manifest's `files`; jobrt::appupdate's `NasReleases` and
 `check`'s `nas` argument, with coordwire::releases::check's; and the CLI's exit 4 (a lead before
-#1118) with publish.sh's cases for it. `tools/nas/fetch-planet.sh` stays on the NAS (DSM runs it):
-a publish still copies it there through the NAS's Mac when it changed.
+#1118) with publish.sh's cases for it.
 
 **The old layout, until every Mac runs the new app:** before #1148 each version was a folder,
 `app/<version>/`, and the live manifest `app/current.json` (`previous.json` beside it), which the

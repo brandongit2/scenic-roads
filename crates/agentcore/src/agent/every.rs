@@ -5,7 +5,7 @@
 //! - **Every step of the plan offered** (`offered`): the lead's coordinator offers its members the
 //!   plan's steps, not only the shared ones (the map tiles' `pack` and `lo` among them; each Mac's
 //!   saves reach the records only through the journal, so a member's are merged as any). Kept to
-//!   the lead: its duties (`LEAD_ONLY`: the catalogues, a prune, the 3D buildings' sources' and the elevation pyramids' fetches),
+//!   the lead: its duties (`LEAD_ONLY`: the catalogues, a prune, the 3D buildings' sources', the elevation pyramids' and the OSM planet's fetches),
 //!   the steps that keep the pass's answers (the agent seeds them as it starts), and the worldwide
 //!   steps (one target, the world: the roads' index, the rail stops, the ferries, the world's roots,
 //!   the landmarks' and overlays' draws, the rail chain, the depth's water digests; the pass's own), whose
@@ -25,17 +25,18 @@ use super::seam::Plan;
 use serde::{Deserialize, Serialize};
 
 /// The steps kept to the lead: the catalogues and prune (their gates:
-/// crate::agent's catalogue and sweep), the 3D buildings' sources' fetch and the elevation
-/// pyramids' (written outside the records, under `sources/`: one Mac's fetcher holds a host to its
-/// limit, buildstore::fetch), and its duties outside the plan (the OSM pass, offered only to the Mac holding
+/// crate::agent's catalogue and sweep), the 3D buildings' sources' fetch, the elevation
+/// pyramids' and the OSM planet's (written outside the records, under `sources/`: one Mac's fetcher
+/// holds a host to its limit, buildstore::fetch), and its duties outside the plan (the OSM pass, offered only to the Mac holding
 /// its progress: crate::agent::resume; GC, a redo (crate::agent::redo), the backup, the input checks, the names and timetables to do: written into the inputs folders'
 /// `todo/`, outside the records).
-pub const LEAD_ONLY: [&str; 13] = [
+pub const LEAD_ONLY: [&str; 14] = [
     store::catalogue::NAME,
     store::catalogue::HELD_NAME,
     "prune",
     "bld-fetch",
     "pyramids-fill",
+    "planet-fetch",
     "osm-pass",
     "gc",
     "redo",
@@ -125,6 +126,7 @@ mod tests {
             "prune",
             "bld-fetch",
             "pyramids-fill",
+            "planet-fetch",
             "osm-pass",
             "gc",
             "inputs",

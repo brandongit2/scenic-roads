@@ -886,6 +886,48 @@ mod tests {
         assert_ne!(sets3, sets);
     }
 
+    /// Task #1120: declaring the planet (`osm-planet.toml` added to the accepted sources) makes a
+    /// new sources index, and every key that reads the declared sources reads them as before it:
+    /// the terrain's lines, a run's inputs and the sets' source (the geoid), the z6 tiles' and tree
+    /// cover's declared sources (the buildings' release, the land cover, canopy and leaf types),
+    /// the depth sources and the planner's input digests. Its description's credit is new: the
+    /// catalogue's key alone changes.
+    #[test]
+    fn declaring_the_planet_changes_no_key_but_the_catalogues() {
+        use inputs::inputs::sources;
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path());
+        let read = |planet: bool| {
+            let decls: Vec<(&str, &[u8])> =
+                sources::STAGED.iter().copied().filter(|(p, _)| planet || *p != "osm-planet.toml").collect();
+            let mut m = BTreeMap::new();
+            inputs::inputs::elevation::accept_fixture(&root, &mut m);
+            sources::accept_files(&root, &mut m, &decls);
+            let mut t = TerrainTiles::default();
+            t.load(&root, &m);
+            let geoid = t.geoid(&m).unwrap();
+            let held = (
+                terrain::terrain_resume::inputs(&m, &geoid),
+                terrain::terrain_resume::inputs_read(&root, &m).unwrap(),
+                t.sets_from(&m).unwrap(),
+                t.keyed(&m).cloned().expect("the declared sources the z6 tiles' keys name"),
+                t.depth(&m).map(|d| d.as_ref().clone()),
+                crate::agent::theplan::input_digests(&root),
+            );
+            let mut ins = BTreeMap::new();
+            if let Some(c) = inputs::inputs::credits::digest(&inputs::inputs::credits::described(&root, &m).unwrap()) {
+                ins.insert("credits".to_string(), c);
+            }
+            let catalogue = crate::agent::build::catalogue_key(&m, &ins, &[]);
+            (m[&inputs::inputs::logical(sources::UNIT)].clone(), held, catalogue)
+        };
+        let (index, held, catalogue) = read(false);
+        let (index2, held2, catalogue2) = read(true);
+        assert_ne!(index2, index, "a new sources index");
+        assert_eq!(held2, held);
+        assert_ne!(catalogue2, catalogue, "the planet's credit: a new catalogue");
+    }
+
     /// Task #965: the terrain-deep targets and their levels' digests as `deep` keeps them are the
     /// plain functions' (terrain::terrain_deep::targets_in, levels_digest of its levels),
     /// worked out once for the copies and every plan while the coverage and the sets stay, again
