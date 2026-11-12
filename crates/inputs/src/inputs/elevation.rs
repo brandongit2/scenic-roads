@@ -270,27 +270,52 @@ fn native_box(native: &dyn Fn(f64, f64) -> (f64, f64), b: [f64; 4]) -> [f64; 4] 
 }
 
 /// How many of its pixels a deep packs' tile spans at least (at the equator, its widest) in the
-/// levels a hollow test reads (`hollow_of`): ~300 m pixels at z10, then, for the tiles found
-/// hollow there, ~40 m (an island of data a coarse overview's pixels miss, read again finer).
+/// levels a hollow test reads (`hollow_of`): ~300 m pixels at z10, then, for the tiles not found
+/// to hold data there, ~40 m (an island of data a coarse overview's pixels miss, or data only
+/// within an overview's reach of the tile's edge, read again finer).
 const HOLLOW_PX: [f64; 2] = [128.0, 1024.0];
 
+/// How far from its centre, in its pixels, the data an overview's valid pixel stands for may lie:
+/// a resampling reaches past the pixel, so a pixel near a tile's edge may hold only the data of the
+/// ground next door (HRDEM's lidar mosaics: up to 2 pixels at each level from ~300 m to ~40 m,
+/// measured round the six tiles of task #1089, none of which holds a pixel of data at ~4 m). A
+/// pixel further inside a tile than this holds data of the tile's own (`hollow_of`); one nearer is
+/// read finer. Larger costs more tiles a finer read, never a tile with data its run.
+const OVERVIEW_REACH: f64 = 3.0;
+
+/// A hollow test's answer (`hollow_of`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Hollow {
+    /// The tiles where no read found data (`Measured::hollow`), sorted as given.
+    pub tiles: Vec<[u32; 2]>,
+    /// The tiles whose coarse read found data only within an overview's reach of their edge
+    /// (`OVERVIEW_REACH`), so read again finer (task #1089), hollow or not, sorted as given.
+    pub edge: Vec<[u32; 2]>,
+}
+
 /// Of a dataset's presence (`presence`: `presence_of`'s tiles, `[x, y]` at the deep packs' zoom),
-/// the tiles where a finer read finds no valid pixel (`Measured::hollow`), sorted as given: each
-/// file meeting one read at the coarsest of its levels whose pixels are no wider than `HOLLOW_PX`'s
-/// first share of a tile's side (its full resolution where none is), and each tile no file had data
-/// in there read so again at its second, over the tile's box in the files' units
-/// alone, a sparse block read as the sampler reads it (its nodata, else 0) without a read, and
-/// data there only at a point of the tile itself, its edges included (points no further apart than
-/// half a pixel). A tile some file holds data in isn't read further. A footprint narrower than a
-/// tile (which presence takes as data whole) is read so too. An overview's pixel holds data where
-/// any under it does (an average's; a nearest-neighbour overview could miss an island narrower
-/// than its second level's pixels, ~40 m).
+/// the tiles where a finer read finds no data (`Hollow::tiles`, `Measured::hollow`). Each file
+/// meeting one is read over the tile's box in the files' units at the coarsest of its levels whose
+/// pixels are no wider than `HOLLOW_PX`'s first share of a tile's side (its full resolution where
+/// none is), a sparse block read as the sampler reads it (its nodata, else 0) without a read. A
+/// tile holds data there where a valid pixel's centre lies inside it further than an overview's
+/// reach (`OVERVIEW_REACH`) from its outline in the files' units. Every other tile is read again at
+/// the second share, and holds data so too; else where a valid pixel meets the tile itself (at
+/// its points no further apart than half a pixel, its edges included), some pixel of its full
+/// resolution under that one meeting the tile holds data (a pixel of the full resolution itself,
+/// where no level is finer). So the tile's own data is found to the full resolution's pixel, and
+/// a pixel near its edge holding the ground next door's (in a mosaic of lidar patches, HRDEM, the
+/// patch beside it: task #1089, those tiles' runs found nothing) isn't taken for it. A tile some
+/// file holds data in isn't read further. A footprint narrower than a tile (which presence takes
+/// as data whole) is read so too. An overview's pixel holds data where any under it does (an
+/// average's; a nearest-neighbour overview could miss an island narrower than its second level's
+/// pixels, ~40 m).
 pub fn hollow_of(
     crs: u16,
     files: &[(String, Option<[f64; 4]>)],
     presence: &[[u32; 2]],
     open: &(dyn Fn(&str) -> std::result::Result<buildstore::geotiff::Tiff, String> + Sync),
-) -> std::result::Result<Vec<[u32; 2]>, String> {
+) -> std::result::Result<Hollow, String> {
     use crate::dem::zoom::PACK_Z;
     let projected = crate::dem::proj::projected(crs);
     let atlas = if projected { crate::dem::proj::Projection::of(crs) } else { None };
@@ -305,10 +330,12 @@ pub fn hollow_of(
     let meets = |a: &[f64; 4], b: &[f64; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
     use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     let data: Vec<AtomicBool> = presence.iter().map(|_| AtomicBool::new(false)).collect();
+    let edge: Vec<AtomicBool> = presence.iter().map(|_| AtomicBool::new(false)).collect();
     // (A file without a footprint: its bounds, once opened.)
     let known: Vec<std::sync::OnceLock<[f64; 4]>> = files.iter().map(|_| Default::default()).collect();
-    let file = |f: usize, share: f64| -> std::result::Result<(), String> {
+    let file = |f: usize, share: f64, first: bool| -> std::result::Result<(), String> {
         let (w, fp) = &files[f];
+        let err = |e: anyhow::Error| format!("{w}: {e:#}");
         // (A file without a footprint is opened for its bounds; one with, only when it meets a tile
         // not yet known to have data.)
         let mut opened = None;
@@ -316,7 +343,7 @@ pub fn hollow_of(
             Some(b) => b,
             None => {
                 let t = open(w)?;
-                let b = file_bounds(&t).map_err(|e| format!("{w}: {e:#}"))?;
+                let b = file_bounds(&t).map_err(err)?;
                 opened = Some(t);
                 *known[f].get_or_init(|| b)
             }
@@ -330,9 +357,9 @@ pub fn hollow_of(
             Some(t) => t,
             None => open(w)?,
         };
-        let level = hollow_level(&t, side / share).map_err(|e| format!("{w}: {e:#}"))?;
-        let gt = t.transform(level).map_err(|e| format!("{w}: {e:#}"))?;
-        let img = t.level(level).map_err(|e| format!("{w}: {e:#}"))?.clone();
+        let level = hollow_level(&t, side / share).map_err(err)?;
+        let gt = t.transform(level).map_err(err)?;
+        let img = t.level(level).map_err(err)?.clone();
         // (Neighbouring tiles share blocks.)
         let t = t.with_cache(64 << 20);
         let nodata = t.nodata();
@@ -351,32 +378,53 @@ pub fn hollow_of(
             if c0 >= c1 || r0 >= r1 {
                 continue;
             }
-            let px = t.read_window(level, c0, r0, c1 - c0, r1 - r0).map_err(|e| format!("{w}: {e:#}"))?;
+            let px = t.read_window(level, c0, r0, c1 - c0, r1 - r0).map_err(err)?;
             if !px.iter().any(|&v| crate::dem::generic::valid(v, nodata)) {
                 continue;
             }
-            // (Some pixel of the box holds data: one meeting the tile itself? Its points no further
-            // apart than half a pixel, each in the files' units, the tile's edges among them: a
-            // pixel across an edge may hold data inside the tile in a sliver narrower than that,
-            // which a run's finer pixels sample.)
             let b = roadcore::geo::tile_box(PACK_Z, presence[i][0], presence[i][1]);
-            let k = ((2.0 * (nb[2] - nb[0]).max(nb[3] - nb[1]) / gt[1].abs()).ceil() as usize).max(2);
+            let ring = native_ring(&native, b);
             let (ww, wh) = ((c1 - c0) as i64, (r1 - r0) as i64);
-            let hit = (0..=k).any(|j| {
-                (0..=k).any(|q| {
-                    let lon = b[0] + q as f64 / k as f64 * (b[2] - b[0]);
-                    let lat = b[1] + j as f64 / k as f64 * (b[3] - b[1]);
-                    let (x, y) = native(lon, lat);
+            let valid = |c: i64, r: i64| crate::dem::generic::valid(px[(r * ww + c) as usize], nodata);
+            // (Some pixel of the box holds data: one further inside the tile than an overview's
+            // reach holds the tile's own.)
+            let reach = OVERVIEW_REACH * gt[1].abs();
+            let deep = (0..wh).any(|r| {
+                (0..ww).any(|c| {
+                    let p =
+                        (gt[0] + (c0 as f64 + c as f64 + 0.5) * gt[1], gt[3] + (r0 as f64 + r as f64 + 0.5) * gt[5]);
+                    valid(c, r) && in_ring(&ring, p) && ring_distance(&ring, p) > reach
+                })
+            });
+            if deep {
+                data[i].store(true, Relaxed);
+                continue;
+            }
+            // (Else those meeting the tile itself: at its points no further apart than half a
+            // pixel, each in the files' units, the tile's edges among them.)
+            let k = ((2.0 * (nb[2] - nb[0]).max(nb[3] - nb[1]) / gt[1].abs()).ceil() as usize).max(2);
+            let mut hits: BTreeSet<(u32, u32)> = BTreeSet::new();
+            for j in 0..=k {
+                for q in 0..=k {
+                    let (x, y) =
+                        native(b[0] + q as f64 / k as f64 * (b[2] - b[0]), b[1] + j as f64 / k as f64 * (b[3] - b[1]));
                     let (c, r) = (
                         ((x - gt[0]) / gt[1]).floor() as i64 - c0 as i64,
                         ((y - gt[3]) / gt[5]).floor() as i64 - r0 as i64,
                     );
-                    (0..ww).contains(&c)
-                        && (0..wh).contains(&r)
-                        && crate::dem::generic::valid(px[(r * ww + c) as usize], nodata)
-                })
-            });
-            if hit {
+                    if (0..ww).contains(&c) && (0..wh).contains(&r) && valid(c, r) {
+                        hits.insert((c0 + c as u32, r0 + r as u32));
+                    }
+                }
+            }
+            if hits.is_empty() {
+                continue;
+            }
+            // (At the first level, a tile read again finer; at the second, its data only where the
+            // full resolution under them has some in the tile.)
+            if first {
+                edge[i].store(true, Relaxed);
+            } else if level == 0 || full_holds(&t, level, &hits, &ring).map_err(err)? {
                 data[i].store(true, Relaxed);
             }
         }
@@ -385,10 +433,106 @@ pub fn hollow_of(
     // (The files' reads are network round trips: `HOLLOW_READERS` at once.)
     use rayon::prelude::*;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(HOLLOW_READERS).build().map_err(|e| e.to_string())?;
-    for share in HOLLOW_PX {
-        pool.install(|| (0..files.len()).into_par_iter().with_max_len(1).try_for_each(|f| file(f, share)))?;
+    let mut out = Hollow::default();
+    for (n, share) in HOLLOW_PX.into_iter().enumerate() {
+        pool.install(|| (0..files.len()).into_par_iter().with_max_len(1).try_for_each(|f| file(f, share, n == 0)))?;
+        if n == 0 {
+            out.edge = (0..presence.len())
+                .filter(|&i| edge[i].load(Relaxed) && !data[i].load(Relaxed))
+                .map(|i| presence[i])
+                .collect();
+        }
     }
-    Ok(presence.iter().zip(&data).filter(|(_, d)| !d.load(Relaxed)).map(|(t, _)| *t).collect())
+    out.tiles = presence.iter().zip(&data).filter(|(_, d)| !d.load(Relaxed)).map(|(t, _)| *t).collect();
+    Ok(out)
+}
+
+/// Whether, under pixels `hits` (column, row) of `t`'s level `level`, a pixel of its full resolution
+/// with data meets the tile of outline `ring` (in the files' units): its centre or a corner inside.
+fn full_holds(
+    t: &buildstore::geotiff::Tiff,
+    level: usize,
+    hits: &BTreeSet<(u32, u32)>,
+    ring: &[(f64, f64)],
+) -> Result<bool> {
+    let (g, g0) = (t.transform(level)?, t.transform(0)?);
+    let img = t.level(0)?.clone();
+    let nodata = t.nodata();
+    for &(c, r) in hits {
+        // (The pixel's ground in the full resolution's pixels.)
+        let (xa, xb) = (g[0] + c as f64 * g[1], g[0] + (c + 1) as f64 * g[1]);
+        let (ya, yb) = (g[3] + r as f64 * g[5], g[3] + (r + 1) as f64 * g[5]);
+        let (ca, cb) = ((xa - g0[0]) / g0[1], (xb - g0[0]) / g0[1]);
+        let (ra, rb) = ((ya - g0[3]) / g0[5], (yb - g0[3]) / g0[5]);
+        let c0 = (ca.min(cb).floor().max(0.0) as u32).min(img.width);
+        let c1 = (ca.max(cb).ceil().max(0.0) as u32).min(img.width);
+        let r0 = (ra.min(rb).floor().max(0.0) as u32).min(img.height);
+        let r1 = (ra.max(rb).ceil().max(0.0) as u32).min(img.height);
+        if c0 >= c1 || r0 >= r1 {
+            continue;
+        }
+        let px = t.read_window(0, c0, r0, c1 - c0, r1 - r0)?;
+        let at = |c: f64, r: f64| (g0[0] + c * g0[1], g0[3] + r * g0[5]);
+        for (n, &v) in px.iter().enumerate() {
+            if !crate::dem::generic::valid(v, nodata) {
+                continue;
+            }
+            let (c, r) = ((c0 + n as u32 % (c1 - c0)) as f64, (r0 + n as u32 / (c1 - c0)) as f64);
+            if [(0.5, 0.5), (0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+                .iter()
+                .any(|&(dc, dr)| in_ring(ring, at(c + dc, r + dr)))
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Box `b`'s outline (w, s, e, n, degrees) in the files' units (`native`): eight points a side, in
+/// turn round it. (A parallel is a curve in a conic projection: off a chord of an eighth of a z10
+/// tile's side by well under a metre.)
+fn native_ring(native: &dyn Fn(f64, f64) -> (f64, f64), b: [f64; 4]) -> Vec<(f64, f64)> {
+    let along = |f: f64, side: usize| match side {
+        0 => (b[0] + f * (b[2] - b[0]), b[1]),
+        1 => (b[2], b[1] + f * (b[3] - b[1])),
+        2 => (b[2] - f * (b[2] - b[0]), b[3]),
+        _ => (b[0], b[3] - f * (b[3] - b[1])),
+    };
+    (0..4)
+        .flat_map(|side| {
+            (0..8).map(move |k| {
+                let (lon, lat) = along(k as f64 / 8.0, side);
+                native(lon, lat)
+            })
+        })
+        .collect()
+}
+
+/// Whether point `p` is inside polygon `ring` (its vertices in turn), by the crossings of a ray
+/// from it.
+fn in_ring(ring: &[(f64, f64)], p: (f64, f64)) -> bool {
+    let mut inside = false;
+    for (i, &(xi, yi)) in ring.iter().enumerate() {
+        let (xj, yj) = ring[(i + ring.len() - 1) % ring.len()];
+        if (yi > p.1) != (yj > p.1) && p.0 < xi + (p.1 - yi) / (yj - yi) * (xj - xi) {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+/// The distance from point `p` to polygon `ring`'s outline (its vertices in turn).
+fn ring_distance(ring: &[(f64, f64)], p: (f64, f64)) -> f64 {
+    let mut best = f64::INFINITY;
+    for (i, &(ax, ay)) in ring.iter().enumerate() {
+        let (bx, by) = ring[(i + 1) % ring.len()];
+        let (dx, dy) = (bx - ax, by - ay);
+        let len2 = dx * dx + dy * dy;
+        let f = if len2 > 0.0 { (((p.0 - ax) * dx + (p.1 - ay) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        best = best.min((p.0 - ax - f * dx).hypot(p.1 - ay - f * dy));
+    }
+    best
 }
 
 /// How many files a hollow test reads at once (`hollow_of`).
@@ -419,8 +563,10 @@ fn hollow_level(t: &buildstore::geotiff::Tiff, px: f64) -> Result<usize> {
 /// found (`Elevation::measure_now`). A dataset taken as accepted (`seed`: its declaration and data
 /// as accepted) that a version of this check with fewer measures measured is measured from the
 /// first step it lacks on, what's before it kept (task #1088): a measure a version adds is one
-/// more step here, last, and costs a dataset that measure only. Every step from the first lacking
-/// is made again, so what's kept and what's made are what a whole measurement makes.
+/// more step here, last, and costs a dataset that measure only. A step whose rule changed (`rule`)
+/// is lacking where it was made under an older one, as its entry's `rules` fact says (task #1089).
+/// Every step from the first lacking is made again, so what's kept and what's made are what a
+/// whole measurement makes.
 #[derive(Clone, Copy, PartialEq, PartialOrd)]
 enum Step {
     /// Its files' headers: its CRS, resolution, bands and coverage.
@@ -453,6 +599,43 @@ impl Step {
     /// The first step whose measure `m` lacks (None: it has them all).
     fn first_lacking(m: &Measured) -> Option<Step> {
         Step::ALL.into_iter().find(|s| s.lacks(m))
+    }
+
+    /// Its name in an entry's `rules` fact.
+    fn name(self) -> &'static str {
+        match self {
+            Step::Headers => "headers",
+            Step::Presence => "presence",
+            Step::Hollow => "hollow",
+        }
+    }
+
+    /// Its rule's version, raised with the checks' (`Checks::version`) when the rule changes: a
+    /// dataset whose entry names an older one for it (`rules`, none named: 1) is measured from this
+    /// step on. Hollow: 2, data an overview shows only within its reach of a tile's edge confirmed
+    /// at the full resolution (checks version 7, task #1089).
+    fn rule(self) -> u32 {
+        match self {
+            Step::Headers | Step::Presence => 1,
+            Step::Hollow => 2,
+        }
+    }
+
+    /// The `rules` fact of a dataset measured now: each step's rule.
+    fn rules() -> serde_json::Value {
+        Step::ALL.into_iter().map(|s| (s.name().to_string(), s.rule().into())).collect::<serde_json::Map<_, _>>().into()
+    }
+
+    /// `m` (made under `rules`, an entry's fact) without the measures of the first step whose rule
+    /// changed since, so it's lacking (`lacks`), and every later step made again.
+    fn outdated(m: &mut Measured, rules: Option<&serde_json::Value>) {
+        let made = |s: Step| rules.and_then(|r| r.get(s.name())).and_then(|v| v.as_u64()).unwrap_or(1);
+        match Step::ALL.into_iter().find(|&s| made(s) < s.rule() as u64) {
+            Some(Step::Headers) => m.crs = None,
+            Some(Step::Presence) => m.presence = None,
+            Some(Step::Hollow) => m.hollow = None,
+            None => {}
+        }
     }
 }
 
@@ -724,7 +907,7 @@ impl Elevation {
                             None => header(w, remote(w)?),
                         }
                     };
-                    m.hollow = Some(hollow_of(crs, &list, presence, &open)?);
+                    m.hollow = Some(hollow_of(crs, &list, presence, &open)?.tiles);
                 }
                 Ok(m)
             }
@@ -831,10 +1014,12 @@ impl Checks for Elevation {
     /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
     /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`). 5: a
     /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`). 6: its hollow tiles
-    /// (`Measured::hollow`). One accepted without a measure is measured from the first it lacks on
+    /// (`Measured::hollow`). 7: the hollow tiles' rule (`Step::rule`: data an overview shows only
+    /// near a tile's edge confirmed at the full resolution, task #1089). One accepted without a
+    /// measure, or with one made under an older rule, is measured from the first such step on
     /// (`Step`).
     fn version(&self) -> u32 {
-        6
+        7
     }
 
     fn recursive(&self) -> bool {
@@ -1040,6 +1225,10 @@ impl Checks for Elevation {
             };
             facts.insert("extent".into(), extent);
             facts.insert("measured".into(), serde_json::to_value(&m)?);
+            // (Every step of a GeoTIFF's is of the rules now: `measure` made those it lacked.)
+            if matches!(decl.data, Data::Geotiff { .. }) {
+                facts.insert("rules".into(), Step::rules());
+            }
             // (Its `keyed` with its data's: an index's tiles or a folder's files added rerun units.)
             d.facts.insert(path, (facts, Some(keyed_with_data(&keyed(&dk, &decl), &data_digest(v, &id, &decl)))));
         }
@@ -1085,6 +1274,8 @@ impl Checks for Elevation {
                 m.cover = (u != [declared::WORLD]).then_some(u);
             }
             m.outline = None;
+            // (One a step of which was made under an older rule, from that step on.)
+            Step::outdated(&mut m, e.facts.get("rules"));
             memo.entry(format!("{id} {}", e.keyed)).or_insert(Ok(m));
         }
     }

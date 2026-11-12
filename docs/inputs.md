@@ -1301,13 +1301,18 @@ other by its coarsest overview's valid pixels, every file of the dataset read so
 finest zoom and the roads' spacing count a dataset only where it has data so
 (crate::terrain_zoom::sources: a tile its cells merely touch, or whose files hold no data there,
 isn't one of its places); measured once a version, a version measured before it counts its cells.
-Of those, where a finer read finds no valid pixel (`hollow`, crate::inputs::elevation::hollow_of,
-task #842): each file meeting a presence tile (a narrow one's footprint opened too) read over the
-tile's box at the coarsest of its levels whose pixels are no wider than 1/128 of a z10 tile at the
-equator (~300 m; its full resolution where none is), and the tiles no file had data in there read
-again so at 1/1024 (~40 m), its sparse blocks read as the sampler reads them (nodata, else 0), a
-pixel counted where it meets the tile (its edges included), eight files at once. The plan reads
-it, and terrain-deep's and slope-deep's runs: a terrain-deep target whose every source reaching
+Of those, where a finer read finds no data (`hollow`, crate::inputs::elevation::hollow_of,
+tasks #842, #1089): each file meeting a presence tile (a narrow one's footprint opened too) read
+over the tile's box at the coarsest of its levels whose pixels are no wider than 1/128 of a z10
+tile at the equator (~300 m; its full resolution where none is), its sparse blocks read as the
+sampler reads them (nodata, else 0), eight files at once. A tile holds data there where a valid
+pixel's centre lies inside it further than an overview's reach from its edge (3 of the level's
+pixels, `OVERVIEW_REACH`: a resampling reaches past the pixel, and HRDEM's lidar mosaics' overviews
+hold data up to 2 pixels from the patch beside a tile, whose runs then found nothing). Every other
+tile is read again so at 1/1024 (~40 m), and holds data where a valid pixel lies so far inside it,
+else where a valid pixel meeting the tile (its edges included) has under it a pixel of the full
+resolution with data meeting the tile (one of the full resolution itself, where no level is
+finer). The plan reads it, and terrain-deep's and slope-deep's runs: a terrain-deep target whose every source reaching
 past z12 is hollow there is never run, or, with an earlier run's outputs named, dropped once its
 key moves (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the
 hollow tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those
@@ -1316,8 +1321,13 @@ hollow tiles), and a dataset taken as accepted (below) that a version of the che
 measures measured is measured from the first step it lacks on, every step after it made again, what's
 before it kept (task #1088): one accepted by checks version 5 has its hollow tiles read, nothing
 else; a projected one accepted by version 4, its presence and hollow tiles; a geographic one, its
-headers too, for its bands (so measured whole). What's kept and what's made are what a whole
-measurement of the same data makes, so its keys don't move. A measure is lacking only where it isn't
+headers too, for its bands (so measured whole). A step lacks its measure too where it was made under
+an older rule than the check's (`Step::rule`, raised with the checks' version when a step's rule
+changes): each GeoTIFF dataset's entry names the rule each of its steps was made under (its `rules`
+fact, `{"headers": 1, "presence": 1, "hollow": 2}`; an entry naming none, each step's first, 1), so
+checks version 7, the hollow tiles' rule 2, reads every dataset's hollow tiles again and nothing
+else (task #1089). What's kept and what's made are what a whole measurement of the same data
+makes, so its keys don't move. A measure is lacking only where it isn't
 none by design: a projected dataset's bands, or the world's presence and hollow tiles. A geographic
 dataset holding the world (glo30) accepted without bands keeps its single `resolution` everywhere
 and its headers aren't read again: bands there would move the keys of everything built from it. A

@@ -917,7 +917,7 @@ fn an_added_measure_alone_is_read_for_a_dataset_as_accepted() {
         let src = buildstore::fetch::Fetch::open(&alone, w).unwrap().unwrap();
         buildstore::geotiff::Tiff::open(src).map_err(|e| format!("{e:#}"))
     };
-    let hollow = hollow_of(4326, &[(n48.to_string(), Some([2.0, 48.0, 3.0, 49.0]))], &presence, &open).unwrap();
+    let hollow = hollow_of(4326, &[(n48.to_string(), Some([2.0, 48.0, 3.0, 49.0]))], &presence, &open).unwrap().tiles;
     assert_eq!(Some(hollow), want.hollow);
     assert!(!alone.sorted().is_empty());
     assert_eq!(added.sorted(), alone.sorted());
@@ -944,6 +944,62 @@ fn an_added_measure_alone_is_read_for_a_dataset_as_accepted() {
     let remade = decide_with(&checks(&Noted::default()), &files, Some(&before), &copies);
     assert!(remade.report.is_none(), "{:?}", remade.report);
     assert_eq!(measured(&remade), want);
+}
+
+/// Task #1089 (#1143): a dataset as accepted whose entry names an older rule for a step than the
+/// check's (`Step::rule`), or none (an entry from before rules were named: each step's first), is
+/// measured from that step on, what's before it kept: its hollow tiles' rule older, its hollow
+/// tiles alone read, as the hollow test reads them; its presence's, its presence and hollow tiles,
+/// not its headers. One naming the rules now reads nothing. Each comes out as a whole measurement.
+#[test]
+fn a_step_made_under_an_older_rule_is_measured_from_that_step_on() {
+    let n48 = "https://e.org/t/N48E002.tif";
+    let files = BTreeMap::from([
+        ("idx.toml".to_string(), decl("", "format = \"geotiff\"\nindex = \"idx.geojson\"")),
+        ("idx.geojson".to_string(), index(&[(n48, [2.0, 48.0, 3.0, 49.0])])),
+    ]);
+    let copies = Default::default();
+    let checks = |n: &Noted| Elevation::new(Arc::new(Noted { reads: n.reads.clone() }), None);
+    let measured = |d: &crate::inputs::gate::Decision| -> Measured {
+        serde_json::from_value(d.index.files["idx.toml"].facts["measured"].clone()).unwrap()
+    };
+    let whole = Noted::default();
+    let first = decide_with(&checks(&whole), &files, None, &copies);
+    assert!(first.report.is_none(), "{:?}", first.report);
+    let want = measured(&first);
+    assert_eq!(
+        first.index.files["idx.toml"].facts["rules"],
+        serde_json::json!({"headers": 1, "presence": 1, "hollow": 2})
+    );
+    // (The hollow test's reads, made by itself.)
+    let alone = Noted::default();
+    let open = |w: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+        let src = buildstore::fetch::Fetch::open(&alone, w).unwrap().unwrap();
+        buildstore::geotiff::Tiff::open(src).map_err(|e| format!("{e:#}"))
+    };
+    hollow_of(4326, &[(n48.to_string(), Some([2.0, 48.0, 3.0, 49.0]))], want.presence.as_deref().unwrap(), &open)
+        .unwrap();
+    let now = first.index.files["idx.toml"].facts["rules"].clone();
+    let mut before = first;
+    before.index.checks = format!("{UNIT} 6");
+    let mut with_rules = |rules: Option<serde_json::Value>| {
+        let facts = &mut before.index.files.get_mut("idx.toml").unwrap().facts;
+        match rules {
+            Some(r) => facts.insert("rules".into(), r),
+            None => facts.remove("rules"),
+        };
+        let n = Noted::default();
+        let d = decide_with(&checks(&n), &files, Some(&before), &copies);
+        assert!(d.report.is_none(), "{:?}", d.report);
+        assert_eq!(measured(&d), want);
+        assert_eq!(d.index.files["idx.toml"].facts["rules"], now);
+        n.sorted()
+    };
+    assert!(with_rules(Some(serde_json::json!({"headers": 1, "presence": 1, "hollow": 2}))).is_empty());
+    assert_eq!(with_rules(Some(serde_json::json!({"headers": 1, "presence": 1, "hollow": 1}))), alone.sorted());
+    assert_eq!(with_rules(None), alone.sorted(), "named none: each step's first rule");
+    let presence = with_rules(Some(serde_json::json!({"headers": 1, "presence": 0, "hollow": 2})));
+    assert!(presence.len() > alone.sorted().len() && presence.len() < whole.sorted().len(), "{presence:?}");
 }
 
 /// Task #842: of a dataset's presence, the deep tiles a finer read finds no valid pixel in are
@@ -975,7 +1031,7 @@ fn a_presence_tile_with_no_valid_pixel_is_hollow() {
         })
         .collect();
     assert!(presence.len() > 4, "{presence:?}");
-    let hollow = hollow_of(4326, &files, &presence, &open).unwrap();
+    let hollow = hollow_of(4326, &files, &presence, &open).unwrap().tiles;
     let west = |t: &[u32; 2]| roadcore::geo::tile_box(PACK_Z, t[0], t[1])[0] < 2.0 + 6.0 * 100.0 * PX;
     assert!(!hollow.is_empty() && hollow.iter().all(|t| !west(t)), "{hollow:?}");
     for t in &presence {
@@ -989,8 +1045,11 @@ fn a_presence_tile_with_no_valid_pixel_is_hollow() {
     let t = presence[0];
     let b = roadcore::geo::tile_box(PACK_Z, t[0], t[1]);
     let small = vec![("s.tif".to_string(), Some([b[0] + 0.01, b[1] + 0.01, b[0] + 0.02, b[1] + 0.02]))];
-    assert_eq!(hollow_of(4326, &small, &[t], &open_none).unwrap(), vec![t]);
-    assert!(west(&t) && hollow_of(4326, &small, &[t], &open).unwrap().is_empty(), "its data read, not its footprint");
+    assert_eq!(hollow_of(4326, &small, &[t], &open_none).unwrap().tiles, vec![t]);
+    assert!(
+        west(&t) && hollow_of(4326, &small, &[t], &open).unwrap().tiles.is_empty(),
+        "its data read, not its footprint"
+    );
 }
 
 /// Task #842 review: a tile whose only data is a sliver of a pixel across its edge, narrower than
@@ -1020,6 +1079,61 @@ fn a_tile_with_data_only_across_its_edge_isnt_hollow() {
         .collect();
     let b = roadcore::geo::tile_box(PACK_Z, 518, presence[0][1]);
     assert!(b[0] > 2.0 + 3.0 * 100.0 * PX && b[0] < 2.0 + 4.0 * 100.0 * PX, "{b:?}");
-    let hollow = hollow_of(4326, &files, &presence, &open).unwrap();
+    let hollow = hollow_of(4326, &files, &presence, &open).unwrap().tiles;
     assert!(!hollow.is_empty() && hollow.iter().all(|t| t[0] == 519), "{hollow:?}");
+}
+
+/// A file at 0.5″ with overviews to 8″ over z10 tiles 517 and 518's shared edge (2.109375° E),
+/// its data in the lon range `data` (degrees), all rows, its overviews' pixels holding data within
+/// two of their own pixels of it, as HRDEM's resampling reaches: the file, its footprint, and the
+/// two tiles (west, east).
+fn reaching_overviews(data: [f64; 2]) -> (Vec<u8>, [f64; 4], [[u32; 2]; 2]) {
+    use crate::dem::zoom::PACK_Z;
+    let (_, fy) = crate::dem::proj::mercator_tile(2.1, 48.5, PACK_Z as u32);
+    let y = fy.floor() as u32;
+    let b = roadcore::geo::tile_box(PACK_Z, 518, y);
+    assert_eq!(b[0], 2.109375);
+    let (w0, n0) = (2.05, b[3] - 0.01);
+    let gt = [w0, 0.5 * PX, 0.0, n0, 0.0, -0.5 * PX];
+    let sizes = [(720u32, 720u32), (360, 360), (180, 180), (90, 90), (45, 45)];
+    let o = buildstore::geotiff::testtiff::Opts { tile: Some(64), ..Default::default() };
+    let (bytes, _) = buildstore::geotiff::testtiff::make_images(&sizes, o, gt, Some("-9999"), &|k, x, _, _| {
+        let p = 0.5 * PX * (1u32 << k) as f64;
+        let reach = if k == 0 { 0.0 } else { 2.0 * p };
+        let (a, z) = (w0 + x as f64 * p - reach, w0 + (x + 1) as f64 * p + reach);
+        if a < data[1] && data[0] < z {
+            100.0
+        } else {
+            -9999.0
+        }
+    });
+    (bytes, [w0, n0 - 0.1, w0 + 0.1, n0], [[517, y], [518, y]])
+}
+
+/// Task #1089: an overview's pixel holds data up to its resampling's reach from it, so pixels inside
+/// a tile near its edge may hold only the ground next door's (HRDEM: those tiles' runs found
+/// nothing). A tile whose overviews show data only within `OVERVIEW_REACH` of its edge is hollow
+/// unless its full resolution has data in it; the tile holding that data isn't, and one with a
+/// sliver of its own at the edge isn't either.
+#[test]
+fn data_an_overview_shows_only_near_a_tiles_edge_is_confirmed_at_the_full_resolution() {
+    let edge = 2.109375;
+    let run = |data: [f64; 2]| {
+        let (bytes, fp, tiles) = reaching_overviews(data);
+        let open = |_: &str| -> std::result::Result<buildstore::geotiff::Tiff, String> {
+            buildstore::geotiff::Tiff::open(Arc::new(bytes.clone())).map_err(|e| format!("{e:#}"))
+        };
+        (hollow_of(4326, &[("f.tif".to_string(), Some(fp))], &tiles, &open).unwrap(), tiles)
+    };
+    // (Data west of the edge to a pixel short of it: the coarse and the ~1″ overviews' pixels
+    // across the edge and just inside tile 518 hold data, its full resolution none.)
+    let (h, [west, east]) = run([2.105, edge - PX]);
+    assert_eq!(h.tiles, vec![east], "{h:?}");
+    assert!(h.edge.contains(&east), "{h:?}");
+    // (A sliver of its own, one full-resolution column inside it: not hollow.)
+    let (h, _) = run([2.105, edge + 0.5 * PX]);
+    assert!(h.tiles.is_empty(), "{h:?}");
+    // (Data deep inside the east tile: held at the coarse read, neither hollow.)
+    let (h, _) = run([edge + 0.02, edge + 0.04]);
+    assert!(h.tiles == vec![west] && h.edge.is_empty(), "{h:?}");
 }
