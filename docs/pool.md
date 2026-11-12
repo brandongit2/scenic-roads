@@ -589,7 +589,7 @@ and pass-sets reckon their room past it, and run by hand, without it, keep none.
 workers read it: `scenic-build`'s); costs record them (`threads`), with the CPU time the target
 took (`cpu_ms`) and the time its process was stopped meanwhile (`paused_ms`: frozen by the memory
 or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that wakes each second
-and counts the time since its last wake when a SIGCONT came meanwhile, `store::sys::continued`,
+and counts the time since its last wake, less a second, when a SIGCONT came meanwhile, `store::sys::continued`,
 tasks #697 and #1155), and the wall time its process waited on the NAS, the network, the
 disk or other work meanwhile (`waited_ms`, store::waits by the wall clock, task #870; where the
 run is timed). **A job is granted the threads its step keeps busy on its Mac** (task #947,

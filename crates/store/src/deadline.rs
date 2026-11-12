@@ -621,12 +621,6 @@ mod tests {
     fn a_stuck_call_at_utility_priority_on_a_loaded_mac_ends_at_its_deadline() {
         let d = tempfile::tempdir().unwrap();
         let r = fifo(d.path(), "r");
-        let _cap = cap_for_test(CAP_DEFAULT);
-        #[cfg(target_os = "macos")]
-        // SAFETY: sets only the calling thread's QoS class.
-        unsafe {
-            libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
-        }
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let n = 2 * std::thread::available_parallelism().map_or(8, |n| n.get());
         let load: Vec<_> = (0..n)
@@ -643,10 +637,23 @@ mod tests {
             })
             .collect();
         let deadline = Duration::from_secs(4);
+        // (The caller a thread of its own, at utility priority: the runner's thread, which runs
+        // other tests after this one under `cargo test`, is left as it was.)
         let rr = r.clone();
-        let t = Instant::now();
-        let e = call(&r.display(), &"read", deadline, move || std::fs::read(&rr)).unwrap_err();
-        let took = t.elapsed();
+        let (e, took) = std::thread::spawn(move || {
+            #[cfg(target_os = "macos")]
+            // SAFETY: sets only the calling thread's QoS class.
+            unsafe {
+                libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+            }
+            let _cap = cap_for_test(CAP_DEFAULT);
+            let on = rr.display().to_string();
+            let t = Instant::now();
+            let e = call(&on, &"read", deadline, move || std::fs::read(&rr)).unwrap_err();
+            (e, t.elapsed())
+        })
+        .join()
+        .unwrap();
         stop.store(true, Ordering::Relaxed);
         load.into_iter().for_each(|h| h.join().unwrap());
         assert!(past_deadline(&e), "{e}");
@@ -660,6 +667,24 @@ mod tests {
     /// deadline's run (the look the stop came in counted as asked at most).
     #[test]
     fn a_stop_isnt_counted_toward_a_deadline() {
+        // Run again in a process of its own, this test alone in it: under `cargo test` the stop
+        // would stop the runner's other tests too, and their timings with it.
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = crate::spawn::output(
+                crate::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "deadline::tests::a_stop_isnt_counted_toward_a_deadline", "--nocapture"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
         let d = tempfile::tempdir().unwrap();
         let (r, go) = (fifo(d.path(), "r"), fifo(d.path(), "go"));
         let _cap = cap_for_test(CAP_DEFAULT);
