@@ -5,7 +5,9 @@
 set -u
 here=${0:A:h}
 fail=0
-tmp=$(mktemp -d); trap 'rm -rf $tmp' EXIT
+tmp=$(mktemp -d)
+sleep 3600 & live=$!   # (stands in for session s1's Claude Code process)
+trap 'kill $live 2>/dev/null; rm -rf $tmp' EXIT
 tmp=${tmp:A}   # (the guard compares real paths: /var is /private/var)
 g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1 }
 r=$tmp/r W=$tmp/r/.claude/worktrees
@@ -13,10 +15,32 @@ mkdir -p $r/tools/dev; cd $r
 g init -q -b main .
 cp $here/../git-guard.py $here/../shellwords.py $here/../shell-guard.sh $r/tools/dev/
 print x > README.md; g add -A; g commit -m b0
-for a in aaa bbb ddd; do g worktree add -q $W/agent-$a -b br-$a; done
+for a in aaa bbb fff ddd abc; do g worktree add -q $W/agent-$a -b br-$a; done
 mkdir -p $tmp/other; git -C $tmp/other init -q
-proj=$tmp/projects/p; mkdir -p $proj/s1/subagents
-print '{"finished":false}' > $proj/s1/subagents/agent-aaa.meta.json   # (Claude Code writes it as the agent starts)
+proj=$tmp/projects/p; mkdir -p $proj $tmp/sessions
+# session <session> <pid> [<seconds ago>]: Claude Code's record of the process running it, started
+# then (<config>/sessions/<pid>.json; <config>/projects/<project> holds the transcripts).
+session() {
+  python3 -c '
+import json, sys, time
+reg, s, pid, ago, lstart = sys.argv[1:]
+json.dump({"pid": int(pid), "sessionId": s, "procStart": lstart, "startedAt": int((time.time() - float(ago)) * 1000)}, open("%s/%s.json" % (reg, pid), "w"))' \
+    $tmp/sessions $1 $2 ${3:-0} "$(LC_ALL=C TZ=UTC ps -o lstart= -p $2)"
+}
+session s1 $live 7200
+# agent <id> <session> <seconds from now> [finished | <text>]: Claude Code's files for a subagent:
+# its meta (finished: true once it finished) and an entry appended to its transcript.
+agent() {
+  mkdir -p $proj/$2/subagents
+  python3 -c '
+import json, sys, datetime
+b, off, what = sys.argv[1], float(sys.argv[2]), sys.argv[3]
+json.dump({"agentType": "general-purpose", **({"finished": True} if what == "finished" else {})}, open(b + ".meta.json", "w"))
+t = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=off)
+e = {"type": "user", "timestamp": t.isoformat().replace("+00:00", "Z"), "message": {"role": "user", "content": [{"type": "text", "text": what}]}}
+open(b + ".jsonl", "a").write(json.dumps(e) + "\n")' $proj/$2/subagents/agent-$1 $3 ${4:-working}
+}
+agent aaa s1 1; agent bbb s1 1   # (both running)
 
 # check <want: ok | a text the refusal has> <agent id, or - for the main session> <session> <cwd> <command>
 check() {
@@ -100,23 +124,49 @@ check ok - s1 $r "git worktree add $other"   # (there already: no claim)
 check $no - s1 $r "git -C $other reset --hard"
 # A finished agent's worktree: free to the next session writing there (a reviewer, the PM), not
 # while a running subagent works there; removed by the PM.
-print '{"finished":false}' > $proj/s1/subagents/agent-bbb.meta.json
 check $no - s1 $r "git worktree remove --force $other"
 check $no ccc s1 $r "git -C $other rebase main"
-print '{"agentType":"general-purpose","finished":true}' > $proj/s1/subagents/agent-bbb.meta.json
-print '{"finished":false}' > $proj/s1/subagents/agent-ccc.meta.json
-print '{"finished":false}' > $proj/s1/subagents/agent-eee.meta.json
+agent bbb s1 2 finished; agent ccc s1 1; agent eee s1 1
 check ok ccc s1 $r "cd $other && git rebase main && git commit -m review"   # (the reviewer takes it)
 check "a running subagent (ccc)" eee s1 $r "git -C $other reset --hard"
 check "a running subagent (ccc)" - s1 $r "git worktree remove --force $other"
 check ok ccc s1 $r "git -C $other commit -m again"
 check "removed or moved by the main session" ccc s1 $r "git worktree remove --force $other"
-print '{"finished":true}' > $proj/s1/subagents/agent-ccc.meta.json
+agent ccc s1 2 finished
 check ok eee s1 $r "git -C $other reset --hard"   # (ccc finished: eee takes it)
-print '{"finished":true}' > $proj/s1/subagents/agent-eee.meta.json
+agent eee s1 2 finished
 check ok - s1 $r "git -C $other reset --hard && git worktree remove --force $other"
 check ok - s1 $r "git worktree remove --force .claude/worktrees/int-1"
 check $no - s1 $r "git -C $own reset --hard"   # (aaa runs)
+
+# Running is told from liveness (#1153), not from the meta alone: an agent stopped with TaskStop,
+# cut off by its session's restart, or of a session no process runs any more never gets
+# finished: true.
+agent fff s1 1
+check "its agent (fff) is still running" - s1 $r "git worktree remove --force $W/agent-fff"
+agent fff s1 2 '[Request interrupted by user for tool use]'   # (TaskStop's mark, its last entry)
+check ok - s1 $r "git worktree remove --force $W/agent-fff"
+agent ddd s1 2
+check "its agent (ddd) is still running" - s1 $r "git -C $W/agent-ddd reset --hard"
+agent ddd s1 3 '[Request interrupted by user]'; agent ddd s1 4   # (stopped, then resumed by SendMessage)
+check "its agent (ddd) is still running" - s1 $r "git worktree remove --force $W/agent-ddd"
+agent ddd s1 -3600   # (idle for an hour, waiting on a background run; s1's process has run for two)
+touch -t 202601010000 $proj/s1/subagents/agent-ddd.*   # (its files' times don't count)
+check "its agent (ddd) is still running" - s1 $r "git worktree remove --force $W/agent-ddd"
+sleep 1000 & s0=$!   # (another session, s0, and its agent abc)
+session s0 $s0; agent abc s0 1
+check ok abc s0 $W/agent-abc "git worktree add $tmp/abc-own HEAD"
+g worktree add -q $tmp/abc-own HEAD
+check "its agent (abc) is still running" - s1 $r "git worktree remove --force $W/agent-abc"
+check "a subagent (abc) made it" - s1 $r "git -C $tmp/abc-own reset --hard"
+python3 -c 'import json,sys; f=sys.argv[1]; d=json.load(open(f)); d["procStart"]="Thu Jan  1 00:00:00 2026"; json.dump(d,open(f,"w"))' $tmp/sessions/$s0.json
+check ok - s1 $r "git worktree remove --force $W/agent-abc"   # (s0's pid is another process's now)
+session s0 $s0; kill $s0; wait $s0 2>/dev/null   # (s0 ended without removing its record)
+check ok - s1 $r "git worktree remove --force $W/agent-abc"
+check ok - s1 $r "git -C $tmp/abc-own reset --hard"   # (made by abc, which no longer runs)
+check $no ccc s1 $r "git -C $tmp/abc-own reset --hard"   # (still not another subagent's to write in)
+session s1 $live   # (s1 restarted: its process started now, after ddd's last entry)
+check ok - s1 $r "git worktree remove --force $W/agent-ddd"
 
 # shell-guard.sh runs the check (exit 2, the reason on stderr).
 in=$(python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":"git -C %s reset --hard" % sys.argv[1]},"cwd":sys.argv[2],"agent_id":"aaa","session_id":"s1"}))' $other $own)

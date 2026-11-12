@@ -8,12 +8,12 @@
 # session's cwd; `git worktree remove|move <path>` to <path>. Only checkouts of this repo are
 # looked at (another repo, a folder that isn't one: no concern of this). Whose they are:
 # - a subagent's worktree, .claude/worktrees/agent-<id> (Claude Code made it): agent <id>'s while
-#   it runs; once Claude Code says it finished (<session>/subagents/agent-<id>.meta.json in the
-#   project's transcripts), whoever writes there next, a reviewer working on its branch or the
-#   main session; a subagent's write there claims it (.git/worktree-owners/, the path's hash)
-#   until that subagent finishes too;
+#   it runs (running(), below: its session's process is alive and the agent has written since
+#   that process started, not stopped or finished); after, whoever writes there next, a reviewer
+#   working on its branch or the main session; a subagent's write there claims it
+#   (.git/worktree-owners/, the path's hash) while that subagent runs;
 # - a worktree a subagent made itself (a `git worktree add <path>` this sees, of a path not yet
-#   there, recorded in .git/worktree-owners/): that subagent's;
+#   there, recorded in .git/worktree-owners/): that subagent's while it runs;
 # - any other checkout (the main checkout, the PM's int-* worktrees, made before this guard or
 #   after): the main session's (the PM). Main sessions are told apart from subagents only (the
 #   hook input's agent_id), not by session id: a resumed or forked session has a new one.
@@ -22,6 +22,7 @@
 # eval too; what a script run by the command does is not seen, nor a `cd` in a subshell, `( … )`,
 # which the line's later commands are taken to be in too.
 import hashlib, json, os, re, subprocess, sys
+from datetime import datetime
 from shellwords import strip_heredocs, segments, substitutions, tokens, command
 
 WRITES = {"reset", "checkout", "switch", "restore", "commit", "rebase", "merge", "cherry-pick", "revert",
@@ -33,7 +34,7 @@ d = json.load(sys.stdin)
 if d.get("tool_name") != "Bash": sys.exit()
 cmd = (d.get("tool_input") or {}).get("command") or ""
 if "git" not in cmd: sys.exit()
-cwd, agent, session = d.get("cwd") or os.getcwd(), d.get("agent_id") or "", d.get("session_id") or ""
+cwd, agent = d.get("cwd") or os.getcwd(), d.get("agent_id") or ""
 here = os.path.dirname(os.path.abspath(__file__))
 common = os.path.realpath(subprocess.check_output(["git", "-C", here, "rev-parse", "--path-format=absolute", "--git-common-dir"], text=True).strip())
 repo = os.path.dirname(common)   # the main checkout
@@ -79,7 +80,7 @@ def record(top):
     if not agent: return
     try:
         os.makedirs(owners, exist_ok=True)
-        with open(owner_file(top), "w") as f: f.write("%s\n%s\n%s\n" % (top, agent, session))
+        with open(owner_file(top), "w") as f: f.write("%s\n%s\n" % (top, agent))
     except OSError:
         pass
 
@@ -90,16 +91,78 @@ def proj_dir():
     return os.path.dirname(os.path.dirname(t)) if os.path.basename(t) == "subagents" else t
 
 
-def finished(a):
-    """Whether Claude Code says subagent a finished: True, False (running), None (no such agent)."""
-    proj = proj_dir()
-    for s in os.listdir(proj) if proj and os.path.isdir(proj) else []:
+def session_start(s):
+    """When the Claude Code process running session s started (epoch seconds), None when none runs it.
+    Claude Code keeps <config>/sessions/<pid>.json for each process it runs (removed as it exits);
+    one whose pid is gone, or now another process (its start time not procStart), is stale. Without
+    that folder liveness can't be told: 0, as if a process has run it all along."""
+    reg = os.path.join(os.path.dirname(os.path.dirname(proj_dir())), "sessions")
+    if not os.path.isdir(reg): return 0
+    starts = []
+    for f in os.listdir(reg):
         try:
-            with open(os.path.join(proj, s, "subagents", "agent-%s.meta.json" % a)) as f:
-                return json.load(f).get("finished") is True
-        except (OSError, ValueError):
-            pass
+            with open(os.path.join(reg, f)) as h: r = json.load(h)
+            if not f.endswith(".json") or r.get("sessionId") != s: continue
+            ps = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(r["pid"]))], capture_output=True, text=True,
+                                env={**os.environ, "TZ": "UTC", "LC_ALL": "C"})
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        if ps.returncode or not ps.stdout.strip(): continue
+        if r.get("procStart") and ps.stdout.split() != str(r["procStart"]).split(): continue
+        starts.append((r.get("startedAt") or 0) / 1000)
+    return min(starts) if starts else None
+
+
+def last_entry(j):
+    """Transcript j's last entry with a timestamp (read from the end), else None."""
+    try: f = open(j, "rb")
+    except OSError: return None
+    with f:
+        end, buf = f.seek(0, 2), b""
+        while end > 0:
+            n = min(1 << 16, end); end -= n; f.seek(end); buf = f.read(n) + buf
+            lines = buf.split(b"\n")
+            buf = lines[0] if end else b""   # (maybe cut: read on)
+            for l in reversed(lines[1:] if end else lines):
+                try: e = json.loads(l)
+                except ValueError: continue
+                if isinstance(e, dict) and e.get("timestamp"): return e
     return None
+
+
+def stamp(e):
+    try: return datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError): return 0
+
+
+def interrupted(e):
+    """Whether entry e is Claude Code's mark of an interrupted agent (TaskStop's, a cut-off turn's)."""
+    c = (e.get("message") or {}).get("content") if e.get("type") == "user" else None
+    texts = [c] if isinstance(c, str) else [x.get("text") or "" for x in c or [] if isinstance(x, dict)]
+    return any(t.startswith("[Request interrupted by user") for t in texts)
+
+
+def running(a):
+    """Whether subagent a runs: its session (<proj>/<session>/subagents/agent-<a>.*) has a live Claude
+    Code process, the agent's transcript has an entry since that process started (one cut off by a
+    restart has none), the last isn't an interruption (TaskStop) and the meta doesn't say finished.
+    An agent no transcript here names runs nowhere this can see: False; without the transcripts
+    folder (no transcript_path in the input) nothing can be told: True."""
+    proj = proj_dir()
+    if not (proj and os.path.isdir(proj)): return True
+    for s in os.listdir(proj):
+        base = os.path.join(proj, s, "subagents", "agent-%s" % a)
+        if not (os.path.exists(base + ".meta.json") or os.path.exists(base + ".jsonl")): continue
+        try:
+            with open(base + ".meta.json") as f:
+                if json.load(f).get("finished") is True: return False
+        except (OSError, ValueError, AttributeError):
+            pass
+        start = session_start(s)
+        if start is None: return False
+        e = last_entry(base + ".jsonl")
+        return e is None or (stamp(e) >= start and not interrupted(e))
+    return False
 
 
 def agent_of(top):
@@ -114,10 +177,10 @@ def mine(top):
     a, o = agent_of(top), owner(top)
     if a:
         if a == agent: return True
-        if finished(a) is not True: return False   # (its agent runs: its alone)
-        if o and o != agent and finished(o) is False: return False   # (a running subagent took it)
+        if running(a): return False   # (its agent runs: its alone)
+        if o and o != agent and running(o): return False   # (a running subagent took it)
         record(top); return True
-    if o: return o == agent or (not agent and finished(o) is not False)   # (a subagent's own, while it runs)
+    if o: return o == agent or (not agent and not running(o))   # (a subagent's own, while it runs)
     return not agent
 
 
@@ -169,7 +232,7 @@ def git(args, base, env):
         block("`%s` of %s: a subagent's worktree is removed or moved by the main session (the PM) or its own agent only." % (what, top))
     if mine(top): return
     a = agent_of(top)
-    why = ("its agent (%s) is still running" % a if a and finished(a) is not True else
+    why = ("its agent (%s) is still running" % a if a and running(a) else
            "a running subagent (%s) is working there" % owner(top) if a else
            "a subagent (%s) made it" % owner(top) if owner(top) else "it is the main session's (the PM's)")
     block("`%s` would write to %s, which isn't this session's: %s. A session writes with git only in its own checkouts: a subagent's worktree, a finished agent's that no running subagent works in, and the worktrees it made; the main session in the rest. To look at or test another commit, make a worktree of your own (`git worktree add <scratch folder> <commit>`) and work there." % (what, top, why))
