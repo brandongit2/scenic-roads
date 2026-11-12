@@ -1700,10 +1700,9 @@ mod tests {
         let kids: Vec<TileId> = (0..2).flat_map(|x| (0..2).map(move |y| TileId { z: 1, x, y })).collect();
         let (here, there) = (d.path().join("here"), d.path().join("there"));
         cut(&src, &kids, &here, 4).unwrap();
-        let n = streamed(&*ssh(""), WAIT, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| {
-            cut(p, &kids, &there, 4)
-        })
-        .unwrap();
+        let n =
+            streamed(&*ssh(""), WAIT, src.to_str().unwrap(), 0, &d.path().join("stream"), |p| cut(p, &kids, &there, 4))
+                .unwrap();
         assert_eq!(n, 4 * len, "four whole reads (osmium 1.19)");
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
