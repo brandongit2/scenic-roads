@@ -452,7 +452,7 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
 (`main-checkout` for the main checkout, `publish` for publish's snapshot).
 - One run per key at a time: a lock on the test Mac (`~/scenic-check/<key>/.busy`, naming this Mac, the
   process, its start time and a nonce), taken before the copy and held to the end. A second run of
-  the same key prints "key … is in use … waiting" and waits (30 min, then runs here). A lock whose
+  the same key prints "key … is in use … waiting" and waits (30 min, then refuses: below). A lock whose
   process on this Mac is gone (or is another process under a reused PID), or older than 6 h, is
   taken over.
 - The copy: the tree's tracked and untracked-not-ignored files and symlinks (uncommitted edits
@@ -489,18 +489,22 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   RUST_BACKTRACE, RUST_TEST_THREADS, RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL,
   CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_* and SCENIC_*. Both sides print their rustc, cargo
   and nextest versions and whether the NAS is mounted. Three runs at a time on the test Mac; the rest
-  queue (30 min, then here). A stopped run is stopped on the test Mac too.
+  queue (30 min, then refused). A stopped run is stopped on the test Mac too.
 - The result: the test Mac's side ends with a status line (read, not shown); the exit status is the
-  command's. Without one (connection lost, no tree, no slot) it prints
-  `--- remote result discarded, local rerun ---` and runs here: what follows the last such line is
-  the result (publish.sh reads its Summary and FAIL lines only from there).
+  command's. Without one (connection lost, no tree, no slot) the run is refused.
 - Connecting never hangs (#637): a fresh ssh asks the ssh agent (1Password), which, locked, waits
   for an approval for ever. The probe (a fresh connection) has 20 s (`SCENIC_TEST_PROBE_S`, a test's shorter), the lock calls 60 s, and the run
-  must print its first line (`remote-tests: connected to the test Mac`, at once) within 120 s; past a bound it runs here, saying why.
-- Runs here instead: on the test Mac itself (the M4 since 31 Oct; publish runs on the mini, so its suite goes
-  to the M4); when the test Mac is down or the copy fails; when the tree
-  has `data/build` (ignored test data that tests skip without, which the copy wouldn't carry); with
-  `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`).
+  must print its first line (`remote-tests: connected to the test Mac`, at once) within 120 s; past a bound it is refused, saying why.
+- Runs here instead only on the test Mac itself (the M4 since 31 Oct; publish runs on the mini, so
+  its suite goes to the M4) and with `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`), the run
+  here asked for.
+- **Refused** otherwise, whatever keeps the run from the test Mac (the owner's rule: tests run on
+  the M4; task #668's review found a run here in its place passing check.sh with nothing in its
+  summary): no connection within the bounds, the key's lock or a slot not had within 30 min, the
+  copy failing, a run ending without a result, a tree with `data/build` (ignored test data the copy
+  wouldn't carry), a path with a newline, a tree that isn't a git checkout (no files to send). It
+  runs nothing and prints `remote-tests: NOT RUN: <why>. …`, exit 3: check.sh's tests part and
+  publish's suite fail with that line.
 - Disk on the test Mac (#912): before a run, other keys' folders go until the test Mac has its
   agent's room target free (`room-target.json` in its agent's folder, set from the menu bar) plus
   what the run needs (its build folder; an empty one, the largest there): first those

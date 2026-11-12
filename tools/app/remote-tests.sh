@@ -1,8 +1,12 @@
 #!/bin/zsh
 # Runs a test command on the test Mac (`ssh $SCENIC_TEST_HOST`, default `m4`: the M4) against an exact
-# copy of a source tree, streaming its output back; on the test Mac itself, when it can't be reached,
-# or with SCENIC_CHECK_LOCAL=1 (or SCENIC_TESTS_LOCAL=1), it runs here instead. Its exit status is the
-# command's. (Task #442: the heavy test runs of tools/dev/check.sh and tools/app/publish.sh go to one
+# copy of a source tree, streaming its output back; on the test Mac itself, or with
+# SCENIC_CHECK_LOCAL=1 (or SCENIC_TESTS_LOCAL=1), it runs here instead. Its exit status is the
+# command's. Anything else keeping it from the test Mac (no connection, no lock or slot within
+# 30 min, a failed copy, a run that ended without a result, a tree it can't copy) runs nothing:
+# a line "remote-tests: NOT RUN: <why> …" and exit 3 (`refuse`; the owner's rule, 31 Oct: tests run
+# on the M4, and a run here in its place had passed check.sh silently, task #668's review).
+# (Task #442: the heavy test runs of tools/dev/check.sh and tools/app/publish.sh go to one
 # Mac, so the others keep building and serving.)
 #
 #   tools/app/remote-tests.sh <key> <source dir> <shell command>
@@ -10,7 +14,7 @@
 #
 # The key's lock: one run per key at a time (~/scenic-check/<key>/.busy, naming this Mac, process,
 # its start time and a nonce), taken before the copy and held until this script exits; a second run
-# of the same key waits for it (up to 30 min, then runs here). A lock whose process on this Mac is
+# of the same key waits for it (up to 30 min, then refuses). A lock whose process on this Mac is
 # gone (or is another process under a reused PID), or older than 6 h, is taken over.
 # The tree: the source dir's tracked files and its untracked, not-ignored ones (as on disk,
 # uncommitted edits and symlinks included) are copied by rsync into the test Mac's
@@ -23,7 +27,7 @@
 # during a run arrive at the next dated before that run's build, and the next run test the old
 # binary.)
 # A tree holding ignored test data (data/build, which tests read when present and skip without)
-# runs here, where that data is.
+# is refused: the test Mac's copy wouldn't have it.
 # The build folders are the slots', not the keys' (#969): ~/scenic-check/.build/<slot>/{src,target},
 # the same paths whichever tree comes, kept between runs, the target set by that folder's
 # .cargo/config.toml. A key's first run is so no new build: rustc's incremental state holds only
@@ -39,13 +43,10 @@
 # RUST_MIN_STACK, CARGO_TERM_COLOR, CARGO_INCREMENTAL, CARGO_BUILD_JOBS, CARGO_PROFILE_*, NEXTEST_*
 # and SCENIC_* (exported ones). Both sides print their rustc, cargo and nextest versions.
 # At most three runs on the test Mac at once (slots in ~/scenic-check/.slots, each naming its process and
-# its start time; a gone process's slot is freed); the rest wait for one, up to 30 min, then run
-# here. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
+# its start time; a gone process's slot is freed); the rest wait for one, up to 30 min, then refuse. A run whose connection drops is stopped on the test Mac (a watcher sees its sshd gone). A slot
 # is its build folder's lock: freed only once nothing the run started is left, a run killed outright too.
 # The result: the test Mac's side ends with a line "@@remote-tests-status <exit>" (or "none <why>"), read
-# here and not shown. Without one (the connection failed, no tree, no slot), it prints
-# "--- remote result discarded, local rerun ---" and runs the command here: what follows the last
-# such line is the result.
+# here and not shown. Without one (the connection failed, no tree, no slot), it refuses.
 # Disk (#912, make_room): before a run, other keys' folders not in use go, a gone worktree's first,
 # then the least recently used, and last the other slots' build folders not in use, until the test
 # Mac has its agent's room target free plus what this run needs (its build folder; never one
@@ -58,7 +59,7 @@
 # key, and a locked 1Password waits for its approval for ever, BatchMode or not. So each ssh this
 # side makes runs under a watchdog: the first, a fresh-connection probe, within 20 s; the lock and
 # drop calls within 60 s; the run itself must print its first line within 120 s (its first,
-# "connected", comes at once). Past a bound, the ssh is stopped and the command runs here, saying why.
+# "connected", comes at once). Past a bound, the ssh is stopped and the run refused, saying why.
 # The test Mac, known two ways (owner, 31 Oct and 10 Nov): who it is, its LocalHostName, the pool's name
 # for a Mac (SCENIC_TEST_MAC, the M4 by default), checked here before anything connects, so on it the
 # tests run here at once, with no ssh to itself (no 1Password approval, no 20 s probe); and how to
@@ -74,7 +75,6 @@ setopt extendedglob
 lib=${self:h}/lib.zsh
 (( $+functions[proc_id] )) || source $lib
 [[ -n ${SCENIC_TESTS_TRACE:-} ]] && set -x
-marker='--- remote result discarded, local rerun ---'
 
 loadavg() { sysctl -n vm.loadavg | tr -d '{}' | awk '{print $1}'; }
 versions() {  # the toolchain this side runs
@@ -105,7 +105,7 @@ remote_unlock() {  # <key> <owner>: removes the lock only while it is still <own
   if [[ $(cat $aside/owner 2>/dev/null) == "$2" ]]; then rm -rf $aside; return 0; fi
   # Someone else's (taken over and retaken meanwhile): left aside, not put back (a move onto a
   # lock made since would nest inside it); its run, seeing its lock gone as it ends, gives no
-  # result, and reruns here.
+  # result, and is refused.
   return 1
 }
 
@@ -353,6 +353,11 @@ send_tree() {  # <source dir> <file list (NUL-separated)> <destination>: the cop
   rsync -rlpD --checksum --from0 --files-from=$2 $1/ $3
 }
 
+refuse() {  # <why>: the run kept from the test Mac runs nothing (exit 3)
+  print -r -- "remote-tests: NOT RUN: $1. Tests run on the test Mac ($host), never on this Mac in its place: fix that and run again, or set SCENIC_TESTS_LOCAL=1 to run them here on purpose."
+  return 3
+}
+
 run_local() {  # <source dir> <command>
   ( cd $1 && eval "$(mise env -s zsh 2>/dev/null)" 2>/dev/null
     ulimit -n 8192 2>/dev/null || ulimit -n "$(ulimit -Hn)" 2>/dev/null
@@ -370,17 +375,18 @@ local_main() {  # <key> <source dir> <command>
   local why=
   if [[ -n ${SCENIC_CHECK_LOCAL:-}${SCENIC_TESTS_LOCAL:-} ]]; then why="SCENIC_CHECK_LOCAL set"
   elif [[ $(scutil --get LocalHostName 2>/dev/null) == $test_mac ]]; then why="this is the test Mac"
-  elif [[ -d $src/data/build ]]; then why="the tree has ignored test data in data/build, which the test Mac's copy wouldn't"
-  # (A fresh connection, as the run's own: its key from the agent, which may wait for an approval.)
-  elif ! bounded $probe_s ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host true 2>/dev/null; then
-    why="no fresh ssh connection to $host within $probe_s s (down, or the ssh agent, 1Password, locked or waiting for an approval)"
   fi
   if [[ -n $why ]]; then
     print "remote-tests: running here ($why; load $(loadavg))"
     run_local $src "$cmd"; return
   fi
+  [[ -d $src/data/build ]] && { refuse "the tree has ignored test data in data/build, which the test Mac's copy wouldn't have"; return }
+  # (A fresh connection, as the run's own: its key from the agent, which may wait for an approval.)
+  if ! bounded $probe_s ssh -o ConnectTimeout=10 -o BatchMode=yes -o ControlPath=none $host true 2>/dev/null; then
+    refuse "no fresh ssh connection to $host within $probe_s s (down, or the ssh agent, 1Password, locked or waiting for an approval)"; return
+  fi
   # (check.sh's hold of this Mac's shared build folder goes, #1123: the test Mac builds these tests.
-  # A local rerun after builds as any cargo, in line.)
+  # A refused run builds nothing here.)
   if [[ -n ${SCENIC_CARGO_HOLD:-} && $(ps -o command= -p $SCENIC_CARGO_HOLD 2>/dev/null) == *--scenic-hold* ]]; then
     kill -USR1 $SCENIC_CARGO_HOLD
   fi
@@ -392,8 +398,7 @@ local_main() {  # <key> <source dir> <command>
     out=$(on_test_mac --remote-lock $key "$owner" 2>&1); rc=$?
     (( rc == 0 )) && break
     if (( rc != 1 )); then
-      print "remote-tests: can't take the key's lock on the test Mac ($rc: $out): running here"
-      run_local $src "$cmd"; return
+      refuse "can't take the key's lock on the test Mac ($rc: $out)"; return
     fi
     held=$out
     # Held by a process on this Mac that is gone (or a different process under its PID): taken over.
@@ -402,8 +407,7 @@ local_main() {  # <key> <source dir> <command>
     fi
     (( waited == 0 )) && print "remote-tests: key $key is in use on the test Mac ($held): waiting"
     if (( waited >= 1800 )); then
-      print "remote-tests: key $key still in use after 30 min: running here"
-      run_local $src "$cmd"; return
+      refuse "key $key still in use on the test Mac after 30 min"; return
     fi
     sleep 5; (( waited += 5 ))
   done
@@ -415,11 +419,15 @@ local_main() {  # <key> <source dir> <command>
   # sent, and goes there).
   ( cd $src && git ls-files -co --exclude-standard -z | while IFS= read -r -d '' f; do
       [[ -f $f || -L $f ]] && print -rn -- "$f"$'\0'; done ) > $tmp/files.list
-  # (The test Mac's prune compares lists a line a path: a path with a newline runs here.)
+  # (The test Mac's prune compares lists a line a path: a path with a newline can't go; nor an empty
+  # list, a tree that isn't a git checkout.)
   if [[ $(<$tmp/files.list) == *$'\n'* ]]; then
     rm -rf $tmp
-    print "remote-tests: running here (a path in the tree has a newline)"
-    run_local $src "$cmd"; return
+    refuse "a path in the tree has a newline"; return
+  fi
+  if [[ ! -s $tmp/files.list ]]; then
+    rm -rf $tmp
+    refuse "no files to send: $src isn't a git checkout (its tracked and untracked files are what's copied)"; return
   fi
   local t0=$SECONDS
   bounded 60 ssh -o ConnectTimeout=10 -o BatchMode=yes $host "mkdir -p ~/scenic-check/$key/src" &&
@@ -428,8 +436,7 @@ local_main() {  # <key> <source dir> <command>
   rc=$?
   if (( rc )); then
     rm -rf $tmp
-    print "remote-tests: copying to the test Mac failed ($rc): running here"
-    run_local $src "$cmd"; return
+    refuse "copying to the test Mac failed ($rc)"; return
   fi
   print "remote-tests: tree copied to the test Mac in $(( SECONDS - t0 )) s (this Mac's load $(loadavg))"
   # This side's settings the tests read, exported there too.
@@ -476,9 +483,7 @@ local_main() {  # <key> <source dir> <command>
   local st=$(<$tmp/status)
   rm -rf $tmp
   if [[ $st == <-> ]]; then return $st; fi
-  print "remote-tests: the test Mac run ended without a result (${st:-the connection ended}): running here"
-  print -r -- "$marker"
-  run_local $src "$cmd"
+  refuse "the test Mac run ended without a result (${st:-the connection ended})"
 }
 
 # (Sourced, by its tests (tools/app/test/remote-tests.zsh): the functions only.)

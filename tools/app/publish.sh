@@ -250,8 +250,8 @@ CARGO_BIN_EXE_server=$PWD/target/release/server $serves >> $tests_log 2>&1 \
 # through the accessor, the records written only through Out (docs/pool.md §7.3), every Wikimedia
 # request through the budgets' proxy (§7.7), the Python steps' timer, no Instant dated back...)
 # Both run on the test Mac, the M4 by default (tools/app/remote-tests.sh, #442: an exact copy of this snapshot, in a test
-# slot's build folder kept there, at nice 20; here when this is the test Mac, when it can't be reached,
-# or with SCENIC_TESTS_LOCAL=1): the suite took 13-30 min on the M1 beside its builds, and a
+# slot's build folder kept there, at nice 20; here when this is the test Mac or with
+# SCENIC_TESTS_LOCAL=1; kept from it otherwise, not run, a failure): the suite took 13-30 min on the M1 beside its builds, and a
 # timing test failed under that load. Its exit status is the suite's.
 suite='export SCENIC_PUBLISH=1; cargo nextest --version >/dev/null 2>&1 || { mise install -q; eval "$(mise env -s zsh)"; }; rc=0
 cargo nextest run --no-fail-fast --hide-progress-bar --workspace || rc=$?
@@ -282,15 +282,11 @@ step clippy $(( other_ok ? 1 : 0 ))
 dj_wrap cargo "cargo clippy" --parse cargo
 $reply cargo clippy -q --workspace --all-targets -- -A clippy::all -D clippy::disallowed_methods >> $tests_log 2>&1 || { tests_ok=$?; grep -A6 'disallowed' $tests_log; }
 unhold $cache/tests.busy
-# (Only the final result counts: when the M4's run ended without one and the suite ran again here,
-# remote-tests.sh marked where the rerun starts.)
-from=$(grep -n -- '^--- remote result discarded, local rerun ---$' $tests_log | tail -1 | cut -d: -f1 || true)
-final() { tail -n +${from:-1} $tests_log; }
-final | grep -E '^ *Summary ' || true
+grep -E '^ *Summary |^remote-tests: NOT RUN: ' $tests_log || true
 grep -E '^other tests: ' $tests_log || true
 (( other_ok == 0 )) || { (( tests_ok != 0 )) || tests_ok=$other_ok; }
 if (( tests_ok != 0 )); then
-  final | sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' | grep -v '^progress: ' || true
+  sed -n '/^ *FAIL \[/,/^ *\(PASS\|SLOW\|FAIL\|Summary\) /p' $tests_log | grep -v '^progress: ' || true
   echo "tests failed; their whole output: $tests_log"
   exit $tests_ok
 fi

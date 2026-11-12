@@ -37,7 +37,8 @@
 #             keep time testkit and the cargo shim say), when ran.zsh, its test, testkit or the shim changed
 #   swift     swiftc of tools/status/main.swift (publish's line) and its --test (arguments, reopen, launchd), when tools/status changed
 #   tests     the tests tools/dev/affected-tests.sh prints, as one `cargo nextest run` (its --nextest),
-#             run on the test Mac (tools/app/remote-tests.sh; here when it can't be reached or SCENIC_CHECK_LOCAL=1)
+#             run on the test Mac (tools/app/remote-tests.sh; here on the test Mac or with SCENIC_CHECK_LOCAL=1;
+#             else, kept from it, not run: a FAIL)
 #   python    pyflakes on the changed .py files (a deleted one's: the rest of its folder's) and
 #             unittest in their folders' test_*.py, when producers/ or dem/ changed
 # Its cargo is tools/dev/bin/cargo: in an agent worktree, this Mac's shared build folder, one build
@@ -255,7 +256,8 @@ elif (( rustin )); then part --parse cargo prod cargo check -q --workspace --lib
 else skip prod "no workspace crate changed"; fi
 # The tests run on the test Mac (tools/app/remote-tests.sh, #442: an exact copy of this tree, a build
 # folder per test slot, three runs at a time there, the rest queued); here on the test Mac itself
-# (the publishing Mac), when it is down, or with SCENIC_CHECK_LOCAL=1.
+# or with SCENIC_CHECK_LOCAL=1; kept from the test Mac otherwise (it is down, …), not run: a FAIL
+# saying why (remote-tests.sh's NOT RUN line).
 rt=$root/tools/app/remote-tests.sh
 # (Test builds without debug info: Cargo.toml's [profile.test], #918, the same as an agent's own runs.)
 if (( ${#tests} )) && [[ ${verdict[tests]:-} == reuse ]]; then reuse tests ${from[tests]} ${why[tests]}
@@ -278,13 +280,15 @@ else
   fi
   if (( ${#tests} )) && (( ! ${#nx} )); then
     summary+="FAIL  tests  (affected-tests.sh --nextest couldn't read $logs/tests-run)"; print "tests ... FAIL"; failed=1
-  elif (( ${#tests} )) && [[ -x $rt ]]; then
+  elif (( ${#tests} )); then
     key=${root:t}; [[ $root == */.claude/worktrees/* ]] || key=main-checkout
     part tests $rt $key $root $run
     # (The test Mac's own wall and CPU, which this Mac's time of the part doesn't count.)
     r=$(grep -h '^remote-tests: the run took' $logs/tests.log | tail -1)
     [[ -n $r ]] && summary[-1]+="  [${r#remote-tests: }]"
-  elif (( ${#tests} )); then part --parse cargo,tests tests zsh -c $run
+    # (Kept from the test Mac, not run: why, on the summary's line.)
+    r=$(grep -h '^remote-tests: NOT RUN: ' $logs/tests.log | tail -1)
+    [[ -n $r ]] && summary[-1]+="  [${${r#remote-tests: }%%. Tests run on the test Mac*}]"
   else skip tests "no affected Rust tests"; fi
   [[ $reused == *" reused tests="* ]] && summary[-1]+="  (only these; the rest reused from ${from[tests]:0:7})"
 fi
