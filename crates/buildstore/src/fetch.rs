@@ -4,12 +4,12 @@
 //!
 //! `Fetcher` reads, in turn: a mirror folder (`<dir>/<host>/<path>`: a file, or the byte ranges of
 //! one, a caller supplied, listed in `<path>.ranges`; `<path>.none` for one the server doesn't
-//! have), then the network: HTTP, with the build's User-Agent, retries and a block cache. It can
-//! record what it fetched into a mirror folder, for a later run, or a worker, to read instead.
+//! have), then the network: HTTP, with the build's User-Agent, retries and a block cache, what it
+//! fetches by range kept on this Mac's disk (`kept`). A mirror folder is made by the trees' runs
+//! (`Noted::save`), for a later run, or a worker, to read instead.
 //! What it fetches is published data (`Kind::Data`): no robots.txt is read.
 //!
 //!   SCENIC_FETCH_MIRROR=<dir>   read from this mirror first
-//!   SCENIC_FETCH_RECORD=<dir>   record what's fetched over the network into this mirror
 //!   SCENIC_FETCH_OFFLINE=1      no network (natively too)
 
 use anyhow::{bail, ensure, Context, Result};
@@ -175,12 +175,12 @@ fn a_host_that_gave_no_answer_is_not_asked_again_for_a_while() {
     let url = "https://data.example.org/datasets/a.zip";
     let net = net::Net::new().with_down(Some(d.path().to_path_buf()));
     // Not noted: asked (and here, offline, refused as such: not a server's lack of answer).
-    let e = net.open(url, None, None, None).err().unwrap();
+    let e = net.open(url, None, None).err().unwrap();
     assert!(!is_unreachable(&e), "{e:#}");
     // Noted: an error at once, a server's lack of answer, naming why.
     note_down(Some(d.path()), url, "connection reset by peer");
     assert!(d.path().join("data.example.org").is_file());
-    let e = net.open("https://data.example.org/other.zip", None, None, None).err().unwrap();
+    let e = net.open("https://data.example.org/other.zip", None, None).err().unwrap();
     assert!(is_unreachable(&e) && format!("{e:#}").contains("connection reset by peer"), "{e:#}");
     // Another host: asked.
     assert!(down_check(Some(d.path()), "https://other.example.org/a.zip").is_ok());
@@ -411,15 +411,14 @@ impl RangeRead for Remote {
 /// disk (`kept`).
 pub struct Fetcher {
     mirror: Option<PathBuf>,
-    net: Option<(net::Net, Option<PathBuf>)>,
+    net: Option<net::Net>,
     kept: Option<kept::Kept>,
 }
 
 impl Fetcher {
-    /// A fetcher reading `mirror` first, then (natively, when `online`) the network, recording
-    /// what that fetched into `record`.
-    pub fn new(mirror: Option<PathBuf>, record: Option<PathBuf>, online: bool) -> Fetcher {
-        Fetcher { mirror, net: online.then(|| (net::Net::new(), record)), kept: None }
+    /// A fetcher reading `mirror` first, then (natively, when `online`) the network.
+    pub fn new(mirror: Option<PathBuf>, online: bool) -> Fetcher {
+        Fetcher { mirror, net: online.then(net::Net::new), kept: None }
     }
 
     /// With the ranges it fetches kept on this Mac's disk (`kept::Kept`).
@@ -427,12 +426,12 @@ impl Fetcher {
         Fetcher { kept, ..self }
     }
 
-    /// From SCENIC_FETCH_MIRROR, SCENIC_FETCH_RECORD and SCENIC_FETCH_OFFLINE, keeping what it
+    /// From SCENIC_FETCH_MIRROR and SCENIC_FETCH_OFFLINE, keeping what it
     /// fetches in the agent's cache (`SCENIC_CACHE`) under the job's room target (`kept::Kept::from_env`).
     pub fn from_env() -> Fetcher {
         let dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
         let offline = std::env::var("SCENIC_FETCH_OFFLINE").is_ok_and(|v| !v.is_empty() && v != "0");
-        Fetcher::new(dir("SCENIC_FETCH_MIRROR"), dir("SCENIC_FETCH_RECORD"), !offline).keeping(kept::Kept::from_env())
+        Fetcher::new(dir("SCENIC_FETCH_MIRROR"), !offline).keeping(kept::Kept::from_env())
     }
 }
 
@@ -446,9 +445,9 @@ impl Fetch for Fetcher {
                 None => {}
             }
         }
-        if let Some((n, record)) = &self.net {
+        if let Some(n) = &self.net {
             if local.as_ref().is_none_or(|l| l.have.is_some()) {
-                return n.open(url, local, record.as_deref(), self.kept.as_ref());
+                return n.open(url, local, self.kept.as_ref());
             }
         }
         match local {
@@ -482,8 +481,8 @@ impl Fetcher {
                 _ => {}
             }
         }
-        if let Some((n, record)) = &self.net {
-            return n.get_recorded(url, record.as_deref(), deadline);
+        if let Some(n) = &self.net {
+            return n.get_by(url, deadline);
         }
         bail!("{url}: not supplied, and there's no network here")
     }
@@ -630,8 +629,7 @@ pub mod kept;
 
 mod net {
     //! HTTP: range requests with retries (as the Python steps' GDAL did: 10 retries, from 2 s,
-    //! doubling), small files whole (as their GSI fetch did: 8 tries, 2 s more each time); and
-    //! the recording of what's fetched into a mirror folder.
+    //! doubling), small files whole (as their GSI fetch did: 8 tries, 2 s more each time).
 
     use super::*;
     use std::collections::HashMap;
@@ -644,52 +642,6 @@ mod net {
     const BLOCK: u64 = 16 << 10;
     const READ_AHEAD: u64 = 64 << 10;
     const CACHE_BYTES: usize = 16 << 20;
-
-    /// Writes what's fetched into a mirror folder: a file of the URL's length with the fetched
-    /// ranges in place (sparse), the ranges listed beside it; or a whole file; or the server's
-    /// "none".
-    pub struct Recorder {
-        path: PathBuf,
-        len: u64,
-    }
-
-    impl Recorder {
-        pub fn new(root: &Path, url: &str, len: u64) -> Result<Recorder> {
-            Ok(Recorder { path: mirror_path(root, url)?, len })
-        }
-
-        pub fn range(&self, s: u64, b: &[u8]) -> Result<()> {
-            if self.path.exists() && !beside(&self.path, ".ranges").exists() {
-                return Ok(()); // a whole file already
-            }
-            std::fs::create_dir_all(self.path.parent().unwrap())?;
-            let f = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&self.path)?;
-            if f.metadata()?.len() != self.len {
-                f.set_len(self.len)?;
-            }
-            f.write_all_at(b, s)?;
-            let mut r = std::fs::OpenOptions::new().append(true).create(true).open(beside(&self.path, ".ranges"))?;
-            r.write_all(format!("{s} {}\n", s + b.len() as u64).as_bytes())?;
-            Ok(())
-        }
-
-        pub fn whole(root: &Path, url: &str, b: &[u8]) -> Result<()> {
-            let p = mirror_path(root, url)?;
-            std::fs::create_dir_all(p.parent().unwrap())?;
-            let tmp = beside(&p, &format!(".{}.tmp", store::sys::pid()));
-            std::fs::write(&tmp, b)?;
-            std::fs::rename(&tmp, &p)?;
-            std::fs::remove_file(beside(&p, ".ranges")).ok();
-            Ok(())
-        }
-
-        pub fn none(root: &Path, url: &str) -> Result<()> {
-            let p = mirror_path(root, url)?;
-            std::fs::create_dir_all(p.parent().unwrap())?;
-            std::fs::write(beside(&p, ".none"), b"")?;
-            Ok(())
-        }
-    }
 
     /// Fetched blocks kept in memory, least recently used out first, and the runs of blocks being
     /// got now (`loading`: a reader wanting a block of one waits for it, never fetches it again).
@@ -740,12 +692,11 @@ mod net {
         jobrt::timings::fetched(n);
     }
 
-    /// A file's network side: the connection pool, the blocks fetched, where they're recorded, and
-    /// this Mac's disk's copy of the file's ranges (`kept`: None without a cache, or for a file
+    /// A file's network side: the connection pool, the blocks fetched, and this Mac's disk's copy
+    /// of the file's ranges (`kept`: None without a cache, or for a file
     /// whose server names no version of it).
     pub struct Online {
         net: Net,
-        record: Option<Recorder>,
         blocks: Mutex<Blocks>,
         kept: Option<super::kept::Version>,
     }
@@ -849,7 +800,7 @@ mod net {
         }
 
         /// Blocks `a..=b` of the `size`-byte file at `url`: those this Mac's disk keeps read there
-        /// (`kept`), the others fetched (each run of them in one request), recorded and kept there.
+        /// (`kept`), the others fetched (each run of them in one request) and kept there.
         fn get_run(&self, url: &str, size: u64, a: u64, b: u64) -> std::result::Result<Vec<Arc<[u8]>>, String> {
             let span = |i: u64| (i * BLOCK, ((i + 1) * BLOCK).min(size));
             let on_disk = |i: u64| self.kept.as_ref().is_some_and(|k| k.has(span(i).0, span(i).1));
@@ -875,11 +826,6 @@ mod net {
                 }
                 let (s, e) = (span(i).0, span(j).1);
                 let (bytes, version) = self.net.range(url, s, e).map_err(|e| format!("{e:#}"))?;
-                if let Some(r) = &self.record {
-                    if let Err(e) = r.range(s, &bytes) {
-                        eprintln!("fetch: {url}: not recorded: {e:#}");
-                    }
-                }
                 if let Some(k) = &self.kept {
                     k.keep(s, &bytes, version.as_deref());
                 }
@@ -1122,34 +1068,22 @@ mod net {
         }
 
         /// `url`'s file: from the mirror's part of it (`local`) where that has the bytes, else
-        /// fetched, and recorded in `record`; None when the server has no such file. What's
+        /// fetched; None when the server has no such file. What's
         /// fetched is kept on this Mac's disk too (`kept`), by the file's version as its server
         /// names it (none named: not kept).
         pub fn open(
             &self,
             url: &str,
             local: Option<Local>,
-            record: Option<&Path>,
             kept: Option<&super::kept::Kept>,
         ) -> Result<Option<Arc<dyn RangeRead>>> {
             let (len, first, version) = match &local {
                 Some(l) => (l.len, Vec::new(), None),
                 None => match self.head(url)? {
                     Some(h) => h,
-                    None => {
-                        if let Some(r) = record {
-                            Recorder::none(r, url).ok();
-                        }
-                        return Ok(None);
-                    }
+                    None => return Ok(None),
                 },
             };
-            let record = record.map(|r| Recorder::new(r, url, len)).transpose()?;
-            if let Some(r) = &record {
-                if !first.is_empty() {
-                    r.range(0, &first).ok();
-                }
-            }
             let mut blocks = Blocks::default();
             for (i, chunk) in first.chunks(BLOCK as usize).enumerate() {
                 // (Only whole blocks, and the file's last.)
@@ -1163,32 +1097,10 @@ mod net {
                 local,
                 online: Some(Online {
                     net: self.clone(),
-                    record,
                     blocks: Mutex::new(blocks),
                     kept: kept.zip(version).and_then(|(k, v)| k.version(url, len, &v)),
                 }),
             })))
-        }
-
-        /// `url`'s small file whole (`get`), recorded in `record`; each request held to
-        /// `deadline` when one's given (`Fetch::get_within`).
-        pub fn get_recorded(
-            &self,
-            url: &str,
-            record: Option<&Path>,
-            deadline: Option<super::Within>,
-        ) -> Result<Option<Vec<u8>>> {
-            let got = self.get_by(url, deadline)?;
-            if let Some(r) = record {
-                let w = match &got {
-                    Some(b) => Recorder::whole(r, url, b),
-                    None => Recorder::none(r, url),
-                };
-                if let Err(e) = w {
-                    eprintln!("fetch: {url}: not recorded: {e:#}");
-                }
-            }
-            Ok(got)
         }
 
         /// Asks again after a transient failure: 10 times, waiting 2 s, then twice as long each
@@ -1561,7 +1473,7 @@ mod net {
 
 #[cfg(test)]
 mod tests {
-    use super::net::{content_range, Recorder};
+    use super::net::content_range;
     use super::*;
 
     /// Every producer script that fetches (producers/, dem/: urllib, curl, producers/depth/grid.py's
@@ -1824,20 +1736,25 @@ mod tests {
         let url = "https://example.org/a/b.tif?x=1";
         assert_eq!(mirror_path(d.path(), url).unwrap(), d.path().join("example.org/a/b.tif"));
         assert!(mirror_path(d.path(), "https://example.org/../etc").is_err());
-        // A recorded range, then reads within it and outside it (no network).
-        let rec = Recorder::new(d.path(), url, 100).unwrap();
-        rec.range(10, b"0123456789").unwrap();
-        rec.range(20, b"abc").unwrap();
-        let f = Fetcher::new(Some(d.path().to_path_buf()), None, false);
+        // A mirror's ranges of a file (as `Noted::save` keeps them), then reads within them and
+        // outside them (no network).
+        let p = mirror_path(d.path(), url).unwrap();
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mut b = vec![0u8; 100];
+        b[10..20].copy_from_slice(b"0123456789");
+        b[20..23].copy_from_slice(b"abc");
+        std::fs::write(&p, &b).unwrap();
+        std::fs::write(beside(&p, ".ranges"), "10 20\n20 23\n").unwrap();
+        let f = Fetcher::new(Some(d.path().to_path_buf()), false);
         let r = f.open(url).unwrap().unwrap();
         assert_eq!(r.len().unwrap(), 100);
         assert_eq!(r.read_at(12, 10).unwrap(), b"23456789ab");
         assert!(r.read_at(0, 5).is_err(), "not supplied");
         assert!(f.get(url).is_err(), "only part of it");
         // A whole file, and the server's "none".
-        Recorder::whole(d.path(), "https://example.org/t.png", b"png").unwrap();
+        std::fs::write(mirror_path(d.path(), "https://example.org/t.png").unwrap(), b"png").unwrap();
         assert_eq!(f.get("https://example.org/t.png").unwrap().unwrap(), b"png");
-        Recorder::none(d.path(), "https://example.org/n.tif").unwrap();
+        save_none(d.path(), "https://example.org/n.tif").unwrap();
         assert!(f.open("https://example.org/n.tif").unwrap().is_none());
         assert!(f.get("https://example.org/n.tif").unwrap().is_none());
         assert!(f.open("https://example.org/missing.tif").is_err(), "not supplied, offline");
@@ -1941,7 +1858,7 @@ mod tests {
         let file = served(data.clone(), "\"v1\"");
         let gate = store::testkit::Signal::new();
         let url = server(file.clone(), usize::MAX, 0, Some(gate.clone()));
-        let r = Fetcher::new(None, None, true).open(&url).unwrap().unwrap();
+        let r = Fetcher::new(None, true).open(&url).unwrap().unwrap();
         // A reader's run of blocks asked of the server, its answer held.
         let a = {
             let r = r.clone();
@@ -1968,7 +1885,7 @@ mod tests {
         let v1: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
         let file = served(v1.clone(), "\"v1\"");
         let url = dropping_server(file.clone(), usize::MAX, 0);
-        let fetcher = || Fetcher::new(None, None, true).keeping(Some(kept.clone()));
+        let fetcher = || Fetcher::new(None, true).keeping(Some(kept.clone()));
         // A job reads a range: fetched, and kept.
         let r = fetcher().open(&url).unwrap().unwrap();
         assert_eq!(r.read_at(100_000, 50_000).unwrap(), v1[100_000..150_000]);
@@ -1989,7 +1906,7 @@ mod tests {
         assert_eq!(r.read_at(100_000, 50_000).unwrap(), v2[100_000..150_000]);
         assert_eq!(asked_past_head(&file).len(), 3);
         // Without a cache (a job run by hand): fetched each time, nothing kept.
-        let r = Fetcher::new(None, None, true).open(&url).unwrap().unwrap();
+        let r = Fetcher::new(None, true).open(&url).unwrap().unwrap();
         assert_eq!(r.read_at(100_000, 50_000).unwrap(), v2[100_000..150_000]);
         assert_eq!(asked_past_head(&file).len(), 4);
     }
@@ -2008,7 +1925,7 @@ mod tests {
         assert_eq!(file.lock().unwrap().2, [(1000, 250_999), (101_000, 250_999), (201_000, 250_999)]);
         // A whole-file read through the fetcher's own path (the same server, dropping once).
         let url = dropping_server(served(data.clone(), "\"v1\""), 50_000, 1);
-        let r = fast().open(&url, None, None, None).unwrap().unwrap();
+        let r = fast().open(&url, None, None).unwrap().unwrap();
         assert_eq!(r.read_at(200_000, 100_000).unwrap(), data[200_000..300_000]);
     }
 
@@ -2136,15 +2053,12 @@ mod tests {
         clock.at(back_at, move || {
             standin_proxy(port, 200, a, back);
         });
-        let d = tempfile::tempdir().unwrap();
-        let rec = d.path().join("rec");
         let url = "http://localhost:9/xyz/dem1a_png/15/29247/12276.png";
-        let got = through(port, &clock).get_recorded(url, Some(&rec), None).unwrap();
+        let got = through(port, &clock).get_by(url, None).unwrap();
         assert_eq!(got.as_deref(), Some(&b"tile"[..]));
         assert!(clock.elapsed() >= back_at, "{:?}", clock.elapsed());
-        // Asked once (nothing reached it before), and recorded.
+        // Asked once (nothing reached it before).
         assert_eq!(asked.load(Ordering::SeqCst), 1);
-        assert!(rec.exists());
         // A range read and a file's head wait as well (the proxy away again, back after 100 s).
         stop.store(true, Ordering::SeqCst);
         s2.store(true, Ordering::SeqCst);
@@ -2176,13 +2090,13 @@ mod tests {
         });
         let url = "http://localhost:9/a.png";
         let clock = store::clock::Virtual::new();
-        let e = through(port, &clock).get_recorded(url, None, None).err().unwrap();
+        let e = through(port, &clock).get_by(url, None).err().unwrap();
         assert!(is_unreachable(&e), "{e:#}");
         // (Waited out once, then the tries as before: not a second wait per try.)
         assert_eq!(clock.elapsed(), PROXY_WAIT + TRIES_WAIT);
         // Pausing: no wait for the proxy at all, the tries alone.
         let clock = store::clock::Virtual::new();
-        let e = through(port, &clock).with_draining(|| true).get_recorded(url, None, None).err().unwrap();
+        let e = through(port, &clock).with_draining(|| true).get_by(url, None).err().unwrap();
         assert!(is_unreachable(&e), "{e:#}");
         assert_eq!(clock.elapsed(), TRIES_WAIT, "no wait for the proxy");
         assert_eq!(asked.load(Ordering::SeqCst), 0);
@@ -2195,7 +2109,7 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let port = standin_proxy(0, 502, asked.clone(), stop.clone());
         let clock = store::clock::Virtual::new();
-        let e = through(port, &clock).get_recorded("http://localhost:9/b.png", None, None).err().unwrap();
+        let e = through(port, &clock).get_by("http://localhost:9/b.png", None).err().unwrap();
         stop.store(true, Ordering::SeqCst);
         assert!(is_unreachable(&e) && format!("{e:#}").contains("status 502"), "{e:#}");
         assert_eq!(asked.load(Ordering::SeqCst), 8);

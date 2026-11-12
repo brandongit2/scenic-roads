@@ -19,8 +19,16 @@
 //!   range answered as another version than the one the file was opened at isn't kept.
 //! - **Read** under the cache's shared lock (store::cachefile::read: a range read whole), marked
 //!   used, its bytes counted as this Mac's disk's (store::nasio's `Local`). A process lists a
-//!   version's folder when it opens the file and again when the folder has changed, at most every
-//!   `RELIST` (a range another process kept since then is fetched again: never wrong, only missed).
+//!   version's folder as it first reads past what it holds in memory, and again when the folder has
+//!   changed, at most every `RELIST` (a range another process kept since then is fetched again:
+//!   never wrong, only missed).
+//!
+//! Measured after it, the same four targets one after another on the mini (each its own process,
+//! as jobs on one Mac): 8.65 GB downloaded in all, was 9.50 (−9 %), 2.12-2.22 GB a target (the first
+//! 2.17 GB, its own blocks alone; each after it less its neighbours' shared edges), 236-251
+//! thread-s waited on the network a target, was 288-335 (−21 %), 30 % fewer requests; 0.33-0.61 GB a
+//! target read from the disk. The targets' bytes the same, and the same again with every range read
+//! from the disk (the first target again: 3.0 GB read here, nothing fetched).
 //! - **Freed** by room-making as `blobs/` is, each file by its own use, the least recently used first
 //!   (agentcore::agent::room): a file deleted mid-job is fetched again.
 

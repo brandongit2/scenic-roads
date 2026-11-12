@@ -631,7 +631,7 @@ fn reads_recorded_and_read_back() {
     };
     let a = block(&shapes, &inp, 132, 88).unwrap();
     assert!(a.kept > 0 && a.kept < 8 << 20, "{} bytes kept", a.kept);
-    let fetch = buildstore::fetch::Fetcher::new(Some(m.path().into()), None, false);
+    let fetch = buildstore::fetch::Fetcher::new(Some(m.path().into()), false);
     let url = format!("file://{}", std::path::absolute(d.path()).unwrap().display());
     let inp = Inputs { chm: Source::parse(&url), leaf: Source::parse(&url), fetch: &fetch, record: None, there: None };
     let b = block(&shapes, &inp, 132, 88).unwrap();
