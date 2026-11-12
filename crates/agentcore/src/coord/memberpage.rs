@@ -50,8 +50,8 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
             "/" | "/index.html" => Answer::Page,
             "/sw.js" => Answer::Here,
             p if p.strip_prefix('/').is_some_and(&page_file) => Answer::Lead,
-            // (A job's spans: the lead keeps them, crate::coord::jobspans.)
-            p if p.starts_with("/api/job/") => Answer::Lead,
+            // (A job's spans and its page: the lead keeps them, crate::coord::jobspans.)
+            p if p.starts_with("/api/job/") || p.starts_with("/job/") => Answer::Lead,
             _ => Answer::Here,
         };
     }
@@ -172,6 +172,8 @@ mod tests {
         assert_eq!(answer("/index.html", true, file), Answer::Page);
         assert_eq!(answer("/dash.js", true, file), Answer::Lead);
         assert_eq!(answer("/sw.js", true, file), Answer::Here);
+        assert_eq!(answer("/job/5-12", true, file), Answer::Lead, "a job's page");
+        assert_eq!(answer("/api/job/5-12", true, file), Answer::Lead);
         assert_eq!(answer("/work/in/1/a", true, file), Answer::Here);
         assert_eq!(answer("/map/snapshot", true, file), Answer::Here);
         for p in ["/api/swarm", "/api/pause", "/api/settings", "/api/hold", "/api/act"] {

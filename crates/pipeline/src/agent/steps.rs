@@ -2500,12 +2500,13 @@ mod tests {
     use buildstore::handoff::Handoff;
     use jobrt::jobid::JobId;
 
-    /// The build page's schedule colours each stage from STAGE_COLOURS (web/buildpage/dash.js), falling
-    /// back to upkeep's grey: every stage has a colour there, and no two stages share one.
+    /// The build page's schedule colours each stage by its `--st-<id>` token (web/buildpage/dash.js
+    /// stageColour), falling back to upkeep's grey: every stage has a colour there, and no two stages
+    /// share one.
     #[test]
     fn every_stage_has_a_colour_of_its_own_on_the_worker_page() {
-        // index.html sets each stage's --st-<id> once per theme: the first of each is the dark theme's, the second the light's.
-        let html = include_str!("../../../../web/buildpage/index.html");
+        // theme.css sets each stage's --st-<id> once per theme: the first of each is the dark theme's, the second the light's.
+        let html = include_str!("../../../../web/buildpage/theme.css");
         let mut themes: [std::collections::BTreeMap<&str, String>; 2] = Default::default();
         for decl in html.split(';') {
             let Some(at) = decl.find("--st-") else { continue };
@@ -2515,12 +2516,12 @@ mod tests {
         }
         for colours in &themes {
             for s in &STAGES {
-                assert!(colours.contains_key(s.id), "stage {} has no --st-{} in index.html", s.id, s.id);
+                assert!(colours.contains_key(s.id), "stage {} has no --st-{} in theme.css", s.id, s.id);
             }
             let mut seen = std::collections::BTreeMap::new();
             for (k, v) in colours {
                 if let Some(other) = seen.insert(v, k) {
-                    panic!("stages {other} and {k} share the colour {v} in index.html");
+                    panic!("stages {other} and {k} share the colour {v} in theme.css");
                 }
             }
         }

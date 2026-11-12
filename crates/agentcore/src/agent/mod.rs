@@ -7130,6 +7130,7 @@ impl Agent {
                 host: self.host.clone(),
                 start: now_s(),
                 log_from: std::fs::metadata(&log).map_or(0, |m| m.len()),
+                app: self.app.clone(),
             };
             if let Some(p) = self.spans.begin(j, meta, &log) {
                 env.push((jobrt::spans::SPANS_ENV.into(), p.to_string_lossy().into_owned()));

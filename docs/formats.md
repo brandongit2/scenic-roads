@@ -827,8 +827,8 @@ and as the run ends. Times are µs from the job's start (`h`'s `start_us`, unix 
   (`ok`: the job's own word), `exit` (its agent's, `at` unix ms: `ok`, how it ended, `lost` when its
   agent lost it).
 - Beside it its agent keeps `<id>.json` (`agent::spans::Facts`: `meta` (`coord::jobspans::Meta`:
-  `{name, step, targets, worker, host, start, log_from}`, `log_from` the log's length as this run
-  began), its log's path, `ended`) and `<id>.sent` (`{s, l, meta}`: what the lead has). All three go
+  `{name, step, targets, worker, host, start, log_from, app}`, `log_from` the log's length as this run
+  began, `app` the app its agent ran, none from an agent before task #1105), its log's path, `ended`) and `<id>.sent` (`{s, l, meta}`: what the lead has). All three go
   once the lead has all of it; any after 14 days (`agent::spans::KEEP`, said in the agent's log).
 
 **To the lead:** a member's beat (`POST /pool/beat`) carries `spans: [Chunk]`, at most 512 KB a
@@ -875,15 +875,18 @@ to be checked against `agent/coord/jobs/` once the pool runs with spans.
 the lead): 400 for a malformed id, 503 off the lead, else:
 
 ```
-{job, legacy: false, running, now, start, end, kind, name, step, targets, worker, host,
+{job, legacy: false, running, now, start, end, kind, name, step, targets, worker, host, app,
  record: RunRec | null,                 the timings' record (above)
  history: [Event],                      the history's events of the run (lease, start, end, done …)
  spans: [{id, parent, kind, name, t0, t1, status, attrs}],
  waits: [{on, t0, t1, n, busy_s}],
  events: [{kind, t, t1, n, ok, text}],
  log: {lines: [{t, text}], bytes},
- gaps: [{of, from, to}]}
-{job, legacy: true, record, history, now}   no spans kept here (from before them, an older app's, or kept by an earlier lead)
+ gaps: [{of, from, to}],
+ runs: [Run], runs_total,               the history's other runs of its step meeting its targets, the newest 50
+ beside: [Run]}                         the history's other runs on its Mac while it ran, the first 200 by start
+{job, legacy: true, record, history, now, runs, runs_total, beside}   no spans kept here (from before them, an older app's, or kept by an earlier lead)
+Run {job, step, targets, n, worker, from, until, ok}   targets: its first 3 (n all); until null: no end in the history
 ```
 
 Every time is unix seconds (ms precision). `spans` is in the dev jobs' run shape (tools/devtools'
@@ -893,7 +896,14 @@ Every time is unix seconds (ms precision). `spans` is in the dev jobs' run shape
 span; `status` `ok`, `running` (said open, the job running) or `cut` (open as it ended, or as its
 word ended: its `t1` the last time heard); `attrs` `{th, n, busy_s, cpu_s, nas_s, net_s, disk_s,
 other_s, bytes, files}` where said. A log line's `t` is where the job's log marks place it (between
-the two either side, by its bytes; none without marks).
+the two either side, by its bytes; none without marks). `app` is null from an agent before task #1105.
+`runs` and `beside` (`coord::jobspans::relate`, task #1105) come from the history's seven days, read
+in place (`History::all`, no copy): a run's `from` is its end's time less its `secs`, else its
+`start`'s, else its `lease`'s; its end an `end`, `done`, `fail` or `cancel`. `runs`: the runs of its
+step any of whose targets is one of its own (a step of no targets: every run of it), newest first;
+`beside`: those on its Mac (any slot) from its start to its end (or now). A legacy job's step,
+targets, Mac and times are its own events'. The job's page reads it (docs/pipeline.md §5, A job's
+page), its step's medians from `POST /api/timings` (`{kind, last}`, also a page's to ask).
 
 ## The forecasts' archive (`state/coord/forecasts/<day>.jsonl.zst`; agentcore::agent::fcarchive, docs/pool.md §7.9)
 

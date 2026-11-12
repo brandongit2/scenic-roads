@@ -209,6 +209,12 @@ Common rules:
   minute of them; a new `epoch` (the
   Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,
   so it outlives a restart.
+- **A job's page** (task #1105; `web/buildpage/job.html`, `job.js`, its sums `jobview.js`, a run's
+  lanes `runlanes.js`, the theme `theme.css` with the build page; docs/pipeline.md §5, A job's page)
+  at `/job/<epoch>-<n>` (`/build/job/…` through Caddy), any id, no key: one job run, from the lead's
+  `GET /api/job/<id>` (docs/formats.md, Job spans), its step's last records (`/api/timings`, a
+  page's to read as `/api/history` is), and its Mac's measures (that Mac's `/api/live`). A member's
+  port sends it to the lead (memberpage: like the page's files). The schedule's jobs link to it.
 - **HTTPS** through `tailscale serve` (docs/pool.md §14), or the M6's
   https://map.brandontsang.net/build (Caddy, docs/macs.md), gives a secure context;
   plain HTTP on the tailnet still works. The page's files and requests are relative
@@ -227,8 +233,8 @@ Common rules:
   `apple-mobile-web-app-*` meta tags only give a device's own Add to Home Screen (every browser has
   its own way: there is no Install button or hint) its name, icon and full screen.
   A page open for days reloads into a newly published one: the coordinator's hash of the page's
-  files (`http::page_version`) is in the page it serves (index.html's `page-version` meta tag, filled
-  in as it is served) and in the `X-Page-Version` header of every answer (`stamp`); the page
+  files (`http::page_version`) is in the page it serves (index.html's and job.html's `page-version`
+  meta tag, filled in as it is served) and in the `X-Page-Version` header of every answer (`stamp`); the page
   (`version.js`, from its `call`, so within 10 s while it is visible) reloads when an answer's
   differs, once per version (`sessionStorage`, against a reload that serves the same old page), not
   while a field has the focus or a pointer is down (a setting being typed, a limit line dragged: the

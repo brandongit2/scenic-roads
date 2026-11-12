@@ -652,11 +652,6 @@ impl History {
         self.events.iter().filter(|e| e.seq > seq).take(max).cloned().collect()
     }
 
-    /// The events kept of job run `job`, oldest first (its lease, start, end, done …).
-    pub fn of_job(&self, job: jobrt::jobid::JobId) -> Vec<Event> {
-        self.events.iter().filter(|e| e.job == Some(job)).cloned().collect()
-    }
-
     /// Every event kept, oldest first, shared rather than copied (`Events`): what the forecast and
     /// placement read on nearly every pass of the lead's loop, where a copy was ~75 MB of a
     /// week's events (#930).

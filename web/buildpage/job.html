@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- A job's page (task #1105), at the build page's job/<id>: its files are the build page's, one
+     folder up (a proxy may serve them under a path, tools/caddy's /build). -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
+<!-- The page's version, filled in as it is served (docs/coordinator.md §7, The page's version). -->
+<meta name="page-version" content="__VERSION__">
+<link rel="icon" href="../icons/icon-192.png">
+<link rel="stylesheet" href="../theme.css">
+<link rel="stylesheet" href="../dash.css">
+<title>Scenic job</title>
+</head>
+<body class="jp">
+<header class="jhead">
+  <a class="back" href="../#jobs" title="The build page's Jobs tab">Scenic build</a>
+  <span class="dim">›</span>
+  <h1 id="title">job</h1>
+  <span id="state" class="chip"></span>
+  <span id="sub" class="dim small"></span>
+  <div id="busy" class="busy" role="progressbar" aria-label="Reading the job" hidden></div>
+</header>
+<aside id="side" aria-label="The job's details"></aside>
+<main id="jmain"><div class="empty">Reading the job…</div></main>
+<footer class="jfoot">
+  <button id="mode" type="button" title="Times as T+ since the job's start, or as this device's clock">T+</button>
+  <span id="mode-said" class="dim"></span>
+  <span id="live" title="While the job runs, its page asks for what has come every 5 s"><i></i><b></b><span id="live-at"></span></span>
+</footer>
+<script type="module" src="../job.js"></script>
+</body>
+</html>

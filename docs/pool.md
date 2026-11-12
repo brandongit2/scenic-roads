@@ -1423,8 +1423,8 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   or the next lead's take-up gave it a fresh deadline beside the new lease).
 - **Job ids** (task #1103; jobrt::jobid, docs/formats.md, Job ids): each job run is named by the
   lease it was first granted under, `<epoch>-<n>` (`Lease::job`): what its spans are kept by on the
-  lead (task #1104, docs/formats.md, Job spans; `GET /api/job/<id>`), and what the job inspector's
-  page will key a run by (planned: task #1105). Never given twice: each start of the lead's
+  lead (task #1104, docs/formats.md, Job spans; `GET /api/job/<id>`), and what a job's page on the
+  build page keys a run by (`job/<id>`, task #1105). Never given twice: each start of the lead's
   store and each take-up leads an epoch past every earlier one's (§4, invariant 2), and within an
   epoch the store's lease numbers only go up, from past the time in milliseconds, its saved next,
   every lease it takes up and the highest number its history names (`Leases::load`, `restore`,

@@ -327,7 +327,7 @@ The Jobs tab's stages are the one exception.
   paused or pausing (paused alone, `scenic pause --here`: the forecast gives it no lanes, the
   lead's own too while it still leads; its jobs from before the pause still show, and with no lanes in view its row stays, chips
   only), out of touch, on battery), each segment in its stage's colour (a `--st-<stage>` token in
-  index.html, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
+  theme.css, a hue each in either theme): the jobs that ran (the history's job ends: a lead's
   `end` on its slot's lane, a worker's leased `done` or `fail`, which names no slot, on its Mac's
   first lane free by then; the history's whole seven days, read back from `/api/history` 5 000 events at a time, about 3.4 MB
   of JSON in four asks for a week's ~18 000 events, measured 23 Oct; runs of one step closer than
@@ -346,8 +346,12 @@ The Jobs tab's stages are the one exception.
   Opt+wheel on a mouse, two fingers' pinch on a touch screen, about the pointer; 10 min at the
   narrowest. Each track is a canvas: its segments are data, those in view drawn on it once a frame
   as the view moves, so a pan or zoom lays nothing out (measured 26 Oct in Chrome, windowed at 120 Hz, a week with ~4,200 segments: a frame 8.3 ms median, 10 ms at the 95th percentile while a sideways wheel pans or a pinch zooms, under 1 ms of script; before, as each segment an element, 17–18 ms at the 95th). At its far left end an archive sign: older history is in the archive
-  (`state/coord/history-archive`), not reachable from the page. A job hovered (or its card pinned,
-  a tap's): red square-cornered arrows from each forecast job it waits on and to each waiting on
+  (`state/coord/history-archive`), not reachable from the page. A job that ran alone in its segment
+  (not packed with others at the zoom) or one running is a link to its page (task #1105, below): a
+  real `<a target="_blank">` laid over the segment under the pointer (a finger's tap too), so a
+  click or a tap opens it in a new tab and Cmd-click, a middle click and the menu's copy work; a
+  drag that starts on it still moves the view (the click after it is eaten). Its card says its job
+  id. A job hovered: red square-cornered arrows from each forecast job it waits on and to each waiting on
   it (the forecast's jobs and their dependencies, `/api/tocome`'s `runs`, `jobs` and `deps`, job to job from the targets' readiness, task #879: a running job is
   its lane's first run of its step, that run's first job its time left, drawn as the running job
   to its forecast end, never as a job to come, task #863), and for a job that ran or one running, from each job that
@@ -378,7 +382,9 @@ The Jobs tab's stages are the one exception.
   what's inside it; its targets as chips; the schedule's job cards are the map's width and layout, 280 px, #794), a step's (its targets done, what it makes, kind, where
   it runs, memory, its forecast and jobs; its time by phase as chips), a stage's (steps done, its
   counts, what it makes, work left, done ≈, now or next, its note; its steps as chips), shown on hover with a mouse or trackpad
-  and pinned on a click or tap, refreshed with each render. A following card never catches the
+  and pinned on a click or tap, refreshed with each render; not the schedule's, whose jobs are
+  links (a tap on a segment of no page, one to come or several packed, shows its card as a hover's,
+  gone with the next tap or scroll). A following card never catches the
   pointer (pointer-events none; placed beside the point, never over it) and goes as the pointer
   leaves what it's about (into anything else, off the map, out of the window). Every tooltip on the page
   (these cards, the catalogue timeline's) has a slightly transparent background with a 6 px backdrop blur
@@ -388,6 +394,38 @@ The Jobs tab's stages are the one exception.
   live. Escape or × close it too. A running job's card says what's inside it (the status's `jobs[].live`, docs/pool.md §10,
   Live: its phase and since when, its target under way against the step's `each_s`, its targets done, its NAS and internet
   bytes). No phase bars yet: they wait for the lead's measured phase shares (task #511).
+- **A job's page** (task #1105; `job.html`, `job.js`, its sums `jobview.js` tested by
+  web/test/jobview.test.mjs) at the build page's `job/<epoch>-<n>`: one job run, from the lead's
+  `GET /api/job/<id>` (docs/formats.md, Job spans). A header (its name, outcome, id and Mac); a
+  sidebar fixed at the left: its step (and stage), name and targets, its Mac and slot, its job id
+  and lease (and how many times its run was held again under a new lease), the app its agent ran;
+  threads granted, cores busy (CPU over wall) and peak memory (its timings' record, once it ends),
+  its NAS weight ("not recorded": the lead weighs a running job's NAS share from its beats and keeps
+  no grant's weight); its start, how long it took, its outcome and why (its error, its agent's exit,
+  the history's notes, a pause, spans cut); its figures (wall, CPU, cores busy, peak memory,
+  threads, NAS and network waits) beside its step's medians over the lead's last 20 records of its
+  kind (`/api/timings`, itself left out); the history's other runs of its targets (links) and the
+  jobs beside it on its Mac. The main part: its spans on a timeline (`timeline.js`, the schedule's
+  look and gestures, down to 2 ms; laid out by `runlanes.js`, the dev job dashboard's too: the flat
+  spans' tree rebuilt by `parent`): the run, its main thread's phases by depth (a phase coloured by
+  what it waited on most: the NAS, the network, the disk, other work, else its CPU; cut ones
+  outlined red, running ones bright to the now line), each other thread's spans; its waits as
+  intervals, a lane a kind; its markers (its leases, a lease after the first its run held again: a
+  lapse, a restart or a take-over; retries, safe points, pauses, its end and its agent's exit); its
+  log's lines, a mark each; its Mac's CPU (the build's and the rest's cores, of its cores), memory,
+  NAS and network traffic as stacked charts from that Mac's `/api/live` (its live store's ring
+  that covers it: a point a second within the hour, every 10 s within the day, coarser to seven
+  days; past that "not kept"; the lead's own port, another Mac's at its addresses), and the other
+  jobs on its Mac meanwhile (links to their pages). A card on hover (a chart's: its values at the
+  pointer). A span clicked: it and what it's in and under lit, its log lines under the timeline (a
+  log mark clicked: its line); the log in full otherwise (4,000 lines, then "show all"), its middle
+  left out said. Times as T+ since its start (`T+05:01.158`: hours only for a run an hour long,
+  milliseconds once the axis's step is under a second), or the device's clock (the date as a run
+  crosses midnight, a midnight on the axis named), by the fixed footer's button, kept in this
+  browser (`localStorage` `job-times`). A job still running: asked again every 5 s (its spans
+  come with its Mac's beats), its Mac's measures every 15 s, the view kept whole as it grows unless
+  zoomed. A job with no spans (`legacy`: from before them, an older app's, or kept by an earlier
+  lead): said in place of the timeline, the sidebar as far as its history and record have it.
 - **Machines:** a card per Mac, one under the other at every width (the pool's cards too): name, role, app, state, heard from;
   a chip "loop stuck 6 min, in <phase>" while its status's `loop_age_s` is past its `loop_stuck_s` (the
   agent's `beat::LOOP_STUCK`, which its plan's stall log goes by too; the age, the round's or a running plan's, the older, counted on from the status's `beat`; task #899; an agent that doesn't say both:

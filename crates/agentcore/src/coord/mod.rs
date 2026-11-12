@@ -5704,6 +5704,14 @@ mod http {
         // The Jobs tab's schedule: its view, gestures and arrows (task #787).
         ("timeline.js", "text/javascript", include_bytes!("../../../../web/buildpage/timeline.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/buildpage/dash.css")),
+        // Both pages' text sizes and colours, either theme.
+        ("theme.css", "text/css; charset=utf-8", include_bytes!("../../../../web/buildpage/theme.css")),
+        // A job's page (task #1105), at /job/<id>: its script, its sums, a run's spans as lanes (the dev
+        // job dashboard's too).
+        ("job.html", "text/html; charset=utf-8", include_bytes!("../../../../web/buildpage/job.html")),
+        ("job.js", "text/javascript", include_bytes!("../../../../web/buildpage/job.js")),
+        ("jobview.js", "text/javascript", include_bytes!("../../../../web/buildpage/jobview.js")),
+        ("runlanes.js", "text/javascript", include_bytes!("../../../../web/buildpage/runlanes.js")),
         // An open page reloading into a newly published version (the page's version, §7).
         ("version.js", "text/javascript", include_bytes!("../../../../web/buildpage/version.js")),
         // Every module's elements and words (one way to make an element, a count, a token's value).
@@ -5861,20 +5869,27 @@ mod http {
         let routes = routes.merge(super::maproutes::router::<Ctx>(Arc::new(move || {
             shared.lock().unwrap_or_else(|e| e.into_inner()).maplog.clone()
         })));
-        // (A job's spans, log and record: jobspans, its file read off the lock.)
+        // (A job's spans, log and record: jobspans, its file read off the lock; the history's other
+        // runs around it, from the history shared, not copied.)
         let shared = ctx.shared.clone();
         let routes = routes.merge(super::jobspans::router::<Ctx>(Arc::new(move |job| {
-            let (store, events, dir) = {
-                let s = shared.lock().unwrap_or_else(|e| e.into_inner());
-                (s.jobspans.clone()?, s.history.of_job(job), s.dir.clone())
+            let (store, all, dir) = {
+                let mut s = shared.lock().unwrap_or_else(|e| e.into_inner());
+                (s.jobspans.clone()?, s.history.all(), s.dir.clone())
             };
-            Some(super::jobspans::view(Some(&store), job, events, || {
+            let events = all.iter().filter(|e| e.job == Some(job)).cloned().collect();
+            let mut v = super::jobspans::view(Some(&store), job, events, || {
                 super::jobspans::record_in(&dir.join("timings.jsonl"), job)
-            }))
+            });
+            let now = v["now"].as_f64().unwrap_or(0.0);
+            super::jobspans::relate(&mut v, &all, job, now);
+            Some(v)
         })));
         // (The newest map held for review, from this agent's folder.)
         let shared = ctx.shared.clone();
         let routes = routes.route("/map/held", get(move || held_map(shared.clone())));
+        // (A job's page, /job/<id>: the inspector, its files beside the build page's.)
+        let routes = routes.route("/job/{id}", get(|| page("job.html")));
         // (A test's handler that waits on a blocking task for good: a stop returns all the same.)
         #[cfg(test)]
         let routes = routes.route("/work/test-block", get(test_block));
@@ -6170,11 +6185,15 @@ mod http {
         let owner = key.as_deref().is_some_and(|k| coordwire::net::same(k, &c.token));
         let job = key.as_deref().is_some_and(|k| coordwire::net::same(k, &c.job_token));
         req.extensions_mut().insert(Caller { local, page: key.is_none(), from });
-        let is_page =
-            req.method() == Method::GET && path.strip_prefix('/').is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p));
+        let is_page = req.method() == Method::GET
+            && (path.starts_with("/job/")
+                || path.strip_prefix('/').is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
         let api = path.strip_prefix("/api/").unwrap_or("");
         let is_view = (req.method() == Method::POST
-            && matches!(api, "swarm" | "history" | "steps" | "live" | "regions" | "catalogs" | "tocome" | "built"))
+            && matches!(
+                api,
+                "swarm" | "history" | "steps" | "live" | "regions" | "catalogs" | "tocome" | "built" | "timings"
+            ))
             || (req.method() == Method::GET && api.starts_with("job/"));
         if is_page || is_view {
             return next.run(req).await;
@@ -6338,7 +6357,7 @@ mod http {
 
     async fn page(file: &str) -> Response {
         match PAGE.iter().find(|(n, _, _)| *n == file) {
-            Some(("" | "index.html", t, body)) => (
+            Some(("" | "index.html" | "job.html", t, body)) => (
                 [(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")],
                 String::from_utf8_lossy(body).replace("__VERSION__", page_version()),
             )
@@ -7077,8 +7096,13 @@ mod tests {
         );
         assert_eq!(v["waits"][0]["on"], "nas");
         assert_eq!(v["log"]["lines"][0]["text"], "=== run of unit 6/1/1 ===");
+        // (The history's other runs around it, none here: jobspans::relate's tests.)
+        assert_eq!((v["runs"].as_array().map(Vec::len), v["beside"].as_array().map(Vec::len)), (Some(0), Some(0)));
+        // (Its step's medians, the page's from the timings: a page reads them, no key.)
+        let (code, _, t) = send(&addr, "POST", "/api/timings", None, &[], &serde_json::json!({ "kind": "unit" }));
+        assert_eq!((code, t["runs"].is_array()), (200, true), "{t}");
         let (code, _, v) = get("/api/job/5-2");
-        assert_eq!((code, v["legacy"].as_bool()), (200, Some(true)));
+        assert_eq!((code, v["legacy"].as_bool(), v["runs"].is_array()), (200, Some(true), true));
         assert_eq!(get("/api/job/nope").0, 400);
     }
 
@@ -12941,10 +12965,13 @@ mod tests {
         // (The page's version: in the page served, and on every answer, the page's own or not; and
         // no service worker.)
         let version = http::page_version();
-        for path in ["/", "/index.html"] {
+        // (A job's page, task #1105, likewise: any id, the page reads it.)
+        for path in ["/", "/index.html", "/job/5-1794000000001"] {
             let r = String::from_utf8(get(path)).unwrap();
             assert!(
-                r.contains(&format!("content=\"{version}\"")) && !r.contains("__VERSION__"),
+                r.starts_with("HTTP/1.1 200")
+                    && r.contains(&format!("content=\"{version}\""))
+                    && !r.contains("__VERSION__"),
                 "{path}: the version is in the page"
             );
         }
