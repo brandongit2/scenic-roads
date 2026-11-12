@@ -291,7 +291,11 @@ becomes 841).
   one path once: when that's newer by (epoch, seq) than its own (another lead saved: the owner
   moved the lead, possibly away and back), or it has none of its own (its disk's copy lost), it
   waits until `STALE_S` (10 min awake) has passed since this process first found itself declared,
-  reads the one path again and takes that up. Only records following the one path's brief count
+  reads the one path again and takes that up. The wait is kept through reads of the declaration
+  that fail (they tell nothing; task #1154: started again by each, a share failing one read in
+  five left no lead for hours), and started again by a read naming another member, or this one
+  under another declaration (its `since`) than it began under; the take-up itself needs that
+  step's read naming it. Only records following the one path's brief count
   (§4 invariant 5; else it waits, naming the Mac that led the brief's epoch). With no one path, no
   brief and nothing saved before (a new pool) it takes today's files (`manifest.json`, `jobs.json`,
   `pending.json`): at once when this process declared itself, else `STALE_S` on, the first Mac
@@ -3094,7 +3098,8 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   torn or whole); crashes; the lead's disk replaced and its store restored from the NAS backup;
   skewed clocks, sleeps, app upgrades, development builds and rollbacks, saved states lost,
   members leaving for good; the owner moving the lead (to another Mac, back, mid-save, while the
-  lead's reads fail) and declaring again the Mac a waiting take-up names (after 20 min). **Checked
+  lead's reads fail) and declaring again the Mac a waiting take-up names (after 20 min); reads
+  failing each on its own, at 5 % or 20 % (`Cfg::flaky`, task #1154). **Checked
   at every step:** no target under two live leases (the jobs running and each coordinator's
   table), two coordinators never granting at once, no lease id granted twice, every hand-off merged
   once or refused with why, acknowledgements only of what a landed snapshot names and no landed
@@ -3103,7 +3108,8 @@ tiles (`pack_raw_with`) stays inside that z6 tile's job.
   one a map server heard within the TTL serves; at the end, the declared lead leading alone and
   caught up, the one path naming every hand-off owed (but the double fault's, docs/coordination.md
   §5.3, and a Mac gone for good's), its take-ups settled (the run going on while the declared
-  lead's take-up waits). Counted, not wrong, as §4's limits: two Macs leading one epoch number, a
+  lead's take-up waits); with reads failing now and then, each declared lead taking up within
+  `STALE_S` and 20 loops (awake) of the owner's move or its process's restart (`TAKE_UP_S`). Counted, not wrong, as §4's limits: two Macs leading one epoch number, a
   take-up finished late with its records fenced, a hand-off another lead acknowledged applied
   again into fenced records, a job doubled by a lease its granting lead never held (its state
   taken up from a backup without it), and a run ending on records lost with their lead's disk
