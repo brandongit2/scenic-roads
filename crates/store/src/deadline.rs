@@ -144,6 +144,9 @@ struct Shared {
     state: AtomicU8,
     moved: AtomicU64,
     keys: Vec<PathBuf>,
+    /// (Test builds: the calling thread's own count of its calls held, `cap_for_test`.)
+    #[cfg(any(test, feature = "testkit"))]
+    mine: Option<Arc<AtomicUsize>>,
 }
 
 /// A call's end on its helper: DONE, or, its caller gone, its hold let go (`HELD`, its keys).
@@ -163,6 +166,11 @@ impl Drop for Ends {
             }
         }
         STUCK_N.store(s.len(), Ordering::Relaxed);
+        #[cfg(any(test, feature = "testkit"))]
+        if let Some(m) = &self.0.mine {
+            m.fetch_sub(1, Ordering::Relaxed);
+            return;
+        }
         HELD.fetch_sub(1, Ordering::Relaxed);
     }
 }
@@ -286,11 +294,25 @@ fn run<T: Send + 'static>(
             )));
         }
     }
-    let shared = Arc::new(Shared { state: AtomicU8::new(RUNNING), moved: AtomicU64::new(0), keys });
+    #[cfg(any(test, feature = "testkit"))]
+    let mine = TEST_CAP.with(|c| c.borrow().clone());
+    let shared = Arc::new(Shared {
+        state: AtomicU8::new(RUNNING),
+        moved: AtomicU64::new(0),
+        keys,
+        #[cfg(any(test, feature = "testkit"))]
+        mine: mine.as_ref().map(|m| m.1.clone()),
+    });
     if ON_HELPER.with(|h| h.get()) {
         // (Inside another call: its deadline holds this one.)
         return f(&Progress(shared));
     }
+    #[cfg(any(test, feature = "testkit"))]
+    let (held, cap) = match &mine {
+        Some((n, m)) => (m.load(Ordering::Relaxed), *n),
+        None => (HELD.load(Ordering::Relaxed), cap()),
+    };
+    #[cfg(not(any(test, feature = "testkit")))]
     let (held, cap) = (HELD.load(Ordering::Relaxed), cap());
     if held >= cap {
         return Err(refuse(format!(
@@ -340,7 +362,9 @@ fn run<T: Send + 'static>(
         let t = Instant::now();
         match rx.recv_timeout(LOOK.min(deadline.saturating_sub(waited))) {
             Ok(r) => break r,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(io::Error::other(format!("{on}: {op}: its call panicked"))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::other(format!("{on}: {op}: its call panicked")))
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
         let now = shared.moved.load(Ordering::Relaxed);
@@ -368,6 +392,12 @@ fn run<T: Send + 'static>(
         s.extend(shared.keys.iter().cloned());
         STUCK_N.store(s.len(), Ordering::Relaxed);
         drop(s);
+        #[cfg(any(test, feature = "testkit"))]
+        let held = match &shared.mine {
+            Some(m) => m.fetch_add(1, Ordering::Relaxed) + 1,
+            None => HELD.fetch_add(1, Ordering::Relaxed) + 1,
+        };
+        #[cfg(not(any(test, feature = "testkit")))]
         let held = HELD.fetch_add(1, Ordering::Relaxed) + 1;
         MISSED.fetch_add(1, Ordering::Relaxed);
         let said = format!(
@@ -381,25 +411,40 @@ fn run<T: Send + 'static>(
     r
 }
 
-/// Test builds: the cap set to `n` until the guard is dropped (one test at a time holds it).
+#[cfg(any(test, feature = "testkit"))]
+thread_local! {
+    /// A test's cap for the calls of this thread (`cap_for_test`), and its count of them held.
+    static TEST_CAP: RefCell<Option<(usize, Arc<AtomicUsize>)>> = const { RefCell::new(None) };
+}
+
+/// Test builds: the calls this thread makes held to a cap of their own, `n`, and counted apart
+/// from the process's (`held`): a test's claim about the cap never meets another test's calls in
+/// the same process, nor its held calls theirs. Until the guard is dropped.
 #[cfg(any(test, feature = "testkit"))]
 pub fn cap_for_test(n: usize) -> CapForTest {
-    static TURN: Mutex<()> = Mutex::new(());
-    let turn = lock(&TURN);
-    let was = CAP.swap(n, Ordering::Relaxed);
-    CapForTest { _turn: turn, was }
+    let mine = Arc::new(AtomicUsize::new(0));
+    let was = TEST_CAP.with(|c| c.replace(Some((n, mine.clone()))));
+    CapForTest { mine, was }
 }
 
 #[cfg(any(test, feature = "testkit"))]
 pub struct CapForTest {
-    _turn: std::sync::MutexGuard<'static, ()>,
-    was: usize,
+    mine: Arc<AtomicUsize>,
+    was: Option<(usize, Arc<AtomicUsize>)>,
+}
+
+#[cfg(any(test, feature = "testkit"))]
+impl CapForTest {
+    /// This thread's calls held now (under this cap).
+    pub fn held(&self) -> usize {
+        self.mine.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(any(test, feature = "testkit"))]
 impl Drop for CapForTest {
     fn drop(&mut self) {
-        CAP.store(self.was, Ordering::Relaxed);
+        TEST_CAP.with(|c| *c.borrow_mut() = self.was.take());
     }
 }
 
@@ -497,16 +542,16 @@ mod tests {
     fn a_call_counts_the_time_the_process_ran() {
         let d = tempfile::tempdir().unwrap();
         let on = d.path().display();
+        let cap = cap_for_test(CAP_DEFAULT);
         assert_eq!(call(&on, &"read", ms(500), || Ok(7)).unwrap(), 7);
         let hung = fake::hang(d.path()).deadline(ms(50));
-        let before = held();
         let e = call(&on, &"read", LONG, || Ok(1)).unwrap_err();
         assert!(e.kind() == io::ErrorKind::TimedOut && past_deadline(&e) && !refused(&e), "{e}");
         assert!(e.to_string().contains("no answer"), "{e}");
         assert!(!past_deadline(&io::Error::from_raw_os_error(libc::ETIMEDOUT)));
-        assert!(held() > before, "held while it's in the kernel");
+        assert_eq!(cap.held(), 1, "held while it's in the kernel");
         drop(hung);
-        crate::testkit::eventually("the held call ends", || held() == before);
+        crate::testkit::eventually("the held call ends", || cap.held() == 0);
         // (A look as asked, or a little late, counts as it took; one back after the process was
         // stopped (the guards' freeze, 30 minutes) counts as one look.)
         assert_eq!(counted(LOOK, LOOK), LOOK);
@@ -521,6 +566,7 @@ mod tests {
     fn a_thread_keeps_its_helper() {
         let d = tempfile::tempdir().unwrap();
         let on = d.path().display();
+        let _cap = cap_for_test(CAP_DEFAULT);
         let here = || call(&on, &"t", ms(500), || Ok(std::thread::current().id())).unwrap();
         let (a, b) = (here(), here());
         assert!(a == b && a != std::thread::current().id());
@@ -541,7 +587,7 @@ mod tests {
     fn held_calls_are_capped() {
         let d = tempfile::tempdir().unwrap();
         let on = d.path().display();
-        let _cap = cap_for_test(held() + 2);
+        let cap = cap_for_test(2);
         let hung = fake::hang(d.path()).deadline(ms(20));
         for _ in 0..2 {
             assert!(past_deadline(&call(&on, &"t", LONG, || Ok(())).unwrap_err()));
@@ -556,7 +602,8 @@ mod tests {
         crate::testkit::ended_before(t, LONG, "refused at once");
         assert!(missed() > missed0 && !ran.load(Ordering::SeqCst));
         drop(hung);
-        crate::testkit::eventually("the held calls end", || call(&"elsewhere", &"t", LONG, || Ok(())).is_ok());
+        crate::testkit::eventually("the held calls end", || cap.held() == 0);
+        assert!(call(&"elsewhere", &"t", LONG, || Ok(())).is_ok());
     }
 
     /// A write left past its deadline holds its paths: another write on one of them is refused at
@@ -566,6 +613,7 @@ mod tests {
     fn a_held_write_holds_its_path() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("f");
+        let _cap = cap_for_test(CAP_DEFAULT);
         let hung = fake::hang(&p).deadline(ms(20));
         let e = writing(&p.display(), &"write", LONG, vec![p.clone()], || Ok(())).unwrap_err();
         assert!(past_deadline(&e), "{e}");
@@ -583,6 +631,7 @@ mod tests {
     /// longer than its deadline ends; one that stops moving is given up at its deadline from then.
     #[test]
     fn a_moving_call_isnt_ended_for_its_length() {
+        let _cap = cap_for_test(CAP_DEFAULT);
         let n = watched(&"copy", &"t", ms(1500), Vec::new(), |p| {
             for _ in 0..8 {
                 std::thread::sleep(ms(400));

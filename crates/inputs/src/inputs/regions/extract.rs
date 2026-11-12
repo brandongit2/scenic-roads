@@ -262,14 +262,13 @@ fn planet_print(planet: &store::nasfs::NasPath) -> String {
     let go = || -> std::io::Result<String> {
         let mut f = planet.open()?;
         let len = f.metadata()?.len();
-        let f: &mut std::fs::File = &mut f;
         let mut h = blake3::Hasher::new();
         let mut head = Vec::new();
-        f.take(1 << 20).read_to_end(&mut head)?;
+        (&mut f).take(1 << 20).read_to_end(&mut head)?;
         h.update(&head);
         f.seek(SeekFrom::Start(len.saturating_sub(1 << 20)))?;
         let mut tail = Vec::new();
-        f.take(1 << 20).read_to_end(&mut tail)?;
+        (&mut f).take(1 << 20).read_to_end(&mut tail)?;
         h.update(&tail);
         Ok(format!("{len} {}", h.finalize().to_hex()))
     };

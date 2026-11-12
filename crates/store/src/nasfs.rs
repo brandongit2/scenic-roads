@@ -10,7 +10,17 @@
 //! `Stats`; a listing its entries; a remove one `Deletes`), and reads, stats and listings are
 //! tried again on a transient error (`RETRY`). Writes, removes and renames are never tried again
 //! here (a lost answer can't tell made from not made); nor are create-new and append.
+//!
+//! Every call on the share is a crate::deadline call within its root's deadline (`LONG`, or
+//! `SHORT` for the server's and the agent loop's roots), each try of a retry its own, made with
+//! the path and bytes owned (the call may outlive its caller's wait). A read, listing or copy says
+//! it moves as it goes (its deadline counted from its last move); a call that changes the share
+//! names the paths it changes, so a later change of this process to one of them is refused while
+//! it is held (why a late finish is harmless, class by class: docs/nas-access.md §6). A `NasFile`'s
+//! reads, writes and close are calls too; a `File` taken out of one (`into_file`, `Loc::open`) is
+//! a library's to read, unbounded.
 
+use crate::deadline::{self, Progress};
 use crate::nasio::{self, Count};
 use anyhow::{Context, Result};
 use std::collections::BTreeSet;
@@ -159,6 +169,15 @@ impl NasRoot {
             Waits::Long => crate::retry::waits(),
             Waits::Short => crate::retry::short_waits(),
             Waits::Never => Vec::new(),
+        }
+    }
+
+    /// The deadline of each of its NAS calls (crate::deadline): `LONG` on the build's schedule (jobs,
+    /// the CLI, the agent's own threads), `SHORT` on the server's and the agent loop's.
+    fn deadline(&self) -> Duration {
+        match self.0.waits {
+            Waits::Long => deadline::LONG,
+            Waits::Short | Waits::Never => deadline::SHORT,
         }
     }
 }
@@ -444,15 +463,57 @@ impl NasPath {
         crate::retry::any(what, Some(&self.full()), waits, again, f)
     }
 
+    // ---- the deadline: every call on the share ----
+
+    /// `f` (one NAS call on this path, `op` naming it) within its root's deadline (crate::deadline),
+    /// given the path, owned: past the deadline the call is left to the kernel.
+    fn call<T: Send + 'static>(
+        &self,
+        op: &'static str,
+        f: impl FnOnce(&Path) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let p = self.full();
+        let on = p.clone();
+        deadline::call(&on.display(), &op, self.root.deadline(), move || f(&p))
+    }
+
+    /// `call`, for one that moves as it goes (`Progress::add`): its deadline counted from its last
+    /// move. One that changes the share (`changes`: the paths it changes, this one among them or not)
+    /// is refused at once while an earlier change of this process to one of them is held.
+    fn moving<T: Send + 'static>(
+        &self,
+        op: &'static str,
+        changes: Vec<PathBuf>,
+        f: impl FnOnce(&Path, &Progress) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let p = self.full();
+        let on = p.clone();
+        deadline::watched(&on.display(), &op, self.root.deadline(), changes, move |m| f(&p, m))
+    }
+
+    /// A call changing the share at this path (and `also`'s), on a copy of this path (`me`): its
+    /// paths held while a late call would land (`moving`).
+    fn change<T: Send + 'static>(
+        &self,
+        op: &'static str,
+        also: &[&NasPath],
+        f: impl FnOnce(&NasPath) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let me = self.clone();
+        let keys = std::iter::once(self.full()).chain(also.iter().map(|q| q.full())).collect();
+        self.moving(op, keys, move |_, _| f(&me))
+    }
+
     // ---- reads: counted, and retried on a transient error ----
 
     /// Its bytes (crate::whole::read: a busy file waited out). Counted as a file read.
     pub fn read(&self) -> io::Result<Vec<u8>> {
         let _w = crate::waits::nas();
-        let p = self.full();
         let t = Instant::now();
-        let b = self.retry("read", || taking_turn(|| crate::whole::read(&p)))?;
-        counted_read(&p, b.len() as u64, t);
+        let b = self.retry("read", || {
+            taking_turn(|| self.moving("read", Vec::new(), |p, m| crate::whole::retried(p, &|q| read_told(q, m))))
+        })?;
+        counted_read(&self.full(), b.len() as u64, t);
         Ok(b)
     }
 
@@ -465,10 +526,13 @@ impl NasPath {
     /// (crate::whole::read_replaced: read from its newest aside when a writer left it missing).
     pub fn read_replaced(&self) -> io::Result<Vec<u8>> {
         let _w = crate::waits::nas();
-        let p = self.full();
         let t = Instant::now();
-        let b = self.retry("read", || taking_turn(|| crate::whole::read_replaced(&p)))?;
-        counted_read(&p, b.len() as u64, t);
+        let b = self.retry("read", || {
+            taking_turn(|| {
+                self.moving("read", Vec::new(), |p, m| crate::whole::read_replaced_by(p, &|q| read_told(q, m)))
+            })
+        })?;
+        counted_read(&self.full(), b.len() as u64, t);
         Ok(b)
     }
 
@@ -476,41 +540,46 @@ impl NasPath {
     /// server, not the unified buffer cache; an SMB lease may still answer).
     pub fn read_fresh(&self) -> io::Result<Vec<u8>> {
         let _w = crate::waits::nas();
-        let p = self.full();
         let t = Instant::now();
         let b = self.retry("read", || {
             taking_turn(|| {
-                let mut f = crate::whole::retried(&p, &|q| std::fs::File::open(q))?;
-                #[cfg(target_os = "macos")]
-                {
-                    use std::os::fd::AsRawFd;
-                    // SAFETY: fcntl on a descriptor this function owns, with an int argument.
-                    if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
-                        return Err(io::Error::last_os_error());
+                self.moving("read", Vec::new(), |p, m| {
+                    let f = crate::whole::retried(p, &|q| std::fs::File::open(q))?;
+                    #[cfg(target_os = "macos")]
+                    {
+                        use std::os::fd::AsRawFd;
+                        // SAFETY: fcntl on a descriptor this function owns, with an int argument.
+                        if unsafe { libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1) } == -1 {
+                            return Err(io::Error::last_os_error());
+                        }
                     }
-                }
-                let mut b = Vec::new();
-                f.read_to_end(&mut b)?;
-                Ok(b)
+                    read_all_told(f, m)
+                })
             })
         })?;
-        counted_read(&p, b.len() as u64, t);
+        counted_read(&self.full(), b.len() as u64, t);
         Ok(b)
     }
 
-    /// The file opened for reading (`std::fs::File::open`; the open retried): its reads counted.
+    /// The file opened for reading (`std::fs::File::open`; the open retried): its reads counted,
+    /// each a call within its root's deadline (`NasFile`).
     pub fn open(&self) -> io::Result<NasFile> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let f = self.retry("open", || std::fs::File::open(&p))?;
-        let len = f.metadata().map_or(0, |m| m.len());
+        let (f, len) = self.retry("open", || {
+            self.call("open", |p| {
+                let f = std::fs::File::open(p)?;
+                let len = f.metadata().map_or(0, |m| m.len());
+                Ok((f, len))
+            })
+        })?;
         nasio::opened(&p, len, ms_since(t));
-        Ok(NasFile { f: Some(f), path: p, wrote: None, t })
+        Ok(NasFile::new(f, p, None, t, self.root.deadline()))
     }
 
-    /// The file opened for positioned reads (crate::range::PlainFile: counted there; the open
-    /// retried here, its reads there).
+    /// The file opened for positioned reads (crate::range::PlainFile: counted there, its open and
+    /// reads within their deadlines there; the open retried here).
     pub fn open_plain(&self) -> io::Result<crate::range::PlainFile> {
         let _w = crate::waits::nas();
         let p = self.full();
@@ -520,25 +589,22 @@ impl NasPath {
     /// A stat (`std::fs::metadata`). One `Stats`.
     pub fn metadata(&self) -> io::Result<std::fs::Metadata> {
         let _w = crate::waits::nas();
-        let p = self.full();
         nasio::add(Count::Stats, 1);
-        self.retry("stat", || std::fs::metadata(&p))
+        self.retry("stat", || self.call("stat", |p| std::fs::metadata(p)))
     }
 
     /// A stat not following a link (`std::fs::symlink_metadata`). One `Stats`.
     fn symlink_metadata(&self) -> io::Result<std::fs::Metadata> {
         let _w = crate::waits::nas();
-        let p = self.full();
         nasio::add(Count::Stats, 1);
-        self.retry("stat", || std::fs::symlink_metadata(&p))
+        self.retry("stat", || self.call("stat", |p| std::fs::symlink_metadata(p)))
     }
 
     /// Whether it exists (`Path::try_exists`). One `Stats`.
     pub fn try_exists(&self) -> io::Result<bool> {
         let _w = crate::waits::nas();
-        let p = self.full();
         nasio::add(Count::Stats, 1);
-        self.retry("stat", || p.try_exists())
+        self.retry("stat", || self.call("stat", |p| p.try_exists()))
     }
 
     /// Whether it exists (`Path::exists`: an error is "no"). One `Stats`.
@@ -557,15 +623,11 @@ impl NasPath {
     }
 
     /// The folder's entries (`std::fs::read_dir`, read to its end: an error midway is an error),
-    /// in the listing's order. Its entries counted as `Listed`.
+    /// in the listing's order (moving as its entries come: a long listing that goes on never ends
+    /// for its length). Its entries counted as `Listed`.
     pub fn read_dir(&self) -> io::Result<Vec<NasEntry>> {
         let _w = crate::waits::nas();
-        let p = self.full();
-        let v = self.retry("list", || {
-            std::fs::read_dir(&p)?
-                .map(|e| e.map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().ok())))
-                .collect::<io::Result<Vec<_>>>()
-        })?;
+        let v = self.retry("list", || self.moving("list", Vec::new(), |p, m| listed(p, m)))?;
         nasio::add(Count::Listed, v.len() as u64);
         Ok(v.into_iter().map(|(name, file_type)| NasEntry { path: self.join(&name), name, file_type }).collect())
     }
@@ -584,29 +646,48 @@ impl NasPath {
 
     /// Copies it to local file `dst`, whole (crate::whole::copy: a temporary name, renamed). The
     /// bytes copied, counted as they're read (`copy_counter`: what this Mac's cache held, not the
-    /// NAS's), and the file counted opened.
+    /// NAS's), and the file counted opened. Moving as it copies; `dst` held while a late copy would
+    /// land (a later copy to it refused meanwhile).
     pub fn copy_to_local(&self, dst: &Path) -> Result<u64> {
         let _w = crate::waits::nas();
-        let p = self.full();
         let t = Instant::now();
+        let d = dst.to_path_buf();
         let (n, _) = copying_turn(
-            || crate::whole::copy_held(&p, dst, &mut copy_counter()),
+            || {
+                self.moving("copy", vec![d.clone()], move |p, m| {
+                    let mut count = copy_counter();
+                    Ok(crate::whole::copy_held(p, &d, &mut |k, h| {
+                        count(k, h);
+                        m.add(k);
+                    }))
+                })?
+            },
             |e| e.downcast_ref::<io::Error>().is_some_and(crate::aimd::nas_congested),
         )?;
-        nasio::opened(&p, n, ms_since(t));
+        nasio::opened(&self.full(), n, ms_since(t));
         Ok(n)
     }
 
     /// Copies it to local file `dst` (crate::sys::copy_data: its bytes and mode, no temporary name).
     /// Counted as it's read (`copy_counter`: what this Mac's cache held, not the NAS's), and the
-    /// file counted opened.
+    /// file counted opened. Moving as it copies; `dst` held as `copy_to_local`'s is.
     pub fn copy_data_to_local(&self, dst: &Path) -> io::Result<u64> {
         let _w = crate::waits::nas();
-        let p = self.full();
         let t = Instant::now();
-        let (n, _) =
-            copying_turn(|| crate::sys::copy_data_held(&p, dst, &mut copy_counter()), crate::aimd::nas_congested)?;
-        nasio::opened(&p, n, ms_since(t));
+        let d = dst.to_path_buf();
+        let (n, _) = copying_turn(
+            || {
+                self.moving("copy", vec![d.clone()], move |p, m| {
+                    let mut count = copy_counter();
+                    crate::sys::copy_data_held(p, &d, &mut |k, h| {
+                        count(k, h);
+                        m.add(k);
+                    })
+                })
+            },
+            crate::aimd::nas_congested,
+        )?;
+        nasio::opened(&self.full(), n, ms_since(t));
         Ok(n)
     }
 
@@ -622,16 +703,15 @@ impl NasPath {
         nasio::made(&self.full(), n, ms);
     }
 
-    // ---- writes: counted, never retried ----
+    // ---- writes: counted, never retried; each holds the paths it changes while it's held ----
 
     /// Writes `b` as it (`std::fs::write`: in place, no temporary name). Counted as a file made.
     pub fn write(&self, b: impl AsRef<[u8]>) -> io::Result<()> {
         let _w = crate::waits::nas();
-        let p = self.full();
-        let b = b.as_ref();
-        let t = Instant::now();
-        std::fs::write(&p, b)?;
-        nasio::wrote(&p, b.len() as u64, ms_since(t));
+        let b = b.as_ref().to_vec();
+        let (n, t) = (b.len() as u64, Instant::now());
+        self.change("write", &[], move |q| std::fs::write(q.full(), &b))?;
+        nasio::wrote(&self.full(), n, ms_since(t));
         Ok(())
     }
 
@@ -639,11 +719,10 @@ impl NasPath {
     /// renamed aside when that stays busy). Counted as a file made.
     pub fn write_whole(&self, b: impl AsRef<[u8]>) -> Result<()> {
         let _w = crate::waits::nas();
-        let p = self.full();
-        let b = b.as_ref();
-        let t = Instant::now();
-        crate::whole::write(&p, b)?;
-        nasio::wrote(&p, b.len() as u64, ms_since(t));
+        let b = b.as_ref().to_vec();
+        let (n, t) = (b.len() as u64, Instant::now());
+        self.change("write", &[], move |q| Ok(crate::whole::write(&q.full(), &b)))??;
+        nasio::wrote(&self.full(), n, ms_since(t));
         Ok(())
     }
 
@@ -665,8 +744,14 @@ impl NasPath {
 
     /// Makes it holding `b` unless something has that name (the pool protocol's create-new: atomic
     /// on the server; the bytes follow the create), its folder made once a process. Never retried.
+    /// Past its deadline, an error: whether it made the file is unknown, as with a lost answer.
     pub fn create_new(&self, b: &[u8]) -> Result<Created> {
         let _w = crate::waits::nas();
+        let b = b.to_vec();
+        self.change("create", &[], move |q| Ok(q.create_new_now(&b)))?
+    }
+
+    fn create_new_now(&self, b: &[u8]) -> Result<Created> {
         let p = self.full();
         self.make_parent()?;
         let open = || std::fs::OpenOptions::new().write(true).create_new(true).open(&p);
@@ -708,85 +793,100 @@ impl NasPath {
         self.open_with(std::fs::OpenOptions::new().write(true).create(true).truncate(true))
     }
 
-    /// The file opened with `o` (append, create-new, write in place, read and write). A file it
-    /// may make: the bytes written through it counted as they go, the file counted made when it is
-    /// dropped; one opened only for reading as a file read. Never retried.
+    /// The file opened with `o` (append, create-new, write in place). A file it may make: the bytes
+    /// written through it counted as they go, the file counted made when it is dropped; one opened
+    /// only for reading as a file read. Never retried. Its open a change of the share (a create, a
+    /// truncate), its writes each another.
     pub fn open_with(&self, o: &std::fs::OpenOptions) -> io::Result<NasFile> {
         let _w = crate::waits::nas();
         let p = self.full();
         let t = Instant::now();
-        let f = o.open(&p)?;
-        // (OpenOptions can't be asked what it was set to: a file opened writable is one written.)
-        let writable = f.metadata().is_ok_and(|_| {
+        let o = o.clone();
+        let (f, writable, len) = self.change("open", &[], move |q| {
+            let f = o.open(q.full())?;
+            // (OpenOptions can't be asked what it was set to: a file opened writable is one written.)
             #[cfg(unix)]
-            {
+            let writable = {
                 use std::os::fd::AsRawFd;
                 // SAFETY: F_GETFL on a descriptor this function owns.
                 let fl = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_GETFL) };
                 fl != -1 && fl & libc::O_ACCMODE != libc::O_RDONLY
-            }
+            };
             #[cfg(not(unix))]
-            true
-        });
+            let writable = true;
+            let len = if writable { 0 } else { f.metadata().map_or(0, |m| m.len()) };
+            Ok((f, writable, len))
+        })?;
         if writable {
-            Ok(NasFile { f: Some(f), path: p, wrote: Some(0), t })
+            Ok(NasFile::new(f, p, Some(0), t, self.root.deadline()))
         } else {
-            let len = f.metadata().map_or(0, |m| m.len());
             nasio::opened(&p, len, ms_since(t));
-            Ok(NasFile { f: Some(f), path: p, wrote: None, t })
+            Ok(NasFile::new(f, p, None, t, self.root.deadline()))
         }
     }
 
     /// Copies local file `src` to it, whole (crate::whole::copy_told). Its bytes counted as they're
     /// written (`nasio::written`: a job's beats see a long upload move, task #990), the file counted
-    /// made once copied.
+    /// made once copied. Moving as it copies.
     pub fn copy_from_local(&self, src: &Path) -> Result<u64> {
         let _w = crate::waits::nas();
-        let p = self.full();
         let t = Instant::now();
-        let n = crate::whole::copy_told(src, &p, &mut nasio::written)?;
-        nasio::made(&p, n, ms_since(t));
+        let s = src.to_path_buf();
+        let n = self.moving("copy", vec![self.full()], move |p, m| {
+            Ok(crate::whole::copy_told(&s, p, &mut |k| {
+                nasio::written(k);
+                m.add(k);
+            }))
+        })??;
+        nasio::made(&self.full(), n, ms_since(t));
         Ok(n)
     }
 
     /// Copies it to `to` on the NAS (crate::sys::copy_data). Its bytes counted as they're read
     /// (`copy_counter`) and written (`nasio::written`), the file counted opened and made once copied.
+    /// Moving as it copies.
     pub fn copy_data_to(&self, to: &NasPath) -> io::Result<u64> {
         let _w = crate::waits::nas();
-        let (p, q) = (self.full(), to.full());
+        let q = to.full();
         let t = Instant::now();
-        let mut read = copy_counter();
-        let (n, _) = crate::sys::copy_data_held(&p, &q, &mut |k, h| {
-            read(k, h);
-            nasio::written(k);
+        let (n, _) = self.moving("copy", vec![q.clone()], move |p, m| {
+            let mut read = copy_counter();
+            crate::sys::copy_data_held(p, &q, &mut |k, h| {
+                read(k, h);
+                nasio::written(k);
+                m.add(k);
+            })
         })?;
-        nasio::opened(&p, n, ms_since(t));
-        nasio::made(&q, n, ms_since(t));
+        nasio::opened(&self.full(), n, ms_since(t));
+        nasio::made(&to.full(), n, ms_since(t));
         Ok(n)
     }
 
     /// Renames it to `to` (`std::fs::rename`).
     pub fn rename(&self, to: &NasPath) -> io::Result<()> {
         let _w = crate::waits::nas();
-        std::fs::rename(self.full(), to.full())
+        let q = to.full();
+        self.change("rename", &[to], move |p| std::fs::rename(p.full(), &q))
     }
 
     /// Renames it over `to`, busy waited out (crate::whole::rename_over).
     pub fn rename_over(&self, to: &NasPath) -> io::Result<()> {
         let _w = crate::waits::nas();
-        crate::whole::rename_over(&self.full(), &to.full())
+        let q = to.full();
+        self.change("rename", &[to], move |p| crate::whole::rename_over(&p.full(), &q))
     }
 
     /// Renames it to `to` unless `to` exists (then `AlreadyExists`): crate::naming::rename_no_replace.
     pub fn rename_no_replace(&self, to: &NasPath) -> io::Result<()> {
         let _w = crate::waits::nas();
-        crate::naming::rename_no_replace(&self.full(), &to.full())
+        let q = to.full();
+        self.change("rename", &[to], move |p| crate::naming::rename_no_replace(&p.full(), &q))
     }
 
     /// Removes the file (`std::fs::remove_file`). One `Deletes`.
     pub fn remove_file(&self) -> io::Result<()> {
         let _w = crate::waits::nas();
-        std::fs::remove_file(self.full())?;
+        self.change("remove", &[], |p| std::fs::remove_file(p.full()))?;
         nasio::add(Count::Deletes, 1);
         Ok(())
     }
@@ -794,15 +894,16 @@ impl NasPath {
     /// Removes the empty folder (`std::fs::remove_dir`). One `Deletes`.
     pub fn remove_dir(&self) -> io::Result<()> {
         let _w = crate::waits::nas();
-        std::fs::remove_dir(self.full())?;
+        self.change("remove", &[], |p| std::fs::remove_dir(p.full()))?;
         nasio::add(Count::Deletes, 1);
         Ok(())
     }
 
-    /// Removes the folder and all in it (`std::fs::remove_dir_all`). One `Deletes`.
+    /// Removes the folder and all in it (`std::fs::remove_dir_all`'s walk: a link removed, never
+    /// followed), moving as each name goes. One `Deletes`.
     pub fn remove_dir_all(&self) -> io::Result<()> {
         let _w = crate::waits::nas();
-        std::fs::remove_dir_all(self.full())?;
+        self.moving("remove", vec![self.full()], |p, m| remove_all(p, m))?;
         nasio::add(Count::Deletes, 1);
         Ok(())
     }
@@ -810,7 +911,7 @@ impl NasPath {
     /// Makes the folder and those above it (`std::fs::create_dir_all`).
     pub fn create_dir_all(&self) -> io::Result<()> {
         let _w = crate::waits::nas();
-        std::fs::create_dir_all(self.full())
+        self.change("make", &[], |p| std::fs::create_dir_all(p.full()))
     }
 
     /// Its folder made, once a process (the `made` set). On SMB `create_dir_all` may fail with
@@ -818,17 +919,18 @@ impl NasPath {
     /// (the write that follows fails if the folder truly is missing), but not remembered.
     fn make_parent(&self) -> Result<()> {
         let _w = crate::waits::nas();
-        let Some(d) = self.full().parent().map(Path::to_path_buf) else { return Ok(()) };
-        if self.root.0.made.lock().unwrap().contains(&d) {
+        let Some(d) = self.parent() else { return Ok(()) };
+        let dir = d.full();
+        if self.root.0.made.lock().unwrap().contains(&dir) {
             return Ok(());
         }
-        match std::fs::create_dir_all(&d) {
+        match d.create_dir_all() {
             Ok(()) => {
-                self.root.0.made.lock().unwrap().insert(d);
+                self.root.0.made.lock().unwrap().insert(dir);
                 Ok(())
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(e).with_context(|| format!("make {}", d.display())),
+            Err(e) => Err(e).with_context(|| format!("make {}", dir.display())),
         }
     }
 
@@ -848,8 +950,56 @@ impl NasPath {
     /// Sets its modification time (a reuse's touch: what GC reads as in use). Not counted.
     pub fn set_modified(&self, t: std::time::SystemTime) -> io::Result<()> {
         let _w = crate::waits::nas();
-        std::fs::File::options().write(true).open(self.full())?.set_modified(t)
+        self.change("touch", &[], move |p| std::fs::File::options().write(true).open(p.full())?.set_modified(t))
     }
+}
+
+/// The file at `p` read whole, moving as its bytes come (`read_all_told`).
+fn read_told(p: &Path, m: &Progress) -> io::Result<Vec<u8>> {
+    read_all_told(std::fs::File::open(p)?, m)
+}
+
+/// `f` read to its end in pieces of crate::sys::COPY_BUF at most, each told to `m` as it comes.
+fn read_all_told(mut f: std::fs::File, m: &Progress) -> io::Result<Vec<u8>> {
+    let len = f.metadata().map_or(0, |m| m.len()) as usize;
+    let mut b = Vec::with_capacity(len.saturating_add(1));
+    loop {
+        let k = (&mut f).take(crate::sys::COPY_BUF as u64).read_to_end(&mut b)?;
+        if k == 0 {
+            return Ok(b);
+        }
+        m.add(k as u64);
+    }
+}
+
+/// Folder `p`'s entries (names and types as the listing gave them), each told to `m` as it comes.
+fn listed(p: &Path, m: &Progress) -> io::Result<Vec<(String, Option<std::fs::FileType>)>> {
+    let mut v = Vec::new();
+    for e in std::fs::read_dir(p)? {
+        let e = e?;
+        v.push((e.file_name().to_string_lossy().into_owned(), e.file_type().ok()));
+        m.add(1);
+    }
+    Ok(v)
+}
+
+/// Folder `p` and everything in it removed (a link removed as a file, never followed), each name
+/// told to `m` as it goes.
+fn remove_all(p: &Path, m: &Progress) -> io::Result<()> {
+    if !std::fs::symlink_metadata(p)?.is_dir() {
+        return std::fs::remove_file(p);
+    }
+    for e in std::fs::read_dir(p)? {
+        let e = e?;
+        let q = e.path();
+        if e.file_type()?.is_dir() {
+            remove_all(&q, m)?;
+        } else {
+            std::fs::remove_file(&q)?;
+        }
+        m.add(1);
+    }
+    std::fs::remove_dir(p)
 }
 
 /// A file either on this Mac's disk or on the NAS, for a reader that takes both (a split helper
@@ -1082,45 +1232,104 @@ pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
 }
 
 /// An open NAS file: reads and writes through it are counted as they go; one written is counted as
-/// made when it is dropped. Derefs to the `File` for its metadata, `sync_all`, `set_len`.
+/// made when it is dropped. Each read, write, seek to its end and its close is a crate::deadline
+/// call within its root's deadline: its reads fill a buffer of crate::sys::COPY_BUF at a time (one
+/// call a MB, not one a reader's few kB), its writes hold its path (a later change to it refused
+/// while one is held). Derefs to the `File` for its metadata and `set_len`, made inline.
 pub struct NasFile {
-    /// (None only once `into_file` took it.)
-    f: Option<std::fs::File>,
+    /// (None only once `into_file` took it, or its close began.)
+    f: Option<Arc<std::fs::File>>,
     path: PathBuf,
     /// Some(bytes written so far) when opened writable.
     wrote: Option<u64>,
     t: Instant,
+    deadline: Duration,
+    /// Bytes read ahead and not yet given (`buf[at..]`): the file's own position is past them.
+    buf: Vec<u8>,
+    at: usize,
+}
+
+impl NasFile {
+    fn new(f: std::fs::File, path: PathBuf, wrote: Option<u64>, t: Instant, deadline: Duration) -> NasFile {
+        NasFile { f: Some(Arc::new(f)), path, wrote, t, deadline, buf: Vec::new(), at: 0 }
+    }
+
+    fn file(&self) -> &Arc<std::fs::File> {
+        self.f.as_ref().expect("a NasFile's file")
+    }
+
+    /// `f` on its file, a call within its deadline (`op` naming it); one that changes it holds its
+    /// path while it's held.
+    fn on<T: Send + 'static>(
+        &self,
+        op: &'static str,
+        changes: bool,
+        f: impl FnOnce(&std::fs::File) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<T> {
+        let file = self.file().clone();
+        let keys = if changes { vec![self.path.clone()] } else { Vec::new() };
+        deadline::writing(&self.path.display(), &op, self.deadline, keys, move || f(&file))
+    }
+
+    /// Bytes read ahead and not given back to the file's position (a write or a seek past them is
+    /// made where the reader is).
+    fn unread(&mut self) -> io::Result<()> {
+        let ahead = (self.buf.len() - self.at) as i64;
+        self.buf.clear();
+        self.at = 0;
+        if ahead > 0 {
+            // (A move of the file's own position: no call on the share.)
+            (&**self.file()).seek(io::SeekFrom::Current(-ahead))?;
+        }
+        Ok(())
+    }
+
+    /// The `File` itself, at the reader's position (its reads no longer counted, nor under a
+    /// deadline: a library's own; a written one counted as made now).
+    pub fn into_file(mut self) -> std::fs::File {
+        if let Err(e) = self.unread() {
+            crate::retry::log(format_args!("{}: its reader's position: {e}", self.path.display()));
+        }
+        let f = self.f.take().expect("a NasFile's file");
+        // (A call left to the kernel may hold it still: a second descriptor of the same open file.)
+        Arc::try_unwrap(f).unwrap_or_else(|f| f.try_clone().expect("a NasFile's descriptor"))
+    }
 }
 
 impl std::ops::Deref for NasFile {
     type Target = std::fs::File;
     fn deref(&self) -> &std::fs::File {
-        self.f.as_ref().expect("a NasFile's file")
-    }
-}
-
-impl std::ops::DerefMut for NasFile {
-    fn deref_mut(&mut self) -> &mut std::fs::File {
-        self.f.as_mut().expect("a NasFile's file")
+        self.file()
     }
 }
 
 impl Read for NasFile {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-        let n = {
+        if self.at == self.buf.len() {
             let _w = crate::waits::nas();
-            (**self).read(b)?
-        };
-        nasio::read(n as u64);
+            let want = b.len().max(crate::sys::COPY_BUF);
+            let got = self.on("read", false, move |mut f| {
+                let mut v = Vec::with_capacity(want);
+                (&mut f).take(want as u64).read_to_end(&mut v)?;
+                Ok(v)
+            })?;
+            nasio::read(got.len() as u64);
+            (self.buf, self.at) = (got, 0);
+        }
+        let n = b.len().min(self.buf.len() - self.at);
+        b[..n].copy_from_slice(&self.buf[self.at..self.at + n]);
+        self.at += n;
         Ok(n)
     }
 }
 
 impl Write for NasFile {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+        self.unread()?;
         let n = {
             let _w = crate::waits::nas();
-            (**self).write(b)?
+            let owned = b.to_vec();
+            self.on("write", true, move |mut f| f.write(&owned))?
         };
         if let Some(w) = &mut self.wrote {
             *w += n as u64;
@@ -1130,30 +1339,47 @@ impl Write for NasFile {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let _w = crate::waits::nas();
-        (**self).flush()
-    }
-}
-
-impl NasFile {
-    /// The `File` itself (its reads no longer counted; a written one counted as made now).
-    pub fn into_file(mut self) -> std::fs::File {
-        self.f.take().expect("a NasFile's file")
+        // (A `File` keeps nothing back to flush.)
+        Ok(())
     }
 }
 
 impl Seek for NasFile {
     fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
-        (**self).seek(to)
+        // (Within what was read ahead: no move of the file's own.)
+        if let io::SeekFrom::Current(d) = to {
+            let at = self.at as i64 + d;
+            if (0..=self.buf.len() as i64).contains(&at) {
+                let ahead = (self.buf.len() - at as usize) as u64;
+                self.at = at as usize;
+                return Ok((&**self.file()).stream_position()? - ahead);
+            }
+        }
+        self.unread()?;
+        match to {
+            // (Its end asks the share for its length: a call.)
+            io::SeekFrom::End(_) => {
+                let _w = crate::waits::nas();
+                self.on("seek", false, move |mut f| f.seek(to))
+            }
+            _ => (&**self.file()).seek(to),
+        }
     }
 }
 
 impl Drop for NasFile {
     fn drop(&mut self) {
-        // (Its close: where SMB sends what's left of a write.)
+        // (Its close: where SMB sends what's left of a write. Past its deadline it's left to the
+        // kernel, as any call.)
         if let Some(f) = self.f.take() {
             let _w = crate::waits::nas();
-            drop(f);
+            let keys = if self.wrote.is_some() { vec![self.path.clone()] } else { Vec::new() };
+            if let Err(e) = deadline::writing(&self.path.display(), &"close", self.deadline, keys, move || {
+                drop(f);
+                Ok(())
+            }) {
+                crate::retry::log(format_args!("{}: close: {e}", self.path.display()));
+            }
         }
         if let Some(n) = self.wrote {
             nasio::made(&self.path, n, ms_since(self.t));

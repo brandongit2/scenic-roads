@@ -716,6 +716,7 @@ mod tests {
         let mut f = PlainFile::open(&p).unwrap();
         f.local = false;
         assert_eq!(f.read_at(2, 5).unwrap(), b"23456", "a NAS read answered: as before");
+        let _cap = crate::deadline::cap_for_test(crate::deadline::CAP_DEFAULT);
         let hung = crate::deadline::fake::hang(&p).deadline(Duration::from_millis(300));
         let held = lock(&f.slot.file).clone().unwrap();
         let t = std::time::Instant::now();

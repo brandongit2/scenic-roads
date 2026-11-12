@@ -205,7 +205,12 @@ pub fn read(path: &Path) -> std::io::Result<Vec<u8>> {
 /// over (the sweeps remove those). Missing with no aside is missing. A missing file lists its
 /// folder, so not for files that are often missing.
 pub fn read_replaced(path: &Path) -> std::io::Result<Vec<u8>> {
-    retried_with(path, &|p| std::fs::read(p), true, PAUSE)
+    read_replaced_by(path, &|p| std::fs::read(p))
+}
+
+/// `read_replaced`, each read made by `read` (crate::nasfs: one that says it moved as it reads).
+pub fn read_replaced_by(path: &Path, read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>) -> std::io::Result<Vec<u8>> {
+    retried_with(path, read, true, PAUSE)
 }
 
 const PAUSE: std::time::Duration = std::time::Duration::from_millis(250);

@@ -1,29 +1,29 @@
-//! The NAS I/O pool (docs/macs.md, Server; task #478). Every NAS filesystem operation
-//! (open, stat, list, read, write, rename) runs on one of a few worker threads while the caller
-//! waits with a timeout, so a stalled SMB mount can never hang a request.
+//! The server's NAS I/O pool (docs/macs.md, Server; task #478): a circuit breaker over
+//! crate::deadline. Every NAS filesystem operation (open, stat, list, read, write, rename) is a
+//! deadline call, at most `calls` of them at once, so a stalled SMB mount can never hang a request.
 //!
-//! The pool is a circuit breaker. An operation that overruns its timeout has its thread abandoned
-//! (counted, and replaced only up to a small fixed number, so threads stuck in the kernel can't
-//! pile up); if the share then fails a quick probe too, the NAS is marked offline and from then on
-//! calls fail at once with [`IoError::Offline`] without touching the share. A share that answers
-//! the probe is busy, not gone (another copy saturating the link): only the slow call fails. One prober thread checks a probe directory
-//! every few seconds (a stat, plus a lookup the SMB client can't answer from its caches), under
-//! its own timeout and never two at a time, and closes the breaker when the share answers.
-//! Network errors from a soft mount, and a file missing because the whole share is gone, trip the
-//! breaker the same way.
+//! An operation that overruns its timeout is left to the kernel (crate::deadline: its process's
+//! calls held there are capped, `deadline::cap`); if the share then fails a quick probe too, the
+//! NAS is marked offline and from then on calls fail at once with [`IoError::Offline`] without
+//! touching the share. A share that answers the probe is busy, not gone (another copy saturating
+//! the link): only the slow call fails. One prober thread checks a probe directory every few
+//! seconds (a stat, plus a lookup the SMB client can't answer from its caches), under its own
+//! timeout and never two at a time, and closes the breaker when the share answers. Network errors
+//! from a soft mount, and a file missing because the whole share is gone, trip the breaker the
+//! same way.
 //!
-//! The API is blocking (std threads and channels), for use from plain threads or
-//! `spawn_blocking`.
+//! The API is blocking, for use from plain threads or `spawn_blocking`.
 
 use crate::nasfs::NasPath;
 use crate::sys::PosIo;
+use std::fmt::Display;
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::SeqCst};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -33,7 +33,8 @@ pub enum IoError {
     /// The NAS is marked offline; the call was refused without touching the share.
     Offline,
     /// The operation overran its timeout (the NAS is then marked offline, unless it still answers a
-    /// probe: busy, not gone), or no worker was free to start it in time.
+    /// probe: busy, not gone), or it couldn't start in time (the pool's calls all busy, or the
+    /// process's calls held in the kernel at their cap).
     Timeout,
     /// The operation itself failed.
     Io(io::Error),
@@ -72,9 +73,9 @@ impl From<io::Error> for IoError {
 /// Pool settings. [`PoolConfig::new`] fills in the defaults.
 #[derive(Clone, Debug)]
 pub struct PoolConfig {
-    /// Worker threads.
-    pub threads: usize,
-    /// How long a caller waits for an operation, and for a worker to start it.
+    /// Operations under way at once (a call waits its timeout at most for its turn).
+    pub calls: usize,
+    /// How long a caller waits for an operation, and for its turn to start it.
     pub op_timeout: Duration,
     /// A directory on the share (e.g. the project folder) that the prober checks.
     pub probe: PathBuf,
@@ -82,24 +83,21 @@ pub struct PoolConfig {
     pub probe_interval: Duration,
     /// How long one probe may take before it counts as failed.
     pub probe_timeout: Duration,
-    /// Extra threads allowed to replace stuck ones: at most `threads + spare` ever exist.
-    pub spare: usize,
     /// How long the share has to answer a probe after an operation overran, to count as busy
     /// rather than gone.
     pub alive_timeout: Duration,
 }
 
 impl PoolConfig {
-    /// `threads` workers and `op_timeout`; a probe every 3 s, under the same timeout; 2 spare
-    /// threads; 3 s for the share to answer after an overrun.
-    pub fn new(threads: usize, op_timeout: Duration, probe: PathBuf) -> Self {
+    /// `calls` at once and `op_timeout`; a probe every 3 s, under the same timeout; 3 s for the
+    /// share to answer after an overrun.
+    pub fn new(calls: usize, op_timeout: Duration, probe: PathBuf) -> Self {
         Self {
-            threads: threads.max(1),
+            calls: calls.max(1),
             op_timeout,
             probe,
             probe_interval: Duration::from_secs(3),
             probe_timeout: op_timeout,
-            spare: 2,
             alive_timeout: Duration::from_secs(3),
         }
     }
@@ -111,9 +109,7 @@ pub struct PoolStatus {
     pub online: bool,
     /// When the NAS was last marked offline, while it still is.
     pub offline_since: Option<SystemTime>,
-    /// Worker threads alive, stuck ones included.
-    pub workers: usize,
-    /// Workers abandoned in an operation that overran its timeout.
+    /// Its operations that overran their timeout and are still in the kernel.
     pub stuck: usize,
     /// Operations that overran their timeout since the pool started.
     pub timeouts: u64,
@@ -130,27 +126,14 @@ pub struct DirItem {
 
 type Listener = dyn Fn(bool) + Send + Sync;
 
-// A queued operation's life: QUEUED → RUNNING → DONE, or QUEUED → CANCELLED (its caller gave up
-// before any worker took it), or RUNNING → ABANDONED (its caller gave up while it ran).
-const QUEUED: u8 = 0;
-const RUNNING: u8 = 1;
-const DONE: u8 = 2;
-const ABANDONED: u8 = 3;
-const CANCELLED: u8 = 4;
-
-/// How often a caller waiting for a worker checks whether the NAS went offline meanwhile.
+/// How often a caller waiting for its turn checks whether the NAS went offline meanwhile.
 const POLL: Duration = Duration::from_millis(50);
 
-struct Item {
-    state: Arc<AtomicU8>,
-    run: Box<dyn FnOnce() + Send>,
-}
-
-enum Msg<T> {
-    Started,
-    /// The result, and whether a NotFound came from the whole share being gone.
-    Done(io::Result<T>, bool),
-}
+// An operation's life: RUNNING → DONE, or RUNNING → ABANDONED (its caller gave up on it at its
+// timeout: counted stuck until it ends).
+const RUNNING: u8 = 0;
+const DONE: u8 = 1;
+const ABANDONED: u8 = 2;
 
 /// See `Inner::alive`.
 #[derive(Default)]
@@ -161,16 +144,15 @@ struct Alive {
 
 #[derive(Default)]
 struct Counts {
-    workers: usize,
+    /// Operations under way (`PoolConfig::calls` at most).
+    busy: usize,
     stuck: usize,
     timeouts: u64,
     offline_since: Option<SystemTime>,
-    next_id: usize,
 }
 
 struct Inner {
     cfg: PoolConfig,
-    jobs: Mutex<Receiver<Item>>,
     online: AtomicBool,
     closed: AtomicBool,
     prober_running: AtomicBool,
@@ -179,15 +161,16 @@ struct Inner {
     /// The liveness probe after an overrun: when the one in flight started, and the last answer
     /// (when it came, and whether the share answered). Overruns arriving meanwhile wait for it.
     alive: Mutex<Alive>,
-    alive_cv: std::sync::Condvar,
+    alive_cv: Condvar,
     counts: Mutex<Counts>,
+    /// Signalled as an operation's turn is given back.
+    turn_cv: Condvar,
     listener: Mutex<Option<Arc<Listener>>>,
 }
 
-/// The bounded NAS I/O pool with its circuit breaker (see the module docs).
+/// The NAS I/O pool with its circuit breaker (see the module docs).
 pub struct IoPool {
     inner: Arc<Inner>,
-    jobs: Sender<Item>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -195,36 +178,44 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// An operation's turn (`Inner::turn`), given back as it's dropped.
+struct Turn<'a>(&'a Inner);
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.counts).busy -= 1;
+        self.0.turn_cv.notify_one();
+    }
+}
+
 impl IoPool {
-    /// A pool of `threads` workers; operations time out after `op_timeout`; `probe` is a path on
-    /// the share that the prober stats while the NAS is offline.
-    pub fn new(threads: usize, op_timeout: Duration, probe: PathBuf) -> Arc<IoPool> {
-        Self::with_config(PoolConfig::new(threads, op_timeout, probe))
+    /// A pool of `calls` operations at once; operations time out after `op_timeout`; `probe` is a
+    /// path on the share that the prober stats while the NAS is offline.
+    pub fn new(calls: usize, op_timeout: Duration, probe: PathBuf) -> Arc<IoPool> {
+        Self::with_config(PoolConfig::new(calls, op_timeout, probe))
     }
 
     /// A pool over the NAS project folder `root`, which its prober stats while the NAS is offline.
-    pub fn for_root(root: &crate::nasfs::NasRoot, threads: usize, op_timeout: Duration) -> Arc<IoPool> {
-        Self::new(threads, op_timeout, root.unchecked_path())
+    pub fn for_root(root: &crate::nasfs::NasRoot, calls: usize, op_timeout: Duration) -> Arc<IoPool> {
+        Self::new(calls, op_timeout, root.unchecked_path())
     }
 
     /// A pool with every setting given.
     pub fn with_config(mut cfg: PoolConfig) -> Arc<IoPool> {
-        cfg.threads = cfg.threads.max(1);
-        let (tx, rx) = mpsc::channel();
+        cfg.calls = cfg.calls.max(1);
         let inner = Arc::new(Inner {
             cfg,
-            jobs: Mutex::new(rx),
             online: AtomicBool::new(true),
             closed: AtomicBool::new(false),
             prober_running: AtomicBool::new(false),
             probe_now: AtomicBool::new(false),
             alive: Mutex::new(Alive::default()),
-            alive_cv: std::sync::Condvar::new(),
+            alive_cv: Condvar::new(),
             counts: Mutex::new(Counts::default()),
+            turn_cv: Condvar::new(),
             listener: Mutex::new(None),
         });
-        inner.ensure_workers();
-        Arc::new(IoPool { inner, jobs: tx })
+        Arc::new(IoPool { inner })
     }
 
     pub fn config(&self) -> &PoolConfig {
@@ -236,16 +227,10 @@ impl IoPool {
         self.inner.online.load(SeqCst)
     }
 
-    /// The breaker's state and the threads' counts.
+    /// The breaker's state and the stuck operations' counts.
     pub fn status(&self) -> PoolStatus {
         let c = lock(&self.inner.counts);
-        PoolStatus {
-            online: self.is_online(),
-            offline_since: c.offline_since,
-            workers: c.workers,
-            stuck: c.stuck,
-            timeouts: c.timeouts,
-        }
+        PoolStatus { online: self.is_online(), offline_since: c.offline_since, stuck: c.stuck, timeouts: c.timeouts }
     }
 
     /// Calls `f(online)` on every change of state (from whichever thread caused it; keep it short).
@@ -269,10 +254,10 @@ impl IoPool {
         self.inner.start_prober();
     }
 
-    /// Runs `f` on a worker. The caller waits up to the pool's timeout for a worker to take it
-    /// (`Timeout` if none is free, without marking the NAS offline: busy isn't dead), then up to
-    /// the timeout again for it to finish (`Timeout`, and the NAS is marked offline). While the NAS
-    /// is offline, `Offline` at once.
+    /// Runs `f` as a deadline call. The caller waits up to the pool's timeout for its turn
+    /// (`Timeout` if none comes, without marking the NAS offline: busy isn't dead), then up to the
+    /// timeout again for it to finish (`Timeout`, and the NAS is marked offline unless it answers a
+    /// probe). While the NAS is offline, `Offline` at once.
     pub fn call<T, F>(&self, f: F) -> Result<T, IoError>
     where
         F: FnOnce() -> io::Result<T> + Send + 'static,
@@ -287,82 +272,52 @@ impl IoPool {
         F: FnOnce() -> io::Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.run(&self.inner.cfg.probe.display(), timeout, f)
+    }
+
+    /// `call_timeout`, the operation on `on` (its errors and the deadline's log name it).
+    fn run<T, F>(&self, on: &dyn Display, timeout: Duration, f: F) -> Result<T, IoError>
+    where
+        F: FnOnce() -> io::Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
         if !self.is_online() {
             return Err(IoError::Offline);
         }
         let _w = crate::waits::nas();
-        self.inner.ensure_workers();
-        let (tx, rx) = mpsc::sync_channel::<Msg<T>>(2);
-        let state = Arc::new(AtomicU8::new(QUEUED));
-        let probe = self.inner.cfg.probe.clone();
-        let run = Box::new(move || {
-            let _ = tx.send(Msg::Started);
+        let turn = self.inner.turn(timeout)?;
+        let (probe, state) = (self.inner.cfg.probe.clone(), Arc::new(AtomicU8::new(RUNNING)));
+        let (me, st) = (self.inner.clone(), state.clone());
+        let r = crate::deadline::call(on, &"a NAS operation", timeout, move || {
             let r = panic::catch_unwind(AssertUnwindSafe(f))
                 .unwrap_or_else(|_| Err(io::Error::other("NAS operation panicked")));
             // A file missing because the whole share is gone means the NAS is offline.
             let gone = matches!(&r, Err(e) if e.kind() == io::ErrorKind::NotFound) && fs::metadata(&probe).is_err();
-            let _ = tx.send(Msg::Done(r, gone));
+            if st.compare_exchange(RUNNING, DONE, SeqCst, SeqCst).is_err() {
+                // (Its caller gave up on it: it was counted stuck.)
+                lock(&me.counts).stuck -= 1;
+            }
+            Ok((r, gone))
         });
-        if self.jobs.send(Item { state: state.clone(), run }).is_err() {
-            return Err(IoError::Io(io::Error::other("the NAS I/O pool has shut down")));
-        }
-
-        // Wait for a worker to take it; give up when none is free in time or the NAS goes offline
-        // meanwhile (an operation that never started is simply dropped).
-        let deadline = Instant::now() + timeout;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(left.min(POLL)) {
-                Ok(Msg::Started) => break,
-                Ok(Msg::Done(r, gone)) => return self.inner.finish(r, gone),
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(IoError::Io(io::Error::other("the NAS I/O pool has shut down")))
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    let offline = !self.is_online();
-                    if !offline && Instant::now() < deadline {
-                        continue;
-                    }
-                    if state.compare_exchange(QUEUED, CANCELLED, SeqCst, SeqCst).is_ok() {
-                        return Err(if offline { IoError::Offline } else { IoError::Timeout });
-                    }
-                    // A worker took it at the last moment: wait for it like any other.
-                    match rx.recv() {
-                        Ok(Msg::Started) => break,
-                        Ok(Msg::Done(r, gone)) => return self.inner.finish(r, gone),
-                        Err(_) => return Err(IoError::Io(io::Error::other("NAS operation lost"))),
-                    }
-                }
-            }
-        }
-
-        match rx.recv_timeout(timeout) {
-            Ok(Msg::Done(r, gone)) => self.inner.finish(r, gone),
-            Ok(Msg::Started) | Err(RecvTimeoutError::Disconnected) => {
-                Err(IoError::Io(io::Error::other("NAS operation lost")))
-            }
-            Err(RecvTimeoutError::Timeout) => {
-                if state.compare_exchange(RUNNING, ABANDONED, SeqCst, SeqCst).is_err() {
-                    // It finished just as the time ran out; the result is already in the channel.
-                    return match rx.recv() {
-                        Ok(Msg::Done(r, gone)) => self.inner.finish(r, gone),
-                        _ => Err(IoError::Io(io::Error::other("NAS operation lost"))),
-                    };
-                }
+        drop(turn);
+        match r {
+            Ok((r, gone)) => self.inner.finish(r, gone),
+            Err(e) if crate::deadline::past_deadline(&e) => {
                 {
                     let mut c = lock(&self.inner.counts);
-                    c.stuck += 1;
                     c.timeouts += 1;
-                }
-                if let Ok(Msg::Done(r, gone)) = rx.try_recv() {
-                    // Done at the very deadline: no stall after all (the worker un-counts itself).
-                    return self.inner.finish(r, gone);
+                    if state.compare_exchange(RUNNING, ABANDONED, SeqCst, SeqCst).is_ok() {
+                        c.stuck += 1;
+                    }
                 }
                 if !self.inner.alive_within(self.inner.cfg.alive_timeout) {
                     self.inner.trip(&format!("an operation took longer than {timeout:?}"));
                 }
                 Err(IoError::Timeout)
             }
+            // (Refused: the process's calls held at their cap. Busy, not gone.)
+            Err(e) if crate::deadline::refused(&e) => Err(IoError::Timeout),
+            Err(e) => Err(IoError::Io(e)),
         }
     }
 
@@ -378,7 +333,7 @@ impl IoPool {
         let t = Instant::now();
         let r = self.retried(path, "open", || {
             let p = p.clone();
-            self.call(move || {
+            self.run(&path.display(), self.inner.cfg.op_timeout, move || {
                 let f = File::open(&p)?;
                 let len = f.metadata()?.len();
                 Ok((Arc::new(f), len))
@@ -409,12 +364,7 @@ impl IoPool {
 
     /// Reads exactly `len` bytes at `off` (pread; an error if the file is shorter).
     pub fn read_at(&self, file: &Arc<File>, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
-        let f = file.clone();
-        self.call(move || {
-            let mut buf = vec![0u8; len];
-            f.read_exact_at(&mut buf, off)?;
-            Ok(buf)
-        })
+        self.read_at_timeout(file, off, len, self.inner.cfg.op_timeout)
     }
 
     /// `read_at` with its own timeout.
@@ -439,7 +389,7 @@ impl IoPool {
         let t = Instant::now();
         let b = self.retried(path, "read", || {
             let p = p.clone();
-            self.call(move || fs::read(&p))
+            self.run(&path.display(), self.inner.cfg.op_timeout, move || fs::read(&p))
         })?;
         crate::nasio::opened(&p, b.len() as u64, t.elapsed().as_millis() as u64);
         crate::nasio::read(b.len() as u64);
@@ -452,7 +402,7 @@ impl IoPool {
         crate::nasio::add(crate::nasio::Count::Stats, 1);
         self.retried(path, "stat", || {
             let p = p.clone();
-            self.call(move || fs::metadata(&p))
+            self.run(&path.display(), self.inner.cfg.op_timeout, move || fs::metadata(&p))
         })
     }
 
@@ -463,7 +413,7 @@ impl IoPool {
         crate::nasio::add(crate::nasio::Count::Stats, 1);
         self.retried(path, "stat", || {
             let (p, probe) = (p.clone(), self.inner.cfg.probe.clone());
-            self.call(move || match fs::metadata(&p) {
+            self.run(&path.display(), self.inner.cfg.op_timeout, move || match fs::metadata(&p) {
                 Ok(_) => Ok(true),
                 Err(e) if e.kind() == io::ErrorKind::NotFound && fs::metadata(&probe).is_ok() => Ok(false),
                 Err(e) => Err(e),
@@ -477,7 +427,7 @@ impl IoPool {
         let d = dir.unchecked_path();
         let v = self.retried(dir, "list", || {
             let d = d.clone();
-            self.call(move || {
+            self.run(&dir.display(), self.inner.cfg.op_timeout, move || {
                 let mut out = Vec::new();
                 for e in fs::read_dir(&d)? {
                     let e = e?;
@@ -501,13 +451,13 @@ impl IoPool {
     /// `fs::create_dir_all`.
     pub fn create_dir_all(&self, dir: &NasPath) -> Result<(), IoError> {
         let d = dir.unchecked_path();
-        self.call(move || fs::create_dir_all(&d))
+        self.run(&dir.display(), self.inner.cfg.op_timeout, move || fs::create_dir_all(&d))
     }
 
     /// `fs::rename`, replacing `to` if it exists (both on the share).
     pub fn rename(&self, from: &NasPath, to: &NasPath) -> Result<(), IoError> {
         let (a, b) = (from.unchecked_path(), to.unchecked_path());
-        self.call(move || fs::rename(&a, &b))
+        self.run(&from.display(), self.inner.cfg.op_timeout, move || fs::rename(&a, &b))
     }
 
     /// Creates `path` exclusively (`O_EXCL`: `AlreadyExists` if it's there) and writes `bytes`.
@@ -515,7 +465,7 @@ impl IoPool {
     pub fn write_new(&self, path: &NasPath, bytes: Vec<u8>) -> Result<(), IoError> {
         let p = path.unchecked_path();
         let (n, t, q) = (bytes.len() as u64, Instant::now(), p.clone());
-        self.call(move || {
+        self.run(&path.display(), self.inner.cfg.op_timeout, move || {
             let mut f = OpenOptions::new().write(true).create_new(true).open(&p)?;
             f.write_all(&bytes)?;
             f.sync_all()
@@ -530,7 +480,7 @@ impl IoPool {
     pub fn write(&self, path: &NasPath, bytes: Vec<u8>) -> Result<(), IoError> {
         let p = path.unchecked_path();
         let (n, t, q) = (bytes.len() as u64, Instant::now(), p.clone());
-        self.call(move || {
+        self.run(&path.display(), self.inner.cfg.op_timeout, move || {
             let mut f = File::create(&p)?;
             f.write_all(&bytes)?;
             f.sync_all()
@@ -542,30 +492,29 @@ impl IoPool {
 
 impl Drop for IoPool {
     fn drop(&mut self) {
-        // Workers leave when the job channel closes (stuck ones when they return); the prober
-        // notices this flag.
+        // (The prober notices this flag.)
         self.inner.closed.store(true, SeqCst);
     }
 }
 
 impl Inner {
-    /// Starts workers until `threads` are free to work, within the `threads + spare` bound.
-    fn ensure_workers(self: &Arc<Self>) {
+    /// An operation's turn (`PoolConfig::calls` under way at most), waited for `timeout` at most:
+    /// `Timeout` past it, `Offline` as the breaker opens meanwhile.
+    fn turn(&self, timeout: Duration) -> Result<Turn<'_>, IoError> {
+        let end = Instant::now() + timeout;
         let mut c = lock(&self.counts);
-        while c.workers - c.stuck < self.cfg.threads && c.workers < self.cfg.threads + self.cfg.spare {
-            let id = c.next_id;
-            let me = self.clone();
-            match thread::Builder::new().name(format!("nas-io-{id}")).spawn(move || worker(me)) {
-                Ok(_) => {
-                    c.workers += 1;
-                    c.next_id += 1;
-                }
-                Err(e) => {
-                    eprintln!("nas: can't start an I/O thread: {e}");
-                    break;
-                }
+        while c.busy >= self.cfg.calls {
+            if !self.online.load(SeqCst) {
+                return Err(IoError::Offline);
             }
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(IoError::Timeout);
+            }
+            c = self.turn_cv.wait_timeout(c, left.min(POLL)).unwrap_or_else(|e| e.into_inner()).0;
         }
+        c.busy += 1;
+        Ok(Turn(self))
     }
 
     fn finish<T>(self: &Arc<Self>, r: io::Result<T>, gone: bool) -> Result<T, IoError> {
@@ -676,33 +625,6 @@ impl Inner {
     }
 }
 
-fn worker(inner: Arc<Inner>) {
-    loop {
-        let item = {
-            let rx = lock(&inner.jobs);
-            match rx.recv() {
-                Ok(item) => item,
-                Err(_) => break,
-            }
-        };
-        if item.state.compare_exchange(QUEUED, RUNNING, SeqCst, SeqCst).is_err() {
-            continue; // its caller gave up before it started
-        }
-        (item.run)();
-        if item.state.compare_exchange(RUNNING, DONE, SeqCst, SeqCst).is_err() {
-            // The caller gave up on this operation and counted this thread as stuck. Rejoin, or
-            // leave if a replacement has taken this thread's place meanwhile.
-            let mut c = lock(&inner.counts);
-            c.stuck -= 1;
-            if c.workers - c.stuck > inner.cfg.threads {
-                c.workers -= 1;
-                return;
-            }
-        }
-    }
-    lock(&inner.counts).workers -= 1;
-}
-
 /// While offline: probe the share every `probe_interval` on a helper thread, one probe in flight
 /// at a time (a stuck one is waited for, never duplicated), until one succeeds.
 fn prober(inner: Arc<Inner>) {
@@ -776,11 +698,10 @@ fn is_disconnect(e: &io::Error) -> bool {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
-    use std::sync::Condvar;
 
     // (The operations here that overrun are held by a gate until the test lets them go, so an
     // overrun never depends on how fast a busy Mac runs a thread; the waits in the pool are short,
-    // for speed, and a call a busy Mac didn't start in time is told apart and made again; the
+    // for speed, and a call that didn't get its turn in time is told apart and made again; the
     // share's answer after an overrun is waited for as long as it takes (`alive_timeout`); and the
     // ordinary operations, whose time isn't what's tested, have minutes.)
 
@@ -796,7 +717,7 @@ mod tests {
         }
     }
 
-    /// Operations that hold their worker until the gate opens.
+    /// Operations held in their call until the gate opens.
     #[derive(Clone, Default)]
     struct Gate {
         open: Arc<(Mutex<bool>, Condvar)>,
@@ -827,8 +748,8 @@ mod tests {
         }
     }
 
-    /// A gated operation called until one overruns (a call whose operation a worker didn't take
-    /// in time is dropped unrun, and made again): its error (an overrun's is `Timeout`). One
+    /// A gated operation called until one overruns (a call that didn't get its turn in time is
+    /// dropped unrun, and made again): its error (an overrun's is `Timeout`). One
     /// caller at a time (the pool's count of overruns tells them apart); `together` for many.
     fn overrun(pool: &IoPool, gate: &Gate) -> IoError {
         for _ in 0..10_000 {
@@ -839,10 +760,10 @@ mod tests {
                 Ok(()) => panic!("a gated operation ended"),
             }
         }
-        panic!("no worker took a call in 10,000 tries");
+        panic!("no call had its turn in 10,000 tries");
     }
 
-    /// `n` gated operations called at once, again for those a worker didn't take in time, until
+    /// `n` gated operations called at once, again for those that didn't get their turn in time, until
     /// each overran or was refused: their errors.
     fn together(pool: &Arc<IoPool>, gate: &Gate, n: usize) -> Vec<IoError> {
         let mut out = Vec::new();
@@ -918,10 +839,10 @@ mod tests {
             matches!(pool.read_all(&nas.join("missing")), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound)
         );
         assert!(pool.is_online());
-        // A panicking operation is an error, and its worker lives on.
+        // A panicking operation is an error, and the pool goes on.
         assert!(matches!(pool.call(|| -> io::Result<()> { panic!("boom") }), Err(IoError::Io(_))));
         assert_eq!(pool.call(|| Ok(1)).unwrap(), 1);
-        assert_eq!(pool.status().workers, 2);
+        assert_eq!(pool.status().stuck, 0);
     }
 
     #[test]
@@ -935,7 +856,7 @@ mod tests {
         pool.set_listener(move |online| ev.lock().unwrap().push(online));
 
         // The share "disappears" and an operation stalls: the caller gets its timeout while the
-        // operation still holds its worker.
+        // operation is still in the kernel.
         fs::remove_dir(&probe).unwrap();
         let gate = Gate::default();
         assert!(matches!(overrun(&pool, &gate), IoError::Timeout));
@@ -944,7 +865,7 @@ mod tests {
         assert_eq!((st.stuck, st.timeouts), (1, 1));
         assert!(st.offline_since.is_some());
 
-        // Offline: refused at once, without queueing (a call that waited for a worker would wait
+        // Offline: refused at once, without waiting (a call that waited for its turn would wait
         // its whole timeout, here ten minutes).
         let t0 = Instant::now();
         let ran = Arc::new(AtomicBool::new(false));
@@ -970,12 +891,9 @@ mod tests {
         assert_eq!(*events.lock().unwrap(), [false, true]);
         assert!(pool.status().offline_since.is_none());
 
-        // The stuck thread returns and the pool settles back to its size.
+        // The stuck operation returns.
         gate.release();
-        eventually("the stuck thread back", || {
-            let s = pool.status();
-            s.stuck == 0 && s.workers == 2
-        });
+        eventually("the stuck operation back", || pool.status().stuck == 0);
     }
 
     #[test]
@@ -990,7 +908,7 @@ mod tests {
         let st = pool.status();
         assert_eq!((st.stuck, st.timeouts), (1, 1));
         assert!(st.offline_since.is_none());
-        // Other calls go on meanwhile, and the slow thread rejoins.
+        // Other calls go on meanwhile, and the slow operation ends.
         assert_eq!(pool.call_timeout(LONG, || Ok(5)).unwrap(), 5);
         gate.release();
         eventually("the slow thread back", || pool.status().stuck == 0);
@@ -1053,52 +971,45 @@ mod tests {
         assert!(!ran.load(SeqCst) && !away.is_online());
     }
 
+    /// Operations stuck in the kernel are bounded by the process's cap (crate::deadline): at it, a
+    /// call is refused at once, unrun, as `Timeout`, and no overrun is counted; once they return,
+    /// work resumes.
     #[test]
-    fn stuck_threads_are_bounded() {
+    fn stuck_operations_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(cfg(dir.path().to_owned(), 2, 50));
+        let _cap = crate::deadline::cap_for_test(2);
         let gate = Gate::default();
-        // Overruns until every thread the pool may have is stuck: never more than 2 + 2 spare.
-        let mut peak = 0;
-        while pool.status().stuck < 4 {
+        while pool.status().stuck < 2 {
             let r = overrun(&pool, &gate);
             assert!(matches!(r, IoError::Timeout), "{r:?}");
-            let s = pool.status();
-            peak = peak.max(s.workers);
-            assert!(s.workers <= 4, "{s:?}");
         }
         assert!(pool.is_online());
-        // Every thread is stuck: a call can't start, times out, and is dropped unrun; no thread is
-        // added.
         let ran = Arc::new(AtomicBool::new(false));
         for _ in 0..3 {
             let r2 = ran.clone();
-            let r = pool.call(move || {
+            let t = Instant::now();
+            let r = pool.call_timeout(LONG, move || {
                 r2.store(true, SeqCst);
                 Ok(())
             });
             assert!(matches!(r, Err(IoError::Timeout)), "{r:?}");
+            crate::testkit::ended_before(t, LONG, "refused at once");
         }
         let s = pool.status();
-        assert_eq!((s.workers, s.stuck, s.timeouts), (4, 4, 4), "{s:?}");
-        // Then they all come back, the extras leave, and work resumes.
+        assert_eq!((s.stuck, s.timeouts), (2, 2), "{s:?}");
         gate.release();
-        eventually("the threads back, the extras gone", || {
-            let s = pool.status();
-            s.stuck == 0 && s.workers == 2
-        });
+        eventually("the stuck operations back", || pool.status().stuck == 0);
         assert!(pool.is_online());
         assert_eq!(pool.call_timeout(LONG, || Ok(3)).unwrap(), 3);
-        thread::sleep(Duration::from_millis(50)); // (absence)
-        assert!(!ran.load(SeqCst), "a cancelled operation ran");
-        assert_eq!(peak, 4);
+        assert!(!ran.load(SeqCst), "a refused operation ran");
     }
 
     #[test]
     fn busy_pool_times_out_without_tripping() {
         let dir = tempfile::tempdir().unwrap();
         let pool = IoPool::with_config(cfg(dir.path().to_owned(), 1, 1000));
-        // Its one worker busy (with a long timeout of its own)...
+        // Its one turn taken (by a call with a long timeout of its own)...
         let gate = Gate::default();
         let (p2, g2) = (pool.clone(), gate.clone());
         let long = thread::spawn(move || p2.call_timeout(LONG, g2.op()));
