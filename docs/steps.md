@@ -36,13 +36,17 @@ makes the same bytes on every Mac.
    osmium opens it, through a named pipe, cipher list `aes128-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-ctr` (the first the NAS also offers; GCM measured 25 -> 59 MB/s on the Mac mini); the soft mount timed out on the hour-long reads). It
    needs SSH keys to the NAS (docs/macs.md) and fails saying so. A job under the budgets' sandbox
    reaches the NAS through its agent's proxy (`CONNECT`, unmetered). The bytes count as NAS reads;
-   each read must carry the file's whole size (taken over SSH first). The first cut (`osmium
+   each read osmium takes to its end must carry the file's whole size (taken over SSH first). The first cut (`osmium
    extract`, three reads) streams (a) the same way when the local copy went. osmium extract first
-   opens its input once and lets go of it after its header, or before any byte (osmium 1.19): a
+   opens its input once and lets go of it after its first bytes, or before any (osmium 1.19): a
    read let go early stops its `cat` and the next open is fed anew. A feed that fails lets osmium
    go (the pipe's link removed, an open waiting on a pipe given its end), so the job fails with the
-   stream's error rather than wait; a read moving no bytes for 5 min (`osmpass::STREAM_STALL`)
-   fails `TimedOut` and the job is tried again later. Known retry cause: a
+   stream's error rather than wait; a read moving no bytes for 5 min of the job's running time
+   (`osmpass::STREAM_STALL`; a freeze or a pause isn't counted, as for a NAS call's deadline,
+   docs/nas-access.md §6) fails `TimedOut` and the job is tried again later. That bound is a stuck
+   stream's deadline, fixed as the NAS calls' deadlines and `SSH_START` are, not a limit on what
+   the build uses: it's counted from the stream's last byte, so a read that keeps moving, however
+   long or slow, is never ended by it. Known retry cause: a
    job frozen by memguard for over 10 minutes freezes its stream too (the feeder is in the job's
    process group), the proxy ends the idle tunnel, and the job fails; its retry redoes that
    stage.

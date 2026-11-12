@@ -236,10 +236,13 @@ fn ssh() -> Command {
     c
 }
 
-/// How long a stream to osmium may move no bytes once its `cat` has started (`streamed`): the NAS
-/// sending none (a dead connection ends ssh sooner itself: ServerAliveInterval 30 s, three
-/// missed), or osmium taking none. Past it the stream fails `TimedOut`, osmium is let go, and the
-/// job fails and is tried again later.
+/// How long a stream to osmium may move no bytes once its `cat` has started (`streamed`), in the
+/// time the job ran (`ready`: a freeze or a pause isn't counted): the NAS sending none (a dead
+/// connection ends ssh sooner itself: ServerAliveInterval 30 s, three missed), or osmium taking
+/// none. Past it the stream fails `TimedOut`, osmium is let go, and the job fails and is tried
+/// again later. A stuck call's deadline, as store::deadline's are, not a bound on what the build
+/// uses: counted from the stream's last byte, a read that keeps moving is never ended for its
+/// length or its speed (docs/steps.md).
 pub const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Runs `run` on a path that reads as `remote` (a file on the NAS) streamed over SSH
@@ -249,13 +252,14 @@ pub const STREAM_STALL: std::time::Duration = std::time::Duration::from_secs(300
 /// extract's smart strategy three times) and refuses stdin for that, so the path is a link to a
 /// named pipe, fed one `cat` each time osmium opens it: once it's opened, the link is pointed at a
 /// fresh pipe for the next open, before any byte is written. A reader may let go of a read early:
-/// osmium extract opens its input once and closes it after its header (8 KiB) or before any
-/// byte, ahead of its reads (osmium 1.19, task #1189); that `cat` is stopped, the next open fed
+/// osmium extract opens its input once and closes it after its first bytes, or before any,
+/// ahead of its reads (osmium 1.19, task #1189); that `cat` is stopped, the next open fed
 /// anew. A read the reader takes to its end must
 /// carry the file's whole length (its size taken over SSH first): a short `cat` that exits 0 fails.
 /// `reads`: how many reads `run` makes, for progress (0: none said, the caller says its own). Each
 /// `ssh` is bounded by `start` (`SSH_START`): the size's call whole, each `cat` to its first byte;
-/// after it, a read moving no bytes for `stall` (`STREAM_STALL`) fails. When the feed fails, the
+/// after it, a read moving no bytes for `stall` (`STREAM_STALL`) fails; both counted in the time
+/// this process ran (`ready`). When the feed fails, the
 /// reader is let go: the link removed (a later open fails) and a pipe it waits to open given its
 /// end, so `run` ends rather than wait for a writer. Returns the bytes read off the NAS. In `dir`,
 /// made afresh.
@@ -450,22 +454,34 @@ fn feed(
     Ok(())
 }
 
-/// Whether `fd` is ready for `events` (or has an error or its end to say) within `bound`.
+/// Whether `fd` is ready for `events` (or has an error or its end to say) within `bound` of the
+/// time this process ran, counted as a NAS call's deadline is (store::deadline, docs/nas-access.md
+/// §6): it looks each second, and a look the process was stopped in (the guards' freeze or a
+/// pause: SIGSTOP, then SIGCONT, `store::sys::continued`) counts a second at most; the Mac asleep
+/// counts none (`Instant`). A job frozen or paused past `bound` goes on as it thaws.
 fn ready(fd: std::os::fd::RawFd, events: libc::c_short, bound: std::time::Duration) -> std::io::Result<bool> {
-    let end = std::time::Instant::now() + bound;
+    const LOOK: std::time::Duration = std::time::Duration::from_secs(1);
+    let mut ran = std::time::Duration::ZERO;
     loop {
-        let left = end.saturating_duration_since(std::time::Instant::now());
+        let look = LOOK.min(bound.saturating_sub(ran));
+        // (The count read before the clock: a stop between them counts no time of the look's.)
+        let (conts, t) = (store::sys::continued(), std::time::Instant::now());
         let mut p = libc::pollfd { fd, events, revents: 0 };
         // SAFETY: one pollfd, ours.
-        match unsafe { libc::poll(&mut p, 1, left.as_millis().min(i32::MAX as u128) as libc::c_int) } {
-            0 => return Ok(false),
+        match unsafe { libc::poll(&mut p, 1, look.as_millis() as libc::c_int) } {
             n if n > 0 => return Ok(true),
+            0 => {}
             _ => {
                 let e = std::io::Error::last_os_error();
                 if e.kind() != std::io::ErrorKind::Interrupted {
                     return Err(e);
                 }
             }
+        }
+        let took = t.elapsed();
+        ran += if store::sys::continued() != conts { took.min(look) } else { took };
+        if ran >= bound {
+            return Ok(false);
         }
     }
 }
@@ -686,7 +702,7 @@ fn cut_tree(
     let marker = work.join(format!("{}.cut", t.dash()));
     if !marker.exists() {
         // (osmium extract with the smart strategy opens its input four times (1.19): the first let go
-        // after its header, then three reads, each a stream of its own when it's on the NAS; the cut says its
+        // after its first bytes, then three reads, each a stream of its own when it's on the NAS; the cut says its
         // progress by the extracts made.)
         read_input(input, &work.join("stream"), 0, |p, _| cut(p, &kids, &dir, 4))?;
         std::fs::write(&marker, b"")?;
@@ -1833,7 +1849,7 @@ mod tests {
             cut(p, &kids, &there, 4)
         })
         .unwrap();
-        // (Three whole reads, and what the first open, let go after its header, took.)
+        // (Three whole reads, and what the first open, let go after its first bytes, took.)
         assert!((3 * len..=4 * len).contains(&n), "three whole reads (osmium 1.19): {n} of {len}");
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
@@ -1847,7 +1863,7 @@ mod tests {
         }
     }
 
-    /// Task #1189: osmium extract opens its input once and lets go of it after its header, before its
+    /// Task #1189: osmium extract opens its input once and lets go of it after its first bytes, before its
     /// three reads (osmium 1.19, `--strategy smart`, with a config or a box). With a file past the pipe's
     /// buffer (64 KiB), the polar points' cut (`extract_boxes`'s command) streamed off the NAS
     /// makes what the local file's cut makes, from three whole reads; it once hung for good,
@@ -1882,7 +1898,10 @@ mod tests {
         let (remote, stream) = (src.to_str().unwrap().to_string(), d.path().join("stream"));
         std::thread::spawn(move || tx.send(streamed(&*ssh(""), WAIT, WAIT, &remote, 3, &stream, |p| cut(p, &there))));
         let n = rx.recv_timeout(WAIT).expect("the stream hung").unwrap();
-        assert!((3 * len..3 * len + (128 << 10)).contains(&n), "three whole reads, and a header: {n} of {len}");
+        assert!(
+            (3 * len..3 * len + (128 << 10)).contains(&n),
+            "three whole reads, and the first open's bytes: {n} of {len}"
+        );
         let opl = |p: &Path| {
             store::spawn::output(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(p)).unwrap().stdout
         };
@@ -1985,6 +2004,63 @@ mod tests {
         .unwrap_err();
         assert!(buildstore::records::nas::timed_out(&e), "{e:#}");
         assert!(format!("{e:#}").contains("osmium took none"), "{e:#}");
+    }
+
+    /// A stop (SIGSTOP, then SIGCONT, as the guards freeze a job or its pause stops it) isn't
+    /// counted toward a stream's stall: a wait on a pipe nothing is written to, its process stopped
+    /// 3 s or more inside it, gives up only after the stop and its bound's run (the look the stop
+    /// came in counted a second at most). Counted as wall time, a freeze past `STREAM_STALL` had
+    /// failed the job's stream as it thawed.
+    #[test]
+    fn a_stop_isnt_counted_toward_a_stall() {
+        // Run again in a process of its own, this test alone in it: under `cargo test` the stop
+        // would stop the runner's other tests too (store::deadline's test of the same).
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let out = store::spawn::output(
+                store::spawn::command(std::env::current_exe().unwrap())
+                    .args(["--exact", "osmpass::tests::a_stop_isnt_counted_toward_a_stall", "--nocapture"])
+                    .env(ALONE, "1"),
+            )
+            .unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let (r, _w) = std::io::pipe().unwrap();
+        // (The stopper only ends the stop, 3 s or more after it sees it: a late stopper only makes
+        // the stop longer.)
+        let script = r#"read a; while ps -o stat= -p "$1" | grep -qv T; do sleep 0.1; done; sleep 3; kill -CONT "$1""#;
+        let mut cmd = store::spawn::command("/bin/sh");
+        cmd.args(["-c", script, "sh"]).arg(std::process::id().to_string()).stdin(std::process::Stdio::piped());
+        let mut child = store::spawn::spawn(&mut cmd).unwrap();
+        let mut line = child.stdin.take().unwrap();
+        let bound = std::time::Duration::from_secs(5);
+        let conts = store::sys::continued();
+        let t = std::time::Instant::now();
+        let stopper = std::thread::spawn(move || {
+            // (Inside the wait below: it looks at once and for its bound.)
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::io::Write::write_all(&mut line, b"go\n").unwrap();
+            drop(line);
+            // SAFETY: a plain signal to this process, alone in it (above).
+            unsafe { libc::kill(std::process::id() as libc::pid_t, libc::SIGSTOP) };
+        });
+        let got = ready(std::os::fd::AsRawFd::as_raw_fd(&r), libc::POLLIN, bound).unwrap();
+        let took = t.elapsed();
+        stopper.join().unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(!got, "nothing was written");
+        assert!(store::sys::continued() > conts, "the stop came during the wait");
+        let stopped = std::time::Duration::from_secs(3);
+        assert!(
+            took + std::time::Duration::from_secs(1) >= bound + stopped,
+            "given up after {took:?}: the stop counted"
+        );
     }
 
     #[test]
