@@ -27,6 +27,13 @@ export function nameShows(p: { r?: unknown; w?: unknown }, mpp: number, px: numb
   return p.w === undefined || Number(p.w) / mpp >= SIZE_PX * Math.sqrt(px / base);
 }
 
+/** The text sizes names are made at (CSS px). */
+const SIZE_STEP = 0.25;
+/** A layer's text size as a name is made at it: in SIZE_STEP steps, so a size that follows the
+ * zoom (place-town's, water-name's …) makes a name again a few times over a zoom, not each frame
+ * (a two-line name took ~10 ms at 2×, 16 at 3×, M1). */
+export const textSize = (px: number): number => Math.round(px / SIZE_STEP) * SIZE_STEP;
+
 /** A glyph as the glyph manager gives it (StyleGlyph): its SDF bitmap and metrics, em px. */
 export type Glyph = {
   bitmap: { width: number; height: number; data: Uint8Array | Uint8ClampedArray };

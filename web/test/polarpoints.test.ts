@@ -3,7 +3,7 @@
 // (a name shown once its reach spans the spacing on screen, as src/polarpoints.ts asks).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ONE_EM, charsOf, layout, nameShows, rasterize, wrap, type Glyph, type TextLook } from '../src/polarlabels.ts';
+import { ONE_EM, charsOf, layout, nameShows, rasterize, textSize, wrap, type Glyph, type TextLook } from '../src/polarlabels.ts';
 
 /** A glyph 10 em px wide advancing 12: its SDF 255 (inside) on its middle rows and columns, falling
  * to 0 at the bitmap's border, as a PBF glyph's (3 px border each side). */
@@ -74,4 +74,12 @@ test('when a name shows', () => {
   assert.ok(!nameShows({ r: 1e7, w: 1999 }, 100, 90, 90));
   assert.ok(nameShows({ r: 1e7, w: 2000 }, 100, 90, 90));
   assert.ok(nameShows({ r: 1e7, w: 1000 }, 100, 22.5, 90));
+});
+
+test('a size that follows the zoom makes a name a few times over a zoom, not each frame', () => {
+  // (place-village's 10 px at z9 to 13 at z14, sampled as 60 frames a second over a 2 s zoom.)
+  const sizes = new Set(Array.from({ length: 120 }, (_, i) => textSize(10 + (3 * i) / 119)));
+  assert.equal(sizes.size, 13);
+  assert.equal(textSize(10.6), 10.5);
+  assert.equal(textSize(13), 13);
 });

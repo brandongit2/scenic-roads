@@ -24,7 +24,7 @@ import { EARTH_R } from './merc';
 import { displayOf } from './names';
 import { capGround } from './polarglobe';
 import { iconPath } from './poiicons';
-import { charsOf, nameShows, rasterize, type Glyph, type Rgba, type TextLine, type TextLook } from './polarlabels';
+import { charsOf, nameShows, rasterize, textSize, type Glyph, type Rgba, type TextLine, type TextLook } from './polarlabels';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity } from './state';
 
 type Props = Record<string, unknown> & { n?: string; k?: string; c?: string; s?: number; r?: number; w?: number; ele?: number };
@@ -53,6 +53,8 @@ const iconOf = (kind: string) => {
 const ROAD_COLOUR = 'rgba(176, 184, 196, 0.85)';
 /** Collision padding (CSS px), as MapLibre's text-padding. */
 const PADDING = 2;
+/** The names made kept at most (each an image): a cap's few hundred in a few looks. */
+const NAMES_KEPT = 2000;
 /** The poles' files (meta's versions). */
 const FILES = { n: 'polar-n.json', s: 'polar-s.json' } as const;
 
@@ -214,13 +216,13 @@ export class PolarPoints {
       halo: straight(ev(sl.paint.get('text-halo-color'), f)),
       haloWidth: Number(ev(sl.paint.get('text-halo-width'), f) ?? 0),
       haloBlur: Number(ev(sl.paint.get('text-halo-blur'), f) ?? 0),
-      size: Number(ev(sl.layout.get('text-size'), f) ?? 12),
+      size: textSize(Number(ev(sl.layout.get('text-size'), f) ?? 12)),
       spacing: Number(ev(sl.layout.get('text-letter-spacing'), f) ?? 0),
       maxWidth: Number(ev(sl.layout.get('text-max-width'), f) ?? 10),
       transform,
     };
     // (The landmarks' names fade with their dots' prominence on the Mercator side; here, whole.)
-    if (p.k !== 'poi') look.fill[3] *= Number(ev(sl.paint.get('text-opacity'), f) ?? 1);
+    if (p.k !== 'poi') look.fill[3] = Math.round(look.fill[3] * Number(ev(sl.paint.get('text-opacity'), f) ?? 1) * 64) / 64;
     const key = JSON.stringify([lines, look, anchor, dpr, stack]);
     if (this.names.has(key)) return this.names.get(key);
     const glyphs = this.glyphsFor(stack, charsOf(lines, look));
@@ -234,6 +236,8 @@ export class PolarPoints {
       c.getContext('2d')!.putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
       d = { canvas: c, ox: img.ox, oy: img.oy, box: img.box };
     }
+    // (Names of looks no longer drawn, after a change of style or size, let go together.)
+    if (this.names.size >= NAMES_KEPT) this.names.clear();
     this.names.set(key, d);
     return d;
   }
