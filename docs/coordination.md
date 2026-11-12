@@ -50,7 +50,9 @@ disk.
    an answer never waits on the share. A test holds the rule (§8, step 1).
 4. **Every post is idempotent:** a lost answer is retried, never doubled. Built: each post is
    idempotent by its own content, with no sequence number: a beat says whole state (its leases,
-   heartbeat, status, hand-offs' keys, progress); a hand-off is taken once by its key; a hold or
+   heartbeat, status, hand-offs' keys, progress), and one sent before a request the lead took from
+   that member since (a beat or an ask, ordered by `held::Sent`: its process's start and its
+   number there) releases nothing, as its list is older than a grant it may not name (task #1038); a hand-off is taken once by its key; a hold or
    setting by its `at` (the later wins, a repeat changes nothing); mail by its numbers; the
    answers' lease by its holder's token (a repeated take or renew is the same lease); a budget
    take repeated after a lost answer gives a second batch, the first unspent (the budget errs

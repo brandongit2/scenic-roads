@@ -465,6 +465,10 @@ struct World {
     /// Since when the declared lead's take-up has waited on the records of the Mac that led an
     /// epoch (`OWNER_S`), and that epoch.
     stuck: Option<(u64, u64)>,
+    /// The epochs each Mac landed a snapshot of at the one path (epoch, Mac), and those two Macs
+    /// led (`repeats`).
+    landed_by: BTreeSet<(u64, usize)>,
+    repeated: BTreeSet<u64>,
     /// The run's folder (each Mac's under it), kept until the run ends.
     _dir: tempfile::TempDir,
     wrong: Vec<String>,
@@ -643,6 +647,8 @@ impl World {
             served: None,
             gc_refused: BTreeSet::new(),
             stuck: None,
+            landed_by: BTreeSet::new(),
+            repeated: BTreeSet::new(),
             _dir: dir,
             wrong: Vec::new(),
             counts: BTreeMap::new(),
@@ -943,6 +949,14 @@ impl World {
         let since = self.clock(to);
         self.files.insert(lead::LEAD.to_string(), declaration(to, since));
         self.writes.insert(lead::LEAD.to_string(), (usize::MAX, self.t));
+    }
+
+    /// Epoch `e` led by two Macs, the first's take-up never on the NAS (no snapshot of it landed).
+    fn repeats(&mut self, e: u64) {
+        if self.repeated.insert(e) {
+            self.count("epochs repeated: a lead's take-up never reached the NAS");
+            self.note(|| format!("epoch {e} repeated: a lead's take-up never reached the NAS"));
+        }
     }
 
     /// Mac `me`, the declared lead, waits to take up: on the records of the Mac that led epoch `e`.
@@ -1352,7 +1366,15 @@ impl World {
             if let Err(why) = consistent(&r) {
                 self.wrong(format!("epoch {e}'s records at {} aren't consistent: {why}", r.seq));
             }
-            if self.leaders.get(&e).is_some_and(|&o| o != me) || e > self.macs[me].epoch {
+            // (An epoch two Macs led: the first's take-up never reached the NAS, so the next one's,
+            // past no snapshot or backup of it, repeated its number (docs/pool.md §4 invariant 2's
+            // limit, at worst a job built again). Its snapshots aren't compared with each other.)
+            if self.leaders.get(&e).is_some_and(|&o| o != me) && !self.landed_by.contains(&(e, me)) {
+                self.repeats(e);
+            }
+            self.landed_by.insert((e, me));
+            let repeated = self.repeated.contains(&e);
+            if (self.leaders.get(&e).is_some_and(|&o| o != me) && !repeated) || e > self.macs[me].epoch {
                 self.wrong(format!(
                     "mac{me} wrote epoch {e}'s records (its store's epoch {}, epoch {e} led by {:?})",
                     self.macs[me].epoch,
@@ -1368,7 +1390,7 @@ impl World {
             if let Some(k) = handled.iter().find(|k| !self.made.contains_key(*k)) {
                 self.wrong(format!("epoch {e}'s records name {k}, which no job handed off"));
             }
-            if let Some((seq, was)) = self.landed.get(&e) {
+            if let Some((seq, was)) = self.landed.get(&e).filter(|_| !repeated) {
                 let back = (r.seq <= *seq).then(|| format!("epoch {e}'s records went from {seq} to {}", r.seq));
                 let lost =
                     was.difference(&handled).next().map(|k| format!("epoch {e}'s records at {} lost {k}", r.seq));
@@ -1379,8 +1401,12 @@ impl World {
             if self.landed.keys().next_back().is_some_and(|&last| last > e) {
                 self.count("the one path's records landed late");
             }
-            let lost: Vec<String> =
-                self.acked.iter().filter(|&(k, &at)| at <= e && !handled.contains(k)).map(|(k, _)| k.clone()).collect();
+            let lost: Vec<String> = self
+                .acked
+                .iter()
+                .filter(|&(k, &at)| at <= e && !repeated && !handled.contains(k))
+                .map(|(k, _)| k.clone())
+                .collect();
             if let Some(k) = lost.first() {
                 self.wrong(format!(
                     "epoch {e}'s records at {} lack {k}, acknowledged in epoch {} ({} in all)",
@@ -1597,7 +1623,11 @@ impl World {
     fn leads(&mut self, me: usize, e: Option<u64>) {
         if let Some(e) = e {
             if let Some(&other) = self.leaders.get(&e).filter(|&&o| o != me) {
-                self.wrong(format!("mac{me} leads epoch {e}, which mac{other} led"));
+                if self.landed_by.contains(&(e, other)) && !self.repeated.contains(&e) {
+                    self.wrong(format!("mac{me} leads epoch {e}, which mac{other} led"));
+                } else {
+                    self.repeats(e);
+                }
             }
             if e <= self.macs[me].led {
                 self.wrong(format!("mac{me} leads epoch {e} after epoch {}", self.macs[me].led));
@@ -1611,10 +1641,11 @@ impl World {
                     self.took.keys().next_back().copied(),
                 ),
             };
-            if let Some(last) = landed.filter(|&k| k >= e) {
+            let repeated = self.repeated.contains(&e);
+            if let Some(last) = landed.filter(|&k| k >= e && !(repeated && k == e)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past the records' epoch {last}"));
             }
-            if let Some(last) = took.filter(|&k| k >= e) {
+            if let Some(last) = took.filter(|&k| k >= e && !(repeated && k == e)) {
                 self.wrong(format!("mac{me} leads epoch {e}, not past epoch {last} taken up before"));
             }
             self.leaders.insert(e, me);

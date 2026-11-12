@@ -150,7 +150,9 @@ Checked by the simulator (§13):
 1. Only the declared lead leads (no member ever does), and one process of it at a time (the member
    lock, §5). A lead grants and plans only while a read of the declaration named it less than
    `driver::VOUCH_S` (5 minutes) ago: one whose reads fail stops before a lead the owner declared
-   meanwhile takes up (`STALE_S` after finding itself declared), so two never grant at once.
+   meanwhile takes up (`STALE_S` after finding itself declared), so two never grant at once; one
+   unvouched that long steps down, and a lead declared anew waits `STALE_S` before taking up even
+   its own records (§6.1).
 2. Each take-up leads an epoch past every earlier one's and past the records it starts from
    (`Io::epoch`, the store's epoch raised durably, its retry too), so (epoch, seq) orders every
    snapshot, and lease ids order, across restarts and the owner's moves. Across a move it is past
@@ -215,7 +217,17 @@ re-exported as `crate::pool::lead`):
   ("another member is the declared lead"), and the new one takes the records up from the one
   path `STALE_S` (10 min) after it first found itself declared, once the old one's last
   acknowledged save can't read stale (§6.2), its coordinator loading the old lead's store's
-  backup with its leases (§7.5). Nothing in the app does it.
+  backup with its leases and the members' words (§7.5: an away member's leases held by its word
+  there too, task #1038). Nothing in the app does it.
+- **Moved away and back** (task #1038): a lead takes up at once from its own records only under
+  the declaration it last took up under (`Saved::led_under`, the declaration's `since`); declared
+  anew, it waits `STALE_S` from finding itself declared whatever records it finds, since the lead
+  between may grant until `VOUCH_S` after its last read naming it (a late save of its own over the
+  one path, its brief too, can leave nothing newer to see). A lead no read has named for `VOUCH_S`
+  (its reads failing, or its Mac asleep) steps down at its next step whatever that step's read
+  says, and takes up again: at once from its own records when the declaration is the one it led
+  under and no other lead saved since, else `STALE_S` after that read. Its coordinator grants
+  nothing from its start until its pool's step says it leads (`agent::UNSTEPPED`).
 
 **The epoch** is the lead's coordinator's store's (docs/coordination.md §4.3), bumped as the store
 opens, so once a process; a take-up raises it past the records it starts from
