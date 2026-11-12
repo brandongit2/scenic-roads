@@ -181,7 +181,7 @@ export function macRows(s) {
     })),
     guarded("nas_held", "NAS calls held", () => ({
       now: `${s.nas_held.n} calls`,
-      note: `the most NAS calls one process on ${s.mac || "this Mac"} (a job, the agent, the CLI) leaves in the kernel past their deadline; at it, its next call fails at once${s.nas_held.set ? by(s.nas_held) : ` (the default, ${s.nas_held.default})`}; a job takes it as it starts`,
+      note: `the most NAS calls one process on ${s.mac || "this Mac"} (a job, the agent, the CLI, the map server) leaves in the kernel past their deadline; at it, its next call fails at once${s.nas_held.set ? by(s.nas_held) : ` (the default, ${s.nas_held.default})`}; a job takes it as it starts`,
       input: { min: 1, max: s.nas_held.max, step: 1, placeholder: "calls", offTitle: `Back to the default (${s.nas_held.default})` },
     })),
   ];

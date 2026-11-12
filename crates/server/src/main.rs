@@ -360,6 +360,9 @@ async fn serve(cli: Cli) -> Result<()> {
         );
     }
     let home = home_arg.clone().unwrap_or_else(data::default_home);
+    // This Mac's cap on the NAS calls a process holds past their deadline (the build page's "NAS
+    // calls held", store::deadline), as set in its agent's folder, followed as it changes.
+    store::deadline::follow_cap(home.join("agent"));
     // (An installed server on a Mac that doesn't serve the map, as every Mac ran one until #874:
     // retired when it's sure it isn't the map's Mac: its service removed, its offline map left. One
     // started on demand is this Mac's offline map, never retired.)

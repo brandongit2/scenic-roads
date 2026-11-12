@@ -122,7 +122,7 @@ pub const NAS_HELD_MAX: usize = 1000;
 
 /// Sets this Mac's cap on the NAS calls a process holds in the kernel past their deadline
 /// (store::deadline: its file in `home`, read by its agent each round and given to each job as it
-/// starts): `what` calls (1 to `NAS_HELD_MAX`), or "off": the default again
+/// starts, read by the CLI as it starts and followed by the map server): `what` calls (1 to `NAS_HELD_MAX`), or "off": the default again
 /// (store::deadline::CAP_DEFAULT).
 pub fn set_nas_held(home: &Path, what: &str, by: &str) -> Result<Option<usize>> {
     let p = home.join(store::deadline::CAP_FILE);
