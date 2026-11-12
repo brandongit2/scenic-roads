@@ -331,7 +331,7 @@ const SHELL_EXEMPT: &[(&str, &str)] = &[
     ("tools/dev/report-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/shell-guard.sh", "a hook: its input on stdin"),
     ("tools/dev/test-guard.sh", "a hook: its input on stdin"),
-    ("tools/devtools/launchd/backup.sh", "launchd runs it nightly"),
+    ("tools/devtools/backup.sh", "launchd runs it nightly (tools/app/services.zsh setup devtools)"),
 ];
 
 /// Every shell tool in tools/ checks its arguments first (docs/building.md, "Command lines"):

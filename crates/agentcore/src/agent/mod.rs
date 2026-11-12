@@ -83,6 +83,7 @@ pub mod regionsview;
 pub mod resume;
 pub mod room;
 pub mod seam;
+pub mod services;
 // A region as the build reads it: the build's files' crate's (task #916 step 4), kept at this path.
 pub use buildstore::recipes;
 pub mod settings;
@@ -8129,6 +8130,7 @@ impl Agent {
             match make_viewer(self.o.the_plan, self.port, &self.app, &self.host) {
                 Some(v) => {
                     eprintln!("agent: this Mac's port shows the lead's build page at {}", v.contact.urls.join(", "));
+                    services::serving(&self.o.home);
                     self.viewer = Some(std::sync::Arc::new(v));
                 }
                 None => self.viewer_failed = Some(now),
@@ -9390,6 +9392,8 @@ fn make_coordinator_on(
             if let Some(app) = o.home.parent() {
                 c.set_releases(app.join(jobrt::appupdate::RELEASES));
             }
+            // (Its routes served: the services this Mac runs beside it brought to this version.)
+            services::serving(&o.home);
             Some(c)
         }
         Err(e) => {
@@ -9409,7 +9413,10 @@ fn make_broker(o: &Options, run: &pool::Run, app: &str, host: &str, port: u16) -
         eprintln!("agent: the pool's token: {e:#}");
     }
     match crate::coord::Broker::start(o.the_plan, &o.home.join("coord"), port, host, app) {
-        Ok(b) => Some(b),
+        Ok(b) => {
+            services::serving(&o.home);
+            Some(b)
+        }
         Err(e) => {
             // (A unit test's would be waited on until its watchdog: it fails at once, #914.)
             assert!(!buildstore::out::testing(), "agent: no broker ({e:#})");

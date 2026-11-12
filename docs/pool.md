@@ -2376,7 +2376,7 @@ coordinator.md §5).
   device typing one; origins alone, never contacted), its HTTPS page (`tailscale serve`),
   MagicDNS's names for it over HTTP (that page's name, full and short, at its port), and the public
   names a proxy on it serves its page under (its broker's `pages`, from `~/.config/scenic/names`,
-  written by tools/caddy/install.sh: the M6's https://map.brandontsang.net/build). A loopback
+  written by `services.zsh setup caddy`, docs/macs.md, Services: the M6's https://map.brandontsang.net/build). A loopback
   origin (`localhost`) is a Mac's own page only from that Mac: from a member's address it is that
   member's page opened on itself, allowed; from any other, refused, as is any other origin. So
   a member's page reads the others' live charts and settings (docs/pipeline.md §5). HTTPS needs

@@ -1,6 +1,8 @@
 #!/bin/zsh
 # Tests of tools/app/lib.zsh, the shell steps publish.sh sources, each in a scratch folder (nothing
-# of the NAS, app/ or target/ touched). Run by tools/dev/check.sh when tools/app changes:
+# of the NAS, app/ or target/ touched); then services.zsh beside it (the services a release ships,
+# staged by lib.zsh's services_stage, installed in a sandbox). Run by tools/dev/check.sh when
+# tools/app changes:
 #   zsh tools/app/test/shell.zsh
 # Prints PASS or FAIL per test; exits non-zero when one failed.
 lib=${0:A:h:h}/lib.zsh
@@ -442,5 +444,8 @@ out=$( { cat $tmp/v3.tar; sleep 0.5; print go; } | (cd $g && HOME=$hm zsh -euo p
 [[ $out == *@@ready && $(<$tmp/gone.rc) == rc=0 && $(lv $R/current.json) == 20261111-0004-$C && $(lv $R/previous.json) == $V2 ]] \
   && clean $V2 20261111-0004-$C && ok "nas_install: the go-ahead, then the connection gone: installed, the lock freed, the rolled-back-from archive removed" \
   || no "nas_install gone after go" "$out / $(<$tmp/gone.rc) / $(ls $R)"
+
+# The services (tools/app/services.zsh), in a sandbox of their own.
+zsh ${0:A:h}/services.zsh || failed=1
 
 exit $failed

@@ -1,14 +1,16 @@
 # The map's public name on the M6 (docs/macs.md, Devices): https://{$SCENIC_MAP_NAME} on the tailnet
 # alone (its DNS record is the M6's Tailscale address), with the owner's certificate (acme.sh,
 # renewed outside Caddy, which then restarts it: `launchctl kickstart -k gui/<uid>/local.scenic.caddy`).
-# The paths come from the LaunchAgent (install.sh): SCENIC_MAP_NAME, SCENIC_CERT, SCENIC_KEY.
+# Shipped in every release and installed by its agent (tools/app/services.zsh, docs/macs.md,
+# Services): the name, the files and the port (443 unset) come from the LaunchAgent services.zsh's setup
+# writes: SCENIC_MAP_NAME, SCENIC_CERT, SCENIC_KEY, SCENIC_HTTPS_PORT.
 {
 	# (No admin API, no ACME, no :80 redirect: the certificate's files are all it serves with.)
 	admin off
 	auto_https off
 }
 
-https://{$SCENIC_MAP_NAME}:443 {
+https://{$SCENIC_MAP_NAME}:{$SCENIC_HTTPS_PORT:443} {
 	tls {$SCENIC_CERT} {$SCENIC_KEY}
 
 	# The build page (the agent's coordinator, docs/coordinator.md §7), at /build/.

@@ -314,6 +314,25 @@ app_files() { (cd $1 && find . -type f ! -name .DS_Store ! -name '._*' | sed 's|
 app_pack() {
   app_files $1 | COPYFILE_DISABLE=1 tar -czf $2 --no-xattrs --no-acls --no-fflags --no-mac-metadata -C $1 -T -
 }
+# services_stage <tree> <folder>: the services a release ships (tools/app/services.zsh, which the
+# agent of a Mac they're set up on runs to install them), put in <folder> (the app's services/) from
+# the git checkout <tree>: the script, caddy/Caddyfile, and devtools/ laid out as in the repo (its
+# tracked files but its tests and README, tools/devtools; and web/buildpage's modules its server
+# serves, its PAGE_LIB, beside them as its ../../web/buildpage).
+services_stage() {
+  local tree=${1:A} to=$2 f
+  mkdir -p $to/caddy $to/devtools/web/buildpage
+  cp -X $tree/tools/app/services.zsh $to/services.zsh
+  cp -X $tree/tools/caddy/Caddyfile $to/caddy/Caddyfile
+  git -C $tree ls-files tools/devtools | grep -Ev '^tools/devtools/(test/|README\.md$)' | while read -r f; do
+    mkdir -p $to/devtools/${f:h}; cp -X $tree/$f $to/devtools/$f
+  done
+  # (Its path in the environment, not in argv: the server, imported, starts only as the program,
+  # which its argv[1] would make it.)
+  SERVER=$tree/tools/devtools/server.mjs node --input-type=module \
+    -e 'const m = await import(process.env.SERVER); console.log([...m.PAGE_LIB].join("\n"))' | while read -r f; do cp -X $tree/web/buildpage/$f $to/devtools/web/buildpage/$f; done
+  [[ -f $to/devtools/tools/devtools/server.mjs && -n $(ls $to/devtools/web/buildpage) ]]
+}
 # app_manifest <folder> <version> <archive>: the manifest (app/releases/current.json's content) of
 # the app in <folder>, packed as <archive>: its version, every file (app_files) with its SHA-256,
 # which every Mac's updater checks its unpacked copy against, and the archive's SHA-256, checked

@@ -760,7 +760,8 @@ shipped binaries 112 MB as 13 files, 84 MB as 3; the binaries' phase of a releas
 links side by side, 17 min, then 5.5 min). `scenic` stays apart: the agent is a launchd program under its own signing
 identifier (`local.scenic.agent`), which Network privacy and the firewall know it by (docs/macs.md);
 `server` is its own crate, signed `local.scenic.server`. The app also carries `dem/` (the Python
-steps), Scenic.app, `web/` and `fonts/`. The Python steps run in one environment per lock file
+steps), Scenic.app, `web/`, `fonts/` and `services/`, the dev tools app and Caddy the Mac mini runs
+beside it (`tools/app/services.zsh`, docs/macs.md, Services). The Python steps run in one environment per lock file
 (`dem/uv.lock` with `dem/.python-version`), in `~/Library/Application Support/scenic/pyenv/<key>/`
 beside the versions, never inside one, and shared by every version with that lock
 (`jobrt::pyenv`): `install.sh` makes it (`scenic-build pyenv`), and a Python step makes it when

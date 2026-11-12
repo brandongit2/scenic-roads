@@ -328,6 +328,9 @@ cp -RX "$sb/Scenic.app" "$app/"  # (Scenic.app, signed above)
 rsync -a web/dist-publish/ $app/web/
 # The fonts: this checkout's data/fonts (checked whole before the build, below `repo=`).
 rsync -a $repo/data/fonts/ $app/fonts/
+# The services the Mac mini runs beside the app, the dev tools and Caddy (lib.zsh's services_stage):
+# its agent installs them as it starts on this version (tools/app/services.zsh).
+services_stage $PWD $app/services || { echo "publish: the services didn't stage"; exit 1; }
 # The version's archive (its one file on the NAS, app/releases/<version>.tgz) and its manifest
 # (app/releases/current.json's content: every file's SHA-256 and the archive's), made here from what
 # is sent: the NAS's Mac checks what it received against it. One stream, its size and SHA-256

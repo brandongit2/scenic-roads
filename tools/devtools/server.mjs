@@ -9,7 +9,8 @@
 //   /api/stream   an event stream telling open pages which collection changed
 // The pages' addresses are relative (`../api/…`), so the app works under a proxy's path (tools/caddy's
 // /dev/). The dashboard's timeline is the build page's own (web/buildpage/timeline.js and what it imports,
-// served from the checkout at /lib/buildpage/), as are its elements and words (dom.js, words.js) and a run's lanes (runlanes.js).
+// served at /lib/buildpage/ from ../../web/buildpage: the repo's, or the copy beside it in a release's services/,
+// tools/app/lib.zsh's services_stage), as are its elements and words (dom.js, words.js) and a run's lanes (runlanes.js).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -23,7 +24,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
 // The build page's modules the dashboard imports (its timeline, and that's; its elements and words).
 const PAGE_DIR = path.join(here, "../../web/buildpage");
-const PAGE_LIB = new Set(["timeline.js", "runlanes.js", "sums.js", "chartmath.js", "dom.js", "words.js"]);
+export const PAGE_LIB = new Set(["timeline.js", "runlanes.js", "sums.js", "chartmath.js", "dom.js", "words.js"]);
 
 export function makeServer({ board: boardStore, jobs: jobsStore }) {
   // ---- change notices: which collection changed, to every open page (a burst sent once) ----------
@@ -97,7 +98,9 @@ export function makeServer({ board: boardStore, jobs: jobsStore }) {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// (Run as the program: its path compared with links resolved, as Node resolves the module's own, so a
+// LaunchAgent's path through services/devtools/current runs it.)
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i > 0 ? process.argv[i + 1] : d; };
   const PORT = Number(arg("port", process.env.PORT || 8077));
   const HOST = arg("host", process.env.HOST || "127.0.0.1");

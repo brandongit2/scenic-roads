@@ -8,7 +8,7 @@
 #   devtools   node --test tools/devtools/test/*.test.mjs (the task board and the dev job dashboard)
 #   devjob     tools/dev/test/devjob.zsh (the dev jobs' recorder)
 #   swift      swiftc of tools/status/*.swift and its --test tools/status/test
-#   shell      tools/app/test/shell.zsh
+#   shell      tools/app/test/shell.zsh (and services.zsh: the services a release ships, in a sandbox)
 #   testguard  tools/dev/test/test-guard.zsh
 set -u
 cd ${0:A:h}/../..

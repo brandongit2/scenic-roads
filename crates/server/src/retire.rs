@@ -93,8 +93,8 @@ mod tests {
     fn only_a_mac_sure_it_isnt_the_lead_retires() {
         use std::io::{Error, ErrorKind};
         let gone = || Err(Error::from(ErrorKind::NotFound));
-        let named: std::io::Result<String> = Ok("# Written by tools/caddy/install.sh\nmap.example.net\n".into());
-        let empty: std::io::Result<String> = Ok("# Written by tools/caddy/install.sh\n\n".into());
+        let named: std::io::Result<String> = Ok("# Written by services.zsh setup caddy\nmap.example.net\n".into());
+        let empty: std::io::Result<String> = Ok("# Written by services.zsh setup caddy\n\n".into());
         // The role as the agent reads it (the shared function): a declaration on a NAS, two Macs.
         let d = tempfile::tempdir().unwrap();
         let nas = store::nasfs::NasRoot::local_for_test(d.path());
