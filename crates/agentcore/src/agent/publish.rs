@@ -644,12 +644,11 @@ mod tests {
             }
         }
         // The lead's snapshot only hourly: the first's, then one an hour on.
-        let at = || std::fs::metadata(&snapshot).unwrap().modified().unwrap();
-        let first = at();
+        let seq = || store::map::Snapshot::decode(&std::fs::read(&snapshot).unwrap()).unwrap().0.seq;
+        assert_eq!(seq(), chain[0].n);
         let last = chain.last().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
         w.snapshot(t0 + std::time::Duration::from_secs(SNAPSHOT_EVERY_S + 5), false);
-        assert!(at() > first, "written again an hour on");
+        assert_eq!(seq(), last.n, "written again an hour on");
         // Reopened (an agent restarted), the log goes on from where it was.
         let here = std::sync::Arc::new(Here::default());
         let mut again = Writer::new(crate::agent::seam::for_tests(), d.path().join(MAPLOG), here.clone());

@@ -65,6 +65,8 @@ const EXEMPT: &[(&str, &str, usize, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "pageview_months", 1, "pageviews' store of the months' indexes, read and written by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "rail_feeds_step", 3, "railfeeds reads the catalogue, the checked list and the keys by path"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lakefill_step", 3, "lakefill's readers open the basemap, the outlines and the zips by path"),
+    ("crates/coordwire/src/lib.rs", "map_now", 1, "a root that isn't the NAS (a test root, refused when live) holds its own map, read as a local folder"),
+    ("crates/server/src/data.rs", "serve_root_map", 1, "a `--root`'s own map, read as a local folder (store::map::root_map)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "lake_folder", 1, "the lake-depth step's zip and shapefile readers open GLOBathy's and HydroLAKES' zips by path"),
     ("crates/inputs/src/inputs/regions/data.rs", "read", 1, "GDAL and the shapefile reader read the datasets by path"),
     ("crates/landmarks/src/namestodo.rs", "translation_files", 1, "the names crate's tables read their files by path"),
@@ -89,9 +91,6 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "pyramids_arg"),
     ("crates/pipeline/src/bin/scenic-build.rs", "pyramids_fill"),
     ("crates/pipeline/src/bin/tools/polar.rs", "main"),
-    // (`--root <test root>`: its map's snapshot read and written, never the NAS's.)
-    ("crates/pipeline/src/bin/tools/coastcheck.rs", "main"),
-    ("crates/pipeline/src/bin/tools/lakefill.rs", "catalogue_add"),
     // (A unit test's root, `TEST_ROOT`, only while `buildstore::out::testing`: refused when live.)
     ("crates/agentcore/src/agent/mod.rs", "find_root"),
     ("crates/server/src/main.rs", "serve"),
