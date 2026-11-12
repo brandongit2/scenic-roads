@@ -115,8 +115,17 @@ fn dict(kv: Vec<(&str, Py)>) -> Py {
     Py::Dict(kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
-/// Writes through a temporary file and a rename: a run stopped midway leaves the old file.
+/// Writes through a temporary file and a rename: a run stopped midway leaves the old file. A
+/// symbolic link is written through, to the file it names (the stand-in root links the pass's
+/// answers in: a rename onto the link would replace the link, and what was written would never
+/// reach them).
 pub(crate) fn write_atomic(p: &Path, text: &str) -> Result<()> {
+    let p = &match std::fs::symlink_metadata(p) {
+        Ok(m) if m.file_type().is_symlink() => {
+            std::fs::canonicalize(p).with_context(|| format!("follow the link {}", p.display()))?
+        }
+        _ => p.to_path_buf(),
+    };
     let tmp = p.with_file_name(format!("{}.tmp", p.file_name().unwrap().to_string_lossy()));
     std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, p)?;
@@ -880,6 +889,29 @@ mod tests {
         assert_eq!(other_article(&arts), Some(("ga".into(), "G".into())));
         let arts = loads(r#"["zz|Z", "xa|X"]"#).unwrap();
         assert_eq!(other_article(&arts), Some(("xa".into(), "X".into())));
+    }
+
+    /// Task #1144: areadetails' park facts, linked into the stand-in root from the pass's answers,
+    /// written by a rename onto the link replaced it: every batch went to the scratch root, and
+    /// each run asked the same parks again. Written through the link, the answers get them.
+    #[test]
+    fn writes_go_through_a_link() {
+        let d = tempfile::tempdir().unwrap();
+        let (kept, link) = (d.path().join("areas-wikidata.json"), d.path().join("wikidata.json"));
+        std::fs::write(&kept, "{}").unwrap();
+        jobrt::sys::symlink(&kept, &link).unwrap();
+        write_atomic(&link, "{\"Q1\": {}}").unwrap();
+        write_atomic(&link, "{\"Q1\": {}, \"Q2\": {}}").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link kept");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "{\"Q1\": {}, \"Q2\": {}}");
+        // (A plain file as before; nothing left beside either.)
+        let plain = d.path().join("plain.json");
+        write_atomic(&plain, "x").unwrap();
+        assert_eq!(std::fs::read_to_string(&plain).unwrap(), "x");
+        let mut names: Vec<String> =
+            std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into()).collect();
+        names.sort();
+        assert_eq!(names, ["areas-wikidata.json", "plain.json", "wikidata.json"]);
     }
 
     #[test]
