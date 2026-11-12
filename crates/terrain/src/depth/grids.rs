@@ -496,10 +496,8 @@ impl Reader {
         // in place of a seek a grid's every block.)
         let at = buildstore::localread::path(self.local.as_deref(), p);
         let f = match &at {
-            Place::Local(l) => {
-                open_retrying(l.as_path(), &|l| within(l, OPEN_DEADLINE, plain_local), &store::retry::waits())
-            }
-            Place::Nas(n) => open_retrying(n, &|n| within(n, OPEN_DEADLINE, plain_nas), &store::retry::waits()),
+            Place::Local(l) => open_retrying(l.as_path(), &plain_local, &store::retry::waits()),
+            Place::Nas(n) => open_retrying(n, &plain_nas, &store::retry::waits()),
         }
         .with_context(|| at.loc().display())?;
         IO[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -524,20 +522,17 @@ impl Reader {
             return Ok(t);
         }
         let tiff = match l.pack {
-            None => open_retrying(p, &|p| within(p, OPEN_DEADLINE, open_file), &store::retry::waits())
-                .with_context(|| format!("{}", p.display()))?,
+            None => open_retrying(p, &open_file, &store::retry::waits()).with_context(|| format!("{}", p.display()))?,
             Some((pack, off, len)) => {
                 let f = self.pack(pack)?;
-                // (Its header read under the same deadline and retries as a loose file's open.)
+                // (Its header read with the same retries as a loose file's open, each read of the
+                // pack a store::deadline call.)
                 open_retrying(
                     p,
                     &|_| {
-                        let f = f.clone();
-                        within_do(OPEN_DEADLINE, move || {
-                            let s = store::range::Slice::new(f, off, len)
-                                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}")))?;
-                            tiff_of(Arc::new(s))
-                        })
+                        let s = store::range::Slice::new(f.clone(), off, len)
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}")))?;
+                        tiff_of(Arc::new(s))
                     },
                     &store::retry::waits(),
                 )
@@ -611,8 +606,7 @@ pub static STRIP_CELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atom
 /// How many of a source's grids are opened, or sampled, at once.
 pub const GRIDS_AT_ONCE: usize = 8;
 
-/// A GeoTIFF opened, its header read. (Not on agentcore::agent::nasread's readers: their four
-/// threads, busy, fail a call at once, and the grids are opened `GRIDS_AT_ONCE` at once.)
+/// A GeoTIFF opened, its header read (its open and each read a store::deadline call).
 /// An I/O error in its header's read keeps its kind (a transient one is tried again); a header
 /// that isn't a GeoTIFF's is `InvalidData` (never tried again).
 fn open_file(p: &NasPath) -> std::io::Result<Tiff> {
@@ -624,24 +618,6 @@ fn open_file(p: &NasPath) -> std::io::Result<Tiff> {
 /// A GeoTIFF's header read from `src` (`open_file`'s errors: store::retry::as_io).
 fn tiff_of(src: Arc<dyn RangeRead>) -> std::io::Result<Tiff> {
     Tiff::open(src).map_err(store::retry::as_io)
-}
-
-/// How long a source file's open and header read may take before the job fails (an SMB open can
-/// stay stuck in the kernel for many minutes; the job's own retry takes over).
-pub const OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
-
-/// `open(p)` on a thread of its own, waited for `deadline` at most: past it, `TimedOut` (the
-/// thread stuck in it left behind).
-pub fn within<P: ?Sized + ToOwned + 'static, T: Send + 'static>(
-    p: &P,
-    deadline: std::time::Duration,
-    open: fn(&P) -> std::io::Result<T>,
-) -> std::io::Result<T>
-where
-    P::Owned: Send + 'static,
-{
-    let owned = p.to_owned();
-    within_do(deadline, move || open(std::borrow::Borrow::borrow(&owned)))
 }
 
 /// A pack opened for positioned reads: this Mac's copy, or the NAS's.
@@ -668,27 +644,6 @@ impl Retried for NasPath {
     fn retried<T>(&self, waits: &[std::time::Duration], f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
         self.retry_with(&self.display().to_string(), waits, store::retry::transient_or_missing, f)
     }
-}
-
-/// `f()` on a thread of its own, waited for `deadline` at most (`within`'s).
-pub fn within_do<T: Send + 'static>(
-    deadline: std::time::Duration,
-    f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
-) -> std::io::Result<T> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    // (Inside `open_retrying`'s try, the worker is that try: a NasPath call in it tries once,
-    // store::retry::attempt.)
-    let nested = store::retry::in_attempt();
-    std::thread::Builder::new().name("depth-open".into()).spawn(move || {
-        let _a = nested.then(store::retry::attempt);
-        let _ = tx.send(f());
-    })?;
-    rx.recv_timeout(deadline).unwrap_or_else(|_| {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("its open took over {} s (the NAS's share stuck?)", deadline.as_secs()),
-        ))
-    })
 }
 
 /// `open(p)`, tried again after each of `waits` while it fails as the share does for a moment
@@ -1758,17 +1713,18 @@ pub(crate) mod tests {
         assert!(open_retrying(Path::new("x"), &bad, &waits).is_err());
         assert_eq!(tries.get(), 1);
         assert!(store::retry::transient_or_missing(&io::Error::from_raw_os_error(libc::EIO)));
-        fn stuck(_: &Path) -> io::Result<u8> {
-            std::thread::sleep(std::time::Duration::from_secs(30));
-            Ok(1)
-        }
-        let t0 = std::time::Instant::now();
-        let e = within(Path::new("x"), std::time::Duration::from_millis(50), stuck).unwrap_err();
-        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
-        assert!(!store::retry::transient_or_missing(&e));
-        store::testkit::ended_before(t0, std::time::Duration::from_secs(30), "the stuck open ends at its deadline");
-        // A file that isn't a GeoTIFF: InvalidData, not tried again.
+        // An open the share never answers: past its deadline (store::deadline's), `TimedOut`, made
+        // once, not tried again.
         let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("s.tif"), b"II*\0").unwrap();
+        let hung = store::deadline::fake::hang(d.path()).deadline(std::time::Duration::from_millis(50));
+        let s = store::nasfs::NasPath::local_for_test(&d.path().join("s.tif"));
+        let e = open_retrying(&s, &open_file, &waits).map(|_| ()).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        assert!(store::deadline::past_deadline(&e) && !store::retry::transient_or_missing(&e));
+        assert_eq!(hung.held(), 1, "made once");
+        drop(hung);
+        // A file that isn't a GeoTIFF: InvalidData, not tried again.
         std::fs::write(d.path().join("n.tif"), b"nope").unwrap();
         assert!(!store::retry::transient_or_missing(
             &open_file(&store::nasfs::NasPath::local_for_test(&d.path().join("n.tif"))).map(|_| ()).unwrap_err()

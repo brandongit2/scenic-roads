@@ -485,11 +485,11 @@ impl ManifestTiles {
         }
     }
 
-    /// A pack opened and its index read, here (a copy) or on the NAS, under `nas_call`'s deadline
-    /// and retries.
+    /// A pack opened and its index read, here (a copy) or on the NAS, with `nas_call`'s retries (its
+    /// open and reads each a store::deadline call).
     fn open_file(p: store::nasfs::Place) -> anyhow::Result<std::sync::Arc<OpenPack>> {
         let shown = p.loc().display();
-        let open = nas_call(&shown, NAS_DEADLINE, &store::retry::waits(), move || {
+        let open = nas_call(&shown, &store::retry::waits(), || {
             let file = p.loc().open_plain()?;
             let idx = store::pack::PackIndex::read_from(&file).map_err(store::retry::as_io)?;
             Ok(std::sync::Arc::new(OpenPack { file, idx }))
@@ -522,7 +522,7 @@ impl ManifestTiles {
         Ok(open.get(&logical).cloned().flatten())
     }
 
-    /// Tile (z, x, y), read under `nas_call`'s deadline and retries (each try on its pack's file
+    /// Tile (z, x, y), read with `nas_call`'s retries (each try on its pack's file
     /// opened again where the last met its handle gone: `OpenPack`); one read ahead
     /// (`read_ahead`) taken from there, or waited for while it's being read.
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
@@ -532,9 +532,7 @@ impl ManifestTiles {
         let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
         let Some(ent) = e.idx.find(z, x, y) else { return Ok(None) };
         let (off, len) = (ent.offset, ent.len as usize);
-        let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), NAS_DEADLINE, &store::retry::waits(), move || {
-            e.read(off, len)
-        })?;
+        let b = nas_call(&format!("{}'s {z}/{x}/{y}", self.layer), &store::retry::waits(), || e.read(off, len))?;
         Ok(Some(b))
     }
 
@@ -558,7 +556,7 @@ impl ManifestTiles {
     /// pack's order, neighbours a gap of under `SPAN_GAP` apart read together, up to `SPAN_MAX` a
     /// read, the spans in parallel. A z6 tile reading thousands of a pack's tiles makes a few dozen
     /// reads of the share instead of a round trip a tile, and moves little it doesn't use. Each
-    /// span's read is under `nas_call`'s deadline and retries (as `get`'s), on store::ahead's
+    /// span's read has `nas_call`'s retries (as `get`'s), on store::ahead's
     /// threads (`each`, the NAS's lane: not rayon's, so a job computing meanwhile, the peaks' next
     /// z6 tile read ahead, doesn't hold them up).
     pub fn get_many(&self, want: &[(u8, u32, u32)]) -> anyhow::Result<Vec<Option<Vec<u8>>>> {
@@ -596,7 +594,7 @@ impl ManifestTiles {
             let (e, s0, s1, ts) = &spans[k];
             let (e, s0, n) = (e.clone(), *s0, (s1 - s0) as usize);
             let what = format!("{}'s bytes {s0}..{s1}", self.layer);
-            let b = nas_call(&what, NAS_DEADLINE, &store::retry::waits(), move || e.read(s0, n))?;
+            let b = nas_call(&what, &store::retry::waits(), || e.read(s0, n))?;
             Ok(ts
                 .iter()
                 .map(|&(o, l, i)| (i, b[(o - s0) as usize..(o - s0) as usize + l as usize].to_vec()))
@@ -690,42 +688,20 @@ impl Drop for ManifestTiles {
     }
 }
 
-/// How long one read or open of a pack may take (a span is 32 MB at most: over a minute even at
-/// 0.5 MB/s) before it fails: an SMB call can stay stuck in the kernel for many minutes.
-pub const NAS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// The tiles `read_ahead` reads in one `get_many` (its spans read together), and the most it keeps
 /// read and not yet taken (a terrain tile is ~100 KB: ~100 MB at most).
 const AHEAD_BATCH: usize = 64;
 const AHEAD_WINDOW: usize = 1024;
 
-/// `f` on a thread of its own, waited for `deadline` at most (past it, `TimedOut`, not tried again:
-/// the thread stuck in it left behind, the job's own retry takes over), tried again after each of
-/// `waits` while it fails as the share does for a moment (store::retry::transient_or_missing),
-/// each retry logged. No call through it blocks for ever.
-pub fn nas_call<T: Send + 'static>(
+/// `f`, a pack's open or read, tried again after each of `waits` while it fails as the share does
+/// for a moment (store::retry::transient_or_missing), each retry logged. Its NAS calls are
+/// store::deadline calls: one the share never answers fails `TimedOut`, not tried again.
+pub fn nas_call<T>(
     what: &str,
-    deadline: std::time::Duration,
     waits: &[std::time::Duration],
-    f: impl Fn() -> std::io::Result<T> + Send + Sync + 'static,
+    f: impl Fn() -> std::io::Result<T>,
 ) -> std::io::Result<T> {
-    let f = std::sync::Arc::new(f);
-    store::retry::io(what, None, waits, store::retry::transient_or_missing, || {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let g = f.clone();
-        // (The worker is this retry's try: a NasPath call in it tries once, store::retry::attempt.)
-        let nested = store::retry::in_attempt();
-        std::thread::Builder::new().name("pack-read".into()).spawn(move || {
-            let _a = nested.then(store::retry::attempt);
-            let _ = tx.send(g());
-        })?;
-        rx.recv_timeout(deadline).unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("{what}: over {} s (the NAS's share stuck?)", deadline.as_secs()),
-            ))
-        })
-    })
+    store::retry::io(what, None, waits, store::retry::transient_or_missing, f)
 }
 
 /// The index file a version of the raw tiles' index is (`Stamp`): its inode (on the NAS, the
@@ -2438,39 +2414,38 @@ pub(crate) mod tests {
         assert!(store::retry::io_of(&e).is_some_and(|i| !store::retry::transient_or_missing(&i)), "{e:#}");
     }
 
-    /// A NAS call stuck past its deadline fails (`TimedOut`, not tried again); a transient failure
-    /// is tried again after each wait; any other fails at once.
+    /// A transient failure is tried again after each wait; any other fails at once, a deadline's
+    /// (store::deadline: a pack's read the share never answers) among them.
     #[test]
-    fn nas_calls_have_a_deadline_and_retry_transient_failures() {
+    fn nas_calls_retry_transient_failures_alone() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let ms = std::time::Duration::from_millis;
-        let t = std::time::Instant::now();
-        let e = nas_call("stuck", ms(100), &[ms(1)], move || {
-            std::thread::sleep(ms(30_000));
-            Ok(())
-        })
-        .unwrap_err();
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("p"), b"pack").unwrap();
+        let hung = store::deadline::fake::hang(d.path()).deadline(ms(50));
+        let p = store::nasfs::NasPath::local_for_test(&d.path().join("p"));
+        let e = nas_call("stuck", &[ms(1)], || p.open_plain().map(|_| ())).unwrap_err();
         assert_eq!(e.kind(), std::io::ErrorKind::TimedOut);
-        store::testkit::ended_before(t, ms(30_000), "the stuck call ends at its deadline");
+        assert_eq!(hung.held(), 1, "not tried again");
+        drop(hung);
         let tries = std::sync::Arc::new(AtomicUsize::new(0));
         let n = tries.clone();
-        let got =
-            nas_call("flaky", ms(1000), &[ms(1), ms(1), ms(1)], move || match n.fetch_add(1, Ordering::Relaxed) {
-                0 => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
-                1 => Err(std::io::Error::from_raw_os_error(libc::EIO)),
-                _ => Ok(7),
-            });
+        let got = nas_call("flaky", &[ms(1), ms(1), ms(1)], move || match n.fetch_add(1, Ordering::Relaxed) {
+            0 => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            1 => Err(std::io::Error::from_raw_os_error(libc::EIO)),
+            _ => Ok(7),
+        });
         assert_eq!((got.unwrap(), tries.load(Ordering::Relaxed)), (7, 3));
         let tries = std::sync::Arc::new(AtomicUsize::new(0));
         let n = tries.clone();
-        let e = nas_call("bad", ms(1000), &[ms(1), ms(1)], move || -> std::io::Result<()> {
+        let e = nas_call("bad", &[ms(1), ms(1)], move || -> std::io::Result<()> {
             n.fetch_add(1, Ordering::Relaxed);
             Err(std::io::Error::from(std::io::ErrorKind::InvalidData))
         })
         .unwrap_err();
         assert_eq!((e.kind(), tries.load(Ordering::Relaxed)), (std::io::ErrorKind::InvalidData, 1));
         // Transient every time: the last error, after every wait.
-        let e = nas_call("gone", ms(1000), &[ms(1), ms(1)], || -> std::io::Result<()> {
+        let e = nas_call("gone", &[ms(1), ms(1)], || -> std::io::Result<()> {
             Err(std::io::Error::from(std::io::ErrorKind::NotFound))
         })
         .unwrap_err();

@@ -485,10 +485,6 @@ pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32
     Ok(((t.x, t.y), out))
 }
 
-/// How long a mid's read may take before the job fails (an SMB read can stay stuck in the kernel
-/// for many minutes; the job's own retry takes over). A mid is a few MB.
-const MID_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// The waits before a mid's read is tried again (crate::depth::grids::open_retrying); a test's
 /// short.
 fn mid_waits() -> Vec<std::time::Duration> {
@@ -507,12 +503,13 @@ fn read_nas(p: &store::nasfs::NasPath) -> std::io::Result<Vec<u8>> {
     p.read()
 }
 
-/// A mid's bytes, read whole under `MID_DEADLINE`, tried again while it fails transiently.
+/// A mid's bytes, read whole (on the NAS a store::deadline call: a read that stops moving fails
+/// the job), tried again while it fails transiently.
 fn read_whole(path: store::nasfs::Loc<'_>) -> std::io::Result<Vec<u8>> {
-    use crate::depth::grids::{open_retrying, within};
+    use crate::depth::grids::open_retrying;
     match path {
-        store::nasfs::Loc::Local(p) => open_retrying(p, &|p| within(p, MID_DEADLINE, read_file), &mid_waits()),
-        store::nasfs::Loc::Nas(p) => open_retrying(p, &|p| within(p, MID_DEADLINE, read_nas), &mid_waits()),
+        store::nasfs::Loc::Local(p) => open_retrying(p, &read_file, &mid_waits()),
+        store::nasfs::Loc::Nas(p) => open_retrying(p, &read_nas, &mid_waits()),
     }
 }
 
