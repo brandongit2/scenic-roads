@@ -711,6 +711,18 @@ mod tests {
         let kinds: Vec<On> = iv.iter().map(|i| i.on).collect();
         assert_eq!(kinds, [On::Disk, On::Disk, On::Other], "{iv:?}");
         assert!(iv.iter().all(|i| i.n == 1 && i.t1 >= i.t0));
+        // The cost, every guard an interval of its own (no gap: the most there is), in this thread's
+        // CPU time.
+        let n = 100_000;
+        let c0 = crate::testkit::thread_cpu_ns();
+        for _ in 0..n {
+            drop(disk());
+        }
+        let each = (crate::testkit::thread_cpu_ns() - c0) as f64 / n as f64;
+        // (Two within the clock's tick of each other merge even so: most are their own.)
+        assert!(take(true).0.len() > n / 2);
+        eprintln!("a guard costs {each:.0} ns, its interval kept");
+        assert!(each < 20_000.0, "{each} ns of CPU a guard"); // (bound ok: CPU time, not wall)
     }
 
     /// Task #1097: two threads computing on two turns hold both; a taker waits until one of them

@@ -179,8 +179,8 @@ impl Store {
         h
     }
 
-    /// Chunks of `worker`'s jobs taken (a member's beat's, the lead's own agent's): each from where
-    /// the lead has its job to, appended as a frame; what the lead has of each after.
+    /// Chunks taken (a member's beat's, the lead's own agent's): each from where the lead has its
+    /// job to, appended as a frame; what the lead has of each after.
     pub fn take(&self, chunks: Vec<Chunk>) -> Vec<Ack> {
         let mut acks = Vec::new();
         for c in chunks {
@@ -473,8 +473,8 @@ fn log_lines(log: &[(u64, String)], log_from: u64, marks: &[(u64, u64)], start_u
     marks.sort();
     let mut out = Vec::new();
     let mut bytes = 0u64;
-    for (at, text) in log {
-        let mut pos = log_from + at;
+    for (from, text) in log {
+        let mut pos = log_from + from;
         for line in text.split_inclusive('\n') {
             pos += line.len() as u64;
             bytes += line.len() as u64;
@@ -487,14 +487,10 @@ fn log_lines(log: &[(u64, String)], log_from: u64, marks: &[(u64, u64)], start_u
                 (_, Some(b)) => Some(b.1),
                 _ => None,
             };
-            out.push(LogLine { t: tt.map(|x| at_s(start_us, x)), text: line.trim_end_matches('\n').to_string() });
+            out.push(LogLine { t: tt.map(|x| at(start_us, x)), text: line.trim_end_matches('\n').to_string() });
         }
     }
     serde_json::json!({ "lines": out, "bytes": bytes })
-}
-
-fn at_s(start_us: u64, t: u64) -> f64 {
-    at(start_us, t)
 }
 
 /// `GET /api/job/<id>`'s route: `of` answers a job's view (None: no store here, 503).
@@ -534,4 +530,56 @@ async fn answer(
 /// The record of `job` in a timings log (the coordinator's `timings.jsonl`), the last.
 pub fn record_in(log: &Path, job: JobId) -> Option<jobrt::timings::RunRec> {
     jobrt::timings::read_log(log).into_iter().rev().find(|r| r.job == Some(job))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A benchmark, run by hand (`-- --ignored`): each job's spans file and log in
+    /// `SCENIC_SPANS_MEASURE` (`<dir>/<tag>/spans.ndjson` and `<dir>/<tag>/log`, as a measuring run
+    /// leaves them) sent as a member sends them, in beats' chunks, and kept as the lead keeps them:
+    /// each one's size raw and on the lead.
+    #[test]
+    #[ignore]
+    fn sizes_on_the_lead() {
+        let Some(dir) = std::env::var_os("SCENIC_SPANS_MEASURE") else { return };
+        let d = tempfile::tempdir().unwrap();
+        let store = Store::new(d.path().join("jobs"));
+        for (i, e) in std::fs::read_dir(&dir).unwrap().flatten().enumerate() {
+            let (s, l) = (e.path().join("spans.ndjson"), e.path().join("log"));
+            let Ok(spans) = std::fs::read_to_string(&s) else { continue };
+            let log = std::fs::read_to_string(&l).unwrap_or_default();
+            let job = JobId { epoch: 1, n: i as u64 + 1 };
+            let max = crate::agent::spans::BEAT_MAX;
+            let (mut sa, mut la) = (0usize, 0usize);
+            while sa < spans.len() || la < log.len() {
+                let s1 = (sa + max).min(spans.len());
+                let s1 = if s1 < spans.len() { spans[..s1].rfind('\n').map_or(sa, |k| k + 1) } else { s1 };
+                let l1 = (la + max).min(log.len());
+                let l1 = if l1 < log.len() { log[..l1].rfind('\n').map_or(la, |k| k + 1) } else { l1 };
+                let end = s1 == spans.len() && l1 == log.len();
+                let meta = (sa == 0).then(Meta::default);
+                store.take(vec![Chunk {
+                    job,
+                    meta,
+                    s_at: sa as u64,
+                    s: spans[sa..s1].to_string(),
+                    l_at: la as u64,
+                    l: log[la..l1].to_string(),
+                    end,
+                }]);
+                (sa, la) = (s1, l1);
+            }
+            let kept = std::fs::metadata(store.path(job)).map_or(0, |m| m.len());
+            eprintln!(
+                "sizes: {}: {} lines, spans {} B, log {} B, on the lead {} B",
+                e.file_name().to_string_lossy(),
+                spans.lines().count(),
+                spans.len(),
+                log.len(),
+                kept
+            );
+        }
+    }
 }

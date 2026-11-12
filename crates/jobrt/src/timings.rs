@@ -2207,11 +2207,6 @@ pub fn summary_text(sums: &[KindSum]) -> String {
     out
 }
 
-/// The phases a child program wrote (`SCENIC_PHASES_TO`'s file), for tests.
-pub fn read_child(p: &Path) -> Vec<PhaseRec> {
-    take_child(p)
-}
-
 /// The UTC day of a time, `YYYY-MM-DD` (task #916: from inputs::rail).
 pub fn day_of(t: std::time::SystemTime) -> String {
     let s = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;

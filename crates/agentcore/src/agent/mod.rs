@@ -3370,7 +3370,6 @@ impl Agent {
         self.o.home.join(format!("job{}.json", slot_suffix(k)))
     }
 
-    /// Where slot `k`'s job leaves its timings' record (`SCENIC_TIMINGS`).
     /// Slot `k`'s running job's own time, from the timings it leaves as it ends (jobrt::timings:
     /// its id's), when it has left them.
     fn run_time(&self, k: usize) -> Option<f64> {
@@ -3383,6 +3382,7 @@ impl Agent {
         (rec.id == *id || rec.id.is_empty()).then_some(rec.wall_s)
     }
 
+    /// Where slot `k`'s job leaves its timings' record (`SCENIC_TIMINGS`).
     fn timings_path(&self, k: usize) -> PathBuf {
         self.o.home.join(format!("timings-run{}.json", slot_suffix(k)))
     }
