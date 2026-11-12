@@ -344,6 +344,7 @@ mod tests {
             host: "m1".into(),
             start,
             log_from,
+            app: "20261112-1433-f531d2c9".into(),
         }
     }
 
