@@ -435,6 +435,7 @@ mod tests {
             kept: None,
             names: String::new(),
             data: Some(&data),
+            progress: Default::default(),
         };
         let out = resolve::resolve(&folder, &ctx);
         assert!(out.problems.is_empty(), "{:?}", out.problems);
