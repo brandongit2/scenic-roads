@@ -108,8 +108,18 @@ makes the same bytes on every Mac.
       make an empty mid, which its z6 tile reads as none. It stays a target keyed as before (no key
       moves, the pyramids-fill's and terrain-hi's included), settled without a record
       (`TerrainTargets::deep_hollow`): nothing waits for it, the checklist counts it "with no data,
-      not run". One with an output there runs as before, to drop or write it again: its z6 tile's
-      runs read every mid named and refuse one of another terrain or slope version.
+      not run". One with an output there (an empty mid an earlier run made,
+      `TerrainTargets::deep_hollow_named`) keeps it while its key holds: its mid is of the versions
+      now. Once its key moves (a version, what it reads), its terrain-deep and slope-deep are each
+      a drop, not a run (`agent::build::hollow_drops`, #1087: an empty run took 231-327 s): offered
+      under its "none" key, its run drops its outputs (scenic-build drops a hollow target as one no
+      target any more, `deep_made`), and its z6 tile's terrain-hi and slope-hi wait for it as for a
+      run, so neither reads a mid of another terrain or slope version, which they refuse. Its
+      record is the "none" key; with nothing named it is then settled as one never run. Its z6
+      tile's keys name its mids, so they move once when they go, and its runs then read none
+      there, as over a target never run. An app that doesn't drop it (one from before #1087) runs
+      it, writing its empty outputs again, under the "none" key it was given: current as a drop
+      all the same, until a version moves that key.
     - **terrain-hi**, a run per z6 tile near the coverage (`build_piece`): its z9–12 by the rule, its
       z12 tiles' quarters over its z10 tiles' deep mids, its hi pack, and its mid
       (`work/terrain-mid/6-x-y`: its z9 tiles' means). It waits for its own z10 tiles' terrain-deep
@@ -199,8 +209,9 @@ makes the same bytes on every Mac.
   z13 tiles' subtree from its deep terrain alone: its deep pack (z13–16, `layers/slope/deep/10-x-y`,
   its terrain deep pack copied here first) and its deep mid (`work/slope-deep-mid/10-x-y`: its z13
   tiles' quadrants at full precision), once its own and its edge neighbours' terrain-deep are built
-  (task #952: nothing else; not the rest of its z3 tile: task #864); a z10 tile no target any more
-  has its deep pack and deep mid dropped. A missing deep tile (a Horn neighbour, an own tile) is its
+  (task #952: nothing else; not the rest of its z3 tile: task #864); a z10 tile no target any more,
+  or with no data past z12 (§2, Terrain: a drop offered once its key moves), has its deep pack and
+  deep mid dropped. A missing deep tile (a Horn neighbour, an own tile) is its
   nearest ancestor within the deep levels (z13–15, `slope_pack::fallback_floor`), never a hi tile;
   where the fine data ends and there is none, the tile's own edge pixels are taken again, a strip
   of one pixel along the edge of the fine coverage (the owner's choice, task #952).
@@ -812,18 +823,19 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   it waits for those targets), and "no hi tiles" for a z6 tile making none. It waits for its own
   pyramids-fill too. Until the datasets are
   read its key is unknown and it waits. A "none" z6 tile is keyed on the version and the tile
-  (`none_piece_key`).
+  (`steps::none_key`).
 - **terrain-deep (a z10 tile):** `TERRAIN_DEEP_V` and the codec, the tile, its band's code and the
   sources meeting it with the zoom each reaches there (`terrain_deep::target_key_lines`), its
   levels' tiles (`agent::build::deep_coverage`) and the pool's datasets meeting it. It reads no built tile: no target of it waits for another, only its z6 tile's pyramids-fill. A z10 tile no target any more
-  is keyed on the version and the tile (`none_deep_key`).
+  is keyed on the version and the tile (`steps::none_key`), and so is one with no data past z12
+  and outputs named whose key moved (`hollow_drops`; slope-deep's alike).
 - **Drops:** a target under any of these "none" keys (`agent::build::is_none_key`) drops its packs
   and reads nothing; its run notes a `drops` measure (`needs::DROPS`, docs/pool.md §7.7) so it is
   sized as a drop, never as its step's build (each through scenic-build's `run_drop`), and the plan
   runs every step's drops first of the terrain, slope and tree cover work (`seam::Planned::drops`), the
   forecast and build page showing them as drops.
 - **terrain-lo (an assembly):** its z6 tiles' mids by content ("-" for a z6 tile without one) and the
-  pool's datasets meeting it; `TERRAIN_LO_V` and the codec. "none" likewise (`none_lo_key`).
+  pool's datasets meeting it; `TERRAIN_LO_V` and the codec. "none" likewise (`steps::none_key`).
 - **slope-hi (a z6 tile):** `SLOPE_V` and the codec (`shade_codec::version`: the encoding, libwebp's
   version and level, the codes' constants), its z10 tiles' deep mids by content, and every terrain
   tile it reads itself (the z13 tiles taken in from those mids, with their tiles in the terrain deep
@@ -842,9 +854,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   latitudes, the blocks built, and every block pack of its layers by logical and content name.
 - **trees (a z6 tile):** the coverage inside the tile; `TREES_V` changes with any change to the bytes
   a z6 tile writes. A z6 tile the coverage has left, with tree hi packs or a mid still named, is
-  keyed on the version and the tile (`treepacks::none_piece_key`): a drop.
+  keyed on the version and the tile (`steps::none_key`): a drop.
 - **trees-lo:** its z6 tiles' mids; `TREES_LO_V`. A z3 tile with no z6 tile the coverage meets, and
-  tree lo packs still named: "none" likewise (`treepacks::none_lo_key`), a drop.
+  tree lo packs still named: "none" likewise (`steps::none_key`), a drop.
 - **heritage-sites:** the pass, its areas set (the protected and Indigenous areas), the registers meeting the cover (their `keyed`
   digests), the matches' accepted version, the coverage.
 - **unit** (a z6 tile): its extract, the pass's road values, the coverage as its ways meet it, the versions of the

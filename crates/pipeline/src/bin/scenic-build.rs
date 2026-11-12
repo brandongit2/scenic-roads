@@ -5436,8 +5436,9 @@ fn terrain_pieces_from(
 /// terrain-deep <10/x/y …> [--regions dir] [--pass d] [--raw dir]: each z10 tile's band past z12
 /// (terrain::terrain_deep: its tiles by the rule, each place's finest zoom sampled from the pool,
 /// the coarser from them): its deep pack and its mid, which its z6 tile's terrain-hi run takes in;
-/// a z10 tile with none now has its deep pack, mid (and a retired fine pack) dropped. Then the
-/// Terrarium tiles AWS gave packed onto the NAS.
+/// a z10 tile with none now, or none with data (terrain::terrain_zoom::hollow: the plan offers one
+/// with outputs named as a drop, pipeline::agent::build::hollow_drops), has its deep pack, mid (and
+/// a retired fine pack) dropped. Then the Terrarium tiles AWS gave packed onto the NAS.
 fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     use terrain::terrain_deep as td;
     const STEP: &str = "terrain-deep";
@@ -5450,15 +5451,16 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     anyhow::ensure!(!ts.is_empty(), "{STEP} <{}/x/y …>", td::PACK_Z);
     let cov = coverage_of(out, args)?;
     let sets = zoom_sets(out)?;
-    // (Those no target now first: their packs dropped, nothing read, each a drop (`run_drop`).)
-    let (ts, gone): (Vec<TileId>, Vec<TileId>) = ts.into_iter().partition(|t| td::is_target(&sets, &cov, (t.x, t.y)));
+    // (Those no target now, or with no data past z12, first: their packs dropped, nothing read,
+    // each a drop (`run_drop`).)
+    let (ts, gone): (Vec<TileId>, Vec<TileId>) = ts.into_iter().partition(|t| deep_made(&sets, &cov, t));
     for t in &gone {
         let n = run_drop(STEP, &t.slash(), || {
             let n = td::drop_target(out, (t.x, t.y));
             out.save()?;
             Ok(n)
         })?;
-        eprintln!("{STEP} {}: no place there past z12; {n} files dropped", t.slash());
+        eprintln!("{STEP} {}: no place or no data there past z12; {n} files dropped", t.slash());
     }
     if ts.is_empty() {
         return Ok(());
@@ -5505,6 +5507,12 @@ fn terrain_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     jobrt::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &|what: &str, done: u64, total: u64| jobrt::jobs::report(done, total, what));
     Ok(())
+}
+
+/// Whether z10 tile `t`'s terrain-deep and slope-deep runs make it, not drop it: a target
+/// (terrain::terrain_deep::is_target) with data past z12 (not terrain::terrain_zoom::hollow).
+fn deep_made(sets: &[terrain::terrain_zoom::Set], cov: &buildstore::coverage::Coverage, t: &TileId) -> bool {
+    terrain::terrain_deep::is_target(sets, cov, (t.x, t.y)) && !terrain::terrain_zoom::hollow(sets, t.x, t.y)
 }
 
 /// terrain-same 10/x/y: z10 tile `t`'s deep pack and mid made as its terrain-deep run makes them
@@ -5826,8 +5834,8 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// slope-deep <10/x/y …> [--regions dir]: each z10 tile's part of its z6 tile's shading pyramid
 /// (terrain::slope_pack::build_deep: its deep pack, z13–16, and its deep mid, which its z6 tile's
 /// slope-hi run takes in), from its and its edge neighbours' terrain deep packs; a z10 tile no
-/// slope-deep target now (no terrain-deep target there: terrain::terrain_deep::is_target) has its
-/// deep pack and deep mid dropped (`slope_deep_batch`).
+/// slope-deep target now (no terrain-deep target there: terrain::terrain_deep::is_target) or with
+/// no data past z12 (`deep_made`) has its deep pack and deep mid dropped (`slope_deep_batch`).
 fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     use terrain::terrain_deep as td;
     let ts: Vec<TileId> = positional(args)
@@ -5841,7 +5849,7 @@ fn slope_deep_step(out: &mut Out, args: &[String]) -> Result<()> {
     let p = phase("reading the declared datasets");
     let sets = zoom_sets(out)?;
     drop(p);
-    let made: Vec<bool> = ts.iter().map(|t| td::is_target(&sets, &cov, (t.x, t.y))).collect();
+    let made: Vec<bool> = ts.iter().map(|t| deep_made(&sets, &cov, t)).collect();
     slope_deep_batch(out, &ts, &made)
 }
 
@@ -5866,7 +5874,7 @@ fn slope_deep_batch(out: &mut Out, ts: &[TileId], made: &[bool]) -> Result<()> {
                 out.save()?;
                 Ok(n)
             })?;
-            eprintln!("{STEP} {}: no deep level there; {n} files dropped", t.slash());
+            eprintln!("{STEP} {}: no deep level or no data there; {n} files dropped", t.slash());
             continue;
         }
         // (On its job's grant as it begins: a re-grant takes the next target, jobrt::control::on_grant.)
@@ -6447,10 +6455,42 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    /// Task #400: a target whose uploads were put off is noted done only once they've landed and
-    /// the save naming them is made: after the next target's work (`then`), or at the end
-    /// (`land`), or before a failure of the next one's work is returned (`after`); one whose
-    /// upload failed isn't noted done, and the job fails.
+    /// Task #1087: a deep target with no data past z12 (terrain::terrain_zoom::hollow) is dropped
+    /// by terrain-deep's and slope-deep's runs, as one no target any more is: the plan offers one
+    /// with outputs named as a drop (pipeline::agent::build::hollow_drops); one beside it with data
+    /// is made.
+    #[test]
+    fn a_hollow_deep_target_is_dropped_not_made() {
+        use terrain::terrain_zoom::{Detail, Presence, Set};
+        let d = tempfile::tempdir().unwrap();
+        let cov = buildstore::coverage::Coverage::fixture(
+            &[buildstore::recipes::Recipe {
+                id: "r".into(),
+                name: "R".into(),
+                outline: vec!["place:10.5,45.5,20".into()],
+            }],
+            None,
+            d.path(),
+        )
+        .unwrap();
+        let (x, y) = terrain::terrain_zoom::tile_at(10.5, 45.5, terrain::terrain_deep::PACK_Z);
+        let set = |hollow: &[[u32; 2]]| Set {
+            id: "fine".into(),
+            line: "fine".into(),
+            cover: inputs::dem::declared::Cover::of(None),
+            detail: Detail::Pyramid(14),
+            cut: None,
+            every_zoom: false,
+            presence: Some(std::sync::Arc::new(Presence::of(&[[x, y], [x + 1, y]]).with_hollow(hollow))),
+        };
+        let (a, b) = (codecs::legacy::TileId { z: 10, x, y }, codecs::legacy::TileId { z: 10, x: x + 1, y });
+        let sets = vec![set(&[])];
+        assert!(super::deep_made(&sets, &cov, &a) && super::deep_made(&sets, &cov, &b));
+        let sets = vec![set(&[[x, y]])];
+        assert!(terrain::terrain_deep::is_target(&sets, &cov, (x, y)), "still a target");
+        assert!(!super::deep_made(&sets, &cov, &a) && super::deep_made(&sets, &cov, &b));
+    }
+
     /// store-fetch's dataset is its argument, not the line's second word (the step's name): the
     /// store went in sources/fetched/store-fetch/ before.
     #[test]
@@ -6460,6 +6500,10 @@ mod tests {
         assert_eq!(super::positional(&line), ["glo30"]);
     }
 
+    /// Task #400: a target whose uploads were put off is noted done only once they've landed and
+    /// the save naming them is made: after the next target's work (`then`), or at the end
+    /// (`land`), or before a failure of the next one's work is returned (`after`); one whose
+    /// upload failed isn't noted done, and the job fails.
     #[test]
     fn a_target_uploading_is_noted_done_once_its_uploads_have_landed() {
         use super::{Landing, Out};

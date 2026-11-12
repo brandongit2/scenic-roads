@@ -251,7 +251,8 @@ The Jobs tab's stages are the one exception.
     nothing to publish)", on the page and in `scenic status`. A deep tile the plan knows has no
     fine data (#842: its sources' hollow tiles, docs/steps.md §2) isn't run at all: no record, so
     the map draws nothing there; the checklist counts it done and says it apart ("…; 306 with no
-    data, not run").
+    data, not run"). One an earlier run left outputs of is dropped once its key moves (#1087): a
+    drop's record, not drawn either, then counted the same.
   A tile in two of them is the running one, else the queued one: built before and to be built
   again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
   catalogue kept published its step's own output there (#994: `/api/catalogs`' `steps`, the last

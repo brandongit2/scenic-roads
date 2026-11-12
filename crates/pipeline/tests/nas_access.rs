@@ -99,7 +99,7 @@ const FROM_ARG: &[(&str, &str)] = &[
     ("crates/pipeline/examples/checklist.rs", "main"),
     ("crates/pipeline/examples/lo_root_measure.rs", "main"),
     ("crates/pipeline/examples/pool_memory.rs", "main"),
-    ("crates/pipeline/examples/hollow_impact.rs", "main"),
+    ("crates/pipeline/examples/hollow_drops.rs", "main"),
     ("crates/pipeline/examples/terrain_impact.rs", "main"),
 ];
 

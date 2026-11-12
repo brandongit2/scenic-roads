@@ -1306,10 +1306,11 @@ task #842): each file meeting a presence tile (a narrow one's footprint opened t
 tile's box at the coarsest of its levels whose pixels are no wider than 1/128 of a z10 tile at the
 equator (~300 m; its full resolution where none is), and the tiles no file had data in there read
 again so at 1/1024 (~40 m), its sparse blocks read as the sampler reads them (nodata, else 0), a
-pixel counted where it meets the tile (its edges included), eight files at once. Only the plan
-reads it: a terrain-deep target whose every source reaching past z12 is hollow there is never run
-(docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the hollow
-tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those
+pixel counted where it meets the tile (its edges included), eight files at once. The plan reads
+it, and terrain-deep's and slope-deep's runs: a terrain-deep target whose every source reaching
+past z12 is hollow there is never run, or, with an earlier run's outputs named, dropped once its
+key moves (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the
+hollow tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those
 before it (`Step`: its headers, giving its CRS, resolution, bands and coverage; its presence; its
 hollow tiles), and a dataset taken as accepted (below) that a version of the check with fewer
 measures measured is measured from the first step it lacks on, every step after it made again, what's
