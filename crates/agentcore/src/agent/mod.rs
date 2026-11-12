@@ -4513,6 +4513,11 @@ impl Agent {
             if let (Some(me), true) = (me, self.published.is_none_or(|t| t.elapsed() >= Duration::from_secs(300))) {
                 let contact = c.reach();
                 if let Some(r) = &root {
+                    // (The pool's token on the NAS, the lead's, when none is there yet (a new pool):
+                    // what a Mac with no contact kept reaches it with. The first one's stays.)
+                    if let Err(e) = pool::share_token(r, &contact.token) {
+                        eprintln!("agent: the pool's token on the NAS: {e:#}");
+                    }
                     coordwire::lead::announce(r, &me.host, Some(contact.urls.clone()));
                 }
                 let k = coordwire::lead::Known { member: me.member, host: me.host, contact };
@@ -8520,11 +8525,7 @@ impl Agent {
     /// lead (its members' beats say it isn't leading), and from
     /// `HUNG_SKIPS` passed over the status says so, naming the cause; all of it until a pool step
     /// runs again.
-    fn pool_skipped(
-        &mut self,
-        since: Option<u64>,
-        waiting: &mut Vec<Waiting>,
-    ) -> pool::Gates {
+    fn pool_skipped(&mut self, since: Option<u64>, waiting: &mut Vec<Waiting>) -> pool::Gates {
         self.pool_skips += 1;
         // (By the awake clock: a sleep isn't a hang.)
         let held = since.map_or(0, |t| pool::Ticking::awake().saturating_sub(t));

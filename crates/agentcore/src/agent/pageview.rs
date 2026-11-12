@@ -1310,11 +1310,7 @@ pub(crate) mod tests {
                         + "\n"
                 })
                 .collect();
-            put(
-                &store::nasfs::NasRoot::local_for_test(d.path()),
-                &format!("history/{day}/m-b.jsonl"),
-                text.as_bytes(),
-            );
+            put(&store::nasfs::NasRoot::local_for_test(d.path()), &format!("history/{day}/m-b.jsonl"), text.as_bytes());
         }
         put(&store::nasfs::NasRoot::local_for_test(d.path()), "state/status.json", b"{}");
         let src = Dir(d.path().into(), AtomicUsize::new(0));
@@ -1417,10 +1413,7 @@ pub(crate) mod tests {
         c.set_page_regions(Arc::new(serde_json::json!({ "catalog": 3 })));
         let c = Arc::new(c);
         let pv = PageView::of(crate::agent::seam::for_tests());
-        pv.set_inputs(Inputs {
-            lead: LeadAt(Some(c.clone())),
-            ..inputs("1.2.3")
-        });
+        pv.set_inputs(Inputs { lead: LeadAt(Some(c.clone())), ..inputs("1.2.3") });
         (c, pv)
     }
 

@@ -2323,7 +2323,9 @@ fn gc_keeps_its_grace_and_cursors_through_hours_away() {
     // under its lease is refused, saying why (counted: rare, since a live lease, an away member's
     // too, holds every name freed after its grant, and a member's map server heard holds its map's).
     let faults = 7 * 3600 + 1800;
-    let counts = check_all(30_000..30_000 + var("POOL_SIM_SEEDS", 12), |_| Cfg {
+    // (24 seeds: the case of a map server unheard past the TTL is rare, 1 in 12 seeds on main before
+    // task #1119, 0 in 12 and 3 in 24 after its members found their lead by the declaration.)
+    let counts = check_all(30_000..30_000 + var("POOL_SIM_SEEDS", 24), |_| Cfg {
         faults,
         end: faults + 1500,
         macs: 3,

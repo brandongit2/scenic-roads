@@ -132,7 +132,7 @@ pub fn status(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Opti
 /// lead announced for that host under `root` (`announce`).
 pub fn addresses(root: &store::nasfs::NasRoot, host: &str) -> Vec<String> {
     if buildstore::out::testing() {
-        return announced().lock().unwrap().get(&(root.unchecked_path(), host.to_string())).cloned().unwrap_or_default();
+        return announced().lock().unwrap().get(&(key_of(root), host.to_string())).cloned().unwrap_or_default();
     }
     let mut out: Vec<String> = crate::net::tailscale_json(&["status", "--json"])
         .map(|v| tailnet_ips(&v, host))
@@ -164,7 +164,12 @@ pub fn tailnet_ips(v: &serde_json::Value, host: &str) -> Vec<String> {
         .collect()
 }
 
-type Announced = std::sync::Mutex<std::collections::HashMap<(PathBuf, String), Vec<String>>>;
+type Announced = std::sync::Mutex<std::collections::HashMap<(String, String), Vec<String>>>;
+
+/// A test pool's name in `announced`: its root, as it displays.
+fn key_of(root: &store::nasfs::NasRoot) -> String {
+    root.join(".").display().to_string()
+}
 
 fn announced() -> &'static Announced {
     static A: std::sync::OnceLock<Announced> = std::sync::OnceLock::new();
@@ -178,7 +183,7 @@ pub fn announce(root: &store::nasfs::NasRoot, host: &str, urls: Option<Vec<Strin
     if !buildstore::out::testing() {
         return;
     }
-    let key = (root.unchecked_path(), host.to_string());
+    let key = (key_of(root), host.to_string());
     let mut a = announced().lock().unwrap();
     match urls {
         Some(u) => a.insert(key, u),

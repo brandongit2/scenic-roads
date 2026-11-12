@@ -194,12 +194,7 @@ pub(crate) fn resolve(run: &Run, name: &str) -> Result<String, String> {
 
 /// After a step: the last change of lead noted, the history's take-ups written, the view made again
 /// when due. `coord`: this process's coordinator (the lead's), whose history they go to.
-pub fn after(
-    run: &mut Run,
-    out: &Out,
-    home: &Path,
-    coord: Option<&crate::coord::Coordinator>,
-) {
+pub fn after(run: &mut Run, out: &Out, home: &Path, coord: Option<&crate::coord::Coordinator>) {
     let now = run.side.now();
     let dir = home.join("pool");
     let me = run.side.member().id.clone();

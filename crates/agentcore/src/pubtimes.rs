@@ -627,7 +627,9 @@ fn asked_of_the_lead(root: Option<&store::nasfs::NasRoot>) -> Vec<Event> {
     let mut after = 0;
     // (At most 200 pages of 5,000: a week's history, `history::KEEP_MAX`, ten times over.)
     for _ in 0..200 {
-        let Ok((200, v)) = c.post_json("/api/history", &serde_json::json!({ "since": after, "max": 5000 })) else { break };
+        let Ok((200, v)) = c.post_json("/api/history", &serde_json::json!({ "since": after, "max": 5000 })) else {
+            break;
+        };
         let page: Vec<Event> = serde_json::from_value(v["events"].clone()).unwrap_or_default();
         let Some(last) = page.last().map(|e| e.seq) else { break };
         let full = page.len() >= 5000;

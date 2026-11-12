@@ -167,8 +167,7 @@ fn timings(a: &cli::Timings) -> Result<()> {
     } else {
         let asked = (|| -> Result<Vec<RunRec>> {
             let root = root(&a.places.root, false)?;
-            let c = lead_client(Some(&root))?
-                .context("no coordinator to ask")?;
+            let c = lead_client(Some(&root))?.context("no coordinator to ask")?;
             let (code, v) = c.post_api("timings", &serde_json::json!({ "kind": kind, "last": last }))?;
             anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
             Ok(serde_json::from_value(v["runs"].clone())?)
@@ -1392,8 +1391,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
         redo::note_cost(pipeline::agent::theplan::the_plan().cost_version(redo::STEP), t0);
         return Ok(());
     }
-    let c = lead_client(Some(&r))?
-        .context("no lead's coordinator to ask")?;
+    let c = lead_client(Some(&r))?.context("no lead's coordinator to ask")?;
     let by = format!("scenic redo on {}", store::sys::host_name());
     let (code, v) = c.post_api("redo", &serde_json::json!({ "step": step, "targets": todo, "by": by }))?;
     anyhow::ensure!(
@@ -1508,8 +1506,7 @@ fn cli_main() -> Result<()> {
                     // A job's progress on a member's Mac given up (agentcore::agent::resume): the lead
                     // runs it wherever it fits from then. Told the lead (docs/coordination.md step
                     // 7), which keeps it.
-                    let c = lead_client(Some(&r))?
-                        .context("no lead's coordinator to ask")?;
+                    let c = lead_client(Some(&r))?.context("no lead's coordinator to ask")?;
                     let (code, v) =
                         c.post_json("/pool/progress/release", &serde_json::json!({ "member": member, "job": job }))?;
                     match (code, v["said"].as_str()) {
@@ -1520,8 +1517,7 @@ fn cli_main() -> Result<()> {
                 Some(PoolCmd::Release { member, job: None }) => {
                     // A member's leases released by the owner (docs/coordination.md §6.1,
                     // agentcore::coord::held): its targets go to others.
-                    let c = lead_client(Some(&r))?
-                        .context("no lead's coordinator to ask")?;
+                    let c = lead_client(Some(&r))?.context("no lead's coordinator to ask")?;
                     let (code, v) = c.post_json("/pool/release", &serde_json::json!({ "member": member }))?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");
                     let gone = v["released"].as_array().cloned().unwrap_or_default();
@@ -1586,8 +1582,7 @@ fn cli_main() -> Result<()> {
                     // The targets' floors the lead's coordinator keeps (agentcore::agent::memguard):
                     // `--clear` clears them all, `--clear <step>` a step's, `--clear <step> <target>`
                     // one target's (a step fixed, or a floor learned wrong).
-                    let c = lead_client(Some(&r))?
-                        .context("no lead's coordinator to ask")?;
+                    let c = lead_client(Some(&r))?.context("no lead's coordinator to ask")?;
                     let (code, v) =
                         c.post_api("floors", &serde_json::json!({ "clear": clear, "step": step, "target": target }))?;
                     anyhow::ensure!(code == 200, "the lead's coordinator answered {code} (an older app?)");

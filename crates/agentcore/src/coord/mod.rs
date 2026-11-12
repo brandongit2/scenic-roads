@@ -1989,7 +1989,8 @@ impl Coordinator {
         self.write_page();
         let mut contact = self.contact.clone();
         contact.page = http::served_https(self.port);
-        self.shared.lock().unwrap().reach = Some(held::Reach { urls: contact.urls.clone(), page: contact.page.clone() });
+        self.shared.lock().unwrap().reach =
+            Some(held::Reach { urls: contact.urls.clone(), page: contact.page.clone() });
         contact
     }
 
@@ -7324,7 +7325,8 @@ mod tests {
     #[test]
     fn a_leads_answers_say_how_to_reach_it() {
         let (_d, c, _w) = start();
-        let b = held::Beat { member: "m-0000000000000001".into(), speaks: vec![held::SPEAKS.into()], ..Default::default() };
+        let b =
+            held::Beat { member: "m-0000000000000001".into(), speaks: vec![held::SPEAKS.into()], ..Default::default() };
         assert_eq!(c.member_beat(&b).reach, None, "not leading: nothing");
         let contact = c.reach();
         let m = crate::pool::Member { id: "m-00000000000000aa".into(), host: "m6".into(), app: "dev".into() };

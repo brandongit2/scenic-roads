@@ -345,7 +345,10 @@ mod tests {
         );
         assert_eq!(l[1].1, b"bb\n");
         // Again: nothing to do.
-        assert_eq!(run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap().days_archived, 0);
+        assert_eq!(
+            run(&store::nasfs::NasRoot::local_for_test(r.path()), None, NOW, false, &|| {}).unwrap().days_archived,
+            0
+        );
     }
 
     #[test]
@@ -432,7 +435,10 @@ mod tests {
             list_tar(&std::fs::read(r.path().join(ARCHIVE).join(format!("{d}.tar"))).unwrap()).unwrap()
         };
         assert_eq!(tar(one), [(format!("{}/m-1.jsonl", journal::day(one).unwrap()), ev(2, one).into_bytes())]);
-        assert!(!r.path().join(ARCHIVE).join(format!("{}.tar", journal::day(NOW).unwrap())).exists(), "today's not yet");
+        assert!(
+            !r.path().join(ARCHIVE).join(format!("{}.tar", journal::day(NOW).unwrap())).exists(),
+            "today's not yet"
+        );
         assert_eq!(run(&root, Some(&f), NOW, false, &|| {}).unwrap().days_archived, 0, "packed again: nothing new");
         std::fs::write(&f, ev(1, two) + &ev(2, one) + &ev(4, one + 60) + &ev(3, NOW)).unwrap();
         assert_eq!(run(&root, Some(&f), NOW, false, &|| {}).unwrap().days_archived, 1);

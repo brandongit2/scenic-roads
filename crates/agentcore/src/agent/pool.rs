@@ -1941,6 +1941,18 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
 /// The pool's copy of the workers' token (§8: the same on every member).
 pub const TOKEN: &str = "state/coord/token";
 
+/// The lead's token made the pool's on the NAS (`TOKEN`) when none is there (create-new: the first
+/// one's stays), so a Mac with no lead's contact of its own finds the lead with it (coordwire::lead).
+pub fn share_token(nas: &dyn Nas, token: &str) -> Result<()> {
+    if nas.read(TOKEN)?.is_some_and(|b| !b.is_empty()) {
+        return Ok(());
+    }
+    if let Created::Unwritten(e) = nas.create_new(TOKEN, token.as_bytes())? {
+        nas.write_whole(TOKEN, token.as_bytes()).context(e)?;
+    }
+    Ok(())
+}
+
 /// The workers' token made the pool's (§12, seeding): this Mac's (the lead's, as the pool is
 /// switched on) copied to the NAS when it has none (create-new: the first lead's stays), else the
 /// NAS's copied here before its coordinator starts, so the Macs' agents keep working with this

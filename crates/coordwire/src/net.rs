@@ -294,10 +294,7 @@ pub fn tailscale_json(args: &[&str]) -> Option<serde_json::Value> {
     .into_iter()
     .find(|p| Path::new(p).exists())?;
     let mut child = store::spawn::spawn(
-        store::spawn::command(cli)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null()),
+        store::spawn::command(cli).args(args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()),
     )
     .ok()?;
     let t = Instant::now();
