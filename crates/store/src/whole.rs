@@ -1,7 +1,9 @@
 //! Files kept whole (docs/macs.md, Downloads). What's written to the NAS's stores, or copied from
 //! them to a Mac's cache, goes by a temporary name (this Mac's name and the process's, so two Macs
-//! never share one), is flushed to the disk and has its length checked before the rename: a write
-//! cut short never takes the file's name. (The build agent's caches are made through
+//! never share one), is flushed to the disk, closed with its close's result checked
+//! (crate::sys::close) and has its length checked before the rename: a write cut short never takes
+//! the file's name. A temporary file's write lost to the share for a moment is made again
+//! (`redone`). (The build agent's caches are made through
 //! crate::cachefile, the same way, and held; a NAS file is written whole through crate::nasfs,
 //! which uses these.)
 
@@ -163,14 +165,17 @@ fn aside_with(
 /// that stays busy (`rename_or_aside`), so a file another SMB session holds open (a Mac killed with
 /// it open: the server may keep its handle for hours) never blocks a write. Readers of a file that
 /// must never read as missing read it through `read_replaced`. The folder's day-old asides and
-/// writes' leftover temporary files are swept once it is written (`sweep_hourly`).
+/// writes' leftover temporary files are swept once it is written (`sweep_hourly`). The temporary
+/// file is closed checked, and written again on a lost write (`redone`).
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
     let tmp = call_tmp_name(path);
     let r = (|| -> Result<()> {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(b)?;
-        f.sync_all()?;
-        drop(f);
+        redone(&tmp, || {
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(b)?;
+            f.sync_all()?;
+            crate::sys::close(f, &tmp)
+        })?;
         let n = std::fs::metadata(&tmp)?.len();
         ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());
         rename_or_aside(&tmp, path)?;
@@ -183,6 +188,35 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
         (Ok(()), None) => {}
     }
     r.with_context(|| format!("write {}", path.display()))
+}
+
+/// The writes of one temporary file a whole write makes at most (`redone`; crate::naming's
+/// content-named upload's too) before its error is the write's.
+pub const WRITE_TRIES: u32 = 3;
+
+/// Whether a write's error (its open, a write, its fsync or its close) is the share's for a
+/// moment (crate::retry::transient: ETIMEDOUT, EIO, a dropped session), its bytes perhaps lost: a
+/// temporary file's write to make again, its source unchanged (task #1142: a session reconnect of
+/// a soft mount fails what's in flight with ETIMEDOUT). Never a deadline's `TimedOut` (no OS
+/// code): a call past its deadline is held, its path with it (crate::deadline), not made again.
+pub fn lost_write(e: &std::io::Error) -> bool {
+    crate::retry::transient(e)
+}
+
+/// `write_tmp` (a temporary file's whole write, from its open to its checked close) made again
+/// while it fails as a lost write (`lost_write`), `WRITE_TRIES` writes at most, each again logged.
+/// What isn't yet under its name can be written again: a rename is never redone.
+pub(crate) fn redone(tmp: &Path, mut write_tmp: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    let mut writes = 1;
+    loop {
+        match write_tmp() {
+            Err(e) if lost_write(&e) && writes < WRITE_TRIES => {
+                crate::retry::log(format_args!("{}: {e}: written again", tmp.display()));
+                writes += 1;
+            }
+            r => return r,
+        }
+    }
 }
 
 /// Tries `op` on `path` (a read or an open) again while it's busy (EBUSY: another SMB session
@@ -449,13 +483,16 @@ impl<R: std::io::Read> std::io::Read for Told<'_, R> {
 fn copy_as(src: &Path, dst: &Path, held: bool, each: &mut dyn FnMut(u64, u64)) -> Result<(u64, u64)> {
     let tmp = call_tmp_name(dst);
     let r = (|| -> Result<(u64, u64)> {
-        let from = std::fs::File::open(src)?;
-        let want = from.metadata()?.len();
-        let h = if held { crate::sys::resident(&from, want) } else { 0 };
-        let mut to = std::fs::File::create(&tmp)?;
-        let n = std::io::copy(&mut Told { r: from, held: h, each }, &mut to)?;
-        to.sync_all()?;
-        drop(to);
+        let (mut n, mut want, mut h) = (0, 0, 0);
+        redone(&tmp, || {
+            let from = std::fs::File::open(src)?;
+            want = from.metadata()?.len();
+            h = if held { crate::sys::resident(&from, want) } else { 0 };
+            let mut to = std::fs::File::create(&tmp)?;
+            n = std::io::copy(&mut Told { r: from, held: h, each: &mut *each }, &mut to)?;
+            to.sync_all()?;
+            crate::sys::close(to, &tmp)
+        })?;
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");
         rename_or_aside(&tmp, dst)?;
@@ -716,6 +753,38 @@ mod tests {
         write(&p, b"bb").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"bb");
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "no temporary file left");
+    }
+
+    /// Task #1142: a whole write or copy whose temporary file's close fails as the share's for a
+    /// moment is written again, WRITE_TRIES writes at most; another close error fails it at once.
+    /// Either way nothing but the file is left.
+    #[test]
+    fn a_whole_write_whose_close_fails_is_written_again() {
+        use crate::sys::close_fault::fail;
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("m.json");
+        let f = fail(d.path(), libc::ETIMEDOUT, WRITE_TRIES - 1);
+        write(&p, b"abc").unwrap();
+        assert_eq!((f.failed(), std::fs::read(&p).unwrap()), (WRITE_TRIES - 1, b"abc".to_vec()));
+        drop(f);
+        let f = fail(d.path(), libc::EIO, WRITE_TRIES);
+        assert!(write(&p, b"de").is_err());
+        assert_eq!((f.failed(), std::fs::read(&p).unwrap()), (WRITE_TRIES, b"abc".to_vec()));
+        drop(f);
+        let src = d.path().join("src");
+        std::fs::write(&src, b"copied").unwrap();
+        let (f, q) = (fail(&d.path().join("c"), libc::ETIMEDOUT, 1), d.path().join("c"));
+        std::fs::create_dir(&q).unwrap();
+        copy(&src, &q.join("x")).unwrap();
+        assert_eq!((f.failed(), std::fs::read(q.join("x")).unwrap()), (1, b"copied".to_vec()));
+        drop(f);
+        let f = fail(d.path(), libc::ENOSPC, 3);
+        assert!(write(&p, b"fg").is_err());
+        assert_eq!(f.failed(), 1, "not written again");
+        drop(f);
+        let mut names: Vec<_> = std::fs::read_dir(d.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        names.sort();
+        assert_eq!(names, ["c", "m.json", "src"], "no temporary file left");
     }
 
     /// Threads of one process copying to the same file at once each use their own temporary file:

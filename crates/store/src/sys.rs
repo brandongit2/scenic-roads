@@ -227,6 +227,77 @@ pub fn set_mode(f: &File, mode: u32) -> io::Result<()> {
     }
 }
 
+/// Closes file `f` (at `path`), its result checked: a written file's last error comes back here,
+/// where a drop loses it. Apple's SMB client keeps a pageout's (its cluster writes') error for the
+/// close alone, and its fsync doesn't return it; on a soft mount a session reconnect fails every
+/// request in flight with ETIMEDOUT (task #1142). So every writer of a NAS file closes it so.
+/// Elsewhere than Unix, a drop.
+pub fn close(f: File, path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::IntoRawFd;
+        let fd = f.into_raw_fd();
+        // SAFETY: the descriptor was its `File`'s alone, taken out of it: closed once, here.
+        if unsafe { libc::close(fd) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(not(unix))]
+    drop(f);
+    #[cfg(any(test, feature = "testkit"))]
+    if let Some(code) = close_fault::take(path) {
+        return Err(io::Error::from_raw_os_error(code));
+    }
+    let _ = path;
+    Ok(())
+}
+
+/// Test builds: the closes of files under a folder made to fail (`sys::close`), as a pageout's
+/// error lost to a reconnect comes back at the close; the file itself closed and whole.
+#[cfg(any(test, feature = "testkit"))]
+pub mod close_fault {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    type Fault = (PathBuf, i32, Arc<AtomicU32>, Arc<AtomicU32>);
+    static FAULTS: Mutex<Vec<Fault>> = Mutex::new(Vec::new());
+
+    /// The next `n` closes of files under its folder fail with OS error `code`, while this lives.
+    pub struct Failing(PathBuf, Arc<AtomicU32>, Arc<AtomicU32>);
+
+    impl Failing {
+        /// The closes it failed so far.
+        pub fn failed(&self) -> u32 {
+            self.2.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for Failing {
+        fn drop(&mut self) {
+            let mut f = FAULTS.lock().unwrap_or_else(|p| p.into_inner());
+            f.retain(|x| !(x.0 == self.0 && Arc::ptr_eq(&x.2, &self.1)));
+        }
+    }
+
+    /// The next `n` closes of files under `folder` fail with `code`.
+    pub fn fail(folder: &Path, code: i32, n: u32) -> Failing {
+        let (left, failed) = (Arc::new(AtomicU32::new(n)), Arc::new(AtomicU32::new(0)));
+        let mut f = FAULTS.lock().unwrap_or_else(|p| p.into_inner());
+        f.push((folder.to_path_buf(), code, left.clone(), failed.clone()));
+        Failing(folder.to_path_buf(), left, failed)
+    }
+
+    /// The code this close of `path` fails with, if a fault has it (one fewer left then).
+    pub(super) fn take(path: &Path) -> Option<i32> {
+        let f = FAULTS.lock().unwrap_or_else(|p| p.into_inner());
+        let (_, code, left, failed) = f.iter().find(|x| path.starts_with(&x.0) && x.2.load(Ordering::SeqCst) > 0)?;
+        left.fetch_sub(1, Ordering::SeqCst);
+        failed.fetch_add(1, Ordering::SeqCst);
+        Some(*code)
+    }
+}
+
 /// Copies `src`'s bytes to `dst` (made, or emptied first) and its permission bits, and nothing else:
 /// what every copy in the build wants. (`std::fs::copy` on macOS also brings the extended
 /// attributes, and the NAS refuses one, `com.apple.provenance`, which macOS puts on whatever an app
@@ -288,6 +359,7 @@ fn copy_data_as(src: &Path, dst: &Path, held: bool, each: &mut dyn FnMut(u64, u6
     if let Some(m) = mode(src) {
         set_mode(&w, m).ok();
     }
+    close(w, dst)?;
     Ok((n, h))
 }
 

@@ -184,6 +184,7 @@ pub(crate) fn merge_into_tar(tar_path: &NasPath, members: Vec<(String, Vec<u8>)>
         let mut f = t.create()?;
         f.write_all(&bytes)?;
         f.sync_all()?;
+        f.close()?;
         Ok(())
     });
     let r = written.and_then(|()| {

@@ -358,7 +358,7 @@ fn write_json(path: &NasPath, v: Py, gz: bool) -> Result<()> {
     let mut f = tmp.create().with_context(|| format!("write {}", tmp.display()))?;
     f.write_all(&bytes)?;
     f.sync_all()?;
-    drop(f);
+    f.close().with_context(|| format!("close {}", tmp.display()))?;
     tmp.rename(path)?;
     Ok(())
 }
@@ -995,7 +995,7 @@ fn fetch(http: &Http, job: &Job, root: &store::nasfs::NasRoot, prog: &Progress) 
                 // (Each piece whole moves the file on: a later failure goes on from here.)
                 k = 0;
             }
-            if let Err(e) = f.sync_all() {
+            if let Err(e) = f.sync_all().and_then(|()| f.close()) {
                 return io(e);
             }
             Attempt::Whole

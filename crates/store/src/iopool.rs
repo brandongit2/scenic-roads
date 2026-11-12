@@ -460,30 +460,33 @@ impl IoPool {
         self.run(&from.display(), self.inner.cfg.op_timeout, move || fs::rename(&a, &b))
     }
 
-    /// Creates `path` exclusively (`O_EXCL`: `AlreadyExists` if it's there) and writes `bytes`.
-    /// Counted as a file made. Never retried.
+    /// Creates `path` exclusively (`O_EXCL`: `AlreadyExists` if it's there) and writes `bytes`,
+    /// closed checked (crate::sys::close). Counted as a file made. Never retried.
     pub fn write_new(&self, path: &NasPath, bytes: Vec<u8>) -> Result<(), IoError> {
         let p = path.unchecked_path();
         let (n, t, q) = (bytes.len() as u64, Instant::now(), p.clone());
         self.run(&path.display(), self.inner.cfg.op_timeout, move || {
             let mut f = OpenOptions::new().write(true).create_new(true).open(&p)?;
             f.write_all(&bytes)?;
-            f.sync_all()
+            f.sync_all()?;
+            crate::sys::close(f, &p)
         })?;
         crate::nasio::wrote(&q, n, t.elapsed().as_millis() as u64);
         Ok(())
     }
 
-    /// Creates or truncates `path` and writes `bytes`, synced. (Callers write a temporary file this
-    /// way and rename it over the real one, so no reader sees half of it; one left by a write that
-    /// never finished is simply written again.) Counted as a file made. Never retried.
+    /// Creates or truncates `path` and writes `bytes`, synced and closed checked (crate::sys::close).
+    /// (Callers write a temporary file this way and rename it over the real one, so no reader sees
+    /// half of it; one left by a write that never finished is simply written again.)
+    /// Counted as a file made. Never retried.
     pub fn write(&self, path: &NasPath, bytes: Vec<u8>) -> Result<(), IoError> {
         let p = path.unchecked_path();
         let (n, t, q) = (bytes.len() as u64, Instant::now(), p.clone());
         self.run(&path.display(), self.inner.cfg.op_timeout, move || {
             let mut f = File::create(&p)?;
             f.write_all(&bytes)?;
-            f.sync_all()
+            f.sync_all()?;
+            crate::sys::close(f, &p)
         })?;
         crate::nasio::wrote(&q, n, t.elapsed().as_millis() as u64);
         Ok(())

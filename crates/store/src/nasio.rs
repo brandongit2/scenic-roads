@@ -1,10 +1,11 @@
 //! This process's I/O counts, kept where they happen: its NAS traffic (the store's readers, a
 //! build's `Out` through buildstore::costin::wrote, the metadata walks costin::meta notes: bytes read
-//! and written, files opened for reading, files made, folder entries listed, files statted and
-//! deleted), and beside it the bytes read from this Mac's own disk (`Local`: crate::range's mapped
-//! and local files, crate::cachefile's reads, and the part of a NAS file copied whole that this
-//! Mac's page cache held, crate::nasfs) and the GeoTIFFs opened. The one per-process counter
-//! set: a build target's input measures (buildstore::costin) are its deltas.
+//! (an upload's read-backs among them, and apart too: `ReadBack`) and written, files opened for
+//! reading, files made, folder entries listed, files statted and deleted), and beside it the bytes
+//! read from this Mac's own disk (`Local`: crate::range's mapped and local files, crate::cachefile's
+//! reads, and the part of a NAS file copied whole that this Mac's page cache held, crate::nasfs)
+//! and the GeoTIFFs opened. The one per-process counter set: a build target's input measures
+//! (buildstore::costin) are its deltas.
 //!
 //! A job's processes count into files of their own on the agent's disk, so the agent sees a job's
 //! traffic while it runs with no channel to it (docs/pool.md §10, Live): when `ENV` names a folder
@@ -59,12 +60,13 @@ pub enum Count {
     Local = 7,
     /// GeoTIFFs opened.
     Tiffs = 8,
+    /// Of `ReadBytes`, those an upload read back to check what it wrote (crate::naming's
+    /// `write_atomic`, `read_back`): a job's NAS traffic, not its step's inputs (buildstore::costin
+    /// keeps them apart, `read_back`).
+    ReadBack = 9,
 }
 
-/// The NAS's counts: the first `NAS` of `Count`'s.
-pub const NAS: usize = 7;
-
-/// The counts in a file (`Count`'s, then room for one more).
+/// The counts in a file (`Count`'s).
 pub const SLOTS: usize = 10;
 
 /// A process's counts, in `Count`'s order.
@@ -274,6 +276,13 @@ pub fn opened(path: &Path, bytes: u64, ms: u64) {
 /// `n` bytes read from the NAS.
 pub fn read(n: u64) {
     add(Count::ReadBytes, n);
+}
+
+/// `n` bytes an upload read back from the NAS (crate::naming's read-back, past the cache): NAS reads
+/// like any (`read`), and counted apart too (`ReadBack`).
+pub fn read_back(n: u64) {
+    read(n);
+    add(Count::ReadBack, n);
 }
 
 /// File `path` of `n` bytes made on the NAS in one write (it took `ms`): its bytes and the file

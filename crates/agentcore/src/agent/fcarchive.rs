@@ -329,6 +329,7 @@ pub(crate) fn append_frame(p: store::nasfs::NasPath, z: Vec<u8>) -> Result<()> {
         q.parent().context("a day's folder")?.create_dir_all()?;
         let mut f = q.open_with(std::fs::OpenOptions::new().create(true).append(true))?;
         f.write_all(&z).with_context(|| format!("append to {}", q.display()))?;
+        f.close().with_context(|| format!("close {}", q.display()))?;
         Ok(())
     })
 }

@@ -786,6 +786,7 @@ pub fn accept(root: &store::nasfs::NasRoot, unit: &str, f: &Finding, member: &st
     match p.open_with(std::fs::File::options().write(true).create_new(true)) {
         Ok(mut file) => {
             std::io::Write::write_all(&mut file, &body).with_context(|| format!("write {}", p.display()))?;
+            file.close().with_context(|| format!("close {}", p.display()))?;
             Ok(true)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),

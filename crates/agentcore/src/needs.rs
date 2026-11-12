@@ -82,7 +82,7 @@ pub fn offered_by(step: &str) -> Option<&'static str> {
 /// disk measure is the job's reads, shared, not its own: a job of several takes the most of theirs,
 /// not their sum (`batch_disk`); and a target's `bytes` (the halo's base-pack files' bytes, its
 /// input size for the fits) aren't what it reads from the NAS: its NAS weight is what the job read
-/// (`nas_read` over `nas_secs`, the job's reads and their time, on each of its targets) and what it writes (`wrote`, `creates`).
+/// (`nas_read` over `nas_secs`, the job's reads and their time, on each of its targets) and what it writes (`wrote`, `creates`) and reads back (`read_back`).
 pub const HALO_STEPS: [&str; 2] = ["pack", "lo"];
 
 /// The steps whose time is the work a target finds to do, not the target itself (task #830), with
@@ -661,7 +661,7 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
 }
 
 /// A run's NAS rate (`bytes` less what of them it read from this Mac's own disk, `local` (its whole
-/// local copies', task #551), plus `wrote`, and `creates`, over its time; its metadata work,
+/// local copies', task #551), plus `wrote` and `read_back`, and `creates`, over its time; its metadata work,
 /// `listed`, `stats` and `deletes`, likewise), when it was measured the
 /// way its step runs now and says its `bytes`. A `HALO_STEPS` step's reads are its job's, not its
 /// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its
@@ -680,9 +680,14 @@ fn nas_rate(the_plan: &dyn Plan, step: &str, c: &Cost) -> Option<(jobrt::budget:
     } else {
         (g("bytes") - g("local")).max(0.0) / secs
     };
+    // (What its uploads read back to check them: as measured, else, on a line from before it was
+    // (task #1142), its `wrote`: each file costin counts made is a store::naming upload, read
+    // back whole once it's written, as every one has been since the store began. So a step's old
+    // measures weigh it as its new ones do, and no `cost_v` is bumped for it.)
+    let back = c.sizes.get("read_back").map_or(g("wrote"), |&b| b as f64);
     (c.v >= the_plan.cost_version(step) && c.sizes.contains_key("bytes")).then(|| {
         let r = jobrt::budget::nas::Rate {
-            bytes_s: read_s + g("wrote") / secs,
+            bytes_s: read_s + (g("wrote") + back) / secs,
             creates_s: g("creates") / secs,
             listed_s: g("listed") / secs,
             stats_s: g("stats") / secs,
@@ -1415,7 +1420,7 @@ impl<'a> Book<'a> {
     }
 
     /// The NAS rate a job of `step` for `target` runs at, as measured (buildstore::costin: `bytes` read
-    /// plus `wrote`, and `creates`, each over its wall time): its own run's, else its step's 90th
+    /// plus `wrote` and `read_back`, and `creates`, each over its wall time): its own run's, else its step's 90th
     /// percentile of each over its runs the way it runs now; None when none of them was measured.
     /// What jobrt::budget::nas weighs it by.
     pub fn nas(&self, step: &str, target: &str) -> Option<jobrt::budget::nas::Rate> {
@@ -1885,13 +1890,17 @@ mod tests {
         assert_eq!(Book::new(crate::agent::seam::for_tests(), &costs).cores("terrain-hi", "6/48/16"), c(3, Some(20)));
     }
 
-    /// A target's NAS rate: its own run's bytes (read and written) and creates over its time, else
-    /// its step's 90th percentile of each; None with no run measured (none says `bytes`).
+    /// A target's NAS rate: its own run's bytes (read, written and read back) and creates over its
+    /// time, else its step's 90th percentile of each; None with no run measured (none says
+    /// `bytes`). A line that doesn't say what it read back (from before task #1142) read back its
+    /// `wrote`.
     #[test]
     fn a_nas_rate_is_the_targets_run_else_its_steps_90th_percentile() {
         let now = |c: Cost| Cost { v: cost_version("slope"), ..c };
         let mut costs = BTreeMap::new();
-        costs.insert(cost_key("slope", "6/1/1"), now(cost(100, 10, &[("bytes", 600), ("wrote", 400), ("creates", 5)])));
+        let first = cost(100, 10, &[("bytes", 600), ("wrote", 200), ("read_back", 200), ("creates", 5)]);
+        costs.insert(cost_key("slope", "6/1/1"), now(first));
+        costs.insert(cost_key("slope", "6/2/1"), now(cost(100, 10, &[("bytes", 600), ("wrote", 200), ("creates", 5)])));
         for i in 2..12 {
             costs.insert(cost_key("slope", &format!("6/1/{i}")), now(cost(100, 10, &[("bytes", 100 * i)])));
         }
@@ -1901,7 +1910,8 @@ mod tests {
             b.nas("slope", "6/1/1"),
             Some(jobrt::budget::nas::Rate { bytes_s: 100.0, creates_s: 0.5, ..Default::default() })
         );
-        // (Rates 20..110, and 100 the first's: the 90th percentile of 11 the 10th, 100.)
+        assert_eq!(b.nas("slope", "6/2/1"), b.nas("slope", "6/1/1"), "its `wrote` read back");
+        // (Rates 20..110, and 100 the first two's: the 90th percentile of 12 the 11th, 100.)
         assert_eq!(b.nas("slope", "6/9/9").map(|r| r.bytes_s), Some(100.0));
         assert_eq!(b.nas("lo", "3/1/1"), None);
         // (Task #551: what it read of its local copies, `local`, isn't the NAS's.)
@@ -1951,10 +1961,10 @@ mod tests {
     #[test]
     fn a_halo_steps_nas_rate_is_its_jobs_reads_and_what_it_writes() {
         let mut costs = BTreeMap::new();
-        let c = cost(100, 10, &[("bytes", 1300 << 20), ("wrote", 400), ("creates", 5)]);
+        let c = cost(100, 10, &[("bytes", 1300 << 20), ("wrote", 200), ("read_back", 200), ("creates", 5)]);
         costs.insert(cost_key("pack", "6/1/1"), Cost { v: cost_version("pack"), ..c.clone() });
         // (Read 30 MB in 20 s; this target itself took 0 s.)
-        let mut quick = cost(100, 0, &[("bytes", 1300 << 20), ("wrote", 400), ("creates", 5)]);
+        let mut quick = cost(100, 0, &[("bytes", 1300 << 20), ("wrote", 200), ("read_back", 200), ("creates", 5)]);
         quick.sizes.extend([("nas_read".to_string(), 30_000_000), ("nas_secs".to_string(), 20)]);
         costs.insert(cost_key("pack", "6/1/2"), Cost { v: cost_version("pack"), ..quick });
         let mut b38 = c;

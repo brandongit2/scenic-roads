@@ -389,8 +389,10 @@ fn probe_in(dir: &Path) -> std::io::Result<Probe> {
     in_streams(|k| {
         let small = vec![7u8; SMALL];
         for i in 0..SMALL_FILES {
-            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(format!("s{k}_{i}")))?;
+            let p = dir.join(format!("s{k}_{i}"));
+            let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&p)?;
             f.write_all(&small)?;
+            store::sys::close(f, &p)?;
         }
         Ok(())
     })?;
@@ -421,6 +423,7 @@ fn large_round(p: &Path) -> std::io::Result<()> {
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(p)?;
         f.write_all(&large)?;
         f.sync_all()?;
+        store::sys::close(f, p)?;
     }
     let mut f = std::fs::File::open(p)?;
     #[cfg(target_os = "macos")]

@@ -66,8 +66,8 @@ pub struct Step {
     pub disk_mb: u64,
     pub secs: u64,
     pub threads: u32,
-    /// What a job of one target reads and writes on the NAS (MB together, as buildstore::costin's `bytes`
-    /// and `wrote`), and the files it makes there (`creates`).
+    /// What a job of one target reads, writes and reads back on the NAS (MB together, as
+    /// buildstore::costin's `bytes`, `wrote` and `read_back`), and the files it makes there (`creates`).
     pub nas_mb: u64,
     pub creates: u64,
     /// What filling its shared cache (crate::needs::CACHES) on a Mac takes past its own disk (MB):
@@ -207,13 +207,14 @@ fn written(j: &Job, t: u64) -> u64 {
 
 /// What a run of one target of `s` given `threads` on a Mac of pace `pace` (`Cfg::pace`) measures,
 /// as buildstore::costin records it: its memory and time, the threads it was given and the CPU time it took (its step's threads busy, at
-/// most those given), and what it read and wrote on the NAS, half of `nas_mb` each (a halo step's
+/// most those given), and what it read, wrote and read back on the NAS, a third of `nas_mb` each (a halo step's
 /// reads its `nas_read` over `nas_secs`, its run; its `bytes` its halo's base packs' files, as
 /// crate::needs reads them).
 fn measures(s: &Step, threads: u32, pace: u64) -> Cost {
     let secs = s.secs * pace;
     let nas = s.nas_mb << 20;
-    let (read, wrote) = (nas / 2, nas - nas / 2);
+    let (read, wrote) = (nas / 3, nas / 3);
+    let back = nas - read - wrote;
     let (bytes, nas_read) = if is_halo(s.name) { (s.disk_mb << 20, read) } else { (read, 0) };
     Cost {
         peak_mb: s.mem_mb,
@@ -227,6 +228,7 @@ fn measures(s: &Step, threads: u32, pace: u64) -> Cost {
             ("nas_read".to_string(), nas_read),
             ("nas_secs".to_string(), secs),
             ("wrote".to_string(), wrote),
+            ("read_back".to_string(), back),
             ("creates".to_string(), s.creates),
         ]
         .into(),

@@ -1969,7 +1969,7 @@ pub fn append_history(
         p.parent().unwrap().create_dir_all()?;
         use std::io::Write;
         p.open_with(std::fs::OpenOptions::new().create(true).append(true))
-            .and_then(|mut f| f.write_all(&b))
+            .and_then(|mut f| f.write_all(&b).and_then(|()| f.close()))
             .with_context(|| format!("append to {}", p.display()))?;
     }
     Ok(())

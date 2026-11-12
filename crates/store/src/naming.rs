@@ -15,9 +15,7 @@ pub const HASH_LEN: usize = 16;
 /// Chunk size for streaming file copies and hashes.
 pub const CHUNK: usize = 4 << 20;
 
-/// Writes of one file `write_atomic` makes before it gives up on a share whose read-backs keep
-/// differing from a source that hasn't changed.
-const WRITE_TRIES: u32 = 3;
+use crate::whole::WRITE_TRIES;
 
 /// The bytes the streamed hashes and copies here have read and written, all told: a long upload
 /// says how far it is by them (pipeline's `Out::put_file_with`).
@@ -147,10 +145,15 @@ pub enum Source<'a> {
 /// Writes `src` under `root` as `<logical>.<hash16>.<ext>` and returns that name (relative to
 /// `root`). The bytes go to `<name>.tmp` first, are read back past the client's cache and checked
 /// against the hash, and only then renamed into place, so a reader never sees a partial or damaged
-/// file under a content name. A read-back that differs, its source unchanged, is written again,
-/// `WRITE_TRIES` writes at most (task #1140: on the NAS, a write in a session reconnect of the
-/// Mac's SMB client read back other bytes of the same length); a source changed since it was
-/// hashed fails at once. Each write again is a line on stderr. When the
+/// file under a content name. The temporary file is closed with its close's result checked
+/// (crate::sys::close). A read-back that differs, or a write lost to the share for a moment (an
+/// ETIMEDOUT, EIO or dropped session at its open, a write, its sync or its close:
+/// crate::whole::lost_write), its source unchanged, is written again, `WRITE_TRIES` writes at most
+/// (task #1140: on the NAS, a write in a session reconnect of the Mac's SMB client read back other
+/// bytes of the same length; task #1142: a soft mount's reconnect fails what's in flight with
+/// ETIMEDOUT); a source changed since it was hashed fails at once, and so does a call past its
+/// deadline (held, its temporary name with it). Each write again is a line on stderr. The
+/// read-back's bytes are counted the NAS's reads (crate::nasio::read_back). When the
 /// name already exists with the right size nothing is written; an existing content-named file is
 /// never overwritten (one with the wrong size is an error to resolve by hand, not a file to replace).
 ///
@@ -215,16 +218,26 @@ fn write_atomic_as(
     let tmp = TmpFile(tmp_path(&dest));
     let mut writes = 0;
     loop {
-        write_tmp(&tmp.0, src).with_context(|| format!("write {}", tmp.0.display()))?;
         writes += 1;
-        let (got, got_size) = reread(&tmp.0).with_context(|| format!("read back {}", tmp.0.display()))?;
-        if got == hash && got_size == size {
-            break;
-        }
-        // Its source unchanged, written again, whichever went wrong, the write or its read-back
-        // (task #1140: on the NAS, in a session reconnect of the Mac's SMB client): a file is
-        // taken only on a read-back that matches the write just made.
-        let what = format!("{}: read back {got} ({got_size} bytes), expected {hash} ({size} bytes)", tmp.0.display());
+        let what = match write_tmp(&tmp.0, src) {
+            Ok(()) => {
+                let (got, got_size) = reread(&tmp.0).with_context(|| format!("read back {}", tmp.0.display()))?;
+                if got == hash && got_size == size {
+                    break;
+                }
+                format!("{}: read back {got} ({got_size} bytes), expected {hash} ({size} bytes)", tmp.0.display())
+            }
+            // (Lost to the share for a moment, its close's error too, task #1142: written again. A
+            // call past its deadline isn't: it's held, the temporary name with it.)
+            Err(Failed::Share(e)) if crate::whole::lost_write(&e) => format!("{}: {e}", tmp.0.display()),
+            Err(Failed::Share(e) | Failed::Source(e)) => {
+                return Err(e).with_context(|| format!("write {}", tmp.0.display()))
+            }
+        };
+        // Its source unchanged, written again, whichever went wrong, the write (an error at its
+        // write, sync or close) or its read-back (task #1140: on the NAS, in a session reconnect
+        // of the Mac's SMB client): a file is taken only on a read-back that matches the write
+        // just made.
         if let Source::File(p) = src {
             // (Bytes are borrowed for the call: they can't change.)
             let now = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
@@ -236,7 +249,7 @@ fn write_atomic_as(
                 now.1
             );
         }
-        ensure!(writes < WRITE_TRIES, "{what}, the source unchanged; {writes} writes read back wrong running");
+        ensure!(writes < WRITE_TRIES, "{what}, the source unchanged; {writes} writes lost or read back wrong running");
         eprintln!("{what}, the source unchanged: written again");
     }
     let (from, to) = (tmp.0.clone(), dest.clone());
@@ -278,59 +291,79 @@ fn present(dest: &Path, size: u64) -> Result<bool> {
     }
 }
 
-fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
+/// Where a temporary file's write failed: on the share (its open, a write, its sync, its close), or
+/// reading its local source.
+enum Failed {
+    Share(io::Error),
+    Source(io::Error),
+}
+
+/// Writes `src` to `tmp`, from its open to its close, the close's result checked (crate::sys::close:
+/// where the Mac's SMB client gives a write's last error).
+fn write_tmp(tmp: &Path, src: Source<'_>) -> std::result::Result<(), Failed> {
     let t = tmp.to_path_buf();
-    let out = on_nas(tmp, "open", vec![t.clone()], move |_| {
+    let opened = on_nas(tmp, "open", vec![t.clone()], move |_| {
         let out = OpenOptions::new().write(true).create(true).truncate(true).open(&t)?;
         // (Past the client's cache: a write returns once its bytes went to the share, so the
         // bytes counted moved are the share's and the closing sync has no backlog to flush unseen:
         // an upload's progress is judged by them, pipeline's `Out::settle`.)
         no_cache(&out)?;
-        Ok(std::sync::Arc::new(out))
-    })?;
-    // (Each piece a call of its own, the piece's bytes its own: never the whole upload copied.)
-    let put = |c: &[u8]| -> io::Result<()> {
-        let (f, owned, t) = (out.clone(), c.to_vec(), tmp.to_path_buf());
-        on_nas(tmp, "write", vec![t], move |_| (&*f).write_all(&owned))
+        Ok(out)
+    });
+    // (The file goes into each call and comes back with its answer; a call that fails keeps it,
+    // closed unchecked as the write is failed anyway.)
+    let mut out = Some(opened.map_err(Failed::Share)?);
+    let mut on_file = |op: &'static str, f: Box<dyn FnOnce(&File) -> io::Result<()> + Send>| {
+        let (file, t) = (out.take().expect("the temporary file"), tmp.to_path_buf());
+        let file = on_nas(tmp, op, vec![t], move |_| f(&file).map(|()| file)).map_err(Failed::Share)?;
+        out = Some(file);
+        Ok(())
     };
-    // (Each write's bytes counted the NAS's as it goes, so a long upload's job is seen moving by
+    // (Each piece a call of its own, the piece's bytes its own: never the whole upload copied.
+    // Each write's bytes counted the NAS's as it goes, so a long upload's job is seen moving by
     // its beats, task #990; the file made is its caller's to count, as it lands.)
+    let mut put = |c: &[u8]| -> std::result::Result<(), Failed> {
+        let owned = c.to_vec();
+        on_file("write", Box::new(move |mut f| f.write_all(&owned)))?;
+        crate::nasio::written(c.len() as u64);
+        Ok(())
+    };
     match src {
         Source::Bytes(b) => {
             for c in b.chunks(CHUNK) {
                 put(c)?;
-                crate::nasio::written(c.len() as u64);
             }
         }
         Source::File(p) => {
             // A plain copy: fs::copy would also carry extended attributes over to the share.
-            let mut inp = File::open(p)?;
+            let mut inp = File::open(p).map_err(Failed::Source)?;
             let mut buf = vec![0u8; CHUNK];
             loop {
                 let n = match inp.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(Failed::Source(e)),
                 };
                 put(&buf[..n])?;
-                crate::nasio::written(n as u64);
                 count_moved(n);
             }
         }
     }
-    let (f, t) = (out.clone(), tmp.to_path_buf());
-    on_nas(tmp, "sync", vec![t], move |_| f.sync_all())?;
+    on_file("sync", Box::new(|f| f.sync_all()))?;
+    let (file, t) = (out.take().expect("the temporary file"), tmp.to_path_buf());
+    on_nas(tmp, "close", vec![t.clone()], move |_| crate::sys::close(file, &t)).map_err(Failed::Share)?;
     #[cfg(test)]
     if faults::take() {
-        faults::damage(tmp)?;
+        faults::damage(tmp).map_err(Failed::Share)?;
     }
     Ok(())
 }
 
 /// Hash and size of a just-written file, read back past the client's cache: on a fresh descriptor
 /// with `F_NOCACHE`, which the Mac's SMB client reads from the server (the cached range dropped
-/// first), never from its pages.
+/// first), never from its pages. Its bytes counted read from the NAS as they come
+/// (crate::nasio::read_back: in the job's NAS reads, and its NAS weight, task #1142).
 fn reread(path: &Path) -> io::Result<(String, u64)> {
     let p = path.to_path_buf();
     on_nas(path, "read back", Vec::new(), move |m| {
@@ -341,14 +374,15 @@ fn reread(path: &Path) -> io::Result<(String, u64)> {
     })
 }
 
-/// A reader saying each read's bytes moved (crate::deadline: a long read-back that goes on never
-/// ends for its length).
+/// A read-back's reader: each read's bytes said moved (crate::deadline: a long read-back that goes
+/// on never ends for its length), and counted read back (crate::nasio::read_back).
 struct Moving<'a, R>(R, &'a crate::deadline::Progress);
 
 impl<R: Read> Read for Moving<'_, R> {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
         let n = self.0.read(b)?;
         self.1.add(n as u64);
+        crate::nasio::read_back(n as u64);
         Ok(n)
     }
 }
@@ -478,6 +512,7 @@ pub(crate) fn replace_file(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::
         crate::sys::set_mode(&f, mode)?;
     }
     f.sync_all()?;
+    crate::sys::close(f, &tmp.0)?;
     fs::rename(&tmp.0, path)?;
     tmp.keep();
     Ok(())
@@ -611,7 +646,7 @@ mod tests {
         // Every write read back wrong: it gives up after WRITE_TRIES of them, leaving nothing.
         damage_next(WRITE_TRIES);
         let e = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap_err();
-        assert!(format!("{e:#}").contains(&format!("{WRITE_TRIES} writes read back wrong running")), "{e:#}");
+        assert!(format!("{e:#}").contains(&format!("{WRITE_TRIES} writes lost or read back wrong running")), "{e:#}");
         assert_eq!(left(), 0);
         // (Its faults all taken: the next write lands at once.)
         assert!(landed(&write_atomic(nr, "a", "bin", Source::File(&src)).unwrap()));
@@ -624,6 +659,67 @@ mod tests {
         let e = write_atomic_hashed(nr, "a", "bin", &src, &stale, big.len() as u64).unwrap_err();
         assert!(format!("{e:#}").contains("the source changed since it was hashed"), "{e:#}");
         assert_eq!(left(), 0);
+    }
+
+    /// Task #1142: a write whose close fails as the share's for a moment (ETIMEDOUT, EIO: a pageout
+    /// lost to a session reconnect comes back at the close alone) is written again, its source
+    /// unchanged, WRITE_TRIES writes at most, leaving nothing when all fail; another close error
+    /// fails at once; a call past its deadline is held, not made again.
+    #[test]
+    fn a_write_whose_close_fails_is_written_again() {
+        use crate::sys::close_fault::fail;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        fs::create_dir(&root).unwrap();
+        let nr = &crate::nasfs::NasRoot::local_for_test(&root);
+        let src = dir.path().join("src.bin");
+        let big: Vec<u8> = (0..(CHUNK + 999)).map(|i| (i % 249) as u8).collect();
+        fs::write(&src, &big).unwrap();
+        let left = || fs::read_dir(&root).unwrap().count();
+        let back0 = crate::nasio::get(crate::nasio::Count::ReadBack);
+
+        // One close failed (its file whole: the close's error alone sends it again): written
+        // again, and lands. From bytes too, all but the last of WRITE_TRIES failed, EIO.
+        let f = fail(&root, libc::ETIMEDOUT, 1);
+        let name = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap();
+        assert_eq!((f.failed(), fs::read(root.join(&name)).unwrap()), (1, big.clone()));
+        drop(f);
+        fs::remove_file(root.join(&name)).unwrap();
+        let f = fail(&root, libc::EIO, WRITE_TRIES - 1);
+        assert_eq!(write_atomic(nr, "c", "bin", Source::Bytes(&big)).unwrap(), name);
+        assert_eq!((f.failed(), fs::read(root.join(&name)).unwrap()), (WRITE_TRIES - 1, big.clone()));
+        drop(f);
+        fs::remove_file(root.join(&name)).unwrap();
+        // (Each landed write read back whole, counted the NAS's reads: two uploads' worth.)
+        assert!(crate::nasio::get(crate::nasio::Count::ReadBack) - back0 >= 2 * big.len() as u64);
+
+        // Every close failed: given up after WRITE_TRIES writes, the error said, nothing left.
+        let f = fail(&root, libc::ETIMEDOUT, WRITE_TRIES + 5);
+        let e = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap_err();
+        assert_eq!(f.failed(), WRITE_TRIES);
+        let s = format!("{e:#}");
+        assert!(s.contains(&format!("{WRITE_TRIES} writes lost or read back wrong running")), "{s}");
+        assert!(s.contains(&io::Error::from_raw_os_error(libc::ETIMEDOUT).to_string()), "{s}");
+        assert_eq!(left(), 0);
+        drop(f);
+
+        // A close error that isn't the share's moment (the disk full): failed at once, not again.
+        let f = fail(&root, libc::ENOSPC, 3);
+        let e = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap_err();
+        assert_eq!(f.failed(), 1, "{e:#}");
+        assert_eq!(left(), 0);
+        drop(f);
+
+        // A call past its deadline (the temporary file's open, hung): held, the temporary name
+        // with it, and never made again (no second call on the hung share).
+        let _cap = crate::deadline::cap_for_test(crate::deadline::CAP_DEFAULT);
+        let dest = root.join(content_name("c", &hash16(&big), "bin"));
+        let hung = crate::deadline::fake::hang(&tmp_path(&dest)).deadline(std::time::Duration::from_millis(50));
+        let e = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap_err();
+        let ie = e.chain().find_map(|c| c.downcast_ref::<io::Error>()).expect("an I/O error");
+        assert!(crate::deadline::past_deadline(ie), "{e:#}");
+        assert_eq!(hung.held(), 1, "made once: {e:#}");
+        drop(hung);
     }
 
     #[test]

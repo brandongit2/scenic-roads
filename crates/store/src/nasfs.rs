@@ -705,12 +705,18 @@ impl NasPath {
 
     // ---- writes: counted, never retried; each holds the paths it changes while it's held ----
 
-    /// Writes `b` as it (`std::fs::write`: in place, no temporary name). Counted as a file made.
+    /// Writes `b` as it (`std::fs::write`: in place, no temporary name), its close checked
+    /// (crate::sys::close). Counted as a file made.
     pub fn write(&self, b: impl AsRef<[u8]>) -> io::Result<()> {
         let _w = crate::waits::nas();
         let b = b.as_ref().to_vec();
         let (n, t) = (b.len() as u64, Instant::now());
-        self.change("write", &[], move |q| std::fs::write(q.full(), &b))?;
+        self.change("write", &[], move |q| {
+            let p = q.full();
+            let mut f = std::fs::File::create(&p)?;
+            f.write_all(&b)?;
+            crate::sys::close(f, &p)
+        })?;
         nasio::wrote(&self.full(), n, ms_since(t));
         Ok(())
     }
@@ -777,6 +783,7 @@ impl NasPath {
             f.write_all(b)?;
             f.sync_all()?;
             let n = f.metadata()?.len();
+            crate::sys::close(f, &p)?;
             anyhow::ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());
             Ok(())
         })();
@@ -788,13 +795,13 @@ impl NasPath {
     }
 
     /// The file made for writing (`std::fs::File::create`): the bytes written through it counted as
-    /// they go, the file counted made when it is dropped.
+    /// they go, the file counted made when it is closed (`NasFile::close`).
     pub fn create(&self) -> io::Result<NasFile> {
         self.open_with(std::fs::OpenOptions::new().write(true).create(true).truncate(true))
     }
 
     /// The file opened with `o` (append, create-new, write in place). A file it may make: the bytes
-    /// written through it counted as they go, the file counted made when it is dropped; one opened
+    /// written through it counted as they go, the file counted made when it is closed; one opened
     /// only for reading as a file read. Never retried. Its open a change of the share (a create, a
     /// truncate), its writes each another.
     pub fn open_with(&self, o: &std::fs::OpenOptions) -> io::Result<NasFile> {
@@ -1232,10 +1239,11 @@ pub(crate) fn copy_counter() -> impl FnMut(u64, u64) {
 }
 
 /// An open NAS file: reads and writes through it are counted as they go; one written is counted as
-/// made when it is dropped. Each read, write, seek to its end and its close is a crate::deadline
-/// call within its root's deadline: its reads fill a buffer of crate::sys::COPY_BUF at a time (one
-/// call a MB, not one a reader's few kB), its writes hold its path (a later change to it refused
-/// while one is held). Derefs to the `File` for its metadata and `set_len`, made inline.
+/// made when it is closed. Each read, write, sync, seek to its end and its close is a
+/// crate::deadline call within its root's deadline: its reads fill a buffer of crate::sys::COPY_BUF
+/// at a time (one call a MB, not one a reader's few kB), its writes hold its path (a later change
+/// to it refused while one is held). A writer ends it with `close`, which says the close's error
+/// (a drop only logs it). Derefs to the `File` for its metadata and `set_len`, made inline.
 pub struct NasFile {
     /// (None only once `into_file` took it, or its close began.)
     f: Option<Arc<std::fs::File>>,
@@ -1367,22 +1375,55 @@ impl Seek for NasFile {
     }
 }
 
+impl NasFile {
+    /// `File::sync_all`, a call within its deadline (its path held while it's held).
+    pub fn sync_all(&self) -> io::Result<()> {
+        let _w = crate::waits::nas();
+        self.on("sync", self.wrote.is_some(), |f| f.sync_all())
+    }
+
+    /// Closes it, the close's result checked (crate::sys::close: where the Mac's SMB client gives a
+    /// write's last error, which a drop loses). Every writer of a NAS file ends it so; a written
+    /// one is counted made.
+    pub fn close(mut self) -> io::Result<()> {
+        self.finish()
+    }
+
+    /// Its close (`close`; once): where SMB sends what's left of a write. Past its deadline it's left
+    /// to the kernel, as any call. A file a call left to the kernel still holds is closed by that
+    /// call as it ends, unchecked: an error, when it was written.
+    fn finish(&mut self) -> io::Result<()> {
+        let written = self.wrote.is_some();
+        let r = match self.f.take() {
+            Some(f) => {
+                let _w = crate::waits::nas();
+                let keys = if written { vec![self.path.clone()] } else { Vec::new() };
+                let p = self.path.clone();
+                deadline::writing(&self.path.display(), &"close", self.deadline, keys, move || {
+                    match Arc::try_unwrap(f) {
+                        Ok(f) => crate::sys::close(f, &p),
+                        Err(_) if written => {
+                            Err(io::Error::other("an earlier call on it is still in the kernel: its close unchecked"))
+                        }
+                        Err(_) => Ok(()),
+                    }
+                })
+            }
+            // (`into_file` took it.)
+            None => Ok(()),
+        };
+        if let Some(n) = self.wrote.take() {
+            nasio::made(&self.path, n, ms_since(self.t));
+        }
+        r
+    }
+}
+
 impl Drop for NasFile {
     fn drop(&mut self) {
-        // (Its close: where SMB sends what's left of a write. Past its deadline it's left to the
-        // kernel, as any call.)
-        if let Some(f) = self.f.take() {
-            let _w = crate::waits::nas();
-            let keys = if self.wrote.is_some() { vec![self.path.clone()] } else { Vec::new() };
-            if let Err(e) = deadline::writing(&self.path.display(), &"close", self.deadline, keys, move || {
-                drop(f);
-                Ok(())
-            }) {
-                crate::retry::log(format_args!("{}: close: {e}", self.path.display()));
-            }
-        }
-        if let Some(n) = self.wrote {
-            nasio::made(&self.path, n, ms_since(self.t));
+        // (Not closed by `close`: closed here, its error logged.)
+        if let Err(e) = self.finish() {
+            crate::retry::log(format_args!("{}: close: {e}", self.path.display()));
         }
     }
 }

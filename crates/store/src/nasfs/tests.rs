@@ -287,6 +287,29 @@ fn an_uploads_bytes_count_as_they_go() {
     assert!(d(Count::WroteBytes) >= wrote + 300_000, "a content-named upload's bytes, as it writes them");
 }
 
+/// Task #1142: a NAS file's close says its error (where the Mac's SMB client gives a write's last
+/// one): `NasFile::close`, an in-place `write`, a create-new; the file still counted made.
+#[test]
+fn a_close_error_is_the_writes() {
+    use crate::sys::close_fault::fail;
+    let (d, r) = root();
+    let at = nasio::own();
+    let f = fail(d.path(), libc::ETIMEDOUT, 3);
+    let mut w = r.join("closed.bin").create().unwrap();
+    w.write_all(b"abc").unwrap();
+    w.sync_all().unwrap();
+    assert_eq!(w.close().unwrap_err().raw_os_error(), Some(libc::ETIMEDOUT));
+    assert!(nasio::own()[Count::Creates as usize] > at[Count::Creates as usize], "counted made");
+    assert_eq!(r.join("in-place.json").write(b"x").unwrap_err().raw_os_error(), Some(libc::ETIMEDOUT));
+    assert!(matches!(r.join("new.json").create_new(b"y").unwrap(), Created::Unwritten(_)));
+    assert_eq!(f.failed(), 3);
+    drop(f);
+    let mut w = r.join("closed.bin").create().unwrap();
+    w.write_all(b"abc").unwrap();
+    w.close().unwrap();
+    assert_eq!(std::fs::read(d.path().join("closed.bin")).unwrap(), b"abc");
+}
+
 /// Task #1141: a call the share never answers fails at its deadline (a read, a stat, a write),
 /// left to the kernel; while that write is held a later write of its path is refused at once,
 /// never made, and once the share answers the path is free again and the last write lands.

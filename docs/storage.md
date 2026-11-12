@@ -43,17 +43,28 @@ nas/           fetch-planet.sh, which the NAS runs (copied from tools/nas/ by pu
 - Every built file is `<logical>.<hash16>.<ext>`, never rewritten. A write goes to `<name>.tmp`, is
   read back past the client's cache (a fresh descriptor with `F_NOCACHE`, which the Mac's SMB
   client reads from the server; one it refuses fails the write) and checked against its hash, then
-  renamed (`store::naming::write_atomic`). A read-back that differs, its source unchanged, is
+  renamed (`store::naming::write_atomic`). The temporary file is closed with the close's result
+  checked (`store::sys::close`): the Mac's SMB client keeps a pageout's write error for the close
+  alone (its fsync doesn't return it, and a dropped `File` ignores it), and on a soft mount a
+  session reconnect fails every request in flight with ETIMEDOUT. A write lost to the share for a
+  moment (ETIMEDOUT, EIO or a dropped session at its open, a write, its sync or its close:
+  `store::whole::lost_write`, task #1142) or a read-back that differs, its source unchanged, is
   written again, three writes at most, each a line in the job's log; a source changed since it was
-  hashed fails at once (task #1140: on 9 and 11 Nov three packs of 511-823 MB from the Mac mini,
-  and on 24 Oct one of 185 MB from the M4, read back the same length but other bytes, and failed
-  their jobs; the mini's SMB session had reconnected during the 11 Nov one's upload). Each write
-  and read-back moves the whole file: the writes are counted as the NAS's bytes written, the
-  read-backs in no NAS count. Each of its calls on the share (the stat, the folder made, the open,
-  each 4 MB written, the sync, the read-back, the rename) is a store::deadline call, two minutes at
-  most (a read-back counted from its last byte); one left in the kernel past it fails the upload,
-  and a late finish lands only in this process's temporary name or the same content-named bytes
-  (docs/nas-access.md §6). An unchanged file keeps its name, so a
+  hashed fails at once, and so does any other error (task #1140: on 9 and 11 Nov three packs of
+  511-823 MB from the Mac mini, and on 24 Oct one of 185 MB from the M4, read back the same length
+  but other bytes, and failed their jobs; the mini's SMB session had reconnected during the 11 Nov
+  one's upload). Each write and read-back moves the whole file: the writes are counted as the
+  NAS's bytes written, the read-backs as its bytes read (store::nasio's `ReadBytes`), and apart
+  too (`ReadBack`), so a job's cost line says them as `read_back`, beside its `bytes` (what the
+  step read), and its NAS weight counts them (docs/pool.md §7.7). Each of its calls on the share
+  (the stat, the folder made, the open, each 4 MB written, the sync, the close, the read-back, the
+  rename) is a store::deadline call, two minutes at most (a read-back counted from its last byte);
+  one left in the kernel past it fails the upload, never written again (the temporary name held
+  with it), and a late finish lands only in this process's temporary name or the same
+  content-named bytes (docs/nas-access.md §6). Every other NAS writer closes its file checked too:
+  `store::whole`'s writes and copies (a lost write of their temporary file written again, as
+  here), a `NasFile` (`close`), an in-place write, a create-new, the server's I/O pool's writes,
+  `store::sys::copy_data` and the NAS budget's probe. An unchanged file keeps its name, so a
   rebuild uploads only what changed; one already there is reused as it is, nothing written to it,
   and named in the job's hand-off (`Handoff::reused`), which the merge checks against GC's deletions
   (docs/maplog.md §7.4). One the manifest already names under the same logical name takes one look

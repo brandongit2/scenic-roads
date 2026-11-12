@@ -181,12 +181,21 @@ change of this process to any of them is refused at once (`deadline::writing`). 
   where a later write of this process can't go meanwhile (its path held), so it never lands over
   a newer write of this process; another Mac's write is as racy as it ever was. A temporary file
   left is a temporary name (`whole::is_tmp`), which GC sweeps.
-- **In-place writes** (`write`, a `NasFile`'s writes and close, `open_with`'s create or truncate):
-  held by their path, so no later write of this process interleaves with a late one.
-- **Content-named uploads** (store::naming: each stat, open, 4 MB piece, sync, read-back, rename
-  and the temporary file's removal a call of its own): a late piece lands only in this process's
-  temporary name, held meanwhile; a late exclusive rename lands only the same content-named bytes,
-  which a name never changes from.
+- **In-place writes** (`write`, a `NasFile`'s writes, sync and close, `open_with`'s create or
+  truncate): held by their path, so no later write of this process interleaves with a late one.
+- **Content-named uploads** (store::naming: each stat, open, 4 MB piece, sync, close, read-back,
+  rename and the temporary file's removal a call of its own): a late piece lands only in this
+  process's temporary name, held meanwhile; a late exclusive rename lands only the same
+  content-named bytes, which a name never changes from. A write the share loses for a moment (an
+  OS error, ETIMEDOUT or EIO, at its open, a write, its sync or its close) is written again, as a
+  whole write's temporary file is (`whole::lost_write`); one past its deadline is never: its
+  `TimedOut` has no OS code, and its temporary name stays held.
+
+**Every NAS writer closes its file checked** (`store::sys::close`, task #1142): the Mac's SMB
+client keeps a pageout's write error for the close alone (its fsync doesn't return it), and a
+dropped `File` ignores the close's result. Content-named uploads, whole writes and copies, a
+`NasFile` (`close`: a writer ends with it; a drop only logs the error), an in-place `write`, a
+create-new, the I/O pool's writes, `sys::copy_data` and the NAS budget's probe.
 - **Create-new** (the pool protocol's): past its deadline its caller can't tell made from not made,
   as with a lost answer, which the protocol already takes (`Created`); never retried here.
 - **Renames** hold both names. **Removes** (`remove_file`, `remove_dir`, `remove_dir_all`, a
