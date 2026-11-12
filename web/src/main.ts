@@ -34,6 +34,7 @@ import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setT
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogueWatch } from './catalogue';
 import { PolarCaps } from './polarcaps';
+import { PolarPoints } from './polarpoints';
 import { globeProjection } from './polarglobe';
 import { nasBack, TileRetry } from './retry';
 import { RegionLayers } from './regions';
@@ -1273,8 +1274,11 @@ async function main() {
     w.on(() => setBuildingsCredit(w.status?.credits));
     // The polar caps, while the catalogue has their layers (under the contours and everything after).
     const polar = new PolarCaps(map, { land: () => store.s.land, water: () => (store.s.layers.water ? store.s.water.colour : null) }, contours.id);
+    // Their labels, landmarks and roads past 85.05°, over the map (their files' versions follow the catalogue).
+    const polarPoints = new PolarPoints(map, () => store.s.labelDensity);
     w.on(() => {
       polar.setCatalogue(w.status?.layers);
+      if (!map.getLayer(polarPoints.layer.id)) map.addLayer(polarPoints.layer);
       reopen();
     });
     // The depth's layers and sources, and the notices their licences ask for in the credits.

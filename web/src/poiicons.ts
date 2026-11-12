@@ -20,6 +20,9 @@ export const ICON_PX = 48;
 /** The distance field's reach (atlas px): 0.5 on the edge, 1 this far inside, 0 this far out. */
 export const SDF_REACH = 10;
 
+/** A kind's icon as its 15 × 15 SVG path (the polar caps draw it on a canvas: polarpoints.ts). */
+export const iconPath = (kind: string): string | undefined => PATHS[kind];
+
 /** Each kind's cell in the atlas (its column), or undefined for a kind with no icon. */
 export const iconIndex = (kind: string): number | undefined => {
   const i = Object.keys(PATHS).indexOf(kind);
