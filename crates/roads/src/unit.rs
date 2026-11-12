@@ -205,7 +205,7 @@ pub const STAGES: [(&str, f64); 24] = [
     ("cutting to the coverage", 1.0),
     ("sampling the elevations (elev)", 150.0),
     ("keeping DEM samples", 40.0),
-    ("staging layers from the packs", 60.0),
+    (crate::stage::STAGE, 60.0),
     ("staging the heritage inputs", 8.0),
     ("flagging the areas (areaflags)", 5.0),
     ("classifying the land cover (landcover)", 4.0),
@@ -597,12 +597,12 @@ pub fn prepare_folder(
         .context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     // 4. The global-source layers the steps read, from the packs.
-    let s = stage("staging layers from the packs");
+    let s = stage(crate::stage::STAGE);
     let b = area.b;
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
     let deep = terrain::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
-    rep.staged = crate::stage::stage(src, area, &deep, dir)?;
+    rep.staged = crate::stage::stage(src, area, &deep, dir, &|f| stage_said(crate::stage::STAGE, f, None))?;
     terrain::road_terrain::Codes::of(&accepted).write(&dir.join(terrain::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated

@@ -15,13 +15,19 @@ use anyhow::{Context, Result};
 use buildstore::out::Out;
 use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain, CELLS};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
+use std::sync::Arc;
 use store::catalogue::Catalogue;
-use store::nasfs::Place;
+use store::nasfs::{Loc, Place};
 use store::pack::PackIndex;
 use store::range::PlainFile;
 use terrain::terrain_pack::ManifestTiles;
+
+/// The grids staged from their packs (besides the terrain's, from its z11 tiles), each its layer
+/// `grid-<var>`.
+const GRIDS: [&str; 3] = ["class", "canopy", "cover"];
 
 /// How far a sample sees, km: its far field (roadcore::scenic::FAR_MAX_M).
 pub const FAR_KM: f64 = roadcore::scenic::FAR_MAX_M / 1000.0;
@@ -126,15 +132,19 @@ impl Source<'_> {
     }
 
     /// The file of a pack or worldwide file, by logical name (None: there's none): the local copy
-    /// when there's a cache (the NAS's if copying fails: the read is only slower).
-    fn file(&self, logical: &str) -> Option<Place> {
+    /// when there's a cache (the NAS's if copying fails: the read is only slower), its copying's
+    /// bytes counted in `reading` as they come.
+    fn file(&self, logical: &str, reading: &Arc<Reading>) -> Option<Place> {
         match self {
             Source::Manifest(out, None) => out.get(logical).map(|c| Place::Nas(out.path(c))),
-            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| match blobs.get(out.root(), c) {
-                Ok(l) => Place::Local(l),
-                Err(e) => {
-                    eprintln!("stage: {c} not copied here ({e}); read from the NAS");
-                    Place::Nas(out.path(c))
+            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| {
+                let r = reading.clone();
+                match blobs.get_counted(out.root(), c, Arc::new(move |k, len| r.copied(k, len))) {
+                    Ok(l) => Place::Local(l),
+                    Err(e) => {
+                        eprintln!("stage: {c} not copied here ({e}); read from the NAS");
+                        Place::Nas(out.path(c))
+                    }
                 }
             }),
             Source::Catalogue(root, cat) => cat.files.get(logical).map(|f| Place::Nas(root.join(&f.file))),
@@ -143,12 +153,12 @@ impl Source<'_> {
 
     /// The file of a pack, by logical name, without copying it here: this Mac's copy when it has
     /// one, else the NAS's (`file` copies it first).
-    fn file_here(&self, logical: &str) -> Option<Place> {
+    fn file_here(&self, logical: &str, reading: &Arc<Reading>) -> Option<Place> {
         match self {
             Source::Manifest(out, Some(blobs)) => {
                 out.get(logical).map(|c| blobs.have(c).map_or_else(|| Place::Nas(out.path(c)), Place::Local))
             }
-            _ => self.file(logical),
+            _ => self.file(logical, reading),
         }
     }
 
@@ -173,6 +183,14 @@ impl Source<'_> {
         logical.iter().filter_map(|l| out.get(l).map(str::to_string)).collect()
     }
 
+    /// Whether there's a file of logical name `logical`.
+    fn has_file(&self, logical: &str) -> bool {
+        match self {
+            Source::Manifest(out, _) => out.get(logical).is_some(),
+            Source::Catalogue(_, cat) => cat.files.contains_key(logical),
+        }
+    }
+
     fn has_layer(&self, layer: &str) -> bool {
         match self {
             Source::Manifest(out, _) => {
@@ -185,40 +203,171 @@ impl Source<'_> {
 }
 
 /// Tiles of a layer, from its packs.
-pub struct LayerReader<'a> {
+struct LayerReader<'a> {
     src: &'a Source<'a>,
     layer: String,
-    open: HashMap<String, Option<(PlainFile, PackIndex)>>,
+    /// Each pack opened: its file, its index, and whether it's read from the NAS (None: no such pack).
+    open: HashMap<String, Option<(PlainFile, PackIndex, bool)>>,
 }
 
 impl<'a> LayerReader<'a> {
-    pub fn new(src: &'a Source<'a>, layer: &str) -> LayerReader<'a> {
+    fn new(src: &'a Source<'a>, layer: &str) -> LayerReader<'a> {
         LayerReader { src, layer: layer.to_string(), open: HashMap::new() }
     }
 
-    pub fn exists(&self) -> bool {
+    fn exists(&self) -> bool {
         self.src.has_layer(&self.layer)
     }
 
-    /// A tile's blob as stored (None when the layer has no such tile).
-    pub fn get(&mut self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
-        let Some(logical) = self.src.pack_of(&self.layer, z, x, y) else { return Ok(None) };
-        if !self.open.contains_key(&logical) {
-            let opened = match self.src.file(&logical) {
-                Some(p) => {
-                    let p = p.loc();
-                    let pf = p.open_plain().with_context(|| format!("open {}", p.display()))?;
-                    let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
-                    Some((pf, idx))
-                }
-                None => None,
-            };
-            self.open.insert(logical.clone(), opened);
+    /// The packs there are (logical names) holding the layer's z11 tiles `tiles`, in order.
+    fn packs(&self, tiles: &[[u32; 2]]) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        tiles
+            .iter()
+            .filter_map(|t| self.src.pack_of(&self.layer, 11, t[0], t[1]))
+            .filter(|l| self.src.has_file(l) && seen.insert(l.clone()))
+            .collect()
+    }
+
+    /// Pack `logical` opened (copied here first, `Source::file`), its index read: once.
+    fn open(&mut self, logical: &str, reading: &Arc<Reading>) -> Result<()> {
+        if self.open.contains_key(logical) {
+            return Ok(());
         }
-        let Some((pf, idx)) = self.open.get(&logical).and_then(Option::as_ref) else { return Ok(None) };
-        Ok(idx.get(pf, z, x, y)?.map(|(_, b)| b))
+        let opened = match self.src.file(logical, reading) {
+            Some(p) => {
+                let p = p.loc();
+                let pf = p.open_plain().with_context(|| format!("open {}", p.display()))?;
+                let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
+                Some((pf, idx, matches!(p, Loc::Nas(_))))
+            }
+            None => None,
+        };
+        self.open.insert(logical.to_string(), opened);
+        Ok(())
+    }
+
+    /// A tile's blob as stored (None when the layer has no such tile), counted in `reading` (a tile
+    /// of the part under way).
+    fn get(&mut self, z: u8, x: u32, y: u32, reading: &Arc<Reading>) -> Result<Option<Vec<u8>>> {
+        let Some(logical) = self.src.pack_of(&self.layer, z, x, y) else { return Ok(None) };
+        self.open(&logical, reading)?;
+        let Some((pf, idx, nas)) = self.open.get(&logical).and_then(Option::as_ref) else { return Ok(None) };
+        let b = idx.get(pf, z, x, y)?.map(|(_, b)| b);
+        reading.tile(b.as_ref().map_or(0, |b| b.len() as u64), *nas);
+        Ok(b)
     }
 }
+
+/// How far a z6 tile's staging is (`stage`), counted as it reads, from any thread: its parts (each
+/// pack it reads: copied here whole, its tiles read in spans, or its index read; and each grid's
+/// tiles taken from their packs), the one under way by its NAS bytes (or its tiles) of those it's
+/// known to take, and the bytes read from the NAS so far (a local copy's reads are quick: they
+/// count for nothing). `stage` says its share done every few seconds and logs it every `LOG_EVERY`:
+/// a slow read is told from a stuck one (task #1156: a z6 tile's staging read its packs at 6 MB/s
+/// for 26 minutes, and said nothing).
+#[derive(Debug, Default)]
+pub struct Reading {
+    parts: AtomicU64,
+    packs: AtomicU64,
+    ended: AtomicU64,
+    /// The part under way: how far (bytes, or tiles), of how much it's known to take (bytes, or
+    /// tiles); whether its copy's length is counted in that yet; its name, and whether it counts tiles.
+    at: AtomicU64,
+    of: AtomicU64,
+    sized: AtomicBool,
+    now: std::sync::Mutex<(String, bool)>,
+    bytes: AtomicU64,
+}
+
+impl Reading {
+    /// `packs` packs and `grids` grids' tiles to read.
+    fn plan(&self, packs: usize, grids: usize) {
+        self.parts.fetch_add((packs + grids) as u64, Relaxed);
+        self.packs.fetch_add(packs as u64, Relaxed);
+    }
+
+    /// Part `what` begins (`tiles`: counted in tiles, else in bytes), taking `of` (more as it's known).
+    fn begin(&self, what: &str, tiles: bool, of: u64) {
+        self.at.store(0, Relaxed);
+        self.of.store(of, Relaxed);
+        self.sized.store(false, Relaxed);
+        *self.now.lock().unwrap_or_else(|e| e.into_inner()) = (what.to_string(), tiles);
+    }
+
+    /// The part under way takes `n` more bytes from the NAS.
+    fn more(&self, n: u64) {
+        self.of.fetch_add(n, Relaxed);
+    }
+
+    /// `k` bytes of the part under way read from the NAS.
+    fn read(&self, k: u64) {
+        self.at.fetch_add(k, Relaxed);
+        self.bytes.fetch_add(k, Relaxed);
+    }
+
+    /// `k` bytes of a pack `len` long copied here (`Source::file`): the copy is the part's.
+    fn copied(&self, k: u64, len: u64) {
+        if !self.sized.swap(true, Relaxed) {
+            self.more(len);
+        }
+        self.read(k);
+    }
+
+    /// A tile of the part under way read, `k` bytes (`nas`: from the NAS).
+    fn tile(&self, k: u64, nas: bool) {
+        self.at.fetch_add(1, Relaxed);
+        if nas {
+            self.bytes.fetch_add(k, Relaxed);
+        }
+    }
+
+    /// The part under way ended.
+    fn end(&self) {
+        self.ended.fetch_add(1, Relaxed);
+        self.begin("", false, 0);
+    }
+
+    /// Its share done (0–1): its parts ended, the one under way by how far it is.
+    pub fn done(&self) -> f64 {
+        let parts = self.parts.load(Relaxed);
+        if parts == 0 {
+            return 0.0;
+        }
+        let (at, of) = (self.at.load(Relaxed), self.of.load(Relaxed));
+        let now = if of > 0 { (at as f64 / of as f64).min(1.0) } else { 0.0 };
+        ((self.ended.load(Relaxed) as f64 + now) / parts as f64).min(1.0)
+    }
+
+    /// Its log line, `took` into it: "12 of 31 parts (28 packs, 3 grids' tiles), 2154 MB from the
+    /// NAS in 340s (6.3 MB/s); now layers/terrain/hi/6-31-19, 410 of 1210 MB".
+    pub fn line(&self, took: std::time::Duration) -> String {
+        let (parts, packs) = (self.parts.load(Relaxed), self.packs.load(Relaxed));
+        let mb = self.bytes.load(Relaxed) as f64 / 1e6;
+        let mut l = format!(
+            "{} of {parts} parts ({packs} packs, {} grids' tiles), {mb:.0} MB from the NAS in {took:.0?} ({:.1} MB/s)",
+            self.ended.load(Relaxed),
+            parts - packs,
+            mb / took.as_secs_f64().max(1e-3),
+        );
+        let (what, tiles) = self.now.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !what.is_empty() {
+            let (at, of) = (self.at.load(Relaxed), self.of.load(Relaxed));
+            l += &if tiles {
+                format!("; now {what}, {at} of {of}")
+            } else {
+                format!("; now {what}, {} of {} MB", at / 1_000_000, of / 1_000_000)
+            };
+        }
+        l
+    }
+}
+
+/// How often staging logs how far it is (`Reading::line`).
+pub const LOG_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The z6 tile's stage that stages these layers (crate::unit's `STAGES`).
+pub const STAGE: &str = "staging layers from the packs";
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Staged {
@@ -248,35 +397,57 @@ fn copied_whole(z: u8, x: u32, y: u32, b: [f64; 4]) -> bool {
     2 * inside >= 64 * 64
 }
 
-/// The terrain's tiles `want` that it has, for box `b`, a pack at a time: from this Mac's whole copy
-/// of a pack the box holds most of (`copied_whole`, copied first when missing), or one it has
-/// already; else from the NAS's, its wanted tiles in spans (`read_tiles`).
-fn terrain_tiles(src: &Source, b: [f64; 4], want: &[(u8, u32, u32)]) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
-    let mut by_pack: std::collections::BTreeMap<String, Vec<(u8, u32, u32)>> = std::collections::BTreeMap::new();
+/// The terrain's tiles `want` by the pack there is holding them (logical name).
+fn terrain_packs(src: &Source, want: &[(u8, u32, u32)]) -> BTreeMap<String, Vec<(u8, u32, u32)>> {
+    let mut by_pack: BTreeMap<String, Vec<(u8, u32, u32)>> = BTreeMap::new();
     for &(z, x, y) in want {
-        if let Some(l) = src.pack_of("terrain", z, x, y) {
+        if let Some(l) = src.pack_of("terrain", z, x, y).filter(|l| src.has_file(l)) {
             by_pack.entry(l).or_default().push((z, x, y));
         }
     }
-    let mut got = HashMap::with_capacity(want.len());
+    by_pack
+}
+
+/// The terrain's tiles `by_pack` (`terrain_packs`) that it has, for box `b`, a pack at a time (each
+/// a part of `reading`): from this Mac's whole copy of a pack the box holds most of
+/// (`copied_whole`, copied first when missing), or one it has already; else from the NAS's, its
+/// wanted tiles in spans (`read_tiles`).
+fn terrain_tiles(
+    src: &Source,
+    b: [f64; 4],
+    by_pack: BTreeMap<String, Vec<(u8, u32, u32)>>,
+    reading: &Arc<Reading>,
+) -> Result<HashMap<(u8, u32, u32), Vec<u8>>> {
+    let mut got = HashMap::new();
     for (logical, tiles) in by_pack {
+        reading.begin(&logical, false, 0);
         let (z, x, y) = tiles[0];
-        let file = if copied_whole(z, x, y, b) { src.file(&logical) } else { src.file_here(&logical) };
-        let Some(p) = file else { continue };
-        let p = p.loc();
-        let pf = p.open_plain().with_context(|| format!("open {}", p.display()))?;
-        let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
-        for (t, blob) in read_tiles(&pf, &idx, &tiles).with_context(|| p.display())? {
-            got.insert(t, blob);
+        let file =
+            if copied_whole(z, x, y, b) { src.file(&logical, reading) } else { src.file_here(&logical, reading) };
+        if let Some(p) = file {
+            let p = p.loc();
+            let pf = p.open_plain().with_context(|| format!("open {}", p.display()))?;
+            let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
+            let nas = matches!(p, Loc::Nas(_)).then_some(&**reading);
+            for (t, blob) in read_tiles(&pf, &idx, &tiles, nas).with_context(|| p.display())? {
+                got.insert(t, blob);
+            }
         }
+        reading.end();
     }
     Ok(got)
 }
 
 /// Tiles `tiles` of a pack that it has, read in spans: their blobs in the pack's order, neighbours
 /// under `SPAN_GAP` apart read together (up to `SPAN_MAX`), the spans in parallel, each blob checked
-/// against its checksum as `PackIndex::read_blob` does.
-fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Result<Vec<((u8, u32, u32), Vec<u8>)>> {
+/// against its checksum as `PackIndex::read_blob` does; each span's bytes counted in `nas` as it's
+/// read (a pack read from the NAS: a local one's reads count for nothing).
+fn read_tiles(
+    pf: &PlainFile,
+    idx: &PackIndex,
+    tiles: &[(u8, u32, u32)],
+    nas: Option<&Reading>,
+) -> Result<Vec<((u8, u32, u32), Vec<u8>)>> {
     use rayon::prelude::*;
     use store::range::RangeRead;
     const SPAN_GAP: u64 = 256 << 10;
@@ -295,10 +466,16 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
             _ => spans.push((e.offset, end, vec![(e, t)])),
         }
     }
+    if let Some(r) = nas {
+        r.more(spans.iter().map(|(s0, s1, _)| s1 - s0).sum());
+    }
     let read: Vec<Result<Vec<((u8, u32, u32), Vec<u8>)>>> = spans
         .par_iter()
         .map(|(s0, s1, v)| {
             let b = pf.read_at(*s0, (s1 - s0) as usize)?;
+            if let Some(r) = nas {
+                r.read(s1 - s0);
+            }
             v.iter()
                 .map(|(e, t)| {
                     let blob = b[(e.offset - s0) as usize..(e.offset - s0) as usize + e.len as usize].to_vec();
@@ -324,12 +501,37 @@ fn read_tiles(pf: &PlainFile, idx: &PackIndex, tiles: &[(u8, u32, u32)]) -> Resu
 /// Writes `terrain.tiles` and the grids for `area` into `dir`: the terrain's z0–12 over it, and
 /// its deep tiles `deep` (z13–16, those the roads' heights read:
 /// terrain::road_terrain::deep_tiles) where it has them, as stored (lossless WebP,
-/// codecs::terrain_codec) in one archive (terrain::road_terrain::TERRAIN_FILE).
+/// codecs::terrain_codec) in one archive (terrain::road_terrain::TERRAIN_FILE). Says how far it is
+/// to `say` (its share done, `Reading::done`) every few seconds (jobrt::jobs::saying), and logs it
+/// every `LOG_EVERY` and at its end (`Reading::line`).
 pub fn stage(
     src: &Source,
     area: &Area,
     deep: &std::collections::BTreeSet<(u8, u32, u32)>,
     dir: &Path,
+    say: &(dyn Fn(f64) + Sync),
+) -> Result<Staged> {
+    let reading = Arc::new(Reading::default());
+    let t = std::time::Instant::now();
+    let log_ticks = (LOG_EVERY.as_secs() / jobrt::jobs::SAY_EVERY.as_secs()).max(1);
+    let tick = |k: u64| {
+        say(reading.done());
+        if k % log_ticks == 0 {
+            eprintln!("  {STAGE}: {}", reading.line(t.elapsed()));
+        }
+    };
+    let st = jobrt::jobs::saying(jobrt::jobs::SAY_EVERY, tick, || stage_reading(src, area, deep, dir, &reading))?;
+    eprintln!("  {STAGE}: {}", reading.line(t.elapsed()));
+    Ok(st)
+}
+
+/// `stage`, counted in `reading` as it goes.
+fn stage_reading(
+    src: &Source,
+    area: &Area,
+    deep: &std::collections::BTreeSet<(u8, u32, u32)>,
+    dir: &Path,
+    reading: &Arc<Reading>,
 ) -> Result<Staged> {
     std::fs::create_dir_all(dir)?;
     let b = area.b;
@@ -337,7 +539,21 @@ pub fn stage(
     let mut want: Vec<(u8, u32, u32)> =
         (0..=12u8).flat_map(|z| area.tiles(z).into_iter().map(move |(x, y)| (z, x, y))).collect();
     want.extend(deep.iter().copied().filter(|t| t.0 > 12));
-    let mut got = terrain_tiles(src, b, &want)?;
+    // (Its parts known before it reads: the terrain's packs, each grid's packs and its tiles.)
+    let by_pack = terrain_packs(src, &want);
+    let mut tiles: Vec<[u32; 2]> = area.tiles(11).into_iter().map(|(x, y)| [x, y]).collect();
+    tiles.sort_unstable_by_key(|t| (t[1], t[0]));
+    let grids: Vec<(&str, LayerReader, Vec<String>)> = GRIDS
+        .iter()
+        .map(|&var| {
+            let l = LayerReader::new(src, &format!("grid-{var}"));
+            let packs = if l.exists() { l.packs(&tiles) } else { Vec::new() };
+            (var, l, packs)
+        })
+        .collect();
+    let read_grids = grids.iter().filter(|g| g.1.exists()).count();
+    reading.plan(by_pack.len() + grids.iter().map(|g| g.2.len()).sum::<usize>(), read_grids);
+    let mut got = terrain_tiles(src, b, by_pack, reading)?;
     want.sort_unstable_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
     want.dedup();
     let file = terrain::road_terrain::TERRAIN_FILE;
@@ -357,8 +573,6 @@ pub fn stage(
     std::fs::rename(&tmp, dir.join(file))?;
 
     // The grids over its z11 tiles.
-    let mut tiles: Vec<[u32; 2]> = area.tiles(11).into_iter().map(|(x, y)| [x, y]).collect();
-    tiles.sort_unstable_by_key(|t| (t[1], t[0]));
     let idx = roadcore::grid::GridIndex::new(tiles);
     let tiles = idx.tiles.clone();
     st.grid_tiles = tiles.len();
@@ -373,12 +587,20 @@ pub fn stage(
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
     // (The area flags are rasterised per z6 tile: landmarks::heritage, codecs::areaflags.)
-    for var in ["class", "canopy", "cover"] {
-        let mut l = LayerReader::new(src, &format!("grid-{var}"));
+    for (var, mut l, packs) in grids {
+        let exists = l.exists();
+        for p in &packs {
+            reading.begin(p, false, 0);
+            l.open(p, reading)?;
+            reading.end();
+        }
+        if exists {
+            reading.begin(&format!("grid-{var}'s tiles"), true, tiles.len() as u64);
+        }
         let mut data = vec![0u8; tiles.len() * CELLS];
         let mut missing: Vec<u32> = Vec::new();
         for (s, t) in tiles.iter().enumerate() {
-            match if l.exists() { l.get(11, t[0], t[1])? } else { None } {
+            match if exists { l.get(11, t[0], t[1], reading)? } else { None } {
                 Some(z) => {
                     let cells = zstd::decode_all(&z[..]).with_context(|| format!("grid-{var} 11/{}/{}", t[0], t[1]))?;
                     anyhow::ensure!(cells.len() == CELLS, "grid-{var} 11/{}/{}: {} cells", t[0], t[1], cells.len());
@@ -393,6 +615,9 @@ pub fn stage(
         write_file(dir, &format!("grid.{var}.missing.u32"), bytemuck::cast_slice(&missing))?;
         st.grids.push(var.into());
         st.missing.insert(var.into(), missing.len());
+        if exists {
+            reading.end();
+        }
     }
     idx.save(&dir.join("grid.idx.tmp"))?;
     std::fs::rename(dir.join("grid.idx.tmp"), dir.join("grid.idx"))?;
@@ -499,14 +724,23 @@ mod tests {
             .unwrap();
         }
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
+        // (Counted as it reads: its three packs, each a part, and the bytes it read from the NAS.)
+        let read = std::cell::RefCell::new(Vec::new());
         let staged = |src: &Source, to: &str| {
             let dir = d.path().join(to);
-            stage(src, &area, &Default::default(), &dir).unwrap();
+            let reading = Arc::new(Reading::default());
+            stage_reading(src, &area, &Default::default(), &dir, &reading).unwrap();
+            assert_eq!((reading.parts.load(Relaxed), reading.packs.load(Relaxed)), (3, 3), "{to}");
+            assert_eq!((reading.ended.load(Relaxed), reading.done()), (3, 1.0), "{to}");
+            read.borrow_mut().push(reading.bytes.load(Relaxed));
             ["terrain.tiles", "grid.terrain.i16", "grid.idx"].map(|f| std::fs::read(dir.join(f)).unwrap())
         };
         let plain = staged(&Source::Manifest(&out, None), "plain");
         let here = staged(&Source::Manifest(&out, Some(&blobs)), "here");
         assert!(plain == here, "staged the same");
+        // Its own pack copied here whole: its bytes counted, its reads after that not.
+        let own = blobs.list()[0].1;
+        assert!(read.borrow()[1] > own && read.borrow()[0] > 0, "{:?}, {own}", read.borrow());
         let copies: Vec<String> =
             blobs.list().iter().map(|f| f.0.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(copies.len(), 1, "{copies:?}");
@@ -523,6 +757,55 @@ mod tests {
         blobs.get(out.root(), out.get(&format!("layers/terrain/hi/6-{}-{y6}", x6 + 1)).unwrap()).unwrap();
         assert!(staged(&Source::Manifest(&out, Some(&blobs)), "again") == plain);
         assert_eq!(blobs.list().len(), 2);
+        // (Two of its packs here now: only the third's strip read from the NAS.)
+        let read = read.into_inner();
+        assert!(read[2] > 0 && read[2] < read[0], "{read:?}");
+    }
+
+    /// A staging's share done moves as it reads, within a pack too: a pack copied here by its bytes
+    /// copied, a strip read from the NAS by its spans, a grid's tiles by those read; what's read
+    /// here already counts for nothing, and its line says where it is.
+    #[test]
+    fn a_stagings_progress_moves_as_it_reads() {
+        let r = Reading::default();
+        assert_eq!(r.done(), 0.0);
+        r.plan(3, 1);
+        r.begin("layers/terrain/hi/6-31-19", false, 0);
+        assert_eq!(r.done(), 0.0);
+        r.copied(250 << 20, 1000 << 20);
+        assert_eq!(r.done(), 0.25 / 4.0);
+        r.copied(250 << 20, 1000 << 20);
+        assert_eq!(r.done(), 0.5 / 4.0);
+        let line = r.line(std::time::Duration::from_secs(100));
+        assert!(
+            line.starts_with("0 of 4 parts (3 packs, 1 grids' tiles), 524 MB from the NAS in 100s (5.2 MB/s)"),
+            "{line}"
+        );
+        assert!(line.ends_with("now layers/terrain/hi/6-31-19, 524 of 1048 MB"), "{line}");
+        r.copied(500 << 20, 1000 << 20);
+        r.end();
+        assert_eq!(r.done(), 1.0 / 4.0);
+        // A neighbour's strip from the NAS, by its spans.
+        r.begin("layers/terrain/hi/6-32-19", false, 0);
+        r.more(400);
+        r.read(100);
+        assert_eq!(r.done(), 1.25 / 4.0);
+        r.read(300);
+        r.end();
+        // A pack here already: nothing to read, its part ended when opened.
+        r.begin("layers/grid-class/hi/6-31-19", false, 0);
+        r.end();
+        assert_eq!(r.done(), 3.0 / 4.0);
+        // A grid's tiles, from a pack here (no NAS bytes) and one on the NAS.
+        r.begin("grid-class's tiles", true, 8);
+        let before = r.bytes.load(Relaxed);
+        r.tile(1000, false);
+        r.tile(1000, true);
+        assert_eq!(r.done(), 3.25 / 4.0);
+        assert_eq!(r.bytes.load(Relaxed), before + 1000);
+        assert!(r.line(std::time::Duration::from_secs(100)).ends_with("now grid-class's tiles, 2 of 8"));
+        r.end();
+        assert_eq!(r.done(), 1.0);
     }
 }
 

@@ -40,13 +40,24 @@ impl Blobs {
     /// its temporary name held while it's held (a late copy writes only that name, which the
     /// cache's room-making removes as any left by a stopped copy).
     pub fn get(&self, root: &crate::nasfs::NasRoot, content: &str) -> io::Result<PathBuf> {
+        self.get_counted(root, content, std::sync::Arc::new(|_, _| {}))
+    }
+
+    /// `get`, each run of bytes it copies said to `copied` as it comes, with the file's length
+    /// (bytes, length): nothing said when the copy is here already.
+    pub fn get_counted(
+        &self,
+        root: &crate::nasfs::NasRoot,
+        content: &str,
+        copied: std::sync::Arc<dyn Fn(u64, u64) + Send + Sync>,
+    ) -> io::Result<PathBuf> {
         let local = self.path_of(content);
         // (Raw: crate::sys::copy_data's copy, its bytes counted as they're read, crate::nasfs's
         // `copy_counter`, the file opened by its caller: tests/nas_access.rs.)
         let src = root.join(content).unchecked_path();
         crate::cachefile::hold(&local, &mut |tmp| {
             let _w = crate::waits::nas();
-            let (s, t) = (src.clone(), tmp.to_path_buf());
+            let (s, t, copied) = (src.clone(), tmp.to_path_buf(), copied.clone());
             // (Under a turn of the process's NAS limit, crate::aimd, as nasfs's copies are.)
             let (n, want) = crate::nasfs::copying_turn(
                 || {
@@ -57,11 +68,13 @@ impl Blobs {
                         vec![t.clone()],
                         move |m| {
                             let mut count = crate::nasfs::copy_counter();
+                            let want = fs::metadata(&s)?.len();
                             let (n, _) = crate::sys::copy_data_held(&s, &t, &mut |k, h| {
                                 count(k, h);
                                 m.add(k);
+                                copied(k, want);
                             })?;
-                            Ok((n, fs::metadata(&s)?.len()))
+                            Ok((n, want))
                         },
                     )
                 },
