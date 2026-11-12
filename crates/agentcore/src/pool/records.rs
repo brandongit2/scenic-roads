@@ -809,6 +809,37 @@ mod tests {
         assert!(Records { epoch: 0, ..r }.save(&nas, &|_| Ok(()), None).is_err(), "records of no epoch");
     }
 
+    /// Task #1038 (the simulator's seeds 20058, 20007): records follow the one path's brief when
+    /// they are its snapshot or a later save of its lead, or were taken up from them however many
+    /// take-ups since (a brief of an earlier lead landed late over a later one's); not a take-up's
+    /// landed late, of a higher epoch but taken up from none of them, nor another lead's save of
+    /// the same epoch number, nor an older snapshot.
+    #[test]
+    fn records_follow_the_brief_by_their_lineage_not_their_number() {
+        let mark = |epoch, seq, lead: &str| Mark { epoch, seq, lead: Some(lead.into()) };
+        let brief = mark(1, 7, "a");
+        let r = |epoch, seq, lead: &str, from: Vec<Mark>| Records {
+            epoch,
+            seq,
+            lead: Some(lead.into()),
+            from,
+            ..Default::default()
+        };
+        assert!(follows(&r(1, 7, "a", vec![]), &brief));
+        assert!(follows(&r(1, 9, "a", vec![]), &brief), "a later save of its lead");
+        assert!(
+            follows(&r(1003, 3, "b", vec![mark(1, 8, "a"), mark(1002, 2, "b")]), &brief),
+            "taken up from it, twice"
+        );
+        assert!(!follows(&r(1, 5, "a", vec![]), &brief), "older");
+        assert!(!follows(&r(1002, 2, "b", vec![]), &brief), "a take-up from today's files, landed late");
+        assert!(!follows(&r(1002, 2, "b", vec![mark(1, 6, "a")]), &brief), "taken up from an older save");
+        assert!(!follows(&r(1, 9, "b", vec![]), &brief), "another lead's epoch of the same number");
+        // Records and a brief of before task #1038: their epoch and seq alone.
+        let old = Mark { epoch: 1, seq: 7, lead: None };
+        assert!(follows(&Records { epoch: 1, seq: 8, ..Default::default() }, &old));
+    }
+
     /// Task #1038: a save whose lead the declaration no longer names (it landed late, the lead
     /// moved meanwhile) writes the one path and not its brief: the next lead's brief stays, newer,
     /// for a take-up's fence (`brief_mark`).

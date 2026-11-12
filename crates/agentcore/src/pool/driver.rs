@@ -730,6 +730,8 @@ impl Driver {
         // declared again.)
         let follows = |r: &Records| mark.as_ref().is_none_or(|m| records::follows(r, m));
         let had_own = own.is_some();
+        // (The newest epoch the NAS shows, followed or not: the take-up's is past it.)
+        let seen = one.as_ref().map(|o| o.epoch).max(mark.as_ref().map(|m| m.epoch)).unwrap_or(0);
         let (own, one) = match (&mark, own.filter(follows), one) {
             (Some(m), None, Some(o)) if !follows(&o) => {
                 let how = if (o.epoch, o.seq) < (m.epoch, m.seq) { "older than" } else { "taken up from none of" };
@@ -812,7 +814,7 @@ impl Driver {
             return out.events.push(Event::Waits { what: "take up the records", why: why.to_string() });
         }
         // Its epoch: past theirs, and past what it saved (an earlier try's is its own already).
-        let epoch = if retry { Ok(r.epoch) } else { io.epoch(r.epoch.max(saved.map_or(0, |s| s.0))) };
+        let epoch = if retry { Ok(r.epoch) } else { io.epoch(r.epoch.max(saved.map_or(0, |s| s.0)).max(seen)) };
         let epoch = match epoch {
             Ok(e) => e,
             Err(e) => {
@@ -1789,6 +1791,36 @@ mod tests {
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
         assert_eq!(a.records().unwrap().seq, 2, "numbered on from the try kept");
         assert!(a.records().unwrap().handles(&key));
+    }
+
+    /// Task #1038 (the simulator's seed 20058): another Mac's take-up that never reached the NAS
+    /// lands over the one path late, in a higher epoch than this lead's, taken up from none of its
+    /// records: this lead's take-up (a restart) passes it over for its own, which hold what it
+    /// acknowledged. It had taken the one path's, newer by number, and lost them.
+    #[test]
+    fn a_late_take_up_of_a_higher_epoch_never_hides_the_briefs_records() {
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        let e = entry(B, 1, 5, "6-1-5");
+        let key = e.key().unwrap();
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { handed: vec![e], ..able() });
+        assert_eq!(o.merged, vec![key.clone()], "acknowledged");
+        // B's take-up of today's files, in epoch 1002, lands late.
+        let late = Records { epoch: 1002, seq: 1, lead: Some(B.into()), ..Default::default() };
+        mem.write_whole(records::ONE, &serde_json::to_vec(&late).unwrap()).unwrap();
+        ia.restart();
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), a.saved());
+        for _ in 0..STALE_S / 20 + 2 {
+            ia.pass(20);
+            step(&mut a, &ia, able());
+        }
+        assert!(a.leads().is_some_and(|e| e > 1002), "{:?}", a.leads());
+        assert!(a.records().unwrap().handles(&key), "what it acknowledged");
+        assert_eq!(a.records().unwrap().from.iter().map(|m| m.epoch).collect::<Vec<_>>(), vec![1], "from its own");
     }
 
     /// Task #1038 (the simulator's seed 1887): in a new pool, only the Mac that declared itself
