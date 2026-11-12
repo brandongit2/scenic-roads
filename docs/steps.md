@@ -724,7 +724,15 @@ index, so a new release rebuilds every z6 tile.
 - **Writes:** road and rail hi tiles (z9–14) and T's hidata: the ways-here index; query parts (each
   road's 100 m samples and channels with offsets, for drives and rides); rail lines; the zoomed-out
   summaries (`docs/phase5.md`).
-- **Lo packs** per z3 tile hold roads and rail z4–8, made from the base packs.
+- **Lo packs** per z3 tile hold roads and rail z4–8, made from the base packs (`lo`, its base packs
+  read as pack's are) a tile at a time (task #1182, `hipack::tiles_one_by_one`): a zoom at a time,
+  each tile from the ways whose box meets it (and the z3 tile), in draw order then by way id,
+  cut 32,768 at a time (a way's copies in two packs in one run), each run's pieces fed to the
+  tile's encoder (`tiling::TileEnc`: the lines it keeps and the dots it merges). Each tile gets its
+  pieces in the order a cut of all the z3 tile's ways gives them, so the bytes are the same. The
+  tiles go into the two packs as they're made (`layers::LocalPackWriter`), in key order, 16 to a
+  resume piece; so the job holds a run's pieces, the tiles at work and 16 tiles made, not the z3
+  tile's ways or pieces, and its memory no longer grows with the tile's ways.
 - Landmarks, stations, ferries and overlays come from their own jobs, so no road pack depends on
   worldwide rankings.
 

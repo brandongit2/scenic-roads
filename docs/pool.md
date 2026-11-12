@@ -1201,7 +1201,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   Steps whose target is a run of independent pieces keep each as it's made (`resume_log::Pieces`,
   task #889; the identity, as the logs above: the step, its declared output version(s), the target
   and the manifest's names of what it reads, never the program, so a pause to restart into a newly
-  installed app resumes its pieces; a change to the output bumps the step's version), each a safe
+  installed app resumes its pieces; a change to the output bumps the step's version; a resumed
+  run reads each kept piece from the log as it takes it, task #1182, never all at once), each a safe
   point: bldtiles each z8 tile's results (made here or by a worker; a resumed run offers only the
   rest), bldprep each chunk of 4 row groups read, bldfield-lo each z6 tile's levels, trees each
   row of a z6 tile's blocks (kept by the trees program, `--keep`, which exits paused, 75, its safe points counted in the
@@ -1210,7 +1211,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   chunk of 16 tiles sampled at every zoom it samples (its finest, and the coarser ones past the
   cap), polar-root each such chunk of a pole's z0–3 (`polar::sample_pieces`), polar-slope each 64
   tiles shaded there, slope-lo each row of a z3 tile's z6 tiles shaded from their terrain, lo each
-  zoom of a z3 tile's road and rail tiles (z4–8), reach each z6 tile's reach (task #890), water
+  16 tiles of a zoom of a z3 tile's road and rail tiles (z4–8; its z4 and z5 a piece each; the
+  identity names the 16), reach each z6 tile's reach (task #890), water
   each z5 tile's subtree (z5–9, drawn side by side, the pieces locked only to take and keep them:
   `Pieces::take`, `Pieces::keep`), regions-extract (task #897) each 256 MiB range of the file in
   each of its three scans (`extract::RANGE_BYTES`: the blobs whose headers start there, their
