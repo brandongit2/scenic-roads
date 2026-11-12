@@ -554,7 +554,10 @@ once the others have freed its bytes), so a finished step's copies never hold a 
 Mac that has the room once they go (12 Nov: lo 3/6/3, 35.2 GB, waited two hours while the M4 held
 28 GB of the depth steps' copies with 16 GB for jobs, until a hand cleared them). What a grant
 takes past the ask's disk is spent of them, and a job reading one granted after it in the same
-answer reserves what was spent beside its fill. A job reading them counts none (they're its
+answer reserves what was spent beside its fill. In the answers after, while the copies are still
+there, so is what the Mac's reservations take past its free space (its ask's disk at 0: the room
+target and the reservations past the free space, its cheap caches not said), and the disk the
+lead takes off for the jobs it holds past the disk said: the copies are counted once. A job reading them counts none (they're its
 cache), nor does the lead's own ask or a Mac with no room target, as for its other caches. A
 grant's agent reserves its disk while it holds the lease: the whole of it until
 the job starts, then that less what the job has written so far (the disk guard's count). The
@@ -2491,7 +2494,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
     memory and disk this Mac is short of, by how much ("lo 3/6/3 needs 12.7 GB of memory and 35.2
     GB of disk: disk short by 19.2 GB (46 GB free · 16 GB for jobs (30 GB room target))"; the
     whole copies counted for it said among its disk), then how many of the other targets offered
-    are held by jobs, done, or in backoff after failing here; with no target past the room, those
+    are held by jobs, done, in backoff after failing here, or free but held back otherwise (no
+    measure yet, the NAS budget or placement); with no target past the room, those
     counts alone ("nothing offered is free to take: 3 held by jobs"). Room held for that target
     while the Mac's jobs end is the refusal ("room held for a job of lo 3/6/3 (…)"), whether or
     not anything offered after it was held back. Each Mac's flag says its own room, so the flags

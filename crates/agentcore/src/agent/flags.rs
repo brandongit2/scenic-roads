@@ -11,7 +11,8 @@
 //!   it names the first target past it (step and tile), what that needs (memory, disk) and what
 //!   this Mac is short of, each by how much ("lo 3/6/3 needs 12.7 GB of memory and 35.2 GB of disk:
 //!   disk short by 19.2 GB (46 GB free · 16 GB for jobs (30 GB room target))"), then how many of
-//!   the other targets offered are held by jobs, done, or in backoff after failing here; room held
+//!   the other targets offered are held by jobs, done, in backoff after failing here, or free but
+//!   held back otherwise; room held
 //!   for that target while this Mac's jobs end is said as the hold ("room held for a job of …").
 //!   Each Mac's flag says its own room, so the flags of the Macs together say what each lacks.
 //!   None free, but the plan holds work of a step any Mac takes behind

@@ -11593,6 +11593,54 @@ mod tests {
         );
     }
 
+    /// Task #1170 review: the whole copies counted for a job granted are counted spent in the
+    /// answers after it too, while its agent reserves its disk and they're still there: its next
+    /// ask (0 for jobs, the target and the reservation 19.2 GB past its free space) counts 8.8 GB
+    /// of the 28 GB free, not all of them again.
+    #[test]
+    fn whole_copies_granted_away_arent_counted_again() {
+        let lo = Some((4000, 36_045, 2000));
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("6/1/1", lo)]);
+        let g = w.ask(&copies_ask(&["pack"], 30_000, 28 << 10, 30 << 10, 1)).unwrap().expect("granted on the copies");
+        let next = || {
+            let mut a = copies_ask(&["pack"], 30_000, 28 << 10, 30 << 10, 1);
+            let cap = a.cap.as_mut().unwrap();
+            (cap.leases, cap.reserved_mb, cap.disk_mb) = (vec![g.lease], 36_045, 0);
+            a.disk_mb = Some(0);
+            a
+        };
+        let why = |c: &Coordinator| c.refusals().get("m1").cloned().unwrap_or_default();
+        // 20 GB: past the 8.8 GB of them left.
+        measured_offer(&c, "pack", &[("6/1/3", Some((4000, 20 << 10, 2000)))]);
+        assert!(w.ask(&next()).unwrap().is_none(), "{}", why(&c));
+        assert!(why(&c).contains("disk short by 11.2 GB"), "{}", why(&c));
+        // 5 GB: within them.
+        measured_offer(&c, "pack", &[("6/1/4", Some((4000, 5 << 10, 2000)))]);
+        assert_eq!(all_granted(&w, &next()), [vec!["6/1/4".to_string()]], "{}", why(&c));
+    }
+
+    /// Task #1170 review: a target free to take but refused for no measure of its past the room (a
+    /// cold start its provisional need keeps off) is counted apart, so the refusal never says
+    /// nothing was free to take.
+    #[test]
+    fn a_refusal_counts_the_free_targets_held_back_otherwise() {
+        let (_d, c, w, _clock) = every((0, 0));
+        measured_offer(&c, "pack", &[("6/1/1", None), ("6/1/2", None)]);
+        assert_eq!(granted(&w, &every_ask("m1", "pack", 9000, 100_000)), ["6/1/1"]);
+        // (The scheduler's own answer: the coordinator offers m2 no cold target while its step's
+        // first job is under way.)
+        let mut s = c.shared.lock().unwrap();
+        let (offers, now, unix) = (s.offers.clone(), s.now(), s.wall_s());
+        let (picks, why) =
+            s.sched.pack(&every_ask("m2", "pack", 9000, 100_000), &offers, false, sched::Clock { now, unix });
+        assert!(picks.is_empty());
+        assert_eq!(
+            why.map(|h| h.words).unwrap_or_default(),
+            "nothing offered is taken: 1 held by jobs, 1 free but held back otherwise (no measure yet, the NAS budget or placement)"
+        );
+    }
+
     /// Task #1170: room held for the first offer refused for its room is the hold the status says
     /// even with nothing offered after it to hold back (a lead whose last offer waited said only
     /// the room left): the target it waits for named, and what it needs.

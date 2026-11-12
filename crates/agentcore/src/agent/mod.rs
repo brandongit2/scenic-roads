@@ -6319,8 +6319,8 @@ impl Agent {
     /// What room-making can free on a member's disk for a job (bytes): its cheap caches
     /// (room::helper_cheap_bytes) but the whole copies (buildstore::localread::is_shared: held by
     /// their own rule, a Mac holding one granted no fill for it, so not free twice; the lead counts
-    /// them, as its capacity says them, `caches_here`, for a job reading none of them:
-    /// crate::coord::sched's `Copies`, room-making freeing them for it like the others) and the
+    /// them from its capacity's `caches` for a job reading none of them, crate::coord::sched's
+    /// `Copies`, and room-making frees them for it like the others) and the
     /// files a job holds now (store::cachefile::in_use: room-making leaves them). Counted at
     /// most every ten minutes (a walk of thousands of files), and again after a job, room-making or
     /// a freeing.

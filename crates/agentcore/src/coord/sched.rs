@@ -483,7 +483,10 @@ impl Backfill {
 /// furthest ahead first; the largest only once the others have freed its bytes). So a job of a
 /// step reading none of them is packed into the ask's disk and them (`credit`); what a grant takes
 /// of them is spent (`take`), and a job reading one granted after reserves what was spent of it
-/// beside its fill (`spent`). Nothing on the lead (alone, its disk unbounded; beside its jobs, a
+/// beside its fill (`spent`). So is, first, what's owed of them past the ask's disk (`pack`'s
+/// `owed`: the jobs the lead takes off it past 0, and at an ask of 0 what its target and
+/// reservations take past its free space): an earlier answer's grant on them, its disk reserved
+/// while they're still there, isn't counted them again. Nothing on the lead (alone, its disk unbounded; beside its jobs, a
 /// job of its own needs its room free as it starts) nor on a Mac with no room target (its caches
 /// aren't counted there: the guard holds only a full disk), as for its other caches.
 struct Copies {
@@ -536,13 +539,15 @@ impl Copies {
 
 /// What became of the targets of the offers an ask was granted none of (`Sched::refused`, task
 /// #1170): how many were held by jobs, done, or kept from its worker after it failed them
-/// (`backoff`), and the first of the rest whose measure is past the room left: its step, its
-/// target and its measure (its step's disk floor and its shared cache's fill among it).
+/// (`backoff`), the first of the rest whose measure is past the room left: its step, its target and
+/// its measure (its step's disk floor and its shared cache's fill among it); and how many of the
+/// rest before it weren't past it (`other`: unmeasured, or held back by the NAS budget or placement).
 #[derive(Default)]
 struct Refused {
     held: usize,
     done: usize,
     backoff: usize,
+    other: usize,
     blocked: Option<(String, String, Measured)>,
 }
 
@@ -553,12 +558,16 @@ impl Refused {
     /// targets offered.
     fn words(&self, a: &Ask, room: &Ask, copies: u64) -> String {
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
-        let others: Vec<String> =
-            [(self.held, "held by jobs"), (self.done, "done"), (self.backoff, "in backoff after failing here")]
-                .iter()
-                .filter(|(n, _)| *n > 0)
-                .map(|(n, what)| format!("{n} {what}"))
-                .collect();
+        let others: Vec<String> = [
+            (self.held, "held by jobs"),
+            (self.done, "done"),
+            (self.backoff, "in backoff after failing here"),
+            (self.other, "free but held back otherwise (no measure yet, the NAS budget or placement)"),
+        ]
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} {what}"))
+        .collect();
         let mem = || match a.cap.as_ref() {
             Some(c) => mem_words(c, room.mem_mb),
             None => format!("{} left", gb(room.mem_mb)),
@@ -579,7 +588,8 @@ impl Refused {
                 let disk = room.disk_mb.map(|d| format!("; disk: {}", disk(d))).unwrap_or_default();
                 return format!("nothing offered fits the room left (memory: {}{disk})", mem());
             }
-            return format!("nothing offered is free to take: {}", others.join(", "));
+            let what = if self.other == 0 { "is free to take" } else { "is taken" };
+            return format!("nothing offered {what}: {}", others.join(", "));
         };
         let mut short = Vec::new();
         if m.mem_mb > room.mem_mb {
@@ -1632,10 +1642,24 @@ impl Sched {
         // (granted since it asked, or an older agent's) are taken off here.)
         let reserved_by_agent = |l: &Lease| a.cap.as_ref().is_some_and(|c| c.leases.contains(&l.id));
         let mut room = a.clone();
+        // (What's taken off its disk past none left (MB): owed of the whole copies before any is
+        // counted free (`Copies`). Its own ask's none is its agent's count of the disk at 0, what
+        // its target and reservations take past its free space at most (its cheap caches not said).)
+        let mut owed = a
+            .cap
+            .as_ref()
+            .filter(|_| a.disk_mb == Some(0))
+            .map_or(0, |c| (c.target_mb + c.reserved_mb).saturating_sub(c.free_mb));
+        let mut take_disk = |room: &mut Ask, mb: u64| {
+            if let Some(d) = room.disk_mb.as_mut() {
+                owed += mb.saturating_sub(*d);
+                *d = d.saturating_sub(mb);
+            }
+        };
         for ((l, _, _), n) in jobs.iter().zip(&needs) {
             room.mem_mb = room.mem_mb.saturating_sub(n.m.mem_mb);
             if !reserved_by_agent(l) {
-                room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(n.m.disk_mb));
+                take_disk(&mut room, n.m.disk_mb);
             }
         }
         // (And never more than what its jobs hold now, as its memory guard last sampled them
@@ -1656,12 +1680,14 @@ impl Sched {
                             && matches!(&l.work, Work::Job { step, .. } if crate::needs::cache_of(step) == Some(c))
                     })
                 {
-                    room.disk_mb = room.disk_mb.map(|d| d.saturating_sub(self.missing(c, a)));
+                    take_disk(&mut room, self.missing(c, a));
                 }
             }
         }
-        // (The whole copies of those none of them reads: freed for a job reading none either.)
+        // (The whole copies of those none of them reads: freed for a job reading none either, less
+        // what's owed of them.)
         let mut copies = Copies::of(a, lead, &caches);
+        copies.take("", owed);
         // (The jobs it may be granted: one to an ask without a capacity (an older app's), and to
         // every ask while any member around is on one (`old_member`); else as many as it wants.)
         let old = if a.cap.is_none() { Some(a.worker.clone()) } else { self.old_member(now) };
@@ -2243,9 +2269,12 @@ impl Sched {
                     let m = if o.job.is_some() { own } else { self.measured(&o.step, t) };
                     let past =
                         |m: &Measured| m.mem_mb > room.mem_mb || room.disk_mb.is_some_and(|d| m.disk_mb > d + copies);
-                    if let Some(m) = m.map(|m| Measured { disk_mb: m.disk_mb.max(job_disk) + fill, ..m }).filter(past) {
-                        r.blocked = Some((o.step.clone(), t.clone(), m));
-                        credit = copies;
+                    match m.map(|m| Measured { disk_mb: m.disk_mb.max(job_disk) + fill, ..m }).filter(past) {
+                        Some(m) => {
+                            r.blocked = Some((o.step.clone(), t.clone(), m));
+                            credit = copies;
+                        }
+                        None => r.other += 1,
                     }
                 }
             }
