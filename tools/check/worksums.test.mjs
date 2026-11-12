@@ -13,11 +13,11 @@ test('map: tiles from targets, their squares', () => {
 });
 
 test('map: a job\'s targets from its start or lease event, else its words', () => {
-  const evs = [{ kind: 'start', step: 'pack', t: 100, targets: ['6/1/1', '6/1/2'] }, { kind: 'lease', lease: 7, targets: ['6/2/2'] }];
+  const evs = [{ kind: 'start', step: 'pack', t: 100, targets: ['6/1/1', '6/1/2'] }, { kind: 'lease', job: '3-7', targets: ['6/2/2'] }];
   assert.deepEqual(targetsOf({ step: 'pack', id: 'pack 6/1/1', started: 103 }, evs), ['6/1/1', '6/1/2']);
   assert.deepEqual(targetsOf({ step: 'pack', id: 'pack 6/1/1', started: 200 }, evs), ['6/1/1']);
-  assert.deepEqual(targetsOf({ lease: 7, what: 'x' }, evs), ['6/2/2']);
-  assert.deepEqual(targetsOf({ lease: 8, what: 'unit 6/3/3 6/3/4' }, evs), ['6/3/3', '6/3/4']);
+  assert.deepEqual(targetsOf({ job: '3-7', what: 'x' }, evs), ['6/2/2']);
+  assert.deepEqual(targetsOf({ job: '3-8', what: 'unit 6/3/3 6/3/4' }, evs), ['6/3/3', '6/3/4']);
 });
 
 test('map: running tiles filled from live, else from its progress\'s share', () => {
@@ -272,8 +272,8 @@ test("past jobs: a worker's leased jobs too (done, fail), each on its Mac's firs
 
 test('past jobs: what each waited on, as its start or lease names it (none before #791)', () => {
   const ev = [
-    { kind: 'lease', seq: 11, t: 90, lease: 4, step: 'terrain-hi', worker: 'm1', targets: ['6/1/1'] },
-    { kind: 'done', seq: 12, t: 100, secs: 10, lease: 4, step: 'terrain-hi', worker: 'm1', targets: ['6/1/1'] },
+    { kind: 'lease', seq: 11, t: 90, job: '3-4', step: 'terrain-hi', worker: 'm1', targets: ['6/1/1'] },
+    { kind: 'done', seq: 12, t: 100, secs: 10, job: '3-4', step: 'terrain-hi', worker: 'm1', targets: ['6/1/1'] },
     { kind: 'start', seq: 13, t: 110, step: 'unit', worker: 'm4', targets: ['6/1/1'], after: [12] },
     { kind: 'start', seq: 14, t: 111, step: 'depth', worker: 'm4 #2' },
     { kind: 'end', seq: 15, t: 200, secs: 90, step: 'unit', worker: 'm4', targets: ['6/1/1'] },
@@ -289,7 +289,7 @@ test('past jobs: what each waited on, as its start or lease names it (none befor
   assert.deepEqual(startOf({ step: 'unit', id: 'unit 6/1/1', started: 112 }, ev)?.after, [12]);
   const two = [...ev, { kind: 'start', seq: 18, t: 112, step: 'unit', worker: 'm4 #2', targets: ['6/2/2'] }];
   assert.deepEqual(startOf({ step: 'unit', id: 'unit 6/1/1', started: 112, worker: 'm4' }, two)?.after, [12]);
-  assert.equal(startOf({ lease: 4 }, ev)?.seq, 11);
+  assert.equal(startOf({ job: '3-4' }, ev)?.seq, 11);
   assert.equal(startOf({ step: 'terrain-hi', id: 'x', started: 95 }, ev), null);
 });
 

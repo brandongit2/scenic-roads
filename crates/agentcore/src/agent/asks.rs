@@ -452,6 +452,7 @@ pub(crate) mod tests {
 
     fn job(id: &str, slot: usize) -> super::super::JobView {
         super::super::JobView {
+            job: None,
             id: id.into(),
             what: format!("{id}'s work"),
             started: 1_700_000_000 - 600,

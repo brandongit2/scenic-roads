@@ -67,7 +67,7 @@
 //! once `STALE_S` has passed since this process found itself declared, so that the last save the
 //! lead before it acknowledged is in them (that lead acknowledges only while a read of the
 //! declaration after its save still names it: `lead_step`). Its epoch is raised past the records'
-//! it starts from, so (epoch, seq) orders every snapshot, and lease ids order, across the owner's
+//! it starts from, so (epoch, seq) orders every snapshot, and job ids (jobrt::jobid) order, across the owner's
 //! moves (and past the pool's last term, at the move from terms). It leads until the declaration
 //! names another member, read each step.
 //!
@@ -998,11 +998,11 @@ impl Driver {
 #[cfg(test)]
 mod tests {
     //! The driver, scripted on the in-memory NAS: Macs with their own clocks, stepping in turn.
-    use super::super::journal::LeaseId;
     use super::super::nas::{Created, Mem};
     use super::*;
     use anyhow::Result;
     use buildstore::handoff::Handoff;
+    use jobrt::jobid::JobId;
     use std::cell::Cell;
 
     const T0: u64 = 1_791_300_000;
@@ -1151,7 +1151,7 @@ mod tests {
             done: Some(("unit".into(), vec![(t.into(), format!("k{n}"))])),
             ..Default::default()
         };
-        Entry { member: member.into(), lease: LeaseId { epoch, n }, step: "unit".into(), handoff: h, at: T0 + n }
+        Entry { member: member.into(), job: JobId { epoch, n }, step: "unit".into(), handoff: h, at: T0 + n }
     }
 
     #[test]

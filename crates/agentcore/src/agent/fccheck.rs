@@ -40,19 +40,19 @@ pub struct Actual {
 /// The jobs done in `events`: workers' (lease to done) and the lead's (end, less its time), those
 /// that ended well and name their targets; by end.
 pub fn actuals(events: &[Event]) -> Vec<Actual> {
-    let mut leased: BTreeMap<u64, u64> = BTreeMap::new();
+    let mut leased: BTreeMap<jobrt::jobid::JobId, u64> = BTreeMap::new();
     let mut out = Vec::new();
     for e in events {
         match e.kind.as_str() {
             "lease" => {
-                if let Some(l) = e.lease {
+                if let Some(l) = e.job {
                     leased.insert(l, e.t);
                 }
             }
             "done" | "end" if e.ok == Some(true) && !e.targets.is_empty() => {
                 let (Some(mac), Some(step)) = (&e.worker, &e.step) else { continue };
                 let back = e.t.saturating_sub(e.secs.unwrap_or(0.0).max(0.0) as u64);
-                let start = e.lease.and_then(|l| leased.get(&l).copied()).unwrap_or(back);
+                let start = e.job.and_then(|l| leased.get(&l).copied()).unwrap_or(back);
                 // (A lead's slot past its first is named `<Mac> #k` in the history, as its lane.)
                 let worker = mac.clone();
                 let mac = mac.split(" #").next().unwrap_or(mac).to_string();
@@ -337,7 +337,7 @@ pub fn check(entries: &[Entry], events: &[Event], from: u64, to: u64) -> Report 
 /// The history's events once each: a lead's file and a member's that led before both hold the
 /// terms it led (as `backtest_against_the_history` reads them), in time order.
 pub fn dedup(mut events: Vec<Event>) -> Vec<Event> {
-    let key = |e: &Event| (e.t, e.kind.clone(), e.lease, e.worker.clone(), e.targets.clone());
+    let key = |e: &Event| (e.t, e.kind.clone(), e.job, e.worker.clone(), e.targets.clone());
     events.sort_by_key(key);
     events.dedup_by(|a, b| key(a) == key(b));
     events
@@ -901,7 +901,7 @@ mod tests {
             t,
             kind: kind.into(),
             worker: Some(worker.into()),
-            lease,
+            job: lease.map(|n| jobrt::jobid::JobId { epoch: 0, n }),
             step: Some(step.into()),
             targets: targets.iter().map(|t| t.to_string()).collect(),
             secs,

@@ -49,7 +49,7 @@ pub fn backup_every() -> Duration {
         Duration::from_secs(600)
     }
 }
-/// A store restored from the backup starts this many epochs past it: no lease id repeats (§4.4).
+/// A store restored from the backup starts this many epochs past it: no job id repeats (§4.4; jobrt::jobid).
 pub const RESTORE_EPOCHS: u64 = 1000;
 
 /// The whole state at a `seq` (the snapshot's file, and the backup's, which also names its writer

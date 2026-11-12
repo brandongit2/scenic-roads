@@ -41,7 +41,7 @@ mod sim;
 
 pub use beat::Beat;
 pub use driver::Driver;
-pub use journal::{Entry, LeaseId, Mine};
+pub use journal::{Entry, Mine};
 pub use nas::Nas;
 pub use records::Records;
 

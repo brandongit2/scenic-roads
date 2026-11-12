@@ -439,7 +439,7 @@ function regionState(r) {
 function mapRuns(m) {
   const runs = [
     ...m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ step: stepOf(j.id), id: j.id, started: j.started, live: j.live, frac: j.progress?.total ? j.progress.done / j.progress.total : null, what: j.what, mac: x.name }))),
-    ...(m.sw.leases || []).map((l) => ({ step: l.step, lease: l.id, what: l.what, live: l.live, mac: l.worker })),
+    ...(m.sw.leases || []).map((l) => ({ step: l.step, job: l.job, what: l.what, live: l.live, mac: l.worker })),
   ];
   for (const r of runs) r.targets = areaTargets(r.step, targetsOf(r, events));
   return runs;
@@ -612,7 +612,7 @@ const keepQueued = keeper(), keepDone = windowKeeper(), keepWhole = keeper(), ke
 // The running tiles: the last ones while these say all the same (their cards' words too).
 let runningLast = new Map(), runningSig = "";
 function steadyRunning(next) {
-  const sig = [...next].map(([k, r]) => [k, r.frac, r.current ? 1 : 0, r.run.mac, r.run.id ?? r.run.lease, r.run.live?.phase ?? "", r.run.targets.join(" ")].join("\t")).join("\n");
+  const sig = [...next].map(([k, r]) => [k, r.frac, r.current ? 1 : 0, r.run.mac, r.run.id ?? r.run.job, r.run.live?.phase ?? "", r.run.targets.join(" ")].join("\t")).join("\n");
   if (sig !== runningSig) { runningLast = next; runningSig = sig; }
   return runningLast;
 }
@@ -1167,7 +1167,7 @@ const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => {
   // history's, so none is matched by time.)
   const step = stepOf(j.id), lead = x.name === m.a.host;
   const held = lead ? [] : (m.sw.leases || []).filter((l) => l.worker === x.name && l.step === step);
-  const run = held.length === 1 ? { step, lease: held[0].id, what: held[0].what } : { step, id: j.id, started: j.started, worker: slotName(x.name, j.slot) };
+  const run = held.length === 1 ? { step, job: held[0].job, what: held[0].what } : { step, id: j.id, started: j.started, worker: slotName(x.name, j.slot) };
   const st = lead || held.length === 1 ? startOf(run, events) : null;
   return { lane: slotName(x.name, j.slot), step, from: j.started, until: m.now, n: j.live?.targets || (jobTarget(j) ? 1 : 0), targets: st?.targets || targetsOf(run, events), after: st?.after || [], job: j, mac: x.name };
 }));

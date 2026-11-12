@@ -129,10 +129,7 @@ impl ToLead {
             match c.post_json("/pool/handoff", &serde_json::json!({ "entry": e })) {
                 Ok((200, _)) => {}
                 Ok((code, v)) => {
-                    eprintln!(
-                        "agent: posting lease {}'s hand-off to the lead: answered {code}: {}",
-                        e.lease, v["error"]
-                    );
+                    eprintln!("agent: posting lease {}'s hand-off to the lead: answered {code}: {}", e.job, v["error"]);
                     return;
                 }
                 Err(e) => {

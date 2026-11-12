@@ -279,6 +279,13 @@ fn began(c: &Event) -> u64 {
     c.t.saturating_sub(c.secs.unwrap_or(0.0).ceil() as u64)
 }
 
+/// Whether a merged hand-off's job (`merged`, its key's id) is the run a "done" event names
+/// (`done`): the same id, or, for an event from before job ids (read as epoch 0,
+/// jobrt::jobid), the same lease number.
+fn same_run(merged: jobrt::jobid::JobId, done: jobrt::jobid::JobId) -> bool {
+    merged == done || (done.epoch == 0 && merged.n == done.n)
+}
+
 /// The chains of the catalogues in `events` (any order) and their z6 tiles, with the servers' and
 /// their mirrors' marks; oldest first. A z6 tile is in the first catalogue begun once its hand-off was merged (a
 /// member's job; the lead's own, at its end) and the map tiles its change made stale were packed;
@@ -287,15 +294,14 @@ pub fn chains(events: &[Event]) -> (Vec<CatalogueChain>, Vec<UnitChain>) {
     let mut ev: Vec<&Event> = events.iter().collect();
     ev.sort_by_key(|e| (e.t, e.seq));
     let cats: Vec<&Event> = ev.iter().copied().filter(|e| e.kind == store::catalogue::NAME).collect();
-    // The merges' jobs: (time, lease number, step, targets).
-    let mut merges: Vec<(u64, Option<u64>, String, Vec<String>)> = Vec::new();
+    // The merges' jobs: (time, job id, step, targets).
+    let mut merges: Vec<(u64, Option<jobrt::jobid::JobId>, String, Vec<String>)> = Vec::new();
     for e in ev.iter().filter(|e| e.kind == "merged") {
         let done: Vec<crate::pool::records::MergedJob> =
             e.data.as_ref().and_then(|d| serde_json::from_value(d["done"].clone()).ok()).unwrap_or_default();
         for (key, _, step, targets) in done {
-            // (`<day>/<epoch>-<n>`: the coordinator's lease is its `n`, which may repeat across
-            // leads.)
-            let n = key.rsplit(['/', '-']).next().and_then(|l| l.parse().ok());
+            // (`<day>/<epoch>-<n>`: its job's id.)
+            let n = key.rsplit('/').next().and_then(|l| l.parse().ok());
             merges.push((e.t, n, step, targets));
         }
     }
@@ -352,7 +358,7 @@ pub fn chains(events: &[Event]) -> (Vec<CatalogueChain>, Vec<UnitChain>) {
                         && *t < until
                         && step == "unit"
                         && targets.contains(u)
-                        && (e.lease.is_none() || *n == e.lease)
+                        && e.job.is_none_or(|j| n.is_some_and(|n| same_run(n, j)))
                 })
                 .map(|m| m.0);
             let hand = merged.unwrap_or(e.t);
@@ -624,7 +630,7 @@ mod tests {
             step: Some(step.into()),
             targets: targets.iter().map(|s| s.to_string()).collect(),
             ok: Some(true),
-            lease,
+            job: lease.map(|n| jobrt::jobid::JobId { epoch: 3, n }),
             worker: Some("m1".into()),
             secs: Some(10.0),
             ..ev(kind, t)

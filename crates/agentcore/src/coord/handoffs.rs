@@ -65,7 +65,7 @@ impl Handoffs {
     /// an error, not taken); its key. One taken or merged already is taken as it is.
     pub fn put(&self, e: Entry) -> Result<String> {
         anyhow::ensure!(crate::pool::is_member_id(&e.member), "{:?} isn't a member id", e.member);
-        let key = e.key().with_context(|| format!("lease {}'s hand-off: its time {} isn't a day", e.lease, e.at))?;
+        let key = e.key().with_context(|| format!("job {}'s hand-off: its time {} isn't a day", e.job, e.at))?;
         let store = self.store.get().ok_or_else(|| anyhow::anyhow!("the lead's store isn't open yet"))?;
         anyhow::ensure!(store.failing().is_none(), "the lead's store can't be written now");
         let mut g = self.inner.lock().unwrap();
@@ -113,12 +113,12 @@ impl Handoffs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::journal::LeaseId;
+    use jobrt::jobid::JobId;
 
     fn entry(member: &str, n: u64) -> Entry {
         Entry {
             member: member.into(),
-            lease: LeaseId { epoch: 7, n },
+            job: JobId { epoch: 7, n },
             step: "unit".into(),
             handoff: Default::default(),
             at: 1_791_300_000,

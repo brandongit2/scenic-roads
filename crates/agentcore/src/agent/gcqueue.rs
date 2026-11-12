@@ -22,12 +22,13 @@
 //! uploads and the files it reused: buildstore::handoff::Handoff::reused) from every chunk until the
 //! records after it are seen.
 
-use crate::pool::journal::{Entry, LeaseId};
+use crate::pool::journal::Entry;
 use crate::pool::records::Records;
+use jobrt::jobid::JobId;
 pub use store::map::gc::{GcQueue, Holders, Queued, Refused, CURSOR_TTL_S, FILE, GRACE_S};
 
-/// A lease's id as the queue keeps it.
-pub fn lease(l: LeaseId) -> store::map::gc::Lease {
+/// A job id as the queue keeps it (its lease order).
+pub fn lease(l: JobId) -> store::map::gc::Lease {
     store::map::gc::Lease { epoch: l.epoch, n: l.n }
 }
 
@@ -42,14 +43,14 @@ pub fn records(q: &GcQueue, r: &Records, now: u64) {
 pub fn refusal(q: &GcQueue, e: &Entry, now: u64) -> Option<String> {
     let h = &e.handoff;
     let names = h.changes.values().flatten().chain(h.pending.keys()).chain(h.reused.iter());
-    Some(match q.bringing(names, lease(e.lease), now)? {
+    Some(match q.bringing(names, lease(e.job), now)? {
         Refused::Deleted(n, at) => format!(
             "{n} was removed from the NAS by GC (told at {at}, before it went) after its lease {} was granted (its job may have found it there): its targets are done again",
-            e.lease
+            e.job
         ),
         Refused::Removing(n) => format!(
             "{n} is being removed from the NAS by GC (told, not yet gone), and lease {}'s job found it there: its targets are done again",
-            e.lease
+            e.job
         ),
     })
 }

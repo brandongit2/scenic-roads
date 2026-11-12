@@ -1705,6 +1705,7 @@ pub fn read_costs(p: &std::path::Path) -> anyhow::Result<(BTreeMap<String, Cost>
         costs.insert(
             k.to_string(),
             Cost {
+                job: None,
                 peak_mb: peak,
                 secs: v["secs"].as_u64().unwrap_or(0),
                 worker: None,
@@ -1723,6 +1724,7 @@ mod tests {
 
     fn cost(peak: u64, secs: u64, sizes: &[(&str, u64)]) -> Cost {
         Cost {
+            job: None,
             peak_mb: peak,
             secs,
             worker: None,

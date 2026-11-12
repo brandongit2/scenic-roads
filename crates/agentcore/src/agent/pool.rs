@@ -1680,10 +1680,10 @@ impl Run {
     }
 
     /// The next number for a drained hand-off (`DRAINED` on, by the clock).
-    fn next_drained(&mut self) -> journal::LeaseId {
+    fn next_drained(&mut self) -> jobrt::jobid::JobId {
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         self.drain_n = (self.drain_n + 1).max(ms);
-        journal::LeaseId { epoch: 0, n: DRAINED + self.drain_n }
+        jobrt::jobid::JobId { epoch: 0, n: DRAINED + self.drain_n }
     }
 
     /// The hand-offs a lead's coordinator journaled on its disk (`journal`), drained into this
@@ -1710,7 +1710,7 @@ impl Run {
                 self.marks.push((d.to_path_buf(), n.to_string()));
             }
             self.entries.push((
-                Entry { member: me.clone(), lease, step, handoff: h, at: crate::agent::jobs::now_s() },
+                Entry { member: me.clone(), job: lease, step, handoff: h, at: crate::agent::jobs::now_s() },
                 Some(p),
             ));
         }
@@ -1806,10 +1806,10 @@ pub fn took_up(
     }
 }
 
-/// Where a job of lease `lease` keeps its hand-off while it runs (`SCENIC_HANDOFF`), its work and
-/// done marks: `<home>/pool/jobs/<epoch>-<n>/`.
-pub fn job_dir(home: &Path, lease: journal::LeaseId) -> PathBuf {
-    home.join("pool/jobs").join(lease.to_string())
+/// Where job run `job` keeps its hand-off while it runs (`SCENIC_HANDOFF`), its work and done
+/// marks: `<home>/pool/jobs/<epoch>-<n>/`.
+pub fn job_dir(home: &Path, job: jobrt::jobid::JobId) -> PathBuf {
+    home.join("pool/jobs").join(job.to_string())
 }
 
 /// The hand-off of the job whose folder is `dir` (`job_dir`): its saves, in the order written,
@@ -1821,7 +1821,7 @@ pub fn entry_of(
     the_plan: &dyn crate::agent::seam::Plan,
     dir: &Path,
     member: &str,
-    lease: journal::LeaseId,
+    job: jobrt::jobid::JobId,
     step: &str,
     done: &[(String, String)],
     at: u64,
@@ -1843,15 +1843,17 @@ pub fn entry_of(
     if h.done.is_none() && h.changes.is_empty() && h.pending.is_empty() && h.checked.is_empty() && h.raw.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Entry { member: member.to_string(), lease, step: step.to_string(), handoff: h, at }))
+    Ok(Some(Entry { member: member.to_string(), job, step: step.to_string(), handoff: h, at }))
 }
 
-/// A job's folder as it's kept (`work.json`): its step, targets and lease.
+/// A job's folder as it's kept (`work.json`): its step, targets and run's id (under the key
+/// `lease`, as apps before job ids read it).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobKept {
     pub step: String,
     pub targets: Vec<(String, String)>,
-    pub lease: journal::LeaseId,
+    #[serde(rename = "lease")]
+    pub job: jobrt::jobid::JobId,
 }
 
 /// The jobs an earlier process of this agent left in `<home>/pool/jobs/` (it stopped or crashed
@@ -1876,7 +1878,7 @@ pub fn left_jobs(
         };
         let names = jobrt::control::read_done(&d.join("done.txt"), &k.step);
         let done: Vec<(String, String)> = k.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect();
-        match entry_of(the_plan, &d, member, k.lease, &k.step, &done, crate::agent::jobs::now_s()) {
+        match entry_of(the_plan, &d, member, k.job, &k.step, &done, crate::agent::jobs::now_s()) {
             Ok(Some(e)) => out.push((e, d)),
             Ok(None) => {
                 std::fs::remove_dir_all(&d).ok();
@@ -1924,7 +1926,7 @@ fn outbox_entries(the_plan: &dyn crate::agent::seam::Plan, outbox: &Path, member
             the_plan,
             &d,
             member,
-            journal::LeaseId { epoch: 0, n: lease },
+            jobrt::jobid::JobId { epoch: 0, n: lease },
             &w.step,
             &done,
             crate::agent::jobs::now_s(),
@@ -2075,7 +2077,7 @@ mod tests {
 
     use super::*;
 
-    use crate::pool::journal::LeaseId;
+    use jobrt::jobid::JobId;
 
     /// A build page's ask to retry target `t`, as a member passes it on to the lead.
     fn retry(t: &str) -> Msg {
@@ -2222,14 +2224,14 @@ mod tests {
         assert!(gone.is_empty());
     }
 
-    fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {
+    fn unit_entry(member: &str, lease: JobId, target: &str, key: &str) -> Entry {
         let l = format!("base/{}", target.replace('/', "-"));
         let h = Handoff {
             changes: [(l.clone(), Some(format!("{l}.2222222222222222.base")))].into(),
             done: Some(("unit".into(), vec![(target.into(), key.into())])),
             ..Default::default()
         };
-        Entry { member: member.into(), lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
+        Entry { member: member.into(), job: lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
     }
 
     #[test]
@@ -2321,7 +2323,7 @@ mod tests {
         std::fs::remove_file(&lock).unwrap();
         let _other = MemberLock::take(home.parent().unwrap(), &a.member().id).unwrap().unwrap();
         let beat = a.http_beats().own().unwrap().pool.beat;
-        let e = unit_entry(&a.member().id, LeaseId { epoch: 1, n: 7 }, "6/1/2", "k2");
+        let e = unit_entry(&a.member().id, JobId { epoch: 1, n: 7 }, "6/1/2", "k2");
         let out = a.step(Give { entries: vec![(e, None)], ..Default::default() }, &any);
         assert!(out.stop.is_some() && a.stopped.is_some());
         let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
@@ -2422,7 +2424,7 @@ mod tests {
         /// B's job's hand-off `n`, handed to its step: kept whole, nothing written nor sent.
         fn hand_off(&mut self, n: u64) -> Entry {
             let ib = self.b.member().id.clone();
-            let e = unit_entry(&ib, LeaseId { epoch: 1, n }, &format!("6/1/{n}"), &format!("k{n}"));
+            let e = unit_entry(&ib, JobId { epoch: 1, n }, &format!("6/1/{n}"), &format!("k{n}"));
             let out = self.b.step(Give { entries: vec![(e.clone(), None)], ..Default::default() }, &any);
             let key = e.key().unwrap();
             assert!(out.send.is_empty() && !self.r.join("state/journal").exists(), "{:?}", out.send);
@@ -2807,7 +2809,7 @@ mod tests {
         };
         buildstore::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
         buildstore::handoff::write(&dir, &save("base/6-1-2", "base/6-1-2.2222222222222222.base")).unwrap();
-        let lease = LeaseId { epoch: 1, n: 3 };
+        let lease = JobId { epoch: 1, n: 3 };
         // A shared step's: only the files of the targets it finished.
         let e = entry_of(
             crate::agent::seam::for_tests(),
@@ -2899,10 +2901,10 @@ mod tests {
         std::fs::write(failed.join("result.json"), r#"{"ok": false, "done": null, "error": "it failed"}"#).unwrap();
         run.drain(&journal);
         run.drain_outbox(&home.join("outbox"));
-        let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
+        let leases: Vec<JobId> = run.entries.iter().map(|(e, _)| e.job).collect();
         assert_eq!(leases.len(), 3, "{leases:?}");
         assert!(leases.iter().all(|l| l.epoch == 0));
-        assert!(leases.contains(&LeaseId { epoch: 0, n: 1791328399374 }), "an outbox job keeps its lease");
+        assert!(leases.contains(&JobId { epoch: 0, n: 1791328399374 }), "an outbox job keeps its lease");
         assert_eq!(leases.iter().filter(|l| l.n >= DRAINED).count(), 2);
         // Drained once in this process, whatever the next look finds.
         run.drain(&journal);
@@ -2950,7 +2952,7 @@ mod tests {
                 names.iter().map(|l| (format!("{l}/{dash}"), Some(format!("{l}/{dash}.{n:016x}.pack")))).collect();
             Entry {
                 member: me.clone(),
-                lease: LeaseId { epoch: 1, n },
+                job: JobId { epoch: 1, n },
                 step: "pack".into(),
                 handoff: Handoff {
                     changes,
@@ -3011,7 +3013,7 @@ mod tests {
         let me = run.side.member().id.clone();
         let gc = |n: u64, names: &[&str]| Entry {
             member: me.clone(),
-            lease: LeaseId { epoch: 1, n },
+            job: JobId { epoch: 1, n },
             step: "gc".into(),
             handoff: Handoff { changes: names.iter().map(|l| (l.to_string(), None)).collect(), ..Default::default() },
             at: crate::agent::jobs::now_s(),
@@ -3055,7 +3057,7 @@ mod tests {
         let me = run.side.member().id.clone();
         let entry = |n: u64, step: &str, changes: &[(&str, Option<&str>)]| Entry {
             member: me.clone(),
-            lease: LeaseId { epoch: 1, n },
+            job: JobId { epoch: 1, n },
             step: step.into(),
             handoff: Handoff {
                 changes: changes.iter().map(|(l, c)| (l.to_string(), c.map(str::to_string))).collect(),
@@ -3102,7 +3104,7 @@ mod tests {
     fn jobs_an_earlier_process_left_are_handed_off() {
         let d = tempfile::tempdir().unwrap();
         let home = d.path().join("agent");
-        let lease = LeaseId { epoch: 3, n: 11 };
+        let lease = JobId { epoch: 3, n: 11 };
         let dir = job_dir(&home, lease);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -3110,7 +3112,7 @@ mod tests {
             serde_json::to_vec(&JobKept {
                 step: "unit".into(),
                 targets: vec![("6/1/1".into(), "k1".into()), ("6/1/2".into(), "k2".into())],
-                lease,
+                job: lease,
             })
             .unwrap(),
         )
@@ -3133,7 +3135,7 @@ mod tests {
         let left = left_jobs(crate::agent::seam::for_tests(), &home, "m-000000000000000a", &[]);
         assert_eq!(left.len(), 1);
         let (e, d0) = &left[0];
-        assert_eq!((e.lease, d0), (lease, &dir));
+        assert_eq!((e.job, d0), (lease, &dir));
         assert_eq!(e.handoff.done, Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), "what it noted done");
         assert_eq!(e.handoff.changes.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
         assert!(!home.join("pool/jobs/junk").exists());
@@ -3162,7 +3164,7 @@ mod tests {
 
     #[test]
     fn the_merges_checks() {
-        let e = unit_entry("m-000000000000000a", LeaseId { epoch: 1, n: 1 }, "6/1/2", "k2");
+        let e = unit_entry("m-000000000000000a", JobId { epoch: 1, n: 1 }, "6/1/2", "k2");
         let r = Records::default();
         assert!(check(crate::agent::seam::for_tests(), &e, &r).is_ok());
         let mut other = e.clone();
@@ -3216,14 +3218,14 @@ mod tests {
     /// refused (docs/coordination.md step 8c: no term says who led an epoch). Other steps' pass.
     #[test]
     fn a_redo_entry_from_anyone_but_the_lead_is_refused() {
-        let mut e = unit_entry("m-lead", LeaseId { epoch: 3, n: 1 }, "6/1/2", "");
+        let mut e = unit_entry("m-lead", JobId { epoch: 3, n: 1 }, "6/1/2", "");
         e.step = crate::agent::redo::STEP.into();
         assert_eq!(by_its_lead(&e, "m-lead"), Ok(()));
-        e.lease.epoch = 840;
+        e.job.epoch = 840;
         assert_eq!(by_its_lead(&e, "m-lead"), Ok(()), "an earlier epoch's, its own");
         e.member = "m-other".into();
         assert!(by_its_lead(&e, "m-lead").unwrap_err().contains("isn't the lead"));
-        let u = unit_entry("m-other", LeaseId { epoch: 3, n: 2 }, "6/1/2", "k");
+        let u = unit_entry("m-other", JobId { epoch: 3, n: 2 }, "6/1/2", "k");
         assert_eq!(by_its_lead(&u, "m-lead"), Ok(()));
     }
 
@@ -3231,7 +3233,7 @@ mod tests {
     fn an_entry_outside_from_a_newer_app_is_held() {
         let r = Records::default();
         let lead = "20261009-0000-bbbbbbb";
-        let mut e = unit_entry("m-000000000000000b", LeaseId { epoch: 1, n: 1 }, "6/1/2", "k2");
+        let mut e = unit_entry("m-000000000000000b", JobId { epoch: 1, n: 1 }, "6/1/2", "k2");
         e.handoff.changes.insert("work/new-output".into(), Some("work/new-output.0123456789abcdef.json".into()));
         let on = |app: Option<&'static str>| move |_: &str| app.map(str::to_string);
         let held =
@@ -3253,7 +3255,7 @@ mod tests {
             );
         }
         // Another check's refusal (a content name not of its logical name): refused, newer or not.
-        let mut bad = unit_entry("m-000000000000000b", LeaseId { epoch: 1, n: 2 }, "6/1/2", "k2");
+        let mut bad = unit_entry("m-000000000000000b", JobId { epoch: 1, n: 2 }, "6/1/2", "k2");
         bad.handoff.changes.insert("base/6-1-2".into(), Some("base/6-1-3.3333333333333333.base".into()));
         assert!(!check_from(crate::agent::seam::for_tests(), &bad, &r, lead, &on(Some("20261010-0000-ccccccc")))
             .unwrap_err()
@@ -3261,7 +3263,7 @@ mod tests {
         assert_eq!(
             check_from(
                 crate::agent::seam::for_tests(),
-                &unit_entry("m-000000000000000b", LeaseId { epoch: 1, n: 3 }, "6/1/2", "k2"),
+                &unit_entry("m-000000000000000b", JobId { epoch: 1, n: 3 }, "6/1/2", "k2"),
                 &r,
                 lead,
                 &on(None)
@@ -3541,7 +3543,7 @@ mod tests {
         let old = crate::pool::store::Snapshot { epoch: 1, seq: 1, member: "b".into(), ..Default::default() };
         crate::pool::store::back_up_once(&old, a.side.nas(), 0).unwrap();
         took_up(&mut a, Some(&cb), &took, out.leads, "a", &[]);
-        let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.lease_epoch(*id) != 1).collect();
+        let lost: Vec<u64> = granted.iter().copied().filter(|id| cb.job_of(*id).map_or(0, |j| j.epoch) != 1).collect();
         assert!(granted.len() >= 3 && lost.is_empty(), "{} granted, not taken up: {lost:?}", granted.len());
     }
 }

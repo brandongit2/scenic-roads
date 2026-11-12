@@ -94,7 +94,7 @@ use crate::coord::client::LeaseCalls;
 use crate::pool::lead::Role;
 use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};
-use jobs::{now_s, JobId, JobSpec, Needs, Running};
+use jobs::{now_s, JobName, JobSpec, Needs, Running};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -352,7 +352,7 @@ fn is_duty(id: &str) -> bool {
 /// The cost key a job of no targets of its own is measured by (the OSM pass's `osm-pass <date>`, GC's
 /// `gc gc`): its id's step and the rest of its id, or its id again.
 fn own_cost_key(id: &str) -> String {
-    let j = JobId::parse(id);
+    let j = JobName::parse(id);
     crate::coord::cost_key(j.step, j.target())
 }
 
@@ -373,7 +373,7 @@ fn offered_job(the_plan: &dyn seam::Plan, spec: &JobSpec) -> bool {
 fn own_targets(spec: &JobSpec) -> Vec<(String, String)> {
     match spec.record.as_ref().filter(|w| !w.targets.is_empty()) {
         Some(w) => w.targets.clone(),
-        None => vec![(JobId::parse(&spec.id).target().to_string(), String::new())],
+        None => vec![(JobName::parse(&spec.id).target().to_string(), String::new())],
     }
 }
 
@@ -409,6 +409,10 @@ pub fn slot_workers(host: &str) -> Vec<String> {
 struct Slot {
     running: Option<Running>,
     lease: Option<Held>,
+    /// Its job run's id (jobrt::jobid): the lease's it was first held under, kept when it's held
+    /// again under another (`beat_lease`, `adopt_jobs`) and by the agent after this one (`Hand::job`).
+    /// None: a job of no lease (no coordinator). Set as its lease is (`take_grant`, `lease_own`).
+    job: Option<jobrt::jobid::JobId>,
     beaten: Option<Instant>,
     drain_since: Option<Instant>,
     /// Its job's time left (its batch's, a job of several targets), and the target under way's.
@@ -577,10 +581,10 @@ fn room_beside(the_plan: &dyn seam::Plan, can: Vec<String>, free: u64, held: u64
     can.into_iter().filter(|s| free >= held.saturating_add(helper_need(the_plan, s))).collect()
 }
 
-/// A leased task's kind: its job id's step (`JobId`, "<kind> <unit>"); "tail", the most room, for
+/// A leased task's kind: its job name's step (`JobName`, "<kind> <unit>"); "tail", the most room, for
 /// an id naming no kind (a job adopted from an agent before task #849, "task <lease>").
 fn task_kind<'a>(the_plan: &dyn seam::Plan, spec: &'a JobSpec) -> &'a str {
-    let step = JobId::parse(&spec.id).step;
+    let step = JobName::parse(&spec.id).step;
     if the_plan.task_disk(step).is_some() {
         step
     } else {
@@ -659,7 +663,7 @@ fn tile_of(s: &str) -> Option<(u32, u32, u32)> {
 /// The archive shards (`archive_shard`) a terrain job's target reads (`terrain_reads`'s rule);
 /// none for any other step's.
 pub(crate) fn terrain_shards(id: &str) -> BTreeSet<(u32, u32, u32)> {
-    let j = JobId::parse(id);
+    let j = JobName::parse(id);
     let (s, Some(t)) = (crate::pool::records::current(j.step), j.rest) else { return BTreeSet::new() };
     let Some((z, x, y)) = tile_of(t) else { return BTreeSet::new() };
     match (s, z) {
@@ -689,6 +693,10 @@ fn mac_cores() -> u32 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Hand {
     lease: Option<Held>,
+    /// Its job run's id (`Slot::job`). None in a record an older app wrote: its lease's
+    /// (`Held::job`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    job: Option<jobrt::jobid::JobId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peak_mb: Option<u64>,
     #[serde(default)]
@@ -754,6 +762,21 @@ enum Held {
     },
 }
 
+impl Held {
+    /// The id of the job run it was granted for, by itself (`epoch`: the lead's own lease's, the
+    /// coordinator's word, 0 unsaid): a slot's is its `Slot::job`, which this is only where none is
+    /// said (an older app's `Hand`).
+    fn job(&self, epoch: u64) -> Option<jobrt::jobid::JobId> {
+        use jobrt::jobid::JobId;
+        match *self {
+            Held::Own(0) => None,
+            Held::Own(n) => Some(JobId { epoch, n }),
+            Held::Leased { lease, .. } => Some(JobId { epoch: 0, n: lease }),
+            Held::Pooled { id, epoch, .. } => Some(JobId { epoch, n: id }),
+        }
+    }
+}
+
 /// A worker as the heartbeat shows it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WorkerView {
@@ -774,8 +797,9 @@ fn read_timings(dir: &Path) -> Option<jobrt::timings::RunRec> {
     std::fs::read(dir.join(TIMINGS_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// What a `unit` job's z6 tiles cost (`SCENIC_COSTS`: a JSON line per z6 tile).
-fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
+/// What a `unit` job's z6 tiles cost (`SCENIC_COSTS`: a JSON line per z6 tile), measured by run
+/// `job` (jobrt::jobid).
+fn read_costs(p: &Path, job: Option<jobrt::jobid::JobId>) -> Vec<(String, crate::coord::Cost)> {
     let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
     s.lines()
         .filter_map(|l| {
@@ -791,6 +815,7 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
                     peak_mb: v["peak_mb"].as_u64()?,
                     secs: v["secs"].as_u64().unwrap_or(0),
                     worker: None,
+                    job,
                     v: v["v"].as_u64().unwrap_or(0) as u32,
                     sizes,
                 },
@@ -1074,6 +1099,9 @@ fn publish_marks(cursors: &BTreeMap<String, store::map::Cursor>) -> Vec<(&'stati
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobView {
     pub id: String,
+    /// Its run's id (jobrt::jobid; `Slot::job`). None: a job of no lease, or an older agent's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<jobrt::jobid::JobId>,
     pub what: String,
     pub started: u64,
     /// Why it's paused (frozen where it is), when it is.
@@ -1311,6 +1339,10 @@ pub struct Waiting {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Done {
     pub id: String,
+    /// Its run's id (jobrt::jobid; `Slot::job`). None: a job of no lease, or one ended before job
+    /// ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<jobrt::jobid::JobId>,
     pub what: String,
     pub ok: bool,
     pub ended: u64,
@@ -2522,6 +2554,7 @@ impl Agent {
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
         self.slots[k].peak_mb = Some(grant.peak_mb).filter(|&m| m > 0);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
+        self.slots[k].job = Some(jobrt::jobid::JobId { epoch: grant.epoch, n: grant.lease });
         match grant {
             crate::coord::Grant { lease, epoch, work: crate::coord::Granted::Job { step, targets, pass }, .. }
                 if every::offered(self.o.the_plan, &step)
@@ -2532,7 +2565,7 @@ impl Agent {
                 // the pass's date, is no step's target. crate::agent::resume.)
                 let resumed = resume::RESUMABLE.contains(&step.as_str()) && !every::offered(self.o.the_plan, &step);
                 // (In the pool, its folder is its lease's, `<epoch>-<lease>`, handed to the pool.)
-                let pooled = self.pool.is_some().then_some(crate::pool::journal::LeaseId { epoch, n: lease });
+                let pooled = self.pool.is_some().then_some(jobrt::jobid::JobId { epoch, n: lease });
                 let dir = match pooled {
                     Some(l) => pool::job_dir(&self.o.home, l),
                     None => self.outbox().join(lease.to_string()),
@@ -2543,7 +2576,7 @@ impl Agent {
                     Some(l) => serde_json::to_vec(&pool::JobKept {
                         step: step.clone(),
                         targets: if resumed { Vec::new() } else { targets.clone() },
-                        lease: l,
+                        job: l,
                     }),
                     None => serde_json::to_vec(&jobs::Work { step: step.clone(), targets: targets.clone() }),
                 };
@@ -2646,7 +2679,7 @@ impl Agent {
                 Some((
                     k,
                     JobSpec {
-                        id: JobId { step: &kind, rest: Some(&unit) }.to_string(),
+                        id: JobName { step: &kind, rest: Some(&unit) }.to_string(),
                         what,
                         cmd,
                         needs: Needs { nas: true },
@@ -2854,14 +2887,15 @@ impl Agent {
         spec: &JobSpec,
         waiting: &mut Vec<Waiting>,
     ) -> bool {
+        let job = co.job_of(n).unwrap_or(jobrt::jobid::JobId { epoch: 0, n });
+        self.slots[k].job = Some(job);
         if self.pool.is_none() {
             self.slots[k].lease = Some(Held::Own(n));
             return true;
         }
         let w = held_work(spec);
-        let lease = crate::pool::journal::LeaseId { epoch: co.lease_epoch(n), n };
-        let dir = pool::job_dir(&self.o.home, lease);
-        let kept = pool::JobKept { step: w.step.clone(), targets: w.targets.clone(), lease };
+        let dir = pool::job_dir(&self.o.home, job);
+        let kept = pool::JobKept { step: w.step.clone(), targets: w.targets.clone(), job };
         if let Err(e) = std::fs::create_dir_all(&dir)
             .map_err(anyhow::Error::from)
             .and_then(|()| store::whole::write(&dir.join("work.json"), &serde_json::to_vec(&kept)?))
@@ -2870,7 +2904,7 @@ impl Agent {
             waiting.push(Waiting { step: Some(w.step), what: spec.what.clone(), why: format!("its folder: {e:#}") });
             return false;
         }
-        self.slots[k].lease = Some(Held::Pooled { id: n, epoch: lease.epoch, dir, own: true });
+        self.slots[k].lease = Some(Held::Pooled { id: n, epoch: job.epoch, dir, own: true });
         true
     }
 
@@ -2929,6 +2963,8 @@ impl Agent {
             }
         }
         let watch = self.sampler.unwatch(k).unwrap_or_default();
+        // (Its run's id, on what it measured.)
+        let job = self.slots[k].job;
         // (None from a job stopped for yielding: what it held says nothing of its targets.)
         let no_floors = self.slots[k].yield_stopped;
         let floors_of = |costs: &[(String, crate::coord::Cost)]| {
@@ -2968,7 +3004,7 @@ impl Agent {
                         c.close_tasks(p);
                     }
                     let costs = self.costs_path(k);
-                    let measured = read_costs(&costs);
+                    let measured = read_costs(&costs, job);
                     c.add_floors(&floors_of(&measured));
                     c.add_disks(&disks);
                     job_run(c, &job_step, outcome, done, job_disk);
@@ -2981,14 +3017,14 @@ impl Agent {
                 // pool, by the pool's next step; its folder kept until a saved state holds it.
                 let kept: Option<pool::JobKept> =
                     std::fs::read(dir.join("work.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-                let costs = read_costs(&if own { self.costs_path(k) } else { dir.join("costs.jsonl") });
+                let costs = read_costs(&if own { self.costs_path(k) } else { dir.join("costs.jsonl") }, job);
                 // (Out of the pool, its member's lock held by another process a while: this Mac's
                 // member all the same, its hand-off read as the pool's would. Without it the job
                 // would go to the lead as failed, with no reason, and be built again.)
                 let me = self.member_id.clone().or_else(|| crate::pool::member_id(&self.o.home).ok());
                 let entry = match (&kept, me.as_deref()) {
                     (Some(w), Some(me)) => {
-                        match pool::entry_of(self.o.the_plan, &dir, me, w.lease, &w.step, done, now_s()) {
+                        match pool::entry_of(self.o.the_plan, &dir, me, w.job, &w.step, done, now_s()) {
                             Ok(e) => e,
                             Err(e) => {
                                 eprintln!(
@@ -3119,7 +3155,7 @@ impl Agent {
                 // (One the memory guard stopped isn't interrupted: kept from this Mac for a while.)
                 let interrupted = !ok && matches!(outcome, Outcome::Paused | Outcome::Interrupted) && !guard_stopped;
                 // (What its targets held at least, for the lead's floors when it isn't done.)
-                let floors = if ok { Vec::new() } else { floors_of(&read_costs(&dir.join("costs.jsonl"))) };
+                let floors = if ok { Vec::new() } else { floors_of(&read_costs(&dir.join("costs.jsonl"), job)) };
                 let r = serde_json::json!({ "ok": ok, "done": done, "failed": failed, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>(), "floors": floors });
                 if let Err(e) = store::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
@@ -3269,7 +3305,8 @@ impl Agent {
                     return true;
                 }
                 let work = self.slots[k].running.as_ref().map(|r| held_work(&r.spec));
-                match work.and_then(|w| c.hold(&w.step, &w.targets)) {
+                let job = self.slots[k].job;
+                match work.and_then(|w| c.hold_for(&w.step, &w.targets, job)) {
                     Some(id) => {
                         // (Held again under a new id, beaten at once: its job's start said, the
                         // lease younger than it, crate::coord::lease::Lease::taken_up. Its hand-off
@@ -3352,7 +3389,8 @@ impl Agent {
                 .map(|r| jobrt::timings::RunRec { host: self.worker_of(k), ..r }),
             None => jobrt::timings::take_record(&self.timings_path(k), &self.worker_of(k)),
         };
-        let Some(rec) = rec else { return };
+        // (Its run's id, as the job said it, else its slot's: a job of an older app says none.)
+        let Some(rec) = rec.map(|r| jobrt::timings::RunRec { job: r.job.or(self.slots[k].job), ..r }) else { return };
         if let Err(e) = jobrt::timings::append(&self.o.home.join("timings.jsonl"), &rec) {
             eprintln!("agent: keeping a job's timings: {e}");
         }
@@ -3635,7 +3673,7 @@ impl Agent {
             h.add(self.o.the_plan, &w.step, &w.targets.into_iter().map(|t| t.0).collect::<Vec<_>>());
         }
         for r in self.slots.iter().filter_map(|s| s.running.as_ref()) {
-            let j = JobId::parse(&r.spec.id);
+            let j = JobName::parse(&r.spec.id);
             if let Some(t) = j.rest.filter(|_| crate::pool::records::current(j.step).starts_with("terrain-")) {
                 h.add(self.o.the_plan, j.step, &[t.to_string()]);
             }
@@ -3872,6 +3910,7 @@ impl Agent {
         let s = &self.slots[k];
         Hand {
             lease: s.lease.clone(),
+            job: s.job,
             peak_mb: s.peak_mb,
             reserve_mb: s.reserve_mb,
             proxy_port: self.proxy.as_ref().map(|p| p.port()),
@@ -3947,12 +3986,19 @@ impl Agent {
             }
             let id = r.spec.id.clone();
             let w = held_work(&r.spec);
+            // (Its run's id as the agent before kept it; an older app's, its lease's.)
+            let job = hand.job.or_else(|| {
+                let own = |n| self.coord.as_ref().and_then(|c| c.job_of(n)).map_or(0, |j| j.epoch);
+                hand.lease.as_ref().and_then(|l| l.job(if let Held::Own(n) = l { own(*n) } else { 0 }))
+            });
             let lease = match (hand.lease, &self.coord) {
-                (Some(Held::Own(n)), Some(c)) => {
-                    Some(Held::Own(if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) }))
-                }
+                (Some(Held::Own(n)), Some(c)) => Some(Held::Own(if c.renew(n, None) {
+                    n
+                } else {
+                    c.hold_for(&w.step, &w.targets, job).unwrap_or(n)
+                })),
                 (Some(Held::Pooled { id: n, epoch, dir, own: true }), Some(c)) => {
-                    let n = if c.renew(n, None) { n } else { c.hold(&w.step, &w.targets).unwrap_or(n) };
+                    let n = if c.renew(n, None) { n } else { c.hold_for(&w.step, &w.targets, job).unwrap_or(n) };
                     Some(Held::Pooled { id: n, epoch, dir, own: true })
                 }
                 (l, _) => l,
@@ -3992,7 +4038,7 @@ impl Agent {
             }
             let pgid = r.pgid;
             let s = &mut self.slots[k];
-            s.lease = lease;
+            (s.lease, s.job) = (lease, job);
             (s.peak_mb, s.reserve_mb) = (hand.peak_mb, hand.reserve_mb);
             s.running = Some(r);
             // (Its own lease beaten at once: its job's start said, so one held again is known
@@ -5070,7 +5116,7 @@ impl Agent {
             }
             self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
-            self.finished(&id, &what, ok || paused, secs, note);
+            self.finished(&id, self.slots[k].job, &what, ok || paused, secs, note);
             self.slots[k].drain_since = None;
             self.slots[k].mem_drain = None;
             self.slots[k].mem_drain_alone = false;
@@ -5259,7 +5305,7 @@ impl Agent {
                         return false;
                     }
                 }
-                None => self.slots[k].lease = Some(Held::Own(0)),
+                None => (self.slots[k].lease, self.slots[k].job) = (Some(Held::Own(0)), None),
             }
         }
         self.try_start_said(k, spec, c, root, waiting)
@@ -5279,7 +5325,7 @@ impl Agent {
         // job with them dropped from the plan already, `guard_holds`.)
         let limit = self.jobs_ceiling();
         if let (None, Some(co), true) = (spec.record.as_ref(), self.coord.as_ref(), limit > 0) {
-            let j = JobId::parse(&spec.id);
+            let j = JobName::parse(&spec.id);
             if let Some(f) = co.holding_floor(j.step, j.target()).filter(|f| f.mb > limit) {
                 return Some(format!("needs about {:.1} GB, past the {:.1} GB this Mac's jobs could hold above its memory floor, and no other Mac runs it: for the owner to see to (a lower floor, or `scenic pool floors --clear` once it's fixed)", f.mb as f64 / 1024.0, limit as f64 / 1024.0));
             }
@@ -5439,7 +5485,7 @@ impl Agent {
                     .map(|w| w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>())
                     .unwrap_or_default(),
             );
-            let j = JobId::parse(&id);
+            let j = JobName::parse(&id);
             if let Some(t) = j.rest.filter(|_| crate::pool::records::current(j.step).starts_with("terrain-")) {
                 hints.add(self.o.the_plan, j.step, &[t.to_string()]);
             }
@@ -5566,7 +5612,7 @@ impl Agent {
             // It couldn't even start (a missing program, a full disk): retried later.
             eprintln!("agent: can't start {id}: {e:#}");
             self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
-            self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
+            self.finished(&id, self.slots[k].job, &what, false, 0, format!("couldn't start: {e:#}"));
             return false;
         }
         true
@@ -6405,6 +6451,7 @@ impl Agent {
         slot.job_eta = progress.as_ref().and_then(|p| p.eta_s);
         Some(JobView {
             id: r.spec.id.clone(),
+            job: slot.job,
             what: r.spec.what.clone(),
             started: r.started,
             paused: r.paused.clone(),
@@ -7031,7 +7078,12 @@ impl Agent {
         let timings = self.timings_path(k);
         std::fs::remove_file(&timings).ok();
         env.push((jobrt::timings::TIMINGS_ENV.into(), timings.to_string_lossy().into_owned()));
-        env.push((jobrt::timings::JOB_ID_ENV.into(), spec.id.clone()));
+        env.push((jobrt::timings::JOB_NAME_ENV.into(), spec.id.clone()));
+        // (And its run's id, its lease's: jobrt::jobid.)
+        let job = self.slots[k].job;
+        if let Some(j) = job {
+            env.push((jobrt::timings::JOB_ENV.into(), j.to_string()));
+        }
         // Where its accessors count the bytes they add to the caches, afresh (docs/pool.md §7.7).
         let written = self.written_path(k);
         std::fs::remove_file(&written).ok();
@@ -7078,7 +7130,7 @@ impl Agent {
         // name a target under way that isn't, crate::agent::memguard.)
         std::fs::remove_file(self.slot_costs(k)).ok();
         self.slots[k].running =
-            Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
+            Some(Running::start(spec, job, threads, &env, log, &self.record_path(k), Some(&done), sandbox)?);
         // (Known to control and **jobs**' thread at once: a hold drains it, a cancel stops it, its
         // end wakes the loop. Control sets a hold before it reads the jobs to drain, and this reads
         // the hold after publishing: a hold taken up since `try_start_said`'s look is either
@@ -7098,6 +7150,7 @@ impl Agent {
         }
         self.note(crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
+            job: self.slots[k].job,
             step,
             targets,
             what,
@@ -7125,6 +7178,7 @@ impl Agent {
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
         let e = crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
+            job: self.slots[k].job,
             step: (!step.is_empty()).then_some(step),
             targets: done.iter().map(|t| t.0.clone()).collect(),
             secs: Some(secs as f64),
@@ -7174,7 +7228,7 @@ impl Agent {
         }
     }
 
-    fn finished(&mut self, id: &str, what: &str, ok: bool, secs: u64, note: String) {
+    fn finished(&mut self, id: &str, job: Option<jobrt::jobid::JobId>, what: &str, ok: bool, secs: u64, note: String) {
         // (One that ran: not one that couldn't start.)
         if secs > 0 {
             self.worked(id);
@@ -7197,9 +7251,10 @@ impl Agent {
             let delay = (600u64 << (n - 1).min(6)).min(6 * 3600);
             self.mem.retry.insert(id.to_string(), (n, now_s() + delay));
         }
-        self.mem
-            .recent
-            .insert(0, Done { id: id.into(), what: what.into(), ok, ended: now_s(), secs, note, cancelled: false });
+        self.mem.recent.insert(
+            0,
+            Done { id: id.into(), job, what: what.into(), ok, ended: now_s(), secs, note, cancelled: false },
+        );
         self.mem.recent.truncate(20);
         self.save();
     }
@@ -7643,6 +7698,7 @@ impl Agent {
         self.worked(&id);
         self.note(crate::coord::history::Event {
             worker: Some(self.worker_of(k)),
+            job: self.slots[k].job,
             step: (!step.is_empty()).then(|| step.clone()),
             targets: vec![c.target.clone()],
             secs: Some(secs as f64),
@@ -7658,7 +7714,8 @@ impl Agent {
             }
         }
         self.mem.retry.remove(&id);
-        self.mem.recent.insert(0, Done { id, what, ok: false, ended: now_s(), secs, note, cancelled: true });
+        let job = self.slots[k].job;
+        self.mem.recent.insert(0, Done { id, job, what, ok: false, ended: now_s(), secs, note, cancelled: true });
         self.mem.recent.truncate(20);
         self.save();
         let s = &mut self.slots[k];
@@ -9121,9 +9178,9 @@ fn room_past(target: u64, goal: u64) -> String {
 }
 
 /// A job's step: its id's first word ("unit 6/31/20": "unit", a leased task's its kind: "tail
-/// 6/1/1": "tail"; `JobId`).
+/// 6/1/1": "tail"; `JobName`).
 pub fn step_of(id: &str) -> Option<String> {
-    Some(JobId::parse(id).step).filter(|s| !s.is_empty()).map(str::to_string)
+    Some(JobName::parse(id).step).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// What job `spec`'s own lease is held again for: its record, or for a job of none (buildings)
@@ -9718,7 +9775,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let c = read_costs(&p);
+        let c = read_costs(&p, None);
         assert_eq!(c.len(), 2);
         assert_eq!(c[0].0, "terrain-hi 6/1/2");
         assert_eq!(
@@ -10176,9 +10233,9 @@ mod tests {
             j.cmd.ends_with(&["terrain-hi".to_string(), "6/18/22".into(), "6/18/23".into()])
                 && !j.cmd.contains(&"--run".to_string())
         );
-        a.finished(&j.id, &j.what, false, 5, String::new());
+        a.finished(&j.id, None, &j.what, false, 5, String::new());
         assert_eq!(redo::pending(&home).unwrap().len(), 1, "a failure keeps the ask");
-        a.finished(&j.id, &j.what, true, 5, String::new());
+        a.finished(&j.id, None, &j.what, true, 5, String::new());
         assert!(redo::pending(&home).unwrap().is_empty() && !home.join(redo::ASKS).exists());
         assert!(a.planner().redo_jobs(&root).is_empty());
     }
@@ -10319,7 +10376,7 @@ mod tests {
     fn a_task_needs_its_kinds_room() {
         // (A task's job named by its kind, as `take_grant` names it: "<kind> <unit>", task #905.)
         let spec = |kind: &str, unit: &str| JobSpec {
-            id: JobId { step: kind, rest: Some(unit) }.to_string(),
+            id: JobName { step: kind, rest: Some(unit) }.to_string(),
             what: String::new(),
             cmd: Vec::new(),
             needs: Needs { nas: true },
@@ -10537,6 +10594,7 @@ mod tests {
         let mut v = a.beat.view.get().as_ref().clone().unwrap();
         v.status.set_jobs(
             vec![JobView {
+                job: None,
                 id: "unit 6/1/2".into(),
                 what: "z6 tile 6/1/2".into(),
                 started: now_s(),
@@ -10654,7 +10712,7 @@ mod tests {
         };
         std::fs::create_dir_all(&a.o.home).unwrap();
         let log = a.o.home.join(format!("job-{k}.log"));
-        let r = Running::start(spec, 1, &[], log, &a.record_path(k), None, None).unwrap();
+        let r = Running::start(spec, None, 1, &[], log, &a.record_path(k), None, None).unwrap();
         let pgid = r.pgid;
         a.slots[k].running = Some(r);
         a.publish_jobs();
@@ -11520,7 +11578,7 @@ mod tests {
             record: Some(jobs::Work { step: "bldtiles".into(), targets: vec![("6/1/2".into(), "k".into())] }),
         };
         std::fs::create_dir_all(&a.o.home).unwrap();
-        let r = Running::start(spec, 1, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None).unwrap();
+        let r = Running::start(spec, None, 1, &[], a.o.home.join("job-0.log"), &a.record_path(0), None, None).unwrap();
         a.slots[0].running = Some(r);
         a.slots[0].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
@@ -13359,6 +13417,7 @@ mod tests {
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, true);
         let beat = |at: u64, done: bool, job: Option<&str>| {
             let job = job.map(|id| JobView {
+                job: None,
                 id: id.into(),
                 what: format!("Ranking the world's place labels ({id})"),
                 started: at,
@@ -14647,6 +14706,12 @@ mod tests {
         }
         let _kill = Kill(pgid);
         assert!(co.held("terrain-hi").contains("6/55/25"));
+        // (Task #1103: its run's id, its lease's, named in its log's first line.)
+        let Some(Held::Own(first)) = a.slots[0].lease else { panic!("its own lease") };
+        let run = a.slots[0].job.expect("its run's id");
+        assert_eq!(co.job_of(first), Some(run));
+        let log = std::fs::read_to_string(&a.slots[0].running.as_ref().unwrap().log).unwrap();
+        assert!(log.contains(&format!("job {run}) ===")), "{log}");
         // The agent ends (a newer app, a SIGTERM): the job left running, its record kept with its
         // slot, its lease not ended.
         a.hand_over_jobs();
@@ -14672,6 +14737,10 @@ mod tests {
         assert!(b.beat(0, Some(&store::nasfs::NasRoot::local_for_test(&root))));
         assert!(co.held("terrain-hi").contains("6/55/25"));
         assert_eq!(co.hold("terrain-hi", &job.record.as_ref().unwrap().targets), None, "never held twice");
+        // (Its run's id kept across the take-over, the lease it's held again under a new one's.)
+        let Some(Held::Own(again)) = b.slots[0].lease else { panic!("its own lease") };
+        assert_ne!(again, first);
+        assert_eq!((b.slots[0].job, co.job_of(again)), (Some(run), Some(run)));
         // Its app's folder kept for it while it runs (the map server's updater reads it).
         assert_eq!(b.job_apps(), Vec::<String>::new(), "its programs aren't in an app's folder here");
         // Tended to its end: its status read from its file (not this process's child), its lease
@@ -14686,6 +14755,12 @@ mod tests {
         assert!(b.slots[0].running.is_none() && b.slots[0].lease.is_none());
         assert!(!co.held("terrain-hi").contains("6/55/25"));
         assert!(!b.record_path(0).exists());
+        // (Its history's start, under the agent before, and end, under this one, name one run; so
+        // does what this agent remembers of it.)
+        let h = co.history();
+        let named = |kind: &str| h.iter().filter(|e| e.kind == kind).map(|e| e.job).collect::<Vec<_>>();
+        assert_eq!((named("start"), named("end")), (vec![Some(run)], vec![Some(run)]));
+        assert_eq!(b.mem.recent.first().map(|d| d.job), Some(Some(run)));
         // (Its head, still this test's child as it isn't once its agent has ended, reaped here as
         // launchd would.)
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
@@ -15212,6 +15287,7 @@ mod tests {
         let runs: Vec<(String, crate::coord::Cost)> = (0..20u64)
             .map(|i| {
                 let c = crate::coord::Cost {
+                    job: None,
                     peak_mb: 100,
                     secs: if i < 17 { 100 } else { 7200 },
                     worker: None,
@@ -15562,6 +15638,7 @@ mod tests {
         // counts as this Mac's does.
         let mut helper = Status { host: "m1".into(), ..Default::default() };
         helper.jobs = vec![JobView {
+            job: None,
             id: "peaks 6/1/2".into(),
             what: String::new(),
             started: 0,
@@ -15620,6 +15697,7 @@ mod tests {
         let helper = Status {
             host: "m1".into(),
             job: Some(JobView {
+                job: None,
                 id: "unit 6/1/2".into(),
                 what: String::new(),
                 started: 0,
@@ -15706,7 +15784,7 @@ mod pool_tests {
     //! The agent with the pool (docs/pool.md §12, phase 1's integration): off, on (leading, and as
     //! a member), its gates, its switch changing, and shadowed.
     use super::*;
-    use crate::pool::journal::LeaseId;
+    use jobrt::jobid::JobId;
 
     /// A NAS folder as the pool begins: today's records, this Mac named their writer.
     fn nas(d: &Path) -> PathBuf {
@@ -16152,7 +16230,7 @@ mod pool_tests {
         // The lead's coordinator ended the lease, its target kept out of offers until the plan shows
         // it built; its own jobs hold none of it meanwhile.
         assert!(lead.coord.as_ref().unwrap().held("slope-hi").is_empty());
-        let lid: LeaseId = key.rsplit('/').next().unwrap().parse().unwrap();
+        let lid: JobId = key.rsplit('/').next().unwrap().parse().unwrap();
         assert_eq!(lid.epoch, 1);
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
@@ -16498,7 +16576,7 @@ mod pool_tests {
         // (Its earlier stage's entry, handed and not yet merged: laid over the snapshot for its job.)
         let earlier = crate::pool::journal::Entry {
             member: im.clone(),
-            lease: LeaseId { epoch: 1, n: 99 },
+            job: JobId { epoch: 1, n: 99 },
             step: "osm-pass".into(),
             handoff: buildstore::handoff::Handoff {
                 changes: [(
@@ -18150,7 +18228,7 @@ mod pool_tests {
         let kept = pool::JobKept {
             step: "unit".into(),
             targets: vec![("6/12/25".into(), "k".into())],
-            lease: crate::pool::journal::LeaseId { epoch: 1, n: 7 },
+            job: jobrt::jobid::JobId { epoch: 1, n: 7 },
         };
         std::fs::write(dir.join("work.json"), serde_json::to_vec(&kept).unwrap()).unwrap();
         a.slots[0].lease = Some(Held::Pooled { id: g.lease, epoch: 1, dir: dir.clone(), own: false });

@@ -60,8 +60,9 @@
 //! alone, caught up, its records at the one path must name every hand-off owed, and no take-up may
 //! have been made in the run's last ten minutes. Checked throughout: no target under two live leases
 //! (the jobs running, all Macs', and each coordinator's table), two leads never granting at once,
-//! no lease id granted twice, every hand-off merged once or refused with why (never applied again
-//! once acknowledged), acknowledgements only of what a saved snapshot names, §4's epoch and
+//! no job id (a lease's, jobrt::jobid) granted twice across every lead, restart and move, every
+//! hand-off merged once or refused with why (never applied again once acknowledged),
+//! acknowledgements only of what a saved snapshot names, §4's epoch and
 //! records invariants (a save landed late over the one path, not following its brief, fenced as a
 //! take-up fences it: `records::follows`), a job's brief never older than the one its lease was granted from (from the
 //! same coordinator), GC removing no name the records it saw name nor one a map server heard within
@@ -72,13 +73,14 @@ mod mac;
 mod place;
 
 use super::driver::{self, Io};
-use super::journal::{Entry, LeaseId};
+use super::journal::Entry;
 use super::lead;
 use super::nas::{Created, Nas};
 use super::records::{self, Records};
 use crate::coord::Coordinator;
 use anyhow::{anyhow, bail, Result};
 use coordwire::client::Wired;
+use jobrt::jobid::JobId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -1203,7 +1205,8 @@ impl World {
     }
 
     /// After a request to Mac `k`'s coordinator: its leases checked (no target under two live
-    /// leases of its table; no lease id granted twice), and what its store holds of the hand-offs.
+    /// leases of its table; no job id, `Lease::job`, granted twice by any coordinator of the run),
+    /// and what its store holds of the hand-offs.
     fn seen_coord(&mut self, k: usize) {
         let Some(c) = self.macs[k].coord.clone() else { return };
         self.holds(k, c.handoffs_taken().into_iter().collect());
@@ -1218,7 +1221,7 @@ impl World {
             }
             match self.granted.get(&(*e, *n)) {
                 Some((w, ts)) if w != worker || ts != targets => self.wrong(format!(
-                    "lease {e}-{n} granted twice: to {w} for {ts:?}, and to {worker} for {targets:?} by mac{k}"
+                    "job {e}-{n} granted twice: to {w} for {ts:?}, and to {worker} for {targets:?} by mac{k}"
                 )),
                 Some(_) => {}
                 None => {
@@ -1279,8 +1282,9 @@ impl World {
             }
         }
         match self.granted.get(&(epoch, n)) {
-            Some((w, ts)) if w != worker || ts != targets => self
-                .wrong(format!("lease {epoch}-{n} granted twice: to {w} for {ts:?}, and to {worker} for {targets:?}")),
+            Some((w, ts)) if w != worker || ts != targets => {
+                self.wrong(format!("job {epoch}-{n} granted twice: to {w} for {ts:?}, and to {worker} for {targets:?}"))
+            }
             Some(_) => {}
             None => {
                 self.granted.insert((epoch, n), (worker.to_string(), targets.to_vec()));
@@ -1628,7 +1632,7 @@ impl World {
 
     /// Mac `me`'s job handed off `e` (its driver's step keeps it): what it is.
     fn handed_off(&mut self, me: usize, e: &Entry) {
-        let Some(key) = e.key() else { return self.wrong(format!("mac{me}'s hand-off of {} has no day", e.lease)) };
+        let Some(key) = e.key() else { return self.wrong(format!("mac{me}'s hand-off of {} has no day", e.job)) };
         let kind = if crate::agent::seam::for_tests().outside_by(e, &|l, removal| writes(&e.step, l, removal)).is_some()
         {
             self.count("hand-offs outside their step's outputs, refused by every lead");

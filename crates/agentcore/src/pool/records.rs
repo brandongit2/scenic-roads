@@ -18,11 +18,12 @@
 //! buildstore::records's, generic over what's read (task #916 step 6a, docs/crates.md §6): here,
 //! the whole records.
 
-use super::journal::{Entry, LeaseId};
+use super::journal::Entry;
 use super::nas::Nas;
 use anyhow::Result;
 use buildstore::rawpack::Pack;
 use buildstore::records::{read_or_default, Snapshot, TODAY};
+use jobrt::jobid::JobId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -345,7 +346,7 @@ pub struct Records {
     /// The lease of the last done record applied, by step and target (`slots`): an entry of an older
     /// lease for one of them, merged later, changes nothing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub last: BTreeMap<String, BTreeMap<String, LeaseId>>,
+    pub last: BTreeMap<String, BTreeMap<String, JobId>>,
     /// The member whose take-up began its epoch (crate::pool::driver's take-up): two Macs may lead
     /// one epoch number (docs/pool.md §4 invariant 2's limit), never one Mac twice. None: records of
     /// before task #1038.
@@ -598,7 +599,7 @@ impl Records {
         let h = &e.handoff;
         let slots: Vec<(String, String)> =
             h.done.iter().flat_map(|(step, ts)| ts.iter().flat_map(|(t, _)| slots(step, t))).collect();
-        if slots.iter().any(|(s, t)| self.last.get(s).and_then(|m| m.get(t)).is_some_and(|l| *l > e.lease)) {
+        if slots.iter().any(|(s, t)| self.last.get(s).and_then(|m| m.get(t)).is_some_and(|l| *l > e.job)) {
             self.reflected.insert(key.to_string());
             return false;
         }
@@ -625,7 +626,7 @@ impl Records {
             }
         }
         for (s, t) in slots {
-            self.last.entry(s).or_default().insert(t, e.lease);
+            self.last.entry(s).or_default().insert(t, e.job);
         }
         self.reflected.insert(key.to_string());
         true
@@ -662,11 +663,8 @@ pub type MergedJob = (String, String, String, Vec<String>);
 /// records name.
 pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, check: Check) -> Merged {
     let mut out = Merged::default();
-    let todo: BTreeMap<(LeaseId, String), &Entry> = entries
-        .into_iter()
-        .filter_map(|e| Some(((e.lease, e.key()?), e)))
-        .filter(|((_, k), _)| !r.handles(k))
-        .collect();
+    let todo: BTreeMap<(JobId, String), &Entry> =
+        entries.into_iter().filter_map(|e| Some(((e.job, e.key()?), e))).filter(|((_, k), _)| !r.handles(k)).collect();
     for ((_, k), e) in todo {
         match check(e, r) {
             Ok(()) => {
@@ -735,10 +733,10 @@ impl std::error::Error for Unsaved {}
 
 #[cfg(test)]
 mod tests {
-    use super::super::journal::LeaseId;
     use super::super::nas::Mem;
     use super::*;
     use buildstore::handoff::Handoff;
+    use jobrt::jobid::JobId;
 
     const DAY: u64 = 1_791_300_000;
 
@@ -758,7 +756,7 @@ mod tests {
         };
         Entry {
             member: "m-000000000000000b".into(),
-            lease: LeaseId { epoch, n },
+            job: JobId { epoch, n },
             step: "unit".into(),
             handoff: h,
             at: DAY + n,
@@ -957,7 +955,7 @@ mod tests {
         let (late, m) = merge1(&mut r, &built(3, 10, "6-1-1", "k10"), &any);
         assert_eq!(m.overtaken, [late]);
         assert!(!r.manifest.contains_key("base/6-1-1") && !r.keys.unit.contains_key("6-1-1"));
-        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { epoch: 3, n: 12 });
+        assert_eq!(r.last["unit"]["6-1-1"], JobId { epoch: 3, n: 12 });
         // Kept in the snapshot, for the next lead.
         assert_eq!(serde_json::from_slice::<Records>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
     }
@@ -986,7 +984,7 @@ mod tests {
         let (k, m) = merge1(&mut r, &redo(5), &check);
         // (#789: what `scenic redo --run` follows: the redo's lease is the target's mark now.)
         assert_ne!(crate::agent::redo::marks(&r, "unit", &ts), marks);
-        assert_eq!(r.last["unit"]["6-1-1"], LeaseId { epoch: 3, n: 5 });
+        assert_eq!(r.last["unit"]["6-1-1"], JobId { epoch: 3, n: 5 });
         assert!(m.refused.is_empty() && m.applied == [k], "{:?}", m.refused);
         assert_eq!(r.keys.unit.get("6-1-1"), None);
         assert_eq!(r.keys.unit.get("6-1-2").map(String::as_str), Some("k2"), "the other target's kept");

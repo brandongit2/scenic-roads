@@ -203,6 +203,10 @@ pub struct Cost {
     pub secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    /// The job run that measured it (jobrt::jobid). None: measured before job ids, or by a job of
+    /// no lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<jobrt::jobid::JobId>,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub v: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -400,8 +404,8 @@ struct GcGone {
 }
 
 /// The newest lease granted (its epoch's, the next's number less one).
-fn newest_lease(s: &Shared) -> crate::pool::journal::LeaseId {
-    crate::pool::journal::LeaseId { epoch: s.leases.epoch, n: s.leases.next().saturating_sub(1) }
+fn newest_lease(s: &Shared) -> jobrt::jobid::JobId {
+    jobrt::jobid::JobId { epoch: s.leases.epoch, n: s.leases.next().saturating_sub(1) }
 }
 
 /// What the request handlers and the agent share.
@@ -745,7 +749,7 @@ impl Shared {
             );
             self.history.add(history::Event {
                 worker: Some(a.worker.clone()),
-                lease: Some(p.lease),
+                job: self.sched.leases.job_of(p.lease),
                 step: Some(p.step.clone()),
                 targets: p.targets.iter().map(|t| t.0.clone()).collect(),
                 data: p.sized.map(|(s, own)| serde_json::json!({ "sized_s": s, "own": own })),
@@ -1602,7 +1606,7 @@ impl Coordinator {
         s.paused.is_none() && s.moving_now(s.wall_s()).is_none()
     }
 
-    /// Its jobs' leases live now: (epoch, id, worker, targets).
+    /// Its jobs' leases live now: their job runs' ids (epoch, n: `Lease::job`), worker, targets.
     #[cfg(test)]
     pub(crate) fn live_jobs(&self) -> Vec<(u64, u64, String, Vec<String>)> {
         let s = self.shared.lock().unwrap();
@@ -1610,7 +1614,7 @@ impl Coordinator {
         s.leases
             .live(now)
             .filter(|l| matches!(l.work, Work::Job { .. }))
-            .map(|l| (l.epoch, l.id, l.worker.clone(), l.targets().iter().map(|t| t.0.clone()).collect()))
+            .map(|l| (l.job().epoch, l.job().n, l.worker.clone(), l.targets().iter().map(|t| t.0.clone()).collect()))
             .collect()
     }
 
@@ -1712,6 +1716,11 @@ impl Coordinator {
         // (No later than a minute from now: an ask's time past that is passed over, `AHEAD_S`.)
         let pause_at = pause_at.min(unix_now() + AHEAD_S);
         let mut history = history::History::load(the_plan, (!viewer).then(|| dir.join("history.jsonl")).as_deref());
+        // (No lease number its history names given again: a job's id, docs/pool.md §7.5, whatever
+        // the clock or the files lost.)
+        if let Some(n) = history.highest_lease() {
+            leases.past(n);
+        }
         if !viewer {
             history.add(history::Event {
                 worker: Some(me.to_string()),
@@ -1992,6 +2001,12 @@ impl Coordinator {
     /// A lease for this Mac's own job of `step` over `targets`, unless a worker holds one of them,
     /// or (a job of no targets, like buildings, either side) any job of the step; its id.
     pub fn hold(&self, step: &str, targets: &[(String, String)]) -> Option<u64> {
+        self.hold_for(step, targets, None)
+    }
+
+    /// `hold`, for job run `job` when it began under another lease (its own lapsed or lost while
+    /// it ran on, crate::agent): its id kept (crate::coord::lease::Lease::job).
+    pub fn hold_for(&self, step: &str, targets: &[(String, String)], job: Option<jobrt::jobid::JobId>) -> Option<u64> {
         let mut s = self.shared.lock().unwrap();
         let now = s.now();
         let held = s.leases.held(step, now);
@@ -2006,7 +2021,11 @@ impl Coordinator {
         if s.leases.epoch > 0 && targets.iter().any(|(t, k)| s.done.get(&(step.to_string(), t.clone())) == Some(k)) {
             return None;
         }
-        let id = s.leases.grant(&self.me, Work::Job { step: step.to_string(), targets: targets.to_vec() }, now);
+        let work = Work::Job { step: step.to_string(), targets: targets.to_vec() };
+        let id = match job {
+            Some(j) => s.leases.grant_for(&self.me, work, now, j),
+            None => s.leases.grant(&self.me, work, now),
+        };
         s.save_leases();
         Some(id)
     }
@@ -2511,7 +2530,7 @@ impl Coordinator {
             }
             s.history.add(history::Event {
                 worker: Some(l.worker.clone()),
-                lease: Some(l.id),
+                job: Some(l.job()),
                 step,
                 targets,
                 note: lapse_why(l),
@@ -2700,7 +2719,7 @@ impl Coordinator {
     /// For GC's queue (crate::agent::gcqueue, docs/maplog.md §7.2, §7.4): when the oldest live lease
     /// was granted (None: none live), and the newest lease granted so far (every one before it has a
     /// smaller id).
-    pub fn lease_bounds(&self) -> (Option<u64>, crate::pool::journal::LeaseId) {
+    pub fn lease_bounds(&self) -> (Option<u64>, jobrt::jobid::JobId) {
         let s = self.shared.lock().unwrap();
         let oldest = s.leases.all(s.now()).iter().map(|l| l.granted_at).min();
         (oldest, newest_lease(&s))
@@ -3015,9 +3034,9 @@ impl Coordinator {
         self.shared.lock().unwrap().brief.as_ref().map(|b| b.held.clone())
     }
 
-    /// The epoch lease `id` was granted in (0: none, or the pool off).
-    pub fn lease_epoch(&self, id: u64) -> u64 {
-        self.shared.lock().unwrap().leases.of(id).map_or(0, |l| l.epoch)
+    /// Lease `id`'s job run's id (crate::coord::lease::Lease::job), while it's held.
+    pub fn job_of(&self, id: u64) -> Option<jobrt::jobid::JobId> {
+        self.shared.lock().unwrap().leases.job_of(id)
     }
 
     /// Ends the leases of `workers` (this Mac's own, whose jobs ended with the process before);
@@ -3493,7 +3512,7 @@ fn cancel_in(s: &mut Shared, c: &jobrt::control::Cancel) -> Vec<(u64, String, St
         s.leases.ask_cancel(l.id, c.clone());
         s.history.add(history::Event {
             worker: Some(l.worker.clone()),
-            lease: Some(l.id),
+            job: Some(l.job()),
             step: Some(step.clone()),
             targets: vec![c.target.clone()],
             note: c.said(),
@@ -4281,7 +4300,7 @@ fn view_of(s: &Shared) -> serde_json::Value {
                 Work::Task { id } => (s.tasks.kind_of(*id), 1),
             };
             let lapses = unix_of(l.deadline());
-            serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "began": unix_of(l.began()), "progress": l.progress, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
+            serde_json::json!({ "id": l.id, "job": l.job(), "worker": l.worker, "what": l.what(), "step": step, "n": n, "began": unix_of(l.began()), "progress": l.progress, "live": l.live, "beat": lapses.saturating_sub(TTL.as_secs()), "lapses": lapses })
         })
         .collect();
     let workers: Vec<serde_json::Value> = s
@@ -4516,9 +4535,10 @@ fn route(
                         o.step,
                         pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")
                     );
+                    let job = s.leases.job_of(lease);
                     s.history.add(history::Event {
                         worker: Some(a.worker.clone()),
-                        lease: Some(lease),
+                        job,
                         step: Some(o.step.clone()),
                         targets: pick.iter().map(|t| t.0.clone()).collect(),
                         ..history::Event::new("lease")
@@ -5002,7 +5022,8 @@ fn route(
             let mut d: Done = serde_json::from_slice(body)?;
             // Its timings kept, whatever became of its lease (by who ran it, as the lease says).
             if let Some(t) = d.timings.take() {
-                keep_timings(shared, &jobrt::timings::RunRec { host: d.worker.clone(), ..t });
+                let job = t.job.or_else(|| shared.lock().unwrap().leases.job_of(d.lease));
+                keep_timings(shared, &jobrt::timings::RunRec { host: d.worker.clone(), job, ..t });
             }
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.get(d.lease, &d.worker, now).cloned() else {
@@ -5074,7 +5095,10 @@ fn route(
                     s = shared.lock().unwrap();
                     let by = d.worker.clone();
                     s.add_costs(
-                        d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))),
+                        d.costs
+                            .into_iter()
+                            .filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0)))
+                            .map(|(u, c)| (u, Cost { job: c.job.or(Some(l.job())), ..c })),
                         &by,
                     );
                     // (What the lease's targets took at least, those it didn't finish too.)
@@ -5105,7 +5129,7 @@ fn route(
                     let secs = l.ran(now).as_secs_f64();
                     let e = history::Event {
                         worker: Some(d.worker.clone()),
-                        lease: Some(d.lease),
+                        job: Some(l.job()),
                         step: Some(step.clone()),
                         targets: targets.iter().map(|t| t.0.clone()).collect(),
                         secs: Some(secs.round()),
@@ -5145,10 +5169,10 @@ fn route(
                         s.needs_rev += 1;
                         s.save_costs();
                     }
-                    s.leases.finish(d.lease, &d.worker, now);
+                    let job = s.leases.finish(d.lease, &d.worker, now).map(|l| l.job());
                     s.history.add(history::Event {
                         worker: Some(d.worker.clone()),
-                        lease: Some(d.lease),
+                        job,
                         step: Some(kind),
                         targets: unit.into_iter().collect(),
                         secs: Some(d.secs.round()),
@@ -5239,7 +5263,7 @@ fn route(
             let back = e.kind == "task-back";
             s.history.add(history::Event {
                 worker: Some(f.worker.clone()),
-                lease: Some(f.lease),
+                job: Some(l.job()),
                 secs: Some(l.ran(now).as_secs_f64().round()),
                 ok: (!back).then_some(false),
                 note: if back { why.clone() } else { note },
@@ -5453,7 +5477,7 @@ fn route(
             let n = (unix_now() * 1000).max(s.redo_asks.iter().map(|a| a.n + 1).max().unwrap_or(0));
             s.redo_asks.push(crate::agent::redo::Ask { n, step, targets, by });
             // (The lease's epoch under the key `term`, as `scenic redo` of every app reads it.)
-            let after = crate::pool::journal::LeaseId { epoch: s.leases.epoch, n: s.leases.next() - 1 };
+            let after = jobrt::jobid::JobId { epoch: s.leases.epoch, n: s.leases.next() - 1 };
             Ok((200, serde_json::json!({ "n": n, "after": { "term": after.epoch, "n": after.n } })))
         }
         "/api/floors" => {
@@ -7652,7 +7676,7 @@ mod tests {
         {
             let s = c.shared.lock().unwrap();
             assert!(s.failed.is_empty() && s.workers.get("m1").is_none_or(|w| w.failed == 0));
-            assert!(s.history.since(0, 1000).iter().any(|e| e.kind == "cancel" && e.lease == Some(g.lease)));
+            assert!(s.history.since(0, 1000).iter().any(|e| e.kind == "cancel" && e.job.map(|j| j.n) == Some(g.lease)));
         }
         // Held on this app: no worker gets it, nor the lead's own job.
         assert!(c.held("unit").contains("6/55/25"));
@@ -12666,6 +12690,34 @@ mod tests {
                 .unwrap(),
             client::Handed::Taken
         );
+    }
+
+    /// Task #1103: a lead restarted with its state lost (its store and files gone) and its clock
+    /// behind what it gave (set back, or the numbers its clock gave ahead) gives no lease number its
+    /// history names, so no job id twice; the history's events from before job ids (`lease`, a
+    /// number) are read as such.
+    #[test]
+    fn a_restart_with_its_state_lost_gives_no_number_its_history_names() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let ahead = unix_now() * 1000 + 3_600_000;
+        let (c, _) = start_for_test(&dir, "m4", "");
+        c.note(history::Event {
+            worker: Some("m1".into()),
+            job: Some(jobrt::jobid::JobId { epoch: 3, n: ahead }),
+            ..history::Event::new("lease")
+        });
+        c.stop();
+        drop(c);
+        std::fs::remove_dir_all(dir.join("store")).ok();
+        std::fs::remove_file(dir.join("leases.json")).ok();
+        let (c, _) = start_for_test(&dir, "m4", "");
+        let n = c.hold("unit", &[("6/1/1".into(), "k1".into())]).unwrap();
+        assert!(n > ahead, "{n} past {ahead}");
+        // (A line from before job ids: its lease's number alone, under `lease`.)
+        let old: history::Event = serde_json::from_str(&format!(r#"{{"kind":"done","lease":{}}}"#, ahead + 5)).unwrap();
+        assert_eq!(old.job, Some(jobrt::jobid::JobId { epoch: 0, n: ahead + 5 }));
+        assert!(serde_json::to_string(&old).unwrap().contains(&format!(r#""job":"0-{}""#, ahead + 5)));
     }
 
     /// A coordinator on every address holds its jobs' loopback address too: no process binds

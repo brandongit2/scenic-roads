@@ -755,7 +755,7 @@ impl Mac {
         };
         Entry {
             member: self.me.id.clone(),
-            lease: LeaseId { epoch: j.epoch, n: j.n },
+            job: JobId { epoch: j.epoch, n: j.n },
             step: STEP.into(),
             handoff: h,
             at: now,

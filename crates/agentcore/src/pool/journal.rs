@@ -6,67 +6,25 @@
 //! keys of what it wrote there, read back whole once by `Mine::read_back`).
 
 use super::nas::Nas;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use buildstore::handoff::Handoff;
+use jobrt::jobid::JobId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-use std::str::FromStr;
 
 /// The NAS's journal's folder, which apps before task #1125 wrote a member's hand-offs to for a lead
 /// on an app before docs/coordination.md step 6: read for `Mine::read_back` alone.
 const DIR: &str = "state/journal";
-
-/// A lease's id (§6.5, §7.5; docs/coordination.md §4.3): the epoch of the lead's store it was
-/// granted in and its number, `<epoch>-<n>`, ordered by both. The epoch goes up at each start of
-/// the lead's store and past every epoch a take-up finds (crate::pool::driver::Io::epoch); the
-/// number is the store's own (crate::coord::lease), never repeated. Leases granted in the pool's
-/// terms, before step 8c, are `<term>-<n>`: the first epoch is past every term.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct LeaseId {
-    /// The epoch it was granted in (a term, before step 8c).
-    pub epoch: u64,
-    /// Its number.
-    pub n: u64,
-}
-
-impl fmt::Display for LeaseId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}", self.epoch, self.n)
-    }
-}
-
-impl FromStr for LeaseId {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<LeaseId> {
-        let Some((t, n)) = s.split_once('-') else { bail!("{s:?} isn't a lease: <epoch>-<n>") };
-        match (t.parse(), n.parse()) {
-            (Ok(epoch), Ok(n)) => Ok(LeaseId { epoch, n }),
-            _ => bail!("{s:?} isn't a lease: <epoch>-<n>"),
-        }
-    }
-}
-
-impl Serialize for LeaseId {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
-        s.collect_str(self)
-    }
-}
-
-impl<'de> Deserialize<'de> for LeaseId {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<LeaseId, D::Error> {
-        String::deserialize(d)?.parse().map_err(serde::de::Error::custom)
-    }
-}
 
 /// A job's hand-off and what it was for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     /// The member whose job made it.
     pub member: String,
-    /// The job's lease.
-    pub lease: LeaseId,
+    /// The job run's id, its first lease's (jobrt::jobid): what the merge orders entries by (lease
+    /// order, docs/pool.md §6.5). Under the key `lease`, as apps before job ids read it.
+    #[serde(rename = "lease")]
+    pub job: JobId,
     /// The lease's step (what the lead checks the hand-off's writes against).
     pub step: String,
     /// What the job changed: manifest changes, uploads, its done record, raw tiles' archives.
@@ -79,7 +37,7 @@ impl Entry {
     /// Its key, `<day>/<epoch>-<n>`: what records name it by; None when its time isn't a day (a
     /// damaged entry's).
     pub fn key(&self) -> Option<String> {
-        Some(format!("{}/{}", day(self.at)?, self.lease))
+        Some(format!("{}/{}", day(self.at)?, self.job))
     }
 }
 
@@ -119,7 +77,7 @@ pub struct Mine {
 impl Mine {
     /// Keeps job's hand-off `e` whole: its key, fixed now. An error when its time isn't a day.
     pub fn add(&mut self, e: Entry) -> Result<String> {
-        let key = e.key().with_context(|| format!("lease {}'s entry: its time {} isn't a day", e.lease, e.at))?;
+        let key = e.key().with_context(|| format!("job {}'s entry: its time {} isn't a day", e.job, e.at))?;
         self.kept.entry(key.clone()).or_insert(e);
         Ok(key)
     }
@@ -187,19 +145,7 @@ mod tests {
             done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])),
             ..Default::default()
         };
-        Entry { member: "m-000000000000000a".into(), lease: LeaseId { epoch, n }, step: "unit".into(), handoff: h, at }
-    }
-
-    #[test]
-    fn leases_read_back_and_order_by_epoch_then_number() {
-        let l: LeaseId = "12-345".parse().unwrap();
-        assert_eq!(l, LeaseId { epoch: 12, n: 345 });
-        assert_eq!(serde_json::to_string(&l).unwrap(), "\"12-345\"");
-        assert_eq!(serde_json::from_str::<LeaseId>("\"12-345\"").unwrap(), l);
-        assert!("12".parse::<LeaseId>().is_err() && "a-1".parse::<LeaseId>().is_err());
-        let mut v = [LeaseId { epoch: 3, n: 1 }, LeaseId { epoch: 2, n: 10 }, LeaseId { epoch: 2, n: 9 }];
-        v.sort();
-        assert_eq!(v.map(|l| l.to_string()), ["2-9", "2-10", "3-1"]);
+        Entry { member: "m-000000000000000a".into(), job: JobId { epoch, n }, step: "unit".into(), handoff: h, at }
     }
 
     #[test]

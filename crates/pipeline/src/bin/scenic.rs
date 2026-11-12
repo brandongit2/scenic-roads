@@ -1353,7 +1353,7 @@ fn redo(step: &str, targets: &[String], run: bool, root_: &Option<PathBuf>) -> R
     println!("asked the lead (redo {}); its job clears them, merged within minutes", v["n"]);
     // The redo's job is leased after `after`; an older lead's answer lacks it: each target's mark.
     let floor = match serde_json::from_value::<(u64, u64)>(serde_json::json!([v["after"]["term"], v["after"]["n"]])) {
-        Ok((epoch, n)) => vec![Some(agentcore::pool::journal::LeaseId { epoch, n }); todo.len()],
+        Ok((epoch, n)) => vec![Some(jobrt::jobid::JobId { epoch, n }); todo.len()],
         Err(_) => redo::marks(&rec, &step, &todo),
     };
     let landed = redo::follow(
@@ -1826,6 +1826,7 @@ mod tests {
     #[test]
     fn status_shows_each_mac_its_jobs_and_why_nothing_more_fits() {
         let job = |k: usize| agent::JobView {
+            job: None,
             id: format!("unit 6/{k}/1"),
             what: format!("job {k}"),
             started: now_s(),

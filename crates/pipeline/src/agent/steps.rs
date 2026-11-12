@@ -2461,8 +2461,9 @@ mod tests {
     }
 
     use super::*;
-    use agentcore::pool::journal::{Entry, LeaseId};
+    use agentcore::pool::journal::Entry;
     use buildstore::handoff::Handoff;
+    use jobrt::jobid::JobId;
 
     /// The build page's schedule colours each stage from STAGE_COLOURS (web/buildpage/dash.js), falling
     /// back to upkeep's grey: every stage has a colour there, and no two stages share one.
@@ -2879,7 +2880,7 @@ mod tests {
         }
         Entry {
             member: "m-0000000000000001".into(),
-            lease: LeaseId { epoch: 1, n: 1 },
+            job: JobId { epoch: 1, n: 1 },
             step: step.into(),
             handoff: h,
             at: 1_791_500_000,

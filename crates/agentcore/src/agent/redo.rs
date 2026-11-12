@@ -95,11 +95,7 @@ pub fn clears<'a>(
 /// The lease of the last done record merged for each of `step`'s `targets` in `rec` (None: none):
 /// a redo's merge sets it (`Records::apply`, `slots`), and so does a build's, so it changes when the
 /// redo lands and stays changed when the build that follows records the key again.
-pub fn marks(
-    rec: &crate::pool::records::Records,
-    step: &str,
-    targets: &[String],
-) -> Vec<Option<crate::pool::journal::LeaseId>> {
+pub fn marks(rec: &crate::pool::records::Records, step: &str, targets: &[String]) -> Vec<Option<jobrt::jobid::JobId>> {
     targets.iter().map(|t| rec.last.get(step).and_then(|m| m.get(t)).copied()).collect()
 }
 
@@ -114,7 +110,7 @@ pub fn follow(
     read: &mut dyn FnMut() -> Result<crate::pool::records::Records>,
     step: &str,
     targets: &[String],
-    floor: &[Option<crate::pool::journal::LeaseId>],
+    floor: &[Option<jobrt::jobid::JobId>],
     wait: std::time::Duration,
     every: std::time::Duration,
     warn: &mut dyn FnMut(&anyhow::Error),
@@ -221,7 +217,8 @@ pub fn said(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::{journal::LeaseId, records::Records};
+    use crate::pool::records::Records;
+    use jobrt::jobid::JobId;
     use std::time::Duration;
 
     /// Task #789: the follow-up of `--run` returns as soon as the redo's merge lands in the records,
@@ -231,7 +228,7 @@ mod tests {
     #[test]
     fn the_follow_up_sees_the_merge_land_though_the_keys_are_back() {
         let ts = vec!["6/1/1".to_string(), "6/1/2".to_string()];
-        let lease = |n| LeaseId { epoch: 3, n };
+        let lease = |n| JobId { epoch: 3, n };
         let mut r = Records { epoch: 3, ..Default::default() };
         for t in &ts {
             r.keys.record("terrain-hi", &[(t.clone(), "k".into())]);
@@ -295,7 +292,7 @@ mod tests {
         assert!(!follow(&mut fixed(&part), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}), "one of two");
         let mut later_term = early.clone();
         for t in &ts {
-            later_term.last.get_mut("terrain-hi").unwrap().insert(t.clone(), LeaseId { epoch: 4, n: 1 });
+            later_term.last.get_mut("terrain-hi").unwrap().insert(t.clone(), JobId { epoch: 4, n: 1 });
         }
         assert!(follow(&mut fixed(&later_term), "terrain-hi", &ts, &floor, wait, every, &mut |_| {}), "a later term's");
         // A target with no lease recorded before: any merge for it is later than None.

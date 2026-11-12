@@ -292,7 +292,7 @@ fn owes(s: &mut Shared, b: &Beat) {
         .collect();
     leases.extend(b.held.iter().map(|&n| store::map::gc::Lease { epoch, n }));
     for k in &b.handoffs {
-        if let Some(l) = k.rsplit('/').next().and_then(|l| l.parse::<crate::pool::journal::LeaseId>().ok()) {
+        if let Some(l) = k.rsplit('/').next().and_then(|l| l.parse::<jobrt::jobid::JobId>().ok()) {
             leases.insert(crate::agent::gcqueue::lease(l));
         }
     }
@@ -326,7 +326,7 @@ fn ended(s: &mut Shared, gone: &[lease::Lease], why: &str) {
         eprintln!("coordinator: {}'s lease {} ended: {why}", l.worker, l.id);
         s.history.add(history::Event {
             worker: Some(l.worker.clone()),
-            lease: Some(l.id),
+            job: Some(l.job()),
             step: match &l.work {
                 lease::Work::Job { step, .. } => Some(step.clone()),
                 lease::Work::Task { .. } => None,

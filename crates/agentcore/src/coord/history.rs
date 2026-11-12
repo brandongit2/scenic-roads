@@ -42,9 +42,12 @@ pub struct Event {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
-    /// The lease it's about (a worker's job, start to end).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lease: Option<u64>,
+    /// The job run it's about (jobrt::jobid): a worker's job from its "lease" to its end, a lead's
+    /// own from its "start" to its "end", a cancel, a task. Under the key `lease` in an event from
+    /// before job ids, its lease's number alone, read as `0-<n>` (epoch 0: the one it was granted in
+    /// unsaid); an app before them reads none from an event since.
+    #[serde(default, alias = "lease", skip_serializing_if = "Option::is_none")]
+    pub job: Option<jobrt::jobid::JobId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -489,6 +492,12 @@ impl History {
         h
     }
 
+    /// The highest lease number its events name (`Event::job`): the coordinator's next grants go
+    /// on past it (crate::coord::lease::Leases::past), whatever its clock says.
+    pub fn highest_lease(&self) -> Option<u64> {
+        self.events.iter().filter_map(|e| e.job).map(|j| j.n).max()
+    }
+
     /// What `next_waits` works from (taken under the coordinator's lock, worked out off it).
     pub fn waits_basis(&self) -> WaitsBasis {
         WaitsBasis { old: self.waits.clone(), built: self.built.clone(), from: None }
@@ -652,7 +661,7 @@ impl History {
         let mut paused: Vec<(u64, u64)> = Vec::new();
         // (Open spans: a job's start by its worker, a lease's grant by its id, the pause.)
         let mut started: BTreeMap<String, u64> = BTreeMap::new();
-        let mut leased: BTreeMap<u64, (String, u64)> = BTreeMap::new();
+        let mut leased: BTreeMap<jobrt::jobid::JobId, (String, u64)> = BTreeMap::new();
         let mut pause_from: Option<u64> = None;
         for e in self.events.iter() {
             let w = e.worker.clone().unwrap_or_default();
@@ -678,12 +687,12 @@ impl History {
                     }
                 }
                 "lease" => {
-                    if let Some(l) = e.lease {
+                    if let Some(l) = e.job {
                         leased.insert(l, (w.clone(), e.t));
                     }
                 }
                 "done" | "fail" | "lapse" => {
-                    if let Some((w, t0)) = e.lease.and_then(|l| leased.remove(&l)) {
+                    if let Some((w, t0)) = e.job.and_then(|l| leased.remove(&l)) {
                         spans.push((w, t0, e.t));
                     }
                 }
@@ -744,14 +753,14 @@ impl History {
 pub fn mend_runs(events: &mut [Event]) {
     let mut starts: Vec<u64> = events.iter().filter(|e| e.kind == "agent").map(|e| e.t).collect();
     starts.sort_unstable();
-    let mut leased: HashMap<u64, u64> = HashMap::new();
+    let mut leased: HashMap<jobrt::jobid::JobId, u64> = HashMap::new();
     for e in events.iter().filter(|e| e.kind == "lease") {
-        if let Some(l) = e.lease {
+        if let Some(l) = e.job {
             leased.entry(l).and_modify(|t| *t = (*t).min(e.t)).or_insert(e.t);
         }
     }
     for e in events.iter_mut().filter(|e| matches!(e.kind.as_str(), "done" | "fail")) {
-        let Some(&from) = e.lease.and_then(|l| leased.get(&l)) else { continue };
+        let Some(&from) = e.job.and_then(|l| leased.get(&l)) else { continue };
         let restarted = starts.get(starts.partition_point(|&t| t <= from)).is_some_and(|&t| t < e.t);
         let whole = e.t.saturating_sub(from) as f64;
         if restarted && e.secs.is_some_and(|s| s < whole) {
@@ -775,8 +784,12 @@ mod tests {
     /// between, or no lease event kept, is as written.
     #[test]
     fn a_run_across_a_restart_is_mended() {
-        let at =
-            |kind: &str, t: u64, lease: Option<u64>, secs: Option<f64>| Event { t, lease, secs, ..Event::new(kind) };
+        let at = |kind: &str, t: u64, lease: Option<u64>, secs: Option<f64>| Event {
+            t,
+            job: lease.map(|n| jobrt::jobid::JobId { epoch: 0, n }),
+            secs,
+            ..Event::new(kind)
+        };
         let mut es = vec![
             at("lease", 100, Some(1), None),
             at("lease", 100, Some(2), None),
@@ -895,9 +908,13 @@ mod tests {
             ok: Some(true),
             ..ev("end", t + 4500, "m4")
         });
-        h.add(Event { lease: Some(7), step: Some("terrain".into()), ..ev("lease", t + 600, "m1") });
         h.add(Event {
-            lease: Some(7),
+            job: Some(jobrt::jobid::JobId { epoch: 2, n: 7 }),
+            step: Some("terrain".into()),
+            ..ev("lease", t + 600, "m1")
+        });
+        h.add(Event {
+            job: Some(jobrt::jobid::JobId { epoch: 2, n: 7 }),
             step: Some("terrain".into()),
             targets: vec!["3/1/1".into()],
             ..ev("done", t + 1200, "m1")

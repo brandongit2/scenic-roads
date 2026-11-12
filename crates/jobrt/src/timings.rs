@@ -58,8 +58,11 @@ use std::time::Instant;
 
 /// Where a job's run record goes (one JSON object; the agent sets it, and collects the file).
 pub const TIMINGS_ENV: &str = "SCENIC_TIMINGS";
-/// The job's id as the agent knows it ("unit 6/32/24").
-pub const JOB_ID_ENV: &str = "SCENIC_JOB_ID";
+/// The job's name as the agent knows it ("unit 6/32/24": `RunRec::id`).
+pub const JOB_NAME_ENV: &str = "SCENIC_JOB_NAME";
+/// The job run's id (crate::jobid, `<epoch>-<n>`: `RunRec::job`), where its agent holds a lease
+/// for it.
+pub const JOB_ENV: &str = "SCENIC_JOB";
 /// Where a child program writes its phases, for the phase that ran it.
 pub const PHASES_TO_ENV: &str = "SCENIC_PHASES_TO";
 /// The record's version: 2 since task #1116 (a phase's CPU its own; 1: the process's while it was
@@ -277,9 +280,14 @@ pub struct RunRec {
     pub v: u32,
     /// The job's kind (its step: "unit", "peaks", "gc").
     pub kind: String,
-    /// The job's id, as the agent knows it.
+    /// The job's name, as the agent knows it (its step and targets, crate's agentcore
+    /// agent::jobs::JobSpec::id: not unique, a target runs again).
     #[serde(default)]
     pub id: String,
+    /// The job run's id (crate::jobid), stamped by the agent that ran it and the lead that keeps it
+    /// (its lease's). None: a record from before job ids, or of a job of no lease.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<crate::jobid::JobId>,
     /// The Mac (or page) that ran it: the agent or coordinator collecting it says.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub host: String,
@@ -1089,7 +1097,8 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
     let mut rec = RunRec {
         v: VERSION,
         kind: r.kind.clone(),
-        id: std::env::var(JOB_ID_ENV).unwrap_or_default(),
+        id: std::env::var(JOB_NAME_ENV).unwrap_or_default(),
+        job: std::env::var(JOB_ENV).ok().and_then(|j| j.parse().ok()),
         host: String::new(),
         start: r.start_wall,
         wall_s,

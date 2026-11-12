@@ -6,9 +6,9 @@
 //! costs no worker its work; a task's die with the job that offered it.
 //!
 //! In the pool (docs/pool.md §7.5) a lease is also the epoch of the lead's store it was granted in
-//! (`Lease::epoch`: its id there is `<epoch>-<id>`, crate::pool::journal::LeaseId;
-//! docs/coordination.md §4.3), and when (`granted_at`: this Mac's wall clock), so a lead after this
-//! one knows it as this one did (`snapshot`, `restore`).
+//! (`Lease::epoch`; docs/coordination.md §4.3), and when (`granted_at`: this Mac's wall clock), so a
+//! lead after this one knows it as this one did (`snapshot`, `restore`). Its job run's id is
+//! `<epoch>-<id>` (`Lease::job`, jobrt::jobid::JobId), or the run's it was held again for.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +38,11 @@ pub struct Lease {
     pub granted_at: u64,
     pub worker: String,
     pub work: Work,
+    /// The job run it is held for when that run began under another lease (`Leases::grant_for`:
+    /// its agent's job held again once its own lease lapsed or was lost); None, its own run
+    /// (`Lease::job`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<jobrt::jobid::JobId>,
     /// (Restarted from the load when read back from disk.)
     #[serde(skip, default = "Instant::now")]
     pub granted: Instant,
@@ -122,6 +127,11 @@ fn is_zero_u32(n: &u32) -> bool {
 }
 
 impl Lease {
+    /// Its job run's id: `<epoch>-<id>`, or the run's it was held again for (`job`).
+    pub fn job(&self) -> jobrt::jobid::JobId {
+        self.job.unwrap_or(jobrt::jobid::JobId { epoch: self.epoch, n: self.id })
+    }
+
     /// When its job began (`began`): its grant, unless its job is older or its worker said.
     pub fn began(&self) -> Instant {
         self.began.unwrap_or(self.granted)
@@ -372,8 +382,9 @@ impl Leases {
 
     /// The leases `saved` (a `leases.json` read; none without one), each live for a whole `ttl`
     /// from `now`: their workers beat again once they reach this process. Ids go on from the last
-    /// given, and never from below the time in milliseconds (`wall`, the coordinator's clock's), so
-    /// none is given twice even if the file is lost.
+    /// given, and never from below the time in milliseconds (`wall`, the coordinator's clock's), nor
+    /// the history's highest (`past`, the coordinator's start), so none is given twice even if the
+    /// file is lost or the clock set back.
     pub fn load(saved: Option<Vec<u8>>, ttl: Duration, now: Instant, wall: std::time::SystemTime) -> Leases {
         let mut l = Leases::new(ttl);
         l.next = wall.duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64);
@@ -586,8 +597,29 @@ impl Leases {
         self.next
     }
 
+    /// Lease `id`'s job run's id (`Lease::job`), while it's in the table.
+    pub fn job_of(&self, id: u64) -> Option<jobrt::jobid::JobId> {
+        self.by_id.get(&id).map(Lease::job)
+    }
+
+    /// Ids go on from past `n` (the highest lease number the history names,
+    /// crate::coord::history::History::highest_lease), whatever the clock or the saved leases say.
+    pub fn past(&mut self, n: u64) {
+        self.next = self.next.max(n.saturating_add(1));
+    }
+
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
         self.grant_at(worker, work, now, unix_now())
+    }
+
+    /// `grant`, for job run `job` (its own lease lapsed or lost while it ran on: crate::agent's hold
+    /// again), which keeps its id (`Lease::job`).
+    pub fn grant_for(&mut self, worker: &str, work: Work, now: Instant, job: jobrt::jobid::JobId) -> u64 {
+        let id = self.grant(worker, work, now);
+        if let Some(l) = self.by_id.get_mut(&id) {
+            l.job = Some(job);
+        }
+        id
     }
 
     /// Lease `id`, granted at `now` for a job that began at `at` by the wall clock (unix s, `unix`
@@ -630,6 +662,7 @@ impl Leases {
                 granted_at,
                 worker: worker.to_string(),
                 work,
+                job: None,
                 granted: now,
                 began: None,
                 deadline: now + self.ttl,
@@ -1199,6 +1232,54 @@ mod tests {
         let mine = b.grant("m4", job(&[("6/2/2", "k2")]), t1);
         assert!(mine > id && b.of(mine).unwrap().epoch == 5);
         assert!(b.restore(&serde_json::json!({"leases": 3}), t1).is_err());
+    }
+
+    /// Task #1103: a job run's id is unique across a lead move, though the lease numbers of two
+    /// leads may meet. The lead before grants a lease after its last backup; the next, its clock
+    /// behind, takes that backup up and goes on from the backup's next number, the very one: their
+    /// runs' ids differ by their epochs. And a lead whose saved state is lost and whose clock was
+    /// set back gives no number its history names (`past`).
+    #[test]
+    fn a_job_id_is_never_given_twice_across_a_lead_move_or_a_lost_state() {
+        use jobrt::jobid::JobId;
+        let (t0, wall) = (Instant::now(), std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000));
+        let ttl = Duration::from_secs(600);
+        let mut a = Leases::load(None, ttl, t0, wall);
+        a.epoch = 4;
+        let first = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
+        let backup = a.snapshot();
+        let after = a.grant("m2", job(&[("6/1/2", "k2")]), t0);
+        let mut b = Leases::load(None, ttl, t0, wall - Duration::from_secs(60));
+        b.epoch = 5;
+        b.restore(&backup, t0).unwrap();
+        let mine = b.grant("m4", job(&[("6/2/2", "k3")]), t0);
+        assert_eq!(mine, after, "the same lease number");
+        let (ja, jb) = (a.job_of(after).unwrap(), b.job_of(mine).unwrap());
+        assert_ne!(ja, jb);
+        assert_eq!((ja.to_string(), jb.to_string()), (format!("4-{after}"), format!("5-{mine}")));
+        assert_eq!(b.job_of(first), Some(JobId { epoch: 4, n: first }), "a lease taken up keeps its run's id");
+        // A lead's state lost and its clock set back an hour: past what its history names.
+        let mut c = Leases::load(None, ttl, t0, wall - Duration::from_secs(3600));
+        c.epoch = 4;
+        c.past(after);
+        assert!(c.grant("m1", job(&[("6/1/3", "k4")]), t0) > after);
+    }
+
+    /// Task #1103: a job held again under a new lease (its own lapsed while it ran on, its agent's
+    /// `hold_for`) keeps its run's id, saved with the lease and taken up with it.
+    #[test]
+    fn a_job_held_again_keeps_its_runs_id() {
+        let t0 = Instant::now();
+        let mut a = Leases::new(Duration::from_secs(600));
+        a.epoch = 7;
+        let first = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
+        let run = a.job_of(first).unwrap();
+        let again = a.grant_for("m1", job(&[("6/1/1", "k1")]), t0, run);
+        assert!(again > first);
+        assert_eq!(a.job_of(again), Some(run));
+        let mut b = Leases::new(Duration::from_secs(600));
+        b.restore(&a.snapshot(), t0).unwrap();
+        assert_eq!(b.job_of(again), Some(run));
     }
 
     /// A job's stillness by its beats (task #986): anything its view or progress line says

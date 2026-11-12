@@ -58,7 +58,7 @@ pub use buildstore::out::UNMERGED_ENV;
 
 /// Whether `job` (an agent's job id, `<step> <target>`) is of a resumable step.
 pub fn resumable(job: &str) -> bool {
-    RESUMABLE.contains(&super::jobs::JobId::parse(job).step)
+    RESUMABLE.contains(&super::jobs::JobName::parse(job).step)
 }
 
 /// A member's progress file: the jobs whose progress is on its Mac's disk.
@@ -185,8 +185,8 @@ pub fn asks(p: &Progress, now: u64, released: &dyn Fn(&str, u64) -> bool) -> Vec
 /// that step handed off that its lead hasn't acknowledged (`Out` lays it over the snapshot).
 pub fn unmerged<'a>(step: &str, entries: impl IntoIterator<Item = &'a Entry>) -> Handoff {
     let mut es: Vec<&Entry> = entries.into_iter().filter(|e| e.step == step).collect();
-    es.sort_by_key(|e| e.lease);
-    es.dedup_by_key(|e| e.lease);
+    es.sort_by_key(|e| e.job);
+    es.dedup_by_key(|e| e.job);
     let mut h = Handoff::default();
     for e in es {
         h.absorb(e.handoff.clone());
@@ -197,7 +197,7 @@ pub fn unmerged<'a>(step: &str, entries: impl IntoIterator<Item = &'a Entry>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::journal::LeaseId;
+    use jobrt::jobid::JobId;
 
     fn file(member: &str, worker: &str, jobs: &[(&str, u64, bool)]) -> Progress {
         Progress {
@@ -312,7 +312,7 @@ mod tests {
     fn unmerged_lays_a_steps_entries_in_lease_order() {
         let e = |n: u64, step: &str, l: &str, c: Option<&str>| Entry {
             member: "m-b".into(),
-            lease: LeaseId { epoch: 2, n },
+            job: JobId { epoch: 2, n },
             step: step.into(),
             handoff: Handoff { changes: [(l.to_string(), c.map(str::to_string))].into(), ..Default::default() },
             at: T,

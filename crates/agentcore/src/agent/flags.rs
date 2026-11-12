@@ -624,6 +624,7 @@ mod tests {
     fn look_says_flags_warnings_and_failures_since() {
         let now = 100_000;
         let done = |id: &str, ok: bool, ended: u64| super::super::Done {
+            job: None,
             id: id.into(),
             what: format!("{id}'s work"),
             ok,

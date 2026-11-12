@@ -546,7 +546,7 @@ mod tests {
         // them must refuse.)
         let e = crate::pool::Entry {
             member: "m-000000000000000b".into(),
-            lease: crate::pool::journal::LeaseId { epoch: 3, n: 4 },
+            job: jobrt::jobid::JobId { epoch: 3, n: 4 },
             step: "unit".into(),
             handoff: Default::default(),
             at: 1_791_300_000,

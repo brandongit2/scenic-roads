@@ -13,20 +13,21 @@
 
 use jobrt::sys::Signal;
 
-/// A job's id: its step (a task's kind for a leased task, crate::agent::steps::TASKS), then what
-/// it's for ("unit 6/31/20", "terrain-hi 3/4/2 3/4/3", "osm-pass 2026-10-01", "tail 6/1/1"); a job
+/// A job's name (`JobSpec::id`; not unique: a target runs again after a failure, a pause, a redo,
+/// each run under its own jobrt::jobid::JobId): its step (a task's kind for a leased task,
+/// crate::agent::steps::TASKS), then what it's for ("unit 6/31/20", "terrain-hi 3/4/2 3/4/3", "osm-pass 2026-10-01", "tail 6/1/1"); a job
 /// of no targets its step alone ("gc"). Written by its `Display`, read back by `parse` alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct JobId<'a> {
+pub struct JobName<'a> {
     pub step: &'a str,
     pub rest: Option<&'a str>,
 }
 
-impl<'a> JobId<'a> {
+impl<'a> JobName<'a> {
     pub fn parse(id: &'a str) -> Self {
         match id.split_once(' ') {
-            Some((step, rest)) => JobId { step, rest: Some(rest) },
-            None => JobId { step: id, rest: None },
+            Some((step, rest)) => JobName { step, rest: Some(rest) },
+            None => JobName { step: id, rest: None },
         }
     }
 
@@ -37,7 +38,7 @@ impl<'a> JobId<'a> {
     }
 }
 
-impl std::fmt::Display for JobId<'_> {
+impl std::fmt::Display for JobName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.rest {
             Some(r) => write!(f, "{} {r}", self.step),
@@ -349,12 +350,15 @@ const HEAD: &str = r#"s=$1; shift; "$@"; c=$?; printf '%s\n' "$c" > "$s.tmp" && 
 use jobrt::sys::{group_members, process_start};
 
 impl Running {
-    /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS) and `env`, its output
-    /// appended to `log`, and records it in `record` (with `done_file`, where it notes the targets
+    /// Starts `spec`, run `job` (jobrt::jobid: its lease's, None without one), with `threads` worker
+    /// threads (RAYON_NUM_THREADS) and `env`, its output appended to `log` (its run's first line
+    /// naming both, `RUN_START`), and records it in `record` (with `done_file`, where it notes the targets
     /// it finishes); under `sandbox`, a profile of `sandbox-exec` (jobrt::budget::SANDBOX: no way
     /// out but through its agent's proxy), when given.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         spec: JobSpec,
+        job: Option<jobrt::jobid::JobId>,
         threads: usize,
         env: &[(&str, &str)],
         log: PathBuf,
@@ -369,7 +373,8 @@ impl Running {
             File::options().create(true).append(true).open(&log).with_context(|| format!("open {}", log.display()))?;
         // (A job's log keeps its earlier runs': this run's begins here, and only what follows is
         // its progress, parts and last lines.)
-        std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}) ===\n", spec.id, now_s()).as_bytes())?;
+        let run = job.map_or(String::new(), |j| format!(", job {j}"));
+        std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}{run}) ===\n", spec.id, now_s()).as_bytes())?;
         let err = out.try_clone()?;
         // (In a unit test, `buildstore::out::testing`, every job's command as the agent made it,
         // checked against its program's table: one the program would refuse fails the test.)
@@ -902,6 +907,7 @@ mod tests {
         let rec = d.path().join("job.json");
         let mut r = Running::start(
             spec(&["/bin/sh", "-c", "echo hello; sleep 3600"]),
+            None,
             2,
             &[],
             d.path().join("log"),
@@ -947,6 +953,7 @@ mod tests {
         ];
         let mut r = Running::start(
             spec(&["/bin/sh", "-c", script]),
+            None,
             1,
             &env,
             d.path().join("log"),
@@ -1013,6 +1020,7 @@ mod tests {
         let log = d.path().join("log");
         let mut r = Running::start(
             spec(&["/bin/sh", "-c", &script]),
+            None,
             1,
             &env,
             log.clone(),
@@ -1082,6 +1090,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut r = Running::start(
             spec(&["/bin/sh", "-c", "exit 3"]),
+            None,
             1,
             &[],
             d.path().join("log"),
@@ -1123,8 +1132,9 @@ mod tests {
                 go.display(),
                 if code == "kill" { "0" } else { code }
             );
-            let r = Running::start(spec(&["/bin/sh", "-c", &script]), 2, &[], d.path().join("log"), &rec, None, None)
-                .unwrap();
+            let r =
+                Running::start(spec(&["/bin/sh", "-c", &script]), None, 2, &[], d.path().join("log"), &rec, None, None)
+                    .unwrap();
             let pgid = r.pgid;
             assert!(adopt(&rec).is_none(), "no slot saved yet");
             r.hand_over(&rec, serde_json::json!({"lease": null}));
@@ -1158,7 +1168,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         let r =
-            Running::start(spec(&["/bin/sh", "-c", "exit 4"]), 1, &[], d.path().join("log"), &rec, None, None).unwrap();
+            Running::start(spec(&["/bin/sh", "-c", "exit 4"]), None, 1, &[], d.path().join("log"), &rec, None, None)
+                .unwrap();
         let pgid = r.pgid;
         r.hand_over(&rec, serde_json::json!({"lease": null}));
         unsafe { libc::waitpid(pgid, std::ptr::null_mut(), 0) };
@@ -1180,6 +1191,7 @@ mod tests {
         let cmd = r#"printf '1\n' > "$SCENIC_JOB_STATUS.said.tmp" && mv "$SCENIC_JOB_STATUS.said.tmp" "$SCENIC_JOB_STATUS"; exec /bin/sleep 3600"#;
         let mut r = Running::start(
             spec(&["/bin/sh", "-c", cmd]),
+            None,
             1,
             &[],
             d.path().join("log"),
@@ -1200,7 +1212,8 @@ mod tests {
         // (Review: taken over by a later agent, the same: its end as it said it, what of it still
         // runs stopped.)
         let rec = d.path().join("job2.json");
-        let r = Running::start(spec(&["/bin/sh", "-c", cmd]), 1, &[], d.path().join("log2"), &rec, None, None).unwrap();
+        let r = Running::start(spec(&["/bin/sh", "-c", cmd]), None, 1, &[], d.path().join("log2"), &rec, None, None)
+            .unwrap();
         let status = r.status.clone();
         store::testkit::eventually("its end said", || status.exists());
         r.hand_over(&rec, serde_json::json!({"lease": null}));
@@ -1219,6 +1232,7 @@ mod tests {
         // The shell leaves a sleep behind in its group and exits: an orphan, as after a crash.
         let mut r = Running::start(
             spec(&["/bin/sh", "-c", "/bin/sleep 3600 & echo started"]),
+            None,
             1,
             &[],
             d.path().join("log"),
@@ -1244,7 +1258,8 @@ mod tests {
     /// A job (its head's shell running `cmd`) in a temporary folder, and the number of its group's
     /// running members that are `sleep`.
     fn sleeper(d: &Path, cmd: &str) -> Running {
-        Running::start(spec(&["/bin/sh", "-c", cmd]), 1, &[], d.join("log"), &d.join("job.json"), None, None).unwrap()
+        Running::start(spec(&["/bin/sh", "-c", cmd]), None, 1, &[], d.join("log"), &d.join("job.json"), None, None)
+            .unwrap()
     }
 
     fn sleeps(pgid: i32) -> usize {

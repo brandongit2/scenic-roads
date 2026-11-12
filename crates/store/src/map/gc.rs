@@ -38,7 +38,7 @@ pub const GRACE_S: u64 = 3600;
 /// was at (task #1134: 7 days held 54,575 names on a NAS at 97%).
 pub const CURSOR_TTL_S: u64 = 6 * 3600;
 
-/// A lease's id as the pool numbers them (agentcore's `pool::journal::LeaseId`): the epoch of the
+/// A lease as the pool orders them (its job run's id, jobrt::jobid::JobId): the epoch of the
 /// lead's store it was granted in (under the key `term`, as when leases were numbered by the pool's
 /// terms), then its number; later grants are greater.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

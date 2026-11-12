@@ -137,6 +137,7 @@ mod tests {
         c.set_beats(Some(Arc::new(Beats::default())));
         let (mut h, to) = member(d.path(), port, &c.contact.token, hung);
         let job = |id: &str| crate::agent::JobView {
+            job: None,
             id: id.into(),
             what: format!("{id}'s work"),
             started: now_s(),

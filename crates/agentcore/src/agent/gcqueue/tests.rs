@@ -158,7 +158,7 @@ fn entry(n: u64, content: &str) -> Entry {
     };
     Entry {
         member: "m-000000000000000b".into(),
-        lease: LeaseId { epoch: 2, n },
+        job: JobId { epoch: 2, n },
         step: "unit".into(),
         handoff: h,
         at: T0 + n,
@@ -178,7 +178,7 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     // (Told and removed while leases up to 2-7 were granted.)
     let none = BTreeMap::new();
     let h = Holders { cursors: &none, oldest_lease: None, now: T0 + 100 };
-    let at = lease(LeaseId { epoch: 2, n: 7 });
+    let at = lease(JobId { epoch: 2, n: 7 });
     assert!(q.removing(&[name.to_string()], &h, at).unwrap().is_empty());
     q.gone(&[name.to_string()], &[], T0 + 100, at).unwrap();
     let mut r = Records { epoch: 2, ..Default::default() };
@@ -227,12 +227,12 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
     assert!(refusal(&q, &reuse(9, &["c.1.pack"]), past).is_none());
     assert_eq!(q.chunk(&h, told, 10, &|_| true).unwrap(), ["a.1.pack", "b.1.pack"]);
     // Being removed: refused, however new its lease.
-    let newer = Entry { lease: LeaseId { epoch: 3, n: 1 }, ..reuse(1, &["a.1.pack"]) };
+    let newer = Entry { job: JobId { epoch: 3, n: 1 }, ..reuse(1, &["a.1.pack"]) };
     assert!(refusal(&q, &newer, past).is_some_and(|w| w.contains("being removed")), "while it goes");
     // Gone, its mark's lease the newest then (3-4): a lease up to it refused, one after not.
     q.gone(&["a.1.pack".into()], &["b.1.pack".into()], past, store::map::gc::Lease { epoch: 3, n: 4 }).unwrap();
     assert!(refusal(&q, &newer, past).is_some());
-    assert!(refusal(&q, &Entry { lease: LeaseId { epoch: 3, n: 5 }, ..newer.clone() }, past).is_none());
+    assert!(refusal(&q, &Entry { job: JobId { epoch: 3, n: 5 }, ..newer.clone() }, past).is_none());
     // Let go (yielded on): b queued again as it was, unmarked; a hand-off bringing it merges.
     assert_eq!(q.queued("b.1.pack"), Some(Queued { seq: 2, at: T0 }));
     assert!(refusal(&q, &reuse(2, &["b.1.pack"]), past).is_none());
@@ -267,9 +267,9 @@ fn an_older_member_s_hand_off_without_reused_is_refused_by_its_changes() {
     let e = Entry { handoff: old, ..entry(5, name) };
     let none = BTreeMap::new();
     let h = Holders { cursors: &none, oldest_lease: None, now: T0 + 100 };
-    assert!(q.removing(&[name.to_string()], &h, lease(LeaseId { epoch: 2, n: 7 })).unwrap().is_empty());
+    assert!(q.removing(&[name.to_string()], &h, lease(JobId { epoch: 2, n: 7 })).unwrap().is_empty());
     assert!(refusal(&q, &e, T0 + 100).is_some_and(|w| w.contains("being removed")));
-    q.gone(&[name.to_string()], &[], T0 + 100, lease(LeaseId { epoch: 2, n: 7 })).unwrap();
+    q.gone(&[name.to_string()], &[], T0 + 100, lease(JobId { epoch: 2, n: 7 })).unwrap();
     assert!(refusal(&q, &e, T0 + 100).is_some_and(|w| w.contains("removed from the NAS")));
 }
 
@@ -356,7 +356,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     c.set_maplog(store::map::feed::Feed::new(), q.clone());
     // (The records not seen yet, a holder unknown: nothing marked, the job told so.)
     assert!(lead().removing(&[name.to_string()]).is_err());
-    assert!(q.deleted_under([name.to_string()].iter(), lease(LeaseId { epoch: 0, n: 0 })).is_none());
+    assert!(q.deleted_under([name.to_string()].iter(), lease(JobId { epoch: 0, n: 0 })).is_none());
     super::records(&q, &records(1, &[]), T0);
     assert_eq!(lead().removing(&[name.to_string()]).unwrap(), Vec::<String>::new());
     // (Being removed: refused, whatever its lease; said gone, a lease of term 2, granted before:
@@ -365,7 +365,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     assert!(refusal(&q, &reused, T0).is_some_and(|why| why.contains(name)));
     lead().gone(&[name.to_string()], &[]).unwrap();
     assert!(refusal(&q, &reused, T0).is_some_and(|why| why.contains(name)));
-    let redo = Entry { lease: LeaseId { epoch: 4, n: 1 }, ..entry(8, name) };
+    let redo = Entry { job: JobId { epoch: 4, n: 1 }, ..entry(8, name) };
     assert!(refusal(&q, &redo, T0).is_none());
     let back = GcQueue::default();
     back.open(&d.path().join("maplog"), &map(1, &[])).unwrap();
@@ -502,7 +502,7 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     // 10 days on, m4 back: its hand-off (reusing `name`) refused, its targets done again.
     let ten = T0 + 10 * 86400;
     let reused = Entry {
-        lease: LeaseId { epoch: 3, n: id },
+        job: JobId { epoch: 3, n: id },
         handoff: Handoff { reused: vec![name.to_string()], ..Default::default() },
         ..entry(5, "base/6-1-1.k5.base")
     };
@@ -510,7 +510,7 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     c.member_beat(&beat("m4", &[], std::slice::from_ref(&key)));
     let why = refusal(&q, &reused, ten).expect("refused");
     assert!(why.contains(name), "{why}");
-    let redo = Entry { lease: LeaseId { epoch: 3, n: grant("m2") }, ..reused.clone() };
+    let redo = Entry { job: JobId { epoch: 3, n: grant("m2") }, ..reused.clone() };
     assert!(refusal(&q, &redo, ten).is_none(), "the redo merges");
     assert_eq!(q.deletions_kept(), 1, "m4 still lists its hand-off");
     // Its hand-off answered, m4 lists nothing: no lease as old as the deletion is owed, let go.
@@ -577,13 +577,13 @@ fn a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused() {
     // m4 back three hours on, its hand-off (reusing `name`) listed: refused, its targets done again.
     let later = T0 + 3 * GRACE_S;
     let reused = Entry {
-        lease: LeaseId { epoch: 3, n: id },
+        job: JobId { epoch: 3, n: id },
         handoff: Handoff { reused: vec![name.to_string()], ..Default::default() },
         ..entry(5, "base/6-1-1.k5.base")
     };
     c.member_beat(&beat("m4", &[], &[reused.key().unwrap()]));
     let why = refusal(&q, &reused, later).expect("refused");
     assert!(why.contains(name), "{why}");
-    let redo = Entry { lease: LeaseId { epoch: 3, n: grant("m2") }, ..reused.clone() };
+    let redo = Entry { job: JobId { epoch: 3, n: grant("m2") }, ..reused.clone() };
     assert!(refusal(&q, &redo, later).is_none(), "the redo merges");
 }
