@@ -54,7 +54,8 @@
 //                     first (when the build has it)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --job-id ID       job ID's page checked too (/job/ID, #1105); `--job FILE`: every job's view
-//                     answered from FILE (GET /api/job/<id>), ID 1-1 by default
+//                     answered from FILE (GET /api/job/<id>), ID 1-1 by default; `--timings FILE`
+//                     /api/timings answered from FILE ({runs: [RunRec]}: a lead before #1105 refuses it)
 //   --solo STEP       the step the map's checks solo (default: the one with the most tiles built)
 //   --zoom-on X,Y     the map then zoomed in on world point X,Y (Web Mercator 0–1000; Ontario and
 //                     Québec: 275,330), a solo held and let go: chrome-solo-zoom, chrome-nosolo-zoom
@@ -114,6 +115,9 @@ const LIVE = arg("--live", null);
 const JOB = arg("--job", null);
 // (`--job-id ID`: job ID's page checked too, /job/ID (#1105); with `--job FILE`, FILE's view.)
 const JOB_ID = arg("--job-id", JOB ? "1-1" : null);
+// (`--timings FILE`: /api/timings answered from FILE ({runs: [RunRec]}, the lead's last records of
+// a kind): a lead before #1105 refuses a page's ask.)
+const TIMINGS = arg("--timings", null);
 const STEPS = arg("--steps", null);
 const MEMBER = arg("--member", null);
 const WIDTH = +arg("--width", 390);
@@ -165,6 +169,10 @@ function serve() {
           const after = HISTORY.filter((e) => e.seq > (v.since ?? 0));
           res.writeHead(200, { "Content-Type": "application/json" });
           return res.end(JSON.stringify({ events: v.since == null ? HISTORY.slice(-(v.max || 1000)) : after.slice(0, v.max || 1000), seq: HISTORY.at(-1)?.seq ?? 0, epoch: "touch-test history" }));
+        }
+        if (call === "timings" && TIMINGS) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          return res.end(readFileSync(TIMINGS));
         }
         if (call === "built" && BUILT) {
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -281,7 +289,7 @@ async function jobPage({ js, tap, pinch, mouse, page, check, shot, until, errors
     }
     check(`job page: a span ${PHONE ? "tapped" : "clicked"} shows its log lines${PHONE ? "" : ", its card on hover"}`, PHONE ? hit === "lines" : hit === "card and lines", hit || "no span found");
     if (PHONE) {
-      const lw = await js(`(() => { const w = document.querySelector("#tlsec .lanewrap"); w.scrollIntoView({ block: "center" }); const r = w.getBoundingClientRect(); return [r.left + r.width * 0.6, r.top + 40]; })()`);
+      const lw = await js(`(() => { const c = document.querySelector("#tlsec .track canvas"); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect(); return [r.left + r.width * 0.6, r.top + r.height / 2]; })()`);
       const a0 = await js(`document.querySelector("#tlsec .axis").textContent`), y0 = await js("scrollY");
       await pinch(lw[0], lw[1], 20, 80);
       await sleep(400);
