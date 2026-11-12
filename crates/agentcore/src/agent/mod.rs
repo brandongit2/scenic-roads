@@ -1034,10 +1034,6 @@ pub struct PoolView {
     /// The pool as the controls show it (crate::agent::lead: docs/pool.md §10, §11).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<lead::View>,
-    /// Every member's heartbeat says its app's NAS check looks at `map/` (pool::Side::all_check_map):
-    /// the lead's `gc` job removes the NAS's old catalogues (gc::OLD_CATALOGUES).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub all_check_map: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -13921,16 +13917,14 @@ mod tests {
             .any(|j| j.id == "backup"));
     }
 
-    /// #883 step 9 (docs/maplog.md §8): the lead's `gc` job removes the NAS's old catalogues only
-    /// while every member's heartbeat says its app checks the NAS by `map/` (the pool's view; the
-    /// gate itself: lead's the_old_catalogues_wait_for_every_member_s_map_check). The gate is
-    /// needed: on a private root, once the pass has run, an agent whose check looks at `catalog/`
-    /// (an older app's) sees the NAS away, while this app's sees it.
+    /// Task #1119: the NAS check is the inputs' folder (`NAS_CHECK`), there for good; the map's
+    /// NAS snapshots (`map/`) are no longer written. On a root without `map/`, this app sees the
+    /// NAS; an app before it, whose check stats `map/`, sees it away: why the NAS's `map/` stays
+    /// until every member's beat says `coord::beats::NAS_CHECK` (and this app's does).
     #[test]
-    fn the_old_catalogues_go_only_once_every_app_checks_by_the_map() {
+    fn the_nas_is_checked_by_its_inputs_not_the_maps_old_snapshots() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path().join("nas");
-        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
         let mut m = BTreeMap::new();
         let nas = store::nasfs::NasRoot::local_for_test(&root);
         inputs::inputs::regions::accept_fixture(
@@ -13940,10 +13934,9 @@ mod tests {
             &mut m,
         );
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
-        put(&root.join("catalog/1066.delta.json.zst"), b"old");
-        put(&root.join("catalog/1065.json.zst"), b"old");
-        put(&root.join("catalog-held/1060.json.zst"), b"old");
-        let old_check: fn(&NasRoot) -> bool = |r| r.join("catalog").is_dir();
+        std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
+        assert!(!root.join("map").exists());
+        let old_check: fn(&NasRoot) -> bool = |r| r.join("map").is_dir();
         let opts = |home: &str| Options {
             the_plan: crate::agent::seam::for_tests(),
             root: Some(nas.clone()),
@@ -13954,36 +13947,12 @@ mod tests {
             member: false,
         };
         let mut a = test_agent(opts("home")).unwrap();
-        let gc_cmd = |a: &mut Agent, every: bool| -> Vec<String> {
-            a.pool_seen = Some(PoolView {
-                member: "m-a".into(),
-                role: pool::Role::Lead,
-                gates: Default::default(),
-                members: vec!["m-a".into(), "m-b".into()],
-                unacked: 0,
-                restart: None,
-                lead: None,
-                all_check_map: every,
-            });
-            let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
-            let plan = a.planner().plan(&nas, &c, &mut Vec::new());
-            plan.into_iter().find(|j| j.id == "gc").expect("gc due").cmd
-        };
-        assert!(!gc_cmd(&mut a, false).iter().any(|c| c == "--old-catalogues"), "a member's app looks at catalog/");
-        assert!(gc_cmd(&mut a, true).iter().any(|c| c == "--old-catalogues"));
-        // The pass, as the job runs it (its duties): the old folders go, nothing else.
-        let r =
-            gc::run(&nas, &gc::Asked { old_catalogues: true, ..Default::default() }, &gc::ways_for_tests(&gc::Idle))
-                .unwrap();
-        assert_eq!(r.old_catalogues, ["catalog", "catalog-held"], "(no old switch on this root)");
-        assert!(!root.join("catalog").exists() && !root.join("catalog-held").exists());
-        assert!(root.join(NAS_CHECK).is_dir() && root.join("state/build/manifest.json").exists());
-        // This app's check sees the NAS; an older app's, by catalog/, sees it away.
         a.round().unwrap();
         assert!(read_status(Some(&nas), &d.path().join("home")).unwrap().conditions.nas);
         let mut old = test_agent_with(opts("old"), old_check).unwrap();
         old.round().unwrap();
         assert!(!read_status(Some(&nas), &d.path().join("old")).unwrap().conditions.nas, "an older app's check");
+        assert!(crate::agent::beat::speaks().iter().any(|w| w == crate::coord::beats::NAS_CHECK));
     }
 
     /// Task #971: a check's listing stays while a job may read it, its folder changed meanwhile:
@@ -18399,7 +18368,6 @@ mod pool_tests {
                 lead: Some(lead::LeadOf { member: "m-m1".into(), host: "m1".into(), ..Default::default() }),
                 ..Default::default()
             }),
-            all_check_map: false,
         });
         // Resumed: the old lead's broker answers with nothing (what the M4 saw for hours).
         let mut w = Vec::new();

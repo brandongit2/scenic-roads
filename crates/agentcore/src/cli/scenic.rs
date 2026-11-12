@@ -209,11 +209,6 @@ pub enum Cmd {
         /// due and goes on from the folder it reached. Without it every sweep runs whole
         #[arg(long, value_name = "FILE")]
         sweeps: Option<PathBuf>,
-        /// Removes what the NAS kept of old catalogues (catalog/, catalog-held/, two switches): the
-        /// agent asks it once every member's app checks the NAS by map/ (an older app sees the NAS
-        /// away without catalog/)
-        #[arg(long)]
-        old_catalogues: bool,
         #[command(flatten)]
         root: Root,
     },

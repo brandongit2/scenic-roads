@@ -827,22 +827,6 @@ mod tests {
             }
         }
 
-        /// `Mac::pass` on the Macs together: their clocks moved on `s` seconds a `TICK_S` at a time,
-        /// each stepped in turn meanwhile (the last steps the test's).
-        pub(super) fn pass_all(macs: &mut [&mut Mac], mut s: u64) {
-            while s > 0 {
-                let k = s.min(crate::agent::pool::TICK_S);
-                s -= k;
-                for m in macs.iter_mut() {
-                    m.run.side.ahead += k;
-                    if s > 0 {
-                        m.go();
-                    }
-                }
-                hear(macs);
-            }
-        }
-
         /// docs/coordination.md steps 8a, 8c: the lead's agent tells its coordinator it leads after
         /// each step (`after`), and its beats' answers say it, only while that step's own read of
         /// the declaration found it the lead (`Out::vouched`). Its declaration unreadable, it keeps
@@ -889,37 +873,6 @@ mod tests {
             std::fs::write(&decl, serde_json::to_vec(&to_b).unwrap()).unwrap();
             assert_eq!(go(&mut a).leads, None);
             assert_eq!(said(), None);
-        }
-
-        /// #883 step 9's gate (docs/maplog.md §8): the NAS's old catalogues go only while every
-        /// member's heartbeat says its app's NAS check looks at `map/`. A member on an older app (its
-        /// heartbeat without `checks_map`), or one whose heartbeat isn't there, holds them: its check
-        /// looks at `catalog/` and would see the NAS away (gc's test of the pass shows it).
-        #[test]
-        fn the_old_catalogues_wait_for_every_member_s_map_check() {
-            use crate::pool::reachable::PROBE_S;
-            let d = tempfile::tempdir().unwrap();
-            let (mut a, mut b) = pool(d.path());
-            pass_all(&mut [&mut b, &mut a], PROBE_S);
-            a.go();
-            assert!(a.run.side.all_check_map && a.run.pool_view().all_check_map, "{:?}", a.run.side.beats);
-            // (B heard on an older app: its heartbeat without `checks_map`.)
-            let mut older = b.run.side.http_beats().own().unwrap();
-            older.pool.checks_map = false;
-            a.run.side.http_beats().heard(older.clone(), Vec::new(), None, a.run.side.now());
-            a.pass(PROBE_S);
-            a.go();
-            assert!(!a.run.side.all_check_map && !a.run.pool_view().all_check_map, "B's app looks at catalog/");
-            // (B not heard lately: no heartbeat.)
-            let long_ago = a.run.side.now() - crate::coord::beats::FORGET_S;
-            a.run.side.http_beats().heard(older, Vec::new(), None, long_ago);
-            a.pass(PROBE_S);
-            a.go();
-            assert!(!a.run.side.all_check_map, "a member without a heartbeat");
-            // B back on this app: they may go.
-            pass_all(&mut [&mut b, &mut a], PROBE_S);
-            a.go();
-            assert!(a.run.side.all_check_map);
         }
 
         /// Task #881: the mini is the fixed lead. The member never leads; with the lead gone it

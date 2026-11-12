@@ -509,9 +509,8 @@ The map (docs/maplog.md: the lead's log of it, on the lead's disk alone; a test 
 read as a catalogue: `store::map::Map::catalogue` makes this value of it (`n` its `seq`, `created`
 its batch's time). The `catalog` step posts the map it builds in this form, zstd with its content
 checksum, to the lead's agent (`maplog/posted.json.zst`, docs/maplog.md §6.7). No catalogue file is
-written or read on the NAS since docs/maplog.md §8, step 6: the old `catalog/` and `catalog-held/`
-folders there, read by nothing, go by the `gc` job once every member's app checks the NAS by `map/`
-(step 9).
+written or read on the NAS since docs/maplog.md §8, step 6 (the old `catalog/` and
+`catalog-held/` folders are gone, step 9).
 
 Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
 NAS holds years of data and the pool runs mixed app versions: the pool's setting `hold-catalog`, the steps
@@ -1245,7 +1244,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     `<day>/<epoch>-<n>.json`), is written by no app and read only for the keys an older app's
     saved state still lists (`mine.entries`, read back once whole, `Mine::read_back`).
   - A member's heartbeat rides in its beat (`POST /pool/beat`, docs/coordination.md §5.1):
-    `{member, host, app, beat, leads, addresses, reach, checks_map, members, conds: {home, ac,
+    `{member, host, app, beat, leads, addresses, reach, members, conds: {home, ac,
     battery, held}}` (with brokers on, `broker: {urls, https, pages}`; `mail_http` and `beat_http`
     always true, for a lead on the app before #1036).
   - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers

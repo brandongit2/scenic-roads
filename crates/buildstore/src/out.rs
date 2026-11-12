@@ -871,7 +871,7 @@ impl Out {
     }
 }
 
-/// How long one call on the NAS (`verify`, `remove_on_nas`) may take: three minutes (the call's own
+/// How long one call on the NAS (`verify`) may take: three minutes (the call's own
 /// authentication, and a NAS busy with others' work), in a test too; a test of a hung call gives
 /// its own thread's a short one (`short_nas_calls`). Its child's start is inside it, which on a
 /// loaded test Mac took 25 s for a `/bin/sh` (#1157), so no test whose stand-in answers has a
@@ -1040,24 +1040,6 @@ pub fn verify(
     let (ok, bad): (Vec<_>, Vec<_>) =
         uploads.iter().partition(|(n, want)| got.get(n.as_str()).is_some_and(|g| want.is_none_or(|w| w == *g)));
     Ok((ok.into_iter().map(|(n, _)| n.clone()).collect(), bad.into_iter().map(|(n, _)| n.clone()).collect()))
-}
-
-/// Removes folders `dirs` (relative to the project folder) on the NAS itself, whole, by one `rm -rf`
-/// over SSH (`ssh`, `nas_root` as for `verify`): a folder of many small files goes in one call, not
-/// one SMB deletion a file (the share takes some tens a second). Bounded as `verify`'s call is.
-pub fn remove_on_nas(ssh: &[&str], nas_root: &str, dirs: &[&str]) -> Result<()> {
-    if dirs.is_empty() {
-        return Ok(());
-    }
-    crate::nasssh::ssh_opened(ssh)?;
-    let mut cmd = store::spawn::command(ssh[0]);
-    cmd.args(&ssh[1..]);
-    let quoted: Vec<String> = dirs.iter().map(|d| sh_quoted(d)).collect();
-    cmd.arg(format!("cd '{nas_root}' && rm -rf -- {}", quoted.join(" ")));
-    let out = output_within(&mut cmd, nas_call_deadline(), nas_call_grace())
-        .map_err(|e| anyhow::Error::new(e).context(format!("ssh to the NAS removing {}", dirs.join(", "))))?;
-    anyhow::ensure!(out.status.success(), "ssh to the NAS: {}", String::from_utf8_lossy(&out.stderr).trim());
-    Ok(())
 }
 
 /// Uploads local file `local` under `logical` to `root` (`Out::put_file`), the local file removed

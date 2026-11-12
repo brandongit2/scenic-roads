@@ -12,7 +12,7 @@
 //!   the rest go back to the queue, which the next chunk takes up first. Nothing is listed.
 //! - **Sweeps, each a pass with its own cursor** (`Sweeps`, in the lead's map log folder, the
 //!   folder each walk reached), run after the queue when due: the duties (`duties`: the names to
-//!   drop, the archives, the old catalogues, the uploads' checks, once a day); the gate's checked
+//!   drop, the archives, the uploads' checks, once a day); the gate's checked
 //!   copies (`inputs_walk`, by their own holders: the accepted indexes); and the orphan sweep
 //!   (`orphan_walk`, §7.5), which lists the folders the map and the records name, the removed
 //!   steps' and the retired passes', a folder at a time, and queues on the lead what's old enough
@@ -175,10 +175,6 @@ pub struct Report {
     pub forecast_days_archived: usize,
     /// Days of the forecast inputs' archive removed (crate::agent::fcinputs::KEEP_S), or counted.
     pub forecast_input_days_removed: usize,
-    /// What the NAS kept of old catalogues removed this run (`OLD_CATALOGUES`; a dry run: there to
-    /// remove), asked (`Asked::old_catalogues`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub old_catalogues: Vec<String>,
     /// What it passed over and why (the agent's status says them as the job's note).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
@@ -721,9 +717,6 @@ pub struct Asked<'a> {
     /// Where its sweeps' passes are kept (`SWEEPS_FILE`, the agent's): each sweep runs when due and
     /// goes on where it reached. None (a run by hand): every sweep runs whole, nothing kept.
     pub sweeps: Option<&'a std::path::Path>,
-    /// What the NAS kept of old catalogues removed (`remove_old_catalogues`): the lead asks it once
-    /// every member's app checks the NAS by `map/` (crate::pool::beat::Beat::checks_map).
-    pub old_catalogues: bool,
 }
 
 /// What a run acts through: the plan (its write sets, the depth's layers), the lead, its safe
@@ -1205,7 +1198,7 @@ fn age_s(t: SystemTime) -> u64 {
 
 /// The duties, once a day (`DUTIES_EVERY_S`): the names to drop (removed steps', the depth's
 /// orphans, the pending uploads the build doesn't read), the history's and the forecasts' archives,
-/// the forecast inputs' old days, the old catalogues once asked, and the uploads still pending
+/// the forecast inputs' old days, and the uploads still pending
 /// checked on the NAS, last. Each a failure said, never failing GC; each goes on where it stopped
 /// (what it did saved as it went), so a pass cut short at a safe point is taken again whole.
 fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep: &mut Report) -> Result<Flow> {
@@ -1245,19 +1238,9 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep:
         }
         Err(e) => rep.warnings.push(format!("forecast inputs not pruned: {e:#}")),
     }
-    // The old catalogues' folders, once asked (docs/maplog.md §8, step 9).
     let nas_root = store::nas::on_nas(&root.unchecked_path());
     let ssh = nas_ssh();
     let ssh: Vec<&str> = ssh.iter().map(String::as_str).collect();
-    if asked.old_catalogues {
-        match remove_old_catalogues(root, nas_root.as_deref().map(|n| (&ssh[..], n)), dry_run) {
-            Ok(o) => {
-                rep.warnings.extend(o.warnings);
-                rep.old_catalogues = o.removed;
-            }
-            Err(e) => rep.warnings.push(format!("old catalogues not removed: {e:#}")),
-        }
-    }
     // The uploads still pending checked on the NAS itself, last. Not a project folder on the NAS's
     // share (a test's): none checked.
     if let Some(nas_root) = &nas_root {
@@ -1282,108 +1265,6 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep:
         std::fs::remove_dir_all(&scratch).ok();
     }
     Ok(Flow::Done)
-}
-
-/// What the NAS kept of the catalogues before docs/maplog.md §8 step 6 (step 9): their folders and
-/// the switches of steps 3 and 6 (`delta-catalog`, `map-serve`), read by nothing since, and removed
-/// once every member's app checks the NAS by `map/` (crate::agent::NAS_CHECK): an older app's check
-/// looks at `catalog/`, and sees the NAS away without it (every Mac's build would stop).
-pub const OLD_CATALOGUES: [&str; 4] = ["catalog", "catalog-held", "state/pool/delta-catalog", "state/pool/map-serve"];
-
-/// What `remove_old_catalogues` did.
-#[derive(Debug, Default)]
-pub struct OldCatalogues {
-    /// Those of `OLD_CATALOGUES` removed (a dry run: there to remove).
-    pub removed: Vec<String>,
-    /// Why it went file by file (its call on the NAS failing), said.
-    pub warnings: Vec<String>,
-}
-
-/// Step 9's pass: `OLD_CATALOGUES` removed from the NAS. By one call on the NAS itself when it can
-/// (`ssh`: the command and the project folder as the NAS sees it; buildstore::out::remove_on_nas), since
-/// the share takes some tens of SMB deletions a second (catalog/ held 1,041 files on 7 Nov); else,
-/// or that failing, file by file over SMB, a safe point between folders (a run paused there goes on
-/// at the next). Nothing else is touched.
-pub fn remove_old_catalogues(
-    root: &store::nasfs::NasRoot,
-    ssh: Option<(&[&str], &str)>,
-    dry_run: bool,
-) -> Result<OldCatalogues> {
-    let mut o = OldCatalogues::default();
-    // (Whether it's there, and a folder.)
-    let there = |name: &str| -> Result<Option<bool>> {
-        meta(0, 1, 0);
-        match root.join(name).metadata() {
-            Ok(m) => Ok(Some(m.is_dir())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e).with_context(|| format!("look at {name}")),
-        }
-    };
-    let mut left = Vec::new();
-    for name in OLD_CATALOGUES {
-        if there(name)?.is_some() {
-            left.push(name);
-        }
-    }
-    if dry_run || left.is_empty() {
-        o.removed = left.iter().map(|n| n.to_string()).collect();
-        return Ok(o);
-    }
-    if let Some((ssh, nas_root)) = ssh {
-        meta(0, 0, 1);
-        if let Err(e) = buildstore::out::remove_on_nas(ssh, nas_root, &left) {
-            o.warnings.push(format!("old catalogues removed over SMB, file by file: {e:#}"));
-        }
-    }
-    for name in left {
-        match there(name)? {
-            Some(true) => remove_tree(&root.join(name))?,
-            Some(false) => {
-                meta(0, 0, 1);
-                unless_gone(root.join(name).remove_file()).with_context(|| format!("remove {name}"))?;
-            }
-            None => {}
-        }
-        o.removed.push(name.to_string());
-    }
-    Ok(o)
-}
-
-/// Folder `dir` and all it holds removed over SMB: its files one by one, a safe point between
-/// folders, then the folders deepest first.
-fn remove_tree(dir: &NasPath) -> Result<()> {
-    let mut dirs = vec![dir.clone()];
-    let mut stack = vec![dir.clone()];
-    while let Some(d) = stack.pop() {
-        yield_point();
-        meta(1, 0, 0);
-        let rd = d.read_dir().with_context(|| format!("list {}", d.display()))?;
-        for e in rd {
-            meta(1, 1, 0);
-            // (A link goes itself, what it points at stays: its stat is its own.)
-            if e.symlink_metadata().with_context(|| format!("look at {}", e.path.display()))?.is_dir() {
-                stack.push(e.path.clone());
-                dirs.push(e.path);
-            } else {
-                meta(0, 0, 1);
-                unless_gone(e.path.remove_file()).with_context(|| format!("remove {}", e.path.display()))?;
-            }
-        }
-    }
-    dirs.sort_by_key(|d| std::cmp::Reverse(d.rel().split('/').count()));
-    for d in dirs {
-        meta(0, 0, 1);
-        unless_gone(d.remove_dir()).with_context(|| format!("remove {}", d.display()))?;
-    }
-    Ok(())
-}
-
-/// A removal's outcome, its file or folder gone already counted as done.
-fn unless_gone(r: std::io::Result<()>) -> std::io::Result<()> {
-    match r {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        r => r,
-    }
 }
 
 /// This Mac's copies of old catalogues (docs/maplog.md §8, step 9), read by nothing since step 6:
@@ -2167,53 +2048,6 @@ mod tests {
             Dropped::default()
         );
         assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
-    }
-
-    /// Step 9's pass (docs/maplog.md §8): the old catalogues' folders go whole, by one call on the
-    /// NAS (here a shell on this Mac in its place), else, or that failing, over SMB file by file;
-    /// nothing else goes, and a dry run removes nothing. (Its gate: agent's
-    /// the_old_catalogues_go_only_once_every_app_checks_by_the_map.)
-    #[test]
-    fn the_old_catalogues_folders_go_whole() {
-        let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("nas");
-        let files = [
-            "catalog/1066.delta.json.zst",
-            "catalog/a/1.json.zst",
-            "catalog-held/1060.json.zst",
-            "state/pool/delta-catalog",
-            "state/pool/map-serve",
-        ];
-        let fill = || {
-            for f in files.iter().chain(&["map/1689.json.zst", "state/pool/nas-budget"]) {
-                fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
-                fs::write(root.join(f), b"x").unwrap();
-            }
-        };
-        let gone = || {
-            OLD_CATALOGUES.iter().all(|n| !root.join(n).exists())
-                && root.join("map/1689.json.zst").exists()
-                && root.join("state/pool/nas-budget").exists()
-        };
-        fill();
-        let nas = store::nasfs::NasRoot::local_for_test(&root);
-        let o = remove_old_catalogues(&nas, None, true).unwrap();
-        assert_eq!(o.removed, OLD_CATALOGUES);
-        assert!(files.iter().all(|f| root.join(f).exists()), "a dry run removes nothing");
-        let o = remove_old_catalogues(&nas, None, false).unwrap();
-        assert_eq!((o.removed, o.warnings.len()), (OLD_CATALOGUES.map(String::from).to_vec(), 0));
-        assert!(gone());
-        assert!(remove_old_catalogues(&nas, None, false).unwrap().removed.is_empty(), "none left");
-        let at = root.to_str().unwrap();
-        fill();
-        let o = remove_old_catalogues(&nas, Some((&["sh", "-c"], at)), false).unwrap();
-        assert_eq!((o.removed.len(), o.warnings), (4, Vec::<String>::new()));
-        assert!(gone());
-        fill();
-        let o = remove_old_catalogues(&nas, Some((&["false"], at)), false).unwrap();
-        assert_eq!(o.removed.len(), 4);
-        assert!(o.warnings[0].contains("file by file"), "{:?}", o.warnings);
-        assert!(gone());
     }
 
     /// This Mac's copies of old catalogues (the map server's `catalog/`, the cache's `catalogue/`)

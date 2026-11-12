@@ -329,10 +329,6 @@ pub struct Side {
     pub beats: Vec<Beat>,
     /// When (unix s) `beats` were last read.
     pub beats_at: Option<u64>,
-    /// Whether every member's heartbeat, as `beats` were last read, says its app's NAS check looks
-    /// at `map/` (`Beat::checks_map`): the NAS's old catalogues may go (crate::agent::gc); a member
-    /// with none heard counts as one that doesn't. False until read.
-    pub all_check_map: bool,
     /// Both its clocks moved on this far (s): tests let time pass so.
     pub ahead: u64,
     /// Its clocks (a test's virtual one: `set_clock`).
@@ -398,7 +394,6 @@ impl Side {
             reach: Vec::new(),
             beats: Vec::new(),
             beats_at: None,
-            all_check_map: false,
             ahead: 0,
             clock: store::clock::real(),
             epochs: own_epochs(),
@@ -1488,7 +1483,6 @@ impl Run {
                 ids.push(l.clone());
             }
             let read: Vec<Option<Heartbeat>> = ids.iter().map(|id| self.side.heartbeat(id)).collect();
-            self.side.all_check_map = read.iter().all(|h| h.as_ref().is_some_and(|h| h.pool.checks_map));
             self.side.beats = read.into_iter().flatten().map(|h| h.pool).collect();
             self.side.beats_at = Some(now);
             if let Some(l) = &lead {
@@ -1554,7 +1548,6 @@ impl Run {
             unacked: self.side.driver().mine().unacked(),
             restart: self.restart.clone(),
             lead: self.controls.view.clone(),
-            all_check_map: self.side.all_check_map,
         }
     }
 

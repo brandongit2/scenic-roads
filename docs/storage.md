@@ -28,8 +28,6 @@ map/           <seq>.json.zst: the map's snapshots that apps before task #1119 w
                newest three) and stat to tell the NAS answers; written and read by no app since.
                Removed once every Mac's beat says `nas-check-inputs` (coord::beats::NAS_CHECK):
                the map is the lead's log's alone (docs/maplog.md §4.4)
-catalog/, catalog-held/  the catalogues of before docs/maplog.md §8, step 6: read by nothing; the
-               gc job removes them once every member's app checks the NAS by map/ (step 9)
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
                current.json (the live one's manifest: {version, sha256, archive_sha256}),
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
@@ -188,7 +186,7 @@ it stopped.
   (`agent/maplog/gc-sweeps.json`, `gc::Sweeps`: the folder each walk reached, so a run stopped
   goes on after it), run after the queue's chunks:
   - **The duties**, once a day: the names to drop (below), the history's and the forecasts'
-    archives, the forecast inputs' old days, the old catalogues once asked, and the pending
+    archives, the forecast inputs' old days, and the pending
     uploads' check (above), last.
   - **The orphan sweep** (docs/maplog.md §7.5), a pass every 14 days (`ORPHAN_AGE_S`): it lists,
     a folder at a time, the top folders of what the map and the records name, the removed steps'

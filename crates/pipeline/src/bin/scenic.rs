@@ -1675,7 +1675,7 @@ fn cli_main() -> Result<()> {
         }
         Some(Cmd::NasRoom { what, root }) => nas_room(what.as_deref(), &root.root),
         Some(Cmd::Memory { what, places }) => memory(what.as_deref(), &places.home),
-        Some(Cmd::Gc { dry_run, depth_keep, sweeps, old_catalogues, root: r }) => {
+        Some(Cmd::Gc { dry_run, depth_keep, sweeps, root: r }) => {
             // (The depth's targets not read: said, and no depth name dropped this run.)
             let keep = depth_keep.as_deref().and_then(|p| {
                 gc::DepthKeep::read(p, now_s())
@@ -1685,7 +1685,7 @@ fn cli_main() -> Result<()> {
             });
             jobrt::timings::job("gc", || {
                 gc::set_way(pipeline::agent::theplan::the_plan().cost_version(gc::STEP));
-                let asked = gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref(), old_catalogues };
+                let asked = gc::Asked { dry_run, depth: keep.as_ref(), sweeps: sweeps.as_deref() };
                 // (Every removal marked deleted on the lead's GC queue first: gc::Lead.)
                 let root = root(&r.root, true)?;
                 let lead = gc::TheLead::find(&root);

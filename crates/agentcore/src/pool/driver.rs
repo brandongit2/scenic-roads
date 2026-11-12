@@ -990,7 +990,6 @@ impl Driver {
             leads,
             addresses: Vec::new(),
             reach: Vec::new(),
-            checks_map: true,
         }
     }
 }
