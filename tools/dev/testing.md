@@ -515,6 +515,19 @@ through their dev-dependency on store, `features = ["testkit"]`):
 - **A stand-in child process: `testkit::sh(script, args)`.** It runs in its own process group; the
   script makes `$READY` once set up (`: >"$READY"`), `ready()` waits for that, and dropping it
   (a panic included) kills the whole group and reaps it. No fixed head start, no leaked `sleep`.
+- **A child's start is never inside a short bound (#1157).** At nice 20 on the loaded test Mac a
+  `/bin/sh` took 25 s to start, and a call is often several starts (a job's head, `taskpolicy`, its
+  shell; a fake `ssh`, the `sh` it runs, its `cat`). So no bound under the watchdog covers a child
+  that must start, print, reach a state or end for the test to pass: the test waits on the child's
+  own signal (its ready file or line, its exit, a state it reads under `eventually`), and a bound
+  it hands the code under test with a child inside (an ssh's start bound, a call's deadline, a kill
+  loop's, a stop's grace, `curl -m`) is `WATCHDOG`, or the real one when that is longer; a real
+  bound of a minute or more on a single start stands (out's `ssh_opened` probe, `SSH_START`).
+  Only a test whose claim is the bound gives a short one, and then to a child that hangs, never to
+  one that must answer in time (a hung NAS call: `buildstore::out::short_nas_calls`, this thread's
+  calls only). A time compared with a child's start (a group's `started`) is read before the child
+  starts, never guessed back from now. A signal goes to a child once it said it runs: a SIGSTOP
+  while its program still starts (macOS's `/bin/sh` execs bash) reads stopped, then runs on.
 - **"It didn't wait": `ended_before(t0, never, what)`**, half of what waiting would take, never
   a fixed "fast" bound.
 - **"It came from the event, not a timer": switch the timer off** (`#[cfg(test)]` hooks such as

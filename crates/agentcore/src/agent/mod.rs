@@ -14730,7 +14730,7 @@ mod tests {
         give_lead(&a);
         let port = a.proxy.as_ref().expect("its proxy").addr.port();
         let (first, go) = (d.path().join("first"), d.path().join("go"));
-        let get = format!("/usr/bin/curl -sS -m 20 http://en.{}/w/api.php", jobrt::budget::WIKIMEDIA[0]);
+        let get = format!("/usr/bin/curl -sS -m 120 http://en.{}/w/api.php", jobrt::budget::WIKIMEDIA[0]);
         let script = format!(
             "{get} > '{0}.tmp' && mv '{0}.tmp' '{0}'; while [ ! -e '{1}' ]; do sleep 0.05; done; {get}",
             first.display(),
@@ -14846,11 +14846,15 @@ mod tests {
         a.free_set = Some(40 * g);
         a.room_target = target();
         a.mem_set = Some((16 << 10, 14 << 10));
-        let go = d.path().join("go");
+        let (go, ready) = (d.path().join("go"), d.path().join("ready"));
         let job = JobSpec {
             id: "unit 6/18/21".into(),
             what: "unit 6/18/21".into(),
-            cmd: vec!["/bin/sh".into(), "-c".into(), format!("while [ ! -e '{}' ]; do sleep 0.1; done", go.display())],
+            cmd: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                format!(": > '{}'; while [ ! -e '{}' ]; do sleep 0.1; done", ready.display(), go.display()),
+            ],
             needs: Needs { nas: false },
             restart_after_sleep: false,
             record: Some(jobs::Work { step: "unit".into(), targets: vec![("6/18/21".into(), "k".into())] }),
@@ -14858,6 +14862,11 @@ mod tests {
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
         assert!(a.try_start(0, job, &cond, Some(&store::nasfs::NasRoot::local_for_test(&root)), &mut Vec::new()));
         let pgid = a.slots[0].running.as_ref().unwrap().pgid;
+        // (Frozen once its loop runs, as a guard freezes a job well under way: a SIGSTOP while the
+        // job's shell still starts (macOS's /bin/sh execs bash) reads stopped and then runs on, the
+        // stop lost in the exec. On the loaded M4 the shell took seconds to start, and the group
+        // taken over was found running, #1157.)
+        store::testkit::eventually("the job's loop running", || ready.exists());
         freeze(&mut a);
         store::testkit::eventually("the job stopped", || a.slots[0].running.as_ref().unwrap().stopped());
         a.hand_over_jobs();
