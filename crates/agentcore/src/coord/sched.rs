@@ -101,6 +101,13 @@ impl Rule {
         }
     }
 
+    /// Whether an ask it held back was short of cores (its cores, those busy outside the pool, or
+    /// those its jobs' threads leave while the load's minute runs): other work could use the cores
+    /// its running jobs' threads hold (`Sched::regrant`'s `wanted`).
+    pub fn short_of_cores(self) -> bool {
+        matches!(self, Rule::Cores | Rule::Outside | Rule::Settle)
+    }
+
     /// Where the rule decides by live state the forecast can't know (docs/pool.md §7.2, One
     /// scheduler): what it is, in words; None, a rule the forecast's run packs by too.
     pub fn live(self) -> Option<&'static str> {

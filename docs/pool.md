@@ -1037,26 +1037,19 @@ packing: the lead moving, the build paused, another app). The line says, after t
 ask from it since (its agent asks only while a slot is free and nothing holds it back: its jobs
 running past their measures, an update's restart, its memory guard, a stalled loop); else its
 asks, the jobs they wanted and got and how many were offered the step (none: the lead's plan
-hadn't listed it yet, where the run offers a target as soon as what it waits on ends; overnight
-the lead's plans took 30–400 s), and each rule that held them back, counted, with the last one's
-words. The rules deciding by live state the forecast can't know say so (`Rule::live`): the
-memory guard (macOS's memory now) and cores busy outside the pool, where the run takes each Mac at
-its sustained best, and the NAS budget, whose gate on the NAS's own load is a reading of now the
-run holds only while the jobs out run; a refusal before packing is the lead's or the agent's state
-now. Each ask
-granted all it wanted says its slots freed later than the run's lanes. For example: `agent: the
+hadn't listed it yet, where the run offers a target as soon as what it waits on ends), and each
+rule that held them back, counted, with the last one's words. The rules deciding by live state
+the forecast can't know say so (`Rule::live`): the memory guard (macOS's memory now) and cores
+busy outside the pool, where the run takes each Mac at its sustained best, and the NAS budget,
+whose gate on the NAS's own load is a reading of now the run holds only while the jobs out run; a
+refusal before packing is the lead's or the agent's state now. Each ask granted all it wanted
+says its slots freed later than the run's lanes. The threads' re-grant (§7.1) reads the rule
+too: an ask held back by cores, cores busy outside the pool or the load's minute was short of
+cores (`Rule::short_of_cores`). For example: `agent: the
 grants departed from the forecast: m4: 0 job(s) of unit granted, the forecast's 3; its 3 ask(s)
 since wanted 5 job(s) and got 0, 2 offered unit; held back by memory ×2 (live: macOS's memory
 now; the forecast takes each Mac at its sustained best), cores ×1; the last: cores: 0.5 of 8
-left, a job of unit takes 1.0`. Before the lines said why, 68 of the 125 the lead logged between
-23:00 and 08:00 UTC on 11–12 Nov said fewer; from the lead's log (no refusal was logged then):
-35 were Macs granted other steps (24 of them a MacBook, granted slope-deep for terrain-deep, or
-`peaks` and `pack` for `unit` and `slope-hi`: placement's order, above, which the run now
-follows, or the work not listed yet), 16 Macs granted nothing in the span (asks held or refused:
-11 of them within a quarter of an hour of a lead restart into an update, the members updating
-after it), 17 fewer of the step (most short `peaks` jobs, 0.2–0.9 min each, foreseen by the tens
-in a few minutes, where the agents' loops took 13–400 s a round); 47 of the 68 came within 15
-minutes of one of the night's 13 lead restarts.
+left, a job of unit takes 1.0`.
 
 Rows of note: `trees`/`terrain-hi`/`slope-hi` per z6 tile with `*-lo` assemblies per z3 tile,
 `terrain-deep`/`slope-deep` per z10 tile (docs/steps.md);
@@ -1151,10 +1144,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   slope after it).
 - **Placement by how crucial** (`crate::agent::placement`, the pool's setting `placement`, §12): a
   member's asks are tried on steps by their forecast slack (least first, plan order between
-  equals; `Sched::pack`, so the forecast's run tries its members' offers so too, task #1163: before,
-  the coordinator's ask handler ordered them and the run tried plan order, so overnight on 12 Nov
-  the lead granted the MacBooks slope-deep where the forecast foresaw terrain-deep, and its
-  departure lines said "fewer" of one and "more" of the other); within a step, the targets in the asker's
+  equals; `Sched::pack`, so the forecast's run tries its members' offers in the same order, task
+  #1163; the lead's own asks in plan order); within a step, the targets in the asker's
   last one's z3 tile first (`placement::group`, from just after it in plan order: its jobs read
   the same neighbourhood's inputs, task #552), then from the longest. Each target is drawn among
   the members asking lately that would take it now (`Sched::would_take_now`: by their last ask,

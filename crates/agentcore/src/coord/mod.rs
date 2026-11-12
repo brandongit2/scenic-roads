@@ -701,10 +701,10 @@ impl Shared {
     /// cores where its last ask, within `CAP_FRESH_S`, was refused for them. The re-grants it's to be
     /// told (lease, threads).
     fn regrant(&mut self, worker: &str, cap: Capacity) -> Vec<(u64, u32)> {
-        let wanted = self.refused.get(worker).is_some_and(|(at, w)| {
-            self.wall_s().saturating_sub(*at) < CAP_FRESH_S
-                && matches!(w.rule, sched::Rule::Cores | sched::Rule::Outside)
-        });
+        let wanted = self
+            .refused
+            .get(worker)
+            .is_some_and(|(at, w)| self.wall_s().saturating_sub(*at) < CAP_FRESH_S && w.rule.short_of_cores());
         let a = Ask { worker: worker.to_string(), cores: cap.cores, cap: Some(cap), ..Default::default() };
         let now = self.now();
         self.sched.regrant(&a, wanted, now)
@@ -1204,7 +1204,7 @@ pub struct Capacity {
 }
 
 /// An ask answered (`Shared::answers`): when (unix s), the jobs it wanted and was granted, the
-/// steps it was offered (in the order tried), and why it got fewer: the packing's rule
+/// steps it was offered (in plan order), and why it got fewer: the packing's rule
 /// (`sched::Held`), or the ask refused before any packing (the lead moving, the build paused,
 /// another app: in words).
 #[derive(Clone, Debug, PartialEq)]
@@ -8461,6 +8461,160 @@ mod tests {
             }
         }
         assert!(grants > 30 && offered > 30, "the run granted {grants} jobs over {offered} offers");
+    }
+
+    /// Task #1163 review: placement's slack order moved from the `/work/ask` route into
+    /// `Sched::pack` grants as the route's did. Two coordinators take one random run of offers,
+    /// measures, slacks, asks (members' and the lead's, one job or several) and ends. The first
+    /// packs as before the move: a member's offers sorted by slack before the packing, its
+    /// placement's slacks all equal (so the packing orders nothing; its draws are the same); the
+    /// second packs offers in plan order by the real slacks. Their grants are the same, every one.
+    #[test]
+    fn slack_order_in_the_packing_grants_as_the_routes_did() {
+        let (_da, a, _wa) = start();
+        let (_db, b, _wb) = start();
+        let t0 = Instant::now();
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut rnd = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n.max(1)
+        };
+        let steps = ["pack", "peaks", "terrain-hi", "depth", "slope-hi"];
+        let tile = |i: u64| format!("6/{}/{}", i % 7, i / 7);
+        let mut slack: Option<crate::agent::placement::Placement> = None;
+        let mut leases: Vec<(u64, u64)> = Vec::new();
+        let (mut grants, mut reordered) = (0usize, 0usize);
+        let mut refusals: BTreeSet<sched::Rule> = BTreeSet::new();
+        for round in 0..800u64 {
+            let now = t0 + Duration::from_secs(round * 7);
+            let clock = sched::Clock { now, unix: 1_800_000_000 + round * 7 };
+            match rnd(10) {
+                0 => {
+                    let some: Vec<&str> = steps.iter().copied().filter(|_| rnd(3) > 0).collect();
+                    let offers: Vec<Offer> = some
+                        .into_iter()
+                        .map(|st| Offer {
+                            step: st.to_string(),
+                            targets: (0..1 + rnd(8))
+                                .map(|_| {
+                                    let t = tile(rnd(12));
+                                    (t.clone(), format!("k {t}"), rnd(3) * 400)
+                                })
+                                .collect(),
+                            job: None,
+                        })
+                        .collect();
+                    a.offer("p", offers.clone());
+                    b.offer("p", offers);
+                }
+                1 => {
+                    let (st, t) = (steps[rnd(5) as usize], tile(rnd(12)));
+                    let c = Cost {
+                        peak_mb: 100 + rnd(30) * 500,
+                        secs: 10 + rnd(900),
+                        v: cost_version(st),
+                        sizes: [("threads".to_string(), 1 + rnd(4))].into(),
+                        ..Default::default()
+                    };
+                    a.add_costs_by(&[(cost_key(st, &t), c.clone())], "m1");
+                    b.add_costs_by(&[(cost_key(st, &t), c)], "m1");
+                }
+                2 => {
+                    let (st, t, mb) = (steps[rnd(5) as usize], tile(rnd(12)), rnd(40) * 1000);
+                    a.add_disks(&[(cost_key(st, &t), mb)]);
+                    b.add_disks(&[(cost_key(st, &t), mb)]);
+                }
+                3 => {
+                    // Placement turned off, or on with new slacks (some steps given none).
+                    slack = (rnd(4) > 0).then(|| crate::agent::placement::Placement {
+                        slack: steps
+                            .iter()
+                            .map(|s| (s.to_string(), rnd(5)))
+                            .filter(|x| x.1 < 4)
+                            .map(|(s, v)| (s, v * 600))
+                            .collect(),
+                    });
+                    let flat = slack.as_ref().map(|p| crate::agent::placement::Placement {
+                        slack: p
+                            .slack
+                            .keys()
+                            .map(|s| (s.clone(), 0))
+                            .chain(steps.iter().map(|s| (s.to_string(), 0)))
+                            .collect(),
+                    });
+                    a.shared.lock().unwrap().placement = flat.map(|p| (p, t0));
+                    b.shared.lock().unwrap().placement = slack.clone().map(|p| (p, t0));
+                }
+                4 if !leases.is_empty() => {
+                    let ids = leases.remove(rnd(leases.len() as u64) as usize);
+                    let done = rnd(2) == 0;
+                    for (c, id) in [(&a, ids.0), (&b, ids.1)] {
+                        let mut s = c.shared.lock().unwrap();
+                        let Some(l) = s.leases.all(now).into_iter().find(|l| l.id == id) else { continue };
+                        if let (true, Work::Job { step, targets }) = (done, &l.work) {
+                            for (t, k) in targets {
+                                s.done.insert((step.clone(), t.clone()), k.clone());
+                            }
+                        }
+                        s.end(id);
+                    }
+                }
+                _ => {
+                    let lead = rnd(3) == 0;
+                    let cores = [4, 8, 12][rnd(3) as usize];
+                    let ask = Ask {
+                        worker: if lead { "m4".into() } else { format!("w{}", rnd(3)) },
+                        kind: "native".into(),
+                        can: steps.iter().filter(|_| rnd(5) > 0).map(|s| s.to_string()).collect(),
+                        mem_mb: 2_000 + rnd(30) * 1_000,
+                        cores,
+                        want: 1 + rnd(4) as usize,
+                        disk_mb: Some(5_000 + rnd(40) * 1_000),
+                        cap: (rnd(4) > 0).then(|| Capacity {
+                            at: clock.unix,
+                            cores,
+                            cores_free: cores,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    let pa = {
+                        let mut s = a.shared.lock().unwrap();
+                        // (The route's sort as it was: a member's offers it can take, by slack.)
+                        let mut offers: Vec<Offer> =
+                            s.offers.iter().filter(|o| ask.can.contains(&o.step)).cloned().collect();
+                        if let Some(p) = slack.as_ref().filter(|_| !lead) {
+                            let before = offers.clone();
+                            offers.sort_by_key(|o| p.slack_of(&o.step));
+                            reordered += usize::from(offers != before);
+                        }
+                        s.sched.pack(&ask, &offers, lead, clock).0
+                    };
+                    let pb = {
+                        let mut s = b.shared.lock().unwrap();
+                        let offers: Vec<Offer> =
+                            s.offers.iter().filter(|o| ask.can.contains(&o.step)).cloned().collect();
+                        let (picks, why) = s.sched.pack(&ask, &offers, lead, clock);
+                        // (The re-grant's test of a refusal as it was, its words: `Rule::short_of_cores`.)
+                        if let Some(h) = why {
+                            assert_eq!(h.rule.short_of_cores(), h.words.starts_with("cores:"), "round {round}: {h:?}");
+                            refusals.insert(h.rule);
+                        }
+                        picks
+                    };
+                    let same = |p: &[sched::Pick]| -> Vec<sched::Pick> {
+                        p.iter().map(|x| sched::Pick { lease: 0, ..x.clone() }).collect()
+                    };
+                    assert_eq!(same(&pa), same(&pb), "round {round}: {ask:?}");
+                    grants += pa.len();
+                    leases.extend(pa.iter().zip(&pb).map(|(x, y)| (x.lease, y.lease)));
+                }
+            }
+        }
+        assert!(grants > 40 && reordered > 20, "the run granted {grants} jobs, {reordered} asks' offers reordered");
+        assert!(refusals.contains(&sched::Rule::Cores) && refusals.contains(&sched::Rule::Room), "{refusals:?}");
     }
 
     /// Task #657: a term's state of before `DISKS_V` brings back no `pack`'s nor `lo`'s targets'
