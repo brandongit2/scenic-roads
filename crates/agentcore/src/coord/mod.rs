@@ -6035,7 +6035,7 @@ mod http {
         let path = req.uri().path().to_string();
         let key = bearer(req.headers()).map(str::to_string);
         // (Not the lead's, a member's port: the page is the lead's, docs/roles.md §3.3. A page of
-        // its own origin (or none: an address typed, the menu bar's web view) sent there; the lead's
+        // its own origin (or none: an address typed) sent there; the lead's
         // page asking this Mac's `/api/live`, `/api/settings` and `/api/asked` from its origin
         // answered here.)
         if key.is_none() && own_page {
@@ -12909,7 +12909,7 @@ mod tests {
     }
 
     /// docs/roles.md §3.3: a member's port sends its page, the page's data and the owner's asks
-    /// to the lead (307, path and query kept: `?view&mac=`), from an address typed or a page of its
+    /// to the lead (307, path and query kept), from an address typed or a page of its
     /// own origin; the lead's page asking this Mac's `/api/live` and `/api/settings` from its
     /// origin, and the jobs' calls, are answered here.
     #[test]
@@ -12924,8 +12924,8 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         b.set_settings(home.path(), None);
         let get = |path: &str, h: &[(&str, &str)]| send(&addr, "GET", path, None, h, &serde_json::json!({}));
-        assert_eq!(get("/?view&mac=m4", &[]).0, 307);
-        assert_eq!(get("/?view&mac=m4", &[]).1, "http://100.64.0.6:8090/?view&mac=m4");
+        assert_eq!(get("/?x=1", &[]).0, 307);
+        assert_eq!(get("/?x=1", &[]).1, "http://100.64.0.6:8090/?x=1");
         assert_eq!(get("/dash.js", &[]).1, "http://100.64.0.6:8090/dash.js");
         // (Through `tailscale serve`: the lead's HTTPS page.)
         let proxied = [("X-Forwarded-Host", "m4.tail1.ts.net"), ("X-Forwarded-For", "100.101.1.2")];
@@ -12970,7 +12970,7 @@ mod tests {
             s.read_to_string(&mut b).unwrap();
             b
         };
-        let page = get("/?view&mac=m4");
+        let page = get("/");
         assert!(page.starts_with("HTTP/1.1 200"), "{page}");
         assert!(page.contains("The lead (mini) isn't reachable since 10 min ago"), "{page}");
         assert!(page.contains("m4 <span>app 1.2.3"), "{page}");

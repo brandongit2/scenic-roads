@@ -8,7 +8,7 @@
 //! the NAS: a `--home` of its own, never this Mac's app folder). The free space the mirror leaves on
 //! the disk is the owner's setting in the Regions panel (crate::reserve). `--listen`: the one address to answer on (a test
 //! server's 127.0.0.1; no devices' page), else every IPv4 address and IPv6's loopback. `--on-demand`: a laptop's
-//! offline map (docs/roles.md §8.3), started by the menu bar's Open the Map on This Mac: this Mac's
+//! offline map (docs/roles.md §8.3), started by the menu bar's Open the map on this Mac: this Mac's
 //! loopback alone, never retired, quitting once unused (`updater::quit_when_unused`). Nothing is
 //! loaded at start: the catalogue says where everything is, and files are opened on first use.
 
@@ -309,7 +309,7 @@ struct Cli {
     /// loopback
     #[arg(long, value_name = "IPV4 ADDRESS", conflicts_with = "on_demand")]
     listen: Option<std::net::Ipv4Addr>,
-    /// This Mac's offline map, started on demand (the menu bar's Open the Map on This Mac, on a Mac
+    /// This Mac's offline map, started on demand (the menu bar's Open the map on this Mac, on a Mac
     /// without the installed server): answers this Mac alone (127.0.0.1 and IPv6's loopback), is
     /// never retired, and quits 30 min after its last use (a request, or a download's copy)
     #[arg(long)]

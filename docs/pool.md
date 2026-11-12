@@ -2622,8 +2622,6 @@ asks passed on are one-shot: the lead's store keeps them (below).
   in a scratch folder removed as it stops, a dead process's as the next starts), no history, no
   background loop. The usual Origin rules hold. A history file written again in its place (its
   inode or first line changed) is read from its start, the events taken in already passed over.
-  The menu bar's panel loads its own port with `?view&mac=<host>`, which sends it to the lead's
-  page (docs/building.md §2, Status).
 - **Phase shares** (task #511): for each step, its top-level phases' mean share of a run's wall
   time and of the bytes its phases counted as read or written (local disk, NAS and internet alike:
   `timings::count`; the page says "I/O"), over its last 10 runs that ended well
@@ -3031,7 +3029,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
 - **`scenic lead`** shows the pool; `scenic status` too.
 - **Cancelling a job** (`crate::control::Cancel`): `scenic job cancel <target> [--step <step>]
   [--rerun-after-update]`, or the menu bar's "Cancel <job>" on the Mac running it (Option: "…,
-  Rerun on a Newer App"), writes an ask to that Mac's agent (a file in `cancel-requests/`; one older than two minutes is dropped). The agent
+  rerun on a newer app"), writes an ask to that Mac's agent (a file in `cancel-requests/`; one older than two minutes is dropped). The agent
   stops a slot of its own running the target at once, whatever its loop waits on (its jobs' own
   thread, `crate::agent::slots`, docs/agent-parts.md §4.5: SIGTERM, SIGKILL 30 s on), records it at
   its next round, and tells the lead's coordinator (in process, or
@@ -3080,7 +3078,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   targets keep their keys, and `scenic redo`'s next dry run says so.
 - **Pausing one Mac** (`crate::control::Hold`, task #224): `scenic pause --here` / `scenic resume
   --here`, `scenic pause <member>` / `scenic resume <member>` (host name or member id) from another
-  Mac, or the menu bar's "Pause This Mac" / "Resume This Mac". The ask goes to this Mac's agent (a
+  Mac, or the menu bar's "Pause this Mac" / "Resume this Mac". The ask goes to this Mac's agent (a
   file in its folder, `hold-request.json`; `scenic pause` prints the agent's answer, and for another
   member's waits up to 20 s for the lead's: refused, it exits 1 with the lead's reason). A Mac's hold
   is kept in its agent's folder (`hold.json`, so a restart keeps it) and by the lead

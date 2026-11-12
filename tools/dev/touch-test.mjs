@@ -49,9 +49,6 @@
 //                     AGE s ago, in PHASE, past a threshold (`loop_stuck_s`) of 300 s (task #899:
 //                     an agent before it says no threshold); the Machines tab's lead card then
 //                     checked for its chip, the Overview for its alert (chrome-loop-stuck)
-//   --mac NAME        the page opened as the menu bar's panel on Mac NAME opens it (`?view&mac=NAME`,
-//                     docs/roles.md §3.3): its title names NAME and the Machines tab shows NAME's card
-//                     first (when the build has it)
 //   --only-map        only the map's checks (its solo, its age controls) and screenshots
 //   --job-id ID       job ID's page checked too (/job/ID, #1105); `--job FILE`: every job's view
 //                     answered from FILE (GET /api/job/<id>), ID 1-1 by default; `--timings FILE`
@@ -64,7 +61,7 @@
 // reading calls forwarded to this Mac's agent (127.0.0.1:8090); everything else is refused, so the
 // page can't act or set a setting. Its Pause is the test's own (#673): /api/pause is
 // answered here, never forwarded, and /api/swarm's `pause` is this server's (none until a press;
-// then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused. The page opens as `?view`.
+// then PAUSE_LAG ms after it, as the build takes seconds to say so), so the pool is never paused.
 // (Other Macs' /api/settings and /api/live the page asks straight; it only reads them.) A setting
 // the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
 // before its scripts run, a POST to any /api/settings with a setting in its body recorded in
@@ -130,7 +127,6 @@ const PAUSE_LAG = +arg("--pause-lag", 3000);
 // answered here with a 503, not forwarded, a member's port sending them to its lead's address.)
 const fake = { pause: null, posts: 0, version: "v1", direct: false };
 const ONLY_MAP = process.argv.includes("--only-map");
-const MAC = arg("--mac", null);
 const PHASE_TIMES = arg("--phase-times", null);
 const OVER_BOUND = arg("--over-bound", null)?.split(":") ?? null;
 const LOOP_STUCK = arg("--loop-stuck", null)?.split(/:(.*)/s) ?? null;
@@ -257,7 +253,7 @@ function serve() {
 
 if (process.argv.includes("--serve")) {
   await serve();
-  console.log(`serving http://localhost:${PORT}/?view (reads forwarded to ${AGENT.host}:${AGENT.port}); Ctrl-C stops`);
+  console.log(`serving http://localhost:${PORT}/ (reads forwarded to ${AGENT.host}:${AGENT.port}); Ctrl-C stops`);
 } else await run();
 
 // ---- A job's page (#1105) ----------------------------------------------------------------------------
@@ -366,7 +362,7 @@ async function run() {
     const still = () => until(`!${MAP}?.dataset.fading`, 5000);
 
     await page.send("Page.addScriptToEvaluateOnNewDocument", { source: stub() });
-    await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/?view${MAC ? `&mac=${encodeURIComponent(MAC)}` : ""}#overview` });
+    await page.send("Page.navigate", { url: `http://127.0.0.1:${PORT}/#overview` });
     await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
 
     // The page's version (docs/coordinator.md §7): answers saying none (the lead away) or the
@@ -389,16 +385,6 @@ async function run() {
       await until(`!!document.querySelector('.panel[data-tab="overview"]')?.children.length && !!${MAP}?.width`, 20000);
       // (The service worker of before and its files, gone from a device that had them: the page's one-off cleanup.)
       check("version: no service worker registered, no shell- cache kept", await js(`navigator.serviceWorker.getRegistrations().then((r) => r.length === 0)`) && !(await js(`caches.keys().then((k) => k.some((n) => n.startsWith("shell-")))`)));
-    }
-
-    // `?mac=` (the menu bar's panel on a member, sent to the lead's page): the page opens on it.
-    if (MAC) {
-      await show("machines");
-      await until(`!!document.querySelector(".machines")?.children.length`, 10000);
-      const [title, first, all] = await js(`(() => { const cards = [...document.querySelectorAll(".machines > *")].map((c) => c.textContent); return [document.getElementById("title").textContent, cards[0] || "", cards.join(" | ")]; })()`);
-      check(`mac=: the page opens on ${MAC}`, title.endsWith(` · ${MAC}`) && (!all.includes(MAC) || first.includes(MAC)), `title "${title}", first card "${first.slice(0, 40)}"`);
-      await shot("chrome-mac");
-      await show("overview");
     }
 
     // The map (#685): in its own panel, no tabs over it, no fade setting, published tiles off at

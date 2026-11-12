@@ -131,7 +131,7 @@ Six places, each with different settings.
 
 The map server runs on the Mac mini and serves the map to the other Macs, the phone and the iPad
 over the tailnet (`docs/macs.md`, Devices). A laptop away from it opens its own offline map from
-the menu bar (Open the Map on This Mac): what was downloaded there (Settings → Regions → Downloads:
+the menu bar (Open the map on this Mac): what was downloaded there (Settings → Regions → Downloads:
 the World zoomed out, a region, or the view). The map supports Chrome and Safari.
 
 - **Navigation:** trackpad pan and pinch anchored to the ground; ⌥ + two-finger drag (or

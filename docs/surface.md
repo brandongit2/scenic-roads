@@ -81,8 +81,8 @@
 - `scenic status` and the menu bar item (Scenic's) show the build's state, and this Mac's memory against its
   floor in a line (what's available and what compressing frees among it, the floor, what's reserved
   for its jobs, why no job starts: the brake, the floor, a give-back's cool-down; the memory brake
-  first while it's on: docs/pool.md §7.1). A click
-  opens the build page in a popover; the menu pauses and resumes the build, hands over the lead,
+  first while it's on: docs/pool.md §7.1). Any click
+  opens its menu, which pauses and resumes the build, hands over the lead,
   sets the disk room and clears the Mac's build caches (`scenic clean`). An action whose ask to the
   agent can't be written says why in the state's place (the icon a problem) for a minute.
 - Every program checks its command line first (docs/building.md, "Command lines"): `--help`/`-h`

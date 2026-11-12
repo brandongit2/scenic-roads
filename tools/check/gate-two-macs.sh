@@ -28,8 +28,8 @@
 #   gate-two-macs.sh page-accept <folder> <unit> [<id>]  the build page's Accept (Accept All with no
 #                                               id): its POST to the lead's coordinator, as a page
 #                                               (LEAD_HOME=<the lead's agent folder>: where it is;
-#                                               PAGE_PORT=<port>: to that Mac's own page, as its
-#                                               menu bar's panel)
+#                                               PAGE_PORT=<port>: to that Mac's own page, as a
+#                                               browser there)
 #   gate-two-macs.sh menu-accept <dir> <unit> <id>…  the menu bar item's Accept: its ask file in this
 #                                               Mac's agent's folder, as the item writes it (or run
 #                                               the item itself: SCENIC_HOME=<dir> scenic-status,
@@ -173,7 +173,7 @@ f = next(p for t in range(e, 0, -1) for p in [f"term/{t}/brief.json", f"term/{t}
     ;;
   page-accept)
     r=${2:?the scratch folder}; u=${3:?the unit}; id=${4:-}
-    # (A Mac's own page, as the menu bar's panel loads it, PAGE_PORT=<its agent's port>: on a member
+    # (A Mac's own page, as a browser on it loads it, PAGE_PORT=<its agent's port>: on a member
     # its agent passes the ask on; else the lead's coordinator's, as a page elsewhere asks, at the
     # address its agent keeps, LEAD_HOME=<the lead's agent folder>: lead.json, coordwire::lead.)
     if [[ -n ${PAGE_PORT:-} ]]; then url=http://127.0.0.1:$PAGE_PORT

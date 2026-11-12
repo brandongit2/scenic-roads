@@ -808,7 +808,7 @@ func holdRequestJSON(_ held: Bool, by: String, at: Int) -> Data {
 
 /// The menu's items for this Mac paused alone (`scenic pause --here`, task #224): the ask while the
 /// agent hasn't taken it up, then its stage as the agent says it (task #846: pausing with each job
-/// finishing, paused since when, resuming) and Resume This Mac, else Pause This Mac. `held`: what
+/// finishing, paused since when, resuming) and Resume this Mac, else Pause this Mac. `held`: what
 /// pressing it asks (pause: true, resume: false), nil for a line only.
 func holdItems(_ r: Reply?, own: Own?) -> [(title: String, held: Bool?, tip: String)] {
     var out: [(title: String, held: Bool?, tip: String)] = []
@@ -1141,8 +1141,8 @@ func keptWords(deep: Bool) -> String {
         : "Kept: what's costly to make again (the heritage clip, the Wikidata and Wikipedia answers: a deep clear takes those too), what exists only here (files the NAS lacks, the z6 tiles' results not on the NAS yet), files a running job holds, and the map's offline copy."
 }
 
-/// The menu's items for this Mac's build caches (none without an agent here): Clear the Build's
-/// Caches and Clear Caches Deeply, each with what it would free now, enabled at any moment (why
+/// The menu's items for this Mac's build caches (none without an agent here): Clear the build
+/// caches and Clear caches deeply, each with what it would free now, enabled at any moment (why
 /// not, in its tooltip: an earlier agent's job running, no NAS, its agent out of touch); while an
 /// ask waits, that it's clearing.
 func cachesItems(_ own: Own?, now: Int, asked: Bool) -> [(title: String, enabled: Bool, tip: String, deep: Bool)] {

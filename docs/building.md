@@ -99,7 +99,7 @@ from the first (`edit_held`).
   nothing.
 - **Pausing** (`jobrt::control`): one pause for the whole build, every Mac's jobs and the pages'
   tasks.
-  - **Asked for** from the menu bar (Pause Building; Option: Pause Building Now), the map's build
+  - **Asked for** from the menu bar (Pause building; Option: Pause building now), the map's build
     panel or `scenic pause [--now]`, lifted by Resume or `scenic resume`: an ask in the agent's folder
     (`pause-request.json`) passed to the lead's coordinator; an ask older than the build's last
     change is passed over. One the lead refuses (task #922) is said in the menu bar and on the build
@@ -161,8 +161,8 @@ from the first (`edit_held`).
     far as that needs, in that order. A file no upcoming job reads isn't deleted while there's
     room: it costs nothing until the room is needed, and the room target already frees it first.
   - **On the owner's ask** (`room::clear`, `room::Level`), at any moment, jobs running (the build
-    never ends: regions are added and updated): the menu bar's Clear the Build's Caches or `scenic
-    clean` (level `caches`), Clear Caches Deeply or `scenic clean --deep` (level `deep`), after a
+    never ends: regions are added and updated): the menu bar's Clear the build caches or `scenic
+    clean` (level `caches`), Clear caches deeply or `scenic clean --deep` (level `deep`), after a
     confirmation naming each cache, how it comes back and what stays, writes `clear-request.json`
     (`{by, at, level}`; one without `level` is `caches`).
     - `caches`: everything a later job copies back cheaply from the NAS: canopy squares, raw terrain
@@ -578,21 +578,16 @@ available. Until work is done, the map serves the last catalogue.
   agent's stuck threshold (the status's `loop_age_s`, counted on from its `beat`, past its `loop_stuck_s`, `beat::LOOP_STUCK`,
   task #899) gets a line "<Mac>: loop stuck 6 min, in <phase>" (`loop_phase`, the loop's phase
   then); its status still beats on its own timer, so it isn't out of touch.
-  - **Its panel:** a click opens the build page in a popover, asked of this Mac's own agent's port
-    (`http://127.0.0.1:8090/?view&mac=<this Mac>`: on a member it redirects to the lead's
-    page, which opens on this Mac, or with the lead not reached shows a small page of this Mac's
-    own, docs/roles.md §3.3), in a web view that keeps nothing, kept for the next opening and quiet
-    while closed, 900 pt tall at most. With this Mac's agent not answering, one line says so ("The
-    build's agent isn't running on this Mac"); with it on another app than the menu bar's (its own
-    status's `app`), the footer says so. From it, as from any page on this Mac, a job
-    can be cancelled and a failed target tried again (docs/pool.md §11).
-  - **Its menu** (right-click, or "⋯"): the state and caches; Pause/Resume Building; the
-    lead items (docs/pool.md §11); Clear the Build's Caches; Clear Caches Deeply; Open the Build
-    Log; Show the Scenic Window; Quit. Nothing of the map server's (task #874).
+  - **Its menu** (any click on the icon, left or right; its items in sentence case): the state,
+    this Mac's memory and caches, and a line when this Mac's agent runs another app than the menu
+    bar's (its own status's `app`); Pause building (Option: Pause building now) or Resume building;
+    Pause this Mac or Resume this Mac; Cancel <each running job> (Option: rerun on a newer app);
+    Clear the build caches; Clear caches deeply; Open the map on this Mac; Open the build log; Show
+    the Scenic window; Quit Scenic. The build page is the browser's (docs/coordinator.md §7).
   - Its timers run in the run loop's common modes, so it updates while a menu is open
     (`scenic-status --menu-proof`).
   - **The input check** (docs/inputs.md §4.7): a held input badges the icon, its menu has a line per
-    held unit (Accept its warnings; Show on the Build Page). `scenic status` and
+    held unit (Accept its warnings; Show on the build page, in the browser). `scenic status` and
     `scenic inputs` print the units' states; the build page shows a banner
     per held unit.
 

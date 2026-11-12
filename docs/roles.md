@@ -112,12 +112,12 @@ The page is the lead's alone (built, step 4: `coord::memberpage`). A member's po
 or with tasks brokered by every member off a viewer alone) answers `/` (the page), the page's files and
 its data and asks (`/api/swarm`, `/api/history`, `/api/catalogs`, `/api/built`,
 `/api/regions`, `/api/pause`, `/api/act`, `/api/settings`, ...) from a page of its own origin
-or none (an address typed, the menu bar's web view) with a 307 to the lead's same path and query,
+or none (an address typed) with a 307 to the lead's same path and query,
 at the lead's address of the network the request came by (`memberpage::location`), so any device
 that reached the member reaches the lead: its HTTPS page when the request came through
 `tailscale serve`; its tailnet address for a request to a tailnet address or `.ts.net` name; its
 LAN name (`<host>.local`) for one to a LAN address or `.local` name (a device without Tailscale);
-else (this Mac itself, the menu bar's web view) its first. Answered there still: `/api/live` and
+else (this Mac itself, at localhost) its first. Answered there still: `/api/live` and
 `/api/settings` asked by the lead's page from any origin it is served at (CORS, the lead's
 heartbeat's addresses: docs/pool.md §8, Cross-member calls), the jobs' calls (their key), and
 `sw.js` (the worker ending the page's old one: a worker's update takes no redirect). The build's own asks (pause, inputs, cancel and
@@ -129,13 +129,11 @@ known, or one not answering: the member's port answers `/` with a small page of 
 this Mac's status (from `helper.json`: its jobs, what it waits on) and "The lead (<name>) isn't
 reachable since <time>", refreshed every 10 s, and the page's data calls 503.
 
-The menu bar's popover loads this Mac's own port with `?view&mac=<host>` (its own status's
-`host`); the 307 takes it to the lead's page, which opens on this Mac (named in its title, its
-card first in the Machines tab), and with the lead down this Mac's own page shows. (Planned was
-the lead's URL from `scenic menu`'s answer; the port's redirect gives the same page and the
-lead-down page from one rule.) Its keep-warm ask is gone: the app's version check reads this
-Mac's own status (`app`). Per-Mac controls act on the chosen Mac as before: its hold through the
-lead (by member id), its settings at its own port (CORS).
+The menu bar shows no page: any click on its item opens its menu (§3.4), whose Show on the build
+page (a held unit's) opens this Mac's own port in the browser, which the 307 takes to the lead's
+page, or with the lead down to this Mac's own. The app's version check reads this Mac's own
+status (`app`). Per-Mac controls act on the chosen Mac: its hold through the lead (by member id),
+its settings at its own port (CORS).
 
 ### 3.4 The menu bar
 
@@ -159,9 +157,9 @@ The menu bar (tools/status) shows on a member its own state while it builds, els
 line, or "Lead (<name>) out of touch since <time>" when the lead hasn't answered for the
 out-of-touch threshold, and its own agent out of touch as this Mac's; the build's pause from the
 lead's line. The lead's menu shows its status's `build`, the same line (an older agent's: its
-verdict): the rule is Rust's alone. A member's menu no longer shows the lead's checklist, forecast, regions or the other
-Macs' jobs (the popover's page, the lead's, has them); the pool's lines from this Mac's agent's
-view stay.
+verdict): the rule is Rust's alone. A member's menu doesn't show the lead's checklist, forecast, regions or the other
+Macs' jobs (the lead's build page has them); the pool's lines from this Mac's agent's view stay.
+Any click on the item, left or right, opens the menu; nothing else opens.
 
 ### 3.5 Leftovers
 
@@ -238,16 +236,15 @@ Each step ships alone and keeps the build running; each ends with its tests.
    with the old lead's Mac's broker. As built: a broker says epoch 0 (term 0 before #878 step 8c), which an older member's
    client also takes as not the lead's; an older member's broker (a coordinator made a broker)
    and a newer one answer jobs' and pages' task calls alike.
-4. *Built.* **The page on the lead** (§3.3): the 307s, the menu bar loading the lead's page, the local
+4. *Built.* **The page on the lead** (§3.3): the 307s, the local
    unreachable page; pageview, cataloguesview, builtview and region steps built on the lead alone.
    Tests: `a_members_page_redirects_to_the_lead`, `a_members_page_with_the_lead_down_shows_its_own`,
    `a_viewer_shows_the_leads_page_does_nothing_else_and_keeps_nothing`,
-   `a_members_page_goes_only_to_a_lead_that_serves_it` (beats), `memberpage`'s own, the Swift
-   self-test for the popover's URL; the touch test's `--mac`. As built: the agent builds the
+   `a_members_page_goes_only_to_a_lead_that_serves_it` (beats), `memberpage`'s own. As built: the agent builds the
    page's views (pageview, Catalogues, built tiles) only beside its coordinator; a member's port is
    told where the page is each loop (`Agent::member_page`). Cut: `coord::Pages`, a member's page
    asks passed on by its agent (`set_forward`, `retry_blocked`), the Catalogues map's member
-   source (`cataloguesview::Lead`), the popover's keep-warm ask; in review, the pageview's ways a
+   source (`cataloguesview::Lead`); in review, the pageview's ways a
    member's page had: the lead's view by HTTP (`pageview::ByHttp`) and the older apps' path (the
    lead's files read on the NAS: `nas_lead_files`, `refresh_pause`, `by_lead`).
 5. *Built.* **The menu without the NAS** (§3.4), after #878 step 3: the beat's answer saved as
@@ -264,7 +261,7 @@ Each step ships alone and keeps the build running; each ends with its tests.
    checklist copied in, the reply's "via the NAS" (`local`, still written for a menu bar before
    this step), the agent's `lead_all_new` read of the NAS; `LEAD_STATUS` moved to
    `crate::agent` (the server reads it). Also fixed: `scenic menu`'s log path took the old
-   `job` field, which an all-new pool no longer writes (no Open the Build Log); now the first of
+   `job` field, which an all-new pool no longer writes (no Open the build log); now the first of
    `jobs`. tools/dev/health.sh reads the lead's heartbeat on the NAS itself.
 6. *Built.* **Leftovers** (§3.5). Tests: `member_leftovers_names_every_lead_file` (the agent's own
    `timings.jsonl` and the broker's `coord/` files, `workers-token` and `journal/` among them, in
@@ -314,7 +311,7 @@ pack indexes). Step 4 needs only the lead's contact, which members already have.
 4. **The laptops' offline map, again** (6 Nov). Decision 1 below and docs/maplog.md's of 1 Nov
    (the owner's) keep it, but nothing on a laptop serves it since #874 (§8.3: a regression).
    **Decided by the PM, 6 Nov: on demand (7a)**, since an offline map is what Scenic Roads is for:
-   the menu bar's "Open the Map on This Mac" starts the app's server on this Mac's loopback alone,
+   the menu bar's "Open the map on this Mac" starts the app's server on this Mac's loopback alone,
    which quits after 30 min unused; nothing resident. The owner may overrule it. The alternative,
    7b: drop the laptops' offline map and delete its files (~1 GB each). The trigger (built): the
    owner's click alone, on every Mac, not the Mac mini going quiet: a server started whenever the
@@ -419,7 +416,7 @@ reached by HTTP. What #882 has left is disk (§8.1: lead and server leftovers) a
     mini's server keeps the devices' list, on the mini alone), `region-areas.json`, `map-page`.
   Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
   #883 step 6; #883 step 9's agent removes them at its start) and the home's `regions.json` (no code reads it; written
-  22 Oct). **7a (the PM's decision; built):** the menu bar's Open the Map on This Mac (every Mac,
+  22 Oct). **7a (the PM's decision; built):** the menu bar's Open the map on this Mac (every Mac,
   tools/status `startMapHere`) opens http://localhost:7311; where nothing answers there and no
   server is installed (`~/Library/LaunchAgents/local.scenic.server.plist`: the map's Mac's), it
   first starts `<home>/app/current/server --web … --fonts … --on-demand` (its output appended to

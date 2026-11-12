@@ -182,9 +182,6 @@ function model(sw) {
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
-// The Macs with `here` (the page's `?mac=`, the Mac whose menu bar opened it) first, the rest in
-// their order.
-export const hereFirst = (macs, here) => (here ? [...macs.filter((x) => x.name === here), ...macs.filter((x) => x.name !== here)] : macs);
 // A Mac's jobs, every slot's in order (crate::agent::Status::jobs: its `jobs`, else an older
 // agent's job, beside, more), each with its slot (an older agent's says none: its place).
 const jobsOf = (st) => (st.jobs?.length ? st.jobs : [st.job, st.beside, ...(st.more || [])].filter(Boolean)).map((j, i) => ({ ...j, slot: j.slot ?? i }));
@@ -2022,7 +2019,7 @@ function waitRead() {
   if (w.state) ctx.onState?.(w.state);
   if (w.error) ctx.onState?.(`can't show the build: ${w.error}`);
   clearTimeout(retry);
-  // (Like the regular poll, only while the page is seen: none from a closed popover.)
+  // (Like the regular poll, only while the page is seen: none from a hidden tab.)
   if (w.retryMs) retry = setTimeout(() => document.visibilityState === "visible" && poll(), w.retryMs);
 }
 
@@ -2140,7 +2137,7 @@ function tabs(m, md) {
       // (The owner's asks refused, here too: the settings and holds are asked from this tab.)
       part("d-refused", () => alertList(m, refusedItems(m.macs, m.now, pageRefused, dismissed))),
       part("d-machines", () => section("d-machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs`,
-        h("div", "machines", hereFirst(m.macs, ctx.here).map((x) => machineCard(m, x)), m.gone.map(goneCard)))),
+        h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard)))),
       part("d-pool", () => poolSection(last.agent, m.now, new Map(m.macs.filter((x) => x.status?.pool?.member).map((x) => [x.status.pool.member, x])), holdAsks(m), askHold) || section("d-pool")),
       part("d-settings", () => settingsSection(ctx.call, last?.macs || [], render, ctx.onError)),
     ],

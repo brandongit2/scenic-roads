@@ -84,7 +84,7 @@
 <body>
 <header><div>
   <!-- The title and the build's status and its pause controls (dash.js). -->
-  <div class="top"><h1 id="title">Scenic build</h1><span id="state">starting…</span><div id="status"></div></div>
+  <div class="top"><h1>Scenic build</h1><span id="state">starting…</span><div id="status"></div></div>
 </div></header>
 <div id="split">
 <!-- Left, the world map (dash.js); right, the tabs; the bar between drags. -->
@@ -117,13 +117,7 @@ import { versionWatch } from "./version.js";
 // The build's page (docs/coordinator.md §7): the whole build at a glance for anyone it answers, and the
 // owner's controls. It reads and asks; it never runs the build's work (pages stopped helping,
 // #875: the Macs' agents do it all).
-//
-// `?view` (the menu bar's panel, tools/status) changes nothing here. `?mac=<host>` (the panel on a member: its port sends it to the
-// lead's page, docs/roles.md §3.3): the page opens on that Mac, named in the title and first in the
-// Machines tab.
 const $ = (id) => document.getElementById(id);
-const here = new URLSearchParams(location.search).get("mac") || null;
-if (here) { $("title").textContent = `Scenic build · ${here}`; document.title = `Scenic build · ${here}`; }
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 // Where this page's member answers: the page's folder ("" at the coordinator's root, "/build"
@@ -227,7 +221,7 @@ liveDot();
 
 // ---- The whole build at a glance (dash.js) -------------------------------------------------------
 dashboard({
-  head: $("status"), mapPane: $("mappane"), tabsEl: $("tabpane"), panels, call, label, store, here,
+  head: $("status"), mapPane: $("mappane"), tabsEl: $("tabpane"), panels, call, label, store,
   onAnswer: () => { answeredAt = Date.now(); liveDot(); },
   // (The header says how the build goes.)
   onState: (st) => { $("state").textContent = st; },

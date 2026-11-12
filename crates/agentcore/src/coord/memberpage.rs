@@ -1,6 +1,6 @@
 //! The build page on a member's port (docs/roles.md §3.3): the page is the lead's alone. A
 //! member's broker answers the page and its data and asks, from a page of its own origin (or none:
-//! a browser's address bar, the menu bar's web view), with a 307 to the lead's same path and query
+//! a browser's address bar), with a 307 to the lead's same path and query
 //! at its address of the same network as the one asked (`location`),
 //! while the lead answers its beats and says it serves its members' pages (`beats::PAGE`). Without
 //! such a lead (none known, not answering, or an older app's) it answers `/` with a small page
@@ -65,8 +65,8 @@ pub fn answer(path: &str, get: bool, page_file: impl Fn(&str) -> bool) -> Answer
 /// (`host`, its `Host`), so the device that asked can open it (any device, the owner's rule): asked
 /// through `tailscale serve` (`proxied`), its HTTPS page when it has one; at a tailnet address
 /// (100.64.0.0/10) or name (`.ts.net`), its tailnet address; at a LAN address or `.local` name
-/// (a device on the LAN, perhaps without Tailscale), its LAN name; else (this Mac itself, the menu
-/// bar's web view) its first.
+/// (a device on the LAN, perhaps without Tailscale), its LAN name; else (this Mac itself, at
+/// localhost) its first.
 pub fn location(lead: &PageAt, path_and_query: &str, proxied: bool, host: &str) -> Option<String> {
     let PageAt::Lead { urls, https } = lead else { return None };
     let name = host.rsplit_once(':').filter(|(h, p)| !h.ends_with(']') || p.is_empty()).map_or(host, |(h, _)| h);
@@ -183,15 +183,15 @@ mod tests {
             urls: vec!["http://100.71.2.3:18091".into(), "http://mini.local:18091".into()],
             https: Some("https://mini.tail.ts.net/".into()),
         };
-        let at = |host: &str, proxied: bool| location(&lead, "/?view&mac=m1", proxied, host).unwrap();
+        let at = |host: &str, proxied: bool| location(&lead, "/?x=1", proxied, host).unwrap();
         // (Each device sent the way it came: the tailnet, the LAN (a phone without Tailscale), this
         // Mac itself, `tailscale serve`.)
-        assert_eq!(at("100.80.0.1:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
-        assert_eq!(at("m1.tail.ts.net:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
-        assert_eq!(at("m1.local:18091", false), "http://mini.local:18091/?view&mac=m1");
-        assert_eq!(at("192.168.1.20:18091", false), "http://mini.local:18091/?view&mac=m1");
-        assert_eq!(at("127.0.0.1:18091", false), "http://100.71.2.3:18091/?view&mac=m1");
-        assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/?view&mac=m1");
+        assert_eq!(at("100.80.0.1:18091", false), "http://100.71.2.3:18091/?x=1");
+        assert_eq!(at("m1.tail.ts.net:18091", false), "http://100.71.2.3:18091/?x=1");
+        assert_eq!(at("m1.local:18091", false), "http://mini.local:18091/?x=1");
+        assert_eq!(at("192.168.1.20:18091", false), "http://mini.local:18091/?x=1");
+        assert_eq!(at("127.0.0.1:18091", false), "http://100.71.2.3:18091/?x=1");
+        assert_eq!(at("m1.tail.ts.net", true), "https://mini.tail.ts.net/?x=1");
         // (A lead with one address: that one, whichever way.)
         let one = PageAt::Lead { urls: vec!["http://100.71.2.3:18091".into()], https: None };
         assert_eq!(location(&one, "/", true, "m1.local").unwrap(), "http://100.71.2.3:18091/");

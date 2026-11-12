@@ -61,7 +61,7 @@
 //! go only when the disk is short of what a job needs, or of the owner's room target (`toward`),
 //! and then only as far as that, the least recently used first.
 //!
-//! On the owner's ask (`clear`: the menu bar's Clear the Build's Caches and Clear Caches Deeply,
+//! On the owner's ask (`clear`: the menu bar's Clear the build caches and Clear caches deeply,
 //! `scenic clean [--deep]`, a `ClearRequest` and its `Level`), at any moment, jobs running here or
 //! not (the build never ends: regions are added and updated):
 //! - `Level::Caches`: what a later job copies back cheaply from the NAS: those caches, the canopy
@@ -610,8 +610,8 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
     v
 }
 
-/// The owner's ask to clear this Mac's build caches (the menu bar's Clear the Build's Caches and
-/// Clear Caches Deeply, `scenic clean [--deep]`): a file in its agent's folder (`CLEAR_REQUEST`)
+/// The owner's ask to clear this Mac's build caches (the menu bar's Clear the build caches and
+/// Clear caches deeply, `scenic clean [--deep]`): a file in its agent's folder (`CLEAR_REQUEST`)
 /// the agent takes up within seconds, as it does a pause's (jobrt::control): it clears them or
 /// says why it can't now, in its status (`Caches::cleared`, `cleared_deep` or `declined`, with
 /// when this was asked), and the ask goes. Pinned on both sides by

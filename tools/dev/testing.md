@@ -713,7 +713,7 @@ Generated state, all ignored: `.claude/health-stamp`, `.claude/sweep-targets.log
 ## The build page on a phone: touch-test.mjs and safari-sim.sh (#614, 23 Oct)
 
 Every brief that changes web/buildpage runs both and looks at the screenshots. Neither presses a button
-that changes anything: the page opens as `?view` from a read-only server (`touch-test.mjs --serve`,
+that changes anything: the page opens from a read-only server (`touch-test.mjs --serve`,
 port 8097) that serves web/buildpage (a job's page at `/job/<id>` too) and forwards only the reading
 calls (swarm, steps, regions, settings with `{}`, history, live, timings, a job's `GET /api/job/<id>`)
 to this Mac's agent on 127.0.0.1:8090, refusing the rest.

@@ -146,9 +146,9 @@ Common rules:
 
 ## 7. The build page
 
-- **The page** at the coordinator's root, `/` (`/build/` through Caddy; also the menu bar's panel, on this Mac's own agent's port, and
+- **The page** at the coordinator's root, `/` (`/build/` through Caddy; also
   `scenic status`'s "Build page"; the menu bar's icon is a filled pause sign while this Mac is
-  paused alone, its menu saying so with Resume This Mac, the same ask file as `scenic resume
+  paused alone, its menu saying so with Resume this Mac, the same ask file as `scenic resume
   --here` (`hold-request.json`); the Jobs tab's schedule chips a paused, out-of-touch or
   on-battery Mac's lanes) shows the build to anyone the Mac answers, with no key: in the
   pool the lead serves it (docs/pool.md §10); a member's port sends it there with a 307, or shows a
@@ -156,10 +156,7 @@ Common rules:
   runs none of the build's work. Its data and the owner's asks are under `/api/` (`coord::API`). A page on any device the Mac answers may pause the build (`/api/pause`), accept a
   held unit's warnings (`/api/inputs`), cancel a job and try a failed target again (`/api/act`),
   and change the owner's settings (`/api/settings`, below), each at the lead (a Mac's own settings
-  at its own port). None needs a key or a page of the Mac's own first (the owner, 21 Oct). `/?view`
-  only watches: the same tabbed page, in the popover's fixed 780 pt width (no
-  horizontal scroll on any tab; checked 2026-10-23), its height the page's up to 900 pt, scrolling
-  inside beyond that.
+  at its own port). None needs a key or a page of the Mac's own first (the owner, 21 Oct).
 - **The settings** (task #521; `web/buildpage/settings.js`, the Machines tab; `crate::agent::settings`):
   each Mac's in-use share (cores kept free while it's used), memory floor (GB kept
   available on the Mac, docs/pool.md §7.1), disk room target (GB kept free) and dev sweep margin
