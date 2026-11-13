@@ -518,6 +518,35 @@ ancestor's neighbours' edges; nearest for classes).
   the accepted depth declarations (`grids::Source::catalogue_entry`: the credits' depth line and notices, the footer's
   water info on hover, and the estimated ones named in the Depth section's note).
 
+## Data available (`layers/available-<theme>/`, `layers/available-<theme>-<n|s>/`; codecs::available)
+
+The source extents' pieces drawn as sets (docs/steps.md §14), a layer per theme, encoding
+`avail-sets`: Web Mercator tiles of 256 px, z0–12, in the root pack `root/0-0-0` (z0–5) and a pack
+per z6 tile `hi/6-x-y` (z6–12 under it); each pole's grid (docs/polar.md) in its own layer,
+`available-<theme>-n` and `-s`, a root pack (z0–3). RDPACK, gzip'd, a tile stored only where its
+pixels aren't all of one set (z0 always, unless it holds nothing): a missing tile is its nearest
+stored ancestor's pixels over it, each of its pixels the ancestor's pixel holding its centre
+(`tile_at`).
+
+A tile ("RDAV", format 1, little-endian), its palette first:
+
+| Field | |
+|---|---|
+| magic, format | `RDAV`, u8 1 |
+| width | u8: 1 (a pixel's index a byte: 256 sets or fewer) or 2 (a u16) |
+| ids | u32 count; each u16 length + UTF-8: the pieces met in the tile, `<source>/<piece>`, in the order their sets first meet them |
+| sets | u32 count; each u32 count + u32 indices into ids: a pixel's pieces, sorted; set 0 empty, the rest in the order the pixels first meet them (row by row) |
+| pixels | 65,536 indices into sets, row by row from the north-west |
+
+A pixel at z12 holds the pieces whose polygons hold its centre (docs/steps.md §14: even-odd per
+polygon, a piece the union of its polygons'); above z12, the union of the four under it.
+
+**The step's record** `work/available-<theme>/mids`: an RDPACK of each z6 tile holding a piece (as
+its pack has it, or the tile all of one set the pack isn't stored for), the step's own (no
+reader but it: the root is made from it). Its meta, JSON: `{"theme", "v": the step's KEY_V, "keys":
+{"6/x/y": key}, "poles": {"n"|"s": key}}`, each key the hash of the polygons whose boxes meet the
+tile (or reach the pole's square): their pieces' ids and digests.
+
 ## The map and its log (`store::map`)
 
 **The map** is the current name → file map of everything served. **Its log** is the batches that
@@ -1136,6 +1165,24 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   kind or pole, outside the grid or the layer's zooms) 404; a read that failed (the NAS away) 503.
   What the server keeps in memory is kept in one kind of cache (`cache::Lru`, least recently used
   out past a byte or entry budget).
+- **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=open|all`
+  (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
+  `best`, `{layer}` `score` or a metric of the theme's `score.toml`: an RGBA PNG, each pixel its
+  set's best value among the pieces passing `avail` (default `open`: availability `open`; `all`:
+  every piece) through the layer's ramp, transparent where none passes; 204 where no pixel is
+  coloured. ETag `"av-<packs' version>-<extents' version>-<layer>-<avail>-z-x-y"`; `?v=` cached for
+  good while it is meta's version of `available-<theme>` (or `available-<theme>-<pole>`): the
+  layer's packs' version and `-` the extents' accepted version's hash, 16 hex digits (the layer's
+  packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
+  `{lng, lat, avail, pieces: [...]}`, the pieces passing `avail` at the z12 pixel holding the point
+  (past 85.05°, the pole's z3 pixel), best score first (none last), each `{id, source, piece,
+  name, source_name, credit, licence, licence_url, link, availability, extent, read, metrics,
+  values, score}` (`metrics` as the piece states them, `values` their 0–1 values). `GET
+  /api/available/{theme}` → `{theme, sets, primary, within, share, metrics: [{id, label, unit,
+  weight, scale, worst, best, values, primary}], layers: [{id, label, unit, ramp: [[at, colour]],
+  stops: [{value, label, colour}]}], sources: [{id, name, credit, licence, licence_url, link,
+  availability, pieces, classes: {class: n}, unknown: [piece]}]}` (without a score, `layers` and
+  `sources` empty); 404 for a theme the accepted extents don't have.
 - **Ways:** `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=…`, `/api/road/{id}?at=…`: `at` picks
   the hidata of the z6 tile holding it, or a neighbour's whose `here` holds the way.
 - `/api/railfreq`: sorted `(u32 way id, f32 trains a day each way)`; negative: a lower bound. ETag: its

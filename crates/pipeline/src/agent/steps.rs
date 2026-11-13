@@ -121,7 +121,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "depth", does: "The depth under the seas and lakes and its shading from the depth sources: a tile at a time where a source has fine detail, then zoomed out by z3 tile as the means of the finer." },
     Stage { id: "roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
-    Stage { id: "finish", does: "What a map update adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
+    Stage { id: "finish", does: "What a map update adds around the tiles: the road index, rail stops, ferries, the world levels, the data-available layers, and a prune." },
     Stage { id: "trains", does: "Trains a day on the regions' rail, from timetables." },
     Stage { id: "landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
     Stage { id: "buildings", does: "Every building in the coverage, raised in 3D, a tile at a time." },
@@ -843,7 +843,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 62] = [
+pub const TABLE: [Step; 63] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -1365,6 +1365,20 @@ pub const TABLE: [Step; 62] = [
             "slope-root",
             "Builds the world-level slope from the z3 tiles' zoomed-out packs.",
             w_slope_root,
+        )
+    },
+    // The data-available layers (terrain::available; docs/steps.md §14): a target per theme, its
+    // pieces as tiles of the sets met at each pixel, made again only where a piece moved.
+    Step {
+        versions: &[("available", || terrain::available::KEY_V.to_string())],
+        reads: &[In { name: "extents", of: idents::extents_pieces }],
+        ..step(
+            "finish",
+            Pack,
+            World,
+            "available",
+            "Draws where each declared source has data, as the pieces met at each pixel, for the data-available layers.",
+            w_available,
         )
     },
     Step {
@@ -2250,6 +2264,14 @@ fn w_polar_slope(l: &str, _: bool) -> bool {
     polar_pack(l, "slope", "polar")
 }
 
+/// The data-available layers' packs (the Web Mercator root and z6 packs, a pole's root) and the
+/// step's mids (codecs::available).
+fn w_available(l: &str, _: bool) -> bool {
+    pack_of(l, &|ly| codecs::available::of_layer(ly).is_some_and(|(_, g)| g == codecs::available::Grid::Mercator), &["root", "hi"])
+        || pack_of(l, &|ly| matches!(codecs::available::of_layer(ly), Some((_, codecs::available::Grid::Polar(_)))), &["root"])
+        || matches!(parts(l).as_slice(), ["work", w, "mids"] if w.strip_prefix("available-").is_some_and(|t| !t.is_empty()))
+}
+
 fn w_polar_root(l: &str, _: bool) -> bool {
     polar_pack(l, "terrain", "root") || polar_pack(l, "slope", "root")
 }
@@ -2955,6 +2977,7 @@ mod tests {
                 "stations",
                 "ferries",
                 "slope-root",
+                "available",
                 "rail-feeds",
                 "rail",
                 "pois",

@@ -5,8 +5,15 @@ near-ties, its guarantee checked. The producers don't score pieces (the build
 step is to, from the same file); this prints what a score.toml does, for tuning its weights.
 
 usage: score.py <score.toml> --examples
+       score.py <score.toml> --json <pieces.json>
        score.py <score.toml> <metric>=<value> ... [-- <metric>=<value> ...]...
+
+--json prints, as JSON, the examples' and the given pieces' (a list of their metrics) scores and
+metric values in full: the map server's scoring (crate::inputs::extents::Score::of) is tested
+against it (crates/inputs/src/inputs/extents/score_expected.json, made by
+`score.py producers/extents/terrain/score.toml --json crates/inputs/src/inputs/extents/score_pieces.json`).
 """
+import json
 import math
 import sys
 import tomllib
@@ -76,12 +83,28 @@ def said(decl, piece):
     return f"  {s:.3f}  {parts}" if s is not None else f"  none   {parts}"
 
 
+def expected(decl, pieces_path):
+    """The JSON --json prints: each piece's metrics, score and values, the examples' then the
+    file's."""
+    with open(pieces_path) as f:
+        given = json.load(f)
+    pieces = [p for _, ps in EXAMPLES for p in ps] + given
+    out = []
+    for p in pieces:
+        s, vals = score(decl, p)
+        out.append({"metrics": p, "score": s, "values": vals})
+    return json.dumps(out, indent=1, sort_keys=True) + "\n"
+
+
 def main(argv):
     if len(argv) < 3:
         sys.exit(__doc__)
     with open(argv[1], "rb") as f:
         decl = tomllib.load(f)
     check(decl)
+    if argv[2] == "--json":
+        sys.stdout.write(expected(decl, argv[3]))
+        return
     if argv[2] == "--examples":
         for title, pieces in EXAMPLES:
             print(title)

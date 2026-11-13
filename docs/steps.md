@@ -887,6 +887,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   packs) by content (`slope_reads`).
 - **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V` and the codec.
   **slope-root:** the lo packs and the codec.
+- **available (a theme, `available-<theme>`):** `available::KEY_V` and each of the theme's
+  `.geojson` files in the accepted extents by its keyed digest (§14); a theme with none has no
+  target.
 - **polar-terrain (a polar block):** `polar::TERRAIN_V`, the terrain codec's version, the block,
   and the pool's datasets meeting its latitudes (`roadcore::polar::lat_box`) by their lines, as the
   Mercator terrain's keys name them (`agent::build::polar_targets`). **polar-slope:** `polar::SLOPE_V`,
@@ -995,101 +998,144 @@ changed where needed: `web/maplibre/FORK.md`), compiled with the app. English co
 The page switches to an updated map in place (it polls `/api/catalog` every minute, every 5 s
 while the server is away from the NAS).
 
-## 14. Data available (planned; task #1334)
+## 14. Data available (task #1334)
 
-Nothing in this section is built. The layers that colour the map by the best data any declared
-source has for each place, from the source extents (docs/inputs.md §6.11): for a theme (`terrain`
-first; `bathymetry` and `buildings` later), a **score** layer, the primary one, a layer per metric,
-and the same layers again from only the data built into the map. The map's regions play no part
-in the first set; in the built-in set they enter only as the build's own cut of where a dataset is
-used (its `regions`, §6.8), which is what the map has built in.
+The layers that colour the map by the best data any declared source has for each place, from the
+source extents (docs/inputs.md §6.11): for a theme (`terrain` first; `bathymetry` and `buildings`
+later), a **score** layer, the primary one, and a layer per metric. **Built** (task #1347): the
+step `available`, its tiles, and the server's score, maxima, tiles and click. **Planned:** the
+same layers from only the data built into the map (the set `built`, task #1349, with
+`piece.dataset`: extents from the build's own data, below), and the app's layers (task #1348). The
+map's regions play no part in the first set; in the built-in set they will enter only as the
+build's own cut of where a dataset is used (its `regions`, §6.8), which is what the map has built
+in.
 
-**The step** `available`, a target per theme and set (`extents` is taken in the build: the base
-packs' header extents, `codecs::extents`, `state/build/extents.json`). It reads the accepted
-`extents` unit (the theme's declarations' pieces) and, for the built-in set, the accepted
-elevation datasets and their store (§6.8). It doesn't read `score.toml`: the tiles hold which
-pieces are where, never a score, so tuning a weight builds nothing again.
-- **Pixels hold piece sets, by a palette per tile.** The step rasterises every piece into Web
-  Mercator tiles (256 px, z0 to z12: a pixel 38 m at the equator); a pixel's value is an index
+**The step** `available` (terrain::available; stage `finish`, a target per theme,
+`available-<theme>` for a theme whose accepted extents have pieces, recorded with the worldwide steps' keys; `extents` is taken in the build: the
+base packs' header extents, `codecs::extents`, `state/build/extents.json`). It reads the accepted
+`extents` unit through the accessor (the theme's `.geojson` files: its pieces, those with an
+extent) and nothing else. Its key is its version (`terrain::available::KEY_V`) and each of the
+theme's `.geojson` files by its keyed digest (`idents::extents_pieces`, from the index the planner
+reads, `theplan::key_inputs`' `extents:<theme>`); never `score.toml` nor a declaration: the tiles
+hold which pieces are where, never a score or a metric, so tuning a weight builds nothing again.
+- **Pixels hold piece sets, by a palette per tile** (docs/formats.md, Data available): Web
+  Mercator tiles of 256 px, z0 to z12 (a pixel 38 m at the equator); a pixel's value is an index
   into its tile's palette, a list of the sets of pieces met in that tile (each set by the pieces'
-  ids, `<source>/<piece>`). A palette is small: over the 978 pieces fetched on 12 Nov, a sample of
-  1,500 of the 209,706 z12 tiles their outlines cross held 2.1 sets a tile on average, 5 at the
-  99th percentile, 10 at most, so a pixel is a byte, and such a tile deflated is 294 B on average
-  (853 B at the 99th percentile). A tile all of one set isn't stored: its parent's pixel says so,
-  so the tiles follow the outlines' length, not the area. Today's pieces: ~210,000 z12 tiles,
-  ~60 MB with their ancestors; with the sources still to come (3DEP's 2,633 work units, England's
-  and France's indexes, the rest of the research) perhaps five to ten times that outline, ~1-2 M
-  tiles, ~0.3-0.6 GB (estimates from the sample, to be measured by the step's first run).
-- **Overviews:** above z12 a pixel's set is the union of the sets under it, so a small piece of
-  fine data stays in sight when zoomed out (a layer's colour there is the best anywhere in the
-  pixel), where a pixel's centre alone would drop it; a click reads z12.
-- **Keys:** a pack per z6 tile (z6 to z12 under it) and a root pack (z0 to z5); a z6 pack's key
-  names the `keyed` digests of the pieces whose boxes meet it (`<source>/<piece>` and its
-  geometry's and metrics' digest), so a new source, or a source fetched again, builds only the
-  packs it meets; the root pack's names every piece. RDPACK packs (docs/formats.md),
-  `layers/available-<theme>[-built]/`.
-- **The score and the layers' maxima are the server's**, from `score.toml` and the pieces'
-  metrics, which it reads from the accepted unit: for each palette entry, its pieces that pass the
-  availability switch, best first by score; the score layer's value is their best score, a metric
-  layer's their best 0-1 value of that metric (the finest spacing, bare earth over surface, the
-  newest year, the best stated accuracy; a piece not stating it takes no part). The same function
-  colours a tile and answers a click, so the two can't disagree; it's tested against
-  `producers/extents/score.py` on the same `score.toml`.
+  ids, `<source>/<piece>`), a byte a pixel while a tile has 256 sets or fewer, two past it (an
+  overview's union can have more). A tile all of one set, at z12 under it, isn't stored, nor
+  anything under it: its nearest stored ancestor's pixels say it (z0 is stored unless it holds
+  nothing), so the tiles follow the outlines' length, not the area.
+- **Overviews:** above z12 a pixel's set is the union of the four under it, so a small piece of fine
+  data stays in sight zoomed out (a layer's colour there is the best anywhere in the pixel), where a
+  pixel's centre alone would drop it; a click reads z12.
+- **Packs:** the root pack (`layers/available-<theme>/root/0-0-0`, z0–5) and a pack per z6 tile
+  holding a stored tile (`layers/available-<theme>/hi/6-x-y`, z6–12 under it), RDPACK, gzip'd;
+  the catalogue's layer `available-<theme>`, encoding `avail-sets`, zooms 0–12.
+- **Keys of the tiles:** a z6 tile's tiles depend only on the polygons whose boxes meet it, so its
+  key is those polygons' pieces' ids and each polygon's digest (`tile_keys`); finer than a piece's
+  digest, a source fetched again makes again only the z6 tiles where one of its polygons changed.
+  The step keeps each z6 tile's key, and its z6 tile, in its own record
+  (`work/available-<theme>/mids`, an RDPACK of the z6 tiles holding a piece, its meta the keys):
+  a run makes again the z6 tiles whose key moved or whose pack is missing, drops those no polygon
+  meets now, and leaves the other packs as they are; the root is made again from the record's z6
+  tiles whenever one moved. A run with nothing moved writes the record again as it was (the same
+  bytes, the same content name), and nothing else. On the 984 pieces of 13 Nov (below), 3,820 z6
+  tiles are keyed and 1,355 have a pack.
+- **The score and the layers' values are the server's**, from `score.toml` and the pieces'
+  metrics, which it reads from the accepted unit (below).
 - **Why raster tiles and not vector:** the maximum over overlapping pieces is a per-place rule,
   exact on a raster by construction, where a vector answer needs the overlay of thousands of
   outlines as a planar partition (slow, and fragile on publishers' geometry); one set of tiles
   serves every layer, both settings of the switch, any weights, and the click; and the extents are
   good to their tolerance (tens of metres at best, kilometres for a mask read at a coarse overview:
   each piece's `read` says, §6.11), which a pixel of the finest level matches.
-- **Rasterising:** a piece's rings are lines in longitude and latitude (RFC 7946), densified so
-  none strays from its Mercator image by a quarter of a finest pixel; a pixel is in a piece when
-  its centre is (even-odd, holes out). The antimeridian needs nothing: pieces arrive cut there,
-  and z12's columns 0 and 4095 end at ±180°. The Web Mercator tiles end at 85.05°; the polar caps
-  (docs/polar.md) take the same palettes in each pole's projection, a root raster per pole from
-  the same pieces (ArcticDEM's and REMA's pieces close along 90° where they hold a pole, and REMA's
-  keeps its hole round the South Pole).
-- **The click:** `lng, lat` → the z12 tile and pixel (the deepest stored ancestor's where the tile
-  isn't stored), its palette entry, the pieces, scored as above.
-- **Extents from the build's own data (the owner's rule A.1).** A piece block naming the
-  elevation dataset that holds its files (`dataset`, §6.11) has its extent taken from that
-  dataset's mask wherever the dataset is accepted (class `mask`), its listed extent standing only
-  outside the dataset's coverage: Copernicus GLO-30, which the store holds whole with its fill
-  masks, is drawn where its own pixels are (its fill mask below 3), not where its 1° tiles are.
-- **The built-in set:** palettes of the same shape whose pieces are the build's own datasets,
-  each where the terrain took its heights from it: the order's first dataset with data at a
-  place, within its `regions` (§6.8, `declared::Cover`), so a place's built-in set is the one
-  dataset the map used there, not a maximum over every dataset holding data. Its extent is the
-  dataset's valid-data mask at the layer's own pixel, read from the store's files at the coarsest
-  level no wider than ~38 m (the hollow tiles' second read, 1/1024 of a z10 tile; a GLO-30 tile's
-  fill mask below 3), over the dataset's presence tiles: the z10 presence and hollow tiles alone
-  are 38 km squares, which would draw a dataset over every tile it touches. Read on the lead,
+- **Rasterising:** a piece's rings are lines in longitude and latitude (RFC 7946), densified so none
+  strays from its image by a quarter of a finest pixel (halving an edge while its midpoint's image
+  lies further from the chord). Each row of pixel centres is cut by every polygon's rings: a pixel
+  is in a polygon when an odd number of crossings lie left of its centre (even-odd, holes out), and
+  in a piece when it's in any of its polygons, so overlapping polygons of one piece add up, never
+  cancel. A row becomes runs of one set, and a tile all of one run in every row is uniform. The
+  antimeridian needs nothing: pieces arrive cut there, and the plane runs from −180° (column 0 of
+  z12) to 180° (column 4095's end). The Web Mercator tiles end at 85.05°: a ring closed along 90°
+  lies past the plane's edge. A row of z6 tiles is cut at once, its tiles' quadtrees made in
+  parallel (rayon), their sets over the row's.
+- **The polar caps** (docs/polar.md) take the same sets in each pole's grid: a root pack a pole
+  (`layers/available-<theme>-<n|s>/root/0-0-0`, z0–3, a pixel 1,024 m of the grid at z3, the
+  polar terrain's root's zooms), from the polygons whose boxes reach the pole's square, keyed
+  alike (in the same record). A polygon's latitudes past the equator are put on it for the
+  projection (the square is far from it: what the polygon holds there doesn't change). ArcticDEM's
+  and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
+  South Pole.
+- **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
+  On the 984 pieces of 13 Nov (producers/extents/terrain/, taken in by `scenic-build inputs
+  extents` on a scratch root; the M1 Pro, the test profile's build): 44 s (2 min 29 s of CPU), a
+  peak footprint of 366 MB, 1,355 hi packs of 400,709 tiles in 140 MB, the root 0.8 MB, the poles'
+  44 and 25 KB, the record 1.0 MB; run again with nothing moved, 0.5 s.
+- **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
+  block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
+  taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent
+  standing only outside the dataset's coverage: Copernicus GLO-30, which the store holds whole
+  with its fill masks, drawn where its own pixels are (its fill mask below 3), not where its 1°
+  tiles are.
+- **The built-in set (planned, task #1349):** palettes of the same shape whose pieces are the
+  build's own datasets, each where the terrain took its heights from it: the order's first dataset
+  with data at a place, within its `regions` (§6.8, `declared::Cover`), so a place's built-in set
+  is the one dataset the map used there, not a maximum over every dataset holding data. Its extent
+  is the dataset's valid-data mask at the layer's own pixel, read from the store's files at the
+  coarsest level no wider than ~38 m (the hollow tiles' second read, 1/1024 of a z10 tile; a GLO-30
+  tile's fill mask below 3), over the dataset's presence tiles: the z10 presence and hollow tiles
+  alone are 38 km squares, which would draw a dataset over every tile it touches. Read on the lead,
   where the store is. Its key names the elevation unit's index and each dataset's store digest.
-- **Tests** (planned with the step): the union over overlapping and nested pieces, and the
-  server's maximum on each layer; the server's score against `producers/extents/score.py`'s for
-  the same `score.toml`; a metric not stated (the weights redistributed; the piece out of that
-  metric's layer); the switch; a piece cut at the antimeridian and one holding a pole; a uniform
-  tile not stored; an overview keeping a piece smaller than its pixel; a new piece moving only the
-  packs it meets.
+- **Tests:** terrain::available's (hand-made pieces: the sets and a tile's palette, a tile all of
+  one set not stored, an overview keeping a piece smaller than its pixel, overlapping polygons of
+  one piece and a hole, a piece cut at the antimeridian, the polar caps with a pole held and a
+  ring's hole round the other, a moved piece making only its z6 tiles again, a removed one dropping
+  them, a fresh run making the same files, and a run with nothing moved making nothing; and the real pieces round Vancouver, two sources overlapping: every piece
+  in some tile, z0 naming every piece a finer tile does, each stored tile holding what its stored
+  children do; every real piece the same, `every_real_piece`, a benchmark run by hand);
+  codecs::available's (the format, the layers' names and packs); the server's below.
 
-**Served** (planned). `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile
-coloured by the server through the layer's ramp (PNG; 204 where no piece is), so the map draws a
-plain raster layer and holds no logic of its own. `/api/available/<theme>/<set>?lng&lat&avail`:
-the pieces at a point, best first, each with its source's name, credit, licence and link, its
-metrics, their 0-1 values and its score, its availability, extent class and what its extent was
-read from (§6.11's `read`: the method, its grain, its date). `/api/available/<theme>`: the
-score's metrics, scales and weights as declared, each layer's ramp and stops, and the sources
-with their pieces counted by class (those of class `unknown` named here, as they're drawn
-nowhere).
+**The score and the layers' values** (crate::available in the server; `Score::of` in
+crate::inputs::extents). The server keeps the extents' accepted version on the Mac as it keeps the
+translations' (crate::accepted, synced every minute while the map is in use), and reads each
+theme's `score.toml` and pieces from it (the `.geojson`s' properties and `read`, the declarations'
+descriptions). For each palette entry, its pieces that pass the availability switch (`avail=open`,
+the default: those whose availability is `open`; `all`: every one): the score layer's value is
+their best score, a metric layer's their best 0–1 value of that metric (the finest spacing, bare
+earth over surface, the newest year, the best stated accuracy; a piece not stating it takes no
+part); none passing, transparent. The same function (`Theme::best`) colours a tile and the same
+pieces answer a click, so the two can't disagree. `Score::of` is producers/extents/score.py's
+formula: tested on score.toml's own examples and more pieces (`score_pieces.json`) against what
+score.py makes of them (`score_expected.json`, made by `score.py <score.toml> --json
+<pieces.json>`; producers/extents/test_extents.py makes it again and checks the file), to 10⁻¹²
+and to the three digits score.py shows. Every layer is drawn on one sequential ramp (viridis's
+ends and middle, dark to light) over its 0–1 value, so bare earth and surface are its two ends;
+the stops `/api/available/<theme>` gives say each colour's value in the metric's own unit.
 
-**In the app** (planned). A group "Data available" in the layers panel, a section per theme: the
-set (best available anywhere / built into the map), the layer (Score, then the theme's metrics),
-the availability switch ("only data that downloads freely"), an opacity. The settings are a
-profile's, as every layer's are: their values when a profile lacks them come from
+**Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile coloured by the
+server through the layer's ramp (PNG; 204 where no piece is, or none passes the switch), so the map
+draws a plain raster layer and holds no logic of its own; a tile not stored is its ancestor's part
+over it (codecs::available::tile_at). Past 85.05°, `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y`
+(z0–3 of the pole's grid). `<set>`: `best` (`built` is planned). `<layer>`: `score` or a metric of
+the theme's score; anything else, or past the zooms, 404. Its ETag names the layer's packs' version,
+the extents' version, the layer, the switch and the tile; `?v=` with the version `/api/meta` gives
+the layer (`available-<theme>`, `available-<theme>-<n|s>`: the packs' version and the extents'
+version's hash) is cached for good while it's current. `/api/available/<theme>/<set>?lng&lat&avail`:
+the pieces at a point (the z12 pixel holding it; past 85.05°, the pole's z3 pixel), best first, each
+with its source's name, credit, licence and link, its metrics, their 0–1 values and its score, its
+availability, extent class and what its extent was read from (§6.11's `read`: its block's reading,
+with the method, its grain, its date). `/api/available/<theme>`: the score's metrics, scales and
+weights as declared, each layer's ramp and stops, and the sources with their pieces counted by
+class (those of class `unknown` named here, as they're drawn nowhere). Away from the NAS a tile
+partly downloaded is cut to the downloads as every layer's (its pixels outside hold no piece).
+
+**In the app** (planned, task #1348). A group "Data available" in the layers panel, a section per
+theme: the set (best available anywhere / built into the map), the layer (Score, then the theme's
+metrics), the availability switch ("only data that downloads freely"), an opacity. The settings are
+a profile's, as every layer's are: their values when a profile lacks them come from
 `web/default-profile.json` alone (task #1199: no defaults in the code; the switch on, the group
-off), and the native app reads the same profile schema. Colours: the score and the year on a
-sequential ramp; the grid spacing in classes on its log scale (0.25, 0.5, 1, 2, 5, 10, 30, 90 m);
-bare earth and surface as two colours; the accuracy on a sequential ramp of its log scale. The
-legend and the formula are read from `/api/available/<theme>`. A click, while a layer of the group
-is on, opens a panel listing the pieces there, best first. In the code the layer is a raster
-source and layer and two requests; nothing of it is MapLibre's but the raster layer itself, and
-in the native port it is a ground layer painted into the drapes (docs/native-port.md, Land).
+off), and the native app reads the same profile schema. The legend and the formula are read from
+`/api/available/<theme>`. A click, while a layer of the group is on, opens a panel listing the
+pieces there, best first. In the code the layer is a raster source and layer and two requests;
+nothing of it is MapLibre's but the raster layer itself, and in the native port it is a ground layer
+painted into the drapes (docs/native-port.md, Land).

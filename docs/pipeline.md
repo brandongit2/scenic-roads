@@ -118,6 +118,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `stations` | pack | the world | lead |
 | | `ferries` | pack | the world | lead |
 | | `slope-root` | pack | the world | lead |
+| | `available` | pack | the world | lead |
 | `trains` | `rail-feeds` | fetch | the world | lead |
 | | `rail` | derive | the world | lead |
 | `landmarks` | `pois` | derive | a z6 tile | ⇄ |

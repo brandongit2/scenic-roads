@@ -63,6 +63,19 @@ pub fn pass_outlines(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [format!("sources/osm/{}/outlines", x.date)])
 }
 
+/// A data-available target's pieces (`available-<theme>`): each `.geojson` of the source extents'
+/// accepted version by its keyed digest (theplan::key_inputs' "extents:<theme>"), never `score.toml`
+/// (the score is the server's: tuning it builds nothing). Required; None while the index can't be
+/// read.
+pub fn extents_pieces(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    x.m.get(&inputs::inputs::logical(inputs::inputs::extents::UNIT))?;
+    let theme = t.strip_prefix("available-")?;
+    match x.inputs.get(&format!("extents:{theme}")).map(String::as_str) {
+        None | Some("?") => None,
+        Some(lines) => Some(lines.lines().map(str::to_string).collect()),
+    }
+}
+
 /// The languages input's accepted index (docs/inputs.md §6.2), required.
 pub fn language_table(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [inputs::inputs::logical(inputs::inputs::languages::UNIT)])

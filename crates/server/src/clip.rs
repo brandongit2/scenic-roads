@@ -132,6 +132,7 @@ pub fn tile(
         "rt7" => roads(&raw, z, x, y, cells)?,
         "rdmt" => marks(&raw, z, x, y, cells)?,
         "geojson-gz" => ferries(&raw, z, x, y, cells)?,
+        codecs::available::ENCODING => available(&raw, z, x, y, cells)?,
         e => bail!("{layer}: tiles of {e} can't be clipped"),
     };
     if gzip {
@@ -147,6 +148,15 @@ pub fn basemap(raw: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u
 }
 
 // ---- rasters ------------------------------------------------------------------------------------
+
+/// A data-available tile (codecs::available): its pixels outside the cells hold no piece.
+fn available(b: &[u8], z: u8, x: u32, y: u32, cells: &Cells) -> Result<Vec<u8>> {
+    let mut t = codecs::available::Tile::decode(b)?;
+    let (held, n) = cells.under(z, x, y);
+    let side = codecs::available::SIDE;
+    t.mask(&|i, j| held[j * n / side * n + i * n / side]);
+    Ok(t.encode())
+}
 
 /// A raster's pixels outside the cells set to `nothing` (by the pixel's plane: `field5`'s blocks);
 /// `w` × `h` pixels, `ch` bytes each, a tile `side` pixels a side (planes stacked down).

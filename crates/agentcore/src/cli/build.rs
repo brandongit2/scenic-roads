@@ -78,6 +78,7 @@ const STEPS: &[Step] = &[
     s("lake-depth", "<6/x/y …> [--regions dir]", "z6 tiles' lakes' estimated depth (GLOBathy's, the small lakes'): a pack a source the step makes", &[], &["--regions"], ANY),
     s("depth", "<T …>", "z6 tiles T's depth and its shading (hi packs, z9–16) where a depth source is finer than the lo packs", &[], &[], ANY),
     s("depth-lo", "<Q …>", "z3 tiles Q's zoomed-out depth and its shading (lo packs, z3–8): the means of their z6 tiles' depth, composed from the declared depth sources where there's none", &[], &[], ANY),
+    s("available", "<available-<theme> …>", "the data-available layers of each theme from the source extents' accepted version: the z6 tiles where a piece moved made again, the root from them, the polar caps", &[], &[], ANY),
     s("depth-root", "", "the depth's z0–2 root packs and their shading, the means of the lo packs' z3 tiles", &[], &[], 0),
     s("bldtile-task", "<8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]", "a z8 tile's task folder as a bldtiles job cuts it", &[], &["--out", "--pass", "--regions"], 1),
     s("trees", "<T …> [--pass d] [--regions dir] [--dem dir] [--chm dir] [--expect-same T,…]", "the tree cover layers, clipped to the coverage: of z6 tiles T, or a z3 tile's whole", &[], &["--pass", "--regions", "--dem", "--chm", "--expect-same"], ANY),

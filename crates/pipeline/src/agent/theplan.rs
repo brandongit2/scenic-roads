@@ -220,11 +220,34 @@ pub(super) fn key_inputs(
         inputs.insert("feed-keys".into(), d.as_ref().map(|d| d.key_names.join(",")).unwrap_or_else(|_| "?".into()));
         inputs.insert("feeds".into(), d.map(|d| d.keyed).unwrap_or_else(|_| "?".into()));
     }
+    // The source extents' pieces as the data-available layers' keys name them ("extents:<theme>":
+    // each `.geojson`'s path and keyed digest, a line each; never `score.toml`, the server's), "?"
+    // while their index can't be read (and the step waits).
+    if let Some(ix) = manifest.get(&inputs::inputs::logical(inputs::inputs::extents::UNIT)) {
+        let index = inputs::inputs::read_index(root, ix);
+        for theme in inputs::inputs::extents::THEMES {
+            let v = index.as_ref().map_or_else(|_| "?".to_string(), |i| extents_lines(i, theme));
+            inputs.insert(format!("extents:{theme}"), v);
+        }
+    }
     inputs.insert(
         inputs::dem::spacing::INPUT.into(),
         inputs::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
     );
     inputs
+}
+
+/// A theme's pieces in the extents' accepted index: each `<theme>/<source>.geojson`'s path and keyed
+/// digest, a line each.
+pub(super) fn extents_lines(index: &inputs::inputs::Index, theme: &str) -> String {
+    use inputs::inputs::extents::{kind, Kind};
+    let mut v = String::new();
+    for (p, f) in &index.files {
+        if matches!(kind(p), Kind::Pieces(t, _) if t == theme) {
+            v.push_str(&format!("{p} {}\n", f.keyed));
+        }
+    }
+    v
 }
 
 /// What jobs read from inputs/ beside the manifest, by digest: which keys inputs/keys.env holds

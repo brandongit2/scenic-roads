@@ -827,6 +827,50 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "lake-depth" => lake_depth_step(&mut out, &args)?,
         "depth-lo" | "depth" => depth_step(&mut out, &args, step.as_str())?,
+        "available" => {
+            // available <available-<theme> …>: the data-available layers of each theme
+            // (terrain::available; docs/steps.md §14) from the source extents' accepted version the
+            // records name: the z6 tiles where a piece moved made again, the root from them, the
+            // polar caps.
+            use ::inputs::inputs::extents;
+            let m = out.manifest.clone();
+            let a = ::inputs::inputs::open(out.root(), &m, extents::UNIT)?
+                .with_context(|| format!("no accepted version of {}", extents::UNIT))?;
+            let targets = positional(&args);
+            for (k, t) in targets.iter().enumerate() {
+                let theme = t
+                    .strip_prefix("available-")
+                    .filter(|th| extents::THEMES.contains(th))
+                    .with_context(|| format!("{t}: not a data-available target (available-<theme>)"))?;
+                stage(k as u64, targets.len() as u64, &format!("the {theme} layers"));
+                let p = phase("reading the pieces");
+                let mut pieces = Vec::new();
+                for (path, _) in a.files() {
+                    if let extents::Kind::Pieces(th, id) = extents::kind(path) {
+                        if th == theme {
+                            pieces.extend(terrain::available::pieces(id, &a.read(path)?)?);
+                        }
+                    }
+                }
+                drop(p);
+                let p = phase("drawing the pieces' tiles");
+                let made = terrain::available::build(&mut out, theme, &pieces, &|d, n| {
+                    jobrt::jobs::report(d, n, "z6 tiles")
+                })?;
+                drop(p);
+                out.save()?;
+                eprintln!(
+                    "available {theme}: {} pieces; {} z6 tiles made again, {} dropped; {} packs, {} tiles; root {}; poles {:?}",
+                    pieces.len(),
+                    made.remade.len(),
+                    made.dropped.len(),
+                    made.packs,
+                    made.tiles,
+                    if made.root { "made again" } else { "as it was" },
+                    made.poles
+                );
+            }
+        }
         "depth-root" => {
             let n = terrain::depth::build::build_root(&mut out)?;
             eprintln!("depth root: {n} tiles");
@@ -1895,6 +1939,7 @@ fn layer_encoding(layer: &str) -> &'static str {
         terrain::depth::SHADE_LAYER => codecs::shade_codec::ENCODING,
         l if l.starts_with("polar-terrain-") => codecs::terrain_codec::ENCODING,
         l if l.starts_with("polar-slope-") => codecs::shade_codec::ENCODING,
+        l if codecs::available::of_layer(l).is_some() => codecs::available::ENCODING,
         _ => "unknown",
     }
 }
@@ -1929,7 +1974,9 @@ fn layer_zooms(layer: &str, root: bool) -> Option<(u8, u8)> {
         // The polar caps: z0–3 in the root, z4 to the cap's finest in the blocks (terrain::polar),
         // the deepest the map stores at most.
         l if l.starts_with("polar-") => (0, terrain::terrain_zoom::DEEPEST),
-        _ => return None,
+        // The data-available layers: z0–5 in the root, z6–12 in the z6 packs; a pole's z0–3 in its
+        // root (codecs::available).
+        l => (0, codecs::available::maxz(codecs::available::of_layer(l)?.1)),
     })
 }
 

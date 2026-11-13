@@ -2406,6 +2406,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         work.extend(bld_work_in(x, done, &bld_rank(&each), &mut left));
         work.extend(depth_work_in(x, done, &mut left));
         work.extend(polar_work_in(x, done, &mut left));
+        work.extend(available_work(x, done));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(x) {
             Some(r) => format!("the regions' z6 tiles wait for the pass's heritage sites: {r}"),
@@ -2977,6 +2978,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     work.extend(bld);
     work.extend(depth);
     work.extend(polar);
+    work.extend(available_work(x, done));
     // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
     Planned {
@@ -4277,6 +4279,32 @@ fn polar_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
     out
 }
 
+/// The data-available layers (terrain::available; docs/steps.md §14): a target per theme the
+/// source extents have (`available-<theme>`, recorded with the worldwide steps' keys), those whose
+/// key isn't the one recorded; none before the extents are accepted, or while their index can't
+/// be read.
+pub fn available_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+    let targets: Vec<(String, String)> = available_targets(x)
+        .into_iter()
+        .filter(|(t, k)| done.lo.get(t) != Some(k))
+        .collect();
+    (!targets.is_empty()).then(|| Work { step: "available".into(), targets })
+}
+
+/// Every data-available target with its key (`available_work`): a theme's whose accepted extents
+/// have pieces (bathymetry and buildings have none yet: no layer).
+fn available_targets(x: &KeyCtx) -> Vec<(String, String)> {
+    inputs::inputs::extents::THEMES
+        .iter()
+        .filter(|th| x.inputs.get(&format!("extents:{th}")).is_some_and(|v| !v.is_empty()))
+        .filter_map(|th| {
+            let t = codecs::available::layer(th);
+            let k = super::steps::derived_key("available", &t, x)?;
+            Some((t, k))
+        })
+        .collect()
+}
+
 /// The polar chain's first stale step, as if each before it succeeded (`remaining`).
 fn polar_next(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let pt = polar_targets(x)?;
@@ -4372,7 +4400,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 36] = [
+pub const COUNTED: [&str; 37] = [
     "heritage-sites",
     "terrain-hi",
     "terrain-deep",
@@ -4395,6 +4423,7 @@ pub const COUNTED: [&str; 36] = [
     "stations",
     "ferries",
     "slope-root",
+    "available",
     "rail-feeds",
     "rail",
     "pois",
@@ -4434,7 +4463,8 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The chains' work still to run, as if each step succeeded (`remaining`): the trains', the
-/// landmarks', the 3D buildings', the depths' and the polar caps', for the forecast (agentcore::agent::forecast; the
+/// landmarks', the 3D buildings', the depths' and the polar caps' (with the data-available
+/// layers, a step waiting on nothing built), for the forecast (agentcore::agent::forecast; the
 /// regions' map tiles are each region's, `RegionLeft::packs`, and the whole-map steps go by their
 /// cadence).
 pub fn chains_left(x: &KeyCtx, done: &Keys) -> [Vec<Work>; 5] {
@@ -4443,7 +4473,7 @@ pub fn chains_left(x: &KeyCtx, done: &Keys) -> [Vec<Work>; 5] {
         remaining(done, |d| landmarks_chain(x, d)),
         remaining(done, |d| bld_next(x, d)),
         remaining(done, |d| depth_next(x, d)),
-        remaining(done, |d| polar_next(x, d)),
+        remaining(done, |d| polar_next(x, d)).into_iter().chain(available_work(x, done)).collect(),
     ]
 }
 
@@ -4556,6 +4586,13 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
             out.push(sized("polar-slope", &pt.slope, &done.polar_slope, pk));
             out.push(sized("polar-root", &pt.root, &done.polar_root, pk));
         }
+    }
+    // (The data-available layers once the source extents are accepted: known once their index is
+    // read.)
+    if m.contains_key(&inputs::inputs::logical(inputs::inputs::extents::UNIT)) {
+        let at = available_targets(x);
+        let known = at.len() == inputs::inputs::extents::THEMES.len();
+        out.push(sized("available", &at, &done.lo, known));
     }
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(x);
@@ -6236,6 +6273,7 @@ mod tests {
             "depth" => depth_targets(x).map(|d| d.hi),
             "depth-lo" => depth_targets(x).map(|d| d.lo),
             "depth-root" => world(depth_root_key(x)),
+            "available" => Some(available_targets(x)),
             "polar-terrain" => polar_targets(x).map(|p| p.terrain),
             "polar-slope" => polar_targets(x).map(|p| p.slope),
             "polar-root" => polar_targets(x).map(|p| p.root),
@@ -6375,7 +6413,14 @@ mod tests {
         for l in made {
             m.entry(l.clone()).or_insert_with(|| format!("{l}.7b7b7b7b7b7b7b7b.bin"));
         }
-        let inputs = spaced(&bld_inputs(&c, "d"));
+        // (The source extents accepted, the terrain's pieces as the planner reads them from its
+        // index: theplan::extents_lines.)
+        m.insert(
+            inputs::inputs::logical(inputs::inputs::extents::UNIT),
+            "sources/inputs/extents/@index.3535353535353535.json".into(),
+        );
+        let mut inputs = spaced(&bld_inputs(&c, "d"));
+        inputs.insert("extents:terrain".into(), "terrain/a.geojson 3636363636363636\n".into());
         let plain = |m: &BTreeMap<String, String>| tiles_for(m);
         // (With the pass's basemap the depth reads its water from: its digests not made yet.)
         let mut water = m.clone();

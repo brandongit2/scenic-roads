@@ -1,0 +1,13 @@
+[
+ {"spacing_m": 0.5, "surface": "ground", "year": 2021},
+ {"spacing_m": 0.5, "surface": "ground", "year": 2024, "vertical_rmse_m": 0.1},
+ {"spacing_m": 1.0, "surface": "ground"},
+ {"spacing_m": 2.0, "surface": "surface", "year": 2022},
+ {"spacing_m": 30, "surface": "surface", "year": 2015, "vertical_rmse_m": 1.68},
+ {"spacing_m": 90, "surface": "surface", "year": 2015},
+ {"spacing_m": 0.05, "surface": "ground", "year": 2030, "vertical_rmse_m": 0.01},
+ {"spacing_m": 5000, "surface": "surface", "year": 1990, "vertical_rmse_m": 50},
+ {"spacing_m": 3, "year": 2010},
+ {"surface": "ground", "year": 2020},
+ {}
+]

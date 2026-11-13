@@ -5,6 +5,7 @@
 //! (pyramids), the terrain a z6 tile's roads read (road_terrain) and the layers' packs and names
 //! (layers). Pipeline re-exports them at their old paths.
 
+pub mod available;
 pub mod depth;
 pub mod layers;
 pub mod polar;

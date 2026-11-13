@@ -4,7 +4,8 @@
 //! with its `theme`, `availability` and `[[piece]]` blocks) and its pieces `<source>.geojson` (a
 //! FeatureCollection made from the declaration by producers/extents/extents.py, a feature per piece:
 //! its outline, extent class, availability and the theme's metrics). The source's id is the files'
-//! stem. Nothing reads the accepted version yet (the step `available`: docs/steps.md §14, planned).
+//! stem. The step `available` (terrain::available) draws the accepted pieces' tiles; the server
+//! reads the score and the pieces' metrics (`Score::of`; docs/steps.md §14).
 //!
 //! The checks:
 //! - **Errors:** a file not of the shape (`<theme>/<source>.toml`, `<theme>/<source>.geojson`,
@@ -181,6 +182,41 @@ impl Score {
     pub fn bound(within: f64, worst: f64, best: f64) -> f64 {
         let k = within.dln() / (worst / best).dln().abs();
         k / (1.0 + k)
+    }
+
+    /// Metric `name`'s 0–1 value of `v` (producers/extents/score.py's `value`): from 0 at `worst` to
+    /// 1 at `best`, clamped (by the logarithm on a log scale), or a word's; None where the piece
+    /// doesn't state it (or `v` isn't of the scale's kind, which an accepted unit never has).
+    pub fn value(&self, name: &str, v: Option<&Value>) -> Option<f64> {
+        let m = self.metrics.get(name)?;
+        let v = v?;
+        match &m.scale {
+            Scale::Values(w) => w.get(v.as_str()?).copied(),
+            Scale::Log { worst, best } => {
+                let x = v.as_f64().filter(|x| *x > 0.0)?;
+                Some(((x.dln() - worst.dln()) / (best.dln() - worst.dln())).clamp(0.0, 1.0))
+            }
+            Scale::Linear { worst, best } => Some(((v.as_f64()? - worst) / (best - worst)).clamp(0.0, 1.0)),
+        }
+    }
+
+    /// A piece's score and each metric's 0–1 value (score.py's `score`), from its properties
+    /// (`metrics`): (1 − share) × the primary's value + share × the rest, the rest the weighted
+    /// mean of the other metrics it states (none stated, or their weights 0: the primary's value);
+    /// no score where it doesn't state the primary.
+    pub fn of(&self, metrics: &serde_json::Map<String, Value>) -> (Option<f64>, BTreeMap<String, Option<f64>>) {
+        let vals: BTreeMap<String, Option<f64>> =
+            self.metrics.keys().map(|k| (k.clone(), self.value(k, metrics.get(k)))).collect();
+        let Some(lead) = vals.get(&self.primary).copied().flatten() else { return (None, vals) };
+        let (mut w, mut sum) = (0.0, 0.0);
+        for (k, v) in &vals {
+            if let (false, Some(v), Some(weight)) = (*k == self.primary, v, self.metrics[k].weight) {
+                w += weight;
+                sum += weight * v;
+            }
+        }
+        let rest = if w > 0.0 { sum / w } else { lead };
+        (Some((1.0 - self.share) * lead + self.share * rest), vals)
     }
 }
 

@@ -1834,8 +1834,10 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 table at this section's end (`producers/extents/`), and the unit `extents` that checks them
-(crate::inputs::extents, the checks below; task #1346). Planned: `piece.dataset` (extents from the
-build's own data), the step, the server's score and the layers (docs/steps.md §14). Task #1334.
+(crate::inputs::extents, the checks below; task #1346); the step `available` that draws the pieces'
+tiles, and the server's score, layers and click (docs/steps.md §14; task #1347). Planned:
+`piece.dataset` (extents from the build's own data; task #1349) and the app's layers (task #1348).
+Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1939,7 +1941,7 @@ by the cosine of the latitude), plus the grain where there is one. British Colum
 sheets become 17 outlines, 246 KB. Tests: `producers/extents/test_extents.py`.
 
 **The score** is declared in the theme's `score.toml`, the one place its formula's numbers live
-(the server reads it, the map shows it; planned: docs/steps.md §14): its `primary` metric, the
+(the server reads it, `Score::of`, as `score.py` does; docs/steps.md §14): its `primary` metric, the
 factor `within`, the others' `share`, and a table per metric with its `label`, `unit`, scale and
 (but the primary, which takes none) `weight`, the metric's value from 0 at `worst` to 1 at `best`
 (`scale = "log"`: by the logarithm; `"linear"`), clamped, or a `values` table instead, a word's

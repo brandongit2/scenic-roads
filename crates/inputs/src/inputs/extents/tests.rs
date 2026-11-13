@@ -588,3 +588,32 @@ fn malformed_files_are_findings() {
         whole_of(&files);
     }
 }
+
+/// The server's score (`Score::of`) is score.py's: on score.toml's own examples and the pieces in
+/// score_pieces.json, each score and metric value as producers/extents/score.py made them
+/// (score_expected.json: the command in score.py's usage; producers/extents/test_extents.py makes
+/// it again and checks it's this file), to the last digit it shows (three) and well past it.
+#[test]
+fn the_score_is_score_py_s() {
+    let s = score(REAL[0].1).unwrap();
+    let expected: Vec<Value> = serde_json::from_str(include_str!("score_expected.json")).unwrap();
+    assert!(expected.len() > 15, "the examples and the pieces");
+    for e in &expected {
+        let metrics = e["metrics"].as_object().unwrap();
+        let (got, vals) = s.of(metrics);
+        match e["score"].as_f64() {
+            Some(want) => {
+                let got = got.unwrap_or_else(|| panic!("{metrics:?}: no score, score.py's {want}"));
+                assert!((got - want).abs() < 1e-12, "{metrics:?}: {got} against score.py's {want}");
+                assert_eq!(format!("{got:.3}"), format!("{want:.3}"), "{metrics:?}");
+            }
+            None => assert_eq!(got, None, "{metrics:?}"),
+        }
+        for (k, want) in e["values"].as_object().unwrap() {
+            match (vals[k], want.as_f64()) {
+                (Some(g), Some(w)) => assert!((g - w).abs() < 1e-12, "{metrics:?} {k}: {g} against {w}"),
+                (g, w) => assert_eq!(g, w, "{metrics:?} {k}"),
+            }
+        }
+    }
+}

@@ -142,6 +142,15 @@ class Score(unittest.TestCase):
         self.assertLess(score.score(d, {"spacing_m": 1.2, "surface": "surface"})[0],
                         score.score(d, {"spacing_m": 1.25, "surface": "ground"})[0])
 
+    def test_the_servers_expected_scores_are_this_files(self):
+        """The map server's scoring is tested against the scores this file makes, checked in beside
+        its test (crate::inputs::extents's score_expected.json): made again from score.toml and the
+        same pieces, they're the same bytes (else run the command in score.py's usage)."""
+        here = os.path.join(os.path.dirname(__file__), "..", "..", "crates", "inputs", "src", "inputs", "extents")
+        made = score.expected(self.DECL, os.path.join(here, "score_pieces.json"))
+        with open(os.path.join(here, "score_expected.json")) as f:
+            self.assertEqual(made, f.read())
+
     def test_a_share_breaking_the_guarantee_is_refused(self):
         score.check(self.DECL)
         with self.assertRaises(SystemExit):

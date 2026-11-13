@@ -13,6 +13,7 @@
 //! loaded at start: the catalogue says where everything is, and files are opened on first use.
 
 mod accepted;
+mod available;
 mod cache;
 mod clip;
 mod data;
@@ -75,6 +76,8 @@ pub struct AppState {
     pub outlines: regions::Outlines,
     /// The user's descriptions, laid over popup details.
     pub descriptions: Arc<descriptions::Descriptions>,
+    /// The source extents' accepted version, which the data-available layers are scored from.
+    pub available: Arc<available::Available>,
     /// The map's places, for its search (made when first searched, again when the labels or the
     /// translations change).
     pub places: Arc<places::Index>,
@@ -242,6 +245,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         areas: regions::Areas::default(),
         outlines: regions::Outlines::default(),
         descriptions: descriptions::Descriptions::new(home),
+        available: available::Available::new(home),
         places: Default::default(),
         downloads: downloads::Downloads::load(home),
         reserve: reserve::Setting::load(home),
@@ -404,6 +408,8 @@ async fn serve(cli: Cli) -> Result<()> {
     names.spawn(d.clone());
     let descs = descriptions::Descriptions::new(&home);
     descs.spawn(d.clone());
+    let avail = available::Available::new(&home);
+    avail.spawn(d.clone());
     let up = updater::Updater::new(&home);
     eprintln!("app: {}", up.running().unwrap_or("development (not from the published app)"));
     // (Not on demand: no launcher starts it again after an exit for a new app, so an open page
@@ -424,6 +430,7 @@ async fn serve(cli: Cli) -> Result<()> {
         areas: regions::Areas::default(),
         outlines: regions::Outlines::default(),
         descriptions: descs,
+        available: avail,
         places: Default::default(),
         downloads: downloads::Downloads::load(&home),
         reserve: reserve::Setting::load(&home),
@@ -472,6 +479,10 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/tiles/depth/{z}/{x}/{y}", get(depth::depth_tile))
         .route("/tiles/depth-class/{z}/{x}/{y}", get(depth::class_tile))
         .route("/tiles/depth-shade/{z}/{x}/{y}", get(terrain::depth_shade_tile))
+        .route("/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}", get(available::mercator_tile))
+        .route("/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}", get(available::polar_tile))
+        .route("/api/available/{theme}", get(available::about))
+        .route("/api/available/{theme}/{set}", get(available::at))
         .route("/api/railfreq", get(rail_freq_h))
         .route("/api/park", get(details::park))
         .route("/api/marks/view", axum::routing::post(marks::view))
@@ -759,7 +770,13 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     let nv = s.names.version_all();
     let named = |v: String| serde_json::Value::from(format!("{v}-{nv:x}"));
     for l in cat.layers.keys() {
-        versions.insert(l.clone(), serde_json::Value::from(s.data.layer_version(l)));
+        let mut v = s.data.layer_version(l);
+        // (The data-available layers are coloured here from the extents' accepted version too: a
+        // weight tuned changes their URLs, crate::available.)
+        if codecs::available::of_layer(l).is_some() {
+            v = format!("{v}-{}", s.available.version());
+        }
+        versions.insert(l.clone(), serde_json::Value::from(v));
     }
     // The layer files' versions: their content names' hashes, under their file names
     // ("layer-summary.json"), which the app's URLs use.
@@ -838,7 +855,9 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     // packs past z12, by z10 tile; a polar layer's root z0–3 and blocks z4–9, by z4 tile of its
     // grid (Data::pack_of) ("z/x/y").
     let mut packs = serde_json::Map::new();
-    for (k, l) in &cat.layers {
+    // (Not the data-available layers': their tiles go by the layer's version, which their colours'
+    // input is in.)
+    for (k, l) in cat.layers.iter().filter(|(k, _)| codecs::available::of_layer(k).is_none()) {
         let names = tiles::has_names(k);
         let tok = |logical: &String| {
             s.data.pack_from(logical).map(|f| {

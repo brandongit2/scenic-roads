@@ -305,6 +305,9 @@ impl Data {
 
     /// The pole of `layer`, a polar cap's (its blocks the grid its reach is told in).
     fn pole(cat: &Catalogue, layer: &str) -> Option<char> {
+        if let Some((_, codecs::available::Grid::Polar(p))) = codecs::available::of_layer(layer) {
+            return Some(p);
+        }
         cat.layers.get(layer).filter(|l| !l.polar.is_empty())?;
         layer.chars().last()
     }
@@ -565,6 +568,16 @@ impl Data {
     pub(crate) fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
+        // (A data-available layer's: its root z0–5 and z6 packs, or a pole's root: codecs::available.)
+        if let Some((_, grid)) = codecs::available::of_layer(layer) {
+            if !self.reach().is_none_or(|r| r.grid(Self::pole(&cat, layer)).cover(z, x, y) != Cover::None) {
+                return None;
+            }
+            return match codecs::available::pack_of(grid, z, x, y)? {
+                ("root", _) => l.root.clone(),
+                (_, key) => l.hi.get(&key).cloned(),
+            };
+        }
         let f = ::terrain::terrain_deep::PACK_Z;
         // (A polar layer's: z0–3 in its root, z4–9 in its blocks, terrain::polar.)
         if !l.polar.is_empty() {
