@@ -3537,6 +3537,52 @@ mod tests {
         assert!(std::fs::symlink_metadata(root.join("map/map")).is_err());
     }
 
+    /// The frozen root `root` (`SCENIC_FROZEN_ROOT`) for the ignored test `test` to plan on, in the
+    /// sandboxed child; none in the parent, which checked the root (never one that is, or leads to,
+    /// a live path; its `state/` a folder of its own), linked the rest of the NAS's project folder
+    /// there and ran this test again in a child under `sandbox-exec`, whose profile denies every
+    /// write under /Volumes and the app's own home, and found its `out` written.
+    fn sandboxed(root: &str, test: &str, out: &str) -> Option<PathBuf> {
+        let real = std::fs::canonicalize(root).unwrap();
+        assert!(!store::nasfs::is_live_path(&real), "the root leads to a live path: {}", real.display());
+        let state = std::fs::symlink_metadata(real.join("state")).unwrap();
+        assert!(state.is_dir(), "the root's state/ must be a copy, not a link: {}", real.display());
+        if std::env::var_os("SCENIC_FROZEN_SANDBOXED").is_some() {
+            return Some(real);
+        }
+        let share = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).expect("the NAS's share mounted");
+        link_the_rest(&real, &share.point.join(store::nas::PROJECT));
+        let app_home = std::env::var("HOME").unwrap() + "/Library/Application Support/scenic";
+        let profile =
+            format!("(version 1)(allow default)(deny file-write* (subpath \"/Volumes\") (subpath \"{app_home}\"))");
+        let me = std::env::current_exe().unwrap();
+        std::fs::remove_file(out).ok();
+        let st = store::spawn::status(
+            store::spawn::command("/usr/bin/sandbox-exec")
+                .args(["-p", &profile])
+                .arg(me)
+                .args(["--exact", &format!("agent::plan::tests::{test}"), "--ignored", "--nocapture"])
+                .env("SCENIC_FROZEN_SANDBOXED", "1"),
+        )
+        .unwrap();
+        assert!(st.success(), "the sandboxed plan: {st}");
+        assert!(std::fs::metadata(out).is_ok(), "the sandboxed plan wrote no {out}");
+        None
+    }
+
+    /// A frozen root's planner's options: a dry run, once, its home `home`.
+    fn frozen_options(root: &store::nasfs::NasRoot, home: &str) -> Options {
+        Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(root.clone()),
+            home: PathBuf::from(home),
+            bin: PathBuf::from("/app"),
+            dry_run: true,
+            once: true,
+            member: false,
+        }
+    }
+
     /// The frozen-plan check (docs/crates.md §6.3, 6f2): a planner's `region_jobs` and `checklist`
     /// on a private copy of the lead's state (`SCENIC_FROZEN_ROOT`: `state/` copied there by hand,
     /// every other entry of the NAS's project folder linked there by the check itself,
@@ -3568,41 +3614,10 @@ mod tests {
         ) else {
             return;
         };
-        let real = std::fs::canonicalize(&root).unwrap();
-        assert!(!store::nasfs::is_live_path(&real), "the root leads to a live path: {}", real.display());
-        let state = std::fs::symlink_metadata(real.join("state")).unwrap();
-        assert!(state.is_dir(), "the root's state/ must be a copy, not a link: {}", real.display());
-        if std::env::var_os("SCENIC_FROZEN_SANDBOXED").is_none() {
-            let share = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).expect("the NAS's share mounted");
-            link_the_rest(&real, &share.point.join(store::nas::PROJECT));
-            let app_home = std::env::var("HOME").unwrap() + "/Library/Application Support/scenic";
-            let profile =
-                format!("(version 1)(allow default)(deny file-write* (subpath \"/Volumes\") (subpath \"{app_home}\"))");
-            let me = std::env::current_exe().unwrap();
-            std::fs::remove_file(&out).ok();
-            let st = store::spawn::status(
-                store::spawn::command("/usr/bin/sandbox-exec")
-                    .args(["-p", &profile])
-                    .arg(me)
-                    .args(["--exact", "agent::plan::tests::frozen_plan_on_a_private_root", "--ignored", "--nocapture"])
-                    .env("SCENIC_FROZEN_SANDBOXED", "1"),
-            )
-            .unwrap();
-            assert!(st.success(), "the sandboxed plan: {st}");
-            assert!(std::fs::metadata(&out).is_ok(), "the sandboxed plan wrote no {out}");
-            return;
-        }
+        let Some(real) = sandboxed(&root, "frozen_plan_on_a_private_root", &out) else { return };
         let env = |k: &str| std::env::var(k).ok();
         let root = store::nasfs::NasRoot::local_for_test(real);
-        let o = Options {
-            the_plan: crate::agent::seam::for_tests(),
-            root: Some(root.clone()),
-            home: PathBuf::from(home),
-            bin: PathBuf::from("/app"),
-            dry_run: true,
-            once: true,
-            member: false,
-        };
+        let o = frozen_options(&root, &home);
         let app = env("SCENIC_FROZEN_APP").unwrap_or_else(|| "development".into());
         let hold = bus::Snap::new(jobrt::control::HoldState::default());
         let mut last = publish::LastCatalogue::default();
@@ -3674,5 +3689,115 @@ mod tests {
             offered.len(),
             lines.len()
         );
+    }
+    /// The planner's memory over plans in a row (task #1251), on a frozen root as
+    /// `frozen_plan_on_a_private_root`'s (`SCENIC_FROZEN_ROOT`, `SCENIC_FROZEN_HOME`, sandboxed
+    /// alike): the coverage read, then `SCENIC_FROZEN_ROUNDS` plans (7 without), each with its
+    /// checklist, its forecast when one is due and the view published, as the plan thread's look
+    /// makes them, `SCENIC_FROZEN_GAP` seconds apart (none without). A line per plan to
+    /// `SCENIC_FROZEN_OUT`: its time, the bytes it asked the allocator for, and the process's
+    /// footprint, its peak, its resident size and its reusable pages after it
+    /// (crate::agent::allocs). With `SCENIC_FROZEN_SITES=<n>`, the stacks of the plans after the
+    /// first are sampled and the `n` functions and sites allocating the most bytes listed after
+    /// (slower: the plans' times are then the sampling's too; with `SCENIC_FROZEN_SITES_LEAST=<bytes>`,
+    /// of the blocks of that size or more alone). With `SCENIC_FROZEN_SIZES`, each
+    /// plan's blocks by size after its line (`allocs::sizes`). `SCENIC_FROZEN_LINGER`: seconds it
+    /// stays up after the last plan, saying its pid, for `vmmap --summary` or `footprint` of it.
+    #[test]
+    #[ignore]
+    fn frozen_plans_memory() {
+        use crate::agent::allocs;
+        let (Ok(root), Ok(home), Ok(out)) = (
+            std::env::var("SCENIC_FROZEN_ROOT"),
+            std::env::var("SCENIC_FROZEN_HOME"),
+            std::env::var("SCENIC_FROZEN_OUT"),
+        ) else {
+            return;
+        };
+        let Some(real) = sandboxed(&root, "frozen_plans_memory", &out) else { return };
+        let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok());
+        let root = store::nasfs::NasRoot::local_for_test(real);
+        let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());
+        let hold = bus::Snap::new(jobrt::control::HoldState::default());
+        let mut p =
+            Planner::new(frozen_options(&root, &home), "frozen".into(), app, 0, None, false, hold, Default::default());
+        let made = p.out_rx.take().unwrap();
+        let mb = |b: u64| b >> 20;
+        let mut lines = Vec::new();
+        let mut say = |l: String| {
+            eprintln!("frozen: {l}");
+            lines.push(l);
+        };
+        let memory = |what: &str, took: Duration, asked: (u64, u64)| {
+            let m = allocs::Memory::now();
+            format!(
+                "{what}: {:.1} s, asked for {} MB in {} blocks; footprint {} MB (peak {}), resident {} MB, reusable {} MB",
+                took.as_secs_f64(),
+                mb(asked.0),
+                asked.1,
+                mb(m.footprint),
+                mb(m.peak),
+                mb(m.resident),
+                mb(m.reusable)
+            )
+        };
+        let since = |a: (u64, u64)| {
+            let b = allocs::asked();
+            (b.0 - a.0, b.1 - a.1)
+        };
+        let (t, a) = (Instant::now(), allocs::asked());
+        let (manifest, _) = p.planning_records(&root).unwrap();
+        while let Err(why) = p.coverage(&root, &manifest, false) {
+            assert!(t.elapsed() < Duration::from_secs(1800), "{why}");
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        drop(manifest);
+        say(memory("the coverage", t.elapsed(), since(a)));
+        let rounds = num("SCENIC_FROZEN_ROUNDS").unwrap_or(7);
+        let sites = num("SCENIC_FROZEN_SITES");
+        let sizes = num("SCENIC_FROZEN_SIZES").is_some();
+        for round in 1..=rounds {
+            if round > 1 {
+                std::thread::sleep(Duration::from_secs(num("SCENIC_FROZEN_GAP").unwrap_or(0)));
+                allocs::on(sites.is_some(), num("SCENIC_FROZEN_SITES_LEAST").unwrap_or(0));
+            }
+            let (t, a) = (Instant::now(), allocs::asked());
+            p.take_forecast();
+            while made.try_recv().is_ok() {}
+            let mut waiting = Vec::new();
+            let c = p.inp.conditions;
+            let plan = p.plan(&root, &c, &mut waiting);
+            nasread::PLAN.enter("");
+            p.regions = load_regions(&root);
+            let (jobs, waits) = (plan.len(), waiting.len());
+            if round == 1 {
+                for w in &waiting {
+                    say(format!("waiting: {} ({})", w.what, w.why));
+                }
+            }
+            p.jobs = plan;
+            p.waiting = waiting;
+            let regions = p.regions.0.clone();
+            p.progress = p.checklist(&root, &regions);
+            p.publish();
+            allocs::on(false, 0);
+            say(memory(&format!("plan {round} ({jobs} jobs, {waits} waits)"), t.elapsed(), since(a)));
+            if sizes {
+                for l in allocs::sizes() {
+                    say(l);
+                }
+            }
+        }
+        if let Some(n) = sites {
+            for l in allocs::report(rounds.saturating_sub(1), n as usize) {
+                say(l);
+            }
+        }
+        std::fs::write(&out, lines.join("\n") + "\n").unwrap();
+        if let Some(s) = num("SCENIC_FROZEN_LINGER") {
+            eprintln!("frozen: pid {} stays {s} s", std::process::id());
+            std::thread::sleep(Duration::from_secs(s));
+            eprintln!("frozen: {}", memory("at the end", Duration::ZERO, (0, 0)));
+        }
     }
 }

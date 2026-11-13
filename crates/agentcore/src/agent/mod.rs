@@ -44,6 +44,8 @@ pub mod theplan;
 #[path = "../../../pipeline/src/agent/tiles.rs"]
 pub mod tiles;
 
+#[cfg(test)]
+pub mod allocs;
 pub mod answered;
 pub mod asks;
 pub mod backup;
