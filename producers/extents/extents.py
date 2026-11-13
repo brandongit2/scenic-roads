@@ -471,14 +471,18 @@ def read_raster(net, b, _tol):
         for url in raster_files(net, b):
             with rasterio.open(url, opener=lambda p, mode="rb", net=net: RangeFile(net, p)) as ds:
                 px = max(abs(ds.transform.a), abs(ds.transform.e)) * (M_PER_DEG if ds.crs.is_geographic else 1)
-                levels = ds.overviews(1) or [1]
+                levels = ds.overviews(1)
+                if not levels:
+                    # Its mask would be the whole file read (every block); a declaration's
+                    # `pattern` leaves such files out.
+                    sys.exit(f"{url}: no overviews, so its mask is a whole download")
                 fine = [f for f in levels if f * px <= float(b.get("mask_m", 0))]
                 # (No overview as fine as `mask_m`: the finest there is, never the full resolution,
                 # which would be a whole download; the grain recorded says how fine it was.)
                 f = fine[-1] if fine else levels[0 if "mask_m" in b else -1]
                 h, w = max(1, math.ceil(ds.height / f)), max(1, math.ceil(ds.width / f))
                 mask = ds.dataset_mask(out_shape=(h, w))
-                tr = ds.transform * ds.transform.scale(ds.width / w, ds.height / h)
+                tr = ds.transform @ ds.transform.scale(ds.width / w, ds.height / h)
                 shapes = [sg.shape(s) for s, v in rasterio.features.shapes((mask > 0).astype(np.uint8), mask=mask > 0, transform=tr) if v]
                 geom = shapely.union_all(shapes)
                 res = max(abs(ds.transform.a), abs(ds.transform.e))

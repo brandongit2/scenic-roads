@@ -380,6 +380,37 @@ class RasterFiles(unittest.TestCase):
                                                         "https://h/raster/Haiti_16/Haiti_16_be/Haiti_651800_2073900.tif"])
 
 
+    def tif(self, overviews):
+        import numpy as np
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_origin
+        data = np.zeros((256, 256), np.float32)
+        data[:, :128] = -9999
+        with MemoryFile() as mem:
+            with mem.open(driver="GTiff", width=256, height=256, count=1, dtype="float32", crs="EPSG:32618",
+                          transform=from_origin(650000, 2070000, 2, 2), nodata=-9999, tiled=True) as ds:
+                ds.write(data, 1)
+                if overviews:
+                    ds.build_overviews([2, 4, 8], rasterio.enums.Resampling.nearest)
+            return mem.read()
+
+    def test_b_a_file_without_overviews_is_refused_not_read_whole(self):
+        net = FakeNet({"https://h/a.tif": self.tif(False)})
+        with self.assertRaises(SystemExit) as e:
+            list(extents.read_raster(net, {"urls": ["https://h/a.tif"], "mask_m": 20}, 0))
+        self.assertIn("no overviews", str(e.exception))
+
+    def test_c_a_file_s_mask_is_its_valid_half(self):
+        net = FakeNet({"https://h/a.tif": self.tif(True)})
+        b = {"urls": ["https://h/a.tif"], "mask_m": 20}
+        [(geom, props)] = list(extents.read_raster(net, b, 0))
+        self.assertEqual(props, {"res_m": 2.0})
+        self.assertEqual(b["grain_m"], 16.0)
+        valid = extents.to_wgs84(sg.box(650256, 2069488, 650512, 2070000), "EPSG:32618", 1)
+        self.assertAlmostEqual(geom.symmetric_difference(valid).area / valid.area, 0, places=2)
+
+
 class Ranges(unittest.TestCase):
     def test_a_remote_file_reads_as_a_file(self):
         body = bytes(range(256)) * 1000
