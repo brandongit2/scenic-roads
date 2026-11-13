@@ -627,7 +627,7 @@ fn partners_are_a_sources_two_files() {
 }
 
 /// The terrain's declarations, pieces and score as producers/extents/ made them.
-const REAL: [(&str, &[u8]); 561] = [
+const REAL: [(&str, &[u8]); 563] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/terrain/score.toml")),
     ("aad-station-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/aad-station-dem.geojson")),
     ("aad-station-dem.toml", include_bytes!("../../../../../producers/extents/terrain/aad-station-dem.toml")),
@@ -926,6 +926,8 @@ const REAL: [(&str, &[u8]); 561] = [
     ("gb-sct-hes-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/gb-sct-hes-lidar.toml")),
     ("gb-sct-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/gb-sct-lidar.geojson")),
     ("gb-sct-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/gb-sct-lidar.toml")),
+    ("gedtm30.geojson", include_bytes!("../../../../../producers/extents/terrain/gedtm30.geojson")),
+    ("gedtm30.toml", include_bytes!("../../../../../producers/extents/terrain/gedtm30.toml")),
     ("geobc-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/geobc-lidar.geojson")),
     ("geobc-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/geobc-lidar.toml")),
     ("geonb-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/geonb-lidar.geojson")),

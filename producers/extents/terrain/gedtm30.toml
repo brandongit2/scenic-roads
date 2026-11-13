@@ -1,0 +1,20 @@
+name = "Global Ensemble Digital Terrain Model 30 m (GEDTM30)"
+credit = "Ho, Y.-F., Hengl, T. et al., OpenGeoHub (GEDTM30)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://zenodo.org/records/18887460"
+theme = "terrain"
+availability = "open"
+notes = "A bare-earth model of the land, 1 arc-second: the Copernicus DEM, AW3D30 and models of objects' heights fused by machine learning trained on ICESat-2 and GEDI points (its inputs of 2006 to 2015), published as one cloud-optimized GeoTIFF on OpenGeoHub's object store (the 30 m file, version of 11 June 2025; Zenodo holds its 240 m and coarser versions): the file's header and its mask at an overview of pixels no wider than 2 km, read by range request (1,638 requests, 107 MB), a grain of 1.8 km, its outline at a 3 km tolerance: 137.3 million km² (the land from 62° S to 84° N, Antarctica not modelled)."
+
+[[piece]]
+id = "gedtm30"
+label = "GEDTM30"
+method = "raster"
+urls = ["https://s3.opengeohub.org/global/edtm/gedtm_rf_m_30m_s_20060101_20151231_go_epsg.4326.3855_v20250611.tif"]
+mask_m = 2000
+tolerance_m = 3000
+[piece.metrics]
+surface = "ground"
+spacing_m = 30
+year = 2015

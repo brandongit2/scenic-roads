@@ -2343,6 +2343,27 @@ Rio Grande do Sul's and Paraná's statewide lidar (not yet delivered); Embrapa's
 in `opentopography`, below); Venezuela, Guyana, Suriname, Paraguay, Bolivia,
 Cuba, Nicaragua and Costa Rica publish nothing finer than the worldwide models.
 
+**The worldwide models and OpenTopography** (read 13 Nov 2026 on the M1, task #1350's third run;
+beside `cop-dem`, `jaxa-aw3d30`, `pgc-arcticdem` and `pgc-rema`, above): 7 declarations, 1,254
+pieces. Areas geodesic.
+
+| Declaration | Pieces | Class | Read by; area |
+|---|---|---|---|
+| `opentopography` | 1,244: OpenTopography's own point clouds and rasters, a piece a dataset (its year the last of its temporal coverage; no spacing: the catalogue states none, so no score) | `service` | `file` (`records`): the otCatalog API's answers for the globe, its federated 3DEP and NOAA collections left out, 1,548 records of 1,270 identifiers (it lists some twice), each record's own footprint; its copies of the worldwide models (boxes) and of national sources declared from their publishers left out (`exclude`); 2.3 MB |
+| `nasa-dem` | 4: NASADEM (open), SRTM GL1 and GL3 v3, ASTER GDEM v3 (an Earthdata login: claimed), 30, 90 and 30 m surface models | `index`; `claimed` | NASADEM: `stac`, the Planetary Computer's 14,520 items; the others `listing` (lines) of NASA's CMR granule search, its CSV pages (its STAC answers 500 after the first page), 14,297, 14,297 and 22,912 1° tiles: 159.7, 158.1 and 179.2 million km² |
+| `fabdem` | 1: FABDEM V1-2, 30 m bare earth (non-commercial) | `index` | `listing` (zip, `links`): the 356 zips of 10° blocks the repository's folder links, each's central directory by range request (731 requests, 37 MB, 11 min on the M1): 19,011 1° tiles, 168.0 million km² |
+| `gedtm30` | 1: GEDTM30, 30 m bare earth | `files` | `raster`: OpenGeoHub's 30 m COG at its overview of 1.8 km pixels (1,638 range requests, 107 MB; about 45 min fetched on the M1, 3.8 from the cache), at a 3 km tolerance: 137.3 million km² |
+| `de-dlr-tandemx`, `merit-dem` | 3; 1: TanDEM-X's 90 m DEM and 30 m EDEM (login, scientific use) and Airbus's WorldDEM (12 m, sold); MERIT DEM (90 m, a registration) | `claimed` | `file`: the land as Natural Earth's admin-1 areas draw it at a 5 km tolerance (islands under 25 km² dropped as specks), Antarctica's too for TanDEM-X, not for MERIT (to 60° S): 146.8 and 134.4 million km²; 3.0 MB (the land three times) |
+
+**Not obtained** (the worldwide models, 13 Nov): TanDEM-X's and MERIT's tile lists (behind DLR's
+login and MERIT's registration: claimed over the land); the spacing of OpenTopography's datasets
+(its catalogue states none; its descriptions say it in free text for some 70 of 1,548, as often an
+image's or a bathymetry's resolution as the model's: not read, so its pieces have no score; its
+dataset pages, one each, for a later run); GEBCO's, ETOPO 2022's, GMTED2010's, SRTM15+'s and GEDI
+L3's grids (15 arc-seconds to 1 km: coarser than the models above wherever those reach; not
+declared); the ALOS PALSAR RTC "12.5 m DEM" (ASF's own note: the SRTM or NED resampled, not a
+terrain model) and Brazil's TOPODATA (the SRTM refined: not declared).
+
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
 areas, 63,636 against 55,284; GLO-30's 1° tiles round every coast), and the layers draw them as
