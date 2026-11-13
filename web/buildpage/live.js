@@ -173,7 +173,7 @@ function build() {
     root, said, body, bars, nowV, ioRows,
     cpu: row(vit, "cpu use", "Cores busy, summed over every core, stacked: the build's jobs (blue) and everything else (grey). Dashed: the Mac's cores, and the cores the build may use now (fewer while the owner uses the Mac)."),
     load: row(vit, "CPU load", "Threads ready to run, averaged over a minute. Above the dashed line (the core count), work waits for a core."),
-    mem: row(vit, "memory", "RAM in use (the Mac's less what's available: free pages, the file cache, purgeable memory and memory processes freed but still hold), stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory floor, the memory kept available; use past it puts the Mac below the floor, and the build gives jobs back."),
+    mem: row(vit, "memory", "RAM in use (the Mac's less what's available: free pages, the file cache, purgeable memory, and memory processes freed as far as the idle memory holds it), stacked: the build's jobs (blue) and every other process (grey). Dashed: the memory floor, the memory kept available; use past it puts the Mac below the floor, and the build gives jobs back."),
     press: row(vit, "memory pressure", "100 % less macOS's memory-free percentage (kern.memorystatus_level); the line's colour is macOS's pressure level. Dashed: 50 % and 80 %."),
     swap: row(vit, "swap used", "Memory macOS has written out to disk. Rising swap means jobs slow down."),
     disk: row(vit, "disk free", "Free space on the Mac's disk. Dashed: the owner's room target; below it the disk guard freezes the fastest-growing job."),
