@@ -194,8 +194,12 @@ export function axisOf(l: AvLayer): Axis {
   if (l.scale === 'values') {
     const lo = l.words[0].value, hi = l.words[l.words.length - 1].value;
     const nearest = (v: number) => l.words.reduce((a, b) => (Math.abs(b.value - v) < Math.abs(a.value - v) ? b : a));
+    // (The step from word to word where they're evenly spaced, so the highlight's slider stops on
+    // the words alone: bare earth or surface.)
+    const gap = Math.min(...l.words.slice(1).map((w, i) => w.value - l.words[i].value));
+    const even = gap > 0 && l.words.every((w) => Math.abs((w.value - lo) / gap - Math.round((w.value - lo) / gap)) < 1e-9);
     return {
-      domain: [lo, hi], step: stepOf(hi - lo), fixed: true,
+      domain: [lo, hi], step: even ? gap : stepOf(hi - lo), fixed: true,
       fmt: (v) => (Math.abs(nearest(v).value - v) < (hi - lo) / 50 ? nearest(v).label : `${+v.toFixed(2)}`),
       ticks: () => l.words.map((w) => [w.value, 0] as [number, number]),
     };
@@ -216,12 +220,16 @@ export function axisOf(l: AvLayer): Axis {
 }
 
 /** A layer's colour map: its own once changed, else the profile's first one, its palette reversed
- * where the layer's better end is its low one (`colours`). */
+ * where the layer's better end is its low one (`colours`). The highlight's value is on the layer's
+ * axis: one off it (the profile's, shared by layers of other units: a year's 0) is the axis's
+ * middle. */
 export function scaleOf(s: AvailableState, l: AvLayer): ScaleFields {
   const own = s.scales[l.id];
-  if (own) return own;
   const p = s.colours.palette, rev = p.endsWith('_r');
-  return { ...s.colours, palette: l.best === 'low' ? (rev ? p.slice(0, -2) : `${p}_r`) : p };
+  const sc = own ?? { ...s.colours, palette: l.best === 'low' ? (rev ? p.slice(0, -2) : `${p}_r`) : p };
+  const { domain: [lo, hi], step } = axisOf(l), t = sc.threshold;
+  if (t.value >= lo && t.value <= hi) return sc;
+  return { ...sc, threshold: { ...t, value: lo + Math.round((hi - lo) / 2 / step) * step } };
 }
 
 // ---- the colour ramp on the map ----------------------------------------------------------------

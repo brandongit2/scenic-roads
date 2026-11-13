@@ -67,6 +67,8 @@ export class AvailableSection {
       spanDefault: () => inUse().available.colours.lowSpan,
       // (A layer of words: its range their values, the ramp's ends theirs.)
       fixedCaption: () => (this.layer && axis()?.fixed ? `${this.layer.words.map((w) => w.label).join(' and ')}: the ramp’s ends` : null),
+      // (Its words are the range's ends: equalized, each still takes its end's colour.)
+      equalizable: () => !axis()?.fixed,
       onPreview: (k) => this.onPreview(k),
     });
     const row = (label: string, input: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, h('span'));

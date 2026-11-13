@@ -151,6 +151,26 @@ for (const b of [base.s, seed]) {
   assert.deepEqual(fromHash(h, true, p).depth.colours, p.depth.colours);
 }
 
+// Data available's colour maps in a link: the profile's first one and each layer's own (#1373: a
+// reload, which reads the link, kept neither); a layer's map in a link over a profile that has
+// others replaces them; none changed, none in the link.
+{
+  const p = structuredClone(seed);
+  const s = structuredClone(p);
+  const year = { ...s.available.colours, palette: 'magma', auto: false, range: [2010, 2020] as [number, number] };
+  s.available = { ...s.available, colours: { ...s.available.colours, palette: 'cividis' }, scales: { year, score: { ...year, palette: 'turbo_r', auto: true, threshold: { on: true, dir: 'below' as const, value: 0.5 } } } };
+  const h = toHash(s, true, { id: 'k3f9', name: 'x', s: p });
+  assert.ok(params(h).get('am')!.startsWith('score~turbo_r,1,'), h);
+  const back = fromHash(h, true, p).available;
+  assert.deepEqual(back.colours, s.available.colours);
+  assert.deepEqual(back.scales, s.available.scales);
+  const q = structuredClone(p);
+  q.available.scales = { year };
+  assert.deepEqual(fromHash(toHash(p, true, { id: 'k3f9', name: 'x', s: q }), true, q).available.scales, {});
+  assert.equal(params(toHash(p, true, { id: 'k3f9', name: 'x', s: p })).get('am'), null);
+  assert.deepEqual(fromHash('#map=5/46/-71&am=Bad~x*year~magma,0', true, p).available.scales, {});
+}
+
 // A link naming no profile: each setting where it differs from the default profile (given as the base).
 {
   const s = fromHash('#map=5/46/-71&pa=cividis&eq=1&gb=0', true, base.s);

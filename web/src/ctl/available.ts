@@ -140,7 +140,7 @@ export class Available {
     else if (this.dist && this.dist.total > 0) range = spread(this.dist.quantile(sc.fit[0] / 100), this.dist.quantile(sc.fit[1] / 100), axis.step * 4);
     else range = this.range ?? axis.domain;
     this.range = range;
-    const cdf = sc.equalize ? cdfOf(this.dist, range) : null;
+    const cdf = sc.equalize && !axis.fixed ? cdfOf(this.dist, range) : null;
     const colour = paletteFn(this.preview ?? sc.palette);
     const colourAt = (v: number) => {
       const u = scaleU(v, range, cdf);
@@ -148,7 +148,7 @@ export class Available {
       return `rgba(${rgb.join(',')},${fadeAlpha(u, sc.lowFade, sc.lowSpan).toFixed(3)})`;
     };
     const stops = rampStops(range, !!cdf, colourAt, sc.threshold);
-    this.layer.show({ url: tileUrl(hostFor('layers'), theme, set, layer.id, s.avail, version(`available-${theme}`)), maxzoom: c.t.maxzoom, opacity: s.opacity, stops });
+    this.layer.show({ url: tileUrl(hostFor('layers'), theme, set, layer.id, s.avail, version(`available-${theme}`)), maxzoom: c.t.maxzoom, scale: `${theme}/${layer.id}`, opacity: s.opacity, stops });
     this.polar?.setOverlay((pole: Pole) => {
       const maxZoom = c.t.poles[pole];
       if (maxZoom === undefined) return null;

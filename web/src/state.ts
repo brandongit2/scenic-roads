@@ -8,7 +8,7 @@ import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from '.
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
 import { DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
-import { cleanState as cleanAvailable, fromField as availableOfField, toField as availableField, type AvailableState } from './available';
+import { cleanScale as cleanAvailableScale, cleanState as cleanAvailable, fromField as availableOfField, toField as availableField, type AvailableState } from './available';
 import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
 import { railPresets } from './presets';
 import { MODES, NCOMP, isScenic, modeDef, type Mode } from './scenic';
@@ -895,6 +895,10 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   p.set('tc', tc(s.trees));
   p.set('av', availableField(s.available));
+  // (Data available's colour maps: the profile's first one, and each layer's own, `<layer>~<scale>`
+  // joined by `*`.)
+  p.set('ac', scaleStr(s.available.colours));
+  p.set('am', Object.entries(s.available.scales).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, v]) => `${k}~${scaleStr(v)}`).join('*'));
   // (Fields 2 and 4 are empty: unused.)
   const dp = (d: DepthState) => [d.on ? 1 : 0, '', d.scale, '', +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
     d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2), d.floor ? 1 : 0].join(',');
@@ -1174,6 +1178,15 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
     };
   }
   s.available = availableOfField(p.get('av'), s.available);
+  const acv = p.get('ac')?.split(',');
+  if (acv && acv.length >= 12) s.available = { ...s.available, colours: cleanAvailableScale(parseScale(acv, s.available.colours), s.available.colours) };
+  const amv = p.get('am');
+  if (amv !== null) {
+    const c = s.available.colours;
+    const scales = Object.fromEntries(amv.split('*').map((e) => e.split('~')).filter(([k, v]) => /^[a-z0-9_]+$/.test(k) && v?.split(',').length >= 12)
+      .map(([k, v]) => [k, cleanAvailableScale(parseScale(v.split(','), c), c)]));
+    s.available = { ...s.available, scales };
+  }
   const dpv = p.get('dp')?.split(',');
   if (dpv && dpv.length >= 18) {
     const d = s.depth;

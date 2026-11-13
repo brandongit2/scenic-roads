@@ -111,6 +111,10 @@ test('a layer’s axis: log10 of its unit on a log layer, labelled in the unit, 
   const w = axisOf(surface);
   assert.deepEqual([w.domain, w.fixed, w.fmt(0), w.fmt(1), w.fmt(0.5)], [[0, 1], true, 'surface', 'ground', '0.5']);
   assert.deepEqual(w.ticks!(0, 1), [[0, 0], [1, 0]]);
+  // (The highlight's slider steps from word to word; words not evenly spaced, a hundredth.)
+  assert.equal(w.step, 1);
+  const three = axisOf({ ...surface, words: [{ value: 0, label: 'a' }, { value: 0.3, label: 'b' }, { value: 1, label: 'c' }] });
+  assert.equal(three.step, 0.01);
 });
 
 test('a layer’s colour map: its own once changed, else the profile’s, reversed where low is better', () => {
@@ -120,6 +124,12 @@ test('a layer’s colour map: its own once changed, else the profile’s, revers
   assert.equal(scaleOf({ ...BASE, colours: { ...COLOURS, palette: 'magma_r' } }, score).palette, 'magma');
   const own = { ...COLOURS, palette: 'turbo', equalize: true };
   assert.equal(scaleOf({ ...BASE, scales: { score: own } }, score), own);
+  // The highlight's value on the layer's own axis: the profile's 0 is 1 m on a log layer, off the
+  // year's axis (its middle instead).
+  const year = theme.layers[4];
+  assert.equal(scaleOf(BASE, score).threshold.value, 0);
+  assert.equal(scaleOf(BASE, year).threshold.value, 2012);
+  assert.equal(scaleOf({ ...BASE, scales: { year: { ...COLOURS, threshold: { on: true, dir: 'below', value: 2010 } } } }, year).threshold.value, 2010);
 });
 
 test('the ramp’s stops: none clear, the range’s colours clamped past it, the highlight’s edge sharp', () => {

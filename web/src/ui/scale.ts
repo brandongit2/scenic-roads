@@ -50,6 +50,9 @@ export interface ScaleOpts {
   spanDefault: () => number;
   /** A fixed caption instead of the auto-fit controls, no dragging (e.g. relief). */
   fixedCaption?: () => string | null;
+  /** Whether Equalise is offered (default: always): not where it can't act (a scale of two
+   * values at its ends, data available's words). */
+  equalizable?: () => boolean;
   /** Auto-fit to ranks in view (the low end at the n-th best, the top at the m-th) instead of
    * percentiles (landmarks). */
   rank?: { get: () => [number, number]; set: (v: [number, number]) => void };
@@ -312,7 +315,7 @@ export class ScaleControls {
       const f = this.o.follow;
       if (f?.available()) this.pills.append(h('button', { class: 'pill' + (f.on() ? ' on' : ''), title: f.title, onclick: () => f.set(!f.on()) }, f.label));
     }
-    this.pills.append(
+    if (this.o.equalizable?.() ?? true) this.pills.append(
       h('button', {
         class: 'pill' + (s.equalize ? ' on' : ''),
         title: `Histogram equalisation: spread colours evenly over the ${this.o.measure} in view`,
@@ -348,7 +351,7 @@ export class ScaleControls {
   }
 
   private uAt(v: number): number {
-    return scaleU(v, this.range, this.o.get().equalize ? this.cdf : null, this.spacing());
+    return scaleU(v, this.range, this.o.get().equalize && (this.o.equalizable?.() ?? true) ? this.cdf : null, this.spacing());
   }
 
   private spacing(): Spacing {

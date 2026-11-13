@@ -11,12 +11,14 @@ const SOURCE = 'available';
 export const AVAILABLE_LAYER = 'available';
 
 /** What the Mercator layer draws: its tiles' URL template, their finest zoom (overzoomed past it),
- * its opacity and its ramp's stops; null: nothing. */
-export type AvailableDraw = { url: string; maxzoom: number; opacity: number; stops: [number, string][] } | null;
+ * which values they carry (`scale`: the layer's id, whose ramp `stops` is), its opacity and its
+ * ramp's stops; null: nothing. */
+export type AvailableDraw = { url: string; maxzoom: number; scale: string; opacity: number; stops: [number, string][] } | null;
 
 export class AvailableMap {
   private url = '';
   private maxzoom = -1;
+  private scale = '';
   private stops = '';
 
   /** `before`: the layer it goes under (the map's lines and labels above it). */
@@ -31,7 +33,10 @@ export class AvailableMap {
       return;
     }
     const src = m.getSource(SOURCE) as RasterDEMTileSource | undefined;
-    if (src && this.maxzoom !== d.maxzoom) {
+    // (Another layer's values: its tiles dropped, not drawn by the new ramp while the new ones
+    // load (a score's metres by a year's ramp: one colour everywhere); the switch's or a new
+    // version's tiles stay until replaced, their values on the same axis.)
+    if (src && (this.maxzoom !== d.maxzoom || this.scale !== d.scale)) {
       m.removeLayer(AVAILABLE_LAYER);
       m.removeSource(SOURCE);
     } else if (src && this.url !== d.url) {
@@ -49,6 +54,7 @@ export class AvailableMap {
       );
       this.url = d.url;
       this.maxzoom = d.maxzoom;
+      this.scale = d.scale;
       this.stops = '';
     }
     const key = JSON.stringify(d.stops);
