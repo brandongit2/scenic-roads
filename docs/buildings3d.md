@@ -22,7 +22,7 @@ Companions: `docs/steps.md` (pipeline, keys), `docs/building.md` (order), `docs/
 - **Zooms:** meshes from z14 tiles alone, wherever MapLibre's cover takes z14 tiles (from map zoom
   14, and nearer the camera of a tilted view below it); above z14 the z14 tiles are drawn whole up
   to zoom 19.5 (§4.1). Elsewhere the field (§4.8), on by default where the map has the layer
-  `buildings-field` (`?bldfield=off` leaves it out; without it, no buildings below zoom 14).
+  `buildings-field` (without it, no buildings below zoom 14).
 - **On the terrain:** the roof is level at the centroid's ground plus the height; each wall's foot
   stands 2 m below the terrain under its own corner (§4.3). Heights are true by default; a setting
   scales them 1–3× or follows the terrain's exaggeration. The extrusions and the field take the
@@ -362,7 +362,7 @@ gabled roofs inferred for small houses); distance-based detail under our control
 The aim: buildings at every zoom looking as full detail would, rendered at high resolution and
 downsampled. Builder `bld::bld::field` (in `bldtiles` and `bldfield-lo`); renderer
 `web/src/bldfield.ts` with `bldfield.worker.ts`, loaded by `import()` from `ctl/buildings.ts` where the
-map has the layer `buildings-field` (`?bldfield=off`: off; `?bldfield=<url>`: tiles from there).
+map has the layer `buildings-field`.
 
 **What full detail shrinks to.** Once a building is under a pixel, a pixel holds a share of roofs, a
 share of visible walls (more the more tilted the view) and ground: sums over buildings. Per texel
@@ -401,7 +401,7 @@ equator).
   hardware against the frame (terrain and meshes), sorted far to near.
 - Each fragment ray-marches its block: walls met at a density rate below each class's roofs, a roof
   met with probability f where the ray comes down through it, events ordered as a descending ray
-  meets them, the nearest surface winning; steps of at least 2 texels (`?fstx=`), only the classes a
+  meets them, the nearest surface winning; steps of at least 2 texels, only the classes a
   texel's mask holds; empty space skipped by per-cell tops; a step whose reads hold no roof as high
   as the ray skips the rest (it meets nothing). One loop walks the cells and takes the steps, the
   classes a step comes down through taken one after another, and a step without a heritage tint
@@ -413,7 +413,7 @@ equator).
   walls are only in the texels their lines cross, and a facade's texel stops only part of the rays
   crossing it; without this the rest went on through the building's inside (no walls there), a
   different share each pixel column: thin vertical streaks down the walls just beyond the meshes,
-  most in tilted views of dense cities (`?fdbg=37` draws without it).
+  most in tilted views of dense cities.
 - Coloured as the meshes are: plain (the plain colour), or by height on the shared colour scale, each class at its
   mean top (v ÷ f) through a lookup of the meshes' own colours (their 33 stops, the low-end fade and
   the threshold), so field and meshes match at the hand-over. Coloured by source, the field stays
@@ -442,18 +442,16 @@ equator).
   there as into the frame, then the texture over the frame: within one level of the frame's 8 bits
   of drawing straight into it), and later frames draw only that texture, marching again only the
   pixels whose depth (meshes, terrain) changed since (a tile coming in). Tokyo, zoom 14, 60°, still,
-  M1 Pro: the field ~1 ms a frame instead of ~17 (`?fcache=0`: off). A moving view draws straight
+  M1 Pro: the field ~1 ms a frame instead of ~17 without the cache. A moving view draws straight
   into the frame, as before. The cache (~56 MB at 2880 × 1626) is freed when the field is off or
   draws nothing, without the frame's depth, and after the view has moved for 60 frames running.
-- Debug and tuning switches: `?fdbg=` (43: each pixel's steps, cells walked and fragments, added up
-  in the frame), `?fstx=`, `?fopt=` (default 3).
 
 **Quality and cost** (measured against full detail shrunk in linear light, σ 8 px blur):
 within about 1 L* of full detail in a district's tone from z13 to z7, the CN Tower standing as a
 spike to z9; ~0.6–1.7 ms of GPU a frame on the M4 at 2880 × 1626 (budget 2 ms). On the M1 Pro at the
 same size, Tokyo at zoom 14 and 60° (the frame's GPU time, task
 #222): 53 ms before the march's changes, 40 ms after (Manhattan 55 → 41, Hong Kong 28 → 22; orbiting
-Tokyo 56 → 36), ~8 ms with `?bldfield=off`; a still view repainted, with the cache, 7.7 ms (Manhattan
+Tokyo 56 → 36), ~8 ms without the field; a still view repainted, with the cache, 7.7 ms (Manhattan
 9.1, Hong Kong 7.5). Moving, the field still holds the frame rate near 30 fps there.
 
 **Known:**

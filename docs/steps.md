@@ -313,7 +313,7 @@ makes the same bytes on every Mac.
 - **3D buildings:** `docs/buildings3d.md`. Every building in the coverage from the Overture release,
   tiles z12–14 per z6 tile (`bldprep`, `bldtiles`; `bld::bld`), a z6 tile's
   z8 tiles offered as tasks (`bldtile`); below zoom 14 the far buildings' field (buildings3d.md
-  §4.8; `?bldfield=off` leaves it out). Planned: national heights (PLATEAU, BD TOPO).
+  §4.8). Planned: national heights (PLATEAU, BD TOPO).
 
 The server builds missing deeper terrain and shading tiles from their ancestors.
 

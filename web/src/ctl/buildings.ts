@@ -26,9 +26,6 @@ export class Buildings {
   /** The far buildings' field, once loaded (null: none, or not yet). */
   field: FieldLayer | null = null;
   private fieldReady: Promise<FieldLayer> | null = null;
-  /** `?bldfield=off` leaves the field out, `?bldfield=<url>` takes its tiles from <url>, a bare
-   * `?bldfield` the server's (either whatever the catalogue says). */
-  private fieldParam = new URLSearchParams(location.search).get('bldfield');
   private dist: Dist | null = null;
   private look: HeightLook;
   /** A palette previewed (the ramp list hovered), else null. */
@@ -47,11 +44,11 @@ export class Buildings {
   }
 
   private wantField(m: Meta) {
-    return this.fieldParam !== 'off' && (this.fieldParam !== null || !!m.layers?.['buildings-field']);
+    return !!m.layers?.['buildings-field'];
   }
 
   private loadField() {
-    return (this.fieldReady ??= import('../bldfield').then((m) => (this.field = new m.FieldLayer(this.fieldParam || null))));
+    return (this.fieldReady ??= import('../bldfield').then((m) => (this.field = new m.FieldLayer())));
   }
 
   /** The field's layer, once loaded, right after the extruded buildings (when they're there). */
