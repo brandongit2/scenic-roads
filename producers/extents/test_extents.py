@@ -95,6 +95,14 @@ class Metrics(unittest.TestCase):
         self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "DTM:2019, DSM:2009"})[0], 2019)
         self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "flown 2011-12-05"})[0], 2011)
 
+    def test_a_pattern_picks_the_value_out_of_a_field(self):
+        spec = {"field": "path", "pattern": r"\\MDT(\d+)_\d+_\d{8}$"}
+        self.assertEqual(extents.metric(spec, {"path": "\\\\host\\MD\\Municipios\\MDT2_05148000_20230103"}), (2.0, None))
+        self.assertEqual(extents.metric(spec, {"path": "\\\\host\\Orto\\Orto10_05148000_20230103"}), (None, None))
+        # (Then read as any field: a class mapped, a date.)
+        self.assertEqual(extents.metric({"field": "t", "pattern": r"Resolución (\S+ c?m)", "map": {"1 m": 1.0}}, {"t": "MDT. Resolución 1 m. Año 2021"}), (1.0, "1 m"))
+        self.assertEqual(extents.metric({"field": "t", "pattern": r"Año (\d+)", "date": "year"}, {"t": "MDT. Resolución 1 m. Año 2021"})[0], 2021)
+
     def test_a_number_written_with_its_unit(self):
         spec = {"field": "s", "text": "metre"}
         self.assertEqual(extents.metric(spec, {"s": "2 metre"}), (2.0, None))
@@ -121,8 +129,9 @@ class Metrics(unittest.TestCase):
         # A class kept as stated survives a later reading's lack of a value.
         self.assertEqual(extents.metric([{"field": "q", "map": {"QL 1": 0.1}}, {"field": "x"}], {"q": "Other"}), (None, "Other"))
         self.assertEqual(extents.wanted_fields({"metrics": {"year": spec, "surface": "ground"}}), {"id", "datetime"})
-        # A filter's and an exclusion's fields are read too: a feature without them is filtered out.
-        self.assertEqual(extents.wanted_fields({"filter": {"STATUS": ["Completed"]}, "exclude": {"KIND": ["x"]}, "by": ["A"]}), {"STATUS", "KIND", "A"})
+        # (And what a filter, an exclusion or `latest` looks at: a service asked for only these.)
+        self.assertEqual(extents.wanted_fields({"filter": {"Estado": ["Oficializado"]}, "exclude": {"x": [""]},
+                                                "latest": {"field": "id", "pattern": "a", "order": "b"}}), {"Estado", "x", "id"})
 
 
 class Score(unittest.TestCase):

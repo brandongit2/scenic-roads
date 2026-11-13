@@ -1,0 +1,44 @@
+name = "Intendencia de Montevideo LiDAR 2024 and surface models"
+credit = "Intendencia de Montevideo, Servicio de Geomática"
+licence = "Licencia de Datos Abiertos - Uruguay"
+licence_url = "https://www.agesic.gub.uy/innovaportal/file/6327/1/licencia-de-datos-abiertos.pdf"
+source = "https://sig.montevideo.gub.uy/lidar-2024.html"
+theme = "terrain"
+availability = "open"
+notes = "The department of Montevideo's airborne lidar of 2024 (classified LAZ: ground, three vegetation classes, buildings, water) and its surface model (MDS 2024, \"generado a partir de datos LiDAR\", EGM2008 heights), each in the city's sheets (K-29-B-5-N-9), each sheet's file a share link on the city's IMNube that downloads without a login (the guide speaks of an IDUruguay login; the links answered a range request without one); the sheet grids are the city GeoServer's WFS layers fa_sig_lidar2024_v4 (870 sheets) and sig_mds2024 (871), EPSG:32721. The point density and the surface model's cell aren't stated on any page read (so no spacing, and no score). The earlier surface model of the 2021 flight is had on request (its catalogue entry: the grid \"para solicitar el MDS 2021\", fa_sig_grilla_mds_vuelo_2021, 890 sheets; its cell not stated): login, claimed on its grid."
+
+[[piece]]
+id = "lidar-2024"
+label = "LiDAR 2024 (point cloud)"
+method = "wfs"
+class = "index"
+url = "https://montevideo.gub.uy/app/geoserver/mapstore-tematicas/ows"
+type = "mapstore-tematicas:fa_sig_lidar2024_v4"
+tolerance_m = 20
+[piece.metrics]
+year = 2024
+
+[[piece]]
+id = "mds-2024"
+label = "MDS 2024 (from the lidar)"
+method = "wfs"
+class = "index"
+url = "https://montevideo.gub.uy/app/geoserver/mapstore-tematicas/ows"
+type = "mapstore-tematicas:sig_mds2024"
+tolerance_m = 20
+[piece.metrics]
+surface = "surface"
+year = 2024
+
+[[piece]]
+id = "mds-2021"
+label = "MDS 2021 (on request)"
+method = "wfs"
+class = "claimed"
+availability = "login"
+url = "https://montevideo.gub.uy/app/geoserver/mapstore-tematicas/ows"
+type = "mapstore-tematicas:fa_sig_grilla_mds_vuelo_2021"
+tolerance_m = 20
+[piece.metrics]
+surface = "surface"
+year = 2021

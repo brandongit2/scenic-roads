@@ -1,0 +1,28 @@
+name = "Distrito Federal MDT 1 m (Terracap/GDF lidar 2016)"
+credit = "Governo do Distrito Federal, SEDUH / IDE-DF; Terracap"
+licence = "none stated"
+licence_url = "https://www.geoservicos.ide.df.gov.br/arcgis/rest/services/Aplicacoes/MDS_PROFILE_FINAL/MapServer"
+source = "https://www.geoservicos.ide.df.gov.br/arcgis/rest/services/Aplicacoes/MDS_PROFILE_FINAL/MapServer"
+theme = "terrain"
+availability = "closed"
+notes = "The Federal District's 1 m terrain model from Terracap's 2016 lidar of its urban and urbanizable areas (a mean of 4 points per m², 3,729 sheets at 1:1,000, as an UnB article states), on the IDE-DF ArcGIS Server only as a raster layer of the MapServer Aplicacoes/MDS_PROFILE_FINAL (layer mdt1m) behind elevation-profile tools: no image service, file or download, so it can't be had: closed. Its extent is the service's own boundary of the model (layer demboundary, its `res` 1; 1,188 km², 20.6 % of the District): `service`, claimed as closed. A 5 m model also sits behind the Profile_5m tool, with no outline (listed)."
+
+[[piece]]
+id = "mdt1m"
+label = "MDT 1 m (2016 lidar; no download)"
+method = "arcgis"
+class = "service"
+url = "https://www.geoservicos.ide.df.gov.br/arcgis/rest/services/Aplicacoes/MDS_PROFILE_FINAL/MapServer/1"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res" }
+year = 2016
+
+[[piece]]
+id = "mdt5m"
+label = "MDT 5 m (no outline)"
+method = "none"
+why = "the 5 m model behind the IDE-DF's Profile_5m tool has no published outline, cell or year"
+[piece.metrics]
+spacing_m = 5

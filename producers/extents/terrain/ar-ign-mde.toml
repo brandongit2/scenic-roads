@@ -1,0 +1,107 @@
+name = "IGN Argentina Modelos Digitales de Elevaciones"
+credit = "Instituto Geográfico Nacional de la República Argentina"
+licence = "IGN Términos y condiciones (cite the source; downloads shared freely; commercial use only in derived works)"
+licence_url = "https://www.ign.gob.ar/descargas/tyc1.html"
+source = "https://www.ign.gob.ar/NuestrasActividades/Geodesia/ModeloDigitalElevaciones/Introduccion"
+theme = "terrain"
+availability = "login"
+notes = "The national geographic institute's elevation models, each class's sheet index a feature type of its WFS (modelos-digitales-elevaciones, EPSG:4326), each sheet its project's `nombre` (\"0039 - 2016 - Rio Parana - Sector 1.16\": its year) and its file's name. The IGN's MDE (Modelo Digital de Elevaciones) \"representan todas las estructuras antrópicas (tales como edificaciones) y vegetación\", a surface model; its MDT (Modelo Digital de Terreno) has them filtered out, a ground model. The aerophotogrammetric 5 m models (Vexcel UltraCamXp, \"precisión vertical submétrica\": no figure) by project, 2,728 MDE sheets and 105 MDT sheets; the 0.5 m models from unmanned flights (VANT) ceded to the IGN, 190 MDE and 86 MDT sheets; the external MDTs ceded by public bodies and firms (ACUMAR 2015, Río Luján 2018, Formosa 2019 …; photogrammetric or lidar, \"resolución espacial … variable\"), 87 sheets, their spacing not stated (so no score). Their download links answer a redirect to the FAQ: they are asked for by e-mail to the IGN's Asesoría Técnica with the area and product (free; login). The MDE-Ar v2.1, 30 m (SRTM and ALOS, the continental territory, SRVN16 heights; its validation against 24,072 levelled points: a mean of −2.11 m and a standard deviation of 1.91 m, no RMSE stated), downloads by sheet (its 1,910 sheets, South Georgia's among them): open. Pieces by project."
+
+[[piece]]
+id = "mde-5m"
+label = "MDE 5 m (aerophotogrammetric)"
+method = "wfs"
+class = "index"
+url = "https://wms.ign.gob.ar/geoserver/modelos-digitales-elevaciones/ows"
+type = "modelos-digitales-elevaciones:mde_5m"
+fields = ["nombre", "geom"]
+page = 500
+by = ["nombre"]
+name = "nombre"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 5
+year = { field = "nombre", date = "text" }
+
+[[piece]]
+id = "mdt-5m"
+label = "MDT 5 m (aerophotogrammetric)"
+method = "wfs"
+class = "index"
+url = "https://wms.ign.gob.ar/geoserver/modelos-digitales-elevaciones/ows"
+type = "modelos-digitales-elevaciones:mdt_5m"
+fields = ["nombre", "geom"]
+page = 500
+by = ["nombre"]
+name = "nombre"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = { field = "nombre", date = "text" }
+
+[[piece]]
+id = "mde-50cm"
+label = "MDE 0.5 m (unmanned flights)"
+method = "wfs"
+class = "index"
+url = "https://wms.ign.gob.ar/geoserver/modelos-digitales-elevaciones/ows"
+type = "modelos-digitales-elevaciones:mde_50cm"
+fields = ["nombre", "geom"]
+page = 500
+by = ["nombre"]
+name = "nombre"
+tolerance_m = 20
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "nombre", date = "text" }
+
+[[piece]]
+id = "mdt-50cm"
+label = "MDT 0.5 m (unmanned flights)"
+method = "wfs"
+class = "index"
+url = "https://wms.ign.gob.ar/geoserver/modelos-digitales-elevaciones/ows"
+type = "modelos-digitales-elevaciones:mdt_50cm"
+fields = ["nombre", "geom"]
+page = 500
+by = ["nombre"]
+name = "nombre"
+tolerance_m = 20
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "nombre", date = "text" }
+
+[[piece]]
+id = "mdt-externos"
+label = "MDT externos (ceded; spacing not stated)"
+method = "wfs"
+class = "index"
+url = "https://wms.ign.gob.ar/geoserver/modelos-digitales-elevaciones/ows"
+type = "modelos-digitales-elevaciones:mdt_externos"
+fields = ["nombre", "geom"]
+page = 500
+by = ["nombre"]
+name = "nombre"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+year = { field = "nombre", date = "text" }
+
+[[piece]]
+id = "mde-ar-30m"
+label = "MDE-Ar v2.1 30 m"
+method = "wfs"
+class = "index"
+availability = "open"
+url = "https://wms.ign.gob.ar/geoserver/modelos-digitales-elevaciones/ows"
+type = "modelos-digitales-elevaciones:mde_v2_30m"
+fields = ["nombre", "geom"]
+page = 500
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 30

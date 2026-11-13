@@ -1,0 +1,24 @@
+name = "DSG Radiografia da Amazônia MDT and MDS (BDGEx)"
+credit = "Diretoria de Serviço Geográfico do Exército Brasileiro (DSG), BDGEx"
+licence = "BDGEx terms (registration)"
+licence_url = "https://bdgex.eb.mil.br/"
+source = "https://web.archive.org/web/20241217044224/http://ebrevistas.eb.mil.br/VO/article/download/819/863"
+theme = "terrain"
+availability = "login"
+notes = "The army's mapping of the Legal Amazon at 1:50,000 (Radiografia da Amazônia: 1.8 million km² planned, 1,142,000 km² imaged by 2012) by airborne interferometric radar, P band and X band, giving terrain models (MDT, under the forest), surface models (MDS) and vegetation heights. The surface model sheets are listed in BDGEx after a registration (the INDE's catalogue holds about 1,946 \"Modelo Digital de Superfície\" sheet records, 1,586 at 1:50,000 and 360 at 1:25,000, each a BDGEx link, the first created 2008-12-30); the terrain models \"sob pedido e com nível de acesso ao BDGEx adequado\". Their grid and accuracy aren't stated where read (the army's hosts reset the connection). The sheets' records give no index the producer reads (a catalogue's records one by one), and the area imaged isn't one a claim can draw: listed, not drawn. Amapá's own share of the mapping is br-ap-sema-insar."
+
+[[piece]]
+id = "mds"
+label = "MDS (X-band InSAR), BDGEx sheets"
+method = "none"
+why = "its about 1,946 sheets are catalogue records one by one, with no sheet index read, and the area imaged (part of the Legal Amazon) isn't an administrative area to claim"
+[piece.metrics]
+surface = "surface"
+
+[[piece]]
+id = "mdt"
+label = "MDT (P-band InSAR), on request"
+method = "none"
+why = "its sheets are had only on request in BDGEx, with no index or stated area"
+[piece.metrics]
+surface = "ground"

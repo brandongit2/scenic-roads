@@ -1,0 +1,32 @@
+name = "Fortaleza levantamento LiDAR 2023 (MDT and MDS)"
+credit = "Prefeitura Municipal de Fortaleza (SEFIN, SEUMA)"
+licence = "none stated"
+licence_url = "https://geonetworkdownload.sefin.fortaleza.ce.gov.br/geonetwork/rasters/IMAGEAMENTO/"
+source = "https://geonetworkdownload.sefin.fortaleza.ce.gov.br/geonetwork/rasters/IMAGEAMENTO/mdt_2023.tif"
+theme = "terrain"
+availability = "open"
+notes = "The city of Fortaleza's airborne lidar of December 2023 (contract 14/2023-SEUMA, about 390 km², at least 4 points per m² as contracted): its terrain model (mdt_2023.tif, 4.3 GB) and surface model (mds_2023.tif), each one cloud-optimized GeoTIFF of 0.5 m cells (SIRGAS 2000 UTM 24S) on the city's download host, without a login. Each file's header and its mask at the overview of 64 m pixels: `files`. No accuracy or licence is stated."
+
+[[piece]]
+id = "mdt"
+label = "MDT 2023 (lidar)"
+method = "raster"
+urls = ["https://geonetworkdownload.sefin.fortaleza.ce.gov.br/geonetwork/rasters/IMAGEAMENTO/mdt_2023.tif"]
+mask_m = 64
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2023
+
+[[piece]]
+id = "mds"
+label = "MDS 2023 (lidar)"
+method = "raster"
+urls = ["https://geonetworkdownload.sefin.fortaleza.ce.gov.br/geonetwork/rasters/IMAGEAMENTO/mds_2023.tif"]
+mask_m = 64
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }
+year = 2023

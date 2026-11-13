@@ -1064,9 +1064,12 @@ def latest_versions(feats, spec):
 
 
 def wanted_fields(b):
-    """The fields a block reads: its `by`, `name`, metrics' readings, and its `filter`'s and
-    `exclude`'s, which a service asked only for the others would leave every feature without."""
+    """The fields a block reads: its `by`, `name`, metrics' readings, and what its `filter`,
+    `exclude` and `latest` look at (a reader asking a service for only these fields, `arcgis`'s,
+    would otherwise leave every feature out of a filter)."""
     out = set(b.get("by", [])) | set(b.get("filter") or {}) | set(b.get("exclude") or {})
+    if b.get("latest"):
+        out.add(b["latest"]["field"])
     if b.get("name"):
         out.add(b["name"])
     for m in (b.get("metrics") or {}).values():
@@ -1095,6 +1098,13 @@ def metric(spec, props):
         v = v[spec["index"]]
     if v is None or v == "":
         return None, None
+    if "pattern" in spec:
+        # (The part of a field that holds the value, the pattern's first group: a file path naming
+        # its grid's cell, IGAC's …\MDT1_05148000_20230103.)
+        m = re.search(spec["pattern"], str(v))
+        if not m:
+            return None, None
+        v = m.group(1)
     if "map" in spec:
         return spec["map"].get(str(v)), str(v)
     if "date" in spec:

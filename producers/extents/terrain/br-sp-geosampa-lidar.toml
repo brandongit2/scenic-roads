@@ -1,0 +1,30 @@
+name = "Prefeitura de São Paulo aerolevantamento LiDAR 2017 and 2020 (GeoSampa)"
+credit = "Prefeitura do Município de São Paulo, GeoSampa"
+licence = "no restrictions stated (\"semRestricoes\")"
+licence_url = "https://geosampa.prefeitura.sp.gov.br/"
+source = "https://geosampa.prefeitura.sp.gov.br/"
+theme = "terrain"
+availability = "open"
+notes = "The city of São Paulo's airborne lidar surveys of 2017 and 2020 (the 2020 one \"Mapeamento LIDAR 2020 1:1000\", by Fototerra), downloaded from GeoSampa without a login: their \"MDT\" (the ground-classified points) and \"MDS\" (every return) are point clouds, so the pieces state no surface. Their sheet indexes are GeoSampa's WFS layers \"Índice do MDS 2017\" (quadricula_folha_mds, 5,544 sheets) and \"Índice do MDT/MDS 2020\" (quadricula_folha_mdt_mds_2020, 5,401 sheets), EPSG:31983. Their point densities aren't stated on a page read here (so no spacing, and no score)."
+
+[[piece]]
+id = "lidar-2017"
+label = "LiDAR 2017 (MDT and MDS point clouds)"
+method = "wfs"
+class = "index"
+url = "https://wfs.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wfs"
+type = "geoportal:quadricula_folha_mds"
+tolerance_m = 50
+[piece.metrics]
+year = 2017
+
+[[piece]]
+id = "lidar-2020"
+label = "LiDAR 2020 (MDT and MDS point clouds)"
+method = "wfs"
+class = "index"
+url = "https://wfs.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wfs"
+type = "geoportal:quadricula_folha_mdt_mds_2020"
+tolerance_m = 50
+[piece.metrics]
+year = { field = "an_levantamento", date = "year" }

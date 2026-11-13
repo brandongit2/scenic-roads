@@ -1,0 +1,20 @@
+name = "IDECOR Modelo Digital de Elevaciones aerofotogramétrico 5 m"
+credit = "IDECOR, Gobierno de la Provincia de Córdoba; the model is the Instituto Geográfico Nacional's"
+licence = "IDECOR's data CC BY-SA 4.0; the model is the IGN's (IGN Términos y condiciones also apply)"
+licence_url = "https://www.idecor.gob.ar/terminos-y-condiciones/"
+source = "https://idecor-ws.mapascordoba.gob.ar/geoserver/wcs?service=WCS&version=2.0.1&request=GetCapabilities"
+theme = "terrain"
+availability = "open"
+notes = "The province of Córdoba's spatial data infrastructure serves the IGN's aerophotogrammetric 5 m elevation model (the MDE, a surface model: ar-ign-mde's mde-5m, had from the IGN only on request) openly over its WCS 2.0.1 (coverage idecor__dem_5m_cba_ext, \"Modelo Digital de Elevaciones: Aerofotogamétrico 5m\", EPSG:22174, 5.00004 m cells, int16 whole metres, nodata 32767; service Fees and AccessConstraints NONE). Its extent is its valid data in a GetCoverage asked for at a scale factor of 0.01 (500 m cells, a 15.7 MB GeoTIFF): `files`, its grain the coarse cell; the spacing is the coverage's own. It holds 8,021 km² round the Sierras de Córdoba and the city, 97 % of it inside the IGN's 5 m sheets (the IGN's sheets in the province: 12,444 km²; the coverage's envelope cuts off at 64.65° W). No year is stated (the IGN's projects there are of 2014 and 2016), nor an accuracy."
+
+[[piece]]
+id = "dem-5m"
+label = "MDE 5 m (IGN, served by IDECOR)"
+method = "raster"
+urls = ["https://idecor-ws.mapascordoba.gob.ar/geoserver/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=idecor__dem_5m_cba_ext&format=image/tiff&SCALEFACTOR=0.01"]
+mask_m = 500
+tolerance_m = 250
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 5

@@ -1,0 +1,18 @@
+name = "Rio de Janeiro Modelo Digital de Terreno (Lidar 2019)"
+credit = "Instituto Pereira Passos (IPP), Prefeitura da Cidade do Rio de Janeiro"
+licence = "none stated (copyright IPP/PCRJ)"
+licence_url = "https://pgeo3.rio.rj.gov.br/arcgis/rest/services/Cartografia/Modelo_Digital_de_Terreno__Lidar_2019__escala_1_10_000_/MapServer"
+source = "https://pgeo3.rio.rj.gov.br/arcgis/rest/services/Cartografia/Modelo_Digital_de_Terreno__Lidar_2019__escala_1_10_000_/MapServer"
+theme = "terrain"
+availability = "closed"
+notes = "The city of Rio de Janeiro's terrain model \"derivado de levantamento Lidar de 2019 reamostrado para 5 metros de resolução espacial, escala 1:10.000\", served only as a map service's hypsometric layer (no image service, file or download): closed. Its outline is only the service's rectangle, and Natural Earth's administrative areas don't draw the city: listed, not drawn."
+
+[[piece]]
+id = "mdt-2019"
+label = "MDT 5 m (lidar 2019, resampled)"
+method = "none"
+why = "the map service gives only its rectangle, and no outline of the city it covers was found"
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2019

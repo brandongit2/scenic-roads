@@ -1,0 +1,28 @@
+name = "Medellín LiDAR 2021-2022 DTM and DSM"
+credit = "Alcaldía de Medellín"
+licence = "Licencia Abierta (non-commercial, share-alike)"
+licence_url = "https://www.medellin.gov.co/geomedellin/"
+source = "https://www.medellin.gov.co/geomedellin/"
+theme = "terrain"
+availability = "login"
+notes = "The city of Medellín's lidar of 2021 and 2022, its 1 m terrain and surface models downloaded after creating an account, under the city's open licence (non-commercial, share-alike), as the research's first pass read it. No sheet index was read, and Natural Earth's administrative areas don't draw the municipality: listed, not drawn."
+
+[[piece]]
+id = "dtm"
+label = "DTM 1 m (lidar 2021-22)"
+method = "none"
+why = "no sheet index of the city's files was read, and Natural Earth doesn't draw the municipality"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2022
+
+[[piece]]
+id = "dsm"
+label = "DSM 1 m (lidar 2021-22)"
+method = "none"
+why = "no sheet index of the city's files was read, and Natural Earth doesn't draw the municipality"
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2022

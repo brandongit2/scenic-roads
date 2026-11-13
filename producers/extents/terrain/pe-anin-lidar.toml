@@ -1,0 +1,24 @@
+name = "Peru: ANIN Piura basin lidar and IGN drone lidar"
+credit = "Autoridad Nacional de Infraestructura (ANIN); Instituto Geográfico Nacional del Perú (IGN)"
+licence = "none published"
+licence_url = "https://www.gob.pe/institucion/anin/noticias/1249148-anin-inicia-vuelos-lidar-en-la-cuenca-del-rio-piura-para-estudios-de-preinversion"
+source = "https://www.gob.pe/institucion/anin/noticias/1249148-anin-inicia-vuelos-lidar-en-la-cuenca-del-rio-piura-para-estudios-de-preinversion"
+theme = "terrain"
+availability = "closed"
+notes = "Peru's known lidar: the national infrastructure authority's helicopter lidar of the Piura basin (from September 2025, \"397, 155.28 hectáreas a lo largo de 480 kilómetros\", for its pre-investment studies: elevation and terrain models; no density, licence or route to the data), and the IGN's drone lidar of Machu Picchu and the Choquequirao trail (2021, its products to public bodies only). The national catalogue (GEOIDEP) holds no lidar or terrain model record, and the IGN's clip-and-download task \"PERU_Dem\" states no resolution or source. Neither survey publishes an outline: listed, not drawn."
+
+[[piece]]
+id = "piura-lidar"
+label = "ANIN lidar, Piura basin (2025)"
+method = "none"
+why = "the area flown (3,972 km² along 480 km of the basin) has no published outline"
+[piece.metrics]
+year = 2025
+
+[[piece]]
+id = "ign-drone-lidar"
+label = "IGN drone lidar, Machu Picchu and Choquequirao (2021)"
+method = "none"
+why = "no outline is published, and the products go to public bodies only"
+[piece.metrics]
+year = 2021

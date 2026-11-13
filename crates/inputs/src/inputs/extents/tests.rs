@@ -327,6 +327,7 @@ fn a_declaration() {
         ("{ field = \"year\", date = \"year\" }", "[]"),
         ("{ field = \"year\", date = \"year\" }", "[2020, { field = \"year\", date = \"year\" }]"),
         ("{ field = \"year\", date = \"year\" }", "[{ field = \"year\", date = \"julian\" }]"),
+        ("{ field = \"year\", date = \"year\" }", "{ field = \"year\", pattern = \"\", date = \"year\" }"),
     ] {
         let bad = DECL.replacen(from, to, 1);
         assert_ne!(bad, DECL);
@@ -351,6 +352,14 @@ fn a_declaration() {
         1,
     );
     assert!(checks_of("terrain/lidar.toml", turns.as_bytes()).is_empty());
+    // A pattern picking the value out of a field.
+    let picked = DECL.replacen(
+        "{ field = \"year\", date = \"year\" }",
+        "{ field = \"path\", pattern = 'MDT(\\d+)_', date = \"year\" }",
+        1,
+    );
+    assert_ne!(picked, DECL);
+    assert!(checks_of("terrain/lidar.toml", picked.as_bytes()).is_empty());
     let atom = DECL.replacen("method = \"arcgis\"\nclass = \"index\"", "method = \"atom\"", 1);
     assert!(checks_of("terrain/lidar.toml", atom.as_bytes()).is_empty());
     // The theme: missing, unknown, or not its folder's.
@@ -618,7 +627,7 @@ fn partners_are_a_sources_two_files() {
 }
 
 /// The terrain's declarations, pieces and score as producers/extents/ made them.
-const REAL: [(&str, &[u8]); 495] = [
+const REAL: [(&str, &[u8]); 551] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/terrain/score.toml")),
     ("aad-station-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/aad-station-dem.geojson")),
     ("aad-station-dem.toml", include_bytes!("../../../../../producers/extents/terrain/aad-station-dem.toml")),
@@ -634,6 +643,10 @@ const REAL: [(&str, &[u8]); 495] = [
     ("antigua-tcarta.toml", include_bytes!("../../../../../producers/extents/terrain/antigua-tcarta.toml")),
     ("antilles-litto3d.geojson", include_bytes!("../../../../../producers/extents/terrain/antilles-litto3d.geojson")),
     ("antilles-litto3d.toml", include_bytes!("../../../../../producers/extents/terrain/antilles-litto3d.toml")),
+    ("ar-cba-idecor.geojson", include_bytes!("../../../../../producers/extents/terrain/ar-cba-idecor.geojson")),
+    ("ar-cba-idecor.toml", include_bytes!("../../../../../producers/extents/terrain/ar-cba-idecor.toml")),
+    ("ar-ign-mde.geojson", include_bytes!("../../../../../producers/extents/terrain/ar-ign-mde.geojson")),
+    ("ar-ign-mde.toml", include_bytes!("../../../../../producers/extents/terrain/ar-ign-mde.toml")),
     ("at-bev-als-dgm.geojson", include_bytes!("../../../../../producers/extents/terrain/at-bev-als-dgm.geojson")),
     ("at-bev-als-dgm.toml", include_bytes!("../../../../../producers/extents/terrain/at-bev-als-dgm.toml")),
     ("at-bgld-dgm.geojson", include_bytes!("../../../../../producers/extents/terrain/at-bgld-dgm.geojson")),
@@ -690,6 +703,49 @@ const REAL: [(&str, &[u8]); 495] = [
     ("bg-sofiaplan.toml", include_bytes!("../../../../../producers/extents/terrain/bg-sofiaplan.toml")),
     ("bh-slrb-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/bh-slrb-dtm.geojson")),
     ("bh-slrb-dtm.toml", include_bytes!("../../../../../producers/extents/terrain/bh-slrb-dtm.toml")),
+    ("br-ap-sema-insar.geojson", include_bytes!("../../../../../producers/extents/terrain/br-ap-sema-insar.geojson")),
+    ("br-ap-sema-insar.toml", include_bytes!("../../../../../producers/extents/terrain/br-ap-sema-insar.toml")),
+    (
+        "br-ba-salvador-lidar.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/br-ba-salvador-lidar.geojson"),
+    ),
+    ("br-ba-salvador-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/br-ba-salvador-lidar.toml")),
+    ("br-ba-sei.geojson", include_bytes!("../../../../../producers/extents/terrain/br-ba-sei.geojson")),
+    ("br-ba-sei.toml", include_bytes!("../../../../../producers/extents/terrain/br-ba-sei.toml")),
+    (
+        "br-ce-fortaleza-lidar.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/br-ce-fortaleza-lidar.geojson"),
+    ),
+    (
+        "br-ce-fortaleza-lidar.toml",
+        include_bytes!("../../../../../producers/extents/terrain/br-ce-fortaleza-lidar.toml"),
+    ),
+    ("br-df-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/br-df-mdt.geojson")),
+    ("br-df-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/br-df-mdt.toml")),
+    (
+        "br-dsg-radiografia.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/br-dsg-radiografia.geojson"),
+    ),
+    ("br-dsg-radiografia.toml", include_bytes!("../../../../../producers/extents/terrain/br-dsg-radiografia.toml")),
+    ("br-es-geobases.geojson", include_bytes!("../../../../../producers/extents/terrain/br-es-geobases.geojson")),
+    ("br-es-geobases.toml", include_bytes!("../../../../../producers/extents/terrain/br-es-geobases.toml")),
+    ("br-ibge-mde.geojson", include_bytes!("../../../../../producers/extents/terrain/br-ibge-mde.geojson")),
+    ("br-ibge-mde.toml", include_bytes!("../../../../../producers/extents/terrain/br-ibge-mde.toml")),
+    ("br-mg-bh-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/br-mg-bh-lidar.geojson")),
+    ("br-mg-bh-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/br-mg-bh-lidar.toml")),
+    ("br-pe-pe3d.geojson", include_bytes!("../../../../../producers/extents/terrain/br-pe-pe3d.geojson")),
+    ("br-pe-pe3d.toml", include_bytes!("../../../../../producers/extents/terrain/br-pe-pe3d.toml")),
+    ("br-rj-rio-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/br-rj-rio-mdt.geojson")),
+    ("br-rj-rio-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/br-rj-rio-mdt.toml")),
+    ("br-sc-sigsc.geojson", include_bytes!("../../../../../producers/extents/terrain/br-sc-sigsc.geojson")),
+    ("br-sc-sigsc.toml", include_bytes!("../../../../../producers/extents/terrain/br-sc-sigsc.toml")),
+    ("br-sp-estado-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/br-sp-estado-mdt.geojson")),
+    ("br-sp-estado-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/br-sp-estado-mdt.toml")),
+    (
+        "br-sp-geosampa-lidar.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/br-sp-geosampa-lidar.geojson"),
+    ),
+    ("br-sp-geosampa-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/br-sp-geosampa-lidar.toml")),
     (
         "caribbean-nl-lidar.geojson",
         include_bytes!("../../../../../producers/extents/terrain/caribbean-nl-lidar.geojson"),
@@ -709,6 +765,16 @@ const REAL: [(&str, &[u8]); 495] = [
     ("ch-swisssurface3d.toml", include_bytes!("../../../../../producers/extents/terrain/ch-swisssurface3d.toml")),
     ("ch-zh-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/ch-zh-dtm.geojson")),
     ("ch-zh-dtm.toml", include_bytes!("../../../../../producers/extents/terrain/ch-zh-dtm.toml")),
+    ("cl-ciren-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/cl-ciren-dem.geojson")),
+    ("cl-ciren-dem.toml", include_bytes!("../../../../../producers/extents/terrain/cl-ciren-dem.toml")),
+    ("cl-saf-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/cl-saf-lidar.geojson")),
+    ("cl-saf-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/cl-saf-lidar.toml")),
+    ("clipperton-shom.geojson", include_bytes!("../../../../../producers/extents/terrain/clipperton-shom.geojson")),
+    ("clipperton-shom.toml", include_bytes!("../../../../../producers/extents/terrain/clipperton-shom.toml")),
+    ("co-igac-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/co-igac-mdt.geojson")),
+    ("co-igac-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/co-igac-mdt.toml")),
+    ("co-medellin-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/co-medellin-lidar.geojson")),
+    ("co-medellin-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/co-medellin-lidar.toml")),
     ("connecticut-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/connecticut-lidar.geojson")),
     ("connecticut-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/connecticut-lidar.toml")),
     ("cop-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/cop-dem.geojson")),
@@ -767,6 +833,8 @@ const REAL: [(&str, &[u8]); 495] = [
     ("dominica-dvrp.toml", include_bytes!("../../../../../producers/extents/terrain/dominica-dvrp.toml")),
     ("dominicanrep-sgn.geojson", include_bytes!("../../../../../producers/extents/terrain/dominicanrep-sgn.geojson")),
     ("dominicanrep-sgn.toml", include_bytes!("../../../../../producers/extents/terrain/dominicanrep-sgn.toml")),
+    ("ec-sigtierras-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/ec-sigtierras-mdt.geojson")),
+    ("ec-sigtierras-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/ec-sigtierras-mdt.toml")),
     ("ee-maaruum-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/ee-maaruum-dtm.geojson")),
     ("ee-maaruum-dtm.toml", include_bytes!("../../../../../producers/extents/terrain/ee-maaruum-dtm.toml")),
     ("eg-sri-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/eg-sri-dem.geojson")),
@@ -866,6 +934,8 @@ const REAL: [(&str, &[u8]); 495] = [
     ("greenland-ghm.toml", include_bytes!("../../../../../producers/extents/terrain/greenland-ghm.toml")),
     ("grenada-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/grenada-lidar.geojson")),
     ("grenada-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/grenada-lidar.toml")),
+    ("gs-sggis-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/gs-sggis-dem.geojson")),
+    ("gs-sggis-dem.toml", include_bytes!("../../../../../producers/extents/terrain/gs-sggis-dem.toml")),
     ("guatemala-ign.geojson", include_bytes!("../../../../../producers/extents/terrain/guatemala-ign.geojson")),
     ("guatemala-ign.toml", include_bytes!("../../../../../producers/extents/terrain/guatemala-ign.toml")),
     ("haiti-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/haiti-dtm.geojson")),
@@ -1057,6 +1127,8 @@ const REAL: [(&str, &[u8]); 495] = [
     ("om-nsa-dem.toml", include_bytes!("../../../../../producers/extents/terrain/om-nsa-dem.toml")),
     ("ontario-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/ontario-lidar.geojson")),
     ("ontario-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/ontario-lidar.toml")),
+    ("pa-igntg-sar.geojson", include_bytes!("../../../../../producers/extents/terrain/pa-igntg-sar.geojson")),
+    ("pa-igntg-sar.toml", include_bytes!("../../../../../producers/extents/terrain/pa-igntg-sar.toml")),
     ("paccsap-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/paccsap-lidar.geojson")),
     ("paccsap-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/paccsap-lidar.toml")),
     (
@@ -1072,6 +1144,8 @@ const REAL: [(&str, &[u8]); 495] = [
         "pacific-national-lidar.toml",
         include_bytes!("../../../../../producers/extents/terrain/pacific-national-lidar.toml"),
     ),
+    ("pe-anin-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/pe-anin-lidar.geojson")),
+    ("pe-anin-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/pe-anin-lidar.toml")),
     ("pf-sau-mnt.geojson", include_bytes!("../../../../../producers/extents/terrain/pf-sau-mnt.geojson")),
     ("pf-sau-mnt.toml", include_bytes!("../../../../../producers/extents/terrain/pf-sau-mnt.toml")),
     ("pgc-arcticdem.geojson", include_bytes!("../../../../../producers/extents/terrain/pgc-arcticdem.geojson")),
@@ -1162,6 +1236,15 @@ const REAL: [(&str, &[u8]); 495] = [
     ("usgs-3dep.toml", include_bytes!("../../../../../producers/extents/terrain/usgs-3dep.toml")),
     ("usiei.geojson", include_bytes!("../../../../../producers/extents/terrain/usiei.geojson")),
     ("usiei.toml", include_bytes!("../../../../../producers/extents/terrain/usiei.toml")),
+    ("uy-ide-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/uy-ide-mdt.geojson")),
+    ("uy-ide-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/uy-ide-mdt.toml")),
+    (
+        "uy-montevideo-lidar.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/uy-montevideo-lidar.geojson"),
+    ),
+    ("uy-montevideo-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/uy-montevideo-lidar.toml")),
+    ("uy-mtop-vergara.geojson", include_bytes!("../../../../../producers/extents/terrain/uy-mtop-vergara.geojson")),
+    ("uy-mtop-vergara.toml", include_bytes!("../../../../../producers/extents/terrain/uy-mtop-vergara.toml")),
     ("wales-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/wales-lidar.geojson")),
     ("wales-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/wales-lidar.toml")),
     ("yukon-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/yukon-lidar.geojson")),
@@ -1226,6 +1309,15 @@ fn the_real_terrain_files_are_taken() {
         ("ba-fgu", 1),
         ("ba-rs-rgurs", 1),
         ("belize-crip", 1),
+        ("br-df-mdt", 1),
+        ("br-dsg-radiografia", 2),
+        ("br-ibge-mde", 2),
+        ("br-mg-bh-lidar", 3),
+        ("br-pe-pe3d", 1),
+        ("br-rj-rio-mdt", 1),
+        ("cl-ciren-dem", 1),
+        ("cl-saf-lidar", 1),
+        ("co-medellin-lidar", 2),
         ("cv-fogo-uav", 1),
         ("cz-brno-dmt", 1),
         ("de-hb-dgm1", 1),
@@ -1242,6 +1334,7 @@ fn the_real_terrain_files_are_taken() {
         ("gb-nir-roads-lidar", 3),
         ("gh-accra-lidar", 2),
         ("gr-ktimatologio", 1),
+        ("gs-sggis-dem", 1),
         ("guatemala-ign", 1),
         ("ie-tailte-dtm", 1),
         ("in-nrsc-cartodem", 2),
@@ -1267,8 +1360,10 @@ fn the_real_terrain_files_are_taken() {
         ("np-survey-lidar", 1),
         ("npi-antarctic-dtm", 1),
         ("om-nsa-dem", 2),
+        ("pa-igntg-sar", 2),
         ("paccsap-lidar", 4),
         ("pacific-island-lidar", 5),
+        ("pe-anin-lidar", 2),
         ("pf-sau-mnt", 3),
         ("ph-namria-elevation", 6),
         ("pl-gugik-nmt", 1),

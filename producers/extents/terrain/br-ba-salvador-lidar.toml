@@ -1,0 +1,41 @@
+name = "Salvador lidar MDT and MDS (BAP Salvador)"
+credit = "Prefeitura Municipal de Salvador, served by the INDE (BAPSalvador)"
+licence = "no conditions stated (the services' Fees and AccessConstraints NONE)"
+licence_url = "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wms?service=WMS&version=1.1.1&request=GetCapabilities"
+source = "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCapabilities"
+theme = "terrain"
+availability = "open"
+notes = "The city of Salvador's lidar terrain and surface models of 2016-17 (PEC-A at 1:1,000, about 415 km², 0.5 m cells, SIRGAS 2000 UTM 24S), served by the national spatial data infrastructure's GeoServer as WCS 2.0.1 coverages: the MDT in five lots (Lote 01, 02, and Lote 03's mainland, Ilha de Maré and Ilha dos Frades) and the MDS in two (Lote 01, 02). Each coverage's extent is its valid data (nodata 0) in a GetCoverage asked for at a scale factor of 0.01 (50 m cells): `files`, its grain the coarse cell; the spacing is the coverages' own. No accuracy figure is stated."
+
+[[piece]]
+id = "mdt"
+label = "MDT 0.5 m (lidar 2016-17)"
+method = "raster"
+urls = [
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDT_Lote_01&format=image/tiff&SCALEFACTOR=0.01",
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDT_Lote_02&format=image/tiff&SCALEFACTOR=0.01",
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDT_Lote_03_Continental&format=image/tiff&SCALEFACTOR=0.01",
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDT_Lote_03_Ilha_Frades&format=image/tiff&SCALEFACTOR=0.01",
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDT_Lote_03_Ilha_Mare&format=image/tiff&SCALEFACTOR=0.01",
+]
+mask_m = 50
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2017
+
+[[piece]]
+id = "mds"
+label = "MDS 0.5 m (lidar 2016-17)"
+method = "raster"
+urls = [
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDS_Lote_01&format=image/tiff&SCALEFACTOR=0.01",
+  "https://geoservicos.inde.gov.br/geoserver/BAPSalvador/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=BAPSalvador__MDS_Lote_02&format=image/tiff&SCALEFACTOR=0.01",
+]
+mask_m = 50
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2017

@@ -1,0 +1,33 @@
+name = "Belo Horizonte Mapa Altimétrico 2015 and lidar point clouds (BHGeo)"
+credit = "Prefeitura de Belo Horizonte, BHGeo"
+licence = "CC-BY"
+licence_url = "https://dados.pbh.gov.br/dataset/mapa-altimetrico-2015"
+source = "https://prefeitura.pbh.gov.br/bhgeo/acervo-cartografico"
+theme = "terrain"
+availability = "open"
+notes = "The city of Belo Horizonte's terrain model of the bare surface interpolated from its 2015 lidar (\"Mapa Altimétrico 2015\", a TIFF, EPSG:31983), and its point clouds of 2007 and 2015 (\"Nuvem de Pontos - MDT e MDS\"), downloaded from the BHGeo portal. Their cells and densities aren't stated, and no index of their files or outline of the city was read (Natural Earth's administrative areas don't draw the city): listed, not drawn."
+
+[[piece]]
+id = "mdt-2015"
+label = "MDT 2015 (from lidar)"
+method = "none"
+why = "BHGeo's files have no index read, and Natural Earth doesn't draw the municipality"
+[piece.metrics]
+surface = "ground"
+year = 2015
+
+[[piece]]
+id = "lidar-2015"
+label = "LiDAR point clouds 2015"
+method = "none"
+why = "BHGeo's files have no index read, and Natural Earth doesn't draw the municipality"
+[piece.metrics]
+year = 2015
+
+[[piece]]
+id = "lidar-2007"
+label = "LiDAR point clouds 2007"
+method = "none"
+why = "BHGeo's files have no index read, and Natural Earth doesn't draw the municipality"
+[piece.metrics]
+year = 2007

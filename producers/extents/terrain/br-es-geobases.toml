@@ -1,0 +1,35 @@
+name = "Mapeamento ES 2012-2015 (GEOBASES) MDT and MDE"
+credit = "Governo do Estado do Espírito Santo, IEMA / GEOBASES, Mapeamento ES 2012-2015 (Hiparc)"
+licence = "Public Domain (as the project's layer page states)"
+licence_url = "https://ide.geobases.es.gov.br/layers/geonode:iema_ortofotomosaico_es_025m_2012-2015"
+source = "https://geobases.es.gov.br/links-para-mapes1215"
+theme = "terrain"
+availability = "open"
+notes = "The state of Espírito Santo's photogrammetric mapping of 2012 to 2015 (flights 27 August 2012 to 24 September 2015): an elevation model from image correlation at 2 m (MDE, the surface), and the terrain model edited from it to take out buildings and vegetation (MDT; under dense forest it may still follow the canopy), PEC A at 1:10,000, EMQ under 1.6 m (taken as each piece's RMSE), SIRGAS 2000 UTM 24S, orthometric heights. Its files are ERDAS .img tiles of 10 × 10 km in a public bucket, without a login, listed in the project's URL lists (MDE 547 tiles, MDT 545); the tiles' outlines are the project's own 10 km sheet index (MAP_ES_2012_2015_ARTICULACAO_10X10_KM.zip, 547 sheets, `ERV_ATTR` each sheet's name): every sheet for the MDE (its list's 30_775l and 42_799 are the index's 30_775 and 42_779), all but 31_767 and 37_775, which the MDT's list hasn't, for the MDT."
+
+[[piece]]
+id = "mdt"
+label = "MDT 2 m (2012-2015)"
+method = "file"
+class = "index"
+url = "https://one.s3.es.gov.br/pr-geobases-public/MAP_ES_2012_2015/MAP_ES_2012_2015_ARTICULACAO_10X10_KM.zip"
+exclude = { ERV_ATTR = ["31_767", "37_775"] }
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+vertical_rmse_m = 1.6
+year = 2015
+
+[[piece]]
+id = "mde"
+label = "MDE 2 m (2012-2015)"
+method = "file"
+class = "index"
+url = "https://one.s3.es.gov.br/pr-geobases-public/MAP_ES_2012_2015/MAP_ES_2012_2015_ARTICULACAO_10X10_KM.zip"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 2
+vertical_rmse_m = 1.6
+year = 2015

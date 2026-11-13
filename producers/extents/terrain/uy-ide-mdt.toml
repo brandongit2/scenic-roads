@@ -1,0 +1,70 @@
+name = "IDE Uruguay modelos digitales de terreno y superficie"
+credit = "Infraestructura de Datos Espaciales (IDE), Presidencia de la República, Uruguay"
+licence = "Licencia de Datos Abiertos - Uruguay"
+licence_url = "https://www.agesic.gub.uy/innovaportal/file/6327/1/licencia-de-datos-abiertos.pdf"
+source = "https://catalogodatos.gub.uy/dataset/ide-ortoimagen-mdt-de-cobertura-nacional"
+theme = "terrain"
+availability = "open"
+notes = "The national spatial data infrastructure's elevation models from its photogrammetric flight of 2017 and 2018 (UltraCam Eagle Prime, 32 cm GSD; correlation with Match-T edited with breaklines, EGM2008 heights), each GeoTIFF and LAS file downloaded without a login, its sheet grid a GeoJSON on the national data catalogue with each sheet's links: the national hydrologically consistent terrain model (MDTHC), a 2.5 m grid in 6,597 sheets of 3'45\" × 2'30\" (1:10,000; \"Exactitud absoluta vertical: 1.5 metros al 95% de confianza\", not an RMSE: left out); and in 86 towns (`localidad`), 2,753 sheets of 37.5\" (1:2,000), the urban terrain model, a 1 m grid, and surface model, a 10 cm grid (both 0.3 m at 95 %, left out); and the flight of December 2025 over Minas (Lavalleja): its surface model, a 10 cm grid (its files' own cell, read from a header), in 47 sheets, and the point cloud of four heritage blocks (its density not stated). Minas's terrain model of those blocks is one zip with no index (not read). Pieces: the national grid; a piece per town."
+
+[[piece]]
+id = "mdt-nacional"
+label = "MDT nacional 2.5 m (2017-2018)"
+method = "file"
+class = "index"
+url = "https://catalogodatos.gub.uy/dataset/cd4b81ab-3943-4bc5-8075-bb1fab4bef9c/resource/e33f0906-3b82-4a98-ad83-c9862eb5e86e/download/mdt_nacional_grilla.geojson"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 2.5
+year = 2018
+
+[[piece]]
+id = "mdt-urbano"
+label = "MDT urbano 1 m (2017-2018)"
+method = "file"
+class = "index"
+url = "https://catalogodatos.gub.uy/dataset/e5e7ef3d-569d-4a86-98bb-4b2b7a037d35/resource/c3267e79-10b7-4c69-80be-060aa851dd10/download/mdt_urbana_grilla.geojson"
+by = ["localidad"]
+name = "localidad"
+tolerance_m = 20
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2018
+
+[[piece]]
+id = "mds-urbano"
+label = "MDS urbano 10 cm (2017-2018)"
+method = "file"
+class = "index"
+url = "https://catalogodatos.gub.uy/dataset/e5e7ef3d-569d-4a86-98bb-4b2b7a037d35/resource/703d702b-d9f8-4db2-8db1-e57eef092179/download/mds_urbana_grilla.geojson"
+by = ["localidad"]
+name = "localidad"
+tolerance_m = 20
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.1
+year = 2018
+
+[[piece]]
+id = "minas-mds-2025"
+label = "MDS Minas 10 cm (December 2025)"
+method = "file"
+class = "index"
+url = "https://catalogodatos.gub.uy/dataset/96fc1e7a-d557-4713-b112-600496269f33/resource/7b0e1853-f327-4550-ad19-67c93c0b35d2/download/ortofotos_mds_minas.geojson"
+tolerance_m = 20
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.1
+year = 2025
+
+[[piece]]
+id = "minas-lidar-2025"
+label = "LiDAR Minas, heritage blocks (December 2025)"
+method = "file"
+class = "index"
+url = "https://catalogodatos.gub.uy/dataset/96fc1e7a-d557-4713-b112-600496269f33/resource/55df73b0-3411-4c28-8436-d229e756392e/download/lidar_modelo3d_minas.geojson"
+tolerance_m = 20
+[piece.metrics]
+year = 2025

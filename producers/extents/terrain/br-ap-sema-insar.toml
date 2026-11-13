@@ -1,0 +1,30 @@
+name = "Amapá Base Cartográfica Digital Contínua: InSAR MDT and MDS"
+credit = "Secretaria de Estado do Meio Ambiente do Amapá (SEMA-AP); Diretoria de Serviço Geográfico do Exército (DSG), 2º CGEO"
+licence = "not stated (its \"Condições de Uso\" file wasn't retrievable)"
+licence_url = "https://web.archive.org/web/2025/https://sema.portal.ap.gov.br/conteudo/servicos-e-informacoes/base-cartografica"
+source = "https://web.archive.org/web/2025/https://sema.portal.ap.gov.br/conteudo/servicos-e-informacoes/base-cartografica"
+theme = "terrain"
+availability = "login"
+notes = "The state of Amapá's continuous digital cartographic base, made by the army's 2nd Geoinformation Centre under conventions of April 2014 (78,000 km² at 1:50,000, the rest at 1:25,000): airborne interferometric radar over the whole state, a terrain model from the P band (ground, under the forest) and a surface model from the X band, among \"cerca de 5.000 produtos geoespaciais\", had \"por protocolo da SEMA\" (on request: login). Their native grid isn't stated (a paper used 30 m), so no spacing (and no score). Their extent is the state, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "mdt"
+label = "MDT (P-band InSAR)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["Amapá"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+
+[[piece]]
+id = "mds"
+label = "MDS (X-band InSAR)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["Amapá"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"

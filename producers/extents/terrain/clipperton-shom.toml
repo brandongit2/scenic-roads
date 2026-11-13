@@ -1,0 +1,21 @@
+name = "Shom MNT côtier de Clipperton (île de la Passion), 20 m"
+credit = "Shom, projet PASSION"
+licence = "Licence Ouverte 2.0 (Etalab); not for navigation"
+licence_url = "https://services.data.shom.fr/geonetwork/srv/api/records/MNT_COTIER_PASSION_CLIPPERTON_20m_WGS84.xml/formatters/xml"
+source = "https://services.data.shom.fr/INSPIRE/telechargement/prepackageGroup/MNT_COTIER_CLIPPERTON_PACK_DL"
+theme = "terrain"
+availability = "open"
+notes = "The French hydrographic office's coastal topographic and bathymetric terrain model of Clipperton (île de la Passion) on a 20 m grid (and a 100 m grid of its surroundings), from data \"acquises entre 2012 et 2015\", heights above the lowest astronomical tide; one 7z of 9.1 MB from the INSPIRE download service, without a login. The 7z can't be read by range, so its extent is the atoll, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data (the grid reaches over the lagoon and the sea round it). No accuracy is stated."
+
+[[piece]]
+id = "mnt-20m"
+label = "MNT côtier 20 m (2012-2015)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["CLP"] }
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 20
+year = 2015

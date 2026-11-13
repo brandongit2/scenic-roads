@@ -1,0 +1,26 @@
+name = "Panamá IGNTG national cartography SAR DTM and DSM (2013)"
+credit = "Instituto Geográfico Nacional Tommy Guardia (IGNTG), ANATI"
+licence = "not offered"
+licence_url = "https://ignpanama.anati.gob.pa/proyectos/"
+source = "https://ignpanama.anati.gob.pa/proyectos/"
+theme = "terrain"
+availability = "closed"
+notes = "The national geographic institute's 2013 national cartography project, whose deliverables included radar (SAR) terrain and surface models and 30 cm urban orthophotos with a terrain model; none is offered (its geoportal has no raster or image service, and the national open-data portal and the environment ministry's hold no elevation model). Their cells and coverage aren't stated: listed, not drawn."
+
+[[piece]]
+id = "sar-dtm"
+label = "SAR DTM (2013 national cartography)"
+method = "none"
+why = "not offered, and its coverage and cell aren't stated"
+[piece.metrics]
+surface = "ground"
+year = 2013
+
+[[piece]]
+id = "sar-dsm"
+label = "SAR DSM (2013 national cartography)"
+method = "none"
+why = "not offered, and its coverage and cell aren't stated"
+[piece.metrics]
+surface = "surface"
+year = 2013

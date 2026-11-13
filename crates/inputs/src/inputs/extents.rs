@@ -590,12 +590,12 @@ fn reading(id: &str, name: &str, t: &toml::Table, bad: &mut Vec<String>) {
             "scale" => num(v).is_some_and(|x| x > 0.0),
             "map" => v.as_table().is_some_and(|m| !m.is_empty()),
             "index" => v.as_integer().is_some_and(|i| i >= 0),
-            "text" => v.as_str().is_some_and(|s| !s.is_empty()),
+            "text" | "pattern" => v.as_str().is_some_and(|s| !s.is_empty()),
             "date" => v.as_str().is_some_and(|s| DATES.contains(&s)),
             "density" => v.is_bool(),
             _ => {
                 bad.push(format!(
-                    "{at}: `{k}` isn't one of a reading's fields (field, scale, map, index, text, date, density)"
+                    "{at}: `{k}` isn't one of a reading's fields (field, pattern, scale, map, index, text, date, density)"
                 ));
                 continue;
             }

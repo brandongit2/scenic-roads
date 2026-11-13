@@ -1,0 +1,32 @@
+name = "IGAC Modelos Digitales de Terreno urbanos y rurales"
+credit = "Instituto Geográfico Agustín Codazzi (IGAC)"
+licence = "none stated (the open-data hub's items: licence \"none\")"
+licence_url = "https://www.igac.gov.co/datos-abiertos/"
+source = "https://datos-abiertos-igac-igac-oit.hub.arcgis.com/"
+theme = "terrain"
+availability = "open"
+notes = "The national geographic institute's terrain models of the cadastral programme, published as public image services on its open-data hub (\"Modelo Digital de Terreno. Departamento de Cesar. Cabecera Municipal de Agustín Codazzi. Resolución 1 m. Año 2021\"; their hosts mapas.igac.gov.co and mapas2.igac.gov.co answered 502 or timed out, so the services themselves weren't read). The programme's progress layers on its ArcGIS Online organization say where they are: P5_MDT_Urbanos (1,154 town areas, `CentroPobl`, each its year `Año` and its model's path `Ruta_MDT`, whose name gives the grid's cell, MDT1_05148000_20230103 a 1 m model and MDT2_ a 2 m one; `Estado` Oficializado or En Producción, the latter left out), and P2_MDT_Rural (114 municipalities whose rural models are made, `Año_Cap` their capture year; their cells, 2 to 6 m by the items' titles, aren't in the layer, so no spacing). Both layers' outlines are the towns' and municipalities' official areas, not the models' own: claimed. Photogrammetric or lidar: not stated per model. The institute's 119 surface models (TanDEM-X TREx at 12 m, 2011 to 2014; ALOS PALSAR) and its national SRTM 30 m have no coverage layer (not declared here)."
+
+[[piece]]
+id = "mdt-urbano"
+label = "MDT urbano (cadastral programme)"
+method = "arcgis"
+class = "claimed"
+url = "https://services2.arcgis.com/RVvWzU3lgJISqdke/arcgis/rest/services/P5_MDT_Urbanos_WFL1/FeatureServer/2"
+filter = { Estado = ["Oficializado"] }
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "Ruta_MDT", pattern = 'MDT(\d+)_\d+_\d{8}\s*$' }
+year = { field = "Año", date = "text" }
+
+[[piece]]
+id = "mdt-rural"
+label = "MDT rural (cadastral programme; cell not stated)"
+method = "arcgis"
+class = "claimed"
+url = "https://services2.arcgis.com/RVvWzU3lgJISqdke/arcgis/rest/services/P2_MDT_Rural_WFL1/FeatureServer/3"
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+year = { field = "Año_Cap", date = "year" }

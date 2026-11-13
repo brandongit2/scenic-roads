@@ -1,0 +1,14 @@
+name = "SAF LiDAR (Servicio Aerofotogramétrico de la Fuerza Aérea de Chile)"
+credit = "Servicio Aerofotogramétrico (SAF), Fuerza Aérea de Chile"
+licence = "sold by quotation"
+licence_url = "https://www.saf.cl/preguntas/"
+source = "https://www.saf.cl/productos/lidar/"
+theme = "terrain"
+availability = "paid"
+notes = "The air force's aerial survey service flies lidar to order and sells its point clouds (\"densidad 8 ppm2\", as at Villa Santa Lucía, 2023), terrain models (Providencia, 2020) and surface models (\"1x1 m\", Viña del Mar, 2024) by quotation (\"Cada solicitud debe ser evaluada de manera específica\"). It publishes no list or outline of the areas flown: listed, not drawn. Chile's other open models are CIREN's islands (cl-ciren-dem)."
+
+[[piece]]
+id = "lidar"
+label = "SAF lidar surveys (by quotation)"
+method = "none"
+why = "the areas flown aren't listed or outlined anywhere read"

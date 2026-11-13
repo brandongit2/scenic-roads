@@ -1,0 +1,29 @@
+name = "CIREN DEM Isla de Pascua y Juan Fernández"
+credit = "Centro de Información de Recursos Naturales (CIREN), Chile"
+licence = "none stated (IDE Chile asks that the providing institution be cited)"
+licence_url = "https://geoportal.cl/geoportal/catalog?categories%5B%5D=elevation&action=search"
+source = "https://geoportal.cl/geoportal/catalog/download/d1235b47-aa07-3207-964b-44606cd36190"
+theme = "terrain"
+availability = "open"
+notes = "CIREN's elevation models of Chile's Pacific islands (published 27 October 2021, one zip of two TIFFs, 69 MB, without a login): Easter Island \"con pixel de 4 m realizado a partir de curvas de nivel\" (its coastline digitized from a QuickBird image; WGS 84 UTM 12S), and Juan Fernández \"con pixel de 2 m\" (UTM 17S); heights above mean sea level; made from contours, so ground models. The TIFFs are inside the zip, so their own masks can't be read by range: Easter Island's extent is the island as Natural Earth's 1:10m map subunits (v5.1.2) draw it (claimed, not checked against data); Natural Earth draws no Juan Fernández apart from Chile (listed). CIREN's regional \"DEM Alos Palsar\" mosaics (12.5 m, 2016) are ASF's terrain-correction DEM, which ASF states is a copy of SRTM resampled and not to be used as a DEM: not declared."
+
+[[piece]]
+id = "pascua"
+label = "DEM Isla de Pascua 4 m (from contours)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_0_map_subunits.geojson"
+filter = { SU_A3 = ["CHP"] }
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 4
+
+[[piece]]
+id = "juan-fernandez"
+label = "DEM Juan Fernández 2 m (from contours)"
+method = "none"
+why = "the TIFF is inside a zip (its mask can't be read by range), and Natural Earth draws no Juan Fernández apart from mainland Chile"
+[piece.metrics]
+surface = "ground"
+spacing_m = 2

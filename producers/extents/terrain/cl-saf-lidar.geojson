@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"cl-saf-lidar","theme":"terrain","read":[{"piece":"lidar","method":"none","why":"the areas flown aren't listed or outlined anywhere read","date":"2026-11-13"}],"features":[{"type":"Feature","properties":{"piece":"lidar","extent":"unknown","availability":"paid","name":"SAF lidar surveys (by quotation)"},"geometry":null}]}

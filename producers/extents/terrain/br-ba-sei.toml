@@ -1,0 +1,61 @@
+name = "SEI Bahia: Chapada Diamantina lidar mosaics, Medeiros Neto, and the 2010 state DSM"
+credit = "Superintendência de Estudos Econômicos e Sociais da Bahia (SEI), Governo do Estado da Bahia"
+licence = "none stated"
+licence_url = "https://imageservices.geo.sei.ba.gov.br/image/rest/services/servicos_raster"
+source = "https://imageservices.geo.sei.ba.gov.br/image/rest/services/servicos_raster"
+theme = "terrain"
+availability = "closed"
+notes = "The Bahia state statistics and geography agency's elevation image services: \"Mosaico MDT/MDS - Chapada Diamantina - 5 m - 2023\" (Optech Galaxy Prime Plus lidar by Topocart; \"Produto ainda não finalizado\"), its catalogue's 308 MDT and 339 MDS items, a 1:25,000 sheet quarter each (SD23-X-B-VI-2-NE), each item's cell about 5 m (`lowps` 5.03 in Web Mercator, about 4.9 m on the ground); and Medeiros Neto's 2024 surface model at 5 cm (its catalogue's primary item; its terrain model's service has no catalogue items: not read). The services offer images, no file to download: closed, claimed on their catalogues' item outlines (the primary items, `category = 1`; the rest are overviews). The statewide photogrammetric DSM of 2010 (ENGEMAP, \"5 x 5 m\", \"EMQ inferiores a 1,8 m\", flight GSD 60 cm) is in the agency's catalogue with no link: closed, claimed over the state as Natural Earth's 1:10m administrative areas (v5.1.2) draw it."
+
+[[piece]]
+id = "chapada-mdt"
+label = "Chapada Diamantina MDT 5 m (lidar 2023)"
+method = "arcgis"
+class = "index"
+url = "https://imageservices.geo.sei.ba.gov.br/image/rest/services/servicos_raster/areachapada_mdt_5m_2023/ImageServer"
+where = "category = 1"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2023
+
+[[piece]]
+id = "chapada-mds"
+label = "Chapada Diamantina MDS 5 m (lidar 2023)"
+method = "arcgis"
+class = "index"
+url = "https://imageservices.geo.sei.ba.gov.br/image/rest/services/servicos_raster/areachapada_mds_5m_2023/ImageServer"
+where = "category = 1"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 5
+year = 2023
+
+[[piece]]
+id = "medeiros-neto-mds"
+label = "Medeiros Neto MDS 5 cm (2024)"
+method = "arcgis"
+class = "index"
+url = "https://imageservices.geo.sei.ba.gov.br/image/rest/services/servicos_raster/rasterdb_dados_raster_amed_neto_mds_5cm_2024/ImageServer"
+where = "category = 1"
+tolerance_m = 20
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.05
+year = 2024
+
+[[piece]]
+id = "estado-mds-2010"
+label = "Bahia DSM 5 m (2010 photogrammetry; no link)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["Bahia"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 5
+vertical_rmse_m = 1.8
+year = 2010

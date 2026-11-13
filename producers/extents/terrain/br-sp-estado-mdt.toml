@@ -1,0 +1,33 @@
+name = "Estado de São Paulo: MDT 2010 (IGC) and MDE (SEMIL/CPLA)"
+credit = "Instituto Geográfico e Cartográfico (IGC-SP); Secretaria de Meio Ambiente, Infraestrutura e Logística (SEMIL), CPLA"
+licence = "none stated"
+licence_url = "https://semil.sp.gov.br/sma/cessao-de-dados/"
+source = "https://www.idesp.sp.gov.br/"
+theme = "terrain"
+availability = "closed"
+notes = "The state of São Paulo's two elevation models. The IGC's terrain model of the 2010 flight at 1:25,000 (\"Modelo Digital de Terreno (MDT) – 2010\", by the BASE, Aerocarta and Engemap consortium): its record names no cell, accuracy or access; its WCS (geoportal.igc.sp.gov.br:6080) didn't answer, IDESP's WCS lists no coverage and the IGC's product pages offer no MDT, so it exists and can't be had: closed, claimed on its sheet index (IDESP's WFS mdt2010_grid1, 1,256 sheets of 7.5', EPSG:4674). The environment secretariat's state MDE (FUNCATE for CPLA, 2013), interpolated from the contour lines of the IBGE's 1:50,000 sheets, a 30 m grid (0.000277°), one 1.38 GB RAR downloaded without a login (semil.sp.gov.br, cessão de dados): open; its extent the state, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No year of survey is stated for it."
+
+[[piece]]
+id = "mdt-2010"
+label = "IGC MDT 2010 (1:25,000; no route found)"
+method = "wfs"
+class = "claimed"
+url = "https://www.idesp.sp.gov.br/geoserver/idesp/ows"
+type = "idesp:mdt2010_grid1"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+year = 2010
+
+[[piece]]
+id = "mde-30m"
+label = "SEMIL/CPLA MDE 30 m (from 1:50,000 contours)"
+method = "file"
+class = "claimed"
+availability = "open"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["São Paulo"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 30

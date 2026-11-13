@@ -5,7 +5,7 @@ licence_url = "https://www.inegi.org.mx/inegi/terminos.html"
 source = "https://www.inegi.org.mx/app/geo2/elevacionesmex/"
 theme = "terrain"
 availability = "open"
-notes = "The national institute's elevation models of Mexico. Its high-resolution terrain models (MDE de alta resolución, a 1:10,000 sheet each, from lidar or photogrammetry): the index of the 5 m sheets (MDT_5m_10k, 26,333 sheets) and of the 1.5 m ones (MDT_1_5m_10k, 1,843 sheets), each sheet's `modelo` T (terrain) and S (surface) both; the sheets state no year. The Continuo de Elevaciones Mexicano 4.0, 15 m over the whole country: its stated coverage, the national outline of the institute's own download page (its states, nacional_3857_200.geojson); its year and accuracy are on no page read (CEM 3.0's, 2012 and an RMSE of 4.9 m, aren't 4.0's). The sheets download one at a time through the institute's app, the CEM as one national zip, both without a login."
+notes = "The national institute's elevation models of Mexico. Its high-resolution terrain models (MDE de alta resolución, a 1:10,000 sheet each, from lidar or photogrammetry): the index of the 5 m sheets (MDT_5m_10k, 26,333 sheets) and of the 1.5 m ones (MDT_1_5m_10k, 1,843 sheets), each sheet's `modelo` naming the models it has, T (terrain) and S (surface): every sheet of both indexes \"T,S\" but one 5 m sheet's T alone; the sheets state no year. The surface models (MDS, Superficie) are declared beside the terrain models, a block each, on the same indexes. The Continuo de Elevaciones Mexicano 4.0, 15 m over the whole country: its stated coverage, the national outline of the institute's own download page (its states, nacional_3857_200.geojson); its year and accuracy are on no page read (CEM 3.0's, 2012 and an RMSE of 4.9 m, aren't 4.0's). The sheets download one at a time through the institute's app, the CEM as one national zip, both without a login."
 
 [[piece]]
 id = "mdt-5m"
@@ -27,6 +27,29 @@ url = "https://www.inegi.org.mx/app/geo2/elevacionesmex/DownloadICFile.do?file=M
 tolerance_m = 50
 [piece.metrics]
 surface = "ground"
+spacing_m = 1.5
+
+[[piece]]
+id = "mds-5m"
+label = "MDS 5 m (1:10,000 sheets)"
+method = "file"
+class = "index"
+url = "https://www.inegi.org.mx/app/geo2/elevacionesmex/DownloadICFile.do?file=MDT_5m_10k"
+exclude = { modelo = ["T"] }
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 5
+
+[[piece]]
+id = "mds-1-5m"
+label = "MDS 1.5 m (1:10,000 sheets)"
+method = "file"
+class = "index"
+url = "https://www.inegi.org.mx/app/geo2/elevacionesmex/DownloadICFile.do?file=MDT_1_5m_10k"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
 spacing_m = 1.5
 
 [[piece]]

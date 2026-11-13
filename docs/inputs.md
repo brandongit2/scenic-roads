@@ -1920,7 +1920,7 @@ area; otherwise the piece is `none`, listed and not drawn.
 | `piece.name`, `piece.label` | the field a piece's `name` is read from (one of `by`, so the features of a piece share it), or the name itself |
 | `piece.tolerance_m` | the simplification, default 50 |
 | `piece.timeout_s` | a request's time limit, default 180: a server that makes its answer on request and takes longer (Bulgaria's WCS, 2 to 5 minutes) |
-| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, `text`, the last year a name holds, alone or opening a compact date, `20240315`, or ending a span in two digits, `2011-12`, not a date's month, or `yymmdd`, six-digit dates of the 2000s alone or as a span, the last taken; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another), its last one may be a constant, the value where none gives one (PST-A's 1 m grid's tiles stating no cell: `[{field = "risoluzion"}, 1.0]`). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
+| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, `text`, the last year a name holds, alone or opening a compact date, `20240315`, or ending a span in two digits, `2011-12`, not a date's month, or `yymmdd`, six-digit dates of the 2000s alone or as a span, the last taken; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS), `pattern` (a regular expression whose first group is the part of the field holding the value, read as the other keys say: a file path naming its grid's cell, IGAC's `…\MDT1_05148000_20230103` with `'MDT(\d+)_\d+_\d{8}\s*$'`; no match, no value); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another), its last one may be a constant, the value where none gives one (PST-A's 1 m grid's tiles stating no cell: `[{field = "risoluzion"}, 1.0]`). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
 | `piece.dataset` | planned (docs/steps.md §14): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
@@ -2049,7 +2049,7 @@ far). Errors:
   `[[piece]]` block, a block without its `id`, two of one id; `by` not a list, `name` not one of
   `by`; `tolerance_m` not positive; `filter` not a table of lists; a metric's reading not of its
   shape (a `field`; `scale` positive, `index` from 0, `date` one of `epoch-ms`, `iso`, `year`,
-  `text`; no other key). A method's own fields (`url`, `pattern` …) are the producer's to read and
+  `text`, `pattern` and `text` not empty; no other key). A method's own fields (`url`, `pattern` …) are the producer's to read and
   check;
 - a `.geojson` that isn't a FeatureCollection, whose `source` isn't its stem, or whose `read`
   isn't a list of readings each naming its block's `piece` and `method` (`ex-pieces`); pieces
@@ -2107,7 +2107,7 @@ America read on 13 Nov, its large indexes on the Mac mini; Europe and the polar 
 | `yukon-lidar` | 84: communities and corridors | `index` | `arcgis`: the territory's terrain-model image service's lidar items (96) |
 | `geonb-lidar` | 5 | `index` | `arcgis`: the province's 1 m DEM image service's catalogue (158 blocks, their outlines over the sea too) |
 | `novascotia-lidar` | 100: the projects | `service` | `arcgis`: the province's 100 project areas, each its required pulse spacing |
-| `inegi-mde` | 3: the 5 m and 1.5 m sheets, the 15 m CEM | `index`; `claimed` | `file`: the institute's sheet indexes (26,333 and 1,843 sheets: 1,027,835 and 73,357 km², within 0.3 % of its own figures), and its national outline for the CEM |
+| `inegi-mde` | 5: the 5 m and 1.5 m sheets' terrain and surface models, the 15 m CEM | `index`; `claimed` | `file`: the institute's sheet indexes (26,333 and 1,843 sheets: 1,027,835 and 73,357 km², within 0.3 % of its own figures; the surface models' 1,025,883 and 73,166, the sheets whose `modelo` names one, all but one 5 m sheet), and its national outline for the CEM |
 | `haiti-dtm` | 2: the 1.5 m DTM's tiles; the southern peninsula | `files`; `claimed` | `raster`: OpenTopography's bucket listing, 357 10 km tiles, each's header and its mask at its overview of 24 m pixels (675 requests, 44 MB, 16,259 km²); `file`: the four departments its 12 southern 50 km tiles span (7,807 km²), those tiles having no overviews (2.4 GB, a mask of theirs the whole file) |
 | 18 claimed sources | 22 | `claimed` | `file`: the areas the publishers state their data covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2, public domain) draw them, filtered: El Salvador, Honduras, the Cayman Islands, Turks and Caicos, Antigua and Barbuda, Saint Lucia, Grenada, Barbados, Trinidad, Saint Vincent, Bonaire, Saba, Sint Eustatius, Greenland (GHM, at a 1 km tolerance), Bermuda, Saint-Pierre-et-Miquelon, Martinique, Saint-Barthélemy, Saint-Martin, Nuevo León, Connecticut, the District of Columbia |
 | `belize-crip`, `dominicanrep-sgn`, `dominica-dvrp`, `guatemala-ign`, `stkitts-lidar` | 1 each | `unknown` | `none`: where they lie isn't stated (Belize's 17 %, Saint Kitts and Nevis's 2024 survey, Guatemala's elevation model, Dominica's lidar, seen only village by village), or their area would overstate them (Greater Santo Domingo's 380 km², in administrative areas of some 1,400 km²) |
@@ -2210,6 +2210,39 @@ river surveys, castles and mobile-mapping (MMS) road point clouds, Shimane's 201
 record), Kanagawa's and Saitama's river and road sets (named by river or route, not by sheet);
 Hiroshima's sheets (DoboX's API needs a key: claimed); the GSI's point clouds' sheets (paid:
 claimed from its footprint tiles); Osaka's, Gifu's, Wakayama's and Nagasaki's sheets (listed).
+
+**Latin America and the Caribbean** (read 13 Nov 2026 on the M1, task #1350's third run): 28
+declarations, 598 pieces, with Mexico's surface models added to `inegi-mde` (above); the claimed
+areas Natural Earth's 1:10m admin-1 areas, or its map subunits for Easter Island, South Georgia and
+Clipperton. French Guiana is in `fr-rgealti`, Puerto Rico and the US Virgin Islands with North America
+(above). Areas geodesic.
+
+| Declaration | Pieces | Class | Read by; area |
+|---|---|---|---|
+| `ar-ign-mde` | 347: the IGN's 5 m and 0.5 m surface and terrain models by sheet name and year (login), the external models, MDE-Ar 30 m (open) | `claimed`; `index` | `wfs`: the IGN's geoserver's five model layers (5,106 sheets, 94 MB; the 5 m surface model 190,139 km², its terrain model 4,820, the 0.5 m 1,648 and 1,069, the external models 5,059, their cell unstated); MDE-Ar's sheet layer, 3.14 million km² |
+| `ar-cba-idecor` | 1: Córdoba's 5 m DEM | `files` | `raster`: IDECOR's WCS at a coarse scale (`SCALEFACTOR` 0.01, 500 m mask), 8,021 km² (97 % inside the IGN's sheets) |
+| `uy-ide-mdt`, `uy-montevideo-lidar`, `uy-mtop-vergara` | 175: the national 2.5 m DTM, the towns' 1 m DTM and 0.1 m DSM (86 towns), Minas's 2025 DSM and lidar; 3: Montevideo's 2024 lidar and DSM, its 2021 DSM flight grid (login); 1: Vergara's lidar | `index`; `claimed` | `file`: the IDE's grids (the national DTM 184,978 km²); `wfs`: the city's layers (~670 km² each); `listing`: the zip's 20 1 km tile names (20 km²) |
+| `br-es-geobases`, `br-ce-fortaleza-lidar`, `br-sp-geosampa-lidar`, `br-ba-salvador-lidar` | 2 each: Espírito Santo's 2 m DTM and DSM (RMSE 1.6 m, 2015), Fortaleza's 0.5 m (2023), São Paulo city's 2017 and 2020 point clouds, Salvador's 0.5 m (2017) | `index`; `files` | `file`: the 10 km grid (54,497 and 54,697 km²); `raster`: Fortaleza's COGs (64 m masks, ~400 km²), Salvador's WCS lots (392 and 538 km²); `wfs`: GeoSampa's sheet grids (~1,680 km²) |
+| `br-sp-estado-mdt`, `br-df-mdt`, `br-ba-sei` | 2: São Paulo state's 2010 DTM grid (closed), its 30 m model; 2: Brasília's 1 m lidar DTM (closed), its 5 m one listed; 4: Bahia's Chapada Diamantina 5 m DTM and DSM and Medeiros Neto's 0.05 m DSM (2023–24, image services only), the 2010 statewide 5 m DSM | `claimed`; `unknown` | `wfs`: the grid (223,426 km²); `arcgis`: the DF's demboundary layer (1,186 km²), the SEI's image catalogues (~23,100 km²); the state areas |
+| `br-pe-pe3d`, `br-sc-sigsc`, `br-ap-sema-insar`, `br-ibge-mde` | 3; 2; 2; 3: Pernambuco's and Santa Catarina's statewide 1 m lidar models, Amapá's InSAR models (logins), the IBGE's RJ25 20 m | `claimed`; `unknown` | the states; PE3D's 0.5 m towns and the IBGE's SC25 and SPMGGO50 listed |
+| `co-igac-mdt` | 18: the cadastral programme's urban DTMs by cell (1 m, 2 m) and year, its rural DTMs by year | `claimed` | `arcgis`: the programme's progress layers on its ArcGIS Online organization (1,154 towns, `Oficializado` only; 114 municipalities), each cell from its model's path (a `pattern` reading); the towns' and municipalities' official areas, not the models' |
+| `ec-sigtierras-mdt` | 9: SIGTIERRAS's 3 to 5 m photogrammetric DTM by year (2010–12, login; 5 m, its coarsest), the open 50 m DTM | `claimed` | `file`: the programme's orthophoto flight index (`observacio` ORTOFOTO; the DTM made with the orthophotos, as its availability map says); Ecuador without the Galápagos |
+| `cl-ciren-dem`, `gs-sggis-dem`, `clipperton-shom` | 2: Easter Island's 4 m DEM, Juan Fernández's listed; 2: South Georgia's 20 m DEM (2017), the Shackleton Crossing's 5 m listed; 1: Clipperton's 20 m DTM (2015) | `claimed`; `unknown` | the islands' map subunits |
+| 7 sources listed only | 12 | `unknown` | `none`, each with its `why`: Rio de Janeiro city's 5 m DTM, Belo Horizonte's DTM and lidar, the DSG's Radiografia da Amazônia InSAR models, Medellín's 1 m lidar models, Chile's SAF lidar (by quotation), Peru's ANIN Piura and IGN drone lidar, Panamá's 2013 SAR models |
+
+**Not obtained** (Latin America, 13 Nov): Santa Catarina's SIGSC and Pernambuco's PE3D sheet
+indexes and São Paulo's IGC WCS (their hosts unreachable from the M1: claimed or listed); IGAC's
+image services themselves (mapas.igac.gov.co answered 502 or timed out: the progress layers read
+instead), its TanDEM-X TREx surface models and national SRTM (no coverage layer); CIREN's ALOS
+PALSAR 12.5 m mosaics and Brazil's TOPODATA (resampled SRTM, not declared); ANADEM's file (a
+sample region only); Jamaica's 30 m DEM (no producer stated, the World Bank's catalogue
+rate-limited); Montevideo's point densities (unstated: no spacing); the IBGE's SC25 and SPMGGO50
+sheets (MI numbers in zips, no sheet index); Juan Fernández (Natural Earth draws it with mainland
+Chile) and the Shackleton Crossing (its CRS, EPSG:404000, unnamed); Belo Horizonte's and Rio's
+outlines (none published); Vergara's survey zip has no shapefile (its tile names read instead);
+Rio Grande do Sul's and Paraná's statewide lidar (not yet delivered); Embrapa's, EBA's and
+OpenTopography's research lidar (not declared); Venezuela, Guyana, Suriname, Paraguay, Bolivia,
+Cuba, Nicaragua and Costa Rica publish nothing finer than the worldwide models.
 
 **Surface models** (read 13 Nov 2026, task #1370; England's, swissSURFACE3D's, PST-A's, mainland
 Portugal's, Sweden's Ythöjdmodell, 3DEP's, NRCan's and Laserdata Skog on the Mac mini, the rest, Ontario's among them, on the M1): the

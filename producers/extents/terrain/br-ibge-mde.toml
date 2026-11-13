@@ -1,0 +1,33 @@
+name = "IBGE Modelo Digital de Elevação (RJ25, SC25, SPMGGO50)"
+credit = "Instituto Brasileiro de Geografia e Estatística (IBGE)"
+licence = "public (\"Todos os arquivos aqui disponíveis são públicos\")"
+licence_url = "https://geoftp.ibge.gov.br/modelos_digitais_de_superficie/modelo_digital_de_elevacao_mde/"
+source = "https://geoftp.ibge.gov.br/modelos_digitais_de_superficie/modelo_digital_de_elevacao_mde/"
+theme = "terrain"
+availability = "open"
+notes = "The IBGE's photogrammetric elevation models of three mapping projects, each a zipped GeoTIFF per topographic sheet on its public FTP-over-HTTP site (\"± 5 metros\", not an RMSE: left out): RJ25, the state of Rio de Janeiro at 1:25,000, a 20 × 20 m grid in 314 sheets; SC25, 86 sheets of Santa Catarina at 1:25,000; SPMGGO50, 73 sheets of São Paulo, Minas Gerais and Goiás at 1:50,000 (from July 2002 photographs at about 1:35,000). The sheets are named by their MI index number (mde_2685a3no_v1.zip), which the producer can't georeference, and the GeoTIFFs are inside zips: RJ25's extent is its project's area, the state, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (claimed, not checked against data); SC25's and SPMGGO50's partial areas have no outline read (listed). Their kind (terrain or surface) isn't stated."
+
+[[piece]]
+id = "rj25"
+label = "MDE RJ25 20 m (Rio de Janeiro)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["Rio de Janeiro"] }
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 20
+
+[[piece]]
+id = "sc25"
+label = "MDE SC25 (86 sheets of Santa Catarina)"
+method = "none"
+why = "its 86 sheets are named by MI index numbers inside zips, and no sheet index of them was found"
+
+[[piece]]
+id = "spmggo50"
+label = "MDE SPMGGO50 (73 sheets of São Paulo, Minas Gerais and Goiás)"
+method = "none"
+why = "its 73 sheets are named by MI index numbers inside zips, and no sheet index of them was found"
+[piece.metrics]
+year = 2002

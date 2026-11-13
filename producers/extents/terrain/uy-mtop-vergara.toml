@@ -1,0 +1,22 @@
+name = "MTOP relevamiento LIDAR de la ciudad de Vergara"
+credit = "Ministerio de Transporte y Obras Públicas, Uruguay"
+licence = "Licencia de Datos Abiertos - Uruguay"
+licence_url = "https://www.agesic.gub.uy/innovaportal/file/6327/1/licencia-de-datos-abiertos.pdf"
+source = "https://catalogodatos.gub.uy/dataset/ministerio-de-transporte-y-obras-publicas-lidar-vergara"
+theme = "terrain"
+availability = "open"
+notes = "The transport ministry's lidar of the town of Vergara (Treinta y Tres), where its survey of the arroyo Parao crosses route 18: \"La densidad de puntos es de 1 punto por metro cuadrado\" (a nominal spacing of 1 m), 20 LAZ tiles of 1 × 1 km in one zip (129 MB); the catalogue says a shapefile places them, but the zip holds only the tiles, each named by its south-west corner in km of UTM 21S (1km_784_6348.laz: its LAS header's bounds lie within 784–785 km E, 6,348–6,349 km N), read from the zip's member names. Its survey date isn't stated (the files date from March 2017)."
+
+[[piece]]
+id = "lidar"
+label = "LiDAR Vergara (1 pt/m²)"
+method = "listing"
+url = "https://catalogodatos.gub.uy/dataset/03a36901-c40e-4152-8881-890c12b63ae4/resource/6c691aee-0d4a-4aad-9845-a326e4e988a1/download/lidar-vergara.zip"
+list = "zip"
+pattern = '1km_(?P<x>\d{3})_(?P<y>\d{4})\.laz$'
+unit = 1000
+size = 1000
+crs = "EPSG:32721"
+tolerance_m = 20
+[piece.metrics]
+spacing_m = 1

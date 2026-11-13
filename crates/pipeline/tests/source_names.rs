@@ -82,7 +82,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     // The Regions list's flags' credits (task #869; made by producers/flags/fetch.py).
     ("web/src/flags/index.json", "-", "\"page\": \"https://commons.wikimedia.org/wiki/File:", "each flag's credit: its file's page on Commons, where its author and licence are (the Credits link it)"),
     ("web/src/flags/index.json", "-", "\"author\": \"", "each flag's credit: its author as Commons gives it (some name where they uploaded it, or a decree's link)"),
-    ("web/src/flags/index.json", "-", "\"name\": \"Flag of ", "each flag's file as Commons names it, after its place (a region an extents declaration also names, \"Ontario\", \"United States\"), not a source"),
+    ("web/src/flags/index.json", "-", "\"name\": \"", "each flag's file as Commons names it, after its place (a region an extents declaration also names, \"Ontario\", \"United States\", \"Bandeira do estado de São Paulo\"), not a source"),
     // A place's law, named in help text.
     ("web/src/basemap.ts", "-", "Ontario Part IV", "the heritage designation's help names the law that makes it (Part IV of the Ontario Heritage Act), not a source"),
     // Tools that check the app.

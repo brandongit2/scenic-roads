@@ -1,0 +1,40 @@
+name = "Pernambuco Tridimensional (PE3D) MDT and MDE"
+credit = "Governo do Estado de Pernambuco, Programa Pernambuco Tridimensional (PE3D)"
+licence = "free of charge (\"Não será cobrado nenhum valor\"); cite the state government"
+licence_url = "https://web.archive.org/web/20221127130409/http://www.pe3d.pe.gov.br/documentos/manual.pdf"
+source = "http://www.pe3d.pe.gov.br/"
+theme = "terrain"
+availability = "login"
+notes = "The state of Pernambuco's airborne lidar programme (flown about 2013 to 2015; the year isn't stated): a terrain model (MDT) and a surface model (MDE) over the whole state at 1 m (vertical \"melhor que 25 cm\", not an RMSE: left out), and over 870 km² of towns at 0.5 m (\"melhor que 10 cm\"). Downloaded tile by tile after a registration and a CAPTCHA (not passed), and its host didn't answer from this network: its sheet index wasn't read. The statewide models' extent is the state, as the programme states it, drawn by Natural Earth's 1:10m administrative areas (v5.1.2): claimed, not checked against data. The urban models have no outline read (listed)."
+
+[[piece]]
+id = "mdt"
+label = "PE3D MDT 1 m (statewide lidar)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["Pernambuco"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+
+[[piece]]
+id = "mde"
+label = "PE3D MDE 1 m (statewide lidar)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRA"], name = ["Pernambuco"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+
+[[piece]]
+id = "urbano"
+label = "PE3D urban MDT and MDE 0.5 m (870 km²)"
+method = "none"
+why = "the 870 km² of towns the 0.5 m models cover have no outline read: the programme's site and index didn't answer"
+[piece.metrics]
+spacing_m = 0.5
