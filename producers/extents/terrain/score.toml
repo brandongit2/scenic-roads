@@ -1,0 +1,34 @@
+# The terrain's score (docs/inputs.md §6.11): how a piece's metrics make one number, 0 to 1.
+# score = Σ weight × value / Σ weight, over the metrics the piece states; a metric it doesn't state
+# is left out of both sums (its weight goes to the others in proportion), never counted as 0.
+# Each metric's value is 0 at `worst` and 1 at `best`, clamped; `log` scales by the logarithm.
+# Availability is not a term: it's a filter (the layer's switch).
+theme = "terrain"
+
+[metric.spacing_m]
+label = "Grid spacing"
+unit = "m"
+weight = 0.5
+scale = "log"
+worst = 90
+best = 0.25
+
+[metric.surface]
+label = "Bare earth or surface"
+weight = 0.2
+values = { ground = 1.0, surface = 0.0 }
+
+[metric.vertical_rmse_m]
+label = "Stated vertical accuracy (RMSE)"
+unit = "m"
+weight = 0.2
+scale = "log"
+worst = 10
+best = 0.05
+
+[metric.year]
+label = "Year surveyed"
+weight = 0.1
+scale = "linear"
+worst = 2000
+best = 2026

@@ -995,3 +995,70 @@ keeps its content name, so jobs keyed on it stop there.
 changed where needed: `web/maplibre/FORK.md`), compiled with the app. English comes from the server.
 The page switches to an updated map in place (it polls `/api/catalog` every minute, every 5 s
 while the server is away from the NAS).
+
+## 14. Data available (planned; task #1334)
+
+Nothing in this section is built. The layers that colour the map by the best data any declared
+source has for each place, from the source extents (docs/inputs.md §6.11): for a theme (`terrain`
+first; `bathymetry` and `buildings` later), a **score** layer, the primary one, a layer per metric,
+and the same layers again from only the data built into the map. The map's regions play no part.
+
+**The step** `extents`: a world step, the lead's, kind `pack`, a target per theme. It reads the
+accepted `extents` unit (its theme's declarations' pieces and `score.toml`) and, for the built-in
+set, the accepted elevation datasets (§6.8).
+- **Key:** `EXTENTS_V`, the `keyed` digests of the theme's accepted files (the `.geojson`s and
+  `score.toml`; a description's credit isn't keyed), and the built-in set's inputs (below).
+- **Combinations, not colours.** The step rasterises every piece into Web Mercator tiles and gives
+  each pixel the **combination** it lies in: the set of pieces covering it. Its outputs are the
+  tiles of combination numbers and one table: for each combination its pieces, best first by
+  score, and, for each layer and each setting of the availability switch, the maximum over its
+  pieces that pass the switch: of the score for the score layer, of each metric's 0-1 value for
+  that metric's layer (the finest spacing, bare earth over surface, the newest year, the best
+  stated accuracy; a piece not stating the metric takes no part in that layer's maximum). So the
+  maximum is taken once, by the build, on every layer; a layer's colour at a pixel is a lookup,
+  and a click's answer is the same row.
+- **Why raster class tiles and not vector:** the maximum over overlapping pieces is a per-place
+  rule, exact on a raster by construction, where a vector answer needs the overlay of thousands of
+  outlines as a planar partition (slow, and fragile on publishers' geometry); one set of tiles
+  serves every layer, both settings of the switch and the click; and the extents themselves are
+  good to tens of metres at best (§6.11's tolerance), which a pixel of the finest level matches.
+- **Tiles:** 256 px, z0 to z12 (a pixel 38 m at the equator), kept as a quadtree: a tile all of
+  one combination isn't stored, its parent says so, so the tiles follow the outlines' length and
+  not the area. Above the finest level a pixel takes the combination at its centre. RDPACK packs
+  (docs/formats.md), `layers/extents-<theme>/`; the table `global/extents/<theme>`.
+- **Rasterising:** a piece's rings are lines in longitude and latitude (RFC 7946), densified so
+  none strays from its Mercator image by a quarter of a finest pixel; a pixel is in a piece when
+  its centre is (even-odd, holes out). The antimeridian needs nothing: pieces arrive cut there
+  (§6.11). The Web Mercator tiles end at 85.05°; the polar caps (docs/polar.md) take the same
+  combinations in each pole's projection, a root raster per pole from the same pieces.
+- **The built-in set:** a second table and tiles of the same shape, `extents-<theme>-built`, whose
+  pieces are the build's own datasets where they have data: for the terrain, each accepted
+  elevation dataset's measured presence less its hollow tiles (§6.8, `facts.measured`: read from
+  the data's valid-data masks at check time), with the dataset's declared `surface` and measured
+  resolution, cut to where the terrain's packs are built from it. Its key names the elevation
+  unit's index and the terrain packs' coverage. Open: whether a finer mask than the presence
+  tiles (a z10 tile) is wanted there, read from the store's files' overviews on the lead.
+- **Tests** (planned with the step): the maximum on overlapping and nested pieces, on each layer;
+  the score against `producers/extents/score.py`'s for the same `score.toml`; a metric not stated
+  (the weights redistributed; the piece out of that metric's layer); the switch; a piece cut at
+  the antimeridian and one holding a pole; a uniform tile not stored.
+
+**Served.** `/tiles/extents/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the combination tile
+coloured by the server through the layer's ramp (PNG; 204 where no piece is), so the map draws a
+plain raster layer and holds no logic of its own. `/api/extents/<theme>/<set>?lng&lat&avail`:
+the pieces at a point, best first, each with its source's name, credit, licence and link, its
+metrics, their 0-1 values and its score, its availability and extent class. `/api/extents/<theme>`:
+the score's metrics, scales and weights as declared, each layer's ramp and stops, and the sources
+with their pieces counted by class (those of class `unknown` named here, as they're drawn nowhere).
+
+**In the app.** A group "Data available" in the layers panel, a section per theme: the set (best
+available anywhere / built into the map), the layer (Score, then the theme's metrics), the
+availability switch ("only data that downloads freely", on by default), an opacity. The settings
+are held by the settings profiles as every layer's are. Colours: the score and the year on a
+sequential ramp; the grid spacing in classes on its log scale (0.25, 0.5, 1, 2, 5, 10, 30, 90 m);
+bare earth and surface as two colours; the accuracy on a sequential ramp of its log scale. The
+legend and the formula are read from `/api/extents/<theme>`. A click, while a layer of the group
+is on, opens a panel listing the pieces there, best first. In the code the layer is a raster
+source and layer and two requests; nothing of it is MapLibre's but the raster layer itself
+(docs/native-port.md: a ground layer painted into the drapes).
+
