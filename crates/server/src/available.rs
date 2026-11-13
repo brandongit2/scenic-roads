@@ -21,6 +21,7 @@ use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use codecs::available::{self as fmt, Grid, Tile, PIXELS, SIDE};
+use det::Det;
 use inputs::inputs::extents::{self as ex, Scale, Score};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -163,7 +164,7 @@ impl Theme {
                     [0.0, 0.25, 0.5, 0.75, 1.0]
                         .iter()
                         .map(|&v: &f64| {
-                            let raw = if log { worst * (best / worst).powf(v) } else { worst + v * (best - worst) };
+                            let raw = if log { worst * (best / worst).dpowf(v) } else { worst + v * (best - worst) };
                             json!({"value": v, "label": format!("{}", (raw * 1000.0).round() / 1000.0), "colour": hex(colour(v))})
                         })
                         .collect()
