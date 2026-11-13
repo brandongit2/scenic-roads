@@ -188,15 +188,15 @@ Common rules:
   soloed from its legend, its published tiles by age, `catalogues.js`; a card of the whole stack
   under a point, hovered or pinned by a click or tap; docs/pipeline.md §5), a tab per part by the
   address's `#hash` in the right panel, and a fixed footer (the charts' range, the Live dot).
-  Overview (the alerts, the work left in the queue, the last and next catalogue, the Macs); Jobs (the schedule: each
+  Overview (the alerts, the work left in the queue, the last and next map update, the Macs); Jobs (the schedule: each
   Mac's lanes with the jobs that ran, running and to come (a job to come's card, as one that ran: its targets and a map of them, from `/api/tocome`, which the page asks once a forecast; a block a job: docs/pool.md); the stages: done and left a step; a card on hover, pinned on a click or tap); Machines (a card per
   machine, the pool: who leads, "Make lead", "Take it"; the settings); Regions (a virtual list; a row under the pointer lights its region on the left panel's map and shows its card); NAS (`nas.js`: how fast it responds, use against its limits, its use over time); Inputs (the gate's held changes with Accept and Accept all, docs/inputs.md §4.7); Activity (last day by the hour,
   events, the file stream and the internet by website: `activity.js`); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10). It reads
   `/api/steps` once (the steps table: every word about a step), `/api/swarm` every 10 s and
   `/api/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/api/regions` (each region's folders, download size and
-  outline: docs/pool.md §10, Regions) when the last catalogue changes, else every ten minutes (an answer
-  the same as the last, its catalogue and version, isn't shown again);
+  outline: docs/pool.md §10, Regions) when the map changes, else every ten minutes (an answer
+  the same as the last, its map and version, isn't shown again);
   each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/api/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The

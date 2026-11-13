@@ -124,7 +124,7 @@
     updating. Download turns into Cancel at the click, the bar moving before the server answers;
     Cancel takes the download off at once (the mirror stops the copy at its next check, what was
     copied goes; one that finished since the panel last asked stays: a whole download goes only by
-    Remove, which asks first). Behind the catalogue served, it says "↻ out of date", what changed (new files, of
+    Remove, which asks first). Behind the map served, it says "↻ out of date", what changed (new files, of
     which kinds) and the size to copy (under 1 MB in KB), with an **Update** button; the World and terrain detail
     rows the same. A region still building can be downloaded: its download has the tiles built then;
     an Update brings those built since, what's here never fetched again.
@@ -138,7 +138,7 @@
   - The Mac's line: what's downloaded, free space, the reserve, the copy under way, and that copies
     keep to 20 MB/s while the build runs.
 - The status bar offers to reload when new data or a new app is in, and says when the NAS or the map server can't be reached.
-- New areas appear as their catalogue goes out, a z6 tile's tiles within minutes of its build (docs/building.md §2, Publishing).
+- New areas appear as their map update goes out, a z6 tile's tiles within minutes of its build (docs/building.md §2, Updating the map).
 
 **Translations and descriptions** (docs/names.md) are inputs folders of the input check: `inputs/translations/` and
 `inputs/descriptions/` (docs/inputs.md §6.3, §6.4). An update shows on the map a few minutes after it's

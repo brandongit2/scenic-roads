@@ -199,8 +199,8 @@ come from GTFS, hand-checked timetables, or OSM `interval` + `opening_hours`; ne
 ## Building and running
 
 The pool's lead, the Mac mini (`scenic agent`, `crates/agentcore/src/agent`), builds the map into the
-NAS from a worldwide OpenStreetMap download, a z6 tile at a time, and publishes a catalogue that the
-map server switches to in place. The other Macs and any browser on the LAN help through its
+NAS from a worldwide OpenStreetMap download, a z6 tile at a time, and updates the map, which the
+map server follows within a second (docs/formats.md, The map and its log). The other Macs and any browser on the LAN help through its
 coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac while Scenic
 (/Applications/Scenic.app, installed by `tools/app/install.sh`) is open there.
 
@@ -229,7 +229,7 @@ coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac whi
 | `docs/building.md` | Units, jobs, the scheduler and its order. |
 | `docs/pipeline.md` | Every build step as one row of one table. |
 | `docs/steps.md` | Each step in detail, its keys. |
-| `docs/storage.md`, `docs/formats.md` | The NAS and its files. |
+| `docs/storage.md`, `docs/formats.md` | The NAS and its files, GC; the files' formats, the map and its log. |
 | `docs/macs.md`, `docs/pool.md`, `docs/coordinator.md` | Each Mac's agent, server and mirror; the pool and its lead; the coordinator and its workers. |
 | `docs/regions.md`, `docs/inputs.md` | Coverage and regions; the inputs folders and their checks. |
 | `docs/names.md`, `docs/sizes.md`, `docs/buildings3d.md` | Names and descriptions; sizes; 3D buildings. |
@@ -242,7 +242,7 @@ Phases, known gaps, risks and decisions are on the task board.
 
 ## Data
 
-The map's **© Credits** dialog lists each source as its catalogue serves it (`CREDITS` in
+The map's **© Credits** dialog lists each source as the map names it (`CREDITS` in
 `crates/inputs/src/rules.rs`, plus the inputs' own descriptions).
 
 <details>

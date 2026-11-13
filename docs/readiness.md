@@ -220,7 +220,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
      heritage-sites, the spacing and registers inputs) so none runs on a read about to change;
      bldprep reads an input (the declared release), not `Whole bld-fetch`: it runs beside the
      fetch, as the planner had it; depth-root reads `Whole depth` as well as `Whole depth-lo`; a
-     pole's root reads its own pole's blocks (`Targets`), not every block; pack and the catalogue
+     pole's root reads its own pole's blocks (`Targets`), not every block; pack and the map update
      declare nothing yet (their reads are the plan's).
    - Decision 2 (the terrain root a waited read) is not in step 1: the root is made in the
      publishing chain, behind the map tiles and the low zooms' cadence, so slope waiting for it
@@ -228,7 +228,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    - `steps::key` (`KEY_SCHEME = 1`) gave each step's key through the `*_key` functions and
      target lists the planner used, not lines assembled from the reads (they carried no
      identities yet); the steps keyed on the whole plan's state (pack, lo, prune, roadunits,
-     stations, ferries, the catalogue, lakefill, names-todo) weren't derived.
+     stations, ferries, the map update, lakefill, names-todo) weren't derived.
    - Cut: `build::waits`, `build::wait_note`, the hand-written wait strings, `steps::Reads`,
      `steps::reads_of`, `Step::after`, `TerrainWork::is_left`'s step match, `Plan::terrain_built`,
      `forecast::chain_deps`, `UNITS_NEED`, the `reads_terrain` group, the held-chain guard.
@@ -285,7 +285,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        named once, on one read.
      - Still keyed on the whole plan's state, so not derived: pack(T) and lo (their
 
-       owners, by every base pack's reach), prune (no key), the catalogue (what's ready to list),
+       owners, by every base pack's reach), prune (no key), the map update (what's ready to list),
        lakefill (its source's pin, the plan's) and names-todo (the map's sequence served). The
        pass's own and upkeep's (osm-pass, pass-sets, regions-extract, buildings, inputs, gc, redo,
        backup) are keyed in agent::plan, outside this derivation.
@@ -354,7 +354,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
        reader re-keys in memory what isn't saved yet (step 4 saves it).
      - Not derived (`steps::derived`: no versions declared): pack(T) and lo (their owners, by
        every base pack's reach: `pack_lo_targets` over the whole plan; deriving them would take
-       the owners as a per-plan memo in the `KeyCtx`), prune (no key), the catalogue (what's ready
+       the owners as a per-plan memo in the `KeyCtx`), prune (no key), the map update (what's ready
        to list), lakefill (its source's pin, the plan's) and names-todo (the map's sequence
        served).
      - Tests: `build::tests::offered_keys_are_derived` (every key the plan offers is
@@ -476,7 +476,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
   `heritage_key`, `marks_key`, `overlays_key`, `heritage_sites_key`, `outlines_key`, `reach_key`,
   `depth_root_key`, `bld_fetch_key` and `root_key` (each now the derived key behind what makes it
   a target). What they gathered survives only as `Input` functions shared with the runs.
-  Planned: `catalogue_key` (the catalogue isn't derived yet).
+  Planned: `catalogue_key` (the map update isn't derived yet).
 - `slope_lo_terrain`, `slope_piece_from`, `slope_deep_from`, `unit_terrain_from` as separate memo
   keys (the memo is keyed on the read's `Grain::Outputs` lines, derived).
 - `UNKNOWN` (`Ready::Unknown`).

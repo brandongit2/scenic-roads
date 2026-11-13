@@ -49,8 +49,7 @@ it (store::nasio), retries the reads, stats and listings the share fails for a m
   from local files, renames (`rename`, `rename_over`, `rename_no_replace`), removes (one `Deletes`),
   `create_dir_all`, `set_modified` (a reuse's touch, not counted).
 - **`Loc` and `Place`** are a file on this Mac or on the NAS (`Loc` borrowed, `Place` owned), for the
-  readers that take both: a local copy or the NAS's file (buildstore::localread), the catalogues'
-  folder (a Mac's copies and the NAS's), the packs a step reads. A caller passes a `&Path` or a
+  readers that take both: a local copy or the NAS's file (buildstore::localread), the packs a step reads. A caller passes a `&Path` or a
   `&NasPath`.
 - **The escape** is `unchecked_path()` on a `NasRoot`, a `NasPath` or a `Loc`. It is for a program's
   argument, a library that opens a path itself, a statfs of the mount, and the store's own readers
@@ -213,7 +212,7 @@ from bytes the share may not hold).
 **Still under no deadline**, each a library's or a program's own reading: a `File` taken out of
 the type (`NasFile::into_file`, `Loc::open`: a library that wants a `File`, such as a TIFF's or a
 land table's reader), and the paths listed in the guard's `EXEMPT` (§3: a step program's
-arguments, GDAL's, osmium's and the other libraries' own opens, the catalogue writers, a mapped
+arguments, GDAL's, osmium's and the other libraries' own opens, a mapped
 file's pages). A call held there holds its job; the agent's stuck-job flag says so.
 
 **Cost.** Measured on the M4 (load 16-28, release build, a 64 MB file in the page cache): a 16 KB

@@ -1,4 +1,4 @@
-//! Publishing timed end to end (task #250; docs/building.md §2, Publishing's times): from a build
+//! Publishing timed end to end (task #250; docs/building.md §2, The map updates' times): from a build
 //! z6 tile done to its map tiles on every Mac's map, by the events each stage leaves.
 //!
 //! - **In the build's history** (crate::coord::history, the lead's): a z6 tile's job ended ("end",

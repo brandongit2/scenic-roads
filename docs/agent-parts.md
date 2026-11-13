@@ -197,7 +197,7 @@ plan meanwhile.
 
 *Built (step 6):* `agent::plan`: the `Planner` owns the plan, its offers, the gate (the lead's;
 a member's asks go to the lead, `Agent::tell_gate`), the redos, the checklist, the regions' states
-and steps, the forecast's and the build page's regions' workers and the catalogues' record, on a
+and steps, the forecast's and the build page's regions' workers and the map updates' record, on a
 thread of its own (in line for a single round, a dry run's, the tests'). **jobs**' round tells it
 its side each round (`plan::Inputs`: a copy of the slots, the memory, the pause, the pool's view,
 the switches; a job's end kicks a plan) and reads its last `PlanView` (numbered `n`). It plans when

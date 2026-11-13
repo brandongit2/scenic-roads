@@ -67,7 +67,7 @@ on one disk.
 | The build page's view | `POST /pool/view` | in memory: the coordinator's view, its agent's status (its `status.json`, which other Macs' `scenic status`, `scenic pool status` and map servers ask it for: `coordwire::lead::status`), the forecast's input, the regions | none |
 | The records' brief | `GET /pool/brief` (`ETag` its (epoch, seq)) | the last save's, gzipped, in memory | `state/build/brief.json`, written each save for the map server and the CLI |
 | The records | — | `agent/pool/records.json`, the lead's disk copy | `state/build/records.json`, written whole each save (pool.md §6.2) |
-| GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/maplog.md §7) | the lead's GC queue | — |
+| GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/storage.md, GC) | the lead's GC queue | — |
 | The history | `/api/history` (the page's; the CLI's on another Mac) | the coordinator's `history.jsonl` (the last week's), which the page's view reads (pool.md §7.5) | each finished day packed into the archive by the daily `gc` job, `state/coord/history-archive/<day>.tar` |
 | How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | read for it by no app since task #1119: with no `lead.json` (a new Mac) or one naming another member than the declaration, or a root that doesn't answer, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`); a root that answers and declares no lead, none. The lead still writes `state/coordinator.json` each 5 min while it leads (`coordwire::OLD_CONTACT`, when it differs), for the apps before #1119 alone, whose agents, map servers and updaters find the lead by it (§9) |
 
@@ -90,7 +90,7 @@ its store, the NAS budget's probes and the history are its own, §3.1, task #111
 ### 4.1 Shape
 
 `crate::pool::store`, in `agent/coord/store/` on the lead's disk, its files `store::seglog`'s
-(shared with the map's log, docs/maplog.md §4.2):
+(shared with the map's log, docs/formats.md, The map and its log):
 
 - `snapshot.json`: the whole state as of a log position, written whole (temporary file, `fsync`,
   rename, `fsync` of the folder).
@@ -160,7 +160,7 @@ rule):
 | `POST /pool/budget/take`, `/pool/budget/hold`, `/pool/lease/answers` | an agent's proxy, for its jobs (the lead's own in process) | a token or a wait / the hold's end / the lease's word |
 | `POST /pool/view` | the lead's page view (in process), and by HTTP | the view's documents, each only when its time differs from the ask's |
 | `GET /pool/brief` | a member's agent: its pool's view, a job as it starts, `--expect-same` | the brief from memory, gzipped; 304 to `If-None-Match` naming its tag; 503 while it has none |
-| `/work/*`, `/task/*`, `/gc/*` | jobs, tasks, map servers and GC | coordinator.md, docs/maplog.md §7 |
+| `/work/*`, `/task/*`, `/gc/*` | jobs, tasks, map servers and GC | coordinator.md, docs/storage.md (GC) |
 
 A coordinator without its store (not the lead's, or not open yet) answers the asks 503, asked
 again.
@@ -291,7 +291,7 @@ tailnet is §7.3's first case.
 | Split | What happens |
 | --- | --- |
 | a member can't reach the lead, both have the NAS | §7.1 for that member alone: it finishes its jobs and waits, keeping their hand-offs; the lead holds its leases as away and grants their targets to no one. There is no NAS fallback. |
-| the lead can't reach the NAS, members reach it | coordination goes on (the store is local); NAS-needing jobs stall on the share; merges wait (records can't be saved: hand-offs stay taken, acknowledgements wait), catalogues and GC wait. |
+| the lead can't reach the NAS, members reach it | coordination goes on (the store is local); NAS-needing jobs stall on the share; merges wait (records can't be saved: hand-offs stay taken, acknowledgements wait), map updates and GC wait. |
 | a member can't reach the NAS, reaches the lead | as away (§7.2): local work only. |
 | two members can't reach each other, both reach the lead | nothing changes: members don't talk to each other for coordination. |
 | the lead hears a member but the member doesn't hear the answers (one-way) | the member's posts are taken but it sees failures: it re-sends (idempotent) and starts nothing new; its leases stay live by its beats. Seen as reached by the lead, not reaching it (`Beat::reach`). |
@@ -339,7 +339,7 @@ old coordination folders are gone):
   status by it), `state/pool/nas-probes.json`, `state/tmp/` (empty), `state/logs/` (logs of 2 and
   6 Oct), and `settings/` (the map's profiles, which an older map server reads and writes; and once
   a daily backup lists `mac/profiles.json`); `map/` once every Mac's beat says `nas-check-inputs`
-  (docs/maplog.md §4.4);
+  (docs/storage.md);
 - **remove** once the lead runs an app since task #1183 (which writes it no more; an older lead reads it at a take-up
   only to pass over its own, and a member never): `state/lead/store.json`, the lead's store's old
   backup, and the `state/lead/` folder;

@@ -94,7 +94,7 @@ New steps (docs/steps.md §2, keys §12): no existing step's output or version c
   (`polar_work`), and a pack in a hand-off not yet merged holds what reads it.
 - **Who runs them:** `polar-terrain` and `polar-slope` are offered to the pool's members like the
   other per-tile steps; `polar-root` is the lead's.
-- **Packs and catalogue:** RDPACK, scope `polar`, root "4/x/y" of the grid; the catalogue's layers
+- **Packs and catalogue:** RDPACK, scope `polar`, root "4/x/y" of the grid; the map's layers
   `polar-terrain-s` and `polar-slope-s` name the blocks under `polar` (docs/formats.md, Pack), the
   root holds z0–3, zooms 0–9.
 - **Served:** `/tiles/polar-terrain/<pole>/{z}/{x}/{y}` and `/tiles/polar-slope/…` (`image/webp`,
@@ -128,7 +128,7 @@ custom layer on the globe.
   ramps, over the land or water colour. Tiles are culled by the frustum and the horizon. The
   elevation tint's fit to the view counts the caps' loaded heights with the Mercator tiles'
   (`capGround`, `terrainstats.ts`).
-- **`web/src/polarcaps.ts`**: adds a pole's cap while the catalogue lists both its layers, its URLs
+- **`web/src/polarcaps.ts`**: adds a pole's cap while the map lists both its layers, its URLs
   at the packs' versions (`api.ts` `packUrl`, `packs.ts` `packToken` read `polar`); a tile no pack
   holds (a block not built) isn't asked for (`PolarTilesOptions.stored`), its ancestor drawn.
 - **The fork** (web/maplibre/FORK.md):
@@ -178,7 +178,7 @@ data or the steps is the globe's:
   loading, decoding and height lookups; only the drawing (`polarglobe.ts`) is the globe's.
 - **What a flat projection would add:** its own drawing layer (or a MapLibre projection for the
   grid), its camera, and the Mercator data near the edge drawn in it; the polar steps, packs,
-  catalogue and routes stay as they are.
+  map entries and routes stay as they are.
 
 ## 7. Sizes and costs
 

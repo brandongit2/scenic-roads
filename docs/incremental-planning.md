@@ -252,7 +252,7 @@ what is assembled each plan is the order alone (2-3 s on the bench).
 ## 6. Equal to a full plan
 
 The incremental plan must be the full plan, byte for byte (its `Plan`, keys included), as the map
-log's `incremental_digest_is_the_whole_digest` holds for its digest (docs/maplog.md):
+log's `incremental_digest_is_the_whole_digest` holds for its digest (docs/formats.md, The map and its log):
 
 - **A shadow full plan on the lead**: after a restart, after the NAS's return, and every Nth plan
   (N set on the build page, shown with the plan's phase times), a full `build::plan` on the same
@@ -262,10 +262,10 @@ log's `incremental_digest_is_the_whole_digest` holds for its digest (docs/maplog
   the status says so (a flag the page shows, not a log line alone). Until step 5 every plan runs
   the shadow. After it, N counts time as well as plans (a shadow at least every 30 min whatever
   the plans' rate), and:
-  - **A catalogue is planned from a confirmed plan.** A catalogue (at most hourly) is the plan's one
+  - **A map update is planned from a confirmed plan.** A map update is the plan's one
     output others see; between shadows a wrong key can only delay or repeat a job, which the next
     shadow corrects (a job records the plan's key, which the full plan then finds stale), but a
-    region published as ready would stay on the map. The plan that puts a catalogue in the work
+    region published as ready would stay on the map. The plan that puts a map update in the work
     runs its shadow then.
   - **A mismatch shadows every plan** until ten in a row are clean, and saves what reproduces it
     (the brief's `seq` and the inputs' digests of both plans) for a recorded-state test.

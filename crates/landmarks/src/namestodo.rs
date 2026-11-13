@@ -339,10 +339,11 @@ fn sect<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<SectReader<PlainFi
 /// The spoken languages the catalogue was made with: its `global/spoken` (the `spoken` job's, from
 /// the languages input's accepted version).
 pub fn spoken_for(root: &store::nasfs::NasRoot, cat: &store::catalogue::Catalogue) -> Result<Spoken> {
-    let f =
-        cat.global.get("spoken").and_then(|l| cat.file(l)).context(
-            "the map has no global/spoken (the spoken job makes it from the languages' accepted version)",
-        )?;
+    let f = cat
+        .global
+        .get("spoken")
+        .and_then(|l| cat.file(l))
+        .context("the map has no global/spoken (the spoken job makes it from the languages' accepted version)")?;
     let b = root.join(&f.file).read().with_context(|| format!("read {}", f.file))?;
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }

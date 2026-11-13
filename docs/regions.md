@@ -36,7 +36,7 @@ check requires, while only some of it is built.
 - **Shrinking:** what only the removed part built leaves the manifest once the z6 tiles are built (a
   prune): z6 tiles no longer built, their candidates and peaks, map tiles no z6 tile's ways reach. A z6
   tile the coverage has left loses its terrain, slope and tree cover hi packs and mids ("none"
-  pieces), a z3 tile its lo packs ("none" assemblies). The next catalogue drops them, and GC frees
+  pieces), a z3 tile its lo packs ("none" assemblies). The next map update drops them, and GC frees
   them.
 
 **By location.** Rules that depend on where a thing is; the z6 tiles' rules are versioned by area in
@@ -49,7 +49,7 @@ check requires, while only some of it is built.
   static timetables (docs/steps.md, Rail service; docs/inputs.md §6.7);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`trees::leaftype`);
 - the languages spoken there (docs/names.md; docs/inputs.md §6.2);
-- credits (`inputs::rules::CREDITS`; a catalogue lists those meeting its coverage + 20 km or its
+- credits (`inputs::rules::CREDITS`; a map lists those meeting its coverage + 20 km or its
   z6 tiles' ways).
 
 **No seams:** no step knows region borders; per-vertex values are computed once, by the owning z6 tile;

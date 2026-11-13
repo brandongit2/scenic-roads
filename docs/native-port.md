@@ -299,7 +299,7 @@ web/src/
               typed look and its draw: land/, water/, depth/, lines/ (roads, rail, basemap lines
               if §9.2 says so), vector/ (fills and draped lines), contours/, buildings/ (near
               meshes and the far field), dots/, names/, polar/, overlay/
-  app/        state, links, settings profiles, config, the server's API, the catalogue, regions
+  app/        state, links, settings profiles, config, the server's API, the map, regions
               and downloads
   ui/         panels, their controllers (today's ctl/), lists, search, the popup, formatting,
               the stylesheet

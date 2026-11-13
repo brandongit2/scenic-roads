@@ -1,7 +1,7 @@
 # The pool: the Mac mini leads the build
 
 Every Mac runs the same agent (`scenic agent`). One of them, the **lead**, plans, grants jobs,
-merges results into the build's records and publishes; the others are **members**. The lead is
+merges results into the build's records and updates the map; the others are **members**. The lead is
 fixed: the Mac mini, the member `state/build/lead-member.json` declares (§6.1, task #881). No other
 Mac ever leads: there is no election, handover or takeover. With the mini gone, the members finish
 the jobs they hold, keep their hand-offs, and wait for it. The Macs' agents are the only
@@ -23,7 +23,7 @@ member's beat, its hand-offs, mail, holds, settings, budgets and the records' br
    notes). A late write of a lead's process before, at the one path, is passed over by the next
    take-up (it starts from the lead's own disk's copy) and saved over within `RESAVE_S` (§4).
 4. **Every job hands its results off** to the lead (§7.3); only the lead's merge writes the records.
-5. **Work goes where it fits,** by measured memory and disk (§7.7). Publishing and GC are the
+5. **Work goes where it fits,** by measured memory and disk (§7.7). Map updates and GC are the
    lead's duties, not jobs.
 6. **One lead, declared:** no Mac decides by itself to lead; a restart of the lead is a take-up
    of its own records in a new epoch, not a restart of the build: nothing is lost, no job stops.
@@ -34,14 +34,14 @@ Where state lives:
 
 | State | Truth | On a Mac | The lead after a restart |
 | --- | --- | --- | --- |
-| Records, built files, catalogues | NAS: `state/build/`, content-named files | caches (`agent/cache/…`); the lead's own copy of the records, `agent/pool/records.json` | takes up its own copy (§6.2) |
+| Records, built files | NAS: `state/build/`, content-named files | caches (`agent/cache/…`); the lead's own copy of the records, `agent/pool/records.json` | takes up its own copy (§6.2) |
 | Downloads | NAS: `sources/` | cache copies | nothing |
 | A pass's Wikidata/Wikipedia answers | NAS: `sources/items/<date>/` (`agentcore::answers`) | `agent/cache/items/`, `agent/cache/heritage-<date>/` | its first run takes them |
 | Z6 tiles' kept state | NAS: `cache/scenic-units/` | none | nothing |
 | A job's progress (the OSM pass's stages, a depth, terrain-hi or terrain-deep target's blocks, scratch) | the Mac running it | scratch folders | the OSM pass's resumed there (§7.2, Resuming), a depth, terrain-hi or terrain-deep target's when it runs there again; the rest redone |
 | The coordinator's state | the lead's disk: `agent/coord/store/` | | opens it (§6.2, §7.5) |
 | The coordinator's token; its history's archive; its contact | NAS: `state/coord/token`, `state/coord/history-archive/`; each Mac's agent's `lead.json` (coordwire::lead) | | uses them |
-| The lead's own (its catalogues' record, daily jobs' last runs; the map's log, docs/maplog.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
+| The lead's own (its map updates' record, daily jobs' last runs; the map and its log, docs/formats.md) | the lead's disk | `agent/publishing.json`, `agent/state.json`, `agent/maplog/` | keeps it |
 
 ## 3. What the NAS gives us
 
@@ -173,7 +173,7 @@ Checked by the simulator (§13):
   job slots (§7), brokers its jobs' tasks (§8), and passes its build page's asks to the lead.
 - **The lead** is the declared member (§6.1): the Mac mini, always on, at home and on power. It
   also plans (`crate::agent::build`) and runs the coordinator, merges the members' hand-offs into the
-  records, publishes catalogues, runs GC, compacts the raw tiles' archives, keeps the pause and
+  records, updates the map, runs GC, compacts the raw tiles' archives, keeps the pause and
   writes the build's status. Its slots are ordinary member slots: its agent asks its own
   coordinator for work as any member asks (§7.2).
 
@@ -218,7 +218,7 @@ its own disk, and the new Mac takes it.
      timings, and the files a store's first fill reads;
    - `maplog/`, whole: the map's log, its snapshot, GC's queue and its sweeps' places;
    - `pool/records.json`: the records it saved last, which the new lead takes up;
-   - `publishing.json`: the catalogues' record (when one was first held back, the cadence-gated
+   - `publishing.json`: the map updates' record (when one was first held back, the cadence-gated
      steps' last runs).
    Not the rest: `member` (each Mac's own id), `lead.json`, `coord/jobs-token` (each Mac's own
    jobs' token, which its jobs running across the stop hold), the per-slot files and the rest of
@@ -257,7 +257,7 @@ opens, so once a process; a take-up leads it, its records numbered on in it. The
 - **One snapshot, saved whole after each merge** (`crate::pool::records`, `Records::save`): the
   manifest, keys, pending uploads (an entry's `checked` takes them out: GC's job, which checks
   them on the NAS, docs/storage.md), the sizes of the files the manifest names (from the entries'
-  hand-offs, for the catalogues: `sizes.json` beside `manifest.json`), raw archives awaiting the
+  hand-offs, for the map updates: `sizes.json` beside `manifest.json`), raw archives awaiting the
   index (each taken off once the lead has named it in the raw store's index and saved that,
   `Heard::named_raw`, with the next snapshot; one named but not yet off when the lead restarts is
   named again, passed over unread; an archive that index lists as merged away is never named
@@ -272,7 +272,7 @@ opens, so once a process; a take-up leads it, its records numbered on in it. The
      (`records::ONE`, `ONE_BRIEF`; `Nas::write_whole`). Nothing else: no today's files.
   A save kept on the lead's disk and not written whole to the NAS (past its 20-s deadline, or
   refused while an earlier write to that path still runs, crate::agent::nasread) leaves the lead
-  leading: it acknowledges nothing and isn't caught up (no catalogue, no GC) until a save reaches
+  leading: it acknowledges nothing and isn't caught up (no map update, no GC) until a save reaches
   the NAS, tried each step.
 - **Taking the records up** (`driver::take_up`, once a process, or again after the declaration
   names it once more): it needs its store (its epoch: the agent's first step runs before its
@@ -286,7 +286,7 @@ opens, so once a process; a take-up leads it, its records numbered on in it. The
   files: the pool's first".
 - **Merging**: it merges what members posted it and its own jobs' hand-offs, from memory, in (epoch,
   lease) order (`records::merge`). It is **caught up** (`caught_up`) once every hand-off it was
-  given is merged and saved; catalogues and GC wait for that. It reads and lists nothing on the
+  given is merged and saved; map updates and GC wait for that. It reads and lists nothing on the
   NAS for them.
 - **Acknowledgements** (`journal::Mine`): a lead acknowledges a hand-off once a saved snapshot names
   it (in its beat's answer, `merged`); the member drops it.
@@ -1111,12 +1111,12 @@ Rows of note: `trees`/`terrain-hi`/`slope-hi` per z6 tile with `*-lo` assemblies
 target per z6 tile, the lead's, planned before every other job (docs/inputs.md §4.3).
 
 - **Every step to every member** (`crate::agent::every`, `crate::coord`'s `pick_every`): all but the
-  lead's own steps (`every::LEAD_ONLY`: catalogues, prunes, `bld-fetch`, the answer-keeping steps, the
+  lead's own steps (`every::LEAD_ONLY`: map updates, prunes, `bld-fetch`, the answer-keeping steps, the
   worldwide steps) go to any member whose measured room fits, the lead among them. A cold start
   (§7.7) goes, one target, to the first asker its provisional need fits (or one holding no job),
   while no job of its step runs anywhere.
 - **The lead's own steps by grant too** (`Agent::offer_plan`, `coord`'s `pick_own`): the lead
-  offers its whole plan in its order (the publishing chain among it), each offered step's targets
+  offers its whole plan in its order (the map update's chain among it), each offered step's targets
   where its work first comes and each of its own planned jobs whole (`Offer::job`). The authority
   rule (`every::grants`): a step kept to the lead, and every planned job of the lead's, is granted
   only to the current lead's member, asking in process; a member's ask over HTTP never gets one.
@@ -1295,9 +1295,7 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md �
   Steps still past it by design: heritage's World Heritage clip and pass-sets' sets (one osmium
   run each), unit's longest program, and the regions' check's stages after the waters (the
   lakes, the one coastline, each region's area, the hand-outs: one stretch over every region
-  with water, no pieces). catalog keeps none: its coverage drawing was the catalogue chain's read
-  (task #895 made it seconds: 20 s on the M1 from the NAS, 1 s from the kept one), the rest of
-  its run about 20 s. names-todo's labels' phase is still one stretch, past the bound on the slower Macs (288–364 s measured in the M4's last runs; the landmarks' 222 s). A log at the top of its step's scratch folder
+  with water, no pieces). catalog keeps none. names-todo's labels' phase is still one stretch, past the bound on the slower Macs (288–364 s measured in the M4's last runs; the landmarks' 222 s). A log at the top of its step's scratch folder
   (`<z>_<x>_<y>.resume`, one append a block, each record with its length and BLAKE3, read a
   record at a time; a slot's moved to the slot running it), taken only for the same inputs (its
   step's versions and encodings, the target, the sources' and water's pins, and what else it
@@ -1450,7 +1448,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
 ### 7.4 Planning reads only the records
 
 In the pool, a pass is complete when its records name `sources/osm/<date>/pass`
-(`crate::osmpass::latest_pass_by`); out of it, a `pass.*.json` file still says it. A catalogue runs only
+(`crate::osmpass::latest_pass_by`); out of it, a `pass.*.json` file still says it. A map update runs only
 when the lead is caught up. A resuming job is given its member's unacknowledged hand-offs of its
 step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
 
@@ -2516,9 +2514,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   heard for twenty minutes is forgotten. Nothing on the NAS (`crate::coord::beats`).
 - **Build status**, written by the lead (its agent's `status.json`, asked of its coordinator by other Macs): the
   checklist (a line per stage with an item per step: docs/pipeline.md §4), forecast, regions,
-  waits, what publishing does, publishing as it stands (`published`: the last catalogue and its
-  kind, the map tiles being drawn by Mac, each Mac's adopted catalogue), recent jobs, pause, last
-  catalogue, the lead.
+  waits, what the map updates do (`publishing`), how they stand (`published`: the last map update and its
+  kind, the map tiles being drawn by Mac, each Mac's adopted map), recent jobs, pause, the last
+  map update, the lead.
   A member writes `helper.json` on its own disk instead, and sends its status in its beat.
 - **Flags** (task #953, `agent::flags`): what needs a look, worked out by the lead at each round
   from its own status and its coordinator, in its status (`flags`: kind, Mac, a line) and in its
@@ -2614,11 +2612,11 @@ asks passed on are one-shot: the lead's store keeps them (below).
     copying GLO-30 at 4 MB/s (6/23/36, 67 min) is not: its 175 tiles a minute over its run sit
     above terrain-hi's slowest tenth, its copy a stretch of a job otherwise fast, which only a
     window inside it can show.
-  - *stale*: the lead's catalogue due (held back, planned, or waiting out its minute:
+  - *stale*: the lead's map update due (held back, planned, or waiting out its minute:
     `PublishLine::due_since`) for more than the overdue factor times the most the plan holds one
-    (`CATALOGUE_CAP_S` and `CATALOGUE_EVERY_S`, 11 min), counted from the last catalogue's going out
-    where later, with no catalogue job leased (that one is stuck by its own stillness). A
-    catalogue merely old, nothing new to list, isn't stale.
+    (`CATALOGUE_CAP_S` and `CATALOGUE_EVERY_S`, 11 min), counted from the last map update's going out
+    where later, with no `catalog` job leased (that one is stuck by its own stillness). A
+    map merely old, nothing new to list, isn't stale.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
@@ -2795,28 +2793,24 @@ asks passed on are one-shot: the lead's store keeps them (below).
   forecast is optimistic until each slot's speed is measured under that sharing.
 - **Regions** (`agent::regionsview`, task #512): each enabled region's `crumbs` (its folders'
   names in the regions' tree, a folder without a `_group.toml` name by its own in words, then its
-  own), its `bytes` (the catalogue's files a download of it copies, `areafiles::files_of` as the map
+  own), its `bytes` (the map's files a download of it copies, `areafiles::files_of` as the map
   server's downloads count them; not the basemap's pieces nor its terrain detail; null while the
-  catalogue lacks it), and its outline for the world maps of the Overview and Regions tabs: its
+  map lacks it), and its outline for the world maps of the Overview and Regions tabs: its
   drawn shapes in Web Mercator, the world 0–1000 each way, simplified to about 7 km, `fill` the
   rings, outer and inner (an island in a water region is a hole of it; outer wound positive, inner
   negative, filled nonzero: a hole unfilled, two shapes overlapping filled) and `edge` the lines
   to stroke (a stretch two of its shapes share along a parallel or meridian left out). Made by the lead, on a thread of its own, once per regions' accepted
-  version and served catalogue (the status's `catalog`; a failed read not tried again until one
-  of them changes): the drawn files read then, the catalogue's sizes once per catalogue, from
-  the catalogue the agent's loop read (`agent::served`: each new catalogue read once, by its
-  new deltas applied to the last, for the loop, its regions on the map, publishing's times
-  (`pubtimes::PlannedNotes::served`) and this view alike; a delta checks the catalogue it
-  changes by its digest, so a number taken again is read afresh, never served stale; task
-  #684: read three times over, each back through 135 deltas to a 9 MB whole one, it held the
-  lead's agent near a whole core, stalled its loop 300 s after each catalogue and took this view
-  136 s on 26 Oct). regions.json is about 0.96 MB. Handed by
+  version and map (the status's `catalog`, the map's `seq`; a failed read not tried again until one
+  of them changes): the drawn files read then, every region's sizes once per map update, from
+  the lead's log's map (`agent::publish::Here`: the head's catalogue, made of the map while a
+  reader holds it; the plan's regions on the map, the map updates' times,
+  `pubtimes::PlannedNotes`, and this view read the same one). regions.json is about 0.96 MB. Handed by
   the lead's pool step to its coordinator for `/pool/view`, read by each Mac's page data when its
   time changes. Every Mac's port answers `POST /api/regions` with
   no key: in the pool from that read, out of it from this Mac's agent's; a page that has the
   outlines of the answer's version says so (`{"have": version}`) and gets it without `fill` and
-  `edge` (asked again with each catalogue for its sizes, as often as each poll while the lead
-  publishes; on 7 Nov's 1,025 regions 0.1 MB without them, 3.1 MB with them). Until there is one it answers 200 with `{making: why}` (task #798: never an error
+  `edge` (asked again with each map update for its sizes, as often as each poll while the lead
+  updates the map; on 7 Nov's 1,025 regions 0.1 MB without them, 3.1 MB with them). Until there is one it answers 200 with `{making: why}` (task #798: never an error
   while the agent is busy; the lead's loop can take minutes after a restart before it makes them), and
   the Regions tab says why in place of its rows.
   Steps (task #636): `POST /api/regions` with `{"steps": true}` answers each region's targets
@@ -2867,7 +2861,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   read of the records' brief (a `-root` step's as 0/0/0; worldwide steps', records of steps the app doesn't know (a
   retired step's) and terrain-hi's, slope-hi's and tree cover's old z3 whole-run records left out:
   `agent::builtview`), `dropped` ({step: [z/x/y]}, the targets whose record is a drop's none
-  key: the page leaves out their drop runs' job ends), and, once the agent's catalogue view has read the map's log, `published`
+  key: the page leaves out their drop runs' job ends), and, once the agent's view of the map updates has read the map's log, `published`
   (indexes the same way, for every step whose files are told by name, an empty list when none) and
   `catalogue`, the map's `seq`: the targets one of whose published files the map still names as an
   `f/` entry (task #866: a batch deleting it ends it; the page draws no other told tile as published),
@@ -2878,9 +2872,10 @@ asks passed on are one-shot: the lead's store keeps them (below).
   Every Mac's port also answers `POST /api/catalogs` (`{"after": n, "steps": [step…]}`, both
   optional; no key) for the
   map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): each batch of
-  the map's log (docs/maplog.md §6.6; its `seq` the catalogue's number) as
+  the map's log (docs/formats.md, The map and its log; `n` its `seq`, `t` its time) as
   `{n, t, first?, z3, z6, z3_gone?, z6_gone?, z10?, z10_gone?}`, the tiles as `y * 2^z + x`, with
-  `latest`, `reading` and `error`. A batch publishes a z6 tile when it sets or deletes a key of it
+  `latest`, `reading` and `error`: a batch's `set` and `del` keys are the tiles it changed and
+  dropped, so nothing is compared. A batch changes a z6 tile when it sets or deletes a key of it
   in a tile section (base pack, road values, hi data, landmark points, a layer's hi pack, the deep
   terrain under it) or changes the file (`f/<name>`, its content name) of a name such a key gives,
   a z10 tile by its deep packs alone, a z3 tile by its layers' lo packs and area overlays (a pack
@@ -2893,17 +2888,18 @@ asks passed on are one-shot: the lead's store keeps them (below).
   keeps each `f/` name's last publish, the batch that gave a key that name or changed its file);
   null for a step whose files aren't told by name, which the page ages by any step's entries. The
   page asks for a step as the map first needs it (a solo, a queued tile's card) and again after a
-  new catalogue: terrain-deep's is 35 KB of JSON (7 Nov), the answer without `steps` the same as
+  new map: terrain-deep's is 35 KB of JSON (7 Nov), the answer without `steps` the same as
   before (146 KB whole, 45 KB gzipped, read once a page; then the batches after its last). The
   agent follows the log on a thread of its own, each loop and each ask (20 s apart at most): the
   lead's log's feed in process, on the lead alone. Told to reset
   (the log no longer holds its batches: a new lead's log), it takes the map again and says in
   `error` that the batches it missed aren't shown. Kept in the agent's folder
-  (`catalogues-view.json.zst`, written when a batch was applied): the entries, each tile section's
+  (`catalogues-view.json.zst`, written when a batch was applied): the entries, the `seq` they reach, each tile section's
   key with its name's hash, and each `f/` name's hash with its file's (what `/api/built`'s
   `published` reads, #866) and its last publish (a view kept before #994 takes each name's from its
-  deepest tile's newest entry, any layer's), never a catalogue; so a restarted agent goes on from where it was, as
-  deep as it has followed the log. `scenic catalogs [--after N]` prints the same JSON from this
+  deepest tile's newest entry, any layer's), never a map; so a restarted agent goes on from where it was, as
+  deep as it has followed the log (the lead's log itself holds 64 MB of batches at most). A file
+  set again unchanged (its size alone) changes no tile. `scenic catalogs [--after N]` prints the same JSON from this
   Mac's kept file. 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
   Natural Earth 1:50m, the same projection; made by `tools/worldmap/countries.py` from the NAS's
@@ -3137,7 +3133,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   offers the targets again under the keys it has; what reads their outputs follows by content
   (slope-hi's key names the terrain hi pack's content, the assemblies' keys their z6 tiles'
   mids), and the old files leave the manifest as the new ones replace them, for GC (its queue
-  on the lead: an hour's grace once nothing holds them, docs/maplog.md §7.2). The coordinator answers the ask with the last lease it granted before it
+  on the lead: an hour's grace once nothing holds them, docs/storage.md, GC). The coordinator answers the ask with the last lease it granted before it
   (`after`); the redo's job is leased later. The command then follows the newest records until
   the redo's merge lands in them: each target's last merged lease (`Records::last`) is later than
   `after`, so a job leased before the ask that merges meanwhile isn't taken for the redo; a lead
@@ -3195,7 +3191,7 @@ finished, from a log in its scratch folder on its Mac (§7.2, Resuming; crate::r
 
 The pool's settings are the lead's (`/pool/settings`, crate::coord::asks; `scenic pool set`):
 `placement` (§7.2; off while not set), `nas-budget`, `nas-target`, `batch-minutes` (§7.7),
-`overdue-factor` (§10, Flags), and publishing's `hold-catalog` and `near-slope` (docs/building.md §2;
+`overdue-factor` (§10, Flags), and the map updates' `hold-catalog` and `near-slope` (docs/building.md §2;
 off while not set), with no switch file. A new setting is made only once every member's
 heartbeat shows the app that has it. A role is read as the agent starts (docs/roles.md §1) and is
 no longer switched: `state/pool/slots` isn't read, but stays `on` on the NAS while an older app may

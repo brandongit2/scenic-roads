@@ -406,23 +406,42 @@ installed by `tools/app/install.sh`, updated by the updater).
   `/api/ping`, `/api/downloads`) and the search's `poll=1`. A mirror's copy stopped by a new map
   resumes under it (copies are kept by content name). The share is mounted again, while it's away,
   every 30 s.
-- **The map's log** (docs/maplog.md; `crates/server/src/maplog.rs`): the map served is the lead's
-  log's, nothing else (no catalogue is read). A thread follows the log over HTTP (`GET
-  /map/changes`, a 30-s long poll, its cursor `server/<host>`), applying each answer's batches to
-  its own map (checked by their digest; the map takes ~0.5–1.5 GB) and the lead's snapshot on a
-  reset; with the lead away, the map it holds (none: none until the lead answers). Each map is handed to the server as one catalogue, swapped whole, never an older one than
-  served. Its map is kept in `~/Library/Caches/scenic/map/current.json.zst` (at most every 10
-  minutes) and read at a start, before the server answers: a start away from the lead and the NAS
-  serves it (the laptops' offline map, kept: owner's decision, 1 Nov; their server runs on demand,
-  #882 step 7a: Mac apps, above). The lead's contact is kept
-  beside it (`lead.json`, mode 600, the build's key in it, as on the NAS); losing the folder means a
-  cold start (nothing served until the lead answers). A server started on a folder laid out as the
-  NAS's (`--root`) serves that folder's own map (its `map/`).
+- **The map's log** (docs/formats.md, The map and its log; `crates/server/src/maplog.rs`): the map
+  served is the lead's log's, nothing else. A thread follows the log over HTTP (`GET /map/changes`,
+  a 30-s long poll, its cursor `server/<host>`), so the server has each map update within a second
+  of it, at home or away, and never lists or reads the share for it. It applies each answer's
+  batches to its own map in place (no reader holds it), each checked by its digest, several in one
+  answer applied in turn and handed over once; a batch that doesn't apply, or a reset (its `seq`
+  older than the batches the lead holds, or past the lead's head), takes the lead's snapshot. Each
+  map is handed to the server whole, as one catalogue (`Map::catalogue`, `Data::set_map`), never an
+  older one than served, so a request reads one map from start to end. Measured on the map of 10
+  Nov (77,666 entries, 999 regions): the map holds 115 MB, the catalogue made of it 15 MB beside
+  it (its regions the map's own, shared), in 0.12 s; the one before is held until its last reader
+  lets it go.
+  - **With the lead away** it keeps the map it holds and asks again each 10 s (logged once);
+    holding none (a fresh Mac, a lost cache), it serves none until the lead answers, then takes its
+    snapshot. Nothing of the map is on the NAS.
+  - **Kept on this Mac:** `~/Library/Caches/scenic/map/current.json.zst` (a snapshot; a temporary
+    name renamed), written at most every 10 minutes (a server on demand: each time the map moves),
+    and read at a start, before the server answers; one whose digest doesn't hold is set aside
+    (`current.bad.json.zst`) and the lead's snapshot taken. So a start away from the lead and the
+    NAS serves the map its downloads were copied for (the laptops' offline map; their server runs
+    on demand: Mac apps, above), then asks for the batches since. The lead's contact is kept beside
+    it (`lead.json`, mode 600, the build's key in it); losing the folder means a cold start.
+  - **Behind the lead's GC:** a server that stopped asking holds its files on the NAS for 6 hours
+    (`CURSOR_TTL_S`, docs/storage.md, GC). Started or woken later, it serves the map it kept (a
+    wake: the one in memory, until its long poll in flight times out) and may meet a file of it
+    gone from the NAS: that request fails (content names: never other bytes), and the next asks
+    the map it has caught up to. What its mirror holds is on this Mac whatever happened on the NAS.
+  - A server started on a folder laid out as the NAS's (`--root`) serves that folder's own map
+    (its `map/`).
+  - **The page** asks its own Mac's server for the map's status (`/api/catalog`, `n` the map's
+    `seq`; `web/src/catalogue.ts`), each minute, and switches in place when `n` moves.
 - **URLs and ETags:** data URLs carry a content version (`?v=`): a tile's is its pack's (meta
-  `packs`), so a new catalogue re-fetches only the changed packs' tiles; a versioned response is
+  `packs`), so a map update re-fetches only the changed packs' tiles; a versioned response is
   `immutable` while current. ETags are content hashes, for named tiles combined with the versions of
   the languages spoken there and the spoken-languages raster (docs/names.md). The basemap's come from the
-  catalogue, so its 304s read nothing.
+  map, so its 304s read nothing.
 
 **Mirror, the Mac mini's** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
 - **Only what's downloaded.** The map reads a file from the Mac when it's there, else from the NAS
@@ -432,14 +451,14 @@ installed by `tools/app/install.sh`, updated by the updater).
   once outside them, with no NAS read and no timeout. A share found mounted is read only once it
   has answered a probe, made at once (`IoPool::probe_first`): a mount left from home never holds
   a request; at home the map is the downloads until it answers (milliseconds; seconds while the
-  NAS wakes), and an open page, asking for the catalogue every 5 s while the server says it's away
+  NAS wakes), and an open page, asking for the map every 5 s while the server says it's away
   (every minute else), takes the NAS's map within 5 s of it. Each change of whether the NAS is read
-  drops what was made from the other side's reads (the catalogue generation); away, every version
+  drops what was made from the other side's reads (the map generation); away, every version
   the app's URLs carry names where the downloads reach (`Data::reach_token`) and a 204 ("not
   downloaded") is never cached for good, so nothing answered away is reused at home. What's downloaded is this Mac's alone (`downloads.json` in its
   home).
 - **The World, zoomed out:** the build's worldwide files (`global/`: only those a step makes, the
-  catalogue lists no other), the Canadian lake fill
+  map lists no other), the Canadian lake fill
   (`work/lakefill/<date>`, read by the water's deeper zooms anywhere in Canada), every layer's root
   and lo packs (z0–8), markdata, ovdata, and the basemap's zooms 0–10: 19.3 GB on map 1658
   (6 Nov), the basemap's piece 1.6 GB of it. Not the pass's outlines. Away from the NAS it is the
@@ -476,8 +495,8 @@ installed by `tools/app/install.sh`, updated by the updater).
   id, a z3 tile's file) to the z3 tiles meeting them; outside them every layer is none (the
   terrain and its shading flat). A region downloaded before its pieces (its
   list naming the whole root and lo packs over it, or the basemap's worldwide zooms 0–10) takes
-  them at the catalogue served at its next round with the NAS, without an Update; the rest stays
-  at its catalogue. Its whole files and zooms 0–10 piece here stay, and are what's read, until
+  them at the map served at its next round with the NAS, without an Update; the rest stays
+  at its map. Its whole files and zooms 0–10 piece here stay, and are what's read, until
   every piece replacing them is here (copied and checked); then they go at once (`bridge` in
   crates/server downloads.rs). Cut off at any point (the NAS gone mid-copy, the server stopped),
   away from the NAS it's its old form or its new one, whole. Away from the NAS, a
@@ -504,26 +523,26 @@ installed by `tools/app/install.sh`, updated by the updater).
   than a sparse copy: removed by deleting, sized as packs are, shared, opened as any archive or
   pack.
 - **Updated only when asked:** each download (the World, a region, a region's terrain detail) stays
-  at the catalogue it was downloaded or last updated at (`downloads.json`); a new catalogue copies
+  at the map it was downloaded or last updated at (`downloads.json`); a map update copies
   nothing. Its row in the Regions panel then says it's out of date, with what changed and the size
   to copy, and offers **Update**. Meanwhile the map reads the download's own older files first, the
-  NAS for what it lacks. An update copies the catalogue served's files beside the old ones (so the
-  region keeps working offline throughout), then moves the download to that catalogue, and the
+  NAS for what it lacks. An update copies the map served's files beside the old ones (so the
+  region keeps working offline throughout), then moves the download to that map, and the
   files only the old one named go. **Whole tiles:** an update moves every z6 tile the download has,
   including those it shares with another download (a neighbouring region's tiles, or its ways'
   owners'), and copies the other download's files of those tiles too (base pack, hi packs, lists,
-  road values, basemap piece), so the map never reads one tile from two catalogues. The other
-  download keeps its other tiles at its own catalogue, still out of date for those alone (its size
+  road values, basemap piece), so the map never reads one tile from two maps. The other
+  download keeps its other tiles at its own map, still out of date for those alone (its size
   to copy counts only them). A road crossing from its old tile into a moved one may lack its info at
   the crossing until it's updated too (a way not found, never a wrong one). The World moves no
   tile: its per-tile files (roads' English names, road ids) index no base pack, so updating it copies
   none of a region's. A download moves on by
   itself only when that copies nothing (all an update would copy is here: its files are the same in
-  the new catalogue, or other downloads brought them; or its catalogue didn't have it yet), or when it has
-  nothing whole to keep (not all here when the new catalogue came: the map never mixes a partial
+  the new map, or other downloads brought them; or its map didn't have it yet), or when it has
+  nothing whole to keep (not all here when the new map came: the map never mixes a partial
   download's older files with the NAS's newer ones). Each download keeps its own
-  list of its files at its catalogue (`downloads.json`), so what changed and the size to copy come
-  from its list against the catalogue served, however far behind it is; no older catalogue is kept
+  list of its files at its map (`downloads.json`), so what changed and the size to copy come
+  from its list against the map served, however far behind it is; no older map is kept
   for it. Removing a download deletes what no other
   download names. Nothing else goes, ever.
 - **Copies:** one file or piece at a time, the World first, then small worldwide files, root and lo
@@ -531,15 +550,28 @@ installed by `tools/app/install.sh`, updated by the updater).
   the NAS is reachable, from home or not (no rule holds them back away from home). While the build
   runs (the lead's heartbeat says a job runs) copies keep to 20 MB/s. Each copy is checked before
   it's moved into place. Each downloading or updating row shows its own progress bar.
-- **Its cursor in the map's log** (`mirror/<host>`, `crate::maplog::MirrorLink`, docs/maplog.md
-  §6.2): each round with the NAS, before it copies, it tells the lead the oldest map whose files it
-  still copies (the one served; an Update's older one until its files are here), so GC keeps them,
-  and the map its round copies and the last it got through at, which the lead notes in the history
-  (`mirror-start`, `mirror-end`, for `scenic timings publish`). The cursor is made each round from
-  `downloads.json` and the files here, so a restart says the same one. One the lead resets (older
-  than its log, or not held by GC: new, or unheard or at one map `CURSOR_TTL_S`, 6 hours) moves
-  each Update of an older map on to the one served, whose files the NAS has, once the server has
-  caught up to the lead's head (a start or a wake serves the map it kept until then).
+- **Its cursor in the map's log** (`mirror/<host>`, `crate::maplog::MirrorLink`): each round with
+  the NAS, before it copies, the mirror asks the lead `GET /map/changes?since=<s>&client=
+  mirror/<host>&copying=<n>&synced=<y>` (no wait; the batches answered are passed over: the
+  downloads compare their own lists). `s`, its cursor, is the oldest map whose files it still
+  copies (`downloads::Plan::copies_from`: the map served; an Update's older target while its files
+  aren't all here; a download's own map while what it keeps there isn't), so GC keeps those files
+  until it's done or moves on. `n` is the map its round copies and `y` the last it got through
+  at, which the lead notes in the history (`mirror-start`, `mirror-end`, for `scenic timings
+  publish`).
+  - **Made each round from what's on this Mac** (`downloads.json`'s pins, the files in the mirror),
+    so a restart says the same cursor, and it is never newer than what the mirror lacks. A pin moves
+    only once its files are all here (each copied under a temporary name): a round cut short (a
+    file missing, a new map, a kill) leaves the cursor where it was.
+  - **Reset** (the lead's answer when the cursor is older than its log, or one it didn't hold:
+    never heard, unheard `CURSOR_TTL_S`, 6 hours, or that long at one map behind the head): the
+    sync is whole each round (what's wanted against what's here), so it needs no snapshot; but an
+    older map's files may be gone from the NAS, so each Update of a map older than the one served
+    goes on at the one served (`Downloads::resync`), once the server has caught up to the head the
+    lead answered (a start or a wake serves the map it kept until then). What a download keeps is
+    on this Mac and stays.
+  - **Away from the NAS or the lead:** with no NAS the mirror copies nothing and says nothing;
+    with the lead away it copies as before, its cursor said again next round.
 - **Room:** a per-Mac reserve ("Keep free", 30 GB unless set; `reserve.json`, `PUT
   /api/downloads/reserve`), applied at once. When this Mac's build agent's room target (`scenic
   room`, docs/building.md §2) is higher, the mirror keeps that instead (seen within 5 s). A
@@ -580,7 +612,7 @@ tailnet: **https://map.brandontsang.net**, or `tailscale serve`'s
   mini gives it. Only a proxy that says so (`X-Forwarded-For`) keeps its
   requests from passing for this Mac's own.
 - **An app** (`web/public/manifest.webmanifest`): Add to Home Screen. Its service worker
-  (`web/public/sw.js`, HTTPS only, never on localhost) keeps the page, its scripts and the catalogue's
+  (`web/public/sw.js`, HTTPS only, never on localhost) keeps the page, its scripts and the map's
   metadata, plus the fonts, icons and `immutable` data as viewed (12,000 files; 3D buildings' tiles
   in a cache of their own, 2,000). A Mac that doesn't answer within 4 s is taken as away for a
   minute.

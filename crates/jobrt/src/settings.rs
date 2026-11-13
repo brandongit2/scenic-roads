@@ -25,7 +25,7 @@ pub const BATCH: &str = "batch-minutes";
 /// before it's slow, and a catalogue due its most wait before it's stale (pipeline's agent::flags,
 /// tasks #953, #986 and #990): a number in `OVERDUE_RANGE`; not set, `OVERDUE_DEFAULT`.
 pub const OVERDUE: &str = "overdue-factor";
-/// Publishing held for review (docs/building.md §2, Publishing): the `catalog` step writes the map
+/// Publishing held for review (docs/building.md §2, Updating the map): the `catalog` step writes the map
 /// it would publish to the lead's disk instead (`catalog-held`), and nothing is published. Off
 /// while not set.
 pub const HOLD_CATALOG: &str = "hold-catalog";

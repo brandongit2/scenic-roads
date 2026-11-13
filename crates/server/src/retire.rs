@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn retiring_removes_the_service_and_leaves_the_map() {
         let (home, u) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        for d in ["mirror/ab", "idx", "agent/logs", "app/20261030-0000-aaaaaaa", "run", "catalog"] {
+        for d in ["mirror/ab", "idx", "agent/logs", "app/20261030-0000-aaaaaaa", "run"] {
             std::fs::create_dir_all(home.path().join(d)).unwrap();
         }
         let kept = ["mirror/ab/x.pack", "downloads.json", "reserve.json", "map-page", "run/agent", "agent/status.json"];
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(gone.len(), 2, "{gone:?}");
         assert!(!home.path().join("run/server").exists());
         assert!(!u.path().join(format!("Library/LaunchAgents/{LABEL}.plist")).exists());
-        for p in kept.iter().chain(&["idx", "app/20261030-0000-aaaaaaa", "catalog"]) {
+        for p in kept.iter().chain(&["idx", "app/20261030-0000-aaaaaaa"]) {
             assert!(home.path().join(p).exists(), "{p} kept");
         }
         assert!(u.path().join("Library/Caches/scenic/map").exists(), "the followed map kept");

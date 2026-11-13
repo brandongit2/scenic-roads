@@ -1,4 +1,4 @@
-//! Publishing (docs/building.md §2, Publishing): its switch, and the map's log the lead writes.
+//! Publishing (docs/building.md §2, Updating the map): its switch, and the map's log the lead writes.
 //!
 //! - **Its switches**, the pool's settings the lead keeps (`Switches`, jobrt::settings: set with
 //!   `scenic pool set` and the build page's Settings): publishing held for review (`hold-catalog`:
@@ -158,7 +158,7 @@ impl LastCatalogue {
 }
 
 /// Publishing as the plan has it now, for the agent's log and the build status (`build::publishing`;
-/// docs/building.md §2, Publishing).
+/// docs/building.md §2, Updating the map).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PublishLine {
     /// What publishing does now, or waits for, in plain words.

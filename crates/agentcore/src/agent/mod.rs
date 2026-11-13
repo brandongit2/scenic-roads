@@ -978,7 +978,7 @@ pub struct Status {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
     /// Publishing as the lead last planned it, and why (publish::PublishLine; docs/building.md §2,
-    /// Publishing).
+    /// Updating the map).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publishing: Option<publish::PublishLine>,
     /// The timetables' to-do list's counts and the routes matching nothing on the map
@@ -1046,7 +1046,7 @@ pub struct CatalogueSeen {
 }
 
 /// Publishing as it stands, for the build page's map KPI and `scenic status` (the
-/// lead's; docs/building.md §2, Publishing): the last catalogue, whether it went with the low zooms
+/// lead's; docs/building.md §2, Updating the map): the last catalogue, whether it went with the low zooms
 /// (publish::LastCatalogue::low_at), the map tiles being drawn by Mac (pack's targets leased), and the
 /// catalogue each Mac's map server last adopted (its cursor in the map's log).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

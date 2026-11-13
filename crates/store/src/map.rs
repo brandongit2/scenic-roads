@@ -261,8 +261,8 @@ impl Batch {
         self.set.is_empty() && self.del.is_empty()
     }
 
-    /// Whether its `why` says `part`: its parts after the first, each after `WHY_SEP` ("catalogue
-    /// 812; the low zooms").
+    /// Whether its `why` says `part`: its parts after the first, each after `WHY_SEP` ("map 812; the
+    /// low zooms").
     pub fn says(&self, part: &str) -> bool {
         self.why.split(WHY_SEP).skip(1).any(|p| p == part)
     }

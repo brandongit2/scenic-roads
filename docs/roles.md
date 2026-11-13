@@ -308,8 +308,8 @@ pack indexes). Step 4 needs only the lead's contact, which members already have.
    member's URL stays in the address bar, but every answer then crosses the member).
 3. **`Unknown` role** (NAS unread at start): start the member's parts (proposed: a subset, safe),
    or wait for the declaration.
-4. **The laptops' offline map, again** (6 Nov). Decision 1 below and docs/maplog.md's of 1 Nov
-   (the owner's) keep it, but nothing on a laptop serves it since #874 (§8.3: a regression).
+4. **The laptops' offline map, again** (6 Nov). Decision 1 below and the owner's of 1 Nov
+   (docs/macs.md, The map's log) keep it, but nothing on a laptop serves it since #874 (§8.3: a regression).
    **Decided by the PM, 6 Nov: on demand (7a)**, since an offline map is what Scenic Roads is for:
    the menu bar's "Open the map on this Mac" starts the app's server on this Mac's loopback alone,
    which quits after 30 min unused; nothing resident. The owner may overrule it. The alternative,
@@ -400,7 +400,7 @@ reached by HTTP. What #882 has left is disk (§8.1: lead and server leftovers) a
   mirror until it retired on 31 Oct 00:37 (its `server.log`). Since then no laptop has a server
   (`retire.rs` ends one at its start), and on 6 Nov neither has `mirror/`, `idx/` or
   `downloads.json` (the M1 had ~15 GB of mirror on 31 Oct, §2); each has a saved map of 4–5 Nov
-  that nothing serves. The owner's decision of 1 Nov (docs/maplog.md) kept this map, so its loss
+  that nothing serves. The owner's decision of 1 Nov (docs/macs.md, The map's log) kept this map, so its loss
   is a regression, not a choice. What a laptop has without the mini is what a phone has: the
   map's page at map.brandontsang.net and its service worker's kept files (`web/public/sw.js`,
   registered on any HTTPS host but localhost: the page, and data as viewed, at most 12,000

@@ -27,7 +27,7 @@ cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-un
 map/           <seq>.json.zst: the map's snapshots that apps before task #1119 wrote (hourly, the
                newest three) and stat to tell the NAS answers; written and read by no app since.
                Removed once every Mac's beat says `nas-check-inputs` (coord::beats::NAS_CHECK):
-               the map is the lead's log's alone (docs/maplog.md §4.4)
+               the map is the lead's log's alone (docs/formats.md, The map and its log)
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
                current.json (the live one's manifest: {version, sha256, archive_sha256}),
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
@@ -83,7 +83,7 @@ state/         build/ (the records, their brief, the lead's declaration),
   whose close fails removed, fetched afresh). An unchanged file keeps its name, so a
   rebuild uploads only what changed; one already there is reused as it is, nothing written to it,
   and named in the job's hand-off (`Handoff::reused`), which the merge checks against GC's deletions
-  (docs/maplog.md §7.4). One the manifest already names under the same logical name takes one look
+  (GC, below). One the manifest already names under the same logical name takes one look
   (`Out::put_file`, task #449: heritage-sites' slices, hundreds of small files nearly all
   unchanged): there at its size, it is taken; missing, put again; of another size, the put fails (a
   damaged file is removed by hand).
@@ -99,8 +99,9 @@ state/         build/ (the records, their brief, the lead's declaration),
   that fails, or moves no byte (hashed, written to the share past the client's cache, or read
   back) for two minutes (`out::UPLOAD_STALL`), fails the job, the target not noted done, and every
   later save with it; a slow share that still moves lands.
-- **Catalogues** list every file the map reads, with the coverage they were built for and the credits
-  of their sources. Readers take the highest that decodes.
+- **The map** names every file the map server reads, with the coverage it was built for and the
+  credits of its sources. It and the log of its updates are the lead's, on its own disk, served by
+  its coordinator; the NAS holds no copy (docs/formats.md, The map and its log).
 - **The build manifest** lists everything built; **job keys** say what each output was made from.
   These, the unverified uploads and the files' sizes are the build's records
   (`state/build/records.json`, the truth, kept first on the lead's disk: docs/building.md §2, The
@@ -143,7 +144,7 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
   tile; hi: z9–14 per z6 tile. Hi tiles exist only near the coverage for the layers built per z6 tile;
   worldwide layers (labels, water) have them wherever they have tiles.
 - **Bundles** (docs/formats.md): a small layer one job makes whole (each landmark kind's thinned
-  tiles, each area overlay) is one pack of every tile, `layers/<layer>/all`, which the catalogue names
+  tiles, each area overlay) is one pack of every tile, `layers/<layer>/all`, which the map names
   for each pack key it holds; the landmark points (a sectioned file per z6 tile) are one bundle,
   `markdata/all`. Each file made on the NAS costs a second or so of round trips: the marks and
   overlays jobs made about 450 and 380 a run before (task #449).
@@ -164,55 +165,96 @@ writes the records directly once a lead is declared
 (`crate::out::check_writer`). Other writers: the owner's inputs folders, `tools/app/publish.sh`, and the
 NAS's own planet fetch. The map's server writes nothing on the NAS.
 
-**GC** (`agent::gc`, docs/maplog.md §7) is the lead's `gc` job, planned whenever GC's queue has a
-chunk for it or one of its sweeps is due, and run when the NAS is quiet: only beside leased jobs
+**GC** (`agent::gc`, the queue `store::map::gc` and `agent::gcqueue`) never looks for garbage: the
+lead queues each file as it stops being held, and the `gc` job removes what's due, a chunk at a
+time. The job is the lead's own (`LEAD_ONLY`), planned whenever GC's queue has a chunk for it or one
+of its sweeps is due (`Planner::gc_work`), and run when the NAS is quiet: only beside leased jobs
 that leave its measured weight room (pool.md §7.2, `Limits::fits_quiet`; unmeasured the way it runs
 now, weighing the whole NAS beside no job weighing the whole, as the lead's own unmeasured NAS steps
 go, so its first run measures it), or, held back 24 hours, as an aged job of the lead's own
 (`QUIET_AGE`); running, it yields at its next safe point (between
 two removals, or two folders) to a target held back for the budget, and the next run goes on where
-it stopped.
-- **What holds a file:** the map at any `seq` a client still holds, the records (the manifest and
-  the pending uploads), and a hand-off the merge has taken until the records after it are seen
-  (its changes, its uploads and the files its job reused, `Handoff::reused`). The lead's agent
-  queues each content name the map's log or the records stop naming (`agent::gcqueue`,
-  `agent/maplog/gc.jsonl`); a name is due once every client's cursor is past the map that freed it,
-  an hour has passed (`GRACE_S`) and every live lease was granted after it was freed.
+it stopped. So there is no run to finish: the queue's length is what's left.
+- **What holds a file.** A content-named file on the NAS is held while any of these names it:
+  the map at any `seq` a client still holds (a cursor heard within `CURSOR_TTL_S`, 6 hours:
+  docs/formats.md, Cursors); the records (the manifest and the pending uploads), which the lead
+  alone saves; and a hand-off the merge has taken, until the records after it are seen (its changes,
+  its uploads and the files its job reused, `Handoff::reused`). The lead sees every change to the
+  first two as it makes it, and the third as it takes it.
+- **The queue** (`agent/maplog/gc.jsonl` on the lead's disk, beside the map's log): JSON lines,
+  appended and `fsync`ed once per change (a batch, a records save, a removal), rewritten whole once
+  it has grown to four times what it holds; it survives a lead restart. When a batch of the map's
+  log frees a content name (`Batch::freed`) or a records save drops one, and the other holder
+  doesn't name it, the lead queues it with the `seq` and time it was freed at; a name named again
+  leaves the queue. The holders' index is memory alone: the map's names from the log's map at the
+  open and each batch, the records' from each save the lead's agent makes; nothing is due until
+  the records have been seen. A name is **due** when:
+  - every client's cursor is past the `seq` it was freed at;
+  - an hour has passed since (`GRACE_S`): a margin for readers outside the cursor set (a request
+    in flight as a map server's cursor moves on; an ad-hoc script). Each day of grace would hold a
+    day's freed files (2,000 to 9,000 names, some 26 MB each), and no window to look at a bad map
+    update is wanted: updates are small and many a day, a bad one is fixed by the next, and the
+    map is never set back to an earlier `seq`;
+  - every live lease was granted after it was freed (a job running since then may have looked it
+    up by name);
+  - and neither the map nor the records name it, checked again as it goes.
 - **By the queue:** each run first takes the due names from the lead's coordinator 200 at a time
   (`POST /gc/chunk`; `gc::CHUNK_NAMES`): the lead checks each against its holders as of then and
   marks the rest deleted in its queue, the newest lease granted then theirs, on its disk before it
-  answers; the job removes them one by one over SMB (a file not there counts as gone while the share
-  answers, its `map/` folder there; a lost mount fails the run), then says
-  them gone (`POST /gc/gone`, the marks' lease renewed to the newest then). The merge refuses a
-  hand-off bringing a name being removed, or one removed after its lease was granted: its targets
-  are done again (docs/maplog.md §7.4). A removal's mark is kept while any lease as old may still
-  be handed off (owed by its member until a beat of its lists it neither held nor handed off),
-  however long a member is away. Killed mid-chunk, the next run's first chunk is the same,
+  answers; the job removes them one by one over SMB, one call a file, nothing listed (a file not
+  there counts as gone while the share answers, its `inputs/` folder there; a lost mount fails the
+  run), then says them gone (`POST /gc/gone`, the marks' lease renewed to the newest then). With the
+  records not seen yet the lead answers 503 and the run removes nothing. A chunk's names are
+  refused to every hand-off while they're being removed: some 24 s of the share's deletions at the
+  median of the NAS budget's probes (8.4 a second, 6 and 7 Nov), 80 s at the tenth percentile; its
+  two asks of the lead and one `fsync` there cost 12.5 ms.
+  Killed mid-chunk, the next run's first chunk is the same,
   told again (one held by then kept out of it, still marked); yielding mid-chunk, the job says what
   went and lets the rest go back to the queue, unmarked (but a name told more than once, which the
-  killed job may have removed, stays marked). Nothing is listed for it. A chunk takes a name in a folder the map indexes, a removed
+  killed job may have removed, stays marked). A chunk takes a name in a folder the map indexes, a removed
   step's, or a source of a pass older than the newest complete one (`gc::by_the_queue`); the
   gate's copies are the inputs sweep's below, and the rest of `sources/` is never GC's. The lead
-  not reached, or not able to put its marks on its disk, nothing is removed and the job fails.
+  not reached, or not able to put its marks on its disk, nothing is removed and the job fails. The
+  job's card says how many names it has; the queue knows no sizes.
+- **Reuse without a touch.** A job that finds its file already on the NAS takes it as it is and
+  names it in its hand-off (`Handoff::reused`); nothing writes a reused file, and nothing goes by a
+  file's time but the sweeps' age rules. The merge refuses a hand-off bringing a name being removed,
+  or one removed since its lease was granted, by the leases' job ids (pool.md §7.5), no clocks: its
+  targets are leased again, a redo that uploads the file afresh (`gcqueue::refusal`). With the
+  third rule of "due" this can only happen to a name freed before the lease, found by the job, and
+  removed during it, or to a name freed during a long job, due once its lease ends and removed
+  before its hand-off is merged: a redo, never a loss. A removal's mark is kept while any lease
+  as old may still be handed off: each lease granted to a member is owed by it (a `Granted` line
+  in the queue's file) until a beat of its lists that lease neither held nor handed off; the oldest
+  lease owed, or out now, is the floor, and a mark whose lease is older goes. So a member away for
+  weeks keeps every removal since its oldest lease out (about 70 bytes a name in the queue's file,
+  150 in the lead's memory), until it comes back or the owner releases it (`scenic pool release`).
+  One the merge takes holds its names from every chunk until the records after it are seen. A
+  reused file's check is pending as an upload's, so the uploads' check finds one missing too.
+- **What the queue can't see.** A lead whose log is lost starts an empty queue: it refuses nothing
+  the old queue removed (a reused file missing is then found only by the uploads' check, said, not
+  mended), and the orphan sweep queues what the lost queue held. A file uploaded and never handed
+  off (a job killed after its upload, a refused hand-off) was never held, so never queued: the
+  orphan sweep's too.
 - **The sweeps**, each a pass with its own cursor in the lead's map log folder
   (`agent/maplog/gc-sweeps.json`, `gc::Sweeps`: the folder each walk reached, so a run stopped
   goes on after it), run after the queue's chunks:
   - **The duties**, once a day: the names to drop (below), the history's and the forecasts'
     archives, the forecast inputs' old days, and the pending
     uploads' check (above), last.
-  - **The orphan sweep** (docs/maplog.md §7.5), a pass every 14 days (`ORPHAN_AGE_S`): it lists,
+  - **The orphan sweep**, a pass every 14 days (`ORPHAN_AGE_S`): it lists,
     a folder at a time, the top folders of what the map and the records name, the removed steps'
     folders and the retired passes' (`sources/osm/<date>/`, `sources/items/<date>/` older than the
     newest complete pass), and sends the lead each content-named file at least 14 days old (no job
     runs that long between its upload and its hand-off), which queues those nothing holds, freed
-    as it finds them (so a lease older than that holds them, and they wait their grace). So what
-    a lost queue held, or a job uploaded and never handed off, goes too. It removes stray `.tmp`
+    as it finds them (so a lease older than that holds them, and they wait their grace). A pass
+    begins 14 days after the last ended, so an orphan goes within twice its age. It removes stray `.tmp`
     files after 2 days, and a retired pass's other files (the planet download) once the newer
     pass has been complete 14 days, with its folders left empty.
   - **The inputs sweep**, a pass every 14 days: the input check's checked copies (`sources/inputs/`,
     inputs.md §4.9) are kept while the records' manifest, an accepted index or
     an index of the last 14 days names them (a hand-off not merged yet bringing one removed is
-    refused by the merge, its job's work done again: the lead's GC queue, docs/maplog.md §7.4); an index names its files' copies and every content
+    refused by the merge, its job's work done again); an index names its files' copies and every content
     name under `sources/inputs/` in their facts, nested ones too (`FileEntry::stored`: a region's
     `.rgeo`, and the regions' `.rgeo` an elevation dataset's `measured.outline` was cut by, which
     its plans read while that index is accepted). The rest, 14 days old, is told the lead 200 at a
@@ -247,8 +289,7 @@ it stopped.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
   state, app and nas. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
   archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC. A
-  tombstone the GC before step 8b left (a file renamed `….gc-tomb` by a run stopped between its
-  rename and its removal) is never taken for a content-named file and stays.
+  file named `….gc-tomb` (`store::naming::TOMB`) is never taken for a content-named file and stays.
 
 **Backups.** Daily, the lead's `backup` job (agentcore::agent::backup) copies `inputs/`, the input
 check's acceptances (`state/inputs/accepted/`) and the map's settings profiles (`profiles.json` in

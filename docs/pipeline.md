@@ -34,7 +34,7 @@ NAS-loading, quiet and halo steps (`coord::sched::NAS_STEPS`, `budget::nas::QUIE
 |---|---|---|
 | `id` (`name`) | the stored name: in the records, the hand-offs, the leases, the timings, the floors, the `work/` paths; and the name every reader shows (task #659: no display names, the build page's, the menu bar's and `scenic status`' alike); renamed only with its old name read as the new (§3) | `unit`, `terrain-lo`, … |
 | `does` | one sentence: what it makes from what | |
-| `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a catalogue), `keep` (checks, lists, removals, backups) |
+| `kind` | where its output goes | `fetch` (`sources/`, from outside), `derive` (`work/`, `global/`: what other steps read), `pack` (what the map serves), `publish` (a map update), `keep` (checks, lists, removals, backups) |
 | `scope` | what one target is, and the noun its targets are counted in | `world` (one target: a run), z3 tile, z6 tile, `input` (an inputs folder); a task's `task`. Counted in "z3 tiles", "z6 tiles", … (`Scope::noun`); sent as `scope` `area` and `tile` by `/api/steps` (the stored words, kept: `Scope`'s serde names) |
 | `stage` | its stage | `pass`, `sites`, `terrain`, `slope`, `trees`, `depth`, `roads`, `tiles`, `finish`, `trains`, `landmarks`, `buildings`, `publish`, `upkeep` |
 | `place` | which Mac runs it: derived from the pool's rules (`agent::every::offered`), not kept | `any` (any member whose measured room fits), `lead` |
@@ -51,7 +51,7 @@ templated from its row (its `id`, `steps::said`, `counted`):
 |---|---|---|
 | a job's name (agent, menu bar) | `{id}: {n} {noun}s`; a worldwide step `{id}` | "terrain-hi: 8 z6 tiles", "outlines" |
 | a job's name (the build page) | its id: `{id} {first target}`; a worldwide step `{id}` | "terrain-deep 10/259/338", "outlines" |
-| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing to publish, and those with no data and not run, apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (progress::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
+| a checklist count | `{done} of {total} {noun}s` (thousands grouped; the done that made nothing for the map, and those with no data and not run, apart), `{left} {noun}s left`, "done", "to come" (not sized yet): served as `counts`/`count` and `finished` (progress::Line::said), printed as is by the menu bar and the page | "156 of 284 z6 tiles", "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)" |
 | a step waiting | `{id}: {why}` | "lakefill: failed 3 times in a row: …" |
 | an event | `{who} finished {job's name} in {time}` | "m4 finished unit 6/33/22 (unit: 6 z6 tiles) in 10 min" |
 
@@ -140,7 +140,7 @@ paths (`terrain-mid`, `slope-mid`) and a mid's `step` field keep the old names. 
 | | `redo` | keep | the world | lead |
 | | `backup` | keep | the world | lead |
 
-Publishing has no lane or step of its own: it goes per z6 tile (docs/building.md §2, Publishing), and the
+Updating the map has no lane of its own: it goes per z6 tile (docs/building.md §2, Updating the map), and the
 forecast marks each region where it's all on the map (`map_at`).
 
 ## 4. The checklist
@@ -187,14 +187,14 @@ link or a reload opens the same tab; an alert links to the tab that says more (a
 Each answer of the build's (`/api/swarm`, every 10 s) renders the header, the map and the tab
 shown; another tab is made as it's opened (task #793). What's worked out from the answers is kept
 while its inputs are the same: the map's queued and finished tiles, their counts and cards (made
-again when the queue, the history's ends, the keys' built tiles, the last catalogue, the Macs or
+again when the queue, the history's ends, the keys' built tiles, the last map update, the Macs or
 the running tiles' keys change, or the 6 h window passes an end), the map's legend (while what it
 says is the same), the schedule's week of past jobs and their packing (while the history and the
 zoom are); the running tiles are worked out each time, and the map is drawn again only when what
 it shows changes. A tile's card says its times as of the last render.
 
 Progress is the work left in the queue, never a share of a whole (no percentage, no "x of y" for
-the build): a build has no definite start, its keys invalidate and catalogues publish as it goes.
+the build): a build has no definite start, its keys invalidate and the map is updated as it goes.
 The Jobs tab's stages are the one exception.
 
 - **Header's verdict:** one sentence (paused, out of touch or idle; the queue's finish, done ≈), the
@@ -210,9 +210,9 @@ The Jobs tab's stages are the one exception.
   best case: each Mac at its quietest sustained state over the last 48 h),
   the stages with work left as a coloured strip, each its share of the queue (each segment with
   the stage's card on hover, pinned on click or tap: its work left and finish, no counts of a
-  whole), the tiles queued, in progress and not yet published (the map's, every member's), the
-  stages under way; two numbers that aren't a step's (the last catalogue: its time, how long ago,
-  its number and kind (with the low zooms or map tiles only); the next catalogue ≈ and the map
+  whole), the tiles queued, in progress and not yet on the map (the map's, every member's), the
+  stages under way; two numbers that aren't a step's (the last map update: its time, how long ago,
+  its number and kind (with the low zooms or map tiles only); the next map update ≈ and the map
   tiles to draw; each Mac by name, a line each, with its jobs, idle or out of touch).
 - **World map** (`worldmap.js`, the left panel; a canvas in Web Mercator, the world 0–1000 each
   way, as tall as the panel leaves it): the z3 grid (z6's too once its cells are 24 px), opening on
@@ -230,39 +230,39 @@ The Jobs tab's stages are the one exception.
     runningTiles: from the job's `live`, its targets done taken as the first of its list and the
     one under way at its time so far against the step's `each_s`, under 95%; where `live` is
     missing, the job's progress spread over its tiles);
-  - **completed, not yet published** and **published**: the finished tiles (`sums.js`
+  - **completed, not yet on the map** and **on the map** (the states `completed` and `published`): the finished tiles (`sums.js`
     finishedTiles, #674: every tile the build's keys record as built, `/api/built`, and those the
     history's ends held finished in the Jobs tab's past window, not merged into the keys yet; its
-    time and Mac the last end held for it); published when finished by the last catalogue's time
+    time and Mac the last end held for it); published when finished by the last map update's time
     (one with no end held when the oldest event the page holds is by then) and, for a step whose
     files are told by name (`agent::steps::output_names`: deep, hi, lo, trees, depth, buildings,
-    unit), only while the latest catalogue still names one of its outputs (`/api/built`'s
-    `published`, #866: a removal, a delta's null, ends a tile's published life whatever catalogue
+    unit), only while the latest map still names one of its outputs (`/api/built`'s
+    `published`, #866: a batch deleting its entry ends a tile's time on the map whatever map
     named it before), else completed:
     completed pale under a dashed outline, each fading in as it comes. An end for a tile whose
     record is a drop's none key (`/api/built`'s `dropped`, ended by when the keys were read) is
     the drop run's: not drawn at all (Alaska's deep drops of 29 Oct had been
-    drawn as published from their job ends). Published tiles are drawn
-    only while a step or stage is soloed, by when a catalogue last published each (#833).
-  - **built, nothing to publish** (#839): a finished tile whose job made no file to publish (a
+    drawn as published from their job ends). Tiles on the map are drawn
+    only while a step or stage is soloed, by when a map update last changed each (#833).
+  - **built, nothing for the map** (#839): a finished tile whose job made no file for the map (a
     deep tile with no fine data there: its run finds none in its presence grids, logs "nothing
-    stored, no pack" and is recorded done), told by `/api/built`'s `empty` before the catalogue's
-    time is compared, as no catalogue will name it. Hidden until toggled on in the legend (counted
+    stored, no pack" and is recorded done), told by `/api/built`'s `empty` before the map's
+    time is compared, as no map will name it. Hidden until toggled on in the legend (counted
     there all the same, not in a step's count), then barely tinted under a hairline; its card says
     no files were made. The checklist counts them apart: "7,837 z10 tiles done (6,814 with
-    nothing to publish)", on the page and in `scenic status`. A deep tile the plan knows has no
+    nothing for the map)", on the page and in `scenic status`. A deep tile the plan knows has no
     fine data (#842: its sources' hollow tiles, docs/steps.md §2) isn't run at all: no record, so
     the map draws nothing there; the checklist counts it done and says it apart ("…; 306 with no
     data, not run"). One an earlier run left outputs of is dropped once its key moves (#1087): a
     drop's record, not drawn either, then counted the same.
   A tile in two of them is the running one, else the queued one: built before and to be built
-  again, its finished tile isn't drawn. It was published before (sums.js publishedBefore) when a
-  catalogue kept published its step's own output there (#994: `/api/catalogs`' `steps`, the last
-  catalogue giving one of its names or a new file of it), record or not; for a step whose files
-  aren't told by name, its tile's last catalogue (any step's files there), counted only when its
-  step's key records it built (current or not, or an end held names it). A solo then draws the queued tile in that catalogue's
-  age colour, fainter than a published one, under its dotted queued outline, and its card says when
-  it was last published. Nothing new is in the status for it: `/api/built` and `/api/catalogs`
+  again, its finished tile isn't drawn. It was on the map before (sums.js publishedBefore) when a
+  map update kept changed its step's own output there (#994: `/api/catalogs`' `steps`, the last
+  map update giving one of its names or a new file of it), record or not; for a step whose files
+  aren't told by name, its tile's last map update (any step's files there), counted only when its
+  step's key records it built (current or not, or an end held names it). A solo then draws the queued tile in that map update's
+  age colour, fainter than one on the map, under its dotted queued outline, and its card says when
+  it was last on the map. Nothing new is in the status for it: `/api/built` and `/api/catalogs`
   hold both (the page asks `/api/built` again within seconds while the agent's first read is
   under way). Steps at one spot
   (slope and roads on 6/57/16) are entries of their own, drawn across the whole square as
@@ -273,7 +273,7 @@ The Jobs tab's stages are the one exception.
   country round it: the smallest of those under the point, #831). A tile's card: its stage and state, its share done and phase, step, job, Mac,
   the degrees it covers, a minimap of it and half a tile around; a queued one's start and Mac
   ("to come at ≈ HH:MM on <Mac>"); a finished one's when and whether it's in the app; a soloed
-  published one's catalogue and when. A region's: its folders, its download and tiles left (stat
+  one on the map: its map's number and when. A region's: its folders, its download and tiles left (stat
   tiles), a bar of the build's stages (built solid, the one under way striped, to come faint),
   state, times, place in line, its work left by step (chips), its outline's recipe. Under a mouse
   the stack follows the pointer, every item in it outlined (the canvas's `data-outlined` counts
@@ -283,12 +283,12 @@ The Jobs tab's stages are the one exception.
   the member chosen's), each a toggle showing or hiding its kind (off: struck and dimmed; hovered:
   the rest of the map faint); the tile areas by the packs the steps make (#659, `sums.js` AREAS:
   `root` z0, `lo` z3, `hi` z6, `deep` z10, each with its outline's weight), toggles the same; and
-  every step that draws tiles, by its id and counted (its tiles to build or publish), grouped by
+  every step that draws tiles, by its id and counted (its tiles to build or put on the map), grouped by
   its stage (the stage's id first). A step's item **solos** it (#685): hovered by a mouse, that
   step's tiles alone are drawn while the pointer's on it; a click or a tap holds the solo until
   it's clicked again (a stage's item: its steps). Soloed, no other step's tiles show; the step's
-  queued, in progress and completed tiles look as above, and its published tiles, the whole
-  world's, are painted by when a catalogue last published that step's own outputs there
+  queued, in progress and completed tiles look as above, and its tiles on the map, the whole
+  world's, are painted by when a map update last changed that step's own outputs there
   (`catalogues.js` stepPublishedAt, #994: `/api/catalogs`' `steps`, asked for as a solo first
   needs a step; a slope-deep pack published leaves terrain-deep's tile as old as it was). A step
   whose files aren't told by name (pack, lo, peaks, pois, bldprep, pyramids-fill, the roots) takes
@@ -304,14 +304,14 @@ The Jobs tab's stages are the one exception.
   it); anything else is refused, said under them, the pair kept. Defaults: the left `-48 hours`,
   the right now at render (kept as "now", moving on with the clock, until another time is
   committed there). "Hide tiles outside the date range": unticked, those take the nearer end's
-  colour; ticked, they aren't drawn. Then a timeline across the panel: every catalogue a mark (a batch
+  colour; ticked, they aren't drawn. Then a timeline across the panel: every map update a mark (a batch
   of the map's log; a tall one the view's start, naming everything the map had), labelled "number · time" (with the date on the first labelled of a
   day) where the label fits (none overlapping, the latest first, the dated ones kept first), the
   range in its middle 80% and the tenth beyond it each side dimmed, a time axis under it (times
   of day up to two days, then days; local time, said once). Hovering a mark (a tap holds it,
-  again lets it go) names the catalogue (number, time, its tiles) and lights its
+  again lets it go) names the map update (number, time, its tiles) and lights its
   tiles on the map in magenta, apart from the ramp, solo or not, whatever the hide box: z6 tiles
-  filled, z3 outlined. Its data: `/api/catalogs` (docs/pool.md §10), the catalogues after the
+  filled, z3 outlined. Its data: `/api/catalogs` (docs/pool.md §10), the map updates after the
   last the page has, every 30 s while the page is seen, every 2 s while the agent is reading. The
   sums (`parseWhen`, `commit`, `tileTimes`, `publishedAt`, `stepPublishedAt`, `paint`, `labelled`, the axis) are
   tested by web/test/catalogues.test.mjs.
@@ -387,7 +387,7 @@ The Jobs tab's stages are the one exception.
   gone with the next tap or scroll). A following card never catches the
   pointer (pointer-events none; placed beside the point, never over it) and goes as the pointer
   leaves what it's about (into anything else, off the map, out of the window). Every tooltip on the page
-  (these cards, the catalogue timeline's) has a slightly transparent background with a 6 px backdrop blur
+  (these cards, the map timeline's) has a slightly transparent background with a 6 px backdrop blur
   (`--tip-glass`, `-webkit-backdrop-filter` for Safari). A pinned card is
   modal (#627): a clear veil under it, not dimmed, takes every click and scroll behind it (the
   page doesn't scroll), a click on it only closing the card; the card itself scrolls and stays

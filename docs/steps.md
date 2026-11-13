@@ -533,7 +533,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   terrain. Hovering water (no road, line or place under the cursor) shows in the footer its depth with the ramp's colour, the water's name and kind where the map labels it, the depth's class, source, resolution and datum; the map names the sources in
   view, "not for navigation", and the notices their licences ask for (CHS's, naming the owner as the
   maker), which the credits carry too. The Depth section's note names the sources whose depths are
-  estimates (the catalogue's `estimated`: GLOBathy's, the small lakes'). The map's depth tiles, each
+  estimates (the map's `estimated`: GLOBathy's, the small lakes'). The map's depth tiles, each
   made from the zoom below, stop one zoom before the layers' z16 and are scaled up past it
   (web/src/depthgrid.ts depthZooms).
 - **The rollout:**
@@ -608,7 +608,7 @@ drawn as a raster.
     CSS px: every pixel holding any land is a shore, placed by its share (`web/src/coastdist.ts`).
     The distance is exact within 192 pixels; past 60° the far field comes from coarser ancestors.
     Stored in metres in MapLibre's 'custom' raster-DEM encoding.
-  - Without the layer in the catalogue, the basemap's water polygons are drawn.
+  - Without the layer in the map, the basemap's water polygons are drawn.
   - The water has no hover or click; its names are the labels'.
 - **Checked** by `tools/coastcheck` (its README has the metric and views): the map in an eval mode
   against full detail over 137 views, and with `--screen` the screen in the app's colours against
@@ -635,9 +635,9 @@ drawn as a raster.
   - **Where it plugs in:** the step makes `work/lakefill/<date>.<h>.sect` (docs/formats.md), keyed
     by the basemap, the outlines and the source's zips (`run::source_pin`); only the fill from the
     latest basemap is drawn (`lakefill::current`). The water, the water digests (`terrain-water`) and
-    the catalogues wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
+    the map updates wait for it (`hold_for_lakefill`) until it has failed 3 times in a row
     (`water_waits_for_lakefill`), then go without it. The water layer draws its lakes as an extra
-    z14 tile (`water::Extra`, the catalogue's `global.lakefill`), read only for tiles in its reach
+    z14 tile (`water::Extra`, the map's `global.lakefill`), read only for tiles in its reach
     (`lakefill::REACH`, Canada's box, which the step refuses a lake outside), so away from the NAS a
     region elsewhere draws its deeper zooms without it; the depth's water reads them as lakes
     (`lakefill::FilledWater`; `terrain_pack::water_source_pin` names the fill); the terrain reads
@@ -980,18 +980,18 @@ keeps its content name, so jobs keyed on it stop there.
 |---|---|
 | our layers | the pack for the tile; names attached |
 | polar caps | `/tiles/polar-terrain/<pole>/z/x/y`, `/tiles/polar-slope/…`: the pole's root (z0–3) or block (z4–9) pack's tile as stored, else 204 (none) |
-| polar caps' points | `/api/layer/polar-<pole>`: `global/polar/<pole>` whole, names attached, gzip'd (404 while the catalogue has none) |
-| basemap | tiles from the catalogue's PMTiles archives (`/tiles/base`); names attached |
+| polar caps' points | `/api/layer/polar-<pole>`: `global/polar/<pole>` whole, names attached, gzip'd (404 while the map has none) |
+| basemap | tiles from the map's PMTiles archives (`/tiles/base`); names attached |
 | drives, rides, rail lines | parts from the hidata in view plus half the window, joined by offset; zoomed out (wider than ~1,200 km) from the 500 m summaries (`approx`) |
 | whole road (hover) | the road's parts, through the road → z6 tiles index; away from the NAS, cut where the Mac's downloads end |
 | details, profiles | by OSM id plus location (ways-here index → base pack) |
 | landmarks, overlays, stations, ferries | by view (`docs/phase5.md`) |
 | `/api/meta` | the map's meta, summed from the base packs' summaries |
-| `/api/catalog` | the catalogue's number, layers, zoom ranges, versions, credits, regions, NAS and build state |
+| `/api/catalog` | the map's number, layers, zoom ranges, versions, credits, regions, NAS and build state |
 | `/api/coverage` | each region's outlines, simplified |
 | `/api/regions/outlines` | each region's outline simplified for a zoom (kept per zoom) |
 
 **Browser:** the map is drawn by our own MapLibre, `web/maplibre/` (MapLibre GL JS 6.11.2's source,
 changed where needed: `web/maplibre/FORK.md`), compiled with the app. English comes from the server.
-The page switches to a new catalogue in place (it polls `/api/catalog` every minute, every 5 s
+The page switches to an updated map in place (it polls `/api/catalog` every minute, every 5 s
 while the server is away from the NAS).

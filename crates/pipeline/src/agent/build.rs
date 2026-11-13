@@ -2789,7 +2789,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     trees.sort_by_key(tree_rank);
     trees_lo.sort_by_key(tree_rank);
 
-    // Publishing (docs/building.md §2, Publishing): as soon as the records change, before the regions'
+    // Publishing (docs/building.md §2, Updating the map): as soon as the records change, before the regions'
     // work, what goes out with the z6 tiles: what the coverage no longer builds pruned, then the
     // publishing chain (`publish_chain`: the map tiles whose owners changed, a z6 tile's together, the
     // road index, the low zooms, rail stops and ferries, the world-level terrain and slope); once

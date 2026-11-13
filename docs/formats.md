@@ -29,7 +29,7 @@ values' `byroad`, hidata's `railinfo` and meta `lsum`.
 32  u32      meta length n
 36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi"|"deep"|"polar", "root": "z/x/y",
              "encoding" (e.g. "rt7", "terrarium-webp", "shade-webp", "mvt"), …}
-             (zoom ranges are the catalogue's)
+             (zoom ranges are the map's)
 …            blobs (identical blobs stored once; entries may share an offset)
 index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
              u64 key, u64 offset, u32 len, u32 raw_len (0 if unknown), u64 xxh3
@@ -46,7 +46,7 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   place's finest zoom (terrain::terrain_zoom) and to 10 cm coarser, ties to even (a 2×2 mean of
   rounded heights lands on a tie about a quarter of the time: rounding ties away from zero would
   lift heights by about a quarter quantum a level), then to Terrarium's 1/256 m. Only what a job
-  reads of another's packs (the root of the lo packs' z3) is rounded before its means. The catalogue names the deep packs
+  reads of another's packs (the root of the lo packs' z3) is rounded before its means. The map names the deep packs
   under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
   (`terrain_deep::native_zoom`: its places' finest, terrain::terrain_zoom; elsewhere their finest is
   z12 or coarser), and the terrain's
@@ -57,7 +57,7 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   each screen tile's once it is in, while the camera moves too (web/src/basemap.ts `SHADE_DETAIL`,
   our MapLibre's `scenic:detail`). The meta's
   `packs.terrain.deep` gives each deep pack's version by z10 tile (`"10/x/y"`), as `lo` and `hi` do
-  theirs, so a tile past z12 there carries its deep pack's `?v=` and a new catalogue asks again only
+  theirs, so a tile past z12 there carries its deep pack's `?v=` and a map update asks again only
   for the tiles of the deep packs it changed. **The terrain's shading** (the `slope` layer:
   terrain::slope_pack, steps.md §2) has the same packs, its deep packs `layers/slope/deep/10-<x>-<y>`
   beside the terrain's; **the floor's** (`depth-shade`) the depth's (Depth below). Every shading tile
@@ -68,7 +68,7 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   **The polar caps** (`polar-terrain-<pole>`, `polar-slope-<pole>`: terrain::polar, docs/polar.md)
   are tiled on their pole's polar stereographic grid, not Web Mercator: their root pack
   (`layers/<layer>/root/0-0-0`) holds z0–3 and a block pack (`layers/<layer>/polar/4-<x>-<y>`, scope
-  `polar`, root "4/x/y" of the grid) z4–9 under one z4 tile; the catalogue names the blocks under the
+  `polar`, root "4/x/y" of the grid) z4–9 under one z4 tile; the map names the blocks under the
   layer's `polar` ("4/x/y"), and meta's `packs` gives their versions there likewise. The tiles are the
   terrain's and the shading's encodings (the shading's directions on the grid: east = +x, south = −y).
   **Offline:** a region's deep packs, the terrain's and its shading's, are on a Mac only where its
@@ -80,8 +80,8 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   (`idx/<file hash>.idx`), so serving a tile is one range read.
 - **Layer bundles** (`layers/<layer>/all`; meta `{"layer", "scope": "all", "encoding"}`): every tile
   of a layer one job makes whole in one pack (each landmark kind's thinned tiles, the area
-  overlays). The catalogue names it for each pack key its tiles fall in (`root`, `lo`'s z3 keys, `hi`'s
-  z6 keys), over any pack of before; the keys come from its index, or from the last catalogue when that
+  overlays). The map names it for each pack key its tiles fall in (`root`, `lo`'s z3 keys, `hi`'s
+  z6 keys), over any pack of before; the keys come from its index, or from the map before when that
   named the same file.
 
 ## Bundles of files (`.pack`, an RDPACK of files)
@@ -90,9 +90,9 @@ Files made per tile by one job, in one pack keyed by the tile (`roadcore::archiv
 member a whole file as it would be on its own, not gzip'd, starting on a 64-byte boundary
 (`PackWriter::aligned`), so a sectioned file in it is mapped and cast in place as on its own
 (`terrain::layers::write_file_bundle`). `markdata/all` (meta `{"bundle": "markdata", "fmt": 1}`):
-the landmark points, a member per z6 tile. The catalogue's `markdata` names it for each tile it holds;
+the landmark points, a member per z6 tile. The map's `markdata` names it for each tile it holds;
 a reader finds the member through the pack's index (kept as a pack's is) and reads it in place
-(`SectView::open_at`; `codecs::marks::markdata_files`). A catalogue naming a `.sect` per tile (before
+(`SectView::open_at`; `codecs::marks::markdata_files`). A map naming a `.sect` per tile (before
 task #449) is read as before.
 
 ## Sectioned file (`.sect`, RDSECT v1): named arrays
@@ -119,7 +119,7 @@ sections for scans, each checked against its XXH3.
 The roads are made and stored per z6 tile. A way's owner is the z6 tile of its first vertex. (Stored
 names keep the word `unit` for a z6 tile, from before the grid's terms were fixed: the meta key
 `"unit"`, the `unit` step, `global/roadunits`, `cache/scenic-units/`, the
-catalogue's `units` list; the OSM pass's `pieces/` folder holds its z6 tile extracts.)
+map's `units` list; the OSM pass's `pieces/` folder holds its z6 tile extracts.)
 
 ## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one z6 tile owns
 
@@ -127,7 +127,7 @@ Meta: `{"fmt": 1, "unit": "z/x/y", "ways", "verts", "samples", "extent": [w, s, 
 geometry), "source": "pass:<date>", "scenic": bool, "drape": bool, "summary": {…}}`. `summary` is
 what the map's meta adds up: `extent`, `ways`, `vertices`, `elev_min`/`elev_max` (roads, metres),
 `hist` (road km by 10 m of elevation, 256 bands), `rail_km` (track km per service group); the
-catalogue works it out from the sections where missing.
+map update works it out from the sections where missing.
 
 | Section | Record | Notes |
 |---|---|---|
@@ -136,7 +136,7 @@ catalogue works it out from the sections where missing.
 | `elevu` | `u16` | elevation, decimetres + 5,000 (`final.u16`); older packs: `elev`, `i16` dm clamped at ±3,200 m. Readers take either (`roadcore::elev`) |
 | `raw` | `f32` | raw DEM sample, NaN = none |
 | `grade` | `u8` | \|grade\|, 0.5 % units |
-| `src` | `u8` | DEM source: the dataset's declared `code` (docs/inputs.md §6.8), named by the catalogue's `dem_labels` |
+| `src` | `u8` | DEM source: the dataset's declared `code` (docs/inputs.md §6.8), named by the map's `dem_labels` |
 | `scenic` | `[u8; 13]` | per-vertex channels (`roadcore::scenic::ch`) |
 | `drape` | `i16` | drape height, metres |
 | `strings` | UTF-8 lines | line 0 is "" |
@@ -315,7 +315,7 @@ sea's share, green the inland water's.
 sea's pixels at z6 (512 a tile) not joined to the world ocean (docs/steps.md §4), little-endian:
 the zoom (u32, 6); the runs' count (u64), then each run as row, first pixel and past the last (three
 u32s), by row and first; the bodies' count (u64), then each body's pixels (u64) and one pixel of it
-(x, y: u32s), largest first. The server reads it (the catalogue's `global`, `"water-enclosed"`) for
+(x, y: u32s), largest first. The server reads it (the map's `global`, `"water-enclosed"`) for
 the water's surface, sea level only on the world ocean; the water version (`w=`) names it. The
 depth steps read it too: an enclosed sea's depth is below its own surface (Depth, below).
 
@@ -336,7 +336,7 @@ elsewhere.
 | `grid` | u32 × (256² + 1) | per z8 cell (row by row) its first entry in `cells`, then the total |
 | `cells` | u32 | lake indices, ascending per cell; a lake in every cell its box meets |
 
-The catalogue names it in `global` (`"lakefill"`); the server draws its lakes into the water's deeper
+The map names it in `global` (`"lakefill"`); the server draws its lakes into the water's deeper
 zooms as a z14 tile beside the basemap's (layer `water`, class `lake`, extent 4096, clipped to the
 tile grown by a sixteenth).
 
@@ -473,7 +473,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
   (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`, `ms`, `s` (crates/landmarks/src/labels.rs). Before `LABELS_V`
   2: `n`, `en`, `k`, `c`, `mz`, `ms`, `s`.
 - **To translate** (`inputs/translations/todo/<language>.jsonl`, `names-todo`'s, rewritten after
-  each catalogue that changed what it reads): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,
+  each map update that changed what it reads): `{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at": [lon,
   lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
 - **Lines with no timetable** (`inputs/timetables/gtfs/todo/lines.jsonl`, `timetables-todo`'s):
   `{"osm", "kind" ("rail" | "ferry"), "name", "ref", "operator", "from", "to", "km", "priority"}`;
@@ -487,7 +487,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 
 Three layers of 256-px tiles in packs like the terrain's: `root/0-0-0` (z0–2, the means of the lo
 packs' z3), `lo/3-x-y` (z3–8) and `hi/6-x-y` (z9–16, only where a source has grids finer than z8);
-the catalogue's zooms 0–16 once the root packs
+the map's zooms 0–16 once the root packs
 exist, 3–16 before (the app makes z0–2 from z3, web/src/depthgrid.ts; its map tiles, each made from the
 zoom below, stop at z15, and MapLibre scales them up past it). A tile is stored where one of its water pixels is a
 source's own data of its zoom, or where a finer stored tile lies under it (each pixel then the mean
@@ -514,26 +514,169 @@ ancestor's neighbours' edges; nearest for classes).
   steepness and mean direction, a tile for each depth tile (docs/steps.md §3), made with the
   depth's packs: the lo packs' z8 from the hi packs' z9 where they cover it, the root's z2 from the
   lo packs' z3.
-- **The catalogue's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "estimated", "notice"}]}`,
+- **The map's meta** `depth`: `{"sources": [{"code", "id", "label", "datum", "water", "estimated", "notice"}]}`,
   the accepted depth declarations (`grids::Source::catalogue_entry`: the credits' depth line and notices, the footer's
   water info on hover, and the estimated ones named in the Depth section's note).
 
-## Catalogue (the map, as its readers take it)
+## The map and its log (`store::map`)
 
-The map (docs/maplog.md: the lead's log of it, on the lead's disk alone; a test root's
-`map/<seq>.json.zst`) is
-read as a catalogue: `store::map::Map::catalogue` makes this value of it (`n` its `seq`, `created`
-its batch's time). The `catalog` step posts the map it builds in this form, zstd with its content
-checksum, to the lead's agent (`maplog/posted.json.zst`, docs/maplog.md §6.7). No catalogue file is
-written or read on the NAS since docs/maplog.md §8, step 6 (the old `catalog/` and
-`catalog-held/` folders are gone, step 9).
+**The map** is the current name → file map of everything served. **Its log** is the batches that
+change it, each with a sequence number (`seq`). A **map update** is one batch appended. A **client**
+is anything that holds a copy of the map at some `seq`. ("Manifest" is the build's: the records'
+logical → content map, docs/storage.md.)
 
-Spelling: the code and docs say catalogue, but every stored or wire name keeps the old spelling, because the
-NAS holds years of data and the pool runs mixed app versions: the pool's setting `hold-catalog`, the steps
-`catalog` and `catalog-held`, the history event kind `catalog`, JSON keys (`catalog`, `catalog_held`,
-`catalog_t`, `catalog_at`, `catalogs`, `catalogs_kept`), the routes `/api/catalog` and `/api/catalogs`, the commands `scenic catalogs` and `lakefill catalog-add`, the
-log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting the manifest's files into the catalog's" and "writing the catalog", gc's "reading the catalogs", namestodo's "reading the catalog, the languages spoken and the translations"). In Rust they are
-`store::catalogue::NAME` and `HELD_NAME` or a `serde(rename)`.
+The lead's agent keeps the map and its log on its own disk (`agent/maplog/`, below) and its
+coordinator serves them over HTTP, from memory. The NAS holds no copy: the lead alone updates the
+map and merges hand-offs into the records, a batch is a few kB while the share is slow at small
+files and stale to list, and a Mac away from home reaches the lead over the tailnet when it can't
+reach the share. With the lead down the map isn't updated, and each client keeps the map it holds.
+What makes an update, and when: docs/building.md §2, 5. How the map server and the mirror follow it:
+docs/macs.md. What it means for the files on the NAS: docs/storage.md, GC.
+
+### Entries
+
+The map is a flat set of entries, key → value, at the grain a change touches:
+
+| Key | Value |
+| --- | --- |
+| `f/<logical>` | a served file: `{file, size, fmt}` (`file` its content name) |
+| `l/<layer>` | the layer's head: encoding, zooms, `root` |
+| `l/<layer>/<lo\|hi\|deep\|polar\|native_zoom>/<tile>` | a logical name (`native_zoom`: a zoom) |
+| `s/<section>/<key>` | a logical name: `base`, `roads`, `hidata`, `markdata`, `ovdata`, `global` |
+| `u/<z6 tile>` | `true`: a z6 tile built |
+| `r/<region id>` | `{"i": its place in the recipes' order, "region": the region}` |
+| `m/<name>` | the value: `meta`, `credits`, `dem_labels`, `basemap`, `app`, `fmt`, the coverage's parts that aren't regions, `extra/<k>` (a field this app doesn't know), `units` (a list not sorted, kept whole) |
+
+A value is kept as its canonical JSON (`store::map::Val`: the bytes its hash is over, parsed only
+where it's read), so the lead and a map server hold the map once.
+
+**The digest** is the sum, modulo 2^128, of XXH3-128 over each entry's key, a zero byte and its
+canonical JSON (`entry_hash`, `digest_of`; written as 32 hex digits). A batch changes it by
+subtracting each replaced entry's hash and adding each new one's, so the writer and every client
+keep it in time proportional to the batch, and a client checks it after every batch. A map holds
+each key once, so the entries are a set, and a map other than the writer's passes only if the
+differing entries sum to the same (2^-128 for hashes that behave as random; nothing here is
+adversarial).
+
+### A batch
+
+```json
+{"seq": 812, "at": "2026-11-02T04:05:06Z", "app": "<version>", "why": "map 812; the low zooms",
+ "set": {"f/layers/roads/hi/6-32-21": {"file": "layers/roads/hi/6-32-21.<hash>.pack", "size": 123, "fmt": 1}},
+ "del": ["f/base/6-1-1", "s/base/6-1-1"],
+ "freed": ["base/6-1-1.<hash>.pack", "layers/roads/hi/6-32-21.<oldhash>.pack"],
+ "digest": "<32 hex>"}
+```
+
+- `set` and `del`: the entries set and deleted. A change of nothing makes no batch.
+- `freed`: the content names the map named before the batch and doesn't after, worked out by the
+  writer from the entries it replaced. GC's queue reads it (docs/storage.md, GC).
+- `why`: `map <seq>`, then its parts, each after `; ` (`WHY_SEP`): `the low zooms` when the update
+  was made with them (`agent::publish::LOW`).
+- `digest`: the map's digest after the batch.
+- A batch is whole for its clients: each applies it to a copy, or in place with an undo while no
+  reader holds the map, and swaps the result in at once. Files are content-named, so applying a
+  batch moves no data: a new name is a file already on the NAS.
+
+**Marks.** The log keeps, for each watch its opener names, the last batch that marked it (`Mark`:
+`seq`, `at`), saved with the snapshot and kept up as batches are replayed and appended
+(`log::Log::open_watching`). A watch is a key prefix (the last batch setting or deleting a key under
+it) or `why:` and a part of a batch's `why`. A prefix newly watched starts at the snapshot's `seq`.
+The lead watches `why:the low zooms` (when the low zooms last went out) and the names' to-do lists'
+inputs (`landmarks::namestodo::INPUTS`, docs/names.md).
+
+### The lead's store (`agent/maplog/`)
+
+```
+snapshot.json.zst       the map whole: {seq, at, digest, entries, cursors, marks}, compact JSON in
+                        zstd (level 3, with its content checksum); written when the log starts and
+                        then once an hour while updates come (agent::publish's SNAPSHOT_EVERY_S),
+                        which also removes each segment all of whose batches it holds
+<first seq>.jsonl       a segment: a batch a line, appended and fsync'ed before the batch counts; a
+                        new one each 10,000 batches or 64 MB (store::seglog)
+posted.json.zst         the map the `catalog` step posts (--post: a catalogue, below, zstd with its
+                        checksum; a temporary name renamed into place); the agent's writer renames
+                        it posted.taken.json.zst, appends its batch and removes it
+held/<seq>.json.zst     the maps held for review while the pool's `hold-catalog` is on (--held:
+                        each a snapshot, the newest three kept; `GET /map/held` serves the newest)
+gc.jsonl                GC's queue (docs/storage.md, GC)
+gc-sweeps.json          GC's sweeps' cursors (docs/storage.md, GC)
+```
+
+- **A start:** the log loads its snapshot and replays the segments after it. A last line that
+  doesn't parse is cut off (a write cut short was never answered); any other line that doesn't, or
+  a batch whose digest doesn't hold, fails the open. A map taken and not appended when the agent
+  stopped (`posted.taken.json.zst`) is appended as the log opens.
+- **The lead moved by hand** (docs/pool.md §6.1) takes `agent/maplog/` with it: its log, its
+  snapshot and GC's queue.
+- **No log on the lead's disk:** the next map the step posts seeds a new one whole. The map is the
+  records', so only what the last map alone kept is lost until it's built again (a region whose
+  outline changed since it was built, its tiles not yet remade), and the first map's sizes are
+  looked up on the NAS. Its `seq` goes past the newest `seq` any client asked from
+  (`Feed::asked_past`), so no client's map is ever newer than the lead's. GC's queue starts empty;
+  the orphan sweep finds what it held (docs/storage.md, GC).
+- **A test root's or a `--root`'s map** is `map/<seq>.json.zst` under that root, the same snapshot
+  (`store::map::write_root_map`, `root_map`; the newest three kept), written by the tools that make
+  test roots (`lakefill catalog-add`, `coastcheck`, the tests) and read by a `--root` server or a
+  job on that root. Refused on the NAS, whose map is the lead's alone.
+
+### Asking the lead (`agentcore::coord::maproutes`)
+
+On the lead's coordinator (port 8090, with the build's key), answered from the feed its log's writer
+keeps (`store::map::feed::Feed`): memory alone, never the NAS or a disk.
+
+- `GET /map/changes?since=<seq>&client=<id>&wait=<s>`: `{"head", "more", "batches"}`, the batches
+  after `since`, up to 4 MB of them (`more` past that); or `{"reset": <seq>}` when `since` is before
+  the oldest batch the lead still holds (64 MB of them at most, `HELD_BYTES`) or past its head: the
+  client then takes the snapshot. With `wait` (30 s at most, `WAIT_S`) it answers once a batch comes
+  or the wait is out (it looks each 50 ms). A mirror says too `copying=<seq>` and `synced=<seq>`.
+- `GET /map/snapshot`: the whole map at the head, a snapshot as above, its `seq` in `X-Map-Seq`;
+  made once per `seq` asked.
+- `GET /map/held`: the newest map held for review; 404 while none is.
+- 503 while there's no map here (not the lead, or its log not open yet): a client goes on as it
+  would with the lead away.
+
+`coordwire::map_now` is how a job or a command reads the map: `GET /map/snapshot` from the lead;
+none with no lead answering (`scenic status` then says it doesn't know the map), but on a root that
+isn't the NAS, that root's own map.
+
+### Cursors
+
+Every `changes` request with a `client` is that client's cursor (`store::map::Cursor`): the `seq` it
+asked from, when it was last heard (`heard`), when it was first heard at that `seq` (`at`: its
+adoption of that map) and, for a mirror, the map its round copies and the last it got through at
+(`copying`, `synced`, each with when first said). The lead keeps them in memory, saves them with
+its snapshot and restores them at a start: a restart can only bring a cursor back older, which
+keeps files longer and never frees one early; one first heard since is gone until it asks again.
+
+| Client | Id | Holds files on the NAS? |
+| --- | --- | --- |
+| a Mac's map server | `server/<host>` | yes: it reads the NAS for what its mirror lacks |
+| a Mac's mirror | `mirror/<host>` | yes, while it copies a `seq`'s files |
+| the lead's agent (the plan, the status, the build page's views) | none: in process | no: it reads names, not files |
+
+A cursor holds, from GC, every file the maps since its `seq` name. One unheard for 6 hours
+(`store::map::gc::CURSOR_TTL_S`) holds nothing: a laptop's map server runs on demand and quits 30
+minutes after its last use, its cursors left where they were. A mirror's cursor is also answered a
+reset whenever the lead didn't hold it (never heard, unheard that long, or held at one `seq` behind
+the head that long), since a file it would copy may be gone (docs/macs.md, Mirror). The browser
+pages are not clients: a page holds logical names and versions and asks its Mac's server, which
+resolves them in the map it holds.
+
+### The catalogue: the map as its readers take it
+
+Readers don't see entries: `store::map::Map::catalogue` makes a `store::catalogue::Catalogue` of
+the map (`n` its `seq`, `created` its batch's time), and `store::map::entries` turns one back into
+entries, the two exact inverses. The `catalog` step posts the map it builds in this form. No
+catalogue is a file on the NAS.
+
+Spelling: the code and docs say catalogue, but the stored and wire names say `catalog`: the pool's
+setting `hold-catalog`, the steps `catalog` and `catalog-held` (`store::catalogue::NAME`,
+`HELD_NAME`), the history event kind `catalog`, JSON keys (`catalog`, `catalog_held`, `catalog_t`,
+`catalog_at`, `catalogs`), the routes `/api/catalog` and `/api/catalogs`, the commands `scenic
+catalogs` and `lakefill catalog-add`, the log line prefix `catalog-stats:` and the phase names
+(scenic-build's "sorting the manifest's files into the catalog's" and "writing the catalog",
+namestodo's "reading the catalog, the languages spoken and the translations").
 
 ```json
 {
@@ -562,9 +705,9 @@ log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting th
 }
 ```
 
-- `files` holds every file the catalogue references.
-- `fmt` 2 (task #449): `markdata` may name the bundle of every tile ("Bundles"). Readers take 1 and 2;
-  an app that reads only 1 passes a catalogue of 2 over and keeps the last it can read until it updates.
+- `files` holds every file the map names.
+- `fmt` 2 (task #449): `markdata` may name the bundle of every tile ("Bundles"). Readers take 1 and 2
+  (`store::catalogue::MIN_FMT`, `FMT`).
 - `credits`: `inputs::rules::CREDITS` plus the inputs' accepted descriptions
   (`inputs::inputs::credits`, docs/inputs.md §4.8; a description replaces the table's entry of its
   `what`), those whose areas meet the coverage + 20 km or a built z6 tile's extent. `areas` are w, s, e,
@@ -572,27 +715,22 @@ log line prefix `catalog-stats:` and the phase names (scenic-build's "sorting th
   `register`, which popups name their source by (docs/inputs.md §6.5).
 - `dem_labels`: the elevation datasets' labels by source byte (`src.u8`), from their accepted
   declarations (`label`, else `name`; `inputs::inputs::credits::dem_labels`, docs/inputs.md
-  §6.8): how a road's details name its elevation sources. Left out when none; a catalogue without
+  §6.8): how a road's details name its elevation sources. Left out when none; a map without
   it gets "source <n>".
-- `coverage`: the regions built for: those done at publish time as their recipes then were
-  (`--ready <id>=<outline digest>,…`), and those not done yet as the last catalogue had them, in the
+- `coverage`: the regions built for: those done at the map update as their recipes then were
+  (`--ready <id>=<outline digest>,…`), and those not done yet as the map had them, in the
   recipes' order. A region still building (the agent's `--building <id>=<built>/<total>,…`: every
   region its plan doesn't record built, with its z6 tiles built of those it builds, by the records)
-  that the last catalogue didn't have built is recorded as its recipe is now with `tiles`
+  that the map didn't have built is recorded as its recipe is now with `tiles`
   (`coverage::DrawnRegion::tiles`): its z6 tiles are on the map, and downloadable, as they come. A
-  built region has no `tiles`; an app made before them reads such a region as built, and this app
-  reads a catalogue without them as before. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
+  built region has no `tiles`. Outlines are GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings
   closed: `osm:` entries from the pass's simplified outlines, others simplified by size (60 m–1 km);
   a region with water (docs/inputs.md §6.1.3) lists its `water` parts after its outline's, each
   `"water <part>"`, and draws one shape, its land and water together;
-  an unreadable entry has no shape. A catalogue with `"credits": []` and no `recorded`: the server
+  an unreadable entry has no shape. A map with `"credits": []` and no `recorded`: the server
   gives every credit and builds the coverage from the recipes.
 - `files`' sizes: the records' (from each file's job's hand-off) or the map's (the same content
   name, the same bytes); the step looks at the NAS only for a file neither has.
-- GC: a file goes once neither the map a client holds nor the records name it, by the lead's GC
-  queue (docs/maplog.md §7, docs/storage.md). While publishing is held (the pool's `hold-catalog`), the map the
-  step would publish is written whole to the lead's `maplog/held/<seq>.json.zst` (a snapshot, the
-  newest three kept; `catalogue --held <dir>`).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
@@ -625,9 +763,9 @@ accepted/regions/@listed.json   the inputs folder's region files as last listed 
                         /api/regions answers from it, the regions thread lists the folder each
                         minute and reads only the files whose size or time changed (every file hourly)
 accepted/regions/@outlines/z<z>.jsonl   the outlines at zoom z (0–12): a key line (the format, the
-                        accepted version or catalogue, the pass's outlines), then a GeoJSON feature
+                        accepted version or the map's `seq`, the pass's outlines), then a GeoJSON feature
                         a line; made for every zoom when the key changes
-names/spoken-<content>.bin   languages spoken where, for a catalogue without `global/spoken`
+names/spoken-<content>.bin   languages spoken where, for a map without `global/spoken`
                         (names::spoken::Spoken::to_bytes: "SPOKEN01", u32 head length, head (rules'
                         version, then per region its ISO code, a tab, its languages), u32 run
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
@@ -638,17 +776,17 @@ reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs)
 downloads.json          {fmt: 5, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
                         detail: {cat, to?} | null}], lists: {"<cat>": {world?: [item], regions:
                         {"<id>": {coarse: [item], detail: [item], cover}}, partial?}}}
-                        (crates/server/src/downloads.rs; `at` unix seconds; `cat` the catalogue a
+                        (crates/server/src/downloads.rs; `at` unix seconds; `cat` the map (its `seq`) a
                         download is at, 0 until the mirror's next round pins it to the one served;
-                        `to` the catalogue an Update is copying; `detail` its terrain detail, when
-                        downloaded; `lists` each download's own list at the catalogue served and at
+                        `to` the map an Update is copying; `detail` its terrain detail, when
+                        downloaded; `lists` each download's own list at the map served and at
                         each one a download is at or updating to, an item {file, size} (a content
                         name) or {archive, piece} (a basemap piece: lo, 6-x-y), `cover` the share
                         of the region its terrain detail covers, per cent; `partial` true when made
                         while some of its ways' owners weren't known, made again once they are). A file of fmt 4 keeps
-                        its pins, its lists made from the catalogues this Mac kept for it; one of
+                        its pins, its lists made by the mirror's next rounds at the map served; one of
                         fmt 3 or before (`world` a time, `detail` or `fine` a flag, fmt 2's `views`)
-                        is written again as fmt 5, each download pinned to the catalogue served; one
+                        is written again as fmt 5, each download pinned to the map served; one
                         that doesn't read is set aside as downloads.json.bad
 map-page                the address to open the map on another device (docs/macs.md, Devices; 0600)
 pool-<id>.lock          the lock of this Mac's member `<id>` (crate::pool::MemberLock)
@@ -668,16 +806,14 @@ state.json, job.json, logs/   job.json (job-<k>.json, slot k's past the first): 
                         before job ids, or for a job of no lease)
 agent.lock              the agent's lock (one agent a Mac), its text its holder's `<pid> <start µs>`
                         (agent::takeover, docs/surface.md)
-publishing.json         the lead's record of its catalogues {held_at, ran}: when a catalogue due was
+publishing.json         the lead's record of its map updates {held_at, ran}: when an update due was
                         first held back since (none: none is), the cadenced steps' runs
                         (agent::publish::LastCatalogue); when the last went out, and the last with
-                        the low zooms, are the map log's (docs/maplog.md §6.5)
-maplog/                 the lead's map log (docs/maplog.md: snapshot.json.zst with its cursors and
-                        marks, segments of batches); held/<seq>.json.zst, the maps held for review
-                        while the pool's `hold-catalog` is on (agent::publish::HELD, the newest
-                        three; the coordinator's `GET /map/held` serves the newest)
-catalogues-view.json.zst  the build page's Catalogues map as followed (agent::cataloguesview: its
-                        entries, `seq`, tile keys' and `f/` names' hashes)
+                        the low zooms, are the map log's (its head batch, its mark of them)
+maplog/                 the lead's map and its log, the maps held for review and GC's queue
+                        (above, The map and its log: The lead's store)
+catalogues-view.json.zst  the build page's map updates as followed (agent::cataloguesview: its
+                        entries, `seq`, tile keys' and `f/` names' hashes; docs/pool.md §10)
 clear-request.json      the owner's ask to clear build caches ({by, at, level: caches | deep}, agent::room::ClearRequest;
                         renamed .taken when taken up)
 room-target.json        the owner's free-disk target {bytes, by, at} (buildstore::room::Target; none: off)
@@ -986,7 +1122,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   hi: {"6/x/y"}}}`: its content name's hash, 12 hex digits, plus the names version for layers with
   names). The map's tiles carry their pack's token (root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6
   tile: `web/src/api.ts` packVersion; MapLibre's sources through the map's request transform), so a
-  catalogue re-requests only the tiles of the packs it changed. Every pack token and layer version
+  map update re-requests only the tiles of the packs it changed. Every pack token and layer version
   meta gives out is current (the polar caps' blocks' too).
 - **Every data endpoint answers alike** (`server/src/cache.rs`): `Content-Encoding: gzip` by the
   pack's own flag (`PackIndex::gzip`) or for what the server gzips; `If-None-Match` read as a list,
@@ -1013,12 +1149,12 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zooms, version), `coverage`
   (without outlines), `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`, `spoken`,
   `warning`, `waiting`), `v`, `marks` (tiles with points, kinds with tiles, totals), `depth` (the
-  catalogue meta's: its sources, Depth below). The map's meta: `/api/meta`.
+  map's meta's: its sources, Depth below). The map's meta: `/api/meta`.
 - **Depth:** `/tiles/depth/…` and `/tiles/depth-class/…`: the stored tile, else made from its nearest
   stored ancestor (`terrain::depth::fall`), 204 where it has no ancestor, 404 past its zooms; versions `depth.tiles`,
   `depth-class.tiles`. `/tiles/terrain/{z}/{x}/{y}?floor=1`: the water's surface less the depth where
   the class tile says water (the floor under the water, for a 3D floor); the terrain as it is without
-  depth in the catalogue. `?surface=1`: the water's surface (sea level where the water tiles say
+  depth in the map. `?surface=1`: the water's surface (sea level where the water tiles say
   sea and it's the world ocean's, not an enclosed sea's (Water, above); the terrain elsewhere), the map's 3D terrain without the floor; a tile with no pixel at sea
   is the stored terrain tile, with its ETag; one with sea, made from a stored terrain tile, has its
   own (that tile's and the water version's). Under the current water version (`w=`), either is
@@ -1034,18 +1170,18 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   reserve, reserve_min, disk, here, world: {…dl, at}, wanted: {bytes, here, more, unknown}, copying:
   {what, bytes, have, slow} | null, last: {…} | null, regions: {id: {…dl, name, tiles?, detail?:
   {…dl, cover}}}}`, each `dl` `{bytes, here, unknown, on, state, cat?, behind?, update?}`: its size and
-  how much is here at its own catalogue (not downloaded: at the one served); `unknown`: basemap
+  how much is here at its own map (not downloaded: at the one served); `unknown`: basemap
   pieces not yet sized; `state`: done, copying, queued, room, away, missing, updating; `cat`: the
-  catalogue it's at; `behind` (behind the one served): `{cat, files, gone, what, bytes, unknown,
-  state?}`, the catalogue an update takes it to, the files new to it and those it lets go, the
+  map it's at; `behind` (behind the one served): `{cat, files, gone, what, bytes, unknown,
+  state?}`, the map an update takes it to, the files new to it and those it lets go, the
   kinds of what changed (a layer's name, basemap, road data, lists…), the bytes still to copy;
   `update` (updating): the tally of those new files.
   `PUT /api/downloads/world {on}` (each on its own: a region doesn't
   bring the World, and the World goes while regions stay); `PUT /api/downloads/regions/{id} {on}`
   (off removes its terrain detail too); `PUT /api/downloads/regions/{id}/detail {on}` (its terrain
   detail, the deep packs near it; on refused unless the region is downloaded); a new download is at
-  the catalogue served. `POST /api/downloads/world/update`, `…/regions/{id}/update`,
-  `…/regions/{id}/detail/update`: update it to the catalogue served (refused when it isn't
+  the map served. `POST /api/downloads/world/update`, `…/regions/{id}/update`,
+  `…/regions/{id}/detail/update`: update it to the map served (refused when it isn't
   downloaded or isn't behind). `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the disk
   size) → `{ok, reserve}`. A download or update that wouldn't fit is refused; refusals are 400
   `{error}`.
@@ -1061,12 +1197,12 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   other covers it, snapped to half the zoom's tolerance and closed by it (grown, then shrunk: the
   slivers between neighbours simplified apart filled), simplified to it again, a ring cut at the antimeridian put back on it (the map leaves stretches along ±180° out as cuts, as it does the `bbox`'s edges); made with GEOS
   (`regions.rs` `union_of`) and kept in memory for the last 32 asked. Made from the
-  accepted copy's drawn files kept on the Mac (else the catalogue's recorded coverage) once per zoom
+  accepted copy's drawn files kept on the Mac (else the map's recorded coverage) once per zoom
   and version, by the regions thread for every zoom when the version changes, and kept on disk
   (`accepted/regions/@outlines/`) and in memory for the zooms asked: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
   `/api/regions` answers from the listing kept on the Mac (`accepted/regions/@listed.json`), so at
   once; it follows the folder within a minute.
-  `/api/coverage` (the catalogue's coverage as GeoJSON, one feature per outline entry, with
+  `/api/coverage` (the map's coverage as GeoJSON, one feature per outline entry, with
   `regions` and `catalog`: the bench's views).
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,
   ferry blocks and marks tiles carry `main` only where it differs from the name; popup records are
@@ -1281,7 +1417,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     always true, for a lead on the app before #1036).
   - Switches: none is a file. `placement` (§7.2: jobs get `SCENIC_OFFER_AHEAD=1`, task offers
     carry `ahead`), `nas-budget`, `nas-target`, and publishing's `hold-catalog` and `near-slope`
-    (docs/building.md §2, Publishing's switches) are the lead's settings (`/pool/settings`).
+    (docs/building.md §2, The map updates' switches) are the lead's settings (`/pool/settings`).
   - A member's ask carries `disk_mb` (free disk less the owner's room target and its jobs'
     reservations; no fixed reserve).
   - A member's resume progress: `{member, worker, jobs: {"osm-pass <date>": {at, since, done,

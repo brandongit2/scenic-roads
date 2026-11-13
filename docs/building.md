@@ -26,7 +26,7 @@ and keys):
    elevations, grade and scenic channels.
 6. **Then chains** that don't wait for each other: **roads** (road → z6 tiles index, pack(T) per z6
    tile from the base data of the z6 tiles whose ways come into it, lo packs, rail stops and ferries, roots,
-   then a catalogue), **rail service** (docs/steps.md), **landmarks** (`docs/phase5.md`) and **3D buildings**
+   then a map update), **rail service** (docs/steps.md), **landmarks** (`docs/phase5.md`) and **3D buildings**
    (`docs/buildings3d.md`).
 
 Because road values come from the whole planet, adding a region changes nothing outside its own
@@ -59,7 +59,7 @@ from the first (`edit_held`).
   (`agent::plan`, docs/agent-parts.md §4.4), on a thread of its own: it plans again when a job
   ends, a gate ask comes, what the plan depends on changes (`Planner::plan_seen`, looked at every
   5 s: the manifest, records, hand-offs, the gate, the pool, the pause, a newer app, switch files,
-  catalogues, leases), at the earliest end of its timed waits (`replan_at`), and otherwise every
+  map updates, leases), at the earliest end of its timed waits (`replan_at`), and otherwise every
   five minutes (`why_plan`), but no sooner after a plan than that plan took. Each plan is numbered
   (from the time in ms, so past every earlier lead's) and published whole; the round grants from the
   last one at once, each grant carrying its number (`coord::Grant::plan`; 0 from an older lead), so
@@ -308,24 +308,24 @@ from the first (`edit_held`).
   pass's worldwide jobs, the map tiles, a region at a time, the slope and tree cover, the chains'),
   and gets what it would grant then (docs/pool.md §7.2, One scheduler), each Mac at its quietest
   sustained room over the last 48 hours: a best case, as the build page says.
-  Z6 tiles reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. Publishing
-  goes per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
+  Z6 tiles reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. The map is
+  updated per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
   once its z6 tiles left are built) are drawn once its z6 tiles are, ahead of the regions' work, each at
   its own measured time; a region is all on the map as it's built now (`map_at`) at its last
-  z6 tile's end, plus its map tiles, plus at most a minute for the catalogue (`CATALOGUE_EVERY_S`). The
+  z6 tile's end, plus its map tiles, plus at most a minute for the map update (`CATALOGUE_EVERY_S`). The
   whole-map steps go by their cadence (`publishes`): the low zooms, the landmarks and the area
-  overlays each once its cadence has passed since it last went (the low zooms by the map log's mark of their batches, docs/maplog.md §6.5; the
+  overlays each once its cadence has passed since it last went (the low zooms by the map log's mark of their batches, docs/formats.md, Marks; the
   others by `LastCatalogue`'s runs), or once no z6 tile or
   terrain is left, whichever comes first (the low zooms may go sooner, half their packs stale).
   Each target takes its own run's time at the lead's pace (a run of the way its step runs now, as
   the coordinator sizes it: docs/pool.md §7.7), else its step's mean, else a first guess; each machine at its measured speed (half the lead's until measured). Run three times for
   a range. It says when each step, region and everything will be done, when each region is all on
-  the map, when each cadenced publish may next go, and each machine's schedule, or why there's no
+  the map, when each cadenced step may next go, and each machine's schedule, or why there's no
   finish.
 - **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
-  (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, catalogues, pauses, workers,
+  (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, map updates, pauses, workers,
   agents, conditions, cache clears and freeings. Summed by the hour for the build page, and the
-  forecast's measure of members' pace and of publishing's time.
+  forecast's measure of members' pace and of the map updates' time.
 - **Timings** (`jobrt::timings`; `dem/timings.py`): every
   job's run is broken into named phases, each with wall time, its own CPU time (task #1116: each
   thread's CPU, macOS's `thread_info`, charged to the span innermost on it; the job's on threads in
@@ -348,22 +348,22 @@ from the first (`edit_held`).
   (docs/formats.md, Timings) goes to `SCENIC_TIMINGS`; the agent keeps `timings.jsonl`, the lead's
   coordinator `coord/timings.jsonl` for every worker. `scenic timings [kind] [--last N] [--host
   mac]` prints them (`--here` this Mac's own).
-- **Publishing's times** (`agentcore::pubtimes`, task #250): each stage from a z6 tile's job to its
+- **The map updates' times** (`agentcore::pubtimes`, task #250): each stage from a z6 tile's job to its
   tiles on every Mac's map leaves an event. In the history: the z6 tile's job ending; its hand-off
   merged (`merged`: each hand-off's key, member, step and targets); the map tiles
   first planned at their keys (`planned`: noted once per tile and key, what was noted known again
   from the history after a restart or a change of lead; with, per z6 tile, the tiles its change made
-  stale: their owners whose base pack or road values differ from the served catalogue's), leased and
-  done; and map n published (`catalog`: its `n`, its job's time, the files listed and stat'ed, its
+  stale: their owners whose base pack or road values differ from the map served's), leased and
+  done; and map n appended (`catalog`: its `n`, its job's time, the files listed and stat'ed, its
   phases once written, from the step's own `catalog-stats:` log line). A map server's adoption of
-  each map is its cursor in the map's log moving there (docs/maplog.md §6.1), which the lead notes
+  each map is its cursor in the map's log moving there (docs/formats.md, Cursors), which the lead notes
   in the history (`adopt`); it follows each batch by a long poll (docs/macs.md). Its mirror's round
   copying a map begun and through everything wanted are what its own cursor (`mirror/<host>`) says
-  (`copying`, `synced`: docs/maplog.md §6.2), which the lead notes the same way (`mirror-start`,
-  `mirror-end`). `scenic timings publish [--last N]` joins them: a z6 tile is in the first catalogue begun
-  once it was merged and its stale tiles packed; per catalogue and per z6 tile, the hand-off, planned, leased, packed, catalogue, servers
+  (`copying`, `synced`: docs/macs.md, Mirror), which the lead notes the same way (`mirror-start`,
+  `mirror-end`). `scenic timings publish [--last N]` joins them: a z6 tile is in the first map update begun
+  once it was merged and its stale tiles packed; per map update and per z6 tile, the hand-off, planned, leased, packed, map update, servers
   and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
-  names-todo ran, and the medians (the catalogues' phases among them).
+  names-todo ran, and the medians (the map updates' phases among them).
 
 **The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/coordinator.md`),
 always on. Every Mac's agent is a member; the declared one leads. A process not in the pool (no NAS at
@@ -392,7 +392,7 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   role's parts; when the owner moves the declaration, the agent restarts into its new role at once,
   its jobs handed over to the next process.
 - **What's offered** (crate::agent::every): every step to every member except the lead's own
-  (`LEAD_ONLY`: catalogues, prune, `bld-fetch`, `planet-fetch`, the OSM pass, GC, backup, input checks, …), the steps
+  (`LEAD_ONLY`: map updates, prune, `bld-fetch`, `planet-fetch`, the OSM pass, GC, backup, input checks, …), the steps
   that keep the pass's answers, and the worldwide steps. The steps table (`agent::steps`, docs/pool.md
   §7.2) ranks the shared steps (`agent::steps::SHARED`): terrain's and slope's z6 tiles, tree cover's
   z6 tiles, roads (`unit`), the landmarks' candidates and peaks, bldprep and bldtiles. The status marks a step
@@ -439,11 +439,11 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
   the lead only their names (`Handoff::raw`); the lead names them in the raw store's index, which
   it alone writes.
 - **A job that fails** hands off the targets it finished; the rest are held against it.
-- **A catalogue** goes out only once the lead's records reflect what's handed off. **GC** runs only
+- **A map update** goes out only once the lead's records reflect what's handed off. **GC** runs only
   on a step whose read of the declaration found this Mac the lead, caught up; it removes only what its queue on the lead frees (no
   map a client holds, nor the records, name it, past its grace and every older lease), each name
   marked deleted on the lead before it goes, and the merge refuses a hand-off that brings or reused
-  one being removed or removed under its lease (docs/maplog.md §7.4).
+  one being removed or removed under its lease (docs/storage.md, GC).
 - **Temporary names** are each Mac's and each process's own.
 
 **Order:**
@@ -464,46 +464,46 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      cover; but first, the slope and tree cover of the regions done that the map hasn't as they are
      now. Other members take the earliest step offered them with work that fits, from the front of
      the plan (the coordinator's `pick_every`).
-   - **Publishing**, before all of the regions' work (after heritage-sites), as soon as the records
+   - **Updating the map**, before all of the regions' work (after heritage-sites), as soon as the records
      change, from the records as they are (nothing is fixed as of a time): a prune of what the
-     coverage no longer builds (docs/regions.md, Shrinking), then the publishing chain (4, Roads), its map tiles
+     coverage no longer builds (docs/regions.md, Shrinking), then the map update's chain (4, Roads), its map tiles
      whose owners changed a z6 tile's together (`build::by_unit`: the z6 tiles whose base pack or road
-     values differ from the served catalogue's, in build order; the tiles no z6 tile's change explains
+     values differ from the map served's, in build order; the tiles no z6 tile's change explains
      by their z3 tile), each group its own work and offer, so a job of them opens one halo of base
      packs (crate::needs::HALO_STEPS: its disk the halo's cache, not its tiles' summed, its NAS
      weight what it writes; docs/pool.md §7.1, §7.7), offered in the plan's order to every
      Mac asking, the lead's agent among them (docs/pool.md §7.2); once the map tiles and the road
      index are drawn (`build::CATALOGUE_GATE`) and none of their hand-offs waits to be merged (or ten
      minutes after it was first held back), a
-     catalogue (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
-     goes out with a later one. Nothing is published before a z6 tile is
+     map update (5), listed before the chain's rest (the low zooms, rail stops, ferries, roots), which
+     goes out with a later one. The map isn't updated before a z6 tile is
      built, while the regions have work left. The lead keeps `publishing.json` in its agent's folder
-     (`publish::LastCatalogue`: when a catalogue due was first held back since, and the cadenced
-     steps' runs); when its last catalogue went out, and the last with the low zooms made, are the
-     map's log's (its head batch, and its last batch whose `why` says so: docs/maplog.md §6.5),
-     and records what publishing does and why (`publish::PublishLine`), shown in the build status
+     (`publish::LastCatalogue`: when a map update due was first held back since, and the cadenced
+     steps' runs); when its last map update went out, and the last with the low zooms made, are the
+     map's log's (its head batch, and its last batch whose `why` says so: docs/formats.md, Marks),
+     and records what the map updates do and why (`publish::PublishLine`), shown in the build status
      (`publishing`), the build page and `scenic status`, and logged when it changes. Beside it the
-     status's `published` (`agent::Published`): the last catalogue (number, when, with the low zooms
-     or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the catalogue
-     the map server last adopted (its cursor in the map's log). The build page's Publishing
-     card and `scenic status` say these in the same words, with the cadenced publishes next (the
+     status's `published` (`agent::Published`): the last map update (number, when, with the low zooms
+     or map tiles only), the map tiles being drawn by Mac (pack's targets leased), and the map
+     the map server last adopted (its cursor in the map's log). The build page
+     and `scenic status` say these in the same words, with the cadenced steps' next runs (the
      forecast's `publishes`); `scenic status` and the menu bar say a region
      still building as "x of y tiles, on the map as they come", and when all of it is.
    - **The low zooms' cadence** (`build::low_gate`): the low zooms (roads' and rails' lo packs,
      terrain's and slope's roots, and with `near-slope` the slope and tree cover assemblies) are
      planned when nothing else is queued (no `unit`, terrain, slope or tree cover z6 tile, 3D buildings or
-     depth work), at once; else `build::LOW_EVERY_S` (three hours) after a catalogue last went out
+     depth work), at once; else `build::LOW_EVERY_S` (three hours) after a map update last went out
      with them made (the map log's last batch saying so, `publish::LOW`), when half the roads' lo packs are stale
      (`build::low_due`), or once everything is built. The gate decides only when; their keys stay
      by content. Zoom ranges don't overlap, so a region new since shows its roads from z9 until the
      low zooms are next made.
-   - **Publishing's switches** (crate::agent::publish::Switches), the pool's settings the lead
+   - **The map updates' switches** (crate::agent::publish::Switches), the pool's settings the lead
      keeps (`scenic pool set <name> on|off`, the build page's Settings), off while not set:
-     - `hold-catalog`: publishing held for review (step 5 below).
+     - `hold-catalog`: map updates held for review (step 5 below).
      - `near-slope`: a done region's slope and tree cover are the z6 tiles near it
        (`Publishing::near`), not every stale z6 tile around; it's recorded built with those.
 4. **Four chains:**
-   - **Roads** (the publishing chain, `build::publish_chain`): a prune of map tiles no z6 tile is near,
+   - **Roads** (the map update's chain, `build::publish_chain`): a prune of map tiles no z6 tile is near,
      pack (the map tiles), the road → z6 tiles index, lo, stations, ferries, the slope root (the terrain's is the terrain stage's),
      its first stale step at a time.
    - **Rail service**, from the start: `rail-feeds`, then `rail` (docs/steps.md §10).
@@ -522,34 +522,53 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
    The trains', landmarks' and buildings' work is listed after the regions'. Last, in idle time: the
    mids of z6 tiles current without one, each made again with `--expect-same` (`scenic-build
    trees|terrain|slope --expect-same`: a pack differing from the manifest fails the job).
-5. **A catalogue** whenever the served files, the regions or which of them are done change
+5. **A map update** (the lead's `catalog` step, `LEAD_ONLY`) whenever the served files, the regions
+   or which of them are done change
    (`build::catalogue_key`), at most one each `publish::CATALOGUE_EVERY_S` (a minute) since the last
    began. It waits while the map tiles or the road index are left to draw (`build::CATALOGUE_GATE`)
-   or a hand-off of theirs waits to be merged. That wait is counted from when a catalogue due was
+   or a hand-off of theirs waits to be merged. That wait is counted from when a map update due was
    first held back, whether or not one was made before (`Publish::held_for`: the lead's agent keeps
    that time in `publishing.json`, `LastCatalogue::held_at`, so a restart doesn't reset it; a new
-   lead's agent, with a record of its own, starts the count afresh). It's reset by each catalogue
+   lead's agent, with a record of its own, starts the count afresh). It's reset by each map update
    made, and when none is held back, none is due and none waits out its minute: past
    `publish::CATALOGUE_CAP_S` (ten minutes) one goes out with what's drawn and merged, its minute
    allowing, the status saying which held it (the map tiles or the road index to draw, or their
    hand-offs waiting to be merged). It records as built (`--ready <id>=<outline
    digest>,…`) the regions done whose z6 tiles are merged, whose map tiles are drawn and merged and
-   whose slope and tree cover are made, and the others as the last catalogue had them; the status
+   whose slope and tree cover are made, and the others as the map had them; the status
    says why a done region isn't yet ("waiting to be merged", "map tiles to draw", "slope and tree
-   cover to make"). A z6 tile's hand-off waiting holds no catalogue: it goes out with a later one.
-   The catalogue is the map: the step (`scenic-build catalog --post <file>`) builds it from the
-   records, each file's size the records' or the map's, and posts it to the lead's agent, which
-   appends it to the map's log (docs/maplog.md §6.7). While the pool's `hold-catalog` is on, the map it
-   would publish goes to the lead's disk instead (`maplog/held/<seq>.json.zst` in its agent's folder,
-   the newest three; its coordinator serves the newest for review, `GET /map/held`), and nothing is
-   published.
-6. **Daily:** backup and GC.
+   cover to make"). A z6 tile's hand-off waiting holds no map update: it goes out with a later one.
+   - **One batch appended to the map's log** (docs/formats.md, The map and its log). The step
+     (`scenic-build catalog --post <file>`) reads the map from the lead (`coordwire::map_now`),
+     builds the whole served map from the records (the staged files, each region's files, the
+     coverage, the credits, the elevation labels: a catalogue), each file's size the records' or the
+     map's (the NAS looked at only for a file neither sizes: the `catalog-stats:` line's `stated`),
+     and posts it to its agent as a file (`maplog/posted.json.zst`). At the job's end the agent's
+     writer (`agent::publish::MapLog`, a thread of its own, never the agent's loop) takes it, makes
+     its entries one at a time against the map, appends the difference as one batch with the names
+     it frees, and checks the map equal to what was posted (a mismatch is logged, `maplog:
+     MISMATCH`). The batch's `seq` is the step's number: the head's next. A map that changes nothing
+     appends nothing. The step's next post replaces one not taken yet.
+   - **Consistent:** the gate decides what goes into a batch, and every client takes a batch
+     whole, so a z6 tile's base pack, road values, hi data and hi packs change in one batch and the
+     map is never seen half updated.
+   - **Held for review:** while the pool's `hold-catalog` is on, the job is `catalog-held`: the map
+     it would post goes to the lead's disk instead (`--held`: `maplog/held/<seq>.json.zst` in its
+     agent's folder, the newest three; its coordinator serves the newest for review, `GET
+     /map/held`), the plan reads its regions from there, and the map isn't updated. The hold
+     lifted, the step's next run appends that map, made again from the records, as one batch.
+   - **Rolling back:** the map is never set back to an earlier `seq`; a bad update is fixed by the
+     next. (`publish.sh --rollback` rolls the app back, not the map: App publishing, below.)
+   - **Planned** (task #1054's follow-up, with #880): build each batch from the records that
+     changed since the last update; today every update builds the whole map and the writer finds
+     the difference.
+6. **Daily:** the backup. **GC** whenever its queue has a chunk or a sweep is due (docs/storage.md, GC).
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture
 and timetables refetched every ~6 months.
 
 **Interruptions.** Any Mac may be asleep, away or unplugged at any time; nothing depends on it being
-available. Until work is done, the map serves the last catalogue.
+available. Until work is done, the map stays as its last update left it.
 - When the NAS goes, the agent freezes the job (`SIGSTOP`) and resumes it (`SIGCONT`) when it's back.
 - Sleep often breaks SMB handles, so a job touching the NAS restarts after wake.
 - **Kills** lose only the target under way: each target is noted done as it's saved. The OSM pass is
@@ -560,7 +579,7 @@ available. Until work is done, the map serves the last catalogue.
 - `scenic status` (the lead, its jobs, what waits, the checklist by stage and step, the regions;
   its flags: a Mac idle while work it could take waits (refused for its room, the first target
   past it, what it needs and what the Mac is short of, each by how much), a job whose work stopped moving (stuck),
-  a catalogue due that hasn't gone out, docs/pool.md
+  a map update due that hasn't gone out, docs/pool.md
   §10, Flags; `--flags` alone, with the pool's warnings and the failures
   since a time, as tools/dev/health.sh reads them),
   `scenic steps` (the steps table: docs/pipeline.md), `scenic clean [--deep]`, `scenic room` (Room on the
@@ -598,9 +617,9 @@ platform's), and the geometry (the Earth, the Web Mercator, the box-grower, the 
 in `roadcore::geo`. Checked per step by hand and by
 `tools/check/`; planned: a "build twice, compare hashes" test per step.
 
-**Validation:** every upload is read back and checked against its hash, and a catalogue fails on a
-missing file. A held catalogue is compared with the current map by hand. Planned: decode checks,
-plausible ranges, and holding a publish when a z6 tile loses over 20 % of its ways without its coverage
+**Validation:** every upload is read back and checked against its hash, and a map update fails on a
+missing file. A held map is compared with the current map by hand. Planned: decode checks,
+plausible ranges, and holding a map update when a z6 tile loses over 20 % of its ways without its coverage
 shrinking.
 
 **Tests:** a test holds on any Mac in any state, so none turns on the wall clock, the real machine
