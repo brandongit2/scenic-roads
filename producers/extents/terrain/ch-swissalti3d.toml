@@ -1,0 +1,21 @@
+name = "swissALTI3D"
+credit = "Federal Office of Topography swisstopo"
+licence = "swisstopo OGD terms of use (free use, commercial included; source reference mandatory)"
+licence_url = "https://www.swisstopo.admin.ch/en/terms-of-use-free-geodata-and-geoservices"
+source = "https://data.geo.admin.ch/api/stac/v1/collections/ch.swisstopo.swissalti3d"
+theme = "terrain"
+availability = "open"
+notes = "swisstopo's bare-earth model of Switzerland and Liechtenstein, as its STAC collection's items: a 1 km tile each (LV95), each with a 0.5 m and a 2 m cloud-optimised GeoTIFF (the 0.5 m grid oversampled where the points are too sparse for it, as swisstopo states). An item's year is its `datetime`'s, the year in its id. A tile re-made in the six-year cycle keeps its earlier item beside the new one (88,775 items on 13 Nov 2026 for 43,650 tiles: the 2019 and 2020 models, then 2021 to 2026's), so only each tile's newest item is read (`latest`, by the tile's number in its id). Accuracy is stated by the data's origin (1 sigma, 3D: new lidar 0.3 m, earlier lidar below 2,000 m 0.5 m, stereo correlation above it 1 to 3 m), not per tile: left out. Its tiles cover Liechtenstein whole, so the Principality's own DTM 2015 (0.5 m, older) is not declared; nor are the cantons' models of the same grid (Aargau's 2024 at 0.5 m). swissSURFACE3D (the point cloud, and its 0.5 m surface raster for part of the country) adds no area or finer grid where this model is: not declared."
+
+[[piece]]
+id = "dtm"
+label = "swissALTI3D 0.5 m"
+method = "stac"
+url = "https://data.geo.admin.ch/api/stac/v1/collections/ch.swisstopo.swissalti3d"
+page = 100
+latest = { field = "id", pattern = '\d{4}-\d{4}$', order = "datetime" }
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "datetime", date = "iso" }

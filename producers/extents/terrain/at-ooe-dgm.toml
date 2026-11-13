@@ -1,0 +1,19 @@
+name = "DORIS DGM"
+credit = "Amt der Oö. Landesregierung, DORIS"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://doris-metadaten.ooe.gv.at/at.gv.ooe.doris.geonetwork_extern/srv/api/records/68CFE491-7CDF-4781-A1F1-603CD0738ABD/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Upper Austria's bare-earth model at 0.5 m from the newest lidar flights (GeoTIFF and XYZ zips per municipality). Its pieces are the Land's own map of the newest flight behind each cadastral map sheet (HOEHENMODELL_AKTUELLE_FLUGJAHRE: 10,278 sheets, each with `DATE_LAST`, as 2015/04), by the flight's year (2014 to 2025). No accuracy is stated in the record."
+
+[[piece]]
+id = "dgm"
+method = "file"
+class = "service"
+url = "https://e-gov.ooe.gv.at/at.gv.ooe.dorisdaten/DORIS_Basisdaten/HOEHENMODELL_AKTUELLE_FLUGJAHRE.zip"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "DATE_LAST", date = "text" }

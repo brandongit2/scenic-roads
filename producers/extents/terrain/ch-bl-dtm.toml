@@ -1,0 +1,21 @@
+name = "DTM BL 2024"
+credit = "Kanton Basel-Landschaft, Amt für Geoinformation"
+licence = "Nutzungsbedingungen des Kantons Basel-Landschaft (not read: the canton's pages answer only behind a browser check)"
+licence_url = "https://www.geocat.ch/geonetwork/srv/api/records/3a33753f-4438-4873-af93-9121439f985e"
+source = "https://www.geocat.ch/geonetwork/srv/api/records/3a33753f-4438-4873-af93-9121439f985e"
+theme = "terrain"
+availability = "login"
+notes = "The canton of Basel-Landschaft's bare-earth model 2024 at 0.5 m and 0.25 m (the finer the piece), interpolated from the ground class of its lidar of February and March 2024 (the record's date, 2 March 2024). Public (access level A) and free, but had only by an order in the canton's GeoShop (ESRI ASCII grid), with no tile index or footprint published: opendata.swiss lists none of it, and geo.bl.ch and baselland.ch answer only behind a browser check. The record's extent is the canton: claimed as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, not checked against data. No accuracy is stated in the record."
+
+[[piece]]
+id = "dtm"
+label = "DTM 2024 0.25 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["CHE"], name = ["Basel-Landschaft"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2024

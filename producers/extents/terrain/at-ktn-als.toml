@@ -1,0 +1,14 @@
+name = "KAGIS Laserscanbefliegung 2022-2029"
+credit = "Amt der Kärntner Landesregierung, KAGIS"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.data.gv.at/api/hub/search/datasets/3f956222-515d-4fd1-bed7-ed91d9bb9c0e"
+theme = "terrain"
+availability = "open"
+notes = "Carinthia's second lidar campaign, 2022 to 2029, published as open data: its record lists the sheet indexes of its raster products and point clouds with flight dates and download URLs (ALS2_RASTER_FLUGDATUM_KTN.zip, ALS2_PUNKTE_FLUGDATUM_KTN.zip on gis.ktn.gv.at), but the host answered nothing on 13 Nov 2026 (connections timed out from both Macs), the Wayback Machine holds no copy, and the record states no grid. The BEV's 1 m model already holds the areas flown in 2022 and 2023 (at-bev-als-dgm). The Land's open 5 m and 10 m models (2006 to 2015) are coarser than the BEV's: not declared."
+
+[[piece]]
+id = "raster"
+label = "Laserscanbefliegung 2022-2029 raster"
+method = "none"
+why = "the sheet index (gis.ktn.gv.at) could not be reached, and no grid or extent is stated elsewhere"

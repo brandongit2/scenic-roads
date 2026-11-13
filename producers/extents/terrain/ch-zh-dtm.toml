@@ -1,0 +1,24 @@
+name = "DTM ZH 2021/22"
+credit = "Kanton Zürich, Amt für Raumentwicklung, Geoinformation"
+licence = "opendata.swiss Open use (commercial use allowed; source to be named)"
+licence_url = "https://opendata.swiss/terms-of-use#terms_open"
+source = "https://ckan.opendata.swiss/api/3/action/package_show?id=digitales-terrainmodell-dtm-2021-bis-2022"
+theme = "terrain"
+availability = "open"
+notes = "The canton of Zürich's bare-earth model at 0.25 m from its lidar flown 2021 to 2022 (mean 16 points/m²), the whole canton and a 500 m buffer, as the download folder's 500 m GeoTIFF tiles, each named by its south-west corner in LV95 (2668500_1260500.tif: read from a tile's own header). Its height accuracy is stated as ±0.10 m at 1 sigma, not as an RMSE: left out. The canton's 2014 and 2017/18 models are older (2017/18 is swisstopo's swissSURFACE3D): not declared."
+
+[[piece]]
+id = "dtm"
+label = "DTM ZH 2021/22 0.25 m"
+method = "listing"
+list = "links"
+url = "https://maps.zh.ch/download/hoehen/2022/dtm/tif/"
+pattern = '^(?P<x>\d{7})_(?P<y>\d{7})\.tif$'
+size = 500
+corner = "sw"
+crs = "EPSG:2056"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2022

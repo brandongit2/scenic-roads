@@ -1,0 +1,19 @@
+name = "DTM Luzern 2024"
+credit = "Kanton Luzern, Dienststelle Raum und Wirtschaft (rawi)"
+licence = "Kanton Luzern Open-By (free use, commercial included; source reference mandatory)"
+licence_url = "https://geoportal.lu.ch/Nutzungsbedingungen"
+source = "https://daten.geo.lu.ch/api/stac/v1.0/collections/DTM24025_DS_V1"
+theme = "terrain"
+availability = "open"
+notes = "The canton of Luzern's bare-earth model 2024 at 0.25 m, as its STAC collection's items: a map sheet each (Kartenblatt), its GeoTIFF downloading with no login (the API's token scheme is for its restricted products). The year is the model's, 2024, as its title names it; the items' `datetime` (1 March 2025) is its issue. No accuracy is stated in the record."
+
+[[piece]]
+id = "dtm"
+label = "DTM 2024 0.25 m"
+method = "stac"
+url = "https://daten.geo.lu.ch/api/stac/v1.0/collections/DTM24025_DS_V1"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2024

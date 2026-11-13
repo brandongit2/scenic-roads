@@ -1,0 +1,21 @@
+name = "GeoDaten Burgenland DGM"
+credit = "Amt der Burgenländischen Landesregierung, GeoDaten Burgenland"
+licence = "CC-BY-4.0-AT"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.de"
+source = "https://geodaten.bgld.gv.at/de/downloads/hoehenmodelle-orthofotos.html"
+theme = "terrain"
+availability = "open"
+notes = "Burgenland's bare-earth model at 0.5 m from its lidar of 2019, flown over the whole Land (\"flächendeckend\"), downloading free per municipality from the Land's page (a municipality's name typed into a search form: no list of files, tile index or footprint is published; the flight dates are a PDF map). Its extent is the Land the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The laser points' height accuracy is stated as ±7.5 cm at one standard deviation, the model's not: left out."
+
+[[piece]]
+id = "dgm"
+label = "ALS 2019 DGM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["AUT"], name = ["Burgenland"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2019
