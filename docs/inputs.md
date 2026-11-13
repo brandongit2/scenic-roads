@@ -1848,7 +1848,7 @@ own data; task #1349). Task #1334.
 ```
 inputs/extents/
   terrain/
-    score.toml          the theme's score: its metrics, their scales and weights, and its layers' colours (below)
+    score.toml          the theme's score: its metrics, their scales and weights, and how tied pieces rank (below)
     <source>.toml       a source: its description, availability, and how each piece's extent is found
     <source>.geojson    its pieces, made by producers/extents/extents.py from the declaration
 ```
@@ -1982,8 +1982,9 @@ whatever its kind or age):
 A metric a piece doesn't state is unknown: it leaves both of the rest's sums, so its weight goes
 to the piece's other metrics in proportion; it's never a zero. A piece stating none of the others
 has its primary's value for the rest (they move it neither way); a piece not stating the primary
-has no score. Availability is not a term: it's a filter. A metric of weight 0 has its layer and
-its line on a click and takes no part in the score.
+has no score. Availability is not a term of the score: it ranks tied pieces (below), and the
+layers' switch filters by it. A metric of weight 0 has its layer and its line on a click and takes
+no part in the score.
 
 **The guarantee:** a piece whose primary is better than another's by more than the factor
 `within` scores higher, whatever either states of the rest (both between the scale's `best` and
@@ -2019,51 +2020,19 @@ a piece doesn't state were as good as what it does, so stating a middling accura
 piece just below the same piece silent about it; it never crosses a spacing step larger than the
 factor.
 
-**How the layers are drawn** is declared in `score.toml` too (the server reads it, docs/steps.md
-§14; nothing is built again for a change, as for the weights). Every field is optional, so a
-`score.toml` declaring none is drawn on the server's own ramp (viridis's ends and middle), every
-layer a ramp over its 0–1 value:
-- `label`: the score layer's name in the legend (the server's own: "Score");
-- `ramp`: the theme's sequential ramp, two or more `#rrggbb` colours, worst to best, evenly spaced;
-  a metric on a log or linear scale without classes is drawn along it;
-- a metric's `classes` (a log or linear scale's): a list of two or more `{ upto, label }`, each
-  class the values up to `upto` (in the metric's unit, positive, each above the one before) above
-  the class before's, the last (no `upto`) the rest; its layer draws each class in one colour, the
-  ramp's at the class's place (the classes spread evenly over it, the class nearer `best` the
-  better end), so a piece's colour says its class whatever its exact value;
-- a `values` metric's `colours`: each of its words' `#rrggbb` (every word one), drawn as they are,
-  not along the ramp;
-- `shade` (0 to under 1, default 0; it needs the primary's classes): the score layer is drawn by
-  the primary's classes, since the primary decides the score, each pixel its best piece's class
-  shaded by the tie-break (the rest, above): a piece with the rest at 1, or stating none of the
-  other metrics, in its class's own colour, one at 0 `shade` of the way to the next coarser class's
-  colour (the coarsest class towards its finer neighbour's mirrored), so a shade never reaches the
-  neighbouring class's colour. Without classes on the primary
-  the score layer is the ramp at the score.
-
-The terrain's: `label = "Best data"`; the spacing in eight classes, each edge a factor of `within`
-above a nominal spacing published, so a product's twin in other units falls in its class:
-
-| Class | Up to | Holds (real pieces of 13 Nov) |
-|---|---|---|
-| 0.5 m | 0.625 m | IGN LiDAR HD, Luxembourg, swissALTI3D, AHN, PNOA-LiDAR's MDT 0.5 m, Tirol, Slovenia's CLSS (0.5 m), Denmark (0.4 m), Baden-Württemberg (0.25 m); 2 ft, 0.6096 m |
-| 1 m | 1.25 m | NRCan HRDEM projects, GeoBC, Wales, the German Länder's DGM1, the BEV, Sweden, England, PST-A (1 m); 3 ft, 0.9144 m |
-| 2 m | 2.5 m | NRCan HRDEM projects and its ArcticDEM-based mosaic, GeoBC, ArcticDEM, REMA, Finland, Iceland, PNOA-LiDAR's MDT02 (2 m) |
-| 3–5 m | 6.25 m | 3DEP's 1/9 arc-second (3.4 m) and Alaska's 5 m IfSAR, INEGI's 5 m sheets, Czechia's DMR 4G, Italy's regional 5 m models, Hungary's DDM5 |
-| 10 m | 12.5 m | 3DEP's 1/3 arc-second (10.3 m), Turks and Caicos' 10 m, Honduras's 12.5 m, TINITALY, Northern Ireland's 10 m |
-| 30 m | 37.5 m | Copernicus GLO-30, AW3D30 |
-| 90 m | 112.5 m | Copernicus GLO-90 |
-| coarser | | |
-
-The ramp, worst to best, `#803041 #8a4a7e #846ab3 #6d90d5 #4fb6df #58d7d2 #9aefba #e7fda7`, a
-colour a class: a spiral in OKLCH (lightness 0.43 to 0.96, the finest brightest on the dark map;
-chroma 0.11; the hue turning 250° from 120°), chosen for the largest least ΔE2000 between
-neighbours under normal sight and simulated protanopia, deuteranopia and tritanopia (Machado
-2009): 14.7, 8.6, 8.2 and 7.2, where viridis sampled alike gives 13.6, 4.4, 7.1 and 7.0 (its 0.5 m
-and 1 m nearly one colour for a protanope); every colour at least 16 from the land's, `#0b0e13`.
-`shade = 0.4`. The surface's `colours`: `ground` `#56b4e9`, `surface` `#e69f00` (Okabe and Ito's
-sky blue and orange, ΔE2000 over 50 apart for each sight above). The year (linear) and the stated
-accuracy (log) run along the ramp. `score.py --examples` names each piece's class.
+**The best piece at a place** (`Score::best`, `score.py`'s `best`; the layers' piece and the
+click's order, docs/steps.md §14): of the pieces there, those whose primary ties the finest's
+(within the factor `within` of it); of them, those of the best availability in the order `score.toml`'s
+`availability` lists (each of `open`, `login`, `paid`, `closed` once, best first); of those, the
+best score; of equals, the first by id. So a grid finer by more than `within` always wins, whatever
+its availability, and among tied grids an open source wins before the score's tie-break (the
+owner's rule, 13 Nov: in Berlin the BKG's paid 1 m DGM of 2022 scores above Brandenburg and
+Berlin's open 1 m of 2021, which is drawn). The order: the best, then the best of the rest, and so
+on. A `score.toml` without `availability` ranks by the score alone. The terrain's: `availability =
+["open", "login", "paid", "closed"]`. Its `label` names the score layer in the app ("Best data";
+none: "Score"). The layers' colours are the app's (its colour maps, docs/steps.md §14); a
+`score.toml` still holding the fields that drew them as classes (`ramp`, `shade`, a metric's
+`classes` and `colours`) is read as if it didn't, and the check warns.
 
 **Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` so
 far). Errors:
@@ -2098,19 +2067,16 @@ far). Errors:
   primary not on a log scale or with a weight, `within` not above 1, `share` not from 0 to under 1
   or breaking the guarantee, a metric without its `label`, a scale whose `worst` = `best` or a log
   scale's not positive, a `values` table not of numbers from 0 to 1, a weight missing or
-  negative; of the drawing: a `label` not a name, a `ramp` not two or more `#rrggbb`, a `shade` not
-  from 0 to under 1 or with no classes on the primary, `classes` fewer than two, on a `values` metric, or
-  a class without its `label`, with a field not its own, an `upto` not positive or not above the
-  class before's, missing (but the last's) or on the last, `colours` on a scale that isn't
-  `values`, naming a word not its own, missing one, or a colour not `#rrggbb`: `ex-score`); a theme
-  with no `score.toml` (`ex-noscore`);
+  negative, a `label` not a name, an `availability` not each of the four ids once: `ex-score`); a
+  theme with no `score.toml` (`ex-noscore`);
 - a metric the theme's score doesn't name, in a declaration's block or a piece (its `stated`
   too), or a value off its scale's kind: a positive number on a log scale, a number on a linear
   one, one of the `values` words (a declaration's constants and its `map`s' values alike;
   `ex-metric`, held with the score).
 
 Warnings: a declaration with no `.geojson` yet (`ex-nopieces`); pieces of class `unknown`
-(`ex-unknown`). A source's two files are held together. Facts read at check time: a `.geojson`'s
+(`ex-unknown`); a `score.toml` holding fields no longer read (`ramp`, `shade`, a metric's `classes`
+or `colours`: `ex-retired`). A source's two files are held together. Facts read at check time: a `.geojson`'s
 pieces, by class and availability, and its box (`pieces`, `classes`, `availability`, `box`); a
 declaration's `theme`, `availability` and `blocks`; a score's `primary` and `metrics`. Tests:
 crate::inputs::extents's, with the real files of `producers/extents/terrain/` taken with no

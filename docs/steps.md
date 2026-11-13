@@ -1100,85 +1100,105 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   children do; every real piece the same, `every_real_piece`, a benchmark run by hand);
   codecs::available's (the format, the layers' names and packs); the server's below.
 
-**The score and the layers' values** (crate::available in the server; `Score::of` in
-crate::inputs::extents). The server keeps the extents' accepted version on the Mac as it keeps the
-translations' (crate::accepted, synced every minute while the map is in use), and reads each
-theme's `score.toml` and pieces from it (the `.geojson`s' properties and `read`, the declarations'
-descriptions). For each palette entry, its pieces that pass the availability switch (`avail=open`,
-the default: those whose availability is `open`; `all`: every one): the score layer's piece is
-the one of the best score, a metric layer's the one of the best 0–1 value of that metric (the
-finest spacing, bare earth over surface, the newest year, the best stated accuracy; a piece not
-stating it takes no part; of equal values, the first id); none passing, transparent
-(`Theme::best`). That piece's colour (`Theme::colour`) is as `score.toml` declares the layer
-(docs/inputs.md §6.11): a metric with classes, its class's (by its value in the metric's unit: the
-terrain's spacing in eight, 0.5 m to coarser); a word's colour where the metric gives them (bare
-earth and surface); otherwise the theme's ramp at its value (the year, the accuracy). The score
-layer is the primary's classes, since the primary decides the score: the piece's class, shaded by
-its tie-break `shade` of the way at most towards the next coarser class's colour, so 0.5 m, 1 m and
-2 m lidar read as three colours, not three near-equal scores on one ramp. A `score.toml` declaring
-no colours (one older than these fields) is drawn as before them, every layer on the server's own
-ramp (viridis's ends and middle) over its 0–1 value. The score and the colours are read at each
-sync, so changing either draws within a minute and builds nothing again. `Score::of` is
-producers/extents/score.py's formula: tested on score.toml's own examples and more pieces
-(`score_pieces.json`) against what score.py makes of them (`score_expected.json`, made by
-`score.py <score.toml> --json <pieces.json>`; producers/extents/test_extents.py makes it again and
-checks the file), to 10⁻¹² and to the three digits score.py shows. The legend
-`/api/available/<theme>` gives each layer (docs/formats.md) is the same colours: the classes with
-their labels and edges, the words', or the ramp with stops in the metric's own unit. The server's
-tests (crate::available's): each layer's best piece under the switch, each layer's colours and
-legend from the real `score.toml`, one declaring no colours drawn on the built-in ramp, the tiles
-and the click; and `renders_the_real_pieces`, which with `SCENIC_RENDER_DIR` set builds every real
-piece and writes each layer as PNGs over the land's colour (the world at z2, France at z5,
-Vancouver at z8; ~1 min), a look at the colours by hand.
+**The score and the layers' values** (crate::available in the server; `Score::of` and
+`Score::best` in crate::inputs::extents). The server keeps the extents' accepted version on the Mac
+as it keeps the translations' (crate::accepted, synced every minute while the map is in use), and
+reads each theme's `score.toml` and pieces from it (the `.geojson`s' properties and `read`, the
+declarations' descriptions). For each palette entry, its pieces that pass the availability switch
+(`avail=open`, the default: those whose availability is `open`; `all`: every one): the score
+layer's piece is the best (`Score::best`, docs/inputs.md §6.11: of those whose spacing ties the
+finest's within `within`, the best availability in `score.toml`'s order, then the best score, then
+the first id), a metric layer's the one of the best 0–1 value of that metric (the finest spacing,
+bare earth over surface, the newest year, the best stated accuracy; a piece not stating it takes
+no part; of equal values, the best availability, then the first id); none passing, transparent
+(`Theme::best`). The pixel carries that piece's value of the layer (`Theme::code`; docs/formats.md,
+Data available, the encoding): a metric's own value, on its own scale (the spacing and the accuracy
+as log10 of metres, the year as it is, bare earth 1 and surface 0, their `values`); the score's on
+the primary's axis, the spacing whose 0–1 value is the score (`Score::primary_of`: worst ×
+(best ÷ worst)^score, so a 1 m grid stating nothing else is drawn at 1 m, and its tie-break moves it
+at most `share` of the scale's four decades, a factor of 1.2, under `within`). So the score layer
+reads in metres like the spacing layer and differs from it in two ways only: the piece drawn (where
+a tie is decided by availability, kind, accuracy or year, not by the spacing alone) and the
+tie-break's shift within the factor. The colours are the app's (below). The score is read at each
+sync, so a weight changed draws within a minute and builds nothing again. `Score::of` and
+`Score::ranked` are producers/extents/score.py's `score` and `ranked`: tested on score.toml's own
+examples and more pieces, and on groups of pieces with their availability (`score_pieces.json`),
+against what score.py makes of them (`score_expected.json`, made by `score.py <score.toml> --json
+<pieces.json>`; producers/extents/test_extents.py makes it again and checks the file), to 10⁻¹²
+and to the three digits score.py shows, and each group in score.py's order. `/api/available/<theme>`
+describes each layer's scale for the app's axis (docs/formats.md). The server's tests
+(crate::available's): each layer's best piece under the switch, an open piece winning a tie on
+every layer that ranks it, each layer's value and scale from the real `score.toml`, one still
+holding the retired colour fields served the same, the tiles' values (inside a piece and
+transparent outside it) and the click.
 
-**Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile coloured by the
-server as above (PNG; 204 where no piece is, or none passes the switch), so the map
-draws a plain raster layer and holds no logic of its own; a tile not stored is its ancestor's part
-over it (codecs::available::tile_at). Past 85.05°, `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y`
-(z0–3 of the pole's grid). `<set>`: `best` (`built` is planned). `<layer>`: `score` or a metric of
-the theme's score; anything else, or past the zooms, 404. Its ETag names the layer's packs' version,
-the extents' version, the layer, the switch and the tile; `?v=` with the version `/api/meta` gives
-the layer (`available-<theme>`, `available-<theme>-<n|s>`: the packs' version and the extents'
-version's hash) is cached for good while it's current. `/api/available/<theme>/<set>?lng&lat&avail`:
-the pieces at a point (the z12 pixel holding it; past 85.05°, the pole's z3 pixel), best first, each
-with its source's name, credit, licence and link, its metrics, their 0–1 values and its score, its
-availability, extent class and what its extent was read from (§6.11's `read`: its block's reading,
-with the method, its grain, its date). `/api/available/<theme>`: the score's metrics, scales and
-weights as declared, each layer's legend, and the sources with their pieces counted by
-class (those of class `unknown` named here, as they're drawn nowhere). Away from the NAS a tile
-partly downloaded is cut to the downloads as every layer's (its pixels outside hold no piece).
+**Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile of values as
+above (PNG; 204 where no piece is, or none passes the switch); a tile not stored is its ancestor's
+part over it (codecs::available::tile_at). Past 85.05°,
+`/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y` (z0–3 of the pole's grid). `<set>`:
+`best` (`built` is planned). `<layer>`: `score` or a metric of the theme's score; anything else, or
+past the zooms, 404. Its ETag names the layer's packs' version, the tiles' format and the extents'
+version, the layer, the switch and the tile; `?v=` with the version `/api/meta` gives the layer
+(`available-<theme>`, `available-<theme>-<n|s>`: the packs' version, the tiles' format and the
+extents' version's hash) is cached for good while it's current. The format in the version means a
+page made for another format reads the theme again at the new version, so one too old to draw it
+shows nothing (it reads no layer from the description) until it's loaded again.
+`/api/available/<theme>/<set>?lng&lat&avail`: the pieces at a point (the z12 pixel holding it; past
+85.05°, the pole's z3 pixel), best first (`Score::ranked`: the best, then the best of the rest; a
+piece with no score last), each with its source's name, credit, licence and link, its metrics,
+their 0–1 values and its score, its availability, extent class and what its extent was read from
+(§6.11's `read`: its block's reading, with the method, its grain, its date); `painted`, the piece
+each layer draws there. `/api/available/<theme>`: the score's metrics, scales, weights and
+availability order as declared, each layer's scale (docs/formats.md), and the sources with their
+pieces counted by class (those of class `unknown` named here, as they're drawn nowhere). Away from
+the NAS a tile partly downloaded is cut to the downloads as every layer's (its pixels outside hold
+no piece).
 
-**In the app** (task #1348). A section "Data available" in the layers panel, shown once the
+**In the app** (tasks #1348, #1373). A section "Data available" in the layers panel, shown once the
 catalogue lists a theme (`available-<theme>`), its switch the group's: each theme's layers as
 `/api/available/<theme>` lists them, the score's first under its label (score.toml's: "Best data"),
 one shown at a time; the set (`best` now; its control appears once a theme lists two: `built`,
-task #1349, is one more id in `sets`, named by the theme's `labels`); the availability switch (Open data | All data); the
-opacity (85 % by default: the classes stay apart over the dark land); and the legend of the layer
-shown, by its `legend`: classes as a swatch each, finest first, the score's split from its own
-colour to its `shaded` one with a caption naming `shaded_by`'s metrics by their labels; words a swatch each; a ramp
-as a gradient with its stops' labels in the metric's unit; then a line saying that zoomed out a
-pixel shows the best data anywhere under it. Nothing in the app is written per metric: labels,
-units, legends and colours are the server's, so a new metric or palette needs no app change. The
-description is read again at each new version of the theme (meta's `available-<theme>`), and the
-tiles' URLs carry that version. The settings (`available`: on, theme, layer, set, avail, opacity)
-are a profile's, as every layer's: their values when a profile lacks them come from
-`web/default-profile.json` alone (task #1199; the group off, open data only), and a link carries
-them as `av=`. The layer is a raster source and layer (`available`) over the hill-shading and
-under the map's lines and labels, its tiles overzoomed past the theme's finest zoom, draped with the
-3D terrain; past 85.05° the polar caps (polarglobe.ts) draw the pole's tiles (z0–3) over their
-ground as an overlay, a cap's finer tiles taking their part of the overlay's z3 tile (only where a
-pole has a cap: the south today). A click while the group is on, when it hits no landmark or ferry,
-opens a panel of the pieces there (`/api/available/<theme>/<set>`), best first: each source's name,
-its piece's, its score, the metrics it states (with their units, and a class as published), its
-availability and extent class in the words of the theme's `labels` (the id where it gives none),
-its licence and a link to the source; the piece the layer shown paints is marked, as the answer's
-`painted` names it (the app ranks nothing itself). Roads and areas aren't picked while the group is
-on, and the panel says so. In the code: `web/src/available.ts`
-(the catalogue's themes, the description read, the legends, the URLs, the click's rows, the link
-field: no MapLibre, tested by `web/test/available.test.ts`), `ctl/available.ts` (the controller),
-`ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only part that is
-MapLibre's (the raster layer); in the native port it is a ground layer painted into the drapes
-(docs/native-port.md, Land).
+task #1349, is one more id in `sets`, named by the theme's `labels`); the availability switch (Open
+data | All data); the opacity (85 % by default); and the layer's colour map: the sidebar's own
+control (ui/scale.ts ScaleControls, as the terrain tint's, the depth's and the roads'), over the
+layer's values in view (sampled from the tiles drawn, each sample by the ground it stands for:
+terrainstats.ts), with continuous colours: the histogram and the range's handles, Auto (the
+percentiles of the area with data in view), Lock, Full (the values present), Equalize, the ramp
+and its reverse, the low end's fade and its span, and the highlight above or below a value or the
+low end. Its axis is the layer's own (available.ts `axisOf`): a log layer's values are log10 of
+its unit's, so the control's even axis is a log one, labelled in the unit (0.5 m … 90 m) with
+ticks at 1, 2 and 5 times the powers of ten; the year's whole years; bare earth or surface, two
+words, is a two-stop ramp: the control has no categorical mode, so the range is fixed to the two
+words' values (its caption says so) and each pixel takes one end's colour. Each layer keeps its own
+colour map (`scales`, by layer id, a profile's like every layer's); a layer shown the first time
+takes the profile's `colours`, its palette reversed where the layer's better end is its low one,
+so the best data takes the ramp's same end on every layer (viridis's bright end by default). Nothing
+in the app is written per metric: labels, units and scales are the server's, so a new metric needs
+no app change. The description is read again at each new version of the theme (meta's
+`available-<theme>`), and the tiles' URLs carry that version. The settings (`available`: on, theme,
+layer, set, avail, opacity, `colours`, `scales`) are a profile's, as every layer's: their values
+when a profile lacks them come from `web/default-profile.json` alone (task #1199; the group off,
+open data only), and a link carries the first six as `av=`. The layer is a raster-dem source of the
+tiles (Terrarium) and a colour-relief layer (`available`) over the hill-shading and under the map's
+lines and labels, coloured on the GPU by the ramp's stops (available.ts `rampStops`: the colour map
+at even steps over the range, clamped outside it, a pixel with no value transparent, the
+highlight's edge sharp at the tiles' precision), nearest-sampled (a pixel is one piece's value,
+never a blend), its tiles overzoomed past the theme's finest zoom, draped with the 3D terrain; past
+85.05° the polar caps (polarglobe.ts) draw the pole's tiles (z0–3) over their ground as an overlay
+of values coloured by the same layer's ramp, a cap's finer tiles taking their part of the overlay's
+z3 tile (only where a pole has a cap: the south today). The values in view don't count the caps'
+part. A click while the group is on, when it hits no landmark or ferry, opens a panel of the pieces
+there (`/api/available/<theme>/<set>`), best first: each source's name, its piece's, its score, the
+metrics it states (with their units, and a class as published), its availability and extent class
+in the words of the theme's `labels` (the id where it gives none), its licence and a link to the
+source; the piece the layer shown draws is marked, as the answer's `painted` names it (the app
+ranks nothing itself). Roads and areas aren't picked while the group is on, and the panel says so.
+In the code: `web/src/available.ts` (the catalogue's themes, the description read, the axes, the
+colour maps, the ramp's stops, the URLs, the click's rows, the settings: no MapLibre, tested by
+`web/test/available.test.ts`), `ctl/available.ts` (the controller: the values in view, the range,
+the colours), `ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only
+part that is MapLibre's (the raster-dem source and colour-relief layer); in the native port it is a
+ground layer painted into the drapes from the same tiles and stops (docs/native-port.md, Land).
 
 ## 15. The region layer (task #1129)
 
@@ -1297,3 +1317,31 @@ hovered in the panel: the borders with its region, or its folder's regions, on o
 `borderOf`), both draped under the roads; the names from the listing's `label` points as a
 country's name. The footer asks `/api/regions/at` for the point hovered, one ask at a time, and
 tells the smallest region there by its box (`pick`); the panel frames the map on a row's `bbox`.
+||||||| parent of f0c304e97 (Task #1373: docs: the tiles carry values (Terrarium, on each layer's scale), the app colours them through the sidebar's colour-map control, and an open source wins a tie (score.toml's availability order); the retired colour fields read as absent, warned by ex-retired)
+task #1349, is one more id in `sets`, named by the theme's `labels`); the availability switch (Open data | All data); the
+opacity (85 % by default: the classes stay apart over the dark land); and the legend of the layer
+shown, by its `legend`: classes as a swatch each, finest first, the score's split from its own
+colour to its `shaded` one with a caption naming `shaded_by`'s metrics by their labels; words a swatch each; a ramp
+as a gradient with its stops' labels in the metric's unit; then a line saying that zoomed out a
+pixel shows the best data anywhere under it. Nothing in the app is written per metric: labels,
+units, legends and colours are the server's, so a new metric or palette needs no app change. The
+description is read again at each new version of the theme (meta's `available-<theme>`), and the
+tiles' URLs carry that version. The settings (`available`: on, theme, layer, set, avail, opacity)
+are a profile's, as every layer's: their values when a profile lacks them come from
+`web/default-profile.json` alone (task #1199; the group off, open data only), and a link carries
+them as `av=`. The layer is a raster source and layer (`available`) over the hill-shading and
+under the map's lines and labels, its tiles overzoomed past the theme's finest zoom, draped with the
+3D terrain; past 85.05° the polar caps (polarglobe.ts) draw the pole's tiles (z0–3) over their
+ground as an overlay, a cap's finer tiles taking their part of the overlay's z3 tile (only where a
+pole has a cap: the south today). A click while the group is on, when it hits no landmark or ferry,
+opens a panel of the pieces there (`/api/available/<theme>/<set>`), best first: each source's name,
+its piece's, its score, the metrics it states (with their units, and a class as published), its
+availability and extent class in the words of the theme's `labels` (the id where it gives none),
+its licence and a link to the source; the piece the layer shown paints is marked, as the answer's
+`painted` names it (the app ranks nothing itself). Roads and areas aren't picked while the group is
+on, and the panel says so. In the code: `web/src/available.ts`
+(the catalogue's themes, the description read, the legends, the URLs, the click's rows, the link
+field: no MapLibre, tested by `web/test/available.test.ts`), `ctl/available.ts` (the controller),
+`ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only part that is
+MapLibre's (the raster layer); in the native port it is a ground layer painted into the drapes
+(docs/native-port.md, Land).
