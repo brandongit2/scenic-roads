@@ -871,7 +871,7 @@ class Chains(unittest.TestCase):
     def test_an_aia_address_is_plain_http_to_a_public_host(self):
         # (Read before the certificate naming it is verified: never this Mac's files or network.)
         for url in ("file:///etc/passwd", "https://127.0.0.1/i.der", "ftp://ca.test/i.der", "http://127.0.0.1/i.der",
-                    "http://localhost:8077/api/c/items", "http://10.0.0.1/i.der", "http://192.168.1.2/i.der",
+                    "http://localhost:9/api/c/items", "http://10.0.0.1/i.der", "http://192.168.1.2/i.der",
                     "http://169.254.169.254/latest", "http://[::1]/i.der", "http://[fe80::1]/i.der"):
             with self.assertRaises(extents.ChainError, msg=url):
                 extents.aia_get(url)

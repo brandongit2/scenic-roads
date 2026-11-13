@@ -1956,7 +1956,9 @@ some 120 million positions took hours to dissolve unsimplified), dissolved in th
 own CRS (a tile index's squares become their outline), brought to longitude and latitude with
 their edges densified, cut at the antimeridian and closed along 90° round a pole
 (`extents.ring_region`), gaps narrower than half the tolerance closed (a quarter's buffer out and
-back: the service's generalisation of neighbouring features apart leaves no wider ones),
+back: the service's generalisation of neighbouring features apart leaves no wider ones; a narrow
+gap of the publisher's own that the generalisation widens in places can close only at its ends,
+leaving a hole: two, of 0.4 km² in all, in the BEV's Styrian flight areas of 2010-11),
 simplified to the tolerance with the topology kept, holes and specks smaller than the tolerance
 squared dropped, coordinates to 5 decimals (about a metre). So an outline is within one and three quarters
 tolerances of its features' (the tolerance taken in degrees of latitude: east-west it's tighter
@@ -2154,7 +2156,7 @@ Tabasco), whose areas aren't stated or have no outline to claim; NOAA Digital Co
 indexes (its surveys are in `usiei`, at the inventory's outlines); Haiti's 12 southern 50 km tiles' masks (no overviews: 2.4 GB read whole; claimed by department instead).
 
 **Europe** (read 13 Nov 2026; England's, swissALTI3D's, PST-A's, mainland Portugal's, RGE ALTI's
-and the BKG's indexes on the Mac mini, the rest on the M1): 119 declarations, 2,502 pieces, 2,469
+and the BKG's indexes on the Mac mini, the rest on the M1): 119 declarations, 2,600 pieces, 2,567
 with an extent. Areas are checked in EPSG:3035 against the publisher's figure or the tiles' count
 times their area.
 
@@ -2176,7 +2178,7 @@ times their area.
 | `fr-litto3d`, `fr-craig-lidar`, `fr-strasbourg-lidar`, `fr-lyon-lidar` | 5; 28; 1; 1 | `index`; `files` | Litto3D's campaigns' 5 km packages (`wfs`), the CRAIG's 2021 tiles by zone (`file`, a GeoPackage), Strasbourg's 2025 and Lyon's 2023 0.5 m COGs (`raster`, 64 m overviews) |
 | `es-pnoa` | 18: the MDT 0.5 m sheets by UTM zone and year (16); MDT02 and MDT05 | `index`; `claimed` | `file`: the CNIG's auxiliary zip of 16 sheet shapefiles, 29,494 sheets, 248,078 km² (each piece within 0.1 % of its sheets' union); the 2 m and 5 m products over Spain as their records state ("cobertura completa") |
 | `es-ct-icgc`, `es-an-rediam`, `es-na-mde`, `es-md-madrid` | 2; 1; 3; 2 | `files`; `index`; `service` | Catalonia's 0.5 m and Barcelona's 0.25 m COGs and Andalucía's 1 m (a 203 GB COG, its 256 m overview) by `raster`; Navarre's 0.5 m by its 1:10,000 sheets (`file`); Madrid's 0.1 m surface model's tiles and its 2019 DTM's KMZ (`file`) |
-| `no-hoydedata` | 1,546: Norway's projects by cell (0.25, 0.5, 1 m) and year, 463 restricted (closed: claimed) | `index`; `claimed` | `arcgis`: hoydedata.no's DTM ImageServer catalogue (its fill items left out), 62 MB, 4 min on the M1; 4.1 MB at a 200 m tolerance (8.0 MB at 50 m: 1,546 irregular block outlines; a coarser tolerance drops corridor projects as specks); 430,716 km² against the items' stated 432,284 |
+| `no-hoydedata` | 1,547: Norway's projects by cell (0.25, 0.5, 1 m) and year, 463 restricted (closed: claimed) | `index`; `claimed` | `arcgis`: hoydedata.no's DTM ImageServer catalogue (its fill items left out), 62 MB, 4 min on the M1; 4.1 MB at a 200 m tolerance (8.0 MB at 50 m: 1,547 irregular block outlines; a coarser tolerance drops corridor projects as specks); 430,716 km² against the items' stated 432,284 |
 | `se-markhojdmodell`, `se-goteborg-hojdmodell` | 17; 1 | `index` | Lantmäteriet's STAC (`dtm-cog`, 5,004 10 km tiles by year, 473,195 km²); Gothenburg's 0.5 m tile index (a zipped shapefile) |
 | `fi-nls-km2`, `fi-nls-lidar` | 18; 7 | `index`; `claimed` | the NLS's OGC API collections: the 2 m model's sheets by year (Åland's whole), the paid 5 p lidar's areas with products by year |
 | `cz-cuzk-dmr4g`, `sk-lls` | 1; 58 | `index`; `service` | the ČÚZK's ATOM feed (16,301 5 km² sheets of DMR 4G, 5 m); Slovakia's lot outlines (`file`, cp1250 shapefiles), cycle 1's 1 m and cycle 2's 0.5 m lots by year, each within 0.3 % of its stated area |
