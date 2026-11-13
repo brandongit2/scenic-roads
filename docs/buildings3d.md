@@ -363,7 +363,6 @@ The aim: buildings at every zoom looking as full detail would, rendered at high 
 downsampled. Builder `bld::bld::field` (in `bldtiles` and `bldfield-lo`); renderer
 `web/src/bldfield.ts` with `bldfield.worker.ts`, loaded by `import()` from `ctl/buildings.ts` where the
 map has the layer `buildings-field` (`?bldfield=off`: off; `?bldfield=<url>`: tiles from there).
-`web/src/bldcmp.ts` (`?bldcmp`) and `tools/bldcheck/` compare it with full detail.
 
 **What full detail shrinks to.** Once a building is under a pixel, a pixel holds a share of roofs, a
 share of visible walls (more the more tilted the view) and ground: sums over buildings. Per texel
@@ -449,7 +448,7 @@ equator).
 - Debug and tuning switches: `?fdbg=` (43: each pixel's steps, cells walked and fragments, added up
   in the frame), `?fstx=`, `?fopt=` (default 3).
 
-**Quality and cost** (`tools/bldcheck`, against full detail shrunk in linear light, σ 8 px blur):
+**Quality and cost** (measured against full detail shrunk in linear light, σ 8 px blur):
 within about 1 L* of full detail in a district's tone from z13 to z7, the CN Tower standing as a
 spike to z9; ~0.6–1.7 ms of GPU a frame on the M4 at 2880 × 1626 (budget 2 ms). On the M1 Pro at the
 same size, Tokyo at zoom 14 and 60° (the frame's GPU time, task
@@ -464,7 +463,7 @@ Tokyo 56 → 36), ~8 ms with `?bldfield=off`; a still view repainted, with the c
 - Over high ground the map's zoom (measured from a sea-level pivot) understates how close the view
   is, so mesh tiles and the field are coarser than they should be in mountain towns.
 - Not done: the source colouring in the field (the owner's choice: a fourth channel, or plain); a measured forecast cost for
-  `bldfield-lo`; measurements on the iPad (`__bld.frames(120)` in the console).
+  `bldfield-lo`; measurements on the iPad.
 
 #### 4.8.1 The model's choices
 

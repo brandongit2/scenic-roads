@@ -87,6 +87,11 @@ const FETCHES = 6;
  * whatever they take). 1,024 MB on a desktop, 512 on a touch device (the iPad's Safari gives a tab
  * ~4 GB, shared with the rest of the map), told apart as the app tells them (`pointer: coarse`). */
 const GPU_CACHE_TARGET_MB = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 512 : 1024;
+/** The level drawn: ⌊zoom⌋ + this at the view's centre (a texel a device pixel at 2×). */
+const LEVEL_BIAS = 1;
+/** MapLibre's wall normals face inward of the ring as the tiles wind it (checked against the
+ * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
+const WALL_SIGN = -1;
 /** MapLibre's transform (its camera's, in v6). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 /** A number from the page's URL, or the default where it's absent or not finite. */
@@ -342,7 +347,6 @@ uniform float u_dRoof;
 uniform vec4 u_dWallA;   // fill-extrusion's directional term for a wall facing each of 8 directions (22.5° + 45° k from east, toward south)
 uniform vec4 u_dWallB;
 uniform float u_opacity;
-uniform int u_linear;
 uniform vec3 u_bg;     // the map's land colour (stored values)
 uniform highp sampler2D u_scene;   // the frame's depth so far (the fork's sceneDepth)
 uniform int u_sceneOn;
@@ -447,7 +451,7 @@ void main() {
     }
   }
   float t0 = 0.0;
-  // The box (a stand-in's clip, the comparison's box: u_box, tile units): the march reads the field
+  // The box (a stand-in's clip: u_box, tile units): the march reads the field
   // only at points in it, so a ray that never comes into it shows nothing (discarded at once: a
   // loading tile's ancestor is drawn whole for each square it stands in for), and the cells after it
   // leaves it add nothing (the march stops there). (A margin of a tile unit: no step in it is lost.)
@@ -600,7 +604,7 @@ ${STEP_END}
   float a = 1.0 - T;
   vec3 b = toSrgb(cLin / a);   // (the surfaces' colour, their light's mean)
   float al = a * u_opacity;
-  if (u_linear == 1) {
+  {
     vec3 g0 = u_bg;
 #ifdef OPT_PMEAN
     // (as MapLibre shows the hits, from their mean colour: one conversion a fragment, not two a hit)
@@ -696,7 +700,6 @@ interface FTile {
   elev: WebGLBuffer | null;
   vao: WebGLVertexArrayObject | null;
   elevFor: string;
-  bytes: number;
   /** The class layers held (the roof ground's). */
   layers: number;
   /** Its textures' and buffers' GPU memory (bytes, about). */
@@ -727,19 +730,8 @@ export class FieldLayer implements CustomLayerInterface {
   opacity = 0.85;
   hk = 1;
   on = true;
-  /** The level drawn: ⌊zoom⌋ + this at the view's centre (1: a texel a device pixel at 2×; more, a
-   * reference drawn as at a closer zoom: bldcmp.ts). */
-  levelBias = 1;
-  /** Mixed with what's under it in linear light (as full detail shrunk), else as stored values. */
-  linear = true;
-  /** Only the buildings in this box (west, south, east, north; the comparison's), or all. */
-  box: [number, number, number, number] | null = null;
   /** The meshes' zoom (MapLibre's z14 tiles hold every building: the field isn't drawn under them). */
   maxZoom = 14;
-  /** The meshes drawn (off, the comparison's field alone: drawn everywhere). */
-  meshOn = true;
-  /** (diagnosis: the class textures read nearest, not filtered) */
-  nearest = false;
   /** The frame's depth read (the fork's sceneDepth). */
   readsSceneDepth = true;
   dbg = urlNum('fdbg', 0);
@@ -764,17 +756,9 @@ export class FieldLayer implements CustomLayerInterface {
   }
   private lutTex: WebGLTexture | null = null;
   private lutFor: Uint8Array | null = null;
-  /** The tiles drawn in the last frame, and GPU time (ms) of the last timed frames. */
-  drawn: string[] = [];
-  gpuMs: number[] = [];
-  timing = false;
-  /** MapLibre's wall normals face inward of the ring as the tiles wind it (checked against the
-   * meshes: with +1 the field's walls were lit from the wrong side, a gradient across the view). */
-  wallSign = -1;
   /** The march's steps no shorter than this many texels (`?fstx=`; 0: a pixel's footprint alone;
    * 2 by default: one-texel steps cost 1.2 ms more at Manhattan 70° on the quiet Mac). */
   stepTexel = urlNum('fstx', 2);
-  lastTrans = -1;
   /** The march's cost cuts, compiled in (`?fopt=`, bits; both by default): 1 the switches (debug
    * views, colour by height, linear mixing, the steps' least length) as constants;
    * 2 the hits as MapLibre shows them, from their mean colour, not summed a hit (−0.76 and −0.30 ms at
@@ -918,7 +902,6 @@ export class FieldLayer implements CustomLayerInterface {
   private lastKey = '';
   /** Frames the view has moved for running (the still view's cache is freed after CACHE_FREE_FRAMES). */
   private moving = 0;
-  private timer: { ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null; q: WebGLQuery[] } = { ext: null, q: [] };
 
   /** `url`: the tiles' template ({z}/{x}/{y}), else the server's. */
   constructor(private url: string | null = null) {
@@ -936,7 +919,6 @@ export class FieldLayer implements CustomLayerInterface {
   onAdd(map: MLMap, gl: WebGL2RenderingContext) {
     this.map = map;
     this.gl = gl;
-    this.timer.ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     this.worker = new Worker(new URL('./bldfield.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = (e: MessageEvent<FieldOut>) => this.received(e.data);
     // (One listener a layer added: elevations follow the terrain as its tiles arrive.)
@@ -1018,8 +1000,8 @@ export class FieldLayer implements CustomLayerInterface {
       Array.from(vp), opts.fov, Array.from(opts.modelViewProjectionMatrix), Array.from(pd.mainMatrix as ArrayLike<number>), Array.from(pd.fallbackMatrix as ArrayLike<number>),
       pd.projectionTransition, Array.from(opts.depthRangeFor3D), opts.shaderData.variantName, map.getBearing(),
       fogUniforms(map), style.light.getCartesianPosition(), style.light.properties.get('anchor'), style.light.properties.get('intensity'), style.light.properties.get('color'),
-      this.land, bgl?.paint?.get('background-color'), this.colour, this.opacity, this.hk, this.tmin, this.stepTexel, this.linear, this.dbg, this.opt, this.lutGen, this.box,
-      this.skip, this.wallSign, this.nearest, draw.map((e) => [e.t.key, e.clip, e.t.rev, e.t.mask, e.her ? 1 : 0]),
+      this.land, bgl?.paint?.get('background-color'), this.colour, this.opacity, this.hk, this.tmin, this.stepTexel, this.dbg, this.opt, this.lutGen,
+      this.skip, draw.map((e) => [e.t.key, e.clip, e.t.rev, e.t.mask, e.her ? 1 : 0]),
     ]);
   }
 
@@ -1087,17 +1069,10 @@ export class FieldLayer implements CustomLayerInterface {
     return out;
   }
 
-  /** Tiles still loading (for the comparison harness). */
-  pending(): number {
-    let n = 0;
-    for (const t of this.tiles.values()) if (t.state === 'loading' || t.state === 'queued') n++;
-    return n;
-  }
-
   /** The field's program for MapLibre's projection and the switches; null while it links (glprog.ts). */
   private program(sd: CustomRenderMethodInput['shaderData']): Prog | null {
     const o = this.opt & 3;
-    const spec = o & 1 ? `|${this.dbg}|${!!this.heightLut}|${this.linear}|${this.stepTexel}` : '';
+    const spec = o & 1 ? `|${this.dbg}|${!!this.heightLut}|${this.stepTexel}` : '';
     const key = `${sd.variantName}|${o}${spec}`;
     let pr = this.progs.get(key);
     if (pr) return pr();
@@ -1107,7 +1082,7 @@ export class FieldLayer implements CustomLayerInterface {
     if (o & 1) {
       // (the switches as constants: their other ways compiled out)
       const c: [string, string][] = [['uniform int u_dbg;', `#define u_dbg ${this.dbg | 0}`],
-        ['uniform int u_byHeight;', `#define u_byHeight ${this.heightLut ? 1 : 0}`], ['uniform int u_linear;', `#define u_linear ${this.linear ? 1 : 0}`],
+        ['uniform int u_byHeight;', `#define u_byHeight ${this.heightLut ? 1 : 0}`],
         ['uniform float u_stepTexel;', `#define u_stepTexel ${Number(this.stepTexel).toFixed(4)}`]];
       for (const [a, b] of c) {
         if (!fs.includes(a)) throw new Error(`bldfield: ${a} not in the shader`);
@@ -1117,7 +1092,7 @@ export class FieldLayer implements CustomLayerInterface {
     if (o & 2) fs = fs.replace('#version 300 es\n', '#version 300 es\n#define OPT_PMEAN\n');
     pr = linkLater(this.map, gl, head + VS, fs, (p) => {
       const u: Record<string, WebGLUniformLocation | null> = {};
-      for (const n of ['u_stepTexel', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_linear', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
+      for (const n of ['u_stepTexel', 'u_gmax', 'u_cmask', 'u_dRoof', 'u_dWallA', 'u_dWallB', 'u_opacity', 'u_bg', 'u_trans', 'u_top', 'u_gmin', 'u_camTile', 'u_c0', 'u_c1', 'u_c2', 'u_c3', 'u_c4', 'u_mask', 'u_tmin', 'u_top32', 'u_elev', 'u_dbg', 'u_byHeight', 'u_lut', 'u_pixAngle', 'u_hk', 'u_box', 'u_lightintensity', 'u_colorvalue', 'u_colour', 'u_lightcolor',
         'u_dg', 'u_her', 'u_herOn', 'u_scene', 'u_sceneOn', 'u_update', 'u_was', 'u_invProj', 'u_vp', 'u_depthRange', 'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix', ...FOG_UNIFORMS]) u[n] = gl.getUniformLocation(p, n);
       return { p, u };
     });
@@ -1131,9 +1106,9 @@ export class FieldLayer implements CustomLayerInterface {
    * (a slice of one, where the source isn't kept whole) by its z14 ancestor. */
   meshTiles(): Set<string> {
     const out = new Set<string>();
-    // (Its layer's least zoom too, where one is set: the comparison's references lower it.)
+    // (Its layer's least zoom too, where one is set.)
     const layer = this.map.getLayer('buildings');
-    if (!this.meshOn || !layer || this.map.getLayoutProperty('buildings', 'visibility') === 'none' || this.map.getZoom() < (layer.minzoom ?? 0)) return out;
+    if (!layer || this.map.getLayoutProperty('buildings', 'visibility') === 'none' || this.map.getZoom() < (layer.minzoom ?? 0)) return out;
     const tm = (this.map as unknown as { style?: { tileManagers?: Record<string, { _inViewTiles?: { getAllTiles?: () => { state: string; tileID: { canonical: { z: number; x: number; y: number } } }[] } }> } }).style?.tileManagers?.bld;
     for (const t of tm?._inViewTiles?.getAllTiles?.() ?? []) {
       const c = t.tileID.canonical;
@@ -1177,7 +1152,7 @@ export class FieldLayer implements CustomLayerInterface {
     }
     const y0 = mercYClamped(b.getNorth()), y1 = mercYClamped(b.getSouth());
     const out: FTile[] = [];
-    const most = Math.min(LEVEL_MAX, Math.floor(zoom + this.levelBias));
+    const most = Math.min(LEVEL_MAX, Math.floor(zoom + LEVEL_BIAS));
     const visit = (z: number, x: number, y: number) => {
       const n = 2 ** z;
       const tx0 = x / n, tx1 = (x + 1) / n, ty0 = y / n, ty1 = (y + 1) / n;
@@ -1190,7 +1165,7 @@ export class FieldLayer implements CustomLayerInterface {
       // measured from a sea-level pivot: over high ground the view is closer than it says).
       const dx = Math.max(tx0 - cam.x, 0, cam.x - tx1), dy = Math.max(ty0 - cam.y, 0, cam.y - ty1);
       const d = Math.hypot(dx, dy, Math.max(cam.z - groundM, 1e-12));
-      const want = Math.min(most, Math.floor(zoom + this.levelBias + Math.log2(centreDist / d)));
+      const want = Math.min(most, Math.floor(zoom + LEVEL_BIAS + Math.log2(centreDist / d)));
       if (z < want || holds.has(key)) {
         for (const [i, j] of [[0, 0], [1, 0], [0, 1], [1, 1]]) visit(z + 1, x * 2 + i, y * 2 + j);
       } else out.push(this.tile(z, x, y));
@@ -1210,7 +1185,7 @@ export class FieldLayer implements CustomLayerInterface {
     const key = `${z}/${x}/${y}`;
     let t = this.tiles.get(key);
     if (!t) {
-      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', bytes: 0, gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre, rev: 0 };
+      t = { z, x, y, key, state: 'queued', tex: null, top32: null, cmask: null, cells: null, ibuf: null, nb: 32, orderKey: '', icount: 0, gmax: 0, top32cpu: null, texels: null, dgTex: null, dgc: null, dgFor: '', dgAsked: '', ee: null, eeVer: 0, elevFrame: 0, hullKey: '', layers: 0, mask: 0, top: 0, gmin: 0, elevTex: null, elev: null, vao: null, elevFor: '', gpu: 0, used: 0, fails: 0, retryAt: 0, herTex: null, herFor: '', herAsked: '', pre, rev: 0 };
       this.tiles.set(key, t);
       this.queue.push(t);
     } else if (t.state === 'failed' && performance.now() >= t.retryAt) {
@@ -1399,7 +1374,6 @@ export class FieldLayer implements CustomLayerInterface {
     t.tex = tex;
     t.mask = m.mask;
     t.top = Math.min(1000, m.top + 2);
-    t.bytes = m.bytes;
     t.gpu = gpu + 32 * 32 * 16 + (512 * 512 * 4) / 3;
     t.state = 'ready';
   }
@@ -1579,7 +1553,6 @@ export class FieldLayer implements CustomLayerInterface {
   }
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
-    this.drawn = [];
     this.elevLeft = 0;
     this.linking = false;
     if (!this.on) {
@@ -1706,12 +1679,6 @@ export class FieldLayer implements CustomLayerInterface {
       map.triggerRepaint();
       return;
     }
-    const timed = this.timing && this.timer.ext;
-    let q: WebGLQuery | null = null;
-    if (timed) {
-      q = gl.createQuery()!;
-      gl.beginQuery(this.timer.ext!.TIME_ELAPSED_EXT, q);
-    }
     const { vp } = boundTarget(this.map, gl);
     // (each tile's heritage tint before anything is drawn: what the frame draws is then known)
     const tiles2 = draw.map(({ t, clip }) => ({ t, clip, her: this.herTexFor(t) }));
@@ -1720,7 +1687,7 @@ export class FieldLayer implements CustomLayerInterface {
     // and the cache over the frame. Otherwise straight into the frame.
     let cache: ReturnType<FieldLayer['cacheFor']> | null = null;
     let update = false;
-    if (this.cacheOn && scene && !timed) {
+    if (this.cacheOn && scene) {
       const key = this.frameKey(opts, vp, tiles2);
       const still = key === this.lastKey;
       this.lastKey = key;
@@ -1814,7 +1781,6 @@ export class FieldLayer implements CustomLayerInterface {
     gl.uniform1f(u.u_opacity, this.opacity);
     setFogUniforms(gl, u, fogUniforms(map));
     gl.uniform1f(u.u_stepTexel, this.stepTexel);
-    gl.uniform1i(u.u_linear, this.linear ? 1 : 0);
     {
       // (the land colour under the buildings: the background layer's)
       const bgl = (map as unknown as { style: { getLayer(id: string): { paint?: { get(k: string): { r: number; g: number; b: number; a: number } } } | undefined } }).style.getLayer('bg');
@@ -1881,7 +1847,6 @@ export class FieldLayer implements CustomLayerInterface {
       // the roofs' term and eight wall directions'.
       {
         const trans = this.dbg === 13 ? 0 : this.dbg === 14 ? 0.5 : pd.projectionTransition;
-        this.lastTrans = pd.projectionTransition;
         let LG = lp;
         if (trans > 0) {
           const sx = ((t.x + 0.5) / n) * Math.PI * 2 + Math.PI;
@@ -1898,7 +1863,7 @@ export class FieldLayer implements CustomLayerInterface {
         gl.uniform1f(u.u_dRoof, dirOf([0, 0, 1]));
         const w8 = Array.from({ length: 8 }, (_, q) => {
           const bb = (q + 0.5) * (Math.PI / 4);
-          const dn = dirOf([this.wallSign * Math.cos(bb), this.wallSign * Math.sin(bb), 0]), dp = dirOf([-this.wallSign * Math.cos(bb), -this.wallSign * Math.sin(bb), 0]);
+          const dn = dirOf([WALL_SIGN * Math.cos(bb), WALL_SIGN * Math.sin(bb), 0]), dp = dirOf([-WALL_SIGN * Math.cos(bb), -WALL_SIGN * Math.sin(bb), 0]);
           return this.dbg === 11 ? Math.max(dn, dp) : this.dbg === 12 ? 0.5 * (dn + dp) : dn;
         });
         gl.uniform4f(u.u_dWallA, w8[0], w8[1], w8[2], w8[3]);
@@ -1908,22 +1873,16 @@ export class FieldLayer implements CustomLayerInterface {
       gl.bindTexture(gl.TEXTURE_2D, t.cmask);
       gl.uniform1f(u.u_gmin, t.gmin);
       {
-        // (the comparison's box, and a stand-in ancestor's clip: their intersection)
-        let bx = [-1e9, -1e9, 1e9, 1e9];
-        if (this.box) {
-          const [w, s, e, nn] = this.box;
-          const a = MercatorCoordinate.fromLngLat([w, nn]), c = MercatorCoordinate.fromLngLat([e, s]);
-          bx = [(a.x * n - t.x) * EXTENT, (a.y * n - t.y) * EXTENT, (c.x * n - t.x) * EXTENT, (c.y * n - t.y) * EXTENT];
-        }
-        if (clip) bx = [Math.max(bx[0], clip[0]), Math.max(bx[1], clip[1]), Math.min(bx[2], clip[2]), Math.min(bx[3], clip[3])];
+        // (a stand-in ancestor's clip, else everywhere)
+        const bx = clip ?? [-1e9, -1e9, 1e9, 1e9];
         gl.uniform4f(u.u_box, bx[0], bx[1], bx[2], bx[3]);
       }
       for (let k = 0; k < 5; k++) {
         gl.activeTexture(gl.TEXTURE4 + k);
         gl.bindTexture(gl.TEXTURE_2D, t.tex![k]);
         if (t.tex![k]) {
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, this.nearest ? gl.NEAREST_MIPMAP_NEAREST : gl.LINEAR_MIPMAP_LINEAR);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, this.nearest ? gl.NEAREST : gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         }
       }
       gl.uniform1i(u.u_mask, t.mask);
@@ -1964,7 +1923,6 @@ export class FieldLayer implements CustomLayerInterface {
 
         if (!(this.skip & 8) && t.icount) gl.drawElements(gl.TRIANGLES, t.icount, gl.UNSIGNED_INT, 0);
       }
-      this.drawn.push(t.key);
     }
     gl.bindVertexArray(null);
     gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -1997,17 +1955,6 @@ export class FieldLayer implements CustomLayerInterface {
     gl.depthMask(true);
     // (MapLibre's framebuffer bound again, as the fork asks of a layer that reads the scene's depth)
     if (scene) gl.bindFramebuffer(gl.FRAMEBUFFER, opts.framebuffer);
-    if (q && timed) {
-      gl.endQuery(this.timer.ext!.TIME_ELAPSED_EXT);
-      this.timer.q.push(q);
-    }
-    while (this.timer.q.length && this.timer.ext) {
-      const q0 = this.timer.q[0];
-      if (!gl.getQueryParameter(q0, gl.QUERY_RESULT_AVAILABLE)) break;
-      if (!gl.getParameter(this.timer.ext.GPU_DISJOINT_EXT)) this.gpuMs.push(gl.getQueryParameter(q0, gl.QUERY_RESULT) / 1e6);
-      gl.deleteQuery(q0);
-      this.timer.q.shift();
-    }
   }
 
   /** The loaded tiles the view wants or stands in with (the last frame's and this one's: any it can
@@ -2024,16 +1971,6 @@ export class FieldLayer implements CustomLayerInterface {
     return { allowM: 0, boxes };
   }
 
-  /** The tiles drawn in the last frame: their download (bytes, as stored) and textures (RGBA16F with
-   * mipmaps, MB). */
-  drawnSize(): { tiles: number; bytes: number; textureMB: number } {
-    let bytes = 0, gpu = 0;
-    for (const k of new Set(this.drawn)) {
-      bytes += this.tiles.get(k)?.bytes ?? 0;
-      gpu += this.tiles.get(k)?.gpu ?? 0;
-    }
-    return { tiles: new Set(this.drawn).size, bytes, textureMB: gpu / 1e6 };
-  }
 }
 
 /** A 4 × 4 matrix's inverse (column-major), or the identity where it has none. */

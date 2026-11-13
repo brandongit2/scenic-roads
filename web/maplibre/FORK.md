@@ -312,8 +312,7 @@ Hebrew, Latin with combining marks not precomposed), in two typefaces; the app's
   one frame of a pan over the lochs, 50–100 ms a time) and the drape pool was emptied every frame.
   `idle` comes at least 100 ms after the last camera change (a frame is scheduled for the hold's
   end, only while the hold alone keeps the map from idle; a map still loading waits for its tiles as
-  upstream), and so does everything that waits for it: the app's `idle` listeners and bldcmp's
-  waits.
+  upstream), and so does everything that waits for it: the app's `idle` listeners.
 - **Tile covers shared between sources** (`Style#_updateSources`, `TileManager#_coverMemo`): within
   one update, sources asking `coveringTiles` with the same options (tile size, zoom range, rounding,
   overscaling, content elevation, zoom function) share one answer (a copy each). The app's 28 sources

@@ -27,7 +27,7 @@ import { applyTrees } from './trees';
 import { Depth } from './depth';
 import { heritageChanged, heritagePoints, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, switchBuildings } from './buildings';
 import * as prefs from './prefs';
-import { Store, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, seed, toHash, type AppState } from './state';
+import { Store, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, toHash, type AppState } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setTerrainAreas, switchContours } from './terrain';
@@ -69,7 +69,6 @@ import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
-import { CMP, cmpState } from './bldcmp';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -113,7 +112,6 @@ async function main() {
   const pre = hasLink ? fromHash(location.hash, false, linkBase) : saved;
   const v = pre.view;
   // (The building comparison: the map fills the window, the panels under it.)
-  if (CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
   const map = new maplibregl.Map({
     container: 'map',
     style: { version: 8, sources: {}, layers: [] },
@@ -134,7 +132,6 @@ async function main() {
     centerClampedToGround: false,
     // Each tile's version is its pack's (a new catalogue re-requests only the tiles it changed).
     transformRequest: (url) => ({ url: packUrl(url) }),
-    ...(CMP ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(CMP.dpr ? { pixelRatio: CMP.dpr } : {}) } : {}),
   });
   // Shaders linked in the background (our MapLibre's Context.asyncPrograms, glprog.ts): by default
   // in Safari; `?ashader=1` or `0` sets it in any browser (for comparing).
@@ -169,7 +166,7 @@ async function main() {
   if (listing === FALLBACK) toast('The settings profiles didn\u2019t load: the built-in Default is shown, and profiles can\u2019t be changed');
   else if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
   const linked = hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
-  const store = new Store(CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
+  const store = new Store(linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
   profiles.use(activePid);
   history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())); // the address bar holds the restored state

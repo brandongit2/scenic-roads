@@ -172,8 +172,7 @@ the World zoomed out, a region, or the view). The map supports Chrome and Safari
   when the profiles don't answer within 5 s or there are none (nothing can be saved to a profile
   then), and what fills a setting a profile was saved without. A control's reset (double-click, ↺)
   goes back to the profile in use's value; Reset to defaults, at the foot of the panel, to the
-  Default profile. The building comparison (`?bldcmp`) draws over `web/default-profile.json`,
-  whatever the profiles.
+  Default profile.
 
 ## How the scenic metrics are computed
 

@@ -49,7 +49,6 @@ export type FieldOut =
       top32: Float32Array;
       /** The class mask pyramid: levels 512 … 1, one after the other. */
       cmask: Uint8Array;
-      bytes: number;
       heritage: Uint8Array | null;
       /** Each class texel held (a layer each, layer-major): its share's code (√f × 255) and its offset
        * to its buildings' centroid + 128 (x, y), 3 bytes: for its roof ground, once the elevations are
@@ -170,7 +169,7 @@ async function load(key: string, url: string): Promise<Extract<FieldOut, { empty
       cmask.set(l, at);
       at += l.length;
     }
-    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), cmask, bytes: b.length, heritage: tail.length ? tail.slice() : null, texels };
+    return { type: 'done', key, empty: false, classes, mask, top, top32: pool(32), cmask, heritage: tail.length ? tail.slice() : null, texels };
   } finally {
     inflight.delete(key);
   }

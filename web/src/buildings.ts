@@ -81,13 +81,7 @@ export { PLAIN };
 export const HEIGHT_DOMAIN: [number, number] = [0, 400];
 
 /** The tiles' URL (versioned: the catalogue's `buildings.tiles`). */
-export const buildingTiles = (): string => {
-  // PROTOTYPE (task #102): `?bldtiles=<url>` takes the tiles from another server, in the comparison
-  // mode only (`?bldcmp`, bldcmp.ts).
-  const q = new URLSearchParams(location.search);
-  const other = q.has('bldcmp') ? q.get('bldtiles') : null;
-  return other ? `${other}/{z}/{x}/{y}` : `${hostFor('buildings')}/tiles/buildings/{z}/{x}/{y}${ver('buildings.tiles')}`;
-};
+export const buildingTiles = (): string => `${hostFor('buildings')}/tiles/buildings/{z}/{x}/{y}${ver('buildings.tiles')}`;
 
 /** By height: the colour at height v (m) on the scale, faded toward the plain colour at its low
  * end (the low-end fade: extrusions have no per-building opacity), as an rgb() string. */

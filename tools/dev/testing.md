@@ -61,7 +61,7 @@ Not seen: a run through a shell function or alias, a script file, or a substitut
   - publish's clippy line.
   Every output goes whole to ~/Library/Logs/scenic/publish-tests-<time>.log; any failure stops the
   publish. Not run by publish: Python (producers/, dem/: check.sh only), doctests, the browser
-  checks in tools/check and tools/bldcheck that are not `*.test.mjs` (run by hand).
+  checks in tools/check that are not `*.test.mjs` (run by hand).
 
 ## Before reporting: tools/dev/check.sh (#273, 18 Oct)
 

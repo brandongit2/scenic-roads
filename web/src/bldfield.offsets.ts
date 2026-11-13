@@ -11,7 +11,7 @@
 // bound short of the whole tile holds every level; instead the march clamps a roof to its cell's
 // start: each cell's runs start at its tallest top plus its largest dg (its texels' and the texel
 // around them: what a level-0 read mixes), and a roof is never higher than that. So no run starts
-// below a roof, at any level (tools/bldcheck/offmip.mjs), and a coarse read near a building with more
+// below a roof, at any level (tools/check/offmip.mjs), and a coarse read near a building with more
 // lift lowers a roof a little at a distance instead. (A max-filtered chain would bound coarse reads
 // too, but needs its own texture and mipmaps built by hand, and then the roof would be the max, not
 // the mean.) Pure functions (the worker's, and the check's).

@@ -5,7 +5,6 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import type { Meta } from '../api';
 import { spread } from '../autofit';
-import { CMP, installCmp } from '../bldcmp';
 import type { FieldLayer } from '../bldfield';
 import { addBuildings, applyBuildings, heightColourFn, heritageChanged, onHeights, type HeightLook } from '../buildings';
 import { hexRgb } from '../palettes';
@@ -37,14 +36,10 @@ export class Buildings {
   private layers: LayersCard | null = null;
 
   /** The field starts loading where the catalogue has its layer (`buildings-field`); without it
-   * the meshes alone (z14), as before the field. Its comparison mode: bldcmp.ts. */
+   * the meshes alone (z14), as before the field. */
   constructor(private map: MLMap, private store: Store, meta: Meta, private host: BuildingsHost) {
     this.look = { range: [...store.s.buildings.height.range], cdf: null };
-    const atStart = this.wantField(meta) ? this.loadField() : null;
-    if (CMP) {
-      if (atStart) void atStart.then((f) => installCmp(map, f));
-      else installCmp(map, null);
-    }
+    if (this.wantField(meta)) void this.loadField();
     onHeights(map, (d) => {
       this.dist = d;
       if (host.styleReady() && store.s.buildings.colour === 'height') this.apply(store.s);
@@ -86,8 +81,7 @@ export class Buildings {
     this.addField();
   }
 
-  /** A new catalogue: the buildings once it has them, the field once it has its layer (not in the
-   * comparison mode: set up at start). */
+  /** A new catalogue: the buildings once it has them, the field once it has its layer. */
   catalogue(m: Meta) {
     const ready = this.host.styleReady();
     if (m.layers?.buildings && ready && !this.map.getSource('bld')) {
@@ -96,7 +90,7 @@ export class Buildings {
       heritageChanged(this.map, this.store.s.overlays.heritage);
       this.addField();
     }
-    if (!this.fieldReady && !CMP && this.wantField(m) && ready && this.map.getLayer('buildings')) {
+    if (!this.fieldReady && this.wantField(m) && ready && this.map.getLayer('buildings')) {
       this.loadField();
       this.addField();
     }
@@ -130,13 +124,11 @@ export class Buildings {
       field.opacity = b.opacity;
       field.hk = b.scale > 0 ? b.scale : Math.max(1, s.terrain.on ? s.terrain.exaggeration : 0);
       field.on = b.on && !b.flat && s.terrain.on;
-      // The plain colour (the comparison's own); by height, the meshes' colours (the field plain when
-      // coloured by source: the owner's call).
-      field.colour = hexRgb(CMP ? CMP.colour : b.plain);
-      if (!CMP) {
-        const hc = heightColourFn(b, this.look);
-        field.setHeightColour(hc?.key ?? '', hc?.colour ?? null);
-      }
+      // The plain colour; by height, the meshes' colours (the field plain when coloured by source:
+      // the owner's call).
+      field.colour = hexRgb(b.plain);
+      const hc = heightColourFn(b, this.look);
+      field.setHeightColour(hc?.key ?? '', hc?.colour ?? null);
     }
     this.layers?.buildings.updateHeights(this.dist, this.look);
   }

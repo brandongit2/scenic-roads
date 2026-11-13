@@ -15,7 +15,7 @@
 //  3. the hand-over's mesh tiles taken by their z14 tile, slices deeper than z14 too.
 // `--mutate nodilate` leaves the texel around a cell out of its largest roof ground: level-0 reads
 // then come out above, and the check fails. Exits 1 on a failure.
-//   node tools/bldcheck/offmip.mjs [--mutate nodilate | --mutate noclamp]
+//   node tools/check/offmip.mjs [--mutate nodilate | --mutate noclamp]
 import { roofGround, groundAt, shareOf, boxMip, meshKey } from '../../web/src/bldfield.offsets.ts';
 
 const mutate = process.argv.includes('--mutate') ? process.argv[process.argv.indexOf('--mutate') + 1] : '';
