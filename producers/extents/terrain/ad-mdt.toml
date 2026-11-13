@@ -1,0 +1,20 @@
+name = "MDT Model Digital del Terreny d'Andorra"
+credit = "Govern d'Andorra, Àrea de Cartografia"
+licence = "no open licence (\"Propietat intel·lectual exclusiva del Govern d'Andorra. Prohibida la reproducció total o parcial sense permís exprés de l'entitat propietària.\")"
+licence_url = "https://www.ideandorra.ad/Cataleg/srv/cat/q?any=MDT&fast=index&to=50"
+source = "https://www.ideandorra.ad/Cataleg/srv/cat/q?any=MDT&fast=index&to=50"
+theme = "terrain"
+availability = "login"
+notes = "The government's bare-earth model of the principality, \"en una malla contínua de 15m\" (also 50 m and 100 m), its catalogue record (IDE Andorra, created 2013, keyword 2003) covering the whole country (its box and its seven parishes). Its download application gives it free after the user enters their details and accepts its conditions of use (the conditions weren't read: a JavaScript application); the record states exclusive intellectual property, no reproduction without permission. Its extent is the country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its year isn't stated (the record's keyword 2003 isn't said to be its survey's). No lidar of Andorra was found; IGN's LiDAR HD and Catalonia's lidar stop at the border."
+
+[[piece]]
+id = "mdt"
+label = "MDT d'Andorra 15 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["AND"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 15

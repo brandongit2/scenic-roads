@@ -1,0 +1,20 @@
+name = "Relief de la Wallonie LiDAR 2021-2022"
+credit = "Service public de Wallonie (SPW)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://metawal.wallonie.be/geonetwork/srv/api/records/a004e570-99d6-4fe5-b83d-49b774409278/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Wallonia's 0.5 m bare-earth model (MNT) from the 2021-2022 lidar campaign (its record: 19 February 2021 to 5 March 2022), downloaded by province. Its extent is the campaign's tile index (RELIEF/LIDAR_MAILLES, \"Mailles 2021-2022\": 69,438 point-cloud tiles of 500 m, the clouds the MNT is made from), by the year of each tile's last point (`DATE_LAST`; some tiles were flown in December 2020). The 2013-2014 MNT (1 m) it replaces is left out."
+
+[[piece]]
+id = "mnt"
+label = "MNT Wallonie 2021-2022 0.5 m"
+method = "arcgis"
+class = "index"
+url = "https://geoservices.wallonie.be/arcgis/rest/services/RELIEF/LIDAR_MAILLES/MapServer/0"
+page = 2000
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "DATE_LAST", date = "epoch-ms" }

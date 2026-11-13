@@ -1,0 +1,73 @@
+name = "Litto3D of metropolitan France"
+credit = "Shom - IGN"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://services.data.shom.fr/geonetwork/srv/api/records/BATHYMETRIE_LITTO3D_PACA_2015.xml/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Shom's and IGN's continuous land-sea models of the metropolitan coast (topographic lidar on land, up to about 2 km inland, topo-bathymetric lidar and multibeam at sea): a 1 m DTM each, in 5 km packages from Shom's INSPIRE download service, without a login. Each campaign's extent is its package grid (Shom's WFS LITTO3D_<campaign>_GRILLE_WFS), a block each, its year the last of its topographic surveys as its record states: Languedoc-Roussillon (bathymetry 2009, topography 16 July to 17 August 2010), PACA (2007 to 12 July 2013), Finistère (2011 to 7 July 2013), Brittany (4 May 2018 to 2 July 2021; its record says the inland part is completed from RGE ALTI) and Nouvelle-Aquitaine (at sea 2020 to 2022; on land IGN's LiDAR HD, flown 8 May 2021 to 1 October 2023). The packages are squares over land and sea: an outline over the sea as they are. The campaigns of the sea only (Litto3D's marine parts: Corsica, Normandy and Hauts-de-France, Iroise, Morbihan, Languedoc-Roussillon 2011 and 2014-2015) are bathymetry's, left out; the overseas ones are antilles-litto3d's and spm-litto3d's."
+
+[[piece]]
+id = "languedoc-roussillon"
+label = "Litto3D Languedoc-Roussillon 2009"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_LR_2009_GRILLE_WFS:grille_litto3d_lr2009"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2010
+
+[[piece]]
+id = "paca"
+label = "Litto3D PACA 2015"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_PACA_2015_GRILLE_WFS:grille_litto3d_paca2015"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2013
+
+[[piece]]
+id = "finistere"
+label = "Litto3D Finistère 2014"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_FINISTR_2014_GRILLE_WFS:grille_litto3d_finistr2014"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2013
+
+[[piece]]
+id = "bretagne"
+label = "Litto3D Bretagne 2018-2021"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_BZH_2018_2021_GRILLE_WFS:grille_bathymetrie_litto3d_bzh_2018_2021"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2021
+
+[[piece]]
+id = "nouvelle-aquitaine"
+label = "Litto3D Nouvelle-Aquitaine 2020-2022"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_NAQ_2020_2022_GRILLE_WFS:grille_bathymetrie_litto3d_naq_2020_2022"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2023

@@ -1,0 +1,44 @@
+name = "AHN"
+credit = "Actueel Hoogtebestand Nederland (AHN)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.ahn.nl/dataroom"
+theme = "terrain"
+availability = "open"
+notes = "The Netherlands' height model, its 0.5 m bare-earth model (DTM, maaiveldmodel) by version, each a block of its own. AHN4: the 1,373 sheets of 5 × 6.25 km of PDOK's ATOM feed (each file's own bbox), flown 30 November 2019 to 25 March 2022 as its dataset record (NGR 41daef8b-155e-4608-b49c-c87ea45d931c) states, CC0. AHN5, published in the three western parts (2 October 2024), and AHN6, its first part (the north-east, 13 October 2025) and the sheets flown in 2026 since: the bladwijzer's sheet indexes (AHN's own OGC API Features collections on Ellipsis Drive, linked from the dataroom), AHN5's 5 × 6.25 km sheets and AHN6's 1 × 1 km ones, each sheet's year the one its DTM file's name opens with (2023_M_37FZ2.TIF, AHN6_2025_M_207000_445000.TIF); AHN6's 792 sheets with a point cloud and no DTM (over water: no ground) left out. AHN5 and AHN6 are CC BY 4.0, AHN4 CC0: the declaration states the more restrictive. The 5 m DTMs cover the same sheets and are left out. AHN states its points' accuracy as at most 5 cm standard deviation and 5 cm systematic error, not an RMSE of the model: left out."
+
+[[piece]]
+id = "ahn4"
+label = "AHN4 DTM 0.5 m"
+method = "atom"
+url = "https://service.pdok.nl/rws/ahn/atom/dtm_05m.xml"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "ahn5"
+label = "AHN5 DTM 0.5 m"
+method = "stac"
+url = "https://api.ellipsis-drive.com/v3/ogc/features/65945b69-81df-4270-97f0-f029033154c1/collections/01170035-93d3-4a38-b04c-8e7be7a7ca78"
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "Maaiveldmodel (DTM) ½m", date = "text" }
+
+[[piece]]
+id = "ahn6"
+label = "AHN6 DTM 0.5 m"
+method = "stac"
+url = "https://api.ellipsis-drive.com/v3/ogc/features/0820faae-5240-499b-8486-cf406433cf71/collections/ea8b0597-57fe-4978-8ad7-a53cddb3940a"
+page = 5000
+exclude = { "Maaiveldmodel (DTM) ½m" = [""] }
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "Maaiveldmodel (DTM) ½m", date = "text" }

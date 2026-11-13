@@ -1,0 +1,25 @@
+name = "RGE ALTI"
+credit = "IGN, RGE ALTI"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/api/1/datasets/61489f5ae64c7f138f1b2e15/"
+theme = "terrain"
+availability = "open"
+notes = "IGN's national bare-earth model (MNT) at 1 m and 5 m, assembled from the sources each place had (lidar since 2010 for the flood-risk programmes, winter image correlation, radar, BD ALTI), over metropolitan France and the overseas departments but ZICAD (no data); its updates stopped in 2024. Its extent is the product's source mask (the WFS ELEVATIONGRIDCOVERAGE.HIGHRES.QUALITY:source_fra, 290,932 polygons), a piece per source class: the class's own resolution as the spacing (the 1 m grid over a 5 m radar source holds no more than 5 m), and its stated accuracy as an RMSE (\"Emq\", erreur moyenne quadratique), the class's upper bound, the class kept as stated; class 0 (\"NR\", nothing stated) left out. No year is stated by source (the product's sources date from 2009 to 2024). At a 1 km tolerance (2.4 MB; 16 MB at 200 m, 5.9 MB at 500 m): the mask is a patchwork of pixel-edged polygons, and its classes' areas are within 6 % of their 200 m outlines', the whole within 2 %. The answers name urn:ogc:def:crs:EPSG::4326 and are longitude first."
+
+[[piece]]
+id = "mnt"
+method = "wfs"
+class = "service"
+url = "https://data.geopf.fr/wfs/ows"
+type = "ELEVATIONGRIDCOVERAGE.HIGHRES.QUALITY:source_fra"
+fields = ["code", "resolution", "origine", "precision", "geom"]
+page = 5000
+filter = { code = [1, 2, 3, 4, 5, 6, 7, 8] }
+by = ["code", "origine"]
+name = "origine"
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "resolution", text = "m" }
+vertical_rmse_m = { field = "precision", map = { "Emq < 30 cm" = 0.3, "Emq < 50 cm" = 0.5, "Emq < 70 cm" = 0.7, "Emq < 80 cm" = 0.8, "Emq < 1 m" = 1.0, "Emq < 1.20 m" = 1.2, "1 m < Emq < 7 m" = 7.0, "2 m < Emq < 8 m" = 8.0 } }

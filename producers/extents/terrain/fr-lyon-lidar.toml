@@ -1,0 +1,19 @@
+name = "Métropole de Lyon MNT 2023"
+credit = "Métropole de Lyon"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/api/1/datasets/68b0d22f0a81526905c51e5d/"
+theme = "terrain"
+availability = "open"
+notes = "The Métropole's 0.5 m bare-earth model (657 km²) from its lidar of 30 points per m², flown July to August 2023 and over the mont Verdun in September 2024 (its year, the survey's last), one cloud-optimised GeoTIFF (5.4 GB): its own header and an overview say where it has data and at what cell. Its grid is LiDAR HD's, its year newer (LiDAR HD's tiles here: 2021). The publisher states a precision of 10 cm in height for the point cloud, not an RMSE: left out."
+
+[[piece]]
+id = "mnt"
+label = "MNT Métropole de Lyon 2023 0.5 m"
+method = "raster"
+urls = ["https://data.grandlyon.com/files/grandlyon/imagerie/mnt2023/relief/MNT2023_Altitude_50cm.tif"]
+mask_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2024
