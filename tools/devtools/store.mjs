@@ -182,10 +182,12 @@ export function openStore(file, { log = () => {} } = {}) {
     // How many there are (of one item's events, with `item`).
     count: (col, item) => (item === undefined ? stmt(`SELECT COUNT(*) AS n FROM ${col}`) : stmt(`SELECT COUNT(*) AS n FROM events WHERE item = ?`)).get(...(item === undefined ? [] : [item])).n,
     // Each item's events in short, for the lists that show a count and the latest change and nothing
-    // of the history itself: {item ("" the board's own): [how many, the latest one's t]}.
+    // of the history itself: {item ("" the board's own): [how many, the latest one's t, a mark]}. The
+    // mark (the highest rowid: a write, an edit too, is a new row) changes with any write of the item's
+    // events, and the count with a delete, so a reader holding a history knows when to read it again.
     history() {
       const out = {};
-      for (const r of stmt(`SELECT item, COUNT(*) AS n, MAX(t) AS last FROM events GROUP BY item`).all()) out[r.item] = [r.n, r.last];
+      for (const r of stmt(`SELECT item, COUNT(*) AS n, MAX(t) AS last, MAX(rowid) AS v FROM events GROUP BY item`).all()) out[r.item] = [r.n, r.last, r.v];
       return out;
     },
     childrenOf: (id) => stmt(`SELECT id FROM items WHERE parent = ?`).all(id).map((r) => r.id),

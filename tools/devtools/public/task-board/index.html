@@ -616,10 +616,8 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
         say("items", id, schema.itemErrors(d));
         if (typeof d.parent === "string" && d.parent && !S.raw.items.has(d.parent)) say("items", id, [{ field: "parent", message: `item ${d.parent} doesn't exist` }]);
       }
-      for (const [id, d] of S.raw.events) {
-        say("events", id, schema.eventErrors(d));
-        if (typeof d.item === "string" && d.item && S.loaded.items && !S.raw.items.has(d.item)) say("events", id, [{ field: "item", message: `item ${d.item} doesn't exist` }]);
-      }
+      for (const [id, d] of S.raw.events) say("events", id, schema.eventErrors(d));
+      for (const [item, { n }] of S.sum) if (item && !S.raw.items.has(item)) bad.push(`events: ${n} of item ${item}, which doesn't exist`);
     }
     if (same(bad, S.bad)) return;
     S.bad = bad;
@@ -650,6 +648,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     // items open in a row or the details: the newest HIST_PAGE of each, and older pages asked for.
     sum: new Map(), // item id → {n, last}
     evHead: new Set(), // the items whose newest events are in raw.events
+    evVer: new Map(), // item id → its summary when they were read (a change: read again)
     evAsk: new Set(), // the items asked for and not yet read
     evBusy: new Set(), // the items an older page is being read for
     evWatch: null, // the subscription (shim.js watch)
@@ -2798,37 +2797,43 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     };
     start();
   }
-  // History (see S): never all of it. Each read, on a change of the events too, is every item's count
-  // and latest time, and the newest page of the history of each item shown open (in a row, or the
-  // details). An older page is read when asked for.
+  // History (see S): never all of it. Each read, on a change of the events too, is every item's count,
+  // latest time and mark (GET /api/history), then the newest events of each item shown open (in a row,
+  // or the details) whose mark has changed or that hasn't been read: as many as the page holds of it,
+  // at least HIST_PAGE, so what it shows is as the server has it now, and the server is asked only for
+  // the histories that changed. An older page is read when asked for.
   const HIST_PAGE = 100;
-  const evUrl = (id, more = "") => `c/events?item=${encodeURIComponent(id)}&orderBy=t&dir=desc&limit=${HIST_PAGE}${more}`;
+  const evUrl = (id, limit, more = "") => `c/events?item=${encodeURIComponent(id)}&orderBy=t&dir=desc&limit=${limit}${more}`;
   const wantedHistory = () => new Set([...S.hist, ...(S.sel ? [S.sel] : [])]);
+  // (t newest first, then id: the order histories are read in.)
+  const olderEv = (t, id, et, eid) => t < et || (t === et && id > eid);
   async function readHistory(get) {
-    const ids = [...wantedHistory()];
-    const [sum, ...pages] = await Promise.all([get("history"), ...ids.map((id) => get(evUrl(id)))]);
-    return { sum, ids, pages: pages.map((p) => p.docs) };
+    const sum = await get("history");
+    const wanted = [...wantedHistory()];
+    const ids = wanted.filter((id) => !S.evHead.has(id) || !same(S.evVer.get(id), sum[id]));
+    const held = new Map();
+    for (const e of S.raw.events.values()) held.set(e.item, (held.get(e.item) || 0) + 1);
+    const limits = ids.map((id) => Math.min(10000, Math.max(HIST_PAGE, held.get(id) || 0)));
+    const pages = await Promise.all(ids.map((id, i) => get(evUrl(id, limits[i]))));
+    return { sum, wanted, ids, limits, pages: pages.map((p) => p.docs) };
   }
-  // (The events of an item read before and older than its newest page stay, as long as that page
-  // reaches the newest ones read before: else there may be a gap, and a "Show older" fills from the page on.)
-  function takeHistory({ sum, ids, pages }) {
+  // (An item read again keeps the events it held older than what was read, a page "Show older" read
+  // meanwhile; the rest are as read. Items no longer open let theirs go.)
+  function takeHistory({ sum, wanted, ids, limits, pages }) {
     S.sum = new Map(Object.entries(sum).map(([id, [n, last]]) => [id, { n, last }]));
-    const before = new Map();
-    for (const [id, e] of S.raw.events) (before.get(e.item) || before.set(e.item, []).get(e.item)).push([id, e]);
+    const keep = new Set([...wanted, ...wantedHistory()]);
+    const read = new Map(ids.map((id, i) => [id, { docs: pages[i], limit: limits[i] }]));
     const next = new Map();
-    ids.forEach((item, i) => {
-      const docs = pages[i];
-      for (const d of docs) next.set(d.id, d.data);
-      const old = before.get(item) || [];
-      const edge = docs.at(-1);
-      if (docs.length < HIST_PAGE || !old.length || !edge) return;
-      const newest = old.reduce((a, b) => (b[1].t > a[1].t || (b[1].t === a[1].t && b[0] < a[0]) ? b : a));
-      if (!docs.some((d) => d.id === newest[0])) return;
-      for (const [id, e] of old) if (e.t < edge.data.t || (e.t === edge.data.t && id > edge.id)) next.set(id, e);
-    });
+    for (const [id, e] of S.raw.events) {
+      if (!keep.has(e.item)) continue;
+      const r = read.get(e.item), edge = r?.docs.at(-1);
+      if (r && (r.docs.length < r.limit || !edge || !olderEv(e.t, id, edge.data.t, edge.id))) continue;
+      next.set(id, e);
+    }
+    for (const r of read.values()) for (const d of r.docs) next.set(d.id, d.data);
     S.raw.events = next;
-    S.evHead = new Set(ids);
-    for (const id of ids) S.evAsk.delete(id);
+    for (const id of [...S.evHead]) if (!keep.has(id)) { S.evHead.delete(id); S.evVer.delete(id); }
+    for (const id of ids) { S.evHead.add(id); S.evVer.set(id, sum[id]); S.evAsk.delete(id); }
   }
   // Asks for the history of what is shown open that hasn't been read (render calls it).
   function askHistory() {
@@ -2840,13 +2845,15 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   async function olderEvents(id) {
     if (S.evBusy.has(id) || !S.db) return;
     const mine = [...S.raw.events].filter(([, e]) => e.item === id);
-    const edge = mine.reduce((a, b) => (!a || b[1].t < a[1].t || (b[1].t === a[1].t && b[0] > a[0]) ? b : a), null);
+    const edge = mine.reduce((a, b) => (!a || olderEv(b[1].t, b[0], a[1].t, a[0]) ? b : a), null);
     if (!edge) return;
     S.evBusy.add(id);
     render();
     try {
-      const r = await S.db.get(evUrl(id, `&before=${encodeURIComponent(edge[1].t)}&beforeId=${encodeURIComponent(edge[0])}`));
-      S.raw.events = new Map([...S.raw.events, ...r.docs.map((d) => [d.id, d.data])]);
+      const r = await S.db.get(evUrl(id, HIST_PAGE, `&before=${encodeURIComponent(edge[1].t)}&beforeId=${encodeURIComponent(edge[0])}`));
+      // (Only while the page still ends where this one starts: the item closed, or the event it
+      // started from deleted, and it is left out; "Show older" reads from where the page ends now.)
+      if (S.raw.events.has(edge[0])) S.raw.events = new Map([...S.raw.events, ...r.docs.map((d) => [d.id, d.data])]);
     } catch (e) { toast(`Couldn't read the older history: ${why(e)}.`, { bad: true }); }
     S.evBusy.delete(id);
     render();

@@ -28,34 +28,46 @@
   };
 
   // One event stream, shared: it tells which collection changed, and each listener reads again (a read
-  // that a write was answered during is dropped and made again: it may predate the write).
+  // that a write was answered during is dropped and made again: it may predate the write). A listener's
+  // first read waits for the stream to open, so no change between the two is missed and none needs
+  // reading twice (up to 2 s: a stream slower than that, and what was read is read again once it opens).
   const listeners = new Set(); // {col, run}
-  let es = null;
+  let ready = null;
   function stream() {
-    if (es) return;
-    es = new EventSource("../api/stream");
-    es.addEventListener("change", (e) => { const col = JSON.parse(e.data).col; for (const l of listeners) if (l.col === col) l.run(); });
-    es.onopen = () => { for (const l of listeners) l.run(); }; // (after a drop, everything is read again)
+    if (ready) return ready;
+    let open = false, late = false;
+    const connect = (opened) => {
+      const es = new EventSource("../api/stream");
+      es.addEventListener("change", (e) => { const col = JSON.parse(e.data).col; for (const l of listeners) if (l.col === col) l.run(); });
+      es.onopen = () => { opened(); if (open || late) for (const l of listeners) l.run(); open = true; }; // (after a drop, everything is read again)
+      // (A stream refused, as a proxy's 502 while the server restarts, is closed for good: opened anew.)
+      es.onerror = () => { if (es.readyState === EventSource.CLOSED) setTimeout(() => connect(() => {}), 2000); };
+    };
+    ready = new Promise((r) => { setTimeout(() => { late = true; r(); }, 2000); connect(r); });
+    return ready;
   }
+  // A subscription: `read` run now and on each change of `col`. One that fails ends, as Firestore's do
+  // (the page subscribes again: kept, each retry would add a listener reading on every change).
   function listen(col, read, wrap, onNext, onError) {
-    stream();
+    const opened = stream();
     let busy = false, again = false, dead = false;
+    const stop = () => { dead = true; listeners.delete(l); };
     const run = async () => {
+      if (dead) return;
       if (busy) { again = true; return; }
       busy = true;
       const was = answered;
       try {
         const j = await read();
         if (answered !== was) again = true;
-        else onNext(wrap(j));
-      } catch (e) { if (!dead) onError && onError(e); }
+        else if (!dead) onNext(wrap(j));
+      } catch (e) { if (!dead) { stop(); onError && onError(e); } }
       busy = false;
       if (again && !dead) { again = false; run(); }
     };
     const l = { col, run };
     listeners.add(l);
-    run();
-    const stop = () => { dead = true; listeners.delete(l); };
+    opened.then(run);
     stop.run = run; // (read again now)
     return stop;
   }

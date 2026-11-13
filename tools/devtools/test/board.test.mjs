@@ -359,14 +359,27 @@ test("history is read by item and in pages, and in short for the lists; no cap h
   assert.equal(h[a][1], all.docs[0].data.t);
   assert.deepEqual([h[b][0], h[""][0] >= 1], [1, true]);
   assert.equal(Object.values(h).reduce((n, v) => n + v[0], 0), store.count("events"), "every event is counted once");
-  // A write moves it at once.
-  await post("events", { item: b, kind: "note", text: "b1" });
-  assert.equal((await call("GET", "/api/history")).body[b][0], 2);
+  // A write moves it at once; so does an edit (the mark) and a delete (the count), and nothing else's.
+  const b1 = (await post("events", { item: b, kind: "note", text: "b1" })).body.id;
+  const h1 = (await call("GET", "/api/history")).body;
+  assert.equal(h1[b][0], 2);
+  assert.notEqual(h1[b][2], h[b][2]);
+  await call("PATCH", `/api/c/events/${b1}`, { text: "b1, edited" });
+  const h2 = (await call("GET", "/api/history")).body;
+  assert.deepEqual([h2[b][0], h2[b][1]], [h1[b][0], h1[b][1]]);
+  assert.notEqual(h2[b][2], h1[b][2], "an edit changes the mark");
+  assert.deepEqual(h2[a], h1[a], "another item's is as it was");
+  await call("DELETE", `/api/c/events/${made[0]}`);
+  assert.equal((await call("GET", "/api/history")).body[a][0], 6);
   // Bad queries are refused.
   await refused(() => call("GET", `/api/c/events?item=${a}&before=2026-01-01T00:00:00.000Z&beforeId=x`), { says: /before: needs orderBy=t&dir=desc/ });
   await refused(() => call("GET", `/api/c/events?orderBy=t&dir=desc&before=2026-01-01T00:00:00.000Z`), { says: /beforeId: go together/ });
   await refused(() => call("GET", `/api/c/events?orderBy=t&dir=desc&before=yesterday&beforeId=x`), { says: /before: must be a time/ });
   await refused(() => call("GET", `/api/c/items?item=${a}`), { says: /item: isn't a query this takes/ });
+  await refused(() => call("GET", `/api/c/events?item=${a}&item=${b}`), { says: /item: is given more than once/ });
+  await refused(() => call("GET", "/api/c/events?limit=1&limit=2"), { says: /limit: is given more than once/ });
+  await refused(() => call("GET", "/api/c/events?item=a%20b"), { says: /item: isn't an item's id/ });
+  await refused(() => call("GET", "/api/c/events?orderBy=t&dir=desc&before=2026-01-01T00:00:00.000Z&beforeId=a%20b"), { says: /beforeId: isn't an event's id/ });
 });
 
 test("the page reads no whole list of events and caps none (history is read by item, in short for the lists)", () => {
@@ -409,27 +422,66 @@ test("a path that isn't valid percent-encoding is a 400, not a 500", async () =>
   assert.equal(r.body.error.code, "invalid_argument");
 });
 
-test("the page's shim never shows a read that began before a write was answered (the flicker on archive)", async () => {
+// shim.js in a sandbox: fetches held until the test answers them, an EventSource the test drives, timers the test runs.
+async function shimSandbox() {
   const vm = await import("node:vm");
-  const ctl = []; // fetches held until the test answers them
-  const fetchStub = (url, o = {}) => new Promise((res) => ctl.push((state) => res({ ok: true, json: async () => state, method: o.method || "GET" })));
-  class ES { constructor() { ES.me = this; this.l = {}; } addEventListener(n, f) { this.l[n] = f; } }
+  const ctl = []; // fetches held until the test answers them: [{url, answer(state), fail()}]
+  const fetchStub = (url, o = {}) => new Promise((res, rej) => ctl.push({ url, answer: (state) => res({ ok: true, json: async () => state, method: o.method || "GET" }), fail: () => rej(new Error("down")) }));
+  const timers = [];
+  class ES { constructor(u) { ES.all.push(this); this.l = {}; this.readyState = 0; } addEventListener(n, f) { this.l[n] = f; } }
+  ES.all = [];
+  ES.CLOSED = 2;
   const window = {};
-  vm.runInNewContext(fs.readFileSync(new URL("../public/task-board/shim.js", import.meta.url), "utf8"), { window, fetch: fetchStub, EventSource: ES, URLSearchParams, encodeURIComponent, JSON, Promise, Object, Error });
-  const db = (await window.claude.use("db"));
-  const shown = [];
-  db.collection("items").onSnapshot((s) => shown.push(s.size));
+  vm.runInNewContext(fs.readFileSync(new URL("../public/task-board/shim.js", import.meta.url), "utf8"), { window, fetch: fetchStub, EventSource: ES, setTimeout: (f, ms) => timers.push({ f, ms }), URLSearchParams, encodeURIComponent, JSON, Promise, Object, Error });
+  const db = await window.claude.use("db");
   const tick = () => new Promise((r) => setImmediate(r));
   const docs = (n) => ({ docs: Array.from({ length: n }, (_, i) => ({ id: "i" + i, data: {} })), total: n });
+  return { db, ctl, ES, timers, tick, docs };
+}
+
+test("the page's shim never shows a read that began before a write was answered (the flicker on archive)", async () => {
+  const { db, ctl, ES, tick, docs } = await shimSandbox();
+  const shown = [];
+  db.collection("items").onSnapshot((s) => shown.push(s.size));
   await tick();
-  ctl.shift()(docs(2)); await tick(); // the first read
-  assert.deepEqual(shown, [2]);
-  ES.me.l.change({ data: '{"col":"items"}' }); await tick(); // a read begins (it will answer with the old state)
+  assert.equal(ctl.length, 0, "the first read waits for the stream to open");
+  ES.all[0].onopen(); await tick();
+  ctl.shift().answer(docs(2)); await tick(); // the first read
+  assert.deepEqual([shown, ctl.length], [[2], 0], "read once, not again for the stream's first open");
+  ES.all[0].l.change({ data: '{"col":"items"}' }); await tick(); // a read begins (it will answer with the old state)
   const stale = ctl.shift();
   const w = db.doc("items/i0").update({ archived: true }); await tick();
-  ctl.shift()({}); await w; // the write is answered
-  stale(docs(2)); await tick(); // the old read arrives after it
+  ctl.shift().answer({}); await w; // the write is answered
+  stale.answer(docs(2)); await tick(); // the old read arrives after it
   assert.deepEqual(shown, [2], "the stale read isn't shown");
-  ctl.shift()(docs(1)); await tick(); // the read made again
+  ctl.shift().answer(docs(1)); await tick(); // the read made again
   assert.deepEqual(shown, [2, 1]);
+});
+
+test("the page's shim: a subscription whose read fails ends (the page's retry adds no second reader); a refused stream is opened anew", async () => {
+  const { db, ctl, ES, timers, tick, docs } = await shimSandbox();
+  const shown = [], failed = [];
+  const subscribe = () => db.collection("items").onSnapshot((s) => shown.push(s.size), (e) => failed.push(e.message));
+  subscribe();
+  ES.all[0].onopen(); await tick();
+  ctl.shift().answer(docs(1)); await tick();
+  ES.all[0].l.change({ data: '{"col":"items"}' }); await tick();
+  ctl.shift().fail(); await tick(); // the server is down
+  assert.deepEqual(failed, ["the server can't be reached"]);
+  subscribe(); await tick(); // the page's retry
+  ctl.shift().answer(docs(2)); await tick();
+  ES.all[0].l.change({ data: '{"col":"items"}' }); await tick();
+  assert.equal(ctl.length, 1, "one read for a change: the failed subscription reads no more");
+  ctl.shift().answer(docs(3)); await tick();
+  assert.deepEqual(shown, [1, 2, 3]);
+  // A stream refused (a proxy's 502) is closed for good by the browser: the shim opens another, and on
+  // its opening everything is read again.
+  ES.all[0].readyState = ES.CLOSED;
+  ES.all[0].onerror();
+  timers.filter((t) => t.ms === 2000).at(-1).f();
+  assert.equal(ES.all.length, 2);
+  ES.all[1].onopen(); await tick();
+  assert.equal(ctl.length, 1, "read again once the new stream is open");
+  ctl.shift().answer(docs(4)); await tick();
+  assert.deepEqual(shown, [1, 2, 3, 4]);
 });

@@ -27,7 +27,9 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   rules below forbid: an archived folder holding an open task is unarchived, a done or abandoned
   task, or a folder with no open task, left inside an archived folder is archived with it. `public/task-board/index.html` is the page;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
-  "assets")`) over the app's.
+  "assets")`) over the app's: a subscription reads once the event stream is open and again on each
+  change of its collection, ends when a read fails (the page subscribes again), and the stream is
+  opened anew when it is refused (a proxy's 502 while the server restarts) and everything read again.
 - **The dev job dashboard** (`/jobs/`, below): `jobs.mjs` its API (`/api/jobs/…`) and file,
   `jobs.db`; `public/jobs/` the page.
 - The pages' addresses are relative (`../api/…`), so the app works under a proxy's path.
@@ -172,7 +174,7 @@ curl -s -X PATCH $B/api/c/meta/now -H 'content-type: application/json' -d '{"tex
 
 **Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=asc|desc&limit=<n>`: a field of the collection, or `id`; any other query, field or value is a 400), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
 
-**History is read by item, never all at once** (#1333). `GET /api/c/events` also takes `item=<id>` (one item's events, `item=` the board's own; `total` is then that item's count) and, to read a history in pages, `before=<t>&beforeId=<id>` (the `t` and id of the last event a page ended with: the events after it, in the order t newest first, then id; needs `orderBy=t&dir=desc`; a tie in `t` loses or repeats none): `?item=i57&orderBy=t&dir=desc&limit=100`. `GET /api/history` is every item's events in short, for lists that show a count and the latest change: `{"<item id>": [count, latest t], …}` (`""` the board's own). The page reads that, kept live, and the newest 100 events of each item it shows open (in a row or the details) with a "Show older" for the rest: no cap hides any history. (A `limit` on any list read is still cut at 10000.)
+**History is read by item, never all at once** (#1333). `GET /api/c/events` also takes `item=<id>` (one item's events, `item=` the board's own; `total` is then that item's count, whatever the page) and, to read a history in pages, `before=<t>&beforeId=<id>` (the `t` and id of the last event a page ended with: the events after it, in the order t newest first, then id; needs `orderBy=t&dir=desc`; a tie in `t` loses or repeats none): `?item=i57&orderBy=t&dir=desc&limit=100`. A query given twice is a 400. `GET /api/history` is every item's events in short, for lists that show a count and the latest change: `{"<item id>": [count, latest t, mark], …}` (`""` the board's own; the mark changes with any write or edit of the item's events, the count with a delete). The page reads that, kept live, and the newest 100 events of each item it shows open (in a row or the details) with a "Show older" for the rest: no cap hides any history. On a change it reads the summary, then again only the open histories whose summary changed, as many events as it holds of each, so an edit or a delete shows. A `limit` on any list read is cut at 10000 (`total` says how many there are): a script reading all the events reads them by item, or in pages with `before`/`beforeId` (`orderBy=t&dir=desc&limit=10000`, then from the last one), not with one large `limit`.
 
 ### The schema (`schema.mjs`)
 

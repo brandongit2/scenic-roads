@@ -345,7 +345,10 @@ export function makeBoard(store, changed) {
   function listQuery(col, params) {
     const errs = [];
     const allowed = ["orderBy", "dir", "limit", ...(col === "events" ? ["item", "before", "beforeId"] : [])];
-    for (const k of params.keys()) if (!allowed.includes(k)) errs.push({ field: k, message: `isn't a query this takes (these are: ${allowed.join(", ")})` });
+    for (const k of new Set(params.keys())) {
+      if (!allowed.includes(k)) errs.push({ field: k, message: `isn't a query this takes (these are: ${allowed.join(", ")})` });
+      else if (params.getAll(k).length > 1) errs.push({ field: k, message: "is given more than once" });
+    }
     const orderBy = params.get("orderBy"), dir = params.get("dir"), limit = params.get("limit");
     if (orderBy && col !== "meta") {
       if (col === "items" && RENAMED.itemFields[orderBy]) errs.push({ field: "orderBy", message: `${JSON.stringify(orderBy)} is renamed ${JSON.stringify(RENAMED.itemFields[orderBy])}` });
@@ -356,6 +359,7 @@ export function makeBoard(store, changed) {
     const item = params.get("item"), t = params.get("before"), beforeId = params.get("beforeId");
     if (item !== null && item !== "" && !validId(item)) errs.push({ field: "item", message: "isn't an item's id (or \"\" for the board itself)" });
     if (t !== null && normTime(t) !== t) errs.push({ field: "before", message: `must be a time, ${TIME_FORMAT}` });
+    if (beforeId !== null && !validId(beforeId)) errs.push({ field: "beforeId", message: "isn't an event's id" });
     if ((t === null) !== (beforeId === null)) errs.push({ field: t === null ? "before" : "beforeId", message: "go together: the time and the id of the event a page ended with" });
     if (t !== null && !(orderBy === "t" && dir === "desc")) errs.push({ field: "before", message: "needs orderBy=t&dir=desc: it is the place in that order a page ended" });
     refuseIf(errs);
