@@ -60,8 +60,11 @@ them.
   started on, its `ran_on` naming the test Mac as soon as the run starts there (`rerun_here` when it
   ran here after all). The API reads each span `on` the Mac it ran on: a tests job whose run is on the
   test Mac shows on that Mac, "started on the M1 Pro, ran on the M4 Pro"; one run here stays on its
-  own. `jobs.db` from before #1086 (its `user_version` 0) has its test-Mac runs moved to their Mac
-  once, as the app opens it.
+  own.
+- **Its form** (`PRAGMA user_version`) is 2 (#1344: the runs and the tests jobs indexed by when they
+  ended, so a timeline's reads never go further back than its range; 1 was #1086's): a file of form
+  1 is moved to it once as the app opens it (`jobs.mjs` migrateTo2, ONE-TIME: to be deleted once the
+  M6's jobs.db is moved); any other form is refused.
 - **What a run is:** a tree of spans (`jobs.db`'s `spans`): each a kind, a name, its Mac, its start
   and end, a status (`running`, `ok`, `fail`, `stopped`, `gone`: its process ended without saying
   how, `skip`, `reuse`) and attributes (a run of its own: its checkout, branch, commit, task, whether
@@ -80,7 +83,7 @@ them.
   pointed at shows its card and lights its checkout's other runs, a click opens it. A run opened:
   its facts, its spans on a timeline of their own (a lane a kind at each depth, deepest last), where
   its time went, its longest and failed spans, the time by kind; its Macs' load and memory over it.
-  By name: one kind of span over all time, each name's runs, failures, median, p90, longest, total
+  By name: one kind of span over the timeline's range (6 h to all time), each name's runs, failures, median, p90, longest, total
   and recent times. Both timelines are the build page's (`web/buildpage/timeline.js`, served at
   `/lib/buildpage/`, as are the page's elements and words, `dom.js` and `words.js`, and a run's spans laid out as lanes, `runlanes.js`, a job page's too): dragged or scrolled sideways to move, pinched or ⌥-scrolled to zoom, down to 20 s.
   The page's address keeps what's open (`?range=24h&run=<id>&kind=test&hide=cargo`).
@@ -98,7 +101,7 @@ count and the Macs its spans ran on, `macs`; `away`, the tests jobs inside other
 to another Mac, each with its run's id, `root`; and the Macs), every span read with `on`, `GET /api/jobs/runs/<id>` (the run a span is part of, whole, with its Macs'
 samples), `GET /api/jobs/samples?from=&to=&n=` (each Mac's samples in at most `n` buckets: the most
 load, the least memory free, the most swap), `GET /api/jobs/stats?kind=[&from=&to=]` (each name's
-runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kinds`.
+runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kinds[?from=&to=]` (each kind and how many, begun in the range; all time without one).
 
 ## The task board's API (for the PM, agents and scripts)
 
