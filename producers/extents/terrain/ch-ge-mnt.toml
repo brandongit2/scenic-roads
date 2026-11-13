@@ -1,11 +1,11 @@
-name = "SITG MNT 2025"
+name = "SITG MNT et MNS 2025"
 credit = "République et canton de Genève, SITG"
 licence = "opendata.swiss Open use (commercial use allowed; source to be named)"
 licence_url = "https://opendata.swiss/terms-of-use#terms_open"
 source = "https://ckan.opendata.swiss/api/3/action/package_show?id=mnt-modele-numerique-de-terrain-2023-pixel-0-2-m1"
 theme = "terrain"
 availability = "open"
-notes = "The canton of Geneva's bare-earth model at 0.2 m from its lidar of March 2025 (classes 2 and 9, Delaunay-interpolated), one cloud-optimised GeoTIFF of 29.5 GB: its own header and an overview say where it has data and at what cell. Its accuracy is stated as about 10 cm in height on hard surfaces, not as an RMSE: left out. The canton's earlier models (2023 at 0.2 m, 2019, 2017 and 2013 at 0.5 m, 2009 and earlier at 1 m) are of the same area and older: not declared."
+notes = "The canton of Geneva's bare-earth model (MNT: classes 2 and 9, Delaunay-interpolated) and surface model (MNS: the ground, vegetation, buildings, water, power lines, masts and bridges classes) from its lidar of March 2025, each one cloud-optimised GeoTIFF (29.5 and 32.6 GB): each file's own header and an overview say where it has data and at what cell (0.2 m both; the MNS's record says a 0.25 m grid, its file's header 0.2 m). The MNS has overviews down to 1.6 m pixels only, so its mask is read at that overview. The MNT's accuracy is stated as about 10 cm in height on hard surfaces, not as an RMSE: left out. The canton's earlier models (MNT and MNS 2023 at 0.2 m, 2019, 2017 and 2013 at 0.5 m, 2009 and earlier at 1 m) are of the same area and older: not declared."
 
 [[piece]]
 id = "mnt"
@@ -15,5 +15,16 @@ urls = ["https://ge.ch/sitg/geodata/SITG/COG-DATA/MNA_TERRAIN_2025_03.tif"]
 mask_m = 20
 [piece.metrics]
 surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2025
+
+[[piece]]
+id = "mns"
+label = "MNS 2025 0.2 m"
+method = "raster"
+urls = ["https://ge.ch/sitg/geodata/SITG/COG-DATA/MNA_SURFACE_2025_03.tif"]
+mask_m = 20
+[piece.metrics]
+surface = "surface"
 spacing_m = { field = "res_m" }
 year = 2025
