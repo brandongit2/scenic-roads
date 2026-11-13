@@ -115,10 +115,11 @@ function inGlyphSlice<T>(f: () => T): Promise<T> {
 }
 
 /**
- * The rasterizer, as it really is. TinySDF carries the `buffer` it was built with, which its type
- * declaration leaves out and which the canvas has to be widened through.
+ * The rasterizer, as it really is. TinySDF carries the `buffer` it was built with, its canvas's
+ * `size` and the context it measures with, which its type declaration leaves out; the canvas is
+ * widened through the buffer.
  */
-export type Rasterizer = TinySDF & {buffer: number; size?: number; ctx?: Pick<CanvasRenderingContext2D, 'measureText'>};
+export type Rasterizer = TinySDF & {buffer: number; size: number; ctx: Pick<CanvasRenderingContext2D, 'measureText'>};
 
 /**
  * Builds the thing that rasterizes a glyph. Taken as a dependency so that a test can stand in for
@@ -162,7 +163,6 @@ function drawnWide(id: string): boolean {
  * rasterizer of the same font to measure it with.
  */
 function emsWideFor(rasterizer: Rasterizer, id: string): number {
-    if (!rasterizer.ctx || !rasterizer.size) return clusterEmsWide;
     const {actualBoundingBoxLeft, actualBoundingBoxRight} = rasterizer.ctx.measureText(id);
     const width = Math.ceil(actualBoundingBoxRight) - Math.floor(-actualBoundingBoxLeft);
     if (width <= rasterizer.size - rasterizer.buffer) return clusterEmsWide;

@@ -152,10 +152,16 @@ What this fork changes (`build/generate-unicode-data.ts` generates the tables):
   unavailable.
 
 The typeface of what is drawn on the page is the browser's own for the script (the stack's name
-gives the weight and style), not the served Noto Sans. Known gaps: nothing is shaped across units
-(no kerning between clusters; an Arabic letter with a vowel mark is a cluster drawn in the page's
-font beside neighbours from the served one, with visible joins; no Arabic ligatures beyond
-lam-alef); the app's polar labels (`web/src/polarlabels.ts`) lay a name out a codepoint at a time.
+gives the weight and style), not the served Noto Sans. The weight follows what the device's font
+has: asked for `Medium` (500), Chrome on macOS draws Thai, Tamil, Sinhala, Odia, Tibetan and
+Hebrew clusters in the font's bold, and Lao, Khmer and Mongolian in its regular, so a town's name
+in Thai is bold where a Lao one is not; an italic stack slants the scripts whose font has no
+italic. Known gaps: nothing is shaped across units (no kerning between clusters; an Arabic letter
+with a vowel mark is a cluster drawn in the page's font beside neighbours from the served one, with
+visible joins; no Arabic ligatures beyond lam-alef); in a script still served a codepoint at a
+time, a letter with marks is a cluster drawn in the page's font beside served letters (pointed
+Hebrew, Latin with combining marks not precomposed), in two typefaces; the app's polar labels
+(`web/src/polarlabels.ts`) lay a name out a codepoint at a time.
 
 - **Local glyphs drawn in slices** (`glyph_manager.ts`, `GLYPH_SLICE_MS`): glyphs drawn with
   TinySDF (CJK, clusters, `font-faces`) run at most 4 ms of the main thread at a time, the rest in
@@ -401,8 +407,13 @@ on a 3D sea floor, with `symbol-height-anchor: sea` for their labels.
 `terrain/fill-extrusion-multipolygon`, `symbol-height-anchor/sea`), and the tile zoom by depth
 (`high-pitch/terrain-pitch95`, `field-of-view-number`, `fog-sky-blend-globe`, `heatmap`,
 `image-projective`, `occlusion-debug`, `rtt-mipmap-minification/pitch-70`,
-`symbol-height-anchor-*`, `symbol-height-offset-building`, `tile-stiching`), and a Khmer name
-drawn wholly from the Mac's font (`regressions/mapbox-gl-native#11729`: its single letters came
-from the test's served font; the image depends on the Mac's Khmer font). Every other upstream
-case passes, but under heavy load a few terrain cases flake on timing, and on Apple silicon four
-`text-local-*` cases fail on system fonts, as upstream's own build does.
+`symbol-height-anchor-*`, `symbol-height-offset-building`, `tile-stiching`), and two cases whose
+names this fork draws on the page from the Mac's fonts (Labels in scripts that need shaping): a
+Khmer name (`regressions/mapbox-gl-native#11729`: its single letters came from the test's served
+font) and Bangkok (`real-world/bangkok`: its Thai names and the characters the test's font lacks,
+drawn on the page, collide differently, and Bangkok Port's label shows); both images depend on
+the Mac's fonts and pass on the M1 and the M4. Not every other case passes: on the M4 (12 Nov,
+the whole suite) 128 upstream cases fail, nearly all raster, hillshade, sky and fog, terrain,
+globe and their combinations, with four `text-local-*` cases that fail on system fonts as
+upstream's own build does on Apple silicon, and so do all four of our cases above (lifted lines,
+the sea surface, `sea`-anchored labels, the drape and scene depth).

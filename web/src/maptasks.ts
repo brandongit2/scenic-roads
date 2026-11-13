@@ -3,8 +3,9 @@
 // id), the tiles in view that have arrived out of those wanted, from MapLibre's tile managers (a
 // tile counts as arrived once parsed in MapLibre's worker, its glyphs and images in: loaded, or
 // errored); a GeoJSON source still being tiled in MapLibre's worker shows as processing; glyphs
-// still to be drawn on the page (the fork's GlyphManager.waiting) and shader programs still linking in the background
-// (glprog.ts, the fork's Context.pendingPrograms, as of the last frame drawn). The regions' own
+// still to be drawn on the page (the fork's GlyphManager#waiting) and shader programs still
+// linking in the background (glprog.ts, the fork's Context.pendingPrograms, as of the last frame
+// drawn). The regions' own
 // sources aren't counted: downloads have their own panel.
 // MapLibre keeps these in its internals (style.tileManagers), read defensively: none of it is
 // public API, and a change there only empties this list.

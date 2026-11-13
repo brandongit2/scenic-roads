@@ -8,7 +8,7 @@ import {fakeServer, type FakeServer} from 'nise';
 import {bufferToArrayBuffer} from '../util/test/util.ts';
 import TinySDF, {type TinySDFOptions} from '@mapbox/tiny-sdf';
 
-import type {CreateRasterizer} from './glyph_manager.ts';
+import type {CreateRasterizer, Rasterizer} from './glyph_manager.ts';
 
 describe('GlyphManager', () => {
     const pbf = fs.readFileSync(path.join(__dirname, '../../test/unit/assets/0-255.pbf'));
@@ -53,7 +53,13 @@ describe('GlyphManager', () => {
     }
 
     function fakeRasterizer(draw: (text: string) => any = () => GLYPHS[0]) {
-        return vi.fn((_options: TinySDFOptions, padding: number) => ({draw, buffer: padding}));
+        // A canvas of the size TinySDF makes, measuring every glyph as one font size wide.
+        return vi.fn((options: TinySDFOptions, padding: number) => ({
+            draw,
+            buffer: padding,
+            size: options.fontSize + options.buffer * 4,
+            ctx: {measureText: () => ({actualBoundingBoxLeft: 0, actualBoundingBoxRight: options.fontSize} as TextMetrics)}
+        }) as unknown as Rasterizer);
     }
 
     afterEach(() => {
