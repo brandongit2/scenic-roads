@@ -598,7 +598,10 @@ const REAL: [(&str, &[u8]); 85] = [
     ("belize-crip.toml", include_bytes!("../../../../../producers/extents/terrain/belize-crip.toml")),
     ("bermuda-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/bermuda-lidar.geojson")),
     ("bermuda-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/bermuda-lidar.toml")),
-    ("caribbean-nl-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/caribbean-nl-lidar.geojson")),
+    (
+        "caribbean-nl-lidar.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/caribbean-nl-lidar.geojson"),
+    ),
     ("caribbean-nl-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/caribbean-nl-lidar.toml")),
     ("cayman-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/cayman-lidar.geojson")),
     ("cayman-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/cayman-lidar.toml")),
@@ -650,7 +653,10 @@ const REAL: [(&str, &[u8]); 85] = [
     ("pgc-rema.toml", include_bytes!("../../../../../producers/extents/terrain/pgc-rema.toml")),
     ("quebec-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/quebec-lidar.geojson")),
     ("quebec-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/quebec-lidar.toml")),
-    ("saskatchewan-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/saskatchewan-lidar.geojson")),
+    (
+        "saskatchewan-lidar.geojson",
+        include_bytes!("../../../../../producers/extents/terrain/saskatchewan-lidar.geojson"),
+    ),
     ("saskatchewan-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/saskatchewan-lidar.toml")),
     ("spm-litto3d.geojson", include_bytes!("../../../../../producers/extents/terrain/spm-litto3d.geojson")),
     ("spm-litto3d.toml", include_bytes!("../../../../../producers/extents/terrain/spm-litto3d.toml")),
@@ -704,7 +710,10 @@ fn the_real_terrain_files_are_taken() {
     assert!(errors.is_empty(), "{errors:#?}");
     warnings.extend(whole.iter().map(|f| f.message.clone()));
     // (Belize's lidar: where its 17 % lies isn't stated.)
-    assert_eq!(warnings, ["terrain/belize-crip.geojson: 1 piece of class unknown: listed in the sources, drawn nowhere"]);
+    assert_eq!(
+        warnings,
+        ["terrain/belize-crip.geojson: 1 piece of class unknown: listed in the sources, drawn nowhere"]
+    );
     // NRCan's 950 projects and its mosaic, its box the country's north.
     let c = Extents.file("terrain/nrcan-hrdem.geojson", &files["terrain/nrcan-hrdem.geojson"]);
     assert_eq!(c.facts["pieces"], 951);
