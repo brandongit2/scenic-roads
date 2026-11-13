@@ -1,11 +1,11 @@
-name = "DTM Luzern 2024"
+name = "DTM und DOM Luzern 2024"
 credit = "Kanton Luzern, Dienststelle Raum und Wirtschaft (rawi)"
 licence = "Kanton Luzern Open-By (free use, commercial included; source reference mandatory)"
 licence_url = "https://geoportal.lu.ch/Nutzungsbedingungen"
 source = "https://daten.geo.lu.ch/api/stac/v1.0/collections/DTM24025_DS_V1"
 theme = "terrain"
 availability = "open"
-notes = "The canton of Luzern's bare-earth model 2024 at 0.25 m, as its STAC collection's items: a map sheet each (Kartenblatt), its GeoTIFF downloading with no login (the API's token scheme is for its restricted products). The year is the model's, 2024, as its title names it; the items' `datetime` (1 March 2025) is its issue. No accuracy is stated in the record."
+notes = "The canton of Luzern's elevation models of 2024, each as its STAC collection's items, a map sheet each (Kartenblatt), its file downloading with no login (the API's token scheme is for its restricted products): the bare-earth model (DTM24025_DS_V1) and the surface model (DOM24025_DS_V1, \"inkl. Bewuchs und Bebauung\"), both 0.25 m GeoTIFFs, and the surface model's point cloud (DOM24WLK_DS_V1, \"minimale Punktdichte beträgt 16 pro m2\": its nominal spacing, 1/√16, 0.25 m; a point cloud holds ground and surface both, so states no `surface`). The year is the models', 2024, as their titles name it; the items' `datetime` (February and March 2025) is their issue. No accuracy is stated in the records. The 2018 and 2012 models are of the same canton and older: not declared."
 
 [[piece]]
 id = "dtm"
@@ -15,5 +15,26 @@ url = "https://daten.geo.lu.ch/api/stac/v1.0/collections/DTM24025_DS_V1"
 tolerance_m = 50
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.25
+year = 2024
+
+[[piece]]
+id = "dom"
+label = "DOM 2024 0.25 m"
+method = "stac"
+url = "https://daten.geo.lu.ch/api/stac/v1.0/collections/DOM24025_DS_V1"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.25
+year = 2024
+
+[[piece]]
+id = "dom-points"
+label = "DOM 2024 point cloud (min. 16 pts/m²)"
+method = "stac"
+url = "https://daten.geo.lu.ch/api/stac/v1.0/collections/DOM24WLK_DS_V1"
+tolerance_m = 50
+[piece.metrics]
 spacing_m = 0.25
 year = 2024

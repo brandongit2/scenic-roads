@@ -5,7 +5,7 @@ licence_url = "https://www.idee.es/csw-codsi-idee/srv/api/records/md_ideeu_mdt_l
 source = "https://www.geo.euskadi.eus/lidar/DatosDescarga/MDE/MAX_ACTUALIDAD/MDT_LIDAR_2017_ETRS89/"
 theme = "terrain"
 availability = "open"
-notes = "The Basque Government's 1 m bare-earth model of the Autonomous Community (\"MDT de 1m de la Comunidad Autónoma del País Vasco. Año 2017\"): the 2016 model from the 2008 and 2012 lidar, updated with the 2017 urban photogrammetric flight and the 2017 lidar (flown 8 February 2008 to 11 October 2017, the record's time extent), orthometric heights, on the government's open file server as one zip in 15 parts and as zipped 1:5,000 sheets in folders per 1:50,000 sheet. The sheets are named, not drawn (no index of them is published; the WCS gives one envelope, the record a box), so its extent is the area it states, the Basque Country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Licence as the record states: \"Se permite cualquier uso si se menciona la autoría\"."
+notes = "The Basque Government's 1 m bare-earth model of the Autonomous Community (\"MDT de 1m de la Comunidad Autónoma del País Vasco. Año 2017\"): the 2016 model from the 2008 and 2012 lidar, updated with the 2017 urban photogrammetric flight and the 2017 lidar (flown 8 February 2008 to 11 October 2017, the record's time extent), orthometric heights, on the government's open file server as one zip in 15 parts and as zipped 1:5,000 sheets in folders per 1:50,000 sheet. The sheets are named, not drawn (no index of them is published; the WCS gives one envelope, the record a box), so its extent is the area it states, the Basque Country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Licence as the record states: \"Se permite cualquier uso si se menciona la autoría\". The government's 1 m surface model (MDS_LIDAR_1M_EGUNERATUENA_MAS_ACTUALIZADA) is served only by its keyless WCS (WCS_KARTOGRAFIA, an ArcGIS WCS): a coarse GetCoverage of it (100 m cells) marks no nodata, its cells 0 outside the Community, so its mask isn't read, and no record of its coverage or year was found: listed, not drawn."
 
 [[piece]]
 id = "mdt-1m-2017"
@@ -19,3 +19,12 @@ tolerance_m = 200
 surface = "ground"
 spacing_m = 1
 year = 2017
+
+[[piece]]
+id = "mds-1m"
+label = "MDS LIDAR 1 m (más actualizada)"
+method = "none"
+why = "served only by the WCS, whose coarse answer marks no nodata (0 outside the Community), and no record of its coverage or year was read"
+[piece.metrics]
+surface = "surface"
+spacing_m = 1

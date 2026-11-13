@@ -5,7 +5,7 @@ licence_url = "https://filescartografia.navarra.es/6_MDE/_leeme.txt"
 source = "https://filescartografia.navarra.es/6_MDE/"
 theme = "terrain"
 availability = "open"
-notes = "Navarre's own bare-earth models (MDT), on the government's open file server as one zipped ASCII grid per 1:10,000 sheet of the grid it publishes beside them (Malla_IGN_10000_EPSG25830.zip, 400 sheets, its `E10_IGN` the sheet in each file's name), heights orthometric (EGM2008_REDNAP), EPSG:25830. The 0.5 m models of 2017 (Leica single-photon lidar, 14 points/m²) and 2024 (Optech Galaxy T2000, 5 points/m²): each listing names 401 sheets, the grid's 400 and 0243_43 (the enclave of Petilla de Aragón), which the grid lacks, so it's left out (about 19 km²). The 12.5 cm model of the Pamplona area (2020, 88 quarter-sheets of the grid's 1:10,000 sheets) has no outline: its quarters are named, not drawn, so it's listed, not drawn. The 2 m models of 2011-12 and 2014 are left out (the 0.5 m ones cover them)."
+notes = "Navarre's own bare-earth models (MDT) and surface models (MDS, \"el terreno como si sobre él se arrojara una sábana\"), a block each, on the government's open file server as one zipped ASCII grid per 1:10,000 sheet of the grid it publishes beside them (Malla_IGN_10000_EPSG25830.zip, 400 sheets, its `E10_IGN` the sheet in each file's name), heights orthometric (EGM2008_REDNAP), EPSG:25830. The 0.5 m models of 2017 (Leica single-photon lidar, 14 points/m²) and 2024 (Optech Galaxy T2000, 5 points/m²): each model's listing (MDT and MDS alike) names 401 sheets, the grid's 400 and 0243_43 (the enclave of Petilla de Aragón), which the grid lacks, so it's left out (about 19 km²). The 12.5 cm MDT and MDS of the Pamplona area (2020, 88 quarter-sheets of the grid's 1:10,000 sheets) has no outline: its quarters are named, not drawn, so it's listed, not drawn. The 2 m models of 2011-12 and 2014 are left out (the 0.5 m ones cover them)."
 
 [[piece]]
 id = "mdt-2024"
@@ -38,5 +38,39 @@ method = "none"
 why = "its 88 files are quarters of the 1:10,000 grid's sheets, named but not drawn by any published outline"
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.125
+year = 2020
+
+[[piece]]
+id = "mds-2024"
+label = "MDS 50 cm 2024"
+method = "file"
+class = "index"
+url = "https://filescartografia.navarra.es/6_MDE/Malla_IGN_10000_EPSG25830.zip"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2024
+
+[[piece]]
+id = "mds-2017"
+label = "MDS 50 cm 2017"
+method = "file"
+class = "index"
+url = "https://filescartografia.navarra.es/6_MDE/Malla_IGN_10000_EPSG25830.zip"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2017
+
+[[piece]]
+id = "mds-pamplona-2020"
+label = "MDS 12.5 cm Comarca de Pamplona 2020"
+method = "none"
+why = "its 88 files are quarters of the 1:10,000 grid's sheets, named but not drawn by any published outline"
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.125
 year = 2020

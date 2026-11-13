@@ -5,7 +5,7 @@ licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
 source = "https://www.data.gouv.fr/api/1/datasets/6932215a98d2031ba60f7ed4/"
 theme = "terrain"
 availability = "open"
-notes = "CRAIG's 0.5 m bare-earth model (MNT) of 21 zones of Auvergne-Rhône-Alpes (3,582 km²: the Dombes, the Chaîne des Puys, the Loire in its département and smaller sites), from a lidar flown February to April 2021: its tile index (TA_LiDAR_2021_MN_L93.gpkg, layer MNT, 14,331 500 m tiles), a piece per zone (its folder). Its grid is LiDAR HD's and its year no newer than LiDAR HD's 2021 and 2022 where those tiles are published; on 13 Nov 2026 Montluçon's zone lay outside LiDAR HD's published tiles. Its record (ids.craig.fr's dd5035b2-7db9-4821-aef5-ea4b54180889) states Licence Ouverte v2.0 as its access rights."
+notes = "CRAIG's 0.5 m bare-earth model (MNT) and surface model (MNS, interpolated from the ground and above-ground points) of 21 zones of Auvergne-Rhône-Alpes (3,582 km²: the Dombes, the Chaîne des Puys, the Loire in its département and smaller sites), from a lidar flown February to April 2021: its tile index (TA_LiDAR_2021_MN_L93.gpkg, layers MNT and MNS, 14,331 500 m tiles each), a piece per zone (its folder), a block per model. Its grid is LiDAR HD's and its year no newer than LiDAR HD's 2021 and 2022 where those tiles are published; on 13 Nov 2026 Montluçon's zone lay outside LiDAR HD's published tiles. The point cloud's stated precision (8 cm in height) isn't an RMSE of the models: left out. Its record (ids.craig.fr's dd5035b2-7db9-4821-aef5-ea4b54180889) states Licence Ouverte v2.0 as its access rights."
 
 [[piece]]
 id = "mnt"
@@ -17,5 +17,18 @@ by = ["dossier"]
 name = "dossier"
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "mns"
+method = "file"
+class = "index"
+url = "https://drive.opendata.craig.fr/public.php/dav/files/opendata/altimetrie/2021_lidar/01_TA/TA_LiDAR_2021_MN_L93.gpkg"
+layer = "MNS"
+by = ["dossier"]
+name = "dossier"
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.5
 year = 2021

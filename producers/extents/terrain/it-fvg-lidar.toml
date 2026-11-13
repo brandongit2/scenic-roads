@@ -5,7 +5,7 @@ licence_url = "https://www.dati.gov.it/iodl/2.0/"
 source = "https://geodati.gov.it/resource/id/r_friuve:m10856-cc-i11826"
 theme = "terrain"
 availability = "open"
-notes = "The region's lidar of 2017 to 2020 (16 pts/m² up to 1,000 m, 10 above): its 0.5 m models (\"Modelli altimetrici a maglia regolare a passo 0,50 m\"), the DTM among them, downloaded from the Eagle.fvg guest app (\"download basi cartografiche\"), with no published index; the record's bounding box is the region's, so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The record says \"Dato pubblico\", no access conditions; the region's open-data standard is IODL 2.0."
+notes = "The region's lidar of 2017 to 2020 (16 pts/m² up to 1,000 m, 10 above): its 0.5 m models (\"Modelli altimetrici a maglia regolare a passo 0,50 m\"), a block for the DTM and one for the surface models (the first-return and last-return DSMs and the DBM, the ground with its buildings, the same grid and flights), downloaded from the Eagle.fvg guest app (\"download basi cartografiche\"), with no published index; the record's bounding box is the region's, so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The record says \"Dato pubblico\", no access conditions; the region's open-data standard is IODL 2.0."
 
 [[piece]]
 id = "dtm"
@@ -17,5 +17,18 @@ filter = { adm0_a3 = ["ITA"], region = ["Friuli-Venezia Giulia"] }
 tolerance_m = 200
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "dsm"
+label = "DSM rilievo LIDAR RAFVG 2017-2020"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Friuli-Venezia Giulia"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.5
 year = 2020

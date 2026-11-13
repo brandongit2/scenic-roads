@@ -5,7 +5,7 @@ licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/v
 source = "https://environment.data.gov.uk/dataset/9ba4d5ac-d596-445a-9056-dae3ddec0178"
 theme = "terrain"
 availability = "open"
-notes = "England's lidar bare-earth models, from the agency's survey index catalogues (the Defra Data Services Platform's WFS, EPSG:27700): the National LIDAR Programme's 1 m DTM, its 5 km tiles by the year flown (302 survey blocks flown January 2017 to February 2023, then repeat surveys of some blocks); the 2022 LIDAR Composite DTM at 1 m and at 2 m, each by the extents of the surveys it was made from (June 2000 to April 2022) and their year (the composite's own `resolution` field is its survey's, resampled to the composite's grid; every survey in it \"had a vertical accuracy of +/-15cm RMSE\", the record says); and the time-stamped archive's survey DTMs finer than 1 m (`resolution` 0.5 and 0.25: its 1 m and 2 m surveys are in the composites), each survey's extent by year. The composites cover \"~99% of England\"; the WFS answers GeoJSON in EPSG:27700. The time-stamped archive's 1 m count by `resultType=hits` times out, so each finer block asks for its own resolution."
+notes = "England's lidar bare-earth and surface models, from the agency's survey index catalogues (the Defra Data Services Platform's WFS, EPSG:27700), a block each: the National LIDAR Programme's 1 m DTM and DSM, its 5 km tiles by the year flown (302 survey blocks flown January 2017 to February 2023, then repeat surveys of some blocks; each tile names its DTM, its DSM and its first-return DSM, `dtm_fn`, `dsm_fn`, `fz_dsm_fn`: the two DSMs one block, their tiles and metrics the same); the 2022 LIDAR Composite DTM and DSM (the last-return model, \"from the last or only laser pulse\") at 1 m and at 2 m, each by the extents of the surveys it was made from (June 2000 to April 2022) and their year (the composite's own `resolution` field is its survey's, resampled to the composite's grid; every survey in it \"had a vertical accuracy of +/-15cm RMSE\", each record says); the 2022 LIDAR Composite First Return DSM at 1 m and 2 m, made from the National LIDAR Programme's surveys alone (11 November 2016 to 5 May 2022, 289 survey extents; the same RMSE stated); and the time-stamped archive's survey DTMs and DSMs finer than 1 m (`resolution` 0.5 and 0.25: its 1 m and 2 m surveys are in the composites), each survey's extent by year (the DSM archive's record: \"All LIDAR data has a vertical accuracy of +/-15cm RMSE\"). The composites cover \"~99% of England\"; the WFS answers GeoJSON in EPSG:27700. The time-stamped archives' 1 m count by `resultType=hits` times out, so each finer block asks for its own resolution."
 
 [[piece]]
 id = "nlp-dtm"
@@ -82,4 +82,115 @@ tolerance_m = 100
 [piece.metrics]
 surface = "ground"
 spacing_m = { field = "resolution" }
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "nlp-dsm"
+label = "National LIDAR Programme DSM 1 m"
+method = "wfs"
+class = "index"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:National_LIDAR_Programme_Index_Catalogue"
+fields = ["year", "shape"]
+page = 2000
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "composite-dsm-1m"
+label = "LIDAR Composite DSM 2022 (last return), 1 m"
+method = "wfs"
+class = "service"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:LIDAR_Composite_1m_Last_Return_DSM_2022_extents"
+fields = ["year", "shape"]
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+vertical_rmse_m = 0.15
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "composite-dsm-2m"
+label = "LIDAR Composite DSM 2022 (last return), 2 m"
+method = "wfs"
+class = "service"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:LIDAR_Composite_2m_Last_Return_DSM_2022_extents"
+fields = ["year", "shape"]
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 2
+vertical_rmse_m = 0.15
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "composite-fz-dsm-1m"
+label = "LIDAR Composite First Return DSM 2022, 1 m"
+method = "wfs"
+class = "service"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:LIDAR_Composite_1m_First_Return_DSM_2022_extents"
+fields = ["year", "shape"]
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+vertical_rmse_m = 0.15
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "composite-fz-dsm-2m"
+label = "LIDAR Composite First Return DSM 2022, 2 m"
+method = "wfs"
+class = "service"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:LIDAR_Composite_2m_First_Return_DSM_2022_extents"
+fields = ["year", "shape"]
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 2
+vertical_rmse_m = 0.15
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "dsm-tiles-50cm"
+label = "LIDAR Tiles DSM (time stamped), 50 cm"
+method = "wfs"
+class = "service"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs?CQL_FILTER=resolution%3D0.5"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:LIDAR_DSM_Time_Stamped_Extents"
+fields = ["year", "resolution", "shape"]
+page = 1000
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "resolution" }
+vertical_rmse_m = 0.15
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "dsm-tiles-25cm"
+label = "LIDAR Tiles DSM (time stamped), 25 cm"
+method = "wfs"
+class = "service"
+url = "https://environment.data.gov.uk/spatialdata/survey-index-files/wfs?CQL_FILTER=resolution%3D0.25"
+type = "dataset-9f0fa3fc-a860-4729-adc9-47fe53f658d0:LIDAR_DSM_Time_Stamped_Extents"
+fields = ["year", "resolution", "shape"]
+page = 1000
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "resolution" }
+vertical_rmse_m = 0.15
 year = { field = "year", date = "year" }

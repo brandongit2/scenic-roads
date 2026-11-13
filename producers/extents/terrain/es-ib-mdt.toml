@@ -1,11 +1,11 @@
-name = "IDEIB Model digital del terreny LIDAR 2014"
+name = "IDEIB Model digital del terreny i de superfícies LIDAR 2014"
 credit = "Govern de les Illes Balears, SITIBSA (GOIB-scne.es)"
 licence = "CC BY-SA (\"Reconeixement-Compartir Igual\")"
 licence_url = "https://ideib.caib.es/geoserveis/rest/services/public/GOIB_Altimetria_IB/MapServer"
 source = "https://ideib.caib.es/geoserveis/rest/services/public/GOIB_Altimetria_IB/MapServer"
 theme = "terrain"
 availability = "closed"
-notes = "The Balearic government's 2 m bare-earth model from the 2014 lidar (MDT_LIDAR_2014_2x2), served only as the mosaic of its map service: no download of the grid was found (the IDEIB's download folders answer 403, and the service draws images). The mosaic's rasters are the five islands' (Mallorca, Menorca, Eivissa, Formentera, Cabrera, the footprint layer's names, its geometry not returned) and its boundary layer is boxes over the sea (11,119 km²), so its extent is the area it covers, the Balearic Islands, as Natural Earth's 1:10m administrative areas (v5.1.2) draw them: claimed, not checked against data. The islands' heights are on local mean sea level."
+notes = "The Balearic government's 2 m bare-earth and surface models from the 2014 lidar (MDT_LIDAR_2014_2x2 and MDS_LIDAR_2014_2x2, a block each), served only as the mosaics of its map service: no download of the grid was found (the IDEIB's download folders answer 403, and the service draws images). The mosaic's rasters are the five islands' (Mallorca, Menorca, Eivissa, Formentera, Cabrera, the footprint layer's names, its geometry not returned) and its boundary layer is boxes over the sea (11,119 km²), so its extent is the area it covers, the Balearic Islands, as Natural Earth's 1:10m administrative areas (v5.1.2) draw them: claimed, not checked against data. The islands' heights are on local mean sea level."
 
 [[piece]]
 id = "mdt-2m-2014"
@@ -17,5 +17,18 @@ filter = { iso_3166_2 = ["ES-PM"] }
 tolerance_m = 200
 [piece.metrics]
 surface = "ground"
+spacing_m = 2
+year = 2014
+
+[[piece]]
+id = "mds-2m-2014"
+label = "MDS LIDAR 2014 2x2 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["ES-PM"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
 spacing_m = 2
 year = 2014

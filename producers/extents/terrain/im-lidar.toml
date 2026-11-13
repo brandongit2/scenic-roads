@@ -5,7 +5,7 @@ licence_url = "https://www.geoconnexion.com/news/bluesky-publishes-first-online-
 source = "https://www.geoconnexion.com/news/bluesky-publishes-first-online-3d-maps-of-isle-of-man"
 theme = "terrain"
 availability = "paid"
-notes = "The Department of Infrastructure's lidar of the island, flown in 2013 \"covering all 572 square kilometres of the Island\", with terrain and surface models at 0.5, 1 and 2 m and the point cloud, resold by Bluesky under its 2016 contract with the Isle of Man Government (Bluesky's announcement, 7 September 2016). The government's own pages (gov.im, data.gov.im) answer \"Request Rejected\" to a script, and Bluesky's Mapshop pages read name no Isle of Man product, so the 2016 statement is the one read. Its extent is the island the statement names, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+notes = "The Department of Infrastructure's lidar of the island, flown in 2013 \"covering all 572 square kilometres of the Island\", with terrain and surface models at 0.5, 1 and 2 m and the point cloud, resold by Bluesky under its 2016 contract with the Isle of Man Government (Bluesky's announcement, 7 September 2016). The government's own pages (gov.im, data.gov.im) answer \"Request Rejected\" to a script, and Bluesky's Mapshop pages read name no Isle of Man product, so the 2016 statement is the one read. Its extent is the island the statement names, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data: the 0.5 m terrain and surface models a block each (the 1 and 2 m ones cover the same island, coarser)."
 
 [[piece]]
 id = "dtm"
@@ -17,5 +17,18 @@ filter = { adm0_a3 = ["IMN"] }
 tolerance_m = 200
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.5
+year = 2013
+
+[[piece]]
+id = "dsm"
+label = "Isle of Man LiDAR DSM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["IMN"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.5
 year = 2013

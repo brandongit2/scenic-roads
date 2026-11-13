@@ -5,7 +5,7 @@ licence_url = "https://www.ign.es/resources/licencia/Condiciones_licenciaUso_IGN
 source = "https://centrodedescargas.cnig.es/CentroDescargas/modelo-digital-terreno-mdt50cm"
 theme = "terrain"
 availability = "open"
-notes = "The bare-earth models of the national lidar programme (PNOA-LiDAR), from the CNIG's download centre (file by file; no account for up to 20 files). The third coverage's MDT50cm v1 (0.5 m, from the provisional NPC01 classification; \"cobertura por completar\"): the sheet index the centre publishes with it (Informacion_Auxiliar_MDT50cm.zip, a shapefile of 1:5,000 sheets per community and UTM zone, each its file's name and `FECHA`, a year), read in each shapefile's own projected CRS; 29,494 sheets in 13 communities and Ceuta and Melilla (September 2026). Catalonia's MDT50cm, published too, is in no shapefile of the index (its own 0.5 m model is es-ct-icgc's). The second coverage's MDT02 (2 m, flown 2015 to 2021, \"Cobertura completa\" in its IDEE record, every lot's MDT02 published) and the first coverage's MDT05 (5 m, flown 2009 to 2015, \"publicada en su totalidad\"): their sheet lists are only the centre's file search, which answers 403 to a request without its page's session, so their extent is the area the IGN states, Spain, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; their years vary by lot (no per-lot outline is readable: the lots' outlines are RAR archives), so no year is stated. Ceuta's, Melilla's and Alborán's MDT02 and MDT05 sheets are from photogrammetric stereo-correlation, not lidar. The surface models (MDS50cm) cover a subset of the MDT50cm's communities and are left out. The programme's RMSE z of at most 10 cm is the point cloud's specification, not the models' stated accuracy, and is left out. Heights orthometric (EPSG:5782 on the mainland)."
+notes = "The bare-earth and surface models of the national lidar programme (PNOA-LiDAR), from the CNIG's download centre (file by file; no account for up to 20 files). The third coverage's MDT50cm v1 (0.5 m, from the provisional NPC01 classification; \"cobertura por completar\"): the sheet index the centre publishes with it (Informacion_Auxiliar_MDT50cm.zip, a shapefile of 1:5,000 sheets per community and UTM zone, each its file's name and `FECHA`, a year), read in each shapefile's own projected CRS; 29,494 sheets in 13 communities and Ceuta and Melilla (September 2026). Catalonia's MDT50cm, published too, is in no shapefile of the index (its own 0.5 m model is es-ct-icgc's). The second coverage's MDT02 (2 m, flown 2015 to 2021, \"Cobertura completa\" in its IDEE record, every lot's MDT02 published) and the first coverage's MDT05 (5 m, flown 2009 to 2015, \"publicada en su totalidad\"): their sheet lists are only the centre's file search, which answers 403 to a request without its page's session, so their extent is the area the IGN states, Spain, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; their years vary by lot (no per-lot outline is readable: the lots' outlines are RAR archives), so no year is stated. Ceuta's, Melilla's and Alborán's MDT02 and MDT05 sheets are from photogrammetric stereo-correlation, not lidar. The third coverage's surface model MDS50cm v1 (0.5 m, \"la superficie visible del territorio, incluyendo el terreno, la vegetación, las edificaciones\", the same NPC01 clouds; \"Cobertura por completar\"): its own sheet index (Informacion_Auxiliar_MDS50cm.zip, the same kind of shapefiles, each its file's name and `FECHA`), 14,337 sheets in 6 communities and Ceuta and Melilla (Baleares, Canarias, Extremadura, Madrid, Murcia and Valencia), a block per shapefile (`mds50cm-`). The second coverage's MDS02 (2 m, 8,153 files to the MDT02's 8,308) and the first coverage's MDS05 (5 m, 1,180 files to the MDT05's 1,525): their records state no coverage and their sheet lists are only the centre's file search (403 without its session), so they are listed, not drawn. The programme's RMSE z of at most 10 cm is the point cloud's specification, not the models' stated accuracy, and is left out. Heights orthometric (EPSG:5782 on the mainland)."
 
 [[piece]]
 id = "mdt50cm-andalucia-h29"
@@ -237,4 +237,152 @@ filter = { adm0_a3 = ["ESP"] }
 tolerance_m = 500
 [piece.metrics]
 surface = "ground"
+spacing_m = 5
+
+[[piece]]
+id = "mds50cm-baleares"
+label = "MDS50cm v1, Illes Balears"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Baleares/Entornos_MDSv1_Baleares_H31.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-canarias"
+label = "MDS50cm v1, Canarias"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Canarias/Entornos_MDSv1_Canarias_H28.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-ceuta"
+label = "MDS50cm v1, Ceuta"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Ceuta/Entornos_MDSv1_Ceuta_H30.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-extremadura-h29"
+label = "MDS50cm v1, Extremadura (UTM 29)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Extremadura/H29/Entornos_MDSv1_Extremadura_H29.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-extremadura-h30"
+label = "MDS50cm v1, Extremadura (UTM 30)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Extremadura/H30/Entornos_MDSv1_Extremadura_H30.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-madrid"
+label = "MDS50cm v1, Comunidad de Madrid"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Madrid/Entornos_MDSv1_MAD_25830.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-melilla"
+label = "MDS50cm v1, Melilla"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Melilla/Entornos_MDSv1_Melilla_H30.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-murcia"
+label = "MDS50cm v1, Región de Murcia"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Murcia/Entornos_MDSv1_Murcia_H30.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-valencia-h30"
+label = "MDS50cm v1, Comunitat Valenciana (UTM 30)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Valencia/H30/Entornos_MDSv1_Valencia_H30.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds50cm-valencia-h31"
+label = "MDS50cm v1, Comunitat Valenciana (UTM 31)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDS50cm.zip"
+member = "Valencia/H31/Entornos_MDSv1_Valencia_H31.shp"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mds02"
+label = "MDS02 (2ª cobertura)"
+method = "none"
+why = "its record states no coverage, and its sheet list is only the download centre's file search, which answers 403 without its page's session"
+[piece.metrics]
+surface = "surface"
+spacing_m = 2
+
+[[piece]]
+id = "mds05"
+label = "MDS05 (1ª cobertura)"
+method = "none"
+why = "no coverage is stated (1,180 files to the MDT05's 1,525), and its sheet list is only the download centre's file search, which answers 403 without its page's session"
+[piece.metrics]
+surface = "surface"
 spacing_m = 5

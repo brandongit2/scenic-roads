@@ -5,7 +5,7 @@ licence_url = "https://www.vlaanderen.be/digitaal-vlaanderen/onze-oplossingen/op
 source = "https://metadata.vlaanderen.be/srv/api/records/f52b1a13-86bc-4b64-8256-88cc0d1a8735/formatters/xml"
 theme = "terrain"
 availability = "open"
-notes = "The Flemish Region's 1 m bare-earth model (DTM) from the DHMV II lidar (at least 8 points per m² a strip), flown 20 February 2013 to 20 April 2015 as its record states, \"gebiedsdekkend\" for the region; downloaded free in 43 zips by the NGI 1:50,000 sheet. Its flight-day outlines (vliegdagcontour, DHMVII_vdc) are a WMS layer only (the WFS address redirects to an error page, no OGC API answers), and its 43 sheets (download.vlaanderen.be's product 939) are 32 × 20 km squares of some 27,500 km² over a region of 13,625: its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. DHMV III is being flown (2026 to 2027, products planned for 2028)."
+notes = "The Flemish Region's 1 m bare-earth model (DTM) and 1 m surface model (DSM, \"inclusief objecten\", record 0da2e5e4-6886-426b-bb82-c0ffe6faeff6), a block each, from the DHMV II lidar (at least 8 points per m² a strip), flown 20 February 2013 to 20 April 2015 as its records state, \"gebiedsdekkend\" for the region; each downloaded free in 43 zips by the NGI 1:50,000 sheet (the DSM: download.vlaanderen.be's product 937). The WCS of both (DHMVII_DSM_1m) answers a GetCoverage at a coarse SCALEFACTOR with a 404 and a multipart body, so no mask is read from it. Its flight-day outlines (vliegdagcontour, DHMVII_vdc) are a WMS layer only (the WFS address redirects to an error page, no OGC API answers), and its 43 sheets (download.vlaanderen.be's product 939) are 32 × 20 km squares of some 27,500 km² over a region of 13,625: its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. DHMV III is being flown (2026 to 2027, products planned for 2028)."
 
 [[piece]]
 id = "dtm"
@@ -17,5 +17,18 @@ filter = { adm0_a3 = ["BEL"], region = ["Flemish"] }
 tolerance_m = 200
 [piece.metrics]
 surface = "ground"
+spacing_m = 1
+year = 2015
+
+[[piece]]
+id = "dsm"
+label = "DHMV II DSM 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BEL"], region = ["Flemish"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
 spacing_m = 1
 year = 2015

@@ -1,11 +1,11 @@
-name = "Provincia autonoma di Bolzano DTM"
+name = "Provincia autonoma di Bolzano DTM e DSM"
 credit = "Provincia Autonoma di Bolzano - Alto Adige, Ufficio Pianificazione territoriale e cartografia"
 licence = "CC0-1.0"
 licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 source = "https://geoservices9.civis.bz.it/geoserver/ows?service=WCS&version=2.0.1&request=GetCapabilities"
 theme = "terrain"
 availability = "open"
-notes = "The province's lidar terrain models, served by its keyless WCS (CC0, \"nessuna limitazione all'accesso del pubblico\"), with no tile index (its WFS holds contours, spot heights and break lines only): the 2.5 m model \"dell'Alto Adige\" (the whole province; created 30 June 2006), claimed as the province, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it; the 0.5 m model \"delle aree insediative\" (settled areas; created 30 November 2013) and the 0.2 m Adige model (flown 11 to 17 December 2024 and 24 January 2025, Tel to Salorno), whose areas no outline states: listed, not drawn."
+notes = "The province's lidar terrain and surface models (DTM and DSM, each a block; the DSMs' `-dsm` or `dsm` ids), served by its keyless WCS (CC0, \"nessuna limitazione all'accesso del pubblico\"), with no tile index (its WFS holds contours, spot heights and break lines only): the 2.5 m model \"dell'Alto Adige\" (the whole province; created 30 June 2006), claimed as the province, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it; the 0.5 m model \"delle aree insediative\" (settled areas; created 30 November 2013) and the 0.2 m Adige model (flown 11 to 17 December 2024 and 24 January 2025, Tel to Salorno), whose areas no outline states: listed, not drawn. The surface models are the same: the DSM 2.5 m \"dell'Alto Adige\" claimed as the province (its record states no date: no year), the DSM 0.5 m \"delle aree insediative\" (no date stated) and the Adige DSM 0.2 m (the same flights) listed; and the glaciers' DSM of 2023 (0.5 m), whose glaciers no outline states: listed (the 2016/17 one, image-matched by semi-global matching, is older: left out)."
 
 [[piece]]
 id = "dtm25"
@@ -39,3 +39,44 @@ why = "the Adige valley from Tel to Salorno has no stated outline; the WCS gives
 surface = "ground"
 spacing_m = 0.2
 year = 2025
+
+[[piece]]
+id = "dsm25"
+label = "DSM 2.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], name = ["Bozen"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 2.5
+
+[[piece]]
+id = "dsm05"
+label = "DSM 0.5 m (aree insediative)"
+method = "none"
+why = "the settled areas it covers have no stated outline; the WCS gives only the province's bounding box"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+
+[[piece]]
+id = "adige02-dsm"
+label = "DSM Adige 0.2 m"
+method = "none"
+why = "the Adige valley from Tel to Salorno has no stated outline; the WCS gives only a bounding box"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.2
+year = 2025
+
+[[piece]]
+id = "glaciers-2023-dsm"
+label = "DSM ghiacciai 2023 0.5 m"
+method = "none"
+why = "the glaciers it covers have no stated outline; the WCS gives only a bounding box"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2023

@@ -1,0 +1,20 @@
+name = "MNS Correl"
+credit = "IGN, MNS Correl"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/api/1/datasets/675871be6e60265b46ab3570/"
+theme = "terrain"
+availability = "open"
+notes = "IGN's 0.5 m surface model made by image correlation of the BD ORTHO's aerial photographs (image-matched, not lidar: the ground with its vegetation and buildings), served by the Géoplateforme's raw-value WMS (ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES.MNS, a GeoTIFF of heights per request, as LiDAR HD's tiles are) and WMTS. \"Le produit couvre l'ensemble du territoire français métropolitain et ultramarin (sauf la Polynésie Française, la Nouvelle-Calédonie et Wallis et Futuna)\", but the ZICAD (no-fly zones, nodata), as its data.gouv.fr record states, with no index or footprint published: its extent is that area, metropolitan France and the overseas departments (Natural Earth's France), Saint-Pierre-et-Miquelon, Saint-Barthélemy and Saint-Martin, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data (the French Southern Lands and Clipperton, which the statement doesn't name and the BD ORTHO isn't said to cover, left out). It is updated by département every 3 to 4 years with the BD ORTHO's flights, with no date by département published: no year is stated, nor an accuracy."
+
+[[piece]]
+id = "mns"
+label = "MNS Correl 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["FRA", "SPM", "BLM", "MAF"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5

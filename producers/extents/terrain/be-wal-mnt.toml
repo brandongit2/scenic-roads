@@ -1,11 +1,11 @@
-name = "Relief de la Wallonie LiDAR 2021-2022"
+name = "Relief de la Wallonie"
 credit = "Service public de Wallonie (SPW)"
 licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://metawal.wallonie.be/geonetwork/srv/api/records/a004e570-99d6-4fe5-b83d-49b774409278/formatters/xml"
 theme = "terrain"
 availability = "open"
-notes = "Wallonia's 0.5 m bare-earth model (MNT) from the 2021-2022 lidar campaign (its record: 19 February 2021 to 5 March 2022), downloaded by province. Its extent is the campaign's tile index (RELIEF/LIDAR_MAILLES, \"Mailles 2021-2022\": 69,438 point-cloud tiles of 500 m, the clouds the MNT is made from), by the year of each tile's last point (`DATE_LAST`; some tiles were flown in December 2020). The 2013-2014 MNT (1 m) it replaces is left out."
+notes = "Wallonia's 0.5 m bare-earth model (MNT) and surface model (MNS, its record 5a4c28fe-d30c-493e-861e-a80ebc703b64) from the 2021-2022 lidar campaign (the records: 19 February 2021 to 5 March 2022), downloaded by province, a block each. Their extent is the campaign's tile index (RELIEF/LIDAR_MAILLES, \"Mailles 2021-2022\": 69,438 point-cloud tiles of 500 m, the clouds the models are made from), by the year of each tile's last point (`DATE_LAST`; some tiles were flown in December 2020). Their height accuracy is stated as \"de l'ordre de 0,12 m en absolu\", not as an RMSE: left out. The SPW's photogrammetric surface model of summer 2023 (MNS_ORTHOS_2023_ETE, record 4b0dadd1-c2b0-49db-a3bb-2f79236ec42e: image matching of the orthophoto flights of 27 May to 25 June 2023, 0.5 m, \"L'ensemble du territoire wallon est couvert\", about 0.75 m in height, CC BY 4.0) is 384 GB delivered only on a hard disk the user brings, so free on request: its extent is the region it states, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The photogrammetric MNS of 2006-07 and 2018 to 2022 cover the same region and are older, and the 2013-2014 lidar MNT and MNS (1 m) are replaced: left out."
 
 [[piece]]
 id = "mnt"
@@ -18,3 +18,29 @@ page = 2000
 surface = "ground"
 spacing_m = 0.5
 year = { field = "DATE_LAST", date = "epoch-ms" }
+
+[[piece]]
+id = "mns"
+label = "MNS Wallonie 2021-2022 0.5 m"
+method = "arcgis"
+class = "index"
+url = "https://geoservices.wallonie.be/arcgis/rest/services/RELIEF/LIDAR_MAILLES/MapServer/0"
+page = 2000
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "DATE_LAST", date = "epoch-ms" }
+
+[[piece]]
+id = "mns-photo-2023"
+label = "MNS 2023 Été photogrammétrique 0.5 m"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BEL"], region = ["Walloon"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2023

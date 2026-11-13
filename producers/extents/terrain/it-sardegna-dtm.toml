@@ -5,7 +5,7 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://webgis.regione.sardegna.it/geoserverraster/ows?service=wms&version=1.3.0&request=GetCapabilities"
 theme = "terrain"
 availability = "open"
-notes = "The region's terrain models: the 10 m DTM of the whole island (2011), claimed as the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it; and its 1 m lidar DTM of the coast (2008) and the towns inland (2013), seen only as a WMS image and through a JavaScript download app, whose areas no outline states: listed, not drawn."
+notes = "The region's terrain models: the 10 m DTM of the whole island (2011), claimed as the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it; and its 1 m lidar DTM and DSM (a block each) of the coast (2008) and the towns inland (2013), seen only as a WMS image and through a JavaScript download app, whose areas no outline states: listed, not drawn."
 
 [[piece]]
 id = "dtm10"
@@ -27,5 +27,15 @@ method = "none"
 why = "the coast and towns it covers have no stated outline; the mosaic is a WMS image only"
 [piece.metrics]
 surface = "ground"
+spacing_m = 1
+year = 2013
+
+[[piece]]
+id = "lidar1-dsm"
+label = "DSM lidar 1 m (coast 2008, towns 2013)"
+method = "none"
+why = "the coast and towns it covers have no stated outline; the mosaic is a WMS image only"
+[piece.metrics]
+surface = "surface"
 spacing_m = 1
 year = 2013

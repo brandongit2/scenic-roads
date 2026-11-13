@@ -1,11 +1,11 @@
-name = "ICGC Model d'elevacions del terreny"
+name = "ICGC Models d'elevacions"
 credit = "Institut Cartogràfic i Geològic de Catalunya (ICGC)"
 licence = "CC-BY-4.0"
 licence_url = "https://www.icgc.cat/en/Geoinformation-and-Maps/Data-and-products/Elevations/Territorial-elevations/Elevation-models"
 source = "https://datacloud.icgc.cat/datacloud/model-elevacions-terreny/tif_unzip/"
 theme = "terrain"
 availability = "open"
-notes = "Catalonia's bare-earth models from the ICGC's territorial lidar (third coverage, flown 2021 to 2023, at least 8 points/m²), each one GeoTIFF on the institute's open directory (no login): the 0.5 m model of all Catalonia (model-elevacions-terreny-lidar-catalunya-50cm-2021-2023.tif, 421,964,204,579 bytes) and the 0.25 m model of the Barcelona metropolitan area (…-lidar-amb-25cm-2022-2022.tif), each file's own header and its mask at an overview say where it has data and at what cell. The 1 m and 5 m models of the same flights, and the 2 m one of 2008 to 2011, cover what the 0.5 m one does and are left out. The lidar's altimetric RMSE of about 6 cm (in flat, low-vegetation areas) is the point cloud's, not the models' stated accuracy, and is left out."
+notes = "Catalonia's bare-earth and surface models, each one GeoTIFF on the institute's open directories (no login), each file's own header and its mask at an overview saying where it has data and at what cell. The bare-earth models (model-elevacions-terreny/) from the ICGC's territorial lidar (third coverage, flown 2021 to 2023, at least 8 points/m²): the 0.5 m model of all Catalonia (model-elevacions-terreny-lidar-catalunya-50cm-2021-2023.tif, 421,964,204,579 bytes) and the 0.25 m model of the Barcelona metropolitan area (…-lidar-amb-25cm-2022-2022.tif). The surface models (model-superficies/, \"buildings, vegetation, street furniture\"): the 1 m model from the same lidar (model-superficies-lidar-catalunya-1m-2021-2023.tif), the 0.25 m one of the metropolitan area's 2022 lidar (…-lidar-amb-25cm-2022-2022.tif), and the newest of the annual 1 m models made by image correlation of the year's Catalonia-wide photo flight (…-correlacio-catalunya-1m-2024-2024.tif: image-matched, not lidar; those of 2018 to 2023 cover the same and are older, left out). The 1 m and 5 m bare-earth models of the same flights, and the 2 m one of 2008 to 2011, cover what the 0.5 m one does and are left out. The lidar's altimetric RMSE of about 6 cm (in flat, low-vegetation areas) is the point cloud's, not the models' stated accuracy, and is left out."
 
 [[piece]]
 id = "dtm-50cm"
@@ -30,3 +30,39 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = { field = "res_m" }
 year = 2022
+
+[[piece]]
+id = "dsm-1m"
+label = "MS lidar Catalunya 1 m 2021-2023"
+method = "raster"
+urls = ["https://datacloud.icgc.cat/datacloud/model-superficies/tif_unzip/model-superficies-lidar-catalunya-1m-2021-2023.tif"]
+mask_m = 100
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }
+year = 2023
+
+[[piece]]
+id = "dsm-25cm-amb"
+label = "MS lidar AMB 25 cm 2022"
+method = "raster"
+urls = ["https://datacloud.icgc.cat/datacloud/model-superficies/tif_unzip/model-superficies-lidar-amb-25cm-2022-2022.tif"]
+mask_m = 100
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }
+year = 2022
+
+[[piece]]
+id = "dsm-correlacio-2024"
+label = "MS correlació Catalunya 1 m 2024"
+method = "raster"
+urls = ["https://datacloud.icgc.cat/datacloud/model-superficies/tif_unzip/model-superficies-correlacio-catalunya-1m-2024-2024.tif"]
+mask_m = 100
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }
+year = 2024

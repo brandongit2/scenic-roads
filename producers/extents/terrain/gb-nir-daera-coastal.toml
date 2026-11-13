@@ -5,7 +5,7 @@ licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/v
 source = "https://opendata-daerani.hub.arcgis.com/maps/DAERANI::2021-ni-3d-coastal-survey-topographic-lidar-digital-terrain-model"
 theme = "terrain"
 availability = "closed"
-notes = "DAERA's lidar of Northern Ireland's whole coastline in 2021 (the intertidal area and about 200 m landward of the high-water mark; its DTM's \"source resolution of 0.25m\") and the North Coast's post-storm surveys of March and September 2022 (Curran Strand, Portrush East Strand, Portstewart Strand, Downhill to Magilligan; September's DTM 0.1 m). Each is published only as cached ArcGIS tile services (MapServer, \"Map,TilesOnly\") and scene services, under the Open Government Licence: no file to download. The services' Footprint and Boundary layers can't be queried (tiles only: a query answers \"Page Not Found\"), the hub's download of them answers \"Downloads are not supported for this item\", ArcGIS Online lists no feature service of the surveys, and a 200 m strip along the coast is no administrative area to claim: listed, not drawn."
+notes = "DAERA's lidar of Northern Ireland's whole coastline in 2021 (the intertidal area and about 200 m landward of the high-water mark; its DTM's \"source resolution of 0.25m\") and the North Coast's post-storm surveys of March and September 2022 (Curran Strand, Portrush East Strand, Portstewart Strand, Downhill to Magilligan; September's DTM 0.1 m), each survey's DTM and DSM (a block each, `-dsm` the surface model's; the 2021 and March 2022 DSMs' records state no cell, September's \"acquired at 0.5m resolution\"). Each is published only as cached ArcGIS tile services (MapServer, \"Map,TilesOnly\") and scene services, under the Open Government Licence: no file to download. The services' Footprint and Boundary layers can't be queried (tiles only: a query answers \"Page Not Found\"), the hub's download of them answers \"Downloads are not supported for this item\", ArcGIS Online lists no feature service of the surveys, and a 200 m strip along the coast is no administrative area to claim: listed, not drawn."
 
 [[piece]]
 id = "coastal-2021"
@@ -34,4 +34,32 @@ why = "published only as a cached tile service; its footprint layers can't be qu
 [piece.metrics]
 surface = "ground"
 spacing_m = 0.1
+year = 2022
+
+[[piece]]
+id = "coastal-2021-dsm"
+label = "2021 NI 3D Coastal Survey, topographic lidar DSM"
+method = "none"
+why = "published only as a cached tile service; its footprint layers can't be queried and no outline is published"
+[piece.metrics]
+surface = "surface"
+year = 2021
+
+[[piece]]
+id = "post-storm-2022-03-dsm"
+label = "March 2022 North Coast Post-Storm Survey DSM"
+method = "none"
+why = "published only as a cached tile service; its footprint layers can't be queried and no outline is published"
+[piece.metrics]
+surface = "surface"
+year = 2022
+
+[[piece]]
+id = "post-storm-2022-09-dsm"
+label = "September 2022 North Coast Post-Storm Recovery Survey DSM"
+method = "none"
+why = "published only as a cached tile service; its footprint layers can't be queried and no outline is published"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
 year = 2022
