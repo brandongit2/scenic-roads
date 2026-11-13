@@ -909,8 +909,9 @@ pub struct Status {
     /// the lead's own first, then each member whose ask carried one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capacity: Vec<(String, crate::coord::Capacity)>,
-    /// Why nothing more fits each member, as the lead's coordinator last packed its ask
-    /// (crate::coord::Coordinator::refusals): by its worker's name.
+    /// Why nothing more runs on each member, as the lead's coordinator last packed its ask
+    /// (crate::coord::Coordinator::refusals_with; a refusal of no offer reaching the room rule
+    /// said from the plan's waits, flags::nothing_words): by its worker's name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub packing: BTreeMap<String, String>,
     /// Each member's share of the NAS budget now, its leased jobs' weights in thousandths of the
@@ -4704,11 +4705,14 @@ impl Agent {
             .coord
             .as_ref()
             .map(|c| {
-                c.refusals_with(|worker, rule, words| match rule {
-                    crate::coord::sched::Rule::Empty => {
-                        flags::nothing_words(self.o.the_plan, &waiting, crate::paces::mac_of(worker) == self.host)
+                c.refusals_with(|worker, rule, words| {
+                    use crate::coord::sched::Rule;
+                    let lead = crate::paces::mac_of(worker) == self.host;
+                    match rule {
+                        Rule::Empty => flags::nothing_words(self.o.the_plan, &waiting, lead, None),
+                        Rule::Away => flags::nothing_words(self.o.the_plan, &waiting, lead, Some(words)),
+                        _ => words.to_string(),
                     }
-                    _ => words.to_string(),
                 })
             })
             .unwrap_or_default();

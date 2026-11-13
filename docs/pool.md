@@ -2776,14 +2776,21 @@ asks passed on are one-shot: the lead's store keeps them (below).
   left for a new job; cores busy, disk reserved and free, on the page as bars); a block per
   running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
   only its fourth slot shows slot 4), (`scenic status`: with that slot's lane's next work); and (`scenic status` alone) why nothing more
-  runs: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
+  runs: the packing's refusal as its last ask was packed (`Coordinator::refusals_with`, the status's
   `packing`: a cold job of the lead's own waiting for room, cores short for the next job open, a job
-  offered refused for its room (the first that didn't fit, what it needs against what there is), jobs
-  offered but not to this Mac (the lead's own, a step it doesn't run; `Rule::Away`: "3 jobs wait for the lead:
-  names-todo, rail, heritage-sites"), or no job offered at all (`Rule::Empty`: the lead's status
-  words it from the plan's waits, `flags::nothing_words`: steps waiting behind other work or an
-  input, named with their waits, else "the plan is complete: no job is left to offer", with no memory
-  or disk figure), shown while the refusal itself is younger than two minutes
+  offered refused for its room (the first that didn't fit, what it needs against what there is,
+  said even beside work offered to other Macs), the targets offered all held by jobs, done or in
+  backoff ("nothing offered is free to take: 1 done"), steps offered but not to this Mac (the
+  lead's own, a step it doesn't run; `Rule::Away`: "3 steps offered are the lead's alone:
+  names-todo, rail, pack"), or no job offered at all (`Rule::Empty`, also while the plan has no
+  pass). The lead's status words the last two with the plan's waits (`flags::nothing_words`, each
+  list cut to its first four): the work left a Mac could take waiting behind other work or an
+  input, with its wait ("the work left waits: slope-hi: …"); on a member, the steps left only the
+  lead runs; the waits of no step ("waiting: Building: the build's records can't be read now", on
+  a member "the lead waits: …"); and only with none of these, as the verdict's "Nothing to build",
+  "the plan is complete: no job is left to offer"; never a memory or disk figure. An ask refused
+  before any packing (the lead moving, the build paused, an older app) lets the refusal go: it
+  was of offers that ask wasn't weighed against), shown while the refusal itself is younger than two minutes
   (`CAP_FRESH_S`), older ones dropped. The forecast's lanes are per slot
   (`<host>`, `<host> #2`, …), as many as the slots each Mac may run now (`forecast::slot_lanes`):
   the lead's its ramp's, each member's `agent::job_slots` of the cores of its capacity (else a

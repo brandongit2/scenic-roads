@@ -580,7 +580,7 @@ fn job_line(j: &agent::JobView) -> String {
 /// (`Status::role`: "lead, coordinator", "member", or out of the pool and why), with its ramp; then
 /// each member building (`Status::helpers`); then any other the coordinator holds a capacity of.
 /// Under each: its capacity (coord::Capacity) and NAS share, a line per running job, and why
-/// nothing more fits (the packing's refusal, `Status::packing`).
+/// nothing more runs (the packing's refusal, `Status::packing`).
 fn macs_lines(st: &agent::Status) -> Vec<String> {
     let ramp = st.ramp.as_ref().map(|r| format!(" · {}", ramp_words(r))).unwrap_or_default();
     let mut macs: Vec<(&str, String, Option<&agent::Status>)> = vec![(
@@ -766,7 +766,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         println!("Flag: {}", f.line());
     }
     // Each Mac, the lead (the coordinator) first: its slots, its capacity, its jobs, and why
-    // nothing more fits (the same layout as the build page's machines).
+    // nothing more runs (the same layout as the build page's machines).
     for l in macs_lines(&st) {
         println!("{l}");
     }
@@ -1866,9 +1866,9 @@ mod tests {
 
     /// `scenic status` shows each Mac as the build page does (task #246): the lead marked
     /// coordinator with its ramp, each Mac's capacity, NAS share, a line per job (0 to 4 of them)
-    /// and why nothing more fits.
+    /// and why nothing more runs.
     #[test]
-    fn status_shows_each_mac_its_jobs_and_why_nothing_more_fits() {
+    fn status_shows_each_mac_its_jobs_and_why_nothing_more_runs() {
         let job = |k: usize| agent::JobView {
             job: None,
             id: format!("unit 6/{k}/1"),

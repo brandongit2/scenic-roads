@@ -18,9 +18,9 @@
 //!   None free, but the plan holds work of a step any Mac takes behind
 //!   other work (`Status::waiting`'s entries with a step: slope-hi behind terrain-root): flagged
 //!   with those waits, and the wait of the step each names where that one waits too, never just
-//!   "nothing offered". Nothing left it could take: no flag. A Mac offered no job at all has that
-//!   in its refusal too (`Status::packing`, `nothing_words`): the plan's waits, else that the plan
-//!   is complete, never the room left.
+//!   "nothing offered". Nothing left it could take: no flag. A Mac no offer reached the room rule
+//!   for says so in its refusal (`Status::packing`, `nothing_words`): the work offered to other
+//!   Macs, the plan's waits, else that the plan is complete; never the room left.
 //! - **Stuck** (`stuck`): a leased job whose work hasn't moved, by its worker's beats, for longer
 //!   than `factor` times its step's usual stillness (`Still`). Its work moved at a beat when
 //!   anything of it changed since the one before (crate::coord::lease::Lease::still): its progress
@@ -238,39 +238,49 @@ pub fn idle(the_plan: &dyn crate::agent::seam::Plan, st: &Status, open: &[Open])
     out
 }
 
-/// A Mac's reason for running nothing more when the plan offered it no job at all
-/// (`coord::sched::Rule::Empty`), from the plan's waits (`Status::waiting`'s entries with a step):
-/// work of a step any Mac takes that waits behind other work or an input, named with its wait; work
-/// of steps only the lead runs, named as waiting for it (on a member); else the plan is complete.
-/// No room figures: nothing was refused for room.
-pub fn nothing_words(the_plan: &dyn crate::agent::seam::Plan, waiting: &[Waiting], lead: bool) -> String {
+/// A Mac's reason for running nothing more when no job offered reached the room rule
+/// (`coord::sched::Rule::Empty`, `Rule::Away`): `away`, the coordinator's words of the work offered
+/// that isn't this Mac's (`Rule::Away`'s), then the plan's waits (`Status::waiting`, the lead's):
+/// work a Mac could take waiting behind other work or an input (`held_back`), named with its wait;
+/// on a member, the steps left only the lead runs; and the waits of no step (the records unreadable,
+/// the first OpenStreetMap pass, the disk room target), as the verdict says them ("Waiting: …").
+/// Only with none of these is the plan complete, as the verdict's "Nothing to build" is. No room
+/// figures: nothing was refused for room. Each list cut to its first few.
+pub fn nothing_words(
+    the_plan: &dyn crate::agent::seam::Plan,
+    waiting: &[Waiting],
+    lead: bool,
+    away: Option<&str>,
+) -> String {
+    const SHOWN: usize = 4;
+    let cut = |mut list: Vec<String>, sep: &str| {
+        list.dedup();
+        let more = list.len().saturating_sub(SHOWN);
+        list.truncate(SHOWN);
+        let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+        format!("{}{more}", list.join(sep))
+    };
+    let mut said: Vec<String> = away.map(str::to_string).into_iter().collect();
     let waits = held_back(the_plan, waiting, lead);
-    let mut said: Vec<String> = Vec::new();
     if !waits.is_empty() {
-        said.push(format!(
-            "{} step{} wait{} behind other work or an input: {}",
-            waits.len(),
-            if waits.len() == 1 { "" } else { "s" },
-            if waits.len() == 1 { "s" } else { "" },
-            waits.join("; ")
-        ));
+        said.push(format!("the work left waits: {}", cut(waits, "; ")));
     }
     if !lead {
-        let mut only: Vec<&str> = waiting
-            .iter()
-            .filter_map(|w| w.step.as_deref())
-            .filter(|s| super::every::place(the_plan, s) != super::every::Place::Any)
-            .collect();
-        only.dedup();
-        if !only.is_empty() {
-            said.push(format!(
-                "{} step{} wait{} for the lead: {}",
-                only.len(),
-                if only.len() == 1 { "" } else { "s" },
-                if only.len() == 1 { "s" } else { "" },
-                only.join(", ")
-            ));
+        let mut only: Vec<String> = Vec::new();
+        for s in waiting.iter().filter_map(|w| w.step.as_deref()) {
+            if super::every::place(the_plan, s) != super::every::Place::Any && !only.iter().any(|o| o == s) {
+                only.push(s.to_string());
+            }
         }
+        if !only.is_empty() {
+            said.push(format!("work left only the lead runs: {}", cut(only, ", ")));
+        }
+    }
+    let plain: Vec<String> =
+        waiting.iter().filter(|w| w.step.is_none()).map(|w| format!("{}: {}", w.what, w.why)).collect();
+    if !plain.is_empty() {
+        let who = if lead { "waiting" } else { "the lead waits" };
+        said.push(format!("{who}: {}", cut(plain, "; ")));
     }
     if said.is_empty() {
         "the plan is complete: no job is left to offer".to_string()
@@ -490,26 +500,46 @@ mod tests {
         assert!(f[0].said.contains("cores: 0 of 8 left"), "{}", f[0].said);
     }
 
-    /// Task #1367: a Mac offered no job says why from the plan's waits, with no room figure:
-    /// nothing waits, the plan is complete; work behind other work or an input is named with its
-    /// wait; steps only the lead runs wait for it on a member, and are the lead's own on the lead.
+    /// Task #1367: a Mac offered no job says why from the plan's waits, with no room figure: the
+    /// plan complete only with no wait at all; work behind other work or an input named with its
+    /// wait; steps only the lead runs said as such on a member, the lead's own on the lead; a wait
+    /// of no step (the records unreadable) said, never "complete"; work offered to other Macs first.
     #[test]
     fn a_mac_offered_nothing_says_the_plan_is_complete_or_what_waits() {
         let plan = crate::agent::seam::for_tests();
-        assert_eq!(nothing_words(plan, &[], false), "the plan is complete: no job is left to offer");
-        // (A wait of no step, as the disk room target's, is no work of the plan.)
-        let disk = Waiting { what: "The disk room target".into(), why: "short".into(), step: None };
-        assert_eq!(nothing_words(plan, &[disk], true), "the plan is complete: no job is left to offer");
+        let complete = "the plan is complete: no job is left to offer";
+        assert_eq!(nothing_words(plan, &[], false, None), complete);
+        assert_eq!(nothing_words(plan, &[], true, None), complete);
+        // (A wait of no step: the plan can't be complete while it waits.)
+        let records =
+            Waiting { what: "Building".into(), why: "the build's records can't be read now".into(), step: None };
+        let w = nothing_words(plan, std::slice::from_ref(&records), true, None);
+        assert_eq!(w, "waiting: Building: the build's records can't be read now");
+        let w = nothing_words(plan, std::slice::from_ref(&records), false, None);
+        assert_eq!(w, "the lead waits: Building: the build's records can't be read now");
         let waits =
             [wait("slope-hi", "wait for terrain-root"), wait("terrain-root", "waits for the lead's NAS budget")];
-        let member = nothing_words(plan, &waits, false);
         assert_eq!(
-            member,
-            "1 step waits behind other work or an input: slope-hi: wait for terrain-root (terrain-root: waits for the lead's NAS budget); 1 step waits for the lead: terrain-root"
+            nothing_words(plan, &waits, false, None),
+            "the work left waits: slope-hi: wait for terrain-root (terrain-root: waits for the lead's NAS budget); work left only the lead runs: terrain-root"
         );
-        let lead = nothing_words(plan, &waits, true);
-        assert!(lead.starts_with("2 steps wait behind other work or an input: slope-hi: wait for"), "{lead}");
-        assert!(!lead.contains("for the lead:"), "{lead}");
+        let lead = nothing_words(plan, &waits, true, None);
+        assert!(lead.starts_with("the work left waits: slope-hi: wait for terrain-root ("), "{lead}");
+        assert!(
+            lead.contains("; terrain-root: waits for the lead's NAS budget") && !lead.contains("only the lead"),
+            "{lead}"
+        );
+        // (Many jobs of one step waiting alike: said once; past four, counted.)
+        let many: Vec<Waiting> = ["a", "a", "b", "c", "d", "e", "f"]
+            .iter()
+            .map(|s| Waiting { what: (*s).into(), why: "x".into(), step: None })
+            .collect();
+        assert_eq!(nothing_words(plan, &many, true, None), "waiting: a: x; b: x; c: x; d: x and 2 more");
+        // (Work offered, none of it this Mac's: the coordinator's words first, the waits after.)
+        let away = "2 steps offered are the lead's alone: rail, pack";
+        assert_eq!(nothing_words(plan, &[], false, Some(away)), away);
+        let w = nothing_words(plan, &waits[..1], false, Some(away));
+        assert!(w.starts_with(&format!("{away}; the work left waits: slope-hi")), "{w}");
     }
 
     /// Nothing free, but work of a shared step held behind another step that waits too (4 Nov:

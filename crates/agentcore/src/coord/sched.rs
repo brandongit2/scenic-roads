@@ -80,10 +80,11 @@ pub enum Rule {
     /// Nothing offered fitting the room left (memory, disk) or free to take (`Refused`).
     Room,
     /// Work is offered, none of it to this Mac: the lead's own planned jobs to a member, a step it
-    /// doesn't run (`Sched::apart`).
+    /// doesn't run (`Sched::apart`); the lead's status adds the plan's waits
+    /// (crate::agent::flags::nothing_words).
     Away,
-    /// Nothing is offered at all: no job of the plan is ready (`Sched::apart`). The plan may be
-    /// complete or its work wait behind other work or an input; the lead's status says which
+    /// Nothing is offered at all (`Sched::apart`; an ask while the plan has no pass): the plan may
+    /// be complete or its work wait behind other work or an input; the lead's status says which
     /// (crate::agent::flags::nothing_words).
     Empty,
     /// The NAS budget: targets it would take waiting for the NAS's room.
@@ -130,6 +131,10 @@ impl Rule {
         }
     }
 }
+
+/// `Rule::Empty`'s words, as the coordinator knows them (the lead's status words it from the plan's
+/// waits, crate::agent::flags::nothing_words).
+pub const EMPTY: &str = "no job is offered";
 
 fn held_by(rule: Rule, words: String) -> Held {
     Held { rule, words }
@@ -2308,23 +2313,23 @@ impl Sched {
                 list.push(step);
             }
         }
-        let say = |n: usize, what: &str, list: &[&str]| {
+        let say = |list: &[&str], one: &str, many: &str| {
             const SHOWN: usize = 6;
+            let n = list.len();
             let names = list.iter().take(SHOWN).copied().collect::<Vec<_>>().join(", ");
-            let more = if list.len() > SHOWN { format!(" and {} more", list.len() - SHOWN) } else { String::new() };
-            format!("{n} job{} {what}: {names}{more}", if n == 1 { "" } else { "s" })
+            let more = if n > SHOWN { format!(" and {} more", n - SHOWN) } else { String::new() };
+            let (s, what) = if n == 1 { ("", one) } else { ("s", many) };
+            format!("{n} step{s} offered {what}: {names}{more}")
         };
         let mut said: Vec<String> = Vec::new();
         if !for_lead.is_empty() {
-            let w = if for_lead.len() == 1 { "waits for the lead" } else { "wait for the lead" };
-            said.push(say(for_lead.len(), w, &for_lead));
+            said.push(say(&for_lead, "is the lead's alone", "are the lead's alone"));
         }
         if !not_here.is_empty() {
-            let w = if not_here.len() == 1 { "isn't one this Mac runs" } else { "aren't ones this Mac runs" };
-            said.push(say(not_here.len(), w, &not_here));
+            said.push(say(&not_here, "isn't one this Mac runs", "aren't ones this Mac runs"));
         }
         if said.is_empty() {
-            held_by(Rule::Empty, "no job of the plan is ready to offer".to_string())
+            held_by(Rule::Empty, EMPTY.to_string())
         } else {
             held_by(Rule::Away, said.join("; "))
         }

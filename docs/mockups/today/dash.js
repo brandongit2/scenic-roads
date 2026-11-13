@@ -158,7 +158,7 @@ const isSlotOf = (name, host) => slotNo(name, host) != null;
 // Slot k's worker name (crate::agent::slot_worker).
 const slotName = (host, k) => (k ? `${host} #${k + 1}` : host);
 // What the lead's coordinator says of a Mac, by its slots' names: its capacity (coord::Capacity),
-// why nothing more fits it (the packing's refusal) and its share of the NAS budget (thousandths).
+// why nothing more runs on it (the packing's refusal) and its share of the NAS budget (thousandths).
 function macSaid(a, host) {
   const cap = (a.capacity || []).find(([nm]) => isSlotOf(nm, host))?.[1];
   const why = Object.entries(a.packing || {}).filter(([nm]) => isSlotOf(nm, host)).map(([, w]) => w);
@@ -514,7 +514,7 @@ function rampText(r, now) {
 }
 
 // A machine's card, each the same: who and how it is (the lead marked coordinator, its ramp); its
-// capacity; a block per running job, by slot, with what's next there; why nothing more fits (or
+// capacity; a block per running job, by slot, with what's next there; why nothing more runs (or
 // why none runs); its facts; its day.
 function machineCard(m, x) {
   const st = x.status, now = m.now;
@@ -541,7 +541,7 @@ function machineCard(m, x) {
     for (const w of why) card.append(h("div", "sub", x.role === "lead" ? `${w.what}: ${w.why}` : w.why));
     card.append(...[nextBlock(m, x.name)].filter(Boolean));
   }
-  for (const w of said.why) card.append(h("div", "fits", h("b", null, "Nothing more fits: "), w));
+  for (const w of said.why) card.append(h("div", "fits", h("b", null, "Nothing more runs: "), w));
   const names = Object.keys(m.fc?.lanes || {}).filter((nm) => isSlotOf(nm, x.name));
   const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, names.length ? names : [x.name]) || [])];
   card.append(...more.filter(Boolean));

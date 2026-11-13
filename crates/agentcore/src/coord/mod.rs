@@ -513,7 +513,7 @@ pub struct Shared {
     pub nas_mount: Option<NasMount>,
     /// Why each worker's last ask was granted fewer jobs than it wanted (`pack`: the packing's
     /// refusal, in words), and when (unix s); none once an ask got all it wanted. The status's
-    /// (`Coordinator::refusals`): why nothing more fits a Mac.
+    /// (`Coordinator::refusals_with`): why nothing more runs on a Mac.
     pub refused: BTreeMap<String, (u64, sched::Held)>,
     /// Each worker's asks answered over the last `ANSWERS_S`, oldest first (`answered`): what the
     /// lead's departure lines name (crate::agent::forecast::departures, `Coordinator::answers`).
@@ -888,8 +888,10 @@ impl Shared {
     }
 
     /// `worker`'s ask refused before any packing, `why` (the lead moving, the build paused, another
-    /// app), kept as its answer (`answered`).
+    /// app), kept as its answer (`answered`). Its last packing's refusal let go: it was of offers
+    /// this ask wasn't weighed against (the status says the pause or the app itself).
     fn refused_ask(&mut self, worker: &str, want: usize, why: &str) {
+        self.refused.remove(worker);
         let at = self.wall_s();
         let answer =
             Answer { at, want: want.max(1), got: 0, offered: Vec::new(), held: None, refused: Some(why.to_string()) };
@@ -2312,15 +2314,17 @@ impl Coordinator {
         })
     }
 
-    /// Why nothing more fits each worker, as its last ask was packed (`Shared::refused`), the
-    /// refusal itself younger than `CAP_FRESH_S` (older ones dropped here): the status's, per Mac.
+    /// Tests: `refusals_with`, each in the coordinator's own words.
+    #[cfg(test)]
     pub fn refusals(&self) -> BTreeMap<String, String> {
         self.refusals_with(|_, _, w| w.to_string())
     }
 
-    /// `refusals`, each said by `say` of its worker, its rule and its words: the lead's status
-    /// words the refusal of an ask offered nothing (`sched::Rule::Empty`) from the plan's waits,
-    /// which the coordinator doesn't know (crate::agent::flags::nothing_words).
+    /// Why nothing more runs on each worker, as its last ask was packed (`Shared::refused`), the
+    /// refusal itself younger than `CAP_FRESH_S` (older ones dropped here): the status's, per Mac,
+    /// each said by `say` of its worker, its rule and its words: the lead's status words a refusal
+    /// no offer reached the room rule for (`sched::Rule::Empty`, `Rule::Away`) with the plan's
+    /// waits, which the coordinator doesn't know (crate::agent::flags::nothing_words).
     pub fn refusals_with(&self, say: impl Fn(&str, sched::Rule, &str) -> String) -> BTreeMap<String, String> {
         let mut s = self.shared.lock().unwrap();
         // (Old ones let go: a worker gone asks no more.)
@@ -4531,9 +4535,12 @@ fn route(
                 }
             }
             if s.pass.is_empty() {
-                // (No pass: nothing offered.)
+                // (No pass: nothing offered, the refusal said so, never an earlier one's.)
                 let at = s.wall_s();
-                let answer = Answer { at, want: a.want.max(1), got: 0, offered: Vec::new(), held: None, refused: None };
+                let held = sched::Held { rule: sched::Rule::Empty, words: sched::EMPTY.to_string() };
+                s.refused.insert(a.worker.clone(), (at, held.clone()));
+                let answer =
+                    Answer { at, want: a.want.max(1), got: 0, offered: Vec::new(), held: Some(held), refused: None };
                 s.answered(&a.worker, answer);
             } else {
                 // (In plan order, as the lead's own (task #909: no step ranked by hand; the plan
@@ -11402,40 +11409,88 @@ mod tests {
         );
     }
 
-    /// Task #1367: an ask offered nothing says so, not the room left: no offer at all is "no job
-    /// of the plan is ready" (`Rule::Empty`, no memory or disk figure), the lead's own planned jobs
-    /// to a member are work for the lead, and a step the Mac doesn't run is named as such
-    /// (`Rule::Away`); the room's words stay for an offer refused for its room.
+    /// Task #1367: an ask no offer reached the room rule for says so, not the room left: no offer
+    /// at all is `Rule::Empty` (no memory or disk figure), the lead's own planned jobs to a member
+    /// and a step the Mac doesn't run are `Rule::Away`, named by step; an offer it can take but not
+    /// in its room keeps the room's words, also beside offers for other Macs; and a room refusal
+    /// never outlives the offers it was of: the plan emptied, the next ask says so, and an ask
+    /// refused before any packing (the build paused) or while the plan has no pass lets it go.
     #[test]
     fn an_ask_offered_nothing_says_why_not_the_room() {
         let (_d, c, w, _clock) = every((0, 0));
         let a = every_ask("m1", "pack", 9000, 100_000);
         let held = |c: &Coordinator| c.answers(0)["m1"].last().and_then(|x| x.held.clone());
+        let ask = |c: &Coordinator| {
+            assert!(w.ask(&a).unwrap().is_none());
+            held(c).unwrap()
+        };
         // Nothing offered anywhere (the plan offered, its pass set).
         c.offer("p", Vec::new());
-        assert!(w.ask(&a).unwrap().is_none());
-        let h = held(&c).unwrap();
-        assert_eq!((h.rule, h.words.as_str()), (sched::Rule::Empty, "no job of the plan is ready to offer"));
-        assert!(!c.refusals()["m1"].contains("GB"), "{:?}", c.refusals());
-        // The lead's own planned jobs: not a member's.
+        let h = ask(&c);
+        assert_eq!((h.rule, h.words.as_str()), (sched::Rule::Empty, sched::EMPTY));
+        // The lead's own planned jobs: not a member's, named by step, once each.
         let key = |t: &str| (t.to_string(), "k".to_string(), 0);
         let own = |step: &str, id: &str| Offer { step: step.into(), targets: vec![key("a")], job: Some(id.into()) };
-        c.offer("p", vec![own("names-todo", "j1"), own("rail", "j2"), own("pack", "j3")]);
-        assert!(w.ask(&a).unwrap().is_none());
-        let h = held(&c).unwrap();
+        c.offer("p", vec![own("names-todo", "j1"), own("rail", "j2"), own("pack", "j3"), own("pack", "j4")]);
+        let h = ask(&c);
         assert_eq!(h.rule, sched::Rule::Away);
-        assert_eq!(h.words, "3 jobs wait for the lead: names-todo, rail, pack");
+        assert_eq!(h.words, "3 steps offered are the lead's alone: names-todo, rail, pack");
         // A step offered to every member that this Mac doesn't run.
-        c.offer("p", vec![Offer { step: "slope-hi".into(), targets: vec![key("6/1/1")], job: None }]);
-        assert!(w.ask(&a).unwrap().is_none());
-        let h = held(&c).unwrap();
-        assert_eq!(h.rule, sched::Rule::Away);
-        assert_eq!(h.words, "1 job isn't one this Mac runs: slope-hi");
-        // An offer it can take but not in its room keeps the room's words.
+        let slope = Offer { step: "slope-hi".into(), targets: vec![key("6/1/1")], job: None };
+        c.offer("p", vec![slope.clone()]);
+        let h = ask(&c);
+        assert_eq!((h.rule, h.words.as_str()), (sched::Rule::Away, "1 step offered isn't one this Mac runs: slope-hi"));
+        // An offer it can take but not in its room keeps the room's words, the job named the one
+        // that doesn't fit, its need against the room.
         measured_offer(&c, "pack", &[("6/1/1", Some((20_000, 100, 2000)))]);
+        let h = ask(&c);
+        assert_eq!(h.rule, sched::Rule::Room);
+        assert!(
+            h.words.starts_with("pack 6/1/1 needs 19.5 GB of memory") && h.words.contains("memory short by"),
+            "{h:?}"
+        );
+        // So too beside work for other Macs: the room refusal isn't hidden.
+        let mut both = c.shared.lock().unwrap().offers.clone();
+        both.extend([own("rail", "j2"), slope]);
+        c.offer("p", both);
+        let h = ask(&c);
+        assert_eq!(h.rule, sched::Rule::Room, "{h:?}");
+        assert!(h.words.starts_with("pack 6/1/1 needs 19.5 GB"), "{h:?}");
+        // The plan emptied: the next ask's refusal is the empty plan's, no room figure lingering.
+        c.offer("p", Vec::new());
+        ask(&c);
+        assert_eq!(c.refusals()["m1"], sched::EMPTY);
+        // A room refusal let go by an ask refused before any packing (the build paused).
+        measured_offer(&c, "pack", &[("6/1/1", Some((20_000, 100, 2000)))]);
+        ask(&c);
+        assert!(c.refusals()["m1"].contains("GB"), "{:?}", c.refusals());
+        c.set_pause(Some(jobrt::control::Pause { mode: jobrt::control::Mode::Freeze, by: "x".into(), at: 1 }), 1);
+        assert!(w.ask(&a).is_err() || c.refusals().get("m1").is_none());
+        assert!(!c.refusals().contains_key("m1"), "{:?}", c.refusals());
+        c.set_pause(None, 2);
+        // And by an ask while the plan has no pass: nothing offered, said so.
+        ask(&c);
+        assert!(c.refusals()["m1"].contains("GB"));
+        c.shared.lock().unwrap().pass.clear();
+        let h = ask(&c);
+        assert_eq!((h.rule, c.refusals()["m1"].as_str()), (sched::Rule::Empty, sched::EMPTY));
+    }
+
+    /// Task #1367 review: the lead's state of 13 Nov 2026, plan complete by the coordinator: the
+    /// one target offered done under its key (`nothing offered is free to take: 1 done`), else no
+    /// offer at all (said complete by the lead's status: flags::nothing_words); never the room.
+    #[test]
+    fn a_done_plan_says_its_targets_are_done_not_the_room() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let a = every_ask("m1", "available", 24_000, 50_000);
+        let o = Offer { step: "available".into(), targets: vec![("terrain".into(), "k".into(), 0)], job: None };
+        c.offer("p", vec![o]);
+        c.shared.lock().unwrap().done.insert(("available".into(), "terrain".into()), "k".into());
         assert!(w.ask(&a).unwrap().is_none());
-        let h = held(&c).unwrap();
-        assert!(h.words.contains("needs 19.5 GB of memory") && h.words.contains("memory short by"), "{h:?}");
+        assert_eq!(c.refusals()["m1"], "nothing offered is free to take: 1 done");
+        c.offer("p", Vec::new());
+        assert!(w.ask(&a).unwrap().is_none());
+        assert_eq!(c.refusals()["m1"], sched::EMPTY);
     }
 
     /// Task #1170: room held for the first offer refused for its room is the hold the status says
