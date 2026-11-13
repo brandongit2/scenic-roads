@@ -69,7 +69,6 @@ import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
-import { EVAL, evalState, installEval } from './evalmode';
 import { CMP, cmpState } from './bldcmp';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
@@ -100,8 +99,8 @@ async function main() {
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
   // The profile in use: the link's (one it names that's gone, or a link naming none: the default
-  // profile; the link's settings are laid over it), else the last session's. The eval modes take the
-  // seed: fixed settings, whatever the server's profiles.
+  // profile; the link's settings are laid over it), else the last session's. The building
+  // comparison takes the seed: fixed settings, whatever the server's profiles.
   const listing = await profilesReady;
   const known = (id: string | null): id is string => !!id && listing.profiles.some((p) => p.id === id);
   const hasLink = location.hash.length > 1;
@@ -113,8 +112,8 @@ async function main() {
   // The opening view, before the metadata: only `bd=` in a link depends on it, not the view.
   const pre = hasLink ? fromHash(location.hash, false, linkBase) : saved;
   const v = pre.view;
-  // (Eval mode: the map fills the window, the panels under it.)
-  if (EVAL || CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
+  // (The building comparison: the map fills the window, the panels under it.)
+  if (CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
   const map = new maplibregl.Map({
     container: 'map',
     style: { version: 8, sources: {}, layers: [] },
@@ -135,8 +134,6 @@ async function main() {
     centerClampedToGround: false,
     // Each tile's version is its pack's (a new catalogue re-requests only the tiles it changed).
     transformRequest: (url) => ({ url: packUrl(url) }),
-    // (Eval mode reads the canvas back, at its own pixel ratio, its reference finer: evalmode.ts.)
-    ...(EVAL ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(EVAL.dpr ? { pixelRatio: EVAL.dpr } : {}) } : {}),
     ...(CMP ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(CMP.dpr ? { pixelRatio: CMP.dpr } : {}) } : {}),
   });
   // Shaders linked in the background (our MapLibre's Context.asyncPrograms, glprog.ts): by default
@@ -172,8 +169,7 @@ async function main() {
   if (listing === FALLBACK) toast('The settings profiles didn\u2019t load: the built-in Default is shown, and profiles can\u2019t be changed');
   else if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
   const linked = hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
-  // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
-  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings, seed)) : CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
+  const store = new Store(CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
   profiles.use(activePid);
   history.replaceState(null, '', toHash(store.s, hasBuildings, profiles.base())); // the address bar holds the restored state
@@ -183,7 +179,6 @@ async function main() {
   // diff: false, so the new style loads as one (style.load, below) rather than as edits to the empty one.
   map.setStyle(baseStyle(store.s.water, !!meta.labelTiles, store.s.labelDensity, !!meta.water, meta.terrainAreas), { diff: false });
   setTerrainAreas(map, meta.terrainAreas);
-  if (EVAL) installEval(map);
   // The 3D buildings and the far buildings' field (ctl/buildings.ts).
   const bld = new Buildings(map, store, meta, {
     styleReady: () => styleReady,

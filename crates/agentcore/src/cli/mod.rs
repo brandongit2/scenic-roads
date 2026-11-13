@@ -38,7 +38,6 @@ pub fn tool(name: &str) -> Option<clap::Command> {
         "bldtile" => Bldtile::command(),
         "terrainsub" => Terrainsub::command(),
         "lakefill" => Lakefill::command(),
-        "coastcheck" => Coastcheck::command(),
         "scenic-polar" => Polar::command(),
         _ => return None,
     })

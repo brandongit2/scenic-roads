@@ -210,7 +210,6 @@ Nothing outside agentcore names them there.
 | scenic-metrics | 1.4k | scache, view, terr, whole, trees, unit, control | pipeline (top; uses trees and unit) |
 | scenic-polar | 0.1k | polar, dem, resume_log | terrain |
 | terrainsub | 0.04k | terrain_task, terrain_pack | terrain |
-| coastcheck | 0.5k | lakefill, water, watercov, osmpass | inputs |
 | lakefill | 0.4k | lakefill, water, inputs | inputs |
 | extract | 1.6k | candidates, elev, trailends, dem | roads |
 | elev, tile | 0.06k | elev, road_terrain | roads |

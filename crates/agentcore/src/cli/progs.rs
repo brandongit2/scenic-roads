@@ -1,5 +1,5 @@
 //! The step programs' command lines: what a unit's tail runs (extract, elev, tile, scenic-metrics,
-//! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub), the rail step's railfreq, and the tools run by hand (lakefill, coastcheck,
+//! areaflags, landcover), the tasks' programs (trees, bldtile, terrainsub), the rail step's railfreq, and the tools run by hand (lakefill,
 //! terrain). Each runs as `scenic-build tool <name>` (src/bin/tools/, jobrt::sys::TOOLS) and parses with its own.
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -378,88 +378,3 @@ pub enum LakefillCmd {
     },
 }
 
-/// The shoreline check's reference (tools/coastcheck/README.md): the water at full detail, and its
-/// exact coverage served as raster tiles
-#[derive(Parser, Debug)]
-#[command(name = "coastcheck")]
-pub struct Coastcheck {
-    #[command(subcommand)]
-    pub cmd: CoastcheckCmd,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum CoastcheckCmd {
-    /// The water at full detail into a store: the water areas of the pass's filtered planet and the sea's water
-    /// polygons
-    Build {
-        /// The pass's filtered planet (sources/osm/<date>/filtered)
-        #[arg(long, value_name = "FILTERED .OSM.PBF")]
-        osm: PathBuf,
-        #[arg(long, value_name = "ZIP")]
-        water_polygons: PathBuf,
-        /// The store folder
-        #[arg(long, value_name = "STORE FOLDER")]
-        out: PathBuf,
-        /// osmium's index (sparse_mem_array, or sparse_file_array,<file>)
-        #[arg(long, value_name = "TYPE", default_value = "sparse_mem_array")]
-        index: String,
-    },
-    /// The store's coverage served as raster tiles (/cov/{z}/{x}/{y}?s=<size>&k=<all|sea|inland>)
-    Serve {
-        #[arg(long, value_name = "STORE FOLDER")]
-        store: PathBuf,
-        #[arg(long, default_value_t = 18095)]
-        port: u16,
-    },
-    /// One coverage tile as a PNG on stdout
-    Tile {
-        #[arg(long, value_name = "STORE FOLDER")]
-        store: PathBuf,
-        z: u8,
-        x: u32,
-        y: u32,
-        #[arg(long, default_value_t = 512)]
-        size: usize,
-    },
-    /// How big a coverage layer would be: the tiles at a zoom some shore passes through, a sample
-    /// of them drawn and compressed
-    Stats {
-        #[arg(long, value_name = "STORE FOLDER")]
-        store: PathBuf,
-        #[arg(long)]
-        z: u8,
-        #[arg(long, default_value_t = 200)]
-        sample: usize,
-        #[arg(long, default_value_t = 512)]
-        size: usize,
-    },
-    /// water-build's tiles as the water layer's packs in a test root, and its map one newer with
-    /// them. Never the NAS's
-    WaterPacks {
-        #[arg(long, value_name = "DIR")]
-        tiles: PathBuf,
-        /// The test root, its map one newer with them
-        #[arg(long, value_name = "DIR")]
-        root: PathBuf,
-    },
-    /// inputs::water's build as the step runs it, its tiles written as files (<dir>/z/x/y.png)
-    WaterBuild {
-        #[arg(long, value_name = "PMTILES")]
-        basemap: PathBuf,
-        /// Only these z5 tiles
-        #[arg(long, value_name = "X/Y,…")]
-        only: Option<String>,
-        /// The lakes filled from Canada's own data drawn too
-        #[arg(long, value_name = "F")]
-        lakefill: Option<PathBuf>,
-        #[arg(long, value_name = "DIR")]
-        out: PathBuf,
-    },
-    /// The sea's rings marked in a store made before it recorded them
-    MarkSea {
-        #[arg(long, value_name = "STORE FOLDER")]
-        store: PathBuf,
-        #[arg(long, value_name = "ZIP")]
-        water_polygons: PathBuf,
-    },
-}

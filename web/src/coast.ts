@@ -23,73 +23,61 @@ let pool: WorkerPool<CoastMessage & { type: 'tile' }, CoastResponse> | null = nu
 
 /** Where the shading measures the shore from: the water's shares (`cov`, the water tiles' raw
  * shares: the same water the map draws, at every zoom; every pixel holding any land is a shore,
- * placed within the pixel by its share: coastdist.ts), else the basemap's vector tiles (`tiles`).
- * `margin`: how far the distance is measured exactly, pixels of the tile (192 by default; past it
- * land is deep and water far, or measured coarser toward the poles: coast.worker.ts); `far`, the
- * water past it measured at least that many levels coarser everywhere. */
-export type CoastInput = { tiles: string; cov: string; margin?: number; far?: number };
+ * placed within the pixel by its share: coastdist.ts), else the basemap's vector tiles (`tiles`). */
+export type CoastInput = { tiles: string; cov: string };
 
-/** The inputs by name: the map's own (`app`), and the shoreline check's reference (evalmode.ts). */
-const inputs = new Map<string, CoastInput>();
+/** The input the workers measure from (the map's water), once the shading has shown. */
+let input: CoastInput | null = null;
 
-const initMessage = (key: string, input: CoastInput): CoastMessage => ({ type: 'init', key, tiles: input.tiles, maxzoom: BASEMAP_MAXZOOM, cov: input.cov, margin: input.margin, far: input.far });
+const initMessage = (input: CoastInput): CoastMessage => ({ type: 'init', tiles: input.tiles, maxzoom: BASEMAP_MAXZOOM, cov: input.cov });
 
 /** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many). */
 function setupProtocol() {
   if (pool) return;
   pool = new WorkerPool(() => new Worker(new URL('./coast.worker.ts', import.meta.url), { type: 'module' }), 2, (w) => {
-    for (const [key, input] of inputs) w.postMessage(initMessage(key, input));
+    if (input) w.postMessage(initMessage(input));
   });
   const p = pool;
   maplibregl.addProtocol('coast', async (params, abort) => {
-    const m = /^coast:\/\/(\d+)\/(\d+)\/(\d+)\?l=(\d)(?:&k=([\w-]+))?/.exec(params.url);
+    const m = /^coast:\/\/(\d+)\/(\d+)\/(\d+)\?l=(\d)/.exec(params.url);
     if (!m) throw new Error(`coast: ${params.url}`);
-    const r = await p.ask({ type: 'tile', id: 0, key: m[5] ?? 'app', z: +m[1], x: +m[2], y: +m[3], lakes: m[4] === '1' }, abort.signal);
+    const r = await p.ask({ type: 'tile', id: 0, z: +m[1], x: +m[2], y: +m[3], lakes: m[4] === '1' }, abort.signal);
     if (!r.data) throw new Error('coast tile');
     return { data: r.data };
   });
 }
 
-/** An input (again, when its URLs change), for the workers to measure from. */
-function setInput(key: string, input: CoastInput) {
-  inputs.set(key, input);
-  pool?.broadcast(initMessage(key, input));
+/** The input (again, when its URLs change), for the workers to measure from. */
+function setInput(i: CoastInput) {
+  input = i;
+  pool?.broadcast(initMessage(i));
 }
 
-const tilesUrl = (lakes: boolean, key = 'app') => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}&k=${key}`;
+const tilesUrl = (lakes: boolean) => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}`;
 let lakesShown: boolean | null = null;
 
 /** The shading's tiles, as the water's: 512-px tiles at 2 texels a CSS px or more (the finer level
  * taken: basemap.ts WATER_TILE_SIZE), the water's own density and levels (its tiles are the very
  * share tiles the water layer draws), so a shore and its thin line fall where full detail puts them
- * (tools/coastcheck --screen: a quarter of the difference at 1 texel). */
+ * (against full detail on screen: a quarter of the difference at 1 texel). */
 const COAST_TILE_SIZE = WATER_TILE_SIZE;
 
 /** The source and its layer, the first time the shading shows: over the water, under the rivers
  * drawn as lines. At every zoom (its shore the same water the map draws). */
 function setupShading(map: MLMap, w: WaterLook, input: CoastInput) {
   if (map.getSource('coast')) return;
-  setInput('app', input);
+  setInput(input);
   setupProtocol();
   lakesShown = w.lakes;
   map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: COAST_TILE_SIZE, maxzoom: 15, ...COAST_ENCODING });
   map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, waterTop(map));
 }
 
-/** Another shading source and layer, measured from `input` (the shoreline check's reference,
- * evalmode.ts): its tiles `tileSize` CSS px, so as fine as the check needs. */
-export function addCoastSource(map: MLMap, id: string, input: CoastInput, lakes: boolean, tileSize: number, before?: string) {
-  setInput(id, input);
-  setupProtocol();
-  map.addSource(id, { type: 'raster-dem', tiles: [tilesUrl(lakes, id)], tileSize, maxzoom: 22, ...COAST_ENCODING });
-  map.addLayer({ id, type: 'color-relief', source: id, paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, before);
-}
-
 const hexOf = (c: number[]) => `#${c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
 
 /** The shading's colour ramp over the distance to the shore (m), for `mpp` metres per CSS px: its
  * stops at the elevations the tiles store those distances as (coastdist.ts coastElevation). */
-export function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
+function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
   const W = Math.max(1, w.width) * mpp, px = mpp;
   const fade = (d: number) => (d >= W ? 0 : Math.pow(1 - d / W, w.falloff));
   // Lines along the coast, evenly within the band, fading with it; each about a pixel wide.
@@ -117,7 +105,7 @@ export function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
 }
 
 /** Metres per CSS px at the view centre. */
-export const centreMpp = (map: MLMap) => (MERC_CIRC * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom());
+const centreMpp = (map: MLMap) => (MERC_CIRC * Math.cos((map.getCenter().lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom());
 
 let rampKey = '';
 /**
@@ -164,7 +152,7 @@ export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, wa
  * workers measure the shore from it, and the shading's tiles are made again. */
 export function switchCoast(map: MLMap, input: CoastInput) {
   if (!pool) return;
-  setInput('app', input);
+  setInput(input);
   const src = map.getSource('coast') as maplibregl.RasterDEMTileSource | undefined;
   // (A fresh URL: MapLibre would keep the old tiles under the same one.)
   src?.setTiles([`${tilesUrl(!!lakesShown)}&s=${++switched}`]);

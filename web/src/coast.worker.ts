@@ -19,12 +19,10 @@ import { coastCode, farLevels, signedDistance, withFarField } from './coastdist'
 import { MERC_CIRC, mercPhi } from './merc';
 
 export type CoastMessage =
-  /** An input by name (`key`; coast.ts): `tiles`, the basemap's tile URL ({z}, {x}, {y});
-   * `maxzoom`, its deepest tiles; `cov`, the water's shares instead; `margin`, how far the distance
-   * is measured exactly (pixels of the tile); `far`, at least this many levels coarser beyond it
-   * (else only toward the poles: farLevels). Sent again when they change. */
-  | { type: 'init'; key: string; tiles: string; maxzoom: number; cov?: string; margin?: number; far?: number }
-  | { type: 'tile'; id: number; key: string; z: number; x: number; y: number; lakes: boolean }
+  /** The input (coast.ts): `tiles`, the basemap's tile URL ({z}, {x}, {y}); `maxzoom`, its deepest
+   * tiles; `cov`, the water's shares instead. Sent again when they change. */
+  | { type: 'init'; tiles: string; maxzoom: number; cov?: string }
+  | { type: 'tile'; id: number; z: number; x: number; y: number; lakes: boolean }
   | { type: 'cancel'; id: number };
 export interface CoastResponse {
   id: number;
@@ -33,15 +31,15 @@ export interface CoastResponse {
 }
 
 const SIZE = 512;
-/** Pixels of the neighbouring tiles taken in around the tile by default: the farthest distance
- * measured exactly. */
+/** Pixels of the neighbouring tiles taken in around the tile: the farthest distance measured
+ * exactly. */
 const MARGIN = 192;
 
 /** An input (init): the basemap's tile URL and its deepest zoom, or instead the water's shares
  * (PNG, 512 px, red the sea's share, green the inland water's: the server's
- * `/tiles/water/…?raw=1`, or the shoreline check's reference). */
-type Input = { tiles: string; maxzoom: number; cov: string; margin: number; far: number };
-const inputs = new Map<string, Input>();
+ * `/tiles/water/…?raw=1`). */
+type Input = { tiles: string; maxzoom: number; cov: string };
+let input: Input | null = null;
 const cancelled = new Set<number>();
 let queue = Promise.resolve();
 
@@ -49,7 +47,7 @@ self.onmessage = (ev: MessageEvent<CoastMessage>) => {
   const m = ev.data;
   if (m.type === 'init') {
     // (Again for new tiles: their water is read anew.)
-    inputs.set(m.key, { tiles: m.tiles, maxzoom: m.maxzoom, cov: m.cov ?? '', margin: Math.min(SIZE, m.margin ?? MARGIN), far: m.far ?? 0 });
+    input = { tiles: m.tiles, maxzoom: m.maxzoom, cov: m.cov ?? '' };
     waterCache.clear();
     covCache.clear();
     coarseCache.clear();
@@ -60,8 +58,7 @@ self.onmessage = (ev: MessageEvent<CoastMessage>) => {
     queue = queue.then(async () => {
       if (cancelled.delete(m.id)) return;
       try {
-        const input = inputs.get(m.key);
-        if (!input) throw new Error(`coast: no input ${m.key}`);
+        if (!input) throw new Error('coast: no input');
         const data = await coastTile(input, m.z, m.x, m.y, m.lakes);
         (self as unknown as Worker).postMessage({ id: m.id, data } satisfies CoastResponse, [data]);
       } catch (e) {
@@ -142,7 +139,7 @@ function shares(url: string): Promise<Uint8ClampedArray | null> {
  * around Antarctica, 9 Oct). A neighbour that failed counts as water with no land: its shore, just
  * past the tile's edge, is missed rather than the whole tile failing. */
 async function landShares(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<Float32Array> {
-  const M = input.margin, n = SIZE + 2 * M;
+  const M = MARGIN, n = N;
   const frac = new Float32Array(n * n);
   const tiles = 2 ** z;
   const jobs: Promise<void>[] = [];
@@ -186,22 +183,19 @@ export function pastThePoles<T extends Float32Array | Uint8ClampedArray>(g: T, n
 
 // ---- the tile --------------------------------------------------------------------------------
 
-/** Canvases n × n (by n: the margin can differ between inputs). */
-const canvases = new Map<number, OffscreenCanvasRenderingContext2D>();
-function canvasOf(n: number) {
-  let c = canvases.get(n);
-  if (!c) canvases.set(n, (c = new OffscreenCanvas(n, n).getContext('2d', { willReadFrequently: true })!));
-  return c;
-}
+/** The tile with its margin, N × N. */
+const N = SIZE + 2 * MARGIN;
+let canvas: OffscreenCanvasRenderingContext2D | null = null;
+const canvasOf = () => (canvas ??= new OffscreenCanvas(N, N).getContext('2d', { willReadFrequently: true })!);
 const outCanvas = new OffscreenCanvas(SIZE, SIZE);
 const outCtx = outCanvas.getContext('2d')!;
 
 async function coastTile(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<ArrayBuffer> {
-  const M = input.margin;
+  const M = MARGIN;
   const sd = await distances(input, z, x, y, lakes);
   // Toward the poles, the water beyond the window from a coarser level (none within 60°). Should
   // that level fail to load, the water beyond is far: the tile itself is still good.
-  const k = Math.min(z, Math.max(input.far, farLevels(z, y)));
+  const k = Math.min(z, farLevels(z, y));
   if (k > 0 && sd.some((d) => d >= 0.75 * M)) {
     const coarse = await coarseDistances(input, z - k, x >> k, y >> k, lakes).catch(() => null);
     const part = SIZE / 2 ** k;
@@ -217,7 +211,7 @@ const coarseCache = new Map<string, Promise<Float32Array>>();
 const COARSE_KEPT = 12;
 
 function coarseDistances(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<Float32Array> {
-  const key = `${input.cov}|${input.tiles}|${input.margin}|${z}/${x}/${y}/${lakes ? 1 : 0}`;
+  const key = `${input.cov}|${input.tiles}|${z}/${x}/${y}/${lakes ? 1 : 0}`;
   const hit = coarseCache.get(key);
   if (hit) {
     coarseCache.delete(key);
@@ -234,9 +228,9 @@ function coarseDistances(input: Input, z: number, x: number, y: number, lakes: b
 /** The tile's signed distance in pixels (coastdist.ts signedDistance: ±Infinity beyond the
  * window). */
 async function distances(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<Float32Array> {
-  const M = input.margin, n = SIZE + 2 * M;
+  const M = MARGIN, n = N;
   if (input.cov) return signedDistance(await landShares(input, z, x, y, lakes), n, M);
-  const ctx = canvasOf(n);
+  const ctx = canvasOf();
   // Past the basemap's zoom: the deepest tile's water, cut to this one.
   const zv = Math.min(z, input.maxzoom), dz = z - zv;
   const tiles = 2 ** zv;

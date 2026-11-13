@@ -621,7 +621,7 @@ gc-sweeps.json          GC's sweeps' cursors (docs/storage.md, GC)
   the orphan sweep finds what it held (docs/storage.md, GC).
 - **A test root's or a `--root`'s map** is `map/<seq>.json.zst` under that root, the same snapshot
   (`store::map::write_root_map`, `root_map`; the newest three kept), written by the tools that make
-  test roots (`lakefill catalog-add`, `coastcheck`, the tests) and read by a `--root` server or a
+  test roots (`lakefill catalog-add`, the tests) and read by a `--root` server or a
   job on that root. Refused on the NAS, whose map is the lead's alone.
 
 ### Asking the lead (`agentcore::coord::maproutes`)

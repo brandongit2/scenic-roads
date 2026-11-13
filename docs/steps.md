@@ -62,7 +62,7 @@ makes the same bytes on every Mac.
    - A country's code is its own assigned `ISO3166-1` tag, else read from its ISO 3166-2 code.
 6. **Basemap:** Planetiler on (b), worldwide (`layers/basemap/world-<date>`), its jar and data pinned
    in `sources/basemap/`. The pass refuses a jar of another version than
-   `inputs::water::PLANETILER_VERSION` until `tools/coastcheck` has checked it.
+   `inputs::water::PLANETILER_VERSION` until its water has been checked against full detail and pinned.
 7. **Cut (a) into z6 tile extracts:** a depth-first quad tree, four outputs per osmium run (osmium
    keeps ~4 GB of id sets per output). Ways whole, multipolygons completed, 10 km buffer. Each
    extract (stored in `sources/osm/<date>/pieces/`: the folder's old name, kept) is uploaded with
@@ -610,10 +610,10 @@ drawn as a raster.
     Stored in metres in MapLibre's 'custom' raster-DEM encoding.
   - Without the layer in the map, the basemap's water polygons are drawn.
   - The water has no hover or click; its names are the labels'.
-- **Checked** by `tools/coastcheck` (its README has the metric and views): the map in an eval mode
-  against full detail over 137 views, and with `--screen` the screen in the app's colours against
-  full detail rendered and shrunk in linear light. Visible difference is about 0.03 % (0.15 % on
-  the densest small-water views), against 7.7 % for the earlier dots over polygons.
+- **Checked** against full detail (8 Oct, Planetiler 0.10.2) over 137 views, the screen in the
+  app's colours against full detail rendered and shrunk in linear light: visible difference about
+  0.03 % (0.15 % on the densest small-water views), against 7.7 % for the earlier dots over
+  polygons. No tool repeats the check for a new Planetiler (not built).
 - **Lakes filled from Canada's own data** (`inputs::lakefill`; the `lakefill` step once a pass,
   before the water, and the `lakefill` tool). OSM's CanVec import skipped some map sheets, whose
   small lakes vanish in rectangles.

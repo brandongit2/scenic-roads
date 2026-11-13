@@ -172,7 +172,7 @@ the World zoomed out, a region, or the view). The map supports Chrome and Safari
   when the profiles don't answer within 5 s or there are none (nothing can be saved to a profile
   then), and what fills a setting a profile was saved without. A control's reset (double-click, ↺)
   goes back to the profile in use's value; Reset to defaults, at the foot of the panel, to the
-  Default profile. The check modes (`?eval`, `?bldcmp`) draw over `web/default-profile.json`,
+  Default profile. The building comparison (`?bldcmp`) draws over `web/default-profile.json`,
   whatever the profiles.
 
 ## How the scenic metrics are computed
@@ -218,8 +218,7 @@ coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac whi
   publishing on `cargo fmt --check`. `.git-blame-ignore-revs` skips the one reformat commit
   (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
 - **Checks:** `tools/dev/check.sh` before reporting work, the tests as `tools/dev/testing.md` says.
-- **Tools:** `tools/coastcheck/` (shoreline accuracy),
-  `tools/devtools/` (the dev tools app: the task board and the dev job dashboard).
+- **Tools:** `tools/devtools/` (the dev tools app: the task board and the dev job dashboard).
 
 ### Docs
 

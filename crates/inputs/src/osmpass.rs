@@ -1538,7 +1538,7 @@ pub fn check_planetiler(jar: &Path) -> Result<()> {
     let v =
         buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
     let pinned = crate::water::PLANETILER_VERSION;
-    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (inputs::water, docs/steps.md): check {v}'s with tools/coastcheck, then pin it", jar.display());
+    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (inputs::water, docs/steps.md): check {v}'s against it, then pin it", jar.display());
     Ok(())
 }
 

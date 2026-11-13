@@ -53,9 +53,9 @@ pub const STORED_MAXZ: u8 = 9;
 /// detail.
 pub const MAXZ: u8 = 18;
 /// The Planetiler whose z14 water this takes as full detail (simplified by 0.0625 px of a 256-px z14
-/// tile, one unit of its 4,096, about 0.6 m at the equator; nothing over 1/256 px² left out), checked against the shoreline check's reference
-/// (tools/coastcheck: 0.0002–0.002 mean difference at z14, 2026-10-08). The pass stops on another
-/// one's jar (inputs::osmpass::check_planetiler) until it's checked again.
+/// tile, one unit of its 4,096, about 0.6 m at the equator; nothing over 1/256 px² left out), checked against
+/// full detail on 2026-10-08 (0.0002–0.002 mean difference at z14). The pass stops on another one's
+/// jar (inputs::osmpass::check_planetiler) until it's pinned here.
 pub const PLANETILER_VERSION: &str = "0.10.2";
 
 // ---- a tile's coverage -----------------------------------------------------------------------------

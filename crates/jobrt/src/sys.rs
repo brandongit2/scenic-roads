@@ -975,7 +975,7 @@ pub fn osmium() -> Command {
 /// with its own command line (agentcore::cli::tool); jobs and tasks name them as programs
 /// (`program`), so a task's spec (`unit::Run::prog`) reads the same to an app from before the fold,
 /// which has them as binaries. (Task #916 step 6d: from agentcore::cli, which re-exports both.)
-pub const TOOLS: [&str; 13] = [
+pub const TOOLS: [&str; 12] = [
     "scenic-metrics",
     "extract",
     "elev",
@@ -987,7 +987,6 @@ pub const TOOLS: [&str; 13] = [
     "bldtile",
     "terrainsub",
     "lakefill",
-    "coastcheck",
     "scenic-polar",
 ];
 

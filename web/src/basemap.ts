@@ -194,15 +194,13 @@ export const waterTilesOn = () => WATER_TILES;
 export { LAND_COLOUR };
 /** The water's colours in its tiles: the sea's, the lakes' and the land's under them (coast.ts
  * applyWater sets them): the server mixes water and land as light mixes for that land
- * (crates/server/src/water.rs alpha_for). No land (''): alpha the share itself (the shoreline
- * check's coverage, evalmode.ts). */
+ * (crates/server/src/water.rs alpha_for). */
 let landColour = LAND_COLOUR;
 /** The land's colour now (the user's: Layers → Map → Land colour); the style's background and the
  * water tiles' land take it (main.ts applyLand). */
 export const setLandColour = (c: string) => (landColour = c);
-export const landColourNow = () => landColour;
 let waterColours = ['#0c1622', '#0f1a27', LAND_COLOUR];
-export const setWaterColours = (sea: string, lake: string, land = landColour) => (waterColours = [sea, lake, land].filter(Boolean));
+export const setWaterColours = (sea: string, lake: string) => (waterColours = [sea, lake, landColour]);
 /** The lakes' colour for a water colour: a shade lighter. */
 export const lakeColour = (sea: string): string =>
   `#${hexBytes(sea).map((v, k) => Math.min(255, v + [3, 4, 5][k]).toString(16).padStart(2, '0')).join('')}`;

@@ -770,7 +770,7 @@ The check: `ssh m6 'security unlock-keychain -p "$(<~/.config/scenic/signing-key
 build steps) and `server`. The programs the steps and tasks run are scenic-build's tools,
 `scenic-build tool <name> …` (`agentcore::cli::TOOLS`, src/bin/tools/): the `unit` job's `extract`,
 `elev`, `areaflags`, `landcover`, `tile`, `scenic-metrics` (rail runs `extract` and `railfreq`, tree
-cover `trees`, the tasks `trees`, `bldtile`, `terrainsub`), and `lakefill`, `coastcheck` and
+cover `trees`, the tasks `trees`, `bldtile`, `terrainsub`), and `lakefill` and
 `scenic-polar` run by hand. Jobs and tasks name a tool as a program (a task's spec its `prog`), and
 `agentcore::cli::program` runs it from the app version's own folder: through its scenic-build, or,
 in a version from before #917, its binary of that name; so a task offered by one version runs on a

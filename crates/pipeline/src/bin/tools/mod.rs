@@ -5,7 +5,6 @@
 
 pub mod areaflags;
 pub mod bldtile;
-pub mod coastcheck;
 pub mod elev;
 pub mod extract;
 pub mod lakefill;
@@ -26,7 +25,6 @@ pub fn run(args: &[String]) -> Option<ExitCode> {
     Some(match args.first()?.as_str() {
         "areaflags" => areaflags::main(a).report(),
         "bldtile" => bldtile::main(a).report(),
-        "coastcheck" => coastcheck::main(a).report(),
         "elev" => elev::main(a).report(),
         "extract" => extract::main(a).report(),
         "lakefill" => lakefill::main(a).report(),
