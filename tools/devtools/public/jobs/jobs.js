@@ -388,10 +388,12 @@ $("run-close").addEventListener("click", () => { st.run = null; saveState(); run
 
 // ---- by name -----------------------------------------------------------------------------------------------
 let kinds = [], stats = null, statsAll = false;
+// (Over the range shown, as the timeline: a read over all time grows with the history, #1344.)
 async function loadStats() {
-  kinds = (await get("kinds")).kinds;
+  const from = rangeFrom(Date.now() / 1000), span = from == null ? "" : `from=${from}&to=${Date.now() / 1000 + 60}`;
+  kinds = (await get(`kinds${span ? `?${span}` : ""}`)).kinds;
   if (!st.kind || !kinds.some((k) => k.kind === st.kind)) st.kind = (kinds.find((k) => k.kind === "part") || kinds.find((k) => k.kind === "suite") || kinds[0])?.kind || "";
-  stats = st.kind ? await get(`stats?kind=${encodeURIComponent(st.kind)}`) : null;
+  stats = st.kind ? await get(`stats?kind=${encodeURIComponent(st.kind)}${span ? `&${span}` : ""}`) : null;
   renderStats();
 }
 const SORTS = [["p90", "p90", (g) => g.p90 ?? -1], ["p50", "median", (g) => g.p50 ?? -1], ["max", "longest", (g) => g.max ?? -1], ["total", "total", (g) => g.total], ["n", "runs", (g) => g.n], ["failed", "failed", (g) => g.failed]];
@@ -412,7 +414,7 @@ function renderStats() {
     kinds.map((k) => h("option", { value: k.kind, selected: k.kind === st.kind }, `${k.kind} (${k.n})`)));
   const filter = h("input", { type: "search", placeholder: "filter names", value: st.filter, oninput: (e) => { st.filter = e.target.value; renderTable(); } });
   const tableBox = h("div");
-  box.replaceChildren(h("div", "statbar", h("span", "dim", "kind"), sel, filter, h("span", "dim", "all time; times of the runs that ended; cargo test's tests have no times (it says when one ended, not when it began)")), tableBox);
+  box.replaceChildren(h("div", "statbar", h("span", "dim", "kind"), sel, filter, h("span", "dim", `${st.range === "all" ? "all time" : `begun in the last ${st.range}`}; times of the runs that ended; cargo test's tests have no times (it says when one ended, not when it began)`)), tableBox);
   function renderTable() {
     const by = SORTS.find(([k]) => k === st.sort) || SORTS[0];
     const f = st.filter.toLowerCase();
@@ -433,7 +435,7 @@ function renderStats() {
 
 // ---- the header's controls ------------------------------------------------------------------------------
 function renderControls() {
-  $("ranges").replaceChildren(...RANGES.map(([k]) => h("button", { type: "button", class: st.range === k ? "on" : null, onclick: () => { st.range = k; saveState(); renderControls(); loadMain(); } }, k)));
+  $("ranges").replaceChildren(...RANGES.map(([k]) => h("button", { type: "button", class: st.range === k ? "on" : null, onclick: () => { st.range = k; saveState(); renderControls(); loadMain(); loadStats().catch(showErr); } }, k)));
   $("kinds").replaceChildren(...CLASSES.map((c) => h("label", { class: st.hide.has(c) ? null : "on", title: `${st.hide.has(c) ? "Show" : "Hide"} ${CLASS_LABEL[c]}` },
     h("input", { type: "checkbox", checked: !st.hide.has(c), onchange: () => { st.hide.has(c) ? st.hide.delete(c) : st.hide.add(c); saveState(); renderControls(); renderMain(); } }),
     h("i", { style: { background: colourOf(c) } }), CLASS_LABEL[c])));

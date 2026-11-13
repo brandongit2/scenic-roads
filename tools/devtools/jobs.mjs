@@ -29,11 +29,13 @@ const MAX_ATTRS = 64 * 1024;
 const ID = /^[A-Za-z0-9_.:@+\-]{1,200}$/;
 const T_MIN = Date.UTC(2026, 0, 1) / 1000; // (nothing was recorded before this app)
 
-export function openJobs(file) {
-  const db = new DatabaseSync(file);
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS spans (
+// The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it). 1:
+// #1086's (a span on the Mac it ran on). 2: #1344's indexes (the runs and the tests jobs by when they
+// ended). A file of another form is refused at open, except form 1, moved to this form once
+// (migrateTo2).
+export const FORM = 2;
+const TABLES = `
+    CREATE TABLE spans (
       id TEXT PRIMARY KEY,
       parent TEXT,               -- the span it is part of ('' or null: a run of its own)
       root TEXT NOT NULL,        -- the run it is part of: the top of its parents (itself for a run)
@@ -44,43 +46,43 @@ export function openJobs(file) {
       attrs TEXT NOT NULL DEFAULT '{}',   -- JSON object
       seen REAL                  -- the last time its Mac's sampler named it live
     );
-    CREATE INDEX IF NOT EXISTS spans_root ON spans(root);
-    CREATE INDEX IF NOT EXISTS spans_runs ON spans(t0) WHERE root = id;   -- (the runs, few beside their tests)
-    CREATE INDEX IF NOT EXISTS spans_kind ON spans(kind, t0);
-    CREATE TABLE IF NOT EXISTS samples (
+    CREATE INDEX spans_root ON spans(root);
+    CREATE INDEX spans_runs ON spans(t0) WHERE root = id;   -- (the runs, few beside their tests)
+    CREATE INDEX spans_kind ON spans(kind, t0);
+    CREATE TABLE samples (
       mac TEXT NOT NULL, t REAL NOT NULL,
       load REAL,                 -- the 1-minute load average
       memfree REAL,              -- the memory available, % (kern.memorystatus_level)
       swap REAL,                 -- swap used, MB
       PRIMARY KEY (mac, t)
     ) WITHOUT ROWID;
-    CREATE INDEX IF NOT EXISTS samples_t ON samples(t);
-    CREATE TABLE IF NOT EXISTS macs (mac TEXT PRIMARY KEY, chip TEXT, mem REAL, ncpu INTEGER, seen REAL);
-  `);
-  // (Version 1, #1086: before it, a test-Mac run and its parts were the recording Mac's; moved to
-  // the Mac their run names.)
-  if (db.prepare("PRAGMA user_version").get().user_version < 1) {
-    db.exec("BEGIN IMMEDIATE");
-    try { onTheirMac(db); db.exec("PRAGMA user_version = 1; COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; }
-  }
+    CREATE INDEX samples_t ON samples(t);
+    CREATE TABLE macs (mac TEXT PRIMARY KEY, chip TEXT, mem REAL, ncpu INTEGER, seen REAL);`;
+// What a timeline reads, the runs and the tests jobs overlapping it, found by when they ended (or
+// that they haven't): what ended before it began is never read (#1344).
+const INDEXES2 = `
+    CREATE INDEX spans_runs_end ON spans(t1) WHERE root = id;
+    CREATE INDEX spans_tests_end ON spans(t1) WHERE kind = 'tests';`;
+
+export function openJobs(file) {
+  const db = new DatabaseSync(file);
+  db.exec("PRAGMA journal_mode = WAL");
+  const tx = (sql) => { db.exec("BEGIN IMMEDIATE"); try { db.exec(sql); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; } };
+  try {
+    const form = db.prepare("PRAGMA user_version").get().user_version;
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spans'").get()) tx(`${TABLES} ${INDEXES2} PRAGMA user_version = ${FORM};`);
+    else if (form === 1) migrateTo2(tx);
+    else if (form !== FORM) throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
+  } catch (e) { db.close(); throw e; }
   const stmts = {};
   const stmt = (sql) => (stmts[sql] ||= db.prepare(sql));
   return { db, stmt, close: () => db.close() };
 }
-// Every test-Mac run (a span naming `ran_on`, kind "run") and its parts put on that Mac.
-function onTheirMac(db) {
-  const remote = db.prepare(`SELECT id, root, json_extract(attrs, '$.ran_on') AS on_ FROM spans WHERE kind = 'run' AND json_extract(attrs, '$.ran_on') IS NOT NULL`).all();
-  const inRun = db.prepare(`SELECT id, parent FROM spans WHERE root = ?`), set = db.prepare(`UPDATE spans SET mac = ? WHERE id = ?`);
-  const kidsOf = new Map(); // a run's root → its spans' kids by parent
-  for (const r of remote) {
-    if (!kidsOf.has(r.root)) {
-      const kids = new Map();
-      for (const s of inRun.all(r.root)) (kids.get(s.parent) || kids.set(s.parent, []).get(s.parent)).push(s.id);
-      kidsOf.set(r.root, kids);
-    }
-    const kids = kidsOf.get(r.root);
-    for (const todo = [r.id]; todo.length;) { const id = todo.pop(); set.run(r.on_, id); todo.push(...(kids.get(id) || [])); }
-  }
+// ONE-TIME (#1344). DELETE this function, its call in openJobs and its test (test/jobs.test.mjs, "a
+// form-1 file") once the M6's jobs.db is at form 2: board task #1344's rollout says so.
+// Form 1 → 2, in one transaction: INDEXES2 made.
+function migrateTo2(tx) {
+  tx(`${INDEXES2} PRAGMA user_version = ${FORM};`);
 }
 
 // Why event `e` can't be taken, or null.
@@ -208,13 +210,18 @@ export function makeJobs(jobs, changed) {
   function runs(url) {
     const { from, to } = range(url);
     const kind = url.searchParams.get("kind");
-    const rs = stmt(`SELECT * FROM spans WHERE root = id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?) ${kind ? "AND kind = ?" : ""} ORDER BY t0`)
-      .all(...[to, from, ...(kind ? [kind] : [])]);
+    // (Found by when they ended, or that they haven't, spans_runs_end: a run that ended before `from`
+    // is never read, however long the history.)
+    const k = kind ? "AND kind = ?" : "";
+    const rs = stmt(`SELECT * FROM (SELECT * FROM spans INDEXED BY spans_runs_end WHERE root = id AND t1 >= ? AND t0 <= ? ${k}
+      UNION ALL SELECT * FROM spans INDEXED BY spans_runs_end WHERE root = id AND t1 IS NULL AND t0 <= ? ${k}) ORDER BY t0`)
+      .all(...[from, to, ...(kind ? [kind] : []), to, ...(kind ? [kind] : [])]);
     const counts = new Map(stmt(`SELECT root, COUNT(*) AS n, SUM(status IN ('fail', 'gone')) AS bad, json_group_array(DISTINCT mac) AS ms,
       json_group_array(DISTINCT CASE WHEN json_extract(attrs, '$.rerun_here') IS NULL THEN json_extract(attrs, '$.ran_on') END) AS ons FROM spans WHERE root IN (SELECT value FROM json_each(?)) GROUP BY root`)
       .all(JSON.stringify(rs.map((r) => r.root))).map((c) => [c.root, c]));
-    const away = !kind || kind === "tests" ? stmt(`SELECT * FROM spans WHERE kind = 'tests' AND root <> id AND t0 <= ? AND (t1 IS NULL OR t1 >= ?)
-      AND json_extract(attrs, '$.ran_on') <> mac AND json_extract(attrs, '$.rerun_here') IS NULL ORDER BY t0`).all(to, from) : [];
+    const awayWhere = `kind = 'tests' AND root <> id AND t0 <= ? AND json_extract(attrs, '$.ran_on') <> mac AND json_extract(attrs, '$.rerun_here') IS NULL`;
+    const away = !kind || kind === "tests" ? stmt(`SELECT * FROM (SELECT * FROM spans INDEXED BY spans_tests_end WHERE t1 >= ? AND ${awayWhere}
+      UNION ALL SELECT * FROM spans INDEXED BY spans_tests_end WHERE t1 IS NULL AND ${awayWhere}) ORDER BY t0`).all(from, to, to) : [];
     return {
       now: now(), from, to,
       runs: rs.map((r) => { const c = counts.get(r.root); return { ...row(r), spans: (c?.n || 1) - 1, failed: c?.bad || 0, macs: c ? [...new Set([...JSON.parse(c.ms), ...JSON.parse(c.ons)])].filter(Boolean).sort() : [r.mac] }; }),
@@ -257,7 +264,7 @@ export function makeJobs(jobs, changed) {
     const has = url.searchParams.has("from") || url.searchParams.has("to");
     const { from, to } = has ? range(url) : { from: 0, to: now() + 86400 };
     const by = new Map();
-    for (const r of stmt(`SELECT name, t0, t1, status, mac, json_extract(attrs, '$.untimed') AS untimed FROM spans WHERE kind = ? AND t0 >= ? AND t0 <= ? ORDER BY t0`).all(kind, from, to)) {
+    for (const r of stmt(`SELECT name, t0, t1, status, mac, json_extract(attrs, '$.untimed') AS untimed FROM spans WHERE kind = ? AND t0 >= ? AND t0 <= ? ORDER BY t0`).iterate(kind, from, to)) {
       let g = by.get(r.name);
       if (!g) by.set(r.name, (g = { name: r.name, n: 0, failed: 0, skipped: 0, d: [], last: null }));
       if (r.status === "skip" || r.status === "reuse") { g.skipped++; continue; }
@@ -273,8 +280,15 @@ export function makeJobs(jobs, changed) {
     });
     return { kind, from: has ? from : null, to: has ? to : null, names };
   }
-  // GET /api/jobs/kinds: each kind of span recorded and how many.
-  const kinds = () => ({ kinds: stmt(`SELECT kind, COUNT(*) AS n FROM spans GROUP BY kind ORDER BY kind`).all() });
+  // GET /api/jobs/kinds[?from=&to=]: each kind of span recorded and how many, all time or begun in
+  // [from, to]. (The kinds found by a skip along spans_kind, one step a kind, and each counted over
+  // its range of that index: the spans outside the range are never read.)
+  function kinds(url) {
+    const has = url.searchParams.has("from") || url.searchParams.has("to");
+    const { from, to } = has ? range(url) : { from: -Infinity, to: Infinity };
+    return { kinds: stmt(`WITH RECURSIVE k(kind) AS (SELECT MIN(kind) FROM spans UNION ALL SELECT (SELECT MIN(kind) FROM spans WHERE kind > k.kind) FROM k WHERE k.kind IS NOT NULL)
+      SELECT kind, (SELECT COUNT(*) FROM spans s WHERE s.kind = k.kind AND s.t0 >= ? AND s.t0 <= ?) AS n FROM k WHERE kind IS NOT NULL`).all(from, to).filter((r) => r.n) };
+  }
 
   async function api(req, res, url, parts) {
     const [what, id] = parts; // after /api/jobs
@@ -285,7 +299,7 @@ export function makeJobs(jobs, changed) {
     if (what === "runs" && id) return send(res, 200, run(id));
     if (what === "samples") return send(res, 200, samples(url));
     if (what === "stats") return send(res, 200, stats(url));
-    if (what === "kinds") return send(res, 200, kinds());
+    if (what === "kinds") return send(res, 200, kinds(url));
     return fail(res, 404, "not_found", "no such route");
   }
   return { api };

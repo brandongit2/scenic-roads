@@ -235,6 +235,8 @@
   /* (In the narrowest rows, in the tree on a small phone, the title keeps the room: the number
      is in the details, and in the priorities.) */
   .row { container-type: inline-size; }
+  /* (A row out of view isn't laid out or painted until it nears it: a long list costs what is shown.) */
+  #list .row { content-visibility: auto; contain-intrinsic-size: auto 30px; }
   @container (max-width: 279px) { .num { display: none; } }
   @media (max-width: 360px) { .num { min-width: 0; font-size: 10.5px; } }
   /* "#57" in a description, a note or the trail: a link to that task. */
@@ -609,12 +611,16 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // the editor offers, and what a stored record is checked against. Records that don't fit it are
   // shown, not dropped: a banner counts them, and lists why. (Old data may have some; the server lets
   // none in.)
+  // (An item's reasons, worked out once a record: the shim hands an unchanged item over as the same
+  // object, so a change checks only what changed.)
+  const errsOf = new WeakMap();
+  const itemErrs = (d) => { let e = errsOf.get(d); if (!e) errsOf.set(d, (e = schema.itemErrors(d))); return e; };
   function checkRaw() {
     const bad = [];
     if (S.loaded.items) {
       const say = (col, id, errs) => { for (const e of errs) bad.push(`${col}/${id}: ${schema.errorText([e])}`); };
       for (const [id, d] of S.raw.items) {
-        say("items", id, schema.itemErrors(d));
+        say("items", id, itemErrs(d));
         if (typeof d.parent === "string" && d.parent && !S.raw.items.has(d.parent)) say("items", id, [{ field: "parent", message: `item ${d.parent} doesn't exist` }]);
       }
       for (const [id, d] of S.raw.events) say("events", id, schema.eventErrors(d));

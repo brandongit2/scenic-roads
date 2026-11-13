@@ -6,7 +6,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { openStore } from "../store.mjs";
-import { openJobs, LOST_S } from "../jobs.mjs";
+import { openJobs, LOST_S, FORM } from "../jobs.mjs";
+import { DatabaseSync } from "node:sqlite";
 import { makeServer } from "../server.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "devjobs-test-"));
@@ -148,21 +149,45 @@ test("a test run is on the Mac it ran on: the tests job while its run is remote,
   assert.deepEqual(c.spans.map((s) => [s.id, s.mac, s.on]), [["c-1-tests", "m1", "m4"], ["c-1-run", "m4", "m4"], ["c-1-suite", "m4", "m4"]]);
 });
 
-test("a stored history's test-Mac runs move to the Mac they name, once (jobs.db before #1086)", () => {
+test("a form-1 jobs.db is moved to form 2 once: its indexes, its spans as they were (ONE-TIME, #1344: delete with migrateTo2)", () => {
   const file = path.join(dir, "old.db");
   const old = openJobs(file);
-  const ins = old.db.prepare(`INSERT INTO spans (id, parent, root, kind, name, mac, t0, t1, status, attrs) VALUES (?, ?, 'o', ?, ?, 'm1', 1, 2, 'ok', ?)`);
-  ins.run("o", null, "check", "check", "{}");
-  ins.run("o-t", "o", "tests", "tests", JSON.stringify({ ran_on: "m4" }));
-  ins.run("o-copy", "o-t", "copy", "copy to the test Mac", "{}");
-  ins.run("o-run", "o-t", "run", "run on the test Mac", JSON.stringify({ ran_on: "m4" }));
-  ins.run("o-suite", "o-run", "suite", "store", "{}");
-  ins.run("o-test", "o-suite", "test", "a::b", "{}");
-  old.db.exec("PRAGMA user_version = 0");
+  old.db.prepare(`INSERT INTO spans (id, parent, root, kind, name, mac, t0, t1, status, attrs) VALUES ('o', NULL, 'o', 'check', 'check', 'm1', 1, 2, 'ok', '{}')`).run();
+  old.db.exec("DROP INDEX spans_runs_end; DROP INDEX spans_tests_end; PRAGMA user_version = 1");
   old.close();
   const again = openJobs(file);
-  const macs = Object.fromEntries(again.db.prepare(`SELECT id, mac FROM spans`).all().map((r) => [r.id, r.mac]));
-  assert.deepEqual(macs, { o: "m1", "o-t": "m1", "o-copy": "m1", "o-run": "m4", "o-suite": "m4", "o-test": "m4" });
-  assert.equal(again.db.prepare("PRAGMA user_version").get().user_version, 1);
+  assert.equal(again.db.prepare("PRAGMA user_version").get().user_version, FORM);
+  assert.deepEqual(again.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'spans_%_end' ORDER BY name").all().map((r) => r.name), ["spans_runs_end", "spans_tests_end"]);
+  assert.equal(again.db.prepare("SELECT name FROM spans WHERE id = 'o'").get().name, "check");
   again.close();
+  // (Any other form is refused, untouched.)
+  const db = new DatabaseSync(file);
+  db.exec("PRAGMA user_version = 0");
+  db.close();
+  assert.throws(() => openJobs(file), /is of form 0 \(PRAGMA user_version\); this version reads form 2/);
+});
+
+test("what the timeline reads every few seconds reads no further back than its range, however long the history", async () => {
+  const plan = (sql) => jobs.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map((r) => r.detail).join("; ");
+  const runs = plan(`SELECT * FROM spans INDEXED BY spans_runs_end WHERE root = id AND t1 >= 1 AND t0 <= 2`);
+  assert.match(runs, /USING INDEX spans_runs_end \(t1>\?\)/, runs);
+  const away = plan(`SELECT * FROM spans INDEXED BY spans_tests_end WHERE t1 >= 1 AND kind = 'tests' AND root <> id AND t0 <= 2`);
+  assert.match(away, /USING INDEX spans_tests_end \(t1>\?\)/, away);
+  // A run long over is outside a range after it; one still running (no end) is inside any range after its start.
+  const V = now - 7 * 86400;
+  await send([
+    { op: "span", id: "old-1", kind: "check", name: "check old", mac: "m", t0: V, t1: V + 10, status: "ok" },
+    { op: "start", id: "old-2", kind: "check", name: "check still", mac: "m", t: V },
+    { op: "span", id: "old-2-t", parent: "old-2", kind: "tests", name: "tests still", mac: "m", t0: V + 1, t1: V + 2, status: "ok", attrs: { ran_on: "m4" } },
+    { op: "start", id: "old-3-t", parent: "old-2", kind: "tests", name: "tests still", mac: "m", t: V + 3, attrs: { ran_on: "m4" } },
+  ]);
+  const d = (await get(`/api/jobs/runs?from=${now - 3600}&to=${now}`)).body;
+  assert.deepEqual([d.runs.some((r) => r.id === "old-1"), d.runs.some((r) => r.id === "old-2")], [false, true]);
+  assert.deepEqual(d.away.filter((r) => r.root === "old-2").map((r) => r.id), ["old-3-t"]);
+  const all = (await get(`/api/jobs/runs?from=0&to=${now}`)).body;
+  assert.ok(all.runs.some((r) => r.id === "old-1"), "a range from the start holds it");
+  // The by-name view's kinds and stats over a range: the spans begun in it.
+  const k = (await get(`/api/jobs/kinds?from=${V - 1}&to=${V + 100}`)).body.kinds;
+  assert.deepEqual(k, [{ kind: "check", n: 2 }, { kind: "tests", n: 2 }]);
+  assert.deepEqual((await get(`/api/jobs/stats?kind=check&from=${V - 1}&to=${V + 100}`)).body.names.map((n) => [n.name, n.n]).sort(), [["check old", 1], ["check still", 1]]);
 });
