@@ -1,6 +1,6 @@
 //! The build's file formats with no build state: the terrain's and shading's tile codecs, the tree
 //! cover's WebP, whole files, packs (legacy, hipack, basepack, basepart), the tiling, vector tiles,
-//! marks, stations, extents, the data-available layers' tiles, tars. No dependency on the pipeline (docs/crates.md, step 2); the pipeline
+//! marks, stations, extents, the data-available layers' tiles, the region layer's tiles, tars. No dependency on the pipeline (docs/crates.md, step 2); the pipeline
 //! re-exports those its agent and binaries name under their old paths (`codecs::tiling`, ...), the
 //! root's progress bars and `morton` too.
 
@@ -13,6 +13,7 @@ pub mod extents;
 pub mod hipack;
 pub mod legacy;
 pub mod marks;
+pub mod regionlayer;
 pub mod shade_codec;
 pub mod stations;
 pub mod summary;
