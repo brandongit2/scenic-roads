@@ -184,85 +184,113 @@ fn a_score_and_its_guarantee() {
     assert_eq!(checks_of("terrain/score.toml", b"x = ["), one(SCORE_CHECK, Level::Error));
     let other = SCORE_TOML.replacen("theme = \"terrain\"", "theme = \"buildings\"", 1);
     assert_eq!(checks_of("terrain/score.toml", other.as_bytes()), one(THEME, Level::Error));
-    // (A score with no colours declared, as above, is taken: the server draws it on its own ramp.)
-    assert!(s.ramp.is_empty() && s.label.is_none() && s.shade == 0.0);
-    assert!(s.metrics.values().all(|m| m.classes.is_empty() && m.colours.is_empty()));
+    // (No availability order: availability ranks no tie.)
+    assert!(s.availability.is_empty() && s.label.is_none() && s.ignored.is_empty());
 }
 
-/// The layers' colours in the real score.toml: its classes, ramp, shade and words' colours, and
-/// each field's mistakes refused.
+/// The real score.toml: its layer's name and availability order, each mistake in the order refused.
 #[test]
-fn a_scores_colours() {
+fn a_scores_availability_order() {
     let real = std::str::from_utf8(REAL[0].1).unwrap();
+    let c = Extents.file("terrain/score.toml", real.as_bytes());
+    assert!(c.findings.is_empty(), "{:?}", c.findings);
     let s = score(real.as_bytes()).unwrap();
-    let m = &s.metrics["spacing_m"];
-    let labels: Vec<&str> = m.classes.iter().map(|c| c.label.as_str()).collect();
-    assert_eq!(labels, ["0.5 m", "1 m", "2 m", "3–5 m", "10 m", "30 m", "90 m", "coarser"]);
-    assert_eq!(s.ramp.len(), m.classes.len(), "a colour a class");
     assert_eq!(s.label.as_deref(), Some("Best data"));
-    assert_eq!(colour_of("#56b4e9"), Some([0x56, 0xb4, 0xe9]));
-    assert_eq!(s.metrics["surface"].colours["ground"], [0x56, 0xb4, 0xe9]);
-    // Every spacing the real pieces state (and the units' near twins) in its class; the edges in
-    // their class, the finest best.
-    let class = |v: f64| m.classes[m.class_of(v).unwrap()].label.as_str();
-    for (v, want) in [
-        (0.5, "0.5 m"),
-        (0.6096, "0.5 m"),
-        (0.625, "0.5 m"),
-        (0.9144, "1 m"),
-        (1.0, "1 m"),
-        (2.0, "2 m"),
-        (3.0, "3–5 m"),
-        (5.0, "3–5 m"),
-        (10.3, "10 m"),
-        (30.0, "30 m"),
-        (90.0, "90 m"),
-        (1000.0, "coarser"),
-    ] {
-        assert_eq!(class(v), want, "{v}");
-    }
-    assert_eq!(m.class_at(0), 1.0);
-    assert_eq!(m.class_at(7), 0.0);
-    assert_eq!(s.metrics["year"].class_of(2020.0), None);
+    assert_eq!(s.availability, AVAILABILITY.map(|(k, _)| k), "open, login, paid, closed");
+    assert_eq!(s.avail_rank(Some("open")), 0);
+    assert_eq!(s.avail_rank(Some("closed")), 3);
+    assert_eq!(s.avail_rank(None), 4);
     for (from, to) in [
-        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 0.5, label = \"1 m\" }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 0.625, label = \"1 m\" }"),
-        ("{ upto = 0.625, label = \"0.5 m\" }", "{ upto = -1, label = \"0.5 m\" }"),
-        ("{ upto = 0.625, label = \"0.5 m\" }", "{ upto = 0, label = \"0.5 m\" }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = \"x\", label = \"1 m\" }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "{ label = \"1 m\" }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 1.25 }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 1.25, label = \" \" }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 1.25, label = \"1 m\", colour = \"#ffffff\" }"),
-        ("{ upto = 1.25, label = \"1 m\" }", "3"),
-        ("{ label = \"coarser\" }", "{ upto = 500, label = \"coarser\" }"),
-        ("classes = [", "classes = [{ label = \"x\" }]\nx = ["),
-        ("\"#803041\",", "\"#80304\","),
-        ("\"#803041\",", "\"803041\","),
-        ("\"#803041\",", "\"#80304g\","),
-        ("\"#803041\",", "3,"),
-        ("ramp = [", "ramp = [\"#ffffff\"]\nx = ["),
-        ("shade = 0.4", "shade = 1.5"),
-        ("shade = 0.4", "shade = 1"),
-        ("shade = 0.4", "shade = -0.1"),
-        ("shade = 0.4", "shade = \"some\""),
+        ("\"closed\"]", "]"),
+        ("\"closed\"]", "\"closed\", \"open\"]"),
+        ("\"closed\"]", "\"gone\"]"),
+        ("\"closed\"]", "3]"),
+        ("availability = [", "availability = 3\nx = ["),
         ("label = \"Best data\"", "label = \"\""),
-        ("label = \"Best data\"", "label = 3"),
-        ("surface = \"#e69f00\" }", "surface = \"#e69f00\", rock = \"#000000\" }"),
-        ("ground = \"#56b4e9\", ", ""),
-        ("ground = \"#56b4e9\"", "ground = \"blue\""),
-        ("colours = {", "colours = 3\nx = {"),
-        ("best = 2026\n", "best = 2026\ncolours = { a = \"#ffffff\" }\n"),
-        ("colours = { ground", "classes = [{ upto = 1, label = \"a\" }, { label = \"b\" }]\nx = { ground"),
     ] {
         let bad = real.replacen(from, to, 1);
         assert_ne!(bad, real, "{from}");
         assert_eq!(checks_of("terrain/score.toml", bad.as_bytes()), one(SCORE_CHECK, Level::Error), "{from} → {to}");
     }
-    // A shade with no classes to shade.
-    let flat = SCORE_TOML.replacen("share = 0.02\n", "share = 0.02\nshade = 0.4\n", 1);
-    assert_eq!(checks_of("terrain/score.toml", flat.as_bytes()), one(SCORE_CHECK, Level::Error));
-    assert!(score(SCORE_TOML.replacen("share = 0.02\n", "share = 0.02\nshade = 0\n", 1).as_bytes()).is_ok());
+}
+
+/// A score.toml as the NAS held it before the layers' colours were the app's (13 Nov): read as if
+/// its classes, colours, ramp and shade weren't there, which the check says (a warning, so it's
+/// accepted and the server keeps drawing until the new file replaces it).
+#[test]
+fn a_score_with_its_retired_colours_is_read_without_them() {
+    let old = SCORE_TOML
+        .replacen(
+            "share = 0.02\n",
+            "share = 0.02\nlabel = \"Best data\"\nramp = [\"#803041\", \"#e7fda7\"]\nshade = 0.4\n",
+            1,
+        )
+        .replacen(
+            "best = 0.1\n",
+            "best = 0.1\nclasses = [{ upto = 0.625, label = \"0.5 m\" }, { label = \"coarser\" }]\n",
+            1,
+        )
+        .replacen(
+            "values = { ground = 1.0, surface = 0.0 }\n",
+            "values = { ground = 1.0, surface = 0.0 }\ncolours = { ground = \"#56b4e9\", surface = \"#e69f00\" }\n",
+            1,
+        );
+    let s = score(old.as_bytes()).unwrap();
+    let mut plain = score(SCORE_TOML.as_bytes()).unwrap();
+    plain.label = Some("Best data".into());
+    plain.ignored =
+        vec!["ramp".into(), "shade".into(), "metric.spacing_m.classes".into(), "metric.surface.colours".into()];
+    assert_eq!(s, plain);
+    assert_eq!(checks_of("terrain/score.toml", old.as_bytes()), one(RETIRED_CHECK, Level::Warning));
+    // A retired field's own mistakes don't matter: it isn't read.
+    let odd = old.replacen("shade = 0.4", "shade = \"some\"", 1);
+    assert_eq!(checks_of("terrain/score.toml", odd.as_bytes()), one(RETIRED_CHECK, Level::Warning));
+}
+
+/// The best piece and the order (`Score::best`, `ranked`): a finer grid beyond the factor wins
+/// whatever its availability; within it, availability first, then the score; equals, the first.
+#[test]
+fn an_open_piece_wins_a_tie() {
+    let s = score(REAL[0].1).unwrap();
+    let piece = |spacing: f64, avail: &'static str, year: f64| {
+        let m = serde_json::json!({"spacing_m": spacing, "surface": "ground", "year": year});
+        let (score, vals) = s.of(m.as_object().unwrap());
+        (vals["spacing_m"].unwrap(), avail, score.unwrap())
+    };
+    let ranked = |ps: &[(f64, &'static str, f64)]| {
+        let rs: Vec<Ranked> =
+            ps.iter().map(|&(lead, a, score)| Ranked { lead, availability: Some(a), score }).collect();
+        (s.best(&rs), s.ranked(&rs))
+    };
+    // Berlin: the BKG's paid 1 m of 2022 against the Länder's open 1 m of 2021: the open one, though
+    // its score is lower.
+    let (paid, open) = (piece(1.0, "paid", 2022.0), piece(1.0, "open", 2021.0));
+    assert!(paid.2 > open.2);
+    assert_eq!(ranked(&[paid, open]), (Some(1), vec![1, 0]));
+    // Within the factor (1.2 m against 1 m): still the open one; beyond it (1.3 m), the finer.
+    assert_eq!(ranked(&[paid, piece(1.2, "open", 2021.0)]).0, Some(1));
+    assert_eq!(ranked(&[paid, piece(1.3, "open", 2021.0)]).0, Some(0));
+    // Login before paid before closed; of one availability, the score.
+    let (login, closed) = (piece(1.0, "login", 2000.0), piece(1.0, "closed", 2026.0));
+    assert_eq!(ranked(&[closed, paid, login]).1, vec![2, 1, 0]);
+    assert_eq!(ranked(&[piece(1.0, "open", 2010.0), open]).1, vec![1, 0]);
+    // The order: the best, then the best of the rest. A coarse open piece ties none of the fine
+    // ones, so ranks after them; of two equal pieces, the first.
+    let coarse = piece(30.0, "open", 2024.0);
+    assert_eq!(ranked(&[coarse, paid, open]).1, vec![2, 1, 0]);
+    assert_eq!(ranked(&[open, open]).1, vec![0, 1]);
+    assert_eq!(ranked(&[]), (None, vec![]));
+    // No order declared: availability ranks no tie (the score alone).
+    let plain = score(SCORE_TOML.as_bytes()).unwrap();
+    let rs = [
+        Ranked { lead: paid.0, availability: Some("paid"), score: paid.2 },
+        Ranked { lead: open.0, availability: Some("open"), score: open.2 },
+    ];
+    assert_eq!(plain.best(&rs), Some(0));
+    // The score drawn on the spacing's own axis: a score of v is the spacing whose value is v.
+    assert!((s.primary_of(0.75).unwrap() - 1.0).abs() < 1e-9);
+    assert!((s.primary_of(open.0).unwrap() - 1.0).abs() < 1e-9);
+    assert_eq!(s.scale_of(SCORE_LAYER), s.scale_of("spacing_m"));
 }
 
 #[test]
@@ -1059,16 +1087,39 @@ fn malformed_files_are_findings() {
     }
 }
 
-/// The server's score (`Score::of`) is score.py's: on score.toml's own examples and the pieces in
-/// score_pieces.json, each score and metric value as producers/extents/score.py made them
-/// (score_expected.json: the command in score.py's usage; producers/extents/test_extents.py makes
-/// it again and checks it's this file), to the last digit it shows (three) and well past it.
+/// The server's score and order (`Score::of`, `Score::ranked`) are score.py's: on score.toml's own
+/// examples and the pieces in score_pieces.json, each score and metric value as
+/// producers/extents/score.py made them (score_expected.json: the command in score.py's usage;
+/// producers/extents/test_extents.py makes it again and checks it's this file), to the last digit
+/// it shows (three) and well past it; and each of its groups of pieces in score.py's order.
 #[test]
 fn the_score_is_score_py_s() {
     let s = score(REAL[0].1).unwrap();
-    let expected: Vec<Value> = serde_json::from_str(include_str!("score_expected.json")).unwrap();
+    let file: Value = serde_json::from_str(include_str!("score_expected.json")).unwrap();
+    let expected = file["scored"].as_array().unwrap();
     assert!(expected.len() > 15, "the examples and the pieces");
-    for e in &expected {
+    let groups = file["ranked"].as_array().unwrap();
+    assert!(groups.len() >= 4);
+    for g in groups {
+        let ps: Vec<(Option<f64>, BTreeMap<String, Option<f64>>, Option<&str>)> = g["pieces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let (score, vals) = s.of(p.as_object().unwrap());
+                (score, vals, p["availability"].as_str())
+            })
+            .collect();
+        let at: Vec<usize> = (0..ps.len()).filter(|&k| ps[k].0.is_some()).collect();
+        let rs: Vec<Ranked> = at
+            .iter()
+            .map(|&k| Ranked { lead: ps[k].1["spacing_m"].unwrap(), availability: ps[k].2, score: ps[k].0.unwrap() })
+            .collect();
+        let got: Vec<usize> = s.ranked(&rs).into_iter().map(|k| at[k]).collect();
+        let want: Vec<usize> = g["order"].as_array().unwrap().iter().map(|k| k.as_u64().unwrap() as usize).collect();
+        assert_eq!(got, want, "{}", g["pieces"]);
+    }
+    for e in expected {
         let metrics = e["metrics"].as_object().unwrap();
         let (got, vals) = s.of(metrics);
         match e["score"].as_f64() {

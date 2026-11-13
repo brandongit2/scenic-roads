@@ -408,7 +408,18 @@
     "layer": "score",
     "set": "best",
     "avail": "open",
-    "opacity": 0.85
+    "opacity": 0.85,
+    "colours": {
+      "palette": "viridis",
+      "auto": true,
+      "range": [0, 1],
+      "fit": [1, 99],
+      "equalize": false,
+      "lowFade": 0,
+      "lowSpan": 0.5,
+      "threshold": { "on": false, "dir": "above", "value": 0 }
+    },
+    "scales": {}
   },
   "ferry": {
     "on": true,

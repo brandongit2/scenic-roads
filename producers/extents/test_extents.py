@@ -177,6 +177,20 @@ class Score(unittest.TestCase):
         self.assertLess(score.score(d, {"spacing_m": 1.2, "surface": "surface"})[0],
                         score.score(d, {"spacing_m": 1.25, "surface": "ground"})[0])
 
+    def test_an_open_piece_wins_a_tie(self):
+        """Berlin (13 Nov): the BKG's paid 1 m DGM of 2022 scores above Brandenburg's open 1 m of
+        2021, but within `within` availability ranks first; a finer grid beyond it still wins."""
+        d = self.DECL
+        paid = {"spacing_m": 1, "surface": "ground", "year": 2022, "availability": "paid"}
+        opened = {"spacing_m": 1, "surface": "ground", "year": 2021, "availability": "open"}
+        self.assertGreater(score.score(d, paid)[0], score.score(d, opened)[0])
+        self.assertEqual(score.ranked(d, [paid, opened]), [1, 0])
+        self.assertEqual(score.best(d, [paid, {**opened, "spacing_m": 1.3}]), 0)
+        self.assertEqual(score.best(d, [paid, {**opened, "spacing_m": 1.2}]), 1)
+        # No order declared: the score alone.
+        plain = {k: v for k, v in d.items() if k != "availability"}
+        self.assertEqual(score.best(plain, [paid, opened]), 0)
+
     def test_the_servers_expected_scores_are_this_files(self):
         """The map server's scoring is tested against the scores this file makes, checked in beside
         its test (crate::inputs::extents's score_expected.json): made again from score.toml and the

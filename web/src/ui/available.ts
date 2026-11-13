@@ -1,10 +1,13 @@
 // The layers panel's Data available section (ui/layers.ts) and the click's panel: the themes'
 // layers from the server's description (available.ts), one shown at a time, the set, the
-// availability switch, the opacity, and the legend of the layer shown.
-import { legendModel, shown, word, type AvailableState, type AvLayer, type AvTheme, type PieceRow, OPACITY_RANGE } from '../available';
-import type { Store } from '../state';
+// availability switch, the opacity, and the layer's colour map: the sidebar's own control
+// (ui/scale.ts ScaleControls) over the values in view, on the layer's own axis (available.ts axisOf).
+import { axisOf, scaleOf, shown, word, type AvailableState, type AvLayer, type AvTheme, type PieceRow, OPACITY_RANGE } from '../available';
+import type { Dist } from '../roads/stats';
+import type { ScaleFields, Store } from '../state';
 import { Slider, pct } from './controls';
 import { h } from './dom';
+import { ScaleControls } from './scale';
 import { inUse } from './settingprofiles';
 
 /** A theme as the section has it: its description, or where that stands. */
@@ -14,14 +17,19 @@ export class AvailableSection {
   readonly nodes: HTMLElement[];
   /** The group's switch (the section's header). */
   readonly on: HTMLInputElement;
+  /** A palette shown on the map while hovering the ramp list (null: back to the chosen one). */
+  onPreview: (palette: string | null) => void = () => {};
   private list = h('div', { class: 'av-layers' });
   private setRow: HTMLElement;
   private setSeg = h('div', { class: 'seg small' });
   private availBtns: HTMLButtonElement[] = [];
   private op: Slider;
-  private legend = h('div', { class: 'av-legend' });
+  private scale: ScaleControls;
+  private scaleBox: HTMLElement;
   private body: HTMLDivElement;
   private themes: ThemeEntry[] = [];
+  /** The layer shown (its axis is the colour map's), null before a theme is read. */
+  private layer: AvLayer | null = null;
 
   constructor(private store: Store) {
     const A = (patch: Partial<AvailableState>) => store.set({ available: { ...store.s.available, ...patch } });
@@ -40,14 +48,36 @@ export class AvailableSection {
       label: 'Opacity', min: OPACITY_RANGE[0], max: OPACITY_RANGE[1], step: 0.05, reset: () => inUse().available.opacity, title: 'Opacity of the layer',
       get: () => store.s.available.opacity, set: (opacity) => A({ opacity }), fmt: pct,
     });
+    // The colour map of the layer shown: each layer keeps its own.
+    const S = (): ScaleFields => (this.layer ? scaleOf(store.s.available, this.layer) : store.s.available.colours);
+    const axis = () => (this.layer ? axisOf(this.layer) : null);
+    this.scale = new ScaleControls({
+      get: S,
+      set: (patch) => {
+        const l = this.layer;
+        if (l) A({ scales: { ...store.s.available.scales, [l.id]: { ...S(), ...patch } } });
+      },
+      metric: () => {
+        const a = axis();
+        return a ? { domain: a.domain, step: a.step, fmt: a.fmt, ticks: a.ticks } : { domain: [0, 1], step: 0.01, fmt: (v: number) => v.toFixed(2) };
+      },
+      noun: 'data',
+      measure: 'area with data',
+      fadeDefault: () => inUse().available.colours.lowFade,
+      spanDefault: () => inUse().available.colours.lowSpan,
+      // (A layer of words: its range their values, the ramp's ends theirs.)
+      fixedCaption: () => (this.layer && axis()?.fixed ? `${this.layer.words.map((w) => w.label).join(' and ')}: the ramp’s ends` : null),
+      onPreview: (k) => this.onPreview(k),
+    });
     const row = (label: string, input: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, h('span'));
     this.setRow = row('Data', this.setSeg);
+    this.scaleBox = h('div', { class: 'tint-scale' }, this.scale.legend, this.scale.palRow, this.scale.fadeRow, this.scale.thrRow);
     this.body = h('div', { class: 'av-body' },
       this.list,
       this.setRow,
       row('Show', avail),
       this.op.el,
-      this.legend,
+      this.scaleBox,
       h('div', { class: 'faint note' }, 'Zoomed out, a pixel shows the best data anywhere under it, so small areas of fine data stay in sight. Click the map for every source there. Places nobody has looked into yet show nothing.'),
     );
     this.nodes = [this.body];
@@ -57,6 +87,11 @@ export class AvailableSection {
   setThemes(themes: ThemeEntry[]) {
     this.themes = themes;
     this.sync();
+  }
+
+  /** The values in view, the range in use and the equalization lookup (ctl/available.ts). */
+  update(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
+    this.scale.update(dist, range, cdf);
   }
 
   sync() {
@@ -90,28 +125,16 @@ export class AvailableSection {
     this.setRow.hidden = sets.length < 2;
     const set = desc ? shown(s, desc).set : '';
     this.setSeg.replaceChildren(...sets.map((k) => h('button', { class: k === set ? 'on' : '', onclick: () => A({ set: k }) }, word(desc ? desc.labels.sets : {}, k))));
-    this.legend.replaceChildren(...(desc ? legendNodes(shown(s, desc).layer, desc) : []));
+    this.layer = desc ? shown(s, desc).layer : null;
+    this.scaleBox.hidden = !this.layer;
+    this.scale.sync();
   }
-}
-
-/** A layer's legend: a swatch and label per class or word (the score's classes split from their
- * best to their worst shade), or a gradient with its stops' labels. */
-function legendNodes(l: AvLayer, t: AvTheme): HTMLElement[] {
-  const m = legendModel(l, t);
-  if (m.kind === 'ramp') {
-    return [h('div', { class: 'tint-bar', style: `background:${m.gradient}` }), h('div', { class: 'tint-ticks' }, ...m.ticks.map((x) => h('span', {}, x)))];
-  }
-  const sw = (colour: string, to?: string) => h('i', { style: `background:${to ? `linear-gradient(90deg, ${colour} 50%, ${to} 50%)` : colour}` });
-  return [
-    h('div', { class: 'av-swatches' }, ...m.rows.map((r) => h('span', { class: 'lg' }, sw(r.colour, r.to), r.label))),
-    ...(m.caption ? [h('div', { class: 'faint av-caption' }, m.caption)] : []),
-  ];
 }
 
 /** Why a click picks no road or area while the group is on. */
 const note = () => h('div', { class: 'faint av-note' }, 'Roads and areas aren’t picked while Data available is on.');
 
-/** The click's panel: the pieces at the point, best first, the one the layer paints marked. */
+/** The click's panel: the pieces at the point, best first, the one the layer draws marked. */
 export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLayer, all: boolean): HTMLElement {
   const box = h('div', { class: 'pop av-pop' });
   if (rows === 'loading') {

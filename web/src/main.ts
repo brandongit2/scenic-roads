@@ -339,7 +339,7 @@ async function main() {
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
   // The data available layers (ctl/available.ts): over the hill-shading, under the map's lines and
   // labels; their section once the catalogue lists a theme.
-  const available = new Available(map, store, layers.available, 'waterway');
+  const available = new Available(map, store, layers.available, 'waterway', () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]));
   available.onShown = (on) => layers.showAvailable(on);
   // Regions (Layers → Regions): the regions the map is built for, and their outlines on the map.
   const regionLayers = new RegionLayers(map);

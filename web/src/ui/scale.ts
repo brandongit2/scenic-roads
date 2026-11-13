@@ -33,6 +33,9 @@ export interface ScaleMetric {
   hiPlus?: boolean;
   /** How the colours are spaced over the range, and so the legend's axis (default linear). */
   spacing?: Spacing;
+  /** The axis's round values between two, with their ranks (scaleaxis.ts axisTicks' `nice`; default:
+   * the spacing's). */
+  ticks?: (lo: number, hi: number) => [number, number][];
 }
 
 export interface ScaleOpts {
@@ -490,7 +493,7 @@ export class ScaleControls {
     }
     // Axis ticks at round values, faint, labelled where there's room beside the handles' labels.
     ctx.font = TF;
-    const ticks = axisTicks(sp, axis[0], axis[1], W, d.step, lab, (t) => ctx.measureText(t).width, taken);
+    const ticks = axisTicks(sp, axis[0], axis[1], W, d.step, lab, (t) => ctx.measureText(t).width, taken, 4, d.ticks);
     for (const t of ticks) {
       ctx.fillStyle = 'rgba(255,255,255,0.28)';
       ctx.fillRect(t.x, HB + 1, 1, 2);

@@ -60,3 +60,13 @@ test('linear axis: no finer than the metric\'s step, and only labels that are ex
   // A step coarser than the nice one wins: 0–2 in steps of 1, not 0.5.
   assert.deepEqual(axisTicks('linear', 0, 2, 400, 1, pc, () => 20).map((t) => t.v), [0, 1, 2]);
 });
+
+test('a metric\'s own round values in place of the spacing\'s, labelled by rank', () => {
+  // Values that are log10 of metres (data available's): ticks at 1, 2 and 5 m, 1 m labelled first.
+  const m = (v: number) => `${+(10 ** v).toPrecision(2)} m`;
+  const nice = (): [number, number][] => [[0, 0], [Math.log10(5), 1], [Math.log10(2), 2]];
+  const ticks = axisTicks('linear', -0.1, 0.8, 400, 0.01, m, () => 24, [], 4, nice);
+  assert.deepEqual(ticks.map((t) => m(t.v)), ['1 m', '2 m', '5 m']);
+  near(ticks[0].x, (0.1 / 0.9) * 400);
+  assert.ok(ticks.every((t) => t.lx !== undefined));
+});

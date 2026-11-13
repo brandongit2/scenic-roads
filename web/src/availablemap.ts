@@ -1,52 +1,61 @@
 // The data available layers on the map (docs/steps.md §14): the one part of them MapLibre's, a
-// raster source and layer over the server's painted tiles, and the polar caps' overlay
-// (polarcaps.ts). What is shown, from where, comes from the controller (ctl/available.ts) as a URL
-// template and an opacity; nothing here reads the layers' meaning (available.ts).
-import type { Map as MLMap, RasterTileSource } from 'maplibre-gl';
+// raster-dem source over the server's tiles of values and a colour-relief layer colouring them on
+// the GPU by the ramp's stops (available.ts rampStops), as the terrain tint is coloured; the polar
+// caps' overlay (polarcaps.ts) takes this layer's ramp. What is shown, from where and in which
+// colours comes from the controller (ctl/available.ts); nothing here reads the layers' meaning. In
+// the native port: a ground layer painted into the drapes from the same tiles and stops.
+import type { ExpressionSpecification, Map as MLMap, RasterDEMTileSource } from 'maplibre-gl';
 
 const SOURCE = 'available';
-const LAYER = 'available';
+/** The colour-relief layer (the polar caps' overlay reads its ramp: polarglobe.ts). */
+export const AVAILABLE_LAYER = 'available';
 
 /** What the Mercator layer draws: its tiles' URL template, their finest zoom (overzoomed past it),
- * and its opacity; null: nothing. */
-export type AvailableDraw = { url: string; maxzoom: number; opacity: number } | null;
+ * its opacity and its ramp's stops; null: nothing. */
+export type AvailableDraw = { url: string; maxzoom: number; opacity: number; stops: [number, string][] } | null;
 
 export class AvailableMap {
   private url = '';
   private maxzoom = -1;
+  private stops = '';
 
-  /** `before`: the layer it goes under (the map's lines and labels above it; the hill-shading
-   * under, so the classes keep their colours). */
+  /** `before`: the layer it goes under (the map's lines and labels above it). */
   constructor(private map: MLMap, private before: string) {}
 
   show(d: AvailableDraw) {
     const m = this.map;
     if (!d) {
-      if (m.getLayer(LAYER)) m.removeLayer(LAYER);
+      if (m.getLayer(AVAILABLE_LAYER)) m.removeLayer(AVAILABLE_LAYER);
       if (m.getSource(SOURCE)) m.removeSource(SOURCE);
-      this.url = '';
+      this.url = this.stops = '';
       return;
     }
-    const src = m.getSource(SOURCE) as RasterTileSource | undefined;
+    const src = m.getSource(SOURCE) as RasterDEMTileSource | undefined;
     if (src && this.maxzoom !== d.maxzoom) {
-      m.removeLayer(LAYER);
+      m.removeLayer(AVAILABLE_LAYER);
       m.removeSource(SOURCE);
     } else if (src && this.url !== d.url) {
       src.setTiles([d.url]);
       this.url = d.url;
     }
     if (!m.getSource(SOURCE)) {
-      // (Tiles of 256 px, z0 to its finest; 204 where nothing is coloured: an empty tile.)
-      m.addSource(SOURCE, { type: 'raster', tiles: [d.url], tileSize: 256, minzoom: 0, maxzoom: d.maxzoom, attribution: '' });
+      // (Tiles of 256 px, z0 to its finest, Terrarium-coded values; 204 where there's none: no
+      // tile.)
+      m.addSource(SOURCE, { type: 'raster-dem', encoding: 'terrarium', tiles: [d.url], tileSize: 256, minzoom: 0, maxzoom: d.maxzoom, attribution: '' });
       m.addLayer(
-        // (Nearest: a pixel is one set of pieces, its colour exact; no fade, as a draped raster
-        // drawn mid-fade keeps it.)
-        { id: LAYER, type: 'raster', source: SOURCE, paint: { 'raster-opacity': d.opacity, 'raster-resampling': 'nearest', 'raster-fade-duration': 0 } },
+        // (Nearest: a pixel is one piece's value, never a blend of two or of one and none.)
+        { id: AVAILABLE_LAYER, type: 'color-relief', source: SOURCE, paint: { 'color-relief-opacity': d.opacity, resampling: 'nearest' } as never },
         m.getLayer(this.before) ? this.before : undefined,
       );
       this.url = d.url;
       this.maxzoom = d.maxzoom;
+      this.stops = '';
     }
-    if (m.getPaintProperty(LAYER, 'raster-opacity') !== d.opacity) m.setPaintProperty(LAYER, 'raster-opacity', d.opacity);
+    const key = JSON.stringify(d.stops);
+    if (key !== this.stops) {
+      this.stops = key;
+      m.setPaintProperty(AVAILABLE_LAYER, 'color-relief-color', ['interpolate', ['linear'], ['elevation'], ...d.stops.flat()] as ExpressionSpecification, { validate: false });
+    }
+    if (m.getPaintProperty(AVAILABLE_LAYER, 'color-relief-opacity') !== d.opacity) m.setPaintProperty(AVAILABLE_LAYER, 'color-relief-opacity', d.opacity);
   }
 }

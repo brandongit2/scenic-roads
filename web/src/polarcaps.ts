@@ -3,7 +3,7 @@
 // come from /tiles/polar-terrain|polar-slope/<pole>/z/x/y at the layers' versions (their packs' where
 // the catalogue gives packs: api.ts packUrl); a new version asks for every tile again. The cap
 // follows the map's hillshade layer, the terrain's 3D and exaggeration, the land and water colours
-// and the tints by itself (polarGlobeLayer reads them from the map each frame); a colour overlay
+// and the tints by itself (polarGlobeLayer reads them from the map each frame); an overlay of values
 // (the data available layers: availablemap.ts) is drawn over it as the overlay asks (setOverlay).
 
 import type { Map as MlMap } from 'maplibre-gl';

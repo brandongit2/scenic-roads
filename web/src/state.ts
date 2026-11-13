@@ -1453,7 +1453,10 @@ export function fromSaved(o: unknown, base: AppState): AppState {
   if (!HEX.test(s.land)) s.land = base.land;
   if (s.depth.scale !== 'linear' && s.depth.scale !== 'log') s.depth.scale = base.depth.scale;
   s.depth.colours = cleanDepthColours(s.depth.colours, base.depth.colours);
-  s.available = cleanAvailable(s.available, base.available);
+  // (Each data available layer's colour map, by layer: merge() only keeps keys the base has; a save
+  // holding none, the profile's.)
+  const avs = rest.available as { scales?: unknown } | undefined;
+  s.available = cleanAvailable({ ...s.available, scales: (avs && 'scales' in avs ? avs.scales : base.available.scales) as AvailableState['scales'] }, base.available);
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = base.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the base has).
   const sfv = (rest.stopFilters ?? {}) as Record<string, Partial<StopFilter>>;

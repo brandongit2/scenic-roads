@@ -1,18 +1,20 @@
 // node web/test/available.test.ts (tools/dev/check.sh's web part): the data available layers' model
-// (src/available.ts): the themes the catalogue lists, the server's theme description read, the
-// legends drawn from it, the tiles' and the click's URLs, the click's rows and the piece a layer
-// paints (the server's Theme::best), and the settings in a link.
+// (src/available.ts): the themes the catalogue lists, the server's theme description read, each
+// layer's axis in its tiles' values and its colour map, the ramp's stops on the map, the tiles'
+// and the click's URLs, the click's rows and the piece a layer draws (the server's Theme::best),
+// and the settings in a link and a save.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  atUrl, cleanState, fromField, legendModel, parsePieces, parseTheme, pieceRows, polarTileUrl, shown, themesOf, tileUrl, toField,
+  NONE, atUrl, axisOf, cleanState, fromField, logTicks, parsePieces, parseTheme, pieceRows, polarTileUrl, rampStops, scaleOf, shown, themesOf, tileUrl, toField,
   type AvailableState,
 } from '../src/available.ts';
+import type { ScaleFields } from '../src/state.ts';
 
 /** `/api/available/terrain` as crates/server/src/available.rs `described` writes it for the real
- * score.toml (shortened: three of eight classes). */
+ * score.toml (the ranges of the real pieces of 13 Nov). */
 const THEME = {
-  theme: 'terrain', sets: ['best'], primary: 'spacing_m', within: 1.25, share: 0.02,
+  theme: 'terrain', sets: ['best'], primary: 'spacing_m', within: 1.25, share: 0.02, availability: ['open', 'login', 'paid', 'closed'],
   metrics: [
     { id: 'spacing_m', label: 'Grid spacing', unit: 'm', weight: null, scale: 'log', worst: 1000, best: 0.1, values: null, primary: true },
     { id: 'surface', label: 'Bare earth or surface', unit: null, weight: 0.4, scale: 'values', worst: null, best: null, values: { ground: 1, surface: 0 }, primary: false },
@@ -20,16 +22,15 @@ const THEME = {
     { id: 'year', label: 'Year surveyed', unit: null, weight: 0.2, scale: 'linear', worst: 2000, best: 2026, values: null, primary: false },
   ],
   layers: [
-    { id: 'score', label: 'Best data', unit: 'm', legend: 'classes', classes_of: 'spacing_m', shade: 0.4, shaded_by: ['surface', 'vertical_rmse_m', 'year'],
-      stops: [{ label: '0.5 m', upto: 0.625, colour: '#e7fda7', shaded: '#c8f6b3' }, { label: '1 m', upto: 1.25, colour: '#9aefba', shaded: '#7fe3c4' }, { label: 'coarser', upto: null, colour: '#803041', shaded: '#7a2040' }] },
-    { id: 'spacing_m', label: 'Grid spacing', unit: 'm', legend: 'classes', stops: [{ label: '0.5 m', upto: 0.625, colour: '#e7fda7' }, { label: 'coarser', upto: null, colour: '#803041' }] },
-    { id: 'surface', label: 'Bare earth or surface', unit: null, legend: 'values', stops: [{ value: 0, label: 'surface', colour: '#e69f00' }, { value: 1, label: 'ground', colour: '#56b4e9' }] },
-    { id: 'year', label: 'Year surveyed', unit: null, legend: 'ramp', ramp: [[0, '#803041'], [0.5, '#4fb6df'], [1, '#e7fda7']],
-      stops: [{ value: 0, label: '2000', colour: '#803041' }, { value: 1, label: '2026', colour: '#e7fda7' }] },
-    { id: 'vertical_rmse_m', label: 'Stated vertical accuracy (RMSE)', unit: 'm', legend: 'ramp', ramp: [[0, '#803041'], [1, '#e7fda7']],
-      stops: [{ value: 0, label: '10', colour: '#803041' }, { value: 1, label: '0.05', colour: '#e7fda7' }] },
-    // (A legend the app doesn't know: left out.)
-    { id: 'odd', label: 'Odd', legend: 'pie', stops: [] },
+    { id: 'score', label: 'Best data', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.1, 90], of: 'spacing_m' },
+    { id: 'spacing_m', label: 'Grid spacing', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.1, 90] },
+    { id: 'surface', label: 'Bare earth or surface', unit: null, scale: 'values', best: 'high', range: [0, 1],
+      words: [{ value: 1, label: 'ground' }, { value: 0, label: 'surface' }] },
+    { id: 'vertical_rmse_m', label: 'Stated vertical accuracy (RMSE)', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.05, 16] },
+    { id: 'year', label: 'Year surveyed', unit: null, scale: 'linear', best: 'high', words: null, range: [2000, 2024] },
+    // (A scale the app doesn't know, and a server of the painted tiles' format: left out.)
+    { id: 'odd', label: 'Odd', scale: 'pie' },
+    { id: 'old', label: 'Old', legend: 'classes', stops: [] },
   ],
   sources: [],
   labels: {
@@ -41,6 +42,13 @@ const THEME = {
 
 const theme = parseTheme(THEME)!;
 
+/** The default profile's first colour map of a layer (web/default-profile.json). */
+const COLOURS: ScaleFields = {
+  palette: 'viridis', auto: true, range: [0, 1], fit: [1, 99], equalize: false, lowFade: 0, lowSpan: 0.5,
+  threshold: { on: false, dir: 'above', value: 0 },
+};
+const BASE: AvailableState = { on: false, theme: 'terrain', layer: 'score', set: 'best', avail: 'open', opacity: 0.85, colours: COLOURS, scales: {} };
+
 test('the catalogue’s themes, with their poles', () => {
   const layers = {
     'available-terrain': { maxzoom: 12 }, 'available-terrain-n': { maxzoom: 3 }, 'available-terrain-s': { maxzoom: 3 },
@@ -51,50 +59,89 @@ test('the catalogue’s themes, with their poles', () => {
 });
 
 test('a theme read: its layers in the server’s order, one it can’t draw left out', () => {
-  assert.deepEqual(theme.layers.map((l) => l.id), ['score', 'spacing_m', 'surface', 'year', 'vertical_rmse_m']);
-  assert.equal(theme.layers[0].label, 'Best data');
+  assert.deepEqual(theme.layers.map((l) => l.id), ['score', 'spacing_m', 'surface', 'vertical_rmse_m', 'year']);
+  assert.deepEqual(theme.layers[0], { id: 'score', label: 'Best data', unit: 'm', scale: 'log', best: 'low', range: [0.1, 90], words: [] });
+  assert.deepEqual(theme.layers[2].words, [{ value: 0, label: 'surface' }, { value: 1, label: 'ground' }], 'by value');
   assert.deepEqual(theme.sets, ['best']);
   assert.equal(parseTheme({ theme: 'terrain', layers: [], sources: [] }), null, 'no score: no layers');
   assert.equal(parseTheme('nope'), null);
-  assert.equal(theme.labels.sets.best, 'Best available anywhere');
-  // A metric the app has never seen, drawn by a legend it knows: shown as any other; a server
-  // without `labels` (before they were sent): no words, the ids shown as they are.
+  // The painted tiles' description (an older server): no layer the app can draw, so none shown.
+  assert.equal(parseTheme({ ...THEME, layers: [THEME.layers[6]] }), null);
+  // A metric the app has never seen: shown as any other; no values present: the layer kept, its
+  // range none; a log range not above 0, or words missing: left out.
   const more = structuredClone(THEME) as Record<string, unknown> & typeof THEME;
-  more.metrics.push({ id: 'density', label: 'Point density', unit: 'pt/m²', weight: 0.1, scale: 'log', worst: 0.1, best: 20, values: null, primary: false });
-  (more.layers as unknown[]).push({ id: 'density', label: 'Point density', unit: 'pt/m²', legend: 'ramp', ramp: [[0, '#000000'], [1, '#ffffff']], stops: [{ value: 0, label: '0.1', colour: '#000000' }, { value: 1, label: '20', colour: '#ffffff' }] });
-  delete more.labels;
+  (more.layers as unknown[]).push({ id: 'density', label: 'Point density', unit: 'pt/m²', scale: 'log', best: 'high', range: null });
+  (more.layers as unknown[]).push({ id: 'neg', label: 'Neg', unit: 'm', scale: 'log', best: 'low', range: [0, 3] });
+  (more.layers as unknown[]).push({ id: 'kind', label: 'Kind', unit: null, scale: 'values', best: 'high', range: [0, 1], words: [{ value: 1, label: 'a' }] });
+  delete (more as Record<string, unknown>).labels;
   const m = parseTheme(more)!;
-  assert.deepEqual(m.layers.at(-1)!.id, 'density');
-  assert.deepEqual(legendModel(m.layers.at(-1)!, m), { kind: 'ramp', gradient: 'linear-gradient(90deg, #000000 0%, #ffffff 100%)', ticks: ['0.1 pt/m²', '20 pt/m²'] });
+  assert.deepEqual(m.layers.map((l) => l.id).slice(-1), ['density']);
+  assert.equal(m.layers.at(-1)!.range, null);
   assert.deepEqual(m.labels, { sets: {}, availability: {}, extent: {} });
-  // A colour not #rrggbb: the layer is left out, not drawn wrong.
-  const bad = structuredClone(THEME);
-  bad.layers[1].stops[0].colour = 'red';
-  assert.deepEqual(parseTheme(bad)!.layers.map((l) => l.id), ['score', 'surface', 'year', 'vertical_rmse_m']);
 });
 
 test('the layer and set shown: the state’s where the theme has them, else its first', () => {
-  const s: AvailableState = { on: true, theme: 'terrain', layer: 'year', set: 'best', avail: 'open', opacity: 0.85 };
+  const s: AvailableState = { ...BASE, on: true, layer: 'year' };
   assert.equal(shown(s, theme).layer.id, 'year');
   assert.equal(shown({ ...s, layer: 'gone', set: 'built' }, theme).layer.id, 'score');
   assert.equal(shown({ ...s, set: 'built' }, theme).set, 'best');
 });
 
-test('legends: classes finest first with the score’s shading, words, a ramp', () => {
-  const score = legendModel(theme.layers[0], theme);
-  assert.equal(score.kind, 'swatches');
-  if (score.kind !== 'swatches') return;
-  assert.deepEqual(score.rows[0], { colour: '#e7fda7', to: '#c8f6b3', label: '0.5 m' });
-  assert.equal(score.rows.at(-1)!.label, 'coarser');
-  assert.equal(score.caption, 'Within a class, left its best and right its worst by Bare earth or surface · Stated vertical accuracy (RMSE) · Year surveyed');
-  const spacing = legendModel(theme.layers[1], theme);
-  assert.deepEqual(spacing, { kind: 'swatches', rows: [{ colour: '#e7fda7', label: '0.5 m' }, { colour: '#803041', label: 'coarser' }], caption: '' });
-  const words = legendModel(theme.layers[2], theme);
-  assert.deepEqual(words, { kind: 'swatches', rows: [{ colour: '#e69f00', label: 'surface' }, { colour: '#56b4e9', label: 'ground' }], caption: '' });
-  assert.deepEqual(legendModel(theme.layers[3], theme), { kind: 'ramp', gradient: 'linear-gradient(90deg, #803041 0%, #4fb6df 50%, #e7fda7 100%)', ticks: ['2000', '2026'] });
-  // The ramp's labels in the metric's unit.
-  const acc = legendModel(theme.layers[4], theme);
-  assert.deepEqual(acc.kind === 'ramp' && acc.ticks, ['10 m', '0.05 m']);
+test('a layer’s axis: log10 of its unit on a log layer, labelled in the unit, round ticks', () => {
+  const [score, , surface, acc, year] = theme.layers;
+  const a = axisOf(score);
+  assert.deepEqual(a.domain.map((v) => +v.toFixed(6)), [+(-1 - 1 / 256).toFixed(6), +(Math.log10(90) + 1 / 256).toFixed(6)], "the values present and a 1/256th");
+  assert.equal(a.step, 0.01);
+  assert.equal(a.fixed, false);
+  assert.deepEqual([Math.log10(0.5), 0, Math.log10(90), Math.log10(1260), Math.log10(0.6096)].map(a.fmt), ['0.5 m', '1 m', '90 m', '1300 m', '0.61 m']);
+  // 1, 5 and 2 times the powers of ten, in that rank, within the axis.
+  const t = logTicks(Math.log10(0.4), Math.log10(30)).map(([v, r]) => [+(10 ** v).toPrecision(3), r]);
+  assert.deepEqual(t.map(([v]) => v).sort((x, y) => x - y), [0.5, 1, 2, 5, 10, 20]);
+  assert.deepEqual(new Map(t.map(([v, r]) => [v, r])).get(5), 1);
+  // A narrow range: at least a factor of two wide, about its middle.
+  const one = axisOf({ ...acc, range: [1, 1] });
+  assert.ok(Math.abs(one.domain[1] - one.domain[0] - 0.3 - 2 / 256) < 1e-9 && Math.abs(one.domain[0] + 0.15 + 1 / 256) < 1e-9);
+  // The year: as it is, whole years.
+  const y = axisOf(year);
+  assert.deepEqual(y.domain, [2000, 2024]);
+  assert.equal(y.step, 1);
+  assert.equal(y.fmt(2021), '2021');
+  assert.equal(y.ticks, undefined);
+  // Two words: the range theirs, fixed; each value its word.
+  const w = axisOf(surface);
+  assert.deepEqual([w.domain, w.fixed, w.fmt(0), w.fmt(1), w.fmt(0.5)], [[0, 1], true, 'surface', 'ground', '0.5']);
+  assert.deepEqual(w.ticks!(0, 1), [[0, 0], [1, 0]]);
+});
+
+test('a layer’s colour map: its own once changed, else the profile’s, reversed where low is better', () => {
+  const [score, , surface] = theme.layers;
+  assert.equal(scaleOf(BASE, score).palette, 'viridis_r', 'the finest spacing at the ramp’s bright end');
+  assert.equal(scaleOf(BASE, surface).palette, 'viridis');
+  assert.equal(scaleOf({ ...BASE, colours: { ...COLOURS, palette: 'magma_r' } }, score).palette, 'magma');
+  const own = { ...COLOURS, palette: 'turbo', equalize: true };
+  assert.equal(scaleOf({ ...BASE, scales: { score: own } }, score), own);
+});
+
+test('the ramp’s stops: none clear, the range’s colours clamped past it, the highlight’s edge sharp', () => {
+  const at = (v: number) => `c${v.toFixed(4)}`;
+  const off = { on: false, dir: 'above' as const, value: 0 };
+  const s = rampStops([0, 1], false, at, off);
+  assert.deepEqual(s.slice(0, 3), [[NONE, 'rgba(0,0,0,0)'], [NONE + 1, 'c0.0000'], [0, 'c0.0000']]);
+  assert.equal(s.length, 2 + 33);
+  assert.deepEqual(s.at(-1), [1, 'c1.0000']);
+  // Every stop a whole 1/256th, ascending, none twice (the map packs them as the tiles).
+  const narrow = rampStops([0.3, 0.34], true, at, off);
+  for (let i = 1; i < narrow.length; i++) assert.ok(narrow[i][0] > narrow[i - 1][0]);
+  assert.ok(narrow.every(([v]) => Number.isInteger(v * 256)));
+  // Above 0.5: what's under it clear, the edge a 1/256th wide; below: the other way; above the
+  // low end: from the range's start.
+  const above = new Map(rampStops([0, 1], false, at, { on: true, dir: 'above', value: 0.5 }));
+  assert.deepEqual([above.get(0.5 - 1 / 256), above.get(0.5), above.get(0.25), above.get(0.75)], ['rgba(0,0,0,0)', 'c0.5000', 'rgba(0,0,0,0)', 'c0.7500']);
+  const below = new Map(rampStops([0, 1], false, at, { on: true, dir: 'below', value: 0.5 }));
+  assert.deepEqual([below.get(0.5), below.get(0.5 + 1 / 256), below.get(0.25), below.get(1)], ['c0.5000', 'rgba(0,0,0,0)', 'c0.2500', 'rgba(0,0,0,0)']);
+  const low = rampStops([0.25, 1], false, at, { on: true, dir: 'low', value: 9 });
+  assert.equal(new Map(low).get(0.25 - 1 / 256), 'rgba(0,0,0,0)');
+  assert.equal(low[1][1], 'rgba(0,0,0,0)', 'clamped below the range: clear too');
 });
 
 test('the URLs: tiles at the meta version, polar tiles, the click', () => {
@@ -167,11 +214,19 @@ test('the piece a layer paints: the server’s pick, none where it names none', 
 });
 
 test('the settings in a link, and from a save', () => {
-  const base: AvailableState = { on: false, theme: 'terrain', layer: 'score', set: 'best', avail: 'open', opacity: 0.85 };
-  const s: AvailableState = { on: true, theme: 'terrain', layer: 'year', set: 'best', avail: 'all', opacity: 0.6 };
+  const s: AvailableState = { ...BASE, on: true, layer: 'year', avail: 'all', opacity: 0.6 };
   assert.equal(toField(s), '1,terrain,year,best,all,0.6');
-  assert.deepEqual(fromField(toField(s), base), s);
-  assert.deepEqual(fromField('1,terrain,year', base), base, 'the wrong shape: ignored whole');
-  assert.deepEqual(fromField('1,Terrain!,year,best,maybe,7', base), { ...base, on: true, layer: 'year', opacity: 1 });
-  assert.deepEqual(cleanState({ ...s, avail: 'x' as 'open', opacity: 0, layer: 3 as unknown as string }, base), { ...s, avail: 'open', opacity: 0.1, layer: 'score' });
+  assert.deepEqual(fromField(toField(s), BASE), s);
+  assert.deepEqual(fromField('1,terrain,year', BASE), BASE, 'the wrong shape: ignored whole');
+  assert.deepEqual(fromField('1,Terrain!,year,best,maybe,7', BASE), { ...BASE, on: true, layer: 'year', opacity: 1 });
+  // (The link leaves the colour maps as they are.)
+  const mine = { ...BASE, scales: { year: { ...COLOURS, palette: 'turbo' } } };
+  assert.equal(fromField(toField(s), mine).scales, mine.scales);
+  assert.deepEqual(cleanState({ ...s, avail: 'x' as 'open', opacity: 0, layer: 3 as unknown as string }, BASE), { ...s, avail: 'open', opacity: 0.1, layer: 'score' });
+  // Colour maps from a save: each field valid, else the base's (a layer's, the save's first one's).
+  const odd = cleanState({ ...s, colours: { ...COLOURS, lowFade: 3, fit: [50, 10] } as ScaleFields,
+    scales: { year: { palette: 'turbo', range: [5, 2], threshold: { on: true, dir: 'sideways', value: 'x' } }, 'Bad!': COLOURS } as unknown as AvailableState['scales'] }, BASE);
+  assert.deepEqual(odd.colours, { ...COLOURS, lowFade: 1 });
+  assert.deepEqual(odd.scales, { year: { ...COLOURS, lowFade: 1, palette: 'turbo', threshold: { on: true, dir: 'above', value: 0 } } });
+  assert.deepEqual(cleanState({ ...s, scales: 3 } as unknown as AvailableState, BASE).scales, {});
 });

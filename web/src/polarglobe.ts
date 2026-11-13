@@ -106,17 +106,18 @@ uniform float u_altitudes[${MAX_LIGHTS}];
 uniform float u_azimuths[${MAX_LIGHTS}];
 uniform vec4 u_shadows[${MAX_LIGHTS}];
 uniform vec4 u_highlights[${MAX_LIGHTS}];
-// A colour overlay over everything (CapOverlay): its tile, where the cap's tile lies in it, its
-// opacity (0: none).
+// An overlay of values over everything (CapOverlay): its tile, where the cap's tile lies in it,
+// whether there's one (its colours the third ramp's).
 uniform highp sampler2D u_ov;
 uniform vec2 u_ov_off;
 uniform float u_ov_scale;
-uniform float u_ov_opacity;
-// The tints: by elevation (0) and by slope (1), each its ramp's stops and colours, or 0 stops.
-uniform highp sampler2D u_tint_stops[2];
-uniform highp sampler2D u_tint_colours[2];
-uniform int u_tint_n[2];
-uniform float u_tint_opacity[2];
+uniform float u_ov_on;
+// The ramps: the tints by elevation (0) and by slope (1), and the overlay's (2), each its stops and
+// colours, or 0 stops.
+uniform highp sampler2D u_tint_stops[3];
+uniform highp sampler2D u_tint_colours[3];
+uniform int u_tint_n[3];
+uniform float u_tint_opacity[3];
 in vec2 v_uv;
 in vec3 v_sphere;
 out vec4 fragColor;
@@ -216,24 +217,32 @@ vec4 rough(float s) {
   return col / float(ROUGH);
 }
 
-// A tint's colour at v (web/maplibre's color_relief.fragment.glsl: linear between its stops).
+// Ramp k's stop i and its colour (a sampler array's index must be a constant).
+float stopOf(int k, int i) {
+  ivec2 p = ivec2(i, 0);
+  return k == 0 ? texelFetch(u_tint_stops[0], p, 0).r : k == 1 ? texelFetch(u_tint_stops[1], p, 0).r : texelFetch(u_tint_stops[2], p, 0).r;
+}
+vec4 colourOf(int k, int i) {
+  ivec2 p = ivec2(i, 0);
+  return k == 0 ? texelFetch(u_tint_colours[0], p, 0) : k == 1 ? texelFetch(u_tint_colours[1], p, 0) : texelFetch(u_tint_colours[2], p, 0);
+}
+
+// Ramp k's colour at v (web/maplibre's color_relief.fragment.glsl: linear between its stops).
 vec4 tintAt(int k, float v) {
   int n = u_tint_n[k];
   if (n == 0) return vec4(0.0);
   int l = 0, r = n - 1;
-  float vl = k == 0 ? texelFetch(u_tint_stops[0], ivec2(l, 0), 0).r : texelFetch(u_tint_stops[1], ivec2(l, 0), 0).r;
-  float vr = k == 0 ? texelFetch(u_tint_stops[0], ivec2(r, 0), 0).r : texelFetch(u_tint_stops[1], ivec2(r, 0), 0).r;
+  float vl = stopOf(k, l);
+  float vr = stopOf(k, r);
   if (v <= vl) l = r = 0;
   else if (v >= vr) l = r = n - 1;
   while (r - l > 1) {
     int m = (l + r) / 2;
-    float vm = k == 0 ? texelFetch(u_tint_stops[0], ivec2(m, 0), 0).r : texelFetch(u_tint_stops[1], ivec2(m, 0), 0).r;
+    float vm = stopOf(k, m);
     if (v < vm) { r = m; vr = vm; } else { l = m; vl = vm; }
   }
-  vec4 cl = k == 0 ? texelFetch(u_tint_colours[0], ivec2(l, 0), 0) : texelFetch(u_tint_colours[1], ivec2(l, 0), 0);
-  vec4 cr = k == 0 ? texelFetch(u_tint_colours[0], ivec2(r, 0), 0) : texelFetch(u_tint_colours[1], ivec2(r, 0), 0);
   float f = r > l ? clamp((v - vl) / (vr - vl), 0.0, 1.0) : 0.0;
-  return u_tint_opacity[k] * mix(cl, cr, f);
+  return u_tint_opacity[k] * mix(colourOf(k, l), colourOf(k, r), f);
 }
 
 void main() {
@@ -271,10 +280,15 @@ void main() {
     sh = c * dir + (1.0 - c) * rough(s);
   }
   vec4 col = sh + base * (1.0 - sh.a);
-  if (u_ov_opacity > 0.0) {
-    vec4 o = texture(u_ov, u_ov_off + v_uv * u_ov_scale);
-    float a = o.a * u_ov_opacity;
-    col = vec4(o.rgb * a, a) + col * (1.0 - a);
+  if (u_ov_on > 0.5) {
+    // The overlay's pixel (nearest: one piece's value), Terrarium-coded, none where transparent,
+    // coloured by its ramp.
+    vec4 o = texelFetch(u_ov, ivec2(min((u_ov_off + v_uv * u_ov_scale) * ${TILE_SIZE}.0, ${TILE_SIZE - 1}.0)), 0);
+    if (o.a > 0.5) {
+      o *= 255.0;
+      vec4 c = tintAt(2, o.r * 256.0 + o.g + o.b / 256.0 - 32768.0);
+      col = c + col * (1.0 - c.a);
+    }
   }
   fragColor = col;
 }`;
@@ -297,12 +311,14 @@ export type PolarGlobeOptions = {
 };
 
 /**
- * A colour overlay drawn over a cap, as a raster layer over the Web Mercator map: its own tiles in
- * the pole's grid (RGBA PNG, z0 to `maxZoom`; a 204 or a failed request: nothing there), the cap's
- * finer tiles taking their part of the overlay's finest. `key` names what its tiles show: a new
- * key asks for every tile again; the opacity alone changes none.
+ * An overlay of values drawn over a cap, as a colour-relief layer over the Web Mercator map: its
+ * own tiles in the pole's grid (Terrarium-coded PNG, transparent where there's no value, z0 to
+ * `maxZoom`; a 204 or a failed request: nothing there), the cap's finer tiles taking their part of
+ * the overlay's finest, coloured by `ramp`, the map's colour-relief layer of the same values (its
+ * stops, colours and opacity, read as the tints'; hidden or gone: nothing drawn). `key` names what
+ * its tiles show: a new key asks for every tile again; a new ramp changes none.
  */
-export type CapOverlay = { key: string; maxZoom: number; url: (z: number, x: number, y: number) => string; opacity: number };
+export type CapOverlay = { key: string; maxZoom: number; url: (z: number, x: number, y: number) => string; ramp: string };
 
 /** The paint of a layer as MapLibre evaluated it (internals: web/package.json's note). */
 type StyleLayerish = {
@@ -353,10 +369,7 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
   const tiles = new PolarTiles({ pole: o.pole, maxZoom: o.maxZoom, url: o.url, stored: o.stored, onLoad: () => map?.triggerRepaint() });
   // Each tile's GL side: its mesh and textures.
   const gpu = new WeakMap<PolarTile, { vbo: WebGLBuffer; terrain: WebGLTexture; shade: WebGLTexture }>();
-  const tints: { stops: WebGLTexture | null; colours: WebGLTexture | null; key: unknown; n: number }[] = [
-    { stops: null, colours: null, key: null, n: 0 },
-    { stops: null, colours: null, key: null, n: 0 },
-  ];
+  const tints: { stops: WebGLTexture | null; colours: WebGLTexture | null; key: unknown; n: number }[] = [0, 1, 2].map(() => ({ stops: null, colours: null, key: null, n: 0 }));
   // The overlay, and its tiles by z/x/y (at most 85 to z3: kept until its key changes; a tile's
   // bytes until uploaded, then its texture).
   let overlay: CapOverlay | null = null;
@@ -497,7 +510,7 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
   };
   const pad = <T,>(a: T[]) => [...a, ...Array(MAX_LIGHTS - a.length).fill(a.at(-1))] as T[];
 
-  // A tint's ramp (stops and colours as float textures) while its layer shows, else 0 stops.
+  // A colour-relief layer's ramp (stops and colours as float textures) while it shows, else 0 stops.
   const tintRamp = (g: WebGL2RenderingContext, m: MlMap, k: number, id: string | undefined, zoom: number) => {
     const r = tints[k];
     const l = id ? (m.getLayer(id) as unknown as StyleLayerish | undefined) : undefined;
@@ -600,6 +613,7 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
       const exag = (map as unknown as { terrain?: { exaggeration: number } | null }).terrain?.exaggeration ?? 0;
       const tE = tintRamp(w, map, 0, o.tints?.elevation, zoom);
       const tS = tintRamp(w, map, 1, o.tints?.slope, zoom);
+      const tO = tintRamp(w, map, 2, overlay?.ramp, zoom);
       w.useProgram(prog);
       const u = (n: string) => w.getUniformLocation(prog!, n);
       w.uniformMatrix4fv(u('u_matrix'), false, m);
@@ -623,17 +637,18 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
       }
       w.uniform1i(u('u_terrain'), 0);
       w.uniform1i(u('u_shade'), 1);
-      // The tints' textures on units 2–5 (one with no stops keeps its unit bound to nothing read).
-      w.uniform1iv(u('u_tint_stops'), [2, 3]);
-      w.uniform1iv(u('u_tint_colours'), [4, 5]);
-      w.uniform1iv(u('u_tint_n'), [tE.n, tS.n]);
-      w.uniform1fv(u('u_tint_opacity'), [tE.opacity, tS.opacity]);
-      [tE.n ? tE.r.stops : null, tS.n ? tS.r.stops : null, tE.n ? tE.r.colours : null, tS.n ? tS.r.colours : null].forEach((t, i) => {
+      // The ramps' textures on units 2–7 (one with no stops keeps its unit bound to nothing read).
+      const ramps = [tE, tS, tO];
+      w.uniform1iv(u('u_tint_stops'), [2, 3, 4]);
+      w.uniform1iv(u('u_tint_colours'), [5, 6, 7]);
+      w.uniform1iv(u('u_tint_n'), ramps.map((t) => t.n));
+      w.uniform1fv(u('u_tint_opacity'), ramps.map((t) => t.opacity));
+      [...ramps.map((t) => (t.n ? t.r.stops : null)), ...ramps.map((t) => (t.n ? t.r.colours : null))].forEach((t, i) => {
         w.activeTexture(w.TEXTURE2 + i);
         w.bindTexture(w.TEXTURE_2D, t);
       });
-      w.uniform1i(u('u_ov'), 6);
-      const ovOff = u('u_ov_off'), ovScale = u('u_ov_scale'), ovOpacity = u('u_ov_opacity');
+      w.uniform1i(u('u_ov'), 8);
+      const ovOff = u('u_ov_off'), ovScale = u('u_ov_scale'), ovOn = u('u_ov_on');
       w.enable(w.DEPTH_TEST);
       w.depthFunc(w.LEQUAL);
       w.depthMask(true);
@@ -656,7 +671,7 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
         w.bindTexture(w.TEXTURE_2D, r.shade);
         // The overlay's tile holding this one (its finest zoom at most), and where this lies in it.
         let ovTex: WebGLTexture | null = null;
-        if (overlay && overlay.opacity > 0) {
+        if (overlay && tO.n > 0 && tO.opacity > 0) {
           const oz = Math.min(t.z, overlay.maxZoom), k = t.z - oz, n = 2 ** k;
           const [ox, oy] = [t.x >> k, t.y >> k];
           const ot = ovTile(overlay, oz, ox, oy);
@@ -668,14 +683,14 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
           w.uniform2f(ovOff, (t.x - ox * n) / n, (t.y - oy * n) / n);
           w.uniform1f(ovScale, 1 / n);
         }
-        w.uniform1f(ovOpacity, ovTex ? overlay!.opacity : 0);
-        w.activeTexture(w.TEXTURE6);
+        w.uniform1f(ovOn, ovTex ? 1 : 0);
+        w.activeTexture(w.TEXTURE8);
         w.bindTexture(w.TEXTURE_2D, ovTex);
         w.drawElements(w.TRIANGLES, nIdx, w.UNSIGNED_SHORT, 0);
       }
       w.disableVertexAttribArray(1);
       w.disableVertexAttribArray(2);
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 9; i++) {
         w.activeTexture(w.TEXTURE0 + i);
         w.bindTexture(w.TEXTURE_2D, null);
       }

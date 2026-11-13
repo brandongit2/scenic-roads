@@ -1,380 +1,497 @@
-[
- {
-  "metrics": {
-   "spacing_m": 2,
-   "surface": "surface",
-   "year": 2020
+{
+ "ranked": [
+  {
+   "order": [
+    1,
+    0
+   ],
+   "pieces": [
+    {
+     "availability": "paid",
+     "spacing_m": 1,
+     "surface": "ground",
+     "year": 2022
+    },
+    {
+     "availability": "open",
+     "spacing_m": 1,
+     "surface": "ground",
+     "year": 2021
+    }
+   ]
   },
-  "score": 0.6663758561905296,
-  "values": {
-   "spacing_m": 0.6747425010840047,
-   "surface": 0.0,
-   "vertical_rmse_m": null,
-   "year": 0.7692307692307693
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 5,
-   "surface": "ground",
-   "year": 2020
+  {
+   "order": [
+    1,
+    0,
+    2
+   ],
+   "pieces": [
+    {
+     "availability": "paid",
+     "spacing_m": 1,
+     "surface": "ground",
+     "year": 2022
+    },
+    {
+     "availability": "open",
+     "spacing_m": 1.2,
+     "surface": "surface",
+     "year": 2005
+    },
+    {
+     "availability": "open",
+     "spacing_m": 1.3,
+     "surface": "ground",
+     "year": 2024
+    }
+   ]
   },
-  "score": 0.5822138873992139,
-  "values": {
-   "spacing_m": 0.5752574989159953,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.7692307692307693
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1.2,
-   "surface": "surface",
-   "year": 2020
+  {
+   "order": [
+    1,
+    2,
+    0,
+    3
+   ],
+   "pieces": [
+    {
+     "availability": "closed",
+     "spacing_m": 0.5,
+     "surface": "ground",
+     "year": 2020
+    },
+    {
+     "availability": "login",
+     "spacing_m": 0.6096,
+     "surface": "ground",
+     "year": 2010
+    },
+    {
+     "availability": "paid",
+     "spacing_m": 0.5,
+     "surface": "surface",
+     "year": 2024
+    },
+    {
+     "availability": "open",
+     "spacing_m": 30,
+     "surface": "surface",
+     "year": 2015
+    },
+    {
+     "availability": "open",
+     "surface": "ground",
+     "year": 2024
+    }
+   ]
   },
-  "score": 0.720728799846537,
-  "values": {
-   "spacing_m": 0.7302046884880938,
-   "surface": 0.0,
-   "vertical_rmse_m": null,
-   "year": 0.7692307692307693
+  {
+   "order": [
+    0,
+    2,
+    1
+   ],
+   "pieces": [
+    {
+     "availability": "open",
+     "spacing_m": 10,
+     "surface": "ground",
+     "year": 2018
+    },
+    {
+     "availability": "open",
+     "spacing_m": 10.3,
+     "surface": "ground",
+     "year": 2018
+    },
+    {
+     "availability": "open",
+     "spacing_m": 10,
+     "surface": "ground",
+     "year": 2018
+    }
+   ]
   }
- },
- {
-  "metrics": {
-   "spacing_m": 1.25,
-   "surface": "ground",
-   "year": 2020
+ ],
+ "scored": [
+  {
+   "metrics": {
+    "spacing_m": 2,
+    "surface": "surface",
+    "year": 2020
+   },
+   "score": 0.6663758561905296,
+   "values": {
+    "spacing_m": 0.6747425010840047,
+    "surface": 0.0,
+    "vertical_rmse_m": null,
+    "year": 0.7692307692307693
+   }
   },
-  "score": 0.7297185852745647,
-  "values": {
-   "spacing_m": 0.7257724967479859,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.7692307692307693
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 0.9144,
-   "surface": "surface",
-   "year": 2010
+  {
+   "metrics": {
+    "spacing_m": 5,
+    "surface": "ground",
+    "year": 2020
+   },
+   "score": 0.5822138873992139,
+   "values": {
+    "spacing_m": 0.5752574989159953,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.7692307692307693
+   }
   },
-  "score": 0.7470857293042323,
-  "values": {
-   "spacing_m": 0.7597159456531937,
-   "surface": 0.0,
-   "vertical_rmse_m": null,
-   "year": 0.38461538461538464
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1,
-   "surface": "ground",
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 1.2,
+    "surface": "surface",
+    "year": 2020
+   },
+   "score": 0.720728799846537,
+   "values": {
+    "spacing_m": 0.7302046884880938,
+    "surface": 0.0,
+    "vertical_rmse_m": null,
+    "year": 0.7692307692307693
+   }
   },
-  "score": 0.7544871794871795,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1,
-   "surface": "ground",
-   "year": 2005
+  {
+   "metrics": {
+    "spacing_m": 1.25,
+    "surface": "ground",
+    "year": 2020
+   },
+   "score": 0.7297185852745647,
+   "values": {
+    "spacing_m": 0.7257724967479859,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.7692307692307693
+   }
   },
-  "score": 0.7496153846153846,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.19230769230769232
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 2,
-   "surface": "ground",
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 0.9144,
+    "surface": "surface",
+    "year": 2010
+   },
+   "score": 0.7470857293042323,
+   "values": {
+    "spacing_m": 0.7597159456531937,
+    "surface": 0.0,
+    "vertical_rmse_m": null,
+    "year": 0.38461538461538464
+   }
   },
-  "score": 0.680734830549504,
-  "values": {
-   "spacing_m": 0.6747425010840047,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1,
-   "surface": "ground",
-   "vertical_rmse_m": 0.3,
-   "year": 2005
+  {
+   "metrics": {
+    "spacing_m": 1,
+    "surface": "ground",
+    "year": 2024
+   },
+   "score": 0.7544871794871795,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.7490638292686854,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": 0.6618248124318337,
-   "year": 0.19230769230769232
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 2,
-   "surface": "ground",
-   "vertical_rmse_m": 0.1,
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 1,
+    "surface": "ground",
+    "year": 2005
+   },
+   "score": 0.7496153846153846,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.19230769230769232
+   }
   },
-  "score": 0.6798933665894498,
-  "values": {
-   "spacing_m": 0.6747425010840047,
-   "surface": 1.0,
-   "vertical_rmse_m": 0.8691759793521873,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1,
-   "surface": "ground",
-   "year": 2005
+  {
+   "metrics": {
+    "spacing_m": 2,
+    "surface": "ground",
+    "year": 2024
+   },
+   "score": 0.680734830549504,
+   "values": {
+    "spacing_m": 0.6747425010840047,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.7496153846153846,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.19230769230769232
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 5,
-   "surface": "ground",
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 1,
+    "surface": "ground",
+    "vertical_rmse_m": 0.3,
+    "year": 2005
+   },
+   "score": 0.7490638292686854,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": 0.6618248124318337,
+    "year": 0.19230769230769232
+   }
   },
-  "score": 0.5832395284248549,
-  "values": {
-   "spacing_m": 0.5752574989159953,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 30,
-   "surface": "surface",
-   "vertical_rmse_m": 2,
-   "year": 2013
+  {
+   "metrics": {
+    "spacing_m": 2,
+    "surface": "ground",
+    "vertical_rmse_m": 0.1,
+    "year": 2024
+   },
+   "score": 0.6798933665894498,
+   "values": {
+    "spacing_m": 0.6747425010840047,
+    "surface": 1.0,
+    "vertical_rmse_m": 0.8691759793521873,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.37753540434590893,
-  "values": {
-   "spacing_m": 0.3807196863200844,
-   "surface": 0.0,
-   "vertical_rmse_m": 0.30376396902828084,
-   "year": 0.5
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 10,
-   "surface": "ground"
+  {
+   "metrics": {
+    "spacing_m": 1,
+    "surface": "ground",
+    "year": 2005
+   },
+   "score": 0.7496153846153846,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.19230769230769232
+   }
   },
-  "score": 0.51,
-  "values": {
-   "spacing_m": 0.5,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": null
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1,
-   "surface": "ground",
-   "vertical_rmse_m": 0.5,
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 5,
+    "surface": "ground",
+    "year": 2024
+   },
+   "score": 0.5832395284248549,
+   "values": {
+    "spacing_m": 0.5752574989159953,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.7512156037748989,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": 0.5654120103239064,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1,
-   "surface": "ground",
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 30,
+    "surface": "surface",
+    "vertical_rmse_m": 2,
+    "year": 2013
+   },
+   "score": 0.37753540434590893,
+   "values": {
+    "spacing_m": 0.3807196863200844,
+    "surface": 0.0,
+    "vertical_rmse_m": 0.30376396902828084,
+    "year": 0.5
+   }
   },
-  "score": 0.7544871794871795,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 0.5,
-   "surface": "ground",
-   "year": 2021
+  {
+   "metrics": {
+    "spacing_m": 10,
+    "surface": "ground"
+   },
+   "score": 0.51,
+   "values": {
+    "spacing_m": 0.5,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": null
+   }
   },
-  "score": 0.8274702976556242,
-  "values": {
-   "spacing_m": 0.8252574989159953,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.8076923076923077
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 0.5,
-   "surface": "ground",
-   "vertical_rmse_m": 0.1,
-   "year": 2024
+  {
+   "metrics": {
+    "spacing_m": 1,
+    "surface": "ground",
+    "vertical_rmse_m": 0.5,
+    "year": 2024
+   },
+   "score": 0.7512156037748989,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": 0.5654120103239064,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.8273980644648007,
-  "values": {
-   "spacing_m": 0.8252574989159953,
-   "surface": 1.0,
-   "vertical_rmse_m": 0.8691759793521873,
-   "year": 0.9230769230769231
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 1.0,
-   "surface": "ground"
+  {
+   "metrics": {
+    "spacing_m": 1,
+    "surface": "ground",
+    "year": 2024
+   },
+   "score": 0.7544871794871795,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.755,
-  "values": {
-   "spacing_m": 0.75,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": null
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 2.0,
-   "surface": "surface",
-   "year": 2022
+  {
+   "metrics": {
+    "spacing_m": 0.5,
+    "surface": "ground",
+    "year": 2021
+   },
+   "score": 0.8274702976556242,
+   "values": {
+    "spacing_m": 0.8252574989159953,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.8076923076923077
+   }
   },
-  "score": 0.6668886767033502,
-  "values": {
-   "spacing_m": 0.6747425010840047,
-   "surface": 0.0,
-   "vertical_rmse_m": null,
-   "year": 0.8461538461538461
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 30,
-   "surface": "surface",
-   "vertical_rmse_m": 1.68,
-   "year": 2015
+  {
+   "metrics": {
+    "spacing_m": 0.5,
+    "surface": "ground",
+    "vertical_rmse_m": 0.1,
+    "year": 2024
+   },
+   "score": 0.8273980644648007,
+   "values": {
+    "spacing_m": 0.8252574989159953,
+    "surface": 1.0,
+    "vertical_rmse_m": 0.8691759793521873,
+    "year": 0.9230769230769231
+   }
   },
-  "score": 0.3781063551563789,
-  "values": {
-   "spacing_m": 0.3807196863200844,
-   "surface": 0.0,
-   "vertical_rmse_m": 0.3366712818754863,
-   "year": 0.5769230769230769
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 90,
-   "surface": "surface",
-   "year": 2015
+  {
+   "metrics": {
+    "spacing_m": 1.0,
+    "surface": "ground"
+   },
+   "score": 0.755,
+   "values": {
+    "spacing_m": 0.75,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": null
+   }
   },
-  "score": 0.2600567390335193,
-  "values": {
-   "spacing_m": 0.2614393726401688,
-   "surface": 0.0,
-   "vertical_rmse_m": null,
-   "year": 0.5769230769230769
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 0.05,
-   "surface": "ground",
-   "vertical_rmse_m": 0.01,
-   "year": 2030
+  {
+   "metrics": {
+    "spacing_m": 2.0,
+    "surface": "surface",
+    "year": 2022
+   },
+   "score": 0.6668886767033502,
+   "values": {
+    "spacing_m": 0.6747425010840047,
+    "surface": 0.0,
+    "vertical_rmse_m": null,
+    "year": 0.8461538461538461
+   }
   },
-  "score": 1.0,
-  "values": {
-   "spacing_m": 1.0,
-   "surface": 1.0,
-   "vertical_rmse_m": 1.0,
-   "year": 1.0
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 5000,
-   "surface": "surface",
-   "vertical_rmse_m": 50,
-   "year": 1990
+  {
+   "metrics": {
+    "spacing_m": 30,
+    "surface": "surface",
+    "vertical_rmse_m": 1.68,
+    "year": 2015
+   },
+   "score": 0.3781063551563789,
+   "values": {
+    "spacing_m": 0.3807196863200844,
+    "surface": 0.0,
+    "vertical_rmse_m": 0.3366712818754863,
+    "year": 0.5769230769230769
+   }
   },
-  "score": 0.0,
-  "values": {
-   "spacing_m": 0.0,
-   "surface": 0.0,
-   "vertical_rmse_m": 0.0,
-   "year": 0.0
-  }
- },
- {
-  "metrics": {
-   "spacing_m": 3,
-   "year": 2010
+  {
+   "metrics": {
+    "spacing_m": 90,
+    "surface": "surface",
+    "year": 2015
+   },
+   "score": 0.2600567390335193,
+   "values": {
+    "spacing_m": 0.2614393726401688,
+    "surface": 0.0,
+    "vertical_rmse_m": null,
+    "year": 0.5769230769230769
+   }
   },
-  "score": 0.6257976002859903,
-  "values": {
-   "spacing_m": 0.6307196863200843,
-   "surface": null,
-   "vertical_rmse_m": null,
-   "year": 0.38461538461538464
-  }
- },
- {
-  "metrics": {
-   "surface": "ground",
-   "year": 2020
+  {
+   "metrics": {
+    "spacing_m": 0.05,
+    "surface": "ground",
+    "vertical_rmse_m": 0.01,
+    "year": 2030
+   },
+   "score": 1.0,
+   "values": {
+    "spacing_m": 1.0,
+    "surface": 1.0,
+    "vertical_rmse_m": 1.0,
+    "year": 1.0
+   }
   },
-  "score": null,
-  "values": {
-   "spacing_m": null,
-   "surface": 1.0,
-   "vertical_rmse_m": null,
-   "year": 0.7692307692307693
+  {
+   "metrics": {
+    "spacing_m": 5000,
+    "surface": "surface",
+    "vertical_rmse_m": 50,
+    "year": 1990
+   },
+   "score": 0.0,
+   "values": {
+    "spacing_m": 0.0,
+    "surface": 0.0,
+    "vertical_rmse_m": 0.0,
+    "year": 0.0
+   }
+  },
+  {
+   "metrics": {
+    "spacing_m": 3,
+    "year": 2010
+   },
+   "score": 0.6257976002859903,
+   "values": {
+    "spacing_m": 0.6307196863200843,
+    "surface": null,
+    "vertical_rmse_m": null,
+    "year": 0.38461538461538464
+   }
+  },
+  {
+   "metrics": {
+    "surface": "ground",
+    "year": 2020
+   },
+   "score": null,
+   "values": {
+    "spacing_m": null,
+    "surface": 1.0,
+    "vertical_rmse_m": null,
+    "year": 0.7692307692307693
+   }
+  },
+  {
+   "metrics": {},
+   "score": null,
+   "values": {
+    "spacing_m": null,
+    "surface": null,
+    "vertical_rmse_m": null,
+    "year": null
+   }
   }
- },
- {
-  "metrics": {},
-  "score": null,
-  "values": {
-   "spacing_m": null,
-   "surface": null,
-   "vertical_rmse_m": null,
-   "year": null
-  }
- }
-]
+ ]
+}

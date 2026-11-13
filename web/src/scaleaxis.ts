@@ -25,13 +25,18 @@ export interface Tick { v: number; x: number; lx?: number }
  * up (mirrored below 0). Labels go to powers of ten first, then fives, then twos, left to right,
  * each kept inside the axis and where it stays `gap` px from the others and from the `taken` spans
  * (the range handles' labels). A tick is labelled only when its text is its own: not one already
- * shown, and not a rounding of a value between two (0.5 m read "1 m" beside 1 m's "1 m"). */
+ * shown, and not a rounding of a value between two (0.5 m read "1 m" beside 1 m's "1 m").
+ * `nice`: the candidate values and their ranks between two values, in place of the spacing's (a
+ * metric whose values are logarithms: data available's, available.ts logTicks). */
 export function axisTicks(sp: Spacing, a: number, b: number, width: number, step: number,
-  label: (v: number) => string, measure: (text: string) => number, taken: [number, number][] = [], gap = 4): Tick[] {
+  label: (v: number) => string, measure: (text: string) => number, taken: [number, number][] = [], gap = 4,
+  nice?: (lo: number, hi: number) => [number, number][]): Tick[] {
   // (The ends a hair wider, so a round end comes back from its log as itself.)
   const lo = unspaced(sp, a), hi = unspaced(sp, b), eps = 1e-9 * Math.max(Math.abs(lo), Math.abs(hi), step);
   const vals: [number, number][] = [];
-  if (sp === 'linear') {
+  if (nice) {
+    vals.push(...nice(lo, hi));
+  } else if (sp === 'linear') {
     const s = Math.max(niceStep(hi - lo, 5), step);
     for (let v = Math.ceil((lo - eps) / s) * s; v <= hi + eps; v += s) vals.push([Number(v.toPrecision(12)), 0]);
   } else {

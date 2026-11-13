@@ -1,21 +1,21 @@
 //! The data-available layers, served (docs/steps.md §14): the step `available`'s tiles hold, per
-//! pixel, a set of the source extents' pieces (codecs::available); the score and each metric's
-//! value are worked out here, as a tile is asked for, from the theme's `score.toml` and the pieces'
-//! metrics in the extents' accepted version (docs/inputs.md §6.11), kept on this Mac as the
-//! translations are (crate::accepted). So a weight tuned is drawn within a minute of the input check,
-//! with nothing built again, and a colour changed likewise.
+//! pixel, a set of the source extents' pieces (codecs::available); the score, the best piece and
+//! each layer's value are worked out here, as a tile is asked for, from the theme's `score.toml`
+//! and the pieces' metrics in the extents' accepted version (docs/inputs.md §6.11), kept on this
+//! Mac as the translations are (crate::accepted). So a weight tuned is drawn within a minute of the
+//! input check, with nothing built again. The colours are the app's: a tile carries values.
 //!
 //! - `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all` and, past 85.05°,
 //!   `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y`: the tile as a PNG, each pixel the
-//!   layer's colour of the best piece there that passes the switch (`avail=open`, the default:
-//!   those that download freely; `all`: every one; `Theme::best`, `Theme::colour`), transparent
-//!   where none does; 204 where no piece is. `layer`: `score`, or a metric of the theme's score.
-//!   `set`: `best` (the best data any declared source has).
+//!   layer's value of the best piece there that passes the switch (`avail=open`, the default:
+//!   those that download freely; `all`: every one; `Theme::best`), Terrarium-coded (`code`),
+//!   transparent where none does; 204 where no piece is. `layer`: `score`, or a metric of the
+//!   theme's score. `set`: `best` (the best data any declared source has).
 //! - `/api/available/<theme>/<set>?lng&lat&avail`: the pieces at a point, best first, and the one
-//!   each layer paints there (`painted`).
-//! - `/api/available/<theme>`: the score as declared, each layer's legend (classes, words' colours
-//!   or a ramp, labelled), and the sources with their pieces counted by class (those of class
-//!   `unknown` named: they're drawn nowhere).
+//!   each layer draws there (`painted`).
+//! - `/api/available/<theme>`: the score as declared, each layer's scale (its unit, kind, words and
+//!   the range of its values present), and the sources with their pieces counted by class (those
+//!   of class `unknown` named: they're drawn nowhere).
 
 use crate::cache::{self, Lru};
 use crate::S;
@@ -23,8 +23,7 @@ use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use codecs::available::{self as fmt, Grid, Tile, PIXELS, SIDE};
-use det::Det;
-use inputs::inputs::extents::{self as ex, Colour, Metric, Scale, Score};
+use inputs::inputs::extents::{self as ex, Ranked, Scale, Score, SCORE_LAYER};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -40,34 +39,22 @@ fn set_served(set: &str) -> bool {
     SETS.iter().any(|(k, _)| *k == set)
 }
 
-/// The score layer's id; the others are the theme's metrics.
-pub const SCORE_LAYER: &str = "score";
-
-/// The ramp of a `score.toml` declaring none (one made before `ramp` was a field): viridis's ends
-/// and middle, worst to best.
-const DEFAULT_RAMP: [Colour; 5] = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
-
 /// The score layer's name where `score.toml` gives none.
 const DEFAULT_LABEL: &str = "Score";
 
-/// `t` of the way from `a` to `b`.
-fn mix(a: Colour, b: Colour, t: f64) -> Colour {
-    [0, 1, 2].map(|i| (f64::from(a[i]) + t * (f64::from(b[i]) - f64::from(a[i]))).round().clamp(0.0, 255.0) as u8)
-}
+/// The tiles' format, in the layers' versions (`Available::version`): a page made for another
+/// format (the painted tiles before it) reads the theme again at the new version, and an old one
+/// can't, so it shows nothing until it's loaded again rather than values as colours.
+const TILE_FORMAT: &str = "values1";
 
-/// A ramp's colour at `v` (0–1), its colours evenly spaced.
-pub fn along(ramp: &[Colour], v: f64) -> Colour {
-    let n = ramp.len() - 1;
-    let x = v.clamp(0.0, 1.0) * n as f64;
-    let k = (x.floor() as usize).min(n.saturating_sub(1));
-    if n == 0 {
-        return ramp[0];
+/// What a tile's pixel carries for a value `v` of a layer on `scale` (docs/formats.md, Data
+/// available): log10(v) on a log scale (a grid spacing of 0.1 m to 1,000 m: −1 to 3), `v` on a
+/// linear one, the word's value on a `values` one (0 to 1).
+pub fn code(scale: &Scale, v: f64) -> f64 {
+    match scale {
+        Scale::Log { .. } => v.log10(),
+        _ => v,
     }
-    mix(ramp[k], ramp[k + 1], x - k as f64)
-}
-
-fn hex(c: Colour) -> String {
-    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 
 /// A piece as the server has it: what the click shows, and its score and values.
@@ -84,7 +71,11 @@ pub struct PieceInfo {
 
 impl PieceInfo {
     fn open(&self) -> bool {
-        self.props.get("availability").and_then(Value::as_str) == Some("open")
+        self.availability() == Some("open")
+    }
+
+    fn availability(&self) -> Option<&str> {
+        self.props.get("availability").and_then(Value::as_str)
     }
 }
 
@@ -107,10 +98,23 @@ impl Theme {
         self.score.as_ref().is_some_and(|s| layer == SCORE_LAYER || s.metrics.contains_key(layer))
     }
 
-    /// The piece of the best value of `layer` among pieces `ids` that pass the switch (`all`: every
-    /// one; else those whose availability is `open`): the best score, or the best 0–1 value of the
-    /// metric (a piece not stating it takes no part; of equal values, the first id). None where
-    /// none does.
+    /// The pieces `ids` that pass the switch (`all`: every one; else those whose availability is
+    /// `open`), by id.
+    fn passing<'a>(&self, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Vec<(&'a str, &PieceInfo)> {
+        let mut ps: Vec<(&str, &PieceInfo)> = ids
+            .into_iter()
+            .filter_map(|id| Some((id, self.pieces.get(id)?)))
+            .filter(|(_, p)| all || p.open())
+            .collect();
+        ps.sort_by_key(|(id, _)| *id);
+        ps
+    }
+
+    /// The piece `layer` draws among pieces `ids` that pass the switch, None where none does:
+    /// - the score's: the best (`Score::best`: of the pieces whose primary ties the finest's,
+    ///   those of the best availability, then the best score);
+    /// - a metric's: the best 0–1 value of it (a piece not stating it takes no part), then the
+    ///   best availability; of equals, the first id.
     pub fn best<'a>(&self, layer: &str, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Option<&PieceInfo> {
         self.best_id(layer, ids, all).map(|(_, p)| p)
     }
@@ -122,15 +126,36 @@ impl Theme {
         ids: impl IntoIterator<Item = &'a str>,
         all: bool,
     ) -> Option<(&'a str, &PieceInfo)> {
-        ids.into_iter()
-            .filter_map(|id| Some((id, self.pieces.get(id)?)))
-            .filter(|(_, p)| all || p.open())
-            .filter_map(|(id, p)| Some((self.value(layer, p)?, id, p)))
-            .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(a.1)))
-            .map(|(_, id, p)| (id, p))
+        let s = self.score.as_ref()?;
+        let ps = self.passing(ids, all);
+        if layer == SCORE_LAYER {
+            let (at, rs) = self.scored(&ps);
+            return s.best(&rs).map(|k| ps[at[k]]);
+        }
+        let mut best: Option<(f64, usize, (&str, &PieceInfo))> = None;
+        for &(id, p) in &ps {
+            let Some(v) = p.values.get(layer).copied().flatten() else { continue };
+            let r = s.avail_rank(p.availability());
+            if best.is_none_or(|(bv, br, _)| v > bv || (v == bv && r < br)) {
+                best = Some((v, r, (id, p)));
+            }
+        }
+        best.map(|(_, _, b)| b)
     }
 
-    /// The piece each layer paints among pieces `ids` (`best`), its id by layer; a layer painting
+    /// The pieces of `ps` with a score, as `Score::best` ranks them, and where each is in `ps`.
+    fn scored<'p>(&self, ps: &'p [(&str, &PieceInfo)]) -> (Vec<usize>, Vec<Ranked<'p>>) {
+        let primary = self.score.as_ref().map_or("", |s| s.primary.as_str());
+        ps.iter()
+            .enumerate()
+            .filter_map(|(k, (_, p))| {
+                let lead = p.values.get(primary).copied().flatten()?;
+                Some((k, Ranked { lead, availability: p.availability(), score: p.score? }))
+            })
+            .unzip()
+    }
+
+    /// The piece each layer draws among pieces `ids` (`best`), its id by layer; a layer drawing
     /// none there absent. The click marks it, so the app ranks nothing itself.
     pub fn painted<'a>(&self, ids: &[&'a str], all: bool) -> Map<String, Value> {
         let Some(s) = &self.score else { return Map::new() };
@@ -140,81 +165,39 @@ impl Theme {
             .collect()
     }
 
-    /// A piece's value of `layer`, 0–1: its score, or its value of the metric.
-    fn value(&self, layer: &str, p: &PieceInfo) -> Option<f64> {
-        if layer == SCORE_LAYER {
-            p.score
-        } else {
-            p.values.get(layer).copied().flatten()
-        }
-    }
-
-    /// The ramp the layers are drawn with, worst to best: score.toml's, or the built-in one.
-    fn ramp(&self) -> &[Colour] {
-        match &self.score {
-            Some(s) if !s.ramp.is_empty() => &s.ramp,
-            _ => &DEFAULT_RAMP,
-        }
-    }
-
-    /// Class `k` of metric `m`'s colour: the ramp at its place (the classes evenly spread over it).
-    fn class_colour(&self, m: &Metric, k: usize) -> Colour {
-        along(self.ramp(), m.class_at(k))
-    }
-
-    /// The colour the score layer's class `k` goes towards as the tie-break worsens: the next
-    /// coarser class's (the coarsest's, its finer neighbour's mirrored).
-    fn shaded_towards(&self, m: &Metric, k: usize) -> Colour {
-        let n = m.classes.len();
-        let (at, c) = (m.class_at(k), self.class_colour(m, k));
-        let step = 1.0 / (n.max(2) - 1) as f64;
-        if at - step >= -1e-9 {
-            along(self.ramp(), at - step)
-        } else {
-            mix(c, along(self.ramp(), at + step), -1.0)
-        }
-    }
-
-    /// A piece's colour on `layer`, None where it doesn't state what the layer shows:
-    /// - a metric with classes: its class's (by its value in the metric's unit);
-    /// - a metric with words' colours: its word's;
-    /// - the score, where the primary has classes: the class of the piece's primary, gone `shade` ×
-    ///   (1 − its tie-break) of the way towards the next coarser class's (a piece stating none of
-    ///   the tie-break's metrics: its class's own colour);
-    /// - otherwise the ramp at its 0–1 value.
-    pub fn colour(&self, layer: &str, p: &PieceInfo) -> Option<Colour> {
+    /// The value a tile carries for a piece on `layer` (`code`): the score's, the primary's value
+    /// it equals (`Score::primary_of`: a score drawn on the spacing's own axis, the tie-break
+    /// moving it within the factor `within`); a metric's, the piece's own value of it. None where
+    /// the piece doesn't state it.
+    pub fn code(&self, layer: &str, p: &PieceInfo) -> Option<f64> {
         let s = self.score.as_ref()?;
-        let v = self.value(layer, p)?;
-        let name = if layer == SCORE_LAYER { &s.primary } else { layer };
-        let m = s.metrics.get(name)?;
-        let raw = p.props.get(name);
-        if let Some(k) = raw.and_then(Value::as_f64).and_then(|x| m.class_of(x)) {
-            let c = self.class_colour(m, k);
-            if layer != SCORE_LAYER || s.shade == 0.0 {
-                return Some(c);
+        let scale = s.scale_of(layer)?;
+        let raw = if layer == SCORE_LAYER {
+            s.primary_of(p.score?)?
+        } else {
+            match scale {
+                Scale::Values(_) => p.values.get(layer).copied().flatten()?,
+                _ => p.props.get(layer).and_then(Value::as_f64).filter(|v| v.is_finite())?,
             }
-            let rest = s.rest(&p.values).unwrap_or(1.0);
-            return Some(mix(c, self.shaded_towards(m, k), s.shade * (1.0 - rest)));
-        }
-        if layer != SCORE_LAYER {
-            if let Some(c) = raw.and_then(Value::as_str).and_then(|w| m.colours.get(w)) {
-                return Some(*c);
-            }
-        }
-        Some(along(self.ramp(), v))
+        };
+        let c = code(scale, raw);
+        c.is_finite().then_some(c)
     }
 
-    /// The pieces `ids` that pass the switch, best first (by score; a piece with none last), as the
-    /// click shows them.
+    /// The pieces `ids` that pass the switch, best first (`Score::ranked`; a piece with no score
+    /// after them, by id), as the click shows them.
     pub fn listed<'a>(&self, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Vec<Value> {
-        let mut ps: Vec<(&str, &PieceInfo)> = ids
+        let ps = self.passing(ids, all);
+        let (at, rs) = self.scored(&ps);
+        let mut order: Vec<usize> = match &self.score {
+            Some(s) => s.ranked(&rs).into_iter().map(|k| at[k]).collect(),
+            None => Vec::new(),
+        };
+        order.extend((0..ps.len()).filter(|k| !at.contains(k)));
+        order
             .into_iter()
-            .filter_map(|id| Some((id, self.pieces.get(id)?)))
-            .filter(|(_, p)| all || p.open())
-            .collect();
-        ps.sort_by(|a, b| b.1.score.unwrap_or(-1.0).total_cmp(&a.1.score.unwrap_or(-1.0)).then(a.0.cmp(b.0)));
-        ps.into_iter()
-            .map(|(id, p)| {
+            .map(|k| {
+                let (id, p) = ps[k];
                 let src = self.sources.get(&p.source).cloned().unwrap_or_default();
                 let metrics: Map<String, Value> = self
                     .score
@@ -244,49 +227,44 @@ impl Theme {
             .collect()
     }
 
-    /// A metric's classes as a legend's stops, finest first: each one's label, upper edge (none for
-    /// the last) and colour, and with `shaded`, the colour of its worst tie-break.
-    fn class_stops(&self, m: &Metric, shaded: Option<f64>) -> Vec<Value> {
-        m.classes
-            .iter()
-            .enumerate()
-            .map(|(k, c)| {
-                let colour = self.class_colour(m, k);
-                let mut o = json!({"label": c.label, "upto": c.upto, "colour": hex(colour)});
-                if let Some(sh) = shaded {
-                    o["shaded"] = json!(hex(mix(colour, self.shaded_towards(m, k), sh)));
-                }
-                o
-            })
-            .collect()
+    /// The values `layer`'s tiles can carry, in the layer's unit: their least and greatest over the
+    /// pieces drawn (those with an extent); None where no piece states it.
+    fn present(&self, layer: &str) -> Option<[f64; 2]> {
+        let s = self.score.as_ref()?;
+        let scale = s.scale_of(layer)?;
+        let mut r: Option<[f64; 2]> = None;
+        for p in self.pieces.values().filter(|p| p.props.get("extent").and_then(Value::as_str) != Some("unknown")) {
+            let Some(c) = self.code(layer, p) else { continue };
+            let v = if matches!(scale, Scale::Log { .. }) { 10f64.powf(c) } else { c };
+            r = Some(r.map_or([v, v], |[lo, hi]| [lo.min(v), hi.max(v)]));
+        }
+        r
     }
 
-    /// `/api/available/<theme>`'s answer: the score as declared, each layer's legend, the sources.
-    /// A layer's `legend` is `classes` (its `stops` the classes, finest first), `values` (a word's
-    /// colour each) or `ramp` (`ramp` the colours at their places, `stops` five of them labelled in
-    /// the metric's unit).
+    /// `/api/available/<theme>`'s answer: the score as declared, each layer's scale, the sources.
+    /// A layer is its `label`, `unit`, `scale` (`log`, `linear` or `values`: what its tiles carry,
+    /// `code`), which end is the better (`best`: `low` or `high`), its `words` (a `values` one's,
+    /// each with its value) and `range`, the least and greatest value present (in its unit; none
+    /// where no piece states it). The score's is the primary's scale (`of`).
     pub fn described(&self, theme: &str) -> Value {
         let Some(s) = &self.score else { return json!({"theme": theme, "layers": [], "sources": []}) };
-        let n = self.ramp().len() - 1;
-        let ramp: Vec<Value> =
-            self.ramp().iter().enumerate().map(|(k, c)| json!([k as f64 / n as f64, hex(*c)])).collect();
-        let ramp_stops = |label: &dyn Fn(f64) -> String| -> Vec<Value> {
-            [0.0, 0.25, 0.5, 0.75, 1.0]
-                .map(|v: f64| json!({"value": v, "label": label(v), "colour": hex(along(self.ramp(), v))}))
-                .into()
+        let layer = |id: &str, label: &str, m: &ex::Metric| {
+            let (kind, best, words) = match &m.scale {
+                Scale::Log { worst, best } => ("log", if best < worst { "low" } else { "high" }, None),
+                Scale::Linear { worst, best } => ("linear", if best < worst { "low" } else { "high" }, None),
+                Scale::Values(w) => {
+                    let mut w: Vec<(&String, &f64)> = w.iter().collect();
+                    w.sort_by(|a, b| a.1.total_cmp(b.1));
+                    let words: Vec<Value> = w.iter().map(|(k, v)| json!({"value": v, "label": k})).collect();
+                    ("values", "high", Some(words))
+                }
+            };
+            json!({"id": id, "label": label, "unit": m.unit, "scale": kind, "best": best, "words": words,
+                "range": self.present(id)})
         };
         let primary = &s.metrics[&s.primary];
-        let label = s.label.as_deref().unwrap_or(DEFAULT_LABEL);
-        let score_layer = if primary.classes.is_empty() {
-            json!({"id": SCORE_LAYER, "label": label, "legend": "ramp", "ramp": ramp,
-                "stops": ramp_stops(&|v| format!("{v:.2}"))})
-        } else {
-            // (Its classes the primary's; within one, the tie-break as a shade: `shaded` its worst.)
-            let by: Vec<&String> =
-                s.metrics.iter().filter(|(_, m)| m.weight.is_some_and(|w| w > 0.0)).map(|(k, _)| k).collect();
-            json!({"id": SCORE_LAYER, "label": label, "unit": primary.unit, "legend": "classes", "classes_of": s.primary,
-                "shade": s.shade, "shaded_by": by, "stops": self.class_stops(primary, (s.shade > 0.0).then_some(s.shade))})
-        };
+        let mut score_layer = layer(SCORE_LAYER, s.label.as_deref().unwrap_or(DEFAULT_LABEL), primary);
+        score_layer["of"] = json!(s.primary);
         let mut layers = vec![score_layer];
         let mut metrics = Vec::new();
         // (The primary first, then the others by name.)
@@ -294,28 +272,6 @@ impl Theme {
         names.sort_by_key(|n| (**n != s.primary, n.as_str()));
         for name in names {
             let m = &s.metrics[name];
-            let mut layer = json!({"id": name, "label": m.label, "unit": m.unit});
-            match &m.scale {
-                _ if !m.classes.is_empty() => {
-                    layer["legend"] = json!("classes");
-                    layer["stops"] = json!(self.class_stops(m, None));
-                }
-                Scale::Values(w) => {
-                    let mut w: Vec<(&String, &f64)> = w.iter().collect();
-                    w.sort_by(|a, b| a.1.total_cmp(b.1));
-                    let colour = |k: &str, v: f64| m.colours.get(k).copied().unwrap_or_else(|| along(self.ramp(), v));
-                    layer["legend"] = json!("values");
-                    layer["stops"] =
-                        w.iter().map(|(k, v)| json!({"value": v, "label": k, "colour": hex(colour(k, **v))})).collect();
-                }
-                Scale::Log { worst, best } | Scale::Linear { worst, best } => {
-                    let log = matches!(m.scale, Scale::Log { .. });
-                    let raw = |v: f64| if log { worst * (best / worst).dpowf(v) } else { worst + v * (best - worst) };
-                    layer["legend"] = json!("ramp");
-                    layer["ramp"] = json!(ramp);
-                    layer["stops"] = json!(ramp_stops(&|v| format!("{}", (raw(v) * 1000.0).round() / 1000.0)));
-                }
-            }
             let (scale, worst, best, values) = match &m.scale {
                 Scale::Log { worst, best } => ("log", Some(*worst), Some(*best), None),
                 Scale::Linear { worst, best } => ("linear", Some(*worst), Some(*best), None),
@@ -323,7 +279,7 @@ impl Theme {
             };
             metrics.push(json!({"id": name, "label": m.label, "unit": m.unit, "weight": m.weight, "scale": scale,
                 "worst": worst, "best": best, "values": values, "primary": *name == s.primary}));
-            layers.push(layer);
+            layers.push(layer(name, &m.label, m));
         }
         let mut counted: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
         for p in self.pieces.values() {
@@ -345,7 +301,7 @@ impl Theme {
         let words =
             |w: &[(&str, &str)]| -> Map<String, Value> { w.iter().map(|(k, v)| (k.to_string(), json!(v))).collect() };
         json!({"theme": theme, "sets": SETS.map(|(k, _)| k), "primary": s.primary, "within": s.within, "share": s.share,
-            "metrics": metrics, "layers": layers, "sources": sources,
+            "availability": s.availability, "metrics": metrics, "layers": layers, "sources": sources,
             "labels": {"sets": words(&SETS), "availability": words(&ex::AVAILABILITY), "extent": words(&ex::CLASSES)}})
     }
 }
@@ -426,10 +382,11 @@ impl Available {
         self.state.read().unwrap().1.get(theme).cloned()
     }
 
-    /// The version kept's hash ("" before one): every tile's colours change with it.
+    /// The tiles' format and the version kept's hash ("" before one): every tile's values change
+    /// with it.
     pub fn version(&self) -> String {
         let v = self.state.read().unwrap().0.clone();
-        inputs::inputs::hash_of(&v).unwrap_or("").to_string()
+        format!("{TILE_FORMAT}-{}", inputs::inputs::hash_of(&v).unwrap_or(""))
     }
 
     /// Reads the version kept here.
@@ -517,23 +474,34 @@ fn all_of(q: Option<&str>) -> bool {
     q.is_some_and(|q| q.split('&').any(|kv| kv == "avail=all"))
 }
 
-/// A tile coloured: each pixel the colour of its set's best piece on the layer
-/// (`Theme::colour`), transparent where none; None where every pixel is.
-pub fn paint(t: &Tile, theme: &Theme, layer: &str, all: bool) -> anyhow::Result<Option<Vec<u8>>> {
-    let colours: Vec<Option<Colour>> = t
+/// A tile of values: each pixel the layer's value of its set's best piece (`Theme::best`,
+/// `Theme::code`), Terrarium-coded in RGB (value + 32,768 = R × 256 + G + B ÷ 256: 1/256 of a unit,
+/// a factor of 1.009 on a log layer), alpha 255; transparent (all 0) where none. None where every
+/// pixel is.
+pub fn values(t: &Tile, theme: &Theme, layer: &str, all: bool) -> anyhow::Result<Option<Vec<u8>>> {
+    let codes: Vec<Option<f32>> = t
         .sets
         .iter()
         .map(|s| {
             let p = theme.best(layer, s.iter().map(|&k| t.ids[k as usize].as_str()), all)?;
-            theme.colour(layer, p)
+            theme.code(layer, p).map(|c| c as f32)
         })
         .collect();
     // (A tile not stored is its ancestor's pixels over it, the ancestor's palette whole: a set
-    // coloured may hold no pixel of it.)
+    // drawn may hold no pixel of it.)
+    let rgb: Vec<Option<[u8; 3]>> = codes
+        .iter()
+        .map(|c| {
+            c.map(|c| {
+                let v = roadcore::grid::terrarium_rgb(&[c]);
+                [v[0], v[1], v[2]]
+            })
+        })
+        .collect();
     let mut rgba = vec![0u8; PIXELS * 4];
     let mut any = false;
     for (k, &p) in t.px.iter().enumerate() {
-        if let Some(c) = colours[p as usize] {
+        if let Some(c) = rgb[p as usize] {
             rgba[k * 4..k * 4 + 4].copy_from_slice(&[c[0], c[1], c[2], 255]);
             any = true;
         }
@@ -553,7 +521,7 @@ pub fn paint(t: &Tile, theme: &Theme, layer: &str, all: bool) -> anyhow::Result<
     Ok(Some(png))
 }
 
-/// Coloured tiles made here, by layer, theme layer, switch, tile and versions.
+/// Tiles of values made here, by layer, theme layer, switch, tile and versions.
 type Made = Lru<(String, String, bool, u8, u32, u32, u64, String), bytes::Bytes>;
 static MADE: LazyLock<Mutex<Made>> = LazyLock::new(|| Mutex::new(Lru::new(64 << 20)));
 
@@ -588,7 +556,7 @@ async fn tile(
             return Ok(None);
         }
         let Some(t) = fmt::tile_at(grid, z, x, y, &mut |z, x, y| stored(&s2, &stl, z, x, y))? else { return Ok(None) };
-        paint(&t, &th, &layer, all)
+        values(&t, &th, &layer, all)
     })
     .await
     .into_response()

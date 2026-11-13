@@ -28,8 +28,10 @@ const BINS = 1024;
 /** The distribution of a raster-dem source's values over the ground in view, in `domain`; null
  * while no tile in view is loaded. `shade`: a shading source (codecs::shade_codec), its value the
  * mean steepness in R, 255 × √(steepness ÷ max). `caps`: the polar caps' heights past the Mercator
- * tiles (polarglobe.ts capGround), counted with an elevation source's. */
-export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], shade: { max: number } | null = null, caps: ((lng: number, lat: number) => number | null) | null = null): Dist | null {
+ * tiles (polarglobe.ts capGround), counted with an elevation source's. `values`: a source of values
+ * with no water (the data available layers', available.ts): every sample in `domain` counts, one
+ * outside it (no value there) none. */
+export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], shade: { max: number } | null = null, caps: ((lng: number, lat: number) => number | null) | null = null, values = false): Dist | null {
   const tm = (map as unknown as { style?: { tileManagers?: Record<string, TileManagerLike> } }).style?.tileManagers?.[source];
   if (!tm) return null;
   const b = map.getBounds();
@@ -69,7 +71,9 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
         const fx = Math.floor(px), fy = Math.floor(py);
         const v = dem.get(fx, fy);
         if (!Number.isFinite(v)) continue;
-        if (dem.get(fx - 1, fy) === v && dem.get(fx + 1, fy) === v && dem.get(fx, fy - 1) === v && dem.get(fx, fy + 1) === v) continue; // water
+        if (values) {
+          if (v < lo || v > hi) continue;
+        } else if (dem.get(fx - 1, fy) === v && dem.get(fx + 1, fy) === v && dem.get(fx, fy - 1) === v && dem.get(fx, fy + 1) === v) continue; // water
         bins[Math.max(0, Math.min(BINS - 1, Math.floor((v - lo) * k)))] += w;
         total += w;
       }

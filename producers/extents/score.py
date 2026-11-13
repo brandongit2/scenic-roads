@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """A theme's score (docs/inputs.md §6.11), as its score.toml declares it: each metric's 0-1 value,
 the primary metric's deciding and the weighted mean of the others the piece states breaking
-near-ties, its guarantee checked. The producers don't score pieces (the build
-step is to, from the same file); this prints what a score.toml does, for tuning its weights.
+near-ties, its guarantee checked, and how pieces rank (`best`: of those whose primary ties the
+finest's, the best availability, then the best score). The producers don't score pieces (the map
+server does, from the same file); this prints what a score.toml does, for tuning its weights.
 
 usage: score.py <score.toml> --examples
        score.py <score.toml> --json <pieces.json>
-       score.py <score.toml> <metric>=<value> ... [-- <metric>=<value> ...]...
+       score.py <score.toml> <metric>=<value> ... [availability=<id>] [-- <metric>=<value> ...]...
 
---json prints, as JSON, the examples' and the given pieces' (a list of their metrics) scores and
-metric values in full: the map server's scoring (crate::inputs::extents::Score::of) is tested
-against it (crates/inputs/src/inputs/extents/score_expected.json, made by
+--json prints, as JSON, the examples' and the given pieces' (`pieces`, each its metrics) scores
+and metric values in full, and the order of the given groups of pieces (`groups`, each piece its
+metrics and `availability`): the map server's scoring and ranking
+(crate::inputs::extents::Score::of, Score::ranked) is tested against it
+(crates/inputs/src/inputs/extents/score_expected.json, made by
 `score.py producers/extents/terrain/score.toml --json crates/inputs/src/inputs/extents/score_pieces.json`).
+Pieces given on the command line are scored, then listed best first.
 """
 import json
 import math
@@ -77,35 +81,65 @@ EXAMPLES = [
 ]
 
 
-def class_of(m, v):
-    """The label of the class of metric `m`'s `classes` holding `v` (the first whose `upto` is at or
-    above it, else the last; the server's Metric::class_of), or None where it has none."""
-    classes = m.get("classes") or []
-    for c in classes:
-        if "upto" not in c or v <= c["upto"]:
-            return c["label"]
-    return None
+def tie(decl):
+    """How far apart two pieces' primary values (0-1) may be and still tie: a factor of `within` on
+    the primary's log scale."""
+    m = decl["metric"][decl["primary"]]
+    return math.log(float(decl["within"])) / abs(math.log(float(m["worst"]) / float(m["best"])))
+
+
+def avail_rank(decl, a):
+    """Where availability `a` ranks: its place in `availability`, one not listed (or no order) after."""
+    order = decl.get("availability", [])
+    return order.index(a) if a in order else len(order)
+
+
+def best(decl, pieces):
+    """The index of the best of `pieces` (each its metrics and `availability`; those with a score),
+    or None: of those whose primary ties the finest's (within `within`), the best availability; of
+    them, the best score; of equals, the first (the server's Score::best)."""
+    scored = [(k, score(decl, p)) for k, p in enumerate(pieces)]
+    scored = [(k, s, vals[decl["primary"]]) for k, (s, vals) in scored if s is not None]
+    if not scored:
+        return None
+    finest = max(lead for _, _, lead in scored)
+    out = None
+    for k, s, lead in scored:
+        if finest - lead > tie(decl) + 1e-12:
+            continue
+        r = avail_rank(decl, pieces[k].get("availability"))
+        if out is None or r < out[1] or (r == out[1] and s > out[2]):
+            out = (k, r, s)
+    return out[0]
+
+
+def ranked(decl, pieces):
+    """The indices of `pieces` with a score, best first: the best, then the best of the rest."""
+    left = list(range(len(pieces)))
+    out = []
+    while (k := best(decl, [pieces[i] for i in left])) is not None:
+        out.append(left.pop(k))
+    return out
 
 
 def said(decl, piece):
     s, vals = score(decl, piece)
     parts = ", ".join(f"{k} {piece[k]} → {vals[k]:.3f}" if vals[k] is not None else f"{k} not stated" for k in decl["metric"])
-    c = class_of(decl["metric"][decl["primary"]], piece[decl["primary"]]) if s is not None else None
-    drawn = f"  [{c}]" if c else ""
-    return f"  {s:.3f}{drawn}  {parts}" if s is not None else f"  none   {parts}"
+    return f"  {s:.3f}  {parts}" if s is not None else f"  none   {parts}"
 
 
 def expected(decl, pieces_path):
     """The JSON --json prints: each piece's metrics, score and values, the examples' then the
-    file's."""
+    file's (`scored`), and each of the file's groups in order (`ranked`)."""
     with open(pieces_path) as f:
         given = json.load(f)
-    pieces = [p for _, ps in EXAMPLES for p in ps] + given
-    out = []
+    pieces = [p for _, ps in EXAMPLES for p in ps] + given["pieces"]
+    scored = []
     for p in pieces:
         s, vals = score(decl, p)
-        out.append({"metrics": p, "score": s, "values": vals})
-    return json.dumps(out, indent=1, sort_keys=True) + "\n"
+        scored.append({"metrics": p, "score": s, "values": vals})
+    groups = [{"pieces": g, "order": ranked(decl, g)} for g in given["groups"]]
+    return json.dumps({"scored": scored, "ranked": groups}, indent=1, sort_keys=True) + "\n"
 
 
 def main(argv):
@@ -123,15 +157,18 @@ def main(argv):
             for p in pieces:
                 print(said(decl, p))
         return
-    piece = {}
+    piece, pieces = {}, []
     for a in argv[2:] + ["--"]:
         if a == "--":
             if piece:
                 print(said(decl, piece))
+                pieces.append(piece)
             piece = {}
             continue
         k, v = a.split("=", 1)
-        piece[k] = v if "values" in decl["metric"][k] else float(v)
+        piece[k] = v if k == "availability" or "values" in decl["metric"][k] else float(v)
+    if len(pieces) > 1:
+        print("best first: " + ", ".join(str(k + 1) for k in ranked(decl, pieces)))
 
 
 if __name__ == "__main__":

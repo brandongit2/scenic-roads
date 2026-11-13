@@ -31,7 +31,8 @@ fn source(id: &str, availability: &str, ps: &[(&str, Value, Option<Value>)]) -> 
 }
 
 /// Open 1 m bare earth of 2021 over a box in France; 0.25 m to be had after a login over part of
-/// it; one with no extent; a piece holding the north pole past the tiles.
+/// it; one with no extent; a piece holding the north pole past the tiles; a paid 1 m of 2024 over
+/// the box's west end (a tie with the open piece, of a better score).
 fn fixture() -> Vec<(String, Vec<u8>)> {
     let a = source(
         "open-lidar",
@@ -53,8 +54,13 @@ fn fixture() -> Vec<(String, Vec<u8>)> {
             ("later", json!({"spacing_m": 0.25}), None),
         ],
     );
+    let c = source(
+        "paid-twin",
+        "paid",
+        &[("dtm", json!({"spacing_m": 1, "surface": "ground", "year": 2024}), Some(square(2.0, 44.0, 2.15, 44.05)))],
+    );
     let mut files = vec![("terrain/score.toml".to_string(), SCORE.to_vec())];
-    for (d, db, p, pb) in [a, b] {
+    for (d, db, p, pb) in [a, b, c] {
         files.push((d, db));
         files.push((p, pb));
     }
@@ -124,112 +130,96 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     assert!(t.painted(&["fine/dtm"], false).is_empty());
 }
 
-/// score.toml's colours, as hex.
-fn ramp_hex(k: usize) -> String {
-    hex(ex::score(SCORE).unwrap().ramp[k])
+/// An open piece wins a tie: of the open 1 m of 2021 and the paid 1 m of 2024 (the better score),
+/// the open one, on every layer that ranks them; the finer grid beyond the factor whatever its
+/// availability.
+#[test]
+fn an_open_piece_wins_a_tie() {
+    let t = theme();
+    let (open, paid) = (&t.pieces["open-lidar/dtm"], &t.pieces["paid-twin/dtm"]);
+    assert!(paid.score > open.score);
+    let twins = ["paid-twin/dtm", "open-lidar/dtm"];
+    for layer in [SCORE_LAYER, "spacing_m", "surface"] {
+        assert_eq!(t.best(layer, twins, true).unwrap().source, "open-lidar", "{layer}");
+    }
+    // The year isn't tied: the paid one's is newer.
+    assert_eq!(t.best("year", twins, true).unwrap().source, "paid-twin");
+    let all = ["paid-twin/dtm", "open-lidar/dtm", "fine/dtm"];
+    assert_eq!(t.best(SCORE_LAYER, all, true).unwrap().source, "fine");
+    let ids = |v: Vec<Value>| v.iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(t.listed(all, true)), ["fine/dtm", "open-lidar/dtm", "paid-twin/dtm"]);
 }
 
+/// What a tile carries: each layer's value of the piece drawn, in its scale's code, and the
+/// layers' scales as described.
 #[test]
-fn each_layer_is_drawn_as_score_toml_says() {
+fn each_layer_carries_its_value() {
     let t = theme();
     let s = ex::score(SCORE).unwrap();
-    let (r, n) = (&s.ramp, s.ramp.len());
     let (a, b, pole) = (&t.pieces["open-lidar/dtm"], &t.pieces["fine/dtm"], &t.pieces["open-lidar/pole"]);
-    // The spacing's classes take the ramp's colours, the finest its best end: 0.25 m in "0.5 m",
-    // 1 m in "1 m", 2 m in "2 m".
-    assert_eq!(n, s.metrics["spacing_m"].classes.len());
-    assert_eq!(t.colour("spacing_m", b), Some(r[n - 1]));
-    assert_eq!(t.colour("spacing_m", a), Some(r[n - 2]));
-    assert_eq!(t.colour("spacing_m", pole), Some(r[n - 3]));
-    // The score: the spacing's class, shaded by the tie-break. Bare earth, nothing else stated: the
-    // best tie-break, the class's own colour; a surface model with no year, the worst: `shade` of
-    // the way to the next coarser class; 1 m of 2021, a little of the way.
-    assert_eq!(t.colour(SCORE_LAYER, b), Some(r[n - 1]));
-    assert_eq!(t.colour(SCORE_LAYER, pole), Some(mix(r[n - 3], r[n - 4], s.shade)));
-    let rest = (0.4 + 0.2 * 21.0 / 26.0) / 0.6;
-    assert_eq!(t.colour(SCORE_LAYER, a), Some(mix(r[n - 2], r[n - 3], s.shade * (1.0 - rest))));
-    assert_ne!(t.colour(SCORE_LAYER, a), Some(r[n - 2]));
-    // Stating none of the tie-break's metrics: the class's own colour, as the best (not shaded by
-    // the primary's own value, which would darken every coarser class more).
+    let near = |x: Option<f64>, y: f64| assert!(x.is_some_and(|x| (x - y).abs() < 1e-9), "{x:?} against {y}");
+    // The spacing as log10 of metres; the words' values; the year as it is.
+    near(t.code("spacing_m", a), 0.0);
+    near(t.code("spacing_m", b), 0.25f64.log10());
+    near(t.code("surface", a), 1.0);
+    near(t.code("surface", pole), 0.0);
+    near(t.code("year", a), 2021.0);
+    assert_eq!(t.code("year", b), None);
+    assert_eq!(t.code("vertical_rmse_m", a), None);
+    // The score on the spacing's axis: stating nothing but the spacing, the spacing itself; a
+    // better tie-break, finer than it, a worse one coarser, both within the factor.
     let mut bare = a.clone();
     bare.props.retain(|k, _| k == "spacing_m");
     (bare.score, bare.values) = s.of(&bare.props);
-    assert_eq!(t.colour(SCORE_LAYER, &bare), Some(r[n - 2]));
-    let lead = bare.values["spacing_m"].unwrap();
-    assert!((bare.score.unwrap() - lead).abs() < 1e-12, "the score: the primary's value alone");
-    // Two words, two colours; the year along the ramp.
-    let surface = &s.metrics["surface"].colours;
-    assert_eq!(t.colour("surface", a), Some(surface["ground"]));
-    assert_eq!(t.colour("surface", pole), Some(surface["surface"]));
-    assert_eq!(t.colour("year", a), Some(along(r, 21.0 / 26.0)));
-    assert_eq!(t.colour("year", b), None);
-    // The legend: every layer's, from score.toml.
+    near(t.code(SCORE_LAYER, &bare), 0.0);
+    let (good, poor) = (t.code(SCORE_LAYER, a).unwrap(), t.code(SCORE_LAYER, pole).unwrap());
+    assert!(good < 0.0 && good > -s.within.log10(), "{good}");
+    assert!(poor > 2f64.log10() && poor < (2.0 * s.within).log10(), "{poor}");
+    // The layers: the score's first, on the primary's scale.
     let d = t.described("terrain");
-    let l = &d["layers"];
+    let l = d["layers"].as_array().unwrap();
+    let ids: Vec<&str> = l.iter().map(|l| l["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["score", "spacing_m", "surface", "vertical_rmse_m", "year"]);
     assert_eq!(l[0]["label"], "Best data");
-    assert_eq!(l[0]["legend"], "classes");
-    assert_eq!(l[0]["unit"], "m");
-    assert_eq!(l[0]["shade"], s.shade);
-    assert_eq!(l[0]["shaded_by"], json!(["surface", "vertical_rmse_m", "year"]));
     assert_eq!(
-        l[0]["stops"][0],
-        json!({"label": "0.5 m", "upto": 0.625, "colour": ramp_hex(n - 1),
-        "shaded": hex(mix(r[n - 1], r[n - 2], s.shade))})
+        (&l[0]["scale"], &l[0]["of"], &l[0]["unit"], &l[0]["best"]),
+        (&json!("log"), &json!("spacing_m"), &json!("m"), &json!("low"))
     );
-    assert_eq!(l[0]["stops"][n - 1]["label"], "coarser");
-    assert!(l[0]["stops"][n - 1]["upto"].is_null());
-    assert_eq!(l[1]["legend"], "classes");
-    assert_eq!(l[1]["stops"][1], json!({"label": "1 m", "upto": 1.25, "colour": ramp_hex(n - 2)}));
-    assert_eq!(l[2]["legend"], "values");
+    assert_eq!(l[1]["range"], json!([0.25, 2.0]), "the values present, of pieces with an extent");
+    assert_eq!((&l[2]["scale"], &l[2]["best"]), (&json!("values"), &json!("high")));
+    assert_eq!(l[2]["words"], json!([{"value": 0.0, "label": "surface"}, {"value": 1.0, "label": "ground"}]));
+    assert!(l[3]["range"].is_null(), "no piece states its accuracy");
     assert_eq!(
-        l[2]["stops"],
-        json!([{"value": 0.0, "label": "surface", "colour": "#e69f00"},
-        {"value": 1.0, "label": "ground", "colour": "#56b4e9"}])
+        (&l[4]["scale"], &l[4]["best"], &l[4]["range"]),
+        (&json!("linear"), &json!("high"), &json!([2021.0, 2024.0]))
     );
-    for (k, (from, to)) in [(3, ("10", "0.05")), (4, ("2000", "2026"))] {
-        assert_eq!(l[k]["legend"], "ramp");
-        assert_eq!(l[k]["stops"][0]["label"], from);
-        assert_eq!(l[k]["stops"][4]["label"], to);
-        assert_eq!(l[k]["stops"][4]["colour"], ramp_hex(n - 1));
-        assert_eq!(l[k]["ramp"][0], json!([0.0, ramp_hex(0)]));
-    }
+    assert_eq!(d["availability"], json!(["open", "login", "paid", "closed"]));
 }
 
-/// A score.toml of before the layers' colours (as the NAS held on 13 Nov): taken, each layer on
-/// the built-in ramp, the score's name the server's.
+/// A score.toml as the NAS holds it before the new one is placed (its classes, colours, ramp and
+/// shade): served as the new one, those fields not read.
 #[test]
-fn a_score_toml_with_no_colours_draws_every_layer_on_the_built_in_ramp() {
-    const OLD: &str = "theme = \"terrain\"\nprimary = \"spacing_m\"\nwithin = 1.25\nshare = 0.02\n\
-        [metric.spacing_m]\nlabel = \"Grid spacing\"\nunit = \"m\"\nscale = \"log\"\nworst = 1000\nbest = 0.1\n\
-        [metric.surface]\nlabel = \"Bare earth or surface\"\nweight = 0.4\nvalues = { ground = 1.0, surface = 0.0 }\n\
-        [metric.year]\nlabel = \"Year surveyed\"\nweight = 0.2\nscale = \"linear\"\nworst = 2000\nbest = 2026\n";
+fn a_score_toml_with_its_retired_colours_is_served() {
+    let old = std::str::from_utf8(SCORE)
+        .unwrap()
+        .replacen("share = 0.02\n", "share = 0.02\nramp = [\"#803041\", \"#e7fda7\"]\nshade = 0.4\n", 1)
+        .replacen(
+            "best = 0.1\n",
+            "best = 0.1\nclasses = [{ upto = 0.625, label = \"0.5 m\" }, { label = \"coarser\" }]\n",
+            1,
+        );
     let mut files: BTreeMap<String, Vec<u8>> = fixture().into_iter().collect();
-    files.insert("terrain/score.toml".into(), OLD.as_bytes().to_vec());
+    files.insert("terrain/score.toml".into(), old.into_bytes());
     let t = theme_of(&files);
+    let new = theme();
+    assert_eq!(t.described("terrain")["layers"], new.described("terrain")["layers"]);
     let a = &t.pieces["open-lidar/dtm"];
-    assert_eq!(t.colour(SCORE_LAYER, a), Some(along(&DEFAULT_RAMP, a.score.unwrap())));
-    assert_eq!(t.colour("spacing_m", a), Some(along(&DEFAULT_RAMP, a.values["spacing_m"].unwrap())));
-    assert_eq!(t.colour("surface", a), Some(DEFAULT_RAMP[4]));
-    let d = t.described("terrain");
-    assert_eq!(d["layers"][0]["label"], DEFAULT_LABEL);
-    for l in d["layers"].as_array().unwrap() {
-        assert_eq!(l["legend"], if l["id"] == "surface" { "values" } else { "ramp" }, "{l}");
-    }
-    assert_eq!(d["layers"][1]["stops"][0]["label"], "1000");
-    assert_eq!(d["layers"][1]["stops"][4]["label"], "0.1");
+    assert_eq!(t.code(SCORE_LAYER, a), new.code(SCORE_LAYER, a));
 }
 
-#[test]
-fn a_ramp_runs_through_its_colours_evenly() {
-    let r = [[0, 0, 0], [100, 50, 0], [200, 250, 10]];
-    assert_eq!(along(&r, 0.0), r[0]);
-    assert_eq!(along(&r, 0.5), r[1]);
-    assert_eq!(along(&r, 1.0), r[2]);
-    assert_eq!(along(&r, 0.25), [50, 25, 0]);
-    assert_eq!(along(&r, 0.75), [150, 150, 5]);
-    assert_eq!(along(&r, 2.0), r[2]);
-    assert_eq!(along(&r, -1.0), r[0]);
-    assert_eq!(along(&DEFAULT_RAMP, 0.0), [68, 1, 84]);
+/// A Terrarium pixel's value.
+fn terrarium(px: [u8; 4]) -> f64 {
+    f64::from(px[0]) * 256.0 + f64::from(px[1]) + f64::from(px[2]) / 256.0 - 32768.0
 }
 
 /// A NAS root with the step's packs of the fixture's pieces and a catalogue naming them, and a
@@ -319,11 +309,26 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
     assert_eq!(r.headers()[header::CACHE_CONTROL], "no-cache");
     let etag = r.headers()[header::ETAG].to_str().unwrap().to_string();
     let open = body(r).await;
-    let c = t.colour(SCORE_LAYER, &t.pieces["open-lidar/dtm"]).unwrap();
-    assert_eq!(png_pixel(&open, 128, 128), [c[0], c[1], c[2], 255]);
+    // (To its 1/256.)
+    let near = |px: [u8; 4], want: f64| {
+        assert_eq!(px[3], 255);
+        assert!((terrarium(px) - want).abs() <= 0.5 / 256.0, "{} against {want}", terrarium(px));
+    };
+    near(png_pixel(&open, 128, 128), t.code(SCORE_LAYER, &t.pieces["open-lidar/dtm"]).unwrap());
     let all = body(get("score", 12, x, y, Some("avail=all"), headers(None)).await).await;
-    let c = t.colour(SCORE_LAYER, &t.pieces["fine/dtm"]).unwrap();
-    assert_eq!(png_pixel(&all, 128, 128), [c[0], c[1], c[2], 255]);
+    near(png_pixel(&all, 128, 128), t.code(SCORE_LAYER, &t.pieces["fine/dtm"]).unwrap());
+    let year = body(get("year", 12, x, y, Some("avail=all"), headers(None)).await).await;
+    near(png_pixel(&year, 128, 128), 2021.0);
+    // Where the open piece ends inside a tile: its pixels inside, transparent (all 0) outside.
+    let (lng, lat) = (2.4, 44.3);
+    let (xe, ye) = z12(lng, lat);
+    let edge = body(get("score", 12, xe, ye, None, headers(None)).await).await;
+    let w = 4096.0 * SIDE as f64;
+    let (px, py) = roadcore::geo::merc(lng, lat);
+    let (i, j) = ((px * w) as usize % SIDE, (py * w) as usize % SIDE);
+    assert!(i > 2 && i < SIDE - 3 && j > 2 && j < SIDE - 3, "{i} {j}");
+    assert_eq!(png_pixel(&edge, i - 2, j + 2)[3], 255, "inside");
+    assert_eq!(png_pixel(&edge, i + 2, j - 2), [0, 0, 0, 0], "outside");
     // Its ETag: 304; versioned: kept for good.
     assert_eq!(get("score", 12, x, y, None, headers(Some(&etag))).await.status(), StatusCode::NOT_MODIFIED);
     let r = get("score", 12, x, y, Some("v=1"), headers(None)).await;
@@ -355,8 +360,7 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
     };
     let r = polar(0, 0, 0).await;
     assert_eq!(r.status(), StatusCode::OK);
-    let c = t.colour(SCORE_LAYER, &t.pieces["open-lidar/pole"]).unwrap();
-    assert_eq!(png_pixel(&body(r).await, 128, 128), [c[0], c[1], c[2], 255]);
+    near(png_pixel(&body(r).await, 128, 128), t.code(SCORE_LAYER, &t.pieces["open-lidar/pole"]).unwrap());
     assert_eq!(polar(4, 0, 0).await.status(), StatusCode::NOT_FOUND);
 }
 
@@ -419,85 +423,11 @@ async fn a_click_answers_the_pieces_there_best_first() {
     // The theme.
     let r = about(State(s.clone()), Path("terrain".into())).await;
     let v: Value = serde_json::from_slice(&body(r).await).unwrap();
-    assert_eq!(v["sources"].as_array().unwrap().len(), 2);
+    assert_eq!(v["sources"].as_array().unwrap().len(), 3);
     assert_eq!(about(State(s.clone()), Path("bathymetry".into())).await.status(), StatusCode::NOT_FOUND);
     // The app's version of the layer names the extents' too.
     let meta = crate::meta_json(&s);
     let v = meta["versions"]["available-terrain"].as_str().unwrap();
     assert!(v.ends_with("-0123456789abcdef"), "{v}");
     assert!(meta["packs"].get("available-terrain").is_none());
-}
-
-/// The real pieces (producers/extents/terrain/) built and painted, each layer as a PNG over the
-/// map's land colour: the world at z2, France at z5, Vancouver at z8 (every piece, `avail=all`),
-/// written to `$SCENIC_RENDER_DIR`: a look at the colours, run by hand (the step's whole build, ~1
-/// min); nothing without the variable.
-#[test]
-fn renders_the_real_pieces() {
-    let Some(dir) = std::env::var_os("SCENIC_RENDER_DIR").map(std::path::PathBuf::from) else { return };
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../producers/extents/terrain");
-    let mut files = BTreeMap::new();
-    let mut pieces = Vec::new();
-    for e in std::fs::read_dir(&src).unwrap() {
-        let p = e.unwrap().path();
-        let name = format!("terrain/{}", p.file_name().unwrap().to_string_lossy());
-        let b = std::fs::read(&p).unwrap();
-        if let ex::Kind::Pieces(_, id) = ex::kind(&name) {
-            pieces.extend(terrain::available::pieces(id, &b).unwrap());
-        }
-        files.insert(name, b);
-    }
-    let th = theme_of(&files);
-    let nas = tempfile::tempdir().unwrap();
-    let root = store::nasfs::NasRoot::local_for_test(nas.path());
-    let mut out = buildstore::out::Out::unbound(&root, &nas.path().join("scratch")).unwrap();
-    terrain::available::build(&mut out, "terrain", &pieces, &|_, _| {}).unwrap();
-    out.save().unwrap();
-    let layer = fmt::layer("terrain");
-    let mut get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Tile>> {
-        let Some((scope, key)) = fmt::pack_of(Grid::Mercator, z, x, y) else { return Ok(None) };
-        let Some(c) = out.get(&format!("layers/{layer}/{scope}/{}", key.replace('/', "-"))) else { return Ok(None) };
-        let b = out.path(c).read()?;
-        let idx = store::pack::PackIndex::parse_bytes(&b)?;
-        Ok(match idx.find(z, x, y) {
-            Some(e) => Some(Tile::decode(&b[e.offset as usize..][..e.len as usize])?),
-            None => None,
-        })
-    };
-    let land = [0x0b, 0x0e, 0x13];
-    // (place, zoom, first column and row, tiles a side)
-    let places: [(&str, u8, u32, u32, u32); 3] =
-        [("world", 2, 0, 0, 4), ("france", 5, 15, 10, 2), ("vancouver", 8, 39, 87, 3)];
-    let mut layers = vec![SCORE_LAYER.to_string()];
-    layers.extend(th.score.as_ref().unwrap().metrics.keys().cloned());
-    for (place, z, x0, y0, n) in places {
-        let tiles: Vec<Option<Tile>> =
-            (0..n * n).map(|k| fmt::tile_at(Grid::Mercator, z, x0 + k % n, y0 + k / n, &mut get).unwrap()).collect();
-        let n = n as usize;
-        for l in &layers {
-            let w = n * SIDE;
-            let mut rgb = [land].repeat(w * w).concat();
-            for (k, t) in tiles.iter().enumerate() {
-                let Some(b) = t.as_ref().and_then(|t| paint(t, &th, l, true).unwrap()) else { continue };
-                let mut d = png::Decoder::new(std::io::Cursor::new(b)).read_info().unwrap();
-                let mut v = vec![0; d.output_buffer_size().unwrap()];
-                d.next_frame(&mut v).unwrap();
-                let (ox, oy) = ((k % n) * SIDE, (k / n) * SIDE);
-                for j in 0..SIDE {
-                    for i in 0..SIDE {
-                        let q = (j * SIDE + i) * 4;
-                        if v[q + 3] > 0 {
-                            let o = ((oy + j) * w + ox + i) * 3;
-                            rgb[o..o + 3].copy_from_slice(&v[q..q + 3]);
-                        }
-                    }
-                }
-            }
-            let f = std::fs::File::create(dir.join(format!("{place}-{l}.png"))).unwrap();
-            let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, w as u32);
-            e.set_color(png::ColorType::Rgb);
-            e.set_depth(png::BitDepth::Eight);
-            e.write_header().unwrap().write_image_data(&rgb).unwrap();
-        }
-    }
 }
