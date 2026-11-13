@@ -79,6 +79,13 @@ pub enum Rule {
     Outside,
     /// Nothing offered fitting the room left (memory, disk) or free to take (`Refused`).
     Room,
+    /// Work is offered, none of it to this Mac: the lead's own planned jobs to a member, a step it
+    /// doesn't run (`Sched::apart`).
+    Away,
+    /// Nothing is offered at all: no job of the plan is ready (`Sched::apart`). The plan may be
+    /// complete or its work wait behind other work or an input; the lead's status says which
+    /// (crate::agent::flags::nothing_words).
+    Empty,
     /// The NAS budget: targets it would take waiting for the NAS's room.
     Nas,
     /// One job at a time while a member runs an older app.
@@ -96,6 +103,8 @@ impl Rule {
             Rule::Cores => "cores",
             Rule::Outside => "cores busy outside the pool",
             Rule::Room => "the room left",
+            Rule::Away => "work for other Macs",
+            Rule::Empty => "no job ready",
             Rule::Nas => "the NAS budget",
             Rule::OldApp => "an older app",
         }
@@ -584,10 +593,6 @@ impl Refused {
             }
         };
         let Some((step, target, m)) = &self.blocked else {
-            if others.is_empty() {
-                let disk = room.disk_mb.map(|d| format!("; disk: {}", disk(d))).unwrap_or_default();
-                return format!("nothing offered fits the room left (memory: {}{disk})", mem());
-            }
             let what = if self.other == 0 { "is free to take" } else { "is taken" };
             return format!("nothing offered {what}: {}", others.join(", "));
         };
@@ -1863,6 +1868,7 @@ impl Sched {
                         Rule::Waiting,
                         waiting.as_ref().map(|w| w.words(&room, cores, false)).unwrap_or_default(),
                     ),
+                    None if refused.iter().all(|(o, ..)| o.targets.is_empty()) => self.apart(a, lead),
                     None => {
                         let (r, credit) = self.refused(&refused, a, &room, now);
                         held_by(
@@ -2280,6 +2286,48 @@ impl Sched {
             }
         }
         (r, credit)
+    }
+
+    /// Why `a`'s worker is offered nothing to take when no offer reached the room rule (none was
+    /// refused for its room, held, done or in backoff: none had a target to weigh): the plan's
+    /// offered jobs that are not for it, by step in plan order (the lead's own planned jobs to a
+    /// member, `every::grants`; a step it doesn't run), or, with none, that nothing is offered.
+    /// Worked out from the offers the scheduler holds already, so a status asks nothing more.
+    fn apart(&self, a: &Ask, lead: bool) -> Held {
+        let mut for_lead: Vec<&str> = Vec::new();
+        let mut not_here: Vec<&str> = Vec::new();
+        for o in self.offers.iter().filter(|o| !o.targets.is_empty()) {
+            let (list, step) = if !crate::agent::every::grants(self.the_plan, &o.step, o.job.is_some(), lead) {
+                (&mut for_lead, o.step.as_str())
+            } else if !a.can.contains(&o.step) {
+                (&mut not_here, o.step.as_str())
+            } else {
+                continue;
+            };
+            if !list.contains(&step) {
+                list.push(step);
+            }
+        }
+        let say = |n: usize, what: &str, list: &[&str]| {
+            const SHOWN: usize = 6;
+            let names = list.iter().take(SHOWN).copied().collect::<Vec<_>>().join(", ");
+            let more = if list.len() > SHOWN { format!(" and {} more", list.len() - SHOWN) } else { String::new() };
+            format!("{n} job{} {what}: {names}{more}", if n == 1 { "" } else { "s" })
+        };
+        let mut said: Vec<String> = Vec::new();
+        if !for_lead.is_empty() {
+            let w = if for_lead.len() == 1 { "waits for the lead" } else { "wait for the lead" };
+            said.push(say(for_lead.len(), w, &for_lead));
+        }
+        if !not_here.is_empty() {
+            let w = if not_here.len() == 1 { "isn't one this Mac runs" } else { "aren't ones this Mac runs" };
+            said.push(say(not_here.len(), w, &not_here));
+        }
+        if said.is_empty() {
+            held_by(Rule::Empty, "no job of the plan is ready to offer".to_string())
+        } else {
+            held_by(Rule::Away, said.join("; "))
+        }
     }
 
     /// A job of `step` over `targets` on `worker`'s Mac, measured `m` and counting for `cores`

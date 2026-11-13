@@ -2776,9 +2776,14 @@ asks passed on are one-shot: the lead's store keeps them (below).
   left for a new job; cores busy, disk reserved and free, on the page as bars); a block per
   running job numbered by its real slot (`JobView::slot`: slots may be sparse, so a Mac running
   only its fourth slot shows slot 4), (`scenic status`: with that slot's lane's next work); and (`scenic status` alone) why nothing more
-  fits: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
-  `packing`: a cold job of the lead's own waiting for room, cores short for the next job open, or nothing
-  offered fitting the room left), shown while the refusal itself is younger than two minutes
+  runs: the packing's refusal as its last ask was packed (`Coordinator::refusals`, the status's
+  `packing`: a cold job of the lead's own waiting for room, cores short for the next job open, a job
+  offered refused for its room (the first that didn't fit, what it needs against what there is), jobs
+  offered but not to this Mac (the lead's own, a step it doesn't run; `Rule::Away`: "3 jobs wait for the lead:
+  names-todo, rail, heritage-sites"), or no job offered at all (`Rule::Empty`: the lead's status
+  words it from the plan's waits, `flags::nothing_words`: steps waiting behind other work or an
+  input, named with their waits, else "the plan is complete: no job is left to offer", with no memory
+  or disk figure), shown while the refusal itself is younger than two minutes
   (`CAP_FRESH_S`), older ones dropped. The forecast's lanes are per slot
   (`<host>`, `<host> #2`, …), as many as the slots each Mac may run now (`forecast::slot_lanes`):
   the lead's its ramp's, each member's `agent::job_slots` of the cores of its capacity (else a

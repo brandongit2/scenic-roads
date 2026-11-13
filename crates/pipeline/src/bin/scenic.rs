@@ -637,7 +637,7 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
             out.push("    running nothing".into());
         }
         for (_, why) in st.packing.iter().filter(|(n, _)| agent::is_slot_of(n, host)) {
-            out.push(format!("    nothing more fits: {why}"));
+            out.push(format!("    nothing more runs: {why}"));
         }
     }
     out
@@ -1923,7 +1923,12 @@ mod tests {
             assert_eq!(l.matches("    slot ").count(), 4, "{l}");
             assert_eq!(l.contains("slot 4: job 3"), n == 4 || n == 0, "{l}");
             assert_eq!(l.matches("running nothing").count(), usize::from(n == 0 || n == 4), "{l}");
-            assert!(l.contains("m1 · member") && l.contains("nothing more fits: cores: 0 of 8 left"), "{l}");
+            assert!(l.contains("m1 · member") && l.contains("nothing more runs: cores: 0 of 8 left"), "{l}");
+            // A finished plan (task #1367): said as such, with no memory or disk figure.
+            st.packing = [("m1".to_string(), "the plan is complete: no job is left to offer".to_string())].into();
+            let l = macs_lines(&st).join("\n");
+            assert!(l.contains("nothing more runs: the plan is complete: no job is left to offer"), "{l}");
+            assert!(!l.contains("fits the room") && !l.contains("for a new job)"), "{l}");
         }
         // Sparse slots: the first and the fourth running, numbered by their slots, a job's tail
         // lines under it.

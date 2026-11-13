@@ -2315,6 +2315,13 @@ impl Coordinator {
     /// Why nothing more fits each worker, as its last ask was packed (`Shared::refused`), the
     /// refusal itself younger than `CAP_FRESH_S` (older ones dropped here): the status's, per Mac.
     pub fn refusals(&self) -> BTreeMap<String, String> {
+        self.refusals_with(|_, _, w| w.to_string())
+    }
+
+    /// `refusals`, each said by `say` of its worker, its rule and its words: the lead's status
+    /// words the refusal of an ask offered nothing (`sched::Rule::Empty`) from the plan's waits,
+    /// which the coordinator doesn't know (crate::agent::flags::nothing_words).
+    pub fn refusals_with(&self, say: impl Fn(&str, sched::Rule, &str) -> String) -> BTreeMap<String, String> {
         let mut s = self.shared.lock().unwrap();
         // (Old ones let go: a worker gone asks no more.)
         let unix = s.wall_s();
@@ -2322,7 +2329,7 @@ impl Coordinator {
         s.refused
             .iter()
             .filter(|(_, (at, _))| unix.saturating_sub(*at) < CAP_FRESH_S)
-            .map(|(w, (_, why))| (w.clone(), why.words.clone()))
+            .map(|(w, (_, why))| (w.clone(), say(w, why.rule, &why.words)))
             .collect()
     }
 
@@ -11393,6 +11400,42 @@ mod tests {
             why.map(|h| h.words).unwrap_or_default(),
             "nothing offered is taken: 1 held by jobs, 1 free but held back otherwise (no measure yet, the NAS budget or placement)"
         );
+    }
+
+    /// Task #1367: an ask offered nothing says so, not the room left: no offer at all is "no job
+    /// of the plan is ready" (`Rule::Empty`, no memory or disk figure), the lead's own planned jobs
+    /// to a member are work for the lead, and a step the Mac doesn't run is named as such
+    /// (`Rule::Away`); the room's words stay for an offer refused for its room.
+    #[test]
+    fn an_ask_offered_nothing_says_why_not_the_room() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let a = every_ask("m1", "pack", 9000, 100_000);
+        let held = |c: &Coordinator| c.answers(0)["m1"].last().and_then(|x| x.held.clone());
+        // Nothing offered anywhere (the plan offered, its pass set).
+        c.offer("p", Vec::new());
+        assert!(w.ask(&a).unwrap().is_none());
+        let h = held(&c).unwrap();
+        assert_eq!((h.rule, h.words.as_str()), (sched::Rule::Empty, "no job of the plan is ready to offer"));
+        assert!(!c.refusals()["m1"].contains("GB"), "{:?}", c.refusals());
+        // The lead's own planned jobs: not a member's.
+        let key = |t: &str| (t.to_string(), "k".to_string(), 0);
+        let own = |step: &str, id: &str| Offer { step: step.into(), targets: vec![key("a")], job: Some(id.into()) };
+        c.offer("p", vec![own("names-todo", "j1"), own("rail", "j2"), own("pack", "j3")]);
+        assert!(w.ask(&a).unwrap().is_none());
+        let h = held(&c).unwrap();
+        assert_eq!(h.rule, sched::Rule::Away);
+        assert_eq!(h.words, "3 jobs wait for the lead: names-todo, rail, pack");
+        // A step offered to every member that this Mac doesn't run.
+        c.offer("p", vec![Offer { step: "slope-hi".into(), targets: vec![key("6/1/1")], job: None }]);
+        assert!(w.ask(&a).unwrap().is_none());
+        let h = held(&c).unwrap();
+        assert_eq!(h.rule, sched::Rule::Away);
+        assert_eq!(h.words, "1 job isn't one this Mac runs: slope-hi");
+        // An offer it can take but not in its room keeps the room's words.
+        measured_offer(&c, "pack", &[("6/1/1", Some((20_000, 100, 2000)))]);
+        assert!(w.ask(&a).unwrap().is_none());
+        let h = held(&c).unwrap();
+        assert!(h.words.contains("needs 19.5 GB of memory") && h.words.contains("memory short by"), "{h:?}");
     }
 
     /// Task #1170: room held for the first offer refused for its room is the hold the status says

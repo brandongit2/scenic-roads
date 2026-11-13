@@ -4700,6 +4700,18 @@ impl Agent {
         let views: Vec<JobView> = (0..self.slots.len()).filter_map(|k| self.job_view(k)).collect();
         let all_new = self.all_new();
         let capacity = self.coord.as_ref().map(|c| c.capacities()).unwrap_or_default();
+        let packing = self
+            .coord
+            .as_ref()
+            .map(|c| {
+                c.refusals_with(|worker, rule, words| match rule {
+                    crate::coord::sched::Rule::Empty => {
+                        flags::nothing_words(self.o.the_plan, &waiting, crate::paces::mac_of(worker) == self.host)
+                    }
+                    _ => words.to_string(),
+                })
+            })
+            .unwrap_or_default();
         let mut status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -4719,7 +4731,7 @@ impl Agent {
             helpers,
             beats,
             capacity,
-            packing: self.coord.as_ref().map(|c| c.refusals()).unwrap_or_default(),
+            packing,
             nas_share: self.coord.as_ref().map(|c| c.nas_shares()).unwrap_or_default(),
             nas_step: self.coord.as_ref().map(|c| c.nas_step_weights()).unwrap_or_default(),
             phase_shares: self.coord.as_ref().map(|c| c.phase_shares()).unwrap_or_default(),
