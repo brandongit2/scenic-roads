@@ -442,9 +442,10 @@ pub async fn list(State(s): State<S>) -> Response {
 
 /// A region's land and water (km², on the authalic sphere: `geom::area_km2`), its country (its
 /// first land shape's ISO 3166-1 code, else its first shape's; "" when none is known), its box
-/// (w, s, e, n in degrees: the panel frames the view on it) and a point inside its largest polygon
-/// for its name on the map (`label_point`), from its stored geometry (inputs::inputs::regions::stored:
-/// water shapes are those marked `water`, the rest land).
+/// (w, s, e, n in degrees: the panel frames the view on it) and a point inside its largest land
+/// polygon (a region of water alone: water) for its name on the map (`label_point`), from its
+/// stored geometry (inputs::inputs::regions::stored: water shapes are those marked `water`, the rest
+/// land).
 #[derive(serde::Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Sized {
     pub land: f64,
@@ -461,9 +462,11 @@ pub struct Sized {
 pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
     use inputs::inputs::regions::geom::{area_km2, Area};
     let (mut land, mut water) = (0.0, 0.0);
-    // (Each shape's largest polygon by its outer ring's area, for the name's point: a shape's own,
-    // never a union of them, which takes minutes for a region of land and water.)
-    let mut largest: Option<(f64, Vec<Vec<[f64; 2]>>)> = None;
+    // (The name's point: in the largest polygon of its land shapes by its outer ring (a region of
+    // water alone: of its water shapes), a shape's own, never a union of them, which takes minutes
+    // for a region of land and water. Land and water alike, a region's waters won, their outer ring
+    // holding the land too, and the name sat in the sea: Iceland's, Alaska's, peninsular Malaysia's.)
+    let mut largest: Option<((bool, f64), Vec<Vec<[f64; 2]>>)> = None;
     for sh in &g.shapes {
         let rings: Vec<Vec<[i64; 2]>> =
             sh.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect();
@@ -477,9 +480,9 @@ pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
         for p in &area.polys {
             let poly: Vec<Vec<[f64; 2]>> =
                 p.iter().map(|r| r.iter().map(|q| [q[0] as f64 * 1e-7, q[1] as f64 * 1e-7]).collect()).collect();
-            let outer = poly.first().map_or(0.0, |r| ring_area(r).abs());
-            if largest.as_ref().is_none_or(|l| outer > l.0) {
-                largest = Some((outer, poly));
+            let rank = (!sh.water, poly.first().map_or(0.0, |r| ring_area(r).abs()));
+            if largest.as_ref().is_none_or(|l| rank > l.0) {
+                largest = Some((rank, poly));
             }
         }
     }
@@ -651,7 +654,7 @@ pub fn sync_accepted(s: &crate::AppState) {
     }
     let read =
         |p: &str| -> anyhow::Result<Vec<u8>> { Ok(store::PooledFile::new(root.join(p), pool.clone()).read_all()?) };
-    if let Err(e) = inputs::inputs::served::sync_with(&read, inputs::inputs::regions::UNIT, &accepted_dir(s), &[]) {
+    if let Err(e) = inputs::inputs::served::sync(&read, inputs::inputs::regions::UNIT, &accepted_dir(s)) {
         eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
     }
 }
@@ -1050,6 +1053,16 @@ mod tests {
         assert!((z.land - 12_364.0 * 0.75).abs() < 60.0, "{z:?}");
         assert!((z.water - 12_364.0).abs() < 60.0, "{z:?}");
         assert_eq!(z.country, "PT");
+        // Its name on its land: not in its waters round it, whose outer ring holds the land.
+        let land = sq(0, 0, e);
+        let waters = vec![sq(-e, -e, 3 * e), sq(0, 0, e)];
+        let g = Geometry { shapes: vec![shape(waters, true, ""), shape(vec![land], false, "MT")], ..g };
+        let l = sized(&g).label.unwrap();
+        assert!(l[0] > 0.0 && l[0] < 1.0 && l[1] > 0.0 && l[1] < 1.0, "{l:?}");
+        // A region of water alone: in its water.
+        let g = Geometry { shapes: vec![shape(vec![sq(-e, -e, 3 * e), sq(0, 0, e)], true, "")], ..g };
+        let l = sized(&g).label.unwrap();
+        assert!(!(l[0] > 0.0 && l[0] < 1.0 && l[1] > 0.0 && l[1] < 1.0) && l[0] > -1.0 && l[0] < 2.0, "{l:?}");
     }
 
     #[test]

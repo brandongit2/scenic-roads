@@ -841,7 +841,7 @@ region file takes it out with the next version.
   regions share simplified once per zoom, so neighbours' lines are one line), green (grey where
   both sides are disabled regions or none: a disabled region is checked even though it isn't
   built), with each region's name as a country's label at the point the server works out inside its
-  largest polygon. Only borders are drawn: never a cut along the antimeridian, a tile's edge or the
+  largest land polygon (a region of water alone: its largest water polygon). Only borders are drawn: never a cut along the antimeridian, a tile's edge or the
   Mercator tiles' ±85.05° (the polar caps draw no region lines); the lines' width and opacity are
   the boundaries'. A map from before the layer draws the names alone. The footer tells the region
   under the cursor (`/api/regions/at`, from the same tiles; the smallest by its box where regions
