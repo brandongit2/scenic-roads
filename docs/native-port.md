@@ -1,12 +1,12 @@
 # One engine: MapLibre subsumed into the web app, then the native map app
 
-**Status: planned (tasks #1196, #1246; board folder "Native map app port").** Nothing here is
-built. The map is the web app (`web/src`) drawn by our MapLibre (`web/maplibre`, `FORK.md`); until
-a step of §8 lands, that code is what is true. Sections 2 and 6 count the code as it is;
-everything else is a plan. The owner decided the order of work and most of the open questions on
-12 Nov (§7.1, §9.1); what is still open is in §9.2. Line counts are of source files without tests
-(§2.1 says how to count them again); every "after" figure is an estimate made by going down the
-file lists, good to about a quarter either way.
+**Status: planned (tasks #1196, #1246; board folder "Native map app port").** Nothing here is built.
+The map is the web app (`web/src`) drawn by our MapLibre (`web/maplibre`, `FORK.md`); until a step
+of §8 lands, that code is what is true. Sections 2 and 6 count the code as it is; everything else is
+a plan. The owner decided the order of work and most of the open questions on 12 and 13 Nov (§7.1,
+§9.1); what is still open is in §9.2. Line counts are of source files without tests (§2.1 says how
+to count them again); every "after" figure is an estimate made by going down the file lists, good to
+about a quarter either way.
 
 ## 1. Summary
 
@@ -34,15 +34,21 @@ file lists, good to about a quarter either way.
   at the level of the code says which lines came from where. The one thing kept is what
   MapLibre's BSD-3-Clause licence requires, its notice, in one named file and in the app's credits
   (§7.6).
+- **One line renderer.** The roads' renderer becomes the map's one line renderer (S8b), and every
+  line is drawn by it, the basemap's lines too, sharp at any tilt rather than draped (§9.1); the
+  native app has the same one.
 - **The modules that exist only because of the wall go with it** (§2.3): the invisible circle
   layers under the dots, `namefade.ts`, the vector-tile encoders that feed `addProtocol`, the
   polar labels' 2D canvas, `covers.ts`, `placement.ts`, `maptasks.ts`, and the casts
   into internals.
-- **How each step is verified (§7.4).** A reference set recorded first (S0): views as images and
-  as numbers, each with the tile and API responses it read, so a view can be drawn again from the
-  same bytes. MapLibre's unit tests move with the code into the app's one suite, run by
-  `check.sh`. MapLibre's own render suite is not used: its cases are style documents, and the
-  style document is one of the things deleted.
+- **How each step is verified (§7.4).** A reference set recorded first (S0): views as images and as
+  numbers, each with the tile and API responses it read, so a view can be drawn again from the same
+  bytes, kept in one folder on the Mac mini. Exact checks (the numbers, picks, label sets, a capture
+  identical to the bit) are automated; a view whose image differs at all goes to the owner, side by
+  side with its reference and a difference image, and he is the arbiter: no pixel tolerance passes
+  or fails a step. MapLibre's unit tests move with the code into the app's one suite, run by
+  `check.sh`. MapLibre's own render suite is not used: its cases are style documents, and the style
+  document is one of the things deleted.
 - **How much code.** 118,900 lines today (136,700 with the style-spec package); about 64,000 when
   the subsuming is done; about 50,000 native (§6).
 - **The web app is not frozen meanwhile.** It keeps being developed, so the steps are ordinary
@@ -55,14 +61,14 @@ file lists, good to about a quarter either way.
   have it. The native part of `check.sh`, agents' native builds and simulator runs go to the M1;
   the engine's macOS cargo tests run on the M4 with the other Rust tests.
 - **The renderer (§5.9), the owner's preference:** the engine and the renderer in Rust, calling
-  Apple's GPU API, Metal, directly through Rust bindings (`objc2-metal`), with shaders in the
-  Metal Shading Language and no wgpu; Swift only as a thin shell for the window, the SwiftUI
-  panels and gestures. The fallback is a Rust core on wgpu. The case for the preference is owning
-  the GPU layer and never waiting on wgpu, not that wgpu cannot reach HDR (§5.9). The trial N0
-  (proposed, §8.3) builds everything above the GPU once and the GPU layer twice, once on Metal
-  directly and once on wgpu, behind one interface, and chooses direct Metal unless a stated rule
-  says otherwise; each variant proves HDR output on macOS and iOS and an offscreen-rendered test
-  an agent runs with cargo.
+  Apple's GPU API, Metal, directly through Rust bindings (`objc2-metal`), with shaders in the Metal
+  Shading Language and no wgpu; Swift only as a thin shell for the window, the SwiftUI panels and
+  gestures. The fallback is a Rust core on wgpu. The case for the preference is owning the GPU layer
+  and never waiting on wgpu, not that wgpu cannot reach HDR (§5.9). The trial N0 (§8.3, accepted 13
+  Nov), which starts only when the subsuming is done, builds everything above the GPU once and the
+  GPU layer twice, once on Metal directly and once on wgpu, behind one interface, and chooses direct
+  Metal unless a stated rule says otherwise; each variant proves HDR output on macOS and iOS and an
+  offscreen-rendered test an agent runs with cargo.
 - **Native text:** our own shaping and glyph path, translated, for the scripts written a
   character at a time. For CJK and the scripts that need shaping, the web app as #1245 leaves it
   has no path of its own to translate (the browser's text engine draws them from the device's
@@ -205,9 +211,9 @@ module becomes when it serves only this map. The target module is §5.1's.
 | Projection, globe, terrain, drapes | **Keep, reshape the edges → `terrain`** | The globe's maths, subdivision, DEM tiles with their min/max pyramids and cross-zoom borders, elevation queries, pole ground, the drapes with footprint sizing, detail and pacing: all kept. What changes: one projection (no factory), the terrain exposed as a service every layer uses the same way (heights at points, the DEM texture of a tile, the depth target), not as fields reached into. |
 | Tile sources, loading, caches, feature queries | **Reshape → `tiles`** | One `Pyramid` generic over what a tile holds (wanted, loading, loaded, standing in, retired), used by every layer including roads and the far field; one `Store` with one byte budget; one fetch queue with priorities and cancellation. A "source" is a function from a tile id to bytes (HTTP, or computed, which replaces `addProtocol`). TileJSON, MLT, source classes per type, the event plumbing go. The feature index stays, smaller, as the vector layers' pick. |
 | GeoJSON, image, video, canvas sources | **Delete, with a small replacement** | Video and canvas go. The few in-memory shapes (markers, selection, highlights, region outlines, ferries, the viewshed's image) become an `overlay` layer that tessellates its shapes directly, without cutting them into tiles. |
-| Style, properties, atlases | **Delete → layers in code** | No style document, no expression interpreter, no diffing, no string-keyed properties. Each layer is a module with a typed parameter struct the app's state sets; what an expression did per feature is a function in the layer's decoder (properties in, vertex attributes out), what it did per zoom is a function evaluated each frame into a uniform. Sprites, images, patterns go; the dash atlas stays with the line renderer. `basemap.ts`'s 1,200 lines of style become layer definitions of about the same size. |
+| Style, properties, atlases | **Delete → layers in code** | No style document, no expression interpreter, no diffing, no string-keyed properties. Each layer is a module with a typed parameter struct the app's state sets; what an expression did per feature is a function in the layer's decoder (properties in, vertex attributes out), what it did per zoom is a function evaluated each frame into a uniform. Sprites, images, patterns and the dash atlas go: the line renderer draws dashes in its shader. `basemap.ts`'s 1,200 lines of style become layer definitions of about the same size. |
 | The style-spec package | **Delete** | Colour parsing and interpolation (about 300 lines) are kept as plain functions. |
-| Buckets and tessellation | **Reshape → inside each layer** | Line, fill, extrusion tessellation and earcut stay, each writing a hand-declared vertex layout straight into the buffer that is drawn. The generated struct arrays and the property binders go. Circles go to the dots' renderer. |
+| Buckets and tessellation | **Reshape → inside each layer** | Fill and extrusion tessellation and earcut stay, each writing a hand-declared vertex layout straight into the buffer that is drawn. The generated struct arrays and the property binders go. Lines go to the line renderer (a vertex per point, joins and caps in its shaders: no line bucket), circles to the dots' renderer. |
 | Symbols, glyphs, placement | **Keep the core, reshape the edges → `labels`** | Placement, collision, fades, the cross-tile index and line labels stay. The engine takes label candidates in world coordinates from any layer (so the caps' labels and the landmark names are ordinary labels with a per-label opacity) rather than only from symbol buckets of Mercator tiles. Icons, variable anchors, vertical text and the RTL plugin loader go. Natively, our own shaping and glyph path translated (§9.1). |
 | Render passes, programs, shaders | **Reshape → `frame`** | A fixed list of passes (§5.2) that every layer takes part in through the same interface; each layer owns its shaders. The painter's per-type dispatch, the custom-layer bridge, and the unused programs go. |
 | WebGL wrapper | **Keep on the web, slimmer; not ported** | One small GPU layer used by every layer (today the app's layers bypass it). Natively it is a small layer of our own over Metal, called from Rust (or over wgpu, the fallback, §5.9), with no state cache. |
@@ -216,24 +222,26 @@ module becomes when it serves only this map. The target module is §5.1's.
 ### 3.1 The layers as peers
 
 Every layer implements the same small interface (§5.1): which tiles it wants, how a tile's bytes
-become what it draws, what it paints into the drapes, what it draws in 3D, which labels it offers,
-what it answers to a pick, how many bytes it holds. None is registered as "custom".
+become what it draws, what it paints into the drapes, what it draws in 3D, which lines it hands to
+the line renderer, which labels it offers, what it answers to a pick, how many bytes it holds. None
+is registered as "custom". The line renderer (`lines/`, S8b) is a service like the label engine:
+every line on the map is drawn by it, whatever layer it belongs to.
 
 | Layer | Today | As a peer |
 |---|---|---|
 | **Land: background, elevation tint, hill-shading, trees** | Style layers (`background`, `color-relief`, `hillshade`) over raster-dem sources, with the fork's stored-shading shader; the trees layer is a `color-relief` over its own tiles. | `layers/land`: paints the drapes from the tint, shading and trees tiles. Its parameters (ramp, light, strength) are a struct; the polar cap reads the same struct rather than MapLibre's evaluated paint. |
 | **Water, whitewater, coast shading** | A raster layer with `scenic:mipmap`, a color-relief with `scenic:mask`, fills at `sea` level, two coast workers. | `layers/water`: paints the drapes from coverage tiles (two 8-bit shares coloured in the shader, flat tiles as one shared texel: the audit's a9 and a11), the mask a plain second texture of the same layer. |
 | **Depth (colour, shading, floor, contours)** | A color-relief and a hillshade over tiles a worker composes and hands in through `addProtocol`; the floor through `setTerrainSurface`. | `layers/depth`: a computed tile source of the common pyramid; the floor is a second surface of the terrain service. |
-| **Roads and rail** | A custom layer with its own tile loading, workers, budget, pick grid and a screen-size target each. | `layers/lines`: the same renderer (sprites and quads), its tiles in the common pyramid and budget, its vertices held once (shared with the pick), scenic channels a separate stream bound only for scenic colours (b10), one accumulation target shared. |
-| **Basemap lines** (boundaries, waterways, ferries, outlines, highlights) | MapLibre line layers draped into the terrain's textures. | Stay draped at first, tessellated by `layers/vector`. Drawing them with the roads' renderer (sharp at any tilt, one line code path) is a look change left to the owner (§9.2). |
-| **Contours** | A custom layer drawing what a MapLibre vector source loads, from tiles two workers make. | `layers/contours`: a computed tile source; drawn by the line renderer; its labels offered to the label engine. |
+| **Roads and rail** | A custom layer with its own tile loading, workers, budget, pick grid and a screen-size target each. | `layers/roads`: its tile format, classes, styling and colouring by metric, drawn by the line renderer (`lines/`: today's sprites and quads, made general in S8b); its tiles in the common pyramid and budget, its vertices held once (shared with the pick), scenic channels a separate stream bound only for scenic colours (b10), one accumulation target shared. |
+| **Basemap lines** (boundaries, waterways, area outlines, ferries, highlights, the depth contours) | MapLibre line layers draped into the terrain's textures. | Decoded by `layers/vector` (the depth contours by `layers/depth`) and drawn by the line renderer, sharp at any tilt (§9.1, 11; S12b, S12c). A look change. Nothing that is a line stays draped. |
+| **Contours** | A custom layer with a segment renderer of its own (mitred joins, translucent), drawing what a MapLibre vector source loads, from tiles two workers make. | `layers/contours`: a computed tile source; drawn by the line renderer (its own renderer goes in S8b); its labels offered to the label engine. |
 | **Areas** (parks, heritage, Indigenous lands, special areas) | Fill and line layers. | `layers/vector` fills painted into the drapes. |
 | **Buildings, near** | A `fill-extrusion` layer plus `keepWhole` reaching into the tile manager. | `layers/buildings`: extrusion meshes from the z14 tiles (whole-building tiles are its own rule, not a patch). |
 | **Buildings, far field** | A custom layer with its own tiles, worker and 1 GB cache target, reading scene depth through a fork hook. | The same module's second representation: the hand-over between meshes and field is decided in one place; tiles in the common budget, never finer than the screen samples (a2). |
 | **Dots** (stops, sights, heritage, stations, terminals) | A custom layer for the look plus invisible circle layers for hit-testing and label anchoring. | `layers/dots`: one point renderer for every dot and circle, with its own pick; its names go to the label engine with the dots' eased opacity. |
 | **Place and water names** | Symbol layers over the server's label tiles. | `layers/names`: decodes label tiles into label candidates. |
 | **Polar caps** | A custom layer for the cap's terrain; a 2D canvas for its labels, dots and roads. | `layers/polar`: the cap's terrain mesh; its names, dots and roads are ordinary candidates and geometry of the label engine, the dots and the line renderer, which all work in world coordinates. |
-| **Overlays** (markers, selection, hover, the selected road's profile cursor, the viewshed) | GeoJSON and image sources with style layers. | `layers/overlay`: shapes tessellated directly; the viewshed's image (from `GET /api/viewshed`) painted into the drapes like any ground layer. |
+| **Overlays** (markers, selection, hover, the selected road's profile cursor, the viewshed) | GeoJSON and image sources with style layers. | `layers/overlay`: its lines (selection halos, highlighted drives, region outlines) drawn by the line renderer, its other shapes tessellated directly; the viewshed's image (from `GET /api/viewshed`) painted into the drapes like any ground layer. |
 
 ## 4. What stays true of the product
 
@@ -294,10 +302,13 @@ web/src/
               of passes, the scene's depth, the Layer interface and the list of layers
   labels/     text (shaping, bidirectional runs, glyph ranges, the glyph atlas), candidates,
               placement, collision, fades, the cross-tile index, line labels
+  lines/      the line renderer: every layer's polylines, drawn sharp in 3D (sprites and quads,
+              the projection pass, widths, joins, caps, dashes, casings, levels of detail), and
+              the pick grid over what it drew
   pick/       one query across the layers; the vector tiles' feature index
   layers/     one directory a layer, each with its decoder, its worker entry, its shaders, its
-              typed look and its draw: land/, water/, depth/, lines/ (roads, rail, basemap lines
-              if §9.2 says so), vector/ (fills and draped lines), contours/, buildings/ (near
+              typed look and its draw: land/, water/, depth/, roads/ (roads and rail), vector/
+              (fills, and the basemap's lines handed to lines/), contours/, buildings/ (near
               meshes and the far field), dots/, names/, polar/, overlay/
   app/        state, links, settings profiles, config, the server's API, the map, regions
               and downloads
@@ -317,12 +328,15 @@ run in the same suite). No `web/maplibre`, no `web/test` (fixtures move beside t
 `index.ts` re-exporting a public API: modules import each other directly.
 
 The layer interface, in words: `wants(view)` (tiles of which scheme, at what priority), `decode(id,
-bytes)` (off the main thread, writing final buffers), `prepare(frame)` (offscreen work), `drape(tile,
-target)` (for layers that paint the ground), `draw(pass)` (for layers drawn in 3D), `labels(view)`,
-`pick(point)`, `bytes()` and `trim(level)`. A layer's look is a typed struct set by `app/state`;
-changing a field marks what must be redrawn (a drape, a buffer, nothing). Layers do not know each
-other; what they share (the ground's height, the land's parameters for the polar cap) they read
-from `terrain` or from the state.
+bytes)` (off the main thread, writing final buffers), `prepare(frame)` (offscreen work),
+`drape(tile, target)` (for layers that paint the ground), `draw(pass)` (for layers drawn in 3D),
+`labels(view)`, `pick(point)`, `bytes()` and `trim(level)`. A layer with lines does not draw them:
+it hands the line renderer its polylines (per-vertex attributes in a layout it declares) with their
+look (widths, casing, dash, colour), and the renderer draws them in the scene pass at the layer's
+place in the frame's order and passes a pick on one of them back to the layer. A layer's look is a
+typed struct set by `app/state`; changing a field marks what must be redrawn (a drape, a buffer,
+nothing). Layers do not know each other; what they share (the ground's height, the land's parameters
+for the polar cap) they read from `terrain` or from the state.
 
 ### 5.2 From a tile request to pixels
 
@@ -338,10 +352,11 @@ from `terrain` or from the state.
    buffers obtained from the GPU layer. Nothing is copied to hand it over.
 5. At the next frame's start the tile is committed to its pyramid: the `Store` adds its bytes;
    drapes it touches are marked to be drawn again (paced while the camera moves, as today).
-6. The frame: **prepare** (layers' offscreen work: the roads' projection pass, the dots' heights),
-   **drape** (dirty terrain tiles: land, water, depth, areas, draped lines, in a fixed order, into
+6. The frame: **prepare** (offscreen work: the line renderer's projection pass, the dots'
+   heights), **drape** (dirty terrain tiles: land, water, depth, area fills, in a fixed order, into
    that tile's texture), **depth** (the terrain's depth), **scene** (terrain mesh with its drapes;
-   buildings; the far field against the scene's depth; lines; dots), **labels**, **overlay**,
+   buildings; the far field against the scene's depth; every layer's lines, in the layers' order;
+   dots), **labels**, **overlay**,
    present.
 7. After the frame, off the main thread: label placement for the new view; the store trims to
    its budget.
@@ -402,8 +417,9 @@ block.
 
 ### 5.6 Picking
 
-`pick(point)` asks the layers front to back and returns typed hits: a road or rail line (the
-roads' grid over the drawn vertices), a dot (the dots' own test, as drawn), a building footprint,
+`pick(point)` asks the layers front to back and returns typed hits: a line (the line renderer's
+grid over the drawn vertices, the hit named by the layer that owns the line: a road, a rail line, a
+ferry, a boundary), a dot (the dots' own test, as drawn), a building footprint,
 a vector feature (the tile's feature index), a marker. Readouts under the cursor (elevation,
 depth, region) are queries on `terrain` and the layers, not picks.
 
@@ -433,8 +449,8 @@ surface. Because anchors are world coordinates, a label past 85° is like any ot
 | Drapes | Sizing by footprint, detail, pacing while moving, stand-ins, fingerprints. |
 | Text | Our own shaping and glyph path, translated (§9.1): the glyph-range fetches, the PBF parser, TinySDF, bidirectional text, the Arabic shaping and #1245's cutting of text into units of writing carry over. Drawing those units for CJK and the scripts that need shaping is the browser's text engine's work in the web app, with no code of ours to translate: natively Core Text if it is fairly ergonomic from Rust, otherwise a shaper and fonts of our own (§9.1, 10; N0's probe). |
 | Label placement | Collision, cross-tile continuity, line labels on a curved, tilted ground. |
-| Tessellation | Lines with joins and caps, polygons, extrusions. |
-| The roads' renderer, the far field's march, the dots | The app's own, about 11,000 lines; shaders are rewritten from GLSL in the Metal Shading Language (in WGSL under the fallback, §5.9), and the two transform-feedback passes (the roads' projection, the dots' heights) are redesigned as compute or vertex work. |
+| Tessellation | Polygons and extrusions; the lines' joins and caps, in the line renderer's shaders. |
+| The line renderer, the far field's march, the dots | The app's own, about 11,000 lines; shaders are rewritten from GLSL in the Metal Shading Language (in WGSL under the fallback, §5.9), and the two transform-feedback passes (the line renderer's projection, the dots' heights) are redesigned as compute or vertex work. |
 | The UI | About as much code as today, in SwiftUI. |
 
 ### 5.9 The renderer: Rust calling Metal directly, and the fallback
@@ -493,7 +509,7 @@ What shape 3 binds the project to (the note, §0, §1, §4):
 
 The fallback is a Rust core on wgpu, with raw Metal through `wgpu-hal` where wgpu lacks
 something. Swift and Metal throughout is not a candidate. N0 builds both behind one interface as
-§8.3 proposes and applies its rule.
+§8.3 sets out and applies its rule (accepted 13 Nov, §9.1).
 
 What both candidates share:
 
@@ -632,13 +648,14 @@ The web app is not frozen: features, fixes and the decided removals (#1203, #120
   step does not rebase onto it: it runs the same script on its own tip first, then rebases, and
   only its real changes conflict. Each script therefore takes any tree, before or after, and is
   idempotent. The PM lands a mechanical step when few web branches are open.
-- **Reviewing a mechanical step** is reviewing its script and the script's own check, not the
-  diff: the reviewer runs the script on the base commit and gets the branch's tree exactly; a
-  token comparison of every file before and after (a TypeScript parser's tokens, whitespace and
-  comments aside) differs only in import paths (S3c, S4) or only in the identifiers the rename
-  map names (S3d); the built bundle's size is within a few per cent; the suite's test count and
-  the oracle are unchanged. A hand edit the script cannot make is a separate commit in the same
-  task, reviewed as a diff.
+- **Reviewing a mechanical step** is reviewing its script and the script's own check, not the diff:
+  the reviewer runs the script on the base commit and gets the branch's tree exactly; a token
+  comparison of every file before and after (a TypeScript parser's tokens, whitespace and comments
+  aside) differs only in import paths (S3c, S4) or only in the identifiers the rename map names
+  (S3d); the built bundle's size is within a few per cent; the suite's test count is unchanged; the
+  oracle's exact checks pass and no view differs, or the owner accepts those that do (a mechanical
+  step is of the kind "no pixel should change", §8.1). A hand edit the script cannot make is a separate commit in the same task,
+  reviewed as a diff.
 - **A decided removal goes first where it shrinks a step.** #1209 (sky and fog, which reach into
   `web/maplibre`) and #1204 (the debug tools, `?eval`, `?checks`) before S2; #1210 and #1212
   (which touch the roads' statistics, `catalogue.ts`, `retry.ts`, `tasks.ts`) before S9; #1203
@@ -661,7 +678,8 @@ The web app is not frozen: features, fixes and the decided removals (#1203, #120
 - **The reference set moves only on purpose.** The images are of the map's canvas alone (no
   panels), so work on the user interface does not move them. A feature task that changes how a
   reference view looks records that view again in the same task and says so. A subsuming step
-  never records again to make itself pass, except for the look changes its row in §8.1 names.
+  never records again on its own: a look change the owner has accepted (§7.4) is recorded again on
+  main once the step has merged, and later steps compare with that recording.
 
 ### 7.4 How a step is verified
 
@@ -684,14 +702,14 @@ recast as views in S0. Three things replace it.
   tiles loaded, fades finished, placement final. The same Mac always, because the GPU is part of
   the picture. The app is captured as `vite build` makes it, the bundle that is published, so a
   difference between development and the build (§8.4's class fields) shows.
-- *Responses.* Beside each image, every response the view read (tiles and API answers, by URL)
-  and each tile's ancestors, kept as one archive a view. A small replay server answers from the
-  archive, so a view is drawn from the same bytes after the map data has been rebuilt. A request
-  the archive lacks fails the comparison and is named: it is a bug, or a stated change in what a
-  step loads, in which case that view is recorded again on main first and the step is compared
-  with the new recording. A settled view reads a few hundred tiles: estimated tens of MB an
-  archive, 1 to 2 GB for the set with the images; one file a view, since the NAS takes small files
-  slowly.
+- *Responses.* Beside each image, every response the view read (tiles and API answers, by URL) and
+  each tile's ancestors, kept as one archive a view. A small replay server answers from the archive,
+  so a view is drawn from the same bytes after the map data has been rebuilt. A request the archive
+  lacks fails the comparison (an automated check) and is named: it is a bug, or a stated change in
+  what a step loads, in which case that view is recorded again on main first and the step is
+  compared with the new recording. A settled view reads a few hundred tiles: estimated tens of MB an
+  archive, 1 to 2 GB for the set with the images; one file a view, so that a view is fetched or
+  replaced whole.
 - *Numbers.* Per view, as JSON: the camera's matrices, the tile cover of each scheme, a grid of
   terrain heights, the placed labels with their boxes. They are stated in the map's terms (a
   matrix, a list of tile ids, a height at a longitude and latitude, a text and a rectangle), so
@@ -703,18 +721,54 @@ recast as views in S0. Three things replace it.
   memory at each stop. Frame times are taken in a windowed Chrome at the display's rate with no
   other tabs, in a quiet period on the M4, as the median of three runs; "no worse" means within
   the spread S0 measures between runs.
-- *Tolerance.* Two runs of the same build define it (S0 measures and records it): for images, the
-  share of pixels differing by more than a small step per channel; numbers equal to float
-  precision; labels equal as sets. A step passes when it is within it.
+- *What is automated, and what the owner judges* (§9.1, 13). Exact checks are automated and
+  fail a step: the numbers (matrices, covers, height grids equal to float precision), label sets
+  equal, pick results, tile and response bytes, a request an archive lacks, and an image identical
+  to its reference to the bit. Image comparisons are the owner's: no pixel tolerance passes or
+  fails a step. A view whose capture differs from its reference at all goes to him, with the
+  reference and the capture side by side, a difference image and the measured differences (the
+  share of pixels that differ, the largest difference per channel, where they are), the views with
+  the biggest difference first; the numbers are shown as information, never as the gate. The step
+  is accepted when he accepts its views. A view he rejects means the step is fixed and its views
+  shown to him again.
+- *Whether a capture repeats to the bit.* S0 measures it, per browser and per GPU: are two
+  captures of one build, settled, identical to the bit? If they are, the steps expected to change
+  no pixel reach the owner only when one does (§8.1's kinds). If they are not, every view of every
+  step differs a little, and how that run-to-run noise is treated without a tolerance gate is a
+  question for the owner (§9.2, 2).
+- *The review page* (planned, S0). Each run of the comparison writes a report, an HTML page with
+  its images, into the oracle's folder, and the dev tools app on the mini serves the folder's
+  reports as a page of its own (`/dev/oracle/` on map.brandontsang.net, beside the task board and
+  the dev job dashboard), so the owner can go through them from any device. Each report names its
+  step, commit and board task; its "accept" and "reject" (with a note per view) write his verdict
+  beside the report and post it to the step's board item. A step with an oracle check merges only
+  with an accepted report of the commit being merged. A step's reports are deleted when it has
+  merged; the verdict stays on the board.
+- *Pace.* Each step whose views differ waits, after its agent and its reviewer are done, for the
+  owner's look, and the S steps are a chain (§8.1's "Depends on"), so his reviews are on the plan's
+  critical path. §8.1 says, step by step, which steps should need him and how many: at least 4
+  reviews (S0's and the three look changes), about 15 expected (with the 11 parts that redraw
+  through new code), at most every part of every step, if captures do not repeat to the bit, plus a
+  review again for each rejection. An agent may prepare the next step on a branch while one waits;
+  it starts from main and merges only after (§7.7).
 - *Time.* Estimated 10 to 30 s a capture, so the full set takes most of an hour and runs in the
   background in parts (no foreground command over 10 minutes); the quick set is chosen to take
   under 2 minutes. S0 measures both.
-- *Where it lives.* On the NAS beside the inputs, with a copy on the test Mac's disk (§9.2).
+- *Where it lives* (§9.1, 12). One copy only, in `~/scenic-oracle` on the Mac mini (`m6`), on
+  its own disk: not on the NAS, and no copy on the test Mac. S0 creates it: `views/` (a folder a
+  view: its images, numbers and archive), `tour/`, and `reports/` (the review page's). Agents on
+  the other Macs read and write it over `ssh m6`: a run fetches the files of the views it compares
+  (one `tar` over ssh) into its own scratch folder on the test Mac and deletes them when it ends,
+  and a recording sends a view's files the same way into a staging folder, moved into place whole
+  so a reader never sees half a view. With no second copy, losing the mini's disk loses the
+  reference: it would be recorded again from that day's main, and later steps compared with that.
 - *What it does not cover.* Feel and motion (gesture response, pacing while moving, loading
   order): the owner uses the published app every day, and each step that touches them says so in
-  its report. Views nobody recorded: a bug the set missed adds a view. Safari: each step's agent
-  opens the views its row names in Safari and saves full-size screenshots (driven by
-  `safaridriver` if §9.2's question 6 allows it).
+  its report. Views nobody recorded: a bug the set missed adds a view.
+- *Safari.* The reference is Chrome's; Safari's pictures differ from Chrome's (fonts, the GPU
+  path). Each step's agent captures the views its row names in Safari on the test Mac with
+  `safaridriver` (Safari's remote automation is on there, §9.1, 17), on main and on the step, and
+  they go into the step's report beside Chrome's for the owner.
 
 **2. One unit-test suite.** S1 makes vitest the web app's one runner and adds it to `check.sh`'s
 `web` part and to `publish.sh`'s other tests (`tools/app/other-tests.zsh`): MapLibre's 62,500
@@ -733,12 +787,15 @@ move, change and are deleted with it: a step that deletes a subsystem deletes it
 cases that still describe the map (the transforms', the covers', placement's, the buckets'
 tessellation) and rewrites them against the new module.
 
-**3. A `check.sh` part.** `web` runs the suite, the type check, the formatter's check (from S3c)
-and the build whenever `web/` changes, as today plus those. A new `oracle` part, added by S0, draws a quick subset of the views (S0 picks
-it and measures its time) from their archives and compares images and numbers; it runs when
-`web/src` changes, on the test Mac, and says `NOT RUN` and fails if the archives or a GPU are not
-there, as the remote tests do. Each step's agent runs the full set and the tour and reports the
-result; the reviewer runs it again.
+**3. A `check.sh` part.** `web` runs the suite, the type check, the formatter's check (from S3c) and
+the build whenever `web/` changes, as today plus those. A new `oracle` part, added by S0, draws a
+quick subset of the views (S0 picks it and measures its time) from their archives, which it fetches
+from the mini for the run (the test Mac has no copy). It fails on the exact checks; images identical
+to the bit pass; the images that differ it does not judge: it writes their report to the review page
+and prints its link. It runs when `web/src` changes, on the test Mac, and says `NOT RUN` and fails
+if the mini cannot be reached or a GPU is not there, as the remote tests do. Each step's agent runs
+the full set and the tour the same way, and that run's report is what the owner reviews; the
+reviewer runs the exact checks again and goes through the report before the owner does.
 
 ### 7.5 The order in which subsystems are folded in
 
@@ -793,6 +850,7 @@ Two orders suggest themselves, and neither works alone.
 | Duplicate helpers, one from each side: Mercator and lng/lat (`merc.ts`, `geo/mercator_coordinate.ts`), DOM helpers (`ui/dom.ts`, `util/dom.ts`), worker pools (`workerpool.ts`, `util/worker_pool.ts`), colour parsing (the app's, the style spec's `Color`) | One module each | S5 (helpers), S9b (workers), S13 (colour) |
 | `web/package.json`'s note listing the reaches; 146 lines with casts into internals | Typed imports; no note | S5 |
 | Generated files: `array_types.g.ts`, `*_properties.g.ts` (13), `unicode_properties.g.ts` | Hand-declared vertex layouts in each layer; typed look structs; the Unicode table an ordinary data file of `labels/` | S12, S13 |
+| The roads' renderer (`roads/layer.ts`, `lod.ts`, `persp.ts`, `pick.ts`: `RoadLayer`, `RoadTile`, `RoadStyle`) and the contours' own segment renderer (`contours.ts`) | One line renderer, `lines/`, named for what it draws (no "road" in its module or types); `layers/roads` keeps what is the roads' own | S8b |
 | `.glsl` files turned into modules by `shaders_plugin.ts` | Each layer's shaders as strings in its own module, as the app's layers have them | S12, S13 |
 
 **Types.** Under the app's compiler settings, MapLibre's source as it is has 2,168 errors in 184
@@ -807,7 +865,7 @@ class fields differently (`useDefineForClassFields`: false in MapLibre's, true b
 app's), and under the app's a field redeclared in a subclass would overwrite what the base
 class's constructor set. The last part sets one value for the whole tree and fixes each field it
 changes (a `declare` on a redeclared field); the suite and the oracle on the built bundle are the
-check.
+check (no pixel should change).
 
 **The licence.** MapLibre GL JS is BSD-3-Clause; it asks that source redistributions keep its
 copyright notice, conditions and disclaimer, and that binary ones reproduce them in the
@@ -847,12 +905,12 @@ Nothing else marks provenance: no headers, no folder, no naming.
   before the services are reshaped.
 - **After S9:** the tiles are the map's feel; the owner uses the published app with S9b longest
   before S10 builds on it (§8.4).
-- **After S13:** §7.9's checklist, run and reported. Native work starts only when it holds (N0
-  perhaps earlier, §9.2).
+- **After S13:** §7.9's checklist, run and reported. Native work, N0 first, starts only when it
+  holds (§9.1, 15).
 - **After N0:** the renderer (§5.9): Rust calling Metal directly, or the wgpu fallback, by
   §8.3's rule.
 - **After N2:** the native engine shows land and water on terrain, on a Mac and in the iPad
-  simulator, inside its byte budget, matching the oracle. If the comparisons are not converging,
+  simulator, inside its byte budget, its comparisons with the oracle accepted by the owner. If the comparisons are not converging,
   or the loop is too slow for agents, the choices are the other candidate of §5.9 or a pause;
   what is at stake is N0 to N2, and the web app is complete either way.
 
@@ -887,7 +945,8 @@ looking; S13's report shows each.
   with a reason each (146 lines today).
 - **One of each.** One `Pyramid` and one `Store` hold every layer's tiles (no other cache has a
   budget); one job pool (no other `new Worker`); one pick (no `queryRenderedFeatures`); one label
-  engine (no label drawn by anything else); one camera (no conversion to and from a second
+  engine (no label drawn by anything else); one line renderer (no line drawn or draped by
+  anything else); one camera (no conversion to and from a second
   representation); one module for each helper job (one Mercator and tile-id code, one colour
   type, one set of DOM helpers).
 - **The layout** is §5.1's: those directories and no others under `web/src`.
@@ -902,8 +961,10 @@ looking; S13's report shows each.
   `web/test`.
 - **The line counts.** Counted as in §2.1 over `web/src`: about 64,000 lines of source (§6.3),
   the actual figures written into §6 in place of the estimates.
-- **The oracle.** Every reference view within tolerance but for the named look changes (the
-  caps' labels); the numbers equal; the tour inside the byte budget; the views checked in Safari.
+- **The oracle.** The full set drawn by S13's build and compared with S0's recording (with the
+  recordings of the look changes the owner accepted on the way: the caps' labels, the depth
+  contours and the basemap's lines): the exact checks pass, and the owner has accepted every view
+  that differs; the tour inside the byte budget; the views captured in Safari.
 - **The licence notice** is at `web/public/third-party-licenses.txt` and reachable from the
   credits.
 - **The docs.** `docs/map-engine.md` describes the engine as it is. This document loses §2, §3,
@@ -916,28 +977,48 @@ Each lands alone, with the app working and its checks passing.
 ### 8.1 The subsuming, in the web app
 
 "Verified by" names what is particular to the step; every step also passes `check.sh` (the suite,
-the type check, the build, the oracle's quick set), and its agent runs the oracle's full set and
-the tour, and checks the views it changed in Safari.
+the type check, the build, the oracle's quick set: its exact checks), and its agent runs the
+oracle's full set and the tour and captures the views it changed in Safari. In the table, "the
+numbers equal" is the oracle's automated part; "the views accepted" means the owner has accepted
+the step's report, or that no view differs from its reference (§7.4).
 
 | Step | What | Depends on | Verified by |
 |---|---|---|---|
-| **S0** | **The oracle** (§7.4): the views, their images, response archives and numbers; the tour; the capture hook in the app; the replay server and the compare tool under `tools/check/`; the tolerance, the quick set and their times measured; `check.sh`'s `oracle` part. | #1245 (the script views); #1204 (it deletes the old hooks) | Two runs of one build agree; a view drawn from its archive matches the live capture; the part's `NOT RUN` when the archives are missing. |
+| **S0** | **The oracle** (§7.4): the views, their images, response archives and numbers; the tour; the capture hook in the app; the replay server and the compare tool under `tools/check/`; whether two captures of one build are identical to the bit (per browser, per GPU), the quick set and their times measured; the folder `~/scenic-oracle` on the mini and its reads and writes over ssh; the review page; `check.sh`'s `oracle` part. | #1245 (the script views); #1204 (it deletes the old hooks) | The numbers of two runs of one build equal; a view drawn from its archive against its live capture; the owner goes through the whole reference set once and accepts it (his first use of the review page); the part's `NOT RUN` when the mini cannot be reached. |
 | **S1** | **One test runner, in `check.sh`.** vitest and what MapLibre's unit tests need become development dependencies of `web/package.json`; one `vitest.config.ts` in `web/` runs them where they are, the app's and the build page's tests converted from `node --test`, and `tools/check`'s tests of `web/` modules; MapLibre's tests made to pass as they stand (§7.4); `check.sh`'s `web` part and `tools/app/other-tests.zsh` run the suite. | — (beside S0) | Every test passes; each deleted test named with its reason; the converted tests' count before and after; `check.sh`'s own tests (`tools/dev/test`). |
-| **S2** | **Delete what the map does not use**, in three parts. *(a)* MapLibre's gestures, controls, markers, location hash and locales; the popup becomes the app's own element; pointer events stay. *(b)* Unused sources and formats (video, canvas, MLT, TileJSON), world copies, the RTL plugin loader, the debug draws. *(c)* Unused layer types and shaders (heatmap, sky and atmosphere), patterns, sprites and the image manager, line gradients, icon and text-and-icon symbols, variable anchors, vertical text. Each with its tests. | S0, S1; #1209, #1204 | The oracle unchanged; (a) `tools/check/touch-gestures.mjs` and gestures by hand in Chrome and Safari. |
-| **S3a** | **One package.** MapLibre's `package.json`, lockfile, workspace file, configs and `build/` tooling go (§7.6); the code generators run from `web/`; the render suite, demos and `fetch-upstream-tests.sh` deleted; its stylesheet's needed rules in the app's; the licence file and credits. Files stay in `web/maplibre`. | S2 | `pnpm install --frozen-lockfile` from a clean store; the oracle unchanged; the bundle's size. |
-| **S3b** | **Strict types**, in parts by directory (about four), fixes valid under both settings; the last part makes one strict `tsconfig.json` over source and tests (its `paths` now naming the source, not declarations), settles `useDefineForClassFields`, and stops writing declarations. No behaviour changes. | S3a | Each part: the strict compiler's errors in its directories at zero; the suite; the oracle on the built bundle. |
-| **S3c** | **The move** (§7.3, §7.6), by a script: MapLibre's files into `web/src`'s directories, renamed; where a subsystem is to be dissolved its files wait in a directory named for what they are (`style/`, `buckets/`, `sources/`); relative imports replace the alias and `index.ts`; the formatter added and run over all of `web/src` in its own commit, its check in `check.sh`; the markers' prefix removed; `FORK.md` moved to `docs/map-engine.md` with its paths rewritten; `web/maplibre` gone. | S3b | §7.3's review of a mechanical step: the script re-run, the token comparison, the suite's count, the oracle unchanged, the bundle's size. |
+| **S2** | **Delete what the map does not use**, in three parts. *(a)* MapLibre's gestures, controls, markers, location hash and locales; the popup becomes the app's own element; pointer events stay. *(b)* Unused sources and formats (video, canvas, MLT, TileJSON), world copies, the RTL plugin loader, the debug draws. *(c)* Unused layer types and shaders (heatmap, sky and atmosphere), patterns, sprites and the image manager, line gradients, icon and text-and-icon symbols, variable anchors, vertical text. Each with its tests. | S0, S1; #1209, #1204 | The numbers equal, the views accepted; (a) `tools/check/touch-gestures.mjs` and gestures by hand in Chrome and Safari. |
+| **S3a** | **One package.** MapLibre's `package.json`, lockfile, workspace file, configs and `build/` tooling go (§7.6); the code generators run from `web/`; the render suite, demos and `fetch-upstream-tests.sh` deleted; its stylesheet's needed rules in the app's; the licence file and credits. Files stay in `web/maplibre`. | S2 | `pnpm install --frozen-lockfile` from a clean store; the numbers equal, the views accepted; the bundle's size. |
+| **S3b** | **Strict types**, in parts by directory (about four), fixes valid under both settings; the last part makes one strict `tsconfig.json` over source and tests (its `paths` now naming the source, not declarations), settles `useDefineForClassFields`, and stops writing declarations. No behaviour changes. | S3a | Each part: the strict compiler's errors in its directories at zero; the suite; the oracle on the built bundle (the numbers equal, the views accepted). |
+| **S3c** | **The move** (§7.3, §7.6), by a script: MapLibre's files into `web/src`'s directories, renamed; where a subsystem is to be dissolved its files wait in a directory named for what they are (`style/`, `buckets/`, `sources/`); relative imports replace the alias and `index.ts`; the formatter added and run over all of `web/src` in its own commit, its check in `check.sh`; the markers' prefix removed; `FORK.md` moved to `docs/map-engine.md` with its paths rewritten; `web/maplibre` gone. | S3b | §7.3's review of a mechanical step: the script re-run, the token comparison, the suite's count, the numbers equal and the views accepted, the bundle's size. |
 | **S3d** | **One naming**, by a script with a committed rename map: identifiers to the app's conventions (underscore members, `MLMap`); then by hand, in parts by directory: comments to the app's manner (library API docs, mentions of MapLibre, upstream and the fork); `docs/map-engine.md` rewritten as a description of the engine. The comment parts may run beside S5 onwards, each on directories no open step is editing. | S4 | The rename script's token comparison; the comments parts reviewed as diffs; §7.9's naming greps return nothing outside the directories still to do. |
 | **S4** | **The app's files move into the layout:** `web/src`'s 85 flat files and `roads/`, `ctl/`, `contour/`, `flags/` into §5.1's directories, `web/test` beside the code and the build page's tests into `buildpage/`, by a script. No behaviour changes. | S3c | As S3c. |
-| **S5** | **The patches from outside become the code**, in two parts. *(a)* `covers.ts`'s saved work is the cover function's own; `placement.ts` is the placement's own scheduling; `maptasks.ts` and `terrainstats.ts` read a typed "what is loading" from the tile code; `keepWhole` is the buildings source's rule; the terrain's rise sets a real setter. *(b)* Every cast into internals becomes a typed import or a small method; `web/package.json`'s note goes; the duplicate helpers of §7.6 (Mercator and lng/lat, DOM) become one module each. | S4 | The oracle unchanged; (a) the tour's frame times no worse (`covers.ts` and `placement.ts` exist for speed); (b) the casts left, listed with a reason each. |
-| **S6** | **The camera.** One `Camera` (a pose) and one `View`; the anchored moves of `camera3d.ts` applied directly; one animator for flights and glides; limits in one place. The transform interface, the per-projection helper classes and the conversion back to centre, zoom and pivot go. | S5 | The oracle's matrices equal; the transforms' unit tests carried over; anchored moves keep the ground point under the cursor (unit tests); gestures by hand in both browsers. |
-| **S7** | **The terrain as a service.** One projection (no factory); heights, a tile's DEM texture, the depth target and the surfaces (ground, sea floor, pole) offered through one typed interface that `layers/` use instead of reading fields; the DEM copies and formats of §5.4. | S6 (both reshape the projection's code) | The oracle's height grids equal; the terrain and pole views; memory at the tour's stops. |
-| **S8** | **The frame, the GPU layer, the layer interface.** A fixed list of passes; one `gpu/` used by every layer (the app's `glprog.ts`, `glstate.ts` and MapLibre's wrapper merged; no raw GL state set beside a cache); the Layer interface of §5.1. The app's six custom layers become peers in the frame's list and the custom-layer bridge is deleted; the base layer types, still described by the style, draw through the same interface. Shared and unread targets (§5.4). | S6, S7 | The oracle unchanged in every layer set; frame times in the tour; a lost and restored WebGL context. |
-| **S9** | **The tiles**, in two parts. *(a)* `Pyramid`, `Store` with the one byte budget, one fetch queue with priorities and cancellation, for the base layers' tiles; a source is a function from a tile id to bytes. *(b)* The roads, the far field and the app's seven worker kinds join the pyramid, the budget and one job pool; `addProtocol`, the actor protocol and the class registry go; the budget and each layer's bytes shown in the status readout. | S8; #1210, #1212 | The oracle unchanged once settled; the tour: memory at every stop inside the budget (12 GB held today), frame times and time-to-settled no worse; loading by hand on a slow connection. |
-| **S10** | **The labels.** The engine takes candidates in world coordinates with an optional animated opacity; `layers/names` decodes the label tiles (the symbol layers leave the style); the caps' labels become ordinary candidates and leave the 2D canvas (`polarlabels.ts` goes). **Look change:** the caps' labels collide and fade like the rest (and are drawn as every label is, which settles #1181's softer caps' names in Mobile Safari). | S8, S9 | The oracle's placed labels equal as sets outside the caps; the script views; the polar views recorded again and shown to the owner; labels while moving, by hand. |
-| **S11** | **Pick and the dots.** One `pick` across layers (`queryRenderedFeatures` goes); `layers/dots` is one point renderer with its own pick and offers its names to the labels with the dots' eased opacity; the invisible circle layers, `namefade.ts`, the landmarks' vector-tile encoding (`mvt.ts`'s `encodePoints`) and its `addProtocol` in `overlays.ts` go. The caps' dots and roads are drawn by the dots' and the lines' renderers, and the 2D canvas over the map goes (`polarpoints.ts`). | S10 | Pick unit tests on recorded tiles; the dots views; hover and click on every kind of thing, by hand. |
-| **S12** | **The layers in code**, a part per group, each leaving the style document: *(a)* land (background, tint, hill-shading, trees); *(b)* water and depth (computed tiles; the depth contours no longer encoded as vector tiles, `mvt.ts`'s `encodeLines` and the `addProtocol` of `depth.ts` and `coast.ts` go, its readers move to `tiles/`; the one-value flag and the water shares, each a server format served in both forms, unless #1224 has landed them); *(c)* vector fills, draped lines and `layers/overlay` (the GeoJSON and image sources, `geojson-vt` and `vt-pbf` go); *(d)* near buildings; *(e)* contours (`contour/vtpbf.ts` and the last `addProtocol` go). Each gets a typed look, a decoder writing a hand-declared vertex layout, its shaders as strings; its `setPaintProperty` call sites (73 in all) become assignments to the look. | S9, S11; (b) the server's tests | Each part: its layer set of the oracle unchanged; every control of that layer's panel tried by hand. |
+| **S5** | **The patches from outside become the code**, in two parts. *(a)* `covers.ts`'s saved work is the cover function's own; `placement.ts` is the placement's own scheduling; `maptasks.ts` and `terrainstats.ts` read a typed "what is loading" from the tile code; `keepWhole` is the buildings source's rule; the terrain's rise sets a real setter. *(b)* Every cast into internals becomes a typed import or a small method; `web/package.json`'s note goes; the duplicate helpers of §7.6 (Mercator and lng/lat, DOM) become one module each. | S4 | The numbers equal, the views accepted; (a) the tour's frame times no worse (`covers.ts` and `placement.ts` exist for speed); (b) the casts left, listed with a reason each. |
+| **S6** | **The camera.** One `Camera` (a pose) and one `View`; the anchored moves of `camera3d.ts` applied directly; one animator for flights and glides; limits in one place. The transform interface, the per-projection helper classes and the conversion back to centre, zoom and pivot go. | S5 | The oracle's matrices equal and the views accepted; the transforms' unit tests carried over; anchored moves keep the ground point under the cursor (unit tests); gestures by hand in both browsers. |
+| **S7** | **The terrain as a service.** One projection (no factory); heights, a tile's DEM texture, the depth target and the surfaces (ground, sea floor, pole) offered through one typed interface that `layers/` use instead of reading fields; the DEM copies and formats of §5.4. | S6 (both reshape the projection's code) | The oracle's height grids equal; the terrain and pole views accepted; memory at the tour's stops. |
+| **S8a** | **The frame, the GPU layer, the layer interface.** A fixed list of passes; one `gpu/` used by every layer (the app's `glprog.ts`, `glstate.ts` and MapLibre's wrapper merged; no raw GL state set beside a cache); the Layer interface of §5.1. The app's six custom layers become peers in the frame's list and the custom-layer bridge is deleted; the base layer types, still described by the style, draw through the same interface. Shared and unread targets (§5.4). | S6, S7 | The numbers equal and the views accepted in every layer set; frame times in the tour; a lost and restored WebGL context. |
+| **S8b** | **One line renderer** (§9.1, 11). The roads' renderer becomes the map's general line renderer, `lines/`, before the basemap's lines need it (S12) and the caps' roads (S11). *Its inputs:* polylines with per-vertex attributes from any layer's tiles, in a vertex layout the layer declares (position, the drape height, the attributes its look reads), through the Layer interface (§5.1). *What it does for every line:* widths by zoom, by attribute and with distance (today's perspective widths); the joins and caps the map's lines use (S8b lists them from `basemap.ts`, the contours' mitred joins among them, and translucent lines without darkened joints); dash patterns given by the look (today's unpaved, ferry and railway patterns and the basemap's dash arrays); casings; levels of detail (`lod.ts`'s piece lists); the sprite and quad draws and the projection pass; depth against the terrain and the scene; its draws in the frame's layer order, so a layer's lines sit under or over another's as its place in the list says; the pick grid over what it drew, a hit handed back to the layer that owns the line. *What stays the roads':* `layers/roads` and its tile format and decoder, the classes, the road and rail look (`RoadStyle`'s fields), colouring by metric (the scenic channels, palettes, histogram equalisation), the statistics and the hover text. The contours' own segment renderer goes: contours are drawn by `lines/`. *Naming:* the module is `lines/`, its types are named for lines (`LineRenderer`, a layer's line set and look), and nothing in it says "road". | S8a | The roads and contours views: the numbers equal, the views accepted (redrawn through new code, expected equal); the roads' pick tests on recorded tiles, exact; frame times in the tour no worse; the renderer's unit tests on lines that are not roads (a dashed, cased line with each join and cap: the vertices and pieces it makes). |
+| **S9** | **The tiles**, in two parts. *(a)* `Pyramid`, `Store` with the one byte budget, one fetch queue with priorities and cancellation, for the base layers' tiles; a source is a function from a tile id to bytes. *(b)* The roads, the far field and the app's seven worker kinds join the pyramid, the budget and one job pool; `addProtocol`, the actor protocol and the class registry go; the budget and each layer's bytes shown in the status readout. | S8; #1210, #1212 | The numbers equal and the views accepted once settled; the tour: memory at every stop inside the budget (12 GB held today), frame times and time-to-settled no worse; loading by hand on a slow connection. |
+| **S10** | **The labels.** The engine takes candidates in world coordinates with an optional animated opacity; `layers/names` decodes the label tiles (the symbol layers leave the style); the caps' labels become ordinary candidates and leave the 2D canvas (`polarlabels.ts` goes). **Look change:** the caps' labels collide and fade like the rest (and are drawn as every label is, which settles #1181's softer caps' names in Mobile Safari). | S8, S9 | The oracle's placed labels equal as sets outside the caps; the script views accepted; the polar views shown to the owner as a look change, accepted, then recorded again on main; labels while moving, by hand. |
+| **S11** | **Pick and the dots.** One `pick` across layers (`queryRenderedFeatures` goes); `layers/dots` is one point renderer with its own pick and offers its names to the labels with the dots' eased opacity; the invisible circle layers, `namefade.ts`, the landmarks' vector-tile encoding (`mvt.ts`'s `encodePoints`) and its `addProtocol` in `overlays.ts` go. The caps' dots and roads are drawn by the dots' renderer and the line renderer, and the 2D canvas over the map goes (`polarpoints.ts`). | S10 | Pick unit tests on recorded tiles; the dots views accepted; hover and click on every kind of thing, by hand. |
+| **S12** | **The layers in code**, a part per group, each leaving the style document: *(a)* land (background, tint, hill-shading, trees); *(b)* water and depth (computed tiles; the depth contours no longer encoded as vector tiles but handed to the line renderer, sharp at any tilt: **look change**; `mvt.ts`'s `encodeLines` and the `addProtocol` of `depth.ts` and `coast.ts` go, its readers move to `tiles/`; the one-value flag and the water shares, each a server format served in both forms, unless #1224 has landed them); *(c)* vector fills, the basemap's lines and `layers/overlay` (the GeoJSON and image sources, `geojson-vt` and `vt-pbf` go): the fills stay draped; the lines (boundaries, waterways, area outlines, ferries, the selection's and the drives' highlights, the regions' outlines) are drawn by the line renderer, sharp at any tilt, not draped: **look change**; *(d)* near buildings; *(e)* contours (their loading leaves the style: `contour/vtpbf.ts` and the last `addProtocol` go). MapLibre's line layer type (its bucket, shaders and dash atlas) is deleted by the last of (b), (c) and (e) to land. Each gets a typed look, a decoder writing a hand-declared vertex layout, its shaders as strings; its `setPaintProperty` call sites (73 in all) become assignments to the look. | S9, S11; (b) the server's tests | Each part: its layer set's numbers equal and views accepted, (b) and (c) as look changes, recorded again on main once accepted; every control of that layer's panel tried by hand. |
 | **S13** | **The rest of the machinery, and the count.** With no layer left in it: the style, the expression interpreter (the style-spec dependency; colour parsing and interpolation kept as functions), the generated array and property code and their generators, the `Map` shell and its event bus of string names (a small engine object with typed methods remains), the shader plugin, unused dependencies. §7.9's checklist run; §6 recounted; this document cut down to the native plan. | S12; #1203 | §7.9, line by line. |
+
+**When the owner is needed** (§7.4). Each step part is one of four kinds:
+
+- **The reference set (S0):** he goes through it once and accepts it.
+- **No pixel should change** (14 parts, and S3d's comment parts): S1, S2a, S2b, S2c, S3a, S3b's
+  parts (about four), S3c, S3d's rename, S4, S5a, S5b. He is needed only if a view differs, which
+  is then a bug or a fact to explain; if S0 finds that captures do not repeat to the bit, every
+  one of them reaches him (§9.2, 2).
+- **Redrawn through new code, expected equal** (11 parts): S6, S7, S8a, S8b, S9a, S9b, S11, S12a,
+  S12d, S12e, S13. Small differences are likely, so expect a look at each.
+- **Look change** (3 parts): S10 (the caps' labels), S12b (the depth contours through the line
+  renderer), S12c (the basemap's lines through the line renderer). A look by definition; once
+  accepted, the views are recorded again on main.
+
+So the owner is needed at least 4 times (S0 and the look changes), about 15 times as expected, at
+most once for every part (29, and S3d's comment parts), and once more for each step he rejects
+and sees again.
 
 Estimated lines of source per step (not tests). "Moved" is renamed without change; "deleted" is
 net; "written" is new or reworked lines in what remains. All estimates but S3c's and S4's "moved",
@@ -958,7 +1039,8 @@ good to about a quarter.
 | S5 | | 700 | 400 | 63,900 | 35,300 |
 | S6 | | 3,800 | 2,500 | 60,100 | 35,300 |
 | S7 | | 800 | 600 | 59,300 | 35,300 |
-| S8 | | 2,200 | 2,500 | 57,100 | 35,300 |
+| S8a | | 2,200 | 2,500 | 57,100 | 35,300 |
+| S8b | | | about 1,000 reworked (the renderer's inputs and looks made general; the rest of the roads' and the contours' renderers moved) | 57,100 | 35,300 |
 | S9 | | 4,700 | 4,000 | 52,500 | 35,200 |
 | S10 | | 3,100 | 2,500 | 49,900 | 34,700 |
 | S11 | | 600 | 1,000 | 49,900 | 34,100 |
@@ -1010,11 +1092,13 @@ way, and only what is inside its GPU layer differs.
   release build with debug symbols (`MTL_CAPTURE_ENABLED=1`), opened in Xcode on the M1.
 - **Seeing a change without a window:** `cargo run -p scenic-render -- '<link>' --out view.png`
   draws any view, from the live map server or from an oracle archive (`--recorded`), and with
-  `--compare` writes the difference image and the oracle's numbers side by side. The agent reads
+  `--compare` runs the oracle's exact checks and writes a report for the review page (§7.4): the
+  reference and the native view side by side, the difference image and the measured
+  differences, for the owner to accept. The agent reads
   the full-size PNG, as with the web app's screenshots. The web app is a second reference: any
   view, not only the recorded ones, can be opened in both.
-- **Tests are offline:** they draw from the oracle's archives, never the live server, so a data
-  build cannot fail them. The unit tests are translated with their modules from the web app's
+- **Tests are offline:** they draw from the oracle's archives, fetched from the mini for the run
+  (§7.4), never from the live server, so a data build cannot fail them. The unit tests are translated with their modules from the web app's
   suite.
 - **The app:** `xcodebuild` for the Mac (launched, then `screencapture -l <window>` for a picture)
   and for the iPhone and iPad simulators (`xcrun simctl install`, `launch`, `io booted
@@ -1044,29 +1128,31 @@ way, and only what is inside its GPU layer differs.
     (§9.1: latest OS only), and the part's first line prints the Xcode and runtime versions it
     used.
 - **What stays with the owner:** feel on real devices (N3, N5, N9), installed by Xcode over a
-  cable or by TestFlight (§9.2). He never needs to open Xcode himself. SwiftUI's previews (Xcode's
+  cable, an install that lasts 7 days, until he has joined the Apple Developer Program, which he
+  does once N0 is past (§9.1, 16); TestFlight and installs that last are for after that. He never
+  needs to open Xcode himself. SwiftUI's previews (Xcode's
   live canvas) are not part of the loop: an agent cannot use them.
 
 ### 8.3 Native: translating the finished web app
 
 The source is `web/src` as §7.9 leaves it: each native module is the translation of the directory
-of the same name, with its tests, minus what the platform replaces (§5.8). N steps follow N0 in
-order, except N8, which can run beside N2 to N7 against the server's API. Every step is built and
+of the same name, with its tests, minus what the platform replaces (§5.8). N0 starts only after the last step of §7, when §7.9's checklist holds
+(§9.1, 15); N steps follow N0 in order, except N8, which can run beside N2 to N7 against the server's API. Every step is built and
 checked on the M1 (§8.2).
 
 | Step | What | Checked by |
 |---|---|---|
-| **N0** | The trial that settles §5.9, as proposed by the research note (`.claude/notes/NATIVE-RUST-METAL.md`, §8.2); the definition, the thresholds and the time box are proposals for the owner (§9.2). Everything above the GPU is built once, so the comparison isolates the GPU layer and the shading language. **Built once, shared** (Rust crates, tested on the M4): the slice's `geo`, `camera` (the view from a link, the globe-to-flat blend), `tiles/cover`, `terrain` (the mesh from recorded DEM tiles), the oracle reader and the image comparison, and a thin Swift shell (a Mac window with trackpad pan and zoom, pinch on the iPad) over a C ABI generated with cbindgen that hands Rust a `CAMetalLayer`. **Built twice**, behind one small engine-side interface `Gpu` (buffers, textures, pipelines, a frame with the fixed passes): **(M)** on `objc2-metal`, shaders in MSL; **(W)** on wgpu, shaders in WGSL, raw Metal through `wgpu-hal` only where needed. **Each draws** the terrain mesh, one drape with the elevation tint and hill-shading, and the roads' sprite draw with its compute pass in place of transform feedback, for three reference views (the Alps pitched, a city, the globe): offscreen under cargo's test runner, in the Mac window, in the iPad simulator. **Feature probes in each**, a small test each, pass or fail with notes: (1) HDR: a 16-bit float layer with the extended-range flag and an extended linear colour space, a test frame with values up to 4.0, the headroom read from `NSScreen` or `UIScreen`, seen brighter than white on a Mac's XDR display and on the owner's iPhone; (2) memoryless depth in the scene pass; (3) one copy of geometry (b1): a decode writes vertices into `mmap`ed memory wrapped as a no-copy buffer, and the pick reads the same bytes (W: made with `objc2-metal`, imported into wgpu); (4) a tile-shader pass and MetalFX upscaling of the scene (W: through the hal); (5) three frames in flight, a buffer retired while in use, checked by validation; (6) native text, built once beside the shared part (§9.1, 10): a few clusters of Devanagari (`क्षि`, `र्दि`), Thai (`น้ำ`, `ที่`) and CJK (`東京`) shaped and rasterised through `objc2-core-text` (Core Text's glyphs and positions for a run, each glyph drawn into a bitmap) into the slice's glyph atlas as SDF glyphs, compared by eye with the browser's drawing, and a report of how calling Core Text from Rust went (lines, `unsafe` blocks, Core Foundation ownership, what was awkward). **Time box:** two weeks for the shared part, one week per GPU layer, each layer built by a different agent from the same interface. | Measured and written up for the owner, per variant: (a) correctness against the oracle: matrices and covers to float precision, heights against its grids, images within the tolerance; the two variants should agree, and a difference is a bug in one GPU layer; (b) the loop: the clean build, the build and test after a one-line Rust change and after a one-line shader change, `cargo test` with offscreen images on the M4, the app build on the M1; (c) size: lines of the GPU layer, of shaders, of `unsafe` blocks, and of glue to raw Metal (W's hal code counts against W); (d) safety: three seeded bugs (a wrong binding index, a buffer too short for a draw, a buffer reused while in flight): which variant reports each, how (an error, a validation assertion, nothing), and how long the agent took to find it; (e) frame time (the median of a windowed run over the three views) and memory (the slice's bytes at the globe, the resident footprint) on the M1, the M4 and one of the owner's devices, with an Instruments Metal System Trace of each; (f) tools: a GPU frame capture of each opened in Xcode, and a shader debugged on one draw; (g) the agents' log of every cycle lost to tooling. **The rule** (proposed, honouring the owner's preference): choose (M) unless a feature probe fails under (M) and works under (W); or (M) misses a seeded bug that (W) catches and the validation-on runs miss too; or (M)'s loop or its lost cycles are clearly worse, more than about 1.5 times (W)'s on the same tasks; or (M)'s GPU layer for the slice passes about 5,000 lines. (W) wins a tie only on safety. |
+| **N0** | The trial that settles §5.9, as the research note proposed it (`.claude/notes/NATIVE-RUST-METAL.md`, §8.2); the definition, the time box and the rule accepted by the owner on 13 Nov, the line threshold raised (§9.1, 14). Everything above the GPU is built once, so the comparison isolates the GPU layer and the shading language. **Built once, shared** (Rust crates, tested on the M4): the slice's `geo`, `camera` (the view from a link, the globe-to-flat blend), `tiles/cover`, `terrain` (the mesh from recorded DEM tiles), the oracle reader and the image comparison, and a thin Swift shell (a Mac window with trackpad pan and zoom, pinch on the iPad) over a C ABI generated with cbindgen that hands Rust a `CAMetalLayer`. **Built twice**, behind one small engine-side interface `Gpu` (buffers, textures, pipelines, a frame with the fixed passes): **(M)** on `objc2-metal`, shaders in MSL; **(W)** on wgpu, shaders in WGSL, raw Metal through `wgpu-hal` only where needed. **Each draws** the terrain mesh, one drape with the elevation tint and hill-shading, and the line renderer's sprite draw (of roads tiles) with its compute pass in place of transform feedback, for three reference views (the Alps pitched, a city, the globe): offscreen under cargo's test runner, in the Mac window, in the iPad simulator. **Feature probes in each**, a small test each, pass or fail with notes: (1) HDR: a 16-bit float layer with the extended-range flag and an extended linear colour space, a test frame with values up to 4.0, the headroom read from `NSScreen` or `UIScreen`, seen brighter than white on a Mac's XDR display and on the owner's iPhone (a 7-day install from Xcode); (2) memoryless depth in the scene pass; (3) one copy of geometry (b1): a decode writes vertices into `mmap`ed memory wrapped as a no-copy buffer, and the pick reads the same bytes (W: made with `objc2-metal`, imported into wgpu); (4) a tile-shader pass and MetalFX upscaling of the scene (W: through the hal); (5) three frames in flight, a buffer retired while in use, checked by validation; (6) native text, built once beside the shared part (§9.1, 10): a few clusters of Devanagari (`क्षि`, `र्दि`), Thai (`น้ำ`, `ที่`) and CJK (`東京`) shaped and rasterised through `objc2-core-text` (Core Text's glyphs and positions for a run, each glyph drawn into a bitmap) into the slice's glyph atlas as SDF glyphs, compared by eye with the browser's drawing, and a report of how calling Core Text from Rust went (lines, `unsafe` blocks, Core Foundation ownership, what was awkward). **Time box:** two weeks for the shared part, one week per GPU layer, each layer built by a different agent from the same interface. | Measured and written up for the owner, per variant: (a) correctness against the oracle: matrices and covers to float precision and heights against its grids (automated); each variant's images in a report for the owner beside the oracle's (§7.4), and the two variants' images compared with each other: they should agree, and a difference is a bug in one GPU layer; (b) the loop: the clean build, the build and test after a one-line Rust change and after a one-line shader change, `cargo test` with offscreen images on the M4, the app build on the M1; (c) size: lines of the GPU layer, of shaders, of `unsafe` blocks, and of glue to raw Metal (W's hal code counts against W); (d) safety: three seeded bugs (a wrong binding index, a buffer too short for a draw, a buffer reused while in flight): which variant reports each, how (an error, a validation assertion, nothing), and how long the agent took to find it; (e) frame time (the median of a windowed run over the three views) and memory (the slice's bytes at the globe, the resident footprint) on the M1, the M4 and one of the owner's devices, with an Instruments Metal System Trace of each; (f) tools: a GPU frame capture of each opened in Xcode, and a shader debugged on one draw; (g) the agents' log of every cycle lost to tooling. **The rule** (accepted 13 Nov, honouring the owner's preference): choose (M) unless a feature probe fails under (M) and works under (W); or (M) misses a seeded bug that (W) catches and the validation-on runs miss too; or (M)'s loop or its lost cycles are clearly worse, more than about 1.5 times (W)'s on the same tasks; or (M)'s GPU layer for the slice passes about 15,000 lines. (W) wins a tie only on safety. |
 | **N1** | `geo`, `camera`, `tiles/cover`: the maths, with the limits and anchored moves. | The oracle's numbers (matrices, project and unproject, covers); the web suite's tests of these modules, translated. |
-| **N2** | `tiles` (pyramid, store, fetch, jobs: threads sharing memory in place of workers), `terrain`, `gpu` and `frame`; `layers/land` and `layers/water`. The budget set from the system and cut on its warning. | Heights against the oracle's grids; `scenic-render --compare` on the land-and-water views; the tour replayed within the byte budget; the same views in the Mac app and the iPad simulator. **The checkpoint (§7.8).** |
+| **N2** | `tiles` (pyramid, store, fetch, jobs: threads sharing memory in place of workers), `terrain`, `gpu` and `frame`; `layers/land` and `layers/water`. The budget set from the system and cut on its warning. | Heights against the oracle's grids; the land-and-water views (`scenic-render --compare`) accepted by the owner; the tour replayed within the byte budget; the same views in the Mac app and the iPad simulator. **The checkpoint (§7.8).** |
 | **N3** | `input` on the Mac and touch (system gesture recognizers in place of the web's classifiers); the app shell: the server's catalogue, the shared settings profiles read. | Anchored moves keep the ground point under the cursor (unit tests). Simulator: interface tests of pinch, rotate and pan. The owner: gestures on a Mac, an iPad and an iPhone. |
-| **N4** | `layers/lines` (roads, rail) with `pick`; then `layers/vector` and `layers/overlay`. | The roads views compared; pick tests on recorded tiles; frame times at the globe and in a city from the tour. |
+| **N4** | `lines/`, the one line renderer, with its pick, and `layers/roads` (roads, rail); then `layers/vector` (fills, and the basemap's lines through `lines/`) and `layers/overlay`. | The roads views and the basemap's lines accepted by the owner; pick tests on recorded tiles; frame times at the globe and in a city from the tour. |
 | **N5** | `labels` and `layers/names`; `layers/dots` with landmark names. The text path: our own shaping and glyphs translated (§9.1), and for CJK and the scripts that need shaping Core Text or a shaper of our own, as N0's probe settles (§9.1, 10). | The oracle's placed labels compared as sets (the same labels shown, boxes within a tolerance; exactly, if the server's glyphs are kept); the views in several scripts. The owner: labels while moving. |
-| **N6** | `layers/buildings`: near meshes, then the far field. | The city views at several zooms and tilts; the hand-over zoom; memory at the globe in the tour. |
-| **N7** | `layers/depth`, ferries, the viewshed; `layers/contours`, `layers/polar` and the 3D floor (kept, §9.1). | Their views compared; the polar tests' numbers. |
+| **N6** | `layers/buildings`: near meshes, then the far field. | The city views at several zooms and tilts, accepted by the owner; the hand-over zoom; memory at the globe in the tour. |
+| **N7** | `layers/depth`, ferries, the viewshed; `layers/contours`, `layers/polar` and the 3D floor (kept, §9.1). | Their views accepted by the owner; the polar tests' numbers. |
 | **N8** | The app: panels, colour scales, lists, search, the selected road's elevation profile, hover readouts, popups, credits (with the licence text), settings profiles shared with the web app (one schema on the server; pick, save, default), and region downloads kept on the device (its store and how the server hands packs to a device need a design of their own first, §9.2). Can run beside N2 to N7. | Unit tests of the state and controllers; a profile saved in one app read by the other. Simulator and Mac app: screenshots of each panel; interface tests of the main flows. The owner: by hand. |
-| **N9** | Memory under pressure, performance, the three platforms' fit and finish, on the latest major OS release only. | The tour within the budget on each device class (the simulator for the budget's logic, the owner's devices for the real limits); frame-time targets the owner sets. The owner: on his devices. |
-| **N10** | The switch: the web map app and its tools deleted; the server's web-only routes with them. | The owner's decision. |
+| **N9** | Memory under pressure, performance, the three platforms' fit and finish, on the latest major OS release only. Its long use on the owner's devices waits for the Apple Developer Program (TestFlight, installs that last; §9.1, 16). | The tour within the budget on each device class (the simulator for the budget's logic, the owner's devices for the real limits); frame-time targets the owner sets. The owner: on his devices. |
+| **N10** | The switch: the web map app and its tools deleted; the server's web-only routes with them. Waits for the Apple Developer Program: the owner's iPhone and iPad need installs that last. | The owner's decision. |
 
 ### 8.4 Risks
 
@@ -1077,8 +1163,8 @@ checked on the M1 (§8.2).
   compare sets, not pixels, and keep the placement algorithm's structure.
 - **The style document's long tail (S12).** About 60 layers, 73 `setPaintProperty` call sites and
   about 40 expression operators carry many small rules (a filter, a zoom stop). Each part of S12
-  lists the rules of its layers from `basemap.ts` before rewriting them, and the oracle's layer
-  sets are the check that none was dropped.
+  lists the rules of its layers from `basemap.ts` before rewriting them, and the owner's look at the oracle's
+  layer sets is the check that none was dropped.
 - **The moves and open branches (S3c, S3d, S4).** A move landing under an open feature branch
   costs that branch a re-run of the script on its tip and a rebase. The scripts, the rename map
   and the PM's timing keep it small (§7.3).
@@ -1090,8 +1176,8 @@ checked on the M1 (§8.2).
 - **Written twice.** §7.2's cost. It is bounded by keeping §5's module boundaries the same on
   both sides, so the second pass is module-for-module.
 - **Shader ports (N4, N6).** The far field's march and the roads' sprite coverage are long shaders
-  tuned by measurement; transform feedback has no direct equivalent. N0 includes the roads' sprite
-  draw for this reason.
+  tuned by measurement; transform feedback has no direct equivalent. N0 includes the line
+  renderer's sprite draw for this reason.
 - **Our own GPU layer (N0, N2).** Calling Metal directly, nothing checks our calls as wgpu would:
   a buffer released while a frame in flight reads it, or a wrong binding, is undefined behaviour
   that may show only on some devices. The rules live in the one GPU layer (§5.3's frames in
@@ -1116,12 +1202,16 @@ checked on the M1 (§8.2).
   keeps changing: a feature added to the web app after S13 is added to the native plan's list.
 - **The M1 as the only native Mac.** Every native check waits on one machine that is also a Mac
   someone works on. The mini is the fallback, by a setting (§8.2).
+- **The owner's reviews on the critical path.** Every step whose views differ waits for his look
+  (§7.4; §8.1 counts them), and the S steps are a chain: the subsuming goes at the pace of his
+  reviews. The review page keeps each one short (identical views not shown, the biggest
+  differences first).
 - **Supervision.** The owner does not read Swift. What he sees of each native step is the
   comparison images, the numbers and the app on his devices; a step's report always includes them.
 
 ## 9. Decisions
 
-### 9.1 Decided (the owner, 12 Nov)
+### 9.1 Decided (the owner: 1 to 10 on 12 Nov 2026, 11 to 17 on 13 Nov 2026)
 
 1. **The order:** subsume in the web app first, fully and structurally, then port (§7).
 2. **Shaping first:** #1245 lands before the subsuming starts.
@@ -1150,30 +1240,38 @@ checked on the M1 (§8.2).
     for those scripts, but only if calling it from Rust (`objc2-core-text`) is at least fairly
     ergonomic; otherwise a shaper of our own (HarfRust) with fonts we ship for each script and
     glyphs rasterised by glyph id. N0's probe (6) finds out (§8.3); the figures for the second
-    way are in §9.2, 7.
+    way are in §9.2, 1.
+11. **Basemap lines are drawn by the line renderer** (13 Nov 2026), sharp at any tilt, not draped.
+    Since it then draws sharp lines of every sort, the roads' renderer is made the map's one
+    general line renderer, named for lines, in the web app before the port (S8b); the basemap's
+    lines (S12c), the depth contours (S12b), the contours and the caps' roads go through it, and
+    nothing that is a line stays draped. The native app has the one line renderer too (N4).
+12. **The oracle: one copy only** (13 Nov 2026), in a folder on the Mac mini, `~/scenic-oracle`:
+    not on the NAS, no copy on the test Mac. Agents on other Macs read and write it over
+    `ssh m6`; a check fetches what it compares for the run (§7.4).
+13. **The owner is the arbiter of the oracle's image comparisons** (13 Nov 2026). No step passes
+    or fails by a pixel tolerance: a step's comparison is gathered for him (the views side by
+    side, a difference image, the measured differences, on the review page) and the step is
+    accepted when he accepts its views; the numbers are information, never the gate. Exact
+    checks that are not image comparisons (numbers, tile bytes, picks, label sets), and a capture
+    identical to its reference to the bit, stay automated (§7.4).
+14. **N0 as proposed** (13 Nov 2026): its definition, its time box (two weeks for the shared
+    part, one week per GPU layer) and its rule (direct Metal kept unless its loop or lost cycles
+    exceed about 1.5 times wgpu's), except the line threshold: direct Metal's GPU layer for the
+    slice may reach about 15,000 lines before that counts against it (§8.3).
+15. **N0 starts only after all the subsuming steps** (13 Nov 2026), when §7.9's checklist holds,
+    not beside the last S steps.
+16. **The Apple Developer Program later** (13 Nov 2026): the owner joins once N0 is past. Until
+    then, the Mac app, the simulators and 7-day installs from Xcode; what needs the programme
+    (TestFlight, installs on the iPhone and iPad that last) waits for it (§8.2, N9, N10).
+17. **Safari on the test Mac** (13 Nov 2026): remote automation is on on the M4; agents capture
+    Safari's views there with `safaridriver` (§7.4).
 
 ### 9.2 Open
 
 Each can be answered in a sentence.
 
-1. **Basemap lines:** stay draped (as now), or drawn by the roads' renderer, sharp at any tilt? A
-   look change; it can be tried in S12c without committing.
-2. **Where the oracle lives:** on the NAS, as an inputs-like folder with its own check and a copy
-   on the test Mac (proposed; the archives and images are too large for the repo)?
-3. **N0 as proposed (§8.3):** accept its definition (the shared part built once, both GPU
-   layers built for the same slice, each by a different agent), its time box (two weeks for the
-   shared part, one week per GPU layer) and its rule's thresholds (direct Metal kept unless its
-   loop or lost cycles exceed about 1.5 times wgpu's, or its GPU layer passes about 5,000 lines
-   for the slice), or change any of them?
-4. **N0 beside the last S steps:** may it start once S9 has landed (it needs the oracle and the
-   finished camera, terrain and tiles), or only after §7.9 as planned?
-5. **Apple Developer Program** (paid, yearly), needed for TestFlight and for installs on the
-   owner's iPhone and iPad that last more than 7 days: join, or the Mac app, the simulators and
-   week-long installs from Xcode only?
-6. **Safari on the test Mac:** may Safari's remote automation (Develop menu, "Allow Remote
-   Automation") be turned on on the M4, so agents capture the oracle's views in Safari with
-   `safaridriver`? Otherwise each step's Safari check is the agent's screenshots taken by hand.
-7. **Native text after N0's probe:** the owner's rule (§9.1, 10) chooses Core Text for the scripts
+1. **Native text after N0's probe:** the owner's rule (§9.1, 10) chooses Core Text for the scripts
    the browser draws (CJK, the Indic scripts, Thai, Lao, Tibetan, Khmer, Myanmar, Mongolian) if
    calling it from Rust is at least fairly ergonomic; is the probe's report (§8.3, N0's (6))
    ergonomic enough? If not, the other way is a shaper of our own: HarfRust (the maintained Rust
@@ -1183,7 +1281,12 @@ Each can be answered in a sentence.
    444 KB (179 KB gzipped) and 117 KB of JavaScript, 25 ms to start, 0.1 ms a label, about 25 MB
    of memory in Node; Noto fonts for sixteen scripts 664 KB as WOFF2 at one weight (the map uses
    three), CJK not counted. The Rust options are listed in the research note
-   (`.claude/notes/NATIVE-RUST-METAL.md`, §7).
+   (`.claude/notes/NATIVE-RUST-METAL.md`, §7). Waits for the probe.
+2. **Run-to-run noise, if S0 finds that two captures of one build are not identical to the bit:**
+   how is it to be treated, given that no simple tolerance gates a step? Proposed, for the owner
+   to decide: he reviews the noise once at S0, and accepts a per-view noise mask recorded from
+   repeated captures of the unchanged build, inside which a difference is shown as noise rather
+   than sent to him.
 
 Region downloads on the device need a design (what is stored, how the server hands a region's
 packs to a device, how they are kept current): a task of its own, planned before N8, not a
