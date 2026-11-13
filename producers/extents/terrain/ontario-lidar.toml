@@ -5,7 +5,7 @@ licence_url = "https://www.ontario.ca/page/open-government-licence-ontario"
 source = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation"
 theme = "terrain"
 availability = "open"
-notes = "The catalogues of the province's two lidar bare-earth image services, an item per 1 km tile. The Ontario Digital Terrain Model (Lidar-Derived): by project (`Project`), each tile's cell as stated (`Resolution_m`, 0.5 m or 1 m) and its acquisition's last year (`EndYear`); its `VerticalAccuracyClass` (5, 10, 15) is a class the service doesn't define, so it isn't read. The Forest Resources Inventory's single-photon lidar DTM (FRI_DTM_SPL, leaf-on, flown 2018 to 2025): its tiles' cell (`LowPS`, 0.5 m); its items state no year (a tile's name holds one, run into other digits)."
+notes = "The catalogues of the province's elevation image services, an item per 1 km tile: the two lidar bare-earth services, their two lidar surface models (the Ontario Digital Surface Model (Lidar-Derived) and FRI_DSM_SPL, from the same surveys), and the two image-matched ones (the Ontario Digital Surface Model (Imagery-Derived), 0.5 m, \"based on a pixel-correlation process using aerial photography\" of the province's photography projects (SCOOP 2018 …), and the older Ontario Digital Elevation Model (Imagery-Derived), 2 m, \"a generalized representation of both surface and ground features\": a surface model too). The Ontario Digital Terrain Model (Lidar-Derived): by project (`Project`), each tile's cell as stated (`Resolution_m`, 0.5 m or 1 m) and its acquisition's last year (`EndYear`); its `VerticalAccuracyClass` (5, 10, 15) is a class the service doesn't define, so it isn't read; the surface model's tiles state the same fields. The Forest Resources Inventory's single-photon lidar DTM (FRI_DTM_SPL, leaf-on, flown 2018 to 2025): its tiles' cell (`LowPS`, 0.5 m); its items state no year (a tile's name holds one, run into other digits); its surface model's alike. The image-matched models: by project, each tile's cell (`Resolution_m`) and its photography's year (`Year`); their `VerticalAccuracy` is empty."
 
 [[piece]]
 id = "dtm"
@@ -32,3 +32,60 @@ page = 1000
 [piece.metrics]
 surface = "ground"
 spacing_m = { field = "LowPS" }
+
+[[piece]]
+id = "dsm"
+label = "Ontario Digital Surface Model (Lidar-Derived)"
+method = "arcgis"
+class = "index"
+url = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/Ontario_DSM_LidarDerived/ImageServer"
+where = "Category = 1"
+page = 1000
+by = ["Project"]
+name = "Project"
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "Resolution_m" }
+year = { field = "EndYear", date = "year" }
+
+[[piece]]
+id = "fri-spl-dsm"
+label = "Forest Resources Inventory single-photon lidar DSM"
+method = "arcgis"
+class = "index"
+url = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/FRI_DSM_SPL/ImageServer"
+where = "Category = 1"
+page = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "LowPS" }
+
+[[piece]]
+id = "dsm-imagery"
+label = "Ontario Digital Surface Model (Imagery-Derived)"
+method = "arcgis"
+class = "index"
+url = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/Ontario_DSM_ImageryDerived/ImageServer"
+where = "Category = 1"
+page = 1000
+by = ["Project"]
+name = "Project"
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "Resolution_m" }
+year = { field = "Year", date = "year" }
+
+[[piece]]
+id = "dem-imagery"
+label = "Ontario Digital Elevation Model (Imagery-Derived)"
+method = "arcgis"
+class = "index"
+url = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/Ontario_DEM_ImageryDerived/ImageServer"
+where = "Category = 1"
+page = 1000
+by = ["Project"]
+name = "Project"
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "Resolution_m" }
+year = { field = "Year", date = "year" }
