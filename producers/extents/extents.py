@@ -12,7 +12,7 @@ A reader per kind of service, none per source:
   wfs      a WFS feature type (`url`, `type`; `crs` where the answer doesn't name its own), as
            GeoJSON or GML (`format`; `version`)
   file     an index file fetched whole (`url`): GeoJSON, GML or a GeoPackage (`layer`), or a zip
-           of one of them or of a shapefile (`member`)
+           of one of them or of a shapefile (`member`; `encoding`, its text's, else its .cpg's or UTF-8)
   listing  a listing of georeferenced names (`url`, or several in turn: `urls`): an S3 bucket
            (`prefix`), a page of links, a text file, a zip's members (its central directory by
            range request) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
@@ -20,7 +20,8 @@ A reader per kind of service, none per source:
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
            `crs`; or the group `ref`, a national grid's lettered reference (`grid`: "osgb",
-           "irish"), its square and side read from it
+           "irish"), its square and side read from it; or, for a nested sheet nomenclature,
+           `digits` (each a group's steps) and `origin`
   raster   each file's own header and an overview, by range request (`urls`; `list` and `pattern`,
            a listing's names as `listing` reads one; or `stac` and `asset`, a STAC collection's
            items' files): its bounds and where it has data, at the coarsest overview, or with
@@ -384,7 +385,13 @@ def shapefile_features(z, stem, b):
     prj = next((n for n in z.namelist() if n.lower() == (stem + ".prj").lower()), None)
     if prj and "crs" not in b:
         b["crs"] = z.read(prj).decode("utf-8", "replace")
-    r = shapefile.Reader(**opened)
+    # (Its text's encoding: the declaration's `encoding`, else the one its .cpg names, else UTF-8.)
+    cpg = next((n for n in z.namelist() if n.lower() == (stem + ".cpg").lower()), None)
+    encoding = b.get("encoding") or (z.read(cpg).decode("ascii", "replace").strip() if cpg else "utf-8")
+    if encoding.isdigit():
+        # (A code page by its number alone, as Esri writes it: "1252".)
+        encoding = "cp" + encoding
+    r = shapefile.Reader(**opened, encoding=encoding)
     names = [f[0] for f in r.fields[1:]]
     def shape(k):
         sh = r.shape(k)
@@ -658,6 +665,8 @@ def read_listing(net, b, _tol):
         size = [size, size]
     corner = b.get("corner", "sw")
     geographic = pyproj.CRS.from_user_input(b.get("crs", "OGC:CRS84")).is_geographic
+    digits = b.get("digits") or []
+    where = {"x", "y", "ew", "ns", "ref"} | {d["group"] for d in digits}
     seen, sides = set(), set()
     for name in listed_names(net, b):
         m = pat.search(name)
@@ -668,7 +677,7 @@ def read_listing(net, b, _tol):
             x, y, w = grid_ref(g["ref"], b["grid"])
             h = w
         else:
-            x, y = float(g["x"]) * unit, float(g["y"]) * unit
+            x, y = sheet_corner(g, b) if digits else (float(g["x"]) * unit, float(g["y"]) * unit)
             w, h = size
             if g.get("ew") in ("W", "w"):
                 x = -x
@@ -676,7 +685,7 @@ def read_listing(net, b, _tol):
                 y = -y
             if corner == "nw":
                 y -= h
-        props = {k: v for k, v in g.items() if k not in ("x", "y", "ew", "ns", "ref")}
+        props = {k: v for k, v in g.items() if k not in where}
         # (A name listed twice is one tile; a tile's two files of different readings, a survey and
         # its successor, are two.)
         key = (x, y, w, tuple(sorted(props.items())))
@@ -687,6 +696,21 @@ def read_listing(net, b, _tol):
         yield sg.box(x, y, x + w, y + h), props
     # (The extent is good to a tile, the largest read: its grain.)
     b["grain_m"] = round(max(sides | ({max(size)} if size else set()), default=0) * (M_PER_DEG if geographic else 1), 1)
+
+
+def sheet_corner(g, b):
+    """A sheet's corner from its name in a nested nomenclature (`digits`): `origin`, plus for each
+    digit group its number from `base` (1) times its steps, `x` and `y`; a digit naming a column and
+    a row at once says how many columns, `cols` (a quadrant's 1 and 2 its southern row, 3 and 4 its
+    northern: `cols = 2`)."""
+    x, y = (float(v) for v in b.get("origin", [0, 0]))
+    for d in b["digits"]:
+        k = int(g[d["group"]]) - int(d.get("base", 1))
+        cols = int(d.get("cols", 0))
+        col, row = (k % cols, k // cols) if cols else (k, k)
+        x += float(d.get("x", 0)) * col
+        y += float(d.get("y", 0)) * row
+    return x, y
 
 
 def raster_files(net, b):

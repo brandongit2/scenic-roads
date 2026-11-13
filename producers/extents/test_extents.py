@@ -353,6 +353,22 @@ class Listing(unittest.TestCase):
         with self.assertRaises(SystemExit):
             list(extents.listed_names(net, {"url": "u", "list": "xlsx", "sheet": "other"}))
 
+    def test_a_nested_nomenclatures_sheets(self):
+        # Latvia's 1 km sheets (LKS-92 TM), as their files' own headers place them: a 100 km row and
+        # column, a 50 km and a 25 km quadrant (1 and 2 the southern row), a 5 km and a 1 km row
+        # and column from the south-west.
+        net = FakeNet({"u": b"las/2434/2434-15-15.las\r\nlas/5412/5412-11-42.las\r\nlas/3123/3123-41-41.las\r\n"})
+        b = {"url": "u", "list": "lines", "pattern": r"/(?P<a>\d)(?P<b>\d)(?P<c>\d)(?P<d>\d)-(?P<e>\d)(?P<f>\d)-(?P<g>\d)(?P<h>\d)\.las$",
+             "size": 1000, "origin": [200000, 0],
+             "digits": [{"group": "a", "y": 100000}, {"group": "b", "x": 100000, "base": 0},
+                        {"group": "c", "x": 50000, "y": 50000, "cols": 2}, {"group": "d", "x": 25000, "y": 25000, "cols": 2},
+                        {"group": "e", "y": 5000}, {"group": "f", "x": 5000}, {"group": "g", "y": 1000}, {"group": "h", "x": 1000}]}
+        got = [(g.bounds, p) for g, p in extents.read_listing(net, b, 0)]
+        self.assertEqual([x for x, _ in got], [(649000.0, 175000.0, 650000.0, 176000.0), (626000.0, 403000.0, 627000.0, 404000.0),
+                                               (350000.0, 243000.0, 351000.0, 244000.0)])
+        # The digits are the sheet's place, not its properties.
+        self.assertEqual(got[0][1], {})
+
 
 class ArcGIS(unittest.TestCase):
     LAYER = "https://h/rest/services/X/ImageServer"
@@ -545,6 +561,30 @@ class IndexFiles(unittest.TestCase):
         self.assertEqual(got, [((0.0, 0.0, 2.0, 2.0), {"y": 1})])
         with self.assertRaises(SystemExit):
             list(extents.read_file(FakeNet({"u": zipped("a/tiles.geojson", gj)}), {"url": "u", "member": "other"}, 0))
+
+    def test_a_shapefiles_text_in_its_encoding(self):
+        import io
+        import zipfile
+
+        import shapefile
+        shp, shx, dbf = io.BytesIO(), io.BytesIO(), io.BytesIO()
+        with shapefile.Writer(shp=shp, shx=shx, dbf=dbf, shapeType=shapefile.POLYGON, encoding="cp1250") as w:
+            w.field("LOT_nazov", "C", 40)
+            w.poly([[[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]])
+            w.record("Banská Štiavnica")
+
+        def body(cpg=None):
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w") as z:
+                for ext, part in (("shp", shp), ("shx", shx), ("dbf", dbf)):
+                    z.writestr("lots." + ext, part.getvalue())
+                if cpg:
+                    z.writestr("lots.cpg", cpg)
+            return out.getvalue()
+        # (No .cpg: the declaration says it, as Slovakia's lots need; Esri's "1250" a code page.)
+        for b, zip_body in (({"url": "u", "encoding": "cp1250"}, body()), ({"url": "u"}, body("1250"))):
+            got = [p for _, p in extents.read_file(FakeNet({"u": zip_body}), b, 0)]
+            self.assertEqual(got, [{"LOT_nazov": "Banská Štiavnica"}])
 
     def test_gml_gives_polygons_surfaces_and_their_properties(self):
         b = {"url": "u"}
