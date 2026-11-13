@@ -1443,26 +1443,31 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   }
   function renderChips() {
     if (!S.loaded.items) { $("chips").replaceChildren(); return; }
-    const base = M.tasks.filter((t) => inMain(t) && matchQ(t));
+    // Each count is of the tasks the text search matches, whatever the chips: what that chip alone
+    // would list (no chip narrows the counts, its own or another's). [n, a]: n not archived (the main
+    // list), a archived (a filtered list's Archived section, shown "+a").
+    const base = M.tasks.filter(matchQ);
+    const tally = (ts) => ts.reduce((c, t) => (c[isArch(t) ? 1 : 0]++, c), [0, 0]);
+    const nums = ([n, a]) => [h("span", { class: "n" }, String(n)), a ? h("span", { class: "n", title: `and ${a} archived, listed apart` }, `+${a}`) : null];
     const box = $("chips");
     const out = [];
     for (const f of FILTERS) {
-      const n = base.filter(f.test).length;
+      const c = tally(base.filter(f.test));
       const on = S.filters.has(f.key);
-      out.push(h("button", { class: "chip" + (n || on ? "" : " zero"), type: "button", "data-chip": f.key, "aria-pressed": String(on), title: `Tasks: ${f.label.toLowerCase()} (with other filters on: a task that fits any of them)` },
-        h("span", { class: "sw", style: `background:${f.sw}`, "aria-hidden": "true" }), f.label, h("span", { class: "n" }, String(n))));
+      out.push(h("button", { class: "chip" + (c[0] || c[1] || on ? "" : " zero"), type: "button", "data-chip": f.key, "aria-pressed": String(on), title: `Tasks: ${f.label.toLowerCase()} (with other filters on: a task that fits any of them)` },
+        h("span", { class: "sw", style: `background:${f.sw}`, "aria-hidden": "true" }), f.label, nums(c)));
     }
     const counts = new Map();
-    for (const t of base) { const w = String(t.assigned ?? ""); if (w) counts.set(w, (counts.get(w) || 0) + 1); }
-    if (S.assigned != null && !counts.has(S.assigned)) counts.set(S.assigned, 0);
-    const assignees = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    for (const t of base) { const w = String(t.assigned ?? ""); if (w) (counts.get(w) || counts.set(w, [0, 0]).get(w))[isArch(t) ? 1 : 0]++; }
+    if (S.assigned != null && !counts.has(S.assigned)) counts.set(S.assigned, [0, 0]);
+    const assignees = [...counts].sort((a, b) => b[1][0] - a[1][0] || b[1][1] - a[1][1] || a[0].localeCompare(b[0]));
     if (assignees.length) out.push(h("span", { class: "sep", "aria-hidden": "true" }));
     if (assignees.length <= 4) {
-      for (const [w, n] of assignees) {
-        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, h("span", { class: "cl" }, w), h("span", { class: "n" }, String(n))));
+      for (const [w, c] of assignees) {
+        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, h("span", { class: "cl" }, w), nums(c)));
       }
     } else {
-      const sel = h("select", { "aria-label": "Who tasks are assigned to", "data-chip": "assigned" }, h("option", { value: "" }, "Anyone"), assignees.map(([w, n]) => h("option", { value: w, selected: S.assigned === w }, `${w} (${n})`)));
+      const sel = h("select", { "aria-label": "Who tasks are assigned to", "data-chip": "assigned" }, h("option", { value: "" }, "Anyone"), assignees.map(([w, [n, a]]) => h("option", { value: w, selected: S.assigned === w }, `${w} (${n}${a ? ` + ${a} archived` : ""})`)));
       out.push(h("label", { class: "chip", "aria-pressed": String(S.assigned != null) }, "Assigned to:", sel));
     }
     const na = M.order.filter((it) => it.archived).length;
