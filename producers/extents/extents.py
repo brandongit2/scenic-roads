@@ -17,7 +17,8 @@ A reader per kind of service, none per source:
            text file (`list` = "s3", "links", "lines"); `pattern`, a regular expression with the
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
-           `crs`
+           `crs`; or the group `ref`, a national grid's lettered reference (`grid`: "osgb",
+           "irish"), its square and side read from it
   raster   each file's own header and an overview, by range request (`urls`; `list` and `pattern`,
            a listing's names as `listing` reads one; or `stac` and `asset`, a STAC collection's
            items' files): its bounds and where it has data, at the coarsest overview, or with
@@ -572,30 +573,62 @@ def listed_names(net, b):
         sys.exit(f"unknown list {kind!r}")
 
 
+def grid_ref(ref, grid):
+    """A national grid's lettered reference: its square's south-west corner and side, in the
+    grid's metres. `grid` "osgb": the British National Grid's (EPSG:27700) two letters, its 500 km
+    and 100 km squares; "irish": the Irish Grid's (EPSG:29903) one, its 100 km square. Then
+    digits, the eastings' half first (NS16: 10 km, NG2004: 1 km), and a quadrant (NS16NE: 5 km)."""
+    m = re.fullmatch(r"([A-HJ-Z]{1,2})(\d*)(NE|NW|SE|SW)?", ref.upper())
+    if not m or len(m.group(1)) != {"osgb": 2, "irish": 1}[grid] or len(m.group(2)) % 2:
+        sys.exit(f"{ref!r} isn't a {grid} grid reference")
+    letters, digits, quad = m.groups()
+    # (A 5 × 5 grid of letters, A at the top left, I left out.)
+    cells = [ord(c) - 65 - (c > "I") for c in letters]
+    x, y = ((cells[0] % 5 - 2) * 500_000, (3 - cells[0] // 5) * 500_000) if grid == "osgb" else (0, 0)
+    x, y = x + cells[-1] % 5 * 100_000, y + (4 - cells[-1] // 5) * 100_000
+    k = len(digits) // 2
+    side = 10 ** (5 - k)
+    if k:
+        x, y = x + int(digits[:k]) * side, y + int(digits[k:]) * side
+    if quad:
+        side //= 2
+        x, y = x + side * (quad[1] == "E"), y + side * (quad[0] == "N")
+    return x, y, side
+
+
 def read_listing(net, b, _tol):
     pat = re.compile(b["pattern"])
     unit = float(b.get("unit", 1))
-    size = b["size"] if isinstance(b["size"], list) else [b["size"], b["size"]]
+    size = b.get("size")
+    if size is not None and not isinstance(size, list):
+        size = [size, size]
     corner = b.get("corner", "sw")
     geographic = pyproj.CRS.from_user_input(b.get("crs", "OGC:CRS84")).is_geographic
-    b["grain_m"] = round(max(size) * (M_PER_DEG if geographic else 1), 1)
-    seen = set()
+    seen, sides = set(), set()
     for name in listed_names(net, b):
         m = pat.search(name)
         if not m:
             continue
         g = m.groupdict()
-        x, y = float(g["x"]) * unit, float(g["y"]) * unit
-        if g.get("ew") in ("W", "w"):
-            x = -x
-        if g.get("ns") in ("S", "s"):
-            y = -y
-        if corner == "nw":
-            y -= size[1]
-        if (x, y) in seen:
+        if "ref" in g:
+            x, y, w = grid_ref(g["ref"], b["grid"])
+            h = w
+        else:
+            x, y = float(g["x"]) * unit, float(g["y"]) * unit
+            w, h = size
+            if g.get("ew") in ("W", "w"):
+                x = -x
+            if g.get("ns") in ("S", "s"):
+                y = -y
+            if corner == "nw":
+                y -= h
+        if (x, y, w) in seen:
             continue
-        seen.add((x, y))
-        yield sg.box(x, y, x + size[0], y + size[1]), {k: v for k, v in g.items() if k not in ("x", "y", "ew", "ns")}
+        seen.add((x, y, w))
+        sides.add(max(w, h))
+        yield sg.box(x, y, x + w, y + h), {k: v for k, v in g.items() if k not in ("x", "y", "ew", "ns", "ref")}
+    # (The extent is good to a tile, the largest read: its grain.)
+    b["grain_m"] = round(max(sides | ({max(size)} if size else set()), default=0) * (M_PER_DEG if geographic else 1), 1)
 
 
 def raster_files(net, b):

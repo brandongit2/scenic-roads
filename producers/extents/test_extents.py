@@ -299,6 +299,18 @@ class Listing(unittest.TestCase):
         b = {"url": "u", "list": "lines", "pattern": r"_(?P<x>\d{4})_(?P<y>\d{4})_", "unit": 1000, "size": 1000, "corner": "nw"}
         self.assertEqual([g.bounds for g, _ in extents.read_listing(net, b, 0)], [(371000.0, 6388000.0, 372000.0, 6389000.0)])
 
+    def test_lettered_grid_references_give_their_squares(self):
+        # Orkney's 10 km HY20, Ayrshire's 5 km NS16NE quadrant, Skye's 1 km NG2004 (the British
+        # National Grid); Dublin's 1 km O1234 (the Irish Grid).
+        net = FakeNet({"u": b"HY20_1M_DTM.tif NS16NE_50CM_DTM.tif NG2004_50cm_DTM.tif readme"})
+        b = {"url": "u", "list": "lines", "pattern": r"^(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_", "grid": "osgb", "crs": "EPSG:27700"}
+        self.assertEqual([g.bounds for g, _ in extents.read_listing(net, b, 0)],
+                         [(320000, 1000000, 330000, 1010000), (215000, 665000, 220000, 670000), (120000, 804000, 121000, 805000)])
+        self.assertEqual(b["grain_m"], 10000)
+        self.assertEqual(extents.grid_ref("O1234", "irish"), (312000, 234000, 1000))
+        with self.assertRaises(SystemExit):
+            extents.grid_ref("NS123", "osgb")
+
 
 class ArcGIS(unittest.TestCase):
     LAYER = "https://h/rest/services/X/ImageServer"
