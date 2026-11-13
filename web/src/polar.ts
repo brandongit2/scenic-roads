@@ -137,7 +137,7 @@ export type PolarTile = {
 export const terrarium = (b: ArrayLike<number>, i: number) => b[i] * 256 + b[i + 1] + b[i + 2] / 256 - 32768;
 
 /** A tile's image as RGBA bytes, exactly as stored (no colour management, no premultiplying). */
-async function decode(blob: Blob): Promise<Uint8ClampedArray> {
+export async function decode(blob: Blob): Promise<Uint8ClampedArray> {
   const bmp = await createImageBitmap(blob, { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
   const c = new OffscreenCanvas(bmp.width, bmp.height);
   const g = c.getContext('2d', { willReadFrequently: true })!;

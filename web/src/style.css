@@ -608,6 +608,26 @@ dialog.credits details.flags a { color: var(--text); }
 #layers .tree-chips .lg { display: flex; align-items: center; gap: 5px; }
 #layers .tree-chips i { width: 14px; height: 6px; border-radius: 2px; }
 #layers .tree-note { padding: 2px 0 4px 22px; font-size: 10.5px; line-height: 1.4; }
+/* Data available (ui/available.ts): the layers (one shown), the legend's swatches, the click's panel. */
+#layers .av-body.off { opacity: 0.4; }
+#layers .av-layers label.tog { grid-template-columns: 14px 1fr; padding: 3px 6px; }
+#layers .av-layers input[type='radio'] { accent-color: var(--accent); width: 12px; height: 12px; margin: 0; }
+#layers .av-layers .av-primary span { color: var(--text); font-weight: 500; }
+#layers .av-theme { text-transform: capitalize; margin-top: 4px; font-size: 10.5px; }
+#layers .av-wait { padding: 4px 0; font-size: 11px; }
+#layers .av-legend { margin-top: 6px; }
+#layers .av-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 4px 8px; font-size: 10.5px; color: var(--muted); }
+#layers .av-swatches .lg { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+#layers .av-swatches i { flex: none; width: 16px; height: 8px; border-radius: 2px; }
+#layers .av-caption { font-size: 10px; line-height: 1.4; margin-top: 4px; }
+.av-pop { min-width: 230px; }
+.av-pop .av-count { font-size: 10.5px; margin: 2px 0 4px; }
+.av-pop .av-piece { border-top: 1px solid var(--line); padding: 6px 0 5px; }
+.av-pop .av-piece.painted { border-left: 2px solid var(--accent); margin-left: -12px; padding-left: 10px; }
+.av-pop .av-head { display: flex; justify-content: space-between; gap: 8px; color: #fff; }
+.av-pop .sub { margin: 1px 0 3px; }
+.av-pop .av-mark { color: var(--accent); font-size: 10px; margin-bottom: 2px; }
+.av-pop .links { margin-top: 3px; }
 #layers .bld-chips { flex-wrap: wrap; gap: 3px 10px; }
 #layers [hidden] { display: none !important; }
 .picks-meta .show-map { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); cursor: pointer; }

@@ -17,6 +17,7 @@ import { ColourPick, RangeFilter, Slider, pct, type SliderOpts } from './control
 import { TreeSection } from './trees';
 import { DepthSection } from './depth';
 import { BuildingSection } from './buildings';
+import { AvailableSection } from './available';
 import { toggleAllStops } from './stops';
 import { LabelStyleSection } from './labelstyle';
 import { presets, railPresets } from '../presets';
@@ -71,6 +72,10 @@ export class LayersCard {
   private depthSection!: HTMLElement;
   /** Their section: hidden until the catalogue has the layer (showBuildings). */
   private buildingsSection: HTMLElement;
+  /** The data available layers (ui/available.ts); their section hidden until the catalogue lists
+   * a theme (showAvailable). */
+  readonly available: AvailableSection;
+  private availableSection!: HTMLElement;
   private railSection: Node[];
   private rail!: HTMLInputElement;
   private pointOutline!: HTMLInputElement;
@@ -205,6 +210,7 @@ export class LayersCard {
     this.trees = new TreeSection(this.store);
     this.buildings = new BuildingSection(this.store);
     this.depth = new DepthSection(this.store);
+    this.available = new AvailableSection(this.store);
     // Passenger rail: the layer and its service groups (styling: top-left panel).
     this.rail = cb((v) => this.store.set({ rail: { ...this.store.s.rail, on: v } }));
     const railGroups = h('div', { class: 'grp' });
@@ -829,6 +835,7 @@ export class LayersCard {
       this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
       (this.depthSection = this.section('depth', 'Depth', this.depth.on, ...this.depth.nodes)),
       (this.buildingsSection = this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes)),
+      (this.availableSection = this.section('available', 'Data available', this.available.on, ...this.available.nodes)),
       this.section('map', 'Map', null,
         tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
         this.land.el,
@@ -860,6 +867,7 @@ export class LayersCard {
     );
     this.showBuildings(false);
     this.showDepth(false);
+    this.showAvailable(false);
     this.sync(store.s);
   }
 
@@ -871,6 +879,11 @@ export class LayersCard {
   /** The Depth section shown, or not: only once the catalogue has the layers. */
   showDepth(on: boolean) {
     this.depthSection.hidden = !on;
+  }
+
+  /** The Data available section shown, or not: only once the catalogue lists a theme. */
+  showAvailable(on: boolean) {
+    this.availableSection.hidden = !on;
   }
 
   /** The Buildings section shown, or not: only once the catalogue has the layer. */
@@ -1005,6 +1018,7 @@ export class LayersCard {
     this.trees.sync();
     this.depth.sync();
     this.buildings.sync();
+    this.available.sync();
     queueMicrotask(() => {
       for (const t of this.root.querySelectorAll<HTMLInputElement & { syncOff?: () => void }>('input.switch')) t.syncOff?.();
     });

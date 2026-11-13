@@ -44,6 +44,7 @@ import { FrameLoop } from './ctl/frame';
 import { Buildings } from './ctl/buildings';
 import { RoadsRail } from './ctl/roads';
 import { Hover } from './ctl/hover';
+import { Available } from './ctl/available';
 import { Lists } from './ctl/lists';
 import { Marks, point } from './ctl/marks';
 import { TerrainTint } from './ctl/tint';
@@ -336,6 +337,10 @@ async function main() {
     return [c.lng, c.lat];
   });
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
+  // The data available layers (ctl/available.ts): over the hill-shading, under the map's lines and
+  // labels; their section once the catalogue lists a theme.
+  const available = new Available(map, store, layers.available, 'waterway');
+  available.onShown = (on) => layers.showAvailable(on);
   // Regions (Layers → Regions): the regions the map is built for, and their outlines on the map.
   const regionLayers = new RegionLayers(map);
   regionLayers.labelsShown = () => labelLayerShown(store.s.labelLooks, 'regions-label');
@@ -461,7 +466,7 @@ async function main() {
 
   // Hover and clicks on the map, and list items hovered (ctl/hover.ts).
   const hover = new Hover(map, store, {
-    strip, overlays, ferries, rd, viewshed, regionLayers, regions, marks,
+    strip, overlays, ferries, rd, viewshed, available, regionLayers, regions, marks,
     depth: () => depth,
     driving: () => !!driving,
     moving: () => moving,
@@ -982,6 +987,7 @@ async function main() {
     }
     if (ch.has('ferry')) ferryCard.sync();
     if (ch.has('trees') && styleReady) applyTrees(map, s.trees);
+    if (ch.has('available') && styleReady) available.apply();
     if (ch.has('depth') && styleReady) {
       depth.apply(s.depth);
       if (floorWanted(s) !== floorShown && !ch.has('terrain')) {
@@ -1227,8 +1233,10 @@ async function main() {
     const polar = new PolarCaps(map, { land: () => store.s.land, water: () => (store.s.layers.water ? store.s.water.colour : null) }, contours.id);
     // Their labels, landmarks and roads past 85.05°, over the map (their files' versions follow the catalogue).
     const polarPoints = new PolarPoints(map, () => store.s.labelDensity);
+    available.setPolar(polar);
     w.on(() => {
       polar.setCatalogue(w.status?.layers);
+      available.setCatalogue(w.status?.layers);
       if (!map.getLayer(polarPoints.layer.id)) map.addLayer(polarPoints.layer);
       reopen();
     });

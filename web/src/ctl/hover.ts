@@ -7,6 +7,7 @@ import { getRoadWays, getWay, peekWay, roadWays } from '../api';
 import { buildingAt, hiddenByBuilding, setHovered as setBuildingHover, summarise as buildingSummary, type Ray } from '../buildings';
 import * as cam3d from '../camera3d';
 import type { Depth } from '../depth';
+import type { Available } from './available';
 import { loadDetail, peekDetail, refKey } from '../details';
 import type { Ferries } from '../ferries';
 import { AREA_LAYERS, POINT_LAYERS, summariseFeature, withDetails, type FeatureSummary, type Overlays } from '../overlays';
@@ -35,6 +36,8 @@ export interface HoverParts {
   /** The depth (made later in main.ts). */
   depth: () => Depth;
   viewshed: ViewshedTool;
+  /** The data available layers: while on, a click not on a point or a ferry shows the data there. */
+  available: Available;
   regionLayers: RegionLayers;
   regions: RegionsPanel;
   marks: Marks;
@@ -245,21 +248,30 @@ export class Hover {
     }
   }
 
-  /** A click on the map: the viewshed's eye placed, a landmark's or ferry's popup, a World
-   * Heritage line, the nearest road or rail line selected, else an area's popup. */
+  /** A click on the map: the viewshed's eye placed, a landmark's or ferry's popup; while the data
+   * available layers are on, the data there (a layer of every place: roads and areas wait for it to
+   * be off); else a World Heritage line, the nearest road or rail line selected, or an area's popup. */
   click(e: maplibregl.MapMouseEvent) {
-    const { overlays, ferries, viewshed, rd } = this.p;
+    const { overlays, ferries, viewshed, rd, available } = this.p;
     if (hudOff()) return;
     if (viewshed.active) {
       viewshed.run([e.lngLat.lng, e.lngLat.lat]);
       return;
     }
-    if (overlays.click(e.point, POINT_LAYERS)) return;
+    if (overlays.click(e.point, POINT_LAYERS)) {
+      available.closePopup();
+      return;
+    }
     if (ferries.click(e.point, e.lngLat)) {
       overlays.closePopup();
+      available.closePopup();
       return;
     }
     ferries.closePopup();
+    if (available.click(e.lngLat)) {
+      overlays.closePopup();
+      return;
+    }
     const hr = rd.roads.pick(e.point.x, e.point.y);
     const hl = this.store.s.rail.on ? rd.rails.pick(e.point.x, e.point.y) : null;
     const hv = hr && hl ? (hl.px <= hr.px ? hl : hr) : hr ?? hl;

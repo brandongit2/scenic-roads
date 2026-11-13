@@ -402,6 +402,14 @@
     },
     "heritage": true
   },
+  "available": {
+    "on": false,
+    "theme": "terrain",
+    "layer": "score",
+    "set": "best",
+    "avail": "open",
+    "opacity": 0.85
+  },
   "ferry": {
     "on": true,
     "groups": [

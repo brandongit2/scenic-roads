@@ -8,6 +8,7 @@ import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from '.
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
 import { DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
+import { cleanState as cleanAvailable, fromField as availableOfField, toField as availableField, type AvailableState } from './available';
 import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
 import { railPresets } from './presets';
 import { MODES, NCOMP, isScenic, modeDef, type Mode } from './scenic';
@@ -533,6 +534,8 @@ export interface AppState {
   depth: DepthState;
   /** 3D buildings (Layers → Buildings). */
   buildings: BuildingState;
+  /** The data available layers (Layers → Data available; available.ts). */
+  available: AvailableState;
   surface: { paved: boolean; unpaved: boolean };
   /** Toll-free and toll roads shown (OSM toll=yes). */
   toll: { free: boolean; toll: boolean };
@@ -891,6 +894,7 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   p.set('tc', tc(s.trees));
+  p.set('av', availableField(s.available));
   // (Fields 2 and 4 are empty: unused.)
   const dp = (d: DepthState) => [d.on ? 1 : 0, '', d.scale, '', +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
     d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2), d.floor ? 1 : 0].join(',');
@@ -1169,6 +1173,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       maskColour: /^[0-9a-f]{6}$/i.test(tcv[9]) ? `#${tcv[9]}` : t.maskColour,
     };
   }
+  s.available = availableOfField(p.get('av'), s.available);
   const dpv = p.get('dp')?.split(',');
   if (dpv && dpv.length >= 18) {
     const d = s.depth;
@@ -1448,6 +1453,7 @@ export function fromSaved(o: unknown, base: AppState): AppState {
   if (!HEX.test(s.land)) s.land = base.land;
   if (s.depth.scale !== 'linear' && s.depth.scale !== 'log') s.depth.scale = base.depth.scale;
   s.depth.colours = cleanDepthColours(s.depth.colours, base.depth.colours);
+  s.available = cleanAvailable(s.available, base.available);
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = base.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the base has).
   const sfv = (rest.stopFilters ?? {}) as Record<string, Partial<StopFilter>>;

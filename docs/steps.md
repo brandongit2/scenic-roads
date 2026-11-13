@@ -1003,9 +1003,9 @@ while the server is away from the NAS).
 The layers that colour the map by the best data any declared source has for each place, from the
 source extents (docs/inputs.md §6.11): for a theme (`terrain` first; `bathymetry` and `buildings`
 later), a **score** layer, the primary one, and a layer per metric. **Built** (task #1347): the
-step `available`, its tiles, and the server's score, maxima, tiles and click. **Planned:** the
-same layers from only the data built into the map (the set `built`, task #1349, with
-`piece.dataset`: extents from the build's own data, below), and the app's layers (task #1348). The
+step `available`, its tiles, and the server's score, maxima, tiles and click; the app's layers
+(task #1348, below). **Planned:** the same layers from only the data built into the map (the set
+`built`, task #1349, with `piece.dataset`: extents from the build's own data, below). The
 map's regions play no part in the first set; in the built-in set they will enter only as the
 build's own cut of where a dataset is used (its `regions`, §6.8), which is what the map has built
 in.
@@ -1149,13 +1149,33 @@ weights as declared, each layer's legend, and the sources with their pieces coun
 class (those of class `unknown` named here, as they're drawn nowhere). Away from the NAS a tile
 partly downloaded is cut to the downloads as every layer's (its pixels outside hold no piece).
 
-**In the app** (planned, task #1348). A group "Data available" in the layers panel, a section per
-theme: the set (best available anywhere / built into the map), the layer (Score, then the theme's
-metrics), the availability switch ("only data that downloads freely"), an opacity. The settings are
-a profile's, as every layer's are: their values when a profile lacks them come from
-`web/default-profile.json` alone (task #1199: no defaults in the code; the switch on, the group
-off), and the native app reads the same profile schema. The legend and the formula are read from
-`/api/available/<theme>`. A click, while a layer of the group is on, opens a panel listing the
-pieces there, best first. In the code the layer is a raster source and layer and two requests;
-nothing of it is MapLibre's but the raster layer itself, and in the native port it is a ground layer
-painted into the drapes (docs/native-port.md, Land).
+**In the app** (task #1348). A section "Data available" in the layers panel, shown once the
+catalogue lists a theme (`available-<theme>`), its switch the group's: each theme's layers as
+`/api/available/<theme>` lists them, the score's first under its label (score.toml's: "Best data"),
+one shown at a time; the set (`best` now; its control appears once a theme lists two: `built`,
+task #1349, is one more id in `sets`); the availability switch (Open data | All data); the
+opacity (85 % by default: the classes stay apart over the dark land); and the legend of the layer
+shown, by its `legend`: classes as a swatch each, finest first, the score's split from its own
+colour to its `shaded` one with a caption naming `shaded_by`'s metrics; words a swatch each; a ramp
+as a gradient with its stops' labels in the metric's unit; then a line saying that zoomed out a
+pixel shows the best data anywhere under it. Nothing in the app is written per metric: labels,
+units, legends and colours are the server's, so a new metric or palette needs no app change. The
+description is read again at each new version of the theme (meta's `available-<theme>`), and the
+tiles' URLs carry that version. The settings (`available`: on, theme, layer, set, avail, opacity)
+are a profile's, as every layer's: their values when a profile lacks them come from
+`web/default-profile.json` alone (task #1199; the group off, open data only), and a link carries
+them as `av=`. The layer is a raster source and layer (`available`) over the hill-shading and
+under the map's lines and labels, its tiles overzoomed past the theme's finest zoom, draped with the
+3D terrain; past 85.05° the polar caps (polarglobe.ts) draw the pole's tiles (z0–3) over their
+ground as an overlay, a cap's finer tiles taking their part of the overlay's z3 tile (only where a
+pole has a cap: the south today). A click while the group is on, when it hits no landmark or ferry,
+opens a panel of the pieces there (`/api/available/<theme>/<set>`), best first: each source's name,
+its piece's, its score, the metrics it states (with their units, and a class as published), its
+availability and extent class in plain words, its licence and a link to the source; the piece the
+layer shown paints is marked (the server's `Theme::best` again: the best score, or the best value of
+the metric). Roads and areas aren't picked while the group is on. In the code: `web/src/available.ts`
+(the catalogue's themes, the description read, the legends, the URLs, the click's rows, the link
+field: no MapLibre, tested by `web/test/available.test.ts`), `ctl/available.ts` (the controller),
+`ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only part that is
+MapLibre's (the raster layer); in the native port it is a ground layer painted into the drapes
+(docs/native-port.md, Land).

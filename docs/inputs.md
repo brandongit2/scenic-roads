@@ -1836,9 +1836,9 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 table at this section's end (`producers/extents/`), and the unit `extents` that checks them
 (crate::inputs::extents, the checks below; task #1346); North America's sources (task #1350); the
 step `available` that draws the pieces' tiles, and the server's score, layers and click
-(docs/steps.md §14; task #1347). Planned: Europe's, Asia's and the rest of the world's sources
-(task #1350's later runs), `piece.dataset` (extents from the build's own data; task #1349) and the
-app's layers (task #1348). Task #1334.
+(docs/steps.md §14; task #1347); the app's layers (task #1348). Planned: Europe's, Asia's and the
+rest of the world's sources (task #1350's later runs) and `piece.dataset` (extents from the build's
+own data; task #1349). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:

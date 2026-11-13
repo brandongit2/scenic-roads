@@ -3,13 +3,14 @@
 // come from /tiles/polar-terrain|polar-slope/<pole>/z/x/y at the layers' versions (their packs' where
 // the catalogue gives packs: api.ts packUrl); a new version asks for every tile again. The cap
 // follows the map's hillshade layer, the terrain's 3D and exaggeration, the land and water colours
-// and the tints by itself (polarGlobeLayer reads them from the map each frame).
+// and the tints by itself (polarGlobeLayer reads them from the map each frame); a colour overlay
+// (the data available layers: availablemap.ts) is drawn over it as the overlay asks (setOverlay).
 
 import type { Map as MlMap } from 'maplibre-gl';
 import { packUrl, packVersion, version } from './api';
 import { hostFor } from './hosts';
 import { polarLayerName, type Pole, type TileKind } from './polar';
-import { polarGlobeLayer, premultiplied, type Rgba } from './polarglobe';
+import { polarGlobeLayer, premultiplied, type CapOverlay, type Rgba } from './polarglobe';
 
 type CatalogueLayer = { maxzoom?: number; version?: string | number };
 
@@ -25,6 +26,8 @@ export class PolarCaps {
   private caps = new Map<Pole, { layer: ReturnType<typeof polarGlobeLayer>; v: string; maxZoom: number }>();
   private layers: Record<string, unknown> = {};
   private colour = new Map<string, Rgba>();
+  /** The overlay over each pole's cap (none: null). */
+  private overlay: (pole: Pole) => CapOverlay | null = () => null;
 
   constructor(
     private map: MlMap,
@@ -48,6 +51,12 @@ export class PolarCaps {
   private url(pole: Pole, kind: TileKind, z: number, x: number, y: number): string {
     const v = this.version(polarLayerName(kind, pole));
     return packUrl(`${hostFor('terrain')}/tiles/polar-${kind}/${pole}/${z}/${x}/${y}${v ? `?v=${v}` : ''}`);
+  }
+
+  /** The overlay drawn over the caps, by pole (again whenever what it shows changes). */
+  setOverlay(of: (pole: Pole) => CapOverlay | null) {
+    this.overlay = of;
+    for (const [pole, c] of this.caps) c.layer.setOverlay(of(pole));
   }
 
   /** The catalogue's layers (at start and for each new catalogue): a cap for each pole listing both. */
@@ -81,6 +90,7 @@ export class PolarCaps {
         hillshade: 'hillshade',
         tints: { elevation: 'tint', slope: 'tint-slope' },
       });
+      layer.setOverlay(this.overlay(pole));
       this.map.addLayer(layer, this.before && this.map.getLayer(this.before) ? this.before : undefined);
       this.caps.set(pole, { layer, v, maxZoom });
     }

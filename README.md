@@ -29,6 +29,8 @@ and coloured by elevation, grade or one of a dozen scenic metrics computed from 
   prominence, with details from official registers and Wikidata.
 - **3D terrain** with hill-shading, elevation or slope tint and contour lines; **3D buildings**,
   **tree cover**, **depth** under the seas and lakes, and coastal shading.
+- **Data available**: where the best terrain data anyone publishes is, and how good (grid spacing,
+  bare earth or surface, year, stated accuracy), openly downloadable or all of it.
 - The coverage is the whole Earth (`inputs/regions/`, `cover = "earth"`); the build is still filling
   it in, one z6 tile at a time.
 
