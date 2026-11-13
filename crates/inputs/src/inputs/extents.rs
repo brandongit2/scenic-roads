@@ -43,11 +43,24 @@ pub const UNIT: &str = "extents";
 /// The themes the app knows (`bathymetry` and `buildings` join when their research is done).
 pub const THEMES: [&str; 1] = ["terrain"];
 
-/// The extent classes, best first.
-pub const CLASSES: [&str; 6] = ["mask", "files", "index", "service", "claimed", "unknown"];
+/// The extent classes, best first, each with what it says in plain words (the app's click shows
+/// them: crates/server/src/available.rs `described`).
+pub const CLASSES: [(&str, &str); 6] = [
+    ("mask", "where the map’s own copy has data"),
+    ("files", "from the files’ own headers"),
+    ("index", "from the publisher’s tile index"),
+    ("service", "from the publisher’s footprint service"),
+    ("claimed", "claimed area, not checked against the data"),
+    ("unknown", "not known"),
+];
 
-/// How a source's data can be had.
-pub const AVAILABILITY: [&str; 4] = ["open", "login", "paid", "closed"];
+/// How a source's data can be had, each in plain words (as the extent classes').
+pub const AVAILABILITY: [(&str, &str); 4] = [
+    ("open", "downloads freely"),
+    ("login", "free after a login or a request"),
+    ("paid", "paid"),
+    ("closed", "exists, not to be had"),
+];
 
 /// The producer's readers and the class each one's extents are (None: the block says, `index`,
 /// `service` or `claimed`).
@@ -677,10 +690,10 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
     }
     let avail = |v: Option<&toml::Value>, at: &str, bad: &mut Vec<String>| -> Option<String> {
         let v = v?;
-        match v.as_str().filter(|a| AVAILABILITY.contains(a)) {
+        match v.as_str().filter(|a| AVAILABILITY.iter().any(|(k, _)| k == a)) {
             Some(a) => Some(a.to_string()),
             None => {
-                bad.push(format!("{at}`availability` is {v}, not one of {}", AVAILABILITY.join(", ")));
+                bad.push(format!("{at}`availability` is {v}, not one of {}", AVAILABILITY.map(|(k, _)| k).join(", ")));
                 None
             }
         }
@@ -999,14 +1012,15 @@ pub fn summary_of(bytes: &[u8]) -> Summary {
             fault("no `piece`, its id".into());
             continue;
         }
-        let extent = p.get("extent").and_then(Value::as_str).filter(|c| CLASSES.contains(c));
+        let extent = p.get("extent").and_then(Value::as_str).filter(|c| CLASSES.iter().any(|(k, _)| k == c));
         let Some(extent) = extent else {
-            fault(format!("`extent` isn't one of {}", CLASSES.join(", ")));
+            fault(format!("`extent` isn't one of {}", CLASSES.map(|(k, _)| k).join(", ")));
             continue;
         };
-        let Some(availability) = p.get("availability").and_then(Value::as_str).filter(|a| AVAILABILITY.contains(a))
+        let Some(availability) =
+            p.get("availability").and_then(Value::as_str).filter(|a| AVAILABILITY.iter().any(|(k, _)| k == a))
         else {
-            fault(format!("`availability` isn't one of {}", AVAILABILITY.join(", ")));
+            fault(format!("`availability` isn't one of {}", AVAILABILITY.map(|(k, _)| k).join(", ")));
             continue;
         };
         if p.get("name").is_some_and(|n| !n.is_string()) {

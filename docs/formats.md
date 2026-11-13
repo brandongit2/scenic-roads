@@ -1176,15 +1176,21 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   good while it is meta's version of `available-<theme>` (or `available-<theme>-<pole>`): the
   layer's packs' version and `-` the extents' accepted version's hash, 16 hex digits (the layer's
   packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
-  `{lng, lat, avail, pieces: [...]}`, the pieces passing `avail` at the z12 pixel holding the point
+  `{lng, lat, avail, pieces: [...], painted: {layer: id}}`, the pieces passing `avail` at the z12 pixel holding the point
   (past 85.05°, the pole's z3 pixel), best score first (none last), each `{id, source, piece,
   name, source_name, credit, licence, licence_url, link, availability, extent, read, metrics,
-  stated, values, score}` (`metrics` as the piece states them, `stated` the publisher's classes
-  where a metric is one, docs/inputs.md §6.11, `values` their 0–1 values). `GET
+  stated, values, score}` (`metrics` as the piece states them, a number in the metric's unit or a
+  word; `stated` null, or `{metric: "class"}`, the publisher's class as published (a string, "QL
+  2", "1 arc-second") for each metric whose value was read from one, docs/inputs.md §6.11, the
+  metric's value beside it in `metrics` where the class maps to one; `values` their 0–1 values,
+  null where not stated), and `painted` the id of the piece each layer (`score` and each metric)
+  paints at that pixel, as its tile does (a layer painting none there left out). `GET
   /api/available/{theme}` → `{theme, sets, primary, within, share, metrics: [{id, label, unit,
   weight, scale, worst, best, values, primary}], layers: [{id, label, unit, legend, stops, …}],
   sources: [{id, name, credit, licence, licence_url, link, availability, pieces, classes: {class:
-  n}, unknown: [piece]}]}` (without a score, `layers` and `sources` empty), the score's layer first
+  n}, unknown: [piece]}], labels: {sets, availability, extent}}` (without a score, `layers` and
+  `sources` empty, no `labels`), `labels` each set's, availability's and extent class's words for
+  the app, by id (crate::available `SETS`, crate::inputs::extents `AVAILABILITY` and `CLASSES`), the score's layer first
   (its `label` score.toml's or "Score"), then the metrics', the primary first. A layer's `legend`
   is what its legend draws: `classes` (`stops: [{label, upto, colour}]`, finest first, the last's
   `upto` null; the score's also with `classes_of` the primary, `shade`, `shaded_by` the

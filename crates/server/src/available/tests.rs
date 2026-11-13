@@ -104,6 +104,24 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     assert_eq!(fine["pieces"], 2);
     assert_eq!(fine["classes"]["unknown"], 1);
     assert_eq!(fine["unknown"], json!(["later"]));
+    // The words the app shows for the ids: the sets', each availability's and extent class's.
+    assert_eq!(d["sets"], json!(["best"]));
+    assert_eq!(d["labels"]["sets"]["best"], "Best available anywhere");
+    for (k, _) in ex::AVAILABILITY {
+        assert!(d["labels"]["availability"][k].as_str().is_some_and(|w| !w.is_empty()), "{k}");
+    }
+    for (k, _) in ex::CLASSES {
+        assert!(d["labels"]["extent"][k].as_str().is_some_and(|w| !w.is_empty()), "{k}");
+    }
+    // The piece each layer paints, as the tiles do: of every one, the score's and the grid
+    // spacing's the finer, the year's the one stating it; of open data alone, the open one; none
+    // where nothing passes.
+    let p = t.painted(&both, true);
+    assert_eq!(p[SCORE_LAYER], "fine/dtm");
+    assert_eq!(p["spacing_m"], "fine/dtm");
+    assert_eq!(p["year"], "open-lidar/dtm");
+    assert_eq!(t.painted(&both, false)[SCORE_LAYER], "open-lidar/dtm");
+    assert!(t.painted(&["fine/dtm"], false).is_empty());
 }
 
 /// score.toml's colours, as hex.
@@ -390,6 +408,7 @@ async fn a_click_answers_the_pieces_there_best_first() {
     };
     let v: Value = serde_json::from_slice(&body(click(2.3, 44.2, Some("all")).await).await).unwrap();
     assert_eq!(ids(&v), ["fine/dtm", "open-lidar/dtm"]);
+    assert_eq!(v["painted"]["score"], "fine/dtm");
     assert!(v["pieces"][0]["score"].as_f64().unwrap() > v["pieces"][1]["score"].as_f64().unwrap());
     let v: Value = serde_json::from_slice(&body(click(2.3, 44.2, None).await).await).unwrap();
     assert_eq!(ids(&v), ["open-lidar/dtm"]);

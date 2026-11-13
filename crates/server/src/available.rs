@@ -11,7 +11,8 @@
 //!   those that download freely; `all`: every one; `Theme::best`, `Theme::colour`), transparent
 //!   where none does; 204 where no piece is. `layer`: `score`, or a metric of the theme's score.
 //!   `set`: `best` (the best data any declared source has).
-//! - `/api/available/<theme>/<set>?lng&lat&avail`: the pieces at a point, best first.
+//! - `/api/available/<theme>/<set>?lng&lat&avail`: the pieces at a point, best first, and the one
+//!   each layer paints there (`painted`).
 //! - `/api/available/<theme>`: the score as declared, each layer's legend (classes, words' colours
 //!   or a ramp, labelled), and the sources with their pieces counted by class (those of class
 //!   `unknown` named: they're drawn nowhere).
@@ -30,9 +31,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
-/// The sets served: the best data any declared source has. (The data built into the map, `built`,
-/// is planned: task #1349.)
-pub const SETS: [&str; 1] = ["best"];
+/// The sets served, each with its name in the app: the best data any declared source has. (The
+/// data built into the map, `built`, is planned: task #1349.)
+pub const SETS: [(&str, &str); 1] = [("best", "Best available anywhere")];
+
+/// Whether `set` is one served.
+fn set_served(set: &str) -> bool {
+    SETS.iter().any(|(k, _)| *k == set)
+}
 
 /// The score layer's id; the others are the theme's metrics.
 pub const SCORE_LAYER: &str = "score";
@@ -106,12 +112,32 @@ impl Theme {
     /// metric (a piece not stating it takes no part; of equal values, the first id). None where
     /// none does.
     pub fn best<'a>(&self, layer: &str, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Option<&PieceInfo> {
+        self.best_id(layer, ids, all).map(|(_, p)| p)
+    }
+
+    /// `best`, with the piece's id.
+    fn best_id<'a>(
+        &self,
+        layer: &str,
+        ids: impl IntoIterator<Item = &'a str>,
+        all: bool,
+    ) -> Option<(&'a str, &PieceInfo)> {
         ids.into_iter()
             .filter_map(|id| Some((id, self.pieces.get(id)?)))
             .filter(|(_, p)| all || p.open())
             .filter_map(|(id, p)| Some((self.value(layer, p)?, id, p)))
             .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(a.1)))
-            .map(|(_, _, p)| p)
+            .map(|(_, id, p)| (id, p))
+    }
+
+    /// The piece each layer paints among pieces `ids` (`best`), its id by layer; a layer painting
+    /// none there absent. The click marks it, so the app ranks nothing itself.
+    pub fn painted<'a>(&self, ids: &[&'a str], all: bool) -> Map<String, Value> {
+        let Some(s) = &self.score else { return Map::new() };
+        std::iter::once(SCORE_LAYER)
+            .chain(s.metrics.keys().map(String::as_str))
+            .filter_map(|l| Some((l.to_string(), json!(self.best_id(l, ids.iter().copied(), all)?.0))))
+            .collect()
     }
 
     /// A piece's value of `layer`, 0–1: its score, or its value of the metric.
@@ -315,8 +341,12 @@ impl Theme {
                     "unknown": self.unknown.get(id).cloned().unwrap_or_default()})
             })
             .collect();
-        json!({"theme": theme, "sets": SETS, "primary": s.primary, "within": s.within, "share": s.share,
-            "metrics": metrics, "layers": layers, "sources": sources})
+        // (The words the app shows for the sets' ids, the pieces' availability and extent classes.)
+        let words =
+            |w: &[(&str, &str)]| -> Map<String, Value> { w.iter().map(|(k, v)| (k.to_string(), json!(v))).collect() };
+        json!({"theme": theme, "sets": SETS.map(|(k, _)| k), "primary": s.primary, "within": s.within, "share": s.share,
+            "metrics": metrics, "layers": layers, "sources": sources,
+            "labels": {"sets": words(&SETS), "availability": words(&ex::AVAILABILITY), "extent": words(&ex::CLASSES)}})
     }
 }
 
@@ -541,7 +571,7 @@ async fn tile(
     headers: HeaderMap,
 ) -> Response {
     let Some(th) = s.available.theme(&theme) else { return StatusCode::NOT_FOUND.into_response() };
-    if !SETS.contains(&set.as_str()) || !th.has_layer(&layer) || z > fmt::maxz(grid) || x >> z != 0 || y >> z != 0 {
+    if !set_served(&set) || !th.has_layer(&layer) || z > fmt::maxz(grid) || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }
     let stl = stored_layer(&theme, grid);
@@ -611,7 +641,7 @@ pub struct At {
 /// The pieces at a point, best first (`/api/available/<theme>/<set>?lng&lat&avail`).
 pub async fn at(State(s): State<S>, Path((theme, set)): Path<(String, String)>, Query(q): Query<At>) -> Response {
     let Some(th) = s.available.theme(&theme) else { return StatusCode::NOT_FOUND.into_response() };
-    if !SETS.contains(&set.as_str()) || !q.lng.is_finite() || !q.lat.is_finite() || q.lat.abs() > 90.0 {
+    if !set_served(&set) || !q.lng.is_finite() || !q.lat.is_finite() || q.lat.abs() > 90.0 {
         return StatusCode::NOT_FOUND.into_response();
     }
     let all = q.avail.as_deref() == Some("all");
@@ -620,8 +650,9 @@ pub async fn at(State(s): State<S>, Path((theme, set)): Path<(String, String)>, 
         let (grid, px, py) = pixel_of(lng, lat);
         let stl = stored_layer(&theme, grid);
         let ids = fmt::pieces_at(grid, px, py, &mut |z, x, y| stored(&s, &stl, z, x, y))?;
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         Ok(json!({"lng": lng, "lat": lat, "avail": if all { "all" } else { "open" },
-            "pieces": th.listed(ids.iter().map(String::as_str), all)}))
+            "pieces": th.listed(ids.iter().copied(), all), "painted": th.painted(&ids, all)}))
     })
     .await;
     match r {
