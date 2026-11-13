@@ -1,0 +1,21 @@
+name = "Regione Lombardia DTM 5x5"
+credit = "Regione Lombardia, Geoportale"
+licence = "CC-BY-4.0"
+licence_url = "https://www.geoportale.regione.lombardia.it/en/note-legali"
+source = "https://www.cartografia.servizirl.it/download/DTM5_RL.zip"
+theme = "terrain"
+availability = "open"
+notes = "The region's \"DTM 5X5 - Modello digitale del terreno (ed. 2015)\", from its topographic database (contours, spot heights, break lines) and lidar along watercourses: one file of the region, DTM5_RL.img in a 3.09 GB zip (its central directory read by range request), with no header readable short of a whole download; so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The region's own lidar is partly for public bodies only; its open lidar is the ministry's PST-A (it-pst-lidar)."
+
+[[piece]]
+id = "dtm5"
+label = "DTM 5x5 (ed. 2015)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Lombardia"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2015

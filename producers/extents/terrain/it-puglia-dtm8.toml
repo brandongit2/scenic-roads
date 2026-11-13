@@ -1,0 +1,21 @@
+name = "SIT Puglia DTM"
+credit = "Regione Puglia, SIT Puglia"
+licence = "IODL-2.0"
+licence_url = "https://www.dati.gov.it/iodl/2.0/"
+source = "https://www.sit.puglia.it/"
+theme = "terrain"
+availability = "login"
+notes = "The region's 8 m photogrammetric terrain model (2006 flights, vertical accuracy stated 1 m, not as an RMSE: left out), whose download is behind the SIT's login gateway; so it is claimed as the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, not checked against data."
+
+[[piece]]
+id = "dtm8"
+label = "DTM 8 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Apulia"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 8
+year = 2006

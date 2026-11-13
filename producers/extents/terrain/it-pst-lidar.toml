@@ -1,0 +1,52 @@
+name = "Piano Straordinario di Telerilevamento Ambientale lidar"
+credit = "Ministero dell'Ambiente e della Sicurezza Energetica, Geoportale Nazionale (PST-A)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://gn.mase.gov.it/portale/distribuzione-dati-pst"
+theme = "terrain"
+availability = "open"
+notes = "The national lidar of the ministry's Piano Straordinario di Telerilevamento Ambientale and its extensions (PST-A 2008, the 2008 and 2014 extensions, the MIADRA and MAMPIRA projects): river corridors, coasts and critical areas, not the whole country. Its download app (sim.mase.gov.it/pst, free, no login: CC BY 4.0, the EU's high-value data) reads the tile grids of its ArcGIS service Grigliato_lidar: the 1 m DTM's 0.01° tiles (layer 2), the 2 m DTM's 0.02° tiles (layer 1) and the land-sea DTM's 4 m tiles of the marine protected areas (layer 0, lidar topography and bathymetry with multibeam). The grids hold the whole country's empty cells too, with no project (`pst` blank): left out, the 164,063 1 m and 4,754 2 m tiles left are those the ministry's WFS lists (QU_Lidar.map). Each tile's cell is its `risoluzion` (0.5 m for 3,361 tiles of the 2014 extension in Bolzano; the 1 m grid's for the 3,878 tiles stating none), its flights its `data` (aammgg, one date or a span); the land-sea tiles' topographic flights `data_lid_1` (2012). The ministry states a DTM height error under ±15 cm (1 sigma), not an RMSE: left out."
+
+[[piece]]
+id = "dtm1"
+method = "arcgis"
+class = "index"
+url = "https://gis.platform.sim.mase.gov.it/portalgis/rest/services/Hosted/Grigliato_lidar/FeatureServer/2"
+where = "pst <> ' '"
+page = 2000
+by = ["pst"]
+name = "pst"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = [{ field = "risoluzion" }, 1.0]
+year = { field = "data", date = "yymmdd" }
+
+[[piece]]
+id = "dtm2"
+method = "arcgis"
+class = "index"
+url = "https://gis.platform.sim.mase.gov.it/portalgis/rest/services/Hosted/Grigliato_lidar/FeatureServer/1"
+where = "pst <> ' '"
+page = 2000
+by = ["pst"]
+name = "pst"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+year = { field = "data", date = "yymmdd" }
+
+[[piece]]
+id = "terramare"
+method = "arcgis"
+class = "index"
+url = "https://gis.platform.sim.mase.gov.it/portalgis/rest/services/Hosted/Grigliato_lidar/FeatureServer/0"
+page = 2000
+by = ["amp"]
+name = "amp"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 4
+year = { field = "data_lid_1", date = "text" }

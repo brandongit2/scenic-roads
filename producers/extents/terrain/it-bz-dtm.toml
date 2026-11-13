@@ -1,0 +1,41 @@
+name = "Provincia autonoma di Bolzano DTM"
+credit = "Provincia Autonoma di Bolzano - Alto Adige, Ufficio Pianificazione territoriale e cartografia"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://geoservices9.civis.bz.it/geoserver/ows?service=WCS&version=2.0.1&request=GetCapabilities"
+theme = "terrain"
+availability = "open"
+notes = "The province's lidar terrain models, served by its keyless WCS (CC0, \"nessuna limitazione all'accesso del pubblico\"), with no tile index (its WFS holds contours, spot heights and break lines only): the 2.5 m model \"dell'Alto Adige\" (the whole province; created 30 June 2006), claimed as the province, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it; the 0.5 m model \"delle aree insediative\" (settled areas; created 30 November 2013) and the 0.2 m Adige model (flown 11 to 17 December 2024 and 24 January 2025, Tel to Salorno), whose areas no outline states: listed, not drawn."
+
+[[piece]]
+id = "dtm25"
+label = "DTM 2.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], name = ["Bozen"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 2.5
+year = 2006
+
+[[piece]]
+id = "dtm05"
+label = "DTM 0.5 m (aree insediative)"
+method = "none"
+why = "the settled areas it covers have no stated outline; the WCS gives only the province's bounding box"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2013
+
+[[piece]]
+id = "adige02"
+label = "DTM Adige 0.2 m"
+method = "none"
+why = "the Adige valley from Tel to Salorno has no stated outline; the WCS gives only a bounding box"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.2
+year = 2025

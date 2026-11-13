@@ -1,0 +1,41 @@
+name = "Valle d'Aosta DTM lidar"
+credit = "Regione Autonoma Valle d'Aosta, Sistema delle Conoscenze Territoriali (SCT)"
+licence = "CC-BY-4.0"
+licence_url = "http://metadati.partout.it/metadata_documents/CC_BY_DTM_v2.pdf"
+source = "https://geoportale.regione.vda.it/download/dtm/"
+theme = "terrain"
+availability = "open"
+notes = "The region's lidar terrain models, downloaded through its GeoDownload app (its tile index, the QDU MapServer, asks a token: not read). The 2005/2008 aggregate at 2 m, \"Copertura territoriale: intero territorio regionale\" (the 2005-06 survey of the Dora valley and its tributaries at 0.5 m, degraded to 2 m, with the 2008 survey of the rest), claimed as the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it; the 2005 model at 0.5 m (the Dora valley and tributaries, 6 % of the region: flown 2005 and 2006) and the 2022 model at 0.5 m (the Dora Baltea from Pont-Saint-Martin to Saint-Pierre, flown 15 May 2022), whose areas no outline states: listed, not drawn."
+
+[[piece]]
+id = "dtm0508"
+label = "DTM 2005/2008 aggregato 2 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], name = ["Aoste"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+year = 2008
+
+[[piece]]
+id = "dtm2005"
+label = "DTM 2005 0.5 m (valle della Dora e affluenti)"
+method = "none"
+why = "the Dora valley and its tributaries (6 % of the region) have no stated outline, and the app's index asks a token"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2006
+
+[[piece]]
+id = "dtm2022"
+label = "DTM 2022 Dora Baltea 0.5 m"
+method = "none"
+why = "the Dora Baltea from Pont-Saint-Martin to Saint-Pierre has no stated outline, and the app's index asks a token"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

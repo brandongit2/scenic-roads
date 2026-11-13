@@ -1,0 +1,20 @@
+name = "Regione Liguria DTM ed. 2023"
+credit = "Regione Liguria"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://geodati.gov.it/resource/id/r_liguri:D.2056"
+theme = "terrain"
+availability = "open"
+notes = "The region's 5 m terrain model (edition 2023), made from its vector topographic data (stated source accuracy 0.6 m), by WCS: a coverage of the region, whose description gives only a bounding box; so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its sources' years aren't stated: left out. The region's finest open terrain is the ministry's PST-A 1 m (it-pst-lidar)."
+
+[[piece]]
+id = "dtm5"
+label = "DTM 5 m ed. 2023"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Liguria"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5

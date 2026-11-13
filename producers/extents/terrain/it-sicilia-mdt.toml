@@ -1,0 +1,21 @@
+name = "SITR Sicilia MDT 2013"
+credit = "Regione Siciliana, SITR"
+licence = "CC-BY-4.0"
+licence_url = "https://www.sitr.regione.sicilia.it/licenza-duso/"
+source = "https://map.sitr.regione.sicilia.it/gis/rest/services/"
+theme = "terrain"
+availability = "open"
+notes = "The region's 2 m terrain model of the island, photogrammetric from the ATA flights of 2012-2013 (EVRF2019 heights), served as an ArcGIS ImageServer (modelli_digitali/mdt_2013: one raster, 2 m pixels, no catalogue to read: its catalogue query isn't supported), CC BY 4.0 by the SITR's licence page; so its extent is Sicily, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Whether the island's small archipelagos are in it isn't stated."
+
+[[piece]]
+id = "mdt2013"
+label = "MDT 2013 2 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Sicily"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+year = 2013

@@ -1,0 +1,21 @@
+name = "Regione Lazio DTM passo 5 m 2002/2003"
+credit = "Regione Lazio"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://geoportale.regione.lazio.it/api/v2/resources?search=dtm&page_size=30"
+theme = "terrain"
+availability = "open"
+notes = "The region's \"Digital Terrain Model Passo 5 mt v. 2002/2003\", from its CTRN 1:5,000 (2002-2003), published as DXF files by province on dati.lazio.it with no index; so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm5"
+label = "DTM passo 5 m 2002/2003"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Lazio"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2003

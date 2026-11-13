@@ -1,0 +1,25 @@
+name = "LiDAR PAT 2014 / 2018"
+credit = "Provincia Autonoma di Trento, Servizio Geologico"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.it"
+source = "https://geodati.gov.it/resource/id/p_TN:79c6cdf0-c73a-46ba-870c-704bf4e27ac3"
+theme = "terrain"
+availability = "open"
+notes = "The province's 0.5 m bare-earth model (\"Modello Digitale del Terreno (0,5m x 0,5m)\", interpolated from the ground points), flown 2013 to 2015 and brought up to date with 46 flights of 2018 over the vegetated areas, by its open directory of ASC tiles (2014_lidar_dtm_asc): 25,201 tiles of 500 m, each named by its south-west corner in hundreds of metres (5h<x><y>: 5h612050925 is 612,000 E, 5,092,500 N, as its header says), ETRS89 / UTM 32N. Many tiles are mostly no-data at the province's edge (the first's valid share 1.4 %), so the outline is the tiles', not the data's. Points 10 ground pts/m² below 1,800 m and 4 above; heights ±25 cm at 95 % (2 sigma), not an RMSE: left out. The record says it doesn't cover Campolongo (its own 2011 survey) nor the UNESCO Dolomites (the ministry's PST-A survey)."
+
+[[piece]]
+id = "dtm"
+label = "LiDAR PAT DTM 0.5 m"
+method = "listing"
+list = "links"
+url = "https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/"
+pattern = '^5h(?P<x>\d{4})(?P<y>\d{5})_DTM\.asc$'
+unit = 100
+size = 500
+corner = "sw"
+crs = "EPSG:25832"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2018

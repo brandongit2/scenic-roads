@@ -1,0 +1,20 @@
+name = "TINITALY/1.1"
+credit = "Istituto Nazionale di Geofisica e Vulcanologia (INGV), TINITALY"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://tinitaly.pi.ingv.it/Download_Area1_1.html"
+theme = "terrain"
+availability = "open"
+notes = "The INGV's 10 m elevation model of Italy (2023's version 1.1), \"covering the whole Italian territory\" and cut along the Italian border and coastline (its accompanying notes), made from the regions' vector data (contours, spot heights, coastlines): the ground. 193 tile zips of nominal 50 km squares (UTM 32N, each cut to its data), with no header readable short of a whole download; so its extent is the area it states it covers, Italy, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its sources' years aren't stated: left out."
+
+[[piece]]
+id = "dem"
+label = "TINITALY 10 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10

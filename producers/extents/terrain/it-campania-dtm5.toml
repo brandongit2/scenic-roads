@@ -1,0 +1,21 @@
+name = "Regione Campania CTR2020 DTM5K"
+credit = "Regione Campania"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://geomaps.regione.campania.it/server/rest/services/Amministrativo/CTR_DTM5m/ImageServer"
+theme = "terrain"
+availability = "open"
+notes = "The region's 5 m terrain model \"CTR2020 - DTM5K\", photogrammetric from the AGEA flights of 2020, over the whole region, served as an ArcGIS ImageServer (one raster, 5 m pixels, no catalogue to read), WMS and WCS; so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The ministry's PST-A 1 m (it-pst-lidar) covers some 71 % of it."
+
+[[piece]]
+id = "dtm5"
+label = "CTR2020 DTM5K"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Campania"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2020

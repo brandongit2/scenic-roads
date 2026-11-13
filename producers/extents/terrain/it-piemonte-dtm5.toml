@@ -1,0 +1,21 @@
+name = "Regione Piemonte DTM 5 ICE 2009-2011"
+credit = "Regione Piemonte, Geoportale"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://web.archive.org/web/2026/https://www.geoportale.piemonte.it/geonetwork/srv/api/records/r_piemon:224de2ac-023e-441c-9ae0-ea493b217a8e"
+theme = "terrain"
+availability = "open"
+notes = "The region's \"RIPRESA AEREA ICE 2009-2011 - DTM 5\", a 5 m bare-earth model from the lidar flown 2009 to 2011 over the whole region (the record, read through the Wayback Machine: the region's geoportal host doesn't resolve), by WCS and sheet download; its sheets' index wasn't reachable, so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its stated accuracy (±0.30 m, ±0.60 m in forest and dense towns) is not an RMSE: left out."
+
+[[piece]]
+id = "dtm5"
+label = "DTM 5 ICE 2009-2011"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Piemonte"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2011

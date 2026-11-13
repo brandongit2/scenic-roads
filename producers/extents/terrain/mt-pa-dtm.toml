@@ -1,0 +1,21 @@
+name = "Planning Authority Digital Terrain Model 2012"
+credit = "Planning Authority, Malta"
+licence = "CC-BY-4.0"
+licence_url = "https://data.europa.eu/api/hub/search/datasets/e2df40e5-6dff-4571-a9c9-dc45f3db11e2"
+source = "https://malta.coverage.wetransform.eu/dtm_1m_2012/ows?SERVICE=WCS&VERSION=2.0.1&REQUEST=DescribeCoverage&COVERAGEID=dtm_1m_2012"
+theme = "terrain"
+availability = "open"
+notes = "The Planning Authority's INSPIRE 1 m terrain model from the airborne lidar of the ERDF156 project (flown 17 February 2012), a WCS 2.0.1 coverage whose description gives a bounding box (426,534 to 461,821 E, 3,960,612 to 3,993,549 N, ETRS89 / UTM 33N) holding Malta, Gozo and Comino; so its extent is the islands, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. data.europa.eu lists it under CC BY 4.0, its INSPIRE service records \"noConditionsApply\": the CC BY kept. The advertised 2018 model (0.15 m) holds 8-bit values, not heights: left out."
+
+[[piece]]
+id = "dtm"
+label = "DTM 2012 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["MLT"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2012

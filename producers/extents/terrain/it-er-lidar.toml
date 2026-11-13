@@ -1,0 +1,47 @@
+name = "Emilia-Romagna RER LiDAR"
+credit = "Regione Emilia-Romagna, Geoportale"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://geoportale.regione.emilia-romagna.it/approfondimenti/rer23_24"
+theme = "terrain"
+availability = "open"
+notes = "The region's lidar campaigns towards a survey of the whole region: the pilot RER 2022 (1,433 km², 4 pts/m², flown 2022 to January 2023), RER 2023/24 (9,240 km², 8 pts/m²) and RER 2025/26 (in progress), each a 0.5 m bare-earth model (\"DTM: Derivato da ripresa LiDAR con cella di 0.5m x 0.5m\") served by a keyless WCS (wcs/dtmrer2022, dtmrer2023_24, dtmrer2025_26). Their extents are the tiles of the campaigns' indexes (quadri d'unione) in the region's metadati_raster MapServer (layers 30, 44, 61), each tile's last flight its year (`DATA`, \"12-14/01/2023\"; the last of `VOLO_1` to `VOLO_5`, of `DATA_1` to `DATA_3`). The heights' stated accuracy (±8 cm, 1 sigma) is not an RMSE: left out. The indexes of the Reno (2021) and rivers (2024) civil-protection surveys, Parma-Baganza (2023) and the cities of Bologna (2023) and Modena (2024) are in the same service, but their WCS answer 401 (not open): left out."
+
+[[piece]]
+id = "rer2022"
+label = "DTM RER 2022"
+method = "arcgis"
+class = "index"
+url = "https://servizigis.regione.emilia-romagna.it/geoags/rest/services/portale/metadati_raster/MapServer/30"
+page = 1000
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "DATA", date = "text" }
+
+[[piece]]
+id = "rer2023-24"
+label = "DTM RER 2023/24"
+method = "arcgis"
+class = "index"
+url = "https://servizigis.regione.emilia-romagna.it/geoags/rest/services/portale/metadati_raster/MapServer/44"
+page = 1000
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = [{ field = "VOLO_5", date = "iso" }, { field = "VOLO_4", date = "iso" }, { field = "VOLO_3", date = "iso" }, { field = "VOLO_2", date = "iso" }, { field = "VOLO_1", date = "iso" }]
+
+[[piece]]
+id = "rer2025-26"
+label = "DTM RER 2025/26"
+method = "arcgis"
+class = "index"
+url = "https://servizigis.regione.emilia-romagna.it/geoags/rest/services/portale/metadati_raster/MapServer/61"
+page = 1000
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = [{ field = "DATA_3", date = "iso" }, { field = "DATA_2", date = "iso" }, { field = "DATA_1", date = "iso" }]

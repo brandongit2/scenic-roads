@@ -1,0 +1,21 @@
+name = "Regione Marche DTM 20 m"
+credit = "Regione Marche"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.regione.marche.it/Portals/0/Paesaggio_Territorio_Urbanistica/Cartografia/Metadati/Relazione_DTM.pdf"
+theme = "terrain"
+availability = "open"
+notes = "The region's 20 m terrain model from its CTR 1:10,000 (flown 1999-2000; level 2: ±2 m in open terrain, not an RMSE: left out), of the region; so its extent is the region, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm20"
+label = "DTM 20 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ITA"], region = ["Marche"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 20
+year = 2000
