@@ -2010,6 +2010,7 @@ outlines as on 12 Nov):
 | `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline (its item's geometry), cell and year (from its name: 146 names hold none); `raster`: the mosaic's 36 squares, each's mask at its overview of ~1 km pixels (`grain_m` 1,024) |
 | `geobc-lidar` | 17: the DEM sheets by cell and year | `index` | `arcgis`: the portal's two sheet indexes, each sheet's cell as stated (1,659 sheets of 2016 are 2 m) |
 | `wales-lidar` | 4: the 1 km tiles by year flown | `index` | `wfs`: the tile catalogue (EPSG:27700) |
+| `ign-lidar-hd` | 6: the 1 km tiles by the year their flights ended (2021 to 2026) | `index` | `wfs`: the programme's tile index, 524,687 tiles (metropolitan France and the overseas tiles so far): 105 requests, 155 MB, 3 min 9 s and 477 MB of memory on the M1, to 174 KB; each year's area within 0.3 % of its tiles' count in km² |
 | `luxembourg-lidar` | 1 | `files` | `raster`: the one GeoTIFF's header and its mask at an overview of 64 m pixels |
 | `usgs-3dep` | none yet | `service` | `arcgis`: declared; its index service answers a layer's description and a count but refused every feature query on 12 and 13 Nov ("Failed to execute query"). Its quality levels' words checked against WESM.csv on 13 Nov |
 

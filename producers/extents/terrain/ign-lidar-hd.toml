@@ -1,0 +1,22 @@
+name = "IGN LiDAR HD"
+credit = "IGN, LiDAR HD"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/api/1/datasets/675871bd6e60265b46ab356e/"
+theme = "terrain"
+availability = "open"
+notes = "The programme's WFS tile index (IGNF_LIDAR-HD_METADONNEE:metadata: a 1 km tile each, metropolitan France and the overseas tiles published so far), by the year its flights ended (`date_fin_acquisition`). Each tile's bare-earth model (MNT) is 0.5 m, as its file's name says (…_MNT_O_0M50_…); flown 2021 to 2026. The answers name urn:ogc:def:crs:EPSG::4326 and are longitude first."
+
+[[piece]]
+id = "mnt"
+label = "LiDAR HD MNT 0.5 m"
+method = "wfs"
+class = "index"
+url = "https://data.geopf.fr/wfs/ows"
+type = "IGNF_LIDAR-HD_METADONNEE:metadata"
+fields = ["date_fin_acquisition", "geom"]
+page = 5000
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "date_fin_acquisition", date = "iso" }
