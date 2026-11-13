@@ -209,7 +209,7 @@ coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac whi
 | `docs/macs.md`, `docs/pool.md`, `docs/coordinator.md` | Each Mac's agent, server and mirror; the pool and its lead; the coordinator and its workers. |
 | `docs/regions.md`, `docs/inputs.md` | Coverage and regions; the inputs folders and their checks. |
 | `docs/names.md`, `docs/sizes.md`, `docs/buildings3d.md` | Names and descriptions; sizes; 3D buildings. |
-| `docs/native-port.md` | The native map app replacing the web one, MapLibre subsumed into one engine (planned). |
+| `docs/native-port.md` | MapLibre subsumed into the web app as one engine, then the native map app translated from it (planned). |
 | `docs/polar.md` | The polar caps past 85° (planned: built and tested, not yet in the live build). |
 | `docs/diagram/` | The pipeline diagram (`python3 page.py out.html`, then republish out.html to https://claude.ai/artifact/2LamxyqCeK6YLbkSpPPbrj). |
 | `web/maplibre/FORK.md` | Our MapLibre changes. |
