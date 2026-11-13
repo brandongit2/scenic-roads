@@ -783,6 +783,21 @@ READERS = {"arcgis": read_arcgis, "stac": read_stac, "wfs": read_wfs, "file": re
 
 # ---- from features to pieces ----
 
+def latest_versions(feats, spec):
+    """Of the features naming one tile (the match of `pattern` in their `field`), only the one
+    greatest in `order`: a collection keeping each tile's earlier versions beside its newest
+    (swissALTI3D's swissalti3d_2019_2600-1199 and _2025_2600-1199). A feature naming none is kept."""
+    pat, best = re.compile(spec["pattern"]), {}
+    for geom, props in feats:
+        m = pat.search(str(props.get(spec["field"], "")))
+        if not m:
+            yield geom, props
+        elif m.group(0) not in best or str(props.get(spec["order"])) > best[m.group(0)][0]:
+            best[m.group(0)] = (str(props.get(spec["order"])), geom, props)
+    for _, geom, props in best.values():
+        yield geom, props
+
+
 def wanted_fields(b):
     out = set(b.get("by", []))
     if b.get("name"):
@@ -965,7 +980,8 @@ def block_pieces(net, decl, b, today):
     r0, b0 = net.mark()
     net.since()
     groups, n, flt = {}, 0, b.get("filter") or {}
-    for geom, props in READERS[method](net, b, tol_deg):
+    feats = READERS[method](net, b, tol_deg)
+    for geom, props in (latest_versions(feats, b["latest"]) if b.get("latest") else feats):
         if any(str(props.get(k)) not in [str(x) for x in want] for k, want in flt.items()):
             continue
         if callable(geom):

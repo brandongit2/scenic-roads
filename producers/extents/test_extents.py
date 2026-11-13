@@ -279,6 +279,18 @@ class Pieces(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_block(block, [(sg.box(0, 0, 1, 1), {"project": "a"})])
 
+    def test_only_a_tiles_latest_version_is_read(self):
+        # (swissALTI3D's: a tile re-made in 2025 keeps its 2019 item.)
+        block = {"id": "x", "method": "fake", "class": "index", "url": "u", "latest": {"field": "id", "pattern": r"\d{4}-\d{4}$", "order": "datetime"},
+                 "metrics": {"year": {"field": "datetime", "date": "iso"}}}
+        feats = [(sg.box(0, 0, 1, 1), {"id": "t_2019_2600-1199", "datetime": "2019-01-01"}),
+                 (sg.box(0, 0, 1, 1), {"id": "t_2025_2600-1199", "datetime": "2025-01-01"}),
+                 (sg.box(1, 0, 2, 1), {"id": "t_2019_2601-1199", "datetime": "2019-01-01"}),
+                 (sg.box(2, 0, 3, 1), {"id": "readme", "datetime": "2019-01-01"})]
+        pieces, reads = self.run_block(block, feats)
+        self.assertEqual(sorted((p["properties"]["year"], round(sg.shape(p["geometry"]).bounds[0], 3)) for p in pieces), [(2019, 1.0), (2025, 0.0)])
+        self.assertEqual(reads[0]["features"], 3)
+
     def test_what_does_not_download_directly_is_claimed(self):
         block = {"id": "x", "method": "fake", "class": "index", "url": "u"}
         pieces, _ = self.run_block(block, [(sg.box(0, 0, 1, 1), {})], availability="login")
