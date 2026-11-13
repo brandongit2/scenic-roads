@@ -24,14 +24,9 @@ global/        worldwide files: road values per z6 tile, road → z6 tiles, rail
 layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
 cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
-map/           <seq>.json.zst: old snapshots of the map, written and read by no app (the map is the
-               lead's log's alone: docs/formats.md, The map and its log); the PM's to remove
-               (docs/coordination.md §9)
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
                current.json (the live one's manifest: {version, sha256, archive_sha256}),
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
-settings/      profiles.json: read and written by no app (the map's server keeps its settings
-               profiles on its own Mac: Backups, below); the PM's to remove (docs/coordination.md §9)
 state/         build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history's archive (a tar a finished day: the history
                itself is the lead's, on its disk), the forecasts' and forecast inputs' archives),
@@ -40,14 +35,8 @@ state/         build/ (the records, their brief, the lead's declaration),
                day), backups/;
                coord/history/ (the days an app before task #1119 wrote: GC packs each into the
                archive and removes it as it passes the week, the last on 19 Nov);
-               lead/store.json (the lead's store's old backup, which an older lead reads at a take-up
-               only to pass its own over: the PM's to remove once the lead runs an app since task
-               #1183, which writes it no more, docs/coordination.md §9);
-               what no app reads or writes, the PM's to remove (docs/coordination.md §9):
-               coordinator.json, pool/nas-probes.json, tmp/ (empty), logs/ (an old bld-fetch's
-               log, of 6 Oct); taskboard/ (copies
-               of the task board's database from its moves, 21 Oct and 5 Nov: the owner's); and the
-               old coordination files no app writes (journal/, the terms' folders: §9)
+               build/term/<E>/ (old forecast inputs the forecast's backtest still reads:
+               docs/coordination.md §9)
 ```
 
 **Immutable, content-named files.**

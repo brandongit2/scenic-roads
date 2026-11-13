@@ -323,22 +323,14 @@ Mac didn't say the new piece's word in its beat, and was deleted by the rule for
 
 ## 9. The NAS's leftover files
 
-No app writes these, and none reads them but as said below; they are the owner's to remove, as one job on the NAS over
-SSH (`rm -r`; SMB removes file by file, and a held file's aside can't be removed for hours), never
-the agent's loop. Measured 12 Nov, read only (the terms' other files, `state/coord/term/` and the
-old coordination folders are gone):
+No app writes these, and none reads them but as said below. Removing any of them is one job on
+the NAS over SSH (`rm -r`; SMB removes file by file, and a held file's aside can't be removed for
+hours), never the agent's loop.
 
 - **keep**: `state/build/term/<E>/forecast-input.json`, E 232 to 673 (352 folders, ~283 MB), which
   `agent::fccheck::inputs` reads for the backtest where the forecast inputs' archive
   (`state/coord/forecast-inputs/`, from 4 Nov) lacks them, until the archive covers them or the
-  check no longer reads term folders;
-- **remove** (task #1175: what the lead alone wrote, now on its disk or asked of it; no app reads
-  or writes them): `state/coordinator.json` (the lead's contact), `state/pool/nas-probes.json`,
-  `state/tmp/` (empty), `state/logs/` (an old bld-fetch's log, of 6 Oct), `settings/` (the map's
-  profiles: a daily backup lists `mac/profiles.json`) and `map/` (the map's snapshots);
-- **remove** once the lead runs an app since task #1183 (which writes it no more; an older lead reads it at a take-up
-  only to pass over its own, and a member never): `state/lead/store.json`, the lead's store's old
-  backup, and the `state/lead/` folder;
+  check no longer reads term folders.
 
 `state/coord/history/<day>/` goes by itself: the `gc` job packs each day into the archive and
 removes it as it passes the week.
