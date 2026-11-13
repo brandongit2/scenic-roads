@@ -5,7 +5,7 @@ licence_url = "https://www.dati.gov.it/iodl/2.0/"
 source = "https://idt2.regione.veneto.it/nuovo-dtm-derivato-da-dati-lidar/"
 theme = "terrain"
 availability = "open"
-notes = "The region's harmonised 5 m bare-earth model of 2024 (\"DTM armonizzato derivante dai voli LIDAR acquisiti dalla Regione del Veneto nel corso degli anni\", downloaded by commune), its extent the index the region names for its coverage, c0101071_Lidar5m (the WFS type rv:c0101071_lidar5m: 4,729 sheets of `tipologia` DTM LIDAR 5M, cut to where the model has data; EPSG:3003 as its answers name). The campaigns' years aren't stated by sheet (over some twenty years, the newest kept): left out."
+notes = "The region's harmonized 5 m bare-earth model of 2024 (\"DTM armonizzato derivante dai voli LIDAR acquisiti dalla Regione del Veneto nel corso degli anni\", downloaded by commune), its extent the index the region names for its coverage, c0101071_Lidar5m (the WFS type rv:c0101071_lidar5m: 4,729 sheets of `tipologia` DTM LIDAR 5M, cut to where the model has data; EPSG:3003 as its answers name). The campaigns' years aren't stated by sheet (over some twenty years, the newest kept): left out."
 
 [[piece]]
 id = "dtm5"

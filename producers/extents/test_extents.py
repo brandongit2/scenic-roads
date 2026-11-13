@@ -273,7 +273,7 @@ class Pieces(unittest.TestCase):
         self.assertEqual(len(pieces), 1)
         self.assertEqual(read["features"], 1)
 
-    def test_each_feature_is_generalised_to_a_quarter_of_the_tolerance_and_its_repair_counted(self):
+    def test_each_feature_is_generalized_to_a_quarter_of_the_tolerance_and_its_repair_counted(self):
         # A square with a fine saw along its top (a mask's pixel staircase, teeth of a metre) and a
         # bow tie (invalid: repaired, counted).
         d = 1 / extents.M_PER_DEG

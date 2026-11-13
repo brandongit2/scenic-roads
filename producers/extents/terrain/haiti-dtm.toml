@@ -5,7 +5,7 @@ licence_url = "https://doi.org/10.5069/G9GX48R8"
 source = "https://portal.opentopography.org/raster?opentopoID=OTSDEM.082021.32618.1"
 theme = "terrain"
 availability = "open"
-notes = "The country's airborne-lidar bare-earth model, 1.5 m, flown 2014 to 2016, in OpenTopography's bucket: 357 cloud-optimised GeoTIFF tiles of 10 km (UTM 18N), each tile's header and its mask at its overview of 24 m pixels (the coarsest no wider than 50 m), and 12 tiles of 50 km over the southern peninsula (`Haiti_Tiburon_Full_*`, 2.4 GB) that have no overviews, so a mask of theirs is the whole file read: for them, the four departments they span (Grand'Anse, Nippes, Sud and Sud-Est) as Natural Earth's 1:10m administrative areas (v5.1.2) draw them, claimed, not checked against data; the part of Ouest only they cover is in neither. Its licence isn't stated."
+notes = "The country's airborne-lidar bare-earth model, 1.5 m, flown 2014 to 2016, in OpenTopography's bucket: 357 cloud-optimized GeoTIFF tiles of 10 km (UTM 18N), each tile's header and its mask at its overview of 24 m pixels (the coarsest no wider than 50 m), and 12 tiles of 50 km over the southern peninsula (`Haiti_Tiburon_Full_*`, 2.4 GB) that have no overviews, so a mask of theirs is the whole file read: for them, the four departments they span (Grand'Anse, Nippes, Sud and Sud-Est) as Natural Earth's 1:10m administrative areas (v5.1.2) draw them, claimed, not checked against data; the part of Ouest only they cover is in neither. Its licence isn't stated."
 
 [[piece]]
 id = "dtm"

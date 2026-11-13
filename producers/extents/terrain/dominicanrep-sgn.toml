@@ -1,6 +1,6 @@
 name = "Gran Santo Domingo lidar (SGN)"
 credit = "Servicio Geológico Nacional, República Dominicana"
-licence = "distribution not authorised (\"no ... expresamente autorizada\")"
+licence = "distribution not authorized (\"no ... expresamente autorizada\")"
 licence_url = "https://sgn.gob.do/images/docs/proyectos/realizados/Memoria_Geologia_del_Gran_Santo_Domingo_GSD.pdf"
 source = "https://sgn.gob.do/images/docs/proyectos/realizados/Memoria_Geologia_del_Gran_Santo_Domingo_GSD.pdf"
 theme = "terrain"

@@ -402,7 +402,7 @@ class RangeFile:
 
 def read_arcgis(net, b, tol_deg):
     """An ArcGIS REST layer's features (a FeatureServer or MapServer layer, or an ImageServer's
-    catalogue), in WGS 84, generalised by the service: as GeoJSON where the layer offers it, as
+    catalogue), in WGS 84, generalized by the service: as GeoJSON where the layer offers it, as
     Esri JSON otherwise (an ImageServer offers only that)."""
     layer = net.json(b["url"].rstrip("/") + "?f=json")
     oid = layer.get("objectIdField") or next((f["name"] for f in layer.get("fields") or [] if f.get("type") == "esriFieldTypeOID"), "OBJECTID")
@@ -1195,7 +1195,7 @@ def block_pieces(net, decl, b, today):
         if not geom.is_valid:
             repaired += 1
             geom = shapely.make_valid(geom)
-        # (Each feature generalised to a quarter of the tolerance before they're dissolved, as
+        # (Each feature generalized to a quarter of the tolerance before they're dissolved, as
         # `arcgis` asks its service to: a source mask's pixel staircases, RGE ALTI's 290,932 polygons
         # of some 120 million positions, took hours to dissolve and tidy unsimplified.)
         crs = b.get("crs", "OGC:CRS84")

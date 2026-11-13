@@ -5,7 +5,7 @@ licence_url = "https://portalrediam.cica.es/geonetwork/srv/api/records/fb916b4f-
 source = "https://portalrediam.cica.es/geonetwork/srv/api/records/fb916b4f-76c4-4d8f-a3d2-4fd3641e509d"
 theme = "terrain"
 availability = "open"
-notes = "Andalusia's 1 m bare-earth model, made by the REDIAM from the PNOA's second-coverage lidar of Andalusia (flown July 2020 to May 2021), as one cloud-optimised GeoTIFF of the region on its public file share (COG/Mos_1m/Mos_MDT_1m_COG.tif, 202,860,702,018 bytes, ETRS89 UTM 30, orthometric heights; the link the record gives redirects to the share): the file's own header and its mask at an overview say where it has data and at what cell. The same model is in the share as quadrants too (Cuadrantes_1m), and at 5 m (Mos_5m), left out."
+notes = "Andalusia's 1 m bare-earth model, made by the REDIAM from the PNOA's second-coverage lidar of Andalusia (flown July 2020 to May 2021), as one cloud-optimized GeoTIFF of the region on its public file share (COG/Mos_1m/Mos_MDT_1m_COG.tif, 202,860,702,018 bytes, ETRS89 UTM 30, orthometric heights; the link the record gives redirects to the share): the file's own header and its mask at an overview say where it has data and at what cell. The same model is in the share as quadrants too (Cuadrantes_1m), and at 5 m (Mos_5m), left out."
 
 [[piece]]
 id = "mdt-1m"

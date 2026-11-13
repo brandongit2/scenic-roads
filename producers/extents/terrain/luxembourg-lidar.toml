@@ -5,7 +5,7 @@ licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 source = "https://data.public.lu/api/1/datasets/lidar-2024-releve-3d-du-territoire-luxembourgeois/"
 theme = "terrain"
 availability = "open"
-notes = "The country's bare-earth model (MNT) and surface model (MNS), each one cloud-optimised GeoTIFF of 0.5 m (40.1 and 42.8 GB): each file's own header and an overview say where it has data and at what cell. Flown February to April 2024."
+notes = "The country's bare-earth model (MNT) and surface model (MNS), each one cloud-optimized GeoTIFF of 0.5 m (40.1 and 42.8 GB): each file's own header and an overview say where it has data and at what cell. Flown February to April 2024."
 
 [[piece]]
 id = "mnt"

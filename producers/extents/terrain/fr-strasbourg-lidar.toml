@@ -5,7 +5,7 @@ licence_url = "https://www.etalab.gouv.fr/wp-content/uploads/2017/04/ETALAB-Lice
 source = "https://data.strasbourg.eu/api/explore/v2.1/catalog/datasets/raster_elevation_sol_2025"
 theme = "terrain"
 availability = "open"
-notes = "The Eurométropole's 0.5 m bare-earth model (Raster d'élévation SOL, MNT, millésime 2025) from its lidar flown in March 2025 (at least 100 points per m² emitted), one cloud-optimised GeoTIFF (5.8 GB): its own header and an overview say where it has data and at what cell. Its grid is LiDAR HD's, its year newer (LiDAR HD's tiles here: 2022)."
+notes = "The Eurométropole's 0.5 m bare-earth model (Raster d'élévation SOL, MNT, millésime 2025) from its lidar flown in March 2025 (at least 100 points per m² emitted), one cloud-optimized GeoTIFF (5.8 GB): its own header and an overview say where it has data and at what cell. Its grid is LiDAR HD's, its year newer (LiDAR HD's tiles here: 2022)."
 
 [[piece]]
 id = "mnt"

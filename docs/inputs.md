@@ -1551,7 +1551,7 @@ a row's and a column's, the rest a point's: the same bits as `Projection::projec
   alike); 3DEP 1 m takes code 8. Their heights reach EGM2008 by the existing
   chains (CGVD2013 by CGG2013a, NAVD88 by GEOID18).
 - **REMA** (#601, the owner's approval of 25 Oct; staged in `producers/elevation/rema.toml`, not yet
-  in the inputs folder): PGC's Reference Elevation Model of Antarctica, its 32 m mosaic v2.0, cloud-optimised
+  in the inputs folder): PGC's Reference Elevation Model of Antarctica, its 32 m mosaic v2.0, cloud-optimized
   GeoTIFFs in EPSG:3031 on AWS's open data (`pgc-opendata-dems`, CC-BY-4.0; PGC's acknowledgement
   and the mosaic's citation in its credit). Ranked after GLO-30 and the Terrarium tiles (`rank = 3`,
   `code = 9`, `roadcore::NDEM` raised to 10 for it), so it serves only in GLO-30's voids where the
@@ -1928,7 +1928,7 @@ a new source of a kind it knows is a new declaration, no code):
 
 | `method` | Reads | Class |
 |---|---|---|
-| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on), the pages coming to the count the service gives first (`returnCountOnly`), so none is skipped or read twice at a page's edge: a layer whose rows share an id (a join), on a page or across its edge, is refused, in WGS 84, generalised by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it (a position's z and m dropped), as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
+| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on), the pages coming to the count the service gives first (`returnCountOnly`), so none is skipped or read twice at a page's edge: a layer whose rows share an id (a join), on a page or across its edge, is refused, in WGS 84, generalized by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it (a position's z and m dropped), as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
 | `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links up to the first page with no items, a link without the page size asked for given it back, a link back to a page already read stopping the run), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
 | `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once, by their `alternate` links: never `up` or `self`, back to the service's every dataset): each file it links with its own `bbox` (`latfirst = true` where a feed writes it latitude first), else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
 | `wfs` | a WFS feature type (GetFeature, paged by `startIndex`, every feature counted, those without geometry too; as GeoJSON, or GML where the server answers only that, the `format` asked for; `version` 2.0.0 or a 1.x's; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
@@ -1954,14 +1954,14 @@ the owner's of 13 Nov; cached answers count: a source over it stops the run, nev
 download). Headers, indexes and overviews come first; a source's data is read whole only where
 that's the only way to its extent and the source is small. No fetch waits for a go-ahead; a run
 reading a large index goes to the Mac mini (tools/dev/agent-rules.md). It
-then makes each piece: its features repaired where invalid (counted in `read`), each generalised to
+then makes each piece: its features repaired where invalid (counted in `read`), each generalized to
 a quarter of the tolerance (as `arcgis` asks its service to: RGE ALTI's 290,932 source polygons of
 some 120 million positions took hours to dissolve unsimplified), dissolved in their
 own CRS (a tile index's squares become their outline), brought to longitude and latitude with
 their edges densified, cut at the antimeridian and closed along 90° round a pole
 (`extents.ring_region`), gaps narrower than half the tolerance closed (a quarter's buffer out and
-back: the service's generalisation of neighbouring features apart leaves no wider ones; a narrow
-gap of the publisher's own that the generalisation widens in places can close only at its ends,
+back: the service's generalization of neighbouring features apart leaves no wider ones; a narrow
+gap of the publisher's own that the generalization widens in places can close only at its ends,
 leaving a hole: two, of 0.4 km² in all, in the BEV's Styrian flight areas of 2010-11),
 simplified to the tolerance with the topology kept, holes and specks smaller than the tolerance
 squared dropped, coordinates to 5 decimals (about a metre). So an outline is within one and three quarters
@@ -2312,7 +2312,7 @@ declarations are made and staged there.
   its staged index's files' URLs (a path-style S3 URL's host with its bucket, the host being
   shared); its `name` and `credit`, whole, and up to their first `,` `(` `:` `;` when that's two
   words or more; its name's first two words in any case (as written when both are plain
-  capitalised words, "Terrain Tiles", common in lower case); and its id, the file's first word, as
+  capitalized words, "Terrain Tiles", common in lower case); and its id, the file's first word, as
   the name writes it and as a whole word, when it's a word of the name, five letters or more and no
   role's, format's or encoding's word (no `[data]` value of any declaration): today `Overture`,
   `CanVec`, `NALCMS`. A host is found where it isn't part of a longer word (Geneva's `ge.ch` isn't in
