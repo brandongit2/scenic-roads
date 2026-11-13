@@ -16,9 +16,10 @@ A reader per kind of service, none per source:
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
            `crs`
-  raster   each file's own header and an overview, by range request (`urls`, or `stac` and `asset`:
-           a STAC collection's items' files): its bounds and where it has data, at the coarsest
-           overview, or with `mask_m` at the coarsest whose pixels are no wider than that
+  raster   each file's own header and an overview, by range request (`urls`; `list` and `pattern`,
+           a listing's names as `listing` reads one; or `stac` and `asset`, a STAC collection's
+           items' files): its bounds and where it has data, at the coarsest overview, or with
+           `mask_m` at the coarsest whose pixels are no wider than that (a file with none stops it)
   none     no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
 
 Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, and no
@@ -228,7 +229,13 @@ def read_arcgis(net, b, tol_deg):
     oid = layer.get("objectIdField") or next((f["name"] for f in layer.get("fields") or [] if f.get("type") == "esriFieldTypeOID"), "OBJECTID")
     esri = "geojson" not in (layer.get("supportedQueryFormats") or "").lower()
     fields = sorted(wanted_fields(b) | {oid})
-    page, last = int(b.get("page", 500)), None
+    base = b["url"].rstrip("/") + "/query?"
+    # (The features the filter holds, counted by the service first: the pages must come to as many,
+    # so none was skipped or read twice at a page's edge.)
+    count = net.json(base + urllib.parse.urlencode({"where": b.get("where", "1=1"), "returnCountOnly": "true", "f": "json"}))
+    if "error" in count or not isinstance(count.get("count"), int):
+        sys.exit(f"{b['url']}: no count of its features: {count.get('error', count)}")
+    page, last, seen = int(b.get("page", 500)), None, 0
     while True:
         # (Paged by the object id, each page after the last one's: the same features in the same
         # order each run, and no deep offsets, which a catalogue of 100,000 items times out on.)
@@ -236,25 +243,27 @@ def read_arcgis(net, b, tol_deg):
         q = {"where": where, "outFields": ",".join(fields), "outSR": "4326", "f": "json" if esri else "geojson",
              "returnGeometry": "true", "geometryPrecision": "6", "maxAllowableOffset": f"{tol_deg / 4:.7f}",
              "orderByFields": oid, "resultRecordCount": str(page)}
-        d = net.json(b["url"].rstrip("/") + "/query?" + urllib.parse.urlencode(q))
+        d = net.json(base + urllib.parse.urlencode(q))
         if "error" in d:
             sys.exit(f"{b['url']}: {d['error']}")
         feats = d.get("features") or []
+        ids = [(f.get("attributes" if esri else "properties") or {}).get(oid, f.get("id")) for f in feats]
+        if None in ids or len(set(ids)) < len(ids) or (last is not None and any(i <= last for i in ids)):
+            # (A joined layer's rows share their table's id: paging by it would skip rows.)
+            sys.exit(f"{b['url']}: its features' {oid} isn't one each: can't page by it")
         for f in feats:
             props = f.get("attributes" if esri else "properties") or {}
             g = esri_shape(f.get("geometry")) if esri else (sg.shape(f["geometry"]) if f.get("geometry") else None)
             if g is not None:
                 yield g, props
-        if not feats:
-            return
-        ids = [(f.get("attributes" if esri else "properties") or {}).get(oid, f.get("id")) for f in feats]
-        if None in ids or len(set(ids)) < len(ids):
-            # (A joined layer's rows share their table's id: paging by it would skip rows.)
-            sys.exit(f"{b['url']}: its features' {oid} isn't one each: can't page by it")
-        last = max(ids)
+        seen += len(feats)
         more = d.get("exceededTransferLimit") or (d.get("properties") or {}).get("exceededTransferLimit")
-        if len(feats) < page and not more:
-            return
+        if not feats or (len(feats) < page and not more):
+            break
+        last = max(ids)
+    if seen != count["count"]:
+        sys.exit(f"{b['url']}: {seen} features read in pages, where the service counts {count['count']}: "
+                 f"its {oid} doesn't page (rows sharing one, or the layer changed while read)")
 
 
 def esri_shape(g):
@@ -305,7 +314,7 @@ def read_wfs(net, b, _tol):
         feats = d.get("features") or []
         for f in feats:
             if f.get("geometry"):
-                yield xy(sg.shape(f["geometry"]), b), f.get("properties") or {}
+                yield (lambda f=f: xy(sg.shape(f["geometry"]), b)), f.get("properties") or {}
         off += len(feats)
         if len(feats) < page:
             return
@@ -336,16 +345,18 @@ def read_file(net, b, _tol):
             b["crs"] = z.read(prj).decode("utf-8", "replace")
         r = shapefile.Reader(**opened)
         names = [f[0] for f in r.fields[1:]]
-        for sr in r.iterShapeRecords():
-            if sr.shape.shapeType:
-                yield sg.shape(sr.shape.__geo_interface__), dict(zip(names, sr.record))
+        def shape(k):
+            sh = r.shape(k)
+            return sg.shape(sh.__geo_interface__) if sh.shapeType else None
+        for k, rec in enumerate(r.iterRecords()):
+            yield (lambda k=k: shape(k)), dict(zip(names, rec))
         return
     d = json.loads(body)
     if answer_crs(d) and "crs" not in b:
         b["crs"] = answer_crs(d)
     for f in d["features"]:
         if f.get("geometry"):
-            yield xy(sg.shape(f["geometry"]), b), f.get("properties") or {}
+            yield (lambda f=f: xy(sg.shape(f["geometry"]), b)), f.get("properties") or {}
 
 
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -356,7 +367,7 @@ def read_atom(net, b, _tol):
     """An ATOM download feed (an INSPIRE download service's): each file it links (`rel="section"`,
     or any non-feed link) with its own `bbox` attribute (west south east north), else each entry's
     GeoRSS polygon or box (latitude first, as GeoRSS writes them). `follow = true` reads the
-    feeds its entries link (`type="application/atom+xml"`) too, each once. A file's properties: its
+    feeds its entries link (`type="application/atom+xml"`, `rel="alternate"`) too, each once. A file's properties: its
     entry's `title`, `updated` and `id`, and its own `href`, `title` and `length`."""
     todo, seen = [b["url"]], set()
     while todo:
@@ -371,7 +382,9 @@ def read_atom(net, b, _tol):
             for l in e.iter(ATOM + "link"):
                 kind = l.get("type") or ""
                 if "atom" in kind:
-                    if b.get("follow"):
+                    # (An entry's own feed, `alternate`: never `up` or `self`, which lead back to the
+                    # service's top, every dataset it has.)
+                    if b.get("follow") and l.get("rel", "alternate") == "alternate":
                         todo.append(l.get("href"))
                     continue
                 if l.get("bbox"):
@@ -676,6 +689,12 @@ def block_pieces(net, decl, b, today):
     for geom, props in READERS[method](net, b, tol_deg):
         if any(str(props.get(k)) not in [str(x) for x in want] for k, want in flt.items()):
             continue
+        if callable(geom):
+            # (A reader's geometry built only for the features the filter keeps: a national file's
+            # thousands of areas for the one a claim names.)
+            geom = geom()
+            if geom is None:
+                continue
         n += 1
         by = tuple(str(props.get(k)) for k in b.get("by", []))
         ms = {k: metric(s, props) for k, s in specs.items()}

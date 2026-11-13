@@ -236,6 +236,15 @@ class Pieces(unittest.TestCase):
             del extents.READERS["fake"], extents.METHOD_CLASS["fake"]
         return [f for f, _ in out if f], [r for _, r in out if r]
 
+    def test_a_readers_geometry_is_built_only_for_the_features_the_filter_keeps(self):
+        def never():
+            raise AssertionError("a filtered-out feature's geometry was built")
+        feats = [(never, {"adm": "A"}), (lambda: sg.box(0, 0, 1, 1), {"adm": "B"})]
+        block = {"id": "dtm", "method": "fake", "class": "claimed", "url": "u", "filter": {"adm": ["B"]}, "metrics": {}}
+        pieces, [read] = self.run_block(block, feats)
+        self.assertEqual(len(pieces), 1)
+        self.assertEqual(read["features"], 1)
+
     def test_features_of_one_reading_are_one_piece(self):
         feats = [(sg.box(0, 0, 1, 1), {"y": 2020}), (sg.box(1, 0, 2, 1), {"y": 2020}), (sg.box(5, 5, 6, 6), {"y": 2021})]
         block = {"id": "dtm", "method": "fake", "class": "index", "url": "u", "metrics": {"surface": "ground", "year": {"field": "y", "date": "year"}}}
@@ -298,6 +307,24 @@ class ArcGIS(unittest.TestCase):
              "orderByFields": "OBJECTID", "resultRecordCount": "2"}
         return self.LAYER + "/query?" + extents.urllib.parse.urlencode(q)
 
+    def count(self, where, n):
+        q = {"where": where, "returnCountOnly": "true", "f": "json"}
+        return {self.LAYER + "/query?" + extents.urllib.parse.urlencode(q): json.dumps({"count": n}).encode()}
+
+    ESRI = {"fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}], "capabilities": "Image,Catalog"}
+
+    def pages(self, *pages, count):
+        """A catalogue answering `pages` (each its features' ids) two to a page, counting `count`."""
+        ring = [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]]
+        answers = {self.LAYER + "?f=json": json.dumps(self.ESRI).encode(), **self.count("1=1", count)}
+        last = None
+        for k, ids in enumerate(pages):
+            where = "1=1" if last is None else f"(1=1) AND OBJECTID > {last}"
+            feats = [{"attributes": {"OBJECTID": i, "Name": str(i)}, "geometry": {"rings": [ring]}} for i in ids]
+            answers[self.query(where, "json")] = json.dumps({"features": feats, "exceededTransferLimit": k < len(pages) - 1}).encode()
+            last = max(ids) if ids else last
+        return FakeNet(answers)
+
     def test_an_image_servers_catalogue_reads_as_esri_json_paged_by_object_id(self):
         ring = lambda x: [[x, 0], [x, 1], [x + 1, 1], [x + 1, 0], [x, 0]]
         # The second item has a hole (Esri JSON: exterior clockwise, the hole counter-clockwise).
@@ -308,6 +335,7 @@ class ArcGIS(unittest.TestCase):
         page2 = {"features": [{"attributes": {"OBJECTID": 9, "Name": "c"}, "geometry": None}]}
         net = FakeNet({
             self.LAYER + "?f=json": b'{"fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}], "capabilities": "Image,Catalog"}',
+            **self.count("Category = 1", 3),
             self.query("Category = 1", "json"): json.dumps(page1).encode(),
             self.query("(Category = 1) AND OBJECTID > 7", "json"): json.dumps(page2).encode(),
         })
@@ -321,10 +349,44 @@ class ArcGIS(unittest.TestCase):
     def test_a_layer_offering_geojson_is_read_as_geojson(self):
         net = FakeNet({
             self.LAYER + "?f=json": b'{"objectIdField": "OBJECTID", "supportedQueryFormats": "JSON, geoJSON"}',
+            **self.count("1=1", 1),
             self.query("1=1", "geojson"): b'{"features": [{"id": 1, "properties": {"OBJECTID": 1, "Name": "a"}, "geometry": {"type": "Polygon", "coordinates": [[[0,0],[1,0],[1,1],[0,0]]]}}]}',
         })
         got = list(extents.read_arcgis(net, {"url": self.LAYER, "page": 2, "name": "Name", "by": ["Name"]}, 50 / extents.M_PER_DEG))
         self.assertEqual([p["Name"] for _, p in got], ["a"])
+
+
+    def test_pages_by_object_id_come_to_the_services_count(self):
+        net = self.pages([3, 7], [9, 12], [], count=4)
+        got = list(extents.read_arcgis(net, {"url": self.LAYER, "page": 2, "name": "Name", "by": ["Name"]}, 50 / extents.M_PER_DEG))
+        self.assertEqual([p["Name"] for _, p in got], ["3", "7", "9", "12"])
+
+    def test_rows_sharing_an_id_are_refused_within_a_page_and_across_its_edge(self):
+        b = {"url": self.LAYER, "page": 2, "name": "Name", "by": ["Name"]}
+        # Two rows of id 7 on one page (a join's).
+        with self.assertRaises(SystemExit) as e:
+            list(extents.read_arcgis(self.pages([7, 7], count=2), b, 50 / extents.M_PER_DEG))
+        self.assertIn("isn't one each", str(e.exception))
+        # The second row of id 7 the next page's first, which "> 7" skips: the count tells.
+        with self.assertRaises(SystemExit) as e:
+            list(extents.read_arcgis(self.pages([3, 7], [9], count=4), b, 50 / extents.M_PER_DEG))
+        self.assertIn("3 features read in pages, where the service counts 4", str(e.exception))
+
+    def test_a_real_footprint_with_holes_reads_as_its_exterior_less_its_holes(self):
+        # Yukon's catalogue item 456: an exterior wound clockwise and three holes counter-clockwise
+        # (ArcGIS's rule), the even-odd join the same as by their windings.
+        with open(os.path.join(os.path.dirname(__file__), "test_esri_holes.json")) as f:
+            rings = json.load(f)["geometry"]["rings"]
+        g = extents.esri_shape({"rings": rings})
+        windings = [sg.LinearRing(r).is_ccw for r in rings]
+        self.assertEqual(windings, [False, True, True, True])
+        by_winding = sg.Polygon(rings[0], rings[1:])
+        self.assertTrue(by_winding.is_valid)
+        [part] = getattr(g, "geoms", [g])
+        self.assertEqual(len(part.interiors), 3)
+        self.assertAlmostEqual(g.symmetric_difference(by_winding).area / by_winding.area, 0, places=9)
+        for hole in rings[1:]:
+            self.assertFalse(g.contains(sg.Polygon(hole).representative_point()))
 
 
 class Atom(unittest.TestCase):
@@ -340,7 +402,8 @@ class Atom(unittest.TestCase):
     </feed>"""
     SUB = b"""<feed xmlns="http://www.w3.org/2005/Atom" xmlns:georss="http://www.georss.org/georss">
       <entry><title>zone</title><updated>2024-05-01T00:00:00Z</updated><georss:box>45 -73 46 -72</georss:box>
-        <link href="https://h/top.xml" rel="up" type="application/atom+xml"/></entry>
+        <link href="https://h/top.xml" rel="up" type="application/atom+xml"/>
+        <link href="https://h/other.xml" rel="up" type="application/atom+xml"/></entry>
     </feed>"""
 
     def test_files_by_their_bbox_entries_by_their_polygon_and_feeds_followed_once(self):
