@@ -5,8 +5,8 @@ Commons, stored in web/src/flags/ with each file's source, author and licence (i
 
   uv run --project producers python producers/flags/fetch.py [--server http://localhost:7311] [--out web/src/flags]
 
-The regions come from a map server (/api/regions and /api/regions/outlines?z=4: each region's
-first osm: relation and its area's ISO 3166 code). A region's item is the Wikidata item naming its
+The regions come from a map server (/api/regions: each region's first osm: relation and its
+area's ISO 3166 code). A region's item is the Wikidata item naming its
 relation (P402), else its ISO 3166-2 code (P300); a country's (folders') by ISO 3166-1 (P297). Its
 image: its current flag (P41, preferred rank first, none ended by P582), else coat of arms (P94),
 else seal (P158); none of those, no file (the list shows the placeholder). Commons' SVG as is up to
@@ -103,7 +103,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(os.path.dirname(__file__), '..', '..', 'web', 'src', 'flags'))
     a = ap.parse_args()
     regions = json.loads(get(a.server + '/api/regions'))['regions']
-    areas = {f['properties']['region']: f['properties'].get('area') or {} for f in json.loads(get(a.server + '/api/regions/outlines?z=4'))['features']}
+    areas = {r['id']: r.get('area') or {} for r in regions}
     # (Only the first osm: part names a region's area, as the server's `area` does.)
     rels = sorted({next((p[4:] for p in r['outline'] if re.fullmatch(r'osm:\d+', p)), None) for r in regions} - {None})
     isos = sorted({x['iso'] for x in areas.values() if '-' in (x.get('iso') or '')})

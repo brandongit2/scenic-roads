@@ -1932,7 +1932,6 @@ dependencies = [
  "coordwire",
  "det",
  "flate2",
- "geos",
  "image-webp",
  "inputs",
  "jobrt",

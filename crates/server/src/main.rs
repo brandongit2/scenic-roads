@@ -72,8 +72,6 @@ pub struct AppState {
     home: PathBuf,
     /// The outlines of the latest OSM pass (the Regions panel).
     pub areas: regions::Areas,
-    /// The regions' outlines simplified per zoom (/api/regions/outlines).
-    pub outlines: regions::Outlines,
     /// The user's descriptions, laid over popup details.
     pub descriptions: Arc<descriptions::Descriptions>,
     /// The source extents' accepted version, which the data-available layers are scored from.
@@ -243,7 +241,6 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         rail_freq: Mutex::new(None),
         home: home.to_owned(),
         areas: regions::Areas::default(),
-        outlines: regions::Outlines::default(),
         descriptions: descriptions::Descriptions::new(home),
         available: available::Available::new(home),
         places: Default::default(),
@@ -428,7 +425,6 @@ async fn serve(cli: Cli) -> Result<()> {
         rail_freq: Mutex::new(None),
         home: home.clone(),
         areas: regions::Areas::default(),
-        outlines: regions::Outlines::default(),
         descriptions: descs,
         available: avail,
         places: Default::default(),
@@ -471,6 +467,7 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/tiles/base/{z}/{x}/{y}", get(tiles::base_tile))
         .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tiles::tree_tile))
         .route("/tiles/buildings/{z}/{x}/{y}", get(tiles::building_tile))
+        .route("/tiles/regions/{z}/{x}/{y}", get(tiles::region_tile))
         .route("/tiles/buildings-field/{z}/{x}/{y}", get(tiles::building_field_tile))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
@@ -503,7 +500,7 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/api/layer/{name}", get(layer_h))
         .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list))
-        .route("/api/regions/outlines", get(regions::outlines))
+        .route("/api/regions/at", get(regions::at))
         .route("/api/downloads", get(downloads::get_status))
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))

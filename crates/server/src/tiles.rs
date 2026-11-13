@@ -95,6 +95,16 @@ pub async fn building_tile(
     plain(s, "buildings".into(), z, x, y, q, headers, "application/x-protobuf").await
 }
 
+/// The region layer (codecs::regionlayer): gzip'd MVT, layer `borders`, served as stored (no names).
+pub async fn region_tile(
+    State(s): State<S>,
+    Path((z, x, y)): Path<(u8, u32, u32)>,
+    RawQuery(q): RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    plain(s, codecs::regionlayer::LAYER.into(), z, x, y, q, headers, "application/x-protobuf").await
+}
+
 pub async fn tree_tile(
     State(s): State<S>,
     Path((var, z, x, y)): Path<(String, u8, u32, u32)>,
