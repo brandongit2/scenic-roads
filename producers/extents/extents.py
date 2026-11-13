@@ -13,9 +13,9 @@ A reader per kind of service, none per source:
            GeoJSON or GML (`format`; `version`)
   file     an index file fetched whole (`url`): GeoJSON, GML or a GeoPackage (`layer`), or a zip
            of one of them or of a shapefile (`member`)
-  listing  a listing of georeferenced names: `url` an S3 bucket (`prefix`), a page of links, a
-           text file, the members of zips (`url` or `urls`, their central directories by range
-           request) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
+  listing  a listing of georeferenced names (`url`, or several in turn: `urls`): an S3 bucket
+           (`prefix`), a page of links, a text file, a zip's members (its central directory by
+           range request) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
            "lines", "zip", "xlsx"); `pattern`, a regular expression with the
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
@@ -548,6 +548,13 @@ def read_atom(net, b, _tol):
 
 
 def listed_names(net, b):
+    """A listing's names: of `url`, or of each of `urls` in turn (a set split into several
+    archives or pages)."""
+    for url in b.get("urls") or [b["url"]]:
+        yield from names_at(net, b, url)
+
+
+def names_at(net, b, url):
     kind = b.get("list", "s3")
     if kind == "s3":
         token = None
@@ -557,7 +564,7 @@ def listed_names(net, b):
                 q["delimiter"] = b["delimiter"]
             if token:
                 q["continuation-token"] = token
-            x = ET.fromstring(net.get(b["url"].rstrip("/") + "/?" + urllib.parse.urlencode(q)))
+            x = ET.fromstring(net.get(url.rstrip("/") + "/?" + urllib.parse.urlencode(q)))
             ns = x.tag[:x.tag.index("}") + 1] if x.tag.startswith("{") else ""
             for e in x.iter(ns + "Key"):
                 yield e.text
@@ -568,15 +575,14 @@ def listed_names(net, b):
             if not token:
                 return
     elif kind == "links":
-        yield from re.findall(r'href="([^"]+)"', net.get(b["url"]).decode("utf-8", "replace"))
+        yield from re.findall(r'href="([^"]+)"', net.get(url).decode("utf-8", "replace"))
     elif kind == "lines":
-        yield from net.get(b["url"]).decode("utf-8", "replace").split()
+        yield from net.get(url).decode("utf-8", "replace").split()
     elif kind == "zip":
-        # (Each zip's central directory, by range request: its members' names, none of its data.)
-        for url in b.get("urls") or [b["url"]]:
-            yield from zipfile.ZipFile(RangeFile(net, url)).namelist()
+        # (A zip's central directory, by range request: its members' names, none of its data.)
+        yield from zipfile.ZipFile(RangeFile(net, url)).namelist()
     elif kind == "xlsx":
-        yield from sheet_rows(net.get(b["url"]), b.get("sheet"))
+        yield from sheet_rows(net.get(url), b.get("sheet"))
     else:
         sys.exit(f"unknown list {kind!r}")
 
