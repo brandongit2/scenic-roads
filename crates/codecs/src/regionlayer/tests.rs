@@ -6,6 +6,7 @@
 use super::simplify::{meet, simplify, Simplified};
 use super::topo::{build, Topology};
 use super::*;
+use det::Det;
 use std::collections::HashMap;
 
 /// E7 of degrees.
@@ -580,13 +581,13 @@ fn holds(r: &Region, p: [i32; 2]) -> bool {
 
 /// Metres from `p` to segment a–b (E7, a local plane at p).
 fn metres(p: [i32; 2], a: [i32; 2], b: [i32; 2]) -> f64 {
-    let c = (p[1] as f64 * 1e-7).to_radians().cos();
+    let c = (p[1] as f64 * 1e-7).to_radians().dcos();
     let f = |q: [i32; 2]| [(q[0] - p[0]) as f64 * 0.011_132 * c, (q[1] - p[1]) as f64 * 0.011_132];
     let (a, b) = (f(a), f(b));
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let l2 = dx * dx + dy * dy;
     let t = if l2 == 0.0 { 0.0 } else { (-(a[0] * dx + a[1] * dy) / l2).clamp(0.0, 1.0) };
-    (a[0] + dx * t).hypot(a[1] + dy * t)
+    (a[0] + dx * t).dhypot(a[1] + dy * t)
 }
 
 #[test]
