@@ -607,7 +607,8 @@ def names_at(net, b, url):
             if not token:
                 return
     elif kind == "links":
-        yield from re.findall(r'href="([^"]+)"', net.get(url).decode("utf-8", "replace"))
+        # (An attribute's name in any case: an IIS directory listing writes HREF.)
+        yield from re.findall(r'href="([^"]+)"', net.get(url).decode("utf-8", "replace"), re.I)
     elif kind == "lines":
         yield from net.get(url).decode("utf-8", "replace").split()
     elif kind == "zip":

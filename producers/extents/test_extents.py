@@ -410,6 +410,13 @@ class Listing(unittest.TestCase):
         # The digits are the sheet's place, not its properties.
         self.assertEqual(got[0][1], {})
 
+    def test_a_page_s_links_in_either_case(self):
+        # An IIS directory listing writes its links' attribute in capitals.
+        net = FakeNet({"u": b'<A HREF="/EL/ETRS89_1325_3750.tif">a</A> <a href="/EL/ETRS89_1350_3750.tif">b</a> <A HREF="/EL/x.tfw">c</A>'})
+        b = {"url": "u", "list": "links", "pattern": r"ETRS89_(?P<x>\d+)_(?P<y>\d+)\.tif$", "unit": 100, "size": 2500}
+        self.assertEqual(sorted(g.bounds for g, _ in extents.read_listing(net, b, 0)),
+                         [(132500.0, 375000.0, 135000.0, 377500.0), (135000.0, 375000.0, 137500.0, 377500.0)])
+
 
 class ArcGIS(unittest.TestCase):
     LAYER = "https://h/rest/services/X/ImageServer"
