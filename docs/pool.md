@@ -1417,8 +1417,21 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   function per step (`agent::steps::writes`) that both the job's `Out` (`Out::open` for its step)
   and the merge use; `Out` refuses a name outside before it lands. An entry outside its write-set
   from a member on a newer app is **held** (`check_from`, `records::HOLD`) until the lead runs that
-  app; otherwise it's refused (with why, in the records' `rejected`). The lint `tests/write_sets.rs`
-  gates publish.
+  app; otherwise it's refused (with why, in the records' `rejected`). So is one GC removed a name
+  of under its lease (`agent::gcqueue::refusal`), and a redo not the lead's. The lint
+  `tests/write_sets.rs` gates publish.
+- **Work the merge doesn't take is done again:** the coordinator holds a job's targets done at
+  their keys from the hand-off's acceptance (`Sched::done`, docs/coordinator.md: never granted
+  again while a plan made before the record was read offers them at those keys); the merge's result names the
+  targets of the entries it refused, or passed over (below) while the records hold them under
+  other keys (`records::Merged::again`, weighed by `Keys::holds` once the whole merge is through),
+  and the lead's coordinator lets go of exactly those (step, target) entries at those keys
+  (`Coordinator::again`), so the next ask grants them again; the status's "done (its record not
+  read yet)" and the forecast's work to come follow. A held entry keeps them done (its record
+  is read later). Each refusal is in the history ("refused", on the build page as a problem,
+  with why) and the log ("merged 0 entries (0 passed over, 1 refused; 1 target to do again)").
+  Nothing stops a job whose hand-off is refused every time from coming round again: each round
+  shows.
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
   lead's whose entry carries only a done record, merged only by the lead whose member it is
   (`agent::pool::by_its_lead`).
@@ -2783,7 +2796,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
   backoff ("nothing offered is free to take: 1 done (its record not read yet)": offered by a plan
   made from records read before its job's hand-off was merged, such as one under way as the job
   ended or while the merge holds the entry; never granted again, and gone at the first plan that
-  doesn't offer it at that key), steps offered but not to this Mac (the
+  doesn't offer it at that key, or as soon as the merge refuses its hand-off or passes it over with
+  the records under another key: `Coordinator::again`), steps offered but not to this Mac (the
   lead's own, a step it doesn't run; `Rule::Away`: "3 steps offered are the lead's alone:
   names-todo, rail, pack"), or no job offered at all (`Rule::Empty`, also while the plan has no
   pass). The lead's status words the last two with the plan's waits (`flags::nothing_words`, each

@@ -1851,6 +1851,8 @@ function eventText(m, e, k = 1) {
     case "done": return [`${who} handed back ${what}, ${dur(e.secs || 0)} after taking it`, ""];
     case "fail": return [`${who}'s ${what} ${/^stopped/.test(e.note) ? e.note : `failed: ${e.note}`}`, /^stopped/.test(e.note) ? "warn" : "bad"];
     case "lapse": return [`${who} went quiet: its lease on ${e.note || what} lapsed and the work is offered again`, "warn"];
+    // (The lead's merge refused a hand-off: its work isn't in the records, offered again.)
+    case "refused": return [`${who}'s hand-off of ${what} was refused (${e.note}): offered again`, "bad"];
     case "task": return [k > 1 ? `${who} did ${plural(k, "task")}` : `${who} did a task${t[0] ? ` (${t[0]})` : ""} in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-back": return [`${who}: a task given back (${e.note})`, "warn"];

@@ -163,7 +163,9 @@ pub struct Sched {
     /// (such as one under way as the job ended) still offers it at that key. Never granted again meanwhile
     /// (`pack`, Coordinator::hold_for), said "done (its record not read yet)" in a refusal
     /// (`Refused::words`), and no work to come in the forecast (crate::agent::forecast::unread);
-    /// let go by the first plan that doesn't offer it at that key (Coordinator::offer).
+    /// let go by the first plan that doesn't offer it at that key (Coordinator::offer), or as the
+    /// lead's merge refuses its hand-off or passes it over with the records under another key: its
+    /// record never to be read (Coordinator::again).
     pub done: BTreeMap<(String, String), String>,
     /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
     /// it again for an hour, doubling each time.

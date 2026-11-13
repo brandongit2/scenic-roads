@@ -195,7 +195,26 @@ impl Keys {
 
     /// The key recorded for `target` of a per-target step.
     pub fn recorded(&self, step: &str, target: &str) -> Option<&str> {
-        let m = match current(step) {
+        self.of(step)?.get(target).map(String::as_str)
+    }
+
+    /// Whether they hold step `step`'s target `t` done under key `k`, where `record` keeps a done
+    /// record: a per-target step's under its own keys, any other step's with the lo keys, a
+    /// catalogue's as the last one's. A prune's or a redo's never: their done records forget keys.
+    pub fn holds(&self, step: &str, t: &str, k: &str) -> bool {
+        match step {
+            "prune" => false,
+            s if s == crate::agent::redo::STEP => false,
+            s if s == store::catalogue::NAME => self.catalogue.as_deref() == Some(k),
+            s if s == store::catalogue::HELD_NAME => self.catalogue_held.as_deref() == Some(k),
+            s => self.of(s).unwrap_or(&self.lo).get(t).map(String::as_str) == Some(k),
+        }
+    }
+
+    /// The keys of per-target step `step` (by its current name; the lo keys for "lo"); None for a
+    /// step that keeps none per target.
+    fn of(&self, step: &str) -> Option<&BTreeMap<String, String>> {
+        Some(match current(step) {
             "terrain-hi" => &self.terrain_hi,
             "slope-hi" => &self.slope_hi,
             "terrain-deep" => &self.terrain_deep,
@@ -221,8 +240,7 @@ impl Keys {
             "polar-root" => &self.polar_root,
             "polar-points" => &self.polar_points,
             _ => return None,
-        };
-        m.get(target).map(String::as_str)
+        })
     }
 
     /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead
@@ -532,6 +550,24 @@ pub struct Merged {
     /// Of those applied, each one's job done (its key, member, step and targets), for publishing's
     /// times (crate::pubtimes).
     pub done: Vec<MergedJob>,
+    /// Of those refused or passed over, each one whose done record names targets the records don't
+    /// hold under its keys once the merge is through (`Keys::holds`): work that isn't in them, to do
+    /// again (the lead's coordinator lets go of its done entries: crate::coord::Coordinator::again).
+    pub again: Vec<Again>,
+}
+
+/// A hand-off's work the merge didn't take (`Merged::again`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Again {
+    /// The hand-off's key, its member, its job and its done record's step.
+    pub key: String,
+    pub member: String,
+    pub job: JobId,
+    pub step: String,
+    /// Its done record's targets, with their keys, that the records don't hold so.
+    pub targets: Vec<(String, String)>,
+    /// Why it was refused; None: passed over (a later lease's set the records under other keys).
+    pub refused: Option<String>,
 }
 
 /// A merged hand-off's job done: its key, member, step and targets.
@@ -540,11 +576,12 @@ pub type MergedJob = (String, String, String, Vec<String>);
 /// Merges hand-offs `entries` the records don't name yet, in lease order (one without a key, its
 /// time not a day, passed over: none is kept so): each checked and applied, or refused, or held
 /// (`HOLD`). Nothing is written: the caller saves the records, then acknowledges what the saved
-/// records name.
+/// records name. What those refused or passed over did that the records don't hold, `Merged::again`.
 pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, check: Check) -> Merged {
     let mut out = Merged::default();
     let todo: BTreeMap<(JobId, String), &Entry> =
         entries.into_iter().filter_map(|e| Some(((e.job, e.key()?), e))).filter(|((_, k), _)| !r.handles(k)).collect();
+    let mut untaken: Vec<(&Entry, String, Option<String>)> = Vec::new();
     for ((_, k), e) in todo {
         match check(e, r) {
             Ok(()) => {
@@ -559,6 +596,7 @@ pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, 
                     }
                     out.applied.push(k);
                 } else {
+                    untaken.push((e, k.clone(), None));
                     out.overtaken.push(k);
                 }
             }
@@ -566,9 +604,21 @@ pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, 
                 Some(held) => out.held.push((k, held.to_string())),
                 None => {
                     r.refuse(&k, &why);
+                    untaken.push((e, k.clone(), Some(why.clone())));
                     out.refused.push((k, why));
                 }
             },
+        }
+    }
+    // (Weighed against the records as the whole merge left them: an entry after it may have done
+    // the same targets under the same keys.)
+    // (By its lease's step, as the coordinator took its done targets: one whose done record is of
+    // another step is refused.)
+    for (e, key, refused) in untaken {
+        let Some((_, ts)) = &e.handoff.done else { continue };
+        let targets: Vec<(String, String)> = ts.iter().filter(|(t, k)| !r.keys.holds(&e.step, t, k)).cloned().collect();
+        if !targets.is_empty() {
+            out.again.push(Again { key, member: e.member.clone(), job: e.job, step: e.step.clone(), targets, refused });
         }
     }
     out
@@ -723,6 +773,60 @@ mod tests {
         assert_eq!(m.held, [(c.key().unwrap(), "a newer app's".to_string())]);
         assert!(!r.handles(&c.key().unwrap()));
         assert_eq!(merge(&mut r, [&c], &any).applied, [c.key().unwrap()]);
+    }
+
+    /// Task #1378: what the merge didn't take and the records don't hold is named to do again
+    /// (`Merged::again`): a refused entry's targets, an older lease's passed over under another key
+    /// than the records'; not an older lease's under the key the records hold, one held, nor a
+    /// refused one whose targets another entry of the same merge set under the same keys.
+    #[test]
+    fn what_the_merge_doesnt_take_is_named_to_do_again() {
+        let mut r = Records { epoch: 3, ..Default::default() };
+        let odd = |e: &Entry, _: &Records| if e.job.n % 2 == 1 { Err("bad".to_string()) } else { Ok(()) };
+        let bad = built(3, 5, "6-1-1", "k5");
+        let m = merge(&mut r, [&bad], &odd);
+        let again = Again {
+            key: bad.key().unwrap(),
+            member: bad.member.clone(),
+            job: bad.job,
+            step: "unit".into(),
+            targets: vec![("6-1-1".into(), "k5".into())],
+            refused: Some("bad".into()),
+        };
+        assert_eq!(m.again, [again]);
+        // Refused beside one setting the same target under the same key: held by the records.
+        let m = merge(&mut r, [&built(3, 6, "6-1-2", "k"), &built(3, 7, "6-1-2", "k")], &odd);
+        assert_eq!((m.refused.len(), m.again.len()), (1, 0), "{m:?}");
+        // Passed over: under the key the records hold, nothing; under another, its target.
+        merge1(&mut r, &built(3, 10, "6-1-3", "k10"), &any);
+        let (older, m) = merge1(&mut r, &built(3, 8, "6-1-3", "k10"), &any);
+        assert!(m.overtaken == [older] && m.again.is_empty(), "{m:?}");
+        let (older, m) = merge1(&mut r, &built(3, 4, "6-1-3", "k4"), &any);
+        assert_eq!(m.overtaken, [older]);
+        assert_eq!(
+            (m.again[0].targets.clone(), m.again[0].refused.clone()),
+            (vec![("6-1-3".into(), "k4".into())], None)
+        );
+        // Held: nothing to do again (its record is read later).
+        let hold = |_: &Entry, _: &Records| Err::<(), String>(format!("{HOLD}a newer app's"));
+        let (_, m) = merge1(&mut r, &built(3, 11, "6-1-4", "k11"), &hold);
+        assert!(m.held.len() == 1 && m.again.is_empty());
+    }
+
+    /// `Keys::holds` finds a done record where `record` kept it: a per-target step's, one kept with
+    /// the lo keys, a catalogue's; a prune's or a redo's never.
+    #[test]
+    fn the_keys_hold_a_done_record_where_it_was_kept() {
+        let mut k = Keys::default();
+        k.record("unit", &[("6/1/1".into(), "a".into())]);
+        k.record("terrain-root", &[("terrain-root".into(), "b".into())]);
+        k.record(store::catalogue::NAME, &[("catalog".into(), "c".into())]);
+        k.record("terrain", &[("6/1/2".into(), "d".into())]);
+        assert!(k.holds("unit", "6/1/1", "a") && !k.holds("unit", "6/1/1", "x") && !k.holds("unit", "6/1/9", "a"));
+        assert!(k.holds("terrain-root", "terrain-root", "b") && k.holds(store::catalogue::NAME, "catalog", "c"));
+        assert!(k.holds("terrain-hi", "6/1/2", "d") && k.holds("terrain", "6/1/2", "d"), "a renamed step's");
+        assert!(!k.holds("pois", "6/1/1", "a"), "another step's");
+        assert!(!k.holds("prune", "unit 6/1/1", "") && !k.holds(crate::agent::redo::STEP, "unit 6/1/1", ""));
     }
 
     /// Merges hand-off `e` alone: its key, and what the merge did.

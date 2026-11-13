@@ -917,11 +917,19 @@ pub fn said(e: &Event) -> String {
     match e {
         Event::TookUp { epoch, how } => format!("took up the records in epoch {epoch}, from {how}"),
         Event::SteppedDown { epoch, why } => format!("no longer leads (epoch {epoch}): {why}"),
-        Event::Merged { applied, overtaken, refused, .. } => format!(
-            "merged {} entr{} ({overtaken} passed over, {refused} refused)",
-            applied.len(),
-            if applied.len() == 1 { "y" } else { "ies" }
-        ),
+        Event::Merged { applied, overtaken, refused, again, .. } => {
+            let n: usize = again.iter().map(|a| a.targets.len()).sum();
+            format!(
+                "merged {} entr{} ({overtaken} passed over, {refused} refused{})",
+                applied.len(),
+                if applied.len() == 1 { "y" } else { "ies" },
+                match n {
+                    0 => String::new(),
+                    1 => "; 1 target to do again".into(),
+                    n => format!("; {n} targets to do again"),
+                }
+            )
+        }
         Event::Waits { what, why } => format!("waits to {what}: {why}"),
         Event::Failed { what, why } => format!("couldn't {what}: {why}"),
     }
@@ -1629,10 +1637,12 @@ impl Run {
             eprintln!("pool: {}", said(e));
             // (The hand-offs merged, by their entries' keys, in the build's history: publishing's
             // times, crate::pubtimes.)
-            if let (Event::Merged { done, .. }, Some(co)) = (e, &self.cx.coord) {
+            // (And the work of those it didn't take, not in the records: granted again.)
+            if let (Event::Merged { done, again, .. }, Some(co)) = (e, &self.cx.coord) {
                 if !done.is_empty() {
                     co.note(crate::pubtimes::merged_event(done));
                 }
+                co.again(again);
             }
         }
         out
@@ -2909,6 +2919,93 @@ mod tests {
         assert!(!rec.manifest.contains_key("layers/terrain/hi/6-1-3") && !rec.manifest.contains_key("hidata/6-1-3"));
         let why = rec.rejected.get(&key).expect("refused");
         assert!(why.contains("layers/terrain/hi/6-1-3"), "{why}");
+    }
+
+    /// Task #1378, as #1375's builder traced it: the coordinator holds a job's targets done at its
+    /// hand-off (here the lead's own job's end, `finish`), so no grant; the lead's merge refuses the
+    /// entry (outside its step's write-set), and the coordinator lets go of exactly those targets at
+    /// that key: granted again at once, the refusal in the history. A held entry's (from a member
+    /// whose app can't be read) stay done, as do targets of the same step it didn't hand off.
+    #[test]
+    fn a_hand_off_the_merge_refuses_is_granted_again_and_a_held_one_stays_done() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut run = Run::new(
+            crate::agent::seam::for_tests(),
+            side(&store::nasfs::NasRoot::local_for_test(&r), &home),
+            Role::Lead,
+            Gates::default(),
+        );
+        let end = Instant::now() + WATCHDOG;
+        while !run.step().caught_up {
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        let (coord, _port) = crate::coord::start_for_test(&d.path().join("a/coord"), "a", "development");
+        let coord = Arc::new(coord);
+        run.cx = Cx {
+            root: Some(store::nasfs::NasRoot::local_for_test(r.clone())),
+            home: home.clone(),
+            coord: Some(coord.clone()),
+            ..Default::default()
+        };
+        coord.set_epoch(1);
+        let me = run.side.member().id.clone();
+        // A pack job's entry writing a terrain pack too (another step's): refused, or held.
+        let outside = |member: &str, n: u64, t: &str| {
+            let dash = t.replace('/', "-");
+            let changes = ["hidata", "layers/terrain/hi"]
+                .iter()
+                .map(|l| (format!("{l}/{dash}"), Some(format!("{l}/{dash}.{n:016x}.pack"))))
+                .collect();
+            Entry {
+                member: member.to_string(),
+                job: JobId { epoch: 1, n },
+                step: "pack".into(),
+                handoff: Handoff {
+                    changes,
+                    done: Some(("pack".into(), vec![(t.into(), format!("k{n}"))])),
+                    ..Default::default()
+                },
+                at: crate::agent::jobs::now_s(),
+            }
+        };
+        let done = |t: &str, n: u64| {
+            let ts = [(t.to_string(), format!("k{n}"))];
+            let id = coord.hold("pack", &ts).expect("granted");
+            coord.finish(id, &ts);
+            assert_eq!(coord.hold("pack", &ts), None, "held done: not granted again");
+        };
+        done("6/1/3", 2);
+        done("6/1/4", 3);
+        done("6/1/5", 4);
+        let held = "m-00000000000000ff";
+        run.entries.extend([(outside(&me, 2, "6/1/3"), None), (outside(held, 4, "6/1/5"), None)]);
+        let out = run.step();
+        let again = out.events.iter().find_map(|e| match e {
+            Event::Merged { refused: 1, again, .. } => Some(again.clone()),
+            _ => None,
+        });
+        assert_eq!(again.map(|a| a.len()), Some(1), "{:?}", out.events);
+        assert!(out.held.len() == 1 && out.held[0].1.contains("can't be read"), "{:?}", out.held);
+        // The refused one's target granted again at once, at that key; the held one's and the one
+        // not handed off yet stay done.
+        assert!(coord.hold("pack", &[("6/1/3".into(), "k2".into())]).is_some(), "granted again");
+        assert_eq!(coord.hold("pack", &[("6/1/5".into(), "k4".into())]), None, "held: stays done");
+        assert_eq!(coord.hold("pack", &[("6/1/4".into(), "k3".into())]), None, "not handed off yet");
+        let unread: Vec<(String, String)> = coord.done_unread().into_keys().collect();
+        assert_eq!(unread, [("pack".to_string(), "6/1/4".to_string()), ("pack".into(), "6/1/5".into())]);
+        let refused: Vec<_> = coord.history_since(0).into_iter().filter(|e| e.kind == "refused").collect();
+        assert_eq!(refused.len(), 1);
+        let e = &refused[0];
+        assert_eq!(
+            (e.step.as_deref(), e.targets.clone(), e.ok),
+            (Some("pack"), vec!["6/1/3".to_string()], Some(false))
+        );
+        assert!(e.note.contains("layers/terrain/hi/6-1-3") && e.job == Some(JobId { epoch: 1, n: 2 }), "{e:?}");
+        assert!(said(&out.events.iter().find(|e| matches!(e, Event::Merged { .. })).unwrap().clone())
+            .ends_with("(0 passed over, 1 refused; 1 target to do again)"));
     }
 
     /// Task #701: the clean-up's entry dropping a removed step's names (crate::agent::gc::RETIRED)

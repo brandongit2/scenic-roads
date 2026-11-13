@@ -213,8 +213,15 @@ pub enum Event {
     /// No longer leads (in epoch `epoch`): why.
     SteppedDown { epoch: u64, why: String },
     /// Hand-offs merged: applied, passed over (an older lease's), refused (`done`: the applied ones'
-    /// jobs done, crate::pool::records::Merged::done).
-    Merged { applied: Vec<String>, overtaken: usize, refused: usize, done: Vec<crate::pool::records::MergedJob> },
+    /// jobs done, crate::pool::records::Merged::done; `again`: the work of those refused or passed
+    /// over that the records don't hold, to do again, crate::pool::records::Merged::again).
+    Merged {
+        applied: Vec<String>,
+        overtaken: usize,
+        refused: usize,
+        done: Vec<crate::pool::records::MergedJob>,
+        again: Vec<crate::pool::records::Again>,
+    },
     /// Something it couldn't do this step, to try again: what, and why.
     Waits { what: &'static str, why: String },
     /// A duty met an error and stopped there; the step went on.
@@ -650,6 +657,7 @@ impl Driver {
                 overtaken: m.overtaken.len(),
                 refused: m.refused.len(),
                 done: m.done.clone(),
+                again: m.again.clone(),
             });
         }
         // What its check holds is merged again next step (said once as it's first held).

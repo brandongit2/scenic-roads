@@ -136,7 +136,12 @@ Common rules:
   from records read before the hand-off was merged (such as one under way as the job ended) still offers
   them, never granted again; a refusal says them "done (its record not read yet)", the forecast
   counts none of them as work to come, and the first plan that doesn't offer one at its key lets
-  it go.
+  it go. A hand-off the lead's merge refuses, or passes over with the records holding its targets
+  under other keys (`records::Merged::again`), lets its targets go at once
+  (`Coordinator::again`): their record is never to be read, so they're granted again at the next
+  ask; a held one (from a member on a newer app) stays done. Each refusal is in the history
+  ("refused": the Mac, the job, its targets and why; on the build page as a problem), so a job
+  whose hand-off is always refused shows every time it comes round.
 - **Restarts:** leases and costs are kept in the lead's store on its disk, the token in
   `state/coord/` (docs/pool.md §7.5); a
   worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.

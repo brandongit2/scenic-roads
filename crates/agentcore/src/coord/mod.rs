@@ -2090,6 +2090,39 @@ impl Coordinator {
         }
     }
 
+    /// The work of hand-offs the lead's merge didn't take (crate::pool::records::Merged::again:
+    /// refused, or passed over with the records under other keys): its targets' done entries at
+    /// those keys let go (their record is never to be read), so they're granted again at the next
+    /// ask; nothing else. Each refused one in the history ("refused": its member's Mac, its job,
+    /// targets and why), as a job's failure is: a job whose hand-off is always refused shows each time.
+    pub fn again(&self, again: &[crate::pool::records::Again]) {
+        if again.is_empty() {
+            return;
+        }
+        let mut s = self.shared.lock().unwrap();
+        let unix = s.wall_s();
+        for a in again {
+            for (t, k) in &a.targets {
+                let at = (a.step.clone(), t.clone());
+                if s.done.get(&at) == Some(k) {
+                    s.done.remove(&at);
+                }
+            }
+            let Some(why) = &a.refused else { continue };
+            let host = s.beats.as_ref().and_then(|b| b.get(&a.member, unix)).map(|h| h.pool.host);
+            let e = history::Event {
+                worker: Some(host.unwrap_or_else(|| a.member.clone())),
+                job: Some(a.job),
+                step: Some(a.step.clone()),
+                targets: a.targets.iter().map(|t| t.0.clone()).collect(),
+                ok: Some(false),
+                note: why.chars().take(300).collect(),
+                ..history::Event::new("refused")
+            };
+            s.history.add(e);
+        }
+    }
+
     /// This Mac's own agent asking for work as any member does (docs/pool.md §7.2): granted by the
     /// same packing (`pack`) and under this Mac's name, the plan's offers in plan order, the lead's
     /// own planned jobs among them (`Offer::job`, granted to it alone: crate::agent::every::grants)
@@ -11502,6 +11535,40 @@ mod tests {
         c.offer("p", Vec::new());
         assert!(w.ask(&a).unwrap().is_none());
         assert_eq!(c.refusals()["m1"], sched::EMPTY);
+    }
+
+    /// Task #1378: the same target held done, its hand-off then refused by the lead's merge
+    /// (`again`): no longer said done, nor kept out of the forecast's work to come, and granted at
+    /// the next ask; work the merge passed over under another key than the one held is let go
+    /// alone, never one done under the key it holds.
+    #[test]
+    fn a_refused_hand_offs_target_is_no_longer_said_done() {
+        let (_d, c, w, _clock) = every((0, 0));
+        let a = every_ask("m1", "available", 24_000, 50_000);
+        let o = Offer { step: "available".into(), targets: vec![("terrain".into(), "k".into(), 0)], job: None };
+        c.offer("p", vec![o]);
+        c.shared.lock().unwrap().done.insert(("available".into(), "terrain".into()), "k".into());
+        let work = crate::agent::jobs::Work { step: "available".into(), targets: vec![("terrain".into(), "k".into())] };
+        assert_eq!(crate::agent::forecast::unread(&c.done_unread(), [&work]).len(), 1);
+        assert!(w.ask(&a).unwrap().is_none());
+        assert_eq!(c.refusals()["m1"], "nothing offered is free to take: 1 done (its record not read yet)");
+        let again = |k: &str, refused: Option<&str>| crate::pool::records::Again {
+            key: "2026-11-13/1-7".into(),
+            member: "m-000000000000000b".into(),
+            job: jobrt::jobid::JobId { epoch: 1, n: 7 },
+            step: "available".into(),
+            targets: vec![("terrain".into(), k.into())],
+            refused: refused.map(str::to_string),
+        };
+        c.again(&[again("k-older", None)]);
+        assert_eq!(c.done_unread().len(), 1, "passed over under another key: the one held kept");
+        c.again(&[again("k", Some("writes outside its step's names"))]);
+        assert!(c.done_unread().is_empty() && crate::agent::forecast::unread(&c.done_unread(), [&work]).is_empty());
+        assert!(w.ask(&a).unwrap().is_some(), "granted again");
+        assert!(!c.refusals().get("m1").is_some_and(|r| r.contains("done")), "{:?}", c.refusals());
+        let h: Vec<_> = c.history_since(0).into_iter().filter(|e| e.kind == "refused").collect();
+        assert!(h.len() == 1 && h[0].note == "writes outside its step's names", "{h:?}");
+        assert_eq!(h[0].worker.as_deref(), Some("m-000000000000000b"), "a member not heard: its id");
     }
 
     /// Task #1170: room held for the first offer refused for its room is the hold the status says
