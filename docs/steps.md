@@ -1217,10 +1217,19 @@ renaming or disabling a region builds nothing.
   neighbours' lines are one line at every zoom and no gap or overlap opens between them.
 - **Slivers:** two arcs in the plane between the same two nodes, the space between them narrower
   on average than the finest zoom's tolerance (its area in Web Mercator over the arcs' mean
-  length), are one arc (the one with more points), the regions beyond them on its sides. The cover
-  check leaves gaps and overlaps under a hair (0.1 km²) between neighbours (docs/inputs.md §6.1.8);
-  each would be two lines metres apart and two nodes no zoom could simplify away. On the real data
-  119,942 slivers are closed: arcs 1.40 M to 335 k, the points kept at z0 2.57 M to 367 k.
+  length: 9.6 m at the equator, 4.8 m at 60°), are one arc (the one with more points), the regions
+  beyond them on its sides, whatever lies between: a gap, an overlap, or a strip of a third region,
+  which is then drawn as no region of its own there and isn't found there by `/api/regions/at`. The
+  cover check leaves gaps and overlaps under a hair (0.1 km²) between neighbours (docs/inputs.md
+  §6.1.8); each would be two lines metres apart and two nodes no zoom could simplify away. On the
+  accepted version of 13 Nov (`@index.554f50a9348f2f75`) 119,164 slivers are closed: 45,598 gaps
+  (17,590 m² in all) and 73,566 strips of a third region (5.6 km² in all; the largest 22,314 m², a
+  strip of Nunavut 5.2 m wide and 4.3 km long between Canada's waters and Ontario's shore of James
+  Bay; most are zero-width hairs of a region along its neighbour's edge), no overlap; 327 k arcs are
+  left, of which z0 keeps 360 k points. Not merged: arcs that run within a metre of
+  each other without being two arcs between the same nodes (11,025 pairs of arcs with a point
+  within a metre of the other, 60 of them along 100 points or more, nearly all Nunavut's strips
+  along the shores of Hudson Bay and James Bay): two lines a metre apart, one line as drawn.
 - **The antimeridian and the poles:** the geometry is cut at ±180°; an edge along a meridian is
   matched with the other meridian's at the same latitudes: where the regions across are the same
   it's a cut and never drawn, where not it's drawn on both meridians. Edges along ±90° are never
@@ -1257,17 +1266,22 @@ renaming or disabling a region builds nothing.
   at least a 64th of a tile from every border, eight times the tolerance of the zoom above.
   Overlapping regions (possible only without a cover rule) aren't noded against each other, so
   where their borders cross the answer may miss one of them.
-- **Cost, the 1,024 regions of 13 Nov** (`terrain::regionlayer::tests::real_regions`, by hand on
-  the Mac mini, release): reading 8–9 s (geometry over the NAS), the build 37 s (47 s wall,
-  176 s CPU), peak footprint 7.0 GB; 57.0 M points, 30.1 M vertices, 6.0 M edges split, 17.3 M
-  border edges; 335 k arcs. Tiles by zoom (z0…z12): 1, 4, 16, 52, 191, 610, 1,844, 5,204, 13,137,
-  30,948, 69,638, 152,489, 331,733 (605,867 in all); gzip'd bytes 147 kB at z0, 1.2 MB at z5,
-  12 MB at z9, 69 MB at z12, 151 MB in all (165 MB of packs on disk).
+- **Cost, the 1,024 regions of 13 Nov** (`@index.554f50a9348f2f75`;
+  `terrain::regionlayer::tests::real_regions`, by hand on the Mac mini, release, three runs):
+  reading 7–8 s (geometry over the NAS), the build 38–39 s (the topology 7 s, the simplification
+  9 s, the tiles 1.5 s, gzip and the packs 21 s; 47 s wall, 168 s CPU), peak footprint 9.1 GB
+  (10.7 GB resident), from the topology's end into the simplification; 56.8 M points, 30.0 M
+  vertices, 6.0 M edges split, 17.0 M border edges; 327 k arcs. Tiles by zoom (z0…z12): 1, 4, 16,
+  52, 191, 609, 1,840, 5,166, 13,057, 30,819, 69,387, 151,889, 330,230 (603,261 in all); the
+  largest 433 kB at z0 (139 kB gzip'd), 363 kB at z5, 55 kB at z9, 14 kB at z12; 1,870 packs,
+  163 MB. Two runs in two processes made the same bytes. A first run is the step's first measure,
+  so it runs alone (docs/pool.md); one region's change makes every tile again and writes the packs
+  whose bytes moved.
 
 **The server** serves the tiles as stored (`/tiles/regions/{z}/{x}/{y}`, `application/x-protobuf`,
 gzip'd, versioned by pack like every layer) and answers `/api/regions/at` from them. The listing
-(`/api/regions`) gives each region's box (`bbox`) and a point inside its largest polygon for its
-name (`label`), worked out once per geometry with its land and water (`region-areas.json`), and
+(`/api/regions`) gives each region's box (`bbox`) and a point inside its largest land polygon (a
+region of water alone: water) for its name (`label`), worked out once per geometry with its land and water (`region-areas.json`), and
 its flag's area (`area`).
 
 **The app** (`web/src/regions.ts`, the pure parts `web/src/regionlayer.ts`, tested by

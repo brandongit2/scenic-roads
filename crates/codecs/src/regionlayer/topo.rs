@@ -400,12 +400,14 @@ pub fn build(regions: &[Region]) -> Topology {
 }
 
 /// Slivers closed: two arcs in the plane between the same two nodes, the space between them a set
-/// of its own (no region: a gap between neighbours; both: an overlap), narrower on average than the
-/// finest zoom's tolerance (its area in Web Mercator over the arcs' mean length), are one arc, the
-/// one with more points, the sets beyond them on its two sides (none when they are the same: a
-/// sliver inside one region). The cover check leaves gaps and overlaps under 0.1 km² between
-/// neighbours (docs/inputs.md §6.1.8, `HAIR_KM2`); each of them would be two lines a few metres
-/// apart, and nodes at its ends that no zoom could simplify away. The arcs and how many were closed.
+/// of its own (no region: a gap between neighbours; both: an overlap; or a third region's strip),
+/// narrower on average than the finest zoom's tolerance (its area in Web Mercator over the arcs'
+/// mean length), are one arc, the one with more points, the sets beyond them on its two sides (none
+/// when they are the same: a sliver inside one region). A strip of a third region so closed is
+/// drawn as no region of its own and isn't found there by `hit` (docs/steps.md §15 has how many).
+/// The cover check leaves gaps and overlaps under 0.1 km² between neighbours (docs/inputs.md
+/// §6.1.8, `HAIR_KM2`); each of them would be two lines a few metres apart, and nodes at its ends
+/// that no zoom could simplify away. The arcs and how many were closed.
 fn slivers(arcs: Vec<Arc>) -> (Vec<Arc>, u64) {
     let plain = |a: &Arc| a.drawn && a.ld == a.l && a.rd == a.r && !a.closed() && a.pts.len() >= 2;
     let mut by: HashMap<(u64, u64), Vec<usize>> = HashMap::new();
