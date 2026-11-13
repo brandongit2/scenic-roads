@@ -149,22 +149,18 @@ test("a test run is on the Mac it ran on: the tests job while its run is remote,
   assert.deepEqual(c.spans.map((s) => [s.id, s.mac, s.on]), [["c-1-tests", "m1", "m4"], ["c-1-run", "m4", "m4"], ["c-1-suite", "m4", "m4"]]);
 });
 
-test("a form-1 jobs.db is moved to form 2 once: its indexes, its spans as they were (ONE-TIME, #1344: delete with migrateTo2)", () => {
+test("a jobs.db of another form is refused, untouched", () => {
   const file = path.join(dir, "old.db");
-  const old = openJobs(file);
-  old.db.prepare(`INSERT INTO spans (id, parent, root, kind, name, mac, t0, t1, status, attrs) VALUES ('o', NULL, 'o', 'check', 'check', 'm1', 1, 2, 'ok', '{}')`).run();
-  old.db.exec("DROP INDEX spans_runs_end; DROP INDEX spans_tests_end; PRAGMA user_version = 1");
-  old.close();
-  const again = openJobs(file);
-  assert.equal(again.db.prepare("PRAGMA user_version").get().user_version, FORM);
-  assert.deepEqual(again.db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'spans_%_end' ORDER BY name").all().map((r) => r.name), ["spans_runs_end", "spans_tests_end"]);
-  assert.equal(again.db.prepare("SELECT name FROM spans WHERE id = 'o'").get().name, "check");
-  again.close();
-  // (Any other form is refused, untouched.)
-  const db = new DatabaseSync(file);
-  db.exec("PRAGMA user_version = 0");
-  db.close();
-  assert.throws(() => openJobs(file), /is of form 0 \(PRAGMA user_version\); this version reads form 2/);
+  openJobs(file).close();
+  for (const form of [0, 1, 3]) {
+    const db = new DatabaseSync(file);
+    db.exec(`PRAGMA user_version = ${form}`);
+    db.close();
+    assert.throws(() => openJobs(file), new RegExp(`is of form ${form} \\(PRAGMA user_version\\); this version reads form 2`));
+    const after = new DatabaseSync(file);
+    assert.equal(after.prepare("PRAGMA user_version").get().user_version, form);
+    after.close();
+  }
 });
 
 test("what the timeline reads every few seconds reads no further back than its range, however long the history", async () => {

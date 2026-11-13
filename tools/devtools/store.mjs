@@ -5,9 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { STATUSES } from "./schema.mjs";
 
 // The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it, so the
-// M6's update can put the file back if the version that changed it doesn't start). 1: #1229's names
-// (status, assigned, meta/now). 2: #1344's indexes (INDEXES). A file of another form is refused at
-// open, except form 1, the one before it, which is moved to this form once (migrateTo2).
+// M6's update can put the file back if the version that changed it doesn't start). A file of another
+// form is refused at open.
 export const FORM = 2;
 
 // A task's status is also enforced by the table itself (a CHECK constraint). A changed list rebuilds
@@ -66,16 +65,6 @@ function inTx(db, fn) {
   try { const r = fn(); db.exec("COMMIT"); return r; } catch (e) { db.exec("ROLLBACK"); throw e; }
 }
 
-// ONE-TIME (#1344). DELETE this function, its call in openStore and its test (test/store.test.mjs, "a
-// form-1 file") once the M6's board is at form 2: board task #1344's rollout says so.
-// Form 1 → 2, in one transaction (a failure leaves the file as it was): form 1's indexes dropped
-// (items_parent; items_num, and items_num_unique, which the unique items_num is now; events_t and
-// events_item, which the id and the time now follow), INDEXES made.
-function migrateTo2(db) {
-  inTx(db, () => db.exec(`${["items_parent", "items_num", "items_num_unique", "events_t", "events_item"].map((i) => `DROP INDEX IF EXISTS ${i};`).join(" ")}
-    ${INDEXES} PRAGMA user_version = ${FORM};`));
-}
-
 const toDoc = (col, row) => {
   const doc = {};
   for (const c of COLS[col]) {
@@ -110,8 +99,7 @@ function listOn(conn, col, { orderBy, dir, limit, item, after } = {}) {
   return { total, rows };
 }
 
-// `log`: where the open says what it changed in the file (a migration), e.g. console.log.
-export function openStore(file, { log = () => {} } = {}) {
+export function openStore(file) {
   const db = new DatabaseSync(file);
   db.exec(`
     PRAGMA journal_mode = WAL;
@@ -124,9 +112,6 @@ export function openStore(file, { log = () => {} } = {}) {
     const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
     if (!cur) {
       inTx(db, () => db.exec(`${itemsTable("items")}; ${eventsTable("events")}; ${INDEXES} PRAGMA user_version = ${FORM};`));
-    } else if (form === 1) {
-      migrateTo2(db);
-      log(`${file}: moved to form ${FORM} (#1344's indexes)`);
     } else if (form !== FORM) {
       throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
     } else if (!cur.sql.includes(STATUS_CHECK)) {

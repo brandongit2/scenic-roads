@@ -108,6 +108,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
   const HOST = arg("host", process.env.HOST || "127.0.0.1");
   const DATA = path.resolve(arg("data", here));
   fs.mkdirSync(DATA, { recursive: true });
-  const server = makeServer({ board: openStore(path.join(DATA, "taskboard.db"), { log: console.log }), jobs: openJobs(path.join(DATA, "jobs.db")) });
+  const server = makeServer({ board: openStore(path.join(DATA, "taskboard.db")), jobs: openJobs(path.join(DATA, "jobs.db")) });
   server.listen(PORT, HOST, () => console.log(`Dev tools on http://${HOST}:${PORT}  (data: ${DATA})`));
 }

@@ -29,10 +29,8 @@ const MAX_ATTRS = 64 * 1024;
 const ID = /^[A-Za-z0-9_.:@+\-]{1,200}$/;
 const T_MIN = Date.UTC(2026, 0, 1) / 1000; // (nothing was recorded before this app)
 
-// The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it). 1:
-// #1086's (a span on the Mac it ran on). 2: #1344's indexes (the runs and the tests jobs by when they
-// ended). A file of another form is refused at open, except form 1, moved to this form once
-// (migrateTo2).
+// The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it). A file
+// of another form is refused at open.
 export const FORM = 2;
 const TABLES = `
     CREATE TABLE spans (
@@ -60,7 +58,7 @@ const TABLES = `
     CREATE TABLE macs (mac TEXT PRIMARY KEY, chip TEXT, mem REAL, ncpu INTEGER, seen REAL);`;
 // What a timeline reads, the runs and the tests jobs overlapping it, found by when they ended (or
 // that they haven't): what ended before it began is never read (#1344).
-const INDEXES2 = `
+const INDEXES = `
     CREATE INDEX spans_runs_end ON spans(t1) WHERE root = id;
     CREATE INDEX spans_tests_end ON spans(t1) WHERE kind = 'tests';`;
 
@@ -70,19 +68,12 @@ export function openJobs(file) {
   const tx = (sql) => { db.exec("BEGIN IMMEDIATE"); try { db.exec(sql); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; } };
   try {
     const form = db.prepare("PRAGMA user_version").get().user_version;
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spans'").get()) tx(`${TABLES} ${INDEXES2} PRAGMA user_version = ${FORM};`);
-    else if (form === 1) migrateTo2(tx);
+    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spans'").get()) tx(`${TABLES} ${INDEXES} PRAGMA user_version = ${FORM};`);
     else if (form !== FORM) throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
   } catch (e) { db.close(); throw e; }
   const stmts = {};
   const stmt = (sql) => (stmts[sql] ||= db.prepare(sql));
   return { db, stmt, close: () => db.close() };
-}
-// ONE-TIME (#1344). DELETE this function, its call in openJobs and its test (test/jobs.test.mjs, "a
-// form-1 file") once the M6's jobs.db is at form 2: board task #1344's rollout says so.
-// Form 1 → 2, in one transaction: INDEXES2 made.
-function migrateTo2(tx) {
-  tx(`${INDEXES2} PRAGMA user_version = ${FORM};`);
 }
 
 // Why event `e` can't be taken, or null.

@@ -21,10 +21,8 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   fraction goes (below; the server's rule and the page's, one copy), `store.mjs` its file, `taskboard.db`:
   `items` (folders and tasks), `events` (history), `meta` (`now`, the now line: what Claude is on,
   shown in the page's header; `counter`, the next item number), `blobs` (photos); its form
-  (`PRAGMA user_version`) is 2 (#1344: the indexes every frequent read is answered from, `store.mjs`
-  INDEXES; 1 was #1229's names, `status`, `assigned`, `meta/now`), and a file of form 1 is moved to
-  it once as the app opens it, in one transaction (`store.mjs` migrateTo2, ONE-TIME: to be deleted
-  once the M6's board is moved; any other form is refused). `public/task-board/index.html` is the page;
+  (`PRAGMA user_version`) is 2 (the indexes every frequent read is answered from, `store.mjs`
+  INDEXES); any other form is refused. `public/task-board/index.html` is the page;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
   "assets")`) over the app's: a subscription reads once the event stream is open and again on each
   change of its collection (the items: whole once, then only what changed since, `?since=`, below),
@@ -61,10 +59,8 @@ them.
   ran here after all). The API reads each span `on` the Mac it ran on: a tests job whose run is on the
   test Mac shows on that Mac, "started on the M1 Pro, ran on the M4 Pro"; one run here stays on its
   own.
-- **Its form** (`PRAGMA user_version`) is 2 (#1344: the runs and the tests jobs indexed by when they
-  ended, so a timeline's reads never go further back than its range; 1 was #1086's): a file of form
-  1 is moved to it once as the app opens it (`jobs.mjs` migrateTo2, ONE-TIME: to be deleted once the
-  M6's jobs.db is moved); any other form is refused.
+- **Its form** (`PRAGMA user_version`) is 2 (the runs and the tests jobs indexed by when they
+  ended, so a timeline's reads never go further back than its range); any other form is refused.
 - **What a run is:** a tree of spans (`jobs.db`'s `spans`): each a kind, a name, its Mac, its start
   and end, a status (`running`, `ok`, `fail`, `stopped`, `gone`: its process ended without saying
   how, `skip`, `reuse`) and attributes (a run of its own: its checkout, branch, commit, task, whether
