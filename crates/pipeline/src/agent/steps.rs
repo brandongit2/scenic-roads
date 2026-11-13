@@ -121,11 +121,11 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "depth", does: "The depth under the seas and lakes and its shading from the depth sources: a tile at a time where a source has fine detail, then zoomed out by z3 tile as the means of the finer." },
     Stage { id: "roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
-    Stage { id: "finish", does: "What publishing adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
+    Stage { id: "finish", does: "What a map update adds around the tiles: the road index, rail stops, ferries, the world levels, and a prune." },
     Stage { id: "trains", does: "Trains a day on the regions' rail, from timetables." },
     Stage { id: "landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
     Stage { id: "buildings", does: "Every building in the coverage, raised in 3D, a tile at a time." },
-    Stage { id: "publish", does: "A catalogue: the map's new data goes out." },
+    Stage { id: "publish", does: "A map update: the map's new data goes out." },
     Stage { id: "upkeep", does: "Checks, to-do lists, removals and backups; nothing the map reads." },
 ];
 
@@ -1505,7 +1505,7 @@ pub const TABLE: [Step; 62] = [
             Publish,
             World,
             store::catalogue::NAME,
-            "Makes the catalogue the map serves: the new data goes out.",
+            "Updates the map: the new data goes out, one batch appended to the map's log.",
             w_none,
         )
     },
@@ -1515,7 +1515,7 @@ pub const TABLE: [Step; 62] = [
             Publish,
             World,
             store::catalogue::HELD_NAME,
-            "Makes a catalogue held for review (the pool's setting hold-catalog).",
+            "Makes a map update held for review (the pool's setting hold-catalog).",
             w_none,
         )
     },

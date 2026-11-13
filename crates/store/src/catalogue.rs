@@ -1,6 +1,6 @@
 //! The map as a catalogue (docs/formats.md, Catalogue): every served file by logical name, with its
-//! content name, size and format version, and the sections that name them. Nothing writes or reads
-//! catalogue files any more (docs/maplog.md §8, step 6): the map's log on the lead is the map, and
+//! content name, size and format version, and the sections that name them. No catalogue is a file
+//! of its own: the map's log on the lead is the map, and
 //! `crate::map::Map::catalogue` makes this value of it for the readers (`n` the map's `seq`). Its
 //! encoding is the step's map posted to the lead's agent and the recorded test chain's.
 

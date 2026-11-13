@@ -1,7 +1,7 @@
 //! A catalogue's coverage (docs/formats.md, Catalogue `coverage`) kept as JSON text, never as a
 //! `serde_json::Value` tree. Its regions' outlines are most of the map's bytes (6.3 million points
 //! on 10 Nov, 134 MB of JSON), and as a tree, a list of two numbers for each point, they were most of
-//! the map server's memory and much of the lead's (task #1092: docs/maplog.md, Memory). Each region
+//! the map server's memory and much of the lead's (task #1092: docs/formats.md, The map and its log, Memory). Each region
 //! is kept as its map entry (`r/<id>`, crate::map::Val): a catalogue made
 //! of the map shares them with it. The rest of the coverage (a few small fields) is a `Value`. A
 //! reader parses what it wants from each region's text (`regions`, `region_texts`).
@@ -29,7 +29,7 @@ enum Kept {
     Split { rest: Map<String, Value>, regions: Vec<Region> },
 }
 
-/// A region: its id and its map entry, `{"i": its place, "region": it}` (docs/maplog.md §4.1).
+/// A region: its id and its map entry, `{"i": its place, "region": it}` (docs/formats.md, The map and its log).
 #[derive(Clone)]
 struct Region {
     id: String,
@@ -140,7 +140,7 @@ impl Coverage {
         Some(Coverage(Kept::Split { rest, regions }))
     }
 
-    /// Its map entries (docs/maplog.md §4.1): each region `r/<id>` (its entry, shared), the rest in
+    /// Its map entries (docs/formats.md, The map and its log): each region `r/<id>` (its entry, shared), the rest in
     /// `m/coverage`, `m/regions` saying how many regions there are; one kept whole is `m/coverage`
     /// alone (none for none).
     pub(crate) fn each_entry(&self, f: &mut dyn FnMut(&str, Val) -> Result<()>) -> Result<()> {
@@ -378,7 +378,7 @@ mod tests {
         let mut c = crate::catalogue::Catalogue::new(4);
         c.coverage = json!({"recorded": true, "regions": [region("b"), region("a")]}).into();
         let m = crate::map::Map::of(&c).unwrap();
-        // (Each region's entry the bytes of its `{"i", "region"}` as a `Value`, as before: §4.1.)
+        // (Each region's entry the bytes of its `{"i", "region"}` as a `Value`, as before.)
         for (i, id) in ["b", "a"].into_iter().enumerate() {
             assert_eq!(m.entries()[&format!("r/{id}")], Val::from(json!({"i": i, "region": region(id)})));
         }

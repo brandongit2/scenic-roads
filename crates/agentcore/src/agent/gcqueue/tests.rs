@@ -113,10 +113,9 @@ fn due_waits_for_every_cursor_the_grace_and_older_leases() {
 /// left behind at the map it was at; the lead's queue held 54,575 names (all but 1,029) behind
 /// the M1's, unheard 4 days, for its 7-day TTL, while the mini's server and mirror were long past
 /// them. Unheard `CURSOR_TTL_S` (hours), it holds nothing; asking again, it holds again from its
-/// `seq`. Task #1119: the cursor an older app noted for the NAS's snapshots (`snapshot`), restored
-/// from a log saved with it, is dropped as the log opens: it holds nothing.
+/// `seq`.
 #[test]
-fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_old_snapshots_none() {
+fn a_quit_servers_cursor_holds_gc_hours_not_days() {
     let d = tempfile::tempdir().unwrap();
     let m1 = map(1, &[("a", "a.1.pack")]);
     let q = GcQueue::default();
@@ -127,9 +126,7 @@ fn a_quit_servers_cursor_holds_gc_hours_not_days_and_the_old_snapshots_none() {
     q.batch(&b2, T0);
     q.batch(&b3, T0);
     let feed = store::map::feed::Feed::new();
-    let old = Cursor { seq: 1, heard: T0, at: T0, ..Default::default() };
-    feed.start(std::sync::Arc::new(m3), 1, &[b2, b3], [("snapshot".to_string(), old)].into());
-    assert!(!feed.cursors().contains_key("snapshot"), "the old NAS snapshot's cursor dropped");
+    feed.start(std::sync::Arc::new(m3), 1, &[b2, b3], Default::default());
     // The M1's server at map 1, then gone; the mini's long-polling at the head.
     feed.changes(1, Some("server/m1"), T0);
     let due_at = |now: u64| {
@@ -199,7 +196,7 @@ fn a_reuse_of_a_deleted_name_is_refused_and_redone() {
     assert!(refusal(&back, &entry(8, name), T0 + 200).is_none());
 }
 
-/// docs/maplog.md §7.4 (step 8b, no touch): a hand-off bringing a name a chunk is removing is
+/// docs/storage.md, GC (no touch): a hand-off bringing a name a chunk is removing is
 /// refused whatever its lease (its job found the file there before it went); the mark's lease is
 /// the newest when the removal ended, so a lease granted while it went is refused after it too. A
 /// hand-off the merge takes holds its names (its changes, uploads and reused files) from the
@@ -242,8 +239,7 @@ fn a_reuse_of_a_name_being_removed_is_refused_and_a_merge_holds_its_names() {
     assert!(q.due(&h).is_empty(), "their grace from then");
 }
 
-/// docs/maplog.md §8 step 8b's deploy: a hand-off from a member on an app before it says no
-/// `reused` (its app touched the file instead); every file its job put under a logical name, reused
+/// A hand-off that says no `reused` (an app that touched the file instead): every file its job put under a logical name, reused
 /// or not, is among its changes, which the merge checks as it does `reused`, so one bringing a name
 /// being removed, or removed under its lease, is refused all the same. (The gate's copies, the one
 /// reuse no change names, are the lead's `inputs` step's: on the lead's app.)
@@ -327,7 +323,7 @@ fn a_chunk_told_again_keeps_what_is_held_now() {
     assert!(back.chunk(&h, l2, 3, &|_| true).unwrap().is_empty());
 }
 
-/// docs/maplog.md §11.4 (step 8a): the `gc` job tells the lead's coordinator each name before it
+/// docs/storage.md, GC: the `gc` job tells the lead's coordinator each name before it
 /// removes it (`/gc/removing`, crate::agent::gc::TheLead): marked deleted in the lead's queue, the
 /// newest lease granted then theirs, at once and kept on its disk, so a hand-off (posted by HTTP or
 /// in the journal, merged whenever) of a lease granted before brings it refused, and its redo
@@ -377,7 +373,7 @@ fn a_hand_off_reusing_a_name_gc_removes_is_refused() {
     assert!(q.queued("base/6-1-2.k0.base").is_some());
 }
 
-/// docs/maplog.md §11.4: the lead answers the `gc` job's names against its holders as they are now,
+/// docs/storage.md, GC: the lead answers the `gc` job's names against its holders as they are now,
 /// the job's roots being as old as its run: what the map or the records name, and a queued name that
 /// hasn't outlasted its grace, a client's cursor or a live lease, stay unmarked and are answered, to
 /// keep; the rest are marked. Marks that can't be on the disk (a queue with no file) are an error.
@@ -445,7 +441,7 @@ fn a_torn_last_line_is_dropped() {
     assert!(GcQueue::default().open(d.path(), &m2).is_err());
 }
 
-/// docs/maplog.md §7.4: a member away 10 days (the M4 travelling) with a hand-off not yet told,
+/// docs/storage.md, GC: a member away 10 days (the M4 travelling) with a hand-off not yet told,
 /// whose job reused a name GC then removed: the deletion is kept for the merge as long as a lease
 /// older than it may still be handed off (owed: granted to that member, not left out of a beat of
 /// its since), however long, across a lead restart; its hand-off is refused and the redo merges.

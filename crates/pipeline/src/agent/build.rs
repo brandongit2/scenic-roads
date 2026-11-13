@@ -2888,23 +2888,23 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
                         if wait == 0 {
                             publishing.why = if capped {
                                 format!(
-                                    "a catalogue now with what's drawn: held {} min by the map tiles or the road index to draw",
+                                    "a map update now with what's drawn: held {} min by the map tiles or the road index to draw",
                                     CATALOGUE_CAP_S / 60
                                 )
                             } else {
-                                "a catalogue now: what it would list changed".into()
+                                "a map update now: what it would list changed".into()
                             };
                             catalogue = Some(w);
                         } else {
                             catalogue_due = true;
                             publishing.why =
-                                format!("a catalogue once a minute has passed since the last (in {wait} s)");
+                                format!("a map update once a minute has passed since the last (in {wait} s)");
                         }
                     }
                     None if inputs.get("regions").map(String::as_str) == Some("?") => {
-                        publishing.why = "the catalogue waits for the regions to be read".into();
+                        publishing.why = "the map update waits for the regions to be read".into();
                     }
-                    None => publishing.why = "caught up: the catalogue has everything built".into(),
+                    None => publishing.why = "caught up: the map has everything built".into(),
                 }
             }
             if let Some(mut w) = chain {
@@ -2926,7 +2926,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
                         );
                     }
                 } else if gated && catalogue.is_none() {
-                    publishing.why = format!("{} next, then a catalogue", super::steps::current(&w.step));
+                    publishing.why = format!("{} next, then a map update", super::steps::current(&w.step));
                 }
                 // (The catalogue first: what it waits for is done.)
                 work.extend(catalogue.take());
@@ -7939,7 +7939,7 @@ mod tests {
         assert!(ran.contains(&"roadunits".to_string()) && ran.contains(&"lo".to_string()), "{ran:?}");
         assert!(p.ready.is_empty());
         assert!(steps(&p).contains(&"unit".to_string()));
-        assert_eq!(p.publishing.why, "a catalogue now: what it would list changed");
+        assert_eq!(p.publishing.why, "a map update now: what it would list changed");
         done.record("catalog", &p.work[0].targets);
         // Caught up: the z6 tiles again.
         let p = pplan(&c, &reach, &m, &done, &none, Some(5), Default::default(), false);

@@ -555,7 +555,7 @@ pub(crate) mod tests {
         assert_eq!(s["verdict"]["state"], "pausing");
         assert_eq!(s["loop_stuck_s"], crate::agent::beat::LOOP_STUCK.as_secs());
         assert_eq!(s["out_of_touch_s"], crate::pool::beat::OUT_OF_TOUCH_S);
-        assert_eq!(s["checklist"][0]["counts"][0], "1,234 of 2,000 z6 tiles (12 with nothing to publish)");
+        assert_eq!(s["checklist"][0]["counts"][0], "1,234 of 2,000 z6 tiles (12 with nothing for the map)");
         assert_eq!(s["checklist"][0]["items"][1]["count"], "done");
         assert_eq!(s["checklist"][0]["items"][1]["finished"], true);
     }

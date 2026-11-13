@@ -1,4 +1,4 @@
-//! The log store on the lead's disk (docs/maplog.md §4.2, §4.5): `snapshot.json.zst` (the map whole
+//! The log store on the lead's disk (docs/formats.md, The map and its log): `snapshot.json.zst` (the map whole
 //! at some `seq`, with the clients' cursors) and segments `<first seq>.jsonl` of batches, one JSON
 //! line each, appended and `fsync`ed before a batch counts. Opening loads the snapshot and replays
 //! the segments' batches past it; a torn last line (a write cut short: it was never answered) is
@@ -6,7 +6,7 @@
 //! their torn lines and the snapshot's whole write are crate::seglog's, shared with the pool's store.
 //!
 //! It keeps, for each watch its opener names (a key prefix, or a part of a batch's `why`:
-//! super::marks), the last batch that marked it (docs/maplog.md §6.8), saved with the snapshot and
+//! super::marks), the last batch that marked it (docs/formats.md, The map and its log), saved with the snapshot and
 //! kept up as batches are replayed and appended: what tells the agent the names' to-do lists' inputs
 //! changed, or when the low zooms last went out, whatever the log still holds.
 
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const SNAPSHOT: &str = "snapshot.json.zst";
-/// A new segment each this many batches or bytes (§4.2).
+/// A new segment each this many batches or bytes.
 const SEGMENT_BATCHES: u64 = 10_000;
 const SEGMENT_BYTES: u64 = 64 << 20;
 

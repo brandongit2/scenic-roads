@@ -1,4 +1,4 @@
-//! The build page's Catalogues map (docs/pool.md §10, task #629; docs/maplog.md §6.6): the map log's
+//! The build page's Catalogues map (docs/pool.md §10, task #629): the map log's
 //! batches (store::map::Batch, `seq` the catalogue's number) as the map tiles each published, for
 //! `/api/catalogs`.
 //!
@@ -18,8 +18,8 @@
 //! (`Plan::output_names`: `step_times`), so a slope-deep pack published leaves
 //! terrain-deep's tile under it as old as it was.
 //!
-//! It follows the log (`Source`): the lead's feed in process, on the lead alone (a member's page asks
-//! the lead's, docs/maplog.md). What it keeps, in the agent's folder
+//! It follows the log: the lead's feed in process, on the lead alone (a member's page asks
+//! the lead's, docs/formats.md, The map and its log). What it keeps, in the agent's folder
 //! (`KEPT`), saved once a refresh applied a batch: its entries, the `seq` they reach, each tile
 //! section's key with its name (hashed), and every `f/` name with its file (both hashed: a file
 //! set again unchanged, its size alone, publishes nothing; the names are what the map's finished
@@ -42,7 +42,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use store::map::feed::Answer;
+use store::map::feed::{Answer, Changes, Feed};
 use store::map::{Batch, Map};
 
 /// The log is asked again this often at most.
@@ -341,27 +341,20 @@ fn entry(n: u64, t: u64, first: bool, ch: Change) -> Entry {
     }
 }
 
-/// Where the log is read: the lead's feed in process, a test's.
-pub trait Source: Send + Sync {
-    /// The batches after `since` (`GET /map/changes`' answer), or a reset.
-    fn changes(&self, since: u64) -> anyhow::Result<Answer>;
-    /// The whole map now (`GET /map/snapshot`).
-    fn map(&self) -> anyhow::Result<Arc<Map>>;
+/// The feed's batches after `since` (`GET /map/changes`' answer), or a reset.
+fn changes(feed: &Feed, since: u64) -> anyhow::Result<Answer> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    // (No cursor: a page reads names, never files, so it holds none for GC.)
+    match feed.changes(since, None, now) {
+        Changes::NotReady => anyhow::bail!("the map's log isn't open yet"),
+        Changes::Reset(head) => Ok(Answer { reset: Some(head), ..Default::default() }),
+        Changes::Batches { body, .. } => Ok(serde_json::from_slice(&body)?),
+    }
 }
 
-impl Source for store::map::feed::Feed {
-    fn changes(&self, since: u64) -> anyhow::Result<Answer> {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        // (No cursor: a page reads names, never files: docs/maplog.md §5.4.)
-        match store::map::feed::Feed::changes(self, since, None, now) {
-            store::map::feed::Changes::NotReady => anyhow::bail!("the map's log isn't open yet"),
-            store::map::feed::Changes::Reset(head) => Ok(Answer { reset: Some(head), ..Default::default() }),
-            store::map::feed::Changes::Batches { body, .. } => Ok(serde_json::from_slice(&body)?),
-        }
-    }
-    fn map(&self) -> anyhow::Result<Arc<Map>> {
-        store::map::feed::Feed::map(self).ok_or_else(|| anyhow::anyhow!("the map's log isn't open yet"))
-    }
+/// The feed's whole map now.
+fn map_of(feed: &Feed) -> anyhow::Result<Arc<Map>> {
+    feed.map().ok_or_else(|| anyhow::anyhow!("the map's log isn't open yet"))
 }
 
 /// What the view shows (`answer`, `names`), as its reader last made it.
@@ -424,7 +417,7 @@ fn step_times(the_plan: &dyn Plan, step: &str, times: &Times, first: Option<u64>
 pub struct CataloguesView {
     /// What tells a step's files by name (`step_times`).
     the_plan: &'static dyn Plan,
-    src: Arc<dyn Source>,
+    src: Arc<Feed>,
     /// Where it's kept (None: not kept).
     keep: Option<PathBuf>,
     shown: Arc<Snap<Shown>>,
@@ -451,7 +444,7 @@ fn read_kept(path: &std::path::Path) -> Kept {
         Ok(k) => k,
         Err(e) => {
             if path.exists() {
-                eprintln!("agent: the Catalogues map's {}: {e:#}; started again", path.display());
+                eprintln!("agent: the map updates' view's {}: {e:#}; started again", path.display());
             }
             Kept::default()
         }
@@ -475,7 +468,7 @@ const MISSED: &str = "the log no longer holds the batches after";
 
 impl CataloguesView {
     /// A view of the log `src`, kept at `keep`.
-    pub fn new(the_plan: &'static dyn Plan, src: Arc<dyn Source>, keep: Option<PathBuf>) -> Arc<Self> {
+    pub fn new(the_plan: &'static dyn Plan, src: Arc<Feed>, keep: Option<PathBuf>) -> Arc<Self> {
         Arc::new(CataloguesView {
             the_plan,
             src,
@@ -555,13 +548,13 @@ impl CataloguesView {
         let mut error = None;
         loop {
             let got = match st.kept.seq {
-                None => src.map().map(|m| {
+                None => map_of(src).map(|m| {
                     st.take_map(&m, true);
                     true
                 }),
-                Some(since) => src.changes(since).and_then(|a| match a.reset {
+                Some(since) => changes(src, since).and_then(|a| match a.reset {
                     Some(head) => {
-                        let m = src.map()?;
+                        let m = map_of(src)?;
                         error = Some(format!("{MISSED} {since} (now at {head}): those to {} aren't shown", m.seq));
                         st.take_map(&m, false);
                         Ok(true)
@@ -590,7 +583,7 @@ impl CataloguesView {
         if st.kept.seq != was {
             if let Some(p) = &self.keep {
                 if let Err(e) = write_kept(p, &st.kept) {
-                    eprintln!("agent: keeping the Catalogues map: {e:#}");
+                    eprintln!("agent: keeping the map updates' view: {e:#}");
                 }
             }
         }
@@ -657,7 +650,7 @@ mod tests {
             self.w.publish(c.clone(), false, std::time::SystemTime::now());
             assert_eq!(self.here.feed.head(), Some(c.n), "catalogue {} in the log", c.n);
         }
-        fn source(&self) -> Arc<dyn Source> {
+        fn source(&self) -> Arc<Feed> {
             self.here.feed.clone()
         }
     }
@@ -806,7 +799,7 @@ mod tests {
         assert_eq!((age(10, t259), age(10, t271), age(6, z6)), (hour(1), hour(3), hour(3)));
     }
 
-    /// docs/maplog.md §8, step 4: on the recorded run of real catalogues (store's
+    /// On the recorded run of real catalogues (store's
     /// `src/map/testdata`, 798–809), the view from the log has the same entries as the catalogues
     /// give, each pair compared by their tile sections' names and those names' files.
     #[test]

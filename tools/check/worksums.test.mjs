@@ -69,7 +69,7 @@ test('map: every tile the keys record stays finished, whatever the window and ev
   assert.equal(mapTiles(new Map(), new Map(), f, { member: 'm4' }, {}).finished.size, 1, 'a member: the tiles its ends name');
 });
 
-test('map: a tile built with nothing to publish is its own state, hidden until shown (#839)', () => {
+test('map: a tile built with nothing for the map is its own state, hidden until shown (#839)', () => {
   // (Live, 29 Oct: 10/266/334 ran, found no fine data, recorded done, no pack: it had shown as
   // published with no catalogue.)
   const ends = [{ kind: 'end', step: 'terrain-deep', t: 1000, worker: 'mini #3', targets: ['10/266/334'] }];

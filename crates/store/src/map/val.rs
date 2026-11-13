@@ -1,4 +1,4 @@
-//! An entry's value kept as its canonical JSON (docs/maplog.md §4.3: the bytes its hash is over),
+//! An entry's value kept as its canonical JSON (docs/formats.md, The map and its log: the bytes its hash is over),
 //! not as a `serde_json::Value`. The map's regions are most of its bytes (their outlines' points),
 //! and a `Value` tree costs several times its JSON (#936: 691 MB for the lead's 80 MB map of
 //! 4 Nov, 4.5 million allocations; 82 MB as text). A value is parsed only where it's read.

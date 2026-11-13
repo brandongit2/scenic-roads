@@ -274,7 +274,7 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     a
 }
 
-/// GC's queue told what each member may still hand off under (docs/maplog.md §7.4): the leases
+/// GC's queue told what each member may still hand off under (docs/storage.md, GC): the leases
 /// granted since (and every one out now) owed to their members, the lead's own Mac's but (its jobs
 /// hand off from its memory); the members the lead knows and its oldest job's lease. A deletion is
 /// kept for the merge's refusal while any lease up to its own is owed (store::map::gc::GcQueue).

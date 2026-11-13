@@ -63,7 +63,7 @@
 //! next and not taken for its epoch's), a job's brief never older than the one its lease was granted from (from the
 //! same coordinator), GC removing no name the records it saw name nor one a map server heard within
 //! the cursor TTL serves, and no records naming a name GC removed (but another disk's queue's,
-//! docs/maplog.md §7.2's limit, counted).
+//! docs/storage.md, GC's limit, counted).
 
 mod mac;
 mod place;
@@ -1261,7 +1261,7 @@ impl World {
                 ));
             }
             // (No content name GC removed: but one another disk's queue removed, which this lead's
-            // queue never knew of, docs/maplog.md §7.2's limit, found only by the uploads' check.)
+            // queue never knew of, docs/storage.md, GC's limit, found only by the uploads' check.)
             let gen = self.macs[me].gen;
             for n in r.manifest.values() {
                 match self.removed.get(n) {
@@ -1278,7 +1278,7 @@ impl World {
         }
     }
 
-    // The map and GC (docs/maplog.md §5.4, §7).
+    // The map and GC (docs/formats.md, The map and its log; docs/storage.md, GC).
 
     /// Lead `k`'s agent publishes the map of records `r` (modelled: a batch of the map's log after
     /// each save that reached the NAS, setting the names the records name and freeing those its
@@ -2004,7 +2004,7 @@ fn every_fault_at_once_keeps_the_invariants() {
 
 #[test]
 fn gc_keeps_its_grace_and_cursors_through_hours_away() {
-    // GC on the lead (docs/maplog.md §7, tasks #1106, #1134) through hours of faults: three Macs,
+    // GC on the lead (docs/storage.md, GC, tasks #1106, #1134) through hours of faults: three Macs,
     // mac1 asleep seven hours from five minutes after the first take-up (its map server unheard past CURSOR_TTL_S, 6 h),
     // Macs cut off for up to six hours, the network's faults. A name is removed only past GRACE_S
     // (1 h), the records it saw naming none, nor any map server heard within the TTL; no records

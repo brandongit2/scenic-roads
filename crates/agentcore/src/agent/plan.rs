@@ -982,7 +982,7 @@ impl Planner {
         }
         if self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
-                eprintln!("agent: noting the catalogue made: {e:#}");
+                eprintln!("agent: noting the map update made: {e:#}");
             }
         }
     }
@@ -1008,7 +1008,7 @@ impl Planner {
         r.held_at = held_at;
         if self.keeps_publishing() {
             if let Err(e) = write_published(&self.o.home, &r) {
-                eprintln!("agent: noting the catalogue held back: {e:#}");
+                eprintln!("agent: noting the map update held back: {e:#}");
             }
         }
     }
@@ -1171,7 +1171,7 @@ impl Planner {
         keep
     }
 
-    /// Whether the `gc` job has work (docs/maplog.md §7.3, step 8b): a chunk GC's queue would hand
+    /// Whether the `gc` job has work (docs/storage.md, GC): a chunk GC's queue would hand
     /// it (one told and not gone, or a name due that a chunk takes: `gc::by_the_queue`, the older
     /// passes before `latest`), only the lead's agent running the jobs knowing; or a sweep's pass
     /// under way or due (`gc::Sweeps`, `sweeps` its file). In words, for the job's card.
@@ -1312,7 +1312,7 @@ impl Planner {
         if self.coord.is_some() {
             out.extend(self.redo_jobs(root));
         }
-        // GC, whenever it has work (docs/maplog.md §7.3): the NAS budget grants it when quiet.
+        // GC, whenever it has work (docs/storage.md, GC): the NAS budget grants it when quiet.
         let sweeps = self.o.home.join(super::publish::MAPLOG).join(gc::SWEEPS_FILE);
         if let Some(what) = self.gc_work(&sweeps, have.as_deref()) {
             let keep = self.keep_depth_targets();
@@ -1796,7 +1796,7 @@ impl Planner {
                 what: "publish".into(),
                 why: format!("the inputs' descriptions (their credits) can't be read now: {why}"),
             });
-            planned.publishing.why = "the catalogue waits for the inputs' descriptions to be read".into();
+            planned.publishing.why = "the map update waits for the inputs' descriptions to be read".into();
             plan.retain(|w| w.step != "catalog");
         }
         // Just edited: the regions' work waits a while for more edits (each would build again what
@@ -1814,7 +1814,7 @@ impl Planner {
         let mut held_back = planned.catalogue_held;
         if unmerged && !publish::unmerged_holds(unmerged, held_for) && plan.iter().any(|w| w.step == "catalog") {
             planned.publishing.why = format!(
-                "a catalogue now with what's merged: held {} min by hand-offs waiting to be merged",
+                "a map update now with what's merged: held {} min by hand-offs waiting to be merged",
                 publish::CATALOGUE_CAP_S / 60
             );
         }
@@ -1825,7 +1825,7 @@ impl Planner {
                 what: "publish".into(),
                 why: "waits for a helper's work to be merged".into(),
             });
-            planned.publishing.why = "the catalogue waits for a helper's work to be merged".into();
+            planned.publishing.why = "the map update waits for a helper's work to be merged".into();
             plan.retain(|w| w.step != "catalog");
         }
         // (When a catalogue was first held back, kept in the lead's record; none held, none to make
@@ -2115,7 +2115,7 @@ impl Planner {
 
     /// Publishing as it stands (`Published`): the map's last batch, whether it went out with the low
     /// zooms, the map tiles drawing, and each Mac's map server's adoption (its cursor in the log:
-    /// docs/maplog.md §6.1).
+    /// docs/macs.md, The map's log).
     pub(super) fn published(&self) -> Published {
         let last = self.catalogue_seen.get();
         let mut drawing: BTreeMap<String, usize> = BTreeMap::new();
@@ -2128,7 +2128,7 @@ impl Planner {
         Published { last, low, drawing, adopted: adopted(&cursors) }
     }
 
-    /// The map now as a catalogue (docs/maplog.md §6.5): the lead's log's (`Inputs::map`); None
+    /// The map now as a catalogue (docs/building.md §2, 5): the lead's log's (`Inputs::map`); None
     /// without it (not the lead, a dry run, a log not started yet): the NAS keeps no copy.
     pub(super) fn map_now(&self) -> Option<std::sync::Arc<store::catalogue::Catalogue>> {
         self.inp.map.as_ref().and_then(|h| h.catalogue())

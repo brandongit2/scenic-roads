@@ -67,7 +67,7 @@ fn grouped(n: usize) -> String {
 /// "{done} of {total} {noun}s", and the done that made nothing to publish and those with no data
 /// (not run) apart.
 fn of_total(done: usize, total: usize, empty: usize, nodata: usize, nouns: &str) -> String {
-    let apart: Vec<String> = [(empty, "with nothing to publish"), (nodata, "with no data, not run")]
+    let apart: Vec<String> = [(empty, "with nothing for the map"), (nodata, "with no data, not run")]
         .into_iter()
         .filter(|(n, _)| *n > 0)
         .map(|(n, what)| format!("{} {what}", grouped(n)))
@@ -239,10 +239,10 @@ mod tests {
     #[test]
     fn a_count_says_the_empty_and_the_unrun_apart() {
         assert_eq!(of_total(318, 4244, 0, 0, "z10 tiles"), "318 of 4,244 z10 tiles");
-        assert_eq!(of_total(318, 4244, 47, 0, "z10 tiles"), "318 of 4,244 z10 tiles (47 with nothing to publish)");
+        assert_eq!(of_total(318, 4244, 47, 0, "z10 tiles"), "318 of 4,244 z10 tiles (47 with nothing for the map)");
         assert_eq!(
             of_total(1_018, 4244, 47, 700, "z10 tiles"),
-            "1,018 of 4,244 z10 tiles (47 with nothing to publish; 700 with no data, not run)"
+            "1,018 of 4,244 z10 tiles (47 with nothing for the map; 700 with no data, not run)"
         );
         assert_eq!(of_total(700, 4244, 0, 700, "z10 tiles"), "700 of 4,244 z10 tiles (700 with no data, not run)");
     }

@@ -32,13 +32,13 @@
 //! nothing whole to keep: not all here at its own catalogue (still copying when the new one came),
 //! whose older files the map never reads (they'd mix with the NAS's, `older`).
 //!
-//! **Its own list** (docs/maplog.md §6.2). Each download keeps what it is at its catalogue: its
+//! **Its own list** (docs/macs.md, Mirror). Each download keeps what it is at its catalogue: its
 //! files' content names (each names its logical name) and sizes, and its pieces, in
 //! `downloads.json`'s `lists`, by catalogue number (`seq`). The lists of the catalogue served are
 //! written as the mirror plans, for every download (`Downloads::keep_lists`), and those of each
 //! catalogue a download is at or updating to are kept, however old: what it keeps, what changed and
 //! what an Update copies are its list against the catalogue served, one pass over its own items,
-//! however far behind it is. No catalogue is kept on this Mac (docs/maplog.md §8, step 6): a
+//! however far behind it is. No catalogue is kept on this Mac: a
 //! download whose list wasn't kept (a file of format 4, from before lists) reads at the map served,
 //! as one whose catalogue is lost (`Plan::eff`). A region behind whose list lacks some file of no z6
 //! tile it now holds (one listed before a region held what's read over it zoomed out) takes it at
@@ -490,7 +490,7 @@ impl Plan {
         Some(out)
     }
 
-    /// The oldest map whose files the mirror still copies from the NAS (docs/maplog.md §6.2): the
+    /// The oldest map whose files the mirror still copies from the NAS (docs/macs.md, Mirror): the
     /// one served, an Update's older one while its files aren't all here, or a download's own while
     /// what it keeps there isn't (`Downloads::advance` moves that on). The mirror's cursor in the
     /// map's log (crate::maplog::MirrorLink): never newer than what it lacks.
@@ -980,7 +980,7 @@ impl Downloads {
         complete
     }
 
-    /// The lead answered the mirror's cursor a reset (docs/maplog.md §6.2: outside its log, or not
+    /// The lead answered the mirror's cursor a reset (docs/macs.md, Mirror: outside its log, or not
     /// held by GC: new, or unheard or at one map `CURSOR_TTL_S`, 6 h), and the map served is the
     /// head it answered or past it (`once`): each Update of a map older than the one served goes
     /// on at the one served, whose files the NAS has (an older map's may have gone with GC
@@ -1741,7 +1741,7 @@ fn update(s: &crate::AppState, w: Which, what: &str) -> Result<Value> {
     let plan = s.downloads.plan(&s.data);
     let mut next = s.downloads.asked();
     let Some(pin) = next.pin_mut(&w) else { bail!("{what} isn't downloaded") };
-    ensure!(plan.eff(pin.cat) != plan.current, "{what} is at the catalogue served already");
+    ensure!(plan.eff(pin.cat) != plan.current, "{what} is at the map served already");
     if pin.to == Some(plan.current) {
         return Ok(json!({ "ok": true }));
     }

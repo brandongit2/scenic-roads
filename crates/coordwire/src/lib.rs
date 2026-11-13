@@ -53,7 +53,7 @@ pub fn keep_old_contact(root: &store::nasfs::NasRoot, c: &Contact) -> anyhow::Re
 pub const POOL_EPOCH: &str = "x-pool-epoch";
 pub const POOL_MEMBER: &str = "x-pool-member";
 
-/// The map now, for a job or a command (docs/maplog.md §6.7, §6.10): the lead's (`GET
+/// The map now, for a job or a command (docs/building.md §2, 5): the lead's (`GET
 /// /map/snapshot` from its coordinator, found as `lead::find` says); None when
 /// there's no coordinator or it holds no map yet (503): the NAS keeps no copy of the map. A root
 /// that isn't the NAS (a test root, a local copy laid out as the project folder) holds its own,

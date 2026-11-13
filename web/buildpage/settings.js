@@ -109,7 +109,7 @@ export function settingsSection(call, macs, done, onError) {
       return h("div", "box settings pool", h("h3", null, "The pool"), poolRows(st.said).map((r) => row(put, r)));
     })()
     : h("div", "box settings pool", h("h3", null, "The pool"), h("div", "setting dim small", "no Mac shown here has answered yet"));
-  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length, overdue factor and publishing's switches, pool-wide")), blocks, pool);
+  return h("section", "d-settings", h("h2", null, "Settings", h("span", null, "each Mac's own, set on that Mac; the NAS reserve, batch length, overdue factor and the map updates' switches, pool-wide")), blocks, pool);
 }
 
 // Sets `body` on Mac `m` (null: this page's) with its kept state `st`; a refusal said through
@@ -213,7 +213,7 @@ export function poolRows(s) {
       note: `a job whose work hasn't moved for this many times its usual still stretch is flagged stuck, one whose progress goes on this many times slower than its step's slowest tenth of jobs slow (Alerts, scenic status, the menu bar)${o.set ? by(o) : ` (the default, ${o.default}×)`}${o.had ? "" : "; the lead's setting not had yet"}; a change goes to the lead with ${s.mac || "this Mac"}'s next beat`,
       input: { min: 1.1, max: 100, step: 0.5, placeholder: "times", offTitle: `Back to the default (${o.default}×)` },
     })),
-    switchRow(s, "hold_catalog", "Hold publishing", "the catalogue step keeps the map it would publish on the lead's disk for review, and nothing is published"),
+    switchRow(s, "hold_catalog", "Hold map updates", "the map update step keeps the map it would append on the lead's disk for review, and the map isn't updated"),
     switchRow(s, "near_slope", "Slope near regions", "a done region's slope and tree cover are the z6 tiles near it, their assemblies made with the low zooms"),
   ];
 }

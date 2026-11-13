@@ -5,7 +5,7 @@
 //! the NAS, read back past the client's cache and checked against its hash, and renamed into place
 //! (`store::naming::write_atomic`). A file already there is reused as it is (one the manifest names
 //! under the same logical name with one look: `put_file`) and named in the hand-off's `reused`, which
-//! GC's queue and the merge go by (docs/maplog.md §7.4). An upload, copied or reused, stays pending
+//! GC's queue and the merge go by (docs/storage.md, GC). An upload, copied or reused, stays pending
 //! until `verify` checks it on the NAS itself (there at its size, by one call over SSH a batch: a
 //! duty of the `gc` job).
 //!
@@ -150,7 +150,7 @@ struct Landed {
     logical: String,
     name: String,
     /// Its SHA-256, its check pending: copied, or found there already and taken as it was (a
-    /// reuse is checked as an upload is: nothing touches it, docs/maplog.md §7.4). None: this run's
+    /// reuse is checked as an upload is: nothing touches it, docs/storage.md, GC). None: this run's
     /// own upload again, pending already.
     sha: Option<String>,
     /// Whether it was copied (else found there already).
@@ -1322,7 +1322,7 @@ mod tests {
         let a = out.put_bytes(l, "json", b"[[1,2]]").unwrap();
         out.save().unwrap();
         let open = || Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch")).unwrap();
-        // There: taken as it is (no touch: GC goes by the queue, docs/maplog.md §7.4).
+        // There: taken as it is (no touch: GC goes by the queue, docs/storage.md, GC).
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
         std::fs::File::options().write(true).open(root.join(&a)).unwrap().set_modified(old).unwrap();
         let mut out = open();
@@ -1486,7 +1486,7 @@ mod tests {
     }
 
     /// A file there already is reused as it is, its time left (GC goes by its queue, not by
-    /// files' times: docs/maplog.md §7.4), and handed off as `reused`, which the merge checks
+    /// files' times: docs/storage.md, GC), and handed off as `reused`, which the merge checks
     /// against GC's deletions; its check is pending as an upload's (the uploads' verification finds
     /// one missing, as it does an upload).
     #[test]

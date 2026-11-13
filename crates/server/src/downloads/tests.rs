@@ -1706,7 +1706,7 @@ async fn a_download_behind_the_log_compares_its_list() {
     assert!(!s.data.mirror.as_ref().unwrap().has(&old));
 }
 
-// ---- the mirror's cursor in the map's log (docs/maplog.md §6.2) ---------------------------------
+// ---- the mirror's cursor in the map's log (docs/macs.md, Mirror) ---------------------------------
 
 type Feed = Arc<store::map::feed::Feed>;
 

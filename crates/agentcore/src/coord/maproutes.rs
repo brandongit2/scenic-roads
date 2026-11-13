@@ -1,4 +1,4 @@
-//! The map's routes on the lead's coordinator (docs/maplog.md §5.1), answered from the feed the
+//! The map's routes on the lead's coordinator (docs/formats.md, The map and its log), answered from the feed the
 //! lead's log writer keeps (store::map::feed, crate::agent::publish::MapLog): memory alone, never
 //! the NAS or a disk.
 //!

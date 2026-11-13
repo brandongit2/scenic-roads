@@ -761,7 +761,7 @@ impl Client {
     }
 
     /// `get_bytes`, None when the coordinator answers that it can't now (503: the map's log not
-    /// open yet, docs/maplog.md §5.1).
+    /// open yet, docs/formats.md, The map and its log).
     pub fn get_ready(&self, path: &str) -> Result<Option<Vec<u8>>> {
         match self.request("GET", path, None)? {
             (200, b) => Ok(Some(b)),

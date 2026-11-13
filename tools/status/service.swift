@@ -792,7 +792,7 @@ func selfTest(_ dir: String) -> Never {
     let helperPrinted = lines(withHelpers, line, own: ownSaid).map(\.text)
     check("a helper's stuck loop said, its age counted on from its beat", helperPrinted.contains { $0.hasPrefix("m4: loop stuck ") && $0.hasSuffix(", in planning") })
     check("a helper under the threshold, or out of touch, never said stuck", !helperPrinted.contains { $0.hasPrefix("m6: loop") || $0.hasPrefix("m7: loop") })
-    check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing to publish)") } && printed.contains { $0.contains("outlines: done") })
+    check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing for the map)") } && printed.contains { $0.contains("outlines: done") })
     // The same status from an agent before #846 (a rollout: the lead updated last): its verdict,
     // stage and counts worked out from the older fields, never "older app".
     func strip(_ v: Any) -> Any {

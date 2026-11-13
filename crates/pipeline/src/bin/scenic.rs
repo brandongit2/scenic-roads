@@ -220,10 +220,10 @@ fn timings_publish(last: usize, file: Option<&Path>, json: bool, places: &cli::P
         return Ok(());
     }
     if cats.is_empty() {
-        println!("no catalogues in the build's history yet ({} events read)", events.len());
+        println!("no map updates in the build's history yet ({} events read)", events.len());
         return Ok(());
     }
-    println!("Publishing, the last {last} catalogues: each unit's hand-off, its map tiles planned, leased and packed, the catalogue, each Mac's server and mirror\n");
+    println!("The last {last} map updates: each unit's hand-off, its map tiles planned, leased and packed, the map update, each Mac's server and mirror\n");
     print!("{}", pubtimes::text(&cats, &units, last));
     Ok(())
 }
@@ -680,11 +680,11 @@ fn publish_name(what: &str) -> &str {
 fn publishing_lines(st: &agent::Status) -> Vec<String> {
     let mut out = Vec::new();
     let Some(u) = &st.publishing else { return out };
-    out.push(format!("Publishing: {}", u.why));
+    out.push(format!("Map updates: {}", u.why));
     let p = st.published.clone().unwrap_or_default();
     if let Some(c) = p.last {
         let kind = if p.low { "with the low zooms" } else { "map tiles only" };
-        out.push(format!("  last catalogue: {}, {}, {kind}", c.n, ago(c.at)));
+        out.push(format!("  last map update: {}, {}, {kind}", c.n, ago(c.at)));
     }
     if u.tiles > 0 || !p.drawing.is_empty() {
         let by: Vec<String> = p.drawing.iter().map(|(h, k)| format!("{h}: {}", plural(*k, "tile"))).collect();
@@ -704,7 +704,7 @@ fn publishing_lines(st: &agent::Status) -> Vec<String> {
         out.push(format!("  next: {}", next.join(", ")));
     }
     if !p.adopted.is_empty() {
-        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h}: catalogue {} ({})", c.n, ago(c.at))).collect();
+        let a: Vec<String> = p.adopted.iter().map(|(h, c)| format!("{h}: map {} ({})", c.n, ago(c.at))).collect();
         out.push(format!("  adopted: {}", a.join(", ")));
     }
     for r in &u.regions {
@@ -1001,7 +1001,7 @@ fn count_line(done: usize, total: Option<usize>, left: Option<usize>, noun: &str
 
 /// A step's done said apart: those that made nothing to publish, those with no data (not run).
 fn apart(empty: usize, nodata: usize) -> String {
-    let said: Vec<String> = [(empty, "with nothing to publish"), (nodata, "with no data, not run")]
+    let said: Vec<String> = [(empty, "with nothing for the map"), (nodata, "with no data, not run")]
         .into_iter()
         .filter(|(n, _)| *n > 0)
         .map(|(n, what)| format!("{n} {what}"))
@@ -1473,13 +1473,8 @@ fn cli_main() -> Result<()> {
             }
             jobrt::sys::raise_open_files();
             // (Every Mac's app kept current from here, the map server's Mac too: coordwire::releases.)
-            // (And its copies of old catalogues gone, docs/maplog.md §8 step 9.)
             if places.home.is_none() {
                 coordwire::releases::spawn(app_home(), o.root.clone());
-                let user = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-                for d in gc::remove_this_macs_catalogues(&app_home(), &user) {
-                    eprintln!("agent: removed {} (an old catalogue's copy)", d.display());
-                }
             }
             let mut a = agent::Agent::new(o)?;
             a.run()?;
@@ -1860,11 +1855,11 @@ mod tests {
         assert_eq!(
             publishing_lines(&st),
             [
-                "Publishing: drawing the map tiles of the units built",
-                "  last catalogue: 812, 2 min ago, map tiles only",
+                "Map updates: drawing the map tiles of the units built",
+                "  last map update: 812, 2 min ago, map tiles only",
                 "  map tiles to draw: 18 (being drawn: m1: 6 tiles, m4: 12 tiles)",
                 "  next: the low zooms in 2.0 h, the landmarks in 50 min, the area overlays now",
-                "  adopted: m1: catalogue 811 (3 min ago), m4: catalogue 812 (1 min ago)",
+                "  adopted: m1: map 811 (3 min ago), m4: map 812 (1 min ago)",
             ]
         );
     }

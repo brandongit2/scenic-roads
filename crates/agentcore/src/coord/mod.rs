@@ -2718,7 +2718,7 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.all(), mem)
     }
 
-    /// For GC's queue (crate::agent::gcqueue, docs/maplog.md §7.2, §7.4): when the oldest live lease
+    /// For GC's queue (crate::agent::gcqueue, docs/storage.md, GC): when the oldest live lease
     /// was granted (None: none live), and the newest lease granted so far (every one before it has a
     /// smaller id).
     pub fn lease_bounds(&self) -> (Option<u64>, jobrt::jobid::JobId) {
@@ -4743,7 +4743,7 @@ fn route(
         | crate::agent::gc::GONE
         | crate::agent::gc::ORPHANS
         | crate::agent::gc::REMOVING) => {
-            // The `gc` job's asks of GC's queue (crate::agent::gc::Lead, docs/maplog.md §7.3): every
+            // The `gc` job's asks of GC's queue (crate::agent::gc::Lead, docs/storage.md, GC): every
             // name it removes marked deleted first (written and fsynced), the newest lease granted
             // now its, so the merge refuses a hand-off of an older lease bringing one from then on;
             // each checked against its holders as of now.

@@ -389,7 +389,7 @@ export const finishedState = (d, pubAt) => {
 // `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile areas not
 // toggled off (`f.offAreas`: AREAS' names), and with `solo` (step ids) those steps' alone. The
 // published tiles are apart in `published` (drawn only for a solo, #833), whatever `f.tiles` says;
-// those built with nothing to publish ("empty") are finished ones, shown only when toggled on
+// those built with nothing for the map ("empty") are finished ones, shown only when toggled on
 // (HIDDEN_STATES). Returns {running, queued, finished, published}, new Maps.
 export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) => w, solo = null } = {}) {
   const shown = (st) => (HIDDEN_STATES.includes(st) ? f.tiles?.[st] === true : f.tiles?.[st] !== false);
@@ -615,7 +615,7 @@ export const PHASE_ABOUT = {
   "making the piece's terrain tiles, z12 down to z9": "Samples the terrain pool's datasets for a z9 piece's tiles, levels the lakes, shades and encodes them as WebP.",
   "sampling the fine elevation data into high-zoom terrain": "Samples the fine datasets (HRDEM, 3DEP and others) for the z10 tile's deep levels, blends their edges and brings them to EGM2008.",
   "making the z8 tile's slope tiles here": "Makes the z8 tiles' slope tiles on this Mac from the terrain it reads.",
-  "drawing the coverage and finding the credits": "Draws the catalogue's coverage and finds the credits its tiles need.",
+  "drawing the coverage and finding the credits": "Draws the map's coverage and finds the credits its tiles need.",
   "composing": "Composes the depth tiles from the sources' windows: fills the gaps, scales stored levels up, feathers the seams.",
   "waiting for the uploads beside to land": "Waits for the uploads sent beside the job (packs, tiles) to land on the NAS.",
   "working out the slope tiles": "Works out the slope tiles from the terrain, read from its packs as needed.",

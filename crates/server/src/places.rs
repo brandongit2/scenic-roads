@@ -942,7 +942,7 @@ impl Index {
                             ),
                         };
                         eprintln!(
-                            "places: {} of catalogue {} ({} MB) in {:.1} s{skipped}",
+                            "places: {} of map {} ({} MB) in {:.1} s{skipped}",
                             b.places.len(),
                             cat.n,
                             b.places.bytes() >> 20,

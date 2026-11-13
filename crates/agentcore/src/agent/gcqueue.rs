@@ -1,9 +1,9 @@
-//! GC's queue on the lead (docs/maplog.md §7.2 to §7.5, §8 step 8b), the queue itself
+//! GC's queue on the lead (docs/storage.md, GC), the queue itself
 //! store::map::gc. The lead queues each content name as it stops being held: a batch of the map's
 //! log frees it (`Batch::freed`, told by the log's writer, super::publish), or a save of the
 //! records drops it (the manifest's names and the pending uploads': `records`), while the other
 //! holder doesn't name it; the orphan sweep queues what it finds on the NAS that nothing holds
-//! (crate::agent::gc, §7.5). A name named again leaves the queue. A queued name is **due** when
+//! (crate::agent::gc). A name named again leaves the queue. A queued name is **due** when
 //! every client's cursor heard within `CURSOR_TTL_S` (6 h) is at or past the `seq` it was freed at, `GRACE_S` has passed since,
 //! every live lease was granted after it, the records have been seen and no holder names it.
 //!

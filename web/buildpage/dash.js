@@ -89,7 +89,7 @@ const waitName = (w) => w.step || w.what;
 // A step's line of the checklist (progress::Item) or a stage's (progress::Line) in words, as the agent
 // says them (progress::Line::said, task #846: the menu bar and `scenic status` say the same): "156 of
 // 284 z6 tiles", "3 runs left", "done", "to come"; the done that made nothing to publish counted
-// apart: "7,837 of 7,849 z10 tiles (6,814 with nothing to publish)".
+// apart: "7,837 of 7,849 z10 tiles (6,814 with nothing for the map)".
 // (An agent's before #846, a rollout's: worked out from the older fields as build.rs Item::count
 // and Line::counts do.)
 function countOf(x) {
@@ -293,7 +293,7 @@ function alerts(m) {
   const failed = (a.recent || []).filter((d) => !d.ok && now - d.ended < 6 * 3600);
   if (failed.length) out.push({ cls: "bad", text: `${plural(failed.length, "job")} failed in the last 6 h`, to: "activity" });
   for (const w of a.waiting || []) {
-    if (/held for review/.test(w.why)) out.push({ cls: "warn", text: "Publishing held for review", to: "overview" });
+    if (/held for review/.test(w.why)) out.push({ cls: "warn", text: "Map updates held for review", to: "overview" });
     else if (/failed \d+ times?/.test(w.why)) out.push({ cls: "warn", text: `${waitName(w)}: waiting out a failure`, to: "details" });
   }
   // Things to know that hold nothing back (agent::Notice): an info line each, apart from the waits.
@@ -398,14 +398,14 @@ function overview(m, md) {
   }));
   const t = md?.whole?.tile;
   const nowLines = lines.filter((l) => !finished(l) && (l.steps || []).some((s) => m.running.has(s))).map((l) => l.id);
-  const queueLine = h("div", "small dim", [t ? `${plural(t.queued, "tile")} queued · ${n(t.progress)} in progress · ${n(t.completed)} not yet published` : "", nowLines.length ? `now: ${nowLines.join(", ")}` : ""].filter(Boolean).join(" · "));
+  const queueLine = h("div", "small dim", [t ? `${plural(t.queued, "tile")} queued · ${n(t.progress)} in progress · ${n(t.completed)} not yet on the map` : "", nowLines.length ? `now: ${nowLines.join(", ")}` : ""].filter(Boolean).join(" · "));
   const cat = lastCatalogue(m);
   const nextUpdate = nextOnMap(m);
   // Each Mac by name, a line each, with what it's doing.
   const doing = (x) => { const k = jobsOf(x.status).length; return !x.fresh ? "out of touch" : k ? plural(k, "job") : "idle"; };
   const kpis = h("div", "kpis",
-    kpi("Last catalogue", cat ? `${clock(cat.at)} (${ago(now, cat.at)})` : "–", cat?.n != null ? `catalogue ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : null),
-    kpi("Next catalogue", nextUpdate ? `≈ ${clock(nextUpdate.at)}` : "–", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : null),
+    kpi("Last map update", cat ? `${clock(cat.at)} (${ago(now, cat.at)})` : "–", cat?.n != null ? `map ${cat.n}${cat.kind ? `, ${cat.kind}` : ""}` : null),
+    kpi("Next map update", nextUpdate ? `≈ ${clock(nextUpdate.at)}` : "–", m.a.publishing?.tiles ? `${plural(m.a.publishing.tiles, "map tile")} to draw` : null),
     kpi("Machines", h("div", "macs", m.macs.map((x) => h("div", null, x.name, h("span", "small dim", ` · ${doing(x)}`)))), null),
   );
   return h("div", "overview", h("div", "box", left, queue.length ? strip : null, queueLine), kpis);
@@ -680,9 +680,9 @@ function tileCards(t, painted, age, kinds) {
     // (Built, nothing to publish (#839): its job ran and made no file, a deep tile with no fine
     // data there; no catalogue will name it.)
     if (d.state === "empty") {
-      cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "built, nothing to publish"),
+      cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "built, nothing for the map"),
         stats: [[d.t == null ? "earlier" : ago(cardNow(), d.t), "built"], ["none", "files made"]],
-        bar: { frac: 1, label: "no data there to publish (its job made no pack)" },
+        bar: { frac: 1, label: "no data there for the map (its job made no pack)" },
         foot: `${d.worker || "?"} · ${key}` }, [
         ["stage", S.stage(d.step)],
         ["on", d.worker],
@@ -691,8 +691,8 @@ function tileCards(t, painted, age, kinds) {
       continue;
     }
     const out = d.state === "published";
-    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, out ? "published" : "completed, not yet published"),
-      stats: [[d.t == null ? "earlier" : ago(cardNow(), d.t), "finished"], [out ? "yes" : "next catalogue", "in the app"]],
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, out ? "on the map" : "completed, not yet on the map"),
+      stats: [[d.t == null ? "earlier" : ago(cardNow(), d.t), "finished"], [out ? "yes" : "next map update", "in the app"]],
       bar: { frac: 1, label: d.t == null ? "done, before the history held" : `done ${clock(d.t)}` },
       foot: `${d.worker || "?"} · ${key}` }, [
       ["stage", S.stage(d.step)],
@@ -702,8 +702,8 @@ function tileCards(t, painted, age, kinds) {
   }
   for (const [key, d] of kinds.includes("queued") ? t.queued : []) {
     // (Asked when shown: a step's own times are read as they're first needed, catalogues.js.)
-    cards.set(`mt ${key}`, () => { const p = publishedBefore(key, d, age.at); return cardBody({ ...head(key, d.step, p ? "queued, published before" : "queued"),
-      stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"], ...(p ? [[ago(cardNow(), p.t), `last published (catalogue ${p.n})`]] : [])],
+    cards.set(`mt ${key}`, () => { const p = publishedBefore(key, d, age.at); return cardBody({ ...head(key, d.step, p ? "queued, on the map before" : "queued"),
+      stats: [[`≈ ${clock(d.at)}`, "to begin"], [d.mac, "on"], ...(p ? [[ago(cardNow(), p.t), `last on the map (map ${p.n})`]] : [])],
       bar: { frac: 0, label: `to come at ≈ ${clock(d.at)} on ${d.mac}` },
       foot: `the forecast's · ${key}` }, [
       ["stage", S.stage(d.step)],
@@ -714,9 +714,9 @@ function tileCards(t, painted, age, kinds) {
   for (const [key, d] of kinds.includes("published") ? t.published : []) {
     if (!painted.has(key)) continue;
     const p = age.at(tileOf(key), d.step);
-    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "published"),
-      stats: [[p ? ago(cardNow(), p.t) : "–", "last published"], [p ? `${p.n}` : "–", "catalogue"]],
-      bar: { frac: 1, colour: painted.get(key), label: p ? `catalogue ${p.n}, ${whenText(p.t)}${p.first ? " (the oldest kept: or before)" : ""}` : "in no catalogue kept" },
+    cards.set(`mt ${key}`, () => cardBody({ ...head(key, d.step, "on the map"),
+      stats: [[p ? ago(cardNow(), p.t) : "–", "last on the map"], [p ? `${p.n}` : "–", "map"]],
+      bar: { frac: 1, colour: painted.get(key), label: p ? `map ${p.n}, ${whenText(p.t)}${p.first ? " (the oldest kept: or before)" : ""}` : "in no map update kept" },
       foot: `${d.worker || "?"} · ${key}` }, [
       ["stage", S.stage(d.step)],
       ["on", d.worker],
@@ -740,7 +740,7 @@ const mapPick = (keys, x, y) => (keys.length ? pinCard("mstack", x, y, keys.join
 // that draws tiles, grouped by its stage, each a solo: hovered, that step alone on the map while
 // the pointer's on it (a stage: its steps), with its published tiles by age; a click holds it until
 // clicked again. Then the member filter. Every step and stage by its id.
-const TILE_WORDS = { queued: "queued", progress: "in progress", completed: "completed, not yet published", published: "published", empty: "built, nothing to publish" };
+const TILE_WORDS = { queued: "queued", progress: "in progress", completed: "completed, not yet on the map", published: "on the map", empty: "built, nothing for the map" };
 // The steps the map draws tiles of, by stage in the build's order: a z3, z6 or z10 tile's, or a
 // root's (sums.js areaTargets); then any other step it has tiles of. [{stage, steps}].
 function mapSteps(stepCount) {
@@ -758,7 +758,7 @@ function mapLegend(md) {
   // (`name`: a stage's, step's or area's code name, the item's `data-name`: touch-test.mjs checks each is one.)
   const toggle = (on, flip, emph, swatch, text, title, cls = "", name = null) => h("button", { type: "button", class: `lg${cls}${on ? "" : " off"}`, "aria-pressed": on ? "true" : "false", title, "data-name": name,
     onclick: () => { map.emphasize(null); flip(); }, onpointerenter: (e) => e.pointerType !== "touch" && map.emphasize(emph), onpointerleave: () => map.emphasize(null) }, swatch, text);
-  // (A tile state hidden until toggled on (sums.js HIDDEN_STATES), the tiles with nothing to publish.)
+  // (A tile state hidden until toggled on (sums.js HIDDEN_STATES), the tiles with nothing for the map.)
   const isOn = (k, st) => (k === "tiles" && HIDDEN_STATES.includes(st) ? f[k][st] === true : f[k][st] !== false);
   const byState = (k, st, cls, text) => toggle(isOn(k, st), () => setMapFilter(k, { ...f[k], [st]: !isOn(k, st) }), { [k === "tiles" ? "tile" : "region"]: st }, h("i", cls), text, "Show or hide these on the map");
   const offA = new Set(f.offAreas || []);
@@ -779,9 +779,9 @@ function mapLegend(md) {
       h("i", `ar ${a}`), `${a} z${z} · ${n(counts.area[a] || 0)}`, `Show or hide the ${a} packs' tiles (z${z}) on the map`, " area", a))),
   h("div", { class: "wmap-legend wmap-steps small dim", role: "group", "aria-label": "Steps by stage: hover one to solo it, click to hold it" },
     groups.map(({ stage, steps }) => h("span", { class: "lgg", "data-stage": stage },
-      solo({ stage }, sw(stage), h("b", null, stage || "–"), `${stage}'s steps alone on the map, their published tiles by when (a click holds it)`, "stage", stage),
-      steps.map((id) => solo({ step: id }, sw(stage), `${id} ${n(counts.step[id] || 0)}`, `${id} alone on the map, its published tiles by when (a click holds it)`, "step", id))))),
-  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or publish) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet published: dashed · published: drawn only for a step soloed, by when (below); its queued tiles published before: the same, fainter, dotted · built, nothing to publish (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile area`)),
+      solo({ stage }, sw(stage), h("b", null, stage || "–"), `${stage}'s steps alone on the map, their tiles on the map by when (a click holds it)`, "stage", stage),
+      steps.map((id) => solo({ step: id }, sw(stage), `${id} ${n(counts.step[id] || 0)}`, `${id} alone on the map, its tiles on the map by when (a click holds it)`, "step", id))))),
+  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or put on the map) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet on the map: dashed · on the map: drawn only for a step soloed, by when (below); its queued tiles on the map before: the same, fainter, dotted · built, nothing to publish (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile area`)),
   mapFilterBar(md.m)];
 }
 // The member filter under the map: a member's tiles alone (those it ran, the history's ends; runs
@@ -1591,7 +1591,7 @@ function stepCard(m, it) {
   const done = finished(it), noun = S.noun(it.step);
   const ps = m.a.phase_shares?.[it.step];
   return jobCard({ kicker: `${S.stage(it.step) || "step"} · step`, colour: S.colour(it.step), title: it.step,
-    stats: it.total ? [[n(it.done), `${noun}s done`], ...(it.empty ? [[n(it.empty), "with nothing to publish"]] : []), [n(it.total - it.done), "left"]] : [[countOf(it), "count"]],
+    stats: it.total ? [[n(it.done), `${noun}s done`], ...(it.empty ? [[n(it.empty), "with nothing for the map"]] : []), [n(it.total - it.done), "left"]] : [[countOf(it), "count"]],
     bar: it.total ? { frac: it.done / it.total, label: countOf(it) } : done ? { frac: 1, label: "done" } : null,
     chips: (ps?.phases || []).map((p) => `${p.name} ${Math.round(p.wall * 100)}%`), chipsLabel: ps?.phases?.length ? `Time by phase (${plural(ps.runs, "run")})` : "",
     foot: it.step }, [
@@ -1663,7 +1663,7 @@ const regionStages = () => table.stages.map((g) => g.id).filter((g) => Object.va
 // building now, its place in line.
 function rowState(r) {
   if (!r.f) return ["", ""];
-  let [st, cls] = !r.count ? (r.on_map === true ? ["on the map", "ok"] : ["done; on the map with the next catalogue", "ok"]) : r.rank === 0 ? ["building now", "run"] : [`#${r.rank + 1} in line`, ""];
+  let [st, cls] = !r.count ? (r.on_map === true ? ["on the map", "ok"] : ["done; on the map with the next map update", "ok"]) : r.rank === 0 ? ["building now", "run"] : [`#${r.rank + 1} in line`, ""];
   return [st, cls];
 }
 
@@ -1919,7 +1919,7 @@ function sinceLine(m, events, seen) {
   const total = Object.values(tiles).reduce((t, k) => t + k, 0);
   const bits = [];
   if (total) bits.push(`${S.said("unit", total)} built (${Object.entries(tiles).map(([w, k]) => `${k} by ${w}`).join(", ")})`);
-  if (updates.length) bits.push(`${plural(updates.length, "catalogue")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
+  if (updates.length) bits.push(`${plural(updates.length, "map update")}${updates.some((r) => r.targets?.length) ? `: ${updates.flatMap((r) => r.targets || []).slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}` : ""}`);
   if (failures) bits.push(h("span", "bad", plural(failures, "failure")));
   const first = fresh[0];
   return h("div", "since", `Since ${clock(first.t)}: `, ...bits.flatMap((b, i) => (i ? [" · ", b] : [b])), bits.length ? "" : `${plural(fresh.length, "event")}`);
@@ -2146,7 +2146,7 @@ function tabs(m, md) {
     inputs: () => [part("d-inputs", () => inputsTab(m))],
     activity: () => [part("d-activity", () => section("d-activity", "Activity", "the last day",
       h("div", "box", hours(m),
-        h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Publishing"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
+        h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Map updates"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
         sinceLine(m, events, seenAt), feed(m, events, seenAt)))), part("d-xfer", () => transfersPart())],
     details: () => [part("d-details", () => section("d-details", null, null, details(m)))],
   };

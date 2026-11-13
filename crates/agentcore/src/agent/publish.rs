@@ -5,12 +5,11 @@
 //!   the `catalog` step keeps the map it would publish on the lead's disk, `catalog-held`), and
 //!   slope and tree cover near (`near-slope`: a done region's slope and tree cover the z6 tiles near
 //!   it, Publishing::near, their assemblies with the low zooms). Off while not set.
-//! - **The map's log** (docs/maplog.md): the `catalog` step builds the map from the records and
+//! - **The map's log** (docs/formats.md, The map and its log): the `catalog` step builds the map from the records and
 //!   posts it whole to its agent (`POSTED`, a file in the agent's `maplog/`, `--post`); the agent's
 //!   writer (`MapLog`, on a thread of its own) diffs it against the map and appends the batch. The
 //!   servers follow the log through the coordinator's `/map/` routes (its `feed`), the agent reads
-//!   the map from it (`Here`), and a job or a command reads it from the lead (coordwire::map_now). No
-//!   catalogue file is written or read (§8, step 6).
+//!   the map from it (`Here`), and a job or a command reads it from the lead (coordwire::map_now).
 
 use crate::pool::records::Keys;
 use serde::{Deserialize, Serialize};
@@ -85,7 +84,7 @@ pub struct Publishing {
 }
 
 /// The lead's record of its catalogues (its folder's `publishing.json`). When the last went out, and
-/// the last with the low zooms made, are the map log's (docs/maplog.md §6.5: its head batch, and its
+/// the last with the low zooms made, are the map log's (docs/building.md §2, 5: its head batch, and its
 /// last batch saying crate::agent::publish::LOW).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LastCatalogue {
@@ -214,7 +213,7 @@ impl PublishLine {
             )
         };
         format!(
-            "publishing: {}{regions}{}",
+            "map update: {}{regions}{}",
             self.why,
             if self.low { "" } else { "; the low zooms wait for their turn" }
         )
@@ -228,7 +227,7 @@ impl PublishLine {
     }
 }
 
-/// The map's log, written by the lead's agent (docs/maplog.md §4, §6.7): each map the `catalog` step
+/// The map's log, written by the lead's agent (docs/formats.md, The map and its log; docs/building.md §2, 5): each map the `catalog` step
 /// posts (`POSTED`) becomes a batch of the log in the agent's `maplog/` (store::map::log), `seq` the
 /// step's number (the head's next: one taken already, the next); the map then is checked equal to
 /// it, and a mismatch is logged loudly. The servers follow the log through the coordinator's `/map/`
@@ -262,7 +261,7 @@ pub const HELD: &str = "held";
 pub fn held_dir(home: &std::path::Path) -> std::path::PathBuf {
     home.join(MAPLOG).join(HELD)
 }
-/// How often the map is written whole: the lead's snapshot (the log compacted, docs/maplog.md §4.4).
+/// How often the map is written whole: the lead's snapshot (the log compacted, docs/formats.md, The map and its log).
 const SNAPSHOT_EVERY_S: u64 = 3600;
 /// What a batch's `why` says of a map made with the low zooms (store::map::Batch::says), and
 /// the log's watch of it: when they last went out (Publishing::since_low).
@@ -275,7 +274,7 @@ fn watches(the_plan: &dyn crate::agent::seam::Plan) -> Vec<&'static str> {
     std::iter::once(LOW_WATCH).chain(the_plan.names_todo_inputs().iter().copied()).collect()
 }
 
-/// The lead's map as its agent reads it (docs/maplog.md §6.5): the log's feed (the map, its batches
+/// The lead's map as its agent reads it (docs/building.md §2, 5): the log's feed (the map, its batches
 /// held, the log's marks), GC's queue (told of each batch here, of each records save by the agent's
 /// loop: super::gcqueue), and the head's catalogue: the one posted and checked equal to the map,
 /// else made of the map (`catalogue`), kept only while one is held (15 MB beside the map's own
@@ -556,7 +555,7 @@ impl Writer {
 
     /// The lead's snapshot (the log compacted, its cursors with it), when the last was written an
     /// hour or more before `now`, or the log just started (`started`). Nothing goes to the NAS: a
-    /// lead restarted reads its own (docs/maplog.md §4.5).
+    /// lead restarted reads its own (docs/formats.md, The map and its log).
     fn snapshot(&mut self, now: std::time::SystemTime, started: bool) {
         let Some(log) = self.log.as_mut() else { return };
         let due = started

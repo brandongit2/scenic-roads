@@ -147,8 +147,8 @@ pub fn valid_logical(s: &str) -> bool {
     !s.is_empty() && !s.contains(['.', '\0', '\\']) && s.split('/').all(|c| !c.is_empty())
 }
 
-/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash, and not a tombstone of the
-/// GC before docs/maplog.md §8 step 8b (`TOMB`, which no sweep takes for a content-named file).
+/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash, and not a GC tombstone's
+/// (`TOMB`, which no sweep takes for a content-named file).
 fn valid_ext(s: &str) -> bool {
     !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty()) && !s.ends_with(TOMB)
 }

@@ -1,11 +1,10 @@
-//! The server follows the map's log (docs/maplog.md §5, §6.1): a thread long-polls the lead's
+//! The server follows the map's log (docs/formats.md, The map and its log; docs/macs.md, The map's log): a thread long-polls the lead's
 //! coordinator (`GET /map/changes`, agentcore::coord::maproutes), applies each answer's batches whole
 //! to its own map (each checked by its digest; one that doesn't apply fetches the snapshot), and
 //! hands the result on as one catalogue, swapped whole (`Data::set_map`): a request never reads a
 //! torn set. Its requests say its cursor (`client=server/<host>`). It runs wherever the server runs:
 //! the Mac mini's, and a laptop's on demand while it runs (#874, #882 step 7a; crate::retire). The
-//! map is all it serves: no catalogue is read
-//! (docs/maplog.md §8, step 6).
+//! map is all it serves.
 //!
 //! The mirror is a client of the log too, with a cursor of its own (`MirrorLink`).
 //!
@@ -13,7 +12,7 @@
 //! written at most every 10 minutes, and read at a start: a start away from the lead and the NAS
 //! serves it (the offline map). With the lead away it keeps the map it holds, asking again each
 //! `retry`; holding none, it serves none until the lead answers (the NAS keeps no copy of the map:
-//! docs/maplog.md §5.2).
+//! docs/macs.md, The map's log).
 
 use crate::data::Data;
 use anyhow::{bail, Context, Result};
@@ -337,7 +336,7 @@ impl Link {
     }
 }
 
-/// The mirror's client of the map's log (docs/maplog.md §6.2), `mirror/<host>`: each round it says
+/// The mirror's client of the map's log (docs/macs.md, Mirror), `mirror/<host>`: each round it says
 /// its cursor, the oldest map whose files it still copies from the NAS (`since`), so the lead's GC
 /// keeps every file a map since then names; the map its round copies (`copying`) and the last it
 /// was through at (`synced`), which the lead notes in the history for publishing's times. Its

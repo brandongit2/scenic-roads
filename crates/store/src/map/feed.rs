@@ -1,6 +1,6 @@
-//! What the lead's coordinator answers its clients from (docs/maplog.md §5.1): the map now, the
+//! What the lead's coordinator answers its clients from (docs/formats.md, The map and its log): the map now, the
 //! batches after some `seq` it still holds (in memory, `HELD_BYTES` at most), the clients' cursors
-//! (§5.4) and the whole map as a snapshot, made once per `seq` asked. The log's writer keeps it
+//! and the whole map as a snapshot, made once per `seq` asked. The log's writer keeps it
 //! (`start` when the log opens, `push` at each batch); the routes only read it, never the NAS or
 //! the lead's disk.
 //!
@@ -19,17 +19,14 @@ pub const HELD_BYTES: usize = 64 << 20;
 pub const ANSWER_BYTES: usize = 4 << 20;
 /// The longest a `changes` request waits for a batch (`?wait=`).
 pub const WAIT_S: u64 = 30;
-/// A mirror's cursor's name, before its host (docs/maplog.md §6.2): a client that copies the files
+/// A mirror's cursor's name, before its host (docs/macs.md, Mirror): a client that copies the files
 /// of the maps since its `seq` from the NAS. One behind the head that the lead didn't hold (never
 /// heard, or unheard `gc::CURSOR_TTL_S`: GC's due set didn't count it, so a file it copies may be
 /// gone) or held at one `seq` that long (an Update that never gets through holds GC no longer) is
 /// answered a reset, on which it moves its Updates on to the map served.
 pub const MIRROR: &str = "mirror/";
-/// A map server's cursor's name, before its host (crates/server's maplog; docs/maplog.md §6.1).
+/// A map server's cursor's name, before its host (crates/server's maplog; docs/macs.md, The map's log).
 pub const SERVER: &str = "server/";
-/// The cursor an app before task #1119 noted for the NAS's snapshots, which no app writes now:
-/// dropped as a log saved with it opens (`start`), as it would hold every name freed after it.
-const OLD_SNAPSHOT: &str = "snapshot";
 
 #[derive(Default)]
 struct Inner {
@@ -98,7 +95,7 @@ impl Feed {
     pub fn start(&self, map: Arc<Map>, base: u64, held: &[Batch], cursors: BTreeMap<String, Cursor>) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let mut kept = std::mem::take(&mut g.cursors);
-        for (k, c) in cursors.into_iter().filter(|(k, _)| k != OLD_SNAPSHOT) {
+        for (k, c) in cursors {
             // (A cursor heard since the snapshot was written kept as heard.)
             kept.entry(k).and_modify(|h| *h = if h.heard >= c.heard { h.clone() } else { c.clone() }).or_insert(c);
         }
@@ -188,7 +185,7 @@ impl Feed {
     }
 
     /// What a mirror (`client`, heard at `now` by `changes`) said of its rounds besides its cursor
-    /// (docs/maplog.md §6.2): the map whose files the one under way copies, and the last one it
+    /// (docs/macs.md, Mirror): the map whose files the one under way copies, and the last one it
     /// was through at; each noted with when it was first said, for publishing's times.
     pub fn said(&self, client: &str, copying: Option<u64>, synced: Option<u64>, now: u64) {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -202,7 +199,7 @@ impl Feed {
 
     /// The newest `seq` a client asked from (a map server, a mirror), with a map here or none yet: a
     /// lead with no log of its own (moved to another Mac, its disk lost) numbers its first map past
-    /// it, so a client's map is never newer than the lead's (docs/maplog.md §4.5).
+    /// it, so a client's map is never newer than the lead's (docs/formats.md, The map and its log).
     pub fn asked_past(&self) -> u64 {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).asked
     }

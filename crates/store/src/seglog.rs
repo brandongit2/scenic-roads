@@ -1,5 +1,5 @@
 //! A log of JSON lines on a local disk, in segments `<first seq>.jsonl`, beside a snapshot written
-//! whole: what the map's log (`map::log`, docs/maplog.md §4.2) and the pool's store on the lead
+//! whole: what the map's log (`map::log`, docs/formats.md, The map and its log) and the pool's store on the lead
 //! (pipeline's `pool::store`, docs/coordination.md §4) are both made of.
 //!
 //! - Appends are `fsync`ed before they count; a failed one is cut off again, and failing that the

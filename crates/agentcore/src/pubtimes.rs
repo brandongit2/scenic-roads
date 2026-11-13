@@ -8,10 +8,10 @@
 //!   ("lease", "start") and done ("end", "done"); and catalogue n written ("catalog": its `n`, its
 //!   job's time, and `CatalogueStats`: the files it stat'ed, its phases).
 //!   And each Mac's map server's adoption of the map at `seq` n ("adopt": `ADOPT`, its `worker` the
-//!   Mac), the lead's note of its cursor in the map's log moving there (docs/maplog.md §6.6), and its
+//!   Mac), the lead's note of its cursor in the map's log moving there (docs/pool.md §10), and its
 //!   mirror's round copying map n begun ("mirror-start": `MIRROR_START`) and through everything
 //!   wanted ("mirror-end": `MIRROR_END`), the lead's notes of what the mirror's own cursor said
-//!   (docs/maplog.md §6.2), each once per `seq` heard.
+//!   (docs/macs.md, Mirror), each once per `seq` heard.
 //!
 //! `chains` joins them, per catalogue and per z6 tile; `scenic timings publish` prints them.
 
@@ -40,8 +40,8 @@ fn now_s() -> u64 {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CatalogueStats {
     pub n: u64,
-    /// The files it listed, and those it looked at on the NAS (stat'ed). (A line of before step 6
-    /// of docs/maplog.md §8 says too whether it wrote a delta: passed over.)
+    /// The files it listed, and those it looked at on the NAS (stat'ed). (A line in the history
+    /// from when catalogues were files says too whether it wrote a delta: passed over.)
     pub files: u64,
     pub stated: u64,
     /// Its phases' wall times, in order (a name from before task #844 read as its new one:
@@ -478,7 +478,7 @@ fn unit_stages(u: &UnitChain) -> Vec<(&'static str, Option<f64>)> {
         ("to planned", gap(hand, u.planned)),
         ("to leased", gap(u.planned, u.leased)),
         ("packed", gap(u.leased.or(u.planned), u.packed)),
-        ("to catalogue", gap(u.packed.or(hand), u.catalogue_t)),
+        ("to map update", gap(u.packed.or(hand), u.catalogue_t)),
         ("servers", gap(u.catalogue_t, last(&u.adopted))),
         ("mirrors", gap(u.catalogue_t, last(&u.mirrored))),
         ("on every map", gap(Some(u.done), last(&u.mirrored).max(last(&u.adopted)))),
@@ -493,7 +493,7 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
     let units: Vec<&UnitChain> = units.iter().filter(|u| u.catalogue_t.is_some_and(|t| t >= from)).collect();
     for c in cats {
         let n = c.n.map_or_else(|| "?".into(), |n| n.to_string());
-        o += &format!("catalogue {n}: {} in its job", s(c.secs));
+        o += &format!("map update {n}: {} in its job", s(c.secs));
         if let Some(st) = &c.stats {
             o += &format!(", {} of {} files stat'ed", st.stated, st.files);
         }
@@ -526,7 +526,7 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
             );
         }
     }
-    o += &format!("\nMedians over {} unit(s) and {} catalogue(s):\n", units.len(), cats.len());
+    o += &format!("\nMedians over {} unit(s) and {} map update(s):\n", units.len(), cats.len());
     let names: Vec<&str> =
         units.first().map(|u| unit_stages(u).into_iter().map(|(k, _)| k).collect()).unwrap_or_default();
     for (i, k) in names.iter().enumerate() {
@@ -541,7 +541,7 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
     if !of.is_empty() {
         let secs: Vec<f64> = cats.iter().filter(|c| c.stats.is_some()).filter_map(|c| c.secs).collect();
         o += &format!(
-            "  catalogues ({}): {} in the job, {} files stat'ed\n",
+            "  map updates ({}): {} in the job, {} files stat'ed\n",
             of.len(),
             s(median(secs)),
             median(of.iter().map(|s| s.stated as f64).collect()).map_or("-".into(), |m| format!("{m:.0}"))
@@ -569,7 +569,7 @@ pub fn text(cats: &[CatalogueChain], units: &[UnitChain], last: usize) -> String
     }
     for st in COUNTED {
         let k = cats.iter().filter(|c| c.ran.iter().any(|r| r == st)).count();
-        o += &format!("  {st}: ran for {k} of {} catalogue(s)\n", cats.len());
+        o += &format!("  {st}: ran for {k} of {} map update(s)\n", cats.len());
     }
     o
 }
@@ -773,17 +773,17 @@ mod tests {
         assert_eq!(stages["hand-off"], Some(30.0));
         assert_eq!(stages["to planned"], Some(20.0));
         assert_eq!(stages["packed"], Some(100.0));
-        assert_eq!(stages["to catalogue"], Some(100.0));
+        assert_eq!(stages["to map update"], Some(100.0));
         assert_eq!(stages["servers"], Some(200.0));
         assert_eq!(stages["on every map"], Some(500.0));
         let t = text(&cats, &units, 10);
-        assert!(t.contains("catalogue 8: "), "{t}");
+        assert!(t.contains("map update 8: "), "{t}");
         assert!(t.contains("12 of 1000 files stat'ed"), "{t}");
         assert!(t.contains("unit 6/1/1 (m1)") && t.contains("restaled 2"), "{t}");
-        assert!(t.contains("catalogues (2)"), "{t}");
+        assert!(t.contains("map updates (2)"), "{t}");
         assert!(t.contains("ferries: ran for 1 of 2"), "{t}");
         assert!(t.contains("m4: adopts after"), "{t}");
-        assert!(!text(&cats, &units, 1).contains("catalogue 7"));
+        assert!(!text(&cats, &units, 1).contains("map update 7"));
     }
 
     /// A catalogue reads the manifest as it begins: a z6 tile merged, or its tiles packed, while one

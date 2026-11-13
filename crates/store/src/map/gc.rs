@@ -1,4 +1,4 @@
-//! GC's queue on the lead (docs/maplog.md §7.2 to §7.5), the map log's own store beside it: the
+//! GC's queue on the lead (docs/storage.md, GC), the map log's own store beside it: the
 //! content names no longer held, each with the map's `seq` from which no map names it and when it
 //! was freed; the holders' index (the map's names, the records', and the names a hand-off being
 //! merged brings); the names being removed (told, not yet gone) and the names deleted, each with
@@ -22,14 +22,14 @@ use std::sync::Mutex;
 
 /// The queue's file in the map log's folder.
 pub const FILE: &str = "gc.jsonl";
-/// How long a freed name waits once no client holds it (docs/maplog.md §7.2): a margin for readers
+/// How long a freed name waits once no client holds it (docs/storage.md, GC): a margin for readers
 /// outside the cursor set, which hold a name for seconds to minutes (a request in flight as the map
 /// server's cursor moves on, an ad-hoc script); browser tabs never hold one (the map server
 /// resolves their tiles by its own map, a cursor). Not what keeps a hand-off safe: the merge
-/// refuses one bringing a name deleted under its lease, however long it was held (§7.4). Each day
-/// of grace holds a day's freed files on the NAS (§7.2).
+/// refuses one bringing a name deleted under its lease, however long it was held. Each day
+/// of grace holds a day's freed files on the NAS.
 pub const GRACE_S: u64 = 3600;
-/// A client unheard this long no longer holds anything (docs/maplog.md §5.4); on its return it
+/// A client unheard this long no longer holds anything (docs/formats.md, The map and its log); on its return it
 /// takes the batches since, or resets, and loses nothing (its mirror is its own). Live clients ask
 /// far more often: a map server long-polls (`feed::WAIT_S`), a mirror asks each round (a minute
 /// apart, longer only while a round copies). Each hour of it is an hour of freed files kept behind a client that
@@ -507,7 +507,7 @@ impl GcQueue {
     /// hold; at `now`): the names they've dropped since the last seen are queued unless the map
     /// names them, those they name now taken; the names hand-offs brought before them (`bringing`)
     /// that they don't name queued again from when they were brought. The first seen only start
-    /// the index (what was dropped before them is the orphan sweep's, §7.5). The same `id` again
+    /// the index (what was dropped before them is the orphan sweep's). The same `id` again
     /// changes nothing.
     pub fn records<'a>(&self, id: (u64, u64), names: impl Iterator<Item = &'a String>, now: u64) {
         let mut g = self.lock();
@@ -551,7 +551,7 @@ impl GcQueue {
         self.lock().due_by(h, take)
     }
 
-    /// The `gc` job's next chunk, up to `max` names (§7.3): first those of a chunk told and not
+    /// The `gc` job's next chunk, up to `max` names: first those of a chunk told and not
     /// gone (the job killed, or its gone not heard), told again, the rest of the chunk the names
     /// due that `take` lets it take. Each is checked against its holders as of now (the map, the
     /// records, a hand-off being merged, or queued and not outlasted `h`): held, a name of a chunk
@@ -628,7 +628,7 @@ impl GcQueue {
         Ok(())
     }
 
-    /// The orphan sweep's `names` (§7.5: content-named files on the NAS old enough that no job
+    /// The orphan sweep's `names` (content-named files on the NAS old enough that no job
     /// still holds them by its upload): those nothing holds and not queued queued, freed `now` at
     /// the map's `seq` (so a lease granted before they were found holds them, and every cursor
     /// must reach the map they were found at). How many. An error while the records haven't been
@@ -647,7 +647,7 @@ impl GcQueue {
 
     /// Hand-off names `names` as the merge takes it (its lease `lease`, at `now`): why it's
     /// refused (a name being removed, or deleted after its lease was granted: its job may have
-    /// found the file on the NAS before it went, §7.4); else they're held (off the queue) until
+    /// found the file on the NAS before it went); else they're held (off the queue) until
     /// the records after it are seen (`records`), so no chunk takes one meanwhile.
     pub fn bringing<'a>(
         &self,
@@ -727,7 +727,7 @@ impl GcQueue {
         self.lock().deleted.len()
     }
 
-    /// The top folders of what the map and the records name (the orphan sweep's, §7.5).
+    /// The top folders of what the map and the records name (the orphan sweep's).
     pub fn tops(&self) -> BTreeSet<String> {
         let g = self.lock();
         let records = g.records.iter().flat_map(|(_, r)| r.iter());

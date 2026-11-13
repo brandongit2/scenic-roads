@@ -1069,7 +1069,7 @@ pub fn host_of(worker: &str) -> &str {
     }
 }
 
-/// The `seq` each Mac's map server last adopted and when (docs/maplog.md §6.1): its cursor in the
+/// The `seq` each Mac's map server last adopted and when (docs/macs.md, The map's log): its cursor in the
 /// map's log (`server/<host>`, store::map::Cursor), as the lead heard it.
 fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, CatalogueSeen> {
     cursors
@@ -1080,7 +1080,7 @@ fn adopted(cursors: &BTreeMap<String, store::map::Cursor>) -> BTreeMap<String, C
         .collect()
 }
 
-/// Publishing's marks in the clients' cursors (docs/maplog.md §6.1, §6.2), for the history
+/// Publishing's marks in the clients' cursors (docs/macs.md, The map's log; docs/macs.md, Mirror), for the history
 /// (crate::pubtimes): each Mac's map server's adoption of a `seq`, and its mirror's round begun at
 /// one ("mirror-start") and through at one ("mirror-end"); (kind, host, seq, when first heard).
 fn publish_marks(cursors: &BTreeMap<String, store::map::Cursor>) -> Vec<(&'static str, String, CatalogueSeen)> {
@@ -8805,7 +8805,7 @@ impl Agent {
         let Some(mut guard) = self.pooled() else { return };
         let run = &mut *guard;
         if let Some(rec) = run.side.driver().records() {
-            // (GC's queue told of the records as saved: what they dropped queued, docs/maplog.md §7.2.)
+            // (GC's queue told of the records as saved: what they dropped queued, docs/storage.md, GC.)
             if let Some(h) = here.as_ref().filter(|_| saved) {
                 gcqueue::records(&h.gc, rec, crate::coord::wall_now());
             }
@@ -9303,7 +9303,7 @@ fn annotate(list: &mut [progress::Line], now: &[String], helpers: &[Status], wai
             p.left = Some(p.left.unwrap_or(0).max(1));
             // (Its own, a catalogue failing, says more.)
             p.note.get_or_insert_with(|| {
-                "as each unit is built (a catalogue at most each minute), and once the steps above are".into()
+                "as each unit is built (a map update at most each minute), and once the steps above are".into()
             });
         }
     }
@@ -13149,7 +13149,7 @@ mod tests {
     }
 
     /// Each Mac's adopted `seq`: its map server's cursor in the log, adopted when first heard there
-    /// (docs/maplog.md §6.1); other clients' cursors aren't servers. Worker names folded to their Macs.
+    /// (docs/macs.md, The map's log); other clients' cursors aren't servers. Worker names folded to their Macs.
     #[test]
     fn each_macs_adopted_catalogue_is_its_servers_cursor() {
         let feed = store::map::feed::Feed::new();
@@ -17343,7 +17343,7 @@ mod pool_tests {
 
     #[test]
     fn a_map_the_lead_s_step_posts_is_appended_to_its_log() {
-        // (docs/maplog.md §6.7: the catalog job's end, as the loop tends it.)
+        // (docs/building.md §2, 5: the catalog job's end, as the loop tends it.)
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
         let root = store::nasfs::NasRoot::local_for_test(r.clone());

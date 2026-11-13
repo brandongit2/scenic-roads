@@ -274,11 +274,11 @@ export function createAges({ call, store, onChange }) {
   const hide = h("input", { type: "checkbox", checked: st.hide, onchange: (e) => { st.hide = e.target.checked; save(); changed(); } });
   const controls = h("div", { class: "wmap-filters cat-ctl small" },
     h("div", { class: "mfrow" },
-      h("span", { class: "cat-pair" }, h("span", { class: "dim" }, "Published from"), leftIn, h("span", { class: "dim" }, "to"), rightIn),
+      h("span", { class: "cat-pair" }, h("span", { class: "dim" }, "On the map from"), leftIn, h("span", { class: "dim" }, "to"), rightIn),
       h("label", { class: "mf" }, hide, "Hide tiles outside the date range")),
     msg);
   const legend = h("div", { class: "cat-legend small dim" });
-  const line = svg("svg", { class: "cat-tl", role: "img", "aria-label": "Timeline of the catalogues" });
+  const line = svg("svg", { class: "cat-tl", role: "img", "aria-label": "Timeline of the map updates" });
   const tip = h("div", { class: "cat-tip small", hidden: true });
   const status = h("div", { class: "small dim cat-status" });
   const tlBox = h("div", { class: "cat-tlbox" }, line, tip);
@@ -330,11 +330,11 @@ export function createAges({ call, store, onChange }) {
     const [from, to] = range();
     const grad = `linear-gradient(to right, ${RAMP.join(", ")})`;
     legend.replaceChildren(
-      h("span", null, "A soloed step's published tiles, by when:"),
+      h("span", null, "A soloed step's tiles on the map, by when:"),
       h("span", { class: "cat-scale" }, h("span", null, whenText(from)), h("i", { style: `background:${grad}` }), h("span", null, whenText(to))),
       h("span", null, st.hide ? "(the rest hidden)" : "(the rest at the nearer end's colour)"),
-      h("span", { class: "lg" }, h("i", { style: `background:${HIGHLIGHT};border-color:${HIGHLIGHT}` }), "a catalogue's tiles, its mark hovered"));
-    status.textContent = error ? `Can't read the catalogues: ${error}` : reading && !cats.length ? "Reading the map's log…" : `${plural(cats.length, "catalogue")} in the map's log${latest != null ? `, the last ${latest}` : ""}${reading ? " · reading" : ""} · times local`;
+      h("span", { class: "lg" }, h("i", { style: `background:${HIGHLIGHT};border-color:${HIGHLIGHT}` }), "a map update's tiles, its mark hovered"));
+    status.textContent = error ? `Can't read the map updates: ${error}` : reading && !cats.length ? "Reading the map's log…" : `${plural(cats.length, "map update")} in the map's log${latest != null ? `, the last ${latest}` : ""}${reading ? " · reading" : ""} · times local`;
     drawLine();
   }
   // The timeline: the range in its centre 80%, the ends dimmed; a mark a catalogue (tall for the
@@ -380,7 +380,7 @@ export function createAges({ call, store, onChange }) {
   const say = (n, e) => {
     const c = cats.find((k) => k.n === n);
     if (!c) { tip.hidden = true; return; }
-    tip.textContent = `Catalogue ${c.n} · ${whenText(c.t)} · ${plural((c.z6 || []).length, "z6 tile")}, ${plural((c.z3 || []).length, "z3 tile")} published${c.first ? " (the view's start: everything the map named)" : ""}`;
+    tip.textContent = `Map update ${c.n} · ${whenText(c.t)} · ${plural((c.z6 || []).length, "z6 tile")}, ${plural((c.z3 || []).length, "z3 tile")} changed${c.first ? " (the view's start: everything the map named)" : ""}`;
     tip.hidden = false;
     const r = tlBox.getBoundingClientRect();
     tip.style.left = `${Math.max(0, Math.min(r.width - tip.offsetWidth, e.clientX - r.left - tip.offsetWidth / 2))}px`;

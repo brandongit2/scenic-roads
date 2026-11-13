@@ -193,7 +193,7 @@ pub fn stale(st: &Status, runs: &[Run], factor: f64, now: u64) -> Option<Flag> {
         kind: "stale".into(),
         mac: st.host.clone(),
         said: format!(
-            "a catalogue due for {} hasn't gone out (past {factor}× the {} the plan holds one at most; the last {last}): {why}",
+            "a map update due for {} hasn't gone out (past {factor}× the {} the plan holds one at most; the last {last}): {why}",
             span(ran),
             span(most)
         ),
@@ -597,7 +597,7 @@ mod tests {
         assert!(stale(&st, &[], 3.0, now).is_none(), "nothing due");
         let due = |since: u64| {
             Some(super::super::publish::PublishLine {
-                why: "a catalogue now: what it would list changed".into(),
+                why: "a map update now: what it would list changed".into(),
                 due_since: Some(since),
                 ..Default::default()
             })
@@ -606,7 +606,7 @@ mod tests {
         let f = stale(&st, &[], 3.0, now).expect("40 min due");
         assert_eq!(
             f.line(),
-            "stale: a catalogue due for 40 min hasn't gone out (past 3× the 11 min the plan holds one at most; the last 6.0 h ago): a catalogue now: what it would list changed"
+            "stale: a map update due for 40 min hasn't gone out (past 3× the 11 min the plan holds one at most; the last 6.0 h ago): a map update now: what it would list changed"
         );
         assert!(stale(&st, &[], 3.0, now - 8 * 60).is_none(), "32 min: within 3× 11 min");
         // (A catalogue went out 10 min ago, another due since: counted from it.)

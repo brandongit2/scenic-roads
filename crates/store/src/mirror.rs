@@ -751,7 +751,7 @@ impl Mirror {
                 .collect()
         };
         for (name, have, want) in bad {
-            eprintln!("mirror: {name} is {have} bytes here but {want} in the catalogue; copying it again");
+            eprintln!("mirror: {name} is {have} bytes here but {want} in the map; copying it again");
             let p = self.path(&name);
             if crate::cachefile::try_remove(&p) != crate::cachefile::Removed::InUse {
                 self.state().files.remove(&name);
@@ -795,7 +795,7 @@ impl Mirror {
             Err(e) => return Ok(Some(Copy::Failed(format!("open on the NAS: {e}")))),
         };
         if len != size {
-            return Ok(Some(Copy::Failed(format!("{len} bytes on the NAS, but the catalogue says {size}"))));
+            return Ok(Some(Copy::Failed(format!("{len} bytes on the NAS, but the map says {size}"))));
         }
         if let Some(dir) = part.parent() {
             fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;

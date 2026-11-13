@@ -1,4 +1,4 @@
-//! The map and its log (docs/maplog.md §4): the current name → file map as flat entries, the
+//! The map and its log (docs/formats.md, The map and its log): the current name → file map as flat entries, the
 //! batches that change it, its multiset digest, and the whole map as a snapshot (the lead's own, a
 //! held one, a test root's). The log store on the lead's disk is `log`.
 //!
@@ -20,7 +20,7 @@ mod val;
 
 pub use val::Val;
 
-/// The map's entries, key → value (docs/maplog.md §4.1), each value its canonical JSON (`Val`).
+/// The map's entries, key → value (docs/formats.md, The map and its log), each value its canonical JSON (`Val`).
 pub type Entries = BTreeMap<String, Val>;
 
 /// A layer's sections kept as entries of their own (`l/<layer>/<section>/<tile>`), not in its head.
@@ -29,7 +29,7 @@ const LAYER_SECTIONS: [&str; 5] = ["lo", "hi", "deep", "native_zoom", "polar"];
 /// The folder of a root's map (a test root's, a `--root`'s: a folder laid out as the project
 /// folder), its snapshots whole (`map/<seq>.json.zst`), as the test tools and the tests write it and
 /// a `--root` server or a job on such a root reads it (`root_map`). Never on the NAS: the NAS's map
-/// is the lead's alone (docs/maplog.md §4.4). And how many snapshots a folder of them keeps (a
+/// is the lead's alone (docs/formats.md, The map and its log). And how many snapshots a folder of them keeps (a
 /// root's map, the lead's held maps).
 pub const ROOT_DIR: &str = "map";
 pub const KEPT: usize = 3;
@@ -45,7 +45,7 @@ pub fn entry_hash(key: &str, v: &Val) -> u128 {
     h.digest128()
 }
 
-/// The digest of a whole set of entries, from scratch: the sum of their hashes modulo 2^128 (§4.3).
+/// The digest of a whole set of entries, from scratch: the sum of their hashes modulo 2^128.
 pub fn digest_of(entries: &Entries) -> u128 {
     entries.iter().fold(0u128, |s, (k, v)| s.wrapping_add(entry_hash(k, v)))
 }
@@ -59,7 +59,7 @@ fn unhex(s: &str) -> Result<u128> {
     u128::from_str_radix(s, 16).with_context(|| format!("{s:?} isn't a digest"))
 }
 
-/// A catalogue as entries (§4.1). An error for a catalogue whose parts can't be told apart once
+/// A catalogue as entries. An error for a catalogue whose parts can't be told apart once
 /// flattened (a layer's name with a `/`, a key made twice).
 pub fn entries(cat: &Catalogue) -> Result<Entries> {
     let mut e = Entries::new();
@@ -149,7 +149,7 @@ fn sections(cat: &Catalogue) -> [(&'static str, &BTreeMap<String, String>); 6] {
     ]
 }
 
-/// The catalogue entries make, numbered `n` and made at `created` (§4.1): `entries`' inverse.
+/// The catalogue entries make, numbered `n` and made at `created`: `entries`' inverse.
 pub fn catalogue(e: &Entries, n: u64, created: &str) -> Result<Catalogue> {
     let mut c = Catalogue { n, created: created.to_string(), ..Default::default() };
     let mut layer_parts: Vec<(&str, &str, &str, &Val)> = Vec::new();
@@ -236,7 +236,7 @@ pub struct Map {
     digest: u128,
 }
 
-/// One batch of the log (§4.2): the entries set and deleted, the content names no longer named
+/// One batch of the log: the entries set and deleted, the content names no longer named
 /// (`freed`), and the map's digest after it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Batch {
@@ -289,7 +289,7 @@ pub fn marks(w: &str, b: &Batch) -> bool {
     }
 }
 
-/// The last batch a watch marked (docs/maplog.md §6.8): its `seq` and time.
+/// The last batch a watch marked (docs/formats.md, The map and its log): its `seq` and time.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Mark {
     pub seq: u64,
@@ -487,16 +487,16 @@ pub struct Undo {
     was: Vec<(String, Option<Val>)>,
 }
 
-/// A client's cursor (§5.4): the last `seq` it applied and when it was heard (seconds since 1970).
-/// Saved with the log's snapshot (Decisions, 6).
+/// A client's cursor: the last `seq` it applied and when it was heard (seconds since 1970).
+/// Saved with the log's snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cursor {
     pub seq: u64,
     pub heard: u64,
-    /// When it was first heard at `seq`: its adoption of it (docs/maplog.md §6.1).
+    /// When it was first heard at `seq`: its adoption of it (docs/macs.md, The map's log).
     #[serde(default)]
     pub at: u64,
-    /// A mirror's (§6.2): the map whose files its round copies, and the last one it was through
+    /// A mirror's: the map whose files its round copies, and the last one it was through
     /// at, each as first heard (`feed::Feed::said`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copying: Option<Heard>,
@@ -511,7 +511,7 @@ pub struct Heard {
     pub at: u64,
 }
 
-/// The whole map as stored: the lead's snapshot, a held one, a root's (§4.4, §4.5). Written from the map
+/// The whole map as stored: the lead's snapshot, a held one, a root's. Written from the map
 /// it borrows (`of`), never a copy of it.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot<E = Entries, C = BTreeMap<String, Cursor>> {

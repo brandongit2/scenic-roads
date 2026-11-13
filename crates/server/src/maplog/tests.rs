@@ -281,7 +281,7 @@ fn a_server_on_demand_keeps_the_map_as_it_moves() {
     }
 }
 
-/// The offline map (docs/maplog.md §5.3; kept on the laptops, owner's decision): a server started
+/// The offline map (docs/macs.md, The map's log; kept on the laptops, owner's decision): a server started
 /// with neither the lead nor the NAS serves the map this Mac kept (its cache folder's
 /// `current.json.zst`), byte for byte; with none kept, nothing. No catalogue is read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

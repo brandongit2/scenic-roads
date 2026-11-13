@@ -521,7 +521,7 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         // catalogue [--held <dir>] [--ready <ids>] [--post <file>]: the map built from the records,
         // posted whole to the lead's agent (`--post`, its agent's: agentcore::agent::publish::POSTED),
-        // which appends its batch to the map's log (docs/maplog.md §6.7); held, it goes into the
+        // which appends its batch to the map's log (docs/building.md §2, 5); held, it goes into the
         // lead's agent's held maps instead (`--held`, agentcore::agent::publish::HELD), which no
         // server follows (a build to compare before it's switched to: the pool's setting
         // hold-catalog);
@@ -1811,7 +1811,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>, now: u64) -> Result<se
     if made > 0 || known.len() != used.len() {
         known.retain(|c, _| used.contains(c));
         path.write_whole(&serde_json::to_vec(&known)?)?;
-        eprintln!("catalogue: {made} unit summaries made from their packs");
+        eprintln!("map update: {made} unit summaries made from their packs");
     }
     let mut m = total.meta();
     m["built"] = serde_json::json!(now);
@@ -1970,7 +1970,7 @@ fn served_global(l: &str) -> bool {
     l.starts_with("global/") && pipeline::agent::steps::made(l)
 }
 
-/// The map built from the records (docs/maplog.md §6.7), as a catalogue: posted whole to `post`
+/// The map built from the records (docs/building.md §2, 5), as a catalogue: posted whole to `post`
 /// (the lead's agent's `maplog/posted.json.zst`, which appends its batch: agentcore::agent::publish),
 /// or, held, written into the folder `held` for review (the lead's agent's held maps). Its number
 /// is the map's next; each
@@ -2148,7 +2148,7 @@ fn catalogue(
     let credits =
         ::inputs::inputs::credits::catalogue_credits_with(&regions, &unit_extents(out, &base), &described, &credited);
     eprintln!(
-        "catalogue: {} regions, {} credits (of the table's {} and {} description{})",
+        "map update: {} regions, {} credits (of the table's {} and {} description{})",
         regions.len(),
         credits.len(),
         ::inputs::rules::CREDITS.len(),
@@ -2174,7 +2174,7 @@ fn catalogue(
         all.iter().copied().filter(|(_, n)| !known.contains_key(n.as_str())).collect();
     let from_records = all.iter().filter(|(_, n)| recorded.contains_key(n.as_str())).count();
     eprintln!(
-        "catalogue: {} of {} files' sizes from the records, {} more from the map at {seq}, {} looked at on the NAS",
+        "map update: {} of {} files' sizes from the records, {} more from the map at {seq}, {} looked at on the NAS",
         from_records,
         all.len(),
         all.len() - listed.len() - from_records,
@@ -2315,7 +2315,7 @@ fn catalogue_coverage(
     let building_n = drawn.values().filter(|d| d.tiles.is_some()).count();
     let kept = recipes.iter().filter(|r| !drawn.contains_key(&r.id) && had.contains_key(&r.id)).count();
     eprintln!(
-        "catalogue: {} regions built as they are now, {building_n} still building, {kept} as the last catalogue had them",
+        "map update: {} regions built as they are now, {building_n} still building, {kept} as the map had them",
         drawn.len() - building_n
     );
     Ok(recipes.iter().filter_map(|r| drawn.remove(&r.id).or_else(|| had.get(&r.id).cloned())).collect())
@@ -7192,9 +7192,9 @@ mod tests {
         c
     }
 
-    /// docs/maplog.md §8, step 6: the step posts its map to the lead's agent, which appends it to the
-    /// map's log (its thread, agentcore::agent::publish::MapLog), and writes no catalogue: no `catalog/`
-    /// folder anywhere. The next map is numbered after it, its sizes the map's and the records'.
+    /// The step posts its map to the lead's agent, which appends it to the map's log (its thread,
+    /// agentcore::agent::publish::MapLog), and writes nothing else: no folder of its own anywhere.
+    /// The next map is numbered after it, its sizes the map's and the records'.
     #[test]
     fn the_step_publishes_with_no_catalog_folder() {
         let d = tempfile::tempdir().unwrap();

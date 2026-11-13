@@ -1,4 +1,4 @@
-//! Removing what nothing holds from the NAS (docs/storage.md, GC; docs/maplog.md §7, step 8b): the
+//! Removing what nothing holds from the NAS (docs/storage.md, GC; docs/storage.md, GC): the
 //! `gc` job, the lead's own, run whenever GC's queue has a chunk or a sweep's pass is due and the
 //! NAS budget leaves it room (crate::agent::plan).
 //!
@@ -39,7 +39,7 @@ pub const GONE: &str = "/gc/gone";
 pub const ORPHANS: &str = "/gc/orphans";
 pub const REMOVING: &str = "/gc/removing";
 
-/// How many names a chunk takes (the design's, docs/maplog.md §7.3). What bounds it: a chunk's
+/// How many names a chunk takes (docs/storage.md, GC). What bounds it: a chunk's
 /// names are refused to every hand-off while they're being removed, and at the share's measured
 /// deletion rates (the NAS budget's probes, 6 and 7 Nov: 8.4 a second at the median, 2.5 at the tenth
 /// percentile) 200 are some 24 s of deletions, 80 s at the slow end; its two asks of the lead and
@@ -631,7 +631,7 @@ fn meta(listed: u64, stats: u64, deletes: u64) {
     }
 }
 
-/// How old an unheld content-named file must be before the orphan sweep queues it (docs/maplog.md
+/// How old an unheld content-named file must be before the orphan sweep queues it (docs/formats.md, The map and its log
 /// §7.5): no job runs that long between its upload and its hand-off.
 pub const ORPHAN_AGE_S: u64 = 14 * 86400;
 /// How old a `.tmp` file must be before a walk removes it: a write that never finished (no write
@@ -978,7 +978,7 @@ fn seen_key(p: &str) -> Vec<String> {
     p.split('/').filter(|c| !c.is_empty()).map(str::to_string).collect()
 }
 
-/// The orphan sweep (docs/maplog.md §7.5): the folders the map and the records name (`tops`, the
+/// The orphan sweep (docs/storage.md, GC): the folders the map and the records name (`tops`, the
 /// lead's), the removed steps' (`RETIRED`) and the retired passes' (older than `latest`), a folder
 /// at a time from the one it reached: each content-named file at least `ORPHAN_AGE_S` old sent to
 /// the lead, which queues those nothing holds (GC's queue frees them as any); each `.tmp` file
@@ -1270,22 +1270,6 @@ fn duties(root: &store::nasfs::NasRoot, asked: &Asked, the_plan: &dyn Plan, rep:
     Ok(Flow::Done)
 }
 
-/// This Mac's copies of old catalogues (docs/maplog.md §8, step 9), read by nothing since step 6:
-/// the map server's `catalog/` in the app's folder (`app_home`) and `Library/Caches/scenic/catalogue/`
-/// in the user's (`user_home`). Removed at the agent's start (every Mac runs one; the map server
-/// only on the Mac mini, a laptop's on demand). What was removed.
-pub fn remove_this_macs_catalogues(app_home: &std::path::Path, user_home: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut gone = Vec::new();
-    for d in [app_home.join("catalog"), user_home.join("Library/Caches/scenic/catalogue")] {
-        match std::fs::remove_dir_all(&d) {
-            Ok(()) => gone.push(d),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!("agent: {} not removed: {e}", d.display()),
-        }
-    }
-    gone
-}
-
 /// A sweep's stat of entry `e`: None when it can't be read, or it's a link. A sweep never goes through
 /// a link: a file reached by one has a path no root names, so it would go however much its own name
 /// is kept (`sources/inputs/regions/@geometry/@geometry`, a link to its own folder, 27 Oct, took the
@@ -1451,7 +1435,7 @@ mod tests {
         v
     }
 
-    /// docs/maplog.md §7.3 (step 8b): GC removes by the queue, a chunk of `CHUNK_NAMES` at a time,
+    /// docs/storage.md, GC: GC removes by the queue, a chunk of `CHUNK_NAMES` at a time,
     /// each name marked deleted on the lead (so the merge refuses a hand-off reusing it) before it
     /// goes, then said gone; what the map names stays. A dry run counts what's due, marking and
     /// removing nothing. The lead not asked: nothing removed, the run fails; what went not said
@@ -1528,7 +1512,7 @@ mod tests {
         assert_eq!(q.removing_now(), more, "told, for the next chunk to take again");
     }
 
-    /// docs/maplog.md §8 step 8b: the job killed between two deletions mid-chunk: the next run's
+    /// The job killed between two deletions mid-chunk (docs/storage.md, GC): the next run's
     /// first chunk is the one it was in, told again; the next deletion is of the first file not
     /// gone (those gone count as gone already, but not while the share doesn't answer: a lost mount
     /// finds no file), nothing is deleted twice, nothing kept for ever, and the queue, back from its
@@ -1637,7 +1621,7 @@ mod tests {
         assert!(q.is_empty());
     }
 
-    /// The orphan sweep (docs/maplog.md §7.5) queues a content-named file nothing holds only once
+    /// The orphan sweep (docs/storage.md, GC) queues a content-named file nothing holds only once
     /// it's `ORPHAN_AGE_S` old, freed when found (so it waits its grace from then, and a lease older
     /// than that holds it); a held one never; a removed step's files and a retired pass's too; it
     /// removes `.tmp` files `TMP_AGE_S` old and a retired pass's planet once the newer pass has
@@ -1702,7 +1686,7 @@ mod tests {
         assert!(!s.due("orphans", now_s()) && s.due("orphans", now_s() + ORPHAN_AGE_S));
     }
 
-    /// docs/maplog.md §4.5, §7.5: a lead whose disk was lost starts its queue empty; the orphan
+    /// docs/formats.md, The map and its log; docs/storage.md, GC: a lead whose disk was lost starts its queue empty; the orphan
     /// sweep finds what the lost queue held (old, named by nothing), and GC's chunks then remove it
     /// once its grace from the find has passed; what the map names stays.
     #[test]
@@ -2051,29 +2035,6 @@ mod tests {
             Dropped::default()
         );
         assert_eq!(fs::metadata(&mpath).unwrap().modified().unwrap(), before);
-    }
-
-    /// This Mac's copies of old catalogues (the map server's `catalog/`, the cache's `catalogue/`)
-    /// go at the agent's start; the rest of the app's folder and the cache stay.
-    #[test]
-    fn this_macs_old_catalogues_go() {
-        let (app, user) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        for p in [
-            app.path().join("catalog/1066.json.zst"),
-            app.path().join("mirror/x"),
-            user.path().join("Library/Caches/scenic/catalogue/1.json.zst"),
-            user.path().join("Library/Caches/scenic/map/current.json.zst"),
-        ] {
-            fs::create_dir_all(p.parent().unwrap()).unwrap();
-            fs::write(&p, b"x").unwrap();
-        }
-        assert_eq!(remove_this_macs_catalogues(app.path(), user.path()).len(), 2);
-        assert!(!app.path().join("catalog").exists() && !user.path().join("Library/Caches/scenic/catalogue").exists());
-        assert!(
-            app.path().join("mirror/x").exists()
-                && user.path().join("Library/Caches/scenic/map/current.json.zst").exists()
-        );
-        assert!(remove_this_macs_catalogues(app.path(), user.path()).is_empty());
     }
 
     /// Task #701: in the pool the drop is the gc job's hand-off (merged by the lead), never a

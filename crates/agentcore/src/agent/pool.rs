@@ -1019,7 +1019,7 @@ pub struct Run {
     pub asks: Vec<driver::Ask>,
     pub conds: Option<Conds>,
     /// GC's queue, leading (its map's log open): the merge refuses an entry bringing a name deleted
-    /// under its lease (super::gcqueue::refusal, docs/maplog.md §7.4).
+    /// under its lease (super::gcqueue::refusal, docs/storage.md, GC).
     pub gc: Option<std::sync::Arc<store::map::gc::GcQueue>>,
     /// The view of the lead and members (crate::agent::lead).
     pub controls: super::lead::Controls,
@@ -1587,7 +1587,7 @@ impl Run {
         let checked = |e: &Entry, r: &Records| {
             by_its_lead(e, &me)?;
             check_from(self.the_plan, e, r, &lead_app, &app_of)?;
-            // (Last: one it lets merge holds its names from GC's chunks, docs/maplog.md §7.4.)
+            // (Last: one it lets merge holds its names from GC's chunks, docs/storage.md, GC.)
             match gc.as_deref().and_then(|q| super::gcqueue::refusal(q, e, crate::coord::wall_now())) {
                 Some(why) => Err(why),
                 None => Ok(()),

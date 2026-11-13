@@ -341,13 +341,13 @@ fn sect<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<SectReader<PlainFi
 pub fn spoken_for(root: &store::nasfs::NasRoot, cat: &store::catalogue::Catalogue) -> Result<Spoken> {
     let f =
         cat.global.get("spoken").and_then(|l| cat.file(l)).context(
-            "the catalogue has no global/spoken (the spoken job makes it from the languages' accepted version)",
+            "the map has no global/spoken (the spoken job makes it from the languages' accepted version)",
         )?;
     let b = root.join(&f.file).read().with_context(|| format!("read {}", f.file))?;
     Spoken::from_bytes(&b).with_context(|| format!("read {}", f.file))
 }
 
-/// What `run` reads of the map, as the map log's watches (docs/maplog.md §6.8; store::map::marks):
+/// What `run` reads of the map, as the map log's watches (docs/formats.md, The map and its log; store::map::marks):
 /// the units and the regions it records, the languages spoken, the labels' hi packs, the base packs,
 /// the units' own-road lists, the hi data, the landmark points and the area overlays, each section's
 /// keys and their files (`f/` and the logical names those sections give, as the steps name them).
@@ -1043,7 +1043,7 @@ pub fn run(
 mod tests {
     use super::*;
 
-    /// docs/maplog.md §8, step 4: the lists' key moves with a batch touching any of their inputs'
+    /// The lists' key moves with a batch touching any of their inputs'
     /// prefixes (a section's key, or a file of one), and with nothing else; across a reopened log.
     #[test]
     fn names_todo_reruns_exactly_when_its_prefixes_change() {
