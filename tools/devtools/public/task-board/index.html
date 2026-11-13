@@ -5,7 +5,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
-  /* A sticky header (Claude's status, search, filters, adding), then one list, shown as the folder
+  /* A sticky header (the now line: what Claude is on; search, filters, adding), then one list, shown as the folder
      tree or sorted flat (the View menu). The selected item's details dock on the right on wide
      screens and slide over the list when narrower. */
   :root {
@@ -45,7 +45,7 @@
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
     --indent: 16px;
     --pr-w: 30px;
-    --where-w: 84px;
+    --assigned-w: 84px;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -134,11 +134,11 @@
   .top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; display: grid; gap: 8px; padding: 10px 16px 9px; background: var(--bg); border-bottom: 1px solid var(--line); min-width: 0; }
   .bar1, .bar2 { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; min-width: 0; }
   h1 { margin: 0; font: 600 16px/1.2 var(--sans); letter-spacing: -0.01em; }
-  .status { flex: 1 1 16rem; min-width: 0; margin: 0; display: flex; align-items: center; gap: 7px; color: var(--muted); }
-  .status .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
-  .status .dot.live { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
-  .status .now { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-  .status .when { flex: none; font: 11.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
+  .nowline { flex: 1 1 16rem; min-width: 0; margin: 0; display: flex; align-items: center; gap: 7px; color: var(--muted); }
+  .nowline .dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .nowline .dot.live { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .nowline .now { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  .nowline .when { flex: none; font: 11.5px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
   .ro { flex: none; height: 20px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font: 500 11px/18px var(--sans); }
   .adds { display: flex; gap: 6px; margin-left: auto; }
   .btn { height: 28px; padding: 0 10px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--fg); font-weight: 500; white-space: nowrap; }
@@ -259,9 +259,9 @@
   .ed-chips .st.s-done::before, .legend .st.s-done::before { content: "✓"; font-weight: 600; }
   .tag { flex: none; height: 16px; padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--muted); font: 500 10px/14px var(--sans); letter-spacing: 0.05em; text-transform: uppercase; }
   .tail { position: relative; flex: none; display: flex; align-items: center; gap: 2px; height: 18px; }
-  /* A row's actions show over its "where" column while it's hovered, focused or selected. */
+  /* A row's actions show over its "assigned" column while it's hovered, focused or selected. */
   .acts { position: absolute; right: 0; top: -2px; z-index: 1; display: flex; align-items: center; gap: 2px; padding-left: 18px; background: linear-gradient(to right, transparent, var(--rowbg) 16px); opacity: 0; pointer-events: none; }
-  .task .acts { min-width: calc(var(--where-w) + 2px); justify-content: flex-end; padding-left: 0; background: var(--rowbg); }
+  .task .acts { min-width: calc(var(--assigned-w) + 2px); justify-content: flex-end; padding-left: 0; background: var(--rowbg); }
   #list.tree .task .acts { right: calc(var(--pr-w) + 2px); }
   .folder .acts { right: calc(100% + 2px); }
   .row:hover .acts, .row.sel .acts, .row:focus-within .acts { opacity: 1; pointer-events: auto; }
@@ -275,7 +275,7 @@
   .ic[aria-disabled="true"] { cursor: default; }
   .hist { width: auto; min-width: 22px; padding: 0 4px; gap: 3px; display: inline-flex; align-items: center; font: 11px var(--mono); }
   .hist.open { color: var(--fg); background: var(--line); }
-  .where { width: var(--where-w); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--faint); font-size: 12px; }
+  .assigned { width: var(--assigned-w); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--faint); font-size: 12px; }
   .pr { flex: none; width: var(--pr-w); text-align: right; font: 500 12px/18px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
   .pr.none { color: var(--faint); }
   .pr.next { color: var(--accent); font-weight: 600; }
@@ -411,6 +411,17 @@
   .viewer { position: fixed; inset: 0; z-index: 60; padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px)); display: grid; place-items: center; background: var(--scrim); }
   .viewer img { max-width: 100%; max-height: calc(100vh - 96px); border-radius: 6px; }
   .viewer .btn { position: absolute; top: calc(12px + env(safe-area-inset-top, 0px)); right: 16px; }
+  /* A warning to confirm (archiving a folder with what is inside). */
+  .confirm { width: min(420px, calc(100% - 32px)); padding: 16px 18px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); color: var(--fg); box-shadow: var(--shadow); }
+  .confirm::backdrop { background: var(--scrim); }
+  .confirm h2 { margin: 0 0 6px; font-size: 14px; font-weight: 600; }
+  .confirm p { margin: 0 0 14px; color: var(--muted); }
+  .confirm .acts-row { display: flex; justify-content: flex-end; gap: 8px; }
+  .btn.danger { border-color: var(--st-wait-fg); background: var(--st-wait-fg); color: var(--panel); }
+  .btn.danger:hover { filter: brightness(1.08); color: var(--panel); }
+  /* Archived: read-only; the details say so, with the one change there is. */
+  .ro-note { margin: 0; padding: 7px 10px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; }
+  .ro-note span { flex: 1; }
 
   /* Narrower: the details slide over the list. */
   @media (max-width: 1099px) {
@@ -427,11 +438,11 @@
     .search { flex: 1 1 100%; }
   }
   @media (max-width: 560px) {
-    .row .where, .row .hist { display: none; }
-    /* (A row's "under way" chip leaves out where it runs, as the rows here do: the title keeps
+    .row .assigned, .row .hist { display: none; }
+    /* (A row's "under way" chip leaves out who it's assigned to, as the rows here do: the title keeps
        the room; the details say it.) */
     .l1 > .st .st-w { display: none; }
-    .status { order: 3; flex-basis: 100%; }
+    .nowline { order: 3; flex-basis: 100%; }
     .chip { height: 28px; }
     .search { flex: 1 1 auto; min-width: 0; }
     .filt { display: inline-flex; }
@@ -451,7 +462,7 @@
   <header class="top">
     <div class="bar1">
       <h1>Task board</h1>
-      <p class="status" id="status"><span class="dot"></span><span class="now">Loading the task board…</span></p>
+      <p class="nowline" id="nowline" aria-label="Now: what Claude is on"><span class="dot"></span><span class="now">Loading the task board…</span></p>
       <span class="ro" id="ro" hidden title="Only the page's owner can change the task board">Read-only</span>
       <div class="adds" id="adds" hidden>
         <button class="btn" id="add-task" type="button" title="Add a task at the top level"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>Task</button>
@@ -459,7 +470,7 @@
       </div>
     </div>
     <div class="bar2">
-      <label class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10.4 10.4 3.4 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search titles, descriptions, notes, where tasks run and folders; #57 finds task 57"><kbd>/</kbd></label>
+      <label class="search"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m10.4 10.4 3.4 3.4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg><input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search titles, descriptions, notes, who tasks are assigned to and folders; #57 finds task 57"><kbd>/</kbd></label>
       <button class="btn filt" id="filters-btn" type="button" aria-expanded="false" aria-controls="chips">Filters</button>
       <div class="chips" id="chips" role="group" aria-label="Filters"></div>
     </div>
@@ -479,6 +490,7 @@
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <div class="viewer" id="viewer" hidden><img id="viewer-img" alt=""><button class="btn" type="button" id="viewer-close">Close</button></div>
 <div class="ghost" id="ghost" aria-hidden="true" hidden></div>
+<dialog class="confirm" id="confirm"></dialog>
 
 <script type="module">
 // (The rules the server holds the board to, one copy: what a record may hold, and where a priority goes.)
@@ -572,13 +584,13 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   const byOrder = (a, b) => (isNum(a.order) ? a.order : 0) - (isNum(b.order) ? b.order : 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
   // ---------------------------------------------------------------------------------------------
-  // Stages, filters, the model.
-  const STAGES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
-  const stageOf = (t) => (typeof t.stage === "string" && t.stage in STAGES ? t.stage : "");
-  const shortWhere = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
-  function stageText(t) {
-    switch (stageOf(t)) {
-      case "working": return `under way · ${shortWhere(t.where) || "Subagent"}`;
+  // Statuses, filters, the model.
+  const STATUSES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
+  const statusOf = (t) => (typeof t.status === "string" && t.status in STATUSES ? t.status : "");
+  const shortAssigned = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
+  function statusText(t) {
+    switch (statusOf(t)) {
+      case "working": return `under way · ${shortAssigned(t.assigned) || "Subagent"}`;
       case "backgrounded": return "backgrounded";
       case "integrating": return "integrating";
       case "review": return "in review";
@@ -612,11 +624,11 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     $("bad-sum").textContent = `${bad.length} thing${bad.length === 1 ? "" : "s"} the page can't show as it should: records that don't fit the board's schema (the server accepts no more).`;
     $("bad-list").replaceChildren(...bad.slice(0, 200).map((t) => h("li", null, t)), ...(bad.length > 200 ? [h("li", null, `… and ${bad.length - 200} more`)] : []));
   }
-  const TASK_FIELDS = ["priority", "where", "stage", "discuss", "started", "finished", "reply"];
-  // The toggles: one per stage, and needing discussion. Several on: a task that fits any of them.
+  const TASK_FIELDS = ["priority", "assigned", "status", "discuss", "started", "finished", "reply"];
+  // The toggles: one per status, and needing discussion. Several on: a task that fits any of them.
   const SW = { "": "var(--faint)", working: "var(--st-work-fg)", backgrounded: "var(--st-work-fg)", integrating: "var(--st-int-fg)", review: "var(--st-rev-fg)", waiting: "var(--st-wait-fg)", done: "var(--st-done-fg)", abandoned: "var(--dim, #888)" };
   const FILTERS = [
-    ...Object.entries(STAGES).map(([st, label]) => ({ key: st || "queued", label, sw: SW[st], test: (t) => stageOf(t) === st })),
+    ...Object.entries(STATUSES).map(([st, label]) => ({ key: st || "queued", label, sw: SW[st], test: (t) => statusOf(t) === st })),
     { key: "discuss", label: "Needs discussion", sw: "var(--disc)", test: (t) => !!t.discuss },
   ];
   // The list's views: the tree, or every task flat by one of the sorts.
@@ -641,7 +653,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     view: VIEWS.includes(local.get("view", "")) ? local.get("view", "") : "tree",
     q: "",
     filters: new Set(),
-    where: null,
+    assigned: null, // the filter: tasks assigned to this
     hist: new Set(), // ids whose history shows open in their rows ("" the top level's)
     draft: null, // {kind, parent, text}: a new item whose title is being typed
     dragging: false,
@@ -724,7 +736,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       for (const c of list(it.id)) {
         if (c.archived && !(it.archived || it.$archAnc)) continue;
         if (c.$folder) { stat(c); open += c.$open; done += c.$done; }
-        else if (stageOf(c) === "done") done++;
+        else if (statusOf(c) === "done") done++;
         else open++;
       }
       it.$open = open;
@@ -738,7 +750,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       (ev.get(e.item) || (ev.set(e.item, []), ev.get(e.item))).push(Object.assign({}, e, { id }));
     }
     for (const l of ev.values()) l.sort((a, b) => (ms(b.t) ?? 0) - (ms(a.t) ?? 0));
-    const queued = tasks.filter((t) => stageOf(t) === "" && !t.archived && !t.$archAnc && isNum(t.priority));
+    const queued = tasks.filter((t) => statusOf(t) === "" && !t.archived && !t.$archAnc && isNum(t.priority));
     const next = queued.length ? Math.min(...queued.map((t) => t.priority)) : null;
     return { byId, kids, order, tasks, ev, next, byNum, byOrder: [...byId.values()].sort(byOrder) };
   }
@@ -758,13 +770,13 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   const lastEvent = (id) => ms(M.ev.get(id)?.[0]?.t);
   const changedAt = (t) => Math.max(ms(t.finished) ?? -Infinity, ms(t.started) ?? -Infinity, lastEvent(t.id) ?? -Infinity);
 
-  // Search: every word somewhere in the title, description, where it runs, the status note or the
+  // Search: every word somewhere in the title, description, who it's assigned to, Claude's note or the
   // folders it's in. A word "#57" is task 57, and nothing else; a bare 57 is task 57 or the text.
   const terms = () => S.q.toLowerCase().split(/\s+/).filter(Boolean);
   const numTerm = (t) => (/^#\d{1,9}$/.test(t) ? Number(t.slice(1)) : null);
   const bareNum = (t) => (/^\d{1,9}$/.test(t) ? Number(t) : null);
   const shownNum = (it) => (it && validNum(it.num) ? it.num : null);
-  const hay = (it) => [it.text, it.note, it.where, it.reply, ...it.$crumbs.map((c) => c.text)].map((s) => String(s ?? "")).join("\n").toLowerCase();
+  const hay = (it) => [it.text, it.note, it.assigned, it.reply, ...it.$crumbs.map((c) => c.text)].map((s) => String(s ?? "")).join("\n").toLowerCase();
   const matchQ = (it) => {
     const ts = terms();
     if (!ts.length) return true;
@@ -773,10 +785,16 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   };
   // (Is the task's own number one the search names?)
   const numHit = (it) => { const n = shownNum(it); return n != null && terms().some((t) => (numTerm(t) ?? bareNum(t)) === n); };
-  const chipsOn = () => S.filters.size > 0 || S.where != null;
-  const matchChips = (t) => (!S.filters.size || FILTERS.some((f) => S.filters.has(f.key) && f.test(t))) && (S.where == null || String(t.where ?? "") === S.where);
+  const chipsOn = () => S.filters.size > 0 || S.assigned != null;
+  const matchChips = (t) => (!S.filters.size || FILTERS.some((f) => S.filters.has(f.key) && f.test(t))) && (S.assigned == null || String(t.assigned ?? "") === S.assigned);
   const searching = () => !!S.q.trim() || chipsOn();
-  const passTask = (t) => !hiddenArch(t) && matchChips(t) && matchQ(t);
+  // A search's results are what isn't archived; what is archived and matches is listed beneath, in a
+  // section of its own (archMatches), whether archived items are shown or not.
+  const inMain = (it) => (searching() ? !isArch(it) : !hiddenArch(it));
+  const passTask = (t) => inMain(t) && matchChips(t) && matchQ(t);
+  // (A folder matches by its words, while no filter is on: filters are about tasks.)
+  const matchFolder = (it) => !chipsOn() && !!S.q.trim() && matchQ(it);
+  const archMatches = (tasksOnly) => (searching() ? M.order.filter((it) => isArch(it) && (it.$folder ? !tasksOnly && matchFolder(it) : matchChips(it) && matchQ(it))) : []);
   function hl(text) {
     const ts = terms().filter((t) => numTerm(t) == null);
     const s = String(text ?? "");
@@ -867,6 +885,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (!ks.length) return Promise.resolve();
     const patch = {};
     for (const k of ks) patch[k] = k in op.after ? op.after[k] : null;
+    if (op.cascade) patch.cascade = true;
     return ref.update(patch).catch((e) => {
       // (Deleted meanwhile, by Claude or another tab: nothing to change.)
       if (e?.code === "not_found" && !S.raw[op.col].has(op.id)) return;
@@ -962,15 +981,20 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     return p;
   }
   let tok = 0;
-  const invert = (ops) => ops.map((o) => ({ col: o.col, id: o.id, before: o.after, after: o.before })).reverse();
+  // (An op that archives or unarchives is sent with `cascade`, the server's word for "with what is
+  // inside" or "with the folders around": its inverse too, each on its own, so the inverses of an
+  // archive's ops, unarchives, may land in any order.)
+  const flips = (o) => !!o.before?.archived !== !!o.after?.archived;
+  const invert = (ops) => ops.map((o) => ({ col: o.col, id: o.id, before: o.after, after: o.before, ...(flips(o) ? { cascade: true } : {}) })).reverse();
   const noop = (o) => !o || (o.before === null && o.after === null) || (o.before && o.after && !opKeys(o).length);
   const Q = []; // the actions waiting or being written, oldest first
   let writing = false;
   // An action, queued: shown at once, written in its turn. Returns it (or null: nothing to do, or
   // changes are paused). Its notice offers Undo; an undo's offers Redo (the action again, as it
   // was: a task it made comes back with the same number). `renum`: the notice's words once the
-  // task it makes has its number.
-  function commit(ops, { toast: msg = "", undoable = true, redo = null, renum = null } = {}) {
+  // task it makes has its number. `inverse`: the ops Undo commits, worked out then, where the ops
+  // inverted one by one won't do (an unarchive's: archived again folder by folder, with cascade).
+  function commit(ops, { toast: msg = "", undoable = true, redo = null, renum = null, inverse = null } = {}) {
     ops = ops.filter((o) => !noop(o));
     if (!ops.length) return null;
     if (!canWrite()) {
@@ -982,7 +1006,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     lay(ops, a.tok);
     Q.push(a);
     render("data");
-    if (msg) toast(msg, { tok: a.tok, redo, undo: undoable ? () => commit(invert(ops), { toast: "Undone", undoable: false, redo: () => commit(ops, { toast: a.msg }) }) : null });
+    if (msg) toast(msg, { tok: a.tok, redo, undo: undoable ? () => commit(inverse ? inverse() : invert(ops), { toast: "Undone", undoable: false, redo: () => commit(ops, { toast: a.msg, inverse }) }) : null });
     pump();
     return a;
   }
@@ -1006,14 +1030,17 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     pump();
   }
   // An action's writes; if one fails for good, the rest stop, and what landed is put back. (What it
-  // makes is POSTed first, in order: the server gives each its id.)
+  // makes is POSTed first, in order: the server gives each its id. An op `via` another is the
+  // server's doing when that one is written, a folder's archive with what is inside: shown, not
+  // written, landed as that one does.)
   async function write(a) {
     const made = new Set();
     try { await createOps(a, made); } catch (e) { a.error = e; }
-    await Promise.all(a.ops.map((o, i) => inTurn(keyOf(o), () => lane(() => (made.has(o) ? Promise.resolve("made") : a.error ? Promise.resolve("skip") : persist(o))).then(
+    await Promise.all(a.ops.map((o, i) => inTurn(keyOf(o), () => lane(() => (made.has(o) ? Promise.resolve("made") : a.error ? Promise.resolve("skip") : o.via ? Promise.resolve("via") : persist(o))).then(
       (r) => { a.state[i] = r === "skip" ? "skipped" : "landed"; },
       (e) => { a.state[i] = "failed"; a.error = a.error || e; },
     ))));
+    a.ops.forEach((o, i) => { if (o.via) a.state[i] = a.state[a.ops.indexOf(o.via)] ?? "skipped"; });
     if (!a.error) return;
     await Promise.all(a.ops.map((o, i) => {
       if (a.state[i] !== "landed") return null;
@@ -1111,7 +1138,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     return { col: "items", id, before, after };
   }
   const evOp = (item, text) => makeOp("events", { item, kind: "owner", text }, { t: nowIso() });
-  const patch = (id, fields) => commit([edit(id, fields)]);
+  const patch = (id, fields) => { const it = M.byId.get(id); return it && isArch(it) ? readOnly(it) : commit([edit(id, fields)]); };
 
   // ---------------------------------------------------------------------------------------------
   // Actions.
@@ -1137,12 +1164,17 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     return orderOps(id, list[index - 1] || null, list[index] || null, { parent });
   }
   function refuse(msg) { toast(msg, { bad: true }); }
+  // (Archived items are read-only, as the server holds them: unarchiving is the one change.)
+  const readOnly = (it) => refuse(`${quote(title(it))} is archived, so it can't be changed: unarchive it first.`);
+  const intoArchived = (f) => refuse(`${quote(title(f))} is archived: nothing goes into an archived folder.`);
   // A tree move: `id` into `parent` ("" = the top level) at `index` among its other children.
   function moveTree(id, parent, index) {
     const it = M.byId.get(id);
     if (!it || !canWrite()) return;
+    if (isArch(it)) return readOnly(it);
     if (parent && (parent === id || isInside(parent, id))) return refuse("A folder can't go inside itself.");
     if (parent && !M.byId.get(parent)?.$folder) return refuse("Only folders hold other items.");
+    if (parent && isArch(M.byId.get(parent))) return intoArchived(M.byId.get(parent));
     if (it.$p === parent && kidsOf(parent).indexOf(it) === index) return;
     const into = it.$p === parent ? "" : parent ? ` into ${quote(title(M.byId.get(parent)))}` : " to the top level";
     if (parent && S.collapsed.has(parent)) setCollapsed(parent, false);
@@ -1192,6 +1224,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function movePrio(id, rest, idx, unset) {
     const it = M.byId.get(id);
     if (!it || !canWrite()) return;
+    if (isArch(it)) return readOnly(it);
     const old = isNum(it.priority) ? it.priority : null;
     const r = prioPlan(it, rest, idx, unset);
     if (!r) return;
@@ -1210,45 +1243,70 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     commit(r.ops, { toast: `${quote(title(it))}: priority ${fmtP(old)} → ${fmtP(r.to)}`, undoable: true });
     return true;
   }
-  // Archiving one item or several (⌘E on a selection), with what is inside them, in one action.
+  // Archiving: each item with what is inside it that isn't archived yet, at one time (`stamp`). An
+  // item holding such things is sent as one write with `cascade` (the server archives them with it;
+  // they show archived meanwhile, ops `via` it): only once the warning has been confirmed
+  // (askArchive), as the server refuses a folder holding them otherwise.
+  function archiveOps(it, stamp) {
+    const open = under(it.id).filter((d) => !d.archived);
+    const main = Object.assign(edit(it.id, { archived: true, archivedAt: stamp }), open.length ? { cascade: true } : {});
+    return [main, ...open.map((d) => Object.assign(edit(d.id, { archived: true, archivedAt: stamp }), { via: main }))];
+  }
+  // One item or several (⌘E on a selection), in one action. (The server notes each in its history.)
   function archive(...its) {
-    its = its.filter((it) => !its.some((o) => o !== it && isInside(it.id, o.id)));
+    its = its.filter((it) => !isArch(it) && !its.some((o) => o !== it && isInside(it.id, o.id)));
+    if (!its.length) return;
     const stamp = nowIso();
-    const ops = [];
-    let inside = 0;
-    for (const it of its) {
-      const docs = [it, ...under(it.id)].filter((d) => !d.archived);
-      const n = docs.length - 1;
-      inside += n;
-      ops.push(...docs.map((d) => edit(d.id, { archived: true, archivedAt: stamp })), evOp(it.id, n ? `Archived, with ${n} inside` : "Archived"));
-    }
+    const ops = its.flatMap((it) => archiveOps(it, stamp));
+    const inside = ops.length - its.length;
     const what = its.length === 1 ? quote(title(its[0])) : `${its.length} items`;
     commit(ops, { toast: `Archived ${what}${inside ? ` and ${inside} inside` : ""}` });
   }
+  // A folder holding things that aren't archived: archived, with them, only once you've confirmed it.
+  function askArchive(its, then = () => {}) {
+    its = its.filter((it) => !isArch(it));
+    const open = its.flatMap((it) => under(it.id).filter((d) => !d.archived));
+    if (!open.length) { archive(...its); then(); return; }
+    const nt = open.filter((d) => !d.$folder).length, nf = open.length - nt;
+    const parts = [nt ? `${nt} task${nt === 1 ? "" : "s"}` : "", nf ? `${nf} folder${nf === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
+    const what = its.length === 1 ? `the folder ${quote(title(its[0]))}` : `these ${its.length} items`;
+    confirmDialog(`Archive ${its.length === 1 ? "this folder" : "these items"}?`, `Archiving ${what} will also archive all the tasks within ${its.length === 1 ? "it" : "them"}: ${open.length === 1 ? "the" : "all"} ${parts} not archived yet. Archived items are read-only until they are unarchived.`, "Archive all", () => { archive(...its); then(); });
+  }
   // Unarchiving restores the archive it came from, whole: everything archived at the same moment
-  // (one archive, one stamp), and likewise for any archived folder around it (or it would stay
-  // hidden), so nothing is left stranded.
+  // (one archive, one stamp), and the archived folders around any of those (nothing that isn't
+  // archived is ever inside an archived folder), until nothing more joins. Each is its own write,
+  // with `cascade` (the server unarchives the folders around it too), so they land in any order.
+  // Undo archives them again folder by folder, each with the time it had.
   function unarchive(it) {
+    const U = new Map(); // id → its archivedAt
     const stamps = new Set();
-    const lone = new Set();
-    for (const d of [it, ...it.$crumbs]) {
-      if (!d.archived) continue;
-      if (typeof d.archivedAt === "string" && d.archivedAt) stamps.add(d.archivedAt);
-      else lone.add(d.id);
+    const queue = [it, ...it.$crumbs];
+    while (queue.length) {
+      const d = queue.pop();
+      if (!d.archived || U.has(d.id)) continue;
+      U.set(d.id, d.archivedAt);
+      for (const a of d.$crumbs) queue.push(a);
+      if (typeof d.archivedAt === "string" && d.archivedAt && !stamps.has(d.archivedAt)) {
+        stamps.add(d.archivedAt);
+        for (const o of M.order) if (o.archived && o.archivedAt === d.archivedAt) queue.push(o);
+      }
     }
-    const docs = M.order.filter((d) => d.archived && (lone.has(d.id) || stamps.has(d.archivedAt)));
+    const docs = M.order.filter((d) => U.has(d.id));
     if (!docs.length) return;
-    const ops = docs.map((d) => edit(d.id, { archived: false, archivedAt: null }));
-    ops.push(evOp(it.id, "Unarchived"));
+    const ops = docs.map((d) => Object.assign(edit(d.id, { archived: false, archivedAt: null }), { cascade: true }));
+    const roots = docs.filter((d) => !U.has(d.$p)).map((d) => d.id);
+    const inverse = () => roots.map((id) => M.byId.get(id)).filter((d) => d && !d.archived).flatMap((d) => archiveOps(d, U.get(d.id) || nowIso()));
     const n = docs.filter((d) => d.id !== it.id).length;
-    commit(ops, { toast: `Unarchived ${quote(title(it))}${n ? ` and the ${n} archived with it` : ""}` });
+    commit(ops, { toast: `Unarchived ${quote(title(it))}${n ? ` and the ${n} archived with it` : ""}`, inverse });
   }
   function remove(it) {
     const docs = [it, ...under(it.id)];
     const n = docs.length - 1;
     const what = `${quote(title(it))}${n ? ` and ${n} inside` : ""}`;
     const ops = docs.map((d) => ({ col: "items", id: d.id, before: data("items", d.id), after: null }));
-    ops.push(evOp(it.$p, `Deleted ${what}`));
+    // (Noted in its folder's history, unless that is archived: read-only.)
+    const p = M.byId.get(it.$p);
+    if (!p || !isArch(p)) ops.push(evOp(it.$p, `Deleted ${what}`));
     if (S.sel && docs.some((d) => d.id === S.sel)) { S.sel = null; S.sheet = false; syncUrl(false); }
     commit(ops, { toast: `Deleted ${what}` });
   }
@@ -1260,7 +1318,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function toTask(it) {
     const n = kidsOf(it.id).length;
     if (n) return refuse(`${quote(title(it))} has ${n} item${n === 1 ? "" : "s"} inside, so it stays a folder.`);
-    commit([edit(it.id, { kind: "task", where: "Subagent", stage: "" }), evOp(it.id, "Converted to a task")], { toast: `${quote(title(it))} is a task now` });
+    commit([edit(it.id, { kind: "task", assigned: "Subagent", status: "" }), evOp(it.id, "Converted to a task")], { toast: `${quote(title(it))} is a task now` });
   }
   // Tab / Shift-Tab in the tree: into the folder just above, or out one level.
   function indent(it) {
@@ -1335,10 +1393,10 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function renderHeader() {
     const m = S.meta;
     const fresh = m && ms(m.updated) != null && Date.now() - ms(m.updated) < 20 * 60e3;
-    const now = S.failed || (m?.now ? m.now : S.loaded.items ? "Claude hasn't said what it's on yet." : "Loading the task board…");
-    put($("status"),
+    const now = S.failed || (m?.text ? m.text : S.loaded.items ? "Claude hasn't said what it's on yet." : "Loading the task board…");
+    put($("nowline"),
       h("span", { class: "dot" + (fresh ? " live" : ""), title: fresh ? "Said in the last 20 minutes" : null }),
-      h("span", { class: "now", title: m?.now || null }, S.failed || !m?.now ? now : ["Claude: ", rich(now)]),
+      h("span", { class: "now", title: m?.text || null }, S.failed || !m?.text ? now : ["Claude: ", rich(now)]),
       m?.updated && !S.failed ? timeEl(m.updated, "when") : null,
     );
     $("adds").hidden = !canWrite();
@@ -1356,8 +1414,8 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     $("expand-all").hidden = $("collapse-all").hidden = !tree || !M.order.some((it) => it.$folder);
     renderChips();
     const open = M.tasks.filter(isOpen);
-    const done = M.tasks.filter((t) => !isArch(t) && stageOf(t) === "done").length;
-    $("list-sum").textContent = !S.loaded.items ? "" : !tree && searching() ? `${M.tasks.filter(passTask).length} shown`
+    const done = M.tasks.filter((t) => !isArch(t) && statusOf(t) === "done").length;
+    $("list-sum").textContent = !S.loaded.items ? "" : !tree && searching() ? `${M.tasks.filter(passTask).length} shown${archMatches(true).length ? ` · ${archMatches(true).length} archived` : ""}`
       : S.view === "priority" ? `${open.filter((t) => isNum(t.priority)).length} with a priority · ${open.filter((t) => !isNum(t.priority)).length} without`
       : `${open.length} open · ${done} done`;
     $("view").value = S.view;
@@ -1368,7 +1426,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   }
   function renderChips() {
     if (!S.loaded.items) { $("chips").replaceChildren(); return; }
-    const base = M.tasks.filter((t) => !hiddenArch(t) && matchQ(t));
+    const base = M.tasks.filter((t) => inMain(t) && matchQ(t));
     const box = $("chips");
     const out = [];
     for (const f of FILTERS) {
@@ -1378,31 +1436,31 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
         h("span", { class: "sw", style: `background:${f.sw}`, "aria-hidden": "true" }), f.label, h("span", { class: "n" }, String(n))));
     }
     const counts = new Map();
-    for (const t of base) { const w = String(t.where ?? ""); if (w) counts.set(w, (counts.get(w) || 0) + 1); }
-    if (S.where != null && !counts.has(S.where)) counts.set(S.where, 0);
-    const wheres = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    if (wheres.length) out.push(h("span", { class: "sep", "aria-hidden": "true" }));
-    if (wheres.length <= 4) {
-      for (const [w, n] of wheres) {
-        out.push(h("button", { class: "chip", type: "button", "data-chip": "where:" + w, "aria-pressed": String(S.where === w), title: `Only tasks run by: ${w}` }, shortWhere(w) || w, h("span", { class: "n" }, String(n))));
+    for (const t of base) { const w = String(t.assigned ?? ""); if (w) counts.set(w, (counts.get(w) || 0) + 1); }
+    if (S.assigned != null && !counts.has(S.assigned)) counts.set(S.assigned, 0);
+    const assignees = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    if (assignees.length) out.push(h("span", { class: "sep", "aria-hidden": "true" }));
+    if (assignees.length <= 4) {
+      for (const [w, n] of assignees) {
+        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, shortAssigned(w) || w, h("span", { class: "n" }, String(n))));
       }
     } else {
-      const sel = h("select", { "aria-label": "Where tasks run", "data-chip": "where" }, h("option", { value: "" }, "Anyone"), wheres.map(([w, n]) => h("option", { value: w, selected: S.where === w }, `${shortWhere(w) || w} (${n})`)));
-      out.push(h("label", { class: "chip", "aria-pressed": String(S.where != null) }, "Runs:", sel));
+      const sel = h("select", { "aria-label": "Who tasks are assigned to", "data-chip": "assigned" }, h("option", { value: "" }, "Anyone"), assignees.map(([w, n]) => h("option", { value: w, selected: S.assigned === w }, `${shortAssigned(w) || w} (${n})`)));
+      out.push(h("label", { class: "chip", "aria-pressed": String(S.assigned != null) }, "Assigned to:", sel));
     }
     const na = M.order.filter((it) => it.archived).length;
     out.push(h("span", { class: "sep", "aria-hidden": "true" }));
     out.push(h("button", { class: "chip" + (na ? "" : " zero"), type: "button", "data-chip": "archived", "aria-pressed": String(S.showArch) }, `Show archived (${na})`));
     box.replaceChildren(...out);
-    const n = S.filters.size + (S.where != null ? 1 : 0) + (S.showArch ? 1 : 0);
+    const n = S.filters.size + (S.assigned != null ? 1 : 0) + (S.showArch ? 1 : 0);
     $("filters-btn").textContent = n ? `Filters · ${n}` : "Filters";
   }
 
   // Row pieces shared by both panes.
-  const stChip = (t) => (stageOf(t) ? h("span", { class: `st s-${stageOf(t)}`, title: `${STAGES[stageOf(t)]}${t.where ? ` · runs: ${t.where}` : ""}` }, stageOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${shortWhere(t.where) || "Subagent"}`)] : stageText(t)) : null);
+  const stChip = (t) => (statusOf(t) ? h("span", { class: `st s-${statusOf(t)}`, title: `${STATUSES[statusOf(t)]}${t.assigned ? ` · assigned to: ${t.assigned}` : ""}` }, statusOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${shortAssigned(t.assigned) || "Subagent"}`)] : statusText(t)) : null);
   function discBtn(t) {
     const on = !!t.discuss;
-    if (!canWrite()) return on ? h("span", { class: "ic disc on", role: "img", "aria-label": "Needs discussion", title: "Needs discussion" }, icon("bubble")) : null;
+    if (!canWrite() || isArch(t)) return on ? h("span", { class: "ic disc on", role: "img", "aria-label": "Needs discussion", title: "Needs discussion" }, icon("bubble")) : null;
     return h("button", { class: "ic disc" + (on ? " on" : ""), type: "button", tabindex: "-1", "data-act": "disc", "aria-pressed": String(on), "aria-label": "Needs discussion", title: on ? "Needs discussion (click to clear)" : "Mark as needing discussion" }, icon("bubble"));
   }
   function histBtn(t) {
@@ -1411,15 +1469,16 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const open = S.hist.has(t.id);
     return h("button", { class: "ic hist" + (open ? " open" : ""), type: "button", tabindex: "-1", "data-act": "hist", "aria-expanded": String(open), "aria-label": `History, ${n} event${n === 1 ? "" : "s"}`, title: `History (${n})` }, icon("clock"), String(n));
   }
-  // The actions that show on hover: a folder's "+", a task's discussion mark while it's off, "…".
-  const acts = (it) => (canWrite() ? h("span", { class: "acts" }, it.$folder ? h("button", { class: "ic add", type: "button", tabindex: "-1", "data-act": "add-in", "aria-label": `Add a task inside ${title(it)}`, title: "Add a task inside" }, icon("plus")) : it.discuss ? null : discBtn(it), moreBtn(it)) : null);
+  // The actions that show on hover: a folder's "+", a task's discussion mark while it's off, "…"
+  // (an archived item's: "…" alone, to unarchive it).
+  const acts = (it) => (canWrite() ? h("span", { class: "acts" }, isArch(it) ? null : it.$folder ? h("button", { class: "ic add", type: "button", tabindex: "-1", "data-act": "add-in", "aria-label": `Add a task inside ${title(it)}`, title: "Add a task inside" }, icon("plus")) : it.discuss ? null : discBtn(it), moreBtn(it)) : null);
   const moreBtn = (it) => (canWrite() ? h("button", { class: "ic more", type: "button", tabindex: "-1", "data-act": "menu", "aria-haspopup": "menu", "aria-label": `Actions for ${title(it)}`, title: "Actions" }, icon("more")) : null);
   function histList(it, depth) {
     const evs = M.ev.get(it.id) || [];
     return h("div", { class: "hist-list", style: `--d:${depth}`, "data-for": it.id }, evs.length ? evs.map((e) => h("div", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "", { row: true })), e.kind === "owner" ? h("span", { class: "who" }, "you") : null)) : h("span", { class: "none" }, "Nothing yet."));
   }
   function rowBase(it, depth, extra) {
-    const st = it.$folder ? "" : stageOf(it);
+    const st = it.$folder ? "" : statusOf(it);
     const cls = ["row", it.$folder ? "folder" : "task", st === "done" ? "done" : "", st === "abandoned" ? "done abandoned" : "", isArch(it) ? "arch" : "", S.picked.has(it.id) ? "sel" : "", S.anchor === it.id ? "active" : "", extra].filter(Boolean).join(" ");
     return h("div", { class: cls, "data-id": it.id, tabindex: "-1", style: `--d:${depth}` });
   }
@@ -1431,14 +1490,15 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     local.set("collapsed", [...S.collapsed]);
   }
   // The tree's visible rows: every item not archived (unless shown), and while searching only the
-  // matches and the folders around them.
+  // matches that aren't archived and the folders around them. (An archived folder takes nothing
+  // new: no "+" line.)
   function treeRows() {
     const active = searching();
     const show = new Map();
     if (active) {
       for (const it of M.order) {
-        if (hiddenArch(it)) continue;
-        const self = it.$folder ? !chipsOn() && !!S.q.trim() && matchQ(it) : passTask(it);
+        if (!inMain(it)) continue;
+        const self = it.$folder ? matchFolder(it) : passTask(it);
         if (!self) continue;
         show.set(it.id, "match");
         for (const a of it.$crumbs) if (!show.has(a.id)) show.set(a.id, "ctx");
@@ -1447,14 +1507,14 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const rows = [];
     const walk = (p, depth) => {
       for (const it of kidsOf(p)) {
-        if (hiddenArch(it)) continue;
+        if (!inMain(it)) continue;
         if (active && !show.has(it.id)) continue;
         rows.push({ it, depth, ctx: show.get(it.id) === "ctx" });
         if (!kidsOf(it.id).length && !(S.draft && S.draft.parent === it.id) && !it.$folder) continue;
         if (it.$folder && !expanded(it)) continue;
         walk(it.id, depth + 1);
         if (S.draft && S.draft.parent === it.id) rows.push({ draft: true, depth: depth + 1 });
-        else if (it.$folder && !active) rows.push({ add: it, depth: depth + 1 });
+        else if (it.$folder && !active && !isArch(it)) rows.push({ add: it, depth: depth + 1 });
       }
     };
     walk("", 0);
@@ -1462,13 +1522,13 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     return rows;
   }
   function treeRow(it, depth, ctx) {
-    const st = it.$folder ? "" : stageOf(it);
+    const st = it.$folder ? "" : statusOf(it);
     const row = rowBase(it, depth, (it.$folder && !expanded(it) ? "collapsed" : "") + (ctx ? " ctx" : ""));
     row.setAttribute("role", "treeitem");
     row.setAttribute("aria-level", String(depth + 1));
     row.setAttribute("aria-selected", String(S.picked.has(it.id)));
     if (it.$folder) row.setAttribute("aria-expanded", String(expanded(it)));
-    if (canWrite()) row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to move (or ⌥↑ ⌥↓, Tab, ⇧Tab)" }));
+    if (canWrite() && !isArch(it)) row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to move (or ⌥↑ ⌥↓, Tab, ⇧Tab)" }));
     if (it.$folder) row.append(h("button", { class: "tw" + (kidsOf(it.id).length ? "" : " leaf"), type: "button", tabindex: "-1", "data-act": "toggle", "aria-label": expanded(it) ? "Collapse" : "Expand" }));
     else row.append(h("span", { class: `box s-${st || "queued"}`, "aria-hidden": "true" }));
     const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it.$folder ? {} : it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
@@ -1481,7 +1541,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       tail.append(h("span", { class: "cnt", title: `${it.$open} open, ${it.$done} done${isArch(it) ? "" : " (archived ones left out)"}` }, it.$open ? `${it.$open} open` : all ? "all done" : "empty"));
       if (all) tail.append(h("span", { class: "meter", role: "img", "aria-label": `${it.$done} of ${all} done`, title: `${it.$done} of ${all} done` }, h("i", { style: `width:${(100 * it.$done) / all}%` })));
     } else {
-      add(tail, histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "where", title: it.where || null }, st === "working" ? "" : hl(shortWhere(it.where))), h("span", { class: "pr" + (isNum(it.priority) ? "" : " none") + (stageOf(it) === "" && isNum(it.priority) && it.priority === M.next && !isArch(it) ? " next" : ""), title: isNum(it.priority) ? `Priority ${it.priority}` : "No priority" }, fmtP(it.priority)));
+      add(tail, histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, st === "working" ? "" : hl(shortAssigned(it.assigned))), h("span", { class: "pr" + (isNum(it.priority) ? "" : " none") + (statusOf(it) === "" && isNum(it.priority) && it.priority === M.next && !isArch(it) ? " next" : ""), title: isNum(it.priority) ? `Priority ${it.priority}` : "No priority" }, fmtP(it.priority)));
     }
     row.append(tail);
     return row;
@@ -1493,7 +1553,9 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     else if (!S.loaded.items) frag.append(h("p", { class: "empty" }, "The folders and tasks appear here as soon as they load."));
     else {
       const rows = treeRows();
-      if (!rows.length) {
+      const arch = archMatches(false);
+      if (!rows.length && arch.length) frag.append(h("p", { class: "empty" }, "Nothing that isn't archived matches."));
+      else if (!rows.length) {
         if (searching()) frag.append(h("div", { class: "empty" }, h("div", null, S.q.trim() ? `Nothing matches ${quote(S.q.trim())}${chipsOn() ? " with these filters" : ""}.` : "No task matches these filters."), h("button", { class: "btn", type: "button", "data-act": "clear-search" }, "Clear the search and filters")));
         else frag.append(h("div", { class: "empty" }, h("div", null, M.order.length ? "Everything here is archived." : "No folders or tasks yet."), canWrite() && !M.order.length ? h("button", { class: "btn", type: "button", "data-act": "add-top" }, "Add the first task") : null));
       }
@@ -1515,6 +1577,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
           if (S.hist.has(r.it.id) && !r.it.$folder) frag.append(histList(r.it, r.depth));
         }
       }
+      archSection(frag, arch);
       if (!tabbed) { const first = frag.querySelector(".row[data-id]"); if (first) first.tabIndex = 0; }
     }
     host.replaceChildren(frag);
@@ -1522,24 +1585,36 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
 
   // The sorted views: every task, flat, by priority, by its last change or by when it was added (ties
   // by order), its folders under it.
-  function sortedTasks() {
-    const tasks = M.tasks.filter(passTask);
+  const sortedTasks = () => sortTasks(M.tasks.filter(passTask));
+  function sortTasks(tasks) {
     if (S.view === "recent") return tasks.sort((a, b) => changedAt(b) - changedAt(a) || byOrder(a, b));
     if (S.view === "added") return tasks.sort((a, b) => (ms(b.added) ?? -Infinity) - (ms(a.added) ?? -Infinity) || byOrder(a, b));
     return prioSorted(tasks);
+  }
+  // A search's archived matches, beneath the rest: one flat row each, its folders under its title
+  // (read-only rows, out of a drag's reach).
+  function archSection(frag, its) {
+    if (!its.length) return;
+    frag.append(h("div", { class: "grp", "data-grp": "arch", id: "arch-sec" }, "Archived", h("span", { class: "n" }, String(its.length))));
+    for (const it of its) {
+      const row = flatRow(it);
+      row.classList.add("in-arch");
+      frag.append(row);
+      if (S.hist.has(it.id) && !it.$folder) frag.append(histList(it, 0));
+    }
   }
   function flatRow(it) {
     const row = rowBase(it, 0, "");
     row.setAttribute("role", "listitem");
     if (S.sel === it.id) row.setAttribute("aria-current", "true");
-    if (canWrite() && S.view === "priority") row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to change its priority (or ⌥↑ ⌥↓)" }));
+    if (canWrite() && S.view === "priority" && !isArch(it)) row.append(h("span", { class: "grip", "data-grip": "", title: "Drag to change its priority (or ⌥↑ ⌥↓)" }));
     const has = isNum(it.priority);
-    row.append(h("span", { class: "pr lead" + (has ? "" : " none") + (stageOf(it) === "" && has && it.priority === M.next && !isArch(it) ? " next" : ""), title: has ? `Priority ${it.priority}` : "No priority" }, has ? String(it.priority) : "–"));
-    row.append(h("span", { class: `box s-${stageOf(it) || "queued"}`, "aria-hidden": "true" }));
+    row.append(h("span", { class: "pr lead" + (has ? "" : " none") + (statusOf(it) === "" && has && it.priority === M.next && !isArch(it) ? " next" : ""), title: has ? `Priority ${it.priority}` : "No priority" }, has ? String(it.priority) : "–"));
+    row.append(it.$folder ? h("span", { class: "tw leaf", "aria-hidden": "true" }) : h("span", { class: `box s-${statusOf(it) || "queued"}`, "aria-hidden": "true" }));
     const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
     const crumbs = it.$crumbs.map(title).join(" › ");
     row.append(h("span", { class: "main" }, l1, crumbs ? h("span", { class: "l2 crumbs", title: crumbs }, hl(crumbs)) : null));
-    row.append(h("span", { class: "tail" }, acts(it), histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "where", title: it.where || null }, stageOf(it) === "working" ? "" : hl(shortWhere(it.where)))));
+    row.append(h("span", { class: "tail" }, acts(it), histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, statusOf(it) === "working" ? "" : hl(shortAssigned(it.assigned)))));
     return row;
   }
   function renderSorted() {
@@ -1558,7 +1633,9 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
         if (S.hist.has(t.id)) frag.append(histList(t, 0));
       }
       if (prio && !divided && tasks.length && canWrite()) frag.append(h("div", { class: "grp", "data-grp": "none", id: "no-prio" }, "No priority", h("span", { class: "n" }, "0")));
-      if (!tasks.length) frag.append(h("p", { class: "empty" }, searching() ? "No task matches." : "No tasks yet."));
+      const arch = archMatches(true);
+      if (!tasks.length) frag.append(h("p", { class: "empty" }, searching() ? (arch.length ? "No task that isn't archived matches." : "No task matches.") : "No tasks yet."));
+      archSection(frag, sortTasks(arch));
       const sel = S.sel && frag.querySelector(`.row[data-id="${CSS.escape(S.sel)}"]`);
       const first = sel || frag.querySelector(".row[data-id]");
       if (first) first.tabIndex = 0;
@@ -1606,14 +1683,14 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function emptyEditor() {
     const legend = h("dl", { class: "legend" });
     for (const [st, what] of [["working", "Claude or a subagent is on it"], ["backgrounded", "waiting on a long process (a download, a build); its slot is free for another task"], ["integrating", "finished; Claude is merging it"], ["review", "finished; a subagent is reviewing it"], ["waiting", "it needs you: an answer, a decision, something only you can do"], ["done", "finished"], ["abandoned", "dropped without being finished; closed, counted apart from done"]]) {
-      legend.append(h("dt", null, stChip({ stage: st, where: "Subagent" })), h("dd", null, what));
+      legend.append(h("dt", null, stChip({ status: st, assigned: "Subagent" })), h("dd", null, what));
     }
     legend.append(h("dt", null, h("span", { class: "ic disc on", "aria-hidden": "true" }, icon("bubble"))), h("dd", null, "needs discussion first"));
     const keys = h("dl", { class: "keys" });
     for (const [k, what] of [["↑ ↓", "move between rows"], ["⌘J ⌘K", "the previous or next row, from anywhere"], ["⌘E", "archive what is selected (or unarchive it)"], ["⌘-click", "pick several; ⇧-click picks a range"], ["Enter", "edit the row's details"], ["⌥↑ ⌥↓", "move it up or down"], ["Tab ⇧Tab", "into the folder above, or out of its folder"], ["← →", "collapse or expand a folder"], ["/", "search"], ["⌘Z", "undo, while the notice shows"], ["⇧⌘Z", "redo, while the notice shows"]]) {
       keys.append(h("dt", null, k.split(" ").map((x) => h("kbd", null, x))), h("dd", null, what));
     }
-    return h("div", { class: "ed-empty" }, h("p", null, "Select a task or folder to see and edit its details."), h("p", null, "Each task and folder has a number, as ", h("span", { class: "num" }, "#57"), ": search for #57 to find it; write #57 in a description or a note to link to it; open …/task-board/57 to land on it."), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Stages"), legend), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Keys"), keys));
+    return h("div", { class: "ed-empty" }, h("p", null, "Select a task or folder to see and edit its details."), h("p", null, "Each task and folder has a number, as ", h("span", { class: "num" }, "#57"), ": search for #57 to find it; write #57 in a description or a note to link to it; open …/task-board/57 to land on it."), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Statuses"), legend), h("div", { class: "sec" }, h("h3", { class: "sec-h" }, "Keys"), keys));
   }
   function renderEditor() {
     const host = $("editor");
@@ -1624,7 +1701,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       return;
     }
     const kind = it.$folder ? "folder" : "task";
-    if (ED.id !== it.id || ED.kind !== kind || ED.ro !== !canEdit()) buildEditor(it, kind, host);
+    if (ED.id !== it.id || ED.kind !== kind || ED.ro !== (!canEdit() || isArch(it))) buildEditor(it, kind, host);
     syncEditor(it);
   }
   function setVal(el, v) {
@@ -1658,7 +1735,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     el.addEventListener("change", () => { if (el.tagName === "SELECT") commitField(); });
     function commitField() {
       const it = edItem();
-      if (!it || !canEdit()) return;
+      if (!it || !canEdit() || isArch(it)) return;
       if (!el.dataset.dirty && el.tagName !== "SELECT") return;
       if (!canWrite()) {
         // (Changes are paused: what you typed stays, marked, and is saved when they resume.)
@@ -1710,7 +1787,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function buildEditor(it, kind, host) {
     ED.id = it.id;
     ED.kind = kind;
-    ED.ro = !canEdit();
+    ED.ro = !canEdit() || isArch(it); // (archived: read-only)
     const ro = ED.ro;
     const f = (ED.f = {});
     f.crumbs = h("div", { class: "ed-crumbs" });
@@ -1718,37 +1795,40 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     f.title.readOnly = ro;
     f.chips = h("div", { class: "ed-chips" });
     const top = h("div", { class: "ed-top" }, f.crumbs,
-      ro ? null : h("button", { class: "ic", type: "button", "data-act": "ed-menu", "aria-haspopup": "menu", "aria-label": "Actions", title: "Actions" }, icon("more")),
+      canEdit() ? h("button", { class: "ic", type: "button", "data-act": "ed-menu", "aria-haspopup": "menu", "aria-label": "Actions", title: "Actions" }, icon("more")) : null,
       h("button", { class: "ic ed-close", type: "button", "data-act": "ed-close", "aria-label": "Close the details", title: "Close (Esc)" }, icon("close")));
     // (Its number, before its title: a click copies "#57".)
     f.num = h("button", { class: "ed-num", type: "button", "data-act": "copy-num", hidden: true });
     const parts = [h("div", { class: "ed-sticky" }, top, h("div", { class: "ed-head" }, f.num, f.title)), h("p", { class: "hint bad", id: "ed-unsaved", hidden: ![...pending.values()].some((p) => p.id === it.id) }, "Not saved yet: changes are paused until the connection is back. What you typed is kept and saved then; Esc puts a field back."), f.chips];
+    if (isArch(it)) parts.push(h("p", { class: "ro-note" }, h("span", null, `Archived${it.archived ? "" : ", with a folder around it"}: read-only. Unarchive it to change it.`), canWrite() ? h("button", { class: "btn", type: "button", "data-act": "ed-unarchive" }, "Unarchive") : null));
     f.reply = h("div", { class: "sec" });
     if (kind === "task") {
       parts.push(f.reply);
-      f.stage = h("select", { class: "inp", id: "ed-stage" }, Object.entries(STAGES).map(([v, l]) => h("option", { value: v }, l)));
+      f.status = h("select", { class: "inp", id: "ed-status" }, Object.entries(STATUSES).map(([v, l]) => h("option", { value: v }, l)));
       f.prio = h("input", { class: "inp num", id: "ed-prio", type: "text", inputmode: "decimal", autocomplete: "off", placeholder: "none", maxlength: "12" });
-      f.where = h("select", { class: "inp", id: "ed-where" }, schema.WHERES.map((w) => h("option", { value: w }, w || "(nobody)")));
+      // (Free text; the usual ones suggested.)
+      f.assigned = h("input", { class: "inp", id: "ed-assigned", type: "text", list: "ed-assigned-list", autocomplete: "off", spellcheck: "false", maxlength: "200", placeholder: "nobody" });
+      f.assignedList = h("datalist", { id: "ed-assigned-list" }, schema.ASSIGNED_SUGGESTIONS.map((w) => h("option", { value: w })));
       f.disc = h("button", { class: "toggle", id: "ed-disc", type: "button", "aria-pressed": "false" }, icon("bubble"), "Needs discussion");
-      f.stage.disabled = ro;
+      f.status.disabled = ro;
       f.prio.readOnly = ro;
-      f.where.disabled = ro;
+      f.assigned.readOnly = ro;
       f.disc.disabled = ro;
       const base = "1 is next; equal numbers go together; 2.5 slots in between 2 and 3.";
       f.prioHint = h("p", { class: "hint", "data-hint-for": "ed-prio", "data-base": ro ? "" : base }, ro ? "" : base);
       parts.push(h("div", { class: "sec" }, h("div", { class: "fields" },
-        h("label", { for: "ed-stage" }, "Stage"), f.stage,
+        h("label", { for: "ed-status" }, "Status"), f.status,
         h("label", { for: "ed-prio" }, "Priority"), h("div", null, f.prio),
-        h("label", { for: "ed-where" }, "Runs"), f.where,
+        h("label", { for: "ed-assigned" }, "Assigned to"), h("div", null, f.assigned, f.assignedList),
         h("span", { class: "lbl" }, "Discussion"), f.disc), f.prioHint));
-      bindField(f.stage, (t, v) => { if (v !== stageOf(t)) patch(t.id, { stage: v }); });
+      bindField(f.status, (t, v) => { if (v !== statusOf(t)) patch(t.id, { status: v }); });
       bindField(f.prio, (t, v) => {
         const ok = typePrio(t, v);
         hint(f.prio, ok === false ? "A priority is a number from 1 up, or blank for none." : "");
         if (ok === false) return false;
       });
-      bindField(f.where, (t, v) => { if (v !== (t.where ?? "")) patch(t.id, { where: v }); });
-      f.disc.addEventListener("click", () => { const t = edItem(); if (t && canEdit()) patch(t.id, { discuss: !t.discuss }); });
+      bindField(f.assigned, (t, v) => { const a = v.replace(/\s+/g, " ").trim(); f.assigned.value = a; if (a !== (t.assigned ?? "")) patch(t.id, { assigned: a }); });
+      f.disc.addEventListener("click", () => { const t = edItem(); if (t && canEdit() && !isArch(t)) patch(t.id, { discuss: !t.discuss }); });
     } else {
       f.stats = h("div", { class: "stats" });
       parts.push(f.stats);
@@ -1803,10 +1883,9 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       const all = it.$open + it.$done;
       put(f.stats, h("span", null, `${it.$open} open · ${it.$done} done`), h("span", { class: "meter", role: "img", "aria-label": `${it.$done} of ${all} done` }, h("i", { style: `width:${all ? (100 * it.$done) / all : 0}%` })), all ? h("span", null, `${Math.round((100 * it.$done) / all)}%`) : null);
     } else {
-      setVal(f.stage, stageOf(it));
+      setVal(f.status, statusOf(it));
       setVal(f.prio, isNum(it.priority) ? String(it.priority) : "");
-      if (it.where && ![...f.where.options].some((o) => o.value === it.where)) f.where.append(h("option", { value: it.where }, `${it.where} (not in the list)`));
-      setVal(f.where, String(it.where ?? ""));
+      setVal(f.assigned, String(it.assigned ?? ""));
       f.disc.setAttribute("aria-pressed", String(!!it.discuss));
       f.reply.replaceChildren(...(it.reply ? [h("h3", { class: "sec-h" }, "Claude's note"), h("div", { class: "reply" }, rich(it.reply))] : []));
       f.reply.hidden = !it.reply;
@@ -1827,7 +1906,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function renderPhotos(it) {
     const f = ED.f;
     const ids = Array.isArray(it.photos) ? it.photos.filter((x) => typeof x === "string" && x) : [];
-    const can = canWrite() && !!S.assets;
+    const can = canWrite() && !!S.assets && !isArch(it);
     const kids = [];
     if (ids.length || can) {
       kids.push(h("h3", { class: "sec-h" }, "Photos", ids.length ? h("span", { class: "n" }, String(ids.length)) : null));
@@ -1889,15 +1968,17 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const m = $("menu");
     const item = (label, act, { why = "", danger = false } = {}) => h("button", { type: "button", role: "menuitem", tabindex: "-1", "data-mact": act, "aria-disabled": why ? "true" : null, class: danger ? "danger" : null }, h("span", null, label), why ? h("small", null, why) : null);
     const parts = [];
-    if (it.$folder) {
+    // (Archived: read-only, so unarchiving, or deleting, is all there is.)
+    if (isArch(it)) parts.push(item("Unarchive", "unarchive"));
+    else if (it.$folder) {
       parts.push(item("Add task inside", "add-task"), item("Add folder inside", "add-folder"));
-      const doneInside = under(it.id).filter((d) => !d.$folder && !d.archived && stageOf(d) === "done").length;
-      if (doneInside && !isArch(it)) parts.push(item(`Archive the ${doneInside} done inside`, "archive-done"));
+      const doneInside = under(it.id).filter((d) => !d.$folder && !d.archived && statusOf(d) === "done").length;
+      if (doneInside) parts.push(item(`Archive the ${doneInside} done inside`, "archive-done"));
       parts.push(h("hr"));
       const n = kidsOf(it.id).length;
       parts.push(item("Convert to task", "to-task", { why: n ? `Not while it holds ${n} item${n === 1 ? "" : "s"} (archived ones count)` : "" }));
     } else parts.push(item("Convert to folder", "to-folder"));
-    parts.push(item(isArch(it) ? "Unarchive" : "Archive", isArch(it) ? "unarchive" : "archive"));
+    if (!isArch(it)) parts.push(item("Archive", "archive"));
     const n = under(it.id).length;
     parts.push(h("hr"), item(n ? `Delete, with the ${n} inside` : "Delete", "delete", { danger: true }));
     m.replaceChildren(...parts);
@@ -1931,7 +2012,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (act === "add-task" || act === "add-folder") startDraft(act === "add-task" ? "task" : "folder", it.id);
     else if (act === "to-task") toTask(it);
     else if (act === "to-folder") toFolder(it);
-    else if (act === "archive") archive(it);
+    else if (act === "archive") askArchive([it]);
     else if (act === "unarchive") unarchive(it);
     else if (act === "archive-done") archiveDone(it);
     else if (act === "delete") remove(it);
@@ -1949,10 +2030,9 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // A folder's finished tasks, archived in one go (the folder stays).
   function archiveDone(folder) {
     const stamp = nowIso();
-    const docs = under(folder.id).filter((d) => !d.$folder && !d.archived && stageOf(d) === "done");
+    const docs = under(folder.id).filter((d) => !d.$folder && !d.archived && statusOf(d) === "done");
     if (!docs.length) return;
     const ops = docs.map((d) => edit(d.id, { archived: true, archivedAt: stamp }));
-    ops.push(evOp(folder.id, `Archived its ${docs.length} done task${docs.length === 1 ? "" : "s"}`));
     commit(ops, { toast: `Archived ${docs.length} done task${docs.length === 1 ? "" : "s"} in ${quote(title(folder))}` });
   }
 
@@ -2087,8 +2167,22 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const gone = (id) => S.picked.has(id) || its.some((it) => isInside(id, it.id));
     const last = Math.max(...its.map((it) => ids.indexOf(it.id)));
     const next = ids.slice(last + 1).find((id) => !gone(id)) ?? ids.slice(0, last).reverse().find((id) => !gone(id)) ?? null;
-    archive(...its.filter((it) => !isArch(it)));
-    if (!S.showArch) select(next, { focus: !!next && !typing(document.activeElement), open: false });
+    askArchive(its, () => { if (!S.showArch) select(next, { focus: !!next && !typing(document.activeElement), open: false }); });
+  }
+
+  // A warning to confirm: `ok` runs on its button, nothing on Cancel or Esc. (A modal <dialog>: the
+  // focus stays in it, on Cancel first.)
+  function confirmDialog(head, text, okLabel, ok) {
+    const d = $("confirm");
+    const back = document.activeElement;
+    put(d, h("form", { method: "dialog" },
+      h("h2", null, head), h("p", null, text),
+      h("div", { class: "acts-row" },
+        h("button", { class: "btn", type: "submit", value: "cancel", autofocus: true }, "Cancel"),
+        h("button", { class: "btn danger", type: "submit", value: "ok" }, okLabel))));
+    d.returnValue = "";
+    d.onclose = () => { d.onclose = null; if (back?.isConnected) back.focus({ preventScroll: true }); if (d.returnValue === "ok") ok(); };
+    d.showModal();
   }
   // The address names the selected item by its number: <base>/57 (the page's own folder, as the
   // page's relative addresses need: /task-board/57 on Caddy, /57 on the server itself), or #57.
@@ -2131,11 +2225,12 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     S.q = "";
     $("q").value = "";
     S.filters.clear();
-    S.where = null;
+    S.assigned = null;
     if (rerender) render();
   }
   function startDraft(kind, parent) {
     if (!canWrite()) return;
+    if (parent && isArch(M.byId.get(parent) || {})) return intoArchived(M.byId.get(parent));
     if (searching()) clearSearch(false);
     if (parent) setCollapsed(parent, false);
     S.draft = { kind, parent, text: "" };
@@ -2176,7 +2271,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // `made` promise gives the new item's id once the server has made it, or null if it didn't.)
   function createWith(kind, parent, text) {
     const last = M.byOrder[M.byOrder.length - 1];
-    const item = makeOp("items", kind === "task" ? { kind, text, parent, where: "Subagent", stage: "" } : { kind, text, parent }, { order: last ? ordOf(last) + 1 : 1, added: nowIso() });
+    const item = makeOp("items", kind === "task" ? { kind, text, parent, assigned: "Subagent", status: "" } : { kind, text, parent }, { order: last ? ordOf(last) + 1 : 1, added: nowIso() });
     const ops = [item, evOp(item.id, kind === "task" ? "Created" : "Created (a folder)")];
     const what = kind === "task" ? "" : "the folder ";
     const a = commit(ops, { toast: `Added ${what}${quote(text)}`, renum: (n) => `Added ${what}#${n} ${quote(text)}` });
@@ -2223,6 +2318,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     d.line = $("list-line");
     d.geo = [];
     for (const el of d.rows.children) {
+      if (el.classList.contains("in-arch") || el.id === "arch-sec") continue;
       const g = { el, top: el.offsetTop, h: el.offsetHeight };
       if (el.matches(".row[data-id]")) Object.assign(g, { kind: "row", id: el.dataset.id, it: M.byId.get(el.dataset.id), depth: +el.style.getPropertyValue("--d") || 0 });
       else if (el.matches(".addrow")) Object.assign(g, { kind: "add", folder: el.dataset.folder, depth: +el.style.getPropertyValue("--d") || 0 });
@@ -2450,7 +2546,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       if (a === "add-task" || a === "add-folder") return startDraft(a === "add-task" ? "task" : "folder", act.dataset.parent || "");
       if (!it) return;
       if (a === "toggle") { if (!searching()) { setCollapsed(it.id, expanded(it)); render(); } return; }
-      if (a === "disc") { if (canWrite()) patch(it.id, { discuss: !it.discuss }); return; }
+      if (a === "disc") { if (canWrite() && !isArch(it)) patch(it.id, { discuss: !it.discuss }); return; }
       if (a === "hist") { if (S.hist.has(it.id)) S.hist.delete(it.id); else S.hist.add(it.id); render(); return; }
       if (a === "menu") return openMenu(act, it.id);
       if (a === "add-in") return startDraft("task", it.id);
@@ -2494,6 +2590,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       moveTree(it.id, it.$p, full.indexOf(sib) + (dir > 0 ? 1 : 0));
       return;
     }
+    if (isArch(it)) return readOnly(it);
     if (S.view !== "priority" || !isOpen(it)) return;
     const open = sortedTasks().filter(isOpen);
     const i = open.findIndex((o) => o.id === it.id);
@@ -2548,13 +2645,13 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (!b) return;
     const k = b.dataset.chip;
     if (k === "archived") { S.showArch = !S.showArch; local.set("archived", S.showArch); }
-    else if (k.startsWith("where:")) { const w = k.slice(6); S.where = S.where === w ? null : w; }
+    else if (k.startsWith("assigned:")) { const w = k.slice(6); S.assigned = S.assigned === w ? null : w; }
     else if (S.filters.has(k)) S.filters.delete(k);
     else S.filters.add(k);
     render();
   });
-  $("chips").addEventListener("change", (e) => { if (e.target.dataset.chip === "where") { S.where = e.target.value || null; render(); } });
-  $("status").addEventListener("click", (e) => { const r = e.target.closest("[data-ref]"); if (r) goRef(r.dataset.ref); });
+  $("chips").addEventListener("change", (e) => { if (e.target.dataset.chip === "assigned") { S.assigned = e.target.value || null; render(); } });
+  $("nowline").addEventListener("click", (e) => { const r = e.target.closest("[data-ref]"); if (r) goRef(r.dataset.ref); });
   $("filters-btn").addEventListener("click", () => {
     const open = !$("app").classList.contains("filters-open");
     $("app").classList.toggle("filters-open", open);
@@ -2583,11 +2680,12 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const a = b.dataset.act;
     if (a === "ed-close") { const id = S.sel; if (sheetOnly.matches) { S.sheet = false; render(); } else select(null); rowEl(id)?.focus({ preventScroll: true }); }
     else if (a === "ed-menu" && it) openMenu(b, it.id);
+    else if (a === "ed-unarchive" && it && canWrite()) unarchive(it);
     else if (a === "copy-num" && it) copyNum(it, b);
     else if ((a === "ed-add-task" || a === "ed-add-folder") && it) startDraft(a === "ed-add-task" ? "task" : "folder", it.id);
   });
   document.addEventListener("paste", (e) => {
-    if (!S.sel || !canWrite() || !S.assets) return;
+    if (!S.sel || !canWrite() || !S.assets || isArch(M.byId.get(S.sel) || {})) return;
     const files = [...(e.clipboardData?.files || [])].filter((f) => /^image\//.test(f.type));
     if (!files.length) return;
     const a = document.activeElement;
@@ -2612,7 +2710,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // it), ⌘E archives what is picked (not from a field, where it is the browser's own).
   const typing = (el) => !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
   document.addEventListener("keydown", (e) => {
-    if (e.defaultPrevented) return;
+    if (e.defaultPrevented || $("confirm").open) return; // (the warning's own keys: Esc cancels it)
     const a = document.activeElement;
     if (e.key === "Escape") {
       if (!$("viewer").hidden) { e.preventDefault(); closePhoto(); return; }
@@ -2645,7 +2743,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // Times shown as "3 h ago" stay current.
   setInterval(() => {
     for (const t of document.querySelectorAll("time[data-t]")) { const v = ago(t.dataset.t); if (t.textContent !== v) t.textContent = v; }
-    const dot = $("status").querySelector(".dot");
+    const dot = $("nowline").querySelector(".dot");
     const u = ms(S.meta?.updated);
     dot?.classList.toggle("live", u != null && Date.now() - u < 20 * 60e3);
   }, 30e3);
@@ -2692,7 +2790,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       checkRaw();
       soon();
     });
-    sub(() => S.db.doc("meta/status"), (snap) => { S.meta = snap.exists ? snap.data() || null : null; soon(); });
+    sub(() => S.db.doc("meta/now"), (snap) => { S.meta = snap.exists ? snap.data() || null : null; soon(); });
   }
   (async () => {
     M = build();
