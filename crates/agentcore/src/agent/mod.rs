@@ -1671,6 +1671,10 @@ pub struct Agent {
     /// didn't take when they ended (it didn't answer). Each told each loop until the lead answers:
     /// its lease is held meanwhile (listed in the beat, `to_lead`; docs/coordination.md §6).
     owed: Vec<Tell>,
+    /// A member's notes to the lead (`tend_notes`): its start noted, and its broker's history's
+    /// last number taken.
+    noted_start: bool,
+    broker_noted: u64,
     /// The members' beats its pool side hears by HTTP (crate::coord::beats; None out of the pool):
     /// what its beat sends the lead and the lead answers.
     beats: Option<std::sync::Arc<crate::coord::beats::Beats>>,
@@ -2086,6 +2090,8 @@ impl Agent {
             lead_kept: None,
             owed: Vec::new(),
             beats: run.as_ref().map(|r| r.side.http_beats()),
+            noted_start: false,
+            broker_noted: 0,
             unjournaled: BTreeMap::new(),
             cheap: None,
             pause,
@@ -7214,11 +7220,37 @@ impl Agent {
         Ok(())
     }
 
-    /// Notes what happened in the build's history (the lead's coordinator's: a member's jobs
-    /// are there by their leases).
+    /// Notes what happened in the build's history: the lead's coordinator's; a member's jobs are
+    /// there by their leases, and what only a member sees goes to it with its beats
+    /// (crate::coord::notes::KINDS).
     fn note(&self, e: crate::coord::history::Event) {
         if let Some(c) = &self.coord {
             c.note(e);
+        } else if let Some(b) = self.beats.as_ref().filter(|_| crate::coord::notes::KINDS.contains(&e.kind.as_str())) {
+            b.note(e, now_s());
+        }
+    }
+
+    /// A member's notes each loop (crate::coord::notes): its agent's start, once, and the tasks its
+    /// broker's jobs offered done or given back since the last loop (its broker's history, in its
+    /// memory alone).
+    fn tend_notes(&mut self) {
+        if self.coord.is_some() || !self.is_member() {
+            return;
+        }
+        if !self.noted_start {
+            self.noted_start = true;
+            self.note(crate::coord::history::Event {
+                worker: Some(self.host.clone()),
+                note: format!("app {}", self.app),
+                ..crate::coord::history::Event::new("agent")
+            });
+        }
+        let Some(b) = &self.broker else { return };
+        let (seen, events) = b.history_since(self.broker_noted);
+        self.broker_noted = seen;
+        for e in events {
+            self.note(e);
         }
     }
 
@@ -8418,6 +8450,7 @@ impl Agent {
             self.switches = sw;
         }
         self.tend_brokers();
+        self.tend_notes();
         self.tend_pageview(r);
         // (The lead's coordinator told this Mac's capacity each loop.)
         let placed = self.placement_now();
@@ -18115,6 +18148,46 @@ mod pool_tests {
         // out; the test's wall time, which a loaded machine stretches, isn't what's checked.)
         assert!(a.pool.is_some(), "in the pool as it starts");
         assert!(a.out_of_pool().is_none() && a.restart_now().is_none());
+    }
+
+    /// Task #1160: a member's agent notes to the lead what only it sees (crate::coord::notes): its
+    /// start, once; its broker's jobs' tasks, each once; its caches and conditions; never its jobs'
+    /// starts and ends, which the lead has by their leases.
+    #[test]
+    fn a_member_notes_what_only_it_sees_to_the_lead() {
+        let d = tempfile::tempdir().unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: false,
+        })
+        .unwrap();
+        if let Some(c) = a.coord.take() {
+            c.stop();
+        }
+        a.role = Role::Member;
+        let beats: std::sync::Arc<crate::coord::beats::Beats> = std::sync::Arc::default();
+        a.beats = Some(beats.clone());
+        let (b, _) = crate::coord::broker::start_for_test(&d.path().join("coord"), &a.host, "");
+        b.note_for_test(crate::coord::history::Event::new("task"));
+        a.broker = Some(b);
+        a.tend_notes();
+        a.note(crate::coord::history::Event::new("start"));
+        a.note(crate::coord::history::Event::new("end"));
+        a.note(caches_event(&a.host.clone(), &room::Freed::default()));
+        a.tend_notes();
+        // (The lead says it takes them.)
+        let says = crate::coord::held::Answer { speaks: vec![crate::coord::beats::NOTES.into()], ..Default::default() };
+        beats.answered(&says, now_s());
+        let out = beats.notes_out(now_s()).unwrap();
+        let kinds: Vec<&str> = out.notes.iter().map(|n| n.event.kind.as_str()).collect();
+        assert_eq!(kinds, ["agent", "task", "caches"]);
+        assert_eq!(out.notes[0].event.note, format!("app {}", a.app));
+        a.broker.take().unwrap().stop();
     }
 
     /// docs/coordination.md §6.1 (task #878 step 2): a member's beat lists its slots' leases and

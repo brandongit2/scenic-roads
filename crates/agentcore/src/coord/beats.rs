@@ -62,6 +62,11 @@ pub const BY_LEAD: &str = "budgets-by-lead";
 /// with every beat.
 pub const SPANS: &str = "spans";
 
+/// What a lead's answer says it takes (task #1160, crate::coord::notes): its members' notes, the
+/// history only they see, in their beats (`held::Beat::notes`), the last it has in its answer. A
+/// member sends them only to a lead saying it: one before it would read past them.
+pub const NOTES: &str = "notes";
+
 /// What a member's beat says: its app neither writes nor reads the map's snapshots on the NAS
 /// (`map/`, task #1119: the lead's log alone holds the map) and checks the NAS by `inputs/`
 /// (crate::agent::NAS_CHECK). The NAS's `map/` may be removed once every member's beat says it (the
@@ -154,6 +159,10 @@ struct Inner {
     /// (crate::agent::spans), once its agent said.
     lead_spans: bool,
     spans: Option<std::sync::Arc<crate::agent::spans::Shipper>>,
+    /// On a member: its notes not yet taken (crate::coord::notes), and whether the lead's last
+    /// answer said it takes them (`NOTES`).
+    notes: super::notes::Queue,
+    lead_notes: bool,
     /// On a member: how that lead said to reach it (`Answer::reach`), for its agent to keep.
     reach: Option<(String, super::held::Reach)>,
 }
@@ -200,6 +209,8 @@ impl Default for Beats {
                 lead_view_at: None,
                 lead_spans: false,
                 spans: None,
+                notes: Default::default(),
+                lead_notes: false,
             }),
             lead_view_write: Mutex::new(()),
         }
@@ -270,6 +281,10 @@ impl Beats {
         g.threads = a.threads.clone();
         g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
         g.lead_spans = a.speaks.iter().any(|w| w == SPANS);
+        g.lead_notes = a.speaks.iter().any(|w| w == NOTES);
+        if let Some(n) = a.noted {
+            g.notes.noted(n);
+        }
         if g.lead_asks {
             g.hold = a.hold.clone();
             g.settings_gen = a.settings_gen;
@@ -471,6 +486,20 @@ impl Beats {
     /// Whether the lead's last answer said it takes the beat (and so reads `held_age_s`).
     pub fn lead_takes(&self) -> bool {
         self.inner.lock().unwrap().lead_takes
+    }
+
+    /// A member's note (crate::coord::notes) at `now`, sent with its next beats.
+    pub fn note(&self, e: super::history::Event, now: u64) {
+        self.inner.lock().unwrap().notes.push(e, now);
+    }
+
+    /// The notes the next beat carries at `now`: while the lead's last answer said it takes them.
+    pub fn notes_out(&self, now: u64) -> Option<super::notes::Notes> {
+        let mut g = self.inner.lock().unwrap();
+        if !g.lead_notes {
+            return None;
+        }
+        g.notes.out(now)
     }
 
     /// This Mac's jobs' spans, sent with its beats (crate::agent::spans).

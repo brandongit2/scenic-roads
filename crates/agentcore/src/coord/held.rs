@@ -73,6 +73,10 @@ pub struct Beat {
     /// them (`beats::SPANS`). Left out by apps before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<super::jobspans::Chunk>,
+    /// Its notes not yet taken (crate::coord::notes: the history only it sees), to a lead saying
+    /// it takes them (`beats::NOTES`). Left out by apps before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<super::notes::Notes>,
 }
 
 /// Where a member's beat or ask stands among its agent's requests: its process (its start, unix
@@ -90,12 +94,16 @@ pub struct Sent {
 /// This process's next `Sent` (an agent's beats and asks, crate::agent::beat and
 /// crate::coord::client::LeaseCalls::ask).
 pub fn sent() -> Sent {
-    static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let process = *PROCESS.get_or_init(|| {
+    Sent { process: process(), n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
+}
+
+/// This process's start (unix ms): a later process's is greater (`Sent`, crate::coord::notes).
+pub fn process() -> u64 {
+    static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *PROCESS.get_or_init(|| {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-    });
-    Sent { process, n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
+    })
 }
 
 /// Request `sent` of member `member` taken: whether it's the newest taken from it (kept so),
@@ -166,6 +174,10 @@ pub struct Answer {
     /// it: the member keeps what it found.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reach: Option<Reach>,
+    /// The last of this member's notes it has (crate::coord::notes), when its beat carried any: the
+    /// member drops those up to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noted: Option<super::notes::Noted>,
 }
 
 /// A lead's addresses and build page (`Answer::reach`).
@@ -244,6 +256,19 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     // (Its jobs' spans, once it keeps them: the beat's are taken by the route, off the lock.)
     if s.jobspans.is_some() {
         a.speaks.push(super::beats::SPANS.to_string());
+    }
+    // (Its notes, into the history, each once: what it took of this member kept in its store. A
+    // broker keeps no history of the pool's: it takes none.)
+    if !s.broker {
+        a.speaks.push(super::beats::NOTES.to_string());
+        if let Some(n) = &b.notes {
+            let key = super::notes::key(&b.member);
+            let last = s.keep.store().and_then(|st| st.doc(&key)).and_then(|v| serde_json::from_value(v).ok());
+            a.noted = super::notes::take(&mut s.history, last, n);
+            if let Some(to) = a.noted.filter(|to| Some(*to) != last) {
+                s.keep.put(&key, serde_json::to_value(to).unwrap_or_default());
+            }
+        }
     }
     // (As its answers' headers say it: its leases' epoch, its member said; a member's broker none.)
     a.leading = s

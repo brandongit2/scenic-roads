@@ -43,6 +43,7 @@ pub mod kept;
 pub mod lease;
 pub mod maproutes;
 pub mod memberpage;
+pub mod notes;
 pub mod releases;
 pub mod sched;
 pub mod task;
@@ -1727,13 +1728,15 @@ impl Coordinator {
         };
         // (No later than a minute from now: an ask's time past that is passed over, `AHEAD_S`.)
         let pause_at = pause_at.min(unix_now() + AHEAD_S);
-        let mut history = history::History::load(the_plan, (!viewer).then(|| dir.join("history.jsonl")).as_deref());
+        // (The lead's history on its disk; a member's broker's in its memory alone, its agent
+        // noting its tasks to the lead: crate::coord::notes.)
+        let mut history = history::History::load(the_plan, lead.then(|| dir.join("history.jsonl")).as_deref());
         // (No lease number its history names given again: a job's id, docs/pool.md §7.5, whatever
         // the clock or the files lost.)
         if let Some(n) = history.highest_lease() {
             leases.past(n);
         }
-        if !viewer {
+        if lead {
             history.add(history::Event {
                 worker: Some(me.to_string()),
                 note: format!("app {app}"),

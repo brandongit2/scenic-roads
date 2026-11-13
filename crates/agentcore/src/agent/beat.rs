@@ -111,6 +111,7 @@ impl ToLead {
             progress: self.beats.progress(),
             sent: None,
             spans: Vec::new(),
+            notes: None,
         }
     }
 
@@ -213,6 +214,7 @@ impl ToLead {
             handoffs: self.beats.handoff_keys(),
             sent: Some(crate::coord::held::sent()),
             spans: ship.as_ref().map(|s| s.chunks(s.beat_bound())).unwrap_or_default(),
+            notes: self.beats.notes_out(now),
             ..b.clone()
         };
         let carried = !b.spans.is_empty();
@@ -714,6 +716,60 @@ mod tests {
         assert!(!beat_once(&x));
         assert!(store.read(job).is_some_and(|l| !l.is_empty()), "sent once it said");
         assert!(sh.chunks(super::super::spans::BEAT_MAX).is_empty(), "the lead has them: nothing more to send");
+        c.stop();
+    }
+
+    /// Task #1160: a member's notes (crate::coord::notes) reach the lead's history with its beats,
+    /// once the lead has said it takes them (none to a lead before it); a beat whose answer was lost
+    /// carries them again and they're taken once, by a restarted lead too (what it took of the
+    /// member in its store); the answer drops them on the member. A member before them sends a beat
+    /// without notes, answered as before.
+    #[test]
+    fn a_member_s_notes_reach_the_lead_s_history_once() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("lead");
+        let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let x = member(d.path(), X, port, &c.contact.token);
+        let noted = |c: &crate::coord::Coordinator| {
+            c.history_since(0).into_iter().filter(|e| e.kind == "conditions").map(|e| e.note).collect::<Vec<_>>()
+        };
+        let ev = |note: &str| crate::coord::history::Event {
+            worker: Some(X.into()),
+            note: note.into(),
+            ..crate::coord::history::Event::new("conditions")
+        };
+        x.beats.note(ev("on battery (40%)"), now_s());
+        assert!(!beat_once(&x));
+        assert!(noted(&c).is_empty(), "the lead hadn't said it takes them yet");
+        // (A beat whose answer is lost: the lead took its notes, the member doesn't know.)
+        let lost = crate::coord::held::Beat { notes: x.beats.notes_out(now_s()), ..x.body(&Status::default()) };
+        assert!(lost.notes.is_some());
+        let client = crate::coord::client::Client::at(x.urls.clone(), x.token.clone(), X);
+        client.pool_beat(&lost).unwrap();
+        assert_eq!(noted(&c), ["on battery (40%)"]);
+        // (The next beat carries them again: taken once; its answer drops them here.)
+        assert!(!beat_once(&x));
+        assert_eq!(noted(&c), ["on battery (40%)"]);
+        assert!(x.beats.notes_out(now_s()).is_none(), "the lead has them");
+        x.beats.note(ev("on mains power"), now_s());
+        assert!(!beat_once(&x));
+        assert_eq!(noted(&c), ["on battery (40%)", "on mains power"]);
+        // A restarted lead takes the old ones again never (its store has what it took).
+        c.stop();
+        drop(c);
+        let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
+        c.set_beats(Some(Arc::new(Beats::default())));
+        let again =
+            crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), X);
+        let a = again.pool_beat(&lost).unwrap().unwrap();
+        assert_eq!(noted(&c), ["on battery (40%)", "on mains power"], "loaded from its file, the old notes not again");
+        assert_eq!(a.noted.map(|n| n.n), Some(2), "what it took of this member, from its store");
+        // (A member before them: its beat has no notes, answered as before.)
+        let old = serde_json::json!({ "member": Y, "speaks": ["held-leases", "beat"], "held": [] });
+        let (code, v) = again.post_json("/pool/beat", &old).unwrap();
+        assert_eq!(code, 200);
+        assert!(v.get("noted").is_none() && v["speaks"].as_array().unwrap().iter().any(|w| w == "notes"));
         c.stop();
     }
 

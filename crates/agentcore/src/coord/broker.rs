@@ -76,6 +76,15 @@ impl Broker {
         self.c.set_member(member)
     }
 
+    /// Its history's events after number `seen` (all of them when its numbers went back: a broker
+    /// started again), and its last number: its jobs' tasks done or given back, which its agent
+    /// notes to the lead (crate::coord::notes).
+    pub fn history_since(&self, seen: u64) -> (u64, Vec<super::history::Event>) {
+        let s = self.c.shared.lock().unwrap();
+        let seq = s.history.seq();
+        (seq, s.history.since(if seq < seen { 0 } else { seen }, usize::MAX))
+    }
+
     /// A job's tasks closed as it ends (`owner`: its pid).
     pub fn close_tasks(&self, owner: u32) {
         self.c.close_tasks(owner)
@@ -165,4 +174,38 @@ impl Brokering {
 pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Broker, u16) {
     let (listener, port) = super::test_listener();
     (Broker::start_on(crate::agent::seam::for_tests(), dir, listener, me, app).unwrap(), port)
+}
+
+#[cfg(test)]
+impl Broker {
+    /// `e` in its history, as its jobs' tasks put them there.
+    pub(crate) fn note_for_test(&self, e: super::history::Event) -> u64 {
+        self.c.note(e)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::history::Event;
+    use super::*;
+
+    /// Task #1160: a member's broker keeps its history in memory alone (no file in its folder: its
+    /// agent notes its tasks to the lead, crate::coord::notes), handed out after a number, all of it
+    /// once its numbers went back (a broker started again).
+    #[test]
+    fn a_brokers_history_is_its_memory_handed_out_after_a_number() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let (b, _) = start_for_test(&dir, "m1", "");
+        let task = |w: &str| Event { worker: Some(w.into()), ..Event::new("task") };
+        let first = b.c.note(task("m1-1"));
+        b.c.note(task("m1-2"));
+        let (seq, evs) = b.history_since(0);
+        assert_eq!((seq, evs.len()), (first + 1, 2), "no start of its own: its agent notes that");
+        let (_, evs) = b.history_since(first);
+        assert_eq!(evs.iter().map(|e| e.worker.clone().unwrap()).collect::<Vec<_>>(), ["m1-2"]);
+        assert_eq!(b.history_since(seq + 50).1.len(), 2, "numbers gone back: all again");
+        assert!(!dir.join("history.jsonl").exists());
+        b.c.stop();
+    }
 }
