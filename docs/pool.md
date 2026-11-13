@@ -836,13 +836,42 @@ counts as any other process).
 - **Available** (`sys::memory_available`, `sys::Pages::available`; task #945): what macOS hands
   out at no cost, and what it frees by compressing other processes' idle memory with its pressure
   left normal.
-  - *At no cost:* the free pages, the file-backed pages (the file cache, dropped at once) and the
-    purgeable ones (`host_statistics64`): the Mac less what Activity Monitor calls Memory Used. A
+  - *At no cost:* the free pages, the file-backed pages (the file cache), the purgeable ones
+    (`host_statistics64`) and the reusable ones (`vm.page_reusable_count`, task #1215). A
     read-ahead's speculative pages are in both the kernel's free count and its file-backed count
     (file-backed + anonymous = active + inactive + speculative, to the page), so they come off the
     free, as `vm_stat` prints it. Never raw free pages (macOS keeps those near zero), and not
     `kern.memorystatus_level`: that counts every page neither wired nor compressed, apps' own pages
     in use among them, and read 60 % on the M4 at 01:10 on 4 Nov with 21 GB swapped.
+    - *Reusable pages* are anonymous memory a process freed and its allocator told the kernel it
+      no longer needs (malloc's `MADV_FREE_REUSABLE`): out of the process's footprint, still in
+      its resident size and in `vm_stat`'s anonymous pages (Activity Monitor's app memory), marked
+      clean, so the kernel's scan frees them as it reaches them, with nothing compressed. Counted
+      up to the anonymous pages not purgeable, and off the idle memory compressing is reckoned
+      on. On the Mac mini at 19:01 on 12 Nov, no job running: 5.5 GB of them (its agent's
+      resident size 6.1 GB, its footprint 1.6 GB; the agent started seven minutes later was at
+      6.5 GB resident within five minutes, its footprint never past 2.4), with 0.1 GB free, 7.6 GB
+      of file cache, 0.3 GB purgeable: 13.5 GB available, where the count without them (8.1 GB,
+      and 0.8 GB by compressing them as idle memory) kept jobs of 9.1–10.7 GB waiting.
+    - *Measured* (12 Nov, a program taking incompressible memory in steps, beside a process
+      holding 6 GB it had marked reusable): on the M1 (nothing free), of 1.3 GB taken 0.8 came out
+      of the reusable pages and 0.2 from compressing; on the M4 (three runs, the last two writing
+      to the memory taken all the while, as a job's working memory) the free pages went first
+      (10–23 GB), then the file cache down to 5.4 GB, then of the next 2–4 GB taken 1.7–3.6 GB out
+      of the reusable pages with 0.2–1.3 GB of other memory compressed: 23.5–25.1 GB in all, the
+      pressure normal, no swap.
+    - *Not all of it is handed out.* A GB further, macOS compressed the taking program's own
+      memory in bursts (5 GB, then 20 GB with the pressure at warning for a sample and 32 MB
+      swapped; decompressed within 5 s; 23 GB left compressed and the pressure at warning in the
+      run that wrote its memory once), while 10–17 GB was still counted available: the 5.4 GB of
+      file cache it kept (a ninth of the M4's memory, as on 4 Nov, below), 4 GB of the reusable
+      pages its scan hadn't reached, and 3–6 GB counted by compressing that was the taking
+      program's own memory (below: the kernel keeps its inactive queue as long as its active
+      one, whatever is in use, so a job's own memory fills the queue the idle memory is read
+      from). So near a floor under the cache macOS keeps (the Mac mini's 1 GB, the M4's 4 GB)
+      the last GBs counted come from compressing memory in use, and the brake is what stands
+      behind them. (Counting neither the kept cache nor a job's own memory as available: task
+      #1244, planned.)
   - *By compressing:* idle app memory macOS compresses cheaply counted as used made a 32 GB Mac
     mini at normal pressure show 6.2 GB available. The kernel's pressure follows its compressor:
     on the three Macs' live series (the 10 s ring, 2–4 Nov, the compressor's share of the memory
@@ -853,10 +882,13 @@ counts as any other process).
     pages not compressed, its way back at 1.2 times that). So the compressor may grow to two fifths of it
     (`sys::COMPRESSOR_NORMAL`) with the pressure normal; each page more holds what it holds now
     (its pages stored over its pages, the ratio), freeing ratio − 1. What it compresses is the
-    inactive anonymous memory: the inactive queue less every file-backed page not speculative
-    and the purgeable (the least it can be: the kernel doesn't split the queue), which frees
-    1 − 1/ratio of itself. Counted: the less of the two; none while the compressor holds nothing
-    (no ratio measured) or past two fifths. Read at 14:39 on 4 Nov, the pressure normal on each:
+    inactive anonymous memory: the inactive queue less every file-backed page not speculative,
+    the purgeable and the reusable (the least it can be: the kernel doesn't split the queue),
+    which frees 1 − 1/ratio of itself. Counted: the less of the two; none while the compressor
+    holds nothing (no ratio measured) or past two fifths. The inactive queue isn't only other
+    processes' idle memory: the kernel keeps it as long as the active one whatever is in use
+    (20.8 GB each on the M4 on 12 Nov with one program writing to 25 GB all the while), so a
+    job's own memory is counted there too (above, *Not all of it is handed out*). Read at 14:39 on 4 Nov, the pressure normal on each:
     the M4 6.8 GB at no cost and 3.5 by compressing (8.0 GB idle at 1.79), the Mac mini 6.1 and
     3.4 (5.1 idle at 3.0), the M1 3.0 and 1.3 (2.1 idle at 2.4); 3 GB of incompressible memory
     touched on the M4 then (in 512 MB steps, its jobs running) left the pressure normal and the
