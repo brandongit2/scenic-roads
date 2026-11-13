@@ -3,8 +3,12 @@
 its pieces, read as its `[[piece]]` blocks say, written beside a copy of it in --out/<theme>/.
 
 A reader per kind of service, none per source:
-  arcgis   an ArcGIS REST layer's features (`url`: the layer; `where`; paged by `page`)
-  stac     a STAC API collection's items (`url`: the collection; paged by its `next` links)
+  arcgis   an ArcGIS REST layer's features, or an ImageServer's catalogue (`url`: the layer;
+           `where`; paged by `page`), as GeoJSON or Esri JSON, whichever the layer answers
+  stac     a STAC API collection's items (`url`: the collection; paged by its `next` links), each
+           item's footprint or (`geometry`) the GeoJSON file of its asset of that name
+  atom     an ATOM download feed (`url`; `follow` the feeds it links): its files' `bbox`es, or its
+           entries' GeoRSS polygons and boxes
   wfs      a WFS feature type (`url`, `type`; `crs` where the answer doesn't name its own)
   file     an index file fetched whole (`url`; GeoJSON, or a zipped shapefile)
   listing  a listing of georeferenced names: `url` an S3 bucket (`prefix`), a page of links or a
@@ -32,6 +36,7 @@ import math
 import os
 import re
 import shutil
+import ssl
 import sys
 import time
 import tomllib
@@ -41,18 +46,22 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
 
+import certifi
 import pyproj
 import shapely
 import shapely.affinity
 import shapely.geometry as sg
 
 UA = "scenic-roads/0.1 (personal offline map)"
+# Mozilla's trust store (certifi's), not the system's file, which lacks roots some publishers chain to
+# (Quebec's: Sectigo's R46); verified as strictly.
+TLS = ssl.create_default_context(cafile=certifi.where())
 # What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): documented services and published files.
 FETCHES = "api, data"
 CLASSES = ("mask", "files", "index", "service", "claimed", "unknown")
 AVAILABILITY = ("open", "login", "paid", "closed")
 # The class a method's extents are; None: the declaration says (`class`).
-METHOD_CLASS = {"arcgis": None, "stac": "index", "wfs": None, "file": None, "listing": "index", "raster": "files", "none": "unknown"}
+METHOD_CLASS = {"arcgis": None, "stac": "index", "wfs": None, "file": None, "listing": "index", "raster": "files", "atom": "index", "none": "unknown"}
 M_PER_DEG = 111_320.0
 
 
@@ -102,7 +111,7 @@ class Fetcher:
             if wait > 0:
                 time.sleep(wait)
             try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180) as r:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180, context=TLS) as r:
                     n = r.headers.get("Content-Length")
                     if n and int(n) > self.left():
                         sys.exit(f"{url}: {int(n) / 1e6:.0f} MB, over what --max-gb leaves this source: not fetched")
@@ -212,36 +221,74 @@ class RangeFile:
 # ---- readers: each yields (geometry in `crs`, properties), and says its CRS ----
 
 def read_arcgis(net, b, tol_deg):
-    """An ArcGIS REST layer, as GeoJSON in WGS 84, generalised by the service."""
+    """An ArcGIS REST layer's features (a FeatureServer or MapServer layer, or an ImageServer's
+    catalogue), in WGS 84, generalised by the service: as GeoJSON where the layer offers it, as
+    Esri JSON otherwise (an ImageServer offers only that)."""
     layer = net.json(b["url"].rstrip("/") + "?f=json")
-    oid = layer.get("objectIdField") or "OBJECTID"
-    fields = sorted(wanted_fields(b)) or [oid]
-    page, off = int(b.get("page", 500)), 0
+    oid = layer.get("objectIdField") or next((f["name"] for f in layer.get("fields") or [] if f.get("type") == "esriFieldTypeOID"), "OBJECTID")
+    esri = "geojson" not in (layer.get("supportedQueryFormats") or "").lower()
+    fields = sorted(wanted_fields(b) | {oid})
+    page, last = int(b.get("page", 500)), None
     while True:
-        # (Ordered by the object id, so the pages hold the same features in the same order each run.)
-        q = {"where": b.get("where", "1=1"), "outFields": ",".join(fields), "outSR": "4326", "f": "geojson",
+        # (Paged by the object id, each page after the last one's: the same features in the same
+        # order each run, and no deep offsets, which a catalogue of 100,000 items times out on.)
+        where = b.get("where", "1=1") if last is None else f"({b.get('where', '1=1')}) AND {oid} > {last}"
+        q = {"where": where, "outFields": ",".join(fields), "outSR": "4326", "f": "json" if esri else "geojson",
              "returnGeometry": "true", "geometryPrecision": "6", "maxAllowableOffset": f"{tol_deg / 4:.7f}",
-             "orderByFields": oid, "resultOffset": str(off), "resultRecordCount": str(page)}
+             "orderByFields": oid, "resultRecordCount": str(page)}
         d = net.json(b["url"].rstrip("/") + "/query?" + urllib.parse.urlencode(q))
         if "error" in d:
             sys.exit(f"{b['url']}: {d['error']}")
         feats = d.get("features") or []
         for f in feats:
-            if f.get("geometry"):
-                yield sg.shape(f["geometry"]), f.get("properties") or {}
-        off += len(feats)
+            props = f.get("attributes" if esri else "properties") or {}
+            g = esri_shape(f.get("geometry")) if esri else (sg.shape(f["geometry"]) if f.get("geometry") else None)
+            if g is not None:
+                yield g, props
+        if not feats:
+            return
+        ids = [(f.get("attributes" if esri else "properties") or {}).get(oid, f.get("id")) for f in feats]
+        if None in ids or len(set(ids)) < len(ids):
+            # (A joined layer's rows share their table's id: paging by it would skip rows.)
+            sys.exit(f"{b['url']}: its features' {oid} isn't one each: can't page by it")
+        last = max(ids)
         more = d.get("exceededTransferLimit") or (d.get("properties") or {}).get("exceededTransferLimit")
-        if not feats or (len(feats) < page and not more):
+        if len(feats) < page and not more:
             return
 
 
+def esri_shape(g):
+    """An Esri JSON polygon as a shapely one: its rings by the even-odd rule (each ring flips what it
+    encloses), so exteriors and holes need no telling apart by their winding."""
+    if not g or not g.get("rings"):
+        return None
+    out = None
+    for r in g["rings"]:
+        if len(r) < 4:
+            continue
+        p = shapely.make_valid(sg.Polygon([c[:2] for c in r]))
+        out = p if out is None else out.symmetric_difference(p)
+    return None if out is None or out.is_empty else polygons(out)
+
+
 def read_stac(net, b, _tol):
+    """A STAC collection's items: each item's footprint, or with `geometry` the GeoJSON file its
+    asset of that name is (a finer outline than the item's own, where a publisher gives one)."""
     url = b["url"].rstrip("/") + "/items?limit=" + str(b.get("page", 500))
     while url:
         d = net.json(url)
         for f in d.get("features") or []:
-            if f.get("geometry"):
-                yield sg.shape(f["geometry"]), {**(f.get("properties") or {}), "id": f.get("id"), "collection": f.get("collection")}
+            props = {**(f.get("properties") or {}), "id": f.get("id"), "collection": f.get("collection")}
+            asset = (f.get("assets") or {}).get(b["geometry"]) if b.get("geometry") else None
+            if asset:
+                g = json.loads(net.get(asset["href"]))
+                parts = [sg.shape(x["geometry"]) for x in (g.get("features") or [g]) if x.get("geometry")]
+                if parts:
+                    # (In WGS 84 like the items' own footprints, whatever CRS the file names.)
+                    shape = shapely.union_all([polygons(shapely.make_valid(x)) for x in parts])
+                    yield (to_wgs84(shape, answer_crs(g), 20.0) if answer_crs(g) else shape), props
+            elif f.get("geometry"):
+                yield sg.shape(f["geometry"]), props
         url = next((l["href"] for l in d.get("links") or [] if l.get("rel") == "next"), None)
 
 
@@ -301,6 +348,46 @@ def read_file(net, b, _tol):
             yield xy(sg.shape(f["geometry"]), b), f.get("properties") or {}
 
 
+ATOM = "{http://www.w3.org/2005/Atom}"
+GEORSS = "{http://www.georss.org/georss}"
+
+
+def read_atom(net, b, _tol):
+    """An ATOM download feed (an INSPIRE download service's): each file it links (`rel="section"`,
+    or any non-feed link) with its own `bbox` attribute (west south east north), else each entry's
+    GeoRSS polygon or box (latitude first, as GeoRSS writes them). `follow = true` reads the
+    feeds its entries link (`type="application/atom+xml"`) too, each once. A file's properties: its
+    entry's `title`, `updated` and `id`, and its own `href`, `title` and `length`."""
+    todo, seen = [b["url"]], set()
+    while todo:
+        url = todo.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        feed = ET.fromstring(net.get(url))
+        for e in feed.iter(ATOM + "entry"):
+            entry = {k: e.findtext(ATOM + k) for k in ("title", "updated", "id")}
+            boxed = False
+            for l in e.iter(ATOM + "link"):
+                kind = l.get("type") or ""
+                if "atom" in kind:
+                    if b.get("follow"):
+                        todo.append(l.get("href"))
+                    continue
+                if l.get("bbox"):
+                    w, s, east, n = (float(v) for v in l.get("bbox").split())
+                    boxed = True
+                    yield sg.box(w, s, east, n), {**entry, "href": l.get("href"), "link_title": l.get("title"), "length": l.get("length")}
+            if boxed:
+                continue
+            for p in e.iter(GEORSS + "polygon"):
+                v = [float(x) for x in p.text.split()]
+                yield sg.Polygon(list(zip(v[1::2], v[0::2]))), entry
+            for p in e.iter(GEORSS + "box"):
+                s, w, n, east = (float(x) for x in p.text.split())
+                yield sg.box(w, s, east, n), entry
+
+
 def listed_names(net, b):
     kind = b.get("list", "s3")
     if kind == "s3":
@@ -356,7 +443,12 @@ def read_listing(net, b, _tol):
 
 
 def raster_files(net, b):
-    """A raster piece's files: its `urls`, or a STAC collection's (`stac`) items' asset (`asset`)."""
+    """A raster piece's files: its `urls`, a listing's names (`list`, as `listing` reads one) that
+    `pattern` matches, each taken relative to `url` (a bucket's keys to the bucket), or a STAC
+    collection's (`stac`) items' asset (`asset`)."""
+    if "list" in b:
+        base = b["url"].rstrip("/") + "/"
+        return sorted({urllib.parse.urljoin(base, n) for n in listed_names(net, b) if re.search(b["pattern"], n)})
     if "stac" not in b:
         return b["urls"]
     url, out = b["stac"].rstrip("/") + "/items?limit=500", []
@@ -397,7 +489,7 @@ def read_raster(net, b, _tol):
                 yield to_wgs84(geom, ds.crs.to_wkt(), abs(tr.a)), {"res_m": round(res, 4)}
 
 
-READERS = {"arcgis": read_arcgis, "stac": read_stac, "wfs": read_wfs, "file": read_file, "listing": read_listing, "raster": read_raster}
+READERS = {"arcgis": read_arcgis, "stac": read_stac, "wfs": read_wfs, "file": read_file, "listing": read_listing, "raster": read_raster, "atom": read_atom}
 
 
 # ---- from features to pieces ----
@@ -407,13 +499,24 @@ def wanted_fields(b):
     if b.get("name"):
         out.add(b["name"])
     for m in (b.get("metrics") or {}).values():
-        if isinstance(m, dict):
-            out.add(m["field"])
+        for r in m if isinstance(m, list) else [m]:
+            if isinstance(r, dict):
+                out.add(r["field"])
     return out
 
 
 def metric(spec, props):
-    """(value or None, the publisher's class or None) of a metric's declaration on a feature."""
+    """(value or None, the publisher's class or None) of a metric's declaration on a feature: a
+    constant, a reading, or a list of readings, the first giving a value (a field the publisher
+    fills only sometimes, then another)."""
+    if isinstance(spec, list):
+        stated = None
+        for s in spec:
+            v, cl = metric(s, props)
+            if v is not None:
+                return v, cl
+            stated = stated or cl
+        return None, stated
     if not isinstance(spec, dict):
         return spec, None
     v = props.get(spec["field"])
@@ -433,8 +536,9 @@ def metric(spec, props):
             return None, None
         return (years[0] if how == "iso" else max(years)), None
     if "text" in spec:
-        # A number written with its unit ("2 metre"): the unit must be the one declared.
-        m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(\w+)\s*", str(v))
+        # A number written with its unit ("2 metre", "10 pts/m2", "0.35m (spec)": a remark in
+        # brackets after it kept out): the unit must be the one declared.
+        m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([^\s(]+)\s*(?:\([^)]*\))?\s*", str(v))
         if not m or not m.group(2).lower().startswith(spec["text"].lower()):
             return None, str(v)
         v = m.group(1)
@@ -571,7 +675,9 @@ def block_pieces(net, decl, b, today):
         n += 1
         by = tuple(str(props.get(k)) for k in b.get("by", []))
         ms = {k: metric(s, props) for k, s in specs.items()}
-        varying = tuple((k, ms[k][0]) for k in sorted(specs) if isinstance(specs[k], dict))
+        # (A metric's reading: its value and the publisher's class, so a piece's `stated` is all its
+        # features'.)
+        varying = tuple((k, *ms[k]) for k in sorted(specs) if isinstance(specs[k], (dict, list)))
         g = groups.setdefault((by, varying), {"geoms": [], "ms": ms, "name": props.get(b["name"]) if b.get("name") else b.get("label")})
         g["geoms"].append(geom)
     crs = b.get("crs", "OGC:CRS84")
@@ -595,7 +701,7 @@ def block_pieces(net, decl, b, today):
             continue
         pid = "/".join([b["id"], *by])
         if shared[by] > 1:
-            pid = "/".join([pid, *(f"{k}={v}" for k, v in varying if v is not None)])
+            pid = "/".join([pid, *(f"{k}={v if cl is None else cl}" for k, v, cl in varying if (v, cl) != (None, None))])
         props = {"piece": pid}
         if g["name"]:
             props["name"] = str(g["name"])

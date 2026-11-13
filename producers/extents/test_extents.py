@@ -1,5 +1,6 @@
 """extents.py's own rules, with no network: the metrics' readings, a piece's making, the
 antimeridian and the poles, a listing's names, the range reader."""
+import json
 import math
 import os
 import random
@@ -36,6 +37,9 @@ class FakeNet:
 
     def length(self, url):
         return self.lengths[url]
+
+    def json(self, url):
+        return json.loads(self.get(url))
 
 
 def area_km2(g):
@@ -85,6 +89,23 @@ class Metrics(unittest.TestCase):
 
     def test_a_point_density_is_its_nominal_spacing(self):
         self.assertEqual(extents.metric({"field": "ppsm", "density": True}, {"ppsm": 4})[0], 0.5)
+        # Written with its unit, as Quebec's index has it.
+        self.assertEqual(extents.metric({"field": "d", "text": "pts", "density": True}, {"d": "4 pts/m2"})[0], 0.5)
+
+    def test_a_remark_after_the_unit_is_left_out(self):
+        spec = {"field": "s", "text": "m"}
+        self.assertEqual(extents.metric(spec, {"s": "0.35m (spec)"}), (0.35, None))
+        self.assertEqual(extents.metric(spec, {"s": "0.28 m "}), (0.28, None))
+        self.assertEqual(extents.metric(spec, {"s": "Topo 1 m, Bathy 5 m"}), (None, "Topo 1 m, Bathy 5 m"))
+
+    def test_readings_in_turn_the_first_with_a_value(self):
+        spec = [{"field": "id", "date": "text"}, {"field": "datetime", "date": "iso"}]
+        self.assertEqual(extents.metric(spec, {"id": "ON-Lake_Huron_2022-1m", "datetime": "2023-06-10T12:00:00Z"})[0], 2022)
+        self.assertEqual(extents.metric(spec, {"id": "AAFC-Admiral-1m", "datetime": "2012-04-17T12:00:00Z"})[0], 2012)
+        self.assertEqual(extents.metric(spec, {"id": "AAFC-Admiral-1m"}), (None, None))
+        # A class kept as stated survives a later reading's lack of a value.
+        self.assertEqual(extents.metric([{"field": "q", "map": {"QL 1": 0.1}}, {"field": "x"}], {"q": "Other"}), (None, "Other"))
+        self.assertEqual(extents.wanted_fields({"metrics": {"year": spec, "surface": "ground"}}), {"id", "datetime"})
 
 
 class Score(unittest.TestCase):
@@ -226,6 +247,14 @@ class Pieces(unittest.TestCase):
         self.assertEqual(reads[0]["features"], 3)
         self.assertEqual(reads[0]["tolerance_m"], 50)
 
+    def test_classes_of_one_value_are_pieces_apart_each_stating_its_own(self):
+        feats = [(sg.box(0, 0, 1, 1), {"ql": "QL 1"}), (sg.box(3, 0, 4, 1), {"ql": "QL 2"}), (sg.box(6, 0, 7, 1), {"ql": "Other"})]
+        block = {"id": "l", "method": "fake", "class": "index", "url": "u",
+                 "metrics": {"vertical_rmse_m": {"field": "ql", "map": {"QL 1": 0.1, "QL 2": 0.1}}}}
+        pieces, _ = self.run_block(block, feats)
+        got = sorted((p["properties"]["piece"], p["properties"].get("vertical_rmse_m"), p["properties"]["stated"]["vertical_rmse_m"]) for p in pieces)
+        self.assertEqual(got, [("l/vertical_rmse_m=Other", None, "Other"), ("l/vertical_rmse_m=QL 1", 0.1, "QL 1"), ("l/vertical_rmse_m=QL 2", 0.1, "QL 2")])
+
     def test_a_name_is_one_of_the_fields_a_piece_is_told_apart_by(self):
         block = {"id": "p", "method": "fake", "class": "index", "url": "u", "name": "project"}
         with self.assertRaises(SystemExit):
@@ -258,6 +287,97 @@ class Listing(unittest.TestCase):
         net = FakeNet({"u": b"LHD_FXX_0371_6389_MNT.tif"})
         b = {"url": "u", "list": "lines", "pattern": r"_(?P<x>\d{4})_(?P<y>\d{4})_", "unit": 1000, "size": 1000, "corner": "nw"}
         self.assertEqual([g.bounds for g, _ in extents.read_listing(net, b, 0)], [(371000.0, 6388000.0, 372000.0, 6389000.0)])
+
+
+class ArcGIS(unittest.TestCase):
+    LAYER = "https://h/rest/services/X/ImageServer"
+
+    def query(self, where, fmt):
+        q = {"where": where, "outFields": "Name,OBJECTID", "outSR": "4326", "f": fmt, "returnGeometry": "true",
+             "geometryPrecision": "6", "maxAllowableOffset": f"{50 / extents.M_PER_DEG / 4:.7f}",
+             "orderByFields": "OBJECTID", "resultRecordCount": "2"}
+        return self.LAYER + "/query?" + extents.urllib.parse.urlencode(q)
+
+    def test_an_image_servers_catalogue_reads_as_esri_json_paged_by_object_id(self):
+        ring = lambda x: [[x, 0], [x, 1], [x + 1, 1], [x + 1, 0], [x, 0]]
+        # The second item has a hole (Esri JSON: exterior clockwise, the hole counter-clockwise).
+        hole = [[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75], [0.25, 0.25]]
+        page1 = {"features": [{"attributes": {"OBJECTID": 3, "Name": "a"}, "geometry": {"rings": [ring(0)]}},
+                              {"attributes": {"OBJECTID": 7, "Name": "b"}, "geometry": {"rings": [ring(2), [[2 + x, y] for x, y in hole]]}}],
+                 "exceededTransferLimit": True}
+        page2 = {"features": [{"attributes": {"OBJECTID": 9, "Name": "c"}, "geometry": None}]}
+        net = FakeNet({
+            self.LAYER + "?f=json": b'{"fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}], "capabilities": "Image,Catalog"}',
+            self.query("Category = 1", "json"): json.dumps(page1).encode(),
+            self.query("(Category = 1) AND OBJECTID > 7", "json"): json.dumps(page2).encode(),
+        })
+        b = {"url": self.LAYER, "where": "Category = 1", "page": 2, "name": "Name", "by": ["Name"]}
+        got = list(extents.read_arcgis(net, b, 50 / extents.M_PER_DEG))
+        self.assertEqual([p["Name"] for _, p in got], ["a", "b"])
+        self.assertAlmostEqual(got[0][0].area, 1.0)
+        self.assertAlmostEqual(got[1][0].area, 0.75)
+        self.assertFalse(got[1][0].contains(sg.Point(2.5, 0.5)))
+
+    def test_a_layer_offering_geojson_is_read_as_geojson(self):
+        net = FakeNet({
+            self.LAYER + "?f=json": b'{"objectIdField": "OBJECTID", "supportedQueryFormats": "JSON, geoJSON"}',
+            self.query("1=1", "geojson"): b'{"features": [{"id": 1, "properties": {"OBJECTID": 1, "Name": "a"}, "geometry": {"type": "Polygon", "coordinates": [[[0,0],[1,0],[1,1],[0,0]]]}}]}',
+        })
+        got = list(extents.read_arcgis(net, {"url": self.LAYER, "page": 2, "name": "Name", "by": ["Name"]}, 50 / extents.M_PER_DEG))
+        self.assertEqual([p["Name"] for _, p in got], ["a"])
+
+
+class Atom(unittest.TestCase):
+    TOP = b"""<feed xmlns="http://www.w3.org/2005/Atom" xmlns:georss="http://www.georss.org/georss">
+      <entry><title>DTM 0.5 m</title><id>d</id><updated>2023-04-12T00:00:00Z</updated>
+        <link href="https://h/sub.xml" rel="alternate" type="application/atom+xml"/>
+        <link href="https://h/a.tif" rel="section" type="image/tiff" length="10" title="sheet a" bbox="5.5 53.4 5.6 53.5"/>
+        <georss:polygon>50 3 50 7 54 7 54 3 50 3</georss:polygon>
+      </entry>
+      <entry><title>no files</title><updated>2021-01-01T00:00:00Z</updated>
+        <georss:polygon>50 3 50 4 51 4 51 3 50 3</georss:polygon>
+      </entry>
+    </feed>"""
+    SUB = b"""<feed xmlns="http://www.w3.org/2005/Atom" xmlns:georss="http://www.georss.org/georss">
+      <entry><title>zone</title><updated>2024-05-01T00:00:00Z</updated><georss:box>45 -73 46 -72</georss:box>
+        <link href="https://h/top.xml" rel="up" type="application/atom+xml"/></entry>
+    </feed>"""
+
+    def test_files_by_their_bbox_entries_by_their_polygon_and_feeds_followed_once(self):
+        net = FakeNet({"https://h/top.xml": self.TOP, "https://h/sub.xml": self.SUB})
+        got = list(extents.read_atom(net, {"url": "https://h/top.xml", "follow": True}, 0))
+        self.assertEqual([g.bounds for g, _ in got], [(5.5, 53.4, 5.6, 53.5), (3.0, 50.0, 4.0, 51.0), (-73.0, 45.0, -72.0, 46.0)])
+        self.assertEqual(got[0][1]["href"], "https://h/a.tif")
+        self.assertEqual(got[0][1]["updated"], "2023-04-12T00:00:00Z")
+        self.assertEqual(got[2][1]["title"], "zone")
+        self.assertEqual(net.requests, 2)
+        # Not followed unless the declaration says.
+        self.assertEqual(len(list(extents.read_atom(FakeNet({"https://h/top.xml": self.TOP}), {"url": "https://h/top.xml"}, 0))), 2)
+
+
+class StacAssets(unittest.TestCase):
+    def test_an_items_footprint_from_its_asset(self):
+        items = {"features": [
+            {"id": "p-1m", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [9, 0], [9, 9], [0, 0]]]},
+             "assets": {"extent": {"href": "https://h/p-extent.geojson"}}},
+            {"id": "q-1m", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[20, 0], [21, 0], [21, 1], [20, 0]]]}, "assets": {}}],
+            "links": []}
+        net = FakeNet({"https://h/c/items?limit=500": json.dumps(items).encode(),
+                       "https://h/p-extent.geojson": b'{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[0,0],[1,0],[1,1],[0,1],[0,0]]]}}'})
+        got = list(extents.read_stac(net, {"url": "https://h/c", "geometry": "extent"}, 0))
+        self.assertEqual([(p["id"], g.bounds) for g, p in got], [("p-1m", (0.0, 0.0, 1.0, 1.0)), ("q-1m", (20.0, 0.0, 21.0, 1.0))])
+
+
+class RasterFiles(unittest.TestCase):
+    def test_a_buckets_files_by_their_names(self):
+        listing = b"""<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>raster</Name>
+          <Contents><Key>Haiti_16/Haiti_16_be.vrt</Key></Contents>
+          <Contents><Key>Haiti_16/Haiti_16_be/Haiti_651800_2063900.tif</Key></Contents>
+          <Contents><Key>Haiti_16/Haiti_16_be/Haiti_651800_2073900.tif</Key></Contents></ListBucketResult>"""
+        net = FakeNet({"https://h/raster/?list-type=2&prefix=Haiti_16%2FHaiti_16_be%2F": listing})
+        b = {"url": "https://h/raster", "list": "s3", "prefix": "Haiti_16/Haiti_16_be/", "pattern": r"\.tif$"}
+        self.assertEqual(extents.raster_files(net, b), ["https://h/raster/Haiti_16/Haiti_16_be/Haiti_651800_2063900.tif",
+                                                        "https://h/raster/Haiti_16/Haiti_16_be/Haiti_651800_2073900.tif"])
 
 
 class Ranges(unittest.TestCase):

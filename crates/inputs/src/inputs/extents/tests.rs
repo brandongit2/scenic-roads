@@ -292,6 +292,9 @@ fn a_declaration() {
         ("{ field = \"spacing\",", "{ field = \"spacing\", index = -1,"),
         ("url = \"https", "tolerance_m = 0\nurl = \"https"),
         ("url = \"https", "filter = { year = 2020 }\nurl = \"https"),
+        ("{ field = \"year\", date = \"year\" }", "[]"),
+        ("{ field = \"year\", date = \"year\" }", "[{ field = \"year\", date = \"year\" }, 2020]"),
+        ("{ field = \"year\", date = \"year\" }", "[{ field = \"year\", date = \"julian\" }]"),
     ] {
         let bad = DECL.replacen(from, to, 1);
         assert_ne!(bad, DECL);
@@ -309,6 +312,15 @@ fn a_declaration() {
     let claimed =
         DECL.replacen("method = \"arcgis\"\nclass = \"index\"", "method = \"listing\"\nclass = \"claimed\"", 1);
     assert!(checks_of("terrain/lidar.toml", claimed.as_bytes()).is_empty());
+    // Readings in turn, and the ATOM reader's class fixed as an index.
+    let turns = DECL.replacen(
+        "{ field = \"year\", date = \"year\" }",
+        "[{ field = \"name\", date = \"text\" }, { field = \"datetime\", date = \"iso\" }]",
+        1,
+    );
+    assert!(checks_of("terrain/lidar.toml", turns.as_bytes()).is_empty());
+    let atom = DECL.replacen("method = \"arcgis\"\nclass = \"index\"", "method = \"atom\"", 1);
+    assert!(checks_of("terrain/lidar.toml", atom.as_bytes()).is_empty());
     // The theme: missing, unknown, or not its folder's.
     assert_eq!(
         checks_of("terrain/lidar.toml", DECL.replacen("theme = \"terrain\"\n", "", 1).as_bytes()),

@@ -1907,7 +1907,7 @@ small.
 | `piece.by` | fields a piece is told apart by: features sharing their values, and every metric's reading, are dissolved into one piece (none: a piece per distinct reading of the metrics) |
 | `piece.name`, `piece.label` | the field a piece's `name` is read from (one of `by`, so the features of a piece share it), or the name itself |
 | `piece.tolerance_m` | the simplification, default 50 |
-| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`: the unit's word, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, or `text`, the last year a name holds, alone or opening a compact date, `20240315`; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS) |
+| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, or `text`, the last year a name holds, alone or opening a compact date, `20240315`; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
 | `piece.dataset` | planned (docs/steps.md §14): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
@@ -1915,16 +1915,18 @@ a new source of a kind it knows is a new declaration, no code):
 
 | `method` | Reads | Class |
 |---|---|---|
-| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`, paged in the order of the layer's object id, in WGS 84, generalised by the service to a quarter of the piece's tolerance) | `index` or `service` |
-| `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links), their footprints and properties | `index` |
+| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on; a layer whose rows share an id, a join, is refused), in WGS 84, generalised by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it, as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
+| `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
+| `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once): each file it links with its own `bbox`, else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
 | `wfs` | a WFS feature type (GetFeature as GeoJSON, paged; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
 | `file` | a published index file fetched whole (GeoJSON, read as `wfs`'s answers are, or a zipped shapefile: `member` names one of several), its size checked first | `index` or `service` |
 | `listing` | a bucket's listing, a page's links or a text file of names (`list`), each name georeferenced by a declared `pattern` (its groups `x`, `y`, and `ew`, `ns`; `unit`, `size`, `corner`, `crs`) | `index` |
-| `raster` | each file's header and an overview by range request (`urls`, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution); the overview's pixel is the piece's `grain_m` | `files` |
+| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution); the overview's pixel is the piece's `grain_m` | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
-Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, the
-provider's 429s and 5xx retried (four tries, waiting longer each time), and a limit on what one source's reads come to (`--max-gb`, 5,
+Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, TLS
+verified against Mozilla's trust store (certifi's: the system's file lacks roots some publishers chain
+to, Quebec's), the provider's 429s and 5xx retried (four tries, waiting longer each time), and a limit on what one source's reads come to (`--max-gb`, 5,
 the owner's of 13 Nov; cached answers count: a source over it stops the run, never a silent bulk
 download). Headers, indexes and overviews come first; a source's data is read whole only where
 that's the only way to its extent and the source is small. No fetch waits for a go-ahead; a run

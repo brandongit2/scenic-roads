@@ -51,13 +51,14 @@ pub const AVAILABILITY: [&str; 4] = ["open", "login", "paid", "closed"];
 
 /// The producer's readers and the class each one's extents are (None: the block says, `index`,
 /// `service` or `claimed`).
-pub const METHODS: [(&str, Option<&str>); 7] = [
+pub const METHODS: [(&str, Option<&str>); 8] = [
     ("arcgis", None),
     ("stac", Some("index")),
     ("wfs", None),
     ("file", None),
     ("listing", Some("index")),
     ("raster", Some("files")),
+    ("atom", Some("index")),
     ("none", Some("unknown")),
 ];
 
@@ -586,7 +587,7 @@ pub struct Block {
     pub extent: String,
     /// Its own availability, or the declaration's.
     pub availability: String,
-    /// Its metrics' declarations: a constant, or a reading (`{field = …}`).
+    /// Its metrics' declarations: a constant, a reading (`{field = …}`) or a list of readings.
     pub metrics: toml::Table,
 }
 
@@ -601,7 +602,7 @@ impl Block {
         if p.availability != self.availability {
             why.push(format!("availability {}, its block's {}", p.availability, self.availability));
         }
-        for (name, spec) in self.metrics.iter().filter(|(_, s)| !s.is_table()) {
+        for (name, spec) in self.metrics.iter().filter(|(_, s)| !s.is_table() && !s.is_array()) {
             let want = serde_json::to_value(spec).unwrap_or(Value::Null);
             let same = |got: &Value| match (got.as_f64(), want.as_f64()) {
                 (Some(a), Some(b)) => a == b,
@@ -778,6 +779,19 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
                     for (name, spec) in m {
                         if let Some(r) = spec.as_table() {
                             reading(&id, name, r, &mut bad);
+                        } else if let Some(rs) = spec.as_array() {
+                            // (Readings in turn, the first giving a value.)
+                            if rs.is_empty() {
+                                bad.push(format!("piece {id}: metrics.{name}: an empty list of readings"));
+                            }
+                            for r in rs {
+                                match r.as_table() {
+                                    Some(r) => reading(&id, name, r, &mut bad),
+                                    None => bad.push(format!(
+                                        "piece {id}: metrics.{name}: a list holds readings ({{field = …}}) only"
+                                    )),
+                                }
+                            }
                         }
                     }
                     m.clone()
@@ -1056,11 +1070,15 @@ fn about_pieces(check: &str, level: Level, files: &[&str], ls: &[(usize, String,
 /// of its scale's kind), or None.
 fn declared_kind(m: &Metric, spec: &toml::Value) -> Option<String> {
     let json = |v: &toml::Value| serde_json::to_value(v).unwrap_or(Value::Null);
-    match spec.as_table() {
-        None => m.scale.refuses(&json(spec)),
-        Some(r) => r.get("map").and_then(|x| x.as_table()).and_then(|map| {
+    let mapped = |r: &toml::Table| {
+        r.get("map").and_then(|x| x.as_table()).and_then(|map| {
             map.iter().find_map(|(k, v)| m.scale.refuses(&json(v)).map(|why| format!("its map's {k:?}: {why}")))
-        }),
+        })
+    };
+    match (spec.as_table(), spec.as_array()) {
+        (Some(r), _) => mapped(r),
+        (None, Some(rs)) => rs.iter().filter_map(|r| r.as_table()).find_map(mapped),
+        (None, None) => m.scale.refuses(&json(spec)),
     }
 }
 
