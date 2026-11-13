@@ -34,7 +34,11 @@ The app compiles this source with its own code; there is no separate build or `d
 - Render tests: `tools/fetch-upstream-tests.sh`, `pnpm run build-dev`, then `pnpm exec vitest run
   test/integration/render/render.test.ts -t <filter>`. Our cases are in
   `test/integration/render/tests/scenic/` (lifted lines across tile seams, a see-through sea
-  surface, the globe's pole, `sea`-anchored labels, the `drape` hook and `sceneDepth`).
+  surface, the globe's pole, `sea`-anchored labels, the `drape` hook and `sceneDepth`, and
+  `text-shaping/`: names in sixteen scripts and along a line, each drawn from a Noto font pinned
+  in this package's devDependencies through `font-faces`, so the images don't depend on the
+  Mac's fonts; they cover the cutting into units, the wide canvases and the placement, not the
+  choice between the page's fonts and the glyphs URL, which `glyph_manager.test.ts` covers).
 - `test/scenic/demo.html?case=custom|lines|water|rasterwater` shows the features on the app's
   terrain.
 
@@ -111,10 +115,54 @@ height (`web/src/bldfield.ts`'s `terrainKey`) read `map.terrain.exaggeration`.
 - **Trilinear mipmaps** (`draw_raster.ts`): a raster source with `"scenic:mipmap": "linear"`
   minifies between mipmap levels (the app's water).
 
+### Labels in scripts that need shaping
+
+Upstream cuts a label into grapheme clusters (`util/graphemes.ts`: `Intl.Segmenter`, corrected by
+`canCombineGraphemes`) and has the browser's text engine draw each cluster of several codepoints
+into the glyph atlas (`glyph_manager.ts`, TinySDF), so a conjunct, a vowel sign written before or
+around its consonant and a stack of marks are shaped inside their cluster; single codepoints come
+from the glyphs URL. Placement, collision, halos, fades and line labels see one glyph a cluster.
+What this fork changes (`build/generate-unicode-data.ts` generates the tables):
+
+- **Every cluster of such a script is drawn on the page** (`codePointNeedsShaping`: the scripts
+  with vowel signs that attach to a consonant, which are the Indic scripts, Thai, Lao, Tibetan,
+  Khmer, Myanmar and their relatives, and the scripts written joined up other than Arabic), its
+  single letters too, never fetched: upstream drew a name partly from the served font and partly
+  from the page's, in two typefaces and weights (Thai, Lao, Sinhala, Tamil), and where the served
+  range lacks the script its single letters were missing (Odia, Tibetan: only the clusters showed;
+  Mongolian: nothing). The tile asks for such a cluster whole and not for its codepoints as well
+  (`symbol_bucket.ts`). These letters are drawn on the clusters' wide canvas (`drawnWide`).
+- **A virama that joins, joins** (`canCombineGraphemes`): a cluster ending in a virama that writes
+  its consonant joined to the next letter is one unit with it, in every script that has one
+  (Unicode's Indic_Syllabic_Category=Virama, but Tamil's and Sinhala's, which only kill the
+  vowel; Tamil's two conjuncts, `க்ஷ` and `ஸ்ரீ`, are named). `Intl.Segmenter` does that for six
+  scripts only (rule GB9c), and only where the browser's ICU knows the rule: Kannada and Gurmukhi
+  conjuncts came apart with the virama showing.
+- **A word of a joined-up script is one unit** (Mongolian, Syriac, N'Ko, …; not Arabic, which
+  MapLibre joins through its presentation forms): its letters take their shapes from their
+  neighbours, which the text engine only gives them when it draws them together. Along a line such
+  a word is one straight glyph.
+- **A cluster wider than its canvas gets a wider one** (`emsWideFor`, up to 12 font sizes): it was
+  cut off at three.
+- **A glyph's top of exactly 0 is kept** (upstream's `|| -8` set it 8 px down: Thai `น้ำ` and `ที่`
+  sat under their line).
+- **A character the served range lacks is drawn on the page** (`_downloadAndCacheRangePromise`),
+  as one of a range that failed to load is; upstream drew nothing. Characters that draw nothing
+  (controls, format characters, line separators, unassigned and private-use codepoints) stay
+  unavailable.
+
+The typeface of what is drawn on the page is the browser's own for the script (the stack's name
+gives the weight and style), not the served Noto Sans. Known gaps: nothing is shaped across units
+(no kerning between clusters; an Arabic letter with a vowel mark is a cluster drawn in the page's
+font beside neighbours from the served one, with visible joins; no Arabic ligatures beyond
+lam-alef); the app's polar labels (`web/src/polarlabels.ts`) lay a name out a codepoint at a time.
+
 - **Local glyphs drawn in slices** (`glyph_manager.ts`, `GLYPH_SLICE_MS`): glyphs drawn with
   TinySDF (CJK, clusters, `font-faces`) run at most 4 ms of the main thread at a time, the rest in
   later tasks; a city's CJK labels drew 300–600 ms of glyphs in one task. The labels come a frame or
-  two later.
+  two later. `GlyphManager#waiting()` is the number queued (the app's status line). Nothing else
+  may queue `_drawGlyph`'s calls in front of it: a glyph asked for while it waits shares its draw
+  (`Entry.drawing`) only from inside.
 
 - **Raster tiles in Safari as bytes** (`raster_tile_source.ts`, `util/png_rgba.ts`): Safari reads an
   ImageBitmap back on the main thread to upload it (~2.8 ms a 512 px tile on an M1 Pro), so there a
@@ -353,6 +401,8 @@ on a 3D sea floor, with `symbol-height-anchor: sea` for their labels.
 `terrain/fill-extrusion-multipolygon`, `symbol-height-anchor/sea`), and the tile zoom by depth
 (`high-pitch/terrain-pitch95`, `field-of-view-number`, `fog-sky-blend-globe`, `heatmap`,
 `image-projective`, `occlusion-debug`, `rtt-mipmap-minification/pitch-70`,
-`symbol-height-anchor-*`, `symbol-height-offset-building`, `tile-stiching`). Every other upstream
+`symbol-height-anchor-*`, `symbol-height-offset-building`, `tile-stiching`), and a Khmer name
+drawn wholly from the Mac's font (`regressions/mapbox-gl-native#11729`: its single letters came
+from the test's served font; the image depends on the Mac's Khmer font). Every other upstream
 case passes, but under heavy load a few terrain cases flake on timing, and on Apple silicon four
 `text-local-*` cases fail on system fonts, as upstream's own build does.

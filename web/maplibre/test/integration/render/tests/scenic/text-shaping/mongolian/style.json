@@ -1,0 +1,70 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 440,
+      "height": 128,
+      "description": "mongolian: names shaped as written (conjuncts, vowel signs, stacks, joined letters), every cluster from the pinned font, with a halo"
+    }
+  },
+  "center": [
+    0,
+    0
+  ],
+  "zoom": 0,
+  "sources": {
+    "text": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            0,
+            0
+          ]
+        }
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "text",
+      "type": "symbol",
+      "source": "text",
+      "layout": {
+        "text-field": "ᠬᠥᠬᠡᠬᠣᠲᠠ ᠮᠣᠩᠭᠣᠯ\nᠤᠯᠠᠭᠠᠨᠪᠠᠭᠠᠲᠤᠷ",
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-size": 24,
+        "text-max-width": 30,
+        "text-line-height": 1.6
+      },
+      "paint": {
+        "text-color": "black",
+        "text-halo-color": "#7cc4ff",
+        "text-halo-width": 2
+      }
+    }
+  ],
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
+  "font-faces": {
+    "Noto Sans Regular": [
+      {
+        "url": "local://fonts/noto-sans-mongolian/files/noto-sans-mongolian-mongolian-400-normal.woff2",
+        "unicode-range": [
+          "U+1800-18AF"
+        ]
+      }
+    ]
+  }
+}

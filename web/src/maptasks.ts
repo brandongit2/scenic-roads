@@ -3,7 +3,7 @@
 // id), the tiles in view that have arrived out of those wanted, from MapLibre's tile managers (a
 // tile counts as arrived once parsed in MapLibre's worker, its glyphs and images in: loaded, or
 // errored); a GeoJSON source still being tiled in MapLibre's worker shows as processing; glyphs
-// still to be drawn on the page (glyphs.ts) and shader programs still linking in the background
+// still to be drawn on the page (the fork's GlyphManager.waiting) and shader programs still linking in the background
 // (glprog.ts, the fork's Context.pendingPrograms, as of the last frame drawn). The regions' own
 // sources aren't counted: downloads have their own panel.
 // MapLibre keeps these in its internals (style.tileManagers), read defensively: none of it is
@@ -12,7 +12,6 @@ import type { Map as MLMap } from 'maplibre-gl';
 import { OVERLAY_SOURCE, POI_SOURCE } from './basemap';
 import { OVERLAYS } from './state';
 import type { Task } from './tasks';
-import { glyphsWaiting } from './glyphs';
 
 interface TileLike { state?: string }
 interface ManagerLike {
@@ -73,7 +72,7 @@ export function mapTasks(map: MLMap): Task[] {
     if (a.processing) out.push({ label, detail: 'processing the file' });
     else if (a.done < a.total) out.push({ label, done: a.done, total: a.total, detail: 'tiles' });
   }
-  const g = glyphsWaiting();
+  const g = (map as unknown as { style?: { glyphManager?: { waiting?: () => number } } }).style?.glyphManager?.waiting?.() ?? 0;
   if (g) out.push({ label: 'Glyphs', detail: `${g} to draw` });
   const progs = (map as unknown as { painter?: { context?: { pendingPrograms?: number } } }).painter?.context?.pendingPrograms ?? 0;
   if (progs) out.push({ label: 'Shaders', detail: `${progs} draws waiting for a program to link` });

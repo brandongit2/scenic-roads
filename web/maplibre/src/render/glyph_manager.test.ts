@@ -86,25 +86,89 @@ describe('GlyphManager', () => {
         expect(missing['Arial Unicode MS'].default[char(0x01)]).toBeNull();
         const next = await manager.getGlyphs({'Arial Unicode MS': {default: [char(0x01), char(0x02), '7']}});
         expect(next['Arial Unicode MS'].default[char(0x02)]).toBeNull();
-        expect(next['Arial Unicode MS'].default['7']).toBeNull();
         expect(glyphRangeRequests()).toHaveLength(1);
     });
 
-    test('GlyphManager requests remote CJK PBF', async () => {
+    test('GlyphManager draws locally a character its served range lacks, and asks for the range once (Scenic Roads)', async () => {
         serveGlyphRanges();
-        const manager = createGlyphManager(true);
+        const createRasterizer = fakeRasterizer();
+        const manager = createGlyphManager(true, undefined, undefined, createRasterizer);
 
-        const returnedGlyphs = await manager.getGlyphs({'Arial Unicode MS': {default: [char(0x5e73)]}});
-        expect(returnedGlyphs['Arial Unicode MS'].default[char(0x5e73)]).toBeNull(); // The fixture returns a PBF without the glyph we requested
+        // The fixture is a PBF of 0-255: none of these is in it. A Han character (no local ideograph
+        // family set), an Egyptian hieroglyph outside the basic plane, a Cherokee letter.
+        for (const codePoint of [0x5e73, 0x13080, 0x13a0]) {
+            const returnedGlyphs = await manager.getGlyphs({'Arial Unicode MS': {default: [char(codePoint)]}});
+            expect(returnedGlyphs['Arial Unicode MS'].default[char(codePoint)].metrics.isDoubleResolution).toBe(true);
+        }
+        await manager.getGlyphs({'Arial Unicode MS': {default: [char(0x13a0), char(0x13a1)]}});
+        expect(glyphRangeRequests().filter(request => request.url.endsWith('/4864-5119.pbf'))).toHaveLength(1);
+        expect(createRasterizer).toHaveBeenCalledTimes(1);
     });
 
-    test('GlyphManager requests remote non-BMP, non-CJK PBF', async () => {
-        serveGlyphRanges();
-        const manager = createGlyphManager(true);
+    test('GlyphManager leaves a character that draws nothing unavailable when its range lacks it (Scenic Roads)', async () => {
+        server.respondWith(/\.pbf$/, [200, {}, new ArrayBuffer(0)]);
+        const createRasterizer = fakeRasterizer();
+        const manager = createGlyphManager(true, undefined, undefined, createRasterizer);
 
-        // Request Egyptian hieroglyph 𓃰
-        const returnedGlyphs = await manager.getGlyphs({'Arial Unicode MS': {default: [char(0x1e0f0)]}});
-        expect(returnedGlyphs['Arial Unicode MS'].default[char(0x1e0f0)]).toBeNull(); // The fixture returns a PBF without the glyph we requested
+        // A newline, a zero-width space, a line separator, a private-use and an unassigned codepoint.
+        const ids = ['\n', '​', ' ', '', '͸'];
+        const returnedGlyphs = await manager.getGlyphs({'Arial Unicode MS': {default: ids}});
+        for (const id of ids) expect(returnedGlyphs['Arial Unicode MS'].default[id]).toBeNull();
+        expect(createRasterizer).not.toHaveBeenCalled();
+    });
+
+    test('GlyphManager draws every letter of a script that needs shaping locally, asking for no range (Scenic Roads)', async () => {
+        serveGlyphRanges();
+        const manager = createGlyphManager(true, undefined, undefined, fakeRasterizer());
+
+        // Single codepoints: Devanagari, Bengali, Tamil, Kannada, Odia, Sinhala, Thai, Lao, Tibetan,
+        // Burmese, Khmer, Mongolian.
+        const ids = ['द', 'ঢ', 'ச', 'ಬ', 'କ', 'ක', 'ก', 'ວ', 'ལ', 'မ', 'ភ', 'ᠮ'];
+        const returnedGlyphs = await manager.getGlyphs({'Noto Sans Regular': {default: ids}});
+        for (const id of ids) expect(returnedGlyphs['Noto Sans Regular'].default[id].metrics.isDoubleResolution).toBe(true);
+        expect(glyphRangeRequests()).toHaveLength(0);
+
+        // Latin, Greek, Cyrillic, Hebrew, Arabic (joined here through its presentation forms),
+        // Armenian, Georgian and Ethiopic stay with the glyphs URL.
+        await manager.getGlyphs({'Noto Sans Regular': {default: ['a', 'θ', 'ж', 'ש', 'م', 'ﻣ', 'Ե', 'თ', 'አ']}});
+        expect(glyphRangeRequests().map(request => decodeURI(request.url).split('/').pop()).sort()).toEqual(
+            ['0-255.pbf', '1024-1279.pbf', '1280-1535.pbf', '1536-1791.pbf', '4096-4351.pbf', '4608-4863.pbf', '65024-65279.pbf', '768-1023.pbf'].sort());
+    });
+
+    test('GlyphManager keeps a glyph whose top comes to exactly zero where it is (Scenic Roads)', async () => {
+        // 55 px above the baseline at 48 px, Thai `น้ำ`: 55 / 2 - 27.5 = 0.
+        const draw = () => ({data: new Uint8ClampedArray(72 * 72), width: 72, height: 72, glyphWidth: 60, glyphHeight: 60, glyphTop: 55, glyphLeft: 0, glyphAdvance: 54});
+        const manager = createGlyphManager(true, undefined, undefined, fakeRasterizer(draw));
+
+        const returnedGlyphs = await manager.getGlyphs({'Noto Sans Regular': {default: ['น้ำ']}});
+        expect(returnedGlyphs['Noto Sans Regular'].default['น้ำ'].metrics.top).toBe(0);
+    });
+
+    test('GlyphManager draws a cluster wider than its canvas on a wider one (Scenic Roads)', async () => {
+        // A rasterizer that measures two font sizes a letter: the first canvas, three font sizes
+        // wide, holds one letter.
+        const made: Array<{buffer: number; drew: string[]}> = [];
+        const createRasterizer = vi.fn((options: TinySDFOptions, padding: number) => {
+            const canvas = {buffer: options.buffer, drew: [] as string[]};
+            made.push(canvas);
+            return {
+                buffer: padding,
+                size: options.fontSize + options.buffer * 4,
+                ctx: {measureText: (text: string) => ({actualBoundingBoxLeft: 0, actualBoundingBoxRight: [...text].length * 2 * options.fontSize} as TextMetrics)},
+                draw: (text: string) => {
+                    canvas.drew.push(text);
+                    return GLYPHS[0];
+                }
+            } as any;
+        });
+        const manager = createGlyphManager(true, undefined, undefined, createRasterizer);
+
+        await manager.getGlyphs({'Noto Sans Regular': {default: ['ᠮ', 'ᠮᠣᠩ', 'ᠮᠣᠩᠭᠣᠯ', 'ᠮᠣᠩᠭᠣ']}});
+
+        // One letter (2 font sizes) on the first; three (6) on one of 6; six and five (12, 10) share one of 12.
+        expect(made.map(canvas => canvas.drew)).toEqual([['ᠮ'], ['ᠮᠣᠩ'], ['ᠮᠣᠩᠭᠣᠯ', 'ᠮᠣᠩᠭᠣ']]);
+        expect(made[0].buffer).toBeLessThan(made[1].buffer);
+        expect(made[1].buffer).toBeLessThan(made[2].buffer);
     });
 
     test('GlyphManager does not cache CJK chars that should be rendered locally', async () => {

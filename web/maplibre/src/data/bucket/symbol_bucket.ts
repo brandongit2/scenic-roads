@@ -24,6 +24,7 @@ import {mergeLines} from '../../symbol/merge_lines.ts';
 import {isCluster} from '../../util/graphemes.ts';
 import {TaggedString} from '../../symbol/tagged_string.ts';
 import {allowsVerticalWritingMode, stringContainsRTLText} from '../../util/script_detection.ts';
+import {codePointNeedsShaping} from '../../util/unicode_properties.g.ts';
 import {WritingMode} from '../../symbol/shaping.ts';
 import {loadGeometry} from '../load_geometry.ts';
 import {toEvaluationFeature} from '../evaluation_feature.ts';
@@ -424,6 +425,8 @@ export class SymbolBucket implements Bucket {
      * A cluster of several codepoints is asked for as a whole, so that it can be drawn as the one
      * shape it is written as. Its codepoints are asked for as well, to give layout something to draw
      * a codepoint at a time where the cluster itself yields no glyph. See `shapeLines`.
+     * (Scenic Roads: not those of a cluster in a script the glyph manager always draws whole,
+     * `codePointNeedsShaping`: each would be a vowel sign or a virama drawn alone for nothing.)
      *
      * A cluster can span two sections, a letter in one and the accent written on it in the next, so
      * the label is taken as a whole and each cluster attributed to the section its first character
@@ -447,7 +450,10 @@ export class SymbolBucket implements Bucket {
 
             const stack = (stacks[section.fontStack] ||= {default: {}}).default;
             const grapheme = graphemes[i];
-            if (isCluster(grapheme)) stack[grapheme] = true;
+            if (isCluster(grapheme)) {
+                stack[grapheme] = true;
+                if (codePointNeedsShaping(grapheme.codePointAt(0))) continue;
+            }
 
             for (const char of grapheme) {
                 stack[char] = true;

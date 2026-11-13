@@ -1,0 +1,72 @@
+{
+  "version": 8,
+  "metadata": {
+    "test": {
+      "width": 440,
+      "height": 128,
+      "description": "myanmar: names shaped as written (conjuncts, vowel signs, stacks, joined letters), every cluster from the pinned font, with a halo"
+    }
+  },
+  "center": [
+    0,
+    0
+  ],
+  "zoom": 0,
+  "sources": {
+    "text": {
+      "type": "geojson",
+      "data": {
+        "type": "Feature",
+        "properties": {},
+        "geometry": {
+          "type": "Point",
+          "coordinates": [
+            0,
+            0
+          ]
+        }
+      }
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "white"
+      }
+    },
+    {
+      "id": "text",
+      "type": "symbol",
+      "source": "text",
+      "layout": {
+        "text-field": "ရန်ကုန် မန္တလေး\nမြစ်ကြီးနား အင်္ဂလန်",
+        "text-font": [
+          "Noto Sans Regular"
+        ],
+        "text-size": 24,
+        "text-max-width": 30,
+        "text-line-height": 1.6
+      },
+      "paint": {
+        "text-color": "black",
+        "text-halo-color": "#7cc4ff",
+        "text-halo-width": 2
+      }
+    }
+  ],
+  "glyphs": "local://glyphs/{fontstack}/{range}.pbf",
+  "font-faces": {
+    "Noto Sans Regular": [
+      {
+        "url": "local://fonts/noto-sans-myanmar/files/noto-sans-myanmar-myanmar-400-normal.woff2",
+        "unicode-range": [
+          "U+1000-109F",
+          "U+A9E0-A9FF",
+          "U+AA60-AA7F"
+        ]
+      }
+    ]
+  }
+}

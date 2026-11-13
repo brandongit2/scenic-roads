@@ -318,6 +318,8 @@ async function canFormGraphemeCluster(): Promise<string> {
     for (const category of ['CR', 'Extend', 'L', 'LV', 'LVT', 'Prepend', 'Regional_Indicator', 'SpacingMark', 'T', 'V', 'ZWJ']) {
         set.add((await import(`@unicode/unicode-${unicodeVersion}/Grapheme_Cluster_Break/${category}/code-points.mjs`)).default);
     }
+    // Scenic Roads: and the letters whose runs `canCombineGraphemes` joins into one unit.
+    set.add(await joinsUpDrawnHereSet());
 
     return set.toString();
 }
@@ -358,6 +360,83 @@ async function joinsToTheFollowingGrapheme(): Promise<string> {
     set.add(0x200d);
 
     return set.toString();
+}
+
+/**
+ * Scenic Roads: the scripts whose virama only marks a consonant as having no vowel and joins it to
+ * nothing: Tamil's pulli and Sinhala's al-lakuna (Sinhala writes its conjuncts with a zero-width
+ * joiner, which joins by the rule above; Tamil's two are named in `canCombineGraphemes`).
+ */
+const scriptsWithAVisibleVirama = ['Tamil', 'Sinhala'];
+
+/**
+ * Scenic Roads: returns a character class matching the viramas that write the consonant before
+ * them joined to the letter after them: a conjunct, a half form, a letter under or after the next.
+ *
+ * `Intl.Segmenter` keeps such a pair in one cluster only for the six scripts Unicode's rule GB9c
+ * names (Devanagari, Bengali, Gujarati, Oriya, Telugu, Malayalam), and only where the browser's ICU
+ * knows the rule. Kannada, Gurmukhi and the rest come apart at the virama, each half drawn alone
+ * with the virama showing.
+ */
+async function viramaJoinsToTheFollowingLetter(): Promise<string> {
+    const set = regenerate.default();
+    set.add((await import(`@unicode/unicode-${unicodeVersion}/Indic_Syllabic_Category/Virama/code-points.mjs`)).default);
+    for (const script of scriptsWithAVisibleVirama) {
+        set.remove((await import(`@unicode/unicode-${unicodeVersion}/Script/${script}/code-points.mjs`)).default);
+    }
+
+    return set.toString();
+}
+
+/**
+ * Scenic Roads: returns a character class matching the scripts that only a text engine can write:
+ * those with vowel signs that attach to a consonant (the Indic scripts, Thai, Lao, Tibetan, Khmer,
+ * Myanmar and their relatives), and those written joined up other than Arabic, whose letters this
+ * library joins itself through its presentation forms.
+ *
+ * Their text is drawn from a font on the page a cluster at a time, every cluster of it: a glyphs
+ * URL serves one shape a codepoint, and a label drawn partly from it and partly from the page's
+ * font is in two typefaces on two baselines.
+ */
+async function needsShaping(): Promise<string> {
+    const dependentVowels = new Set<number>((await import(`@unicode/unicode-${unicodeVersion}/Indic_Syllabic_Category/Vowel_Dependent/code-points.mjs`)).default);
+    const joiningTypes = await readJoiningTypes();
+    const joins = (codePoint: number) => ['D', 'L', 'R', 'C'].includes(joiningTypes.get(codePoint));
+
+    const set = await createSet([], ['Duployan']);
+    const scripts = (await import(`@unicode/unicode-${unicodeVersion}/index.mjs`)).default.Script;
+    for (const script of scripts) {
+        if (script === 'Common' || script === 'Inherited' || script === 'Arabic') continue;
+        const codePoints: number[] = (await import(`@unicode/unicode-${unicodeVersion}/Script/${script}/code-points.mjs`)).default;
+        if (codePoints.some(codePoint => dependentVowels.has(codePoint) || joins(codePoint))) set.add(codePoints);
+    }
+
+    return set.toString();
+}
+
+/**
+ * Scenic Roads: returns a character class matching the letters, marks and format characters of the
+ * scripts written joined up that are drawn from a font on the page (`needsShaping`: all but
+ * Arabic).
+ *
+ * A letter of these takes its shape from its neighbours, which a text engine only gives it when it
+ * draws them together, so a run of them is one unit of writing: Mongolian `ᠮᠣᠩᠭᠣᠯ` is drawn as
+ * one word, where a letter at a time is six isolated forms.
+ */
+async function joinsUpDrawnHereSet(): Promise<regenerate.regenerate> {
+    const joiningTypes = await readJoiningTypes();
+    const joins = (codePoint: number) => ['D', 'L', 'R', 'C'].includes(joiningTypes.get(codePoint));
+
+    const set = regenerate.default();
+    const scripts = ['Duployan', ...(await import(`@unicode/unicode-${unicodeVersion}/index.mjs`)).default.Script];
+    for (const script of scripts) {
+        if (script === 'Common' || script === 'Inherited' || script === 'Arabic') continue;
+        const codePoints: number[] = (await import(`@unicode/unicode-${unicodeVersion}/Script/${script}/code-points.mjs`)).default;
+        if (script !== 'Duployan' && !codePoints.some(joins)) continue;
+        set.add(codePoints.filter(codePoint => /^[\p{L}\p{M}\p{Cf}]$/u.test(String.fromCodePoint(codePoint))));
+    }
+
+    return set;
 }
 
 const downloadedRows = new Map<string, Promise<string[][]>>();
@@ -629,6 +708,10 @@ export function codePointIsWrittenWithoutSpaces(codePoint: number): boolean {
     return /${await isWrittenWithoutSpaces()}/gim.test(String.fromCodePoint(codePoint));
 }
 
+const JOINS_UP = '(?:${(await joinsUpDrawnHereSet()).toString()})';
+const JOINS_UP_AT_END = new RegExp(\`\${JOINS_UP}$\`);
+const JOINS_UP_AT_START = new RegExp(\`^\${JOINS_UP}\`);
+
 /**
  * Returns whether two grapheme clusters found by \`Intl.Segmenter\` are really one unit of writing,
  * and so have to be measured and drawn as a whole.
@@ -636,9 +719,29 @@ export function codePointIsWrittenWithoutSpaces(codePoint: number): boolean {
  * The segmenter follows the tailored rules CLDR uses for stepping a cursor through text, which put a
  * boundary after an invisible stacker and before a spacing mark. Laying text out wants the untailored
  * rules of UAX #29 instead: \`လ\`, \`ာ\` and \`း\` are one Burmese syllable, not three.
+ *
+ * Scenic Roads: a virama that writes its consonant joined to the next letter joins the two as well
+ * (Kannada \`ಬ್ಬ\`, Gurmukhi \`ਮ੍ਰ\`), in every script that has one and whatever the browser's ICU
+ * knows; Tamil's pulli joins only in its two conjuncts, \`க்ஷ\` and \`ஸ்ரீ\`. And a run of letters of
+ * a script written joined up and drawn from a font on the page (Mongolian, Syriac, N'Ko: not
+ * Arabic, joined through its presentation forms) is one unit, the word drawn whole.
  */
 export function canCombineGraphemes(former: string, latter: string): boolean {
-    return /(?:${await joinsToTheFollowingGrapheme()})$/.test(former) || /^\\p{gc=Mc}/u.test(latter);
+    if (JOINS_UP_AT_END.test(former) && JOINS_UP_AT_START.test(latter)) return true;
+    return /(?:${await joinsToTheFollowingGrapheme()})$/.test(former) || /^\\p{gc=Mc}/u.test(latter) ||
+        (/(?:${await viramaJoinsToTheFollowingLetter()})$/.test(former) && /^\\p{L}/u.test(latter)) ||
+        (former.endsWith('\\u0B95\\u0BCD') && latter.startsWith('\\u0BB7')) ||
+        (/[\\u0BB6\\u0BB8]\\u0BCD$/.test(former) && latter.startsWith('\\u0BB0\\u0BC0'));
+}
+
+/**
+ * Scenic Roads: returns whether the given codepoint belongs to a script that only a text engine can
+ * write (vowel signs attached to consonants, or letters joined up that this library does not join
+ * itself), so that its text is drawn from a font on the page a cluster at a time, never fetched a
+ * codepoint at a time.
+ */
+export function codePointNeedsShaping(codePoint: number): boolean {
+    return /${await needsShaping()}/.test(String.fromCodePoint(codePoint));
 }
 
 /**

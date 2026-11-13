@@ -266,9 +266,15 @@ describe('SymbolBucket', () => {
         expect(hebrew).toContain('שְׁ');
         expect(hebrew).toEqual(expect.arrayContaining(['ש', 'ְ', 'ׁ']));
 
-        const devanagari = glyphsRequestedFor('दि');
-        expect(devanagari).toContain('दि');
-        expect(devanagari).toEqual(expect.arrayContaining(['द', 'ि']));
+    });
+
+    test('SymbolBucket asks for a cluster of a script drawn whole as a whole only (Scenic Roads)', () => {
+        // A vowel sign or a virama alone is never drawn: the glyph manager draws every cluster of
+        // these scripts from a font on the page.
+        expect(glyphsRequestedFor('दि')).toEqual(['दि']);
+        expect(glyphsRequestedFor('ಬ್ಬಳ್ಳಿ').sort()).toEqual(['ಬ್ಬ', 'ಳ್ಳಿ'].sort());
+        expect(glyphsRequestedFor('ที่ก').sort()).toEqual(['ที่', 'ก'].sort());
+        expect(glyphsRequestedFor('ᠮᠣᠩᠭᠣᠯ')).toEqual(['ᠮᠣᠩᠭᠣᠯ']);
     });
 });
 

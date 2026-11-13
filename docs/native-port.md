@@ -36,7 +36,7 @@ file lists, good to about a quarter either way.
   (§7.6).
 - **The modules that exist only because of the wall go with it** (§2.3): the invisible circle
   layers under the dots, `namefade.ts`, the vector-tile encoders that feed `addProtocol`, the
-  polar labels' 2D canvas, `covers.ts`, `placement.ts`, `glyphs.ts`, `maptasks.ts`, and the casts
+  polar labels' 2D canvas, `covers.ts`, `placement.ts`, `maptasks.ts`, and the casts
   into internals.
 - **How each step is verified (§7.4).** A reference set recorded first (S0): views as images and
   as numbers, each with the tile and API responses it read, so a view can be drawn again from the
@@ -64,10 +64,11 @@ file lists, good to about a quarter either way.
   says otherwise; each variant proves HDR output on macOS and iOS and an offscreen-rendered test
   an agent runs with cargo.
 - **Native text:** our own shaping and glyph path, translated, for the scripts written a
-  character at a time. The owner accepts forgoing Core Text, the system's text engine (§9.1).
-  For CJK and the scripts that need shaping, the web app as #1245 leaves it has no path of its
-  own to translate: the browser's text engine draws them from the device's fonts. What does that
-  natively is open (§9.2).
+  character at a time. For CJK and the scripts that need shaping, the web app as #1245 leaves it
+  has no path of its own to translate (the browser's text engine draws them from the device's
+  fonts); natively the owner chose Core Text, the system's text engine, for those scripts if
+  calling it from Rust is at least fairly ergonomic, otherwise a shaper of our own with fonts we
+  ship (§9.1); a small probe in N0 finds out (§8.3).
 
 ### 1.1 Apple terms used here
 
@@ -151,7 +152,7 @@ hold an `as unknown as` or `as any` cast, most of them into MapLibre's internals
 | **Style, properties, atlases** | 9,199 | `style/`, `data/program_configuration.ts`, `render/image_*.ts`, `pattern_atlas.ts`, `line_atlas.ts`, `util/color_ramp.ts` | A style of about 60 layers built in `basemap.ts` (background, fill, line, symbol, circle, fill-extrusion, raster, hillshade, color-relief) and the app's own six kinds of custom layer; `setPaintProperty` (73 call sites), `setLayoutProperty`, `setFilter`; about 40 expression operators; dashes. | Style loading, validation, diffing and migration (the style starts empty and is built by calls), sprites and images (`poiicons.ts` rasterises its own atlas for its own layer), patterns, heatmap, the sky (#1209), light beyond the extrusions' default, transitions. | `polarglobe.ts` reads the hillshade's and the tints' evaluated paint (`paint.get`, `_createColorRamp`); `polarpoints.ts` the label layers' evaluated paint and layout; `details.ts` `style._layers`. |
 | **The style-spec package** | 17,724 | `@maplibre/maplibre-gl-style-spec` (a dependency) | The expression parser, type checker and evaluator, filters, colour and interpolation. | Validation, diff, migrate, the reference document, old-style functions. | — |
 | **Buckets and tessellation** | 4,864 | `data/bucket*`, `data/segment.ts`, `data/array_types.g.ts`, `util/struct_array.ts`, small helpers | Line, fill (earcut), fill-extrusion, circle and symbol buckets. | Heatmap, patterns, most of the 1,181 generated struct-array types. | `buildings.ts` (`_vectorTileFeature`). |
-| **Symbols, glyphs, placement** | 9,257 | `symbol/`, `render/glyph_*.ts`, `font_face_manager.ts`, `source/rtl_text_plugin_*`, `util/script_detection.ts`, `verticalize_punctuation.ts`, `graphemes.ts` | Text labels on points and along lines, wrapping, halos, sort keys, collision and fades, the cross-tile index, server glyph ranges and locally drawn CJK; the built-in Arabic shaping (joining forms, lam-alef) and bidirectional reordering (`arabic_shaping.ts`, `bidi.ts` over bidi-js). | Icons (no `icon-image` anywhere), variable anchors, vertical text, the RTL plugin loader (never called: the built-in code replaces it). Not handled at all: scripts that need OpenType shaping (Devanagari and the other Indic scripts, Khmer, Myanmar) are drawn a character at a time. | `glyphs.ts` (`glyphManager._drawGlyph`), `placement.ts` (`style._updatePlacement`), `polarpoints.ts` (the glyph manager's SDF glyphs). |
+| **Symbols, glyphs, placement** | 9,257 | `symbol/`, `render/glyph_*.ts`, `font_face_manager.ts`, `source/rtl_text_plugin_*`, `util/script_detection.ts`, `verticalize_punctuation.ts`, `graphemes.ts` | Text labels on points and along lines, wrapping, halos, sort keys, collision and fades, the cross-tile index, server glyph ranges for the scripts written a codepoint at a time; the built-in Arabic shaping (joining forms, lam-alef) and bidirectional reordering (`arabic_shaping.ts`, `bidi.ts` over bidi-js); CJK, and the scripts that need a text engine (the Indic scripts, Thai, Lao, Tibetan, Khmer, Myanmar, Mongolian), cut into units of writing (`graphemes.ts`, `canCombineGraphemes`) and each unit drawn by the browser's text engine, from the device's fonts, into the glyph atlas (`glyph_manager.ts`, TinySDF; web/maplibre/FORK.md, Labels in scripts that need shaping). | Icons (no `icon-image` anywhere), variable anchors, vertical text, the RTL plugin loader (never called: the built-in code replaces it). | `maptasks.ts` (`glyphManager.waiting`), `placement.ts` (`style._updatePlacement`), `polarpoints.ts` (the glyph manager's SDF glyphs). |
 | **Render passes, programs, shaders** | 10,378 | `render/painter.ts`, `webgl/draw/`, `webgl/program/`, `shaders/` (4,248 lines of GLSL), `webgl/scene_target.ts` | The offscreen, drape, opaque and translucent passes; the terrain's depth and coordinate targets; the fork's scene depth, lifted layers and water mask; the shaders of the nine layer types in use. | Heatmap, sky and atmosphere, every pattern shader, line gradients, icon and text-and-icon symbols, the debug and collision-debug draws. | `roads/layer.ts` reads `painter._tileClippingMaskIDs`; the custom layers set raw GL state beside MapLibre's cache (`glprog.ts`). |
 | **WebGL wrapper** | 2,262 | the rest of `webgl/` | All of it, by MapLibre's own layers; the app's layers call WebGL directly. | — | — |
 | **Workers and transfer** | 2,021 | `source/worker*.ts`, `vector_tile_worker_source.ts`, `util/actor*.ts`, `dispatcher.ts`, `web_worker*.ts`, `*worker_pool.ts` | Up to six tile workers (parse, tessellate, shape), the class registry that serialises buckets across threads. The app runs seven worker kinds of its own beside them (road and rail tiles ×12, depth ×2, coast ×2, landmarks, far field, contours, contour DEM), each with its own messages and caches. | Custom worker sources. | — |
@@ -181,7 +182,7 @@ wall, and several features exist only to work round the wall:
 - `polarpoints.ts` and `polarlabels.ts` (589 lines) draw the caps' labels on a 2D canvas over the
   map with glyphs borrowed from the glyph manager, because MapLibre's symbols live in Web Mercator
   tile coordinates.
-- `covers.ts`, `placement.ts`, `glyphs.ts`, `maptasks.ts` (452 lines) patch or read MapLibre from
+- `covers.ts`, `placement.ts`, `maptasks.ts` (392 lines) patch or read MapLibre from
   outside to make it cheaper or to see what it is loading.
 - `camera3d.ts` computes every camera move as a rigid motion about a point on the ground, then
   converts the result back into MapLibre's centre, zoom and pivot.
@@ -249,11 +250,15 @@ The subsuming changes two things a user of the web app could notice:
 - Memory is bounded by one budget, so a long session holds what the view needs, not what was seen
   (S9).
 
-Text does not change in the subsuming: labels are drawn from the server's glyph ranges as today,
-shaped by the text path as #1245 leaves it. The native app translates that path where it is our
-own code, under either candidate of §5.9 (the owner accepts forgoing Core Text, §9.1); where the
-browser's text engine draws (CJK and the scripts that need shaping), the native replacement is
-open (§9.2).
+Text does not change in the subsuming: labels are drawn as today, by the text path as #1245
+leaves it (web/maplibre/FORK.md, Labels in scripts that need shaping). The scripts written a
+character at a time (Latin, Greek, Cyrillic, Hebrew, Arabic through its presentation forms and
+others) come from the server's glyph ranges; CJK and the scripts that need shaping (the Indic
+scripts, Thai, Lao, Tibetan, Khmer, Myanmar, Mongolian) are cut into units of writing by our code
+and each unit is drawn by the browser's text engine from the device's fonts. The native app
+translates the first half and the cutting under either candidate of §5.9; the drawing of those
+units needs a text engine natively too: Core Text if calling it from Rust is at least fairly
+ergonomic, otherwise a shaper of our own with fonts we ship (the owner, §9.1; N0's probe, §8.3).
 
 Decided for the native app (§9.1): it supports only the latest major OS release on iPhone, iPad
 and Mac; region downloads happen on the device; settings profiles are shared with the web app.
@@ -426,7 +431,7 @@ surface. Because anchors are world coordinates, a label past 85° is like any ot
 | Globe and terrain maths | The projection blend, subdivision near the poles, precision tricks (positions as flat plus a globe difference), elevation queries, the pole ground: the same code in another language. |
 | Tile covers | Every rule exists for a reason found by measurement; all carry over. |
 | Drapes | Sizing by footprint, detail, pacing while moving, stand-ins, fingerprints. |
-| Text | Our own shaping and glyph path, translated (§9.1): the glyph-range fetches, the PBF parser, TinySDF, bidirectional text, the Arabic shaping and #1245's cutting of text into units of writing carry over. Drawing those units for CJK and the scripts that need shaping is the browser's text engine's work in the web app, with no code of ours to translate: natively Core Text or a shaper and fonts of our own (§9.2). |
+| Text | Our own shaping and glyph path, translated (§9.1): the glyph-range fetches, the PBF parser, TinySDF, bidirectional text, the Arabic shaping and #1245's cutting of text into units of writing carry over. Drawing those units for CJK and the scripts that need shaping is the browser's text engine's work in the web app, with no code of ours to translate: natively Core Text if it is fairly ergonomic from Rust, otherwise a shaper and fonts of our own (§9.1, 10; N0's probe). |
 | Label placement | Collision, cross-tile continuity, line labels on a curved, tilted ground. |
 | Tessellation | Lines with joins and caps, polygons, extrusions. |
 | The roads' renderer, the far field's march, the dots | The app's own, about 11,000 lines; shaders are rewritten from GLSL in the Metal Shading Language (in WGSL under the fallback, §5.9), and the two transform-feedback passes (the roads' projection, the dots' heights) are redesigned as compute or vertex work. |
@@ -499,8 +504,8 @@ What both candidates share:
   callbacks cross it, through generated bindings (UniFFI or cbindgen).
 - Tile formats: the server's own crates decode (`codecs`, `roadcore`, the shading and field
   codecs): one definition of each format, encoder and decoder tested together.
-- Text: our own shaping and glyph path, translated (§9.1), and the same open question for the
-  scripts the browser draws (§9.2).
+- Text: our own shaping and glyph path, translated (§9.1), and for the scripts the browser
+  draws, Core Text or a shaper of our own as N0's probe finds (§9.1, 10).
 - The simulator's Metal differs from a device's (§8.2): features reached through raw Metal under
   either candidate are missing there.
 - The agents' loop (§8.2): `cargo test` with offscreen rendering for the engine, on the M4 with
@@ -759,7 +764,7 @@ Two orders suggest themselves, and neither works alone.
    one type check and one suite cover both sides of every change, and a workaround can be removed
    by changing the code it patched.
 3. *Take the cheap workarounds at once* (S5): the modules that patch or read MapLibre from
-   outside (`covers.ts`, `placement.ts`, `glyphs.ts`, `maptasks.ts`, the casts) become part of
+   outside (`covers.ts`, `placement.ts`, `maptasks.ts`, the casts) become part of
    the code they patched. Small, and the first visible return.
 4. *Then the services, bottom up* (S6 to S11): camera, terrain, frame, tiles, labels, pick. Each
    is reshaped under the layers that use it, and each step ends by deleting the workarounds that
@@ -874,7 +879,7 @@ looking; S13's report shows each.
   `layers/` implements the one interface and is in the frame's one list.
 - **No boundary workarounds.** These do not exist: `namefade.ts`, the vector-tile encoders
   (`mvt.ts`'s `encodePoints` and `encodeLines`, `contour/vtpbf.ts`), `polarlabels.ts`,
-  `polarpoints.ts` and the 2D canvas over the map, `covers.ts`, `placement.ts`, `glyphs.ts`,
+  `polarpoints.ts` and the 2D canvas over the map, `covers.ts`, `placement.ts`,
   `maptasks.ts`, `terrainstats.ts`'s reads of the tile managers, the invisible circle layers,
   `addProtocol`, `keepWhole`'s reach into the tile manager, `web/package.json`'s note. No cast
   (`as any`, `as unknown as`) reads another module's private state; the casts left are reported
@@ -889,7 +894,7 @@ looking; S13's report shows each.
   `@maplibre/geojson-vt`, `@maplibre/vt-pbf`, `quickselect`. Expected to stay, each only if a
   source file still imports it: `pbf`, `@mapbox/vector-tile`, `@mapbox/point-geometry`, `earcut`,
   `gl-matrix`, `bidi-js`, `@mapbox/tiny-sdf`, `potpack`, `kdbush`, `murmurhash-js`, `tinyqueue`,
-  `@mapbox/unitbezier`, and whatever #1245 adds for shaping. Development: `typescript`, `vite`,
+  `@mapbox/unitbezier` (#1245 added none: the browser shapes). Development: `typescript`, `vite`,
   `vitest` and what its tests need (`jsdom`), `@types/*`.
 - **One suite.** `check.sh`'s `web` part and `publish.sh` run every test of `web/` (the map's
   and the build page's) with one command; no `node --test` of web modules; no render suite; no
@@ -923,7 +928,7 @@ the tour, and checks the views it changed in Safari.
 | **S3c** | **The move** (§7.3, §7.6), by a script: MapLibre's files into `web/src`'s directories, renamed; where a subsystem is to be dissolved its files wait in a directory named for what they are (`style/`, `buckets/`, `sources/`); relative imports replace the alias and `index.ts`; the formatter added and run over all of `web/src` in its own commit, its check in `check.sh`; the markers' prefix removed; `FORK.md` moved to `docs/map-engine.md` with its paths rewritten; `web/maplibre` gone. | S3b | §7.3's review of a mechanical step: the script re-run, the token comparison, the suite's count, the oracle unchanged, the bundle's size. |
 | **S3d** | **One naming**, by a script with a committed rename map: identifiers to the app's conventions (underscore members, `MLMap`); then by hand, in parts by directory: comments to the app's manner (library API docs, mentions of MapLibre, upstream and the fork); `docs/map-engine.md` rewritten as a description of the engine. The comment parts may run beside S5 onwards, each on directories no open step is editing. | S4 | The rename script's token comparison; the comments parts reviewed as diffs; §7.9's naming greps return nothing outside the directories still to do. |
 | **S4** | **The app's files move into the layout:** `web/src`'s 85 flat files and `roads/`, `ctl/`, `contour/`, `flags/` into §5.1's directories, `web/test` beside the code and the build page's tests into `buildpage/`, by a script. No behaviour changes. | S3c | As S3c. |
-| **S5** | **The patches from outside become the code**, in two parts. *(a)* `covers.ts`'s saved work is the cover function's own; `placement.ts` and `glyphs.ts` are the placement's and the glyph atlas's own scheduling; `maptasks.ts` and `terrainstats.ts` read a typed "what is loading" from the tile code; `keepWhole` is the buildings source's rule; the terrain's rise sets a real setter. *(b)* Every cast into internals becomes a typed import or a small method; `web/package.json`'s note goes; the duplicate helpers of §7.6 (Mercator and lng/lat, DOM) become one module each. | S4 | The oracle unchanged; (a) the tour's frame times no worse (`covers.ts` and `placement.ts` exist for speed); (b) the casts left, listed with a reason each. |
+| **S5** | **The patches from outside become the code**, in two parts. *(a)* `covers.ts`'s saved work is the cover function's own; `placement.ts` is the placement's own scheduling; `maptasks.ts` and `terrainstats.ts` read a typed "what is loading" from the tile code; `keepWhole` is the buildings source's rule; the terrain's rise sets a real setter. *(b)* Every cast into internals becomes a typed import or a small method; `web/package.json`'s note goes; the duplicate helpers of §7.6 (Mercator and lng/lat, DOM) become one module each. | S4 | The oracle unchanged; (a) the tour's frame times no worse (`covers.ts` and `placement.ts` exist for speed); (b) the casts left, listed with a reason each. |
 | **S6** | **The camera.** One `Camera` (a pose) and one `View`; the anchored moves of `camera3d.ts` applied directly; one animator for flights and glides; limits in one place. The transform interface, the per-projection helper classes and the conversion back to centre, zoom and pivot go. | S5 | The oracle's matrices equal; the transforms' unit tests carried over; anchored moves keep the ground point under the cursor (unit tests); gestures by hand in both browsers. |
 | **S7** | **The terrain as a service.** One projection (no factory); heights, a tile's DEM texture, the depth target and the surfaces (ground, sea floor, pole) offered through one typed interface that `layers/` use instead of reading fields; the DEM copies and formats of §5.4. | S6 (both reshape the projection's code) | The oracle's height grids equal; the terrain and pole views; memory at the tour's stops. |
 | **S8** | **The frame, the GPU layer, the layer interface.** A fixed list of passes; one `gpu/` used by every layer (the app's `glprog.ts`, `glstate.ts` and MapLibre's wrapper merged; no raw GL state set beside a cache); the Layer interface of §5.1. The app's six custom layers become peers in the frame's list and the custom-layer bridge is deleted; the base layer types, still described by the style, draw through the same interface. Shared and unread targets (§5.4). | S6, S7 | The oracle unchanged in every layer set; frame times in the tour; a lost and restored WebGL context. |
@@ -1050,12 +1055,12 @@ checked on the M1 (§8.2).
 
 | Step | What | Checked by |
 |---|---|---|
-| **N0** | The trial that settles §5.9, as proposed by the research note (`.claude/notes/NATIVE-RUST-METAL.md`, §8.2); the definition, the thresholds and the time box are proposals for the owner (§9.2). Everything above the GPU is built once, so the comparison isolates the GPU layer and the shading language. **Built once, shared** (Rust crates, tested on the M4): the slice's `geo`, `camera` (the view from a link, the globe-to-flat blend), `tiles/cover`, `terrain` (the mesh from recorded DEM tiles), the oracle reader and the image comparison, and a thin Swift shell (a Mac window with trackpad pan and zoom, pinch on the iPad) over a C ABI generated with cbindgen that hands Rust a `CAMetalLayer`. **Built twice**, behind one small engine-side interface `Gpu` (buffers, textures, pipelines, a frame with the fixed passes): **(M)** on `objc2-metal`, shaders in MSL; **(W)** on wgpu, shaders in WGSL, raw Metal through `wgpu-hal` only where needed. **Each draws** the terrain mesh, one drape with the elevation tint and hill-shading, and the roads' sprite draw with its compute pass in place of transform feedback, for three reference views (the Alps pitched, a city, the globe): offscreen under cargo's test runner, in the Mac window, in the iPad simulator. **Feature probes in each**, a small test each, pass or fail with notes: (1) HDR: a 16-bit float layer with the extended-range flag and an extended linear colour space, a test frame with values up to 4.0, the headroom read from `NSScreen` or `UIScreen`, seen brighter than white on a Mac's XDR display and on the owner's iPhone; (2) memoryless depth in the scene pass; (3) one copy of geometry (b1): a decode writes vertices into `mmap`ed memory wrapped as a no-copy buffer, and the pick reads the same bytes (W: made with `objc2-metal`, imported into wgpu); (4) a tile-shader pass and MetalFX upscaling of the scene (W: through the hal); (5) three frames in flight, a buffer retired while in use, checked by validation. **Time box:** two weeks for the shared part, one week per GPU layer, each layer built by a different agent from the same interface. | Measured and written up for the owner, per variant: (a) correctness against the oracle: matrices and covers to float precision, heights against its grids, images within the tolerance; the two variants should agree, and a difference is a bug in one GPU layer; (b) the loop: the clean build, the build and test after a one-line Rust change and after a one-line shader change, `cargo test` with offscreen images on the M4, the app build on the M1; (c) size: lines of the GPU layer, of shaders, of `unsafe` blocks, and of glue to raw Metal (W's hal code counts against W); (d) safety: three seeded bugs (a wrong binding index, a buffer too short for a draw, a buffer reused while in flight): which variant reports each, how (an error, a validation assertion, nothing), and how long the agent took to find it; (e) frame time (the median of a windowed run over the three views) and memory (the slice's bytes at the globe, the resident footprint) on the M1, the M4 and one of the owner's devices, with an Instruments Metal System Trace of each; (f) tools: a GPU frame capture of each opened in Xcode, and a shader debugged on one draw; (g) the agents' log of every cycle lost to tooling. **The rule** (proposed, honouring the owner's preference): choose (M) unless a feature probe fails under (M) and works under (W); or (M) misses a seeded bug that (W) catches and the validation-on runs miss too; or (M)'s loop or its lost cycles are clearly worse, more than about 1.5 times (W)'s on the same tasks; or (M)'s GPU layer for the slice passes about 5,000 lines. (W) wins a tie only on safety. |
+| **N0** | The trial that settles §5.9, as proposed by the research note (`.claude/notes/NATIVE-RUST-METAL.md`, §8.2); the definition, the thresholds and the time box are proposals for the owner (§9.2). Everything above the GPU is built once, so the comparison isolates the GPU layer and the shading language. **Built once, shared** (Rust crates, tested on the M4): the slice's `geo`, `camera` (the view from a link, the globe-to-flat blend), `tiles/cover`, `terrain` (the mesh from recorded DEM tiles), the oracle reader and the image comparison, and a thin Swift shell (a Mac window with trackpad pan and zoom, pinch on the iPad) over a C ABI generated with cbindgen that hands Rust a `CAMetalLayer`. **Built twice**, behind one small engine-side interface `Gpu` (buffers, textures, pipelines, a frame with the fixed passes): **(M)** on `objc2-metal`, shaders in MSL; **(W)** on wgpu, shaders in WGSL, raw Metal through `wgpu-hal` only where needed. **Each draws** the terrain mesh, one drape with the elevation tint and hill-shading, and the roads' sprite draw with its compute pass in place of transform feedback, for three reference views (the Alps pitched, a city, the globe): offscreen under cargo's test runner, in the Mac window, in the iPad simulator. **Feature probes in each**, a small test each, pass or fail with notes: (1) HDR: a 16-bit float layer with the extended-range flag and an extended linear colour space, a test frame with values up to 4.0, the headroom read from `NSScreen` or `UIScreen`, seen brighter than white on a Mac's XDR display and on the owner's iPhone; (2) memoryless depth in the scene pass; (3) one copy of geometry (b1): a decode writes vertices into `mmap`ed memory wrapped as a no-copy buffer, and the pick reads the same bytes (W: made with `objc2-metal`, imported into wgpu); (4) a tile-shader pass and MetalFX upscaling of the scene (W: through the hal); (5) three frames in flight, a buffer retired while in use, checked by validation; (6) native text, built once beside the shared part (§9.1, 10): a few clusters of Devanagari (`क्षि`, `र्दि`), Thai (`น้ำ`, `ที่`) and CJK (`東京`) shaped and rasterised through `objc2-core-text` (Core Text's glyphs and positions for a run, each glyph drawn into a bitmap) into the slice's glyph atlas as SDF glyphs, compared by eye with the browser's drawing, and a report of how calling Core Text from Rust went (lines, `unsafe` blocks, Core Foundation ownership, what was awkward). **Time box:** two weeks for the shared part, one week per GPU layer, each layer built by a different agent from the same interface. | Measured and written up for the owner, per variant: (a) correctness against the oracle: matrices and covers to float precision, heights against its grids, images within the tolerance; the two variants should agree, and a difference is a bug in one GPU layer; (b) the loop: the clean build, the build and test after a one-line Rust change and after a one-line shader change, `cargo test` with offscreen images on the M4, the app build on the M1; (c) size: lines of the GPU layer, of shaders, of `unsafe` blocks, and of glue to raw Metal (W's hal code counts against W); (d) safety: three seeded bugs (a wrong binding index, a buffer too short for a draw, a buffer reused while in flight): which variant reports each, how (an error, a validation assertion, nothing), and how long the agent took to find it; (e) frame time (the median of a windowed run over the three views) and memory (the slice's bytes at the globe, the resident footprint) on the M1, the M4 and one of the owner's devices, with an Instruments Metal System Trace of each; (f) tools: a GPU frame capture of each opened in Xcode, and a shader debugged on one draw; (g) the agents' log of every cycle lost to tooling. **The rule** (proposed, honouring the owner's preference): choose (M) unless a feature probe fails under (M) and works under (W); or (M) misses a seeded bug that (W) catches and the validation-on runs miss too; or (M)'s loop or its lost cycles are clearly worse, more than about 1.5 times (W)'s on the same tasks; or (M)'s GPU layer for the slice passes about 5,000 lines. (W) wins a tie only on safety. |
 | **N1** | `geo`, `camera`, `tiles/cover`: the maths, with the limits and anchored moves. | The oracle's numbers (matrices, project and unproject, covers); the web suite's tests of these modules, translated. |
 | **N2** | `tiles` (pyramid, store, fetch, jobs: threads sharing memory in place of workers), `terrain`, `gpu` and `frame`; `layers/land` and `layers/water`. The budget set from the system and cut on its warning. | Heights against the oracle's grids; `scenic-render --compare` on the land-and-water views; the tour replayed within the byte budget; the same views in the Mac app and the iPad simulator. **The checkpoint (§7.8).** |
 | **N3** | `input` on the Mac and touch (system gesture recognizers in place of the web's classifiers); the app shell: the server's catalogue, the shared settings profiles read. | Anchored moves keep the ground point under the cursor (unit tests). Simulator: interface tests of pinch, rotate and pan. The owner: gestures on a Mac, an iPad and an iPhone. |
 | **N4** | `layers/lines` (roads, rail) with `pick`; then `layers/vector` and `layers/overlay`. | The roads views compared; pick tests on recorded tiles; frame times at the globe and in a city from the tour. |
-| **N5** | `labels` and `layers/names`; `layers/dots` with landmark names. The text path: our own shaping and glyphs translated (§9.1), and for CJK and the scripts that need shaping whichever path §9.2 settles. | The oracle's placed labels compared as sets (the same labels shown, boxes within a tolerance; exactly, if the server's glyphs are kept); the views in several scripts. The owner: labels while moving. |
+| **N5** | `labels` and `layers/names`; `layers/dots` with landmark names. The text path: our own shaping and glyphs translated (§9.1), and for CJK and the scripts that need shaping Core Text or a shaper of our own, as N0's probe settles (§9.1, 10). | The oracle's placed labels compared as sets (the same labels shown, boxes within a tolerance; exactly, if the server's glyphs are kept); the views in several scripts. The owner: labels while moving. |
 | **N6** | `layers/buildings`: near meshes, then the far field. | The city views at several zooms and tilts; the hand-over zoom; memory at the globe in the tour. |
 | **N7** | `layers/depth`, ferries, the viewshed; `layers/contours`, `layers/polar` and the 3D floor (kept, §9.1). | Their views compared; the polar tests' numbers. |
 | **N8** | The app: panels, colour scales, lists, search, the selected road's elevation profile, hover readouts, popups, credits (with the licence text), settings profiles shared with the web app (one schema on the server; pick, save, default), and region downloads kept on the device (its store and how the server hands packs to a device need a design of their own first, §9.2). Can run beside N2 to N7. | Unit tests of the state and controllers; a profile saved in one app read by the other. Simulator and Mac app: screenshots of each panel; interface tests of the main flows. The owner: by hand. |
@@ -1138,10 +1143,13 @@ checked on the M1 (§8.2).
    Metal through `wgpu-hal` where needed. Swift and Metal throughout is not a candidate. N0
    settles it by §8.3's rule; each variant it builds must prove HDR output on macOS and iOS and
    an offscreen-rendered test an agent runs with cargo.
-10. **Forgoing Core Text is acceptable:** under either candidate, native text is our own shaping
-    and glyph path, the one #1245 puts in the web app, translated. Core Text stays reachable from
-    Rust or the shell but is not required. Where the web app's text is drawn by the browser
-    (CJK and the scripts that need shaping) there is no path of ours to translate: §9.2, 7.
+10. **Native text:** for the scripts written a character at a time, our own shaping and glyph
+    path, the one #1245 leaves in the web app, translated. For CJK and the scripts that need
+    shaping, which the web app has the browser draw (no path of ours to translate): Core Text
+    for those scripts, but only if calling it from Rust (`objc2-core-text`) is at least fairly
+    ergonomic; otherwise a shaper of our own (HarfRust) with fonts we ship for each script and
+    glyphs rasterised by glyph id. N0's probe (6) finds out (§8.3); the figures for the second
+    way are in §9.2, 7.
 
 ### 9.2 Open
 
@@ -1164,14 +1172,17 @@ Each can be answered in a sentence.
 6. **Safari on the test Mac:** may Safari's remote automation (Develop menu, "Allow Remote
    Automation") be turned on on the M4, so agents capture the oracle's views in Safari with
    `safaridriver`? Otherwise each step's Safari check is the agent's screenshots taken by hand.
-7. **Native text for the scripts the browser draws:** the web app (as #1245 leaves it) cuts CJK
-   and the scripts that need shaping into units of writing and has the browser's text engine
-   draw each unit from the device's fonts, so there is no code of ours to translate for them.
-   Natively: Core Text for those units only, behind the labels engine's "shape this run"
-   interface (reachable from Rust through `objc2-core-text`, no Swift between; §9.1, 10), or a
-   shaper of our own (HarfBuzz-class, e.g. HarfRust, the maintained Rust port of HarfBuzz) with
-   fonts we ship for each script and glyphs rasterised by glyph id? The Rust options are listed
-   in the research note (`.claude/notes/NATIVE-RUST-METAL.md`, §7).
+7. **Native text after N0's probe:** the owner's rule (§9.1, 10) chooses Core Text for the scripts
+   the browser draws (CJK, the Indic scripts, Thai, Lao, Tibetan, Khmer, Myanmar, Mongolian) if
+   calling it from Rust is at least fairly ergonomic; is the probe's report (§8.3, N0's (6))
+   ergonomic enough? If not, the other way is a shaper of our own: HarfRust (the maintained Rust
+   port of HarfBuzz; rustybuzz is archived) natively, with fonts we ship for each script and
+   glyphs rasterised by glyph id, and the web app's text path rewritten to the same shaper first
+   (HarfBuzz as wasm) so the two apps agree. Measured for that, 12 Nov (#1245): HarfBuzz's wasm
+   444 KB (179 KB gzipped) and 117 KB of JavaScript, 25 ms to start, 0.1 ms a label, about 25 MB
+   of memory in Node; Noto fonts for sixteen scripts 664 KB as WOFF2 at one weight (the map uses
+   three), CJK not counted. The Rust options are listed in the research note
+   (`.claude/notes/NATIVE-RUST-METAL.md`, §7).
 
 Region downloads on the device need a design (what is stored, how the server hands a region's
 packs to a device, how they are kept current): a task of its own, planned before N8, not a

@@ -1,6 +1,6 @@
 import {FontFaceManager} from './font_face_manager.ts';
 import TinySDF, {type TinySDFOptions} from '@mapbox/tiny-sdf';
-import {codePointUsesLocalIdeographFontFamily} from '../util/unicode_properties.g.ts';
+import {codePointNeedsShaping, codePointUsesLocalIdeographFontFamily} from '../util/unicode_properties.g.ts';
 import {isCluster} from '../util/graphemes.ts';
 import {AlphaImage} from '../util/image.ts';
 import {ensureError, warnOnce} from '../util/util.ts';
@@ -20,7 +20,6 @@ type Entry = {
      */
     glyphs: Record<string, Record<string, StyleGlyph | null>>;
     requests: Record<number, Promise<{[_: number]: StyleGlyph | null}>>;
-    ranges: Record<number, boolean | null>;
     tinySDF?: Promise<Rasterizer>;
     ideographTinySDF?: Promise<Rasterizer>;
     /**
@@ -28,8 +27,9 @@ type Entry = {
      */
     fontFaceTinySDFs?: Record<string, Promise<Rasterizer>>;
     /**
-     * One TinySDF per font selection used to draw whole grapheme clusters, which need a wider canvas
-     * to fit in than a single codepoint does.
+     * One TinySDF per font selection and canvas width used to draw whole grapheme clusters and the
+     * letters of the scripts drawn here (`drawnWide`), which need a wider canvas to fit in than
+     * another single codepoint does.
      */
     clusterTinySDFs?: Record<string, Promise<Rasterizer>>;
     /**
@@ -62,6 +62,9 @@ const defaultGenericFontFamily = 'sans-serif';
  * Client-generated glyphs are rendered at 2× because CJK glyphs are more detailed than others.
  */
 const textureScale = 2;
+/** The size client-generated glyphs are drawn at, and the room left around each in its bitmap. */
+const localFontSize = 24 * textureScale;
+const localPadding = 3 * textureScale;
 
 /**
  * Scenic Roads: glyphs drawn here (TinySDF, ~0.5 ms each) run in slices of the main thread at most
@@ -115,7 +118,7 @@ function inGlyphSlice<T>(f: () => T): Promise<T> {
  * The rasterizer, as it really is. TinySDF carries the `buffer` it was built with, which its type
  * declaration leaves out and which the canvas has to be widened through.
  */
-export type Rasterizer = TinySDF & {buffer: number};
+export type Rasterizer = TinySDF & {buffer: number; size?: number; ctx?: Pick<CanvasRenderingContext2D, 'measureText'>};
 
 /**
  * Builds the thing that rasterizes a glyph. Taken as a dependency so that a test can stand in for
@@ -133,12 +136,39 @@ const defaultCreateRasterizer: CreateRasterizer = (options, padding) => {
 };
 
 /**
- * How wide a grapheme cluster may be drawn, in multiples of the font size.
+ * How wide a grapheme cluster is drawn at first, in multiples of the font size.
  *
  * TinySDF sizes its canvas for a single character and cuts off the rest, but a cluster is a whole
- * syllable: Burmese `လား` is nearly twice the font size. Three ems fits the ones that occur.
+ * syllable: Burmese `လား` is nearly twice the font size. Three ems fits most.
  */
 const clusterEmsWide = 3;
+/**
+ * Scenic Roads: the widest canvas a cluster gets, in font sizes. One wider than `clusterEmsWide`
+ * (a Kannada or Khmer syllable of four consonants) is drawn on the next canvas, of a multiple of
+ * it, that holds it.
+ */
+const clusterEmsWidest = 12;
+
+/**
+ * Scenic Roads: whether a glyph is drawn on a cluster's wide canvas: a cluster, or one letter of a
+ * script drawn here, some of which are wider than the canvas of a single character (Tamil `ஔ`).
+ */
+function drawnWide(id: string): boolean {
+    return isCluster(id) || codePointNeedsShaping(id.codePointAt(0));
+}
+
+/**
+ * Scenic Roads: how wide a canvas, in font sizes, this glyph needs to be drawn whole, given a
+ * rasterizer of the same font to measure it with.
+ */
+function emsWideFor(rasterizer: Rasterizer, id: string): number {
+    if (!rasterizer.ctx || !rasterizer.size) return clusterEmsWide;
+    const {actualBoundingBoxLeft, actualBoundingBoxRight} = rasterizer.ctx.measureText(id);
+    const width = Math.ceil(actualBoundingBoxRight) - Math.floor(-actualBoundingBoxLeft);
+    if (width <= rasterizer.size - rasterizer.buffer) return clusterEmsWide;
+    const ems = Math.ceil((width + localPadding) / localFontSize / clusterEmsWide) * clusterEmsWide;
+    return Math.min(ems, clusterEmsWidest);
+}
 
 export class GlyphManager {
     requestManager: RequestManager;
@@ -217,7 +247,7 @@ export class GlyphManager {
      */
     async _getAndCacheGlyphsPromise(stack: string, id: string, variant: string): Promise<GlyphResult> {
         // Create an entry for this fontstack if it doesn’t already exist.
-        this.entries[stack] ??= {glyphs: {default: {}}, requests: {}, ranges: {}};
+        this.entries[stack] ??= {glyphs: {default: {}}, requests: {}};
         const entry = this.entries[stack];
         const glyphs = (entry.glyphs[variant] ||= {});
 
@@ -242,9 +272,10 @@ export class GlyphManager {
             return {stack, id, variant, glyph};
         }
 
-        // If the style hasn’t opted into server-side fonts, this codepoint is CJK, or this is a cluster
-        // that a codepoint-keyed glyphs URL cannot serve, draw the glyph locally and cache it.
-        if (!this.url || isCluster(id) || this._charUsesLocalIdeographFontFamily(codePoint)) {
+        // If the style hasn’t opted into server-side fonts, this codepoint is CJK, this is a cluster
+        // that a codepoint-keyed glyphs URL cannot serve, or (Scenic Roads) it is of a script whose
+        // every cluster is drawn here so a label is in one typeface, draw the glyph locally and cache it.
+        if (!this.url || isCluster(id) || codePointNeedsShaping(codePoint) || this._charUsesLocalIdeographFontFamily(codePoint)) {
             glyph = glyphs[id] = await this._drawGlyph(entry, stack, id);
             return {stack, id, variant, glyph};
         }
@@ -257,32 +288,38 @@ export class GlyphManager {
      *
      * Only reached for a single codepoint. What comes back is keyed by codepoint, as the file is,
      * and is cached by cluster -- which for one codepoint is the character itself.
+     *
+     * Scenic Roads: a character the range lacks is drawn locally, as one of a range that failed to
+     * load is, where upstream drew nothing: the served fonts hold some scripts and symbols in part
+     * or not at all, and a name lost those letters. Characters that draw nothing (controls, format
+     * characters, line separators, unassigned and private-use codepoints) stay unavailable.
      */
-    async _downloadAndCacheRangePromise(stack: string, id: string): Promise<{stack: string; id: string; glyph: StyleGlyph}> {
+    async _downloadAndCacheRangePromise(stack: string, id: string): Promise<{stack: string; id: string; glyph: StyleGlyph | null}> {
         const codePoint = id.codePointAt(0);
         const entry = this.entries[stack];
         const range = Math.floor(codePoint / 256);
-        if (entry.ranges[range]) {
-            return {stack, id, glyph: null};
-        }
 
-        // Start downloading this range unless we’re currently downloading it.
+        // Start downloading this range unless it is downloading or has been downloaded.
         entry.requests[range] ||= this._loadGlyphRange(stack, range);
 
         try {
             // Get the response and cache the glyphs from it.
             const response = await entry.requests[range];
             for (const responseId in response) {
-                entry.glyphs.default[String.fromCodePoint(+responseId)] = response[+responseId];
+                entry.glyphs.default[String.fromCodePoint(+responseId)] ??= response[+responseId];
             }
-            entry.ranges[range] = true;
-            return {stack, id, glyph: response[codePoint] || null};
+            if (response[codePoint]) return {stack, id, glyph: response[codePoint]};
+            if (/^[\p{C}\p{Zl}\p{Zp}]/u.test(id)) {
+                entry.glyphs.default[id] = null;
+                return {stack, id, glyph: null};
+            }
         } catch (e) {
-            // Fall back to drawing the glyph locally and caching it.
-            const glyph = entry.glyphs.default[id] = await this._drawGlyph(entry, stack, id);
-            this._warnOnMissingGlyphRange(glyph, range, codePoint, ensureError(e));
-            return {stack, id, glyph};
+            this._warnOnMissingGlyphRange(range, codePoint, ensureError(e));
         }
+
+        // Fall back to drawing the glyph locally and caching it.
+        const glyph = entry.glyphs.default[id] = await this._drawGlyph(entry, stack, id);
+        return {stack, id, glyph};
     }
 
     /**
@@ -309,7 +346,7 @@ export class GlyphManager {
         return glyphs;
     }
 
-    _warnOnMissingGlyphRange(glyph: StyleGlyph, range: number, id: number, err: Error): void {
+    _warnOnMissingGlyphRange(range: number, id: number, err: Error): void {
         const begin = range * 256;
         const end = begin + 255;
         const codePoint = id.toString(16).padStart(4, '0').toUpperCase();
@@ -345,7 +382,12 @@ export class GlyphManager {
 
     /** The draw itself, in the glyphs' next slice. */
     async _drawGlyphNow(entry: Entry, stack: string, id: string, fontFaceFamily?: string): Promise<StyleGlyph> {
-        const tinySDF = await this._getTinySDF(entry, stack, id, fontFaceFamily);
+        let tinySDF = await this._getTinySDF(entry, stack, id, fontFaceFamily);
+        if (drawnWide(id)) {
+            // Scenic Roads: a cluster wider than its canvas is drawn on a wider one, not cut off.
+            const emsWide = emsWideFor(tinySDF, id);
+            if (emsWide > clusterEmsWide) tinySDF = await this._getTinySDF(entry, stack, id, fontFaceFamily, emsWide);
+        }
         const char = await inGlyphSlice(() => tinySDF.draw(id));
 
         /**
@@ -368,6 +410,10 @@ export class GlyphManager {
         // By definition, control characters are invisible and nonspacing.
         const isControl = /^\p{gc=Cf}+$/u.test(id);
 
+        // Scenic Roads: a glyph whose top comes to exactly 0 keeps it (upstream's `|| -8` took 0 for
+        // "none" and set it 8 px down: Thai `น้ำ` and `ที่`, 55 px tall, sat under their line).
+        const top = char.glyphTop / textureScale - topAdjustment;
+
         return {
             id: id.codePointAt(0),
             bitmap: new AlphaImage({width: char.width || 30 * textureScale, height: char.height || 30 * textureScale}, char.data),
@@ -375,7 +421,7 @@ export class GlyphManager {
                 width: isControl ? 0 : (char.glyphWidth / textureScale || 24),
                 height: char.glyphHeight / textureScale || 24,
                 left: (char.glyphLeft / textureScale + leftAdjustment) || 0,
-                top: char.glyphTop / textureScale - topAdjustment || -8,
+                top: Number.isNaN(top) ? -8 : top,
                 advance: isControl ? 0 : (char.glyphAdvance / textureScale || 24),
                 isDoubleResolution: true
             }
@@ -385,20 +431,22 @@ export class GlyphManager {
     /**
      * Returns the TinySDF that draws this grapheme, created lazily. A stack keeps one per font
      * selection, so a fallback cannot bleed into the rest of the text, and one more per font file
-     * for the clusters drawn from it, which need a wider canvas.
+     * and canvas width for the clusters drawn from it, which need a wider canvas (`drawnWide`).
      *
      * A font file carries its own weight and style, so neither is sniffed out of the family name.
      * Where no file covers the grapheme, `localIdeographFontFamily` beats the last resort fontstack.
      */
-    _getTinySDF(entry: Entry, stack: string, id: string, fontFaceFamily?: string): Promise<Rasterizer> {
-        const cluster = isCluster(id);
+    _getTinySDF(entry: Entry, stack: string, id: string, fontFaceFamily?: string, emsWide: number = clusterEmsWide): Promise<Rasterizer> {
+        const cluster = drawnWide(id);
+        const wideKey = (family: string) => emsWide === clusterEmsWide ? family : `${family}\u0000${emsWide}`;
 
         if (fontFaceFamily) {
-            const cache = cluster ? 'clusterTinySDFs' : 'fontFaceTinySDFs';
-
-            entry[cache] ??= {};
-            entry[cache][fontFaceFamily] ||= this._createTinySDF(fontFaceFamily, false, cluster ? clusterEmsWide : 1);
-            return entry[cache][fontFaceFamily];
+            if (cluster) {
+                entry.clusterTinySDFs ??= {};
+                return entry.clusterTinySDFs[wideKey(fontFaceFamily)] ||= this._createTinySDF(fontFaceFamily, false, emsWide);
+            }
+            entry.fontFaceTinySDFs ??= {};
+            return entry.fontFaceTinySDFs[fontFaceFamily] ||= this._createTinySDF(fontFaceFamily, false);
         }
 
         const usesLocalIdeographFontFamily = stack === defaultStack &&
@@ -408,8 +456,7 @@ export class GlyphManager {
 
         if (cluster) {
             entry.clusterTinySDFs ??= {};
-            entry.clusterTinySDFs[family] ||= this._createTinySDF(family, true, clusterEmsWide);
-            return entry.clusterTinySDFs[family];
+            return entry.clusterTinySDFs[wideKey(family)] ||= this._createTinySDF(family, true, emsWide);
         }
 
         const cache = usesLocalIdeographFontFamily ? 'ideographTinySDF' : 'tinySDF';
@@ -434,7 +481,7 @@ export class GlyphManager {
             /[-\w]+/.test(fontName) ? fontName : `'${CSS.escape(fontName)}'`
         ).join(',');
 
-        const fontSize = 24 * textureScale;
+        const fontSize = localFontSize;
         const fontWeight = sniffFontStyles ? this._fontWeight(fontFamilies[0]) : undefined;
         const fontStyle = sniffFontStyles ? this._fontStyle(fontFamilies[0]) : 'normal';
 
@@ -447,7 +494,7 @@ export class GlyphManager {
             }
         }
 
-        const padding = 3 * textureScale;
+        const padding = localPadding;
         return this.createRasterizer({
             fontSize,
             buffer: Math.max(padding, Math.ceil(fontSize * (emsWide - 1) / 4)),
@@ -499,6 +546,11 @@ export class GlyphManager {
         return match;
     }
 
+    /** Scenic Roads: the glyphs queued to be drawn in a later slice (the app's status line). */
+    waiting(): number {
+        return glyphQueue.length;
+    }
+
     destroy(): void {
         for (const stack in this.entries) {
             const entry = this.entries[stack];
@@ -507,7 +559,6 @@ export class GlyphManager {
             entry.fontFaceTinySDFs = {};
             entry.glyphs = {default: {}};
             entry.requests = {};
-            entry.ranges = {};
         }
         this.entries = {};
         this.fontFaceManager.destroy();

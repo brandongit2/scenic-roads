@@ -49,7 +49,6 @@ import { Marks, point } from './ctl/marks';
 import { TerrainTint } from './ctl/tint';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
-import { slicedGlyphs } from './glyphs';
 import { installTrackpad } from './trackpad';
 import { MapStatus } from './ui/mapstatus';
 import { ColourCard } from './ui/colour';
@@ -199,7 +198,6 @@ async function main() {
   unlinkCameraFromTerrain(map);
   cacheTerrainRays(map);
   cheaperCovers(map);
-  slicedGlyphs(map);
   // Once the terrain is ready, set the pivot for the view (camera fixed; see camera3d.relevel).
   const levelOnce = () => {
     if (map.queryTerrainElevation(map.getCenter()) === null) return;
