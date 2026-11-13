@@ -2,10 +2,10 @@
 // the fingers goes, and how far a pinch zooms. Driven through the Chrome DevTools Protocol.
 //
 // Start a Chrome with remote debugging and a scratch profile, and the app (a Vite dev server, or
-// the map server) with ?checks:
+// the map server):
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=18229 \
 //     --user-data-dir=<scratch>/chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist about:blank
-//   node tools/check/touch-gestures.mjs --port 18229 --url 'http://127.0.0.1:18221/?checks' \
+//   node tools/check/touch-gestures.mjs --port 18229 --url 'http://127.0.0.1:18221/' \
 //     [--places mb,fuji,rockies,sea] [--zooms 12,15,17,18] [--pitches 0,45,70] [--gestures pinch,rotate,tilt,pan] [--out f.json]
 //
 // For each case it frames the place at the zoom (from the ground: cam3d.frame), hides the panels
@@ -25,7 +25,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) =>
   return acc;
 }, []));
 const PORT = Number(args.port ?? 18229);
-const URL = String(args.url ?? 'http://127.0.0.1:18221/?checks');
+const URL = String(args.url ?? 'http://127.0.0.1:18221/');
 const W = 1180, H = 820;
 const PLACES = {
   mb: { name: 'Mont Blanc', lng: 6.8652, lat: 45.8326 },

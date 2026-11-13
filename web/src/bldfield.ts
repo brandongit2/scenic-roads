@@ -1592,7 +1592,7 @@ export class FieldLayer implements CustomLayerInterface {
       map.triggerRepaint();
       return;
     }
-    const { vp } = boundTarget(this.map, gl);
+    const { vp } = boundTarget(this.map);
     // (each tile's heritage tint before anything is drawn: what the frame draws is then known)
     const tiles2 = draw.map(({ t, clip }) => ({ t, clip, her: this.herTexFor(t) }));
     // The still view's cache: the same inputs as the last frame's, the view is still; the field then

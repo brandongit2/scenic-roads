@@ -70,13 +70,6 @@ import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 
-// Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
-// for automated checks. No effect otherwise.
-if (new URLSearchParams(location.search).has('bgrender')) {
-  window.requestAnimationFrame = (f) => window.setTimeout(() => f(performance.now()), 16);
-  window.cancelAnimationFrame = (id) => window.clearTimeout(id);
-}
-
 async function main() {
   // The metadata and the data hosts' probe (hosts.ts) load while the map engine starts (its
   // container, WebGL context and workers, on an empty style); the basemap style follows them, as
@@ -133,15 +126,6 @@ async function main() {
     // Each tile's version is its pack's (a new catalogue re-requests only the tiles it changed).
     transformRequest: (url) => ({ url: packUrl(url) }),
   });
-  // Shaders linked in the background (our MapLibre's Context.asyncPrograms, glprog.ts): by default
-  // in Safari; `?ashader=1` or `0` sets it in any browser (for comparing).
-  const ashader = new URLSearchParams(location.search).get('ashader');
-  const setAshader = () => {
-    if (ashader === '0' || ashader === '1') (map as unknown as { painter: { context: { setAsyncPrograms(on: boolean): void } } }).painter.context.setAsyncPrograms(ashader === '1');
-  };
-  setAshader();
-  // (a restored context is a new painter's: set again)
-  map.on('webglcontextrestored', setAshader);
   if (v?.elev) map.jumpTo({ elevation: v.elev });
   if (!v) {
     map.fitBounds([[-80.6, 40.4], [-52.6, 51.8]], { duration: 0, padding: 20 });
@@ -181,8 +165,6 @@ async function main() {
     styleReady: () => styleReady,
     bridges: () => [[roads, 'roads-bridges'], [rails, 'rails-bridges']],
   });
-  // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
-  if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
   new TileRetry(map);
   unlinkCameraFromTerrain(map);
@@ -1298,7 +1280,9 @@ async function main() {
     map.once('load', attach);
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
-  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours, regions, catalogue: () => watch };
+  // The map, its camera and its settings, for the browser checks that drive it (tools/check:
+  // touch-gestures.mjs, pack-versions.mjs). Read only by them; it changes nothing in the app.
+  (window as unknown as { __app: unknown }).__app = { map, cam3d, store };
 }
 
 /**

@@ -1,6 +1,6 @@
 // The custom layers' shader programs. `link` waits for the driver as the program is made; `linkLater`
 // doesn't, where MapLibre's context links in the background (its Context.asyncPrograms: Safari, with
-// KHR_parallel_shader_compile; `?ashader=0|1` sets it, main.ts): until the link completes the getter
+// KHR_parallel_shader_compile): until the link completes the getter
 // gives null, counted as a draw waiting (Context.pendingPrograms, so the map draws another frame),
 // and the layer leaves out what that program draws. Nothing that waits for the link (the link
 // status, uniform lookups) is asked before. Elsewhere the getter links and finishes at once, as

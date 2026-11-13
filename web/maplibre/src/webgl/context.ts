@@ -60,7 +60,7 @@ export class Context {
     program: ProgramValue;
     /**
      * Scenic Roads: KHR_parallel_shader_compile while programs are linked in the background
-     * (Program.ready; by default in Safari, where it has the extension: setAsyncPrograms), else null.
+     * (Program.ready; in Safari, where it has the extension), else null.
      */
     asyncPrograms: KHR_parallel_shader_compile | null;
     /** Scenic Roads: the draws skipped this frame for programs still linking (Program.ready). */
@@ -138,7 +138,7 @@ export class Context {
         this.pendingPrograms = 0;
         this.programFrame = 0;
         this._linkingSeenFrame = -1;
-        this.setAsyncPrograms(typeof navigator !== 'undefined' && (navigator.vendor ?? '').includes('Apple'));
+        this.asyncPrograms = typeof navigator !== 'undefined' && (navigator.vendor ?? '').includes('Apple') ? gl.getExtension('KHR_parallel_shader_compile') : null;
 
         this.boundUniformBuffers = [];
         this.projectionUniformBuffer = createProjectionUniformBuffer(this);
@@ -146,14 +146,6 @@ export class Context {
         this.freeProjectionUniformBuffers = [];
         this.terrainUniformBuffer = createTerrainUniformBuffer(this);
         this.frameUniformBuffer = createFrameUniformBuffer(this);
-    }
-
-    /**
-     * Scenic Roads: programs made from now on are linked in the background (when the browser has
-     * KHR_parallel_shader_compile) or, off, waited for as they're made.
-     */
-    setAsyncPrograms(on: boolean): void {
-        this.asyncPrograms = on ? this.gl.getExtension('KHR_parallel_shader_compile') : null;
     }
 
     /**

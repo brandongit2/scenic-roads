@@ -1719,7 +1719,7 @@ export class RoadLayer implements CustomLayerInterface {
       this.accum = false;
       return null;
     }
-    const prevFb = boundTarget(this.map, gl).fb;
+    const prevFb = boundTarget(this.map).fb;
     if (this.accum) {
       gl.deleteFramebuffer(this.accum.fb);
       gl.deleteTexture(this.accum.acc);
@@ -2419,7 +2419,7 @@ export class RoadLayer implements CustomLayerInterface {
      * is left for the passes after. */
     const fill = (a: NonNullable<typeof acc>) => {
       const A = this.progA, u = A.u;
-      const { fb: prevFb, vp } = boundTarget(this.map, gl);
+      const { fb: prevFb, vp } = boundTarget(this.map);
       gl.bindFramebuffer(gl.FRAMEBUFFER, a.fb);
       gl.viewport(0, 0, a.w, a.h);
       gl.disable(gl.STENCIL_TEST);

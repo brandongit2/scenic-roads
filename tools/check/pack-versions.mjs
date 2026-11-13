@@ -8,7 +8,7 @@
 // command restarts it):
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=18229 \
 //     --user-data-dir=<scratch>/chrome about:blank
-//   node tools/check/pack-versions.mjs --port 18229 --url 'http://127.0.0.1:18153/?checks' \
+//   node tools/check/pack-versions.mjs --port 18229 --url 'http://127.0.0.1:18153/' \
 //     --at -73.125,45.24,9.5 --pack 6/18/22 --publish '<command writing the next catalogue>'
 //
 // It frames `--at` (lng,lat,zoom: best a corner of four z6 packs), waits for the road tiles to
@@ -22,7 +22,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((acc, a, i, all) =>
   return acc;
 }, []));
 const PORT = Number(args.port ?? 18229);
-const URL_ = String(args.url ?? 'http://127.0.0.1:18153/?checks');
+const URL_ = String(args.url ?? 'http://127.0.0.1:18153/');
 const [lng, lat, zoom] = String(args.at ?? '-73.125,45.24,9.5').split(',').map(Number);
 const PACK = String(args.pack ?? '6/18/22');
 const origin = new URL(URL_).origin;
@@ -77,10 +77,10 @@ await send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: t
 await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 860, deviceScaleFactor: 1, mobile: false });
 await send('Page.navigate', { url: URL_ });
 for (let i = 0; i < 120; i++) {
-  if (await evaluate('return !!(window.__map && window.__map.loaded())').catch(() => false)) break;
+  if (await evaluate('return !!(window.__app && window.__app.map.loaded())').catch(() => false)) break;
   await sleep(500);
 }
-await evaluate(`window.__map.jumpTo({ center: [${lng}, ${lat}], zoom: ${zoom}, pitch: 0, bearing: 0 }); return 1;`);
+await evaluate(`window.__app.map.jumpTo({ center: [${lng}, ${lat}], zoom: ${zoom}, pitch: 0, bearing: 0 }); return 1;`);
 await settle();
 const before = tiles.splice(0);
 const n0 = await catalogueN();

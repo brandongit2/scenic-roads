@@ -176,7 +176,6 @@ Hebrew, Latin with combining marks not precomposed), in two typefaces; the app's
   as bytes, the same pixels (premultiplied rounding up, as Safari's own upload). They're fetched
   through the image request queue (`ImageRequest.getImage`'s `decode`), so its limits and expiry
   apply. Other images, a worker that fails or takes over 10 s, and other browsers: as before.
-  `?pngdec=0`: always as bitmaps.
 - **Shaders linked in the background in Safari** (`program.ts` `ready`, `context.ts`
   `asyncPrograms`/`linkComplete`, `painter.ts` `BLOCKING_PROGRAMS`): with
   KHR_parallel_shader_compile, a program's link status, attributes and uniforms are read only once
@@ -188,7 +187,7 @@ Hebrew, Latin with combining marks not precomposed), in two typefaces; the app's
   (`LINK_WAIT_FRAMES`) is waited for. A failed link throws at each draw, as upstream. The tiles' clipping masks, the depth pass
   and the terrain's depth are always waited for. On by default where
   `navigator.vendor` is Apple's; elsewhere (Chrome showed no gain) as upstream. The app's custom
-  layers do the same (`web/src/glprog.ts`); `?ashader=0|1` sets it in any browser.
+  layers do the same (`web/src/glprog.ts`).
 
 ### Tile covers over 3D terrain
 

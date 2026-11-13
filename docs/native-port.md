@@ -696,8 +696,9 @@ recast as views in S0. Three things replace it.
   terrain heights, the placed labels with their boxes. They are stated in the map's terms (a
   matrix, a list of tile ids, a height at a longitude and latitude, a text and a rectangle), so
   they stay comparable while the code that produces them is reshaped. The app gets a small capture
-  hook of its own to report them (#1204 deletes `?eval` and `?checks`); each step keeps the hook
-  reading the right place.
+  hook of its own to report them (#1204 deleted `?eval` and `?checks`; `window.__app`, the map,
+  camera and settings that tools/check's browser checks drive, is all that is left); each step
+  keeps the hook reading the right place.
 - *The tour.* The memory audit's tour as a camera path: frames at fixed times, frame times, and
   memory at each stop. Frame times are taken in a windowed Chrome at the display's rate with no
   other tabs, in a quiet period on the M4, as the median of three runs; "no worse" means within
