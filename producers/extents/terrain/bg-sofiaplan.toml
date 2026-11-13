@@ -1,0 +1,21 @@
+name = "Sofiaplan Цифров модел на релефа (София град)"
+credit = "Софияплан (Sofiaplan), Столична община"
+licence = "none set (\"Не са зададени лицензни права\")"
+licence_url = "https://urbandata.sofia.bg/api/3/action/package_show?id=digital-terrain-model-clean-surface-sofia-city"
+source = "https://urbandata.sofia.bg/api/3/action/package_show?id=digital-terrain-model-clean-surface-sofia-city"
+theme = "terrain"
+availability = "open"
+notes = "The city planning office's bare-earth relief model of the territory of Sofia city, current to 1 Jan 2017, downloaded without a login from the city's open-data portal: one 7z archive (22.6 MB) holding a GeoTIFF of 5 m cells (its world file), interpolated from contours (\"TopoToR\", ArcGIS's Topo to Raster). Its extent is the area it is stated to cover, Sofia city (София град), as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data (the archive can't be read by range)."
+
+[[piece]]
+id = "dtm"
+label = "Цифров модел на релефа - чист (5 m)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BGR"], name = ["Grad Sofiya"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2017

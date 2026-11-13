@@ -1,0 +1,16 @@
+name = "Ελληνικό Κτηματολόγιο ψηφιακά μοντέλα εδάφους"
+credit = "Ελληνικό Κτηματολόγιο (Hellenic Cadastre)"
+licence = "on application to the Hellenic Cadastre"
+licence_url = "https://www.gov.gr/ipiresies/periousia-kai-phorologia/ktematographese/geopule-geokhorikon-dedomenon-inspire-ellenikou-ktematologiou"
+source = "https://www.gov.gr/ipiresies/periousia-kai-phorologia/ktematographese/geopule-geokhorikon-dedomenon-inspire-ellenikou-ktematologiou"
+theme = "terrain"
+availability = "paid"
+notes = "The Hellenic Cadastre's INSPIRE gateway lists the availability and technical characteristics of its orthophotos and digital terrain models \"at various scales and periods\", to be had by application to the Cadastre (gov.gr's page, read through the Wayback Machine: the live page answers 403, ktimatologio.gr and geodata.gov.gr were unreachable). Their grids, areas and years aren't stated on any page read; its high-resolution elevation programme (DEM_HD, DEM_HD2: specifications in ΦΕΚ Β' 4682/2024) is under way. Listed, not drawn."
+
+[[piece]]
+id = "dtm"
+label = "Ψηφιακά μοντέλα εδάφους (on application)"
+method = "none"
+why = "the models' grids and areas aren't stated on any page read, and no index is published"
+[piece.metrics]
+surface = "ground"

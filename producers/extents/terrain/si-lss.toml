@@ -1,0 +1,21 @@
+name = "ARSO Lasersko skeniranje Slovenije 2011–2015"
+credit = "Agencija Republike Slovenije za okolje (ARSO), LSS"
+licence = "CC-BY-4.0 (as Mapterhorn reads ARSO's terms; ARSO's own page was unreachable)"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://gis.arso.gov.si/evode/profile.aspx?id=atlas_voda_Lidar%40Arso"
+theme = "terrain"
+availability = "open"
+notes = "The environment agency's laser scanning of the whole of Slovenia, flown 2011 to 2015 (at least 5 first returns per m²): its bare-earth model DMR1, a 1 m grid in 1 km² files by block (the blocks' technical reports, b_14_izdelava_izdelkov.pdf: Geodetski inštitut Slovenije and Flycom, 2014; each block's own height RMS, 0.06 to 0.07 m in block 14, none for the whole). Its extent is the country the survey is stated to cover, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No tile index could be read on 13 Nov 2026: ARSO's GIS portal answered \"temporarily unavailable\" (the lidar page 503, the tile folders 403, the fishnet zip the outage page), and the Wayback Machine holds the block reports and a few tiles, no index. Superseded where the 2023–2025 CLSS has its 0.5 m model (si-clss)."
+
+[[piece]]
+id = "dmr1"
+label = "LSS DMR1 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["SVN"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2015

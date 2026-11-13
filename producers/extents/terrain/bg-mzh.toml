@@ -1,0 +1,80 @@
+name = "МЗХ Цифров модел на релефа (INSPIRE)"
+credit = "Министерство на земеделието и храните, Република България"
+licence = "no conditions stated (the INSPIRE view service's record: access limited under Art. 13(1)(d) of the INSPIRE directive; its WCS: fees and access constraints \"NONE\")"
+licence_url = "http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&request=GetCapabilities&version=2.0.1"
+source = "http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&request=GetCapabilities&version=2.0.1"
+theme = "terrain"
+availability = "open"
+notes = "The agriculture ministry's elevation models made with its orthophotos, a third of the country a year (its INSPIRE GeoServer, RasterData workspace): the 1 m terrain models Dem_2023, Dem_2024 and Dem_2025 (\"DTM\", cells of 1.0 m in UTM 35N as each coverage's DescribeCoverage states) and the 4 m surface models Dem_2020, Dem_2021 and Dem_2022 (\"DSM\", cells of 4.0 m; the 2021 one 4.016 m). Its WCS answers GetCoverage without a login, so they download: open. Each coverage's extent is its valid data in a GetCoverage asked for at a coarse scale (2 km cells: SCALEFACTOR 0.0005 for the 1 m models, 0.002 for the 4 m ones): `files`, its grain the coarse cell; the spacing is the coverage's own. The server takes 2 to 5 minutes to make each 1 m model's coarse answer (Dem_2025: 301 s), longer than the producer waits (180 s): those three answers were fetched with curl at the same addresses on 13 Nov 2026 and put in the run's cache. Dem_Alternative (a 4 m surface model of the whole country, its year and making not stated) is left out. No accuracy is stated."
+
+[[piece]]
+id = "dtm-2023"
+label = "Dem_2023 DTM 1 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_2023&format=image/tiff&SCALEFACTOR=0.0005"]
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2023
+
+[[piece]]
+id = "dtm-2024"
+label = "Dem_2024 DTM 1 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_2024&format=image/tiff&SCALEFACTOR=0.0005"]
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2024
+
+[[piece]]
+id = "dtm-2025"
+label = "Dem_2025 DTM 1 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_2025&format=image/tiff&SCALEFACTOR=0.0005"]
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2025
+
+[[piece]]
+id = "dsm-2020"
+label = "Dem_2020 DSM 4 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_2020&format=image/tiff&SCALEFACTOR=0.002"]
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = 4
+year = 2020
+
+[[piece]]
+id = "dsm-2021"
+label = "Dem_2021 DSM 4 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_2021&format=image/tiff&SCALEFACTOR=0.002"]
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = 4
+year = 2021
+
+[[piece]]
+id = "dsm-2022"
+label = "Dem_2022 DSM 4 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_2022&format=image/tiff&SCALEFACTOR=0.002"]
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = 4
+year = 2022

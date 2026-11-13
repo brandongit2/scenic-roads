@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"ru-ffpd","theme":"terrain","read":[{"piece":"dem","method":"none","why":"no grid, coverage or index is stated for the fund's relief models","date":"2026-11-13"}],"features":[{"type":"Feature","properties":{"piece":"dem","extent":"unknown","availability":"paid","name":"Цифровые модели рельефа (federal fund)"},"geometry":null}]}

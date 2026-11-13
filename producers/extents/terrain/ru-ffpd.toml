@@ -1,0 +1,14 @@
+name = "ФФПД цифровые модели рельефа"
+credit = "ФГБУ «Центр геодезии, картографии и ИПД» (federal spatial data fund), Российская Федерация"
+licence = "on application, by contract and fee (free to state and municipal bodies)"
+licence_url = "https://cgkipd.ru/fsdf/service/provide/"
+source = "https://cgkipd.ru/fsdf/service/provide/"
+theme = "terrain"
+availability = "paid"
+notes = "The federal spatial data fund supplies its materials on application, with a contract and a fee (free to state and municipal bodies); the centre lists digital relief models among its photogrammetric work, with no grid, coverage or licence stated (its pages, read through the Wayback Machine). The Arctic's 2 m surface model is ArcticDEM's, declared apart (pgc-arcticdem). Listed, not drawn."
+
+[[piece]]
+id = "dem"
+label = "Цифровые модели рельефа (federal fund)"
+method = "none"
+why = "no grid, coverage or index is stated for the fund's relief models"

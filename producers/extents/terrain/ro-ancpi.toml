@@ -1,0 +1,27 @@
+name = "ANCPI Modelul Numeric al Terenului and LAKI MNT"
+credit = "Date realizate de ANCPI (Agenția Națională de Cadastru și Publicitate Imobiliară)"
+licence = "OGL-ROU-1.0"
+licence_url = "https://help.emd.dk/mediawiki/images/c/ca/Licen%C8%9Ba_deschisa_Modelul_numeric_al_terenului_v2_MNT.pdf"
+source = "https://geoportal.ancpi.ro/"
+theme = "terrain"
+availability = "open"
+notes = "The cadastre agency's terrain models, both open under OGL-ROU-1.0: the national Modelul Numeric al Terenului (from 1:50,000 contours, updated 2014–2015 and 2019–2020; the agency states accuracies of 10 m in mountains, 5 m in hills and 1.5 m on plains), in 5 m, 10 m and 26.5 m grids by county with part of the Danube delta left out, as only a reseller's description says (EMD's wiki); and the LAKI II lidar programme's 0.5 m terrain model (finished 2022), a zip per administrative-territorial unit (geoportal.ancpi.ro/descarcare/LAKI_MNT/UAT/grid/T<code>.zip: 325 units in Mapterhorn's copy of the list, 2025). On 13 Nov 2026 the agency's geoportal was off line (geoportal.ancpi.ro has no address; geoportal.gov.ro refused the connection; ancpi.ro says the geoportal will be restarted in stages), and the Wayback Machine holds no index of either. Without the agency's own statement of either's area and grids: listed, not drawn."
+
+[[piece]]
+id = "mnt"
+label = "Modelul Numeric al Terenului"
+method = "none"
+why = "the geoportal is off line, and the model's grids by county and its gap in the Danube delta are stated only by a reseller"
+[piece.metrics]
+surface = "ground"
+year = 2020
+
+[[piece]]
+id = "laki-mnt"
+label = "LAKI II MNT 0.5 m"
+method = "none"
+why = "the units it covers are named only in a third party's copy of the file list, and the geoportal is off line"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

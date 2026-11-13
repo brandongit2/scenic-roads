@@ -1,0 +1,28 @@
+name = "RGZ Digitalni model terena"
+credit = "Republički geodetski zavod, Republika Srbija"
+licence = "issued under the law on republic administrative fees (Zakon o republičkim administrativnim taksama)"
+licence_url = "https://www.rgz.gov.rs/digitalni-model-terena"
+source = "https://www.rgz.gov.rs/digitalni-model-terena"
+theme = "terrain"
+availability = "paid"
+notes = "The survey authority's terrain models (its DTM page): from aerial photogrammetry, heights on 5 m, 10 m and 25 m grids with breaklines (the 2007–2010 survey's model updated from that of 2011–2013); and from lidar, a high-precision 1 m DTM of the Tisa floodplain (about 2,920 km², flown 2012, mean height accuracy 0.07 m). A lidar DTM of 74 flood areas (about 9,427 km²) is being made (IPA II 2014) and is not a piece. Issued for the administrative fees. The page doesn't state the photogrammetric model's coverage, and none of them has a published outline: listed, not drawn."
+
+[[piece]]
+id = "dmt-5m"
+label = "DMT 5 m (aerial photogrammetry 2011–2013)"
+method = "none"
+why = "the area the photogrammetric model covers isn't stated, and no index is published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2013
+
+[[piece]]
+id = "tisa-lidar"
+label = "Visokoprecizni DMT, plavno područje Tise (lidar 2012)"
+method = "none"
+why = "the Tisa floodplain surveyed (about 2,920 km²) has no published outline"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2012

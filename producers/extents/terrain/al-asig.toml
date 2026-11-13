@@ -1,0 +1,20 @@
+name = "ASIG LiDAR DTM"
+credit = "Autoriteti Shtetëror për Informacionin Gjeohapësinor (ASIG), Republika e Shqipërisë"
+licence = "none found"
+licence_url = "https://asig.gov.al/en/aerial-photography-in-the-republic-of-albania/"
+source = "https://asig.gov.al/en/aerial-photography-in-the-republic-of-albania/"
+theme = "terrain"
+availability = "closed"
+notes = "The geospatial authority's 2015–2017 aerial survey with lidar, whose DTM and DSM are made at 5 points/m² in urban areas (about 1,028 km²), 2 points/m² in rural areas (about 10,340 km²) and up to 1 point/m² in the mountains (about 17,380 km²): 28,748 km², the whole country (its page). The page says the products are accessible through the national geoportal, but its WCS offers no elevation coverage to an anonymous request (164 coverages, none a DTM or DSM) and the geoportal signs in through CAS; no download was found. Its extent is the country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No grid is stated and the density differs by zone, so the piece states no spacing (it has no score)."
+
+[[piece]]
+id = "dtm"
+label = "LiDAR DTM 2015–2017"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ALB"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+year = 2017

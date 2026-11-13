@@ -1,0 +1,21 @@
+name = "DGU Digitalni model reljefa"
+credit = "Državna geodetska uprava, Republika Hrvatska"
+licence = "fee under the cost regulation (Pravilnik NN 53/23, 106/25), on written request"
+licence_url = "https://dgu.gov.hr/proizvodi-i-usluge/podaci-topografske-izmjere/digitalni-model-reljefa/180"
+source = "https://dgu.gov.hr/proizvodi-i-usluge/podaci-topografske-izmjere/digitalni-model-reljefa/180"
+theme = "terrain"
+availability = "paid"
+notes = "The survey administration's relief model (DMR, and its height model DMV) from the multisensor aerial survey of the Republic of Croatia: lidar of at least 8 points/m² flown 2022–2023 (two lots and the levees), photogrammetry 2023–2024; the DMV from lidar has its points every 1 m (the product page). Issued by area or by 1:25,000 and 1:2,000 sheets on a written request, at a fee under the cost regulation. The NIPP registry's entry for the classified point cloud (source 1694) says \"Nema uvjeta za pristup i korištenje\", but no download was found and the product page names the fee: the more restrictive reading is kept. Its extent is the country the survey is stated to cover (\"Multisenzorsko zračno snimanje Republike Hrvatske\"), as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No accuracy is stated."
+
+[[piece]]
+id = "dmv"
+label = "DMV 1 m (lidar 2022–2023)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HRV"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2023

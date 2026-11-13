@@ -1,0 +1,17 @@
+name = "HGM Sayısal Yüzey Modeli 5 m (SYM5-L0)"
+credit = "Harita Genel Müdürlüğü (HGM), Türkiye"
+licence = "sold under HGM's terms (144.00 TL, VAT included), ordered by form"
+licence_url = "https://www.harita.gov.tr/urunler/yukseklik-verileri-grid/1"
+source = "https://www.harita.gov.tr/urunler/yukseklik-verileri-grid/1"
+theme = "terrain"
+availability = "paid"
+notes = "The General Directorate of Mapping's elevation grids (its products page, read through the Wayback Machine; harita.gov.tr timed out on 13 Nov 2026): the 5 m surface model SYM5-L0 (144.00 TL), DTED-2 and the 30 m terrain model SAM sold by order form; SYM12 and SAM12 free to public bodies only. What area a SYM5-L0 purchase covers, and the model's coverage, aren't stated on the page read (its product pages are broken links; the Wayback Machine's index was offline): listed, not drawn."
+
+[[piece]]
+id = "sym5"
+label = "SYM5-L0 5 m"
+method = "none"
+why = "the model's coverage isn't stated on any page read, and no sheet index is published"
+[piece.metrics]
+surface = "surface"
+spacing_m = 5

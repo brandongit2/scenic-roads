@@ -1,0 +1,55 @@
+name = "AGCC Modelul Digital al Terenului"
+credit = "Agenția Geodezie, Cartografie și Cadastru (AGCC), Republica Moldova"
+licence = "no conditions stated (INSPIRE record: \"noLimitations\", \"noConditionsApply\")"
+licence_url = "https://geodata.gov.md/geoserver/DTM/wcs?service=WCS&request=GetCapabilities"
+source = "https://geodata.gov.md/geoserver/DTM/wcs?service=WCS&request=GetCapabilities"
+theme = "terrain"
+availability = "open"
+notes = "The land agency's terrain models, served by the national geoportal's GeoServer: its DTM workspace's WCS (geodata.gov.md/geoserver/DTM/wcs; the server-wide WCS and WFS answer \"disabled\", the workspace's answers): \"DTM Moldova 2007, (5m)\" (DTM__DTM_5m, made by INGEOCAD from an aerial survey, its INSPIRE record saying the left bank of the Dniester isn't in it, though the coverage has values there: its mask holds 1,965 of the 1,981 km² Natural Earth draws for the left bank), \"DTM 2020, Centru\" and \"DTM 2021, Sud\" (5 m) and the Plaiul Fagului reserve's (0.5 m), all in MOLDREF99 (EPSG:4026), their cells as each coverage's DescribeCoverage states. Each coverage's extent is its valid data (nodata −32767) in a GetCoverage asked for at a coarse scale (SCALEFACTOR, each a GeoTIFF of a few hundred kB): `files`, its grain the coarse cell; the spacing is the coverage's own, not the coarse answer's. No accuracy is stated."
+
+[[piece]]
+id = "dtm-2007"
+label = "DTM Moldova 2007 (5 m)"
+method = "raster"
+urls = ["https://geodata.gov.md/geoserver/DTM/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=DTM__DTM_5m&format=image/tiff&SCALEFACTOR=0.01"]
+mask_m = 500
+tolerance_m = 250
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2007
+
+[[piece]]
+id = "dtm-2020-centru"
+label = "DTM 2020, Centru (5 m)"
+method = "raster"
+urls = ["https://geodata.gov.md/geoserver/DTM/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=DTM__DTM_2020_centru&format=image/tiff&SCALEFACTOR=0.01"]
+mask_m = 500
+tolerance_m = 250
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2020
+
+[[piece]]
+id = "dtm-2021-sud"
+label = "DTM 2021, Sud (5 m)"
+method = "raster"
+urls = ["https://geodata.gov.md/geoserver/DTM/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=DTM__DTM_2021_Sud&format=image/tiff&SCALEFACTOR=0.01"]
+mask_m = 500
+tolerance_m = 250
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2021
+
+[[piece]]
+id = "plaiul-fagului"
+label = "DTM rez. Plaiul Fagului (0.5 m)"
+method = "raster"
+urls = ["https://geodata.gov.md/geoserver/DTM/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=DTM__plaiulfagului_dtm&format=image/tiff&SCALEFACTOR=0.05"]
+mask_m = 10
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5

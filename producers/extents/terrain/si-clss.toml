@@ -1,0 +1,26 @@
+name = "CLSS Ciklično lasersko skeniranje Slovenije 2023–2025"
+credit = "Geodetska uprava Republike Slovenije, CLSS"
+licence = "no conditions stated (\"No limitations\" in the GURS metadata record)"
+licence_url = "https://eprostor.gov.si/imps/srv/slv/catalog.search#/metadata/951eaa88-0f6b-4d29-8d02-eaf56534453e"
+source = "https://clss.si/"
+theme = "terrain"
+availability = "open"
+notes = "The survey administration's cyclic laser scanning of Slovenia, flown 2023 to 2025 (a three-year cycle for the whole country, at least 10 last returns per m²). Its public viewer's 1 km tile grid (the GeoServer layer fmp_clss:tileindex_clss_zdruzeno behind clss.si, EPSG:3794), each tile with its block (`orig_ime`, `ime_ob`), its capture dates (`datum_za_1`, \"od 07.04.2025 do 09.04.2025\": the last year taken) and its files' links, downloaded without a login (20 a day). The bare-earth model DMR is a regular 0.5 m grid of points interpolated from the ground and water returns, published as LAZ (the blocks' technical reports, e.g. Jesenice_porocilo.pdf); the tender's height accuracy RMSE_H ≤ 10 cm (Jesenice achieved 5 cm). Pieces by block and year."
+
+[[piece]]
+id = "dmr"
+label = "CLSS DMR 0.5 m"
+method = "wfs"
+class = "index"
+url = "https://lift.clss.si/geoserver/fmp_clss/wfs"
+type = "fmp_clss:tileindex_clss_zdruzeno"
+fields = ["orig_ime", "ime_ob", "datum_za_1", "geom"]
+page = 5000
+by = ["orig_ime", "ime_ob"]
+name = "ime_ob"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+vertical_rmse_m = 0.1
+year = { field = "datum_za_1", date = "text" }

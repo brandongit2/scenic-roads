@@ -1,0 +1,18 @@
+name = "RGURS Digitalni model terena (2026)"
+credit = "Republička uprava za geodetske i imovinsko-pravne poslove Republike Srpske (RGURS)"
+licence = "none stated (the WMS capabilities say fees and access constraints \"none\"; its layers need a token)"
+licence_url = "https://geoportal.rgurs.org/geoserver/dmt/wms?service=WMS&request=GetCapabilities"
+source = "https://geoportal.rgurs.org/init/geoportal.json"
+theme = "terrain"
+availability = "closed"
+notes = "Republika Srpska's survey administration's geoportal lists \"Digitalni model terena (2026)\", a terrain model \"for 20 local self-government units, five resolutions\" (10 m, 5 m, 1 m, 50 cm and 20 cm: the WMS layers dmt:dmt_10m … dmt:dmt_20cm), and the 2012 terrain and height models of the entity, all in groups flagged keycloakToken: an anonymous GetMap answers \"LayerNotDefined\", so they are seen only with a geoportal token and downloaded nowhere. Which 20 units isn't stated, and the capabilities give one box for the entity: listed, not drawn."
+
+[[piece]]
+id = "dmt-2026"
+label = "Digitalni model terena (2026), 20 local units"
+method = "none"
+why = "the 20 local self-government units it covers aren't named, and its only box is the entity's"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.2
+year = 2026

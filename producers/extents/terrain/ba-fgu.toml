@@ -1,0 +1,30 @@
+name = "FGU Digitalni model reljefa"
+credit = "Federalna uprava za geodetske i imovinsko-pravne poslove (FGU), Federacija Bosne i Hercegovine"
+licence = "use and access limited under the regulations and tariffs in force (\"Ograničeno korištenje i pristup podacima u skladu sa važećim propisima i tarifama\")"
+licence_url = "https://katastar.ba/koristenje"
+source = "https://metapodaci.ippfbih.gov.ba/srv/api/records/adbbd0cd-a68a-43cc-b999-d38d7ace03d4"
+theme = "terrain"
+availability = "paid"
+notes = "The Federation's survey administration's terrain models, as its spatial data infrastructure's metadata records state them (metapodaci.ippfbih.gov.ba): \"Digitalni model reljefa 5m\", the terrain model of the area of Bosnia and Herzegovina from the EU-funded aerial photogrammetric survey of its territory (a 5 m grid; temporal extent from 2013), and \"Digitalni model reljefa (LiDAR) 2018\", the flood-hazard project's lidar of the river corridors (3,288 km², October to December 2018, 4 to 20 points/m², a 1 × 1 m DTM grid, absolute height accuracy 10 cm). Both viewable on the geoportal, issued on a written request at the tariff (katastar.ba/koristenje). The 5 m model's extent is the country it is stated to cover, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The corridors have no published outline (the record's box is the country's): listed, not drawn. The EU's IPA II 2019 lidar of the whole country (point clouds, DTM and DSM, planned 2023–2024; reported flown and delivered to the three administrations, processing under way) has no product published yet and is not a piece."
+
+[[piece]]
+id = "dmr-5m"
+label = "Digitalni model reljefa 5m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BIH"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+
+[[piece]]
+id = "lidar-2018"
+label = "Digitalni model reljefa (LiDAR) 2018"
+method = "none"
+why = "the river corridors surveyed (3,288 km²) have no published outline: the record's box is the country's"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2018
