@@ -4,13 +4,13 @@
 // landmark's popup or selecting a road.
 import type * as maplibregl from 'maplibre-gl';
 import { getRoadWays, getWay, peekWay, roadWays } from '../api';
-import { buildingAt, hiddenByBuilding, setHovered as setBuildingHover, summarise as buildingSummary, type Ray } from '../buildings';
+import { buildingAt, hiddenByBuilding, setHovered as setBuildingHover, summarize as buildingSummary, type Ray } from '../buildings';
 import * as cam3d from '../camera3d';
 import type { Depth } from '../depth';
 import type { Available } from './available';
 import { loadDetail, peekDetail, refKey } from '../details';
 import type { Ferries } from '../ferries';
-import { AREA_LAYERS, POINT_LAYERS, summariseFeature, withDetails, type FeatureSummary, type Overlays } from '../overlays';
+import { AREA_LAYERS, POINT_LAYERS, summarizeFeature, withDetails, type FeatureSummary, type Overlays } from '../overlays';
 import type { RegionLayers } from '../regions';
 import type { HoverInfo, RoadLayer } from '../roads/layer';
 import type { Store } from '../state';
@@ -241,7 +241,7 @@ export class Hover {
     }
     if ('feature' in x) {
       marks.ringAround(null);
-      const f = summariseFeature(x.feature.layer, x.feature.props, x.feature.lngLat);
+      const f = summarizeFeature(x.feature.layer, x.feature.props, x.feature.lngLat);
       if (f) this.showFeat(f, []);
       return;
     }

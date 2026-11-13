@@ -152,7 +152,7 @@ for want type agent prompt in \
     refuse "" "" "Look at the pool's logs." \
     refuse general-purpose "" "Fix the docs. Follow tools/dev/testing.md for running tests." \
     pass "" "" "Fix the docs. Follow the standing rules in tools/dev/agent-rules.md." \
-    pass web-fetch "" "Read https://example.org/ and summarise it." \
+    pass web-fetch "" "Read https://example.org/ and summarize it." \
     pass "" t "Look at the pool's logs."; do
   out=$(brief "$prompt" "$type" "$agent"); rc=$?
   if [[ $want == refuse ]]; then

@@ -12,7 +12,7 @@ there are problems.
 
 The rules, and the failure each one was added for:
   format     one {"n", "kind", "langs", "main", "sub"} JSON line per name
-  romanise   no CJK or kana left in the English
+  romanize   no CJK or kana left in the English
   same       English that's the name itself (case, accents, punctuation aside) must be null
   half       a translation that kept the original's articles/prepositions ("Lake de la Point")
   order      the original's word order ("Lake Long" for Lac Long)
@@ -113,7 +113,7 @@ def _fold(w: str) -> str:
 
 
 def kunrei(word: str) -> str | None:
-    """'kunrei' when a romanised word needs Kunrei/Nihon-shiki syllables, 'typo' for "stu"
+    """'kunrei' when a romanized word needs Kunrei/Nihon-shiki syllables, 'typo' for "stu"
     (Nakakomastu for Nakakomatsu), else None."""
     w = _fold(word)
     if _HEP_RE.fullmatch(w):

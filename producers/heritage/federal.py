@@ -4,7 +4,7 @@
 The authority is Parks Canada's Directory of Federal Heritage Designations (DFHD, official,
 open data — but without coordinates). Each designated place in our provinces (National
 Historic Sites, heritage lighthouses and railway stations, federal heritage buildings) is
-matched by normalised English/French name, within the same province, to:
+matched by normalized English/French name, within the same province, to:
   1. a Wikidata item carrying the same designation (coordinates from Wikidata),
   2. else any Wikidata heritage item of that name in the province,
   3. else a named OpenStreetMap feature (historic / heritage / museum / lighthouse / station …).
@@ -69,7 +69,7 @@ def norm(s: str | None) -> str:
 
 
 def aliases(name: str | None) -> set[str]:
-    """Normalised alternatives: ' / ' splits, parenthetical contents, and the whole name."""
+    """Normalized alternatives: ' / ' splits, parenthetical contents, and the whole name."""
     if not name:
         return set()
     out = {norm(name)}

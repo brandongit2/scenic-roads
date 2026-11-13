@@ -1,7 +1,7 @@
 """The curated inputs: what a person or an AI agent made by hand (research, curation, agents' writing, hand downloads,
 hand-run steps), not a deterministic job or configuration in the code. For each: what it feeds, who or what makes it, where
 it lives, where its method is written down, and what making it again would take today. The owner's starting point for
-standardising them (9 Oct 2026). Kept to what's true on main; each inputs folder's how/ (docs/inputs.md §8) and docs/steps.md
+standardizing them (9 Oct 2026). Kept to what's true on main; each inputs folder's how/ (docs/inputs.md §8) and docs/steps.md
 "Hand-made inputs" say how each is made."""
 from html import escape as E
 
@@ -12,7 +12,7 @@ GROUPS = [
     ('Written by Claude agents', [
         ('part', None, 'base', 'Place-name translations (today’s)',
          'English everywhere: labels, basemap names, roads, rail, popups (the servers, names::table)',
-         'the earlier translation work (its own repository): word rules, romanisation, Claude agents (lines tagged agent:sonnet); converted once (log in translations/how/conversion-log.txt)',
+         'the earlier translation work (its own repository): word rules, romanization, Claude agents (lines tagged agent:sonnet); converted once (log in translations/how/conversion-log.txt)',
          'NAS inputs/translations/0-converted/',
          'its how/: the conversion’s log, the first Haiku brief and launch prompt; the later session’s rules and brief only in the other repository',
          'that repository’s rules and brief, or translating again from the to-do lists'),

@@ -260,7 +260,7 @@ fn the_zoomed_out_depth_is_made_from_the_finer() {
         .filter(|&v| v < NODATA_MIN)
         .collect();
     let mean = four.iter().sum::<f32>() / four.len() as f32;
-    assert!((depth_at(&t7, px, py) - quantise(mean)).abs() < 0.11, "{} {mean}", depth_at(&t7, px, py));
+    assert!((depth_at(&t7, px, py) - quantize(mean)).abs() < 0.11, "{} {mean}", depth_at(&t7, px, py));
 }
 
 /// `Fixture`'s water, with (when asked) a river running east from the sea across the land, and a
@@ -1236,7 +1236,7 @@ fn a_fine_source_in_the_open_sea_is_built_to_its_zoom_and_averaged_down() {
             .map(|&(dx, dy)| depth_at(t, px + dx, py + dy))
             .filter(|&v| v < NODATA_MIN)
             .collect();
-        quantise(v.iter().sum::<f32>() / v.len() as f32)
+        quantize(v.iter().sum::<f32>() / v.len() as f32)
     };
     for zoom in [12u8, 14] {
         let d = tempfile::tempdir().unwrap();

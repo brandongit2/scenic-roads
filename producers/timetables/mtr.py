@@ -13,7 +13,7 @@ headway, read from the entry's note ("weekday off-peak 3.6-5 min"). Off-peak, LO
 is the shuttle from Tiu Keng Leng (through trains run at peaks only). An entry with neither a count
 nor such a note, or with fewer than two stations placed, has no route.
 
-Stations are stops, one per name as normalised (`norm`: a station on two lines is one stop), placed
+Stations are stops, one per name as normalized (`norm`: a station on two lines is one stop), placed
 by either:
 - --stations: Hong Kong's stations from OSM as GeoJSON lines (a pass's filtered stations), by their
   English names, a `railway=station` first;

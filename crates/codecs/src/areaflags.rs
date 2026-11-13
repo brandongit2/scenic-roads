@@ -47,7 +47,7 @@ pub fn run(dir: &Path, shapes: &Path) -> Result<()> {
     let text = std::fs::read_to_string(shapes).with_context(|| format!("{}", shapes.display()))?;
     let (list, read) = read_shapes(&text, grid_box(&tiles))?;
     eprintln!("areaflags: {read} polygons over {} grid tiles", tiles.len());
-    let out = rasterise(&tiles, &list);
+    let out = rasterize(&tiles, &list);
     std::fs::write(roadcore::tmp(dir, "grid.areas.u8"), &out)?;
     roadcore::commit(dir, &["grid.areas.u8"])
 }
@@ -213,7 +213,7 @@ pub fn is_clockwise(p: &[[f64; 2]]) -> bool {
 }
 
 /// The grid's area flags, CELLS bytes per tile in `tiles`' order.
-pub fn rasterise(tiles: &[[u32; 2]], shapes: &[Shape]) -> Vec<u8> {
+pub fn rasterize(tiles: &[[u32; 2]], shapes: &[Shape]) -> Vec<u8> {
     let mut out = vec![0u8; tiles.len() * CELLS];
     out.par_chunks_mut(CELLS)
         .zip(tiles.par_iter())
@@ -533,7 +533,7 @@ mod tests {
         .join("\n");
         let (shapes, read) = read_shapes(&text, grid_box(&tiles)).unwrap();
         assert_eq!((shapes.len(), read), (3, 3), "the polygon away from the grid isn't read");
-        let out = rasterise(&tiles, &shapes);
+        let out = rasterize(&tiles, &shapes);
         let at = |x: usize, y: usize| out[y * 256 + x];
         let count = |bit: u8| out[..CELLS].iter().filter(|&&v| v & bit != 0).count();
         // Centres 10.5..60.5 less 20.5..30.5.
@@ -556,7 +556,7 @@ mod tests {
         let r = rect(tx, ty, 50.1, 40.1, 80.3, 40.4);
         let text = [feature(PARK, &[vec![r.clone()]]), feature(HERITAGE, &[vec![r]])].join("\n");
         let (shapes, _) = read_shapes(&text, grid_box(&[[tx, ty]])).unwrap();
-        let out = rasterise(&[[tx, ty]], &shapes);
+        let out = rasterize(&[[tx, ty]], &shapes);
         assert!(out.iter().all(|&v| v & PARK == 0));
         let burnt: Vec<usize> = (0..CELLS).filter(|&i| out[i] == HERITAGE).collect();
         assert_eq!(burnt, (50..=80).map(|x| 40 * 256 + x).collect::<Vec<_>>());

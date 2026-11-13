@@ -888,7 +888,7 @@ export function hiddenByBuilding(map: MLMap, ll: [number, number], b: BuildingSt
 
 /** What the bottom bar says of a building: its height, where the height comes from ("from 6
  * floors", "estimated by Microsoft"…), its base when it has one, its kind. */
-export function summarise(f: MapGeoJSONFeature): FeatureSummary {
+export function summarize(f: MapGeoJSONFeature): FeatureSummary {
   const p = f.properties as Record<string, number>;
   const h = (p.h ?? 0) / 10, m = (p.m ?? 0) / 10, s = p.s ?? 5;
   const [how, colour] = SOURCES[s] ?? SOURCES[5];

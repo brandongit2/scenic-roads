@@ -171,7 +171,7 @@ const SAME_LANGUAGE: [&str; 7] = ["Hant", "Hans", "TW", "HK", "CN", "MO", "SG"];
 const KANA_KEYS: [&str; 3] = ["name:ja-Hira", "name:ja_kana", "name:ja-Kana"];
 
 /// How much a name:… key that romanizes the name is preferred (lower first).
-fn romanised(key: &str) -> Option<u8> {
+fn romanized(key: &str) -> Option<u8> {
     let rest = key.strip_prefix("name:")?;
     if rest.ends_with("_rm") {
         return Some(1);
@@ -192,7 +192,7 @@ fn own(t: &Tags, name: &str) -> (Option<String>, Option<String>, Option<String>)
         en =
             t.0.iter()
                 .filter(|(_, v)| !pytext::strip(v).is_empty())
-                .filter_map(|(k, v)| Some((romanised(k)?, v.as_str())))
+                .filter_map(|(k, v)| Some((romanized(k)?, v.as_str())))
                 .min()
                 .map(|(_, v)| pytext::strip(v).to_string());
     }

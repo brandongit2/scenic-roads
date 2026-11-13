@@ -29,7 +29,7 @@ Protected areas and Indigenous lands come from OSM (data/areas/areas.geojsonseq)
 What is covered is --tiles' tiles (uint32 x, y pairs at zoom --zoom: those within 20 km of the
 coverage): sites and special places outside them are left out. The areas' polygons, each with
 its flag bit (roadcore::scenic::flag: PARK, HERITAGE, SPECIAL_AREA, INDIGENOUS), go to
-area-shapes.geojsonseq for the units to rasterise onto their own grids (the `areaflags` program).
+area-shapes.geojsonseq for the units to rasterize onto their own grids (the `areaflags` program).
 --date stamps heritage-sources.json with the pass's date.
 
 usage: heritage.py <build_dir> --registers <dir> [--matches <dir>] --tiles <tiles.u32> --zoom <z> [--date YYYY-MM-DD]
@@ -350,7 +350,7 @@ def main():
                 f.close()
         with w:
             os.replace(tmp, b / "area-shapes.geojsonseq")
-    print(f"area-shapes.geojsonseq: {len(shapes_ll)} polygons (the units rasterise them)")
+    print(f"area-shapes.geojsonseq: {len(shapes_ll)} polygons (the units rasterize them)")
 
 
 if __name__ == "__main__":

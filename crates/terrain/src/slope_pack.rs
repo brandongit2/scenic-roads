@@ -2558,7 +2558,7 @@ mod tests {
     /// (GDAL's basic method, light from 315° at 45°, as the map's shader shades a pixel), in 255ths.
     /// SCENIC_SHADE_DRIFT="<root> <x/y>[,<x/y>…]"; unset, nothing.
     #[test]
-    fn measure_quantisation_drift() {
+    fn measure_quantization_drift() {
         use roadcore::shade::{code, mean4, value};
         let Ok(m) = std::env::var("SCENIC_SHADE_DRIFT") else { return };
         let a: Vec<&str> = m.split_whitespace().collect();

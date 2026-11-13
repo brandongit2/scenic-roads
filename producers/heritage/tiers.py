@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Kinds of designation for the Heritage sites sub-toggles: each heritage entry's `tier`
 (registers.py), the map's `t`, from its designation (and level, for World Heritage and anything not
-recognised). Grouped as in the Layers panel
+recognized). Grouped as in the Layers panel
 (web/src/basemap.ts HERITAGE_TIERS, same keys): World Heritage (w.*), National (n.*), Provincial
 / state (p.*), Municipal (m.*). Kinds cut across jurisdictions: England's Grade I, Scotland's
 Category A and France's monuments classés are all "top grade".

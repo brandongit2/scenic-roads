@@ -823,7 +823,7 @@ fn means_down(made: &mut Made, top: u8, bottom: u8) -> Result<()> {
 
 /// A tile's depth (quantized: `quantize`) and class, encoded as stored.
 fn encoded(depth: &[f32], class: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
-    let q: Vec<f32> = depth.iter().map(|&v| super::quantise(v)).collect();
+    let q: Vec<f32> = depth.iter().map(|&v| super::quantize(v)).collect();
     Ok((fall::encode(&Grid::F(q))?, fall::encode(&Grid::C(class))?))
 }
 

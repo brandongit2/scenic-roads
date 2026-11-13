@@ -656,7 +656,7 @@ export class Overlays {
     let point: FeatureSummary | null = null;
     if (pts.length) {
       const fs = this.rank(this.onDots(map.queryRenderedFeatures([[pt.x - 5, pt.y - 5], [pt.x + 5, pt.y + 5]], { layers: pts }), pt), pt);
-      point = fs.length ? summarise(fs[0], map.unproject([pt.x, pt.y])) : null;
+      point = fs.length ? summarize(fs[0], map.unproject([pt.x, pt.y])) : null;
       // Others at the same spot (click lists them all).
       const names = new Set(fs.slice(1).map((f) => named(f.properties?.name, f.properties ?? {})).filter((n) => n && n !== cap(point?.title)));
       if (point && names.size) point.also = [...names];
@@ -668,7 +668,7 @@ export class Overlays {
     const whs = vis(['whs-line', 'whs-fill']);
     const whsHit = whs.length ? map.queryRenderedFeatures([[pt.x - 4, pt.y - 4], [pt.x + 4, pt.y + 4]], { layers: whs }) : [];
     const areas = [...whsHit, ...(ars.length ? map.queryRenderedFeatures([pt.x, pt.y], { layers: ars }) : [])]
-      .map((f) => summarise(f, at))
+      .map((f) => summarize(f, at))
       .filter((f): f is FeatureSummary => !!f && !seen.has(f.title + f.kind) && !!seen.add(f.title + f.kind));
     return { point, areas };
   }
@@ -775,7 +775,7 @@ export class Overlays {
       };
       fill(p);
       // The site's record: by kind, id and place.
-      const ref = p.mid !== undefined ? summarise(f, at)?.ref : undefined;
+      const ref = p.mid !== undefined ? summarize(f, at)?.ref : undefined;
       if (ref) loadDetail(ref).then((d) => d?.props && fill({ ...p, ...d.props }));
     } else if (lid.startsWith('poi-')) {
       put(
@@ -816,7 +816,7 @@ export class Overlays {
       );
     } else return null;
     // Details (description, facts, links), filled in when loaded.
-    const sum = summarise(f, at);
+    const sum = summarize(f, at);
     if (!sum?.ref) return body;
     const slot = h('div', { class: 'pop-details' }, h('div', { class: 'faint' }, 'Loading details…'));
     const src = body.querySelector('.src');
@@ -862,8 +862,8 @@ function named(name: unknown, p: Record<string, any>): string {
 }
 
 /** A landmark from a list (its map layer, properties and place), summarized as a hover on it is. */
-export const summariseFeature = (layer: string, props: Record<string, any>, at: [number, number]): FeatureSummary | null =>
-  summarise({ layer: { id: layer }, properties: props } as unknown as MapGeoJSONFeature, maplibregl.LngLat.convert(at));
+export const summarizeFeature = (layer: string, props: Record<string, any>, at: [number, number]): FeatureSummary | null =>
+  summarize({ layer: { id: layer }, properties: props } as unknown as MapGeoJSONFeature, maplibregl.LngLat.convert(at));
 
 /** A point by view's details: by kind and id, at its place. */
 function markRef(layer: string, p: Record<string, any>, at: [number, number]): DetailRef | null {
@@ -871,7 +871,7 @@ function markRef(layer: string, p: Record<string, any>, at: [number, number]): D
   return kind ? { mark: { kind, id: Number(p.mid), at } } : null;
 }
 
-function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary | null {
+function summarize(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary | null {
   const p = f.properties ?? {};
   // An area's details by its id and their z3 tile; a World Heritage outline opens its site dot's
   // (id, place).

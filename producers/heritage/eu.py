@@ -169,7 +169,7 @@ SMALL = {"de", "del", "la", "las", "los", "el", "els", "les", "i", "y", "e", "da
 
 
 def tidy(name):
-    """ALL-CAPS or Capitalised-Every-Word register names in normal capitalisation ("MANOR FARMHOUSE"
+    """ALL-CAPS or Capitalized-Every-Word register names in normal capitalization ("MANOR FARMHOUSE"
     → "Manor Farmhouse", "Casa De La Vila" → "Casa de la Vila", "L'ESGLÉSIA" → "L'Església")."""
     if not isinstance(name, str) or not name:
         return name
@@ -178,7 +178,7 @@ def tidy(name):
         words = [string.capwords(w.lower(), "-") for w in words]
         words = [re.sub(r"^([DdLl])'(\w)", lambda m: m.group(1).upper() + "'" + m.group(2).upper(), w) for w in words]
     elif not all(w[:1].isupper() for w in words if w[:1].isalpha()):
-        return name  # already written with its own capitalisation
+        return name  # already written with its own capitalization
     out = [w if i == 0 or w.lower() not in SMALL else w.lower() for i, w in enumerate(words)]
     out = [re.sub(r"^([DL])'", lambda m: m.group(1).lower() + "'", w) if i > 0 else w for i, w in enumerate(out)]
     return " ".join(out)

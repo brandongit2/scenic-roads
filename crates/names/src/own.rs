@@ -26,7 +26,7 @@ const SAME_LANGUAGE: [&str; 7] = ["Hant", "Hans", "TW", "HK", "CN", "MO", "SG"];
 
 /// Whether a `name:…` key is a romanization of the name (`name:ja-Latn`, `name:ja_rm`,
 /// `name:zh-Latn-pinyin`), and how much it's preferred (lower first).
-fn romanised(key: &str) -> Option<u8> {
+fn romanized(key: &str) -> Option<u8> {
     let rest = key.strip_prefix("name:")?;
     if rest.ends_with("_rm") {
         return Some(1);
@@ -50,7 +50,7 @@ pub fn own_english<'a>(tags: &[(&'a str, &'a str)], en_keys: &[&str]) -> Option<
     if let Some((_, v)) = tags
         .iter()
         .filter(|(_, v)| !v.trim().is_empty())
-        .filter_map(|(k, v)| romanised(k).map(|r| (r, *v)))
+        .filter_map(|(k, v)| romanized(k).map(|r| (r, *v)))
         .min_by_key(|(r, _)| *r)
     {
         return Some(Cow::Borrowed(v));

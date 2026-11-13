@@ -63,7 +63,7 @@ pub const C_FILLED: u8 = 4;
 pub const DRIES: u8 = 8;
 
 /// 0.1 m in the first 100 m, 1 m deeper; no data left alone.
-pub fn quantise(v: f32) -> f32 {
+pub fn quantize(v: f32) -> f32 {
     if v >= NODATA_MIN {
         v
     } else if v > -100.0 {
