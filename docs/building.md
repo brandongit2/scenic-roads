@@ -559,9 +559,9 @@ https://map.brandontsang.net, docs/macs.md, Devices; task #874).
      lifted, the step's next run appends that map, made again from the records, as one batch.
    - **Rolling back:** the map is never set back to an earlier `seq`; a bad update is fixed by the
      next. (`publish.sh --rollback` rolls the app back, not the map: App publishing, below.)
-   - **Planned** (task #1054's follow-up, with #880): build each batch from the records that
-     changed since the last update; today every update builds the whole map and the writer finds
-     the difference.
+   - **Planned** (with #880's incremental planning): build each batch from the records that
+     changed since the last update, a whole build kept as the check; today every update builds the
+     whole map and the writer finds the difference.
 6. **Daily:** the backup. **GC** whenever its queue has a chunk or a sweep is due (docs/storage.md, GC).
 
 **Planned:** stale work after step-version bumps done oldest first in idle time; registers, Overture

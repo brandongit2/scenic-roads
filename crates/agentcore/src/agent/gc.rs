@@ -1,4 +1,4 @@
-//! Removing what nothing holds from the NAS (docs/storage.md, GC; docs/storage.md, GC): the
+//! Removing what nothing holds from the NAS (docs/storage.md, GC): the
 //! `gc` job, the lead's own, run whenever GC's queue has a chunk or a sweep's pass is due and the
 //! NAS budget leaves it room (crate::agent::plan).
 //!
@@ -631,8 +631,8 @@ fn meta(listed: u64, stats: u64, deletes: u64) {
     }
 }
 
-/// How old an unheld content-named file must be before the orphan sweep queues it (docs/formats.md, The map and its log
-/// §7.5): no job runs that long between its upload and its hand-off.
+/// How old an unheld content-named file must be before the orphan sweep queues it (docs/storage.md, GC):
+/// no job runs that long between its upload and its hand-off.
 pub const ORPHAN_AGE_S: u64 = 14 * 86400;
 /// How old a `.tmp` file must be before a walk removes it: a write that never finished (no write
 /// takes that long).

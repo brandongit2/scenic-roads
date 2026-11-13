@@ -414,9 +414,8 @@ reached by HTTP. What #882 has left is disk (§8.1: lead and server leftovers) a
   - what the server keeps for offline use: `accepted/` (0.9 GB, the translations' and descriptions'
     accepted versions), `names/` (3 MB), `profiles.json` (its own settings profiles: the
     mini's server keeps the devices' list, on the mini alone), `region-areas.json`, `map-page`.
-  Not needed by anything: `catalog/`, `~/Library/Caches/scenic/catalogue` (no catalogue read since
-  #883 step 6; #883 step 9's agent removes them at its start) and the home's `regions.json` (no code reads it; written
-  22 Oct). **7a (the PM's decision; built):** the menu bar's Open the map on this Mac (every Mac,
+  Not needed by anything: the home's `regions.json` (no code reads it; written 22 Oct). (`catalog/`
+  and `~/Library/Caches/scenic/catalogue` are gone from every Mac.) **7a (the PM's decision; built):** the menu bar's Open the map on this Mac (every Mac,
   tools/status `startMapHere`) opens http://localhost:7311; where nothing answers there and no
   server is installed (`~/Library/LaunchAgents/local.scenic.server.plist`: the map's Mac's), it
   first starts `<home>/app/current/server --web … --fonts … --on-demand` (its output appended to

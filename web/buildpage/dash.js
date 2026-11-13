@@ -781,7 +781,7 @@ function mapLegend(md) {
     groups.map(({ stage, steps }) => h("span", { class: "lgg", "data-stage": stage },
       solo({ stage }, sw(stage), h("b", null, stage || "–"), `${stage}'s steps alone on the map, their tiles on the map by when (a click holds it)`, "stage", stage),
       steps.map((id) => solo({ step: id }, sw(stage), `${id} ${n(counts.step[id] || 0)}`, `${id} alone on the map, its tiles on the map by when (a click holds it)`, "step", id))))),
-  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or put on the map) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet on the map: dashed · on the map: drawn only for a step soloed, by when (below); its queued tiles on the map before: the same, fainter, dotted · built, nothing to publish (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile area`)),
+  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or put on the map) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet on the map: dashed · on the map: drawn only for a step soloed, by when (below); its queued tiles on the map before: the same, fainter, dotted · built, nothing for the map (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile area`)),
   mapFilterBar(md.m)];
 }
 // The member filter under the map: a member's tiles alone (those it ran, the history's ends; runs

@@ -118,8 +118,6 @@ local folder of links, is a `Path`.
   not become a typed `inputs()` accessor.
 - Errors carry the path through `display()`, as before; they don't carry `nas:<rel>` and the
   operation.
-- `store::catalogue`'s writers (`write`, `write_delta_of`) still take a `Path`; the lead's catalogue
-  publish passes the NAS folder through `unchecked_path()`. Its readers take a `Loc`.
 - The step programs' NAS inputs (osmium's, extract's, the trees program's, GDAL's, basepart's,
   railfeeds', lakefill's, the names crate's tables) are paths on their command lines or in their
   readers: listed in `EXEMPT`, not wrapped.

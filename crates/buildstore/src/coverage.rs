@@ -1511,7 +1511,7 @@ impl Coverage {
 
 // ---- the coverage a catalogue records ------------------------------------------------------------
 
-/// A region as a catalogue records it (docs/formats.md, Catalogue `coverage`): its recipe when the
+/// A region as a catalogue records it (docs/formats.md, The catalogue `coverage`): its recipe when the
 /// catalogue was made, and each outline entry's polygons simplified for drawing, as GeoJSON
 /// MultiPolygon coordinates (degrees to 5 decimals, about a metre; rings closed).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

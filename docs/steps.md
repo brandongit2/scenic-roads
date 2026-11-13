@@ -775,7 +775,7 @@ index, so a new release rebuilds every z6 tile.
 - **The to-do lists:** `names-todo` after a batch of the map's log that changed what it reads
   (`namestodo::INPUTS`: the z6 tiles, regions, languages spoken, labels' hi packs, base packs,
   own-road lists, hi data, landmark points and area overlays, their keys and files; its key the
-  log's last batch touching any, docs/maplog.md §6.8; a batch of depth or terrain alone changes
+  log's last batch touching any, docs/formats.md, Marks; docs/names.md; a batch of depth or terrain alone changes
   none), at most daily while z6 tiles build, after any such once none's left
   (docs/names.md, `NAMES_TODO_EVERY_S`); `timetables-todo` after each rail
   and ferries run (docs/inputs.md §6.7.3).

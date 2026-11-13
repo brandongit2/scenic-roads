@@ -2866,20 +2866,22 @@ asks passed on are one-shot: the lead's store keeps them (below).
   `catalogue`, the map's `seq`: the targets one of whose published files the map still names as an
   `f/` entry (task #866: a batch deleting it ends it; the page draws no other told tile as published),
   read by the agent on a
-  thread of its own while a page asks, again a minute after the last read at most (~600 KB over
-  SMB), the last read kept when the file can't be read now. The page asks each minute while the
+  thread of its own while a page asks, again a minute after the last read at most, from the
+  records' brief its coordinator holds (in process; the NAS's brief while it holds none), the last
+  read kept when the brief can't be read now. The page asks each minute while the
   map is drawn.
   Every Mac's port also answers `POST /api/catalogs` (`{"after": n, "steps": [step…]}`, both
   optional; no key) for the
   map's age controls (task #629, `agent::cataloguesview`; the page asks the lead's): each batch of
   the map's log (docs/formats.md, The map and its log; `n` its `seq`, `t` its time) as
   `{n, t, first?, z3, z6, z3_gone?, z6_gone?, z10?, z10_gone?}`, the tiles as `y * 2^z + x`, with
-  `latest`, `reading` and `error`: a batch's `set` and `del` keys are the tiles it changed and
-  dropped, so nothing is compared. A batch changes a z6 tile when it sets or deletes a key of it
+  `latest`, `reading` and `error`: a batch's `set` and `del` keys say which tiles it changed and
+  dropped. A batch changes a z6 tile when it sets or deletes a key of it
   in a tile section (base pack, road values, hi data, landmark points, a layer's hi pack, the deep
   terrain under it) or changes the file (`f/<name>`, its content name) of a name such a key gives,
   a z10 tile by its deep packs alone, a z3 tile by its layers' lo packs and area overlays (a pack
-  built again keeps its name and gets a new file: #833 review). `first` marks the view's start: with
+  built again keeps its name and gets a new file: #833 review; a file set again with only its size
+  changed changes no tile, the view keeping each name's file by its hash). `first` marks the view's start: with
   nothing kept, it takes the map whole and names everything it has. Those entries are every step's
   (the timeline's marks). A soloed step's tiles are aged by its own outputs instead (task #994): with
   `steps`, the answer adds `steps: {step: [{n, t, first?, z3|z6|z10: [i…]}] | null}`, each tile the
@@ -2898,8 +2900,8 @@ asks passed on are one-shot: the lead's store keeps them (below).
   key with its name's hash, and each `f/` name's hash with its file's (what `/api/built`'s
   `published` reads, #866) and its last publish (a view kept before #994 takes each name's from its
   deepest tile's newest entry, any layer's), never a map; so a restarted agent goes on from where it was, as
-  deep as it has followed the log (the lead's log itself holds 64 MB of batches at most). A file
-  set again unchanged (its size alone) changes no tile. `scenic catalogs [--after N]` prints the same JSON from this
+  deep as it has followed the log (the lead's feed holds the last 64 MB of batches, `HELD_BYTES`;
+  behind them, a reset). `scenic catalogs [--after N]` prints the same JSON from this
   Mac's kept file. 503 until the agent has made it.
   The page's own files carry the world's countries' outlines for the same map (`countries.json`,
   Natural Earth 1:50m, the same projection; made by `tools/worldmap/countries.py` from the NAS's

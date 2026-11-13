@@ -168,7 +168,7 @@ impl Described {
         }
     }
 
-    /// As the catalogue carries a credit (docs/formats.md, Catalogue `credits`): a heritage register's
+    /// As the catalogue carries a credit (docs/formats.md, The catalogue `credits`): a heritage register's
     /// with its id (`register`), which the map's popups name their source by.
     pub fn credit(&self) -> serde_json::Value {
         let d = &self.description;

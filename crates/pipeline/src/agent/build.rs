@@ -2859,7 +2859,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         // (Nothing before a z6 tile is built, while the regions have work left: none of theirs to show
         // yet.)
         None if done.unit.is_empty() && !last_now => {
-            publishing.why = "nothing to publish until a z6 tile is built".into();
+            publishing.why = "no map update until a z6 tile is built".into();
         }
         None => {
             let chain = publish_chain(x, done, &pl, root_held, low);
@@ -7810,7 +7810,7 @@ mod tests {
         let p = hplan(&c, &reach, &m, &done, Some(4000), Some(CATALOGUE_CAP_S - 1));
         assert!(
             p.catalogue_held && !p.work.iter().any(|w| w.step == "catalog"),
-            "the last catalogue long ago: still held"
+            "the last map update long ago: still held"
         );
         let p = hplan(&c, &reach, &m, &done, Some(CATALOGUE_EVERY_S), Some(CATALOGUE_CAP_S));
         assert_eq!((p.work[0].step.as_str(), p.work[1].step.as_str()), ("catalog", "pack"));
@@ -7909,7 +7909,7 @@ mod tests {
         // before a z6 tile is built).
         let p = plan(&BTreeMap::new());
         assert_eq!(steps(&p), ["unit", "slope-hi", "unit", "trees"]);
-        assert_eq!(p.publishing.why, "nothing to publish until a z6 tile is built");
+        assert_eq!(p.publishing.why, "no map update until a z6 tile is built");
         assert_eq!(units(&p), ["6/28/16", "6/31/16", "6/29/16", "6/30/16"]);
         assert!(p.ready.is_empty());
         // a and c on the map already (as they are, or redrawn): b first, though it has more left.

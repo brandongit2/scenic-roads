@@ -257,7 +257,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 
 ### 4.8 Credits from the inputs
 
-- The map's `credits` (formats.md, Catalogue) are made from the accepted descriptions (§5.1) by
+- The map's `credits` (formats.md, The catalogue) are made from the accepted descriptions (§5.1) by
   crate::inputs::credits, beside `inputs::rules::CREDITS` for sources with no description yet
   (descriptions win for a source both name), with one rule for which to list: those whose extent
   meets the coverage, 20 km around it, or a built z6 tile's ways (`rules::listed`). A description's
@@ -273,8 +273,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   the map's credits (web/src/overlays.ts `sourceOf`), so a credit edit reaches popups with the
   next map update.
 - The map's own credits for what the app makes (colour ramps, `web/src/ui/strip.ts`) stay the app's.
-  The server's fallback for map updates without credits (`credits_of`, which reads `rules::CREDITS`)
-  stays while such map updates are served.
+  The server's fallback for a map without credits (`credits_of`, which reads `rules::CREDITS`)
+  stays while such a map can be served.
 
 ### 4.9 GC and backups
 
@@ -850,8 +850,8 @@ region file takes it out with the next version.
 Every reader reads `accepted_coverage`, and only once the records hold
 `sources/inputs/regions/@switched` (crate::inputs::regions::read `switched`); without it the readers
 refuse, saying to do the migration's runbook first. The switch records the app it was made on, and
-no Mac on an older app builds. Map updates record their regions' shapes inline
-(formats.md, Catalogue `coverage`), so old map updates still draw. The tests (crate::inputs::regions's)
+no Mac on an older app builds. The map records its regions' shapes inline
+(formats.md, The catalogue `coverage`), so a map made before still draws. The tests (crate::inputs::regions's)
 cover the operations on small fixtures: union, minus, intersect, cuts (past the shape, ending
 inside, pieces missed), a 12 nmi buffer against a geodesic distance, ways that don't join, a loop,
 duplicate ids, a pin mismatch, the antimeridian, byte-identical output twice.
@@ -884,7 +884,7 @@ lines as read, so comments rerun nothing.
 **Ingesting.** The `spoken` job (docs/names.md) keys on the outlines, `spoken::RULES` and the accepted
 index (`--languages-index`), and waits while there's none. `global/spoken` carries the table, which
 `names-todo` reads; the server reads the accepted table (`accepted/languages/` in its home) only for
-map updates without `global/spoken`.
+a map without `global/spoken`.
 
 ### 6.3 Translations
 
@@ -1282,7 +1282,7 @@ the same declarations.
 | `heights` | `EGM2008`, `EGM96`, `CGVD2013`, `NAVD88`, `JGD2011`, `TWVD2001`, `ellipsoid-WGS84` | the height reference, brought to EGM2008 before the blend (below) |
 | `rank` | integer, default 0 | overrides the order by resolution (lower first), where datasets of one resolution differ in quality |
 | `code` | 1–9 | the source byte (at most `roadcore::NDEM` − 1, where the server counts a way's sources) in the z6 tiles' outputs (`src.u8`), named on the map by `label` |
-| `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the map's `dem_labels` (formats.md, Catalogue), as a credit edit does (§4.8) |
+| `label` | string | the short name a road's details give its elevation source (`"GSI lidar (5 m)"`), else `name`; one label per `code` (an `el-decl` error otherwise); not keyed: it reaches the map through the map's `dem_labels` (formats.md, The catalogue), as a credit edit does (§4.8) |
 | `regions` | region ids (§6.1) | optional: the map regions the dataset is used in at all, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Its coverage (`facts.measured.cover`) is cut at check time to the 1° cells meeting one of them (`declared::scope_cover`; the check's key names the accepted regions and the index records them, `derived_from`, so a regions change, no file changed, cuts every dataset again and writes a new index: from what was measured, `facts.measured.uncut`, no data read again); an id no accepted region has is an `el-data` error. Then it's cut to the regions' outlines inside those cells (`declared::scope_outline`, `facts.measured.outline`): their shapes, land and any water a region declares, with their buffer, as the coverage holds a point (§6.1). A cell they hold whole together is used whole; every other is an edge cell, where each point is tested against the outlines as the terrain's base samples (`declared::Cover::contains`, the regions' stored geometry read by the plan, `OutlineCut`); outside them the next dataset serves. The roads take their heights from the finished terrain, so they have the same cut. Not in its `keyed` digest (`Declaration::keyed_part`): a key names the cut only where it changed what the key's box reads (`cut_note`: the cells it cut there, and in each edge cell it meets only the outlines inside the key's box, grown by a 256th of it each way: a box the outlines hold whole there keeps its key, one wholly outside them counts the cell as cut, else the outlines there are named; the keys read the regions' stored geometry as the plans do), so the z6 tiles whose cells the outlines wholly hold keep their keys and those whose datasets change are built again |
 | `exclude` | boxes `[w, s, e, n]` in whole degrees | optional: 1° cells the dataset isn't used in, by the roads and the terrain alike; elsewhere the next dataset in the order serves both. Cut from its coverage (and from its outline's edge cells) after its `regions`, at check time; not in its `keyed` digest, so as with `regions` only the keys whose box reads a cut cell change (`cut_note`). e.g. `[[153, 24, 155, 25]]`, Minamitorishima, for GSI's datasets (JGD2011): GSIGEO2011, their geoid grid, stops near 150° E |
 | `territory` | ISO codes or `"world"` | required for a tile pyramid (its coverage is its territory's outlines' boxes, in the newest pass's outlines: the index records which, `derived_from`, so a new pass measures such a pyramid again); `"world"` makes any dataset's coverage the world |

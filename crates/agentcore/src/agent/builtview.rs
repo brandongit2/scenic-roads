@@ -4,7 +4,7 @@
 //! page has read them and the history keeps; the keys hold every target built, whenever, and every
 //! Mac reads the same file, so each Mac's page draws the same tiles.
 //!
-//! With each step's tiles, those that made nothing to publish (task #839): a target recorded built
+//! With each step's tiles, those that made nothing for the map (task #839): a target recorded built
 //! whose published files (crate::agent::steps::output_named) the manifest doesn't name, e.g. a deep
 //! tile with no fine data there (terrain::terrain_deep, `PRESENCE`), sent as `empty: {step: [i]}`,
 //! indexes into the step's list (6,276 of terrain-deep's 7,243 in term 599's brief, 29 Oct: ~50 KB on 247 KB). The keys and the
@@ -20,8 +20,9 @@
 //! catalogue 756 (29 Oct) had stayed drawn as published, their drop runs' job ends taken as
 //! published once a later catalogue came.
 //!
-//! Read only while a page asks (`ask`): a thread of its own reads the file again when it's older
-//! than `EVERY` (about 600 KB over SMB); the answer is the last read, never waiting on it.
+//! Read only while a page asks (`ask`): a thread of its own reads the brief again when its last read
+//! is older than `EVERY` (the one its coordinator holds, in process; the NAS's while it holds none);
+//! the answer is the last read, never waiting on it.
 
 use super::seam::Plan;
 use crate::pool::records::Keys;

@@ -589,9 +589,10 @@ inputs (`landmarks::namestodo::INPUTS`, docs/names.md).
 
 ```
 snapshot.json.zst       the map whole: {seq, at, digest, entries, cursors, marks}, compact JSON in
-                        zstd (level 3, with its content checksum); written when the log starts and
-                        then once an hour while updates come (agent::publish's SNAPSHOT_EVERY_S),
-                        which also removes each segment all of whose batches it holds
+                        zstd (level 3, with its content checksum); written when a new log is
+                        seeded, then once an hour while updates come (agent::publish's
+                        SNAPSHOT_EVERY_S), which also removes each segment all of whose batches it
+                        holds
 <first seq>.jsonl       a segment: a batch a line, appended and fsync'ed before the batch counts; a
                         new one each 10,000 batches or 64 MB (store::seglog)
 posted.json.zst         the map the `catalog` step posts (--post: a catalogue, below, zstd with its
@@ -606,14 +607,17 @@ gc-sweeps.json          GC's sweeps' cursors (docs/storage.md, GC)
 - **A start:** the log loads its snapshot and replays the segments after it. A last line that
   doesn't parse is cut off (a write cut short was never answered); any other line that doesn't, or
   a batch whose digest doesn't hold, fails the open. A map taken and not appended when the agent
-  stopped (`posted.taken.json.zst`) is appended as the log opens.
+  stopped (`posted.taken.json.zst`), then one posted and not yet taken, are appended as the
+  writer's thread starts.
 - **The lead moved by hand** (docs/pool.md §6.1) takes `agent/maplog/` with it: its log, its
   snapshot and GC's queue.
 - **No log on the lead's disk:** the next map the step posts seeds a new one whole. The map is the
   records', so only what the last map alone kept is lost until it's built again (a region whose
   outline changed since it was built, its tiles not yet remade), and the first map's sizes are
-  looked up on the NAS. Its `seq` goes past the newest `seq` any client asked from
-  (`Feed::asked_past`), so no client's map is ever newer than the lead's. GC's queue starts empty;
+  looked up on the NAS. Its `seq` goes past the newest `seq` any client has asked from since the
+  agent started (`Feed::asked_past`). A client asking later from past the lead's head is answered
+  a reset and follows the lead's map from then; a map server goes on serving its newer one until
+  the lead's passes it (`Data::set_map` never takes an older map). GC's queue starts empty;
   the orphan sweep finds what it held (docs/storage.md, GC).
 - **A test root's or a `--root`'s map** is `map/<seq>.json.zst` under that root, the same snapshot
   (`store::map::write_root_map`, `root_map`; the newest three kept), written by the tools that make
@@ -670,7 +674,8 @@ the map (`n` its `seq`, `created` its batch's time), and `store::map::entries` t
 entries, the two exact inverses. The `catalog` step posts the map it builds in this form. No
 catalogue is a file on the NAS.
 
-Spelling: the code and docs say catalogue, but the stored and wire names say `catalog`: the pool's
+Spelling: the code calls this form a catalogue (the docs say the map, and a map update for the
+`catalog` step's batch), but the stored and wire names say `catalog`: the pool's
 setting `hold-catalog`, the steps `catalog` and `catalog-held` (`store::catalogue::NAME`,
 `HELD_NAME`), the history event kind `catalog`, JSON keys (`catalog`, `catalog_held`, `catalog_t`,
 `catalog_at`, `catalogs`), the routes `/api/catalog` and `/api/catalogs`, the commands `scenic

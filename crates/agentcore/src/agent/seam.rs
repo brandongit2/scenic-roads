@@ -90,7 +90,7 @@ pub struct Planned {
     pub ready: Vec<String>,
     /// The regions not `ready`, each with its z6 tiles built of those it builds (by the records: a
     /// z6 tile current under its key), in the regions' order: what a catalogue records of a region still
-    /// building (its `--building`; docs/formats.md, Catalogue `coverage`).
+    /// building (its `--building`; docs/formats.md, The catalogue `coverage`).
     pub building: Vec<(String, usize, usize)>,
     /// Every region's work left, in the order they're built (those with none last), whether or not
     /// it can start now: what the forecast schedules (crate::agent::forecast).

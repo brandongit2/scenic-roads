@@ -52,7 +52,7 @@ pub fn versions_meeting(b: [i32; 4]) -> String {
 
 /// A data source's credit as the map shows it: what came from it, the source as its terms ask to be
 /// named, the terms, and the areas whose data comes from it (none: anywhere). Catalogues carry them as
-/// written here (docs/formats.md, Catalogue `credits`), `areas` left out for anywhere.
+/// written here (docs/formats.md, The catalogue `credits`), `areas` left out for anywhere.
 #[derive(Debug, serde::Serialize)]
 pub struct Credit {
     pub what: &'static str,

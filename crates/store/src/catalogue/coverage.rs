@@ -1,4 +1,4 @@
-//! A catalogue's coverage (docs/formats.md, Catalogue `coverage`) kept as JSON text, never as a
+//! A catalogue's coverage (docs/formats.md, The catalogue `coverage`) kept as JSON text, never as a
 //! `serde_json::Value` tree. Its regions' outlines are most of the map's bytes (6.3 million points
 //! on 10 Nov, 134 MB of JSON), and as a tree, a list of two numbers for each point, they were most of
 //! the map server's memory and much of the lead's (task #1092: docs/formats.md, The map and its log, Memory). Each region

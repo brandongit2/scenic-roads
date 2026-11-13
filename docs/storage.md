@@ -192,7 +192,7 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   - every client's cursor is past the `seq` it was freed at;
   - an hour has passed since (`GRACE_S`): a margin for readers outside the cursor set (a request
     in flight as a map server's cursor moves on; an ad-hoc script). Each day of grace would hold a
-    day's freed files (2,000 to 9,000 names, some 26 MB each), and no window to look at a bad map
+    day's freed files (2,000 to 9,000 names, some 26 MB each: 50 to 240 GB), and no window to look at a bad map
     update is wanted: updates are small and many a day, a bad one is fixed by the next, and the
     map is never set back to an earlier `seq`;
   - every live lease was granted after it was freed (a job running since then may have looked it
@@ -207,7 +207,8 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   records not seen yet the lead answers 503 and the run removes nothing. A chunk's names are
   refused to every hand-off while they're being removed: some 24 s of the share's deletions at the
   median of the NAS budget's probes (8.4 a second, 6 and 7 Nov), 80 s at the tenth percentile; its
-  two asks of the lead and one `fsync` there cost 12.5 ms.
+  two asks of the lead and one `fsync` there are noise beside 200 SMB calls (12.5 ms, measured on
+  the M4 over a lead's coordinator's HTTP).
   Killed mid-chunk, the next run's first chunk is the same,
   told again (one held by then kept out of it, still marked); yielding mid-chunk, the job says what
   went and lets the rest go back to the queue, unmarked (but a name told more than once, which the

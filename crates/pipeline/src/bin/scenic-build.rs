@@ -1985,7 +1985,7 @@ fn catalogue(
     post: Option<&Path>,
     now: u64,
 ) -> Result<agentcore::pubtimes::CatalogueStats> {
-    anyhow::ensure!(held.is_some() || post.is_some(), "a map is published by posting it to the lead's agent (--post)");
+    anyhow::ensure!(held.is_some() || post.is_some(), "a map update posts its map to the lead's agent (--post)");
     // (Stored phase name: old spelling, task #547.)
     let p = phase("sorting the manifest's files into the catalog's");
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();

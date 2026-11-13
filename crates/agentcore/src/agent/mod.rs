@@ -8412,7 +8412,7 @@ impl Agent {
         }
         if let Some(sw) = self.pool_settings().map(|s| publish::Switches::of(&s)) {
             if sw != self.switches {
-                eprintln!("agent: publishing's switches: {sw:?}");
+                eprintln!("agent: the map updates' switches: {sw:?}");
             }
             self.switches = sw;
         }

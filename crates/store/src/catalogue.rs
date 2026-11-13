@@ -1,4 +1,4 @@
-//! The map as a catalogue (docs/formats.md, Catalogue): every served file by logical name, with its
+//! The map as a catalogue (docs/formats.md, The catalogue): every served file by logical name, with its
 //! content name, size and format version, and the sections that name them. No catalogue is a file
 //! of its own: the map's log on the lead is the map, and
 //! `crate::map::Map::catalogue` makes this value of it for the readers (`n` the map's `seq`). Its
