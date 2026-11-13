@@ -1,0 +1,23 @@
+name = "FABDEM V1-2"
+credit = "Hawker, L., Uhe, P., Paulo, L. et al., University of Bristol and Fathom (FABDEM V1-2), from the Copernicus DEM GLO-30"
+licence = "CC-BY-NC-SA-4.0"
+licence_url = "https://creativecommons.org/licenses/by-nc-sa/4.0/"
+source = "https://data.bris.ac.uk/data/dataset/s5hqmjcdj8yo2ibzi9b4ew3sn"
+theme = "terrain"
+availability = "open"
+notes = "The Copernicus DEM GLO-30 with its forests and buildings removed by machine learning (a bare-earth model, 1 arc-second, 60° S to 80° N), published as 356 zips of 10° blocks in the University of Bristol's data repository, each holding the 1° tiles it has land in: each zip's central directory read by range request (its members' names, none of their data), each tile a square: 19,011 tiles, 168.0 million km². The years are the Copernicus DEM's (TanDEM-X, 2011 to 2015). Non-commercial use only."
+
+[[piece]]
+id = "fabdem"
+label = "FABDEM V1-2"
+method = "listing"
+list = "zip"
+links = true
+url = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn/"
+pattern = '(?P<ns>[NS])(?P<y>\d\d)(?P<ew>[EW])(?P<x>\d{3})_FABDEM'
+size = 1
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 30
+year = 2015
