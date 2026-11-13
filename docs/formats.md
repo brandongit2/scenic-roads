@@ -547,6 +547,24 @@ reader but it: the root is made from it). Its meta, JSON: `{"theme", "v": the st
 {"6/x/y": key}, "poles": {"n"|"s": key}}`, each key the hash of the polygons whose boxes meet the
 tile (or reach the pole's square): their pieces' ids and digests.
 
+## The region layer (`layers/regions/`; codecs::regionlayer)
+
+The regions' borders as vector tiles (docs/steps.md §15), the catalogue's layer `regions`,
+encoding `mvt`, zooms 0–12: the root pack `root/0-0-0` (z0–2), a pack per z3 tile `lo/3-x-y`
+(z3–8) and per z6 tile `hi/6-x-y` (z9–12), RDPACK, each tile gzip'd, stored only where a border
+crosses it (a tile the layer hasn't is 204). A tile is Mapbox Vector Tile 2.1 with one layer,
+`borders`, extent 4096 (8192 at z12, the finest, so its full-precision lines keep their points
+apart), a buffer of 1/64 of the tile each way: each feature a LineString (a MultiLineString where a
+border leaves the tile and comes back), with properties
+
+| Key | |
+|---|---|
+| `l`, `r` | the ids of the regions on the line's left and right as drawn, comma-joined, sorted ("" for none: a coast of the regions) |
+| `lv` | how many folders the regions either side share (0: different top folders, or a side with none) |
+
+The lines are the borders themselves (arcs between the points where three regions meet), never a
+ring's outline: no tile edge, no cut along ±180°, no edge at ±85.05° is in a tile.
+
 ## The map and its log (`store::map`)
 
 **The map** is the current name → file map of everything served. **Its log** is the batches that
@@ -796,16 +814,14 @@ accepted/regions/@listed.json   the inputs folder's region files as last listed 
                         {"Ok": <the panel's region, with its state>} | {"Err": "<problem>"}}}};
                         /api/regions answers from it, the regions thread lists the folder each
                         minute and reads only the files whose size or time changed (every file hourly)
-accepted/regions/@outlines/z<z>.jsonl   the outlines at zoom z (0–12): a key line (the format, the
-                        accepted version or the map's `seq`, the pass's outlines), then a GeoJSON feature
-                        a line; made for every zoom when the key changes
 names/spoken-<content>.bin   languages spoken where, for a map without `global/spoken`
                         (names::spoken::Spoken::to_bytes: "SPOKEN01", u32 head length, head (rules'
                         version, then per region its ISO code, a tab, its languages), u32 run
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
-region-areas.json       each accepted region's land and water (km²) and country, by its geometry's
-                        content name: {"<name>": {land, water, country}} (crates/server/src/regions.rs,
-                        `sized`; worked out once per geometry, unused names dropped)
+region-areas.json       each accepted region's land and water (km²), country, box and name's point,
+                        by its geometry's content name: {"<name>": {land, water, country, bbox: [w,
+                        s, e, n], label: [lng, lat]}} (crates/server/src/regions.rs, `sized`; worked
+                        out once per geometry, again for one kept without a box; unused names dropped)
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
 downloads.json          {fmt: 5, world: {at, cat, to?} | null, regions: [{id, name, at, cat, to?,
                         detail: {cat, to?} | null}], lists: {"<cat>": {world?: [item], regions:
@@ -1169,7 +1185,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 
 ## Server API
 
-- **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class,depth-shade}/{z}/{x}/{y}`,
+- **Tiles:** `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings,buildings-field,depth,depth-class,depth-shade,regions}/{z}/{x}/{y}`,
   `/tiles/trees/{var}/{z}/{x}/{y}`. Strong `ETag`: the stored blob's hash, plus for named tiles the
   versions of the languages spoken within them and of the spoken-languages raster (docs/names.md);
   `/tiles/base`'s a hash of the basemap archives' content names, the tile's z/x/y and the names
@@ -1281,21 +1297,14 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   downloaded or isn't behind). `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the disk
   size) → `{ok, reserve}`. A download or update that wouldn't fit is refused; refusals are 400
   `{error}`.
-- **Regions** (read only): `GET /api/regions`; `/api/regions/outlines?z=Z[&bbox=w,s,e,n][&ids=a,b][&union=1]`,
-  every region's outline for drawing at zoom Z (0–12, deeper as 12): a GeoJSON feature per region,
-  its every shape in one MultiPolygon simplified to half a pixel there (Douglas–Peucker,
-  `buildstore::outlines::simplify`, 0.5 × 40,075 km ÷ (512 × 2^Z) m; rings smaller than that left out
-  but its largest polygon), properties `region`, `name`, `disabled`, `bbox`, `label` (a point inside
-  its largest polygon for its name) and `area` (its first osm: part's `iso`, `country`, `in`: its
-  flag), and `z`; `bbox` keeps the regions whose box meets it, `ids` those named; `union=1` sends
-  those named as one feature (a folder's outline, hovered in the panel), `region` their ids: their
-  outer rings unioned at Z (z5 at most: deeper zooms draw z5's), a hole of one kept only where no
-  other covers it, snapped to half the zoom's tolerance and closed by it (grown, then shrunk: the
-  slivers between neighbours simplified apart filled), simplified to it again, a ring cut at the antimeridian put back on it (the map leaves stretches along ±180° out as cuts, as it does the `bbox`'s edges); made with GEOS
-  (`regions.rs` `union_of`) and kept in memory for the last 32 asked. Made from the
-  accepted copy's drawn files kept on the Mac (else the map's recorded coverage) once per zoom
-  and version, by the regions thread for every zoom when the version changes, and kept on disk
-  (`accepted/regions/@outlines/`) and in memory for the zooms asked: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
+- **Regions** (read only): `GET /api/regions`, each region with its land and water, its country,
+  its box (`bbox`: w, s, e, n in degrees) and the point its name is drawn at (`label`: inside its
+  largest polygon), all from its accepted geometry once this Mac's server has read it, and its first
+  osm: part's area in the pass's outlines (`area`: `iso`, `country`, `in`, its flag);
+  `GET /api/regions/at?lng=&lat=` → `{"regions": [id, …]}`, the regions at a point, read from the
+  region layer's tiles (`codecs::regionlayer::hit`: the finest stored tile there, the nearest
+  border's side; none before the map has the layer), what the footer tells hovered. The borders
+  themselves are the region layer's tiles, `/tiles/regions/{z}/{x}/{y}` (z0–12; below).
   `/api/regions` answers from the listing kept on the Mac (`accepted/regions/@listed.json`), so at
   once; it follows the folder within a minute.
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,

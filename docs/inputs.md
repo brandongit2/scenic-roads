@@ -228,7 +228,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   agent. No step reads an inputs folder (§7.1).
 - **Keys:** a step names the index's content name when it reads the whole unit, or the `keyed`
   digests of the files it reads (heritage-sites names only the registers meeting its cover).
-- **The map's server** reads the translations, descriptions, languages and regions' drawn files from
+- **The map's server** reads the translations, descriptions, languages and the regions' index from
   the accepted copies the lead's manifest names, copied to the Mac (crates/server/src/accepted.rs,
   inputs::inputs::served), and from that copy away from the NAS. The Regions panel reads the
   region files read-only plus the accepted index and held report. `names-todo` reads the accepted
@@ -660,8 +660,10 @@ and may record other datasets a shape came from (`gadm = "4.1"`, checked only as
   ```
   No name, so renaming changes no key. `tolerance_m` is 1,000 for an `osm:` part with the coast
   tolerance, else 0; `country` is the relation's ISO code (a computed shape's first `osm:` part's).
-- `sources/inputs/regions/@drawn/<id>.<hash16>.json`, what the map and the region layer draw:
-  each shape simplified for drawing (an `osm:` part as the pass simplified it, else by
+- `sources/inputs/regions/@drawn/<id>.<hash16>.json`, the small outlines the map's catalogue
+  records (its `coverage`: what a download reaches, the credits and the names' checks read; the map
+  draws the region layer from the full geometry instead, docs/steps.md §15): each shape simplified
+  for drawing (an `osm:` part as the pass simplified it, else by
   `draw_tolerance_m`), degrees to 5 decimals, keyed by `from`. A region resolved by cell
   (§6.1.3) is drawn with its cells' pieces dissolved into one area first, so no 2° cell edge is
   drawn inside it.
@@ -834,16 +836,16 @@ region file takes it out with the next version.
   I/O pool each minute, only those changed (all of them hourly), and keeps the listing with their states from the
   accepted index and held report (`GET /api/regions` answers from it at once). Nothing in the
   app writes a region.
-- **Show regions on map** (a switch in Settings → Regions, `/api/regions/outlines`): every declared
-  region's stored outline as a line, green (a disabled region grey: it is checked even though it
-  isn't built), with its name as a country's label. Only its border is drawn: not the cuts along a
-  box it was clipped to or the antimeridian, nor what lies past the Mercator tiles' ±85.05°
-  (`web/src/regions.ts` `outlineLines`, cut where a line crosses that edge; there MapLibre would draw
-  it along the tiles' edge, a ring round a pole that a region such as Antarctica reaches, and the
-  polar caps draw no region lines); the line's width and opacity are the
-  boundaries'. The server simplifies the drawn files (copied to the Mac as the translations are)
-  for every zoom when the accepted version changes and keeps them on the Mac (docs/formats.md). The footer tells the region under
-  the cursor: its folders and name with their flags, its state, land and water and download.
+- **Show regions on map** (a switch in Settings → Regions): every accepted region's borders as
+  lines, from the region layer's tiles (docs/steps.md §15: the full geometry, each border two
+  regions share simplified once per zoom, so neighbours' lines are one line), green (grey where
+  both sides are disabled regions or none: a disabled region is checked even though it isn't
+  built), with each region's name as a country's label at the point the server works out inside its
+  largest polygon. Only borders are drawn: never a cut along the antimeridian, a tile's edge or the
+  Mercator tiles' ±85.05° (the polar caps draw no region lines); the lines' width and opacity are
+  the boundaries'. A map from before the layer draws the names alone. The footer tells the region
+  under the cursor (`/api/regions/at`, from the same tiles; the smallest by its box where regions
+  overlap): its folders and name with their flags, its state, land and water and download.
 - **The banner and menu bar** (§4.7).
 
 #### 6.1.10 The switch

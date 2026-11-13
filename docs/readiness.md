@@ -181,6 +181,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | depth-lo | versions, sources, water, z6 hi packs, the lake-depth packs it reads, an enclosed sea's surface | `Targets depth` (its z6 tiles), `in depth-sources`, `in water:depth`, `Targets lake-depth` (its z6 tiles and their ring, `Grain::Read`), `Built water` and `Built terrain-lo` (under its tile and margin) as depth's | changes: today `after: depth` waits on every depth tile; derived on its 64 |
 | depth-root | versions, every depth lo pack | `Whole depth-lo` | same (`after: depth` was redundant) |
 | available | `available::KEY_V`, each `.geojson` of the theme's accepted extents (keyed digest) | versions; `in extents` (`idents::extents_pieces`) | new (task #1347): `score.toml` and the declarations not keyed |
+| region-tiles | `regionlayer::KEY_V`, each accepted region's file path and geometry content name | versions; `in regions:geometry` (`idents::regions_geometry`) | new (task #1129): names, flags and `disabled` not keyed (the app reads them from the list) |
 | pois | extract spacing, trailends | `in extract`, `Whole trailends` | same |
 | summits | (pass) | `Input`s | same |
 | peaks | candidates, summits, z8 digest, hi packs within 30 km | `Targets pois` (its tile), `Whole summits`, `Targets terrain-hi` (30 km box), `Targets terrain-lo` | changes in waiting only: the forecast's `reads_terrain` waited on *all* terrain; derived waits on its box. Key same |

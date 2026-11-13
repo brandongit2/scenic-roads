@@ -991,7 +991,7 @@ keeps its content name, so jobs keyed on it stop there.
 | landmarks, overlays, stations, ferries | by view (`docs/phase5.md`) |
 | `/api/meta` | the map's meta, summed from the base packs' summaries |
 | `/api/catalog` | the map's number, layers, zoom ranges, versions, credits, regions, NAS and build state |
-| `/api/regions/outlines` | each region's outline simplified for a zoom (kept per zoom) |
+| `/api/regions/at` | the regions at a point, from the region layer's tiles (§15) |
 
 **Browser:** the map is drawn by our own MapLibre, `web/maplibre/` (MapLibre GL JS 6.11.2's source,
 changed where needed: `web/maplibre/FORK.md`), compiled with the app. English comes from the server.
@@ -1179,3 +1179,102 @@ field: no MapLibre, tested by `web/test/available.test.ts`), `ctl/available.ts` 
 `ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only part that is
 MapLibre's (the raster layer); in the native port it is a ground layer painted into the drapes
 (docs/native-port.md, Land).
+
+## 15. The region layer (task #1129)
+
+The regions' borders as vector tiles, made from their full geometry (docs/inputs.md §6.1.4,
+`@geometry/<id>.rgeo`), what "Show regions on map" draws (docs/inputs.md §6.1.9) and what the
+footer's region under the cursor is read from. **Built:** the step `region-tiles`, the tiles, the
+server's `/tiles/regions` and `/api/regions/at`, the app's layers.
+
+**The step** `region-tiles` (terrain::regionlayer, the format codecs::regionlayer; stage `finish`,
+one world target recorded with the worldwide steps' keys). It reads the regions' accepted version
+the records name (every region with geometry, disabled ones too) and nothing else. Its key is its
+version (`terrain::regionlayer::KEY_V`) and each region file's path with its geometry's content
+name (`idents::regions_geometry`, from the index the planner reads: `theplan::key_inputs`'
+`regions:geometry`); never a name, a flag or `disabled`, which the app reads from the list, so
+renaming or disabling a region builds nothing.
+
+- **Reading a region:** each stored shape even–odd, its rings turned so the region is on their
+  left (an outer ring counter-clockwise, a ring an odd number of the shape's others hold clockwise:
+  a ray cast west from an edge's midpoint, `orient`). A region's own pieces (its land and its
+  water, the cells it was resolved by) aren't unioned: their shared edges have the region on both
+  sides and the topology drops them. Only shapes that overlap (a point of one inside another
+  farther than `NEAR` from its edges) are unioned (i_overlay), since an overlap can't be read
+  edge by edge. *Why:* the union of a region's land and water took minutes for each of the regions
+  with water (their coasts were each rounded to the grid, so the overlay saw near-coincident edges
+  everywhere: canadian-waters alone ran past 15 min); read edge by edge, all 1,024 regions take
+  8 s. On the accepted version of 13 Nov no region needs the union.
+- **The topology** (`topo`): every ring edge of every region in one list under its two ends, the
+  vertices shared by their exact E7 points (after the cover check, neighbours' borders are the same
+  points). An edge with no region on one side is split at the points of others like it lying on
+  it or within `NEAR` (4 E7 units, under 5 cm) of it: a T-junction (a point one copy has and the
+  other dropped as collinear), or a point rounded off the other's line. Each edge's sides are the
+  regions by their winding: a region's copies along it less those against, so an edge a region has
+  both ways is no border, and a hair of a region split onto its own edge cancels. Edges with the
+  same regions both sides go; the rest join into arcs between nodes (where more than two meet, or
+  the sides change). *Why arcs:* each border two regions share is one arc, simplified once, so the
+  neighbours' lines are one line at every zoom and no gap or overlap opens between them.
+- **Slivers:** two arcs in the plane between the same two nodes, the space between them narrower
+  on average than the finest zoom's tolerance (its area in Web Mercator over the arcs' mean
+  length), are one arc (the one with more points), the regions beyond them on its sides. The cover
+  check leaves gaps and overlaps under a hair (0.1 km²) between neighbours (docs/inputs.md §6.1.8);
+  each would be two lines metres apart and two nodes no zoom could simplify away. On the real data
+  119,942 slivers are closed: arcs 1.40 M to 335 k, the points kept at z0 2.57 M to 367 k.
+- **The antimeridian and the poles:** the geometry is cut at ±180°; an edge along a meridian is
+  matched with the other meridian's at the same latitudes: where the regions across are the same
+  it's a cut and never drawn, where not it's drawn on both meridians. Edges along ±90° are never
+  drawn.
+- **Simplification** (`simplify`): in Web Mercator, each arc's points get their Douglas–Peucker
+  importance once (its ends fixed; a closed arc keeps four anchors, so a ring kept never collapses);
+  zoom z keeps the points at least half a pixel of a 512 px tile from the chord. Then, per zoom, no
+  two arcs may cross or touch but at their shared nodes: each simplified segment goes into a grid of
+  cells an eighth of the zoom's tile across (a cell holding more than 64 split 8 × 8, again as
+  needed: the Canadian Arctic's z0 cell holds hundreds of thousands), and a segment skipping points
+  that meets another gets back its most important point skipped, until none does. A closed arc
+  under a pixel across is left out at that zoom for both its sides (its inside's region drawn no
+  more there), unless it is the largest ring of a region made only of such rings (a small island
+  region stays, as a quadrilateral at least). z12, the finest, keeps every point.
+- **Tiles** (`tiles`; docs/formats.md, The region layer): MVT, layer `borders`, a feature an arc
+  with the regions on its left and right (`l`, `r`) and the folders they share (`lv`); extent
+  4096, 8192 at z12; a buffer of 1/64 of the tile. Lines are clipped to the tile and its buffer
+  and to the Mercator square (y 0–1), so a border reaching a pole stops at the tiles' edge instead
+  of running along it: only arcs are drawn, never a ring's outline, so no tile edge, cut or the
+  ±85.05° edge shows. *Why vector tiles and lines:* the full geometry (57 M points) can't go to
+  the app whole, and per-zoom GeoJSON from the server simplified each region's rings apart (gaps
+  between neighbours, lines doubled, a box's and the antimeridian's cuts drawn); tiles give the
+  finest detail where zoomed in and the same shared line everywhere. No fills: the map drew lines
+  only.
+- **Packs:** as every layer's (codecs::regionlayer `pack_of`): the root `layers/regions/root/0-0-0`
+  (z0–2), lo packs by z3 tile (z3–8), hi packs by z6 tile (z9–12); RDPACK, each tile gzip'd; the
+  catalogue's layer `regions`, encoding `mvt`, zooms 0–12. **Keys of the packs:** the step is
+  stateless: it makes every tile and writes again only a pack whose content name differs from the
+  one recorded, and removes those no longer made; a region changed rewrites the packs its arcs
+  reach (and the root), the others are left as they are.
+- **The regions at a point** (`hit`, the server's `/api/regions/at`): from z12 up, the first tile
+  made that holds the point; in it the nearest line and the point's side of it (at a node, the
+  wedge between the node's arcs). A tile not made has no border within its buffer, so the point is
+  at least a 64th of a tile from every border, eight times the tolerance of the zoom above.
+  Overlapping regions (possible only without a cover rule) aren't noded against each other, so
+  where their borders cross the answer may miss one of them.
+- **Cost, the 1,024 regions of 13 Nov** (`terrain::regionlayer::tests::real_regions`, by hand on
+  the Mac mini, release): reading 8–9 s (geometry over the NAS), the build 37 s (47 s wall,
+  176 s CPU), peak footprint 7.0 GB; 57.0 M points, 30.1 M vertices, 6.0 M edges split, 17.3 M
+  border edges; 335 k arcs. Tiles by zoom (z0…z12): 1, 4, 16, 52, 191, 610, 1,844, 5,204, 13,137,
+  30,948, 69,638, 152,489, 331,733 (605,867 in all); gzip'd bytes 147 kB at z0, 1.2 MB at z5,
+  12 MB at z9, 69 MB at z12, 151 MB in all (165 MB of packs on disk).
+
+**The server** serves the tiles as stored (`/tiles/regions/{z}/{x}/{y}`, `application/x-protobuf`,
+gzip'd, versioned by pack like every layer) and answers `/api/regions/at` from them. The listing
+(`/api/regions`) gives each region's box (`bbox`) and a point inside its largest polygon for its
+name (`label`), worked out once per geometry with its land and water (`region-areas.json`), and
+its flag's area (`area`).
+
+**The app** (`web/src/regions.ts`, the pure parts `web/src/regionlayer.ts`, tested by
+`web/test/regionlayer.test.ts`): a vector source `regions` added once the map has the layer (a map
+from before it draws the names alone), the line layer `regions-line` (green; grey where neither
+side has an enabled region; the boundaries' width and opacity) and `region-hover-line` (a row
+hovered in the panel: the borders with its region, or its folder's regions, on one side only:
+`borderOf`), both draped under the roads; the names from the listing's `label` points as a
+country's name. The footer asks `/api/regions/at` for the point hovered, one ask at a time, and
+tells the smallest region there by its box (`pick`); the panel frames the map on a row's `bbox`.

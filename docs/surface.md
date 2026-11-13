@@ -90,9 +90,10 @@
 - The server mounts the NAS itself when it's missing, at home.
 
 **The Regions panel** (Settings → Regions):
-- The regions, read only, and on the map (**Show regions on map**) each region's accepted outline,
-  green (disabled grey), named as countries are, as wide and opaque as the boundaries (drawn while
-  it's on, whatever the boundaries' switch); hovered, the footer shows its folders and name with
+- The regions, read only, and on the map (**Show regions on map**) their borders from the region
+  layer (docs/steps.md §15: each border two regions share one line, at the full geometry's detail
+  zoomed in), green (grey between disabled regions), each named as countries are, as wide and
+  opaque as the boundaries (drawn while it's on, whatever the boundaries' switch); hovered, the footer shows its folders and name with
   their flags (Canada › Quebec), its state, land and water and download here.
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
   - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
@@ -112,8 +113,9 @@
     with a match inside opens while the search is on.
   - **Hover**: a region's row outlines it on the map (a dashed pale line), a folder's heading the
     outline around all of its regions as one (no line between regions that touch: Canada with its
-    waters), at the map's zoom's simplification (a folder's to z5's: `/api/regions/outlines`,
-    `union=1`), in and around the view.
+    waters): the region layer's borders with the region on one side only (`web/src/regionlayer.ts`
+    `borderOf`), at the map's zoom's detail. A row's name frames the map on its box (the listing's
+    `bbox`).
 - **Downloads on this Mac** (docs/macs.md, Mirror): nothing is copied to a Mac unless downloaded there.
   - **World, zoomed out**: its own row, Download or Remove, downloaded on its own (a region doesn't
     bring it; it can go while regions stay). Without it, away from the NAS, the map is the regions
