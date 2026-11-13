@@ -1042,8 +1042,7 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   goes too), and leaves the other packs as they are; a record missing, of another `KEY_V` or not
   readable makes every tile again; the root is made again from the record's z6
   tiles whenever one moved. A run with nothing moved writes the record again as it was (the same
-  bytes, the same content name), and nothing else. On the 5,988 pieces with an extent of 13 Nov
-  (below), 3,820 z6 tiles are keyed and 1,429 have a pack.
+  bytes, the same content name), and nothing else.
 - **The score and the layers' values are the server's**, from `score.toml` and the pieces'
   metrics, which it reads from the accepted unit (below).
 - **Why raster tiles and not vector:** the maximum over overlapping pieces is a per-place rule,
@@ -1071,13 +1070,13 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   South Pole.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
   On the 5,988 pieces with an extent of 13 Nov (producers/extents/terrain/, North America's and
-  Europe's sources among them; `build` on them in a scratch folder, the test profile's build, on
-  the M4): 58 s, a peak resident set of 2.24 GB, 1,429 hi packs of 717,077 tiles, 421 MB with the
-  root and the record (2.7 MB); 890 tiles have more than 256 sets (two bytes a pixel; the most,
-  9,163, in z4's tile over Texas and northern Mexico, where 3DEP's and the US inventory's thousand
-  pieces each overlap); run again with nothing moved, 0.6 s.
-- **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
-  block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
+  Europe  On the 13,262 pieces with an extent of 13 Nov (producers/extents/terrain/, every region's sources
+  and the worldwide models; `renders_the_real_pieces`, the test profile's build, alone on the M4):
+  257 s, a peak resident set of 5.58 GB, 3,153,702 tiles in packs of 2.46 GB; 1,801 tiles have more
+  than 256 sets (two bytes a pixel), the most 11,997. The worldwide pieces claimed over the land
+  (TanDEM-X's three, MERIT's) and the masks and indexes that follow every coast (GEDTM30's,
+  FABDEM's, the 1° tile lists) make each coastal tile down to the finest zoom one of several sets.
+ing the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent
   standing only outside the dataset's coverage: Copernicus GLO-30, which the store holds whole
   with its fill masks, drawn where its own pixels are (its fill mask below 3), not where its 1°
@@ -1132,8 +1131,9 @@ none), one still holding the retired colour fields served the same, the tiles' v
 piece and transparent outside it) and the click; and `renders_the_real_pieces`, run by hand: with
 `SCENIC_RENDER_DIR` set it builds every real piece, prints the step's time, peak resident set,
 packs' bytes and tiles' sets (those over 256, the most in one), and writes the score layer as PNGs,
-each value in its spacing's class (the world at z2, Europe at z4, France at z5, Germany at z6,
-Vancouver at z8, each under both settings of the switch).
+each value in its spacing's class (the world at z2, Asia at z3, Europe, Oceania and South America
+at z4, France and Japan at z5, Germany at z6, Vancouver at z8, each under both settings of the
+switch).
 
 **Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile of values as
 above (PNG; 204 where no piece is, or none passes the switch); a tile not stored is its ancestor's
