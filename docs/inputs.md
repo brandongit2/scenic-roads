@@ -59,7 +59,7 @@ inputs/
     gtfs/             declare: <name>.zip [+ <name>.toml]; todo/ (§6.7.2, §6.7.3)
   elevation/          source declarations: <dataset>.toml, indexes, <dataset>/ (§6.8)
   sources/            source declarations: <id>.toml, indexes (§6.9, the depth's §6.10)
-  extents/            planned on the NAS (§6.11): source declarations by theme: <theme>/<source>.toml + .geojson, <theme>/score.toml
+  extents/            source declarations by theme: <theme>/<source>.toml + .geojson, <theme>/score.toml (§6.11)
   keys.env            not inputs
 ```
 
@@ -1833,9 +1833,9 @@ One format serves three **themes**, each with its own metrics and score: `terrai
 and `bathymetry` and `buildings` (planned, when their research is done).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
-table at this section's end (`producers/extents/`). Planned: the folder on the NAS and its unit
-(the checks below), `piece.dataset` (extents from the build's own data), the step, the server's
-score and the layers (docs/steps.md §14). Task #1334.
+table at this section's end (`producers/extents/`), and the unit `extents` that checks them
+(crate::inputs::extents, the checks below; task #1346). Planned: `piece.dataset` (extents from the
+build's own data), the step, the server's score and the layers (docs/steps.md §14). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1941,8 +1941,9 @@ sheets become 17 outlines, 246 KB. Tests: `producers/extents/test_extents.py`.
 **The score** is declared in the theme's `score.toml`, the one place its formula's numbers live
 (the server reads it, the map shows it; planned: docs/steps.md §14): its `primary` metric, the
 factor `within`, the others' `share`, and a table per metric with its `label`, `unit`, scale and
-(but the primary) `weight`, the metric's value from 0 at `worst` to 1 at `best` (`scale = "log"`:
-by the logarithm; `linear`; or `values`, a word's value), clamped. The primary metric decides,
+(but the primary, which takes none) `weight`, the metric's value from 0 at `worst` to 1 at `best`
+(`scale = "log"`: by the logarithm; `"linear"`), clamped, or a `values` table instead, a word's
+value from 0 to 1. The primary's scale is `log` (the guarantee below is a factor). The primary metric decides,
 the others only break near-ties (the owner, 13 Nov: for the terrain, a finer grid always wins,
 whatever its kind or age):
 
@@ -1989,14 +1990,50 @@ a piece doesn't state were as good as what it does, so stating a middling accura
 piece just below the same piece silent about it; it never crosses a spacing step larger than the
 factor.
 
-**Checks** (the unit `extents`, crate::inputs::extents, planned). Errors: a file not of the shape;
-a description field wrong; an unknown theme, method, class, availability or metric; a `.geojson`
-with no declaration, or whose `source` isn't its declaration's; a feature without `piece`,
-`extent` and `availability`, or with a metric the theme's score doesn't name or a value off its
-scale's kind; invalid geometry (§5.3), or rings wound against RFC 7946; a `score.toml` with a
-negative weight, no `primary` among its metrics, a `share` breaking the guarantee, or a scale
-whose `worst` = `best`. Warnings: a declaration with no `.geojson` yet; a piece of class `unknown`.
-Facts read at check time: each file's pieces, by class and availability, and its box.
+**Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` so
+far). Errors:
+- a file not of the shape (`<theme>/<source>.toml`, `<theme>/<source>.geojson`,
+  `<theme>/score.toml`, ids lower-case letters, digits, `-` and `_`); a theme folder the app doesn't
+  know, or a file's `theme` not its folder's (`ex-shape`, `ex-theme`);
+- a declaration's description fields wrong (§5.1, `ex-desc`), or its own (`ex-decl`): an unknown
+  method or availability (a block's own, or the declaration's: one of them is required); a class a
+  block's method can't have (a method that fixes its class takes that or `claimed`; `arcgis`,
+  `wfs` and `file` say `index`, `service` or `claimed`; `none`'s is `unknown`, with its `why`); no
+  `[[piece]]` block, a block without its `id`, two of one id; `by` not a list, `name` not one of
+  `by`; `tolerance_m` not positive; `filter` not a table of lists; a metric's reading not of its
+  shape (a `field`; `scale` positive, `index` from 0, `date` one of `epoch-ms`, `iso`, `year`,
+  `text`; no other key). A method's own fields (`url`, `pattern` …) are the producer's to read and
+  check;
+- a `.geojson` that isn't a FeatureCollection, whose `source` isn't its stem, or whose `read`
+  isn't a list of readings each naming its block's `piece` and `method` (`ex-pieces`); pieces
+  without `piece`, `extent` (a class) and `availability`, a `name` not a string, a `stated` not a
+  table of strings, a geometry that isn't a MultiPolygon, or a geometry where the class is
+  `unknown` and none where it isn't (`ex-piece`); invalid geometry (`ex-geom`): a position not two
+  numbers, a longitude outside ±180° or a latitude outside ±90°, a ring not closed, of fewer than
+  four positions, of no area or crossing itself, an exterior wound clockwise or a hole
+  counter-clockwise (RFC 7946), an edge stepping more than half a turn of longitude (not cut at
+  the antimeridian) but one from −180° to 180° (a piece spanning the turn, along a parallel or
+  a pole); a piece's id twice (`ex-twice`). Each finding
+  lists its pieces. Whether a polygon's holes lie inside it, or its polygons overlap, isn't checked;
+- a `.geojson` without its declaration (`ex-pair`), or not made from it as it is: the blocks its
+  `read` names aren't the declaration's, or a piece's id doesn't start with one of them
+  (`ex-made`);
+- a `score.toml` not of its shape (above: an unknown field, no `primary` among its metrics, the
+  primary not on a log scale or with a weight, `within` not above 1, `share` not from 0 to under 1
+  or breaking the guarantee, a metric without its `label`, a scale whose `worst` = `best` or a log
+  scale's not positive, a `values` table not of numbers from 0 to 1, a weight missing or
+  negative: `ex-score`); a theme with no `score.toml` (`ex-noscore`);
+- a metric the theme's score doesn't name, in a declaration's block or a piece (its `stated`
+  too), or a value off its scale's kind: a positive number on a log scale, a number on a linear
+  one, one of the `values` words (a declaration's constants and its `map`s' values alike;
+  `ex-metric`, held with the score).
+
+Warnings: a declaration with no `.geojson` yet (`ex-nopieces`); pieces of class `unknown`
+(`ex-unknown`). A source's two files are held together. Facts read at check time: a `.geojson`'s
+pieces, by class and availability, and its box (`pieces`, `classes`, `availability`, `box`); a
+declaration's `theme`, `availability` and `blocks`; a score's `primary` and `metrics`. Tests:
+crate::inputs::extents's, with the real files of `producers/extents/terrain/` taken with no
+error.
 
 **The sources so far** (terrain; `producers/extents/terrain/`, read 13 Nov 2026, the same
 outlines as on 12 Nov):

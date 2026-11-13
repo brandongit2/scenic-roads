@@ -18,6 +18,7 @@ contract is docs/inputs.md in the repository.
 | `timetables/gtfs/` | declare | `<name>.zip` static GTFS [+ `<name>.toml`]; the app's list of lines without a timetable in `todo/` |
 | `elevation/` | source declarations | `<dataset>.toml`, its tile index `.geojson` |
 | `sources/` | source declarations | `<id>.toml`, its index `.geojson` (land cover, canopy, leaf type, buildings, Wikidata, Wikipedia, lake fill, depth) |
+| `extents/` | source declarations | per theme (`terrain/`): `<source>.toml` + its pieces `<source>.geojson`, and `score.toml`: where each source has data, and how good |
 
 Not inputs: `keys.env` (secrets), `ferries/` (not an inputs folder: nothing reads it; its research answers are kept in `timetables/gtfs/how/research/`, and the folder can be deleted).
 

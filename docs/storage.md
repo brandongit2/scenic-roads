@@ -5,7 +5,7 @@ Recycle Bin.
 
 ```
 inputs/        the inputs folders (docs/inputs.md): regions/, languages/, translations/, descriptions/,
-               heritage/, heritage-matches/, timetables/{feeds,gtfs}/, elevation/, sources/, each
+               heritage/, heritage-matches/, timetables/{feeds,gtfs}/, elevation/, sources/, extents/, each
                with how/ (how it's made); README.md; keys.env (KEY=value: the feeds' API keys, the
                NAS's SNMP keys NAS_SNMP_USER and NAS_SNMP_AUTH, its DSM account NAS_DSM_USER and
                NAS_DSM_PASS);

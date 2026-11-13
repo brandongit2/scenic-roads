@@ -14,7 +14,9 @@ reads only the service it names:
 It writes `<folder>/terrain/<source>.geojson` and a copy of the declaration, and says what it read
 (requests, bytes, features), which each file also records (`read`). No more than `--max-gb` (5) is
 read for one source. The declarations and their pieces are kept in the repository's
-`producers/extents/terrain/`; add both, and `score.toml`, to `inputs/extents/terrain/`.
+`producers/extents/terrain/`; add both, and `score.toml`, to `inputs/extents/terrain/`, where the
+input check (the unit `extents`) takes them in. A declaration without its pieces yet is a warning
+that holds it until accepted on the build page.
 
 `producers/extents/score.py <score.toml> --examples` prints what the score's weights do on a few
 pairs of pieces; edit `score.toml` to tune them.

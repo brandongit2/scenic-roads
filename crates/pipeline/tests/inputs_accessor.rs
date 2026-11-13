@@ -100,19 +100,20 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// Each gate unit's name as code would write it in a path. (The regions', the heritage
-/// registers' and matches', the elevation datasets' and the source declarations' aside: "regions",
-/// "heritage", "elevation" and "sources" are words every reader of the coverage, the catalogue, the
-/// heritage chain, the roads' heights and the NAS's stores (`sources/…`) says, and their inputs folders
-/// are only ever named `inputs/regions`,
-/// `inputs/heritage`, `inputs/heritage-matches`, `inputs/elevation`, `inputs/sources`, which
-/// `MARKERS` catches.)
+/// registers' and matches', the elevation datasets', the source declarations' and the source
+/// extents' aside: "regions", "heritage", "elevation", "sources" and "extents" are words every reader
+/// of the coverage, the catalogue, the heritage chain, the roads' heights, the NAS's stores
+/// (`sources/…`) and the base packs' header extents (`codecs::extents`) says, and their inputs
+/// folders are only ever named `inputs/regions`, `inputs/heritage`, `inputs/heritage-matches`,
+/// `inputs/elevation`, `inputs/sources`, `inputs/extents`, which `MARKERS` catches.)
 fn unit_markers() -> Vec<String> {
-    use inputs::inputs::{elevation, heritage, heritage_matches, regions, sources};
+    use inputs::inputs::{elevation, extents, heritage, heritage_matches, regions, sources};
     inputs::inputs::UNITS
         .iter()
         .chain([&inputs::inputs::TEST_UNIT])
         .filter(|u| {
-            ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT].contains(*u)
+            ![regions::UNIT, heritage::UNIT, heritage_matches::UNIT, elevation::UNIT, sources::UNIT, extents::UNIT]
+                .contains(*u)
         })
         .map(|u| format!("\"{u}"))
         .collect()

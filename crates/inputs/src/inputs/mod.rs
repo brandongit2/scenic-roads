@@ -17,8 +17,9 @@
 //! translations and the descriptions (#137), the regions (#135), the timetable feeds (#140,
 //! crate::inputs::feeds) and the static timetables (#141, crate::inputs::gtfs), the heritage
 //! registers and the owner's matches (#138, crate::inputs::heritage,
-//! crate::inputs::heritage_matches), and the test unit `_gate-test` while `state/inputs/gate-test`
-//! exists (`TEST_FLAG`). Each other input joins `UNITS` in its own task (#142–#145).
+//! crate::inputs::heritage_matches), the elevation datasets (crate::inputs::elevation), the source
+//! declarations (crate::inputs::sources), the source extents (#1346, crate::inputs::extents), and
+//! the test unit `_gate-test` while `state/inputs/gate-test` exists (`TEST_FLAG`).
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,7 @@ pub mod credits;
 pub mod descriptions;
 pub mod elevation;
 pub mod estimate;
+pub mod extents;
 pub mod feeds;
 pub mod gate;
 pub mod gatetest;
@@ -50,8 +52,8 @@ pub mod watch;
 /// 3: a region with water's needs kept too: the land-and-water pass dropped them.)
 pub const INPUTS_V: u32 = 3;
 
-/// The gate units on the gate (each input's task adds its own).
-pub const UNITS: [&str; 10] = [
+/// The gate units: every inputs folder (the test unit aside).
+pub const UNITS: [&str; 11] = [
     languages::UNIT,
     translations::UNIT,
     descriptions::UNIT,
@@ -62,6 +64,7 @@ pub const UNITS: [&str; 10] = [
     heritage_matches::UNIT,
     elevation::UNIT,
     sources::UNIT,
+    extents::UNIT,
 ];
 
 /// The test unit (docs/inputs.md §4.10): not real data; on the gate while `TEST_FLAG` exists.
@@ -122,6 +125,7 @@ pub fn checks(unit: &str) -> Option<&'static dyn Checks> {
         heritage_matches::UNIT => Some(&*MATCHES),
         elevation::UNIT => Some(&*ELEVATION),
         sources::UNIT => Some(&*SOURCES),
+        extents::UNIT => Some(&extents::Extents),
         _ => None,
     }
 }

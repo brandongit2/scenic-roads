@@ -1462,7 +1462,7 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **The input check** (docs/inputs.md §3, §4; a unit's name is `/`-separated components of
   `[a-z0-9_-]`; its records start with `@`): inputs folders under `inputs/` (docs/inputs.md §3: `regions`,
   `languages`, `translations`, `descriptions`, `heritage`, `heritage-matches`, `timetables/feeds`,
-  `timetables/gtfs`, `elevation`, `sources`; and the test unit's `inputs/_gate-test/`, `{"k", "v"}`
+  `timetables/gtfs`, `elevation`, `sources`, `extents`; and the test unit's `inputs/_gate-test/`, `{"k", "v"}`
   lines, checked while `state/inputs/gate-test` exists), each box's top-level `todo/` (the app's)
   and `how/` (the owner's notes on how it's made, Markdown and briefs) never listed, and
   `inputs/README.md` describing them (none read by the app); checked
