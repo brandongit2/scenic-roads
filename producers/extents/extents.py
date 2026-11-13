@@ -17,7 +17,7 @@ A reader per kind of service, none per source:
   listing  a listing of georeferenced names (`url`, or several in turn: `urls`): an S3 bucket
            (`prefix`), a page of links, a text file, a zip's members (its central directory by
            range request; with `prefix`, each zip's in a bucket's folder) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
-           "lines", a gzipped one too, "zip", "xlsx"); `pattern`, a regular expression with the
+           "lines", a gzipped one too, or the one a page's meta refresh sends to, "zip", "xlsx"); `pattern`, a regular expression with the
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
            `crs`; or the group `ref`, a national grid's lettered reference (`grid`: "osgb",
@@ -40,6 +40,7 @@ import argparse
 import datetime
 import gzip
 import hashlib
+import html
 import http.client
 import io
 import ipaddress
@@ -793,6 +794,13 @@ def names_at(net, b, url):
         yield from re.findall(r'href="([^"]+)"', net.get(url).decode("utf-8", "replace"), re.I)
     elif kind == "lines":
         body = net.get(url)
+        refresh = re.match(rb"\s*<!DOCTYPE html>.{0,500}?<meta http-equiv=\"refresh\" content=\"0;\s*url='([^']+)'", body, re.I | re.S)
+        if refresh:
+            # (A download page that sends on to its file by a meta refresh, a portal's signed
+            # link: the file it sends to. The page isn't kept: its link expires, so a later run
+            # asks for a fresh one.)
+            net.pending = None
+            body = net.get(html.unescape(refresh[1].decode()))
         if body[:2] == b"\x1f\x8b":
             # (A gzipped list, a mirror's file_list.csv.gz: its text.)
             body = gzip.decompress(body)

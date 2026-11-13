@@ -411,6 +411,14 @@ class Listing(unittest.TestCase):
         (g, _), = extents.read_listing(net, b, 0)
         self.assertEqual([round(v, 5) for v in g.bounds], [139.7625, 35.675, 139.775, 35.68333])
 
+    def test_a_list_a_download_page_sends_on_to(self):
+        # Miyagi's portal answers with a page whose meta refresh sends on to a signed link.
+        page = b"<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\" />\n<meta http-equiv=\"refresh\" content=\"0;url='https://s3/f.csv?a=1&amp;b=2'\" />"
+        net = FakeNet({"u": page, "https://s3/f.csv?a=1&b=2": b"https://h/1mcsv/1/10NA4411.zip\n"})
+        b = {"url": "u", "list": "lines", "pattern": r"/(?P<ref>10[A-Z]{2}\d{4})\.zip", "grid": "jp-kihonzu-1250", "crs": "EPSG:6678"}
+        (g, _), = extents.read_listing(net, b, 0)
+        self.assertEqual(net.requests, 2)
+
     def test_a_tile_listed_twice_is_one_and_its_successor_another(self):
         net = FakeNet({"u": b"dgm1_32_433_5426_1_rp_2022.tif dgm1_32_433_5426_1_rp_2022.tif dgm1_32_433_5426_1_rp_2026.tif"})
         b = {"url": "u", "list": "lines", "pattern": r"_(?P<x>\d{3})_(?P<y>\d{4})_1_rp_(?P<year>\d{4})", "unit": 1000, "size": 1000}
