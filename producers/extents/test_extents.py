@@ -916,8 +916,9 @@ class Chains(unittest.TestCase):
         with unittest.mock.patch.object(extents.socket, "getaddrinfo", addrinfo), \
              unittest.mock.patch.object(extents.http.client, "HTTPConnection", Conn):
             self.assertEqual(extents.aia_get("http://ca.test/a.crt"), b"DER")
-            for url in ("http://ca.test/local", "http://ca.test/tls", "http://ca.test/loop"):
-                with self.assertRaises(extents.ChainError, msg=url):
+            for url, why in (("http://ca.test/local", "isn't public"), ("http://ca.test/tls", "isn't http"),
+                             ("http://ca.test/loop", "redirected too many times")):
+                with self.assertRaisesRegex(extents.ChainError, why, msg=url):
                     extents.aia_get(url)
 
 

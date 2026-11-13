@@ -5,7 +5,7 @@ licence_url = "https://geotree.geog.uni.edu/lidar/"
 source = "https://geotree.geog.uni.edu/lidar/"
 theme = "terrain"
 availability = "open"
-notes = "Iowa's statewide lidar surface model of the 2019-21 statewide collection (the 3DEP's IA_* projects), one cloud-optimised GeoTIFF of 272 GB (iowa_statewide_dsm_2020.tif, UTM 15N): its own header and an overview say where it has data and at what cell. Its bare-earth DEM of the same collection is 3DEP's 1 m DEM (`usgs-3dep`). The file names its year 2020; the survey's span isn't stated per cell: no year. No accuracy and no licence are stated for the 2020 data."
+notes = "Iowa's statewide lidar surface model of the 2019-21 statewide collection (the 3DEP's IA_* projects), one cloud-optimized GeoTIFF of 272 GB (iowa_statewide_dsm_2020.tif, UTM 15N): its own header and an overview say where it has data and at what cell. Its bare-earth DEM of the same collection is 3DEP's 1 m DEM (`usgs-3dep`). The file names its year 2020; the survey's span isn't stated per cell: no year. No accuracy and no licence are stated for the 2020 data."
 
 [[piece]]
 id = "dsm-2020"
