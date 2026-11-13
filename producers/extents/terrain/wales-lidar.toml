@@ -1,0 +1,22 @@
+name = "Welsh Government LiDAR 2020-2023"
+credit = "Welsh Government"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+source = "https://datamap.gov.wales/layers/geonode:welsh_government_lidar_tile_catalogue_2020_2023"
+theme = "terrain"
+availability = "open"
+notes = "The tile catalogue of the 1 m bare-earth and surface models (1 km tiles, British National Grid), by the year flown."
+
+[[piece]]
+id = "dtm"
+label = "Wales 1 m DTM"
+method = "wfs"
+class = "index"
+url = "https://datamap.gov.wales/geoserver/ows"
+type = "geonode:welsh_government_lidar_tile_catalogue_2020_2023"
+fields = ["year", "geom"]
+page = 5000
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }

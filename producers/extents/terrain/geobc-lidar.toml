@@ -1,0 +1,32 @@
+name = "LidarBC Open LiDAR Data Portal"
+credit = "Province of British Columbia"
+licence = "OGL-BC-2.0"
+licence_url = "https://www2.gov.bc.ca/gov/content/data/policy-standards/open-data/open-government-licence-bc"
+source = "https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_BC_S3_Public/FeatureServer"
+theme = "terrain"
+availability = "open"
+notes = "The portal's indexes of its bare-earth DEM files, a map sheet each (1:20,000 and 1:2,500), by the year flown. The DEMs are 1 m (the portal's product specification)."
+
+[[piece]]
+id = "dem-20k"
+label = "LidarBC DEM, 1:20,000 sheets"
+method = "arcgis"
+class = "index"
+url = "https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_BC_S3_Public/FeatureServer/6"
+page = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "dem-2500"
+label = "LidarBC DEM, 1:2,500 sheets"
+method = "arcgis"
+class = "index"
+url = "https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_BC_S3_Public/FeatureServer/5"
+page = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }

@@ -1,0 +1,72 @@
+name = "USGS 3D Elevation Program"
+credit = "U.S. Geological Survey"
+licence = "public domain"
+licence_url = "https://www.usgs.gov/3d-elevation-program/about-3dep-products-services"
+source = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer"
+theme = "terrain"
+availability = "open"
+notes = "The program's own index (refreshed weekly). A work unit's accuracy is its quality level's, as the Lidar Base Specification's table gives it (https://www.usgs.gov/3d-elevation-program/topographic-data-quality-levels-qls). The seamless layers (1/3, 1 and 2 arc-second) are each one outline, with no survey year."
+
+# The lidar work units whose source DEM is published, at the DEM's own cell.
+[[piece]]
+id = "lidar"
+method = "arcgis"
+class = "service"
+url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/11"
+by = ["workunit"]
+name = "workunit"
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "dem_gsd_meters" }
+year = { field = "collect_end", date = "epoch-ms" }
+vertical_rmse_m = { field = "ql", map = { "QL 0" = 0.05, "QL 1" = 0.10, "QL 2" = 0.10, "QL 3" = 0.20 } }
+
+[[piece]]
+id = "1m"
+label = "1 meter DEM"
+method = "arcgis"
+class = "service"
+url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/1"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+
+[[piece]]
+id = "ifsar-5m"
+label = "5 meter DEM (Alaska)"
+method = "arcgis"
+class = "service"
+url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/3"
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+
+[[piece]]
+id = "13"
+label = "1/3 arc-second DEM"
+method = "arcgis"
+class = "service"
+url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/4"
+[piece.metrics]
+surface = "ground"
+spacing_m = 10
+
+[[piece]]
+id = "1"
+label = "1 arc-second DEM"
+method = "arcgis"
+class = "service"
+url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/5"
+[piece.metrics]
+surface = "ground"
+spacing_m = 30
+
+[[piece]]
+id = "2"
+label = "2 arc-second DEM (Alaska)"
+method = "arcgis"
+class = "service"
+url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/6"
+[piece.metrics]
+surface = "ground"
+spacing_m = 60

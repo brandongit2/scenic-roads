@@ -59,7 +59,7 @@ inputs/
     gtfs/             declare: <name>.zip [+ <name>.toml]; todo/ (§6.7.2, §6.7.3)
   elevation/          source declarations: <dataset>.toml, indexes, <dataset>/ (§6.8)
   sources/            source declarations: <id>.toml, indexes (§6.9, the depth's §6.10)
-  extents/            planned (§6.11): source declarations by theme: <theme>/<source>.toml + .geojson, <theme>/score.toml
+  extents/            planned on the NAS (§6.11): source declarations by theme: <theme>/<source>.toml + .geojson, <theme>/score.toml
   keys.env            not inputs
 ```
 
@@ -1832,7 +1832,9 @@ worldwide models are sources like any other, and a place no declared source cove
 One format serves three **themes**, each with its own metrics and score: `terrain` (built here),
 and `bathymetry` and `buildings` (planned, when their research is done).
 
-**Status.** Planned, all of it: nothing below is built yet. Task #1334.
+**Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
+table at this section's end (`producers/extents/`). Planned: the folder on the NAS and its unit
+(the checks below), the step and the layers (docs/steps.md §14). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1889,13 +1891,13 @@ Never a whole download to learn an extent, unless the source is small.
 | `[[piece]]` | one or more blocks, each a way of finding extents and the metrics of what it finds |
 | `piece.id` | the block's name, the first part of its pieces' ids |
 | `piece.method` | the producer's generic reader (below) |
-| `piece.class` | the extent class its extents are: `index` or `service` for a reader that can be either (`arcgis`, `wfs`, `file`), fixed by the method otherwise |
+| `piece.class` | the extent class its extents are: `index` or `service` for a reader that can be either (`arcgis`, `wfs`, `file`), or `claimed` where the outline read is a stated coverage and not the data's (an administrative area's); fixed by the method otherwise. A piece that doesn't download directly (its availability not `open`) is `claimed` whatever lists it |
 | `piece.url` and the method's own fields | where to read: a layer, a collection, a file, a listing |
-| `piece.where` | a filter in the service's own language, or `{field = [values]}` for a reader without one |
-| `piece.by` | the fields one piece is: features sharing their values are dissolved into one piece (none: the block is one piece) |
-| `piece.name` | the field a piece's `name` is read from |
+| `piece.where`, `piece.filter` | a filter in an ArcGIS service's own language; `{field = [values]}`, applied to what any reader read |
+| `piece.by` | fields a piece is told apart by: features sharing their values, and every metric's reading, are dissolved into one piece (none: a piece per distinct reading of the metrics) |
+| `piece.name`, `piece.label` | the field a piece's `name` is read from, or the name itself |
 | `piece.tolerance_m` | the simplification, default 50 |
-| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `date` (how a date is written: `epoch-ms`, `iso`, `year`; the year is taken), `density = true` (a point density per m², taken as 1/√density) |
+| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `date` (how a date is written: `epoch-ms`, `iso`, `year`, or `text`, the last year a name holds; the year is taken), `density = true` (a point density per m², taken as 1/√density) |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
 a new source of a kind it knows is a new declaration, no code):
@@ -1903,20 +1905,22 @@ a new source of a kind it knows is a new declaration, no code):
 | `method` | Reads | Class |
 |---|---|---|
 | `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`, paged, in WGS 84, generalised by the service to the piece's tolerance) | `index` or `service` |
-| `stac` | a STAC API collection's items (paged), their footprints and properties | `index` |
+| `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links), their footprints and properties | `index` |
 | `wfs` | a WFS feature type (GetFeature as GeoJSON, paged) | `index` or `service` |
-| `file` | a published index file fetched whole (GeoJSON, a zipped shapefile, GeoPackage), its size checked first | `index` or `service` |
-| `listing` | a bucket's or a directory's listing, each name georeferenced by a declared pattern (a tile's corner and size in a declared CRS) | `index` |
-| `raster` | each listed file's header and coarsest overview by range request: its bounds and where it has data | `files` |
-| `area` | an administrative area's outline from a declared boundary service, for a stated coverage | `claimed` |
+| `file` | a published index file fetched whole (GeoJSON, or a zipped shapefile: `member` names one of several), its size checked first | `index` or `service` |
+| `listing` | a bucket's listing, a page's links or a text file of names (`list`), each name georeferenced by a declared `pattern` (its groups `x`, `y`, and `ew`, `ns`; `unit`, `size`, `corner`, `crs`) | `index` |
+| `raster` | each file's header and an overview by range request (`urls`, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider | `files` |
+| `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
 Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, a size
 limit per answer (`--max-mb`, 50: a larger answer stops the run, never a silent bulk download). It
-then makes each piece: the features of one `by` value, repaired where invalid (said in `read`),
-dissolved (a tile index's squares become their outline), simplified to the tolerance with the
-topology kept, holes smaller than the tolerance squared dropped, cut at the antimeridian,
-coordinates to 5 decimals (about a metre). A source whose index is 600,000 tiles becomes a few
-outlines of a few hundred KB.
+then makes each piece: its features repaired where invalid (counted in `read`), dissolved in their
+own CRS (a tile index's squares become their outline), brought to longitude and latitude with
+their edges densified, cut at the antimeridian and closed along 90° round a pole
+(`extents.ring_region`), hairline gaps closed, simplified to the tolerance with the topology kept,
+holes and specks smaller than the tolerance squared dropped, coordinates to 5 decimals (about a
+metre). British Columbia's 98,964 map sheets become 17 outlines, 246 KB. Tests:
+`producers/extents/test_extents.py`.
 
 **The score** is declared in the theme's `score.toml`, the one place its formula's numbers live
 (the build step reads it, the map shows it): a table per metric with its `weight` and its scale,
@@ -1955,6 +1959,20 @@ with no declaration, or whose `source` isn't its declaration's; a feature withou
 scale's kind; invalid geometry (§5.3); a `score.toml` whose weights aren't positive or whose scale
 has `worst` = `best`. Warnings: a declaration with no `.geojson` yet; a piece of class `unknown`.
 Facts read at check time: each file's pieces, by class and availability, and its box.
+
+**The sources so far** (terrain; `producers/extents/terrain/`, read 12 Nov 2026):
+
+| Declaration | Pieces | Class | Read by |
+|---|---|---|---|
+| `copernicus-dem` | 2: GLO-30, GLO-90 | `index` | `listing`: each bucket's list of its 1° tiles |
+| `pgc-arcticdem` | 1: the 2 m mosaic | `index` | `file`: the centre's tile index (a zipped shapefile, EPSG:3413) |
+| `pgc-rema` | 1: the 2 m mosaic | `index` | `file`: the same, EPSG:3031; the hole at the pole kept |
+| `jaxa-aw3d30` | 1 | `claimed` (a free account) | `listing`: the agency's public list of 1° tiles |
+| `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline, cell and year; `raster`: the mosaic's 36 squares, each at an overview of 2 km pixels or finer |
+| `geobc-lidar` | 17: the DEM sheets by year flown | `index` | `arcgis`: the portal's two sheet indexes |
+| `wales-lidar` | 4: the 1 km tiles by year flown | `index` | `wfs`: the tile catalogue (EPSG:27700) |
+| `luxembourg-lidar` | 1 | `files` | `raster`: the one GeoTIFF's header and an overview of 100 m pixels or finer |
+| `usgs-3dep` | none yet | `service` | `arcgis`: declared; the index service refused every feature query on 12 Nov ("Failed to execute query") |
 
 **Bathymetry and buildings** (planned) take the same folder, declaration and piece properties,
 with their own metrics and `score.toml`: bathymetry `spacing_m`, `method` (multibeam, single-beam,

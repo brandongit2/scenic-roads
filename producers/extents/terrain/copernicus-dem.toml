@@ -1,0 +1,37 @@
+name = "Copernicus DEM"
+credit = "produced using Copernicus WorldDEM-30 © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018 provided under COPERNICUS by the European Union and ESA"
+licence = "Copernicus DEM licence (GLO-30 and GLO-90 public)"
+licence_url = "https://dataspace.copernicus.eu/sites/default/files/media/files/2025-06/copernicus_contributing_mission_data_access_v2_cop_dem_licenses.pdf"
+source = "https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM"
+theme = "terrain"
+availability = "open"
+notes = "Each bucket's own list of its 1° tiles: a tile the public release withholds, or that is all sea, isn't in it. A surface model from TanDEM-X, 2011 to 2015. The accuracy is the producer's validation against ICESat (RMSE 1.68 m, its validation report of 08.2024)."
+
+[[piece]]
+id = "glo-30"
+label = "GLO-30"
+method = "listing"
+list = "lines"
+url = "https://copernicus-dem-30m.s3.amazonaws.com/tileList.txt"
+pattern = '_(?P<ns>[NS])(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM'
+size = 1
+tolerance_m = 10
+[piece.metrics]
+surface = "surface"
+spacing_m = 30
+year = 2015
+vertical_rmse_m = 1.68
+
+[[piece]]
+id = "glo-90"
+label = "GLO-90"
+method = "listing"
+list = "lines"
+url = "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt"
+pattern = '_(?P<ns>[NS])(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM'
+size = 1
+tolerance_m = 10
+[piece.metrics]
+surface = "surface"
+spacing_m = 90
+year = 2015

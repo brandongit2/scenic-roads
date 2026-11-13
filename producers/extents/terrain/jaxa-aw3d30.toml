@@ -1,0 +1,22 @@
+name = "ALOS World 3D - 30m, version 4.1"
+credit = "© JAXA"
+licence = "JAXA terms of use (free, with credit)"
+licence_url = "https://earth.jaxa.jp/en/data/policy/"
+source = "https://www.eorc.jaxa.jp/ALOS/en/dataset/aw3d30/aw3d30_e.htm"
+theme = "terrain"
+availability = "login"
+notes = "The agency's public list of the 1° tiles; the tiles themselves need a free account, so the extent stands as claimed. A surface model from PRISM stereo imagery of 2006 to 2011, its cloud gaps filled from other models."
+
+[[piece]]
+id = "aw3d30"
+label = "AW3D30"
+method = "listing"
+list = "lines"
+url = "https://www.eorc.jaxa.jp/ALOS/jp/dataset/aw3d30/data/List_of_all_tiles_in_AW3D30.txt"
+pattern = '^(?P<ns>[NS])(?P<y>\d{3})(?P<ew>[EW])(?P<x>\d{3})$'
+size = 1
+tolerance_m = 10
+[piece.metrics]
+surface = "surface"
+spacing_m = 30
+year = 2011

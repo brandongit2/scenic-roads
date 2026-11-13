@@ -1,0 +1,19 @@
+name = "BD-L-Lidar2024"
+credit = "Administration du cadastre et de la topographie, Luxembourg"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://data.public.lu/api/1/datasets/lidar-2024-releve-3d-du-territoire-luxembourgeois/"
+theme = "terrain"
+availability = "open"
+notes = "The country's bare-earth model as one cloud-optimised GeoTIFF: its own header and an overview say where it has data and at what cell. Flown February to April 2024."
+
+[[piece]]
+id = "mnt"
+label = "MNT Lidar 2024"
+method = "raster"
+urls = ["https://download.data.public.lu/resources/bd-l-lidar2024-releve-3d-du-territoire-luxembourgeois/20241223-093912/MNT_Lidar2024.tif"]
+mask_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2024

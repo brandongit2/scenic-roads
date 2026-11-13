@@ -1,0 +1,32 @@
+name = "NRCan High Resolution Digital Elevation Model"
+credit = "Natural Resources Canada"
+licence = "OGL-Canada-2.0"
+licence_url = "https://open.canada.ca/en/open-government-licence-canada"
+source = "https://datacube.services.geo.ca/stac/api/collections/hrdem-lidar"
+theme = "terrain"
+availability = "open"
+notes = "CanElevation's lidar projects (each a bare-earth and a surface model; the bare-earth one is the piece) and its ArcticDEM-derived surface mosaic of the north. A project's year is the last in its name; its cell is its files' own (the STAC item's transform)."
+
+[[piece]]
+id = "lidar"
+method = "stac"
+url = "https://datacube.services.geo.ca/stac/api/collections/hrdem-lidar"
+by = ["id"]
+name = "id"
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "proj:transform", index = 1 }
+year = { field = "id", date = "text" }
+
+# The 500 km squares of the mosaic, each read at an overview for where it has data.
+[[piece]]
+id = "arcticdem"
+label = "HRDEM mosaic from ArcticDEM"
+method = "raster"
+stac = "https://datacube.services.geo.ca/stac/api/collections/hrdem-arcticdem"
+asset = "dsm"
+mask_m = 2000
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }

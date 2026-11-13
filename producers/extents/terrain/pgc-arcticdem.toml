@@ -1,0 +1,21 @@
+name = "ArcticDEM mosaic, version 4.1"
+credit = "Polar Geospatial Center, University of Minnesota"
+licence = "CC-BY-4.0"
+licence_url = "https://www.pgc.umn.edu/data/arcticdem/"
+source = "https://data.pgc.umn.edu/elev/dem/setsm/ArcticDEM/indexes/ArcticDEM_Mosaic_Index_latest_shp.zip"
+theme = "terrain"
+availability = "open"
+notes = "The centre's index of the mosaic's 2 m tiles (50 km squares, EPSG:3413). A surface model from stereo satellite imagery of 2007 to 2022; a tile isn't all data (the index's data_perc)."
+
+[[piece]]
+id = "2m"
+label = "ArcticDEM 2 m mosaic"
+method = "file"
+class = "index"
+url = "https://data.pgc.umn.edu/elev/dem/setsm/ArcticDEM/indexes/ArcticDEM_Mosaic_Index_latest_shp.zip"
+member = "_2m"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "gsd" }
+year = 2022

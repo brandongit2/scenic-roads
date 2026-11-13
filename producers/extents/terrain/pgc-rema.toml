@@ -1,0 +1,21 @@
+name = "Reference Elevation Model of Antarctica mosaic, version 2"
+credit = "Polar Geospatial Center, University of Minnesota"
+licence = "CC-BY-4.0"
+licence_url = "https://www.pgc.umn.edu/data/rema/"
+source = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Mosaic_Index_latest_shp.zip"
+theme = "terrain"
+availability = "open"
+notes = "The centre's index of the mosaic's 2 m tiles (50 km squares, EPSG:3031). A surface model from stereo satellite imagery of 2009 to 2021."
+
+[[piece]]
+id = "2m"
+label = "REMA 2 m mosaic"
+method = "file"
+class = "index"
+url = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Mosaic_Index_latest_shp.zip"
+member = "_2m"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "gsd" }
+year = 2021
