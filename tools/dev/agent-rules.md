@@ -69,8 +69,11 @@ rely on the agent.
 
 - Requests identify themselves as `scenic-roads/0.1 (personal offline map)`, with no contact
   details.
-- APIs and data downloads follow the provider's own policy; crawling pages or undocumented URLs
-  checks robots.txt first, as a separate step.
+- robots.txt is for crawlers, and is read only before real crawling: a script following links or
+  fetching many pages of a host in bulk. Reading a page, a catalogue record, an API answer or a
+  published file as a person would (research, a declared source's fetch) needs no robots.txt check;
+  follow the provider's own usage policy and rate limits. Never get round a block, a login or a
+  CAPTCHA.
 - Never print, log or commit keys (`inputs/keys.env` on the NAS).
 
 ## The board
