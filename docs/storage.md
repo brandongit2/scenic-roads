@@ -271,8 +271,7 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   marks, sends and removes nothing; without `--sweeps` every sweep runs whole.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
   state, app and nas. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
-  archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC. A
-  file named `….gc-tomb` (`store::naming::TOMB`) is never taken for a content-named file and stays.
+  archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC.
 
 **Backups.** Daily, the lead's `backup` job (agentcore::agent::backup) copies `inputs/`, the input
 check's acceptances (`state/inputs/accepted/`) and the map's settings profiles (`profiles.json` in

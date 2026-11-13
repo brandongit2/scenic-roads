@@ -147,16 +147,10 @@ pub fn valid_logical(s: &str) -> bool {
     !s.is_empty() && !s.contains(['.', '\0', '\\']) && s.split('/').all(|c| !c.is_empty())
 }
 
-/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash, and not a GC tombstone's
-/// (`TOMB`, which no sweep takes for a content-named file).
+/// An extension: non-empty dot-separated parts, no `/`, NUL or backslash.
 fn valid_ext(s: &str) -> bool {
-    !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty()) && !s.ends_with(TOMB)
+    !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty())
 }
-
-/// A GC tombstone's ending: a content-named file renamed so before its removal, by a GC that no
-/// longer exists. One left on the share (a run stopped between the two), its bytes perhaps a reused
-/// file's, is never taken for a content-named file, so no sweep removes it.
-pub const TOMB: &str = ".gc-tomb";
 
 fn is_hash16(s: &str) -> bool {
     s.len() == HASH_LEN && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
