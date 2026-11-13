@@ -1892,6 +1892,13 @@ publisher's per-file index (`files` and `index`, `files` first as it's the data'
 footprint service; then a claim. Never a whole download to learn an extent, unless the source is
 small.
 
+**What is declared** (the owner, 13 Nov 2026): every elevation product is declared, surface models
+included (image-matched DSMs, lidar DSMs, point clouds), each with its own spacing and its
+`surface` metric stated truthfully (a point cloud, holding both, states none); none is left
+out because it would outrank a ground model: the finest grid wins, whatever it models. **What is
+claimed:** a whole country or region only where the publisher's product covers it or states that
+area; otherwise the piece is `none`, listed and not drawn.
+
 **A declaration** is a description (§5.1: `name`, `credit`, `licence`, `licence_url`, `source`,
 `notes`) and:
 
@@ -2117,7 +2124,7 @@ America read on 13 Nov, its large indexes on the Mac mini; Europe below):
 | `jaxa-aw3d30` | 1 | `claimed` (a free account) | `listing`: the agency's public list of 1° tiles |
 | `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline (its `extent` asset: the items' own footprints, hulls for many, summed 5.07 million km²; the extent files 2.29 million, against the 2,230,605 km² NRCan states; 4.5 MB, their 1 km tiles' staircase edges, which a 200 m tolerance cuts by 6 % only), cell and year (from its name, or its item's `datetime` for the 145 names holding none); `raster`: the mosaic's 36 squares, each's mask at its overview of ~1 km pixels (`grain_m` 1,024) |
 | `geobc-lidar` | 17: the DEM sheets by cell and year | `index` | `arcgis`: the portal's two sheet indexes, each sheet's cell as stated (1,659 sheets of 2016 are 2 m) |
-| `wales-lidar` | 4: the 1 km tiles by year flown | `index` | `wfs`: the tile catalogue (EPSG:27700) |
+| `wales-lidar` | 8: the 1 km tiles by year flown, the DTM's and the DSM's | `index` | `wfs`: the tile catalogue (EPSG:27700) |
 | `ign-lidar-hd` | 6: the 1 km tiles by the year their flights ended (2021 to 2026) | `index` | `wfs`: the programme's tile index, 524,687 tiles (metropolitan France and the overseas tiles so far): 105 requests, 155 MB, 3 min 9 s and 477 MB of memory on the M1, to 174 KB; each year's area within 0.3 % of its tiles' count in km² |
 | `luxembourg-lidar` | 1 | `files` | `raster`: the one GeoTIFF's header and its mask at an overview of 64 m pixels |
 | `usgs-3dep` | 1,050: the 1 m DEM by project and year (1,021), the 1/9 arc-second DEM and Alaska's 5 m IfSAR DTM by year, the 1/3, 1 and 2 arc-second layers | `index` | `arcgis`: the bare-earth DEM service's catalogue (an ImageServer, Esri JSON), 143,630 items, 81 requests, 306 MB, 16 min on the mini, 429 MB of memory, to 1.1 MB; the 1 m DEM's 126,836 10 km tiles sum 12.67 million km² (their count × 100 km²: within 0.1 %), its pieces within 0.001 % of the tiles' unions by project. The index service with the 0.5 m source DEMs refuses every feature query |
@@ -2156,7 +2163,7 @@ times their area.
 | `gb-eng-lidar` | 97: the National LIDAR Programme's tiles by year, the composite DTMs' coverages (1 m, 2 m) by year, the time-stamped surveys' 50 and 25 cm | `index`; `service` | `wfs` ×5: the Environment Agency's indexes (EPSG:27700; the 50 and 25 cm blocks with a `CQL_FILTER` in their `url`, the server timing out on their filters as fields); 108 requests, 308 MB, 9.3 min from the cache on the mini, a peak of 3.7 GB; 1.54 MB at 100 and 200 m tolerances; the programme's 7,139 5 km tiles 178,475 km², its pieces 177,472; the composites' 1 m 138,593 km² (England is 130,279: the tiles over the sea) |
 | `gb-sct-lidar`, `gb-sct-hes-lidar` | 11; 7: the portal's phases (I to VI, the National LiDAR Programme, Outer Hebrides, Orkney, the coast) and Historic Environment Scotland's sets | `index` | `listing` (s3): the portal's bucket, each file's lettered grid reference (NS16NE, NG2004) its square; each piece within 0.1 % of its tiles' count × area. The phases' extents are their point clouds' tiles: the DTM sheets hold corridors in 10 km sheets (Phase I's 382 sheets span 38,215 km² against its stated 11,845) |
 | `gb-nir-osni-dtm`, `gb-nir-river-basin-lidar` | 1; 77 | `index` | `file`: OSNI's 10 m DTM's quarter-sheets (1,057 × 15.36 km²); DfI's 1 km tiles by basin, cell (1 or 0.5 m) and survey date, 3,721 km² against 3,722 tiles |
-| `ie-gsi-lidar` | 99: the GSI's, TII's and the OPW's surveys | `index` | `arcgis` ×9: each survey's 2 km tiles, their `RESOLUTION`, last capture year and `RMS_ERROR` ("Within +/- 150mm" taken as 0.15 m, the class kept as `stated`); photogrammetric surveys `surface` |
+| `ie-gsi-lidar` | 189: the GSI's, TII's and the OPW's surveys, each lidar survey's DTM and DSM | `index` | `arcgis` ×9: each survey's 2 km tiles, their `RESOLUTION`, last capture year and `RMS_ERROR` ("Within +/- 150mm" taken as 0.15 m, the class kept as `stated`); photogrammetric surveys `surface` |
 | `de-*-dgm1` (14 Länder), `de-bw-dgm025` | 1 to 82 each, 199 in all | `index`; Bayern's `service` | each Land's own index: Berlin's, Mecklenburg-Vorpommern's and Schleswig-Holstein's ATOM feeds' tile names (`listing`), Brandenburg's OGC API and Niedersachsen's STAC (`stac`; Niedersachsen's every edition, so its lots overlap where re-flown), Bremen's, Hamburg's, Sachsen-Anhalt's and Saarland's archives' members (`listing` zip), Hessen's tile table (`listing` xlsx), Nordrhein-Westfalen's and Rheinland-Pfalz's folder listings (`listing`; Rheinland-Pfalz's 2022 tiles and their 2026 successors both), Sachsen's ArcGIS layer, Bayern's 82 flight lots (`file`), Baden-Württemberg's two WFS (0.25 m: ALS_2 by flight year, and ALS_3's re-flown tiles); each within 0.5 % of its tiles' count × area; years where the index states them (none for Mecklenburg-Vorpommern and Sachsen-Anhalt) |
 | `ch-swissalti3d` | 7: by year (2019, 2021 to 2026) | `index` | `stac` with `latest`: 88,775 items for 43,650 tiles, each tile's newest; 888 requests, 248 MB, 17 min on the mini; 43,646 km² (Liechtenstein's whole) |
 | `ch-ge-mnt`, `ch-zh-dtm`, `ch-lu-dtm` | 1 each | `files`; `index` | Geneva's 0.2 m COG (`raster`, a 12.8 m overview), Zürich's 0.25 m tile links (`listing`, 7,784 × 0.25 km²), Luzern's 0.25 m STAC (1,804 sheets) |
@@ -2201,9 +2208,13 @@ Helsinki's DTM (the WCS describes a rectangle with the sea); Stockholm's (Natura
 its county); Slovenia's 2011–15 index (ARSO's lidar pages answer 503: claimed); Romania's (the
 ANCPI's geoportal is down after an outage; Mapterhorn's file list names 325 LAKI II units by code);
 Turkey's, Greece's and Russia's coverage (unstated or unreachable: listed); Jersey, Guernsey and
-Gibraltar (nothing finer than 30 m published); the Länder's image-matched surface models (bDOM,
-0.1 to 0.2 m, finer than every DTM: left out, as surface models where a DTM is published, the
-owner's call).
+Gibraltar (nothing finer than 30 m published). Surface models not yet declared (each a
+declaration or a block for a later run, by the rule above): the Länder's DOM1 (1 m) and
+image-matched bDOM (0.1 to 0.2 m), England's composite and time-stamped DSMs, AHN's DSM,
+swissSURFACE3D, Spain's MDS50cm, LiDAR HD's MNS, Wallonia's, Brussels', Flanders', Navarre's and
+Luxembourg's surface models, Portugal's and the Azores' MDS, PST-A's DSMs, Bulgaria's 4 m
+Dem_Alternative, NRCan's HRDEM DSMs and 3DEP's and the US inventory's surface products (Hesse's
+DOM1, Wales' DSM and Ireland's GSI lidar DSMs are declared).
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
