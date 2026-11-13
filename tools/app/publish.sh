@@ -43,14 +43,18 @@ cleanup=("rm -rf $sb")
 # FAILED, nothing published (exit N)" with N non-zero, whatever stopped it. (A wrapper's own exit
 # status, e.g. `publish.sh > log; grep … log`, is the wrapper's last command's: read this line or
 # publish.sh's own status.)
+# (Or, when the push failed and the lead's releases couldn't be read after it, "publish: FAILED,
+# unknown whether <version> went live …": `scenic releases` says.)
 # (tools/app/lib.zsh's at_end: zsh runs no EXIT trap when errexit stops it inside a function.)
-published=
+published= unknown=
 on_exit() {
   local rc=$? c
   for c in $cleanup; do eval $c; done
   if [[ -z $published && ${rollback:-} != done ]]; then
     (( rc == 0 )) && rc=1
-    echo "publish: FAILED, nothing published (exit $rc)"
+    if [[ -n $unknown ]]; then
+      echo "publish: FAILED, unknown whether $version went live on the lead (\`scenic releases\` says; exit $rc)"
+    else echo "publish: FAILED, nothing published (exit $rc)"; fi
     c=$djstep_name; step "" 1; dj_end $djrun fail exit $rc ${c:+failed_in} ${c:+$c}
   else
     step ""; dj_end $djrun ok ${published:+version} ${published:+$published}
@@ -293,6 +297,7 @@ dj_attr $djrun upload_bytes $(stat -f %z $sb/send/app.tgz)
 # lead checks the archive and every file against the manifest); read and pushed again when another
 # publish or a rollback went in meanwhile.
 step lead
-lead_install $PWD/target/release/scenic $sb/send/app.tgz $sb/send/manifest.json $head "$lead_began" $sb/lead || exit 1
+lead_install $PWD/target/release/scenic $sb/send/app.tgz $sb/send/manifest.json $head "$lead_began" $sb/lead || {
+  (( $? != 2 )) || unknown=1; exit 1; }
 published=$version
 echo "published $version"

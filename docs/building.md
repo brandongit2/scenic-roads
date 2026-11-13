@@ -699,7 +699,9 @@ version's (fast-forward; a live commit published from the other Mac since this o
 fetched): one of an older or diverged commit fails, saying so, as does one begun before a rollback
 (a rollback waits for no publish). Its last line is
 `published <version>` or `publish: FAILED, nothing published (exit N)` (the lead unreachable, a
-check failed, the lead refused it).
+check failed, the lead refused it), or, when the push failed and the lead's releases couldn't be
+read after it, `publish: FAILED, unknown whether <version> went live on the lead` (`scenic
+releases` says).
 
 `publish.sh --rollback` puts the release before back live on the lead (`lead_rollback`, through this Mac's installed app: the lead's two releases read, then swapped only from them), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
 

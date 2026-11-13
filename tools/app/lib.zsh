@@ -196,7 +196,8 @@ for k in ("current", "previous"):
 # live version read (the lead checks the archive and every file, and takes it only from that
 # version); when the lead's releases changed meanwhile (another publish or a rollback went in:
 # exit 3), again, up to $lead_tries times (3); a push that failed otherwise counts as live when the
-# lead's releases, read again, say it is (the answer lost after the lead took it). 0 live, else 1.
+# lead's releases, read again, say it is (the answer lost after the lead took it). 0 live; 2: the
+# push failed and the lead's releases couldn't be read after it (live or not, unknown); else 1.
 lead_install() {
   local scenic=$1 archive=$2 manifest=$3 head=$4 began=$5 d=$6 try rc base v
   for try in {1..${lead_tries:-3}}; do
@@ -208,8 +209,8 @@ lead_install() {
     (( rc == 0 )) && return 0
     # (Refused, or its answer lost after the lead took it: the lead's live release says which.)
     v=$(live_version $manifest)
-    lead_live $scenic $d && [[ $(live_version $d/current.json) == $v ]] \
-      && { print -r -- "the lead's answer was lost, but $v is live there"; return 0; }
+    lead_live $scenic $d || { print -r -- "the push failed (exit $rc) and the lead's releases can't be read: unknown whether $v went live"; return 2; }
+    [[ $(live_version $d/current.json) == $v ]] && { print -r -- "the lead's answer was lost, but $v is live there"; return 0; }
     print -r -- "the lead refused the release (exit $rc)"; return 1
   done
   print -r -- "the lead's live release kept changing: nothing published"; return 1

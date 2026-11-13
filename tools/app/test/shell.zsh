@@ -139,7 +139,7 @@ out=$(ff $C) && no "fast_forward unknown live" "allowed" || ok "fast_forward unk
 
 # lead_install / lead_rollback (#1118): against a stand-in `scenic releases` (the lead's releases
 # in $LD/live.json, each push and rollback logged; `move-once`: the next push refused, exit 3, as another publish went in meanwhile, moved.json
-# live then), in the stand-in repository above: B builds on A, C on B, D diverged.
+# live then; `down-at-push`: the push fails and the lead stops answering), in the stand-in repository above: B builds on A, C on B, D diverged.
 LD=$tmp/lead; mkdir -p $LD
 fake=$tmp/scenic-releases
 cat > $fake <<'EOF'
@@ -147,8 +147,9 @@ cat > $fake <<'EOF'
 LD=${0:h}/lead
 mf() { python3 -c 'import json, sys; print(json.dumps({"version": sys.argv[1]}))' $1; }
 case "$1 $2" in
-  "releases --json") cat $LD/live.json ;;
+  "releases --json") [[ ! -f $LD/down ]] || exit 1; cat $LD/live.json ;;
   "releases push")
+    [[ ! -f $LD/down-at-push ]] || { touch $LD/down; exit 1; }
     [[ ! -f $LD/move-always ]] || { print -r -- moved >> $LD/log; exit 3; }
     [[ ! -f $LD/refuse ]] || { print -r -- refused >> $LD/log; exit 1; }
     print -r -- "push $(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $4) from $6" >> $LD/log
@@ -204,6 +205,12 @@ out=$(li 20261112-0001-$B)
 [[ $out == *'refused the release'*rc=1 && $(lv1) == "20261112-0001-$B None" ]] \
   && ok "lead_install: refused, 1" || no "lead_install refused" "$out"
 rm $LD/refuse
+# The push failed and the lead went down with it: unknown whether it went live, 2.
+setlive 20261112-0001-$B > $LD/live.json; touch $LD/down-at-push
+out=$(li 20261112-0001-$B)
+[[ $out == *'unknown whether 20261112-0002-'$C' went live'*rc=2 ]] \
+  && ok "lead_install: the lead gone after a failed push, unknown, 2" || no "lead_install unknown" "$out"
+rm -f $LD/down-at-push $LD/down
 # lead_rollback: the one before made live from the two read; none before it, refused.
 setlive 20261112-0002-$C 20261112-0001-$B > $LD/live.json; rm -f $LD/log
 out=$(cd $g && zsh -c "source ${(q)lib}; lead_rollback $fake $tmp/lead-read; print -r -- rc=\$?" 2>&1)
