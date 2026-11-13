@@ -318,9 +318,9 @@ export class ScaleControls {
     if (this.o.equalizable?.() ?? true) this.pills.append(
       h('button', {
         class: 'pill' + (s.equalize ? ' on' : ''),
-        title: `Histogram equalisation: spread colours evenly over the ${this.o.measure} in view`,
+        title: `Histogram equalization: spread colours evenly over the ${this.o.measure} in view`,
         onclick: () => this.o.set({ equalize: !s.equalize }),
-      }, 'Equalise'),
+      }, 'Equalize'),
     );
     this.draw();
   }

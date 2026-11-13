@@ -60,7 +60,7 @@ impl Record {
 
     /// As put: zstd'd JSON (rail's asks a point of each of the world's rail ways).
     pub fn to_bytes(&self) -> Vec<u8> {
-        zstd::encode_all(&serde_json::to_vec(self).expect("a record serialises")[..], 9).expect("zstd in memory")
+        zstd::encode_all(&serde_json::to_vec(self).expect("a record serializes")[..], 9).expect("zstd in memory")
     }
 
     pub fn from_bytes(b: &[u8]) -> Result<Record> {

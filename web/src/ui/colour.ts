@@ -83,7 +83,7 @@ export class ColourCard {
       this.presetBar.el,
       this.weights.el,
       h('div', { class: 'faint note' },
-        'Negative weights penalise. Views, vistas and water already account for trees (canopy heights block sight lines). Double-click (on a touch screen, double-tap) a slider to zero it.'),
+        'Negative weights penalize. Views, vistas and water already account for trees (canopy heights block sight lines). Double-click (on a touch screen, double-tap) a slider to zero it.'),
     );
 
     // The heading, and below it the settings profiles (main.ts): kept at the panel's top.

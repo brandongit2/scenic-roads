@@ -167,7 +167,7 @@ pub type OwnCode = BTreeMap<String, Option<String>>;
 /// rail-feeds' countries (`countries`) as a question of the coverage asked whole, which its key
 /// asks again (buildstore::asked::Record::also): the pass outlines' content name and the own codes.
 pub fn countries_question(outlines: &str, own: &OwnCode) -> String {
-    format!("countries {outlines} {}", serde_json::to_string(own).expect("codes serialise"))
+    format!("countries {outlines} {}", serde_json::to_string(own).expect("codes serialize"))
 }
 
 /// `countries_question`'s parts: (the outlines' content name, the own codes); None for another question.

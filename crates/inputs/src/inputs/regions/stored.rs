@@ -121,7 +121,7 @@ impl Geometry {
             names: Names { osm: self.relations.clone(), ways: self.ways.clone() },
             water_only: false,
         };
-        let h = serde_json::to_vec(&head).expect("a head serialises");
+        let h = serde_json::to_vec(&head).expect("a head serializes");
         let mut out = MAGIC.to_vec();
         out.extend_from_slice(&(h.len() as u32).to_le_bytes());
         out.extend_from_slice(&h);

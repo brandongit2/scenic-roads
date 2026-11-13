@@ -141,7 +141,7 @@ def problem(name: str, en: str | None, region: str) -> str | None:
     if not en:
         return None if latin(name) else f"{name!r} needs an English name (it isn't in Latin script)"
     if not latin(en) or any(unicodedata.name(c, "").startswith(("CJK", "HIRAGANA", "KATAKANA")) for c in en):
-        return f"{en!r} still has characters to romanise"
+        return f"{en!r} still has characters to romanize"
     if not differs(name, en):
         return f"{en!r} is the name itself: write null"
     if HALF.search(en):

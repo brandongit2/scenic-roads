@@ -100,7 +100,7 @@ export const HERITAGE_TIERS: { key: string; label: string; help: string }[] = [
   { key: 'n.hist', label: 'Historic sites & landmarks', help: 'National Historic Sites of Canada, US National Historic Landmarks' },
   { key: 'n.fed', label: 'Federal heritage buildings', help: 'Classified and recognized federal heritage buildings, heritage railway stations and heritage lighthouses (Canada)' },
   { key: 'p.des', label: 'Designated', help: 'Protected by a provincial, state or territorial designation: immeubles classés, provincial historic resources, heritage sites and properties; Taiwan\'s city and county monuments and archaeological sites' },
-  { key: 'p.reg', label: 'Registered or recognised', help: 'On a provincial register without full protection; Taiwan\'s historic and commemorative buildings' },
+  { key: 'p.reg', label: 'Registered or recognized', help: 'On a provincial register without full protection; Taiwan\'s historic and commemorative buildings' },
   { key: 'p.area', label: 'Sites, districts & parks', help: 'Heritage sites and districts designated as a whole (sites patrimoniaux, historic areas), provincial parks listed as historic places; Taiwan\'s settlements and cultural landscapes' },
   { key: 'm.des', label: 'Designated', help: 'Protected by a municipal by-law or citation: Ontario Part IV, immeubles cités, municipal heritage sites and properties, imóveis de interesse municipal' },
   { key: 'm.reg', label: 'On a local register', help: 'Listed on a community or local heritage register, without designation' },
