@@ -254,6 +254,12 @@ fn packs_are_named_by_source_and_tile() {
     }
     let m: BTreeMap<String, String> = [(l.clone(), "c".to_string()), ("work/other".into(), "d".into())].into();
     assert_eq!(named(&m).collect::<Vec<_>>(), vec![("smalllakes", (40, 21), "c")]);
+    // (The packs' digest, `grids::estimates_key`: the hash of a line a pack, in the names' order.)
+    let mut m = m;
+    m.insert(logical("globathy", (3, 4)), "e".to_string());
+    let lines = "globathy (3, 4) e\nsmalllakes (40, 21) c";
+    assert_eq!(crate::depth::grids::estimates_key(&m), format!("{:016x}", store::naming::xxh3(lines.as_bytes())));
+    assert_eq!(crate::depth::grids::estimates_key(&BTreeMap::new()), format!("{:016x}", store::naming::xxh3(b"")));
 }
 
 /// Terrain rising 0.05 m a ground metre eastwards from 100 m at (−73.1°, 45°), or 0 (the sea)

@@ -3715,6 +3715,7 @@ mod tests {
             return;
         };
         let Some(real) = sandboxed(&root, "frozen_plans_memory", &out) else { return };
+        allocs::counting();
         let num = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok());
         let root = store::nasfs::NasRoot::local_for_test(real);
         let app = std::env::var("SCENIC_FROZEN_APP").unwrap_or_else(|_| "development".into());

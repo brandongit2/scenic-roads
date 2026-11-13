@@ -3963,29 +3963,38 @@ pub fn depth_kept(
     Some(agentcore::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi })
 }
 
-/// The depth's targets that read the water, each with what decides the tiles it reads
-/// (`WaterIdx`'s from): the assemblies ("depth 3/x/y"), then the z6 tiles ("depth 6/x/y"). What the
-/// plan asks of the water's digests: the names alone, never the tiles (`depth_water_reads`: a z6
-/// tile's are tens of thousands, 3 GB for the world's targets held at once, task #1251).
-pub fn depth_water_wants(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(String, String)> {
+/// The depth's targets that read the water, by tile: the assemblies (z3), then the z6 tiles.
+fn depth_water_targets(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(u8, (u32, u32))> {
     let (lo, hi) = depth_tiles(cov, sources);
-    let lo = lo.into_iter().map(|q| (format!("depth 3/{}/{}", q.0, q.1), DEPTH_LO_WATER_FROM.to_string()));
-    lo.chain(hi.into_iter().map(|(x, y)| (format!("depth 6/{x}/{y}"), DEPTH_WATER_FROM.to_string()))).collect()
+    lo.into_iter().map(|q| (3, q)).chain(hi.into_iter().map(|t| (6, t))).collect()
+}
+
+/// A depth target that reads the water ("depth 3/x/y", "depth 6/x/y"), and what decides the tiles
+/// it reads (`WaterIdx`'s from).
+fn depth_water_want(z: u8, t: (u32, u32)) -> (String, String) {
+    let from = if z == 3 { DEPTH_LO_WATER_FROM } else { DEPTH_WATER_FROM };
+    (format!("depth {z}/{}/{}", t.0, t.1), from.to_string())
+}
+
+/// What the plan asks of the water's digests: the depth's targets that read the water, by name
+/// (`depth_water_want`), never with their tiles (`depth_water_reads`: a z6 tile's are tens of
+/// thousands, 3 GB for the world's targets held at once, task #1251).
+pub fn depth_water_wants(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(String, String)> {
+    depth_water_targets(cov, sources).into_iter().map(|(z, t)| depth_water_want(z, t)).collect()
 }
 
 /// The water the depth's targets read (`depth_water_wants`, each with its tiles), as the
-/// terrain-water job works their digests out: an assembly's z6–8 tiles, a z6 tile's
-/// `depth_hi_water`, the rivers in both.
+/// terrain-water job works their digests out: an assembly's z3–8 tiles (`depth_lo_water`), a z6
+/// tile's `depth_hi_water`, the rivers in both.
 pub fn depth_water_reads(
     cov: &Coverage,
     sources: &[terrain::depth::grids::Source],
 ) -> Vec<codecs::terrain_water::Reads> {
-    depth_water_wants(cov, sources)
+    depth_water_targets(cov, sources)
         .into_iter()
-        .map(|(t, from)| {
-            let u = TileId::parse(t.strip_prefix("depth ").unwrap_or(&t)).expect("a depth target names its tile");
-            let tiles = if u.z == 3 { depth_lo_water((u.x, u.y)) } else { depth_hi_water(sources, (u.x, u.y)) };
-            (t, from, tiles)
+        .map(|(z, t)| {
+            let (name, from) = depth_water_want(z, t);
+            (name, from, if z == 3 { depth_lo_water(t) } else { depth_hi_water(sources, t) })
         })
         .collect()
 }
@@ -11343,6 +11352,13 @@ mod tests {
             "{:?}",
             reads.iter().map(|r| &r.0).collect::<Vec<_>>()
         );
+        // (What the plan asks by name, `depth_water_wants`: the reads' own targets and froms, in
+        // their order, the tiles left out.)
+        assert_eq!(
+            depth_water_wants(&c, &depth_sources()),
+            reads.iter().map(|r| (r.0.clone(), r.1.clone())).collect::<Vec<_>>()
+        );
+        assert!(reads.iter().all(|r| !r.2.is_empty()));
         let mut idx = codecs::terrain_water::WaterIdx {
             fmt: 1,
             step: "terrain-water".into(),

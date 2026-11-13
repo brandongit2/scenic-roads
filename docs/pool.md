@@ -853,6 +853,21 @@ counts as any other process).
       the other idle memory: counted at no cost only up to the inactive anonymous pages (the
       inactive queue less every file-backed page not speculative and the purgeable), and off the
       idle memory compressing is reckoned on. The rest are counted nowhere.
+    - *What leaves them* (task #1251; macOS 27.2 on the M4, with `MallocLargeCache=0` as the
+      agent and its jobs run, a program allocating blocks of one size, writing to them and
+      freeing them, wave after wave): macOS's malloc keeps a freed block's pages for blocks of
+      that size. A block under about 2 MB is never unmapped (1.9 MB kept, 2.2 MB unmapped as it
+      is freed) and its pages are never given to another size, but that the larger ones
+      share theirs in part (1.2 MB blocks took 100 KB blocks' whole; 1.1, 1.3, 1.5 and 1.9 MB
+      in turn left 0.74 GB for 0.42 to 0.57 GB each): 0.5 GB of 600-byte blocks, then of
+      100 KB, 48-byte and 4 KB blocks, each wave freed before the next, left 2.0 GB resident and
+      reusable beside a footprint of 10 MB; waves of one size reused their own (0.46 GB however
+      many).
+      `malloc_zone_pressure_relief` gives none of them back (0 MB of 0.5 GB freed, 600-byte
+      blocks or 1.2 MB ones). So a process's reusable pages are about the sum, over the sizes of
+      its blocks, of the most each size held at once, less what it holds now: they come back
+      only as the kernel's scan reaches them, and what a long-lived process can keep down is
+      each size's most, never by freeing sooner.
     - *Measured* (12 Nov, a program taking incompressible memory in steps and writing to it all
       the while, as a job's working memory, beside a process holding memory it had just marked
       reusable): on the M1 (nothing free), of 1.3 GB taken 0.8 came out of the reusable pages
@@ -878,9 +893,21 @@ counts as any other process).
     - *The Mac mini's* (19:01 on 12 Nov, no job running): 0.1 GB free, 7.6 GB of file cache,
       0.3 GB purgeable, 1.8 GB of idle anonymous memory and 5.5 GB of reusable pages, most of
       them its agent's (resident 5.6–6.2 GB, 1.5 GB of it mapped files; footprint 1.6 GB, at most
-      2.8 GB in its first half hour: its allocations come and go, leaving the pages they freed
-      resident). Counted: 9.9 GB (the idle 1.8 GB as reusable, at no cost), where it was 8.9 GB
-      (the idle 1.8 GB as worth 0.8 compressed) and 13.5 GB would have counted all 5.5.
+      2.8 GB in its first half hour). Counted: 9.9 GB (the idle 1.8 GB as reusable, at no
+      cost), where it was 8.9 GB (the idle 1.8 GB as worth 0.8 compressed) and 13.5 GB would
+      have counted all 5.5.
+    - *The agent's* are left by its first plans after a start (above, *What leaves them*) and
+      then stay: 36 min after one (13 Nov, app 20261113-0149) it was 6.9 GB resident, 3.96 GB of
+      it malloc's reclaimable pages (`footprint <pid>`: Malloc Small), and a plan moved neither
+      by more than 0.05 GB (sampled every 2 s for 9 min). Most were one list's: the plan built
+      every depth target's water tiles, 3.1 GB of 1–2 MB blocks at once, to ask the water's
+      digests by the targets' names. It asks by name since #1251 (`build::depth_water_wants`).
+      On a copy of the lead's state of that day (`plan::tests::frozen_plans_memory`: the
+      planner alone, seven plans in a row, the M4, test profile) the reusable pages after the
+      seventh plan are 1.04 GB where they were 3.71, the resident size 3.04 GB where 5.73 (1.3
+      GB of each the coverage's mapped file), the footprint's most 0.59 GB where 1.95; what is
+      left is the first plan's (1.04 GB after it, and no more after the six that follow). (The
+      lead's own after #1251's rollout: not yet read.)
   - *By compressing:* idle app memory macOS compresses cheaply counted as used made a 32 GB Mac
     mini at normal pressure show 6.2 GB available. The kernel's pressure follows its compressor:
     on the three Macs' live series (the 10 s ring, 2–4 Nov, the compressor's share of the memory

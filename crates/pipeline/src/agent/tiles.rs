@@ -640,13 +640,14 @@ impl TerrainTiles {
         self.water.get(m.get(&codecs::terrain_water::idx_logical(pin))?).filter(|w| w.pin == pin)
     }
 
-    /// Holds a water source's digests as given, under content name `content` (tests: no file).
-    /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them).
+    /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them),
+    /// with where they are fine.
     pub fn hold_elevation(&mut self, content: &str, e: Elevation) {
         let fine = inputs::dem::spacing::Fine::of(&e);
         self.elevation = Some((content.to_string(), std::sync::Arc::new(e), std::sync::Arc::new(fine)));
     }
 
+    /// Holds a water source's digests as given, under content name `content` (tests: no file).
     pub fn hold_water(&mut self, content: &str, w: codecs::terrain_water::WaterIdx) {
         self.water.insert(content.to_string(), w);
     }

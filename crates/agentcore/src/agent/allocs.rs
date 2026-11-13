@@ -1,9 +1,10 @@
-//! The unit tests' allocator: the system's, counting what is asked of it and, while a test turns
-//! it on (`on`), sampling the call stack of one allocation per `EVERY` bytes a thread asks for
-//! (in blocks of a least size, when given one), so
-//! a run on real data (`plan::tests::frozen_plans_memory`) ranks the code by the bytes it
-//! allocates, freed since or not, rather than by what is live. Off (every other test), an
-//! allocation costs two relaxed adds.
+//! The unit tests' allocator: the system's. Once a test asks (`counting`), it counts what is asked
+//! of it: the bytes and blocks, and by block size the bytes asked for, those live and the most
+//! that were live at once (`sizes`). While a test turns sampling on (`on`), it keeps the call
+//! stack of one allocation per `EVERY` bytes a thread asks for (in blocks of a least size, when
+//! given one), so a run on real data (`plan::tests::frozen_plans_memory`) ranks the code by the
+//! bytes it allocates, freed since or not, rather than by what is live (`report`). In every other
+//! test, an allocation or a free costs one relaxed load.
 //!
 //! And this process's memory as macOS counts it (`Memory::now`): its footprint, its resident size
 //! and its reusable pages (freed, told to the kernel as no longer needed, still resident:
@@ -12,8 +13,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering::Relaxed};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, Ordering::Relaxed};
 
 /// A stack sampled per this many bytes asked for by a thread.
 const EVERY: u64 = 4 << 20;
@@ -31,6 +31,8 @@ pub struct Counting;
 #[global_allocator]
 static COUNTING: Counting = Counting;
 
+/// Whether it counts (`counting`), and whether it samples (`on`).
+static COUNTS: AtomicBool = AtomicBool::new(false);
 static ON: AtomicBool = AtomicBool::new(false);
 /// The least block sampled, in bytes.
 static LEAST: AtomicU64 = AtomicU64::new(0);
@@ -43,8 +45,14 @@ static MOST: [AtomicI64; BUCKETS] = [const { AtomicI64::new(0) }; BUCKETS];
 /// The bytes live in all, and the most they were.
 static LIVE_ALL: AtomicI64 = AtomicI64::new(0);
 static MOST_ALL: AtomicI64 = AtomicI64::new(0);
-/// The sampled stacks, each standing for `EVERY` bytes.
-static SAMPLES: Mutex<Vec<std::backtrace::Backtrace>> = Mutex::new(Vec::new());
+/// The sampled stacks, each standing for `EVERY` bytes: a list the samplers push onto and `report`
+/// takes whole (no lock: a thread sampling holds none while it allocates).
+static SAMPLES: AtomicPtr<Sample> = AtomicPtr::new(std::ptr::null_mut());
+
+struct Sample {
+    stack: std::backtrace::Backtrace,
+    next: *mut Sample,
+}
 
 thread_local! {
     /// The bytes this thread asked for since its last sample.
@@ -54,11 +62,17 @@ thread_local! {
 }
 
 fn freed(size: usize) {
+    if !COUNTS.load(Relaxed) {
+        return;
+    }
     LIVE[bucket(size)].fetch_sub(size as i64, Relaxed);
     LIVE_ALL.fetch_sub(size as i64, Relaxed);
 }
 
 fn count(size: usize) {
+    if !COUNTS.load(Relaxed) {
+        return;
+    }
     BYTES.fetch_add(size as u64, Relaxed);
     CALLS.fetch_add(1, Relaxed);
     let k = bucket(size);
@@ -78,8 +92,15 @@ fn count(size: usize) {
         return;
     }
     let stack = std::backtrace::Backtrace::force_capture();
-    if let Ok(mut s) = SAMPLES.lock() {
-        s.push(stack);
+    let new = Box::into_raw(Box::new(Sample { stack, next: std::ptr::null_mut() }));
+    let mut head = SAMPLES.load(Relaxed);
+    loop {
+        // SAFETY: `new` is this thread's alone until the exchange below hands it over.
+        unsafe { (*new).next = head };
+        match SAMPLES.compare_exchange_weak(head, new, Relaxed, Relaxed) {
+            Ok(_) => break,
+            Err(h) => head = h,
+        }
     }
     SAMPLING.try_with(|b| b.set(false)).ok();
 }
@@ -107,6 +128,13 @@ unsafe impl GlobalAlloc for Counting {
     }
 }
 
+/// Counts from now on, for the rest of the process: called as a test starts, before what it
+/// measures allocates (a block from before it, freed after, is taken off the live bytes without
+/// having been added).
+pub fn counting() {
+    COUNTS.store(true, Relaxed);
+}
+
 /// Sampling on or off; on, of the blocks of `least` bytes or more (the stacks then rank who asks
 /// for those).
 pub fn on(yes: bool, least: u64) {
@@ -114,7 +142,7 @@ pub fn on(yes: bool, least: u64) {
     ON.store(yes, Relaxed);
 }
 
-/// The bytes asked for and the calls so far, whole process.
+/// The bytes asked for and the blocks, since `counting`, whole process.
 pub fn asked() -> (u64, u64) {
     (BYTES.load(Relaxed), CALLS.load(Relaxed))
 }
@@ -156,7 +184,14 @@ pub fn sizes() -> Vec<String> {
 /// each function on it, so a caller's line holds its callees'), `top` of them, then the innermost
 /// workspace function of each stack ranked alike (the sites), each in MB per `rounds`.
 pub fn report(rounds: u64, top: usize) -> Vec<String> {
-    let stacks = std::mem::take(&mut *SAMPLES.lock().unwrap());
+    let mut stacks = Vec::new();
+    let mut at = SAMPLES.swap(std::ptr::null_mut(), Relaxed);
+    while !at.is_null() {
+        // SAFETY: the list taken whole is this call's alone; each node was a `Box` made in `count`.
+        let s = unsafe { Box::from_raw(at) };
+        at = s.next;
+        stacks.push(s.stack);
+    }
     let mb = |n: u64| n as f64 * EVERY as f64 / rounds.max(1) as f64 / (1u64 << 20) as f64;
     let mut out = vec![format!("{} stacks sampled, one per {} KB, over {rounds} round(s)", stacks.len(), EVERY >> 10)];
     let (mut under, mut site): (BTreeMap<String, u64>, BTreeMap<String, u64>) = Default::default();
@@ -186,37 +221,17 @@ pub fn report(rounds: u64, top: usize) -> Vec<String> {
 /// The functions of this workspace's crates on a printed stack, innermost first, without their
 /// hashes and closures' marks.
 fn our_frames(stack: &str) -> Vec<String> {
-    const OURS: [&str; 22] = [
-        "agentcore::",
-        "pipeline::",
-        "buildstore::",
-        "inputs::",
-        "terrain::",
-        "trees::",
-        "roads::",
-        "names::",
-        "bld::",
-        "landmarks::",
-        "offload::",
-        "store::",
-        "jobrt::",
-        "codecs::",
-        "coordwire::",
-        "roadcore::",
-        "det::",
-        "mapview::",
-        "pyport::",
-        "webpenc::",
-        "server::",
-        "scenic",
-    ];
+    // (The workspace's crates, and its programs' names' start.)
+    const OURS: &str =
+        "agentcore pipeline buildstore inputs terrain trees roads names bld landmarks offload store jobrt \
+                        codecs coordwire roadcore det mapview pyport webpenc server scenic";
     stack
         .lines()
         .filter_map(|l| l.trim_start().split_once(": ").filter(|(n, _)| n.parse::<u32>().is_ok()).map(|(_, f)| f))
         .filter(|f| !f.contains("agent::allocs::"))
         .filter(|f| {
             let f = f.trim_start_matches('<');
-            OURS.iter().any(|o| f.starts_with(o))
+            OURS.split(' ').any(|o| f.strip_prefix(o).is_some_and(|rest| rest.starts_with("::") || o == "scenic"))
         })
         .map(|f| f.replace("::{{closure}}", "").to_string())
         .collect()

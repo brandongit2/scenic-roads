@@ -302,6 +302,23 @@ whole), naming 13 590 distinct manifest entries. So:
 - **The shadow full plan** (§6) runs with its own memo, as a plan does today: no more than today's
   peak while it runs.
 
+What a plan asks of the allocator (task #1251, 13 Nov; `plan::tests::frozen_plans_memory` on a
+copy of the lead's state of that day, everything built, the M4, test profile; blocks counted by
+the test's allocator, a block grown counted again whole): a plan after the first asks for
+8.0 GB in 75 M blocks and takes 19 s, where before #1251 it asked for 37.5 GB in 311 M blocks
+and took 44 s; the first plan after a start (the terrain's targets made, the deep answers cold)
+137 GB in 930 M blocks and 199 s, where 166 GB, 1 166 M and 235 s. Before, by the function
+allocating (sampled stacks, GB a plan): `build::depth_water_reads` 13.0 (every depth target's
+water tiles, listed to ask for their names), `steps::pack_of` 9.7 (a `Vec` of a name's parts per
+manifest entry, for every key reading a step whole), `depth::grids::estimates_key` 4.0 (the
+lake-depth packs' digest, made for every key reading the depth's sources),
+`dem::spacing::Fine::of` 2.2 (made for every z6 tile's key), `steps::key_lines` 1.9. The first
+four are gone. What is left is the key lines themselves, made as text for every key every plan
+(`key_lines` 1.9 GB, `build::unit_deep_tiles` 1.0, `roads::stage::Area::tiles` 0.7, a reach as
+JSON 0.4): steps 4-5 end that for the keys nothing changed under. Why the bytes matter beyond
+the time: macOS's malloc keeps each block size's freed pages resident (docs/pool.md §7.1,
+*What leaves them*).
+
 The lead's agent is at 3.2 GB (footprint, 12:44Z) on a 32 GB mini; the bench's test process,
 holding the coverage, the terrain indexes, two states and four plans, peaked at 4.2 GB resident.
 The planned budget for the kept state is 0.5 GB (1.5 % of the mini), measured and logged on the

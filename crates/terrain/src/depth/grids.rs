@@ -296,7 +296,6 @@ pub fn estimates_key(manifest: &std::collections::BTreeMap<String, String>) -> S
     // (A line a pack, "<id> <tile> <content>", hashed as written: a plan asks for this with every
     // key that reads the depth's sources.)
     let n = store::naming::xxh3_text(|w| {
-        use std::fmt::Write as _;
         for (i, (id, t, c)) in crate::depth::lakes::named(manifest).enumerate() {
             write!(w, "{}{id} {t:?} {c}", if i == 0 { "" } else { "\n" })?;
         }
