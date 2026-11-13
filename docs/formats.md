@@ -1318,7 +1318,8 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 
 ## RT road tiles, version 8
 
-Laid out in `roadcore::tile`'s header comment (the packs' encoding keeps its name, "rt7"). The way
+Laid out in `roadcore::tile`'s header comment. The road and rail packs' `encoding` is "rt7": a
+name, not the tiles' version (each tile's header says it). The way
 column holds OSM way ids, and lines are sorted by (draw class, id) within a tile. The client sends
 the id with the clicked point. A reader takes version 8 only.
 

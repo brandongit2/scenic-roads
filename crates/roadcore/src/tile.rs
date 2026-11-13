@@ -4,7 +4,7 @@
 //!   varint nlines, varint nverts
 //!   nlines × u8      style byte: class (bits 0-3) | UNPAVED<<4 | BRIDGE<<5 | TUNNEL<<6 | LINK<<7
 //!   nlines × u8      line flags (`lflag`)
-//!   nlines × varint  zigzag delta of the OSM way id (v6: index into ways.bin)
+//!   nlines × varint  zigzag delta of the OSM way id
 //!   nlines × varint  vertex count
 //!   nlines × varint  true (full-resolution) length of the piece, decimetres
 //!   nlines × varint  length of the whole road the way belongs to, metres (its road value: `codecs::chain`)
@@ -14,7 +14,7 @@
 //!   nverts × varint  zigzag delta elevation, decimetres
 //!   nverts × u8      |grade| in 0.5 % units
 //!   nverts × varint  zigzag delta drape height (terrain surface for 3D), metres
-//!   13 × (nverts × varint)  zigzag delta of each scenic channel (roadcore::scenic::ch; v5: 12)
+//!   13 × (nverts × varint)  zigzag delta of each scenic channel (roadcore::scenic::ch)
 //!
 //! Lines are stored minor → major so the client can draw a tile in one ordered pass, and by way id
 //! within a draw class.
@@ -29,7 +29,7 @@ pub mod style {
     pub const LINK: u8 = 1 << 7;
 }
 
-/// Per-line flags (v3), after the styles.
+/// Per-line flags, after the styles.
 pub mod lflag {
     /// The way has neither a name nor a route number.
     pub const UNNAMED: u8 = 1;
