@@ -7,9 +7,11 @@
 // GET /api/schema). To allow a new one, add it here.
 export const STATUSES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"]; // "" = queued
 export const ITEM_KINDS = ["task", "folder"];
-// Who a task is assigned to is free text; these are what the page's editor suggests.
+// Who a task is assigned to is free text; these are what the page's editor suggests. A new task's,
+// and one a folder is turned into, is DEFAULT_ASSIGNED unless sent (the server's and the page's).
+export const DEFAULT_ASSIGNED = "Opus subagent";
 export const ASSIGNED_SUGGESTIONS = [
-  "Subagent", "Subagent (Opus)", "Subagent (Sonnet)", "Subagent (Fable)", "Fable subagent (high effort)", "Sonnet subagent",
+  DEFAULT_ASSIGNED, "Subagent", "Subagent (Opus)", "Subagent (Sonnet)", "Subagent (Fable)", "Fable subagent (high effort)", "Sonnet subagent",
   "worktree agent (Opus)", "worktree agent on the M1 (Opus)", "agent, this Mac", "PM (M4)", "Claude", "You", "Pipeline (lead)",
 ];
 // `status` and `archive`: the server's own (a task's status changed; an item archived or unarchived).

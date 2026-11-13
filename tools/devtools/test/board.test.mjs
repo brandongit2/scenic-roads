@@ -8,7 +8,7 @@ import path from "node:path";
 import { openStore } from "../store.mjs";
 import { openJobs } from "../jobs.mjs";
 import { makeServer } from "../server.mjs";
-import { STATUSES, ASSIGNED_SUGGESTIONS, EVENT_KINDS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
+import { STATUSES, ASSIGNED_SUGGESTIONS, DEFAULT_ASSIGNED, EVENT_KINDS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "taskboard-test-"));
 const store = openStore(path.join(dir, "t.db"));
@@ -78,7 +78,7 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   assert.deepEqual([a.body.num, b.body.num, g.body.num, c.body.num], [2, 3, 4, 5], "tasks and folders from one counter");
   assert.deepEqual([a.body.order, b.body.order, g.body.order, c.body.order], [2, 3, 4, 5], "last in the one order over all items");
   assert.match(a.body.added, ISO);
-  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2, status: "", assigned: "Subagent", num: a.body.num, order: 2, added: a.body.added });
+  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2, status: "", assigned: "Opus subagent", num: a.body.num, order: 2, added: a.body.added });
   assert.equal((await get("items", g.body.id)).num, 4);
   assert.equal((await get("meta", "counter")).next, c.body.num + 1);
   // working at birth leaves a status event, dated by the server
@@ -380,6 +380,15 @@ test("history is read by item and in pages, and in short for the lists; no cap h
   await refused(() => call("GET", "/api/c/events?limit=1&limit=2"), { says: /limit: is given more than once/ });
   await refused(() => call("GET", "/api/c/events?item=a%20b"), { says: /item: isn't an item's id/ });
   await refused(() => call("GET", "/api/c/events?orderBy=t&dir=desc&before=2026-01-01T00:00:00.000Z&beforeId=a%20b"), { says: /beforeId: isn't an event's id/ });
+});
+
+test("a task's default assignee is one constant, the server's and the page's, and the first suggestion", () => {
+  assert.equal(DEFAULT_ASSIGNED, "Opus subagent");
+  assert.equal(ASSIGNED_SUGGESTIONS[0], DEFAULT_ASSIGNED);
+  assert.ok(ASSIGNED_SUGGESTIONS.includes("Subagent"), "the others are kept");
+  const page = fs.readFileSync(new URL("../public/task-board/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /assigned: "[^"]*"|\|\| "Subagent"/, "no default spelled out in the page");
+  assert.equal(page.match(/schema\.DEFAULT_ASSIGNED/g).length, 5, "a new task, a folder turned into one, the status text's and the chip's fallback, the legend's sample");
 });
 
 test("the page reads no whole list of events and caps none (history is read by item, in short for the lists)", () => {

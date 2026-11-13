@@ -8,7 +8,7 @@
 import crypto from "node:crypto";
 import {
   ITEM_FIELDS, ITEM_CREATE, EVENT_CREATE, ITEM_EDIT, EVENT_EDIT, RENAMED,
-  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, TIME_FORMAT, validId, describe, renamedMeta,
+  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, TIME_FORMAT, DEFAULT_ASSIGNED, validId, describe, renamedMeta,
 } from "./schema.mjs";
 import { COLS } from "./store.mjs";
 import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
@@ -150,7 +150,7 @@ export function makeBoard(store, changed) {
     refuseIf(sentErrors(body, ITEM_CREATE, ["id", "num", "order", "added"], RENAMED.itemFields));
     const given = dropNulls(body);
     const task = (given.kind ?? "task") === "task";
-    const doc = { kind: "task", parent: "", ...(task ? { status: "", assigned: "Subagent" } : {}), ...given };
+    const doc = { kind: "task", parent: "", ...(task ? { status: "", assigned: DEFAULT_ASSIGNED } : {}), ...given };
     return tx(() => {
       // (The server's fields are filled in before the check, so it names what the client got wrong.)
       doc.added = nowIso();

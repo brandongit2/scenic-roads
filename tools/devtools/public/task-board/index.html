@@ -594,7 +594,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   const shortAssigned = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
   function statusText(t) {
     switch (statusOf(t)) {
-      case "working": return `under way · ${shortAssigned(t.assigned) || "Subagent"}`;
+      case "working": return `under way · ${shortAssigned(t.assigned) || schema.DEFAULT_ASSIGNED}`;
       case "backgrounded": return "backgrounded";
       case "integrating": return "integrating";
       case "review": return "in review";
@@ -1333,7 +1333,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function toTask(it) {
     const n = kidsOf(it.id).length;
     if (n) return refuse(`${quote(title(it))} has ${n} item${n === 1 ? "" : "s"} inside, so it stays a folder.`);
-    commit([edit(it.id, { kind: "task", assigned: "Subagent", status: "" }), evOp(it.id, "Converted to a task")], { toast: `${quote(title(it))} is a task now` });
+    commit([edit(it.id, { kind: "task", assigned: schema.DEFAULT_ASSIGNED, status: "" }), evOp(it.id, "Converted to a task")], { toast: `${quote(title(it))} is a task now` });
   }
   // Tab / Shift-Tab in the tree: into the folder just above, or out one level.
   function indent(it) {
@@ -1475,7 +1475,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   }
 
   // Row pieces shared by both panes.
-  const stChip = (t) => (statusOf(t) ? h("span", { class: `st s-${statusOf(t)}`, title: `${STATUSES[statusOf(t)]}${t.assigned ? ` · assigned to: ${t.assigned}` : ""}` }, statusOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${shortAssigned(t.assigned) || "Subagent"}`)] : statusText(t)) : null);
+  const stChip = (t) => (statusOf(t) ? h("span", { class: `st s-${statusOf(t)}`, title: `${STATUSES[statusOf(t)]}${t.assigned ? ` · assigned to: ${t.assigned}` : ""}` }, statusOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${shortAssigned(t.assigned) || schema.DEFAULT_ASSIGNED}`)] : statusText(t)) : null);
   function discBtn(t) {
     const on = !!t.discuss;
     if (!canWrite() || isArch(t)) return on ? h("span", { class: "ic disc on", role: "img", "aria-label": "Needs discussion", title: "Needs discussion" }, icon("bubble")) : null;
@@ -1707,7 +1707,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   function emptyEditor() {
     const legend = h("dl", { class: "legend" });
     for (const [st, what] of [["working", "Claude or a subagent is on it"], ["backgrounded", "waiting on a long process (a download, a build); its slot is free for another task"], ["integrating", "finished; Claude is merging it"], ["review", "finished; a subagent is reviewing it"], ["waiting", "it needs you: an answer, a decision, something only you can do"], ["done", "finished"], ["abandoned", "dropped without being finished; closed, counted apart from done"]]) {
-      legend.append(h("dt", null, stChip({ status: st, assigned: "Subagent" })), h("dd", null, what));
+      legend.append(h("dt", null, stChip({ status: st, assigned: schema.DEFAULT_ASSIGNED })), h("dd", null, what));
     }
     legend.append(h("dt", null, h("span", { class: "ic disc on", "aria-hidden": "true" }, icon("bubble"))), h("dd", null, "needs discussion first"));
     const keys = h("dl", { class: "keys" });
@@ -2299,7 +2299,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // `made` promise gives the new item's id once the server has made it, or null if it didn't.)
   function createWith(kind, parent, text) {
     const last = M.byOrder[M.byOrder.length - 1];
-    const item = makeOp("items", kind === "task" ? { kind, text, parent, assigned: "Subagent", status: "" } : { kind, text, parent }, { order: last ? ordOf(last) + 1 : 1, added: nowIso() });
+    const item = makeOp("items", kind === "task" ? { kind, text, parent, assigned: schema.DEFAULT_ASSIGNED, status: "" } : { kind, text, parent }, { order: last ? ordOf(last) + 1 : 1, added: nowIso() });
     const ops = [item, evOp(item.id, kind === "task" ? "Created" : "Created (a folder)")];
     const what = kind === "task" ? "" : "the folder ";
     const a = commit(ops, { toast: `Added ${what}${quote(text)}`, renum: (n) => `Added ${what}#${n} ${quote(text)}` });
