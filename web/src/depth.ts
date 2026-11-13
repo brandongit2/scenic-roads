@@ -72,7 +72,7 @@ export class Depth {
   private has = false;
   private sources: DepthSource[] = [];
   /** The catalogue's depth zooms (depthgrid.ts). */
-  private zooms: DepthZooms = { least: 0, tiles: 15, shade: 16 };
+  private zooms: DepthZooms = { tiles: 15, shade: 16 };
   private pool: WorkerPool<DepthMsg & { id: number }, DepthReply> | null = null;
   private added = false;
   /** The 3D floor shown (setFloor). */
@@ -101,9 +101,7 @@ export class Depth {
       // (A source's greatest zoom is fixed when it's added: new ones, added again by apply below.)
       const again = this.added && (zooms.tiles !== this.zooms.tiles || zooms.shade !== this.zooms.shade);
       if (again) this.removeLayers();
-      const least = zooms.least !== this.zooms.least;
       this.zooms = zooms;
-      if (least && this.pool) this.initWorkers();
       if (again) this.apply(this.s);
     }
     if (has !== this.has) {
@@ -147,7 +145,6 @@ export class Depth {
       base: (this.map.getSource('base') as maplibregl.VectorTileSource | undefined)?.tiles?.[0] ?? `${hostFor('base')}/tiles/base/{z}/{x}/{y}`,
       depth: `${hostFor('layers')}/tiles/depth/{z}/{x}/{y}${ver('depth.tiles')}`,
       cls: `${hostFor('layers')}/tiles/depth-class/{z}/{x}/{y}${ver('depth-class.tiles')}`,
-      minzoom: this.zooms.least,
     };
     this.pool?.broadcast(msg);
     (this.map.getSource('depth-shade') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([this.shadeUrl()]);

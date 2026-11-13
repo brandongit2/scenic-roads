@@ -1924,7 +1924,7 @@ fn bundled(
         x.lo.clear();
         x.hi.clear();
         x.add_bundle(logical, &keys);
-        if let Some(zs) = layer_zooms(layer, x.root.is_some()) {
+        if let Some(zs) = layer_zooms(layer) {
             (x.minzoom, x.maxzoom) = zs;
         }
     }
@@ -1971,8 +1971,8 @@ fn layer_encoding(layer: &str) -> &'static str {
     }
 }
 
-/// A layer's zoom range as its builders make it (`root`: whether the layer's root pack is built).
-fn layer_zooms(layer: &str, root: bool) -> Option<(u8, u8)> {
+/// A layer's zoom range as its builders make it.
+fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     Some(match layer {
         "roads" | "rails" => (4, 14),
         "terrain" | "labels" => (0, 12),
@@ -1992,11 +1992,10 @@ fn layer_zooms(layer: &str, root: bool) -> Option<(u8, u8)> {
         "buildings" => (::bld::bld::ZOOM, ::bld::bld::ZOOM),
         // Their field: levels 9–14 in the hi packs, 4–8 in the lo (bld::bld::field).
         "buildings-field" => (::bld::bld::field::LEVEL_MIN, ::bld::bld::field::LEVEL_MAX),
-        // Depth: z0–2 in the root once depth-root has made it (until then z3 up: the app composes
-        // the coarser from z3), z3–8 in the lo packs, z9–16 in the hi where a source has that
+        // Depth: z0–2 in the root, z3–8 in the lo packs, z9–16 in the hi where a source has that
         // detail; the server makes the others from their ancestors (terrain::depth).
         terrain::depth::LAYER | terrain::depth::CLASS_LAYER | terrain::depth::SHADE_LAYER => {
-            (if root { terrain::depth::build::ROOT.0 } else { terrain::depth::ZOOMS.0 }, terrain::depth::ZOOMS.1)
+            (terrain::depth::build::ROOT.0, terrain::depth::ZOOMS.1)
         }
         // The polar caps: z0–3 in the root, z4 to the cap's finest in the blocks (terrain::polar),
         // the deepest the map stores at most.
@@ -2129,7 +2128,7 @@ fn catalogue(
     }
     // Zoom ranges as each layer is defined (whichever packs exist yet), else the packs' scopes.
     for (l, x) in layers.iter_mut() {
-        if let Some(zs) = layer_zooms(l, x.root.is_some()) {
+        if let Some(zs) = layer_zooms(l) {
             (x.minzoom, x.maxzoom) = zs;
         }
     }

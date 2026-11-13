@@ -2,9 +2,7 @@
 //
 // A map tile z/x/y (512 px) is built from the server's depth and class tiles of zoom z + 1 (four
 // 256-px tiles, lossless WebP, decoded exact: the stored ones, or past a place's sources' zoom the
-// server's from their nearest stored ancestor, crates/server/src/depth.rs; above the layer's least
-// zoom the catalogue names, z3 until depth-root has built the root packs (z0–2), each pixel the
-// mean of the least zoom's tiles under it with data, depthgrid.ts coarsen, #822; the map asks for
+// server's from their nearest stored ancestor, crates/server/src/depth.rs; the map asks for
 // none past the greatest less one, depthgrid.ts depthZooms) and the basemap's own water (its vector tile of zoom min(z, 14), as the map draws it),
 // painted at 512 px. From that one composite come:
 //   relief   the water's depth, reaching REACH px past its data, never across land into other
@@ -19,12 +17,12 @@
 // tiles in view (the colour scale fitted to the view) and the sources in them (the attribution).
 import { HeightTile } from './contour/height-tile';
 import generateIsolines from './contour/isolines';
-import { NODATA_MIN, SENTINEL, coarsen, contourValues, reliefValues, type Grid } from './depthgrid';
+import { NODATA_MIN, SENTINEL, contourValues, reliefValues, type Grid } from './depthgrid';
 import { HBINS, HCELLS, hbin } from './depthlook';
 import { encodeLines, readPolygons } from './mvt';
 
 export type DepthMsg =
-  | { type: 'init'; base: string; depth: string; cls: string; minzoom: number }
+  | { type: 'init'; base: string; depth: string; cls: string }
   | { type: 'tile'; id: number; kind: 'relief' | 'contour'; z: number; x: number; y: number; q: Record<string, string> }
   | { type: 'probe'; id: number; z: number; x: number; y: number; px: number; py: number }
   /** The depths of the tiles' cells listed (HCELLS × HCELLS a tile, row by row). */
@@ -55,15 +53,13 @@ const VMAX = 14;
 let base = '';
 let depthUrl = '';
 let clsUrl = '';
-/** The layer's least zoom stored (the catalogue's). */
-let minzoom = 0;
 const cancelled = new Set<number>();
 
 self.onmessage = (ev: MessageEvent<DepthMsg>) => {
   const m = ev.data;
   if (m.type === 'init') {
     // (A new catalogue: its URLs, and nothing kept from the old one.)
-    if (m.depth !== depthUrl || m.base !== base || m.minzoom !== minzoom) {
+    if (m.depth !== depthUrl || m.base !== base) {
       fetched.clear();
       composites.clear();
       waterCache.clear();
@@ -71,7 +67,6 @@ self.onmessage = (ev: MessageEvent<DepthMsg>) => {
     base = m.base;
     depthUrl = m.depth;
     clsUrl = m.cls;
-    minzoom = m.minzoom;
     return;
   }
   if (m.type === 'cancel') {
@@ -132,7 +127,7 @@ function serverTile(z: number, x: number, y: number): Promise<Grid> {
   const key = `${z}/${x}/${y}`;
   const hit = fetched.get(key);
   if (hit) return hit;
-  const p = z < minzoom ? coarser(z, x, y) : (async () => {
+  const p = (async () => {
     const [dp, kp] = await Promise.all([pixels(fill(depthUrl, z, x, y)), pixels(fill(clsUrl, z, x, y))]);
     if (!dp) return null;
     const d = new Float32Array(256 * 256), k = new Uint8Array(256 * 256);
@@ -145,12 +140,6 @@ function serverTile(z: number, x: number, y: number): Promise<Grid> {
   remember(fetched, key, p, 600);
   p.catch(() => fetched.get(key) === p && fetched.delete(key));
   return p;
-}
-
-/** A tile above the least zoom stored: the f × f tiles of that zoom under it (f = 2^(minzoom − z)). */
-async function coarser(z: number, x: number, y: number): Promise<Grid> {
-  const dz = minzoom - z, f = 2 ** dz;
-  return coarsen(await Promise.all(Array.from({ length: f * f }, (_, i) => serverTile(minzoom, (x << dz) + (i % f), (y << dz) + Math.floor(i / f)))), f);
 }
 
 const waterCache = new Map<string, Promise<number[][][]>>();
