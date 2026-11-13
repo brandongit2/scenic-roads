@@ -152,6 +152,9 @@ test("assigned is free text: anything up to 200 characters, the suggestions or n
     assert.equal((await get("items", t1)).assigned, a);
   }
   assert.equal((await post("items", { text: "Freeform", assigned: "Subagent (Fable, low effort)" })).status, 200);
+  // (One line, and not only spaces.)
+  await refused(() => patch("items", t1, { assigned: "two\nlines" }), { says: /assigned: must be one line/ });
+  await refused(() => patch("items", t1, { assigned: "   " }), { says: /assigned: is only spaces; "" is nobody/ });
 });
 test("PATCH: null removes an optional field, and never a required one", async () => {
   await patch("items", t1, { note: null, priority: null });
@@ -273,7 +276,7 @@ test("meta: the counter is the server's; the now line's time is too", async () =
   await refused(() => call("DELETE", "/api/c/meta/now"), { status: 405 });
   await refused(() => call("POST", "/api/c/meta", { text: "x" }), { status: 405 });
   // (The status line's old name, refused whatever is asked of it.)
-  for (const [m, b] of [["GET"], ["PATCH", { now: "x" }], ["PUT", { now: "x" }]]) await refused(() => call(m, "/api/c/meta/status", b), { says: /meta\/status is renamed meta\/now \(its fields: text, updated; "now" is "text"\)/ });
+  for (const [m, b] of [["GET"], ["PATCH", { now: "x" }], ["PUT", { now: "x" }]]) await refused(() => call(m, "/api/c/meta/status", b), { says: /meta\/status is renamed meta\/now \(its fields: text, updated; "now" is "text"; a task board page open since before the rename: reload it\)/ });
   const r = await patch("meta", "now", { text: "Working on it" });
   assert.equal(r.status, 200);
   const s = await get("meta", "now");
@@ -315,6 +318,12 @@ test("routes: nothing else is open", async () => {
   await refused(() => call("GET", "/api/c/items?orderBy=stage"), { says: /orderBy: "stage" is renamed "status"/ });
   await refused(() => call("GET", "/api/c/items?orderBy=colour"), { says: /orderBy: "colour" isn't a field of items/ });
   assert.equal((await call("GET", "/api/c/events?orderBy=t&dir=desc&limit=2")).status, 200);
+  // (A query it doesn't take is refused, not ignored.)
+  await refused(() => call("GET", "/api/c/items?stage=done"), { says: /stage: isn't a query this takes \(these are: orderBy, dir, limit\)/ });
+  await refused(() => call("GET", "/api/c/items?orderBy=num&dir=up"), { says: /dir: must be asc or desc/ });
+  await refused(() => call("GET", "/api/c/items?limit=-1"), { says: /limit: must be a whole number from 1/ });
+  // (An old name's refusal says what a page opened before the rename should do.)
+  assert.match((await call("PATCH", `/api/c/items/${t1}`, { stage: "done" })).body.error.message, /reload it/);
 });
 
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {

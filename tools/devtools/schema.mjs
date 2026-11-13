@@ -21,7 +21,8 @@ export const RENAMED = {
   meta: { status: "now" },
   metaFields: { now: "text" },
 };
-const renamedText = (old, now) => `is renamed: send ${JSON.stringify(now)}, not ${JSON.stringify(old)}`;
+// (A board page opened before the rename sends the old names: its notice says to reload.)
+const renamedText = (old, now) => `is renamed: send ${JSON.stringify(now)}, not ${JSON.stringify(old)} (a task board page open since before the rename: reload it)`;
 
 // Times are one format everywhere: ISO 8601, UTC, to the millisecond (what Date#toISOString gives),
 // which also sorts as text. Accepted on the way in: the same with or without the fraction
@@ -117,6 +118,8 @@ export function itemErrors(doc) {
   for (const k of ["kind", "text", "parent", "order", "num", "added"]) if (doc[k] === undefined) bad(k, "is required");
   if (task) for (const k of ["status", "assigned"]) if (doc[k] === undefined) bad(k, "is required for a task");
   if (typeof doc.text === "string" && !doc.text.trim()) bad("text", "must not be empty");
+  if (typeof doc.assigned === "string" && /[\u0000-\u001f\u007f]/.test(doc.assigned)) bad("assigned", "must be one line (no line breaks or control characters)");
+  else if (typeof doc.assigned === "string" && doc.assigned && !doc.assigned.trim()) bad("assigned", 'is only spaces; "" is nobody');
   if (doc.archivedAt !== undefined && doc.archived !== true) bad("archivedAt", "is only for an archived item (archived: true)");
   return errs;
 }
@@ -147,10 +150,9 @@ export function metaErrors(key, doc) {
   for (const k of Object.keys(fields)) if (doc[k] === undefined) errs.push({ field: k, message: "is required" });
   return errs;
 }
-export const docErrors = (col, id, doc) => (col === "items" ? itemErrors(doc) : col === "events" ? eventErrors(doc) : metaErrors(id, doc));
 
 // meta/<old>'s refusal: its new name and fields.
-export const renamedMeta = (key) => `meta/${key} is renamed meta/${RENAMED.meta[key]} (its fields: ${Object.keys(META_FIELDS[RENAMED.meta[key]]).join(", ")}; "now" is "text")`;
+export const renamedMeta = (key) => `meta/${key} is renamed meta/${RENAMED.meta[key]} (its fields: ${Object.keys(META_FIELDS[RENAMED.meta[key]]).join(", ")}; "now" is "text"; a task board page open since before the rename: reload it)`;
 // A request body's keys against what a client may send: the server's own fields, and names from
 // before a rename (`renamed`: old → new), are named as such.
 export function sentErrors(sent, allowed, owned, renamed = {}) {

@@ -287,8 +287,13 @@ export function makeBoard(store, changed) {
     for (const d of docs) trash.set(`${d.col}/${d.id}`, g);
     while (new Set(trash.values()).size > UNDO_KEPT) for (const [k, v] of trash) { for (const d of v.docs) trash.delete(`${d.col}/${d.id}`); break; }
   };
+  // (Read-only, archived: an archived item, one inside an archived folder and their history can't be
+  // deleted on their own; a folder that isn't archived goes with everything inside it.)
   function remove(col, id) {
     if (col === "meta") refuse(405, "invalid_argument", "meta documents can't be deleted");
+    const ro = col === "items" ? (store.get("items", id) ? readOnlyWhy(id, store.get("items", id)) : null) : null;
+    if (ro) invalid([{ field: "", message: `${ro}: it can't be deleted (archived items are read-only); unarchive it first, PATCH {"archived": false}` }]);
+    if (col === "events") { const e = store.get("events", id); if (e) checkItem(e.item); }
     return tx(() => {
       const docs = [];
       const take = (c, i) => { const doc = store.get(c, i); if (doc) docs.push({ col: c, id: i, doc }); };
@@ -316,7 +321,12 @@ export function makeBoard(store, changed) {
           if (store.get("items", d.id)) refuse(409, "conflict", `${d.id} exists again`);
           const a = d.doc.parent && !have.has(d.doc.parent) && !d.doc.archived ? archivedAround(d.doc.parent)[0] : null;
           if (a) refuse(409, "conflict", `its folder ${named(a.doc)} is archived now`);
-        } else if (d.doc.item && !have.has(d.doc.item) && !store.get("items", d.doc.item)) refuse(409, "conflict", `its item ${d.doc.item} is gone`);
+        } else if (d.doc.item && !have.has(d.doc.item)) {
+          const it = store.get("items", d.doc.item);
+          if (!it) refuse(409, "conflict", `its item ${d.doc.item} is gone`);
+          const ro = readOnlyWhy(d.doc.item, it);
+          if (ro) refuse(409, "conflict", `${ro} now: its history is read-only`);
+        }
       }
       for (const d of g.docs) { store.put(d.col, d.id, d.doc); trash.delete(`${d.col}/${d.id}`); }
       changed(...new Set(g.docs.map((d) => d.col)));
@@ -324,12 +334,20 @@ export function makeBoard(store, changed) {
     });
   }
 
-  // `orderBy`: a field of the collection, or "id"; an old name is refused with its new one.
-  function orderOf(col, orderBy) {
-    if (!orderBy || col === "meta") return orderBy;
-    if (col === "items" && RENAMED.itemFields[orderBy]) invalid([{ field: "orderBy", message: `${JSON.stringify(orderBy)} is renamed ${JSON.stringify(RENAMED.itemFields[orderBy])}` }]);
-    if (orderBy !== "id" && !COLS[col].includes(orderBy)) invalid([{ field: "orderBy", message: `${JSON.stringify(orderBy)} isn't a field of ${col} (these are: id, ${COLS[col].join(", ")})` }]);
-    return orderBy;
+  // A list's query: `orderBy` a field of the collection, or "id" (an old name refused with its new
+  // one), `dir` asc or desc, `limit` a whole number from 1; anything else is refused, not ignored.
+  function listQuery(col, params) {
+    const errs = [];
+    for (const k of params.keys()) if (!["orderBy", "dir", "limit"].includes(k)) errs.push({ field: k, message: "isn't a query this takes (these are: orderBy, dir, limit)" });
+    const orderBy = params.get("orderBy"), dir = params.get("dir"), limit = params.get("limit");
+    if (orderBy && col !== "meta") {
+      if (col === "items" && RENAMED.itemFields[orderBy]) errs.push({ field: "orderBy", message: `${JSON.stringify(orderBy)} is renamed ${JSON.stringify(RENAMED.itemFields[orderBy])}` });
+      else if (orderBy !== "id" && !COLS[col].includes(orderBy)) errs.push({ field: "orderBy", message: `${JSON.stringify(orderBy)} isn't a field of ${col} (these are: id, ${COLS[col].join(", ")})` });
+    }
+    if (dir !== null && dir !== "asc" && dir !== "desc") errs.push({ field: "dir", message: "must be asc or desc" });
+    if (limit !== null && !/^[1-9]\d{0,8}$/.test(limit)) errs.push({ field: "limit", message: "must be a whole number from 1" });
+    refuseIf(errs);
+    return { orderBy, dir, limit: Number(limit) };
   }
 
   async function api(req, res, url, parts) {
@@ -351,7 +369,7 @@ export function makeBoard(store, changed) {
 
     if (!id) {
       // (`total`: how many there are, so a reader that asked for fewer can say so.)
-      if (m === "GET") return send(res, 200, { docs: store.list(col, { orderBy: orderOf(col, url.searchParams.get("orderBy")), dir: url.searchParams.get("dir"), limit: Number(url.searchParams.get("limit")) }), total: store.count(col) });
+      if (m === "GET") return send(res, 200, { docs: store.list(col, listQuery(col, url.searchParams)), total: store.count(col) });
       if (m === "POST" && col !== "meta") return send(res, 200, (col === "items" ? createItem : createEvent)(await jsonBody(req), req));
       return fail(res, 405, "invalid_argument", col === "meta" ? "meta documents are changed by PATCH meta/now" : "method not allowed: POST creates, PATCH/DELETE need an id");
     }

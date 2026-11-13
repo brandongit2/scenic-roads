@@ -87,10 +87,28 @@ test("an archived item is read-only: no PATCH, PUT or event, but unarchiving", a
   const old = b.store.list("events").find((e) => e.data.item === f);
   await b.refused(() => b.call("PATCH", `/api/c/events/${old.id}`, { text: "edited" }), /item: #1 "Outer" is archived: its history is read-only/);
   assert.equal((await b.call("POST", "/api/c/events", { item: "", kind: "note", text: "about the board" })).status, 200);
-  // (Deleting is no edit: an archived item can still be deleted.)
+  // (Nor deleted: an archived item, one inside an archived folder, or an event of theirs. A folder
+  // that isn't archived goes with everything in it, archived or not.)
   const lone = await b.add({ text: "lone" });
   assert.equal((await b.patch(lone, { archived: true })).status, 200);
+  await b.refused(() => b.call("DELETE", `/api/c/items/${lone}`), /#6 "lone" is archived: it can't be deleted \(archived items are read-only\); unarchive it first/);
+  await b.refused(() => b.call("DELETE", `/api/c/items/${u}`), /#4 "Deep" is archived: it can't be deleted/);
+  await b.refused(() => b.call("DELETE", `/api/c/events/${old.id}`), /item: #1 "Outer" is archived: its history is read-only/);
+  assert.equal((await b.patch(lone, { archived: false })).status, 200);
   assert.equal((await b.call("DELETE", `/api/c/items/${lone}`)).status, 200);
+  const h = await b.add({ kind: "folder", text: "holder" });
+  const done = await b.add({ text: "done", parent: h });
+  assert.equal((await b.patch(done, { archived: true })).status, 200);
+  assert.deepEqual((await b.call("DELETE", `/api/c/items/${h}`)).body.deleted.filter((d) => d.startsWith("items/")), [`items/${h}`, `items/${done}`]);
+});
+
+test("an event deleted before its item was archived isn't put back into its history", async (t) => {
+  const b = await board(t);
+  const x = await b.add({ text: "x" });
+  const e = (await b.call("POST", "/api/c/events", { item: x, kind: "note", text: "n" })).body.id;
+  assert.equal((await b.call("DELETE", `/api/c/events/${e}`)).status, 200);
+  assert.equal((await b.patch(x, { archived: true })).status, 200);
+  await b.refused(() => b.call("POST", `/api/c/events/${e}/restore`), /#1 "x" is archived now: its history is read-only/, 409);
 });
 
 test("nothing goes into an archived folder, at any depth: new or moved, named", async (t) => {

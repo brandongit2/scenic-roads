@@ -51,13 +51,17 @@ function inTx(db, fn) {
   try { const r = fn(); db.exec("COMMIT"); return r; } catch (e) { db.exec("ROLLBACK"); throw e; }
 }
 
-// ONE-TIME (#1229; delete this function, and its call, once the M6's board has been moved to form 1):
-// form 0 → 1, in one transaction (a failure leaves the file as it was). Items' stage and where become
-// status and assigned; the unused extra columns of items and events go; status events (kind "stage",
-// "Stage Queued → Under way (by curl)") become kind "status", "Status …"; meta/status {now} becomes
-// meta/now {text}. And no item that isn't archived may be inside an archived folder (board.mjs keeps
-// it so from now on): each archived folder holding one, at any depth, is unarchived, with an
-// `archive` event saying why. Returns the folders unarchived, [{num, for: [num]}].
+// ONE-TIME (#1229). DELETE this function, its call in openStore and its tests (test/store.test.mjs)
+// once the M6's board is at form 1: board task #1229's rollout says so.
+// Form 0 → 1, in one transaction (a failure leaves the file as it was). Items' stage and where become
+// status and assigned; the unused extra columns of items and events go; status events (kind "stage")
+// become kind "status", and the server's own words in them ("Stage Queued → Under way (by curl)")
+// "Status …", anything else written in them left as it is; meta/status {now} becomes meta/now {text}.
+// And no item that isn't archived may be inside an archived folder (board.mjs keeps it so from now
+// on): an archived folder holding an open task (one neither done nor abandoned, not archived), at any
+// depth, is unarchived; what is left not archived inside an archived folder after that (done and
+// abandoned tasks, folders with no open task) is archived, now, as archiving the folder now would. Each leaves an `archive` event saying why. Returns
+// {unarchived: [{num, for: [num]}], archived: [{num, in: num}]}.
 function migrateTo1(db) {
   return inTx(db, () => {
     db.exec(`${itemsTable("items_new")};
@@ -67,28 +71,40 @@ function migrateTo1(db) {
       ${eventsTable("events_new")};
       INSERT INTO events_new (id, item, kind, t, text)
         SELECT id, item, CASE kind WHEN 'stage' THEN 'status' ELSE kind END, t,
-          CASE WHEN kind = 'stage' AND text LIKE 'Stage %' THEN 'Status ' || substr(text, 7) ELSE text END FROM events;
+          CASE WHEN kind = 'stage' AND text GLOB 'Stage * (by *)' THEN 'Status ' || substr(text, 7) ELSE text END FROM events;
       DROP TABLE events; ALTER TABLE events_new RENAME TO events;
       INSERT INTO meta (key, value) SELECT 'now', json_object('text', coalesce(json_extract(value, '$.now'), ''), 'updated', json_extract(value, '$.updated')) FROM meta WHERE key = 'status';
       DELETE FROM meta WHERE key = 'status';
       ${INDEXES}`);
-    const rows = db.prepare(`SELECT id, parent, num, archived FROM items`).all();
+    const rows = db.prepare(`SELECT id, kind, parent, num, status, archived, archivedAt FROM items`).all();
     const byId = new Map(rows.map((r) => [r.id, r]));
-    const why = new Map(); // archived folder id → the numbers of the items not archived inside it
-    for (const r of rows) {
-      if (r.archived) continue;
-      for (let p = byId.get(r.parent), n = 0; p && n < 10000; p = byId.get(p.parent), n++) if (p.archived) (why.get(p.id) || why.set(p.id, []).get(p.id)).push(r.num);
-    }
+    const up = (r, f) => { for (let p = byId.get(r.parent), n = 0; p && n < 10000; p = byId.get(p.parent), n++) if (f(p)) return p; return null; };
     const t = new Date().toISOString();
-    const out = [];
+    const note = db.prepare(`INSERT INTO events (id, item, kind, t, text) VALUES (?, ?, 'archive', ?, ?)`);
+    const why = new Map(); // archived folder id → the numbers of the open tasks inside it
+    for (const r of rows) {
+      if (r.archived || r.kind !== "task" || r.status === "done" || r.status === "abandoned") continue;
+      up(r, (p) => { if (p.archived) (why.get(p.id) || why.set(p.id, []).get(p.id)).push(r.num); return false; });
+    }
+    const unarchived = [];
     for (const [id, nums] of [...why].sort((a, b) => byId.get(a[0]).num - byId.get(b[0]).num)) {
+      const r = byId.get(id);
+      r.archived = 0;
       db.prepare(`UPDATE items SET archived = 0, archivedAt = NULL WHERE id = ?`).run(id);
-      const list = nums.map((n) => `#${n}`).join(", ");
-      db.prepare(`INSERT INTO events (id, item, kind, t, text) VALUES (?, ?, 'archive', ?, ?)`).run(crypto.randomUUID(), id, t, `Unarchived when the board moved to its new names (#1229): it held ${list}, not archived, and no item that isn't archived may be inside an archived folder`);
-      out.push({ num: byId.get(id).num, for: nums });
+      note.run(crypto.randomUUID(), id, t, `Unarchived when the board moved to its new names (#1229): it held ${nums.map((n) => `#${n}`).join(", ")}, open and not archived, and nothing that isn't archived may be inside an archived folder`);
+      unarchived.push({ num: r.num, for: nums });
+    }
+    const archived = [];
+    for (const r of [...rows].sort((a, b) => a.num - b.num)) {
+      if (r.archived) continue;
+      const a = up(r, (p) => p.archived);
+      if (!a) continue;
+      db.prepare(`UPDATE items SET archived = 1, archivedAt = ? WHERE id = ?`).run(t, r.id);
+      note.run(crypto.randomUUID(), r.id, t, `Archived when the board moved to its new names (#1229): it was inside archived folder #${a.num}, and nothing that isn't archived may be inside an archived folder`);
+      archived.push({ num: r.num, in: a.num });
     }
     db.exec(`PRAGMA user_version = ${FORM}`);
-    return out;
+    return { unarchived, archived };
   });
 }
 
@@ -107,8 +123,8 @@ export function openStore(file, { log = () => {} } = {}) {
     if (!cur) {
       inTx(db, () => db.exec(`${itemsTable("items")}; ${eventsTable("events")}; ${INDEXES} PRAGMA user_version = ${FORM};`));
     } else if (form === 0) {
-      const un = migrateTo1(db);
-      log(`${file}: moved to form ${FORM} (status, assigned, meta/now)${un.length ? `; unarchived ${un.map((u) => `#${u.num} (it held ${u.for.map((n) => `#${n}`).join(", ")})`).join(", ")}` : ""}`);
+      const { unarchived: un, archived: ar } = migrateTo1(db);
+      log(`${file}: moved to form ${FORM} (status, assigned, meta/now)${un.length ? `; unarchived ${un.map((u) => `#${u.num} (it held ${u.for.map((n) => `#${n}`).join(", ")})`).join(", ")}` : ""}${ar.length ? `; archived ${ar.map((a) => `#${a.num} (inside #${a.in})`).join(", ")}` : ""}`);
     } else if (form !== FORM) {
       throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
     } else if (!cur.sql.includes(STATUS_CHECK)) {

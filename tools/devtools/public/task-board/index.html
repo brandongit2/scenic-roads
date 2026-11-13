@@ -277,6 +277,8 @@
   .hist.open { color: var(--fg); background: var(--line); }
   .assigned { width: var(--assigned-w); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--faint); font-size: 12px; }
   .pr { flex: none; width: var(--pr-w); text-align: right; font: 500 12px/18px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+  /* (A sorted row's leading priority: wider for one with a fraction, as old ones have, not over its box.) */
+  .pr.lead { width: auto; min-width: var(--pr-w); }
   .pr.none { color: var(--faint); }
   .pr.next { color: var(--accent); font-weight: 600; }
   .lead { width: 26px; margin-left: -4px; text-align: right; }
@@ -1270,7 +1272,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const nt = open.filter((d) => !d.$folder).length, nf = open.length - nt;
     const parts = [nt ? `${nt} task${nt === 1 ? "" : "s"}` : "", nf ? `${nf} folder${nf === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ");
     const what = its.length === 1 ? `the folder ${quote(title(its[0]))}` : `these ${its.length} items`;
-    confirmDialog(`Archive ${its.length === 1 ? "this folder" : "these items"}?`, `Archiving ${what} will also archive all the tasks within ${its.length === 1 ? "it" : "them"}: ${open.length === 1 ? "the" : "all"} ${parts} not archived yet. Archived items are read-only until they are unarchived.`, "Archive all", () => { archive(...its); then(); });
+    confirmDialog(`Archive ${its.length === 1 ? "this folder" : "these items"}?`, `Archiving ${what} will also archive all the tasks within ${its.length === 1 ? "it" : "them"}: the ${parts} not archived yet. Archived items are read-only until they are unarchived.`, "Archive all", () => { archive(...its); then(); });
   }
   // Unarchiving restores the archive it came from, whole: everything archived at the same moment
   // (one archive, one stamp), and the archived folders around any of those (nothing that isn't
@@ -1300,6 +1302,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     commit(ops, { toast: `Unarchived ${quote(title(it))}${n ? ` and the ${n} archived with it` : ""}`, inverse });
   }
   function remove(it) {
+    if (isArch(it)) return readOnly(it);
     const docs = [it, ...under(it.id)];
     const n = docs.length - 1;
     const what = `${quote(title(it))}${n ? ` and ${n} inside` : ""}`;
@@ -1441,8 +1444,10 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const assignees = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     if (assignees.length) out.push(h("span", { class: "sep", "aria-hidden": "true" }));
     if (assignees.length <= 4) {
+      // (Shortened, unless that makes two alike: "Subagent (Opus)" and "Subagent (Fable)".)
+      const short = (w) => (assignees.some(([o]) => o !== w && shortAssigned(o) === shortAssigned(w)) ? w : shortAssigned(w) || w);
       for (const [w, n] of assignees) {
-        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, shortAssigned(w) || w, h("span", { class: "n" }, String(n))));
+        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, short(w), h("span", { class: "n" }, String(n))));
       }
     } else {
       const sel = h("select", { "aria-label": "Who tasks are assigned to", "data-chip": "assigned" }, h("option", { value: "" }, "Anyone"), assignees.map(([w, n]) => h("option", { value: w, selected: S.assigned === w }, `${shortAssigned(w) || w} (${n})`)));
@@ -1646,7 +1651,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // ---------------------------------------------------------------------------------------------
   // The editor: the selected item's details. Fields save on blur or Enter; Esc puts back what the
   // field had. A change from Claude shows at once, unless you're changing that field.
-  const ED = { id: null, kind: null, ro: null, f: {} };
+  const ED = { id: null, kind: null, ro: null, unarch: null, f: {} };
   // Fields saved while changes were paused: "<item>:<field>" → {id, save, value, el}.
   const pending = new Map();
   function unmark(el) {
@@ -1701,7 +1706,8 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       return;
     }
     const kind = it.$folder ? "folder" : "task";
-    if (ED.id !== it.id || ED.kind !== kind || ED.ro !== (!canEdit() || isArch(it))) buildEditor(it, kind, host);
+    // (An archived item's Unarchive button shows once changes can be written: built again then.)
+    if (ED.id !== it.id || ED.kind !== kind || ED.ro !== (!canEdit() || isArch(it)) || ED.unarch !== (isArch(it) && canWrite())) buildEditor(it, kind, host);
     syncEditor(it);
   }
   function setVal(el, v) {
@@ -1788,6 +1794,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     ED.id = it.id;
     ED.kind = kind;
     ED.ro = !canEdit() || isArch(it); // (archived: read-only)
+    ED.unarch = isArch(it) && canWrite();
     const ro = ED.ro;
     const f = (ED.f = {});
     f.crumbs = h("div", { class: "ed-crumbs" });
@@ -1800,7 +1807,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     // (Its number, before its title: a click copies "#57".)
     f.num = h("button", { class: "ed-num", type: "button", "data-act": "copy-num", hidden: true });
     const parts = [h("div", { class: "ed-sticky" }, top, h("div", { class: "ed-head" }, f.num, f.title)), h("p", { class: "hint bad", id: "ed-unsaved", hidden: ![...pending.values()].some((p) => p.id === it.id) }, "Not saved yet: changes are paused until the connection is back. What you typed is kept and saved then; Esc puts a field back."), f.chips];
-    if (isArch(it)) parts.push(h("p", { class: "ro-note" }, h("span", null, `Archived${it.archived ? "" : ", with a folder around it"}: read-only. Unarchive it to change it.`), canWrite() ? h("button", { class: "btn", type: "button", "data-act": "ed-unarchive" }, "Unarchive") : null));
+    if (isArch(it)) parts.push(h("p", { class: "ro-note" }, h("span", null, `Archived${it.archived ? "" : ", with a folder around it"}: read-only. Unarchive it to change it.`), ED.unarch ? h("button", { class: "btn", type: "button", "data-act": "ed-unarchive" }, "Unarchive") : null));
     f.reply = h("div", { class: "sec" });
     if (kind === "task") {
       parts.push(f.reply);
@@ -1968,7 +1975,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const m = $("menu");
     const item = (label, act, { why = "", danger = false } = {}) => h("button", { type: "button", role: "menuitem", tabindex: "-1", "data-mact": act, "aria-disabled": why ? "true" : null, class: danger ? "danger" : null }, h("span", null, label), why ? h("small", null, why) : null);
     const parts = [];
-    // (Archived: read-only, so unarchiving, or deleting, is all there is.)
+    // (Archived: read-only, so unarchiving is all there is.)
     if (isArch(it)) parts.push(item("Unarchive", "unarchive"));
     else if (it.$folder) {
       parts.push(item("Add task inside", "add-task"), item("Add folder inside", "add-folder"));
@@ -1978,9 +1985,10 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       const n = kidsOf(it.id).length;
       parts.push(item("Convert to task", "to-task", { why: n ? `Not while it holds ${n} item${n === 1 ? "" : "s"} (archived ones count)` : "" }));
     } else parts.push(item("Convert to folder", "to-folder"));
-    if (!isArch(it)) parts.push(item("Archive", "archive"));
-    const n = under(it.id).length;
-    parts.push(h("hr"), item(n ? `Delete, with the ${n} inside` : "Delete", "delete", { danger: true }));
+    if (!isArch(it)) {
+      const n = under(it.id).length;
+      parts.push(item("Archive", "archive"), h("hr"), item(n ? `Delete, with the ${n} inside` : "Delete", "delete", { danger: true }));
+    }
     m.replaceChildren(...parts);
     m.hidden = false;
     const r = anchor.getBoundingClientRect();
@@ -2645,7 +2653,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (!b) return;
     const k = b.dataset.chip;
     if (k === "archived") { S.showArch = !S.showArch; local.set("archived", S.showArch); }
-    else if (k.startsWith("assigned:")) { const w = k.slice(6); S.assigned = S.assigned === w ? null : w; }
+    else if (k.startsWith("assigned:")) { const w = k.slice("assigned:".length); S.assigned = S.assigned === w ? null : w; }
     else if (S.filters.has(k)) S.filters.delete(k);
     else S.filters.add(k);
     render();

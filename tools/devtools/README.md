@@ -22,8 +22,10 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   `items` (folders and tasks), `events` (history), `meta` (`now`, the now line: what Claude is on,
   shown in the page's header; `counter`, the next item number), `blobs` (photos); its form
   (`PRAGMA user_version`) is 1 (#1229: `status`, `assigned`, `meta/now`), and a file of form 0 is
-  moved to it once as the app opens it (`store.mjs` migrateTo1, to be deleted once the M6's board
-  is moved; any other form is refused). `public/task-board/index.html` is the page;
+  moved to it once as the app opens it, in one transaction (`store.mjs` migrateTo1, to be deleted
+  once the M6's board is moved; any other form is refused). That move also mends what the archive
+  rules below forbid: an archived folder holding an open task is unarchived, a done or abandoned
+  task, or a folder with no open task, left inside an archived folder is archived with it. `public/task-board/index.html` is the page;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
   "assets")`) over the app's.
 - **The dev job dashboard** (`/jobs/`, below): `jobs.mjs` its API (`/api/jobs/…`) and file,
@@ -148,15 +150,15 @@ curl -s -X PATCH $B/api/c/items/i1100 -H 'content-type: application/json' -d '{"
 
 **Archived items are read-only** (#1229). An item is archived with `PATCH {"archived": true}` (`archivedAt`, when, is the server's time unless sent) and unarchived with `{"archived": false}` (or `null`; its `archivedAt` goes with it). No item that isn't archived is ever inside an archived folder:
 
-- An archived item, or one inside an archived folder, can't be changed: any other PATCH, and any PUT, is refused (400, naming it); the one change taken is unarchiving it. Its history is read-only too (above). Deleting it is no edit: `DELETE` takes it as any other.
-- Nothing goes into an archived folder, at any depth: a POST or a PATCH whose `parent` is one, or is inside one, is refused, naming the folder. (A deleted item isn't restored into a folder archived since: 409.)
+- An archived item, or one inside an archived folder, can't be changed: any other PATCH, any PUT, and a `DELETE` of it or of an event in its history are refused (400, naming it); the one change taken is unarchiving it. Its history is read-only too (above). A folder that isn't archived is deleted with everything inside it, archived or not.
+- Nothing goes into an archived folder, at any depth: a POST or a PATCH whose `parent` is one, or is inside one, is refused, naming the folder. (A deleted item isn't restored into a folder archived since, nor a deleted event into the history of an item archived since: 409.)
 - Archiving a folder holding items that aren't archived is refused, naming them: archive those first. The page, once you have confirmed its warning, sends `"cascade": true` with it: those are archived with it, at the same time. (`cascade` is sent, never stored, and only with `archived`.)
 - Unarchiving an item inside an archived folder is refused, naming the folder: unarchive that first, or send `"cascade": true` to unarchive the archived folders around it with it (what else is inside them stays archived).
 - Each archive and unarchive leaves a `kind: "archive"` event ("Archived, with the 3 inside (by curl)", "Unarchived (by the page)").
 
 ```bash
-curl -s -X PATCH $B/api/c/items/i771 -H 'content-type: application/json' -d '{"archived": true}'
-# → 400 archived: #771 "Mac mini setup and hosting" holds 1 item(s) that aren't archived (#1250): archive those first
+curl -s -X PATCH $B/api/c/items/i1305 -H 'content-type: application/json' -d '{"archived": true}'
+# → 400 archived: #1305 "A folder" holds 2 item(s) that aren't archived (#1306, #1307): archive those first
 ```
 
 **The now line** (what Claude is on, in the page's header): `PATCH /api/c/meta/now` with `{"text": "…"}`. The server sets `updated` (send it and it's a 400); `meta/counter` can't be written (403), nor deleted.
@@ -167,12 +169,12 @@ curl -s -X PATCH $B/api/c/meta/now -H 'content-type: application/json' -d '{"tex
 
 **Delete**: `DELETE /api/c/items/<id>` also deletes what is inside it and every event about any of them (a reference never points at nothing); `DELETE /api/c/events/<id>` one event. The page's Undo puts it back with `POST /api/c/<collection>/<id>/restore` (the server keeps the last 100 deletions in memory; a restart forgets them). A deleted item's number is never given again.
 
-**Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=desc&limit=<n>`: a field of the collection, or `id`; another is a 400), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
+**Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=asc|desc&limit=<n>`: a field of the collection, or `id`; any other query, field or value is a 400), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
 
 ### The schema (`schema.mjs`)
 
 - **Times** are one format everywhere: ISO 8601, UTC, to the millisecond (`2026-10-26T08:35:48.000Z`, `new Date().toISOString()`). A time you send may leave the fraction out (`…08:35:48Z`) and is stored in full. Epoch numbers or digit strings (`"1792000000000.0"`, what broke #634–#673 on 26 Oct), offsets and bare dates are refused.
-- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it; read-only while true, above), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `status`, `assigned` (who or what it is assigned to: free text, ≤ 200; `""` nobody), `priority` (number ≥ 0), `discuss` (bool), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
+- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it; read-only while true, above), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `status`, `assigned` (who or what it is assigned to: free text, one line, ≤ 200; `""` nobody, not spaces), `priority` (number ≥ 0), `discuss` (bool), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
 - **Events**: `item` (an existing item's id, or `""`), `kind`, `text` (non-empty), `t`. Only `kind` and `text` can be changed afterwards.
 - **Meta**: only `now` (`text`: string, `updated`: time) and `counter` (`next`).
 - **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): status `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `status`, `archive` and `priority` (the server's, above), `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `assigned` is free text: the page's editor suggests `ASSIGNED_SUGGESTIONS` (`Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …).
