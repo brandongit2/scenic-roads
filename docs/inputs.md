@@ -2271,7 +2271,8 @@ declarations are made and staged there.
   capitalised words, "Terrain Tiles", common in lower case); and its id, the file's first word, as
   the name writes it and as a whole word, when it's a word of the name, five letters or more and no
   role's, format's or encoding's word (no `[data]` value of any declaration): today `Overture`,
-  `CanVec`, `NALCMS`. And any other URL, but this machine's, the tailnet's (`100.64.0.0/10`), the
+  `CanVec`, `NALCMS`. A host is found where it isn't part of a longer word (Geneva's `ge.ch` isn't in
+  `heritage.checked`). And any other URL, but this machine's, the tailnet's (`100.64.0.0/10`), the
   documentation names (`example.*`, `.test`, `.invalid`, `192.0.2.*`) and a host of one label; a host
   behind a template (`${x}.host`) is judged by what follows it.
 - **Allowed:** the W3C's namespaces (a format's); OpenStreetMap (its tags are the map's schema; its

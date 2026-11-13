@@ -215,8 +215,9 @@ fn data_words(tomls: &[PathBuf]) -> std::collections::BTreeSet<String> {
     out
 }
 
-/// Whether line `l` (`lower`, lowercased) names marker `m` (`ci:` any case; `w:` a whole word;
-/// else as written).
+/// Whether line `l` (`lower`, lowercased) names marker `m` (`ci:` any case; `w:` a whole word; a
+/// host, a marker of one word, where it isn't part of a longer word: "ge.ch" isn't named by
+/// `heritage.checked`; else as written).
 fn names(l: &str, lower: &str, m: &str) -> bool {
     if let Some(x) = m.strip_prefix("ci:") {
         return lower.contains(x);
@@ -226,6 +227,12 @@ fn names(l: &str, lower: &str, m: &str) -> bool {
         return l
             .match_indices(w)
             .any(|(k, _)| !word(l[..k].chars().next_back()) && !word(l[k + w.len()..].chars().next()));
+    }
+    if !m.contains(char::is_whitespace) {
+        let part = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        return l
+            .match_indices(m)
+            .any(|(k, _)| !part(l[..k].chars().next_back()) && !part(l[k + m.len()..].chars().next()));
     }
     l.contains(m)
 }
@@ -621,6 +628,10 @@ fn the_scanner_finds_sources_by_their_declarations() {
     let marks: BTreeMap<String, String> =
         [("data.example-source.org".to_string(), "a.toml".to_string()), ("Some Source".into(), "a.toml".into())].into();
     assert_eq!(hits("let h = \"data.example-source.org\";", &marks), ["data.example-source.org"]);
+    // (A host inside a longer word isn't named: Geneva's "ge.ch" in `heritage.checked`.)
+    let short: BTreeMap<String, String> = [("ge.ch".to_string(), "a.toml".to_string())].into();
+    assert!(hits("this.heritage.checked = b.heritage;", &short).is_empty());
+    assert_eq!(hits("host: 'ge.ch',", &short), ["ge.ch"]);
     assert_eq!(hits("x = 'Some Source v2'", &marks), ["Some Source"]);
     assert_eq!(hits("u = \"https://other.org/x.zip\"", &marks), ["https://other.org/x.zip"]);
     for ok in [
