@@ -85,6 +85,10 @@ class Metrics(unittest.TestCase):
         self.assertEqual(extents.metric({"field": "d", "date": "yymmdd"}, {"d": "131018"})[0], 2013)
         self.assertEqual(extents.metric({"field": "d", "date": "yymmdd"}, {"d": "090317 - 100526"})[0], 2010)
         self.assertEqual(extents.metric({"field": "d", "date": "yymmdd"}, {"d": " "})[0], None)
+        # A span's two-digit end (the BEV's flight years), not a date's month.
+        self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "2011-12"})[0], 2012)
+        self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "DTM:2019, DSM:2009"})[0], 2019)
+        self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "flown 2011-12-05"})[0], 2011)
 
     def test_a_number_written_with_its_unit(self):
         spec = {"field": "s", "text": "metre"}

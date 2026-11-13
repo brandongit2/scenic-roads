@@ -825,6 +825,9 @@ def metric(spec, props):
             return (max(years) if years else None), None
         # A year alone or opening a compact date (20230930).
         years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d\d)(?:[01]\d[0-3]\d)?(?!\d)", str(v))]
+        if how == "text":
+            # (A span's end written with two digits, "2011-12": 2012; a date's month, "2011-12-05", isn't one.)
+            years += [int(y[:2] + e) for y, e in re.findall(r"(?<!\d)((?:19|20)\d\d)-(\d\d)(?![\d-])", str(v)) if e > y[2:]]
         if not years:
             return None, None
         return (years[0] if how == "iso" else max(years)), None
