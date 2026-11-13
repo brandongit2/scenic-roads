@@ -1,5 +1,6 @@
 //! The region layer's tests: the topology, the simplification (no gap, no overlap, no crossing at
-//! any zoom), the tiles, the regions at a point. The step's own (keys, the real sample) are
+//! any zoom), the tiles, the regions at a point, on made-up regions and on three small boxes of the
+//! real ones (`samples/`). The step's own (keys, the whole real set by hand) are
 //! terrain::regionlayer's.
 
 use super::simplify::{meet, simplify, Simplified};
@@ -225,7 +226,7 @@ fn slivers_between_neighbours_are_closed() {
         }
         v
     };
-    // (300 E7 units: about 25 m east–west at 40°N, a sliver at the finest zoom's tolerance.)
+    // (300 E7 units: about 2.6 m east–west at 40°N, under the finest zoom's tolerance there, 7.3 m.)
     let west_b = off(10..20, 300);
     let east_b = off(35..45, 300);
     let (w, _) = split_box(9.0, 40.0, 11.0, 41.0, &west_b);
@@ -534,4 +535,123 @@ fn a_hair_of_a_region_on_its_own_edge() {
     let t = build(&[region("n", &[], vec![ring])]);
     assert_eq!(t.arcs.len(), 1, "{:?}", t.arcs);
     assert!(t.arcs[0].closed() && !t.arcs[0].pts.contains(&c), "{:?}", t.arcs[0].pts);
+}
+
+/// A real sample (`samples/<name>.json`): the accepted regions of 13 Nov (`@index.554f50a9348f2f75`)
+/// read as the step reads them (terrain::regionlayer::regions: its full geometry, rings turned with
+/// the region on their left), cut to a small box (each ring Sutherland–Hodgman'd against it, a cut
+/// point worked out from its edge's ends in one order, so neighbours' copies are cut alike): the
+/// box, and the regions in it.
+fn sample(json: &str) -> ([f64; 4], Vec<Region>) {
+    #[derive(serde::Deserialize)]
+    struct Sample {
+        #[serde(rename = "box")]
+        bx: [f64; 4],
+        regions: Vec<Listed>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        id: String,
+        folders: Vec<String>,
+        rings: Vec<Vec<[i32; 2]>>,
+    }
+    let s: Sample = serde_json::from_str(json).unwrap();
+    (s.bx, s.regions.into_iter().map(|r| Region { id: r.id, folders: r.folders, rings: r.rings }).collect())
+}
+
+/// Whether `p` is in a region (even–odd over its rings, exactly).
+fn holds(r: &Region, p: [i32; 2]) -> bool {
+    let mut odd = false;
+    for ring in &r.rings {
+        for k in 0..ring.len() {
+            let (a, b) = (ring[k], ring[(k + 1) % ring.len()]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let (lo, hi) = if a[1] < b[1] { (a, b) } else { (b, a) };
+                let c = (hi[0] as i128 - lo[0] as i128) * (p[1] as i128 - lo[1] as i128)
+                    - (hi[1] as i128 - lo[1] as i128) * (p[0] as i128 - lo[0] as i128);
+                if c > 0 {
+                    odd = !odd;
+                }
+            }
+        }
+    }
+    odd
+}
+
+/// Metres from `p` to segment a–b (E7, a local plane at p).
+fn metres(p: [i32; 2], a: [i32; 2], b: [i32; 2]) -> f64 {
+    let c = (p[1] as f64 * 1e-7).to_radians().cos();
+    let f = |q: [i32; 2]| [(q[0] - p[0]) as f64 * 0.011_132 * c, (q[1] - p[1]) as f64 * 0.011_132];
+    let (a, b) = (f(a), f(b));
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dx * dx + dy * dy;
+    let t = if l2 == 0.0 { 0.0 } else { (-(a[0] * dx + a[1] * dy) / l2).clamp(0.0, 1.0) };
+    (a[0] + dx * t).hypot(a[1] + dy * t)
+}
+
+#[test]
+fn real_samples_one_line_no_gap_no_overlap() {
+    // Hendaye: France and Spain along the Bidasoa, Pheasant Island in it (a condominium: a region
+    // of its own between them). Basel: France, Germany and Switzerland at their tripoint on the
+    // Rhine. Quintana Roo: its coast and Mexico's waters, the land and water each rounded to the
+    // grid on its own (docs/inputs.md §6.1.4), with cm-wide slivers between them all along.
+    for (name, json, slivers) in [
+        ("hendaye", include_str!("samples/hendaye.json"), 1),
+        ("basel", include_str!("samples/basel.json"), 0),
+        ("quintana-roo", include_str!("samples/quintana-roo.json"), 54),
+    ] {
+        let (bx, regions) = sample(json);
+        let (topo, s, tiles) = run(&regions);
+        assert_eq!(topo.stats.slivers, slivers, "{name}: {:?}", topo.stats);
+        // Every border has two different sides, and every region is on one.
+        assert!(topo.arcs.iter().all(|a| a.l != a.r && a.drawn), "{name}");
+        for (k, _) in regions.iter().enumerate() {
+            assert!(
+                topo.arcs
+                    .iter()
+                    .any(|a| topo.sets[a.l as usize].contains(&(k as u32))
+                        || topo.sets[a.r as usize].contains(&(k as u32))),
+                "{name}: region {k} on no border"
+            );
+        }
+        // One line per border: no two arcs within a metre of each other but near a node they share.
+        for (i, a) in topo.arcs.iter().enumerate() {
+            for b in &topo.arcs[i + 1..] {
+                let ends = [a.pts[0], *a.pts.last().unwrap(), b.pts[0], *b.pts.last().unwrap()];
+                for &p in &a.pts {
+                    if ends.iter().any(|&e| metres(p, e, e) < 2.0) {
+                        continue;
+                    }
+                    let d = b.pts.windows(2).map(|w| metres(p, w[0], w[1])).fold(f64::INFINITY, f64::min);
+                    assert!(d >= 1.0, "{name}: arcs {:?} and {:?} {d:.2} m apart at {p:?}", (a.l, a.r), (b.l, b.r));
+                }
+            }
+        }
+        // At every zoom: no pixel in two regions, none in a gap, no two lines meeting.
+        check_every_zoom(&topo, &s, world_box(bx[0], bx[1], bx[2], bx[3]));
+        // The regions at a point, by the tiles, as the geometry has them (a 40 × 40 grid over the box,
+        // those under 2 m from a border left out: the finest tiles' units are 1.2 m).
+        let mut get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> { Ok(tiles.get(&(z, x, y)).cloned()) };
+        let mut asked = 0;
+        for i in 0..40 {
+            for k in 0..40 {
+                let (lon, lat) = (
+                    bx[0] + (bx[2] - bx[0]) * (i as f64 + 0.5) / 40.0,
+                    bx[1] + (bx[3] - bx[1]) * (k as f64 + 0.5) / 40.0,
+                );
+                let p = e7(lon, lat);
+                let near = topo.arcs.iter().flat_map(|a| a.pts.windows(2)).any(|w| metres(p, w[0], w[1]) < 2.0);
+                if near {
+                    continue;
+                }
+                asked += 1;
+                let mut want: Vec<String> = regions.iter().filter(|r| holds(r, p)).map(|r| r.id.clone()).collect();
+                want.sort();
+                let mut got = hit::regions_at(&mut get, lon, lat).unwrap();
+                got.sort();
+                assert_eq!(got, want, "{name}: at {lon:.6}, {lat:.6}");
+            }
+        }
+        assert!(asked > 1000, "{name}: {asked}");
+    }
 }
