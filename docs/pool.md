@@ -2665,15 +2665,19 @@ asks passed on are one-shot: the lead's store keeps them (below).
   state (quietly, not as an error) and asks again every 2 s, saying it as an error only after a
   minute of 503s (`sums.js` `notRead`; no retry while the page is hidden).
 - **The page's history** is the coordinator's, held in its memory (`coord::history`, task #1160):
-  the week's events (`history::KEEP_S`, its one bound), each without its `data` (the catalogues'
-  and merges' details, which only publishing's times read: from the file and the archive). Measured
-  13 Nov on the lead's file (39 MB, 99,653 lines): the week was 58,113 events (~8,300 a day,
-  ~2.9 MB of JSON a day), ~21 MB in memory (~0.37 KB an event; with their `data`, ~1.34 KB); ten
-  times that volume, ~215 MB. The file is read once, a line at a time, as the coordinator starts
-  (168 ms for the 39 MB at the tests' build, before it listens: a restarted lead's page has its
-  week at its first answer); `/api/history` takes the events after a number by a binary search
+  the week's events (`history::KEEP_S`, its one bound), each without its `data` (the catalogues',
+  merges' and leases' details, which only publishing's times read: from the file and the archive;
+  a `planned`'s kept, which a restarted lead reads back). Measured 13 Nov on a copy of the lead's
+  file (39 MB, 99,737 lines; task #1160 review, the M1, the tests' build): the week was 57,800
+  events (~8,300 a day, ~2.5 MB of JSON a day), ~55 MB in memory (~0.95 KB an event), the process
+  ~80 MB larger once loaded; ten times that volume, ~0.55 and ~0.75 GB. The file is read once, a
+  line at a time, as the coordinator starts (0.24 s for the 39 MB, 2.2 s at ten times, before it
+  listens: a restarted lead's page has its week at its first answer); it is rewritten under the
+  coordinator's lock with the week's lines once it holds twice as many (0.1 s, 0.7 s at ten times;
+  a failed one tried again 10 minutes later); `/api/history` takes the events after a number by a binary search
   (1,000 in ~0.6 ms, ~160 KB of JSON), and the swarm's `rates` are summed from a shared copy off the
-  coordinator's lock (~13 ms for the week). One numbering, the coordinator's (`epoch`
+  coordinator's lock (~14 ms for the week, ~57 ms at ten times; an event coming meanwhile copies
+  the week, 0.03 s, 0.3 s at ten times). One numbering, the coordinator's (`epoch`
   `coordinator <member>`): its numbers go on across its restarts, as they're in the file, so a
   page keeps its cursor over a lead's restart; the page starts its cursor again when the epoch
   changes (another Mac leads) or `seq` falls below its last event (a file lost), and the Jobs tab's

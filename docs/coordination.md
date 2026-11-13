@@ -368,11 +368,14 @@ PM, 30 Oct, with what was built:
    - **The page's history is served from the coordinator's memory** (`/api/history`, and the
      swarm's `seq`, `epoch` and `rates`), in and out of the pool: no file or NAS read on a page's
      path or on a timer feeding it. Memory holds the week's events, the week (`history::KEEP_S`)
-     its one bound, each event without its `data`: measured 13 Nov on the lead's file, the week was
-     58,113 events (~8,300 a day), ~21 MB in memory; ten times that, ~215 MB on the mini's 32 GB,
-     so no count caps it, and the page has the 7 days it says. Why no
-     `data`: it is ~70 % of an event's memory, and only publishing's times read it, from the file
-     and the archive. Older than the week: the NAS's archive, which the page doesn't read (its
+     its one bound, each event without its `data` (but a "planned"'s, which a restarted lead reads
+     back: `history::keeps_data`): measured 13 Nov on a copy of the lead's file (task #1160
+     review), the week was 57,800 events (~8,300 a day), ~55 MB in memory (~0.95 KB an event), the
+     process ~80 MB larger once loaded; ten times that, ~0.55 and ~0.75 GB on the mini's 32 GB, so
+     no count caps it (a count would be a limit hidden from the page), and the page has the 7 days
+     it says. A burst (a re-plan's tens of thousands of leases) is held its week like any event;
+     the clock set back holds what came since for that much longer. Why no `data`: only
+     publishing's times read it, from the file and the archive. Older than the week: the NAS's archive, which the page doesn't read (its
      schedule's card says so) and `scenic timings publish` and the forecast check do.
    - **After a restart** the coordinator reads its file once, a line at a time, before it listens
      (168 ms for the 39 MB file of 13 Nov; ~2 s at ten times): no "loading" state is needed, the
@@ -387,9 +390,10 @@ PM, 30 Oct, with what was built:
      (`lease`, `done`, `fail`, with the member's own words in `note`), and noting them too would
      count their work twice. The forecast reads none of these kinds, and lacks nothing. Bounded
      (50 a beat, `notes::BEAT_MAX`; a note older than the week goes unsent), sent again until the
-     answer's `noted` says the lead has it, taken once by its agent's process and its number there,
-     the lead keeping the last per member in its store (`noted/<member>`), so a lost answer and a
-     lead's restart double none. Mixed apps: a member sends notes only to a lead whose answer says
+     answer's `noted` says the lead has it, taken once by its queue (its start: a later one's,
+     after a restart, is greater) and its number there, each event in the lead's history saying
+     which note it was (`Event::noted`), so the line appended is the lead's word that it took it:
+     a lost answer, a lead's restart and its crash double none. Mixed apps: a member sends notes only to a lead whose answer says
      `notes` (`beats::NOTES`), keeping them meanwhile; a member before it sends none and is
      answered as before (its events stay on it, as they did). In a member's memory only: a note
      made in the seconds before its agent stops is lost with it. A member's broker keeps its

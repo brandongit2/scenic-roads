@@ -10,7 +10,8 @@
 //! by its own `route` and its store's durability wait, `answer_json`, as over HTTP; its grants by
 //! its scheduler, its own jobs' by `ask_own`, released by beats, `held::beat`; hand-offs taken into
 //! its store, `handoffs::Handoffs`, on a real folder, its epoch bumped as it opens); the member's beat (`agent::beat::ToLead::post_on`:
-//! its body, the lead's answer into `coord::beats::Beats`, the hand-offs it lacks posted) on
+//! its body, the lead's answer into `coord::beats::Beats`, the hand-offs it lacks posted, a note
+//! every few beats, crate::coord::notes, each checked taken once by each coordinator) on
 //! coordwire's client (`Client::through`: its rounds and errors, `LeaseCalls`' asks), the
 //! grants' wire types; the records' brief a job opens (crate::agent::brief::Briefs::fresh: the
 //! lead's coordinator's in process, a member's over the network, `GET /pool/brief` answered from
@@ -439,6 +440,8 @@ struct World {
     gc_refused: BTreeSet<String>,
     /// The epochs each Mac led (epoch, Mac).
     led_by: BTreeSet<(u64, usize)>,
+    /// The members' notes made (crate::coord::notes; `mac::NOTE_EVERY`).
+    notes_made: u64,
     /// The run's folder (each Mac's under it), kept until the run ends.
     _dir: tempfile::TempDir,
     wrong: Vec<String>,
@@ -615,6 +618,7 @@ impl World {
             served: None,
             gc_refused: BTreeSet::new(),
             led_by: BTreeSet::new(),
+            notes_made: 0,
             _dir: dir,
             wrong: Vec::new(),
             counts: BTreeMap::new(),
@@ -1543,6 +1547,7 @@ impl World {
                 self.wrong(format!("mac{k} leads {leads:?} at the end, mac{d} declared"));
             }
         }
+        self.notes_taken();
         let gone = self.made.iter().filter(|(k, m)| self.macs[m.mac].gone && self.macs[m.mac].mine.contains(*k));
         *self.counts.entry("hand-offs a Mac gone for good holds").or_default() += gone.count() as u64;
         let lost = self.made.iter().filter(|(k, m)| self.lost(k, m)).count() as u64;
@@ -1567,6 +1572,32 @@ impl World {
             }
             None => self.wrong("no records at the one path at the end".into()),
         }
+    }
+}
+
+impl World {
+    /// The members' notes in each Mac's coordinator's history (its file, across its restarts and
+    /// crashes): each taken once by a coordinator (crate::coord::notes); counted, and those taken
+    /// by two (a lead's answer lost, then another Mac leading).
+    fn notes_taken(&mut self) {
+        let mut by: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        for k in 0..self.macs.len() {
+            let p = self.macs[k].dir.join("coord/history.jsonl");
+            let h = crate::coord::history::History::load(crate::agent::seam::for_tests(), Some(&p));
+            let mut seen = BTreeSet::new();
+            for e in h.since(0, usize::MAX).into_iter().filter(|e| e.kind == "conditions" && e.noted.is_some()) {
+                if !seen.insert(e.note.clone()) {
+                    self.wrong(format!("{} taken twice by mac{k}'s coordinator", e.note));
+                }
+                by.entry(e.note).or_default().insert(k);
+            }
+        }
+        *self.counts.entry("members' notes made").or_default() += self.notes_made;
+        *self.counts.entry("members' notes taken by a lead").or_default() += by.len() as u64;
+        *self.counts.entry("members' notes taken by two leads").or_default() +=
+            by.values().filter(|l| l.len() > 1).count() as u64;
+        let leads: BTreeSet<usize> = by.values().flatten().copied().collect();
+        *self.counts.entry("leads that took members' notes").or_default() += leads.len() as u64;
     }
 }
 
@@ -1886,7 +1917,7 @@ fn var(name: &str, or: u64) -> u64 {
 
 /// Each kind of take-up and fault, and what the knobs bring, that the default runs must see at
 /// least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 25] = [
+const KINDS: [&str; 26] = [
     "hand-offs outside their step's outputs, refused by every lead",
     "take-ups from its own records",
     "sleeps",
@@ -1912,6 +1943,7 @@ const KINDS: [&str; 25] = [
     "processes crashed",
     "jobs not started: the lead away",
     "hand-offs reusing files on the NAS",
+    "members' notes taken by a lead",
 ];
 
 #[test]

@@ -24,6 +24,9 @@ use std::time::Duration;
 /// Per loop while the faults last: that a free slot asks for work (a member's over the network,
 /// the lead's own in process); that one of its jobs reads the current records.
 const P_ASK: f64 = 0.5;
+/// A member notes something to its lead (crate::coord::notes) every this many of its beats (by a
+/// count, not the seed's draws: the schedules stay as they were).
+const NOTE_EVERY: u64 = 4;
 const P_READ: f64 = 0.2;
 /// Per loop: that its map server asks its lead's feed (`/map/changes`); that the lead's `gc` job
 /// takes a chunk (`/gc/chunk`); per job, that it finds its targets' files on the NAS as its brief
@@ -86,6 +89,8 @@ pub(super) struct Mac {
     published: Option<(u64, u64)>,
     /// The brief it last had from its lead over the network (crate::agent::brief::Briefs).
     briefs: Briefs,
+    /// Its beats as a member, for its notes (`NOTE_EVERY`).
+    beats_sent: u64,
 }
 
 impl Mac {
@@ -113,6 +118,7 @@ impl Mac {
             gc: None,
             published: None,
             briefs: Briefs::default(),
+            beats_sent: 0,
         }
     }
 
@@ -468,6 +474,24 @@ impl Mac {
             beats: self.beats.clone(),
             home: self.sim.quiet(|w| w.macs[k].dir.clone())?,
         };
+        // (A note now and then, to whichever Mac leads: its queue in its memory, lost with a
+        // crash, numbered past the last after a restart. Its time the real clock's, as the lead's
+        // history keeps a week by it.)
+        self.beats_sent += 1;
+        if self.beats_sent % NOTE_EVERY == 0 {
+            let note = self.sim.quiet(|w| {
+                w.notes_made += 1;
+                format!("mac{k}'s note {}", w.notes_made)
+            })?;
+            let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let e = crate::coord::history::Event {
+                worker: Some(host(k)),
+                note,
+                t,
+                ..crate::coord::history::Event::new("conditions")
+            };
+            self.beats.note(e, now);
+        }
         let c = self.client(to);
         c.new_round();
         self.failing = to_lead.post_on(&c, &body, self.failing, Duration::ZERO, now);
