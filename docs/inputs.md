@@ -1838,7 +1838,8 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 table at this section's end (`producers/extents/`), and the unit `extents` that checks them
 (crate::inputs::extents, the checks below; task #1346); North America's and Europe's sources
 (task #1350); the step `available` that draws the pieces' tiles, and the server's score, layers
-and click (docs/steps.md §14; task #1347); the app's layers (task #1348). Planned: Asia's and the
+and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the surface models of
+North America and Europe (task #1370). Planned: Asia's and the
 rest of the world's sources (task #1350's later runs) and `piece.dataset` (extents from the build's
 own data; task #1349). Task #1334.
 
@@ -1940,7 +1941,8 @@ Each reads through one fetcher: the app's User-Agent, one request at a time with
 verified against Mozilla's trust store (certifi's: the system's file lacks roots some publishers chain
 to, Quebec's; a server sending its certificate without its intermediate, the CNIG's and the IDEE's,
 has its chain completed once a run from the certificate's AIA, only where its issuer wasn't found:
-the issuers fetched, up to three, over plain http to a public address only, no redirect followed,
+the issuers fetched, up to three, over plain http to a public address only, up to three redirects
+followed (D-Trust's AIA answers a 302 to a host of its own), each held to the same rules,
 64 KiB in 30 s at most, a root never loaded, are added with partial chains refused, so each is a
 link to one of the store's roots, never trusted by itself, the host's name checked as ever; a
 certificate refused otherwise, expired or misnamed, is refused at once, not retried; revocation
@@ -2146,8 +2148,8 @@ times their area.
 | `fr-litto3d`, `fr-craig-lidar`, `fr-strasbourg-lidar`, `fr-lyon-lidar` | 5; 28; 1; 1 | `index`; `files` | Litto3D's campaigns' 5 km packages (`wfs`), the CRAIG's 2021 tiles by zone (`file`, a GeoPackage), Strasbourg's 2025 and Lyon's 2023 0.5 m COGs (`raster`, 64 m overviews) |
 | `es-pnoa` | 18: the MDT 0.5 m sheets by UTM zone and year (16); MDT02 and MDT05 | `index`; `claimed` | `file`: the CNIG's auxiliary zip of 16 sheet shapefiles, 29,494 sheets, 248,078 km² (each piece within 0.1 % of its sheets' union); the 2 m and 5 m products over Spain as their records state ("cobertura completa") |
 | `es-ct-icgc`, `es-an-rediam`, `es-na-mde`, `es-md-madrid` | 2; 1; 3; 2 | `files`; `index`; `service` | Catalonia's 0.5 m and Barcelona's 0.25 m COGs and Andalucía's 1 m (a 203 GB COG, its 256 m overview) by `raster`; Navarre's 0.5 m by its 1:10,000 sheets (`file`); Madrid's 0.1 m surface model's tiles and its 2019 DTM's KMZ (`file`) |
-| `no-hoydedata` | 1,547: Norway's projects by cell (0.25, 0.5, 1 m) and year, 463 restricted (closed: claimed) | `index`; `claimed` | `arcgis`: hoydedata.no's DTM ImageServer catalogue (its fill items left out), 62 MB, 4 min on the M1; 4.1 MB at a 200 m tolerance (8.0 MB at 50 m: 1,547 irregular block outlines; a coarser tolerance drops corridor projects as specks); 430,716 km² against the items' stated 432,284 |
-| `se-markhojdmodell`, `se-goteborg-hojdmodell` | 17; 1 | `index` | Lantmäteriet's STAC (`dtm-cog`, 5,004 10 km tiles by year, 473,195 km²); Gothenburg's 0.5 m tile index (a zipped shapefile) |
+| `no-hoydedata` | 1,547: Norway's projects by cell (0.25, 0.5, 1 m) and year, 463 restricted (closed: claimed) | `index`; `claimed` | `arcgis`: hoydedata.no's DTM ImageServer catalogue (its fill items left out), 62 MB, 4 min on the M1; its DTM blocks 4.1 MB at a 200 m tolerance (8.0 MB at 50 m: 1,547 irregular block outlines; a coarser tolerance drops corridor projects as specks); 430,716 km² against the items' stated 432,284 |
+| `se-markhojdmodell`, `se-goteborg-hojdmodell` | 17; 1 | `claimed` (login); `index` | Lantmäteriet's STAC (`dtm-cog`, 5,004 10 km tiles by year, 473,195 km²; its files download after a free login); Gothenburg's 0.5 m tile index (a zipped shapefile) |
 | `fi-nls-km2`, `fi-nls-lidar` | 18; 7 | `index`; `claimed` | the NLS's OGC API collections: the 2 m model's sheets by year (Åland's whole), the paid 5 p lidar's areas with products by year |
 | `cz-cuzk-dmr4g`, `sk-lls` | 1; 58 | `index`; `service` | the ČÚZK's ATOM feed (16,301 5 km² sheets of DMR 4G, 5 m); Slovakia's lot outlines (`file`, cp1250 shapefiles), cycle 1's 1 m and cycle 2's 0.5 m lots by year, each within 0.3 % of its stated area |
 | `lv-lgia-lidar` | 2: the point clouds' 1 km sheets; the open 20 m DTM | `index`; `claimed` | `listing` of the LAS names by their nested sheet numbers (`digits`), 65,941 km²; the country |
@@ -2178,13 +2180,61 @@ Helsinki's DTM (the WCS describes a rectangle with the sea); Stockholm's (Natura
 its county); Slovenia's 2011–15 index (ARSO's lidar pages answer 503: claimed); Romania's (the
 ANCPI's geoportal is down after an outage; Mapterhorn's file list names 325 LAKI II units by code);
 Turkey's, Greece's and Russia's coverage (unstated or unreachable: listed); Jersey, Guernsey and
-Gibraltar (nothing finer than 30 m published). Surface models not yet declared (each a
-declaration or a block for a later run, by the rule above): the Länder's DOM1 (1 m) and
-image-matched bDOM (0.1 to 0.2 m), England's composite and time-stamped DSMs, AHN's DSM,
-swissSURFACE3D, Spain's MDS50cm, LiDAR HD's MNS, Wallonia's, Brussels', Flanders', Navarre's and
-Luxembourg's surface models, Portugal's and the Azores' MDS, PST-A's DSMs, Bulgaria's 4 m
-Dem_Alternative, NRCan's HRDEM DSMs and 3DEP's and the US inventory's surface products (Hesse's
-DOM1, Wales' DSM and Ireland's GSI lidar DSMs are declared).
+Gibraltar (nothing finer than 30 m published).
+
+**Surface models** (read 13 Nov 2026, task #1370; England's, swissSURFACE3D's, PST-A's, mainland
+Portugal's, Sweden's Ythöjdmodell, 3DEP's, NRCan's and Laserdata Skog on the Mac mini, the rest, Ontario's among them, on the M1): the
+rows above count the ground models and point clouds as first read; these are the surface models
+declared beside them, each a block of its source's declaration (a new declaration where it has no
+ground model here), `surface = "surface"`, its own spacing and year as its records state them.
+Image-matched (photogrammetric, correlation) models say so in their declarations' notes. Areas in
+EPSG:3035, against the tiles' count times their area or the publisher's figure.
+
+| Declaration: blocks | Product (method), spacing | Class | Read by; area |
+|---|---|---|---|
+| `nrcan-hrdem`: `lidar-dsm`, `cdsm` | each lidar project's DSM (its item's `dsm` asset, the DTM's cell and extent: every item has both); the Canadian Digital Surface Model (from the SRTM's 1 arc-second DSM of 2000), 16 m | `index`; `files` | the same STAC items as the DTM's; the CDSM's one GeoTIFF's mask at an overview. 8.7 MB (2,683 requests, 112 MB, 2.5 min on the mini, 453 MB of memory, from the cache but the CDSM): the 950 project outlines twice, the DTM's and the DSM's |
+| `ontario-lidar`: `dsm`, `fri-spl-dsm`, `dsm-imagery`, `dem-imagery` | the lidar DSMs (0.5 m, 1 m; the forest inventory's single-photon DSM, 0.5 m); the image-matched DSM (0.5 m) and DEM (2 m, "both surface and ground features") of the photography projects | `index` | `arcgis`: the four image services' catalogues, 1 km tiles: 194,149, 419,333, 87,164 and 73,138 tiles, the pieces summing 193,547, 412,998, 87,032 and 72,984 km² (the DTM blocks' 1,413 requests with them: 390 MB, 35 min and 584 MB of memory on the M1); 1.1 MB |
+| `usgs-3dep`: `ifsar-dsm` | Alaska's IfSAR DSM, 5 m (radar) | `index` | `file`: its Full Extent Spatial Metadata (FESM_DSM_PROJ.gpkg, 26 MB, 429 cells), by year: 1,784,420 km², the IfSAR DTM's items 1,594,813 (its cells reach further over the sea) |
+| `iowa-geotree`: `dsm-2020` (new) | Iowa's statewide lidar DSM, 1 m | `files` | `raster`: the 272 GB COG's mask at a 256 m overview, 147,746 km² (the state 145,746) |
+| `de-*-dgm1`, `de-bw-dgm025`, `de-bkg-dgm1` | the Länder's lidar DOM1 (1 m: Berlin, Bremen and Bremerhaven, Niedersachsen, Nordrhein-Westfalen, Rheinland-Pfalz, Sachsen, Baden-Württemberg; Mecklenburg-Vorpommern's and Sachsen-Anhalt's image-matched; Saarland's, its method not stated; Thüringen's claimed) and image-matched bDOM (Mecklenburg-Vorpommern 0.1 m, Brandenburg, Niedersachsen, Rheinland-Pfalz, Sachsen-Anhalt, Schleswig-Holstein and Bayern 0.2 m, Nordrhein-Westfalen 0.5 m, Berlin's and Hamburg's 1 m); the BKG's national DOM1 (paid: claimed) | `index`; Bayern's `service`; `claimed` | each Land's DGM index's twin (the same feed, collection, folder or archive's DOM entries), Bayern's DOP flight areas (a GeoPackage), Mecklenburg-Vorpommern's yearly overview shapefiles, Schleswig-Holstein's mass-download GeoJSON (17,626 km² against 17,614 tiles), the BKG's WFS; each within 0.5 % of its tiles' count × area. Baden-Württemberg's bDOM claimed (paid by order); Bremen's and Thüringen's bDOM listed (`none`) |
+| `gb-eng-lidar`: 7 | the National LIDAR Programme's DSM (1 m), the composites' last-return and first-return DSMs (1 m, 2 m, RMSE 0.15 m), the time-stamped DSMs (50 and 25 cm) | `index`; `service` | the same WFS's `_DSM_` layers; each within 0.4 % of its DTM's union (the first-return composite 134,537 km²). 3.4 MB: its DSM pieces repeat the DTM's outlines |
+| `gb-sct-lidar`, `gb-sct-hes-lidar`, `gb-nir-river-basin-lidar`: 11; 7; 1 | each phase's and survey's DSM, its DTM's spacing and year | `index` | the same bucket's `dsm/` names (the NLP's 5,994 tiles: 5,994 km²); DfI's grid index; Northern Ireland's coastal DSMs listed (`none`: tile services only) |
+| `nl-ahn`: `ahn4-dsm`, `ahn5-dsm`, `ahn6-dsm` | AHN's 0.5 m DSM | `index` | PDOK's dsm_05m ATOM (42,971 km²); the AHN5 and AHN6 collections, their DSM field |
+| `ch-swisssurface3d` (new): `dsm`, `points-2024`, `points` | swissSURFACE3D Raster, 0.5 m; swissSURFACE3D's point clouds (15 and 5 pts/m²) | `index` | `stac` with `latest`: the raster's newest tiles 43,688 km² (swissALTI3D's 43,646), the point clouds' 2024–26 tiles 15,632 km² and the earlier ones' 26,091 (1,781 requests, 304 MB, 21 min on the mini) |
+| `ch-zh-dtm`, `ch-lu-dtm`, `ch-ge-mnt`: `dom`; `dom`, `dom-points`; `mns` | Zürich's 0.25 m DOM (1,946 km²), Luzern's 0.25 m DOM and its point cloud (1,691 km²), Geneva's 0.2 m MNS | `index`; `files` | tile links, STAC, Geneva's COG at its coarsest overview (1.6 m) |
+| `ign-lidar-hd`: `mns`; `fr-craig-lidar`, `fr-lyon-lidar`: `mns`; `fr-mns-correl` (new) | LiDAR HD's 0.5 m MNS (524,956 km², every tile); the CRAIG's and Lyon's 0.5 m MNS; IGN's image-matched MNS Correl, 0.5 m | `index`; `files`; `claimed` | the same WFS index, GeoPackage and COG; MNS Correl claimed over France with Saint-Pierre-et-Miquelon, Saint-Barthélemy and Saint-Martin (no index read; no year or accuracy stated) |
+| `be-wal-mnt`: `mns`, `mns-photo-2023`; `be-vlg-dhmv`: `dsm`; `luxembourg-lidar`: `mns` | Wallonia's lidar MNS 0.5 m and its image-matched 2023 MNS (login: claimed, 16,988 km²); Flanders' DHMV II DSM 1 m (claimed); Luxembourg's 0.5 m MNS (2,633 km²) | `index`; `claimed`; `files` | the same tile index; the region; the GeoTIFF's mask |
+| `es-pnoa`: 10 `mds50cm-*`, `mds02`, `mds05`; `es-na-mde`: `mds-2024`, `mds-2017`; `es-ct-icgc`: 3; `es-ib-mdt`: `mds-2m-2014` | PNOA's MDS 0.5 m (14,337 sheets, 121,418 km²; its MDS02 and MDS05 listed, no coverage stated); Navarre's MDS (401 sheets each); Catalonia's 1 m DSM, Barcelona's 0.25 m and the ICGC's image-matched 1 m of 2024; the Balearics' 2 m (claimed) | `index`; `files`; `claimed` | the CNIG's MDS50cm auxiliary zip; Navarre's sheet file; the ICGC's COGs at 100 m masks |
+| `pt-dgt-lidar`: `mds-50cm`; `pt-ac-lidar`: `mds-1m` | Portugal's 0.5 m MDS (login: claimed on its STAC's tiles, 90,601 km²); the Azores' 1 m MDS (2,912 km²) | `claimed`; `index` | the DGT's and the Azores' STAC collections |
+| `it-pst-lidar`: `dsm1`, `dsm2`; `it-fvg-lidar`, `it-bz-dtm`, `mt-pa-dtm` | PST-A's DSM grids (1 m 147,796 km², 2 m 17,023 km², as its DTM's); Friuli-Venezia Giulia's 0.5 m and Bolzano's 2.5 m DSM, Malta's 1 m (claimed); Bolzano's 0.5 m, Adige 0.2 m and glaciers', Toscana's and Sardegna's DSMs listed | `index`; `claimed`; `unknown` | the ministry's download grids; the regions |
+| `im-lidar`: `dsm` | the Isle of Man's 0.5 m DSM (sold: claimed) | `claimed` | the island |
+| `no-hoydedata`: `dom`, `dom-restricted` | hoydedata's DOM projects (lidar, and 424 image-matched "Bilde" projects with no DTM), 0.25 to 1 m | `index`; `claimed` | the Prosjekt_DOM ImageServer's catalogue: 978,350 km² against its items' 981,192 (projects overlap). 9.1 MB: 3,520 irregular outlines at 200 m (a coarser tolerance drops corridor projects as specks) |
+| `se-ythojdmodell` (new) | Lantmäteriet's image-matched Ythöjdmodell, 0.25 and 0.5 m (paid: claimed) | `claimed` | `stac` (dsm-cog): 149,614 items, 997 MB, 54 min on the mini, 240 MB of memory; 935,353 km² against items × 6.25 km² |
+| `se-markhojdmodell`: `laserdata-skog` | Laserdata Skog's point clouds, by stated density (login: claimed) | `claimed` | `stac` (dsm-skoglig-copc): 81,031 items of 2.5 km, 485 MB, 21 min on the mini, 179 MB of memory; nominal spacings 0.69 to 0.95 m; the pieces sum 506,503 km² against the items × 6.25 km², 506,444 (re-scanned tiles overlap: their union 409,918) |
+| `fi-nls-km2`: `lidar05p` | the open 0.5 p point clouds the 2 m model is made from (1.414 m nominal) | `claimed` | the model's sheets (no index of their own) |
+| `dk-dhm`: `dsm`; `ee-maaruum-dtm`: `dsm`; `pl-gugik-nmt`: `nmpt`, `nmpt-urban`; `al-asig`: `dsm` | DHM/Overflade 0.4 m (RMSE 0.06 m), Estonia's 1 m, Poland's NMPT 1 m (its 0.5 m urban one listed), Albania's (closed) | `claimed`; `unknown` | the countries |
+| `at-bev-als-dgm`: `dom`, `dom-luftbild`; `at-ooe-dgm`, `at-tirol-dgm`, `at-bgld-dgm`, `at-vbg-dgm`: `dom` | the BEV's ALS-DOM 1 m (84,011 km²) and its image-matched DOM 0.5 m (paid: claimed, 13,828 sheets); the Länder's 0.5 m DOMs (Burgenland's and Vorarlberg's claimed) | `service`; `claimed` | the same metadata shapefile and flight-year layers; the BEV's actuality shapefile |
+| `cz-cuzk-dmr4g`: `dmpok`, `dmpok-points`; `sk-lls`: 9 `dmp*`; `si-clss`: `dmp`, `gkot` | Czechia's image-matched DMP OK 0.5 m and its point grid (16,301 sheets); Slovakia's DMP 1 m and 0.5 m by lot and year; Slovenia's first-return and classified point clouds (23,034 km²) | `index`; `service` | the ČÚZK's ATOM feeds; the same lot shapefiles; the same WFS tiles |
+| `cy-dls`: `dsm-2019`, `dsm-2014`; `bg-mzh`: `dsm-alternative` | Cyprus's 0.5 m DSMs (1,068 and 1,063 tiles of 6.25 km²); Bulgaria's Dem_Alternative 4 m (110,095 km²) | `index`; `files` | the INSPIRE folder's listing; the WCS at a coarse scale |
+| `lv-lgia-lidar`, `mk-akn`: listed | Latvia's 1 m DTM and DSM (public bodies only), North Macedonia's DSM | `unknown` | `none` |
+
+**Not obtained** (surface models, 13 Nov): Saxony's DOM2 and Baden-Württemberg's nDOM (heights
+above ground), Bavaria's DOM mesh (not a grid), Brandenburg's TDOM (no download); Schleswig-Holstein's
+DOM1 (no feed found); Hessen publishes no bDOM; Brussels' (a point cloud only), Trento's,
+Emilia-Romagna's (its WCS answers 401), Tailte Éireann's, Madeira's, Andorra's, Strasbourg's (nDSMs
+only) and the Litto3D surveys' (none published); La Rioja's (403s) and Aberdeen's 2025 (listed, not
+in the bucket); the Basque Country's MDS (listed: its WCS answers 0 outside the Community with no
+nodata stated, which `raster` can't take as no data); Bern's, Schaffhausen's, Fribourg's and
+Florence's city DSMs and the other point clouds (LiDAR HD's, Scotland's, Portugal's, AHN's and
+Luxembourg's LAZ, their grids declared); Czechia's DMP 1G (a TIN, no spacing stated, withdrawn
+from 2027); Finland's (no DSM published), Croatia's, Hungary's, Moldova's and Lithuania's (none or
+no grid stated); Vorarlberg's 2024 re-flight (no outline); Kärnten's (its host unreachable); the
+older editions of a model whose newer one covers its area (the ICGC's 2018–23 correlation models,
+Geneva's 2023 MNS). In North America: Quebec publishes no DSM (its lidar products are the DTM, a
+canopy height model and the point clouds, declared); the US inventory's IfSAR surveys are 3DEP's
+Alaska IfSAR (its DSM now declared); the states' own DSMs (Illinois's, Montana's, Utah's, Hawaii's,
+the District of Columbia's) and NEON's sites, of the same surveys as 3DEP's 1 m DEM, are for a
+later run; NRCan's CDEM and MRDEM-30 (ground models, 20 and 30 m) aren't declared.
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project

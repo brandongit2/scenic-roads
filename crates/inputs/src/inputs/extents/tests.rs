@@ -616,7 +616,7 @@ fn partners_are_a_sources_two_files() {
 }
 
 /// The terrain's declarations, pieces and score as producers/extents/ made them.
-const REAL: [(&str, &[u8]); 323] = [
+const REAL: [(&str, &[u8]); 331] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/terrain/score.toml")),
     ("ad-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/ad-mdt.geojson")),
     ("ad-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/ad-mdt.toml")),
@@ -673,6 +673,8 @@ const REAL: [(&str, &[u8]); 323] = [
     ("ch-lu-dtm.toml", include_bytes!("../../../../../producers/extents/terrain/ch-lu-dtm.toml")),
     ("ch-swissalti3d.geojson", include_bytes!("../../../../../producers/extents/terrain/ch-swissalti3d.geojson")),
     ("ch-swissalti3d.toml", include_bytes!("../../../../../producers/extents/terrain/ch-swissalti3d.toml")),
+    ("ch-swisssurface3d.geojson", include_bytes!("../../../../../producers/extents/terrain/ch-swisssurface3d.geojson")),
+    ("ch-swisssurface3d.toml", include_bytes!("../../../../../producers/extents/terrain/ch-swisssurface3d.toml")),
     ("ch-zh-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/ch-zh-dtm.geojson")),
     ("ch-zh-dtm.toml", include_bytes!("../../../../../producers/extents/terrain/ch-zh-dtm.toml")),
     ("connecticut-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/connecticut-lidar.geojson")),
@@ -775,6 +777,8 @@ const REAL: [(&str, &[u8]); 323] = [
     ("fr-litto3d.toml", include_bytes!("../../../../../producers/extents/terrain/fr-litto3d.toml")),
     ("fr-lyon-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/fr-lyon-lidar.geojson")),
     ("fr-lyon-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/fr-lyon-lidar.toml")),
+    ("fr-mns-correl.geojson", include_bytes!("../../../../../producers/extents/terrain/fr-mns-correl.geojson")),
+    ("fr-mns-correl.toml", include_bytes!("../../../../../producers/extents/terrain/fr-mns-correl.toml")),
     ("fr-rgealti.geojson", include_bytes!("../../../../../producers/extents/terrain/fr-rgealti.geojson")),
     ("fr-rgealti.toml", include_bytes!("../../../../../producers/extents/terrain/fr-rgealti.toml")),
     (
@@ -840,6 +844,8 @@ const REAL: [(&str, &[u8]); 323] = [
     ("im-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/im-lidar.toml")),
     ("inegi-mde.geojson", include_bytes!("../../../../../producers/extents/terrain/inegi-mde.geojson")),
     ("inegi-mde.toml", include_bytes!("../../../../../producers/extents/terrain/inegi-mde.toml")),
+    ("iowa-geotree.geojson", include_bytes!("../../../../../producers/extents/terrain/iowa-geotree.geojson")),
+    ("iowa-geotree.toml", include_bytes!("../../../../../producers/extents/terrain/iowa-geotree.toml")),
     ("is-islandsdem.geojson", include_bytes!("../../../../../producers/extents/terrain/is-islandsdem.geojson")),
     ("is-islandsdem.toml", include_bytes!("../../../../../producers/extents/terrain/is-islandsdem.toml")),
     ("it-bz-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/it-bz-dtm.geojson")),
@@ -943,6 +949,8 @@ const REAL: [(&str, &[u8]); 323] = [
     ("se-markhojdmodell.toml", include_bytes!("../../../../../producers/extents/terrain/se-markhojdmodell.toml")),
     ("se-stockholm-sbk.geojson", include_bytes!("../../../../../producers/extents/terrain/se-stockholm-sbk.geojson")),
     ("se-stockholm-sbk.toml", include_bytes!("../../../../../producers/extents/terrain/se-stockholm-sbk.toml")),
+    ("se-ythojdmodell.geojson", include_bytes!("../../../../../producers/extents/terrain/se-ythojdmodell.geojson")),
+    ("se-ythojdmodell.toml", include_bytes!("../../../../../producers/extents/terrain/se-ythojdmodell.toml")),
     ("si-clss.geojson", include_bytes!("../../../../../producers/extents/terrain/si-clss.geojson")),
     ("si-clss.toml", include_bytes!("../../../../../producers/extents/terrain/si-clss.toml")),
     ("si-lss.geojson", include_bytes!("../../../../../producers/extents/terrain/si-lss.geojson")),
@@ -1020,22 +1028,28 @@ fn the_real_terrain_files_are_taken() {
         ("ba-rs-rgurs", 1),
         ("belize-crip", 1),
         ("cz-brno-dmt", 1),
+        ("de-hb-dgm1", 1),
+        ("de-th-dgm1", 1),
         ("dominica-dvrp", 1),
         ("dominicanrep-sgn", 1),
-        ("es-na-mde", 1),
+        ("es-na-mde", 2),
+        ("es-pnoa", 2),
+        ("es-pv-mdt", 1),
         ("fi-helsinki-korkeusmalli", 1),
-        ("gb-nir-daera-coastal", 3),
+        ("gb-nir-daera-coastal", 6),
         ("gb-nir-hed-lidar", 1),
         ("gb-nir-roads-lidar", 3),
         ("gr-ktimatologio", 1),
         ("guatemala-ign", 1),
         ("ie-tailte-dtm", 1),
-        ("it-bz-dtm", 2),
-        ("it-sardegna-dtm", 1),
-        ("it-toscana-lidar", 1),
+        ("it-bz-dtm", 5),
+        ("it-sardegna-dtm", 2),
+        ("it-toscana-lidar", 2),
         ("it-vda-dtm", 2),
+        ("lv-lgia-lidar", 2),
         ("lv-riga-3d", 1),
-        ("mk-akn", 1),
+        ("mk-akn", 2),
+        ("pl-gugik-nmt", 1),
         ("ro-ancpi", 2),
         ("rs-rgz", 2),
         ("ru-ffpd", 1),
@@ -1045,10 +1059,10 @@ fn the_real_terrain_files_are_taken() {
         ("tr-hgm", 1),
     ];
     assert_eq!(warnings, expected.map(unknown));
-    // NRCan's 950 projects and its mosaic, its box the country's north.
+    // NRCan's 950 projects, each a DTM and a DSM, its mosaic and the CDSM.
     let c = Extents.file("terrain/nrcan-hrdem.geojson", &files["terrain/nrcan-hrdem.geojson"]);
-    assert_eq!(c.facts["pieces"], 951);
-    assert_eq!(c.facts["classes"], serde_json::json!({"files": 1, "index": 950}));
+    assert_eq!(c.facts["pieces"], 1902);
+    assert_eq!(c.facts["classes"], serde_json::json!({"files": 2, "index": 1900}));
 }
 
 /// Malformed files are findings, never a panic: each kind's fixture cut short at every few bytes,

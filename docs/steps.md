@@ -1130,7 +1130,11 @@ describes each layer's scale for the app's axis (docs/formats.md). The server's 
 (crate::available's): each layer's best piece under the switch, an open piece winning a tie on
 every layer that ranks it, each layer's value and scale from the real `score.toml`, one still
 holding the retired colour fields served the same, the tiles' values (inside a piece and
-transparent outside it) and the click.
+transparent outside it) and the click; and `renders_the_real_pieces`, run by hand: with
+`SCENIC_RENDER_DIR` set it builds every real piece, prints the step's time, peak resident set,
+packs' bytes and tiles' sets (those over 256, the most in one), and writes the score layer as PNGs,
+each value in its spacing's class (the world at z2, Europe at z4, France at z5, Germany at z6,
+Vancouver at z8, each under both settings of the switch).
 
 **Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile of values as
 above (PNG; 204 where no piece is, or none passes the switch); a tile not stored is its ancestor's

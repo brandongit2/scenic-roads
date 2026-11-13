@@ -431,3 +431,122 @@ async fn a_click_answers_the_pieces_there_best_first() {
     assert!(v.ends_with("-0123456789abcdef"), "{v}");
     assert!(meta["packs"].get("available-terrain").is_none());
 }
+
+/// The real pieces (producers/extents/terrain/) built and their score layer's values drawn as PNGs
+/// over the map's land colour, each value in its spacing's class (0.5, 1, 2, 5, 10, 30, 90 m and
+/// coarser, a class's edge a factor of 1.25 over its spacing, finer brighter): the world at z2,
+/// Europe at z4, France at z5, Germany at z6, Vancouver at z8, each under both settings of the
+/// switch, written to `$SCENIC_RENDER_DIR`; a look by hand at what the app's colour map will show
+/// (the step's whole build, ~1 min); nothing without the variable. It prints what the step made:
+/// its time, its peak resident set, its packs' bytes and its tiles' sets (over 256, the most).
+#[test]
+fn renders_the_real_pieces() {
+    let Some(dir) = std::env::var_os("SCENIC_RENDER_DIR").map(std::path::PathBuf::from) else { return };
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../producers/extents/terrain");
+    let mut files = BTreeMap::new();
+    let mut pieces = Vec::new();
+    for e in std::fs::read_dir(&src).unwrap() {
+        let p = e.unwrap().path();
+        let name = format!("terrain/{}", p.file_name().unwrap().to_string_lossy());
+        let b = std::fs::read(&p).unwrap();
+        if let ex::Kind::Pieces(_, id) = ex::kind(&name) {
+            pieces.extend(terrain::available::pieces(id, &b).unwrap());
+        }
+        files.insert(name, b);
+    }
+    let th = theme_of(&files);
+    let nas = tempfile::tempdir().unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(nas.path());
+    let mut out = buildstore::out::Out::unbound(&root, &nas.path().join("scratch")).unwrap();
+    let t = std::time::Instant::now();
+    terrain::available::build(&mut out, "terrain", &pieces, &|_, _| {}).unwrap();
+    let took = t.elapsed();
+    // SAFETY: getrusage fills the struct it's given (ru_maxrss: bytes on macOS).
+    let mut r: libc::rusage = unsafe { std::mem::zeroed() };
+    let peak = if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut r) } == 0 { r.ru_maxrss } else { 0 };
+    out.save().unwrap();
+    let layer = fmt::layer("terrain");
+    let (mut bytes, mut tiles, mut over, mut most) = (0, 0, 0, 0);
+    for (l, c) in &out.manifest {
+        if !l.starts_with(&format!("layers/{layer}/")) {
+            continue;
+        }
+        let b = out.path(c).read().unwrap();
+        bytes += b.len();
+        for e in store::pack::PackIndex::parse_bytes(&b).unwrap().entries {
+            let n = Tile::decode(&b[e.offset as usize..][..e.len as usize]).unwrap().sets.len();
+            tiles += 1;
+            over += usize::from(n > 256);
+            most = most.max(n);
+        }
+    }
+    eprintln!(
+        "{} pieces built in {took:.1?}, a peak resident set of {peak} bytes: {bytes} bytes of packs, {tiles} tiles, \
+         {over} of over 256 sets, {most} the most",
+        pieces.len()
+    );
+    let mut get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Tile>> {
+        let Some((scope, key)) = fmt::pack_of(Grid::Mercator, z, x, y) else { return Ok(None) };
+        let Some(c) = out.get(&format!("layers/{layer}/{scope}/{}", key.replace('/', "-"))) else { return Ok(None) };
+        let b = out.path(c).read()?;
+        let idx = store::pack::PackIndex::parse_bytes(&b)?;
+        Ok(match idx.find(z, x, y) {
+            Some(e) => Some(Tile::decode(&b[e.offset as usize..][..e.len as usize])?),
+            None => None,
+        })
+    };
+    let land = [0x0b, 0x0e, 0x13];
+    // The classes' upper edges (metres) and their colours, finest first.
+    let edges = [0.625, 1.25, 2.5, 6.25, 12.5, 37.5, 112.5];
+    let ramp: [[u8; 3]; 8] = [
+        [0xe7, 0xfd, 0xa7],
+        [0x9a, 0xef, 0xba],
+        [0x58, 0xd7, 0xd2],
+        [0x4f, 0xb6, 0xdf],
+        [0x6d, 0x90, 0xd5],
+        [0x84, 0x6a, 0xb3],
+        [0x8a, 0x4a, 0x7e],
+        [0x80, 0x30, 0x41],
+    ];
+    // (place, zoom, first column and row, tiles a side)
+    let places: [(&str, u8, u32, u32, u32); 5] = [
+        ("world", 2, 0, 0, 4),
+        ("europe", 4, 6, 3, 4),
+        ("france", 5, 15, 10, 2),
+        ("germany", 6, 32, 20, 3),
+        ("vancouver", 8, 39, 87, 3),
+    ];
+    for (place, z, x0, y0, n) in places {
+        let tiles: Vec<Option<Tile>> =
+            (0..n * n).map(|k| fmt::tile_at(Grid::Mercator, z, x0 + k % n, y0 + k / n, &mut get).unwrap()).collect();
+        let n = n as usize;
+        for all in [true, false] {
+            let w = n * SIDE;
+            let mut rgb = [land].repeat(w * w).concat();
+            for (k, t) in tiles.iter().enumerate() {
+                let Some(b) = t.as_ref().and_then(|t| values(t, &th, SCORE_LAYER, all).unwrap()) else { continue };
+                let mut d = png::Decoder::new(std::io::Cursor::new(b)).read_info().unwrap();
+                let mut v = vec![0; d.output_buffer_size().unwrap()];
+                d.next_frame(&mut v).unwrap();
+                let (ox, oy) = ((k % n) * SIDE, (k / n) * SIDE);
+                for j in 0..SIDE {
+                    for i in 0..SIDE {
+                        let q = (j * SIDE + i) * 4;
+                        if v[q + 3] > 0 {
+                            let m = 10f64.dpowf(terrarium([v[q], v[q + 1], v[q + 2], v[q + 3]]));
+                            let class = edges.iter().position(|&e| m <= e).unwrap_or(edges.len());
+                            let o = ((oy + j) * w + ox + i) * 3;
+                            rgb[o..o + 3].copy_from_slice(&ramp[class]);
+                        }
+                    }
+                }
+            }
+            let name = format!("{place}-score-{}.png", if all { "all" } else { "open" });
+            let f = std::fs::File::create(dir.join(name)).unwrap();
+            let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, w as u32);
+            e.set_color(png::ColorType::Rgb);
+            e.set_depth(png::BitDepth::Eight);
+            e.write_header().unwrap().write_image_data(&rgb).unwrap();
+        }
+    }
+}
