@@ -1,0 +1,37 @@
+name = "NI 3D Coastal Survey"
+credit = "Department of Agriculture, Environment and Rural Affairs (DAERA), Bluesky"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+source = "https://opendata-daerani.hub.arcgis.com/maps/DAERANI::2021-ni-3d-coastal-survey-topographic-lidar-digital-terrain-model"
+theme = "terrain"
+availability = "closed"
+notes = "DAERA's lidar of Northern Ireland's whole coastline in 2021 (the intertidal area and about 200 m landward of the high-water mark; its DTM's \"source resolution of 0.25m\") and the North Coast's post-storm surveys of March and September 2022 (Curran Strand, Portrush East Strand, Portstewart Strand, Downhill to Magilligan; September's DTM 0.1 m). Each is published only as cached ArcGIS tile services (MapServer, \"Map,TilesOnly\") and scene services, under the Open Government Licence: no file to download. The services' Footprint and Boundary layers can't be queried (tiles only: a query answers \"Page Not Found\"), the hub's download of them answers \"Downloads are not supported for this item\", ArcGIS Online lists no feature service of the surveys, and a 200 m strip along the coast is no administrative area to claim: listed, not drawn."
+
+[[piece]]
+id = "coastal-2021"
+label = "2021 NI 3D Coastal Survey, topographic lidar DTM"
+method = "none"
+why = "published only as a cached tile service; its footprint layers can't be queried and no outline is published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2021
+
+[[piece]]
+id = "post-storm-2022-03"
+label = "March 2022 North Coast Post-Storm Survey DTM"
+method = "none"
+why = "published only as a cached tile service; its footprint layers can't be queried and no outline is published"
+[piece.metrics]
+surface = "ground"
+year = 2022
+
+[[piece]]
+id = "post-storm-2022-09"
+label = "September 2022 North Coast Post-Storm Recovery Survey DTM"
+method = "none"
+why = "published only as a cached tile service; its footprint layers can't be queried and no outline is published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.1
+year = 2022

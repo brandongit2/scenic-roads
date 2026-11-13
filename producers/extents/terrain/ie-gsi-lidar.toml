@@ -1,0 +1,152 @@
+name = "Geological Survey Ireland Open Topographic Lidar Data"
+credit = "Contains Irish Public Sector Data (Geological Survey Ireland) licensed under a Creative Commons Attribution 4.0 International (CC BY 4.0) licence"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://gsi.geodata.gov.ie/server/rest/services/Lidar"
+theme = "terrain"
+availability = "open"
+notes = "Ireland's open lidar terrain and surface models as Geological Survey Ireland publishes them, a zip per 1 km or 2 km tile (Irish Transverse Mercator), each tile in the coverage layers of its ArcGIS services with its cell (`RESOLUTION`), capture date (`DATECAPTUR`, written as \"Nov - Dec 2015\", \"2018-06-27\", \"May 2010 - May 2011\", \"03/11/2020\": its last year taken), place (`LOCATION`) and vertical error (`RMS_ERROR`, \"Within +/- 150mm\": the field is the publisher's RMS error, so its figure is taken as the RMSE and its words kept as stated): GSI's own surveys of 2015 to 2017 with the Department of Culture, Heritage and the Gaeltacht's, the Discovery Programme's, the Heritage Council's and Meath County Council's site surveys (0.125 to 0.2 m; one layer); GSI's Phase 2 (2018); New York University's Dublin City survey (2015); the Office of Public Works' surveys of Cork (2007), of 2006-07 and of 2011 (OPW NASC); Transport Infrastructure Ireland's road corridors (2010-11); Westmeath County Council's Ushnagh Hill (0.25 m, 2020); and GSI's and the CHERISH project's photogrammetric surface models of coastal sites (0.25 m, 2019 to 2021). The lidar tiles hold a DTM and a DSM each, the photogrammetry's a DSM only. The country-wide height data Tailte Éireann sells is ie-tailte-dtm's."
+
+[[piece]]
+id = "gsi"
+label = "GSI lidar (GSI, DCHG, Discovery Programme)"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_GSI_DCHG_DP_IE26_ITM/FeatureServer/0"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "gsi-phase-2"
+label = "GSI lidar Phase 2"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_GSI_Phase2_IE26_ITM/FeatureServer/12"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "nyu-dublin"
+label = "NYU Dublin City lidar 2015"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_NYU_Dublin_IE26_ITM/FeatureServer/4"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "opw-cork"
+label = "OPW lidar, Cork 2007"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_OPW_Cork_IE26_ITM/FeatureServer/2"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "opw"
+label = "OPW lidar 2006-2007"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_OPW_IE26_ITM/FeatureServer/3"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "opw-nasc"
+label = "OPW NASC lidar 2011"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_OPW_NASC_IE26_ITM/FeatureServer/3"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "tii"
+label = "TII lidar 2010-2011"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_TII_IE26_ITM/FeatureServer/0"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "westmeath"
+label = "Westmeath County Council lidar, Ushnagh Hill"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_LiDAR_Coverage_WH_CoCo_IE26_ITM/FeatureServer/0"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }
+
+[[piece]]
+id = "photogrammetry"
+label = "GSI and CHERISH photogrammetry DSM"
+method = "arcgis"
+class = "index"
+url = "https://gsi.geodata.gov.ie/server/rest/services/Lidar/IE_GSI_Photogrammetry_Coverage_GSI_IE26_ITM/FeatureServer/3"
+by = ["LOCATION"]
+name = "LOCATION"
+page = 1000
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "RESOLUTION" }
+year = { field = "DATECAPTUR", date = "text" }
+vertical_rmse_m = { field = "RMS_ERROR", map = { "Within +/- 150mm" = 0.15, "Within +/-200mm" = 0.2, "Within +/- 30mm" = 0.03, "+/- 30mm" = 0.03, "Within +/- 84mm" = 0.084, "Within ± 150mm" = 0.15, "Witihin ± 150mm" = 0.15 } }

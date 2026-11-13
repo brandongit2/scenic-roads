@@ -1,0 +1,184 @@
+name = "Scottish Remote Sensing Portal LiDAR"
+credit = "Crown copyright Scottish Government, SEPA, Scottish Water and Orkney Islands Council"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+source = "https://remotesensingdata.gov.scot/data#/list"
+theme = "terrain"
+availability = "open"
+notes = "The portal's lidar bare-earth models under the Open Government Licence, from the file names in its public bucket (srsp-open-data), each a British National Grid square: the Scottish National LiDAR Programme's 50 cm DTM (1 km tiles; flown May to December 2025, at least 10 points/m²; the programme flies to 2027); Phases I and II (1 m; 2011-12 over 10 areas, 11,845 km², and 2012-14 over 66 sites, 3,516 km²; about 2 points/m²); Phases III to VI (50 cm; Scottish Power Energy Networks' surveys of 2015-16, its two 2019 pilot flights over the Whiteadder not told apart, 11,772 km²; 2017-19, 17,945 km²; 2020-21; 2021-22); the Outer Hebrides 2019 (50 cm over about 1,705 km², 25 cm over the 200 km² of its settlements); Orkney Islands Council's 2023 survey (50 cm, 1,655 km²); and the coastal survey of February and March 2026 (50 cm). The phases' and the Outer Hebrides' 50 cm DTMs come in 10 km sheets (Phases I and II) or 5 km quadrants holding their surveys' corridors and patches, so each one's extent is its survey's point-cloud tiles (1 km; Phase II's 5 km quadrants): Phase I's 382 DTM sheets span 38,215 km² for its 11,845. Each grid's cell is its files' names'; each year its collection's capture as the portal's records state it. The national programme's \"absolute vertical accuracy of 15cm\" isn't stated as an RMSE, so is left out. Historic Environment Scotland's sets are gb-sct-hes-lidar's."
+
+[[piece]]
+id = "nlp"
+label = "Scottish National LiDAR Programme DTM 50 cm"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/national-lidar-programme/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2025
+
+[[piece]]
+id = "phase-1"
+label = "LiDAR for Scotland Phase I DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-1/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2012
+
+[[piece]]
+id = "phase-2"
+label = "LiDAR for Scotland Phase II DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-2/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2014
+
+[[piece]]
+id = "phase-3"
+label = "LiDAR for Scotland Phase III DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-3/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2016
+
+[[piece]]
+id = "phase-4"
+label = "LiDAR for Scotland Phase IV DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-4/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "phase-5"
+label = "LiDAR for Scotland Phase V DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-5/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "phase-6"
+label = "LiDAR for Scotland Phase VI DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-6/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "outer-hebrides-50cm"
+label = "LiDAR for Outer Hebrides 2019, 50 cm DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/outer-hebrides/2019/laz/4ppm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "outer-hebrides-25cm"
+label = "LiDAR for Outer Hebrides 2019, 25 cm DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/outer-hebrides/2019/dtm/25cm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2019
+
+[[piece]]
+id = "orkney-2023"
+label = "LiDAR for Orkney Islands Council 2023 DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/orkney-islands-council-23/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "coastal-2026"
+label = "Scottish Coastal LiDAR Survey 2025-26 DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/coastal/coastal-2025-2026/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2026

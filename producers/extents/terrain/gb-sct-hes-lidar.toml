@@ -1,0 +1,120 @@
+name = "Historic Environment Scotland LiDAR"
+credit = "© Historic Environment Scotland"
+licence = "NCGL-UK-2.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/non-commercial-government-licence/version/2/"
+source = "https://remotesensingdata.gov.scot/data#/list"
+theme = "terrain"
+availability = "open"
+notes = "Historic Environment Scotland's lidar of its sites and their landscapes on the Scottish Remote Sensing Portal, from the file names in its public bucket (srsp-open-data), each a 1 km British National Grid square: Stirling 2010 (50 cm), the Scottish Ten World Heritage Sites of 2010 and 2012 (50 cm), the Rae Project's 2016-17 sites (25 cm), its 2016 and 2017 sub-project 4 sites (25 cm), its 2017 sites (25 cm) and sub-project 3's Orkney sites (50 cm files, though the record says 0.25 m processing), and Luing 2020 (50 cm). Each grid's cell is its files' names'; each year its set's capture as the portal's records state it. The sets' licences differ: Stirling's, the Scottish Ten's, sub-project 4's and Luing's are the Non-Commercial Government Licence (non-commercial use only, by their supplier's terms), the Rae Project's 2016 and 2017 sets' and sub-project 3's the Open Government Licence v3: the declaration takes the more restrictive."
+
+[[piece]]
+id = "stirling-2010"
+label = "HES LiDAR Stirling City and surrounding area (2010) DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/hes_2010/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2010
+
+[[piece]]
+id = "scottish-ten"
+label = "HES Scottish Ten Project (2010) DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/hes-2010s10/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2012
+
+[[piece]]
+id = "rae-2016"
+label = "HES Projects (2016) DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/hes-2016/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2017
+
+[[piece]]
+id = "rae-2016-2017"
+label = "HES Projects (2016-2017 sub project 4) DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/hes-2016-2017/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2017
+
+[[piece]]
+id = "rae-2017"
+label = "HES Projects (2017) DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/hes-2017/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2017
+
+[[piece]]
+id = "rae-2017-sp3"
+label = "HES Project (2017 Sub Project 3) DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/hes-2017sp3/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2017
+
+[[piece]]
+id = "luing-2020"
+label = "HES Projects Isle of Luing DTM"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/hes/luing/dtm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.tif$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020

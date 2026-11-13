@@ -1,0 +1,22 @@
+name = "DfI Rivers River Basin LIDAR"
+credit = "Department for Infrastructure (Rivers), Northern Ireland; Belfast City 2006 © Cyient Europe Ltd"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+source = "https://admin.opendatani.gov.uk/dataset/lidar-belfast-city-2006"
+theme = "terrain"
+availability = "open"
+notes = "Northern Ireland's lidar terrain models of its river basins (OpenDataNI's \"OSNI Open Data: River Basin LIDAR\" sets, 2004 to 2014), Belfast City (March 2006) and the environs of Lough Neagh (2017): 1 km tiles of DTM and DSM, downloaded by area, as the department's grid index (RiverBasin_LIDAR_Grid_Index, Irish Grid TM65) lists them, 3,722 tiles, each with its area's name, its cell (`CELL_SIZE`: 1 m, 0.5 m for 218 tiles) and its survey date. \"Not a supported LPS product\", the sets say. The tile index of Lough Neagh's own set (LoughNeaghLIDAR_Grid_Index) holds the same 478 tiles."
+
+[[piece]]
+id = "dtm"
+method = "file"
+class = "index"
+url = "https://opendatani.blob.core.windows.net/dfiriverslidar/RiverBasin_LIDAR_Grid_Index.zip"
+member = "Grid_Index"
+by = ["NAME"]
+name = "NAME"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "CELL_SIZE" }
+year = { field = "SurveyDate", date = "iso" }

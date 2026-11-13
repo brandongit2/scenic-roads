@@ -1,0 +1,30 @@
+name = "DfI Roads scheme LIDAR"
+credit = "Department for Infrastructure (Roads), Northern Ireland"
+licence = "OGL-UK-3.0"
+licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+source = "https://admin.opendatani.gov.uk/dataset/a26-dualling-lidar"
+theme = "terrain"
+availability = "open"
+notes = "Point clouds of three road schemes on OpenDataNI, no grid published from them: the A26 dualling (the 8 km scheme area, October 2013), the York Street Interchange in Belfast (July to September 2012) and the A6 Randalstown to Castledawson dualling (pre-works, undated). Each is a few zips of LAS files, with no index, footprint or stated density; a corridor is no area to claim. Listed, not drawn."
+
+[[piece]]
+id = "a26"
+label = "A26 Dualling LIDAR"
+method = "none"
+why = "a corridor's point clouds in five zips, with no index or footprint published"
+[piece.metrics]
+year = 2013
+
+[[piece]]
+id = "york-street"
+label = "York Street Interchange LIDAR"
+method = "none"
+why = "a junction's point clouds in two zips, with no index or footprint published"
+[piece.metrics]
+year = 2012
+
+[[piece]]
+id = "a6"
+label = "A6 Randalstown to Castledawson pre-works LIDAR"
+method = "none"
+why = "a corridor's point clouds in seventeen zips, with no index, footprint or date published"
