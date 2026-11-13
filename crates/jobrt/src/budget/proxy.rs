@@ -7,7 +7,7 @@
 //! it. It listens on this Mac alone (127.0.0.1). A process that sees a 429 or a `Retry-After`
 //! tells it (`POST /hold?s=<seconds>&host=<host>`: crate::budget::seen), and the budget holds every
 //! process and Mac; one that asks again tells it too (`POST /retry?host=<host>`: crate::budget::retried).
-//! One fetching a host's pages tells its robots.txt (`POST /robots?host=<host>&state=<unchecked,
+//! One crawling a host's pages tells its robots.txt (`POST /robots?host=<host>&state=<unchecked,
 //! allowed or disallowed>[&t=<unix ms read>]`: crate::budget::net::Robots).
 //! What goes through is counted per host as it's relayed, and per job by the credential its
 //! clients send (`env_for`; crate::budget::net).

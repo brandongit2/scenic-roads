@@ -2,7 +2,7 @@
 //! agent's proxy, which every job's connection out goes through, so nothing is told by the jobs
 //! but their retries and 429s (`/retry`, `/hold`). Per host: the bytes in (to the job) and out, the
 //! requests asked (a tunnel is one: what's inside is the client's TLS), the connections opened and
-//! those open now, the retries and the holds told, and its robots.txt as a job that fetches its pages
+//! those open now, the retries and the holds told, and its robots.txt as a job that crawls its pages
 //! told it (`Robots`). And the last `EVENTS` transfers, each as it ended.
 //!
 //! And each job's bytes in and out (`Job`), by the tag its agent gave it in its proxy's address
@@ -35,15 +35,15 @@ pub struct Host {
     pub robots_t: AtomicU64,
 }
 
-/// A host's robots.txt, as a job fetching its pages tells the proxy (`POST /robots?host=…&state=…`,
-/// docs/inputs.md §6.9). Only a page's host's robots.txt is read (crate::fetch::Kind::Page), and
-/// every script fetching pages tells (`fetch::tests::every_fetching_script_declares_its_kinds`), so
-/// a host never told is an API's or a data download's: no robots.txt applies.
+/// A host's robots.txt, as a job crawling its pages tells the proxy (`POST /robots?host=…&state=…`,
+/// docs/inputs.md §6.9). Only a crawl's host's robots.txt is read (buildstore::fetch::Kind::Crawl), and
+/// every script crawling tells (`fetch::tests::every_fetching_script_declares_its_kinds`), so
+/// a host never told is an API's, a data download's or a page read as a person would: no robots.txt applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Robots {
-    /// Its pages are to be fetched; its robots.txt not read yet.
+    /// Its pages are to be crawled; its robots.txt not read yet.
     Unchecked = 1,
-    /// Read, and it allows the pages fetched.
+    /// Read, and it allows the pages crawled.
     Allowed = 2,
     /// Read, and it disallows a page asked for.
     Disallowed = 3,

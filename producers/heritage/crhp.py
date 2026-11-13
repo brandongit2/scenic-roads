@@ -37,8 +37,9 @@ H = Path()
 CACHE = Path()
 BASE = "https://www.historicplaces.ca/en/"
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
-# What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): the register's web pages, scraped: its robots.txt read first.
-FETCHES = "page"
+# What it fetches (buildstore::fetch::Kind, docs/inputs.md §6.9): the register's web pages, a listing
+# then every place's page (thousands of one host's pages in bulk: a crawl): its robots.txt read first.
+FETCHES = "crawl"
 PROVINCES = {
     "New Brunswick": ("CA-NB", (-69.1, 44.5, -63.7, 48.1)),
     "Prince Edward Island": ("CA-PE", (-64.5, 45.9, -61.9, 47.1)),

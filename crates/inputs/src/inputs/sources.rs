@@ -103,7 +103,7 @@ pub struct Data {
     pub role: String,
     /// Its format (one of its role's).
     pub format: String,
-    /// What fetching it is (buildstore::fetch::Kind: `api`, `data` or `page`), required: only a page's
+    /// What fetching it is (buildstore::fetch::Kind: `api`, `data` or `crawl`), required: only a crawl's
     /// host's robots.txt is read first. Kept out of the digests and the accepted index (what's
     /// fetched is the same whatever it's called), so the steps read None.
     #[serde(default, skip_serializing)]
@@ -221,10 +221,10 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
         }
     }
     match data.kind {
-        None => why.push("no `kind`: api, data or page (docs/inputs.md §6.9)".into()),
-        // (No Rust fetcher reads robots.txt: a page is a producer script's, `FETCHES = "page"`.)
-        Some(buildstore::fetch::Kind::Page) => {
-            why.push("`kind` is page: no step's fetcher reads robots.txt; a page is fetched by a producer script (docs/inputs.md §6.9)".into())
+        None => why.push("no `kind`: api, data or crawl (docs/inputs.md §6.9)".into()),
+        // (No Rust fetcher reads robots.txt: a crawl is a producer script's, `FETCHES = "crawl"`.)
+        Some(buildstore::fetch::Kind::Crawl) => {
+            why.push("`kind` is crawl: no step's fetcher reads robots.txt; a crawl is done by a producer script (docs/inputs.md §6.9)".into())
         }
         Some(_) => {}
     }

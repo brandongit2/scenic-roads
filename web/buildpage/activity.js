@@ -5,9 +5,9 @@
 // last `RATE_S`, the connections open now, retries and 429 holds since each Mac's agent started,
 // the budget it is metered by, its robots.txt). Each Mac a chip in its colour on the page. From each Mac's /api/live (`files` and `net`), asked every `EVERY_MS`
 // while the tab shows: this page's own Mac through its own calls, the others at their addresses
-// (live.js's `remote`). A host's robots.txt is as a job fetching its pages told its Mac's proxy
-// (crate::budget::net::Robots), the newest told of any Mac; one never told is an API's or a data
-// download's, which follow their provider's policy: no robots.txt applies (docs/inputs.md §6.9).
+// (live.js's `remote`). A host's robots.txt is as a job crawling its pages told its Mac's proxy
+// (crate::budget::net::Robots), the newest told of any Mac; one never told is an API's, a data
+// download's or a page read as a person would, which follow their provider's policy: no robots.txt applies (docs/inputs.md §6.9).
 import { remote } from "./live.js";
 import { el } from "./dom.js";
 
@@ -120,10 +120,10 @@ function macChip(host) {
 // A host's robots.txt cell: its state as told (module doc), when it was read on hover.
 const ROBOTS = { unchecked: ["not checked yet", "warn"], allowed: ["allowed", "ok"], disallowed: ["disallowed", "warn"] };
 function robotsCell(r) {
-  if (!r) return Object.assign(el("td", "small dim", "n/a: API or data"), { title: "An API or a data download: it follows its provider's usage policy, no robots.txt read" });
+  if (!r) return Object.assign(el("td", "small dim", "n/a: API or data"), { title: "An API, a data download or a page read as a person would: it follows its provider's usage policy, no robots.txt read" });
   const [say, cls] = ROBOTS[r.state] || [r.state, "warn"];
   const hm = new Date(r.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-  return Object.assign(el("td", `small ${cls}`, r.state === "unchecked" ? say : `${say} (checked ${hm})`), { title: r.state === "unchecked" ? `Its pages are to be fetched; robots.txt not read yet (told ${clock(r.t)})` : `robots.txt read at ${clock(r.t)}` });
+  return Object.assign(el("td", `small ${cls}`, r.state === "unchecked" ? say : `${say} (checked ${hm})`), { title: r.state === "unchecked" ? `Its pages are to be crawled; robots.txt not read yet (told ${clock(r.t)})` : `robots.txt read at ${clock(r.t)}` });
 }
 const num = (v, d = 1) => (v ? v.toFixed(d) : "0");
 

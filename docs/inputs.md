@@ -1593,7 +1593,7 @@ their indexes.
 |---|---|
 | `role` | the slot the app reads it in, one source a role: `osm-planet` (the pass's planet: its `version` the planet's date, `params.md5` its MD5's URL), `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
 | `format` | one of its role's: `osm-pbf`, `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
-| `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files) or `page` (a web page, an undocumented URL, links followed or scraped), refused: no step's fetcher reads robots.txt, so pages are a producer script's (`FETCHES = "page"`). Kept out of keys and the accepted index |
+| `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files; or a page or record read as a person would) or `crawl` (links followed, or a host's pages fetched in bulk), refused: no step's fetcher crawls, so a crawl is a producer script's (`FETCHES = "crawl"`). Kept out of keys and the accepted index |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |
 | `version` | the pinned release |
 | `refresh` | `pinned` (default: a new release is the owner's edit) or `live` (a query service asked each run) |
@@ -1607,13 +1607,13 @@ of one role (`src-role`; for `depth`, two of one `code`). Warning: an index no d
 description's extent for the credits (§4.8), the world or its territory's polygons' boxes in the
 newest pass's outlines.
 
-**robots.txt is for crawlers.** Only a page's host's robots.txt is read first, in a
+**robots.txt is for crawlers.** Only a crawl's host's robots.txt is read first, in a
 request of its own, and obeyed (one that's missing, refused or unreadable allows everything). An
-`api` or `data` source follows its provider's usage policy instead: the User-Agent
+`api` or `data` source (a page read as a person would is `data`) follows its provider's usage policy instead: the User-Agent
 "scenic-roads/0.1 (personal offline map)" (`fetch::USER_AGENT`), the pool's rate limits (the
 budget's proxy, `crate::budget`), a back-off on 429, and its credit. Every producer script that
 fetches says what it fetches (`FETCHES = "api, data"`; a shell script's `# FETCHES: data`), and
-one fetching pages reads robots.txt and tells its agent's proxy what it found (`/robots`, shown
+one crawling reads robots.txt and tells its agent's proxy what it found (`/robots`, shown
 in the build page's Activity tab): `fetch::tests::every_fetching_script_declares_its_kinds`.
 The Rust fetchers (`crate::fetch`'s `Fetcher`, `crate::wikiask`) fetch only APIs and data.
 

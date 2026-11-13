@@ -223,18 +223,19 @@ pub fn go_offline() {
 pub const USER_AGENT: &str = "scenic-roads/0.1 (personal offline map)";
 
 /// What a fetched source is (docs/inputs.md §6.9), which decides whether its host's robots.txt is
-/// read first: robots.txt is for crawlers, so only a page's is. An API or a data download follows
-/// its provider's usage policy instead: `USER_AGENT`, the pool's rate limits (jobrt::budget), a
-/// back-off on 429, the credit.
+/// read first: robots.txt is for crawlers, so only a crawl's is. An API, a data download or a page
+/// read as a person would follows its provider's usage policy instead: `USER_AGENT`, the pool's
+/// rate limits (jobrt::budget), a back-off on 429, the credit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// A documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service.
     Api,
-    /// A published data download: a dump, an extract, a dataset's files.
+    /// A published data download: a dump, an extract, a dataset's files; or a page or record read
+    /// as a person would (a declared source's fetch).
     Data,
-    /// A web page, an undocumented URL, links followed or scraped: its robots.txt read first.
-    Page,
+    /// Real crawling: links followed, or a host's pages fetched in bulk: its robots.txt read first.
+    Crawl,
 }
 
 /// Outside data by URL.
@@ -1675,7 +1676,7 @@ mod tests {
 
     /// Every producer script that fetches (producers/, dem/: urllib, curl, producers/depth/grid.py's
     /// helpers) declares what it fetches, kinds of `Kind` (`FETCHES = "api, data"`; a shell
-    /// script's `# FETCHES: data`), and one that fetches pages reads robots.txt and tells its proxy
+    /// script's `# FETCHES: data`), and one that crawls reads robots.txt and tells its proxy
     /// what it found (`/robots`: jobrt::budget::net::Robots, the Activity tab's column). (The declarations'
     /// `kind` is inputs::inputs::sources::parse's.)
     #[test]
@@ -1717,18 +1718,18 @@ mod tests {
                     .and_then(|r| r.strip_suffix('"'))
                     .or_else(|| l.strip_prefix("# FETCHES: "))
             });
-            let decl = decl.unwrap_or_else(|| panic!("{rel} fetches but declares no FETCHES (api, data, page)"));
+            let decl = decl.unwrap_or_else(|| panic!("{rel} fetches but declares no FETCHES (api, data, crawl)"));
             let kinds: Vec<Kind> = decl
                 .split(',')
                 .map(|k| {
                     serde_json::from_value(serde_json::Value::String(k.trim().into()))
-                        .unwrap_or_else(|_| panic!("{rel}: FETCHES names {k:?}: api, data or page"))
+                        .unwrap_or_else(|_| panic!("{rel}: FETCHES names {k:?}: api, data or crawl"))
                 })
                 .collect();
             assert!(!kinds.is_empty(), "{rel}: FETCHES names nothing");
-            if kinds.contains(&Kind::Page) {
-                assert!(text.contains("robots.txt"), "{rel} fetches pages but reads no robots.txt");
-                assert!(text.contains("/robots?host="), "{rel} fetches pages but tells its proxy no robots.txt state");
+            if kinds.contains(&Kind::Crawl) {
+                assert!(text.contains("robots.txt"), "{rel} crawls but reads no robots.txt");
+                assert!(text.contains("/robots?host="), "{rel} crawls but tells its proxy no robots.txt state");
             }
             checked += 1;
         }

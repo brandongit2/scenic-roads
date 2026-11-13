@@ -515,8 +515,8 @@ The Jobs tab's stages are the one exception.
   **internet by website**, a row per host: requests and MB a second over the last 30 s, the
   connections open now (those opened since each Mac's agent started on hover), retries and 429
   holds since then, the budget it is metered by, and its robots.txt: allowed or disallowed (with
-  when it was read), not checked yet (a page host whose robots.txt is still to be read), or n/a (an
-  API or a data download: no robots.txt applies), as the jobs told their Macs' proxies (the newest
+  when it was read), not checked yet (a crawled host whose robots.txt is still to be read), or n/a (an
+  API, a data download or a page read as a person would: no robots.txt applies), as the jobs told their Macs' proxies (the newest
   told). Not shown: a NAS read's MB/s (a read file's bytes aren't counted per file, so its line says its
   size and the open's time), and the tokens left in a budget's window (pool-wide, on the NAS; a
   Mac holds only its batch). Below 640 px a line's time is left out (it shows on hover).
