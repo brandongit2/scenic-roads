@@ -1,0 +1,34 @@
+name = "Lidar du Québec (MRNF)"
+credit = "© Gouvernement du Québec, ministère des Ressources naturelles et des Forêts"
+licence = "CC-BY-4.0"
+licence_url = "https://www.donneesquebec.ca/licence/"
+source = "https://www.donneesquebec.ca/recherche/dataset/donnees-lidar-du-quebec"
+theme = "terrain"
+availability = "open"
+notes = "Two products of the province's lidar. The classified point clouds: the download index's latest 1 km tiles (IndexTelechargementLidarPlusRecent; the 229,001 tiles it has replaced, IndexTelechargementLidarHistorique, left out), by project, each tile's density as stated (`DENSITE`, \"10 pts/m2\", taken as its nominal spacing) and its acquisition's year (`DATE_ACQUISITION`). The 1 m bare-earth model (MNT) of the derived products: the 1:20,000 sheets of its download-link index (URL_Lidar.geojson), its cell as the dataset states it; the sheets state no year. The WFS answers name urn:ogc:def:crs:EPSG::4617 and are longitude first."
+
+[[piece]]
+id = "points"
+method = "wfs"
+class = "index"
+url = "https://servicesvecto3.mern.gouv.qc.ca/geoserver/Index_Telechargement_Lidar_Pub/wfs"
+type = "IndexTelechargementLidarPlusRecent"
+fields = ["PROJET", "DENSITE", "DATE_ACQUISITION", "SHAPE_S"]
+page = 10000
+by = ["PROJET"]
+name = "PROJET"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = { field = "DENSITE", text = "pts", density = true }
+year = { field = "DATE_ACQUISITION", date = "iso" }
+
+[[piece]]
+id = "mnt"
+label = "Modèle numérique de terrain 1 m (produits dérivés du lidar)"
+method = "file"
+class = "index"
+url = "https://diffusion.mffp.gouv.qc.ca/Diffusion/DonneeGratuite/Foret/IMAGERIE/Produits_derives_LiDAR/Produit_derive_lidar/03-Telechargement/URL_Lidar.geojson"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1

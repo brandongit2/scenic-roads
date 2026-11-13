@@ -1,0 +1,17 @@
+name = "Dominica lidar (DVRP)"
+credit = "Government of Dominica, Disaster Vulnerability Reduction Project"
+licence = "none stated"
+licence_url = "https://dvrp.gov.dm/dvrpinaction/capacity-building-data-development-hazard-risk-management/light-imaging-detection-and-ranging/"
+source = "https://dvrp.gov.dm/dvrpinaction/capacity-building-data-development-hazard-risk-management/light-imaging-detection-and-ranging/"
+theme = "terrain"
+availability = "login"
+notes = "The project's topographic and bathymetric lidar (bidding from December 2016), held in the Dominode GeoNode, more of it after a login; its grid and year aren't stated (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "lidar"
+label = "DVRP lidar"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["DMA"] }
+tolerance_m = 200

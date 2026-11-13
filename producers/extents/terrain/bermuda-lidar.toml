@@ -1,0 +1,19 @@
+name = "Bermuda topo-bathymetric lidar 2019"
+credit = "UK Hydrographic Office, for the Government of Bermuda"
+licence = "unpublished"
+licence_url = "https://www.arcgis.com/sharing/rest/content/items/ea627dab1e3e43f9bede22cdeaebdaa5?f=json"
+source = "https://tiles.arcgis.com/tiles/YFNj7IqppWGZsn5o/arcgis/rest/services/LiDAR_Building_Terrain_Removed_V2/ImageServer?f=json"
+theme = "terrain"
+availability = "closed"
+notes = "The UKHO's topographic and bathymetric lidar of December 2019, owned by the UKHO and unpublished; the government's planning office serves a tile service made from it (about 1 m, bare earth by its name) with no file and no open licence. Its grid isn't stated (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "lidar"
+label = "Lidar 2019"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BMU"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2019

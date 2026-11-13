@@ -1,0 +1,21 @@
+name = "Litto3D Saint-Pierre-et-Miquelon 2023"
+credit = "Shom - IGN, 2024"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://services.data.shom.fr/geonetwork/srv/api/records/BATHYMETRIE_LITTO3D_SPM_2023.xml/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "The islands' topographic and bathymetric lidar of 7 September to 16 October 2023: a 1 m DTM (and 5 m) and point clouds in 1 km sheets, 47 packages from Shom's INSPIRE download service without a login; its packages state no outline the producer reads. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Litto3D DTM 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["SPM"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2023

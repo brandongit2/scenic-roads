@@ -1,0 +1,16 @@
+name = "Belize Climate Resilient Infrastructure Project lidar"
+credit = "Government of Belize (World Bank Climate Resilient Infrastructure Project)"
+licence = "none found"
+licence_url = "http://documents.worldbank.org/curated/en/718361653656954792/pdf/Belize-Climate-Resilient-Infrastructure-Project.pdf"
+source = "http://documents.worldbank.org/curated/en/718361653656954792/pdf/Belize-Climate-Resilient-Infrastructure-Project.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "The project's lidar, \"topographic data for 17 percent of Belize\" (2017 to 2020; sub-metre contours), with no route to it found (the national SDI was unreachable). Which 17 % isn't stated, so it has no outline: listed, not drawn."
+
+[[piece]]
+id = "lidar"
+label = "CRIP lidar (17 % of Belize)"
+method = "none"
+why = "the 17 % of Belize it covers isn't stated anywhere read, and no footprint or index is published"
+[piece.metrics]
+year = 2020

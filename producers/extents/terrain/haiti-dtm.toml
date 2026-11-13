@@ -1,0 +1,36 @@
+name = "Haiti Digital Terrain Model 2014 - 2016"
+credit = "CNIGS and the World Bank, distributed by OpenTopography"
+licence = "not provided (OpenTopography: \"Use License: Not Provided\")"
+licence_url = "https://doi.org/10.5069/G9GX48R8"
+source = "https://portal.opentopography.org/raster?opentopoID=OTSDEM.082021.32618.1"
+theme = "terrain"
+availability = "open"
+notes = "The country's airborne-lidar bare-earth model, 1.5 m, flown 2014 to 2016, in OpenTopography's bucket: 357 cloud-optimised GeoTIFF tiles of 10 km (UTM 18N), each tile's header and its mask at its overview of 24 m pixels (the coarsest no wider than 50 m), and 12 tiles of 50 km over the southern peninsula (`Haiti_Tiburon_Full_*`, 2.4 GB) that have no overviews, so a mask of theirs is the whole file read: for them, the four departments they span (Grand'Anse, Nippes, Sud and Sud-Est) as Natural Earth's 1:10m administrative areas (v5.1.2) draw them, claimed, not checked against data; the part of Ouest only they cover is in neither. Its licence isn't stated."
+
+[[piece]]
+id = "dtm"
+label = "Haiti DTM 1.5 m"
+method = "raster"
+url = "https://opentopography.s3.sdsc.edu/raster"
+list = "s3"
+prefix = "Haiti_16/Haiti_16_be/"
+pattern = 'Haiti_\d+_\d+\.tif$'
+mask_m = 50
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2016
+
+[[piece]]
+id = "tiburon"
+label = "Haiti DTM 1.5 m (southern peninsula)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HTI"], name = ["Grand'Anse", "Nippes", "Sud", "Sud-Est"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.5
+year = 2016

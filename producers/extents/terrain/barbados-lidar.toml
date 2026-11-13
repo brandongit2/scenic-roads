@@ -1,0 +1,19 @@
+name = "Barbados lidar and Digimap-Height"
+credit = "Lands and Surveys Department, Government of Barbados"
+licence = "priced, no open licence"
+licence_url = "https://landsandsurveys.gov.bb/pages/MapProducts.html"
+source = "https://landsandsurveys.gov.bb/pages/MapProducts.html"
+theme = "terrain"
+availability = "paid"
+notes = "The island's lidar (flown from September 2014 for the Coastal Zone Management Unit) and the department's Digimap-Height (contours, spot heights and a DTM), sold per km² or parish; the DTM's cell isn't stated (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Digimap-Height DTM"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BRB"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"

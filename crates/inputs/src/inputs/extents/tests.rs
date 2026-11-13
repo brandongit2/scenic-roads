@@ -586,27 +586,92 @@ fn partners_are_a_sources_two_files() {
 }
 
 /// The terrain's declarations, pieces and score as producers/extents/ made them.
-const REAL: [(&str, &[u8]); 20] = [
+const REAL: [(&str, &[u8]); 85] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/terrain/score.toml")),
-    ("cop-dem.toml", include_bytes!("../../../../../producers/extents/terrain/cop-dem.toml")),
+    ("antigua-tcarta.geojson", include_bytes!("../../../../../producers/extents/terrain/antigua-tcarta.geojson")),
+    ("antigua-tcarta.toml", include_bytes!("../../../../../producers/extents/terrain/antigua-tcarta.toml")),
+    ("antilles-litto3d.geojson", include_bytes!("../../../../../producers/extents/terrain/antilles-litto3d.geojson")),
+    ("antilles-litto3d.toml", include_bytes!("../../../../../producers/extents/terrain/antilles-litto3d.toml")),
+    ("barbados-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/barbados-lidar.geojson")),
+    ("barbados-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/barbados-lidar.toml")),
+    ("belize-crip.geojson", include_bytes!("../../../../../producers/extents/terrain/belize-crip.geojson")),
+    ("belize-crip.toml", include_bytes!("../../../../../producers/extents/terrain/belize-crip.toml")),
+    ("bermuda-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/bermuda-lidar.geojson")),
+    ("bermuda-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/bermuda-lidar.toml")),
+    ("caribbean-nl-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/caribbean-nl-lidar.geojson")),
+    ("caribbean-nl-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/caribbean-nl-lidar.toml")),
+    ("cayman-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/cayman-lidar.geojson")),
+    ("cayman-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/cayman-lidar.toml")),
+    ("connecticut-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/connecticut-lidar.geojson")),
+    ("connecticut-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/connecticut-lidar.toml")),
     ("cop-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/cop-dem.geojson")),
-    ("geobc-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/geobc-lidar.toml")),
+    ("cop-dem.toml", include_bytes!("../../../../../producers/extents/terrain/cop-dem.toml")),
+    ("dc-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/dc-lidar.geojson")),
+    ("dc-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/dc-lidar.toml")),
+    ("dominica-dvrp.geojson", include_bytes!("../../../../../producers/extents/terrain/dominica-dvrp.geojson")),
+    ("dominica-dvrp.toml", include_bytes!("../../../../../producers/extents/terrain/dominica-dvrp.toml")),
+    ("dominicanrep-sgn.geojson", include_bytes!("../../../../../producers/extents/terrain/dominicanrep-sgn.geojson")),
+    ("dominicanrep-sgn.toml", include_bytes!("../../../../../producers/extents/terrain/dominicanrep-sgn.toml")),
+    ("elsalvador-cnr.geojson", include_bytes!("../../../../../producers/extents/terrain/elsalvador-cnr.geojson")),
+    ("elsalvador-cnr.toml", include_bytes!("../../../../../producers/extents/terrain/elsalvador-cnr.toml")),
     ("geobc-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/geobc-lidar.geojson")),
-    ("ign-lidar-hd.toml", include_bytes!("../../../../../producers/extents/terrain/ign-lidar-hd.toml")),
+    ("geobc-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/geobc-lidar.toml")),
+    ("geonb-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/geonb-lidar.geojson")),
+    ("geonb-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/geonb-lidar.toml")),
+    ("greenland-ghm.geojson", include_bytes!("../../../../../producers/extents/terrain/greenland-ghm.geojson")),
+    ("greenland-ghm.toml", include_bytes!("../../../../../producers/extents/terrain/greenland-ghm.toml")),
+    ("grenada-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/grenada-lidar.geojson")),
+    ("grenada-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/grenada-lidar.toml")),
+    ("guatemala-ign.geojson", include_bytes!("../../../../../producers/extents/terrain/guatemala-ign.geojson")),
+    ("guatemala-ign.toml", include_bytes!("../../../../../producers/extents/terrain/guatemala-ign.toml")),
+    ("haiti-dtm.geojson", include_bytes!("../../../../../producers/extents/terrain/haiti-dtm.geojson")),
+    ("haiti-dtm.toml", include_bytes!("../../../../../producers/extents/terrain/haiti-dtm.toml")),
+    ("honduras-sinit.geojson", include_bytes!("../../../../../producers/extents/terrain/honduras-sinit.geojson")),
+    ("honduras-sinit.toml", include_bytes!("../../../../../producers/extents/terrain/honduras-sinit.toml")),
     ("ign-lidar-hd.geojson", include_bytes!("../../../../../producers/extents/terrain/ign-lidar-hd.geojson")),
-    ("jaxa-aw3d30.toml", include_bytes!("../../../../../producers/extents/terrain/jaxa-aw3d30.toml")),
+    ("ign-lidar-hd.toml", include_bytes!("../../../../../producers/extents/terrain/ign-lidar-hd.toml")),
+    ("inegi-mde.geojson", include_bytes!("../../../../../producers/extents/terrain/inegi-mde.geojson")),
+    ("inegi-mde.toml", include_bytes!("../../../../../producers/extents/terrain/inegi-mde.toml")),
     ("jaxa-aw3d30.geojson", include_bytes!("../../../../../producers/extents/terrain/jaxa-aw3d30.geojson")),
-    ("luxembourg-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/luxembourg-lidar.toml")),
+    ("jaxa-aw3d30.toml", include_bytes!("../../../../../producers/extents/terrain/jaxa-aw3d30.toml")),
     ("luxembourg-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/luxembourg-lidar.geojson")),
-    ("nrcan-hrdem.toml", include_bytes!("../../../../../producers/extents/terrain/nrcan-hrdem.toml")),
+    ("luxembourg-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/luxembourg-lidar.toml")),
+    ("novascotia-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/novascotia-lidar.geojson")),
+    ("novascotia-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/novascotia-lidar.toml")),
     ("nrcan-hrdem.geojson", include_bytes!("../../../../../producers/extents/terrain/nrcan-hrdem.geojson")),
-    ("pgc-arcticdem.toml", include_bytes!("../../../../../producers/extents/terrain/pgc-arcticdem.toml")),
+    ("nrcan-hrdem.toml", include_bytes!("../../../../../producers/extents/terrain/nrcan-hrdem.toml")),
+    ("nuevoleon-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/nuevoleon-lidar.geojson")),
+    ("nuevoleon-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/nuevoleon-lidar.toml")),
+    ("ontario-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/ontario-lidar.geojson")),
+    ("ontario-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/ontario-lidar.toml")),
     ("pgc-arcticdem.geojson", include_bytes!("../../../../../producers/extents/terrain/pgc-arcticdem.geojson")),
-    ("pgc-rema.toml", include_bytes!("../../../../../producers/extents/terrain/pgc-rema.toml")),
+    ("pgc-arcticdem.toml", include_bytes!("../../../../../producers/extents/terrain/pgc-arcticdem.toml")),
     ("pgc-rema.geojson", include_bytes!("../../../../../producers/extents/terrain/pgc-rema.geojson")),
+    ("pgc-rema.toml", include_bytes!("../../../../../producers/extents/terrain/pgc-rema.toml")),
+    ("quebec-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/quebec-lidar.geojson")),
+    ("quebec-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/quebec-lidar.toml")),
+    ("saskatchewan-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/saskatchewan-lidar.geojson")),
+    ("saskatchewan-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/saskatchewan-lidar.toml")),
+    ("spm-litto3d.geojson", include_bytes!("../../../../../producers/extents/terrain/spm-litto3d.geojson")),
+    ("spm-litto3d.toml", include_bytes!("../../../../../producers/extents/terrain/spm-litto3d.toml")),
+    ("stkitts-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/stkitts-lidar.geojson")),
+    ("stkitts-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/stkitts-lidar.toml")),
+    ("stlucia-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/stlucia-lidar.geojson")),
+    ("stlucia-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/stlucia-lidar.toml")),
+    ("stvincent-usgs.geojson", include_bytes!("../../../../../producers/extents/terrain/stvincent-usgs.geojson")),
+    ("stvincent-usgs.toml", include_bytes!("../../../../../producers/extents/terrain/stvincent-usgs.toml")),
+    ("tci-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/tci-dem.geojson")),
+    ("tci-dem.toml", include_bytes!("../../../../../producers/extents/terrain/tci-dem.toml")),
+    ("trinidad-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/trinidad-lidar.geojson")),
+    ("trinidad-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/trinidad-lidar.toml")),
+    ("usgs-3dep.geojson", include_bytes!("../../../../../producers/extents/terrain/usgs-3dep.geojson")),
     ("usgs-3dep.toml", include_bytes!("../../../../../producers/extents/terrain/usgs-3dep.toml")),
-    ("wales-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/wales-lidar.toml")),
+    ("usiei.geojson", include_bytes!("../../../../../producers/extents/terrain/usiei.geojson")),
+    ("usiei.toml", include_bytes!("../../../../../producers/extents/terrain/usiei.toml")),
     ("wales-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/wales-lidar.geojson")),
+    ("wales-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/wales-lidar.toml")),
+    ("yukon-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/yukon-lidar.geojson")),
+    ("yukon-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/yukon-lidar.toml")),
 ];
 
 #[test]
@@ -628,7 +693,9 @@ fn the_real_terrain_files_are_taken() {
         warnings.extend(c.findings.iter().filter(|f| f.level == Level::Warning).map(|f| f.message.clone()));
         if p.ends_with(".geojson") {
             assert!(c.facts["pieces"].as_u64().unwrap() > 0, "{p}");
-            assert!(c.facts.contains_key("box"), "{p}");
+            // (A source whose only pieces are of unknown extent, Belize's, has no box.)
+            let unknown = c.facts["classes"].as_object().is_some_and(|k| k.keys().all(|k| k == "unknown"));
+            assert!(c.facts.contains_key("box") || unknown, "{p}");
         }
     }
     let read = |p: &str| -> Result<Arc<Vec<u8>>> { Ok(Arc::new(files[p].clone())) };
@@ -636,8 +703,8 @@ fn the_real_terrain_files_are_taken() {
     let errors: Vec<&Finding> = whole.iter().filter(|f| f.level == Level::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");
     warnings.extend(whole.iter().map(|f| f.message.clone()));
-    // (3DEP's index refused every query: declared, no pieces yet.)
-    assert_eq!(warnings, ["terrain/usgs-3dep.toml: no terrain/usgs-3dep.geojson yet (made by producers/extents/extents.py): the source has no pieces"]);
+    // (Belize's lidar: where its 17 % lies isn't stated.)
+    assert_eq!(warnings, ["terrain/belize-crip.geojson: 1 piece of class unknown: listed in the sources, drawn nowhere"]);
     // NRCan's 950 projects and its mosaic, its box the country's north.
     let c = Extents.file("terrain/nrcan-hrdem.geojson", &files["terrain/nrcan-hrdem.geojson"]);
     assert_eq!(c.facts["pieces"], 951);

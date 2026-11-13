@@ -1,0 +1,20 @@
+name = "Cayman Islands lidar DTM"
+credit = "Lands and Survey Department, Cayman Islands Government"
+licence = "no open licence"
+licence_url = "https://www.caymanlandinfo.ky/services/ngis/map-request"
+source = "https://data.jncc.gov.uk/data/951346cc-5b22-4202-92d0-8cf4e6ac7032/jncc-ot-report-6.pdf"
+theme = "terrain"
+availability = "login"
+notes = "The department's lidar bare-earth model, about 0.5 m (JNCC's report; in use by 2021), by request to the department; no open release. Its year isn't stated. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["CYM"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5

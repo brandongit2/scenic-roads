@@ -1,0 +1,34 @@
+name = "Ontario Elevation Mapping Program and Forest Resources Inventory lidar"
+credit = "Contains information licensed under the Open Government Licence – Ontario"
+licence = "OGL-Ontario-1.0"
+licence_url = "https://www.ontario.ca/page/open-government-licence-ontario"
+source = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation"
+theme = "terrain"
+availability = "open"
+notes = "The catalogues of the province's two lidar bare-earth image services, an item per 1 km tile. The Ontario Digital Terrain Model (Lidar-Derived): by project (`Project`), each tile's cell as stated (`Resolution_m`, 0.5 m or 1 m) and its acquisition's last year (`EndYear`); its `VerticalAccuracyClass` (5, 10, 15) is a class the service doesn't define, so it isn't read. The Forest Resources Inventory's single-photon lidar DTM (FRI_DTM_SPL, leaf-on, flown 2018 to 2025): its tiles' cell (`LowPS`, 0.5 m); its items state no year (a tile's name holds one, run into other digits)."
+
+[[piece]]
+id = "dtm"
+method = "arcgis"
+class = "index"
+url = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/Ontario_DTM_LidarDerived/ImageServer"
+where = "Category = 1"
+page = 1000
+by = ["Project"]
+name = "Project"
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "Resolution_m" }
+year = { field = "EndYear", date = "year" }
+
+[[piece]]
+id = "fri-spl"
+label = "Forest Resources Inventory single-photon lidar DTM"
+method = "arcgis"
+class = "index"
+url = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation/FRI_DTM_SPL/ImageServer"
+where = "Category = 1"
+page = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "LowPS" }

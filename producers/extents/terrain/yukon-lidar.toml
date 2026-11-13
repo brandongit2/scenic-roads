@@ -1,0 +1,23 @@
+name = "Geomatics Yukon digital terrain models"
+credit = "Contains information licensed under the Open Government Licence – Yukon"
+licence = "OGL-Yukon"
+licence_url = "https://open.yukon.ca/open-government-licence-yukon"
+source = "https://mapservices.gov.yk.ca/imagery/rest/services/Elevation/DigitalTerrainModels/ImageServer"
+theme = "terrain"
+availability = "open"
+notes = "The catalogue of the territory's terrain-model image service (153 items): its airborne-lidar models of communities and highway corridors (the items of a cell under 2 m; the CDEM's 16 m and 30 m items left out, the national model at a coarser cell than the 30 m worldwide ones need), by area (`AreaName`), each item's cell (`Resolution_m`), year (`Year`) and kind (`DEM_TYPE`). The same models download as zips from map-data.service.yukon.ca/Elevation/DTMs/."
+
+[[piece]]
+id = "lidar"
+method = "arcgis"
+class = "index"
+url = "https://mapservices.gov.yk.ca/imagery/rest/services/Elevation/DigitalTerrainModels/ImageServer"
+where = "Category = 1 AND LowPS < 2"
+page = 1000
+by = ["AreaName"]
+name = "AreaName"
+tolerance_m = 20
+[piece.metrics]
+surface = { field = "DEM_TYPE", map = { DTM = "ground", DSM = "surface" } }
+spacing_m = { field = "Resolution_m" }
+year = { field = "Year", date = "year" }

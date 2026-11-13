@@ -1,0 +1,20 @@
+name = "El Salvador Maps lidar (CNR)"
+credit = "Centro Nacional de Registros, El Salvador"
+licence = "none stated"
+licence_url = "https://www.cnr.gob.sv/servicios/catalogo-de-servicios-del-instituto-geografico-y-del-catastro-nacional/"
+source = "https://www.cnr.gob.sv/presentan-el-salvador-maps-la-plataforma-que-pone-al-pais-a-la-vanguardia-en-la-informacion-geografica-y-territorial/"
+theme = "terrain"
+availability = "login"
+notes = "The registry's nationwide lidar of 2023 to 2025 (20,742.5 km², a bare-earth and a surface model, contours and 10 cm orthophotos), in a viewer behind a login; no bulk download was found, and its grid isn't stated (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM (El Salvador Maps)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["SLV"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+year = 2025

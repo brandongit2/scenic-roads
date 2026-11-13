@@ -1,0 +1,20 @@
+name = "Turks and Caicos Islands Digital Elevation Model"
+credit = "Department of Environment and Coastal Resources, Turks and Caicos Islands"
+licence = "Other (Not Open): research use only"
+licence_url = "https://dataportal.gov.tc/dataset/digital-elevation-model-tci"
+source = "https://dataportal.gov.tc/dataset/digital-elevation-model-tci"
+theme = "terrain"
+availability = "login"
+notes = "A 10 m DEM made from the 1 m contours of the 2010 habitat-mapping project (reference date 2011), \"around 10 m\" accurate and biased below 1 m above sea level; \"Restricted, send data request to point of contact\". Its kind isn't stated. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dem"
+label = "DEM 10 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["TCA"] }
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 10
+year = 2011

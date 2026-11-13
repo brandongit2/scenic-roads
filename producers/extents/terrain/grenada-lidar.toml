@@ -1,0 +1,21 @@
+name = "Grenada lidar"
+credit = "Government of Grenada (Ministry of Agriculture, Land Use Division; survey by Fugro)"
+licence = "no open licence (\"Permission to use from the Government of Grenada\")"
+licence_url = "https://nowgrenada.com/2018/06/topographical-data-unprecedented-insight-into-grenadas-terrestrial-and-coastal-landscapes/"
+source = "https://www.arcgis.com/sharing/rest/content/items/f94cb50a1faf4b139cba778d634301b5?f=json"
+theme = "terrain"
+availability = "closed"
+notes = "The government's helicopter topographic and bathymetric lidar, flown November 2017 and handed over in June 2018; its DTM is seen only through a consultant's image service (0.5 m pixels), by permission, with no file to download. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["GRD"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2017

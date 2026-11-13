@@ -5,18 +5,19 @@ licence_url = "https://open.canada.ca/en/open-government-licence-canada"
 source = "https://datacube.services.geo.ca/stac/api/collections/hrdem-lidar"
 theme = "terrain"
 availability = "open"
-notes = "CanElevation's lidar projects (each a bare-earth and a surface model; the bare-earth one is the piece) and its ArcticDEM-derived surface mosaic of the north. A project's year is the last in its name; its cell is its files' own (the STAC item's transform)."
+notes = "CanElevation's lidar projects (each a bare-earth and a surface model; the bare-earth one is the piece) and its ArcticDEM-derived surface mosaic of the north. A project's outline is its `extent` asset, the project's extent.geojson (the items' own footprints, hulls for many, summed 5.07 million km² on 13 Nov; the extent files sum 2.29 million, against the 2,230,605 km² of lidar NRCan states it holds); its year the last in its name, or for the 145 names holding none, the year of its item's `datetime` (on the 805 items with both, the same year on 743 and a year later on the rest); its cell its files' own (the STAC item's transform). The projects' coverage files (coverage.gpkg, their valid-data polygons) come to 8.4 GB, over a source's 5 GB, and hold no year: not read."
 
 [[piece]]
 id = "lidar"
 method = "stac"
 url = "https://datacube.services.geo.ca/stac/api/collections/hrdem-lidar"
+geometry = "extent"
 by = ["id"]
 name = "id"
 [piece.metrics]
 surface = "ground"
 spacing_m = { field = "proj:transform", index = 1 }
-year = { field = "id", date = "text" }
+year = [{ field = "id", date = "text" }, { field = "datetime", date = "iso" }]
 
 # The 500 km squares of the mosaic, each read at an overview for where it has data.
 [[piece]]

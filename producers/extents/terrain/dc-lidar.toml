@@ -1,0 +1,21 @@
+name = "District of Columbia lidar 2024"
+credit = "Office of the Chief Technology Officer, District of Columbia (Open Data DC)"
+licence = "CC0-1.0"
+licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
+source = "https://www.arcgis.com/sharing/rest/content/items/c35d84d84da74a05950892f4c14f8006?f=json"
+theme = "terrain"
+availability = "open"
+notes = "The District's 2024 QL1 lidar (8 points/m² by its specification; flown every two years) and its 1 m hydro-enforced bare-earth DTM, as Open Data DC items; the US inventory (usiei) lists the District's 2015, 2020 and 2022 surveys, not this one. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "DC 2024 DTM 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["USA"], name = ["District of Columbia"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2024

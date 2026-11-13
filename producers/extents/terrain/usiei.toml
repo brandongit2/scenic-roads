@@ -1,0 +1,85 @@
+name = "United States Interagency Elevation Inventory"
+credit = "NOAA Office for Coastal Management and U.S. Geological Survey (the inventory); each project its own publisher's"
+licence = "public domain (the inventory); each project's data under its publisher's terms"
+licence_url = "https://coast.noaa.gov/inventory/"
+source = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer"
+theme = "terrain"
+notes = "The inventory NOAA and the USGS keep of every known lidar survey of the United States and its territories, by any agency, state, county, city or other body (3,288 topographic and 402 topobathymetric surveys, 13 Nov 2026): NOAA's Digital Coast holdings, state and local programmes (Texas's TxGIO, Oregon's DOGAMI, Washington's DNR, New York City's, American Samoa's and Guam's NOAA topobathy …) and the 3DEP projects alike. A piece per reading of the metrics (the surveys of one spacing and year dissolved together; a survey a piece each came to 23 MB; simplified to 500 m, as 200 m came to 15 MB), of the surveys complete or partly delivered (`Status`; planned and in-progress ones left out): its stated point spacing (`pointspacing`, read where written in metres: \"0.35 m\", \"0.35m (spec)\"; feet and \"Not Provided\" kept as stated), its collection year (`collectionyear`). Its quality-level field is a bare number with no domain on the service, so it isn't read. Availability as its `restrictions` say: Public is open, Purchase paid, Government Only closed, and Other or Unknown closed too (no way to the data is stated). The 26 IfSAR surveys (Alaska) state no spacing and are 3DEP's 5 m DTM: not here. The outlines are the surveys' areas as inventoried, not checked against data."
+
+[[piece]]
+id = "topo-open"
+method = "arcgis"
+class = "service"
+availability = "open"
+url = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer/2"
+where = "Status IN ('Complete', 'Partial') AND (restrictions = 'Public')"
+page = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "pointspacing", text = "m" }
+year = { field = "collectionyear", date = "year" }
+
+[[piece]]
+id = "topo-paid"
+method = "arcgis"
+class = "service"
+availability = "paid"
+url = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer/2"
+where = "Status IN ('Complete', 'Partial') AND (restrictions = 'Purchase')"
+page = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "pointspacing", text = "m" }
+year = { field = "collectionyear", date = "year" }
+
+[[piece]]
+id = "topo-closed"
+method = "arcgis"
+class = "service"
+availability = "closed"
+url = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer/2"
+where = "Status IN ('Complete', 'Partial') AND (restrictions IN ('Government Only', 'Other', 'Unknown') OR restrictions IS NULL)"
+page = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "pointspacing", text = "m" }
+year = { field = "collectionyear", date = "year" }
+
+[[piece]]
+id = "topobathy-open"
+method = "arcgis"
+class = "service"
+availability = "open"
+url = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer/0"
+where = "Status IN ('Complete', 'Partial') AND (restrictions = 'Public')"
+page = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "pointspacing", text = "m" }
+year = { field = "collectionyear", date = "year" }
+
+[[piece]]
+id = "topobathy-paid"
+method = "arcgis"
+class = "service"
+availability = "paid"
+url = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer/0"
+where = "Status IN ('Complete', 'Partial') AND (restrictions = 'Purchase')"
+page = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "pointspacing", text = "m" }
+year = { field = "collectionyear", date = "year" }
+
+[[piece]]
+id = "topobathy-closed"
+method = "arcgis"
+class = "service"
+availability = "closed"
+url = "https://coast.noaa.gov/arcgis/rest/services/USInteragencyElevationInventory/USIEIv2/MapServer/0"
+where = "Status IN ('Complete', 'Partial') AND (restrictions IN ('Government Only', 'Other', 'Unknown') OR restrictions IS NULL)"
+page = 1000
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "pointspacing", text = "m" }
+year = { field = "collectionyear", date = "year" }

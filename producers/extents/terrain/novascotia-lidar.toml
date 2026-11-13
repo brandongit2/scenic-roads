@@ -1,0 +1,20 @@
+name = "Nova Scotia lidar (Elevation Explorer)"
+credit = "Reproduced and distributed with the permission of the Department of Service Nova Scotia"
+licence = "Unrestricted Data Use License Agreement for Government Geographic Data (Service Nova Scotia)"
+licence_url = "https://nsgiwa.novascotia.ca/documents/licenses/unrestricted/unrestrictedLicense.pdf"
+source = "https://nsgiwa.novascotia.ca/arcgis/rest/services/ELEV/ELEV_LIDAR_ELEVATION_UT83/MapServer"
+theme = "terrain"
+availability = "open"
+notes = "The province's lidar index: its 100 project areas (layer 0), each its outline (63,636 km² in all on 13 Nov, the province being 55,284: the areas reach over the sea), its required pulse spacing (`PULSSPACRQ`, the nominal spacing its contract asked for) and its year (`YEARDATE`). The 1 m DEM, DSM and point clouds download a tile at a time from the Elevation Explorer. The tile and 10K-sheet layers (2, 3) are joins whose rows share their table's object id, which the producer can't page by: not read."
+
+[[piece]]
+id = "projects"
+method = "arcgis"
+class = "service"
+url = "https://nsgiwa.novascotia.ca/arcgis/rest/services/ELEV/ELEV_LIDAR_ELEVATION_UT83/MapServer/0"
+by = ["PROJNAME"]
+name = "PROJNAME"
+tolerance_m = 20
+[piece.metrics]
+spacing_m = { field = "PULSSPACRQ" }
+year = { field = "YEARDATE", date = "year" }

@@ -1,0 +1,21 @@
+name = "Grønlands Højdemodel Overflade (GHM)"
+credit = "Klimadatastyrelsen"
+licence = "CC-BY-4.0 (Vilkår for brug af frie geografiske data)"
+licence_url = "https://dataforsyningen.dk/data/4780"
+source = "https://dataforsyningen.dk/data/4780"
+theme = "terrain"
+availability = "login"
+notes = "Greenland's 2 m surface model of 2023, a composite of ArcticDEM, GIMP and TREx (not lidar; \"Data ajourføres ikke\"), as 10 km GeoTIFFs over FTPS with a free Dataforsyningen user. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dsm"
+label = "GHM 2 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["GRL"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 2
+year = 2023

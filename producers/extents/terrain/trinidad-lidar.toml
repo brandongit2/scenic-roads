@@ -1,0 +1,21 @@
+name = "Trinidad lidar DTM"
+credit = "Surveys and Mapping Division, Ministry of Agriculture, Land and Fisheries, Trinidad and Tobago (served by UWI GIRI)"
+licence = "none stated (the hillshade: not for commercial use)"
+licence_url = "https://www.arcgis.com/sharing/rest/content/items/8cdcd8fa4ab94bcca080ddddb4b64a06?f=json"
+source = "https://www.arcgis.com/sharing/rest/content/items/8cdcd8fa4ab94bcca080ddddb4b64a06?f=json"
+theme = "terrain"
+availability = "closed"
+notes = "The 2014 lidar of Trinidad, its 1 m bare-earth model seen only through a university's image service, with no file to download; its area Trinidad's regions (Tobago's lidar by the CCCCC isn't public). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["TTO"], name = ["Arima", "Chaguanas", "Couva-Tabaquite-Talparo", "Diego Martin", "Penal-Debe", "Point Fortin", "Port of Spain", "Princes Town", "Rio Claro-Mayaro", "San Fernando", "San Juan-Laventille", "Sangre Grande", "Siparia", "Tunapuna/Piarco"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2014

@@ -1,0 +1,47 @@
+name = "Dataroom Caribisch Nederland lidar"
+credit = "Beeldmateriaal Nederland / AHN"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://www.beeldmateriaal.nl/dataroom-caribisch-nederland"
+theme = "terrain"
+availability = "open"
+notes = "The islands' airborne lidar of about 2023-24 (contract: at least 10 points/m², σz at most 5 cm): an island-wide 0.5 m DTM GeoTIFF each, downloading without a login (Bonaire's 3.08 GB). The files have overviews, but their CRS is a local one with no definition (LOCAL_CS \"unnamed\"), so their own extents can't be placed: the islands are the claim. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "bonaire"
+label = "Bonaire DTM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["NLD"], name = ["Bonaire"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "saba"
+label = "Saba DTM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["NLD"], name = ["Saba"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "st-eustatius"
+label = "Sint Eustatius DTM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["NLD"], name = ["St. Eustatius"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023

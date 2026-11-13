@@ -1,0 +1,21 @@
+name = "Gran Santo Domingo lidar (SGN)"
+credit = "Servicio Geológico Nacional, República Dominicana"
+licence = "distribution not authorised (\"no ... expresamente autorizada\")"
+licence_url = "https://sgn.gob.do/images/docs/proyectos/realizados/Memoria_Geologia_del_Gran_Santo_Domingo_GSD.pdf"
+source = "https://sgn.gob.do/images/docs/proyectos/realizados/Memoria_Geologia_del_Gran_Santo_Domingo_GSD.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "The 2012 lidar terrain model of Greater Santo Domingo (about 380 km²: 0.5 m in the city, 1 m elsewhere; the coarser stated), by request and not for redistribution; its area the Distrito Nacional and the province of Santo Domingo. The national lidar tendered in 2026 isn't delivered. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM Gran Santo Domingo"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["DOM"], name = ["Distrito Nacional", "Santo Domingo"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2012

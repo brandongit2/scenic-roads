@@ -1,0 +1,40 @@
+name = "INEGI Modelos Digitales de Elevación and Continuo de Elevaciones Mexicano"
+credit = "Fuente: INEGI"
+licence = "INEGI Términos de libre uso de la información"
+licence_url = "https://www.inegi.org.mx/inegi/terminos.html"
+source = "https://www.inegi.org.mx/app/geo2/elevacionesmex/"
+theme = "terrain"
+availability = "open"
+notes = "The national institute's elevation models of Mexico. Its high-resolution terrain models (MDE de alta resolución, a 1:10,000 sheet each, from lidar or photogrammetry): the index of the 5 m sheets (MDT_5m_10k, 26,333 sheets) and of the 1.5 m ones (MDT_1_5m_10k, 1,843 sheets), each sheet's `modelo` T (terrain) and S (surface) both; the sheets state no year. The Continuo de Elevaciones Mexicano 4.0, 15 m over the whole country: its stated coverage, the national outline of the institute's own download page (its states, nacional_3857_200.geojson); its year and accuracy are on no page read (CEM 3.0's, 2012 and an RMSE of 4.9 m, aren't 4.0's). The sheets download one at a time through the institute's app, the CEM as one national zip, both without a login."
+
+[[piece]]
+id = "mdt-5m"
+label = "MDT 5 m (1:10,000 sheets)"
+method = "file"
+class = "index"
+url = "https://www.inegi.org.mx/app/geo2/elevacionesmex/DownloadICFile.do?file=MDT_5m_10k"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+
+[[piece]]
+id = "mdt-1-5m"
+label = "MDT 1.5 m (1:10,000 sheets)"
+method = "file"
+class = "index"
+url = "https://www.inegi.org.mx/app/geo2/elevacionesmex/DownloadICFile.do?file=MDT_1_5m_10k"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.5
+
+[[piece]]
+id = "cem-15m"
+label = "Continuo de Elevaciones Mexicano 4.0 (15 m)"
+method = "file"
+class = "claimed"
+url = "https://www.inegi.org.mx/app/geo2/elevacionesmex/js/capas/nacional_3857_200.geojson"
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 15

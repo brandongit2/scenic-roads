@@ -1,0 +1,20 @@
+name = "GeoNB Lidar DEM"
+credit = "Province of New Brunswick (GeoNB)"
+licence = "OGL-New Brunswick"
+licence_url = "https://www.snb.ca/e/2000/data-E.html"
+source = "https://geonb.snb.ca/image/rest/services/Elevation/DEM_Raw_MNE_Brut/ImageServer"
+theme = "terrain"
+availability = "open"
+notes = "The catalogue of the province's 1 m lidar DEM image service (158 items, a block of the 2015 to 2018 province-wide lidar or a later update each): each item's cell (`LowPS`) and, where its name holds one, its year. The items' footprints are their blocks' outlines, over the sea too: 106,396 km² in all (13 Nov), against the province's 72,908. The service has no download capability (its pixels are served, not its files); the province's tiles download from GeoNB's data catalogue."
+
+[[piece]]
+id = "dem"
+method = "arcgis"
+class = "index"
+url = "https://geonb.snb.ca/image/rest/services/Elevation/DEM_Raw_MNE_Brut/ImageServer"
+where = "Category = 1"
+page = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "LowPS" }
+year = { field = "Name", date = "text" }

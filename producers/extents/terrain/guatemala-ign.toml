@@ -1,0 +1,19 @@
+name = "IGN Guatemala elevation models"
+credit = "Instituto Geográfico Nacional de Guatemala"
+licence = "IGN price list (Acuerdo Ministerial 247-2011)"
+licence_url = "https://web.archive.org/web/2026/http://www.ign.gob.gt/ventas.html"
+source = "https://sites.google.com/ign.gob.gt/catalogo/productos-frecuentes/modelos-de-elevaci%C3%B3n"
+theme = "terrain"
+availability = "paid"
+notes = "The institute's \"Modelo de elevación\" (TIN and TIFF, product 103, Q120.00 each, bought at the institute), of 2006; its grid and coverage aren't stated, so the country is its claim and it has no spacing (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dem"
+label = "Modelo de elevación (IGN)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["GTM"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2006

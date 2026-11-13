@@ -1,0 +1,21 @@
+name = "Saint Lucia lidar"
+credit = "Department of Physical Planning and Urban Development, Government of Saint Lucia (survey by Woolpert-GDS for the World Bank DVRP)"
+licence = "upon request"
+licence_url = "https://geoservices.govt.lc/"
+source = "https://documents1.worldbank.org/curated/en/099022825083528028/txt/P179371-b7a5d2f7-f00b-4fdb-9cfb-f690894da1bd.txt"
+theme = "terrain"
+availability = "login"
+notes = "The island's lidar, completed 2022: a hydro-flattened 0.5 m DTM, a DSM, a canopy model and a topo-bathy DTM, held by the department \"upon request\". Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["LCA"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

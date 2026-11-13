@@ -2,81 +2,89 @@ name = "USGS 3D Elevation Program"
 credit = "U.S. Geological Survey"
 licence = "public domain"
 licence_url = "https://www.usgs.gov/3d-elevation-program/about-3dep-products-services"
-source = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer"
+source = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
 theme = "terrain"
 availability = "open"
-notes = "The program's own index (refreshed weekly). Not fetched yet: on 12 and 13 Nov its MapServer answered a layer's description and a count (`returnCountOnly`: 2,633 source DEM work units) but refused every feature query (\"Failed to execute query\": by `where`, by object id, by envelope, with and without geometry). The quality levels' words are the index's own (`ql`: QL 0, QL 1, QL 2, QL 3, QL 5 and Other, as WESM.csv, its published table of the same work units, has them, 13 Nov); a level's accuracy is the Lidar Base Specification's non-vegetated RMSEz (https://www.usgs.gov/3d-elevation-program/topographic-data-quality-levels-qls); QL 5 (IfSAR) and Other aren't in that table, so they state no accuracy. The seamless layers (1/9, 1/3, 1 and 2 arc-second) are each one outline, with no survey year."
-
-# The lidar work units whose source DEM is published, at the DEM's own cell.
-[[piece]]
-id = "lidar"
-method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/11"
-by = ["workunit"]
-name = "workunit"
-[piece.metrics]
-surface = "ground"
-spacing_m = { field = "dem_gsd_meters" }
-year = { field = "collect_end", date = "epoch-ms" }
-vertical_rmse_m = { field = "ql", map = { "QL 0" = 0.05, "QL 1" = 0.10, "QL 2" = 0.10, "QL 3" = 0.20 } }
+notes = "The catalogue of the program's bare-earth DEM service (an ImageServer's items, one per published file: \"all 3DEP DEM data published as of\" its stated date), each item's footprint, its cell (`LowPS`, in metres: 3.44 for 1/9, 10.3 for 1/3, 30.9 for 1 and 61.8 for 2 arc-second; the 1 m DEM's and Alaska's 5 m IfSAR DTM's as their products are named, their `LowPS` 1 and 5, but for 993 of the 1 m items not exactly 1) and its acquisition's end (`EndDate`). The 1 m DEM by project (the item's `Name`), the 1/9 arc-second DEM and Alaska's 5 m IfSAR DTM by the year their acquisitions ended, the seamless 1/3, 1 and 2 arc-second layers each one outline (their tiles are compiled from many surveys; no year). The 0.5 m source DEMs (OPR) aren't in the catalogue, and the index service that has them (3DEPElevationIndex/MapServer, layer 11, and WESM) refused every feature query on 12 and 13 Nov (\"Failed to execute query\"); its WESM GeoPackage is 3.8 GB, so they aren't here."
 
 [[piece]]
 id = "1m"
-label = "1 meter DEM"
 method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/1"
+class = "index"
+url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
+where = "Category = 1 AND LowPS > 0.9 AND LowPS < 1.1"
+page = 2000
+by = ["Name"]
+name = "Name"
+tolerance_m = 100
 [piece.metrics]
 surface = "ground"
 spacing_m = 1
+year = { field = "EndDate", date = "text" }
 
 [[piece]]
 id = "19"
 label = "1/9 arc-second DEM"
 method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/2"
+class = "index"
+url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
+where = "Category = 1 AND LowPS > 3 AND LowPS < 4"
+page = 2000
+tolerance_m = 100
 [piece.metrics]
 surface = "ground"
-spacing_m = 3
+spacing_m = { field = "LowPS" }
+year = { field = "EndDate", date = "text" }
 
 [[piece]]
 id = "ifsar-5m"
-label = "5 meter DEM (Alaska)"
+label = "5 meter IfSAR DTM (Alaska)"
 method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/3"
+class = "index"
+url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
+where = "Category = 1 AND LowPS > 4.9 AND LowPS < 5.1"
+page = 2000
+tolerance_m = 100
 [piece.metrics]
 surface = "ground"
 spacing_m = 5
+year = { field = "EndDate", date = "text" }
 
 [[piece]]
 id = "13"
 label = "1/3 arc-second DEM"
 method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/4"
+class = "index"
+url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
+where = "Category = 1 AND LowPS > 10 AND LowPS < 11"
+page = 2000
+tolerance_m = 200
 [piece.metrics]
 surface = "ground"
-spacing_m = 10
+spacing_m = { field = "LowPS" }
 
 [[piece]]
 id = "1"
 label = "1 arc-second DEM"
 method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/5"
+class = "index"
+url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
+where = "Category = 1 AND LowPS > 30 AND LowPS < 31"
+page = 2000
+tolerance_m = 500
 [piece.metrics]
 surface = "ground"
-spacing_m = 30
+spacing_m = { field = "LowPS" }
 
 [[piece]]
 id = "2"
 label = "2 arc-second DEM (Alaska)"
 method = "arcgis"
-class = "service"
-url = "https://index.nationalmap.gov/arcgis/rest/services/3DEPElevationIndex/MapServer/6"
+class = "index"
+url = "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer"
+where = "Category = 1 AND LowPS > 61 AND LowPS < 62"
+page = 2000
+tolerance_m = 500
 [piece.metrics]
 surface = "ground"
-spacing_m = 60
+spacing_m = { field = "LowPS" }

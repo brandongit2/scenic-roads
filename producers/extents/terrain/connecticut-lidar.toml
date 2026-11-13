@@ -1,0 +1,21 @@
+name = "Connecticut statewide lidar 2023 (CT ECO)"
+credit = "CT ECO (University of Connecticut CLEAR and Connecticut DEEP)"
+licence = "no restrictions"
+licence_url = "https://maps.cteco.uconn.edu/data/lidar/ct_lidar/"
+source = "https://maps.cteco.uconn.edu/data/lidar/ct_lidar/"
+theme = "terrain"
+availability = "open"
+notes = "The state's 2023 statewide QL1 lidar (at least 15 points/m²) and its 2 ft (0.6096 m) bare-earth DEM, as tiles and an image service; 3DEP's index shows it for about a third of the state, and the US inventory (usiei) doesn't list it. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dem"
+label = "CT 2023 DEM 2 ft"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["USA"], name = ["Connecticut"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.6096
+year = 2023

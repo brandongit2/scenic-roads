@@ -1,0 +1,21 @@
+name = "Antigua and Barbuda satellite-derived bare-earth DEM"
+credit = "TCarta, commissioned by the UK for the Government of Antigua and Barbuda"
+licence = "none open"
+licence_url = "https://www.gim-international.com/content/news/tcarta-delivers-surface-models-for-caribbean-disaster-recovery"
+source = "https://www.gim-international.com/content/news/tcarta-delivers-surface-models-for-caribbean-disaster-recovery"
+theme = "terrain"
+availability = "login"
+notes = "A 0.5 m bare-earth model from satellite imagery, delivered to the government in April 2018, by request to it. The CCCCC lidar scheduled for the islands has no deliverables yet. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Bare-earth DEM 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ATG"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2018

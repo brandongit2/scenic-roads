@@ -1,0 +1,19 @@
+name = "Saint Kitts and Nevis lidar land survey"
+credit = "Climate Action Unit and the Air and Sea Port Authority, Saint Kitts and Nevis"
+licence = "none open"
+licence_url = "https://www.gov.kn/"
+source = "https://skncgtoronto.gov.kn/?p=11390"
+theme = "terrain"
+availability = "closed"
+notes = "The government's lidar land survey flown 4 and 5 April 2024: nothing released, its grid not stated (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "lidar"
+label = "Lidar survey 2024"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["KNA"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2024

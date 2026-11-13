@@ -1,0 +1,19 @@
+name = "SINIT digital elevation model of Honduras"
+credit = "SINIT (source: UNAG)"
+licence = "none stated"
+licence_url = "https://metadatos.sinit.hn/"
+source = "https://metadatos.sinit.hn/DEM/DEM.zip"
+theme = "terrain"
+availability = "open"
+notes = "A 12.5 m national DEM (DEM_12.5m_ovr, one zip of 1,063,447,441 bytes, downloads without a login, last modified 2025-02-28), of unknown lineage: its kind (bare earth or surface) and year aren't stated, and its extent is the country, as a national model's claim (its own valid-data mask isn't read: the zip isn't a file that reads by range). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dem"
+label = "DEM 12.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HND"] }
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 12.5

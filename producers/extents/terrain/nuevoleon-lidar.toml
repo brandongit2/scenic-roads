@@ -1,0 +1,21 @@
+name = "Nuevo León state lidar 2012"
+credit = "Gobierno del Estado de Nuevo León"
+licence = "not stated"
+licence_url = "https://cig.nl.gob.mx/"
+source = "https://www.monterrey.gob.mx/pdf/gacetas/Gaceta_Municipal_de_Monterrey_Atlas_de_Riesgo.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "The state's 2012 lidar terrain model (a 5 m grid and 50 cm contours, per a risk-atlas gazette): not offered by the state's geographic centre, its atlas portal inactive. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "Lidar DTM 5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["MEX"], name = ["Nuevo León"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2012

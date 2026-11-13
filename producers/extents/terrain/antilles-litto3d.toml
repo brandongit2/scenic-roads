@@ -1,0 +1,47 @@
+name = "Litto3D of the French Antilles"
+credit = "Shom - IGN"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://www.data.gouv.fr/api/1/datasets/litto3d-martinique-2016/"
+theme = "terrain"
+availability = "open"
+notes = "Shom's and IGN's topographic and bathymetric lidar models of Martinique (2016, its topographic lidar flown February 2010), Saint-Barthélemy and Saint-Martin (March 2019): a 1 m DTM each, from Shom's INSPIRE download service. Guadeloupe's 0.5 m LiDAR HD is in ign-lidar-hd. Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "martinique"
+label = "Litto3D Martinique 2016"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["FRA"], name = ["Martinique"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2010
+
+[[piece]]
+id = "st-barthelemy"
+label = "Litto3D Saint-Barthélemy 2019"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BLM"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2019
+
+[[piece]]
+id = "st-martin"
+label = "Litto3D Saint-Martin 2019"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["MAF"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2019

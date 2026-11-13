@@ -1,0 +1,22 @@
+name = "Saskatchewan LiDAR bare earth"
+credit = "Government of Saskatchewan (Saskatchewan Geospatial Imagery Collaborative)"
+licence = "For public use (Saskatchewan's terms: use at your own risk)"
+licence_url = "https://gis.saskatchewan.ca/imagery/rest/services/All_LiDAR_BareEarth/ImageServer"
+source = "https://gis.saskatchewan.ca/imagery/rest/services/All_LiDAR_BareEarth/ImageServer"
+theme = "terrain"
+availability = "open"
+notes = "The catalogue of the province's lidar bare-earth image service (988 rasters, served anonymously with download), by project area (`Project_Area_Name`), each raster's cell as stated (`Resolution`) and its year (`Year_of_Data`); its overview items (named Ov_…) left out. The province's other elevation service, SGIC_Public_DEM (6,593 rasters), is 30 m or coarser but for a few dozen: not here."
+
+[[piece]]
+id = "bare-earth"
+method = "arcgis"
+class = "index"
+url = "https://gis.saskatchewan.ca/imagery/rest/services/All_LiDAR_BareEarth/ImageServer"
+where = "Category = 1 AND Name NOT LIKE 'Ov_%'"
+page = 1000
+by = ["Project_Area_Name"]
+name = "Project_Area_Name"
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "Resolution" }
+year = { field = "Year_of_Data", date = "year" }
