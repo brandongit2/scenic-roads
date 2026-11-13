@@ -23,6 +23,7 @@ use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use codecs::available::{self as fmt, Grid, Tile, PIXELS, SIDE};
+use det::Det;
 use inputs::inputs::extents::{self as ex, Ranked, Scale, Score, SCORE_LAYER};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -52,7 +53,7 @@ const TILE_FORMAT: &str = "values1";
 /// linear one, the word's value on a `values` one (0 to 1).
 pub fn code(scale: &Scale, v: f64) -> f64 {
     match scale {
-        Scale::Log { .. } => v.log10(),
+        Scale::Log { .. } => v.dlog10(),
         _ => v,
     }
 }
@@ -235,7 +236,7 @@ impl Theme {
         let mut r: Option<[f64; 2]> = None;
         for p in self.pieces.values().filter(|p| p.props.get("extent").and_then(Value::as_str) != Some("unknown")) {
             let Some(c) = self.code(layer, p) else { continue };
-            let v = if matches!(scale, Scale::Log { .. }) { 10f64.powf(c) } else { c };
+            let v = if matches!(scale, Scale::Log { .. }) { 10f64.dpowf(c) } else { c };
             r = Some(r.map_or([v, v], |[lo, hi]| [lo.min(v), hi.max(v)]));
         }
         r

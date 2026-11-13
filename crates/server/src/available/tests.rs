@@ -160,7 +160,7 @@ fn each_layer_carries_its_value() {
     let near = |x: Option<f64>, y: f64| assert!(x.is_some_and(|x| (x - y).abs() < 1e-9), "{x:?} against {y}");
     // The spacing as log10 of metres; the words' values; the year as it is.
     near(t.code("spacing_m", a), 0.0);
-    near(t.code("spacing_m", b), 0.25f64.log10());
+    near(t.code("spacing_m", b), 0.25f64.dlog10());
     near(t.code("surface", a), 1.0);
     near(t.code("surface", pole), 0.0);
     near(t.code("year", a), 2021.0);
@@ -173,8 +173,8 @@ fn each_layer_carries_its_value() {
     (bare.score, bare.values) = s.of(&bare.props);
     near(t.code(SCORE_LAYER, &bare), 0.0);
     let (good, poor) = (t.code(SCORE_LAYER, a).unwrap(), t.code(SCORE_LAYER, pole).unwrap());
-    assert!(good < 0.0 && good > -s.within.log10(), "{good}");
-    assert!(poor > 2f64.log10() && poor < (2.0 * s.within).log10(), "{poor}");
+    assert!(good < 0.0 && good > -s.within.dlog10(), "{good}");
+    assert!(poor > 2f64.dlog10() && poor < (2.0 * s.within).dlog10(), "{poor}");
     // The layers: the score's first, on the primary's scale.
     let d = t.described("terrain");
     let l = d["layers"].as_array().unwrap();
