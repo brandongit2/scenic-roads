@@ -8,11 +8,11 @@
 import crypto from "node:crypto";
 import {
   ITEM_FIELDS, ITEM_CREATE, EVENT_CREATE, ITEM_EDIT, EVENT_EDIT, RENAMED,
-  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, TIME_FORMAT, DEFAULT_ASSIGNED, validId, describe, renamedMeta,
+  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, DEFAULT_ASSIGNED, validId, describe, renamedMeta,
 } from "./schema.mjs";
-import { COLS } from "./store.mjs";
+import { COLS, DEFAULT_ORDER } from "./store.mjs";
 import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
-import { isOpen, placePriority } from "./priority.mjs";
+import { placePriority } from "./priority.mjs";
 
 const STATUS_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
@@ -68,17 +68,19 @@ export function makeBoard(store, changed) {
   }
 
   // ---- archived ----------------------------------------------------------------------------------
-  // The archived folders around an item whose folder is `parent`, nearest first: [{id, doc}].
-  function archivedAround(parent) {
-    const out = [];
-    for (let p = parent, n = 0; p && n < 10000; n++) {
+  // The folders around an item whose folder is `parent`, nearest first: [{id, doc}]. (A loop, which
+  // checkParent never lets be made, ends the walk.)
+  function around(parent) {
+    const out = [], seen = new Set();
+    for (let p = parent; p && !seen.has(p); p = out.at(-1).doc.parent) {
+      seen.add(p);
       const d = store.get("items", p);
       if (!d) break;
-      if (d.archived) out.push({ id: p, doc: d });
-      p = d.parent;
+      out.push({ id: p, doc: d });
     }
     return out;
   }
+  const archivedAround = (parent) => around(parent).filter((a) => a.doc.archived);
   // Everything inside `id`, at any depth: [{id, doc}].
   function inside(id) {
     const out = [];
@@ -97,21 +99,16 @@ export function makeBoard(store, changed) {
   // was): placed by priority.mjs, in the caller's transaction. The task's own number is set in `doc`;
   // each open task it runs into is written moved down one. The whole move leaves one `kind: "priority"`
   // event, on the task placed, saying how many moved and from which numbers. Returns {priority, moved: [{id, num, from, to}]}, or null for a whole number (stored as sent).
+  // (The open tasks above it are read from their index, store.openAbove: no item inside an archived
+  // folder is open, as none that isn't archived is ever inside one.)
   function placeIfFraction(id, doc, before, req) {
     const x = doc.priority;
     if (doc.kind !== "task" || typeof x !== "number" || Number.isInteger(x)) return null;
-    const items = new Map(store.list("items").map((d) => [d.id, d.data]));
-    const inArchived = (d) => {
-      for (let p = d.parent, n = 0; p && n < 10000; p = items.get(p)?.parent, n++) if (items.get(p)?.archived) return true;
-      return false;
-    };
-    const others = [];
-    for (const [oid, o] of items) if (oid !== id && o.kind === "task" && isOpen(o, inArchived(o))) others.push({ id: oid, priority: o.priority });
-    const { to, moves } = placePriority(x, others);
+    const { to, moves } = placePriority(x, store.openAbove(x).filter((o) => o.id !== id));
     doc.priority = to;
     const by = byWho(req), old = before?.priority;
     const moved = moves.map((m) => {
-      const o = items.get(m.id);
+      const o = store.get("items", m.id);
       store.put("items", m.id, { ...o, priority: m.to });
       return { id: m.id, num: o.num, from: m.from, to: m.to };
     });
@@ -138,10 +135,7 @@ export function makeBoard(store, changed) {
     if (typeof parent !== "string") return; // (the schema says so)
     const p = store.get("items", parent);
     if (!p) invalid([{ field: "parent", message: `no item ${JSON.stringify(parent)} to be inside of` }]);
-    for (let q = parent, n = 0; q && n < 10000; n++) {
-      if (q === id) invalid([{ field: "parent", message: "an item can't be inside itself or what is inside it" }]);
-      q = store.get("items", q)?.parent;
-    }
+    if (around(parent).some((a) => a.id === id)) invalid([{ field: "parent", message: "an item can't be inside itself or what is inside it" }]);
     if (p.kind !== "folder") invalid([{ field: "parent", message: `${parent} is a task; only folders hold items` }]);
     const a = into ? archivedAround(parent)[0] : null;
     if (a) invalid([{ field: "parent", message: `${a.id === parent ? `folder ${named(p)} is archived` : `folder ${named(p)} is inside archived folder ${named(a.doc)}`}: nothing goes into an archived folder` }]);
@@ -337,33 +331,99 @@ export function makeBoard(store, changed) {
     });
   }
 
+  // ---- list reads (README, "Read") ---------------------------------------------------------------
+  // A place in a list's order, as `next` says it and `after` takes it: the order it is a place in,
+  // and the last row's value and id (base64url JSON, opaque to a reader).
+  const cursor = (by, dir, at) => Buffer.from(JSON.stringify([by, dir, ...at])).toString("base64url");
+  function uncursor(s, by, dir) {
+    let c = null;
+    try { c = JSON.parse(Buffer.from(s, "base64url").toString("utf8")); } catch {}
+    if (!Array.isArray(c) || c.length !== 4 || typeof c[3] !== "string") return { why: "isn't a place in a list (pass the `next` a read ended with)" };
+    if (c[0] !== by || c[1] !== dir) return { why: `is a place in another order (orderBy=${c[0]}&dir=${c[1]}): send it with the query it came from` };
+    return { at: [c[2], c[3]] };
+  }
   // A list's query: `orderBy` a field of the collection, or "id" (an old name refused with its new
-  // one), `dir` asc or desc, `limit` a whole number from 1; anything else is refused, not ignored.
-  // Events also take `item` (one item's, "" the board's own) and, to read a history in pages,
-  // `before` (a time) with `beforeId`: the events after that one in the order t newest first, then id
-  // (the last one a page ended with); they need `orderBy=t&dir=desc`.
+  // one), `dir` asc or desc, `limit` a whole number from 1, `after` a `next` a read of the same order
+  // ended with; or `since`, alone: a `mark` an earlier read gave ("0": none). Events also take `item`
+  // (one item's, "" the board's own). Anything else is refused, not ignored; meta takes none.
   function listQuery(col, params) {
     const errs = [];
-    const allowed = ["orderBy", "dir", "limit", ...(col === "events" ? ["item", "before", "beforeId"] : [])];
+    const allowed = col === "meta" ? [] : ["orderBy", "dir", "limit", "after", "since", ...(col === "events" ? ["item"] : [])];
     for (const k of new Set(params.keys())) {
-      if (!allowed.includes(k)) errs.push({ field: k, message: `isn't a query this takes (these are: ${allowed.join(", ")})` });
+      if (!allowed.includes(k)) errs.push({ field: k, message: `isn't a query this takes (${allowed.length ? `these are: ${allowed.join(", ")}` : "it takes none"})` });
       else if (params.getAll(k).length > 1) errs.push({ field: k, message: "is given more than once" });
     }
-    const orderBy = params.get("orderBy"), dir = params.get("dir"), limit = params.get("limit");
-    if (orderBy && col !== "meta") {
+    const orderBy = params.get("orderBy"), dir = params.get("dir") ?? "asc", limit = params.get("limit"), after = params.get("after"), since = params.get("since"), item = params.get("item");
+    if (orderBy) {
       if (col === "items" && RENAMED.itemFields[orderBy]) errs.push({ field: "orderBy", message: `${JSON.stringify(orderBy)} is renamed ${JSON.stringify(RENAMED.itemFields[orderBy])}` });
       else if (orderBy !== "id" && !COLS[col].includes(orderBy)) errs.push({ field: "orderBy", message: `${JSON.stringify(orderBy)} isn't a field of ${col} (these are: id, ${COLS[col].join(", ")})` });
     }
-    if (dir !== null && dir !== "asc" && dir !== "desc") errs.push({ field: "dir", message: "must be asc or desc" });
-    if (limit !== null && !/^[1-9]\d{0,8}$/.test(limit)) errs.push({ field: "limit", message: "must be a whole number from 1" });
-    const item = params.get("item"), t = params.get("before"), beforeId = params.get("beforeId");
+    if (dir !== "asc" && dir !== "desc") errs.push({ field: "dir", message: "must be asc or desc" });
+    if (limit !== null && !/^[1-9]\d{0,14}$/.test(limit)) errs.push({ field: "limit", message: "must be a whole number from 1" });
     if (item !== null && item !== "" && !validId(item)) errs.push({ field: "item", message: "isn't an item's id (or \"\" for the board itself)" });
-    if (t !== null && normTime(t) !== t) errs.push({ field: "before", message: `must be a time, ${TIME_FORMAT}` });
-    if (beforeId !== null && !validId(beforeId)) errs.push({ field: "beforeId", message: "isn't an event's id" });
-    if ((t === null) !== (beforeId === null)) errs.push({ field: t === null ? "before" : "beforeId", message: "go together: the time and the id of the event a page ended with" });
-    if (t !== null && !(orderBy === "t" && dir === "desc")) errs.push({ field: "before", message: "needs orderBy=t&dir=desc: it is the place in that order a page ended" });
+    const by = orderBy || DEFAULT_ORDER[col];
+    const at = after !== null ? uncursor(after, by, dir) : null;
+    if (at?.why) errs.push({ field: "after", message: at.why });
+    if (since !== null) {
+      if (since !== "0" && !/^[0-9a-f]+-\d+$/.test(since)) errs.push({ field: "since", message: "must be the `mark` a read gave, or 0" });
+      const with_ = [...params.keys()].filter((k) => k !== "since");
+      if (with_.length) errs.push({ field: "since", message: `goes alone: it reads what changed, all of it (not with ${with_.join(", ")})` });
+    }
     refuseIf(errs);
-    return { orderBy, dir, limit: Number(limit), ...(item !== null ? { item } : {}), ...(t !== null ? { before: [t, beforeId] } : {}) };
+    return { orderBy: by, dir, limit: limit === null ? undefined : Number(limit), ...(item !== null ? { item } : {}), ...(at ? { after: at.at } : {}), ...(since !== null ? { since } : {}) };
+  }
+
+  // A list read's answer, written as it is read (from store.snapshot: the file at one moment, so
+  // `total` and `mark` are those of the documents sent), a chunk at a time, waiting while the reader
+  // is slow: the server holds a chunk, never the whole answer. {docs, total, mark} and, when it
+  // stops short of the end (a `limit`), `next`; `more` is added as is ({full: true} for a `since` too
+  // far back). A read that fails part way ends the connection (server.mjs): never a partial answer.
+  async function sendList(res, col, q, more = {}) {
+    const snap = store.snapshot();
+    let rows = null;
+    try {
+      const r = snap.list(col, { ...q, limit: q.limit && q.limit + 1 });
+      rows = r.rows;
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      let buf = '{"docs":[', n = 0, last = null, next = null;
+      for (const row of rows) {
+        if (q.limit && n === q.limit) { next = cursor(q.orderBy, q.dir, last); break; }
+        buf += (n++ ? "," : "") + JSON.stringify({ id: row.id, data: row.data });
+        last = row.at;
+        if (buf.length >= 1 << 16) {
+          const ok = res.write(buf);
+          buf = "";
+          if (!ok) await new Promise((go) => { res.once("drain", go); res.once("close", go); });
+          if (res.destroyed) return;
+        }
+      }
+      res.end(`${buf}],${JSON.stringify({ total: r.total, mark: snap.mark, ...(next ? { next } : {}), ...more }).slice(1)}`);
+    } finally {
+      rows?.return();
+      snap.close();
+    }
+  }
+  // What changed since `mark` (a `since` read): {docs: the ones changed, as they are now, deleted: the
+  // ids of the ones gone, total, mark}; a mark the change log can't answer, everything ({full: true}).
+  function sendSince(res, col, since) {
+    const ch = store.changedSince(col, since);
+    if (!ch) return sendList(res, col, { orderBy: DEFAULT_ORDER[col], dir: "asc" }, { full: true });
+    const docs = [], deleted = [];
+    for (const id of ch.keys()) { const d = store.get(col, id); if (d) docs.push({ id, data: d }); else deleted.push(id); }
+    return send(res, 200, { docs, deleted, total: store.count(col), mark: store.mark() });
+  }
+  // GET /api/history: every item's events in short (store.history), or with `since`, those of the items
+  // whose events changed since that mark: {items: {id: [n, last, mark] | null (none left)}, mark}, all
+  // of them ({full: true}) for a mark the change log can't answer.
+  function history(res, params) {
+    const keys = [...new Set(params.keys())];
+    const since = params.get("since");
+    if (keys.some((k) => k !== "since")) invalid(keys.filter((k) => k !== "since").map((k) => ({ field: k, message: "isn't a query this takes (it takes since)" })));
+    if (since === null) return send(res, 200, store.history());
+    if (params.getAll("since").length > 1 || (since !== "0" && !/^[0-9a-f]+-\d+$/.test(since))) invalid([{ field: "since", message: "must be the `mark` a read gave, or 0, once" }]);
+    const mark = store.mark(), ch = store.changedSince("events", since);
+    if (!ch) return send(res, 200, { items: store.history(), mark, full: true });
+    return send(res, 200, { items: store.history(new Set(ch.values())), mark });
   }
 
   async function api(req, res, url, parts) {
@@ -380,13 +440,16 @@ export function makeBoard(store, changed) {
       store.stmt(`INSERT OR IGNORE INTO blobs (id, type, data, sha256, created) VALUES (?, ?, ?, ?, ?)`).run(bid, type, data, sha, nowIso());
       return send(res, 200, { id: bid });
     }
-    if (what === "history" && req.method === "GET") return send(res, 200, store.history());
+    if (what === "history" && req.method === "GET") return history(res, url.searchParams);
     if (what !== "c" || !["items", "events", "meta"].includes(col)) return fail(res, 404, "not_found", "no such route");
     const m = req.method;
 
     if (!id) {
-      // (`total`: how many there are, so a reader that asked for fewer can say so.)
-      if (m === "GET") { const q = listQuery(col, url.searchParams); return send(res, 200, { docs: store.list(col, q), total: store.count(col, q.item) }); }
+      if (m === "GET") {
+        const q = listQuery(col, url.searchParams);
+        if (col === "meta") { const docs = store.list("meta"); return send(res, 200, { docs, total: docs.length }); }
+        return q.since !== undefined ? sendSince(res, col, q.since) : sendList(res, col, q);
+      }
       if (m === "POST" && col !== "meta") return send(res, 200, (col === "items" ? createItem : createEvent)(await jsonBody(req), req));
       return fail(res, 405, "invalid_argument", col === "meta" ? "meta documents are changed by PATCH meta/now" : "method not allowed: POST creates, PATCH/DELETE need an id");
     }

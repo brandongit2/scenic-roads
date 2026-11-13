@@ -22,10 +22,7 @@
   }
   const META = { fromCache: false, hasPendingWrites: false };
   const docSnap = (id, j) => ({ id, exists: !!j.exists, data: () => (j.exists ? j.data : undefined), metadata: META });
-  const querySnap = (j) => {
-    const docs = j.docs.map((d) => ({ id: d.id, exists: true, data: () => d.data, metadata: META }));
-    return { docs, size: docs.length, total: j.total, empty: !docs.length, metadata: META, forEach: (f) => docs.forEach(f) };
-  };
+  const querySnap = (docs) => ({ docs: docs.map((d) => ({ id: d.id, exists: true, data: () => d.data, metadata: META })), metadata: META });
 
   // One event stream, shared: it tells which collection changed, and each listener reads again (a read
   // that a write was answered during is dropped and made again: it may predate the write). A listener's
@@ -84,14 +81,33 @@
     };
     return ref;
   }
-  function query(col, opts) {
-    const qs = () => { const p = new URLSearchParams(); if (opts.orderBy) { p.set("orderBy", opts.orderBy); p.set("dir", opts.dir || "asc"); } if (opts.limit) p.set("limit", opts.limit); return `../api/c/${encodeURIComponent(col)}?${p}`; };
-    return {
-      orderBy: (orderBy, dir) => query(col, { ...opts, orderBy, dir }),
-      limit: (limit) => query(col, { ...opts, limit }),
-      get: async () => querySnap(await call("GET", qs())),
-      onSnapshot: (next, error) => listen(col, () => call("GET", qs()), querySnap, next, error),
+  // A subscription to a whole collection keeps it: read whole once, then on each change only what
+  // changed since the last read's `mark` (`?since=`, README "Read"), so a change costs what changed,
+  // not the collection. Read whole again when the server says so (`full`: it restarted, or the mark
+  // is older than its change log) or when what changed doesn't add up to its `total`. (`read` keeps
+  // nothing: a read that is dropped, above, changes nothing; `take` keeps what a shown one read.)
+  function kept(col) {
+    const url = `../api/c/${encodeURIComponent(col)}`;
+    let docs = null, mark = null;
+    const read = async () => {
+      if (docs) {
+        const j = await call("GET", `${url}?since=${encodeURIComponent(mark)}`);
+        if (j.full || !j.deleted) return j;
+        let n = docs.size;
+        for (const d of j.docs) if (!docs.has(d.id)) n++;
+        for (const id of j.deleted) if (docs.has(id)) n--;
+        if (n === j.total) return j;
+      }
+      return call("GET", url);
     };
+    const take = (j) => {
+      if (!j.deleted) docs = new Map(); // (a whole read)
+      for (const d of j.docs) docs.set(d.id, d.data);
+      for (const id of j.deleted || []) docs.delete(id);
+      mark = j.mark;
+      return querySnap([...docs].map(([id, data]) => ({ id, data })));
+    };
+    return { read, take };
   }
   // A subscription to a read of the page's own: `read(get)` is run (get(path): the answer of GET ../api/<path>)
   // when it starts and whenever `col` changes; `refresh()` runs it again at once (what it reads has changed).
@@ -104,7 +120,11 @@
     get,
     watch,
     // add(content): the server makes the doc (its id, and an item's num, order and added time) and says them.
-    collection: (col) => Object.assign(query(col, {}), { doc: (id) => docRef(col, id), add: (data) => call("POST", `../api/c/${encodeURIComponent(col)}`, data) }),
+    collection: (col) => ({
+      onSnapshot: (next, error) => { const k = kept(col); return listen(col, k.read, k.take, next, error); },
+      doc: (id) => docRef(col, id),
+      add: (data) => call("POST", `../api/c/${encodeURIComponent(col)}`, data),
+    }),
     doc: (path) => { const [col, id] = path.split("/"); return docRef(col, id); },
   };
   const assets = {

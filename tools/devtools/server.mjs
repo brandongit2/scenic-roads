@@ -92,8 +92,10 @@ export function makeServer({ board: boardStore, jobs: jobsStore }) {
       if (e instanceof Refusal) return fail(res, e.status, e.code, e.message, e.errors);
       if (e?.code === "too_large") return fail(res, 413, "too_large", `the body is over ${e.max / 1e6} MB`);
       console.error(e);
+      // (An answer that fails part way, a list read as it is sent, ends the connection: the reader
+      // sees an error, never a partial answer.)
       if (!res.headersSent) fail(res, 500, "internal", String(e?.message || e));
-      else res.end();
+      else res.destroy();
     }
   });
 }

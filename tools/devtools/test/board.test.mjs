@@ -319,7 +319,7 @@ test("routes: nothing else is open", async () => {
   await refused(() => call("GET", "/api/c/items?orderBy=colour"), { says: /orderBy: "colour" isn't a field of items/ });
   assert.equal((await call("GET", "/api/c/events?orderBy=t&dir=desc&limit=2")).status, 200);
   // (A query it doesn't take is refused, not ignored.)
-  await refused(() => call("GET", "/api/c/items?stage=done"), { says: /stage: isn't a query this takes \(these are: orderBy, dir, limit\)/ });
+  await refused(() => call("GET", "/api/c/items?stage=done"), { says: /stage: isn't a query this takes \(these are: orderBy, dir, limit, after, since\)/ });
   await refused(() => call("GET", "/api/c/items?orderBy=num&dir=up"), { says: /dir: must be asc or desc/ });
   await refused(() => call("GET", "/api/c/items?limit=-1"), { says: /limit: must be a whole number from 1/ });
   // (An old name's refusal says what a page opened before the rename should do.)
@@ -333,20 +333,22 @@ test("history is read by item and in pages, and in short for the lists; no cap h
   await post("events", { item: b, kind: "note", text: "b0" });
   const board = (await post("events", { item: "", kind: "note", text: "top" })).body;
   const one = async (qs) => (await call("GET", `/api/c/events?${qs}`)).body;
-  // One item's events, newest first (ties by id), and its own total.
+  // One item's events, newest first (ties by id, the same way), and its own total.
   const all = await one(`item=${a}&orderBy=t&dir=desc`);
   assert.equal(all.docs.length, 7);
   assert.equal(all.total, 7, "the total is the item's, not the board's");
+  assert.equal(all.next, undefined, "all of it: no next");
   assert.ok(all.docs.every((d) => d.data.item === a));
   assert.deepEqual(all.docs.map((d) => d.id).sort(), [...made].sort());
-  assert.deepEqual(all.docs.map((d) => [d.data.t, d.id]), all.docs.map((d) => [d.data.t, d.id]).sort((x, y) => (x[0] < y[0] ? 1 : x[0] > y[0] ? -1 : x[1] < y[1] ? -1 : 1)));
-  // Pages of 3 from where the last ended give exactly the same, none twice, none missed (ties in t too).
+  assert.deepEqual(all.docs.map((d) => [d.data.t, d.id]), all.docs.map((d) => [d.data.t, d.id]).sort((x, y) => (x[0] < y[0] ? 1 : x[0] > y[0] ? -1 : x[1] < y[1] ? 1 : -1)));
+  // Pages of 3 from where the last ended (`next`) give exactly the same, none twice, none missed (ties in t too).
   const pages = [];
   let cur = await one(`item=${a}&orderBy=t&dir=desc&limit=3`);
-  while (cur.docs.length) {
+  for (;;) {
     pages.push(...cur.docs);
-    const e = cur.docs.at(-1);
-    cur = await one(`item=${a}&orderBy=t&dir=desc&limit=3&before=${encodeURIComponent(e.data.t)}&beforeId=${e.id}`);
+    assert.equal(cur.total, 7);
+    if (!cur.next) break;
+    cur = await one(`item=${a}&orderBy=t&dir=desc&limit=3&after=${cur.next}`);
   }
   assert.deepEqual(pages.map((d) => d.id), all.docs.map((d) => d.id));
   // The board's own events are item "".
@@ -371,15 +373,30 @@ test("history is read by item and in pages, and in short for the lists; no cap h
   assert.deepEqual(h2[a], h1[a], "another item's is as it was");
   await call("DELETE", `/api/c/events/${made[0]}`);
   assert.equal((await call("GET", "/api/history")).body[a][0], 6);
+  // In short, since a mark: only the items whose events changed (one with none left: null).
+  const s0 = (await call("GET", "/api/history?since=0")).body;
+  assert.equal(s0.full, true, "0: everything");
+  assert.deepEqual(s0.items, (await call("GET", "/api/history")).body);
+  await post("events", { item: b, kind: "note", text: "b2" });
+  const s1 = (await call("GET", `/api/history?since=${s0.mark}`)).body;
+  assert.deepEqual(Object.keys(s1.items), [b]);
+  assert.equal(s1.items[b][0], 3);
+  assert.equal(s1.full, undefined);
+  assert.deepEqual((await call("GET", `/api/history?since=${s1.mark}`)).body.items, {}, "nothing since");
+  const c = (await post("items", { text: "History C" })).body.id;
+  const ce = (await post("events", { item: c, kind: "note", text: "c0" })).body.id;
+  const s2 = (await call("GET", `/api/history?since=${s1.mark}`)).body;
+  await call("DELETE", `/api/c/events/${ce}`);
+  assert.deepEqual((await call("GET", `/api/history?since=${s2.mark}`)).body.items, { [c]: null }, "its last event deleted: null");
+  assert.equal((await call("GET", "/api/history?since=0123abcd-5")).body.full, true, "another process's mark: everything");
   // Bad queries are refused.
-  await refused(() => call("GET", `/api/c/events?item=${a}&before=2026-01-01T00:00:00.000Z&beforeId=x`), { says: /before: needs orderBy=t&dir=desc/ });
-  await refused(() => call("GET", `/api/c/events?orderBy=t&dir=desc&before=2026-01-01T00:00:00.000Z`), { says: /beforeId: go together/ });
-  await refused(() => call("GET", `/api/c/events?orderBy=t&dir=desc&before=yesterday&beforeId=x`), { says: /before: must be a time/ });
+  await refused(() => call("GET", "/api/history?since=yesterday"), { says: /since: must be the `mark` a read gave/ });
+  await refused(() => call("GET", "/api/history?item=x"), { says: /item: isn't a query this takes \(it takes since\)/ });
+  await refused(() => call("GET", `/api/c/events?item=${a}&before=2026-01-01T00:00:00.000Z&beforeId=x`), { says: /before: isn't a query this takes/ });
   await refused(() => call("GET", `/api/c/items?item=${a}`), { says: /item: isn't a query this takes/ });
   await refused(() => call("GET", `/api/c/events?item=${a}&item=${b}`), { says: /item: is given more than once/ });
   await refused(() => call("GET", "/api/c/events?limit=1&limit=2"), { says: /limit: is given more than once/ });
   await refused(() => call("GET", "/api/c/events?item=a%20b"), { says: /item: isn't an item's id/ });
-  await refused(() => call("GET", "/api/c/events?orderBy=t&dir=desc&before=2026-01-01T00:00:00.000Z&beforeId=a%20b"), { says: /beforeId: isn't an event's id/ });
 });
 
 test("a task's default assignee is one constant, the server's and the page's, and the first suggestion", () => {
@@ -395,7 +412,8 @@ test("the page reads no whole list of events and caps none (history is read by i
   const page = fs.readFileSync(new URL("../public/task-board/index.html", import.meta.url), "utf8");
   assert.doesNotMatch(page, /collection\("events"\)/, "no read of the events collection as a whole");
   assert.doesNotMatch(page, /limit\(10000\)|oldest weren't loaded/);
-  assert.match(page, /get\("history"\)/);
+  assert.match(page, /get\(`history\?since=/, "the summary, what changed since the last read");
+  assert.doesNotMatch(page, /Math\.min\(10000/, "no cap of its own");
 });
 
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
@@ -451,7 +469,7 @@ async function shimSandbox() {
 test("the page's shim never shows a read that began before a write was answered (the flicker on archive)", async () => {
   const { db, ctl, ES, tick, docs } = await shimSandbox();
   const shown = [];
-  db.collection("items").onSnapshot((s) => shown.push(s.size));
+  db.collection("items").onSnapshot((s) => shown.push(s.docs.length));
   await tick();
   assert.equal(ctl.length, 0, "the first read waits for the stream to open");
   ES.all[0].onopen(); await tick();
@@ -470,7 +488,7 @@ test("the page's shim never shows a read that began before a write was answered 
 test("the page's shim: a subscription whose read fails ends (the page's retry adds no second reader); a refused stream is opened anew", async () => {
   const { db, ctl, ES, timers, tick, docs } = await shimSandbox();
   const shown = [], failed = [];
-  const subscribe = () => db.collection("items").onSnapshot((s) => shown.push(s.size), (e) => failed.push(e.message));
+  const subscribe = () => db.collection("items").onSnapshot((s) => shown.push(s.docs.length), (e) => failed.push(e.message));
   subscribe();
   ES.all[0].onopen(); await tick();
   ctl.shift().answer(docs(1)); await tick();
@@ -493,4 +511,32 @@ test("the page's shim: a subscription whose read fails ends (the page's retry ad
   assert.equal(ctl.length, 1, "read again once the new stream is open");
   ctl.shift().answer(docs(4)); await tick();
   assert.deepEqual(shown, [1, 2, 3, 4]);
+});
+
+test("the page's shim keeps the items: read whole once, then only what changed since the last read's mark", async () => {
+  const { db, ctl, ES, tick } = await shimSandbox();
+  const shown = [];
+  db.collection("items").onSnapshot((s) => shown.push(s.docs.map((d) => d.id).sort().join(",")));
+  ES.all[0].onopen(); await tick();
+  const first = ctl.shift();
+  assert.equal(first.url, "../api/c/items", "the first read is whole");
+  first.answer({ docs: [{ id: "a", data: {} }, { id: "b", data: {} }], total: 2, mark: "f00-1" }); await tick();
+  const change = async () => { ES.all[0].l.change({ data: '{"col":"items"}' }); await tick(); return ctl.shift(); };
+  let r = await change();
+  assert.equal(r.url, "../api/c/items?since=f00-1");
+  r.answer({ docs: [{ id: "c", data: { text: "new" } }], deleted: ["a"], total: 2, mark: "f00-3" }); await tick();
+  assert.deepEqual(shown, ["a,b", "b,c"]);
+  // What changed doesn't add up to the total (a change missed): read whole again, at once.
+  r = await change();
+  assert.equal(r.url, "../api/c/items?since=f00-3");
+  r.answer({ docs: [], deleted: [], total: 5, mark: "f00-4" }); await tick();
+  const whole = ctl.shift();
+  assert.equal(whole.url, "../api/c/items");
+  whole.answer({ docs: ["b", "c", "d"].map((id) => ({ id, data: {} })), total: 3, mark: "f00-4" }); await tick();
+  assert.equal(shown.at(-1), "b,c,d");
+  // The server says it can't tell (it restarted): what it sends is everything.
+  r = await change();
+  assert.equal(r.url, "../api/c/items?since=f00-4");
+  r.answer({ docs: [{ id: "z", data: {} }], total: 1, mark: "ba5-0", full: true }); await tick();
+  assert.deepEqual([shown.at(-1), ctl.length], ["z", 0]);
 });

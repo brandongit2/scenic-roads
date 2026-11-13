@@ -21,15 +21,15 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   fraction goes (below; the server's rule and the page's, one copy), `store.mjs` its file, `taskboard.db`:
   `items` (folders and tasks), `events` (history), `meta` (`now`, the now line: what Claude is on,
   shown in the page's header; `counter`, the next item number), `blobs` (photos); its form
-  (`PRAGMA user_version`) is 1 (#1229: `status`, `assigned`, `meta/now`), and a file of form 0 is
-  moved to it once as the app opens it, in one transaction (`store.mjs` migrateTo1, to be deleted
-  once the M6's board is moved; any other form is refused). That move also mends what the archive
-  rules below forbid: an archived folder holding an open task is unarchived, a done or abandoned
-  task, or a folder with no open task, left inside an archived folder is archived with it. `public/task-board/index.html` is the page;
+  (`PRAGMA user_version`) is 2 (#1344: the indexes every frequent read is answered from, `store.mjs`
+  INDEXES; 1 was #1229's names, `status`, `assigned`, `meta/now`), and a file of form 1 is moved to
+  it once as the app opens it, in one transaction (`store.mjs` migrateTo2, ONE-TIME: to be deleted
+  once the M6's board is moved; any other form is refused). `public/task-board/index.html` is the page;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
   "assets")`) over the app's: a subscription reads once the event stream is open and again on each
-  change of its collection, ends when a read fails (the page subscribes again), and the stream is
-  opened anew when it is refused (a proxy's 502 while the server restarts) and everything read again.
+  change of its collection (the items: whole once, then only what changed since, `?since=`, below),
+  ends when a read fails (the page subscribes again), and the stream is opened anew when it is
+  refused (a proxy's 502 while the server restarts) and everything read again.
 - **The dev job dashboard** (`/jobs/`, below): `jobs.mjs` its API (`/api/jobs/…`) and file,
   `jobs.db`; `public/jobs/` the page.
 - The pages' addresses are relative (`../api/…`), so the app works under a proxy's path.
@@ -172,9 +172,17 @@ curl -s -X PATCH $B/api/c/meta/now -H 'content-type: application/json' -d '{"tex
 
 **Delete**: `DELETE /api/c/items/<id>` also deletes what is inside it and every event about any of them (a reference never points at nothing); `DELETE /api/c/events/<id>` one event. The page's Undo puts it back with `POST /api/c/<collection>/<id>/restore` (the server keeps the last 100 deletions in memory; a restart forgets them). A deleted item's number is never given again.
 
-**Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=asc|desc&limit=<n>`: a field of the collection, or `id`; any other query, field or value is a 400), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
+**Read**: `GET /api/c/items/<id>` (`{exists, data}`); `GET /api/c/items` and `GET /api/c/events` (#1344), **every document asked for, with no cap**:
 
-**History is read by item, never all at once** (#1333). `GET /api/c/events` also takes `item=<id>` (one item's events, `item=` the board's own; `total` is then that item's count, whatever the page) and, to read a history in pages, `before=<t>&beforeId=<id>` (the `t` and id of the last event a page ended with: the events after it, in the order t newest first, then id; needs `orderBy=t&dir=desc`; a tie in `t` loses or repeats none): `?item=i57&orderBy=t&dir=desc&limit=100`. A query given twice is a 400. `GET /api/history` is every item's events in short, for lists that show a count and the latest change: `{"<item id>": [count, latest t, mark], …}` (`""` the board's own; the mark changes with any write or edit of the item's events, the count with a delete). The page reads that, kept live, and the newest 100 events of each item it shows open (in a row or the details) with a "Show older" for the rest: no cap hides any history. On a change it reads the summary, then again only the open histories whose summary changed, as many events as it holds of each, so an edit or a delete shows. A `limit` on any list read is cut at 10000 (`total` says how many there are): a script reading all the events reads them by item, or in pages with `before`/`beforeId` (`orderBy=t&dir=desc&limit=10000`, then from the last one), not with one large `limit`.
+- The answer is `{docs: [{id, data}], total, mark}` (and `next`, below). `total` is how many there are (one item's, with `item`); `mark` is where the board's change log stood when the read was made (`since`, below).
+- The order: `?orderBy=<field>&dir=asc|desc` (a field of the collection, or `id`), then the id, the same way (`dir` alone: the default order that way). Without `orderBy`, items by `num` and events by `t`, oldest first: a stable order, new ones last. A null comes first going up, last going down.
+- `limit=<n>` (any whole number from 1): at most that many; without it, all of them. **A read that stops short of the end says so**: its answer has `next`, a place in that order to pass back as `after=<next>` (with the same `orderBy` and `dir`; from another order it's a 400) for the documents after it. An answer without `next` holds everything from where it began. So `events?limit=20000` is every event while there are at most 20,000; past that, its `next` reads the rest.
+- An answer is read from the file at one moment (a read-only connection of its own, in a transaction): `total`, `mark` and the documents are of the same moment, whatever is written meanwhile. It is sent as it is read, a chunk at a time, waiting for a slow reader, so the server never holds a whole large answer. One that fails part way ends the connection: the reader gets an error, never an answer that parses.
+- `?since=<mark>`, alone: what changed since the read that gave that mark, `{docs: those changed, as they are now, deleted: [the ids of those gone], total, mark}`. The change log is the server's, in memory (`store.mjs` CHANGES_KEPT, the last 10,000 changes): a mark from before a restart, one older than that, or `since=0`, is answered with everything, `{docs, total, mark, full: true}`. The page's items are read so (shim.js): whole once, then on each change only what changed.
+- `meta` takes no query: `GET /api/c/meta` is `{docs, total}`, both its documents.
+- Any other query, field or value is a 400, as is a query given twice. `GET /api/schema` lists the fields and the fixed lists.
+
+**History is read by item, never all at once** (#1333). `GET /api/c/events` also takes `item=<id>` (one item's events, `item=` the board's own; `total` is then that item's count, whatever the page), in pages as any list: `?item=i57&orderBy=t&dir=desc&limit=100`, then `&after=<next>` (a tie in `t` loses or repeats none). `GET /api/history` is every item's events in short, for lists that show a count and the latest change: `{"<item id>": [count, latest t, mark], …}` (`""` the board's own; the mark changes with any write or edit of the item's events, the count with a delete). `GET /api/history?since=<mark>` (one an earlier `?since=` answer gave, or `0`) is the same for the items whose events changed since: `{items: {"<item id>": [count, latest t, mark] | null (none left)}, mark}`; everything, with `full: true`, when the change log can't say (as above). The page reads that, kept live, and the newest 100 events of each item it shows open (in a row or the details) with a "Show older" for the rest (from the last page's `next`): no cap hides any history. On a change it reads what changed in the summary, then again only the open histories whose summary changed, as many events as it holds of each, so an edit or a delete shows.
 
 ### The schema (`schema.mjs`)
 

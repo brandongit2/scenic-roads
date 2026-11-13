@@ -1,13 +1,14 @@
 // The task board's SQLite file: the tables, and documents <-> rows. No rules here (schema.mjs and
 // board.mjs have them); a document is written as given, and a field no column holds isn't written.
+import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { STATUSES } from "./schema.mjs";
 
 // The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it, so the
 // M6's update can put the file back if the version that changed it doesn't start). 1: #1229's names
-// (status, assigned, meta/now). A file of another form is refused at open, except form 0, the one
-// before it, which is moved to this form once (migrateTo1).
-export const FORM = 1;
+// (status, assigned, meta/now). 2: #1344's indexes (INDEXES). A file of another form is refused at
+// open, except form 1, the one before it, which is moved to this form once (migrateTo2).
+export const FORM = 2;
 
 // A task's status is also enforced by the table itself (a CHECK constraint). A changed list rebuilds
 // the table at open.
@@ -31,24 +32,31 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     photos TEXT                -- JSON array of blob ids
   )`;
 const eventsTable = (name) => `CREATE TABLE ${name} (id TEXT PRIMARY KEY, item TEXT, kind TEXT, t TEXT, text TEXT)`;
+// An open task in SQL (priority.mjs isOpen: neither done nor abandoned, not archived; no item that
+// isn't archived is ever inside an archived folder, board.mjs). Its priority is indexed by this, and
+// a query is answered from that index only when it says the same.
+const OPEN_TASK = `kind = 'task' AND status NOT IN ('done', 'abandoned') AND archived IS NOT 1`;
+// Every read the board makes often is answered from an index (#1344): a folder's items, a number's
+// owner and the highest number, the last order, the open tasks a priority runs into; the events in
+// time order, and one item's (its history, newest first, and its summary).
 const INDEXES = `
-  CREATE INDEX IF NOT EXISTS items_parent ON items(parent);
-  CREATE INDEX IF NOT EXISTS items_num ON items(num);
-  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;
-  CREATE INDEX IF NOT EXISTS events_item ON events(item);
-  CREATE INDEX IF NOT EXISTS events_t ON events(t);`;
+  CREATE INDEX items_parent ON items(parent);
+  CREATE UNIQUE INDEX items_num ON items(num);
+  CREATE INDEX items_order ON items("order");
+  CREATE INDEX items_open_priority ON items(priority) WHERE ${OPEN_TASK};
+  CREATE INDEX events_t ON events(t, id);
+  CREATE INDEX events_item ON events(item, t, id);`;
 
 export const COLS = {
   items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
   events: ["item", "kind", "t", "text"],
 };
-// (The events a list keeps: one item's, and those after a given event.)
-const eventsWhere = (item, before) => {
-  const w = [], args = [];
-  if (item !== undefined) { w.push("item = ?"); args.push(item); }
-  if (before) { w.push("(t < ? OR (t = ? AND id > ?))"); args.push(before[0], before[0], before[1]); }
-  return [w.length ? ` WHERE ${w.join(" AND ")}` : "", args];
-};
+// A list's order when it asks for none: the items by number, the events by time (oldest first). A
+// field that isn't unique is followed by the id, in the same direction.
+export const DEFAULT_ORDER = { items: "num", events: "t" };
+const UNIQUE = new Set(["id", "num"]); // (no tie to break: an item's number is its own)
+// How many changes the change log keeps (`since`, below): a reader further behind reads everything.
+export const CHANGES_KEPT = 10000;
 const BOOL = new Set(["discuss", "archived"]);
 const JSONCOL = new Set(["photos"]);
 const q = (c) => `"${c}"`;
@@ -58,61 +66,48 @@ function inTx(db, fn) {
   try { const r = fn(); db.exec("COMMIT"); return r; } catch (e) { db.exec("ROLLBACK"); throw e; }
 }
 
-// ONE-TIME (#1229). DELETE this function, its call in openStore and its tests (test/store.test.mjs)
-// once the M6's board is at form 1: board task #1229's rollout says so.
-// Form 0 → 1, in one transaction (a failure leaves the file as it was). Items' stage and where become
-// status and assigned; the unused extra columns of items and events go; status events (kind "stage")
-// become kind "status", and the server's own words in them ("Stage Queued → Under way (by curl)")
-// "Status …", anything else written in them left as it is; meta/status {now} becomes meta/now {text}.
-// And no item that isn't archived may be inside an archived folder (board.mjs keeps it so from now
-// on): an archived folder holding an open task (one neither done nor abandoned, not archived), at any
-// depth, is unarchived; what is left not archived inside an archived folder after that (done and
-// abandoned tasks, folders with no open task) is archived, now, as archiving the folder now would. Each leaves an `archive` event saying why. Returns
-// {unarchived: [{num, for: [num]}], archived: [{num, in: num}]}.
-function migrateTo1(db) {
-  return inTx(db, () => {
-    db.exec(`${itemsTable("items_new")};
-      INSERT INTO items_new (id, kind, text, parent, "order", num, status, assigned, note, reply, priority, discuss, archived, archivedAt, added, started, finished, photos)
-        SELECT id, kind, text, parent, "order", num, stage, "where", note, reply, priority, discuss, archived, archivedAt, added, started, finished, photos FROM items;
-      DROP TABLE items; ALTER TABLE items_new RENAME TO items;
-      ${eventsTable("events_new")};
-      INSERT INTO events_new (id, item, kind, t, text)
-        SELECT id, item, CASE kind WHEN 'stage' THEN 'status' ELSE kind END, t,
-          CASE WHEN kind = 'stage' AND text GLOB 'Stage * (by *)' THEN 'Status ' || substr(text, 7) ELSE text END FROM events;
-      DROP TABLE events; ALTER TABLE events_new RENAME TO events;
-      INSERT INTO meta (key, value) SELECT 'now', json_object('text', coalesce(json_extract(value, '$.now'), ''), 'updated', json_extract(value, '$.updated')) FROM meta WHERE key = 'status';
-      DELETE FROM meta WHERE key = 'status';
-      ${INDEXES}`);
-    const rows = db.prepare(`SELECT id, kind, parent, num, status, archived, archivedAt FROM items`).all();
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    const up = (r, f) => { for (let p = byId.get(r.parent), n = 0; p && n < 10000; p = byId.get(p.parent), n++) if (f(p)) return p; return null; };
-    const t = new Date().toISOString();
-    const note = db.prepare(`INSERT INTO events (id, item, kind, t, text) VALUES (?, ?, 'archive', ?, ?)`);
-    const why = new Map(); // archived folder id → the numbers of the open tasks inside it
-    for (const r of rows) {
-      if (r.archived || r.kind !== "task" || r.status === "done" || r.status === "abandoned") continue;
-      up(r, (p) => { if (p.archived) (why.get(p.id) || why.set(p.id, []).get(p.id)).push(r.num); return false; });
-    }
-    const unarchived = [];
-    for (const [id, nums] of [...why].sort((a, b) => byId.get(a[0]).num - byId.get(b[0]).num)) {
-      const r = byId.get(id);
-      r.archived = 0;
-      db.prepare(`UPDATE items SET archived = 0, archivedAt = NULL WHERE id = ?`).run(id);
-      note.run(crypto.randomUUID(), id, t, `Unarchived when the board moved to its new names (#1229): it held ${nums.map((n) => `#${n}`).join(", ")}, open and not archived, and nothing that isn't archived may be inside an archived folder`);
-      unarchived.push({ num: r.num, for: nums });
-    }
-    const archived = [];
-    for (const r of [...rows].sort((a, b) => a.num - b.num)) {
-      if (r.archived) continue;
-      const a = up(r, (p) => p.archived);
-      if (!a) continue;
-      db.prepare(`UPDATE items SET archived = 1, archivedAt = ? WHERE id = ?`).run(t, r.id);
-      note.run(crypto.randomUUID(), r.id, t, `Archived when the board moved to its new names (#1229): it was inside archived folder #${a.num}, and nothing that isn't archived may be inside an archived folder`);
-      archived.push({ num: r.num, in: a.num });
-    }
-    db.exec(`PRAGMA user_version = ${FORM}`);
-    return { unarchived, archived };
-  });
+// ONE-TIME (#1344). DELETE this function, its call in openStore and its test (test/store.test.mjs, "a
+// form-1 file") once the M6's board is at form 2: board task #1344's rollout says so.
+// Form 1 → 2, in one transaction (a failure leaves the file as it was): form 1's indexes dropped
+// (items_parent; items_num, and items_num_unique, which the unique items_num is now; events_t and
+// events_item, which the id and the time now follow), INDEXES made.
+function migrateTo2(db) {
+  inTx(db, () => db.exec(`${["items_parent", "items_num", "items_num_unique", "events_t", "events_item"].map((i) => `DROP INDEX IF EXISTS ${i};`).join(" ")}
+    ${INDEXES} PRAGMA user_version = ${FORM};`));
+}
+
+const toDoc = (col, row) => {
+  const doc = {};
+  for (const c of COLS[col]) {
+    const v = row[c];
+    if (v === null || v === undefined) continue;
+    doc[c] = BOOL.has(c) ? !!v : JSONCOL.has(c) ? JSON.parse(v) : v;
+  }
+  return doc;
+};
+
+// A list read on connection `conn`: {total, rows}, `rows` an iterator of {id, data, at} in the order
+// asked (`orderBy` a column or "id", else DEFAULT_ORDER; `dir`; then the id, in the same direction),
+// `at` its place in that order ([its orderBy value, its id]: what `after` takes to go on from it).
+// `limit` rows at most; `total`, how many there are in all (of one item's events, with `item`).
+// `after` ([value, id]): only the rows after that place. (SQLite puts a null first going up, last
+// going down.)
+function listOn(conn, col, { orderBy, dir, limit, item, after } = {}) {
+  const by = orderBy || DEFAULT_ORDER[col], desc = dir === "desc";
+  const w = [], args = [];
+  if (item !== undefined) { w.push("item = ?"); args.push(item); }
+  const total = conn.prepare(`SELECT COUNT(*) AS n FROM ${col}${w.length ? ` WHERE ${w.join(" AND ")}` : ""}`).get(...args).n;
+  if (after) {
+    const [v, id] = after, c = q(by), gt = desc ? "<" : ">";
+    if (by === "id") { w.push(`id ${gt} ?`); args.push(id); }
+    else if (v === null) { w.push(desc ? `(${c} IS NULL AND id < ?)` : `((${c} IS NULL AND id > ?) OR ${c} IS NOT NULL)`); args.push(id); }
+    else { w.push(`(${c} ${gt} ? OR (${c} = ? AND id ${gt} ?)${desc ? ` OR ${c} IS NULL` : ""})`); args.push(v, v, id); }
+  }
+  const d = desc ? "DESC" : "ASC";
+  const sql = `SELECT * FROM ${col}${w.length ? ` WHERE ${w.join(" AND ")}` : ""} ORDER BY ${q(by)} ${d}${UNIQUE.has(by) ? "" : `, id ${d}`}${limit ? ` LIMIT ${limit}` : ""}`;
+  const it = conn.prepare(sql).iterate(...args);
+  const rows = (function* () { for (const r of it) yield { id: r.id, data: toDoc(col, r), at: [r[by], r.id] }; })();
+  return { total, rows };
 }
 
 // `log`: where the open says what it changed in the file (a migration), e.g. console.log.
@@ -129,9 +124,9 @@ export function openStore(file, { log = () => {} } = {}) {
     const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
     if (!cur) {
       inTx(db, () => db.exec(`${itemsTable("items")}; ${eventsTable("events")}; ${INDEXES} PRAGMA user_version = ${FORM};`));
-    } else if (form === 0) {
-      const { unarchived: un, archived: ar } = migrateTo1(db);
-      log(`${file}: moved to form ${FORM} (status, assigned, meta/now)${un.length ? `; unarchived ${un.map((u) => `#${u.num} (it held ${u.for.map((n) => `#${n}`).join(", ")})`).join(", ")}` : ""}${ar.length ? `; archived ${ar.map((a) => `#${a.num} (inside #${a.in})`).join(", ")}` : ""}`);
+    } else if (form === 1) {
+      migrateTo2(db);
+      log(`${file}: moved to form ${FORM} (#1344's indexes)`);
     } else if (form !== FORM) {
       throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
     } else if (!cur.sql.includes(STATUS_CHECK)) {
@@ -142,15 +137,19 @@ export function openStore(file, { log = () => {} } = {}) {
 
   const stmts = {};
   const stmt = (sql) => (stmts[sql] ||= db.prepare(sql));
-  const toDoc = (col, row) => {
-    const doc = {};
-    for (const c of COLS[col]) {
-      const v = row[c];
-      if (v === null || v === undefined) continue;
-      doc[c] = BOOL.has(c) ? !!v : JSONCOL.has(c) ? JSON.parse(v) : v;
-    }
-    return doc;
+
+  // ---- the change log: what each write changed, for the readers that hold a copy (`since`) -------
+  // In memory: a mark is this process's (`<epoch>-<n>`), so one from before a restart, or older than
+  // the last CHANGES_KEPT changes, is answered with everything. An event's change keeps its item (a
+  // deleted one's too), for the history's summary.
+  const epoch = crypto.randomBytes(4).toString("hex");
+  let seq = 0;
+  let changes = []; // [seq, col, id, item]
+  const noted = (col, id, item) => {
+    changes.push([++seq, col, id, item]);
+    if (changes.length > 2 * CHANGES_KEPT) changes = changes.slice(-CHANGES_KEPT);
   };
+
   const SELECT = { items: `SELECT * FROM items`, events: `SELECT * FROM events` };
   const s = {
     db,
@@ -166,30 +165,58 @@ export function openStore(file, { log = () => {} } = {}) {
       const vals = COLS[col].map((c) => { const v = doc[c]; return v == null ? null : BOOL.has(c) ? (v ? 1 : 0) : JSONCOL.has(c) ? JSON.stringify(v) : v; });
       const names = ["id", ...COLS[col]];
       stmt(`INSERT OR REPLACE INTO ${col} (${names.map(q).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`).run(id, ...vals);
+      noted(col, id, doc.item);
     },
-    del(col, id) { return stmt(`DELETE FROM ${col} WHERE id = ?`).run(id).changes; },
-    // [{id, data}], in the order asked (an `orderBy` that is a column, or "id"; else by id). Events
-    // only: `item` keeps one item's events ("" the board's own); `before` ([t, id]) the ones after that
-    // event in the order t newest first, then id (the next page of a history, read from where the last
-    // one ended).
-    list(col, { orderBy, dir, limit, item, before } = {}) {
+    del(col, id) {
+      const item = col === "events" ? stmt(`SELECT item FROM events WHERE id = ?`).get(id)?.item : undefined;
+      const n = stmt(`DELETE FROM ${col} WHERE id = ?`).run(id).changes;
+      if (n) noted(col, id, item);
+      return n;
+    },
+    // A list read (listOn), whole, on this connection: [{id, data}].
+    list(col, opts = {}) {
       if (col === "meta") return db.prepare(`SELECT key, value FROM meta ORDER BY key`).all().map((r) => ({ id: r.key, data: JSON.parse(r.value) }));
-      const o = orderBy && (COLS[col].includes(orderBy) || orderBy === "id") ? ` ORDER BY ${q(orderBy)} ${dir === "desc" ? "DESC" : "ASC"}, id` : " ORDER BY id";
-      const lim = Number.isFinite(limit) && limit > 0 ? ` LIMIT ${Math.min(limit, 10000)}` : "";
-      const [where, args] = eventsWhere(item, before);
-      return db.prepare(`${SELECT[col]}${where}${o}${lim}`).all(...args).map((r) => ({ id: r.id, data: toDoc(col, r) }));
+      return [...listOn(db, col, opts).rows].map(({ id, data }) => ({ id, data }));
     },
-    // How many there are (of one item's events, with `item`).
-    count: (col, item) => (item === undefined ? stmt(`SELECT COUNT(*) AS n FROM ${col}`) : stmt(`SELECT COUNT(*) AS n FROM events WHERE item = ?`)).get(...(item === undefined ? [] : [item])).n,
+    // A read of its own, at one moment: a read-only connection in a transaction, so a list read as it
+    // is sent (board.mjs) is the file as it was when it began, whatever is written meanwhile, and
+    // `mark` the change log's then. {list(col, opts): listOn's, mark, close()}.
+    snapshot() {
+      const r = new DatabaseSync(file, { readOnly: true });
+      r.exec("BEGIN");
+      const mark = s.mark();
+      return { list: (col, opts) => listOn(r, col, opts), mark, close() { try { r.exec("COMMIT"); } finally { r.close(); } } };
+    },
+    // The change log's mark now, and what changed in `col` after an earlier one: Map id → its item (an
+    // event's), or null when the log can't say (another process's mark, or older than it keeps).
+    mark: () => `${epoch}-${seq}`,
+    changedSince(col, mark) {
+      const m = /^([0-9a-f]+)-(\d+)$/.exec(mark || "");
+      const n = m && m[1] === epoch ? Number(m[2]) : -1;
+      if (n < 0 || n > seq || (changes.length && n < changes[0][0] - 1) || (!changes.length && n !== seq)) return null;
+      const out = new Map();
+      let i = changes.length;
+      while (i > 0 && changes[i - 1][0] > n) i--;
+      for (; i < changes.length; i++) if (changes[i][1] === col) out.set(changes[i][2], changes[i][3]);
+      return out;
+    },
     // Each item's events in short, for the lists that show a count and the latest change and nothing
     // of the history itself: {item ("" the board's own): [how many, the latest one's t, a mark]}. The
     // mark (the highest rowid: a write, an edit too, is a new row) changes with any write of the item's
     // events, and the count with a delete, so a reader holding a history knows when to read it again.
-    history() {
+    // `items`: only those (one with no events left: null).
+    history(items) {
       const out = {};
+      if (items) {
+        for (const it of items) { const r = stmt(`SELECT COUNT(*) AS n, MAX(t) AS last, MAX(rowid) AS v FROM events WHERE item = ?`).get(it); out[it] = r.n ? [r.n, r.last, r.v] : null; }
+        return out;
+      }
       for (const r of stmt(`SELECT item, COUNT(*) AS n, MAX(t) AS last, MAX(rowid) AS v FROM events GROUP BY item`).all()) out[r.item] = [r.n, r.last, r.v];
       return out;
     },
+    // The open tasks (OPEN_TASK) whose priority is above `x`: [{id, priority}], from their index.
+    openAbove: (x) => stmt(`SELECT id, priority FROM items WHERE ${OPEN_TASK} AND priority > ?`).all(x),
+    count: (col) => stmt(`SELECT COUNT(*) AS n FROM ${col}`).get().n,
     childrenOf: (id) => stmt(`SELECT id FROM items WHERE parent = ?`).all(id).map((r) => r.id),
     eventsOf: (id) => stmt(`SELECT id FROM events WHERE item = ?`).all(id).map((r) => r.id),
     maxNum: () => stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0,
