@@ -205,7 +205,7 @@ def main():
             return best, f"wikidata (fuzzy {bs:.2f})"
         return None, None
 
-    located, report = [], []
+    located = []
     used_q = set()
     unmatched = []
     for rec in dfhd:
