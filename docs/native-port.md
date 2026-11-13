@@ -52,40 +52,57 @@ file lists, good to about a quarter either way.
 - **Before any of it:** task #1245 makes labels in Devanagari and the other Indic scripts, Khmer
   and Myanmar shape correctly. The plan assumes a correct text path going in.
 - **Native work runs on the M1 (§8.2).** Xcode cannot be installed on the M4; the M1 and the mini
-  have it. The native part of `check.sh`, agents' native builds and simulator runs go to the M1.
-- **The renderer's language (§5.9):** the owner leans strongly towards a Rust core on wgpu, on
-  condition that it does not shut the app out of Metal-only capabilities he wants later, HDR
-  output first. The trial N0 decides, and it must prove HDR on wgpu (§9.1).
-- **Still open (§9.2):** native text, but only as far as this: our own shaping and glyph path
-  (the one #1245 puts in the web app), translated, is acceptable to the owner; Core Text is
-  needed only if Swift and Metal is chosen and it is the better path there.
+  have it. The native part of `check.sh`, agents' native builds and simulator runs go to the M1;
+  the engine's macOS cargo tests run on the M4 with the other Rust tests.
+- **The renderer (§5.9), the owner's preference:** the engine and the renderer in Rust, calling
+  Apple's GPU API, Metal, directly through Rust bindings (`objc2-metal`), with shaders in the
+  Metal Shading Language and no wgpu; Swift only as a thin shell for the window, the SwiftUI
+  panels and gestures. The fallback is a Rust core on wgpu. The trial N0 builds the preferred
+  shape first and the fallback as far as needed to compare; each must prove HDR output on macOS
+  and iOS and an offscreen-rendered test an agent runs with cargo (§8.3, §9.1).
+- **Native text:** under either candidate, our own shaping and glyph path (the one #1245 puts in
+  the web app), translated. The owner accepts forgoing Core Text, the system's text engine; it
+  stays reachable from Rust or the shell but is not required (§9.1).
 
 ### 1.1 Apple terms used here
 
 - **Xcode:** Apple's IDE and toolchain; `xcodebuild` is its command line. The **Command Line
-  Tools** are a smaller install (compilers, SwiftPM) without the simulators or app packaging.
-- **SwiftPM** (Swift Package Manager): `swift build` and `swift test`, Swift's equivalent of cargo.
-  **Swift Testing** is its test framework (`@Test`, `#expect`).
+  Tools** are a smaller install (compilers, the macOS SDK) without the iOS SDKs, the simulators
+  or app packaging.
 - **Simulator:** an iPhone or iPad running as a Mac process, driven by `xcrun simctl` (install,
   launch, screenshot). It runs the app's Metal code on the Mac's GPU.
 - **SwiftUI:** the declarative UI framework (the native counterpart of a component framework);
   **UIKit** (iPhone, iPad) and **AppKit** (Mac) are the older frameworks under it, where the
   **gesture recognizers** (pinch, pan, rotate) and the Mac's trackpad events live.
 - **Metal:** the GPU API (the counterpart of WebGL/WebGPU); shaders are written in the **Metal
-  Shading Language** (MSL). **Shared storage:** on Apple Silicon the CPU and GPU see the same
-  memory, so a buffer can be written by the CPU and drawn without a copy. A **memoryless**
+  Shading Language** (MSL), a C++-based language that the system compiles from source at run
+  time, or Xcode's Metal toolchain ahead of time into a library file (`.metallib`). Metal's **API
+  validation** (turned on by the `MTL_DEBUG_LAYER` setting) checks each call in debug runs; a
+  misuse it does not catch is undefined behaviour. **Shared storage:** on Apple Silicon the CPU
+  and GPU see the same memory, so a buffer can be written by the CPU and drawn without a copy. A **memoryless**
   attachment is a render target that lives only in the GPU's tile memory during a pass (no RAM).
   **ASTC** is a compressed texture format the GPU samples directly. A **compute pass** runs
-  shader code that is not drawing (the replacement for WebGL's transform feedback).
+  shader code that is not drawing (the replacement for WebGL's transform feedback). **Tile
+  shaders** run compute work inside a render pass, on that tile memory. **MetalFX** is Apple's
+  upscaler: the frame is drawn at fewer pixels and shown sharp at full size.
+- **objc2:** a family of Rust crates that expose Apple's frameworks to Rust as bindings generated
+  from Apple's headers: `objc2-metal` for Metal, `objc2-quartz-core` for the layer a frame is
+  shown in (`CAMetalLayer`), `objc2-app-kit` and `objc2-ui-kit` for the Mac's and the iPhone's
+  windows and screens. A call through them is a Rust call into the framework; many are `unsafe`
+  (Rust's marker for code whose rules the compiler cannot check: the framework's rules are the
+  caller's to keep).
 - **Core Text:** the system's text engine: it shapes text in every script (joins, ligatures,
   reordering, bidirectional runs) and draws glyphs. **ImageIO** decodes images; **URLSession** is
   the HTTP client with its own cache.
 - **Instruments:** the profiler (memory, GPU, time). **TestFlight:** Apple's channel for
   installing test builds on one's own devices; it and installs lasting more than 7 days need a
   paid Apple Developer Program membership.
-- **wgpu:** a Rust implementation of the WebGPU API that runs on Metal on Apple platforms; its
-  shaders are **WGSL**. **wgpu-hal** is its lower layer, through which the Metal objects under a
-  wgpu device, texture or surface can be reached for what wgpu itself does not offer.
+- **wgpu:** a Rust implementation of the WebGPU API that runs on Metal on Apple platforms, and on
+  Vulkan, DirectX and in browsers elsewhere; it checks every call and tracks what each GPU
+  resource is used by, so a misuse is an error rather than undefined behaviour. Its shaders are
+  **WGSL**, translated to each platform's shading language. **wgpu-hal** is its lower layer,
+  through which the Metal objects under a wgpu device, texture or surface can be reached for what
+  wgpu itself does not offer.
 - **HDR (EDR) output:** Apple's extended dynamic range. A Metal layer (`CAMetalLayer`) flagged
   for extended range, with a 16-bit float pixel format and an extended-range colour space, shows
   values above 1.0 brighter than white, up to the display's current *headroom*.
@@ -177,9 +194,9 @@ module becomes when it serves only this map. The target module is §5.1's.
 | Style, properties, atlases | **Delete → layers in code** | No style document, no expression interpreter, no diffing, no string-keyed properties. Each layer is a module with a typed parameter struct the app's state sets; what an expression did per feature is a function in the layer's decoder (properties in, vertex attributes out), what it did per zoom is a function evaluated each frame into a uniform. Sprites, images, patterns go; the dash atlas stays with the line renderer. `basemap.ts`'s 1,200 lines of style become layer definitions of about the same size. |
 | The style-spec package | **Delete** | Colour parsing and interpolation (about 300 lines) are kept as plain functions. |
 | Buckets and tessellation | **Reshape → inside each layer** | Line, fill, extrusion tessellation and earcut stay, each writing a hand-declared vertex layout straight into the buffer that is drawn. The generated struct arrays and the property binders go. Circles go to the dots' renderer. |
-| Symbols, glyphs, placement | **Keep the core, reshape the edges → `labels`** | Placement, collision, fades, the cross-tile index and line labels stay. The engine takes label candidates in world coordinates from any layer (so the caps' labels and the landmark names are ordinary labels with a per-label opacity) rather than only from symbol buckets of Mercator tiles. Icons, variable anchors, vertical text and the RTL plugin loader go. Natively, our own shaping and glyph path translated, or Core Text's under Swift and Metal if §9.2 chooses it. |
+| Symbols, glyphs, placement | **Keep the core, reshape the edges → `labels`** | Placement, collision, fades, the cross-tile index and line labels stay. The engine takes label candidates in world coordinates from any layer (so the caps' labels and the landmark names are ordinary labels with a per-label opacity) rather than only from symbol buckets of Mercator tiles. Icons, variable anchors, vertical text and the RTL plugin loader go. Natively, our own shaping and glyph path translated (§9.1). |
 | Render passes, programs, shaders | **Reshape → `frame`** | A fixed list of passes (§5.2) that every layer takes part in through the same interface; each layer owns its shaders. The painter's per-type dispatch, the custom-layer bridge, and the unused programs go. |
-| WebGL wrapper | **Keep on the web, slimmer; not ported** | One small GPU layer used by every layer (today the app's layers bypass it). Natively it is Metal or wgpu, with no state cache. |
+| WebGL wrapper | **Keep on the web, slimmer; not ported** | One small GPU layer used by every layer (today the app's layers bypass it). Natively it is a small layer of our own over Metal, called from Rust (or over wgpu, the fallback, §5.9), with no state cache. |
 | Workers and transfer | **Reshape → one job pool** | One pool, one job shape (fetch, decode, write into the final buffer), used by every layer. The actor protocol and class registry go. Natively: threads sharing memory. |
 
 ### 3.1 The layers as peers
@@ -220,9 +237,9 @@ The subsuming changes two things a user of the web app could notice:
   (S9).
 
 Text does not change in the subsuming: labels are drawn from the server's glyph ranges as today,
-shaped by the text path as #1245 leaves it. The native app translates that path (the owner
-accepts it, and it is the path under Rust and wgpu); the system's fonts shaped by Core Text
-(slightly different glyph shapes and spacing) are open only under Swift and Metal (§9.2).
+shaped by the text path as #1245 leaves it. The native app translates that path, under either
+candidate of §5.9 (the owner accepts forgoing Core Text, §9.1), so labels look the same in both
+apps.
 
 Decided for the native app (§9.1): it supports only the latest major OS release on iPhone, iPad
 and Mac; region downloads happen on the device; settings profiles are shared with the web app.
@@ -320,8 +337,8 @@ from `terrain` or from the state.
   on the main thread, in slices).
 - **Network:** the platform's.
 - Shared between threads: immutable tile payloads, and buffers handed over exactly once. No
-  locks on the draw path. (In Swift, the compiler's data-race checks enforce this: what crosses
-  threads must be declared safe to share.)
+  locks on the draw path. (In Rust, the compiler enforces this: what crosses threads must be
+  `Send`, and what threads share must be `Sync`.)
 - The GPU runs up to two or three frames behind the CPU (frames in flight). A buffer or texture
   the store frees is released only when the last frame that used it has completed, and a decode
   never writes into a buffer a frame in flight still reads.
@@ -384,7 +401,6 @@ surface. Because anchors are world coordinates, a label past 85° is like any ot
 | Simpler | Why |
 |---|---|
 | Threads | Shared memory: decode writes the buffer that is drawn; no transfer protocol, no per-worker caches, no 25 heaps. |
-| Text (only under Swift and Metal, if §9.2 chooses Core Text) | Core Text shapes every script, with bidirectional text and fallback fonts, and rasterises glyphs; the glyph-range fetches, the PBF parser, TinySDF, the slice scheduler, bidi-js and the Arabic tables are not ported. The atlas is keyed by font and glyph id. |
 | Gestures | Pinch, rotate, pan, tap and long-press recognizers on touch; scroll and magnify events with phases on the Mac. The wheel-or-trackpad classifier and the two-finger state machine are not ported. |
 | GPU | Metal has no hidden state to cache or restore, no lost context, no link-status polling; shared-storage buffers, memoryless attachments, 16-bit and compressed formats; compute passes in place of transform feedback. |
 | Network and images | URLSession's cache, priorities and cancellation; ImageIO decodes PNG and WebP exactly off the main thread. Host sharding, retry scheduling and the Safari PNG path are not ported. |
@@ -396,38 +412,72 @@ surface. Because anchors are world coordinates, a label past 85° is like any ot
 | Globe and terrain maths | The projection blend, subdivision near the poles, precision tricks (positions as flat plus a globe difference), elevation queries, the pole ground: the same code in another language. |
 | Tile covers | Every rule exists for a reason found by measurement; all carry over. |
 | Drapes | Sizing by footprint, detail, pacing while moving, stand-ins, fingerprints. |
-| Label placement | Collision, cross-tile continuity, line labels on a curved, tilted ground. Core Text gives glyphs, not placement. |
+| Text | Our own shaping and glyph path, translated (§9.1): the glyph-range fetches, the PBF parser, TinySDF, bidirectional text, the Arabic shaping and #1245's shaping carry over. |
+| Label placement | Collision, cross-tile continuity, line labels on a curved, tilted ground. |
 | Tessellation | Lines with joins and caps, polygons, extrusions. |
-| The roads' renderer, the far field's march, the dots | The app's own, about 11,000 lines; shaders are rewritten in the new shading language, and the two transform-feedback passes (the roads' projection, the dots' heights) are redesigned as compute or vertex work. |
+| The roads' renderer, the far field's march, the dots | The app's own, about 11,000 lines; shaders are rewritten from GLSL in the Metal Shading Language (in WGSL under the fallback, §5.9), and the two transform-feedback passes (the roads' projection, the dots' heights) are redesigned as compute or vertex work. |
 | The UI | About as much code as today, in SwiftUI. |
 
-### 5.9 The renderer's language: the choice a trial decides
+### 5.9 The renderer: Rust calling Metal directly, and the fallback
 
-The owner leans strongly towards a Rust core on wgpu (§9.1), on condition that it does not lock
-the app out of Metal-only capabilities he wants later, HDR output first; N0 decides, and proves
-that condition.
+The owner's preference (12 Nov, §9.1), "shape 3": the engine **and** the renderer in Rust,
+calling Metal directly through the objc2 bindings (`objc2-metal`, the layer through
+`objc2-quartz-core`), with shaders in the Metal Shading Language and no wgpu. Swift is only a
+thin shell: the window or screen, the SwiftUI panels and the gestures. His reasons:
 
-Both fit §5.1 unchanged; the module boundaries that touch the platform (text, surface, input,
-fetch and image decode) are narrow in either.
+- wgpu's main value is portability across Metal, Vulkan, DirectX and the browser. An Apple-only
+  app whose web version goes away (N10) does not need it, while its costs remain: a model of
+  what every backend can do, in which Metal's features arrive late or not at all.
+- It keeps the agents' Rust workflow: cargo builds, and offscreen rendering in the tests.
+- It cannot lock the app out of Metal-only features: HDR output, which he wants later, MetalFX,
+  tile shaders, memoryless targets.
+- One language for the whole engine, renderer included: no wall inside it.
 
-| | Swift and Metal throughout | A Rust core on wgpu, a thin Swift shell |
+Its costs, which he accepts: no wgpu validation and safety (a misuse of Metal is caught only by
+Metal's API validation in debug runs, or not at all); calls that are more verbose and partly
+`unsafe`; bindings fewer projects use than wgpu; and a small GPU layer of our own (buffers,
+textures, pipelines, passes, and the frames-in-flight rule of §5.3, kept in one place).
+
+The fallback is a Rust core on wgpu, with raw Metal through `wgpu-hal` where wgpu lacks
+something. Swift and Metal throughout is not a candidate. N0 builds both as far as §8.3 says and
+applies its rule.
+
+What both candidates share:
+
+- §5.1's modules unchanged; the module boundaries that touch the platform (text, surface, input,
+  fetch and image decode) are narrow.
+- One language boundary, between the Swift shell and the Rust engine. It is not the MapLibre wall
+  (both sides are ours and the boundary is drawn by us), but state, picks, labels' text and
+  callbacks cross it, through generated bindings (UniFFI or cbindgen).
+- Tile formats: the server's own crates decode (`codecs`, `roadcore`, the shading and field
+  codecs): one definition of each format, encoder and decoder tested together.
+- Text: our own shaping and glyph path, translated (§9.1).
+- The agents' loop (§8.2): `cargo test` with offscreen rendering for the engine, on the M4 with
+  the other Rust tests; `check.sh`, the shared target folder and the guards work as they are, and
+  agents here write Rust daily. The app still needs `xcodebuild` (on the M1) and the Swift shell,
+  plus the Rust built for three targets (Mac, iPhone, the simulator) and packed as an
+  XCFramework (a bundle of a library for several platforms): two build systems in every app
+  build.
+
+| | Rust calling Metal directly (preferred) | A Rust core on wgpu (fallback) |
 |---|---|---|
-| **The wall** | One language from gesture to pixel: nothing to marshal, no second boundary to grow. | A language boundary between UI and engine. It is not the MapLibre wall (both sides are ours and the boundary is drawn by us), but state, picks, labels' text and callbacks cross it. |
-| **Platform features this design counts on** | Direct: shared-storage buffers read in place (b1), memoryless attachments, ASTC, Core Text, HDR output (an extended-range layer), the pressure signal, Instruments and the Metal debugger. | Through wgpu's model: buffers are mapped to be read, not permanently shared, so "one copy of geometry" needs a kept CPU copy for picks or backend-specific code; memoryless attachments, some formats and HDR output depend on what wgpu exposes, and anything it lacks is reached through its escape hatch to raw Metal (`wgpu-hal`'s Metal objects). Text is our own shaping and glyph path (the owner accepts forgoing Core Text, §9.1). |
-| **Tile formats** | Decoders written again in Swift (as the TypeScript ones are today), or the Rust codecs linked as a library. | The server's own crates decode (`codecs`, `roadcore`, the shading and field codecs): one definition of each format, encoder and decoder tested together. |
-| **Agents' loop** | `swift build` and `swift test` for the engine, `xcodebuild` for the app, all on the M1 (§8.2). A new part for `check.sh` sent to a second Mac, and changes to `affected-tests.sh` and the guards; the status app (`tools/status`) is the only Swift in the repo today, so agents here have written little Swift. | `cargo test` with offscreen wgpu rendering for the engine, on the M4 with the other Rust tests; `check.sh`, the shared target folder and the guards work as they are, and agents here write Rust daily. The app still needs `xcodebuild` (on the M1) and a Swift shell, plus the Rust built for three targets (Mac, iPhone, the simulator), packed as an XCFramework (a bundle of a library for several platforms), and generated bindings (UniFFI or cbindgen): two build systems in every app build. |
-| **Shaders** | Metal Shading Language. | WGSL (translated to Metal by wgpu). |
-| **HDR output** (wanted later, §9.1) | A `CAMetalLayer` with `wantsExtendedDynamicRangeContent`, a 16-bit float pixel format and an extended-range colour space; headroom from the screen (`NSScreen`, `UIScreen`). | The same layer under wgpu's surface: an `Rgba16Float` surface, the layer's extended-range flag and colour space set through the hal's Metal layer where wgpu does not set them, headroom read from the display. N0 proves it on macOS and iOS. |
-| **Risk** | Tooling and test infrastructure are new here; no reuse of the Rust side unless linked. | A dependency that sits between the engine and the GPU and changes its API often; two build systems in one app; features of Metal reached late, or through wgpu's backend-specific escape hatches. |
+| **GPU features** | Direct: shared-storage buffers read in place (b1), memoryless attachments, ASTC, tile shaders, MetalFX, HDR output, the pressure signal; Instruments and the Metal debugger see our own calls. | Through wgpu's model: buffers are mapped to be read, not permanently shared, so "one copy of geometry" needs a kept CPU copy for picks or backend-specific code; memoryless attachments, some formats and HDR output depend on what wgpu exposes, and anything it lacks is reached through `wgpu-hal`'s Metal objects. |
+| **Safety and validation** | Partly `unsafe` calls; a misuse (a buffer released while a frame in flight reads it, a wrong binding index) is undefined behaviour unless Metal's API validation catches it. Our GPU layer holds the rules; the tests run with validation on where it can run (N0 measures it). | wgpu checks every call and tracks resource use: a misuse is an error. |
+| **Code** | More verbose calls through bindings generated from Apple's headers, used by fewer projects than wgpu; a small GPU layer of our own to write and keep correct. | wgpu's API, widely used; a dependency between the engine and the GPU that changes its API often. |
+| **Shaders** | Metal Shading Language, compiled by the system at run time or ahead of time by Xcode's Metal toolchain. | WGSL, translated to the Metal Shading Language by wgpu. |
+| **HDR output** (wanted later, §9.1) | A `CAMetalLayer` with `wantsExtendedDynamicRangeContent`, a 16-bit float pixel format and an extended-range colour space, set by our code through `objc2-quartz-core`; headroom from the screen (`NSScreen`, `UIScreen`). | The same layer under wgpu's surface: an `Rgba16Float` surface, the layer's extended-range flag and colour space set through the hal's Metal layer where wgpu does not set them, headroom read from the display. |
+| **Risk** | Correctness of our GPU layer rests on our tests and Metal's validation; the bindings' gaps or changes are ours to work round. | Metal's features reached late, or through backend-specific escape hatches; the dependency's API changes. |
+
+N0 proves HDR output on macOS and iOS in each candidate it builds (§8.3).
 
 ## 6. Sizing
 
 Every column but "Today" is an estimate, made by going down the file lists, good to about a
 quarter either way; the rows are written to the nearest hundred only so that they add up. "After
 S2" is the web app once the unused parts are deleted; "Subsumed" is the web app when S13 is done
-(§8.1 gives the same sums step by step); "Native" is the port's size, in either language. Native
-line counts say little about effort: the hard part of each module (§5.8) is the same size in any
-language.
+(§8.1 gives the same sums step by step); "Native" is the port's size, under either candidate of
+§5.9. Native line counts say little about effort: the hard part of each module (§5.8) is the same
+size in any language.
 
 ### 6.1 What came from MapLibre
 
@@ -607,7 +657,7 @@ recast as views in S0. Three things replace it.
   order): the owner uses the published app every day, and each step that touches them says so in
   its report. Views nobody recorded: a bug the set missed adds a view. Safari: each step's agent
   opens the views its row names in Safari and saves full-size screenshots (driven by
-  `safaridriver` if §9.2's question 7 allows it).
+  `safaridriver` if §9.2's question 6 allows it).
 
 **2. One unit-test suite.** S1 makes vitest the web app's one runner and adds it to `check.sh`'s
 `web` part and to `publish.sh`'s other tests (`tools/app/other-tests.zsh`): MapLibre's 62,500
@@ -742,11 +792,12 @@ Nothing else marks provenance: no headers, no folder, no naming.
   before S10 builds on it (§8.4).
 - **After S13:** §7.9's checklist, run and reported. Native work starts only when it holds (N0
   perhaps earlier, §9.2).
-- **After N0:** the renderer's language (§5.9).
+- **After N0:** the renderer (§5.9): Rust calling Metal directly, or the wgpu fallback, by
+  §8.3's rule.
 - **After N2:** the native engine shows land and water on terrain, on a Mac and in the iPad
   simulator, inside its byte budget, matching the oracle. If the comparisons are not converging,
-  or the loop is too slow for agents, the choices are the other language or a pause; what is at
-  stake is N0 to N2, and the web app is complete either way.
+  or the loop is too slow for agents, the choices are the other candidate of §5.9 or a pause;
+  what is at stake is N0 to N2, and the web app is complete either way.
 
 ### 7.9 Done: the checklist
 
@@ -866,21 +917,22 @@ holds at the end is counted then.
 
 Native development happens on the M1: Xcode cannot be installed on the M4, and the M1 has it (so
 does the mini, which also runs the build pool and `publish.sh`). This is the loop every N step
-uses; N0 measures it. It is written for Swift + Metal and says where Rust + wgpu (the owner's
-lean, §9.1) differs: then the engine's part is `cargo build` and `cargo test` with a Rust
-`scenic-render`, and the app's part is the same.
+uses; N0 measures it. It is the same under both candidates of §5.9: the engine is Rust either
+way, and only what is inside its GPU layer differs.
 
-- **Layout.** `native/` holds a Swift package with §5.1's modules as package targets (the engine
-  and the app's logic), a command-line renderer `scenic-render`, and the tests. A thin Xcode
-  project beside it (`native/App`) holds only what must be an app: the entry point, the window or
-  screen, the SwiftUI panels' host, icons and settings files.
-- **Where it runs.** Everything native runs on the M1, in a copy of the agent's worktree: `swift
-  build` and `swift test` for the engine, `xcodebuild` for the app, the simulators. An agent
+- **Layout.** `native/` holds Rust crates for §5.1's modules (the engine and the app's logic), a
+  command-line renderer `scenic-render`, and the tests. A thin Xcode project beside it
+  (`native/App`) holds only what must be an app, in Swift: the entry point, the window or screen,
+  the SwiftUI panels and their host, the gestures, icons and settings files. It links the engine
+  as an XCFramework through generated bindings (§5.9).
+- **Where it runs.** The engine's macOS build and its cargo tests, offscreen rendering included,
+  run on the M4 with the other Rust tests: they need only the Command Line Tools (an offscreen
+  Metal render worked over SSH on the M4 with only those, 12 Nov). Everything that needs Xcode
+  runs on the M1, in a copy of the agent's worktree: the engine's iOS builds and its
+  XCFramework, which need Xcode's SDKs, `xcodebuild` for the app, the simulators. An agent
   working on the M4 sends its tree there as the Rust tests are sent to the test Mac today.
-  (`swift test` and an offscreen Metal render also worked over SSH on the M4 with only the
-  Command Line Tools, 12 Nov; the plan keeps native work in one place all the same.)
-- **Seeing a change without a window:** `swift run scenic-render '<link>' --out view.png` draws
-  any view, from the live map server or from an oracle archive (`--recorded`), and with
+- **Seeing a change without a window:** `cargo run -p scenic-render -- '<link>' --out view.png`
+  draws any view, from the live map server or from an oracle archive (`--recorded`), and with
   `--compare` writes the difference image and the oracle's numbers side by side. The agent reads
   the full-size PNG, as with the web app's screenshots. The web app is a second reference: any
   view, not only the recorded ones, can be opened in both.
@@ -894,28 +946,26 @@ lean, §9.1) differs: then the engine's part is `cargo build` and `cargo test` w
   agent works and sends its `tests` part to the test Mac, the M4, through
   `tools/app/remote-tests.sh` (a key, a tree, a command); its other parts run where it runs,
   which the standing rules make the M4. Planned, as a task of its own before N0:
-  - a `native` part of `check.sh`, run when `native/` changes: the package's build and tests and
-    the app's build for the Mac and the simulator;
+  - a `native` part of `check.sh`, run when `native/` changes: the engine's iOS build, its
+    XCFramework and bindings, and the app's build for the Mac and the simulator (the engine's
+    cargo tests are in the `tests` part, on the M4);
   - it is sent to a second role, the *native Mac* (the M1), by the same runner made to take the
-    role; it runs in place when `check.sh` is itself on the M1. The Rust and web tests stay on
-    the M4;
+    role; it runs in place when `check.sh` is itself on the M1. The Rust tests, the engine's
+    among them, and the web tests stay on the M4;
   - when the M1 cannot be reached the part prints `NOT RUN` and `check.sh` fails, as the remote
     tests do. It never runs on another Mac silently; the mini can be made the native Mac by the
     same visible setting;
   - native builds take turns on the M1 (one at a time, as the shared build folder's lock orders
     cargo): it is the smaller Mac and a burst of compilers has restarted it before;
   - `affected-tests.sh`, the test guard, the report guard and `tools/dev/agent-rules.md`'s "where
-    things run" learn the package and the role; the runner drops a worktree's copy on the M1 when
+    things run" learn `native/` and the role; the runner drops a worktree's copy on the M1 when
     the worktree goes;
-  - every build folder of a copy (SwiftPM's `.build`, Xcode's DerivedData set to a folder inside
-    the copy with `-derivedDataPath`, cargo's target for the Apple targets) lives inside it and
+  - every build folder of a copy (Xcode's DerivedData set to a folder inside the copy with
+    `-derivedDataPath`, cargo's target for the Apple targets) lives inside it and
     goes with it, so nothing accumulates on the M1;
   - the M1 and the mini keep Xcode at the latest release with the latest OS's simulator runtimes
     (§9.1: latest OS only), and the part's first line prints the Xcode and runtime versions it
     used.
-  Under Rust + wgpu the engine's cargo tests (macOS, offscreen) stay on the M4 with the other
-  Rust tests; the iOS builds of the Rust core and its XCFramework, which need Xcode's SDKs, the
-  app's build and the simulators go to the M1.
 - **What stays with the owner:** feel on real devices (N3, N5, N9), installed by Xcode over a
   cable or by TestFlight (§9.2). He never needs to open Xcode himself. SwiftUI's previews (Xcode's
   live canvas) are not part of the loop: an agent cannot use them.
@@ -929,12 +979,12 @@ checked on the M1 (§8.2).
 
 | Step | What | Checked by |
 |---|---|---|
-| **N0** | The trial that settles §5.9, time-boxed (§9.2). Rust + wgpu first (the owner's lean), Swift + Metal as far as §9.2 says; in each: `scenic-render` for one slice (the camera and view from a link, the globe-to-flat blend, the terrain mesh from recorded DEM tiles, one drape with the elevation tint and hill-shading, the roads' sprite draw) for three reference views (the Alps pitched, a city, the globe); a Mac window with trackpad pan and zoom; the same in the iPad simulator. | Measured and written up for the owner: (1) correctness: the oracle's matrices and covers reproduced to float precision, heights against its grids, the images against its land-and-water views within the tolerance; (2) the loop: clean build, the build and test after a one-line engine change and after a one-line shader change, the app builds; (3) memory: the slice's bytes at the globe against the web app's for the same layers, and whether picks read the drawn buffer (b1); (4) lines of code, and how many are glue between languages; (5) the agents' log of every cycle lost to tooling; (6) HDR on wgpu, on a Mac and in the iPhone simulator (and on the owner's device for the real headroom): an `Rgba16Float` surface with the layer's extended-range flag and colour space set, the headroom read from the display, a test frame with values above 1.0 shown brighter than white; and the escape hatch to raw Metal through `wgpu-hal` used once, for something wgpu lacks (the extended-range flag or a memoryless target). The rule, from the owner's lean: Rust + wgpu unless it fails (6), or is clearly less correct or slower to iterate than Swift + Metal, or has a blocker on b1 or memoryless targets that the hal cannot get round. |
+| **N0** | The trial that settles §5.9, time-boxed (§9.2). Its planned input: the research note on what committing to shape 3 entails (`.claude/notes/NATIVE-RUST-METAL.md`, being written). **First, Rust calling Metal directly** (the owner's preference), built in full: the engine's GPU layer over `objc2-metal` (devices, buffers in shared storage, textures, pipelines, passes, the frames-in-flight rule), shaders in the Metal Shading Language, the layer set up through `objc2-quartz-core`. **Then Rust + wgpu** (the fallback), built as far as needed to compare (§9.2): the same slice through wgpu, shaders in WGSL, `wgpu-hal` where wgpu lacks something. In each: `scenic-render` for one slice (the camera and view from a link, the globe-to-flat blend, the terrain mesh from recorded DEM tiles, one drape with the elevation tint and hill-shading, the roads' sprite draw) for three reference views (the Alps pitched, a city, the globe); HDR output on macOS and iOS; an offscreen-rendered test an agent runs with `cargo test` on the M4; a Mac window with trackpad pan and zoom (the Swift shell over the Rust engine); the same in the iPad simulator. | Measured and written up for the owner, for each variant built: (1) correctness: the oracle's matrices and covers reproduced to float precision, heights against its grids, the images against its land-and-water views within the tolerance; (2) the loop: clean build, the build and test after a one-line engine change and after a one-line shader change, the app builds; (3) memory: the slice's bytes at the globe against the web app's for the same layers, and whether picks read the drawn buffer (b1); (4) lines of code: the GPU layer of our own against the same work through wgpu, the `unsafe` blocks, and the glue between Swift and Rust; (5) the agents' log of every cycle lost to tooling, and every GPU misuse found and how (Metal's API validation, a test, by eye); (6) HDR, on a Mac and in the iPhone simulator (and on the owner's device for the real headroom): a 16-bit float layer (`Rgba16Float` under wgpu) with the extended-range flag and colour space set, the headroom read from the display, a test frame with values above 1.0 shown brighter than white; under wgpu, the flag and colour space set through `wgpu-hal` where wgpu does not set them; (7) the offscreen test: one reference view drawn with no window under `cargo test` on the M4 over SSH and compared with the oracle, and whether Metal's API validation (`MTL_DEBUG_LAYER`) runs under it. The rule, from the owner's preference: Rust calling Metal directly unless it fails (6) or (7), or is clearly less correct or slower to iterate than Rust + wgpu, or its GPU layer costs more to write and keep correct than the time box allows (misuses that (5) shows neither validation nor the tests catch). Then Rust + wgpu, with raw Metal through `wgpu-hal` where needed. |
 | **N1** | `geo`, `camera`, `tiles/cover`: the maths, with the limits and anchored moves. | The oracle's numbers (matrices, project and unproject, covers); the web suite's tests of these modules, translated. |
 | **N2** | `tiles` (pyramid, store, fetch, jobs: threads sharing memory in place of workers), `terrain`, `gpu` and `frame`; `layers/land` and `layers/water`. The budget set from the system and cut on its warning. | Heights against the oracle's grids; `scenic-render --compare` on the land-and-water views; the tour replayed within the byte budget; the same views in the Mac app and the iPad simulator. **The checkpoint (§7.8).** |
 | **N3** | `input` on the Mac and touch (system gesture recognizers in place of the web's classifiers); the app shell: the server's catalogue, the shared settings profiles read. | Anchored moves keep the ground point under the cursor (unit tests). Simulator: interface tests of pinch, rotate and pan. The owner: gestures on a Mac, an iPad and an iPhone. |
 | **N4** | `layers/lines` (roads, rail) with `pick`; then `layers/vector` and `layers/overlay`. | The roads views compared; pick tests on recorded tiles; frame times at the globe and in a city from the tour. |
-| **N5** | `labels` and `layers/names`; `layers/dots` with landmark names. The text path: our own shaping and glyphs translated (Core Text only under Swift and Metal, §9.2). | The oracle's placed labels compared as sets (the same labels shown, boxes within a tolerance; exactly, if the server's glyphs are kept); the views in several scripts. The owner: labels while moving. |
+| **N5** | `labels` and `layers/names`; `layers/dots` with landmark names. The text path: our own shaping and glyphs translated (§9.1). | The oracle's placed labels compared as sets (the same labels shown, boxes within a tolerance; exactly, if the server's glyphs are kept); the views in several scripts. The owner: labels while moving. |
 | **N6** | `layers/buildings`: near meshes, then the far field. | The city views at several zooms and tilts; the hand-over zoom; memory at the globe in the tour. |
 | **N7** | `layers/depth`, ferries, the viewshed; `layers/contours`, `layers/polar` and the 3D floor (kept, §9.1). | Their views compared; the polar tests' numbers. |
 | **N8** | The app: panels, colour scales, lists, search, the selected road's elevation profile, hover readouts, popups, credits (with the licence text), settings profiles shared with the web app (one schema on the server; pick, save, default), and region downloads kept on the device (its store and how the server hands packs to a device need a design of their own first, §9.2). Can run beside N2 to N7. | Unit tests of the state and controllers; a profile saved in one app read by the other. Simulator and Mac app: screenshots of each panel; interface tests of the main flows. The owner: by hand. |
@@ -965,6 +1015,11 @@ checked on the M1 (§8.2).
 - **Shader ports (N4, N6).** The far field's march and the roads' sprite coverage are long shaders
   tuned by measurement; transform feedback has no direct equivalent. N0 includes the roads' sprite
   draw for this reason.
+- **Our own GPU layer (N0, N2).** Calling Metal directly, nothing checks our calls as wgpu would:
+  a buffer released while a frame in flight reads it, or a wrong binding, is undefined behaviour
+  that may show only on some devices. The rules live in the one GPU layer (§5.3's frames in
+  flight), the tests run with Metal's API validation where N0 shows it runs, and N0's rule falls
+  back to wgpu if the layer costs more than its time box allows.
 - **Phone memory (N2).** The web app holds 1.6 to 12 GB today; an iPhone allows a small fraction.
   S9's budget makes the web app bounded; N2 proves the budget at a phone's size.
 - **Two apps at once.** From N2 to N10 a server or format change must suit both, and the web app
@@ -986,39 +1041,41 @@ checked on the M1 (§8.2).
    is set for the devices that run it.
 5. **Region downloads** happen on the device.
 6. **Settings profiles** are shared between the web app and the native one: one schema.
-7. **Native development runs on the M1** (§8.2).
+7. **Native development runs on the M1** (§8.2): everything that needs Xcode. The engine's
+   macOS cargo tests run on the M4 with the other Rust tests.
 8. **Contour lines, the polar caps and the 3D sea floor are kept**, though off in every profile
    today: S10, S11 and S12e reshape them and N7 translates them.
-9. **The renderer's language: a strong lean towards Rust + wgpu**, on condition that it does not
-   lock the app out of Metal-only capabilities wanted later, notably HDR (extended dynamic range)
-   output. N0 stays the decider and must prove that condition (§8.3): an `Rgba16Float` surface
-   with the layer's extended-range flag and colour space set and the headroom read from the
-   display, on macOS and iOS, and the escape hatch to raw Metal through wgpu's hal for anything
-   wgpu lacks.
-10. **Forgoing Core Text is acceptable** if Rust + wgpu is chosen: native text may be our own
-    shaping and glyph path, the one #1245 puts in the web app, translated.
+9. **The renderer: Rust calling Metal directly ("shape 3") is preferred.** The engine and the
+   renderer in Rust, calling Metal through the objc2 bindings, shaders in the Metal Shading
+   Language, no wgpu; Swift only as a thin shell for the window, the SwiftUI panels and gestures.
+   §5.9 records his reasons (wgpu's portability is not needed by an Apple-only app; the agents'
+   Rust workflow kept; no lock-out from Metal-only features such as HDR output, which he wants
+   later, MetalFX, tile shaders, memoryless targets; one language for the engine) and the costs
+   he accepts. The fallback is Rust + wgpu, with raw Metal through `wgpu-hal` where needed.
+   Swift and Metal throughout is not a candidate. N0 builds the preferred shape first and
+   applies §8.3's rule; each variant it builds must prove HDR output on macOS and iOS and an
+   offscreen-rendered test an agent runs with cargo.
+10. **Forgoing Core Text is acceptable:** under either candidate, native text is our own shaping
+    and glyph path, the one #1245 puts in the web app, translated. Core Text stays reachable from
+    Rust or the shell but is not required.
 
 ### 9.2 Open
 
 Each can be answered in a sentence.
 
-1. **Native text under Swift and Metal only:** if N0 chooses Swift and Metal, are labels the
-   system's fonts shaped by Core Text (slightly different glyphs and spacing), or our own path
-   translated as under Rust? Under Rust and wgpu there is nothing to decide (§9.1, 10). Needed by
-   N5.
-2. **Basemap lines:** stay draped (as now), or drawn by the roads' renderer, sharp at any tilt? A
+1. **Basemap lines:** stay draped (as now), or drawn by the roads' renderer, sharp at any tilt? A
    look change; it can be tried in S12c without committing.
-3. **Where the oracle lives:** on the NAS, as an inputs-like folder with its own check and a copy
+2. **Where the oracle lives:** on the NAS, as an inputs-like folder with its own check and a copy
    on the test Mac (proposed; the archives and images are too large for the repo)?
-4. **N0's time box:** how long for each variant (two weeks each is proposed)? Given the lean,
-   Rust + wgpu is built first; Swift + Metal is built only to compare if Rust's fails a condition
-   of §8.3's rule, or in full?
-5. **N0 beside the last S steps:** may it start once S9 has landed (it needs the oracle and the
+3. **N0's time box:** how long for each of the two Rust variants (two weeks each is proposed)?
+   And is the wgpu variant built in full, or only as far as needed to compare with the direct
+   one?
+4. **N0 beside the last S steps:** may it start once S9 has landed (it needs the oracle and the
    finished camera, terrain and tiles), or only after §7.9 as planned?
-6. **Apple Developer Program** (paid, yearly), needed for TestFlight and for installs on the
+5. **Apple Developer Program** (paid, yearly), needed for TestFlight and for installs on the
    owner's iPhone and iPad that last more than 7 days: join, or the Mac app, the simulators and
    week-long installs from Xcode only?
-7. **Safari on the test Mac:** may Safari's remote automation (Develop menu, "Allow Remote
+6. **Safari on the test Mac:** may Safari's remote automation (Develop menu, "Allow Remote
    Automation") be turned on on the M4, so agents capture the oracle's views in Safari with
    `safaridriver`? Otherwise each step's Safari check is the agent's screenshots taken by hand.
 
