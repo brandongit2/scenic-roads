@@ -701,8 +701,6 @@ export class FieldLayer implements CustomLayerInterface {
   }
   private lutTex: WebGLTexture | null = null;
   private lutFor: Uint8Array | null = null;
-  /** The land colour the buildings are mixed over in linear light (stored values), or the map's background layer's. */
-  land: [number, number, number] | null = null;
   private map!: MLMap;
   private gl!: WebGL2RenderingContext;
   private tiles = new Map<string, FTile>();
@@ -925,7 +923,7 @@ export class FieldLayer implements CustomLayerInterface {
       Array.from(vp), opts.fov, Array.from(opts.modelViewProjectionMatrix), Array.from(pd.mainMatrix as ArrayLike<number>), Array.from(pd.fallbackMatrix as ArrayLike<number>),
       pd.projectionTransition, Array.from(opts.depthRangeFor3D), opts.shaderData.variantName, map.getBearing(),
       fogUniforms(map), style.light.getCartesianPosition(), style.light.properties.get('anchor'), style.light.properties.get('intensity'), style.light.properties.get('color'),
-      this.land, bgl?.paint?.get('background-color'), this.colour, this.opacity, this.hk, this.lutGen,
+      bgl?.paint?.get('background-color'), this.colour, this.opacity, this.hk, this.lutGen,
       draw.map((e) => [e.t.key, e.clip, e.t.rev, e.t.mask, e.her ? 1 : 0]),
     ]);
   }
@@ -1693,7 +1691,7 @@ export class FieldLayer implements CustomLayerInterface {
       // (the land colour under the buildings: the background layer's)
       const bgl = (map as unknown as { style: { getLayer(id: string): { paint?: { get(k: string): { r: number; g: number; b: number; a: number } } } | undefined } }).style.getLayer('bg');
       const c = bgl?.paint?.get('background-color');
-      const bgc = this.land ?? (c ? [c.r / (c.a || 1), c.g / (c.a || 1), c.b / (c.a || 1)] : [0.1, 0.1, 0.12]);
+      const bgc = c ? [c.r / (c.a || 1), c.g / (c.a || 1), c.b / (c.a || 1)] : [0.1, 0.1, 0.12];
       gl.uniform3f(u.u_bg, bgc[0], bgc[1], bgc[2]);
     }
     gl.uniform1i(u.u_cmask, 11);

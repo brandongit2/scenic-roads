@@ -91,8 +91,7 @@ async function main() {
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
   // The profile in use: the link's (one it names that's gone, or a link naming none: the default
-  // profile; the link's settings are laid over it), else the last session's. The building
-  // comparison takes the seed: fixed settings, whatever the server's profiles.
+  // profile; the link's settings are laid over it), else the last session's.
   const listing = await profilesReady;
   const known = (id: string | null): id is string => !!id && listing.profiles.some((p) => p.id === id);
   const hasLink = location.hash.length > 1;
@@ -104,7 +103,6 @@ async function main() {
   // The opening view, before the metadata: only `bd=` in a link depends on it, not the view.
   const pre = hasLink ? fromHash(location.hash, false, linkBase) : saved;
   const v = pre.view;
-  // (The building comparison: the map fills the window, the panels under it.)
   const map = new maplibregl.Map({
     container: 'map',
     style: { version: 8, sources: {}, layers: [] },
