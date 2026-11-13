@@ -18,6 +18,7 @@ const STATUS_LABEL = { "": "Queued", working: "Under way", backgrounded: "Backgr
 const IMAGE = /^image\/(png|jpeg|gif|webp|avif|heic|heif)$/;
 const MAX_BLOB = 20 * 1024 * 1024;
 const UNDO_KEPT = 100; // deleted groups kept for a restore
+const STALL_MS = 30000; // how long a list read waits for a reader that takes none of it (sendList)
 
 const invalid = (errs) => refuse(400, "invalid_argument", errorText(errs), errs);
 const refuseIf = (errs) => { if (errs.length) invalid(errs); };
@@ -338,7 +339,10 @@ export function makeBoard(store, changed) {
   function uncursor(s, by, dir) {
     let c = null;
     try { c = JSON.parse(Buffer.from(s, "base64url").toString("utf8")); } catch {}
-    if (!Array.isArray(c) || c.length !== 4 || typeof c[3] !== "string") return { why: "isn't a place in a list (pass the `next` a read ended with)" };
+    // (A place's value is what a column holds: null, a number or a string; anything else, a forged
+    // one, is no place.)
+    const value = (v) => v === null || typeof v === "string" || (typeof v === "number" && Number.isFinite(v));
+    if (!Array.isArray(c) || c.length !== 4 || typeof c[3] !== "string" || !value(c[2])) return { why: "isn't a place in a list (pass the `next` a read ended with)" };
     if (c[0] !== by || c[1] !== dir) return { why: `is a place in another order (orderBy=${c[0]}&dir=${c[1]}): send it with the query it came from` };
     return { at: [c[2], c[3]] };
   }
@@ -393,7 +397,7 @@ export function makeBoard(store, changed) {
         if (buf.length >= 1 << 16) {
           const ok = res.write(buf);
           buf = "";
-          if (!ok) await new Promise((go) => { res.once("drain", go); res.once("close", go); });
+          if (!ok) await drained(res);
           if (res.destroyed) return;
         }
       }
@@ -403,6 +407,14 @@ export function makeBoard(store, changed) {
       snap.close();
     }
   }
+  // Until `res` can take more (or is closed). A reader that takes nothing for STALL_MS is cut off: the
+  // read holds its transaction open while it waits, and the WAL can't be checkpointed past it.
+  const drained = (res) => new Promise((go) => {
+    const done = () => { clearTimeout(t); res.off("drain", done); res.off("close", done); go(); };
+    const t = setTimeout(() => { res.destroy(); done(); }, STALL_MS);
+    res.on("drain", done);
+    res.on("close", done);
+  });
   // What changed since `mark` (a `since` read): {docs: the ones changed, as they are now, deleted: the
   // ids of the ones gone, total, mark}; a mark the change log can't answer, everything ({full: true}).
   function sendSince(res, col, since) {

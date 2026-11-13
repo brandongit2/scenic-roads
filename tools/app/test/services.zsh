@@ -81,6 +81,8 @@ mark() { curl -sk --max-time 2 --resolve svc.test:$hport:127.0.0.1 https://svc.t
 pid() { launchctl print gui/$UID/$prefix.$1 2>/dev/null | awk '$1 == "pid" && $2 == "=" { print $3; exit }' }
 items() { curl -sf --max-time 2 "$B/api/c/items?limit=1" | python3 -c 'import json, sys; print(json.load(sys.stdin)["total"])' }
 uv() { /usr/bin/sqlite3 $data/jobs.db 'PRAGMA user_version' }
+# (The form this checkout's dev tools make and keep jobs.db at: jobs.mjs's FORM.)
+jform=$($node --input-type=module -e "import('$repo/tools/devtools/jobs.mjs').then((m) => console.log(m.FORM))") || { no setup "jobs.mjs's FORM"; exit 1 }
 run() { out=$(zsh "$@" 2>&1); rc=$? }
 
 # ---- setup ------------------------------------------------------------------------------------------
@@ -125,7 +127,7 @@ elif grep -q backup $H/devtools/setup; then no "setup devtools" "the setup file 
 elif [[ $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist) != "[\"${node//\//\\/}\",\"${${H//\//\\/}}\\/devtools\\/current\\/tools\\/devtools\\/server.mjs\",\"--host\",\"::\",\"--port\",\"$port\",\"--data\",\"${data//\//\\/}\"]" ]]; then
   no "setup devtools" "the plist: $(plutil -extract ProgramArguments json -o - $box/LaunchAgents/$prefix.devtools.plist)"
 else ok "setup devtools: from the checkout's, its data kept where it is"; fi
-[[ $(uv) == 1 ]] || no "jobs.db" "user_version $(uv), not 1"
+[[ $(uv) == $jform ]] || no "jobs.db" "user_version $(uv), not $jform"
 
 print -rl -- '# an older names file' other.test > $box/names
 run $v1 setup caddy
@@ -190,7 +192,7 @@ else ok "a dev tools that doesn't answer: the one before back"; fi
 version four migrate; v4=$REPLY
 run $v4 update
 if (( rc != 1 )); then no "a failed migration" "exit $rc: $out"
-elif [[ $(uv) != 1 ]]; then no "a failed migration" "jobs.db's user_version $(uv), not put back: $out"
+elif [[ $(uv) != $jform ]]; then no "a failed migration" "jobs.db's user_version $(uv), not put back: $out"
 elif [[ $(page) != "<!-- ${v2:h:h:t} -->" || $(items) != 1 ]]; then no "a failed migration" "page $(page), items $(items)"
 elif [[ $out != *"jobs.db put back"* || $out == *"taskboard.db put back"* ]]; then no "a failed migration" "only jobs.db put back: $out"
 else ok "a failed migration: its database put back"; fi
@@ -249,7 +251,7 @@ if [[ $(uv) != 99 || ! -f $H/devtools/backup/pending ]]; then no "a run cut shor
 else
   run $v10 update
   if (( rc != 1 )); then no "a run cut short" "exit $rc: $out"
-  elif [[ $(uv) != 1 || $(readlink $H/devtools/current) != ${v7:h:h:t} || -f $H/devtools/backup/pending ]]; then
+  elif [[ $(uv) != $jform || $(readlink $H/devtools/current) != ${v7:h:h:t} || -f $H/devtools/backup/pending ]]; then
     no "a run cut short" "uv $(uv), current $(readlink $H/devtools/current): $out"
   else
     for (( i = 0; i < 50; i++ )); do [[ $(page) == "<!-- ${v7:h:h:t} -->" ]] && break; sleep 0.2; done

@@ -74,6 +74,21 @@ test("a list read has no cap: every document asked for, in a stable order, `next
   const up = (await get("events?limit=5000")).next;
   await b.refused(() => b.call("GET", `/api/c/events?orderBy=t&dir=desc&limit=5000&after=${up}`), /after: is a place in another order \(orderBy=t&dir=asc\)/);
   await b.refused(() => b.call("GET", "/api/c/events?after=nonsense"), /after: isn't a place in a list/);
+  // (A forged place, its value no column's, is refused too, never a 500.)
+  const forged = (v) => Buffer.from(JSON.stringify(["t", "asc", v, "e00001"])).toString("base64url");
+  for (const v of [{}, [1], true]) await b.refused(() => b.call("GET", `/api/c/events?after=${forged(v)}`), /after: isn't a place in a list/);
+  // A slow reader: the read waits for it each time, leaving no listener behind.
+  let warned = null;
+  const onWarn = (w) => { warned = w; };
+  process.on("warning", onWarn);
+  t.after(() => process.off("warning", onWarn));
+  const slow = await new Promise((done, failed) => (async () => {
+    const r = await fetch(`${b.base}/api/c/events`), rd = r.body.getReader(), chunks = [];
+    for (;;) { const { done: end, value } = await rd.read(); if (end) break; chunks.push(value); await new Promise((go) => setTimeout(go, 2)); }
+    done(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+  })().catch(failed));
+  assert.equal(slow.docs.length, 12345);
+  assert.equal(warned, null, String(warned));
   // Read as it is sent, from the file at one moment: a write made while the answer is on its way isn't in it.
   const http = await import("node:http");
   const body = await new Promise((done, failed) => http.get(`${b.base}/api/c/events`, (res) => {
