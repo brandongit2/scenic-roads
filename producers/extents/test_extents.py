@@ -81,6 +81,10 @@ class Metrics(unittest.TestCase):
         # number is no year.
         self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "bc_092b041_xli1m_utm10_20230930_20240315.tif"})[0], 2024)
         self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "bc_092g028144_xl2m_utm10_20160630_dem.tif"})[0], 2016)
+        # Two-digit years of the 2000s, a span's last (PST-A's "aammgg" flights).
+        self.assertEqual(extents.metric({"field": "d", "date": "yymmdd"}, {"d": "131018"})[0], 2013)
+        self.assertEqual(extents.metric({"field": "d", "date": "yymmdd"}, {"d": "090317 - 100526"})[0], 2010)
+        self.assertEqual(extents.metric({"field": "d", "date": "yymmdd"}, {"d": " "})[0], None)
 
     def test_a_number_written_with_its_unit(self):
         spec = {"field": "s", "text": "metre"}
@@ -426,6 +430,18 @@ class ArcGIS(unittest.TestCase):
         })
         got = list(extents.read_arcgis(net, {"url": self.LAYER, "page": 2, "name": "Name", "by": ["Name"]}, 50 / extents.M_PER_DEG))
         self.assertEqual([p["Name"] for _, p in got], ["a"])
+
+    def test_a_geojson_answers_z_and_null_m_are_dropped(self):
+        # (Emilia-Romagna's tile indexes: each position x, y, 0, null.)
+        ring = [[0, 0, 0, None], [1, 0, 0, None], [1, 1, 0, None], [0, 0, 0, None]]
+        net = FakeNet({
+            self.LAYER + "?f=json": b'{"objectIdField": "OBJECTID", "supportedQueryFormats": "JSON, geoJSON"}',
+            **self.count("1=1", 1),
+            self.query("1=1", "geojson"): json.dumps({"features": [{"id": 1, "properties": {"OBJECTID": 1, "Name": "a"}, "geometry": {"type": "Polygon", "coordinates": [ring]}}]}).encode(),
+        })
+        (g, _), = extents.read_arcgis(net, {"url": self.LAYER, "page": 2, "name": "Name", "by": ["Name"]}, 50 / extents.M_PER_DEG)
+        self.assertFalse(g.has_z)
+        self.assertAlmostEqual(g.area, 0.5)
 
 
     def test_pages_by_object_id_come_to_the_services_count(self):

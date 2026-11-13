@@ -259,7 +259,7 @@ def read_arcgis(net, b, tol_deg):
             sys.exit(f"{b['url']}: its features' {oid} isn't one each: can't page by it")
         for f in feats:
             props = f.get("attributes" if esri else "properties") or {}
-            g = esri_shape(f.get("geometry")) if esri else (sg.shape(f["geometry"]) if f.get("geometry") else None)
+            g = esri_shape(f.get("geometry")) if esri else (flat_shape(f["geometry"]) if f.get("geometry") else None)
             if g is not None:
                 yield g, props
         seen += len(feats)
@@ -270,6 +270,14 @@ def read_arcgis(net, b, tol_deg):
     if seen != count["count"]:
         sys.exit(f"{b['url']}: {seen} features read in pages, where the service counts {count['count']}: "
                  f"its {oid} doesn't page (rows sharing one, or the layer changed while read)")
+
+
+def flat_shape(g):
+    """A GeoJSON geometry as a shapely one from its positions' first two numbers: a service's z and m
+    dropped (an ArcGIS layer's m may be null, which no geometry takes)."""
+    def trim(c):
+        return c[:2] if c and not isinstance(c[0], list) else [trim(x) for x in c]
+    return sg.shape({**g, "coordinates": trim(g["coordinates"])} if "coordinates" in g else g)
 
 
 def esri_shape(g):
@@ -376,7 +384,7 @@ def index_features(body, b):
             b["crs"] = answer_crs(d)
         for f in d["features"]:
             # (One without geometry is still a feature: a WFS page's count is all of them.)
-            yield (lambda f=f: xy(sg.shape(f["geometry"]), b) if f.get("geometry") else None), f.get("properties") or {}
+            yield (lambda f=f: xy(flat_shape(f["geometry"]), b) if f.get("geometry") else None), f.get("properties") or {}
 
 
 def shapefile_features(z, stem, b):
@@ -805,6 +813,10 @@ def metric(spec, props):
         how = spec["date"]
         if how == "epoch-ms":
             return datetime.datetime.fromtimestamp(float(v) / 1000, datetime.UTC).year, None
+        if how == "yymmdd":
+            # Six-digit dates of the 2000s, one or several ("090317 - 100526"): the last year.
+            years = [2000 + int(d[:2]) for d in re.findall(r"(?<!\d)\d{6}(?!\d)", str(v))]
+            return (max(years) if years else None), None
         # A year alone or opening a compact date (20230930).
         years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d\d)(?:[01]\d[0-3]\d)?(?!\d)", str(v))]
         if not years:
