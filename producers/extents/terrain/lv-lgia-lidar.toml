@@ -1,0 +1,45 @@
+name = "LĢIA Digitālā augstuma modeļa pamatdati"
+credit = "Latvijas Ģeotelpiskās informācijas aģentūra (LĢIA)"
+licence = "CC-BY-4.0"
+licence_url = "https://www.lgia.gov.lv/sites/lgia/files/document/Atverto%20datu%20licence%20CC%20BY_0.pdf"
+source = "https://geolatvija.lv/geonetwork/srv/api/records/d0673187-b7a9-49b4-afb9-4666e9a02e6a/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Two open products of the agency's first airborne laser scanning of the country (scanned 2014 to 2019, as its service record says). The classified points (\"digitālā augstuma modeļa pamatdati\": at least 4 points/m² in all, 1.5 on the ground; LAS in 1 km sheets of the TKS-93 nomenclature in LKS-92 TM, EPSG:3059): the agency's own list of the files' links (LGIA_OpenData_las_saites.txt, 65,917 sheets and a Thumbs.db), each name placed by its nomenclature (2434-15-15: the 100 km row 2 and column 4, the 50 km and 25 km quadrants 3 and 4, the 5 km and 1 km rows and columns from the south-west, as the files' own headers place them); taken at their nominal spacing, 1/√4 = 0.5 m, and the cycle's last year. The 1 m bare-earth and surface grids made from them are for public bodies only, so the open points are the piece. The 20 m bare-earth grid (DTM_Latvija_20m.7z, one archive of the country, text) is the other: its extent the country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw Latvia, claimed. The second cycle (2022 to 2024, about half the country, at least 6 points/m²) isn't open. No vertical accuracy as an RMSE is stated (12 cm at 2 sigma, 95 %)."
+
+[[piece]]
+id = "points"
+label = "LĢIA lidar points (cycle 1)"
+method = "listing"
+url = "https://s3.storage.pub.lvdc.gov.lv/lgia-opendata/las/LGIA_OpenData_las_saites.txt"
+list = "lines"
+pattern = '/(?P<a>\d)(?P<b>\d)(?P<c>\d)(?P<d>\d)-(?P<e>\d)(?P<f>\d)-(?P<g>\d)(?P<h>\d)(?:_[^/]*)?\.las$'
+crs = "EPSG:3059"
+size = 1000
+origin = [200000, 0]
+digits = [
+  { group = "a", y = 100000 },
+  { group = "b", x = 100000, base = 0 },
+  { group = "c", x = 50000, y = 50000, cols = 2 },
+  { group = "d", x = 25000, y = 25000, cols = 2 },
+  { group = "e", y = 5000 },
+  { group = "f", x = 5000 },
+  { group = "g", y = 1000 },
+  { group = "h", x = 1000 },
+]
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "dtm20"
+label = "LĢIA DTM 20 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["LVA"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 20

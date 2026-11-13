@@ -1,0 +1,20 @@
+name = "IPR Praha Digitální model terénu"
+credit = "IPR Praha"
+licence = "CC-BY-4.0"
+licence_url = "https://geoportalpraha.cz/data-a-sluzby/otevrena-data"
+source = "https://www.arcgis.com/sharing/rest/content/items/97d2c9c11aa9478cb21b469b8a4f820e?f=json"
+theme = "terrain"
+availability = "open"
+notes = "Prague's bare-earth model, \"Digitální model terénu - rastr\" in the city's open data (owner opendatapraha on ArcGIS Online, licence CC BY, credit \"datový podklad © IPR Praha\"): \"Současný DTM Prahy\", made from lidar at about 40 points/m², one 2 GB zip holding one GeoTIFF (dtm_1m.tif, its own metadata read from the zip's directory by range request: a 1 m grid, 35,001 × 26,001 cells in S-JTSK, resampled in July 2025 from a corrected 25 cm model, 660,025,394 valid cells, so 660 km² of data). The file has no overviews, so its mask would be the whole download; the item names no outline. Its extent is the city the item states, Prague, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (517 km²; the data reach some way past it): claimed, not checked against the data. No year is stated (its folder's name says DTM2023, not the item); no accuracy."
+
+[[piece]]
+id = "dtm"
+label = "DTM Prahy 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["CZE"], name = ["Prague"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1

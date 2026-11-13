@@ -1,0 +1,18 @@
+name = "Brno Digitální model terénu 2019"
+credit = "Statutární město Brno (Magistrát města Brna, Odbor městské informatiky)"
+licence = "CC-BY-4.0"
+licence_url = "https://gis.brno.cz/ost/edas/public/scripts/getDetailData.php?uuid=7517ffb8-6adc-4346-b87b-f37ffdc27f16"
+source = "https://gis.brno.cz/ost/edas/public/scripts/getDetailData.php?uuid=7517ffb8-6adc-4346-b87b-f37ffdc27f16"
+theme = "terrain"
+availability = "open"
+notes = "The city's bare-earth model of 2019, an elevation image service (OMI/OMI_DMT_2019_elevation: 0.25 m pixels, S-JTSK) and downloads (TIFF, XYZ, DWG, DGN, ShapeFile, on the city's SharePoint), CC BY. Its catalogue record names its region, Brno, and no outline; the image service is one raster with no catalogue (its query refused) and only a bounding box (22.9 × 21.5 km, 493 km², against the city's 230); the TIFF download is a zip behind SharePoint (403 to a plain request). Natural Earth's administrative areas have no unit for the city (its region, South Moravia, would overstate it). So it has no outline: listed, not drawn. The lidar's density and the model's accuracy are not stated."
+
+[[piece]]
+id = "dmt"
+label = "DMT 2019 0.25 m"
+method = "none"
+why = "the city's 2019 model is one image service with only a bounding box twice the city's area, its files are behind SharePoint, and no outline of it is published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2019

@@ -1,0 +1,18 @@
+name = "ČÚZK DMR 4G"
+credit = "ČÚZK (Český úřad zeměměřický a katastrální)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://geoportal.cuzk.gov.cz/SDIProCSW/service.svc/get?REQUEST=GetRecordById&SERVICE=CSW&VERSION=2.0.2&OUTPUTSCHEMA=http://www.isotc211.org/2005/gmd&ELEMENTSETNAME=full&Id=CZ-CUZK-DMR4G-V"
+theme = "terrain"
+availability = "open"
+notes = "The national bare-earth model as a 5 × 5 m grid (DMR 4G: generated in 2016 from the DMR 5G for the whole country, 78,866 km² as its record states, and updated as the DMR 5G is, from the 2009 to 2013 lidar and the surveys since; LAZ and GeoTIFF by SM5 sheet). Its extent: the SM5 sheets (2.5 × 2 km) its ATOM download service lists (DMR4G-SJTSK), each entry's GeoRSS box. The year each area was last updated is in the agency's metadata service (Metadata/MapServer layer 20, `rok`, 2010 to 2026), which answers every query without geometry (GeoJSON, Esri JSON, its own CRS, generalised): so no year is stated here. The record states a total mean height error of 0.3 m in open and 1 m in forested terrain, two figures for one grid: left out. The DMR 5G (a TIN of the ground points, 0.18 m and 0.3 m) has no grid spacing, so no score: not a piece; the DMP 1G and DMP OK surface models are not pieces beside this bare-earth grid."
+
+[[piece]]
+id = "dmr4g"
+label = "DMR 4G 5 m"
+method = "atom"
+url = "https://atom.cuzk.gov.cz/DMR4G-SJTSK/DMR4G-SJTSK.xml"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 5

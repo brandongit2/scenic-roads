@@ -1,0 +1,20 @@
+name = "GUGiK NMT"
+credit = "Główny Urząd Geodezji i Kartografii (GUGiK)"
+licence = "free of charge, any use (\"dostępne bezpłatnie i możliwe do dowolnego wykorzystania\")"
+licence_url = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
+source = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
+theme = "terrain"
+availability = "open"
+notes = "The national bare-earth model (NMT): by the regulation of 16 December 2022 its basic model is the 1 m grid, kept up to date from airborne laser scanning (and, for cities, from stereo measurement for the 10 cm orthophoto); a 5 m grid is also made, from the 25 cm orthophoto's stereo measurement. Downloaded free by sheet. Its sheet indexes (the WFS SkorowidzNMT layers by year, its WMS sheet layers, the OGC API and ATOM services) are all on hosts that time out from outside Poland (mapy.geoportal.gov.pl, ogcapi.geoportal.gov.pl, opendata.geoportal.gov.pl, integracja.gugik.gov.pl, api.dane.gov.pl, from both Macs, 13 Nov 2026); the Wayback Machine holds only the WFS's capabilities and single 1,000-sheet pages. So its extent is the area the agency states: \"W Polsce mamy pokrycie całego kraju danymi ALS\" (the whole country covered by its laser scanning, 4 to 20 points/m², from which the 1 m model is made), as Natural Earth's 1:10m administrative areas (v5.1.2) draw Poland: claimed, not checked against the sheets. No year or vertical accuracy is stated for the model as a whole. Warsaw's and Kraków's city-commissioned surveys (12 and 10 points/m²) are published within it, as the same 1 m NMT."
+
+[[piece]]
+id = "nmt"
+label = "NMT 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["POL"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 1

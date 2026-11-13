@@ -1,0 +1,16 @@
+name = "Rīgas 3D realitātes modelis"
+credit = "Rīgas valstspilsētas pašvaldība"
+licence = "not open (only the LOD2 building models are planned as open data)"
+licence_url = "https://lvportals.lv/dienaskartiba/360234-izstradats-augstas-izskirtspejas-rigas-3d-realitates-un-3d-vektoru-modelis-2024"
+source = "https://lvportals.lv/dienaskartiba/360234-izstradats-augstas-izskirtspejas-rigas-3d-realitates-un-3d-vektoru-modelis-2024"
+theme = "terrain"
+availability = "closed"
+notes = "Riga's 3D reality and vector model project (begun 2021, published on GEO RĪGA in February 2024) lists among its products a classified laser-scanning point cloud and a bare-earth model (digitālais reljefa modelis) of 55 km², the historic centre and its protection zone; neither is offered for download (the city's open data, 78 datasets, hold LOD1 and LOD2 buildings and no elevation), and the model's grid and the scan's density aren't stated. The 55 km² has no published outline: listed, not drawn."
+
+[[piece]]
+id = "dtm"
+label = "Riga 3D project DTM (55 km²)"
+method = "none"
+why = "the 55 km² of the historic centre and its protection zone has no published outline, and the model isn't offered"
+[piece.metrics]
+surface = "ground"

@@ -1,0 +1,20 @@
+name = "Lidar_DR_LT"
+credit = "Nacionalinė žemės tarnyba (NŽT)"
+licence = "not stated (the record's constraints say only \"copyright\" and \"license\")"
+licence_url = "https://www.geoportal.lt/metadata-catalog/csw?service=CSW&version=2.0.2&request=GetRecordById&elementSetName=full&outputSchema=http://www.isotc211.org/2005/gmd&id=%7B3C0D5E47-49CA-4132-88C1-EC3D1E4610B4%7D"
+source = "https://www.geoportal.lt/metadata-catalog/csw?service=CSW&version=2.0.2&request=GetRecordById&elementSetName=full&outputSchema=http://www.isotc211.org/2005/gmd&id=%7B3C0D5E47-49CA-4132-88C1-EC3D1E4610B4%7D"
+theme = "terrain"
+availability = "login"
+notes = "The national land service's classified lidar point clouds (\"Aktualiausi Lidar_DR_LT\", the latest of each place, 2019 to 2026): at least 6.5 points/m² (15 in the 2026 flights), a vertical RMSE of no more than 10 cm on hard surfaces, LAZ by LKS-94 sheet, each sheet with its download link; no grid is published from them (the relief models in the catalogue are older and coarser), so the piece is the points, at their nominal spacing, 1/√6.5 = 0.3922 m. The geoportal's download services need a login and the terms are not written out, so it is `login`. Its record's coverage map (Lidar_DR_LT_recent.png) shows the flights by year over all but the Curonian Spit and lagoon coast and a corner by Lake Drūkšiai; no sheet index is published (the record links none, the geoportal has no open feature service of it). Its extent is the eight counties the map shows covered whole, as Natural Earth's 1:10m administrative areas (v5.1.2) draw them (Klaipėda's and Utena's counties, partly uncovered, left out): claimed, not checked against the sheets. No year: the flights range from 2019 to 2026 by place."
+
+[[piece]]
+id = "points"
+label = "Lidar_DR_LT point clouds"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["LTU"], name = ["Alytaus", "Kauno", "Marijampoles", "Panevezio", "Taurages", "Telšiai", "Vilniaus", "Šiauliai"] }
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 0.3922
+vertical_rmse_m = 0.1
