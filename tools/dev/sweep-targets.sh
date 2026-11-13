@@ -157,7 +157,7 @@ done_tasks=$(curl -s --max-time 5 $BOARD/api/c/items 2>/dev/null | python3 -c '
 import json, sys
 for i in json.load(sys.stdin).get("docs", []):
     d = i.get("data") or {}
-    if d.get("stage") == "done" and d.get("num") is not None: print(d["num"])' 2>/dev/null)
+    if d.get("status") == "done" and d.get("num") is not None: print(d["num"])' 2>/dev/null)
 for wt in $repo/.claude/worktrees/*(N/); do
   [[ -d $wt/target || ${wt:t} == agent-* ]] || continue
   if print -r -- "$busy" | grep -q "^$wt"; then skip "cargo runs in it"; continue; fi

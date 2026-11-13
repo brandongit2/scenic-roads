@@ -19,8 +19,11 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   (`/api/c/…`, photos at `/_blob/<id>`), `schema.mjs` the shape of its data, enforced on every write
   (and imported by the page, which shows what doesn't fit), `priority.mjs` where a priority with a
   fraction goes (below; the server's rule and the page's, one copy), `store.mjs` its file, `taskboard.db`:
-  `items` (folders and tasks), `events` (history), `meta` (`status`, the status bar; `counter`, the
-  next item number), `blobs` (photos). `public/task-board/index.html` is the page;
+  `items` (folders and tasks), `events` (history), `meta` (`now`, the now line: what Claude is on,
+  shown in the page's header; `counter`, the next item number), `blobs` (photos); its form
+  (`PRAGMA user_version`) is 1 (#1229: `status`, `assigned`, `meta/now`), and a file of form 0 is
+  moved to it once as the app opens it (`store.mjs` migrateTo1, to be deleted once the M6's board
+  is moved; any other form is refused). `public/task-board/index.html` is the page;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
   "assets")`) over the app's.
 - **The dev job dashboard** (`/jobs/`, below): `jobs.mjs` its API (`/api/jobs/…`) and file,
@@ -95,19 +98,19 @@ runs, failures, p50, p90, longest, total and last 40 times), `GET /api/jobs/kind
 
 ## The task board's API (for the PM, agents and scripts)
 
-Everything is under `/api/c/<collection>`, JSON in and out, `B=http://mac-mini-de-brandon:8077`. **You send content; the server assigns the rest.** A new item's `num`, `id`, `order` and `added`, a new event's `id` and `t`, `meta/counter` and `meta/status`'s `updated` are the server's: sending one is a 400. Every write is checked against the schema (below) in one transaction: a request that doesn't fit gets a **400** with every reason (`error.message`, and `error.errors` as `[{field, message}]`), and nothing is written. Errors are `{"error": {"code", "message"}}`: `invalid_argument` 400, `not_found` 404, `forbidden` 403, `conflict` 409.
+Everything is under `/api/c/<collection>`, JSON in and out, `B=http://mac-mini-de-brandon:8077`. **You send content; the server assigns the rest.** A new item's `num`, `id`, `order` and `added`, a new event's `id` and `t`, `meta/counter` and `meta/now`'s `updated` are the server's: sending one is a 400. Every write is checked against the schema (below) in one transaction: a request that doesn't fit gets a **400** with every reason (`error.message`, and `error.errors` as `[{field, message}]`), and nothing is written. Errors are `{"error": {"code", "message"}}`: `invalid_argument` 400, `not_found` 404, `forbidden` 403, `conflict` 409. **Names from before #1229 are refused** (400) with the name to use: an item's `stage` is `status`, `where` is `assigned`; an event's kind `stage` is `status`; `meta/status` is `meta/now`, its `now` is `text` (`GET /api/schema`'s `renamed` lists them).
 
-**Add a task** (`POST /api/c/items`). Only `text` is required; `kind` defaults to `task`, `parent` to `""` (top level; else an item's id), `stage` to `""` (queued), `where` to `Subagent`. Also allowed: `note`, `priority`, `discuss`. `parent` must be a folder: only folders hold items.
+**Add a task** (`POST /api/c/items`). Only `text` is required; `kind` defaults to `task`, `parent` to `""` (top level; else an item's id), `status` to `""` (queued), `assigned` to `Subagent`. Also allowed: `note`, `priority`, `discuss`. `parent` must be a folder (only folders hold items), and not an archived one nor inside one (below).
 
 ```bash
 curl -s -X POST $B/api/c/items -H 'content-type: application/json' \
-  -d '{"text": "Task board: do the thing", "note": "What and why.", "priority": 15, "where": "Subagent (Sonnet)", "parent": "f-publish"}'
+  -d '{"text": "Task board: do the thing", "note": "What and why.", "priority": 15, "assigned": "Subagent (Sonnet)", "parent": "f-publish"}'
 # → {"id":"i674","num":674,"order":52,"added":"2026-10-26T09:03:14.285Z"}      (the task is #674, id i674)
 ```
 
 A new item's id is `i<num>`, so `GET $B/api/c/items/i674` reads it (older items keep the ids they have, e.g. `f-publish`). A folder (`"kind": "folder"`, `text`, `parent`, `note`) is numbered from the same counter as tasks: #501 a folder, then #502 a task. `order` is one order over all items, the last + 1 for a new one: the tiebreaker of every view (siblings in the tree, equal priorities in the sort), and what a drag changes.
 
-**Add a history event** (`POST /api/c/events`): `item` (an item's id, or `""` for the board itself), `kind` (one of the list below), `text`.
+**Add a history event** (`POST /api/c/events`): `item` (an item's id, or `""` for the board itself), `kind` (one of the list below), `text`. An archived item's history is read-only: an event on it, or on an item inside an archived folder, is refused (400), and so is a change of one already in it.
 
 ```bash
 curl -s -X POST $B/api/c/events -H 'content-type: application/json' \
@@ -115,10 +118,10 @@ curl -s -X POST $B/api/c/events -H 'content-type: application/json' \
 # → {"id":"4f0c…","t":"2026-10-26T09:05:00.113Z"}
 ```
 
-**Change a task**: `PATCH /api/c/items/<id>` with only the fields that change (`null` removes an optional field). A missing id is a 404: a PATCH can't create. `num`, `id` and `added` can't be changed; `order` can (a reorder); a folder made a task (`"kind": "task"` with `stage` and `where`) or a task made a folder (null its task fields in the same PATCH) keeps its number; a folder holding items can't become a task. A change of `stage` leaves a history event (`kind: "stage"`, by the client's User-Agent) whoever makes it.
+**Change a task**: `PATCH /api/c/items/<id>` with only the fields that change (`null` removes an optional field). A missing id is a 404: a PATCH can't create. `num`, `id` and `added` can't be changed; `order` can (a reorder); a folder made a task (`"kind": "task"` with `status` and `assigned`) or a task made a folder (null its task fields in the same PATCH) keeps its number; a folder holding items can't become a task. A change of `status` leaves a history event (`kind: "status"`, "Status Queued → Under way (by curl)", by the client's User-Agent) whoever makes it.
 
 ```bash
-curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"stage": "working", "where": "Subagent (Opus)"}'
+curl -s -X PATCH $B/api/c/items/i674 -H 'content-type: application/json' -d '{"status": "working", "assigned": "Subagent (Opus)"}'
 # → {"id":"i674","num":674,"order":52,"added":"…"}
 ```
 
@@ -141,22 +144,35 @@ curl -s -X PATCH $B/api/c/items/i1100 -H 'content-type: application/json' -d '{"
 # → {"id":"i1100","num":1100,"order":957,"added":"…","priority":7,"moved":[{"id":"i1042","num":1042,"from":7,"to":8}]}
 ```
 
-`PUT /api/c/items/<id>` replaces what a client writes (it needs `kind`, `text`, `parent`, and for a task `stage` and `where`), keeping `num`, `added` and `order`; a missing id is a 404 too. **Use PATCH**: a PUT with only `{stage}` is refused, not a wipe, but PATCH is what you mean.
+`PUT /api/c/items/<id>` replaces what a client writes (it needs `kind`, `text`, `parent`, and for a task `status` and `assigned`), keeping `num`, `added` and `order`; a missing id is a 404 too. **Use PATCH**: a PUT with only `{status}` is refused, not a wipe, but PATCH is what you mean.
 
-**The status line**: `PATCH /api/c/meta/status` with `{"now": "…"}`. The server sets `updated` (send it and it's a 400); `meta/counter` can't be written (403), nor deleted.
+**Archived items are read-only** (#1229). An item is archived with `PATCH {"archived": true}` (`archivedAt`, when, is the server's time unless sent) and unarchived with `{"archived": false}` (or `null`; its `archivedAt` goes with it). No item that isn't archived is ever inside an archived folder:
+
+- An archived item, or one inside an archived folder, can't be changed: any other PATCH, and any PUT, is refused (400, naming it); the one change taken is unarchiving it. Its history is read-only too (above). Deleting it is no edit: `DELETE` takes it as any other.
+- Nothing goes into an archived folder, at any depth: a POST or a PATCH whose `parent` is one, or is inside one, is refused, naming the folder. (A deleted item isn't restored into a folder archived since: 409.)
+- Archiving a folder holding items that aren't archived is refused, naming them: archive those first. The page, once you have confirmed its warning, sends `"cascade": true` with it: those are archived with it, at the same time. (`cascade` is sent, never stored, and only with `archived`.)
+- Unarchiving an item inside an archived folder is refused, naming the folder: unarchive that first, or send `"cascade": true` to unarchive the archived folders around it with it (what else is inside them stays archived).
+- Each archive and unarchive leaves a `kind: "archive"` event ("Archived, with the 3 inside (by curl)", "Unarchived (by the page)").
 
 ```bash
-curl -s -X PATCH $B/api/c/meta/status -H 'content-type: application/json' -d '{"now": "In flight: #601, #672."}'
+curl -s -X PATCH $B/api/c/items/i771 -H 'content-type: application/json' -d '{"archived": true}'
+# → 400 archived: #771 "Mac mini setup and hosting" holds 1 item(s) that aren't archived (#1250): archive those first
+```
+
+**The now line** (what Claude is on, in the page's header): `PATCH /api/c/meta/now` with `{"text": "…"}`. The server sets `updated` (send it and it's a 400); `meta/counter` can't be written (403), nor deleted.
+
+```bash
+curl -s -X PATCH $B/api/c/meta/now -H 'content-type: application/json' -d '{"text": "In flight: #601, #672."}'
 ```
 
 **Delete**: `DELETE /api/c/items/<id>` also deletes what is inside it and every event about any of them (a reference never points at nothing); `DELETE /api/c/events/<id>` one event. The page's Undo puts it back with `POST /api/c/<collection>/<id>/restore` (the server keeps the last 100 deletions in memory; a restart forgets them). A deleted item's number is never given again.
 
-**Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=desc&limit=<n>`), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
+**Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=desc&limit=<n>`: a field of the collection, or `id`; another is a 400), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
 
 ### The schema (`schema.mjs`)
 
 - **Times** are one format everywhere: ISO 8601, UTC, to the millisecond (`2026-10-26T08:35:48.000Z`, `new Date().toISOString()`). A time you send may leave the fraction out (`…08:35:48Z`) and is stored in full. Epoch numbers or digit strings (`"1792000000000.0"`, what broke #634–#673 on 26 Oct), offsets and bare dates are refused.
-- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `stage`, `where`, `priority` (number ≥ 0), `discuss` (bool), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
+- **Items**: `kind` (`task` | `folder`), `text` (non-empty, ≤ 2000), `parent` (`""` or an existing folder; not itself or inside itself), `order` (number; one order over all items), `added`, `note`, `archived` (bool; `archivedAt` only with it; read-only while true, above), `photos` (blob ids from `POST /api/blob`), and `num` (whole number, from 1, unique; every item has one). Tasks only: `status`, `assigned` (who or what it is assigned to: free text, ≤ 200; `""` nobody), `priority` (number ≥ 0), `discuss` (bool), `started`, `finished` (times), `reply`. A folder with any of those is refused; unknown fields are refused.
 - **Events**: `item` (an existing item's id, or `""`), `kind`, `text` (non-empty), `t`. Only `kind` and `text` can be changed afterwards.
-- **Meta**: only `status` (`now`: string, `updated`: time) and `counter` (`next`).
-- **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): stage `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `stage`, `priority` (the server's, above), `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `where`: see `WHERES` (`Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …). The page's editor offers `where` from the same list.
+- **Meta**: only `now` (`text`: string, `updated`: time) and `counter` (`next`).
+- **Fixed lists** (the values in use on 26 Oct 2026; to allow another, add it to `schema.mjs`): status `""` (queued), `working`, `backgrounded`, `integrating`, `review`, `waiting`, `done`, `abandoned`; event kind `note`, `owner`, `status`, `archive` and `priority` (the server's, above), `added`, `start`, `delegate`, `progress`, `review`, `merge`, `publish`, `done`, `wait`, `stop`, `bug`, `decision`; `assigned` is free text: the page's editor suggests `ASSIGNED_SUGGESTIONS` (`Subagent`, `Subagent (Opus)`, `Subagent (Sonnet)`, `You`, `PM (M4)`, …).

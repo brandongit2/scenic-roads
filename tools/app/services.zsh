@@ -221,7 +221,7 @@ forms() {
   done
 }
 answers() {  # answers <port>: the board's and the dashboard's APIs answer
-  curl -sf --max-time 2 -o /dev/null http://127.0.0.1:$1/api/c/meta/status \
+  curl -sf --max-time 2 -o /dev/null "http://127.0.0.1:$1/api/c/items?limit=1" \
     && curl -sf --max-time 2 -o /dev/null http://127.0.0.1:$1/api/jobs/kinds
 }
 up() {  # up <label> <pid before> <tries, 0.2 s apart> <check…>: a new process of the job passes the check

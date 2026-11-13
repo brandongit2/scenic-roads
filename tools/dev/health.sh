@@ -73,7 +73,7 @@ for wt in .claude/worktrees/*(N/); do
 done
 tools/dev/sweep-targets.sh
 tail -3 .claude/sweep-targets.log 2>/dev/null | sed 's/^/sweep: /'
-print "== also: check every running subagent and background task, update the board (stage, history, status line), email the owner if anything notable"
+print "== also: check every running subagent and background task, update the board (status, history, now line), email the owner if anything notable"
 print "gates (.claude/gates.txt):"
 grep -v "^# " .claude/gates.txt | grep -v '^$' | while IFS='|' read -r task what test; do
   if zsh -c "$test" >/dev/null 2>&1; then s="READY  <-- ACT NOW"; else s="waiting"; fi

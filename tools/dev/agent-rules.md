@@ -79,7 +79,7 @@ rely on the agent.
 ## The board
 
 - Post progress to your task's board item: `POST http://mac-mini-de-brandon:8077/api/c/events`
-  with `{item, kind, text}`. Leave the item's stage to the PM unless your brief says otherwise.
+  with `{item, kind, text}`. Leave the item's status to the PM unless your brief says otherwise.
 
 ## Your report
 
