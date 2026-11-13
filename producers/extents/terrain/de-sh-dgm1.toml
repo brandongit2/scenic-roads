@@ -5,7 +5,7 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://opendata.schleswig-holstein.de/dataset/digitales-gelandemodell-1-dgm1"
 theme = "terrain"
 availability = "open"
-notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25832), from airborne laser scanning at 3 to 4 pts/m²: the INSPIRE download feed's tile entries, each named for its tile and its year (dgm1_32_<east km>_<north km>_1_sh_<year>), by that year. The open-data portal states CC BY 4.0 (\"© GeoBasis-DE/LVermGeo SH/CC BY 4.0\"). Accuracy stated as ≤ 15 cm in flat terrain, not an RMSE, so left out. The download client's host fails TLS verification; the feed's doesn't. No open point cloud was found."
+notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25832), from airborne laser scanning at 3 to 4 pts/m²: the INSPIRE download feed's tile entries, each named for its tile and its year (dgm1_32_<east km>_<north km>_1_sh_<year>), by that year. The open-data portal states CC BY 4.0 (\"© GeoBasis-DE/LVermGeo SH/CC BY 4.0\"). Accuracy stated as ≤ 15 cm in flat terrain, not an RMSE, so left out. The image-matched surface model bDOM (0.2 m, from the aerial photographs of 2023 and 2024, CC BY 4.0, its accuracy stated as ±0.5 m, not an RMSE) is a piece beside it: the download client's mass-download index (bDOM_SH_Massendownload.geojson, 17,614 1 km tiles in EPSG:25832, each its `datum`), by year. The download client's host sends its certificate without its intermediate, completed from its AIA (D-Trust's, redirected once). No open point cloud was found."
 
 [[piece]]
 id = "dgm1"
@@ -22,3 +22,15 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = 1
 year = { field = "year", date = "year" }
+
+[[piece]]
+id = "bdom"
+label = "bDOM 0.2 m"
+method = "file"
+class = "index"
+url = "https://geodaten.schleswig-holstein.de/gaialight-sh/_apps/dladownload/single.php?file=bDOM_SH_Massendownload.geojson&id=4"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.2
+year = { field = "datum", date = "iso" }

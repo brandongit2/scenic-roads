@@ -130,11 +130,13 @@ class ChainError(Exception):
     pass
 
 
-def aia_get(url, timeout=30, limit=1 << 16):
+def aia_get(url, timeout=30, limit=1 << 16, hops=3):
     """An issuer's certificate from the URL a certificate's AIA names, read before that certificate
     is verified, so its URL is the server's to choose: plain http only (RFC 5280's caIssuers), to a
     public address only (never this Mac, its network or its files), the address checked the one
-    connected to, no redirect followed, no more than `limit` bytes in `timeout` seconds in all."""
+    connected to, up to `hops` redirects followed (D-Trust's AIA answers a 302 to another host of
+    its own), each held to the same rules, no more than `limit` bytes in `timeout` seconds in all."""
+    deadline = time.monotonic() + timeout
     parts = urllib.parse.urlsplit(url)
     if parts.scheme != "http" or not parts.hostname:
         raise ChainError(f"{url}: an AIA address that isn't http")
@@ -143,14 +145,20 @@ def aia_get(url, timeout=30, limit=1 << 16):
     if not addrs or not all(ipaddress.ip_address(a.partition("%")[0]).is_global for a in addrs):
         raise ChainError(f"{url}: an AIA address that isn't public ({', '.join(sorted(addrs))})")
     addr = sorted(addrs)[0]
-    deadline = time.monotonic() + timeout
     conn = http.client.HTTPConnection(f"[{addr}]" if ":" in addr else addr, port, timeout=timeout)
     try:
         conn.request("GET", (parts.path or "/") + (f"?{parts.query}" if parts.query else ""),
                      headers={"Host": parts.netloc, "User-Agent": UA})
         r = conn.getresponse()
+        if r.status in (301, 302, 303, 307, 308) and r.getheader("Location"):
+            if hops == 0:
+                raise ChainError(f"{url}: {r.status}, redirected too many times")
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ChainError(f"{url}: over {timeout} s")
+            return aia_get(urllib.parse.urljoin(url, r.getheader("Location")), left, limit, hops - 1)
         if r.status != 200:
-            raise ChainError(f"{url}: {r.status} (no redirect followed)")
+            raise ChainError(f"{url}: {r.status}")
         body = b""
         while len(body) <= limit and time.monotonic() < deadline:
             part = r.read(4096)

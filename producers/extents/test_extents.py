@@ -891,6 +891,36 @@ class Chains(unittest.TestCase):
                 extents.aia_get(url)
 
 
+    def test_an_aia_redirect_is_held_to_the_same_rules(self):
+        import unittest.mock
+        # (D-Trust's AIA: a 302 to another host of its own. Each hop's host must be public and its
+        # scheme http; a redirect elsewhere, or a fourth one, is refused.)
+        pages = {"ca.test/a.crt": (302, "http://www1.ca.test/a.crt"), "www1.ca.test/a.crt": (200, b"DER"),
+                 "ca.test/local": (302, "http://127.0.0.1/a.crt"), "ca.test/tls": (302, "https://ca.test/a.crt"),
+                 "ca.test/loop": (302, "/loop")}
+        class Conn:
+            def __init__(self, addr, port, timeout):
+                pass
+            def request(self, method, path, headers):
+                self.key = headers["Host"] + path
+            def getresponse(self):
+                status, body = pages[self.key]
+                r = io.BytesIO(body if status == 200 else b"")
+                r.status = status
+                r.getheader = lambda k: body if status != 200 and k == "Location" else None
+                return r
+            def close(self):
+                pass
+        def addrinfo(host, port, type):
+            return [(0, 0, 0, "", ("127.0.0.1" if host == "127.0.0.1" else "93.184.215.14", port))]
+        with unittest.mock.patch.object(extents.socket, "getaddrinfo", addrinfo), \
+             unittest.mock.patch.object(extents.http.client, "HTTPConnection", Conn):
+            self.assertEqual(extents.aia_get("http://ca.test/a.crt"), b"DER")
+            for url in ("http://ca.test/local", "http://ca.test/tls", "http://ca.test/loop"):
+                with self.assertRaises(extents.ChainError, msg=url):
+                    extents.aia_get(url)
+
+
 class Answer(io.BytesIO):
     headers = {}
 
