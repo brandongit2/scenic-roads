@@ -462,11 +462,12 @@ pub struct Sized {
 pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
     use inputs::inputs::regions::geom::{area_km2, Area};
     let (mut land, mut water) = (0.0, 0.0);
-    // (The name's point: in the largest polygon of its land shapes by its outer ring (a region of
-    // water alone: of its water shapes), a shape's own, never a union of them, which takes minutes
-    // for a region of land and water. Land and water alike, a region's waters won, their outer ring
-    // holding the land too, and the name sat in the sea: Iceland's, Alaska's, peninsular Malaysia's.)
-    let mut largest: Option<((bool, f64), Vec<Vec<[f64; 2]>>)> = None;
+    // (The name's point: in the largest polygon by its outer ring of its land shapes, unless its land
+    // is under a thousandth of it (a region of waters with a few islets of land: Mexico's, 14 km² of
+    // 3.2 M); a shape's own polygon, never a union of them, which takes minutes for a region of land
+    // and water. Land and water alike, a region's waters won, their outer ring holding the land too,
+    // and the name sat in the sea: Iceland's, Alaska's, peninsular Malaysia's.)
+    let mut polys: Vec<(bool, f64, Vec<Vec<[f64; 2]>>)> = Vec::new();
     for sh in &g.shapes {
         let rings: Vec<Vec<[i64; 2]>> =
             sh.rings.iter().map(|r| r.iter().map(|p| [p[0] as i64, p[1] as i64]).collect()).collect();
@@ -480,12 +481,12 @@ pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
         for p in &area.polys {
             let poly: Vec<Vec<[f64; 2]>> =
                 p.iter().map(|r| r.iter().map(|q| [q[0] as f64 * 1e-7, q[1] as f64 * 1e-7]).collect()).collect();
-            let rank = (!sh.water, poly.first().map_or(0.0, |r| ring_area(r).abs()));
-            if largest.as_ref().is_none_or(|l| rank > l.0) {
-                largest = Some((rank, poly));
-            }
+            polys.push((!sh.water, poly.first().map_or(0.0, |r| ring_area(r).abs()), poly));
         }
     }
+    let on_land = land >= (land + water) / 1000.0;
+    let largest =
+        polys.into_iter().map(|(l, a, p)| ((l == on_land, a), p)).reduce(|best, x| if x.0 > best.0 { x } else { best });
     let country = g
         .shapes
         .iter()
@@ -1059,10 +1060,13 @@ mod tests {
         let g = Geometry { shapes: vec![shape(waters, true, ""), shape(vec![land], false, "MT")], ..g };
         let l = sized(&g).label.unwrap();
         assert!(l[0] > 0.0 && l[0] < 1.0 && l[1] > 0.0 && l[1] < 1.0, "{l:?}");
-        // A region of water alone: in its water.
-        let g = Geometry { shapes: vec![shape(vec![sq(-e, -e, 3 * e), sq(0, 0, e)], true, "")], ..g };
-        let l = sized(&g).label.unwrap();
-        assert!(!(l[0] > 0.0 && l[0] < 1.0 && l[1] > 0.0 && l[1] < 1.0) && l[0] > -1.0 && l[0] < 2.0, "{l:?}");
+        // A region of water alone, or of waters with an islet of land under a thousandth of it: in its
+        // water.
+        let water = || shape(vec![sq(-e, -e, 3 * e), sq(0, 0, e)], true, "");
+        for shapes in [vec![water()], vec![water(), shape(vec![sq(5 * e, 5 * e, e / 100)], false, "")]] {
+            let l = sized(&Geometry { shapes, ..g.clone() }).label.unwrap();
+            assert!(!(l[0] > 0.0 && l[0] < 1.0 && l[1] > 0.0 && l[1] < 1.0) && l[0] > -1.0 && l[0] < 2.0, "{l:?}");
+        }
     }
 
     #[test]

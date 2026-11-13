@@ -1281,7 +1281,7 @@ renaming or disabling a region builds nothing.
 **The server** serves the tiles as stored (`/tiles/regions/{z}/{x}/{y}`, `application/x-protobuf`,
 gzip'd, versioned by pack like every layer) and answers `/api/regions/at` from them. The listing
 (`/api/regions`) gives each region's box (`bbox`) and a point inside its largest land polygon (a
-region of water alone: water) for its name (`label`), worked out once per geometry with its land and water (`region-areas.json`), and
+region of water, or of waters with land under a thousandth of it: water) for its name (`label`), worked out once per geometry with its land and water (`region-areas.json`), and
 its flag's area (`area`).
 
 **The app** (`web/src/regions.ts`, the pure parts `web/src/regionlayer.ts`, tested by

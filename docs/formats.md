@@ -1299,7 +1299,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   `{error}`.
 - **Regions** (read only): `GET /api/regions`, each region with its land and water, its country,
   its box (`bbox`: w, s, e, n in degrees) and the point its name is drawn at (`label`: inside its
-  largest land polygon by its outer ring; a region of water alone, its largest water polygon), all from its accepted geometry once this Mac's server has read it, and its first
+  largest land polygon by its outer ring; a region of water, or of waters whose land is under a thousandth of it, its largest water polygon), all from its accepted geometry once this Mac's server has read it, and its first
   osm: part's area in the pass's outlines (`area`: `iso`, `country`, `in`, its flag);
   `GET /api/regions/at?lng=&lat=` → `{"regions": [id, …]}`, the regions at a point, read from the
   region layer's tiles (`codecs::regionlayer::hit`: the finest stored tile there, the nearest
