@@ -1,0 +1,38 @@
+name = "Norsk Polarinstitutt terrain models"
+credit = "Norsk Polarinstitutt"
+licence = "CC-BY-4.0"
+licence_url = "https://kartkatalog.geonorge.no/api/getdata/9d118d31-182c-495b-b7be-d819cc7444b1"
+source = "https://data.npolar.no/dataset/dce53a47-c726-4845-85c3-a65b46fe2fea"
+theme = "terrain"
+availability = "open"
+notes = "The Norwegian Polar Institute's terrain models of Svalbard (S0 Terrengmodell) and Jan Mayen (J0 Terrengmodell), as Geonorge's records and the institute's dataset pages describe them. Svalbard DTM 20, 20 m, \"covers the land area of Svalbard\" (one 604 MB zip; mostly from stereo models of newer aerial photos, elsewhere from contours, lakes and the coast; a standard deviation of about 2-5 m, or 25 m, stated, not an RMSE): claimed, Svalbard as Natural Earth's 1:10m administrative areas (v5.1.2) draw it. Svalbard DTM 5, 5 m (2 m on Bjørnøya), \"covers parts of Svalbard\", updated 2023-11-08: its 32 download cells (Geonorge's ATOM feed and download API) carry codes and no geometry, the download map's selection layer (dtm-svalbard) isn't a published service, and the institute's pages give 42 zips and no index: listed, not drawn. Jan Mayen DTM 5 (5 m, published 2024-10-29) is one 60 MB zip with no index, and Natural Earth's administrative areas have no Jan Mayen to claim: listed, not drawn. Geonorge's records say CC BY 4.0, the institute's pages CC0: the more restrictive kept."
+
+[[piece]]
+id = "svalbard-dtm20"
+label = "Svalbard DTM 20"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["NOR"], name = ["Svalbard"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 20
+
+[[piece]]
+id = "svalbard-dtm5"
+label = "Svalbard DTM 5"
+method = "none"
+why = "it covers parts of Svalbard, which aren't outlined anywhere read: its download cells carry codes and no geometry, and no index is published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+
+[[piece]]
+id = "janmayen-dtm5"
+label = "Jan Mayen DTM 5"
+method = "none"
+why = "one zipped GeoTIFF with no index or footprint, and Natural Earth's 1:10m administrative areas hold no Jan Mayen to claim"
+[piece.metrics]
+surface = "ground"
+spacing_m = 5

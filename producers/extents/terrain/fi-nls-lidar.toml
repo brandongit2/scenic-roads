@@ -1,0 +1,20 @@
+name = "Maanmittauslaitos Laserkeilausaineisto 5 p"
+credit = "Maanmittauslaitos (National Land Survey of Finland)"
+licence = "NLS's terms of use for laser scanning data (paid)"
+licence_url = "https://www.maanmittauslaitos.fi/laserkeilausaineistot/kayttoehdot"
+source = "https://www.maanmittauslaitos.fi/en/maps-and-spatial-data/datasets-and-interfaces/product-descriptions/laser-scanning-data-5-p"
+theme = "terrain"
+availability = "paid"
+notes = "The national laser scanning programme's point clouds, at least 5 pulses/m² (\"the distance between laser points on the ground is on average no more than approx. 0.40 m\"; taken as 1/√5, 0.4472 m), sold by map sheet after strong identification. Its extent: the NLS status map's OGC API Features collection laserkeilaus, the production areas of 2019 to 2025 whose products are available (`status_p1_id` 5, \"Tuotteet saatavilla\"), by the year scanned; 2026's areas (the programme scans 20 points/m² from 2026, and 3 of its 17 areas are available) left out. Paid: claimed. The 2 m model (fi-nls-km2) is made from these scans."
+
+[[piece]]
+id = "lidar5p"
+label = "Laserkeilausaineisto 5 p"
+method = "stac"
+url = "https://tilannekartta.maanmittauslaitos.fi/api/collections/laserkeilaus"
+page = 1000
+filter = { status_p1_id = ["5"], year = ["2019", "2020", "2021", "2022", "2023", "2024", "2025"] }
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 0.4472
+year = { field = "year", date = "year" }

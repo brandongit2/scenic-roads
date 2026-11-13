@@ -1,0 +1,34 @@
+name = "Umhvørvisstovan hæddarmodell"
+credit = "Data from the Faroese Environment Agency, Umhvørvisstovan"
+licence = "Umhvørvisstovan's terms and conditions (free use with attribution)"
+licence_url = "https://www.foroyakort.fo/um-foeroyakort/terms-and-conditions-in-english"
+source = "https://www.foroyakort.fo/tak-datur-nidur/dtm-og-dsm-haeddarmodell/"
+theme = "terrain"
+availability = "open"
+notes = "The Faroes' elevation models on Føroyakort's download page, each one GeoTIFF: the 10 m terrain model (FO_DTM_2009_10m.tif, from COWI's photo flights of 2009, ArcticDEM where they had no data) and the 2 m surface model (FO_DSM_2015_FOTM_2M.tif, made in 2015 by the Danish mapping agency, SDFE, from ArcticDEM; also published at 5 and 10 m). The files have no overviews (a mask of theirs would be the whole file, 66 MB and 1.3 GB): their extent is the islands they model, as Natural Earth's 1:10m administrative areas (v5.1.2) draw the Faroes, claimed. No lidar of the Faroes is published."
+
+[[piece]]
+id = "dtm"
+label = "DTM 2009 10 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["FRO"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 10
+year = 2009
+
+[[piece]]
+id = "dsm"
+label = "DSM 2015 2 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["FRO"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 2
+year = 2015

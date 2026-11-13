@@ -1,0 +1,17 @@
+name = "Helsingin korkeusmalli"
+credit = "Helsingin kaupunki, kaupunkimittauspalvelut"
+licence = "none read (the WCS states no fees and no access constraints)"
+licence_url = "https://kartta.hel.fi/ws/geoserver/avoindata/wcs?service=WCS&request=GetCapabilities&version=2.0.1"
+source = "https://kartta.hel.fi/ws/geoserver/avoindata/wcs?service=WCS&request=GetCapabilities&version=2.0.1"
+theme = "terrain"
+availability = "open"
+notes = "The City of Helsinki's elevation model, served by its open WCS as one coverage, Korkeusmalli_2021_1m (1 m, ETRS-GK25; Fees NONE, AccessConstraints NONE). The coverage's extent is a rectangle round the city, sea included; whether the model is of the ground alone, and its licence, aren't stated in what was read (the city's open-data catalogue, hri.fi, answered 403). The city has no outline in Natural Earth's 1:10m administrative areas (their Uusimaa is the region, some 9,000 km²; the city 214 km² of land): listed, not drawn."
+
+[[piece]]
+id = "dem"
+label = "Korkeusmalli 2021 1 m"
+method = "none"
+why = "the WCS gives only the rectangle round the city, and the city has no outline in Natural Earth's 1:10m administrative areas to claim"
+[piece.metrics]
+spacing_m = 1
+year = 2021

@@ -1,0 +1,27 @@
+name = "Stockholms stad SBK Höjdgrid"
+credit = "Stockholms stad, Stadsbyggnadskontoret"
+licence = "none stated (sold at the city planning committee's tariff)"
+licence_url = "https://kartor.stockholm/kartor-geodata/"
+source = "https://dataportalen.stockholm.se/dataportalen/srv/eng/csw"
+theme = "terrain"
+availability = "paid"
+notes = "The City of Stockholm's planning office's lidar products, as its GeoNetwork catalogue's records describe them: SBK Höjdgrid (2023), a 1 m grid interpolated from airborne laser scanning \"over Stockholms stad\" of 22 April to 7 May 2023, at least 16 ground points/m² (heights under buildings and bridges interpolated); and SBK Punktmoln (2025), flown 1 to 3 April 2025, 16 points/m², with no grid of it catalogued. Both are ordered at a cost (\"Kostnaden beräknas enligt stadsbyggnadsnämndens taxa\"); the records state no licence. The area stated is the city (the municipality), which Natural Earth's 1:10m administrative areas don't draw (their Stockholm is the county, some 6,300 km², the city 188): listed, not drawn."
+
+[[piece]]
+id = "grid"
+label = "SBK Höjdgrid 2023 1 m"
+method = "none"
+why = "the city's survey covers the municipality, which has no outline in Natural Earth's 1:10m administrative areas (Stockholm County would overstate it some thirty times), and no footprint or index is published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2023
+
+[[piece]]
+id = "points"
+label = "SBK Punktmoln 2025"
+method = "none"
+why = "as the grid: the municipality has no outline to claim, and no index is published"
+[piece.metrics]
+spacing_m = 0.25
+year = 2025

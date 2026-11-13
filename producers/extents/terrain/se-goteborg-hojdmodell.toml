@@ -1,0 +1,21 @@
+name = "Göteborgs Stad Höjdmodell 2022"
+credit = "Göteborgs Stad, Stadsbyggnadsförvaltningen"
+licence = "CC0-1.0"
+licence_url = "https://opengeodata.goteborg.se/files/hojdmodell/2022/hojdmodell_2022_en.pdf"
+source = "https://opengeodata.goteborg.se/files/hojdmodell/2022/hojdmodell_2022.html"
+theme = "terrain"
+availability = "open"
+notes = "The city's 0.5 m elevation model of the ground (GeoTIFFs of 1 km tiles in 10 km zips, SWEREF 99 12 00; interpolated from automatically classified ground points of airborne laser scanning on 9, 15 and 16 May 2022, 10 points/m², heights under buildings and over water interpolated; \"all of Gothenburg\"): the tile index (index_2022.shp) of the product's support files. Its stated accuracy, 0.05 m in height on hard flat surfaces, is the laser data's, not the grid's RMSE: left out."
+
+[[piece]]
+id = "dtm"
+label = "Höjdmodell 2022"
+method = "file"
+class = "index"
+url = "https://opengeodata.goteborg.se/downloads/hojdmodell/2022/hojdmodell_2022_metadata.zip"
+member = "index"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

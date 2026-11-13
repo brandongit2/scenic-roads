@@ -1,0 +1,20 @@
+name = "ÍslandsDEM v1.0"
+credit = "Náttúrufræðistofnun (Natural Science Institute of Iceland), ÍslandsDEM"
+licence = "CC-BY-4.0"
+licence_url = "https://gatt.natt.is/geonetwork/srv/api/records/e6712430-a63c-4ae5-9158-c89d16da6361/formatters/xml"
+source = "https://gatt.natt.is/geonetwork/srv/api/records/e6712430-a63c-4ae5-9158-c89d16da6361/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Iceland's national elevation model: a median mosaic of ArcticDEM's 2 m surface models (satellite stereo, 2008 onwards, most from 2012), co-registered to GLO-30, which fills its small gaps, \"one single DEM of Iceland\" (its record, dated 2020-02-23). The 2 m model downloads by cell from the national geoportal; its 10, 20 and 50 m resamples are single GeoTIFFs on the institute's FTP, with no overviews (the 10 m file 2.7 GB, a mask of it a whole download), and the geoportal's cells aren't a published layer of its WFS: claimed, Iceland as Natural Earth's 1:10m administrative areas (v5.1.2) draw it. Its stated accuracy, \"better than 0.5 m (Z)\" against drone lidar at five places, isn't an RMSE: left out. No national lidar is published."
+
+[[piece]]
+id = "dem"
+label = "ÍslandsDEM v1.0 2 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ISL"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 2

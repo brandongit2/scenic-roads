@@ -1,0 +1,20 @@
+name = "Lantmäteriet Markhöjdmodell"
+credit = "© Lantmäteriet"
+licence = "CC-BY-4.0"
+licence_url = "https://www.lantmateriet.se/globalassets/geodata/geodataprodukter/anvandningsvillkor_for_vardefulla_datamangder.pdf"
+source = "https://api.lantmateriet.se/stac-hojd/v1/collections/dtm-cog"
+theme = "terrain"
+availability = "open"
+notes = "The national bare-earth model's 10 km tiles: the items of Lantmäteriet's STAC collection dtm-cog (a cloud-optimised GeoTIFF each, SWEREF 99 TM), by the year their scanning ended (`end_datetime`, else `datetime`), each its cell as stated (`geometriskupplosning`: 1 m on every item); 4,952 of the 5,004 items state airborne laser scanning, 52 stereo photogrammetry (`huvudsakliglagesbestamningsmetod`), all of them a ground model (`hojdmodelltyp`). The items' `lagesosakerhethojd` (0.1, 0.2 or 0.6 m) is a position uncertainty, not stated to be an RMSE: left out. The tiles' own boxes (`proj:bbox`) sum 479,550 km² in SWEREF 99 TM, the pieces 473,195. The collection says CC-BY-4.0, Lantmäteriet's open-data page CC0: the more restrictive kept. Laserdata Skog (dsm-skoglig-copc, a point cloud under its own terms of use) adds no grid: not a piece."
+
+[[piece]]
+id = "mhm"
+label = "Markhöjdmodell 1 m"
+method = "stac"
+url = "https://api.lantmateriet.se/stac-hojd/v1/collections/dtm-cog"
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "geometriskupplosning" }
+year = [{ field = "end_datetime", date = "iso" }, { field = "datetime", date = "iso" }]

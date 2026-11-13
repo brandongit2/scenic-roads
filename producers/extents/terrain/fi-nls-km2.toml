@@ -1,0 +1,20 @@
+name = "Maanmittauslaitos Korkeusmalli 2 m"
+credit = "Maanmittauslaitos (National Land Survey of Finland)"
+licence = "CC-BY-4.0"
+licence_url = "https://www.maanmittauslaitos.fi/en/maps-and-spatial-data/datasets-and-interfaces/product-descriptions/elevation-model-2-m"
+source = "https://tilannekartta.maanmittauslaitos.fi/km2"
+theme = "terrain"
+availability = "open"
+notes = "The 2 m elevation model of the ground (from laser scanning of at least 0.5 points/m²; \"in some parts of the outer archipelago or the eastern border, the elevation model is not available\"): the NLS status map's OGC API Features collection km2 (the model's map sheets, dissolved by its quality class and the year each was updated, `update_year`), by year. The quality classes' accuracy is stated as \"on average 0.3 metres\" (class I) and \"between 0.3 metres and one metre\" (class II), not as an RMSE: left out. Free from MapSite's Download geospatial data section, an order whose e-mail gives the download link (the WCS and the file service need a free API key). The 0.5 p open lidar, thinned from the 5 p, is what the model is made from: not a piece."
+
+[[piece]]
+id = "km2"
+label = "Korkeusmalli 2 m"
+method = "stac"
+url = "https://tilannekartta.maanmittauslaitos.fi/api/collections/km2"
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+year = { field = "update_year", date = "year" }
