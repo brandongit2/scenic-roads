@@ -618,7 +618,7 @@ fn partners_are_a_sources_two_files() {
 }
 
 /// The terrain's declarations, pieces and score as producers/extents/ made them.
-const REAL: [(&str, &[u8]); 417] = [
+const REAL: [(&str, &[u8]); 419] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/terrain/score.toml")),
     ("ad-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/ad-mdt.geojson")),
     ("ad-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/ad-mdt.toml")),
@@ -939,6 +939,8 @@ const REAL: [(&str, &[u8]); 417] = [
     ("jp-nagano-dem.toml", include_bytes!("../../../../../producers/extents/terrain/jp-nagano-dem.toml")),
     ("jp-nagasaki-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-nagasaki-lidar.geojson")),
     ("jp-nagasaki-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/jp-nagasaki-lidar.toml")),
+    ("jp-osaka-ground.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-osaka-ground.geojson")),
+    ("jp-osaka-ground.toml", include_bytes!("../../../../../producers/extents/terrain/jp-osaka-ground.toml")),
     ("jp-rinya-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-rinya-dem.geojson")),
     ("jp-rinya-dem.toml", include_bytes!("../../../../../producers/extents/terrain/jp-rinya-dem.toml")),
     ("jp-saitama-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-saitama-lidar.geojson")),
@@ -1157,6 +1159,7 @@ fn the_real_terrain_files_are_taken() {
         ("jp-gifu-dem", 1),
         ("jp-nagano-dem", 1),
         ("jp-nagasaki-lidar", 1),
+        ("jp-osaka-ground", 1),
         ("jp-wakayama-lidar", 1),
         ("kr-ngii-dem", 1),
         ("lk-survey-lidar", 1),

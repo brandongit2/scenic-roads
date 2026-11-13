@@ -1,0 +1,18 @@
+name = "大阪府 グラウンドデータ"
+credit = "大阪府 (Osaka Prefecture), 都市整備部"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/270008_grounddata"
+theme = "terrain"
+availability = "open"
+notes = "Osaka Prefecture's ground points from its airborne lidar of FY2019 and FY2020, thinned to 0.5 m (4 points/m²), CC BY 4.0: ZIPs per municipality on the G-spatial record (105), each zip's members its map-level-1250 sheets (06pd6113_grd.txt: a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m, plane rectangular zone VI), some with a sheet index (zk1250_*.shp). Of the zips' download links, 18 answered 500 on 13 Nov 2026 (93 of the 105 are stored under names the record mangled, www.geospatial.jp prepended), and the host's firewall then refused this client (403): the zips' central directories, read by range request with `list = \"zip\"` and `urls`, could be read once it answers. The DEM the record names isn't published on it. No accuracy is stated."
+
+[[piece]]
+id = "ground"
+label = "ground points 0.5 m (FY2019-20)"
+method = "none"
+why = "18 of the record's 105 ZIPs answer 500, and the host refused this client (403) after the rest were tried: no sheet list read"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
