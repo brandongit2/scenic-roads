@@ -1,7 +1,6 @@
 /data/
 /target/
 /tools/*
-!/tools/bench/
 !/tools/dev/
 !/tools/launcher/
 /tools/launcher/scenic-launcher

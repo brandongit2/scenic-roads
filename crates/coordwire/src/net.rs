@@ -219,8 +219,7 @@ pub fn same(a: &str, b: &str) -> bool {
 
 /// The port the map's server listens on unless `--port` says otherwise (not 8080: other tools
 /// default to it). Repeated where another language can't read this: web/vite.config.ts, the
-/// status app (tools/status/main.swift), tools/bench,
-/// .claude/launch.json and the docs; the server's test pins it.
+/// status app (tools/status/main.swift), .claude/launch.json and the docs; the server's test pins it.
 pub const DEFAULT_PORT: u16 = 7311;
 
 /// This Mac's addresses for others: its Tailscale address (100.64.0.0/10), then its LAN name. In a

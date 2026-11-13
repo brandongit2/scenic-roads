@@ -4,7 +4,10 @@
 // make (bldfield.worker.ts: v, w and f from each byte of its tiles); R16F over every binade it reaches,
 // with the mantissas at each rounding boundary, of either sign, and random values to a million.
 //
-//   node tools/bench/packcheck.mjs [--port 9333]    (a Chrome as tools/bench/bench.mjs starts one)
+// Against a Chrome drawing on the real GPU, with remote debugging:
+//   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=9333 \
+//     --user-data-dir=<scratch>/chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist about:blank
+//   node tools/check/packcheck.mjs [--port 9333]
 import fs from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 

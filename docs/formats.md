@@ -1207,8 +1207,6 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   (`accepted/regions/@outlines/`) and in memory for the zooms asked: 0.9 MB for the world at z0, 4.7 MB at z4 (the map asks the view's box from z3), against 142 MB for every full outline.
   `/api/regions` answers from the listing kept on the Mac (`accepted/regions/@listed.json`), so at
   once; it follows the folder within a minute.
-  `/api/coverage` (the map's coverage as GeoJSON, one feature per outline entry, with
-  `regions` and `catalog`: the bench's views).
 - **Names in answers:** MVT tiles and API JSON carry `main` and, when any, `sub`; JSON layer files,
   ferry blocks and marks tiles carry `main` only where it differs from the name; popup records are
   served as stored.

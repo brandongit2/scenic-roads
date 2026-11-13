@@ -365,7 +365,7 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   // After a drag's release the grabbed ground carries on along the pointer's path, as if the
   // pointer kept moving at its release speed, decaying (GLIDE_TAU_MS). Each frame is the same pan
   // step as the drag's. It stops on any new pointer, wheel or pinch (stopInertia), and when
-  // anything else moves the camera (a fly-to, the self-benchmark's scripted views) or the map's
+  // anything else moves the camera (a fly-to, a link's view) or the map's
   // limits hold it still. Finer terrain under the grabbed point re-picks it where it is seen.
   let glide = 0;
   let glideCam: string | null = null;

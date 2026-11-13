@@ -1,7 +1,7 @@
 // Floats packed into the GPU's small float formats off the main thread (the far field's worker), so
 // the page uploads them as they are stored: a texture given as 32-bit floats is converted by the
 // browser's GPU process while the page's upload waits, a quarter of a second for a city's tiles
-// (task #222). Each value comes out as the GPU process's own conversion makes it (tools/bench/
+// (task #222). Each value comes out as the GPU process's own conversion makes it (tools/check/
 // packcheck.mjs compares the two in Chrome, for every value the field's class textures can hold).
 
 const f32 = new Float32Array(1);

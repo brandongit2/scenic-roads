@@ -71,7 +71,6 @@ import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 import { EVAL, evalState, installEval } from './evalmode';
 import { CMP, cmpState } from './bldcmp';
-import { BENCH, benchHash, runBench } from './selfbench';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -101,18 +100,18 @@ async function main() {
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
   // The profile in use: the link's (one it names that's gone, or a link naming none: the default
-  // profile; the link's settings are laid over it), else the last session's. The self-benchmark and
-  // the eval modes take the seed: fixed settings, whatever the server's profiles.
+  // profile; the link's settings are laid over it), else the last session's. The eval modes take the
+  // seed: fixed settings, whatever the server's profiles.
   const listing = await profilesReady;
   const known = (id: string | null): id is string => !!id && listing.profiles.some((p) => p.id === id);
-  const hasLink = !BENCH && location.hash.length > 1;
+  const hasLink = location.hash.length > 1;
   const linkPid = hasLink ? profileIdOf(location.hash) : null;
   const lastPid = prefs.load<string | null>('profile', null);
   const activePid = hasLink ? (known(linkPid) ? linkPid : listing.default) : known(lastPid) ? lastPid : listing.default;
   const linkBase = fromProfile(listing.profiles.find((p) => p.id === activePid)!.settings);
   const saved = fromSaved(prefs.load('state', null), linkBase);
   // The opening view, before the metadata: only `bd=` in a link depends on it, not the view.
-  const pre = BENCH ? fromHash(benchHash(), false, seed) : hasLink ? fromHash(location.hash, false, linkBase) : saved;
+  const pre = hasLink ? fromHash(location.hash, false, linkBase) : saved;
   const v = pre.view;
   // (Eval mode: the map fills the window, the panels under it.)
   if (EVAL || CMP) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
@@ -172,8 +171,7 @@ async function main() {
   // only with the buildings: without, the saved settings stay.)
   if (listing === FALLBACK) toast('The settings profiles didn\u2019t load: the built-in Default is shown, and profiles can\u2019t be changed');
   else if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
-  // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
-  const linked = BENCH ? fromHash(benchHash(), hasBuildings, seed) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  const linked = hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings, seed)) : CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);
@@ -1309,7 +1307,6 @@ async function main() {
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
   (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours, regions, catalogue: () => watch };
-  if (BENCH) void runBench((window as any).__app);
 }
 
 /**

@@ -493,7 +493,6 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list))
         .route("/api/regions/outlines", get(regions::outlines))
-        .route("/api/coverage", get(regions::coverage))
         .route("/api/downloads", get(downloads::get_status))
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))
@@ -506,7 +505,6 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/api/profiles/{id}", axum::routing::put(profiles::put).delete(profiles::delete))
         .route("/api/profiles/{id}/default", axum::routing::post(profiles::set_default))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
-        .route("/api/bench", axum::routing::post(bench_h))
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
@@ -956,64 +954,6 @@ fn credits_of(cat: &store::catalogue::Catalogue) -> serde_json::Value {
     }
 }
 
-/// A result of the in-page self-benchmark (web/src/selfbench.ts): its JSON saved as
-/// `<home>/bench/<name>.json` (`?name=`, letters, digits, `-` and `_` alone), for analysis
-/// (tools/bench/inpage.mjs). At most 2 MB each (axum's body limit), and the folder at most
-/// BENCH_MAX_FILES results and BENCH_MAX_BYTES (save_bench).
-async fn bench_h(State(s): State<S>, RawQuery(q): RawQuery, b: axum::body::Bytes) -> Response {
-    let name = q.as_deref().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("name="))).filter(|n| {
-        !n.is_empty() && n.len() <= 120 && n.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-    });
-    let Some(name) = name.map(str::to_owned) else {
-        return (StatusCode::BAD_REQUEST, "?name= (letters, digits, - and _)").into_response();
-    };
-    if serde_json::from_slice::<serde_json::Value>(&b).is_err() {
-        return (StatusCode::BAD_REQUEST, "a JSON body").into_response();
-    }
-    let dir = s.home.join("bench");
-    match tokio::task::spawn_blocking(move || save_bench(&dir, &name, &b)).await {
-        Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
-        Ok(Err(BenchSave::Full(why))) => (StatusCode::INSUFFICIENT_STORAGE, why).into_response(),
-        Ok(Err(BenchSave::Io(e))) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-/// The most benchmark results `<home>/bench/` keeps, and their most bytes: past either, a new
-/// result is refused (a result saved again under its own name replaces it).
-const BENCH_MAX_FILES: usize = 500;
-const BENCH_MAX_BYTES: u64 = 200 << 20;
-
-#[derive(Debug)]
-enum BenchSave {
-    Full(String),
-    Io(std::io::Error),
-}
-
-/// Saves one result as `<dir>/<name>.json`, unless the folder would then hold more than
-/// BENCH_MAX_FILES results or BENCH_MAX_BYTES.
-fn save_bench(dir: &std::path::Path, name: &str, body: &[u8]) -> std::result::Result<(), BenchSave> {
-    std::fs::create_dir_all(dir).map_err(BenchSave::Io)?;
-    let file = format!("{name}.json");
-    let (mut files, mut bytes) = (0usize, 0u64);
-    for e in std::fs::read_dir(dir).map_err(BenchSave::Io)?.flatten() {
-        if e.file_name().to_str() == Some(file.as_str()) {
-            continue;
-        }
-        files += 1;
-        bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
-    }
-    if files + 1 > BENCH_MAX_FILES || bytes + body.len() as u64 > BENCH_MAX_BYTES {
-        return Err(BenchSave::Full(format!(
-            "{} holds {files} results, {} MB: at most {BENCH_MAX_FILES} and {} MB; move old results away first",
-            dir.display(),
-            bytes >> 20,
-            BENCH_MAX_BYTES >> 20
-        )));
-    }
-    std::fs::write(dir.join(file), body).map_err(BenchSave::Io)
-}
-
 async fn catalogue_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
     let agent = tokio::task::spawn_blocking(move || s2.data.lead_status()).await.unwrap_or(serde_json::Value::Null);
@@ -1041,8 +981,7 @@ async fn catalogue_h(State(s): State<S>) -> Response {
         "created": cat.created,
         "units": cat.units.len(),
         "layers": cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!({"encoding": l.encoding, "minzoom": l.minzoom, "maxzoom": l.maxzoom, "version": salted(&s, s.data.layer_version(k))}))).collect::<serde_json::Map<_, _>>(),
-        // The regions it was built for; their outlines are /api/coverage's (this is asked every
-        // minute).
+        // The regions it was built for (this is asked every minute).
         "coverage": {"regions": *regions::recorded_list_kept(&cat)},
         "credits": credits_of(&cat),
         "online": s.data.online(),
@@ -1067,27 +1006,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bench_results_are_capped() {
-        let dir = std::env::temp_dir().join(format!("bench-cap-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        for i in 0..BENCH_MAX_FILES {
-            save_bench(&dir, &format!("r{i}"), b"{}").unwrap();
-        }
-        // full: a new one refused, one saved again under its own name still replaced
-        assert!(matches!(save_bench(&dir, "new", b"{}"), Err(BenchSave::Full(w)) if w.contains("at most 500")));
-        save_bench(&dir, "r0", b"{\"a\":1}").unwrap();
-        assert_eq!(std::fs::read(dir.join("r0.json")).unwrap(), b"{\"a\":1}");
-        std::fs::remove_dir_all(&dir).ok();
-        // bytes: past BENCH_MAX_BYTES refused
-        let big = vec![b' '; (BENCH_MAX_BYTES / 2 + 1) as usize];
-        save_bench(&dir, "a", &big).unwrap();
-        assert!(matches!(save_bench(&dir, "b", &big), Err(BenchSave::Full(_))));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
     fn the_default_port_is_not_8080() {
-        // Other tools default to 8080; the docs, the status app, the bench and the dev proxy repeat this number.
+        // Other tools default to 8080; the docs, the status app and the dev proxy repeat this number.
         assert_eq!(coordwire::net::DEFAULT_PORT, 7311); // (pool port: not bound)
     }
 

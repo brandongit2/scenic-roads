@@ -9,8 +9,6 @@
 //!                                   narrow it), a feature per region, made once per zoom and version
 //!                                   and kept on this Mac (made for every zoom when the version
 //!                                   changes); from the accepted copy kept on this Mac, else the catalogue's
-//!   GET    /api/coverage            the coverage the catalogue was built for: its regions' outlines,
-//!                                   simplified (GeoJSON), and the regions
 //!
 //! Outlines come from the latest OSM pass (the catalogue's `global.outlines`); records and strings are
 //! read once per catalogue, rings when an outline is drawn or tested.
@@ -1275,85 +1273,6 @@ pub fn recorded_list_kept(cat: &Arc<store::catalogue::Catalogue>) -> Arc<Vec<Val
     l
 }
 
-/// The recorded regions' outlines as GeoJSON features, one per entry in each recipe's order, with
-/// the properties the panel reads: region, region_name, entry, and an osm: entry's area fields when
-/// the pass's outlines can be read (`ix`). Each borrows its points from `regions`, written out as
-/// they are (as a `Value`, the world's were ~650 MB and 7 million allocations a request, #1092); its
-/// members in the order a `Value` writes them.
-fn recorded_features<'a>(regions: &'a [DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<Feature<'a>> {
-    let mut feats = Vec::new();
-    for r in regions {
-        for entry in &r.outline {
-            let Some(coords) = r.shapes.get(entry) else { continue };
-            let mut props = json!({ "region": r.id, "region_name": r.name, "entry": entry });
-            let area = entry
-                .strip_prefix("osm:")
-                .and_then(|id| id.parse::<u64>().ok())
-                .and_then(|id| ix.and_then(|ix| ix.by_id(id).map(|o| ix.summary(o))));
-            if let (Some(Value::Object(a)), Some(p)) = (area, props.as_object_mut()) {
-                for (k, v) in a {
-                    p.entry(k).or_insert(v);
-                }
-            }
-            feats.push(Feature {
-                geometry: Geometry { coordinates: coords, kind: "MultiPolygon" },
-                properties: props,
-                kind: "Feature",
-            });
-        }
-    }
-    feats
-}
-
-/// A recorded outline entry as a GeoJSON feature (`recorded_features`).
-#[derive(serde::Serialize)]
-struct Feature<'a> {
-    geometry: Geometry<'a>,
-    properties: Value,
-    #[serde(rename = "type")]
-    kind: &'static str,
-}
-
-#[derive(serde::Serialize)]
-struct Geometry<'a> {
-    coordinates: &'a Vec<Vec<Vec<[f64; 2]>>>,
-    #[serde(rename = "type")]
-    kind: &'static str,
-}
-
-/// The coverage for drawing, as the current catalogue recorded it, with the regions it was built for
-/// (`regions`), so the panel can tell which regions aren't on the map yet (added or redrawn since)
-/// and works away from home.
-pub async fn coverage(State(s): State<S>) -> Response {
-    let s2 = s.clone();
-    tokio::task::spawn_blocking(move || -> Result<Response> {
-        let cat = s2.data.catalogue();
-        let regions = recorded(&cat);
-        // The areas' fields are a nicety: without the pass's outlines (the NAS away, not mirrored
-        // yet) the outlines are drawn all the same.
-        let ix = s2.areas.get(&s2).unwrap_or_else(|e| {
-            eprintln!("coverage: the pass's outlines: {e:#}");
-            None
-        });
-        // (Its members in the order a `Value` writes them.)
-        #[derive(serde::Serialize)]
-        struct Collection<'a> {
-            catalog: u64,
-            features: Vec<Feature<'a>>,
-            regions: &'a [Value],
-            #[serde(rename = "type")]
-            kind: &'static str,
-        }
-        let features = recorded_features(&regions, ix.as_deref());
-        let listed = recorded_list_kept(&cat);
-        let body = Collection { catalog: cat.n, features, regions: &listed, kind: "FeatureCollection" };
-        Ok(Json(body).into_response())
-    })
-    .await
-    .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
-    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1561,29 +1480,6 @@ mod tests {
         s.data.pool().unwrap().mark_offline("test");
         let v = json_of(list(State(s.clone())).await).await;
         assert_eq!((ids(&v), v["offline"].as_bool()), (vec!["borders".to_string()], Some(true)));
-        assert_eq!(coverage(State(s.clone())).await.status(), StatusCode::OK, "drawn from the catalogue, away too");
-    }
-
-    /// /api/coverage's body: the bytes its `Value` writes (#1092: written from the regions as they
-    /// are, its members in a `Value`'s order).
-    #[tokio::test]
-    async fn the_coverage_is_written_as_its_value() {
-        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let s = crate::test_state(home.path(), &store::nasfs::NasRoot::local_for_test(nas.path()));
-        let ring = json!([[1.0, 50.0], [2.5, 50.0], [2.0, 51.125], [1.0, 50.0]]);
-        let mut c = catalogue(json!({"recorded": true, "regions": [
-            {"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"], "shapes": {"poly:b.poly": [[ring]], "osm:7": [[ring]]}},
-            {"id": "a", "name": "A", "outline": ["place:1,2,3"], "shapes": {}},
-        ]}));
-        c.n = 1_000_000;
-        s.data.set_map(Arc::new(c));
-        let body = axum::body::to_bytes(coverage(State(s.clone())).await.into_body(), usize::MAX).await.unwrap();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(std::str::from_utf8(&body).unwrap(), v.to_string());
-        assert_eq!((v["type"].as_str(), v["catalog"].as_u64()), (Some("FeatureCollection"), Some(1_000_000)));
-        assert_eq!(v["features"].as_array().unwrap().len(), 2);
-        assert_eq!(v["features"][1]["geometry"], json!({"type": "MultiPolygon", "coordinates": [[ring]]}));
-        assert_eq!(ids(&v), ["b", "a"]);
     }
 
     fn catalogue(coverage: Value) -> store::catalogue::Catalogue {
@@ -1601,15 +1497,6 @@ mod tests {
         ]}));
         let r = recorded(&c);
         assert_eq!(r.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
-        // A feature per entry with an outline, with what the panel reads (an osm: entry's area
-        // fields come from the pass's outlines, none here).
-        let feats = recorded_features(&r, None);
-        let f = serde_json::to_value(&feats).unwrap();
-        assert_eq!(f.as_array().unwrap().len(), 1);
-        // (Written as the `Value` of it is: the same bytes.)
-        assert_eq!(serde_json::to_string(&feats).unwrap(), f.to_string());
-        assert_eq!(f[0]["properties"], json!({"region": "b", "region_name": "B", "entry": "poly:b.poly"}));
-        assert_eq!(f[0]["geometry"], json!({"type": "MultiPolygon", "coordinates": [[ring]]}));
         // The regions, outlines left out; every region recorded, drawn or not.
         assert_eq!(
             recorded_list(&c),

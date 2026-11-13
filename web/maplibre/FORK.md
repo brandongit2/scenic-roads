@@ -250,7 +250,7 @@ Hebrew, Latin with combining marks not precomposed), in two typefaces; the app's
   moving or not. A tile is refined only once it has data (it stands in while its finer tiles load).
   The out-of-view cache keeps as many more tiles as the cover's finer ones (`_detailTiles`). Until
   the refinement is done the source isn't `loaded()` (`_detailPending`), so `idle` waits for the
-  finer tiles (a screenshot, a benchmark's settle); `_detailOffset` holds each finer tile's zooms
+  finer tiles (a screenshot); `_detailOffset` holds each finer tile's zooms
   beyond its screen tile's, the same Map while they are the same (the drapes' sizes aren't worked
   out again). Both covers are worked out each update (the finer one 0.4–0.6 ms at saguenay's z13,
   60° pitch, 1440 × 900, in Node on the M1; the choice ~0.1 ms): the finer cover moves with the
@@ -313,7 +313,7 @@ Hebrew, Latin with combining marks not precomposed), in two typefaces; the app's
   `idle` comes at least 100 ms after the last camera change (a frame is scheduled for the hold's
   end, only while the hold alone keeps the map from idle; a map still loading waits for its tiles as
   upstream), and so does everything that waits for it: the app's `idle` listeners, bldcmp's and
-  evalmode's waits, the benches' settling.
+  evalmode's waits.
 - **Tile covers shared between sources** (`Style#_updateSources`, `TileManager#_coverMemo`): within
   one update, sources asking `coveringTiles` with the same options (tile size, zoom range, rounding,
   overscaling, content elevation, zoom function) share one answer (a copy each). The app's 28 sources

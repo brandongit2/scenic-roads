@@ -433,7 +433,7 @@ equator).
   tile's nearest loaded ancestor (however many levels up: zooming in fast skips levels never asked for) drawn over its area only (a ray that never enters that area discarded at once);
   failures retried after 2, 4 … 60 s; a 204 means nothing there or below. The worker packs the
   class textures and the roof ground into their GPU formats (`packfloat.ts`, as the browser would
-  convert them: `tools/bench/packcheck.mjs`), so an upload is a copy.
+  convert them: `tools/check/packcheck.mjs`), so an upload is a copy.
 - Elevations: each tile's grid sampled from the terrain as drawn (the fork's
   `elevationForLngLatFn`), again when the terrain's tiles in view change, within 3 ms a frame
   (`ELEV_BUDGET_MS`), the longest since sampled first; a tile without a hull yet at once. A tile
@@ -452,7 +452,7 @@ equator).
 **Quality and cost** (`tools/bldcheck`, against full detail shrunk in linear light, σ 8 px blur):
 within about 1 L* of full detail in a district's tone from z13 to z7, the CN Tower standing as a
 spike to z9; ~0.6–1.7 ms of GPU a frame on the M4 at 2880 × 1626 (budget 2 ms). On the M1 Pro at the
-same size, Tokyo at zoom 14 and 60° (`tools/bench/views.mjs --native`, the frame's GPU time, task
+same size, Tokyo at zoom 14 and 60° (the frame's GPU time, task
 #222): 53 ms before the march's changes, 40 ms after (Manhattan 55 → 41, Hong Kong 28 → 22; orbiting
 Tokyo 56 → 36), ~8 ms with `?bldfield=off`; a still view repainted, with the cache, 7.7 ms (Manhattan
 9.1, Hong Kong 7.5). Moving, the field still holds the frame rate near 30 fps there.
