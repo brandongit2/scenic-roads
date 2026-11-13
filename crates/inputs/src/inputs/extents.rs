@@ -156,6 +156,24 @@ impl Scale {
     }
 }
 
+/// A colour, as `#rrggbb`.
+pub type Colour = [u8; 3];
+
+/// `#rrggbb`'s colour.
+pub fn colour_of(s: &str) -> Option<Colour> {
+    let h = s.strip_prefix('#').filter(|h| h.len() == 6 && h.bytes().all(|b| b.is_ascii_hexdigit()))?;
+    let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some([c(0)?, c(2)?, c(4)?])
+}
+
+/// A class of a metric's layer: the values up to `upto` (in the metric's unit) above the class
+/// before's; the last class, all the rest (`upto` None).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Class {
+    pub upto: Option<f64>,
+    pub label: String,
+}
+
 /// A metric of a theme's score.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Metric {
@@ -164,6 +182,35 @@ pub struct Metric {
     /// None for the primary metric.
     pub weight: Option<f64>,
     pub scale: Scale,
+    /// Its layer's classes, edges ascending (a log or linear scale's; empty: its layer a ramp).
+    pub classes: Vec<Class>,
+    /// Its layer's colour of each word (a `values` scale's; empty: the ramp at the word's value).
+    pub colours: BTreeMap<String, Colour>,
+}
+
+impl Metric {
+    /// The class holding `v`, a value in the metric's unit (the first whose `upto` is at or above
+    /// it, else the last); None where it has no classes.
+    pub fn class_of(&self, v: f64) -> Option<usize> {
+        if self.classes.is_empty() {
+            return None;
+        }
+        Some(self.classes.iter().position(|c| c.upto.is_some_and(|u| v <= u)).unwrap_or(self.classes.len() - 1))
+    }
+
+    /// Where class `k` sits on the theme's ramp (0 worst to 1 best): the classes evenly spread
+    /// over it, the class nearer `best` the higher.
+    pub fn class_at(&self, k: usize) -> f64 {
+        let n = self.classes.len();
+        let t = if n > 1 { k as f64 / (n - 1) as f64 } else { 1.0 };
+        let finer_best =
+            matches!(self.scale, Scale::Log { worst, best } | Scale::Linear { worst, best } if best < worst);
+        if finer_best {
+            1.0 - t
+        } else {
+            t
+        }
+    }
 }
 
 /// A theme's `score.toml` (docs/inputs.md §6.11).
@@ -174,6 +221,14 @@ pub struct Score {
     pub within: f64,
     pub share: f64,
     pub metrics: BTreeMap<String, Metric>,
+    /// The score layer's name (None: the server's own).
+    pub label: Option<String>,
+    /// The layers' sequential ramp, worst to best, its colours evenly spaced (empty: the server's
+    /// own).
+    pub ramp: Vec<Colour>,
+    /// How far the score layer's class colour goes towards the next coarser class's as the
+    /// tie-break goes from best to worst (0 to 1 of the way; 0: not at all).
+    pub shade: f64,
 }
 
 impl Score {
@@ -208,15 +263,27 @@ impl Score {
         let vals: BTreeMap<String, Option<f64>> =
             self.metrics.keys().map(|k| (k.clone(), self.value(k, metrics.get(k)))).collect();
         let Some(lead) = vals.get(&self.primary).copied().flatten() else { return (None, vals) };
+        let rest = self.rest(&vals).unwrap_or(lead);
+        (Some((1.0 - self.share) * lead + self.share * rest), vals)
+    }
+
+    /// The tie-break of a piece's metric values (`of`'s rest): the weighted mean of the other
+    /// metrics it states; none stated, or their weights 0, the primary's value (None where that's
+    /// unstated too).
+    pub fn rest(&self, vals: &BTreeMap<String, Option<f64>>) -> Option<f64> {
         let (mut w, mut sum) = (0.0, 0.0);
-        for (k, v) in &vals {
-            if let (false, Some(v), Some(weight)) = (*k == self.primary, v, self.metrics[k].weight) {
+        for (k, v) in vals {
+            if let (false, Some(v), Some(weight)) = (*k == self.primary, v, self.metrics.get(k).and_then(|m| m.weight))
+            {
                 w += weight;
                 sum += weight * v;
             }
         }
-        let rest = if w > 0.0 { sum / w } else { lead };
-        (Some((1.0 - self.share) * lead + self.share * rest), vals)
+        if w > 0.0 {
+            Some(sum / w)
+        } else {
+            vals.get(&self.primary).copied().flatten()
+        }
     }
 }
 
@@ -229,7 +296,8 @@ fn metric(name: &str, t: &toml::Value, primary: bool) -> std::result::Result<Met
     let Some(t) = t.as_table() else { return Err(vec![format!("metric.{name} isn't a table")]) };
     let mut bad = Vec::new();
     for k in t.keys() {
-        if !["label", "unit", "weight", "scale", "worst", "best", "values"].contains(&k.as_str()) {
+        if !["label", "unit", "weight", "scale", "worst", "best", "values", "classes", "colours"].contains(&k.as_str())
+        {
             bad.push(format!("metric.{name}: `{k}` isn't one of a metric's fields"));
         }
     }
@@ -317,10 +385,95 @@ fn metric(name: &str, t: &toml::Value, primary: bool) -> std::result::Result<Met
             None
         }
     };
+    let classes = match (t.get("classes"), &scale) {
+        (None, _) => Vec::new(),
+        (Some(c), Some(Scale::Log { .. } | Scale::Linear { .. })) => classes(name, c, &mut bad),
+        (Some(_), _) => {
+            bad.push(format!(
+                "metric.{name}: `classes` are a log or linear scale's (a `values` table takes `colours`)"
+            ));
+            Vec::new()
+        }
+    };
+    let colours = match (t.get("colours"), &scale) {
+        (None, _) => BTreeMap::new(),
+        (Some(c), Some(Scale::Values(w))) => word_colours(name, c, w, &mut bad),
+        (Some(_), _) => {
+            bad.push(format!(
+                "metric.{name}: `colours` are a `values` table's (a log or linear scale takes `classes`)"
+            ));
+            BTreeMap::new()
+        }
+    };
     match (bad.is_empty(), label, scale) {
-        (true, Some(l), Some(scale)) => Ok(Metric { label: l.to_string(), unit, weight, scale }),
+        (true, Some(l), Some(scale)) => Ok(Metric { label: l.to_string(), unit, weight, scale, classes, colours }),
         _ => Err(bad),
     }
+}
+
+/// A metric's `classes`: a list of tables, each a `label` and, but the last, an `upto` (positive,
+/// each above the one before); the last takes the rest and has none.
+fn classes(name: &str, c: &toml::Value, bad: &mut Vec<String>) -> Vec<Class> {
+    let Some(list) = c.as_array().filter(|l| l.len() >= 2) else {
+        bad.push(format!("metric.{name}: `classes` isn't a list of two or more classes"));
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut last = 0.0;
+    for (k, c) in list.iter().enumerate() {
+        let n = k + 1;
+        let Some(t) = c.as_table() else {
+            bad.push(format!("metric.{name}: class {n} isn't a table"));
+            continue;
+        };
+        if let Some(f) = t.keys().find(|f| !["upto", "label"].contains(&f.as_str())) {
+            bad.push(format!("metric.{name}: class {n}: `{f}` isn't one of a class's fields"));
+        }
+        let label = t.get("label").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+        if label.is_none() {
+            bad.push(format!("metric.{name}: class {n}: `label` is required"));
+        }
+        let upto = t.get("upto").map(|u| num(u).filter(|u| *u > 0.0));
+        match (upto, n == list.len()) {
+            (Some(Some(u)), false) if u > last => last = u,
+            (Some(Some(u)), false) => {
+                bad.push(format!("metric.{name}: class {n}: `upto` {u} isn't above the class before's, {last}"))
+            }
+            (Some(None), _) => bad.push(format!("metric.{name}: class {n}: `upto` isn't a positive number")),
+            (None, false) => bad.push(format!("metric.{name}: class {n}: `upto` is required (but the last's)")),
+            (Some(Some(_)), true) => bad.push(format!("metric.{name}: the last class takes the rest: no `upto`")),
+            (None, true) => {}
+        }
+        out.push(Class { upto: upto.flatten(), label: label.unwrap_or("").to_string() });
+    }
+    out
+}
+
+/// A `values` metric's `colours`: each of its words' `#rrggbb`.
+fn word_colours(
+    name: &str,
+    c: &toml::Value,
+    w: &BTreeMap<String, f64>,
+    bad: &mut Vec<String>,
+) -> BTreeMap<String, Colour> {
+    let Some(c) = c.as_table() else {
+        bad.push(format!("metric.{name}: `colours` isn't a table of its words' colours"));
+        return BTreeMap::new();
+    };
+    let mut out = BTreeMap::new();
+    for (word, h) in c {
+        match (w.contains_key(word), h.as_str().and_then(colour_of)) {
+            (true, Some(h)) => {
+                out.insert(word.clone(), h);
+            }
+            (false, _) => bad.push(format!("metric.{name}: `colours` names {word:?}, not one of its values")),
+            (true, None) => bad.push(format!("metric.{name}: the colour of {word:?} isn't \"#rrggbb\"")),
+        }
+    }
+    if let Some(word) = w.keys().find(|k| !c.contains_key(*k)) {
+        bad.push(format!("metric.{name}: `colours` gives {word:?} none (every word takes one)"));
+    }
+    out
 }
 
 /// A `score.toml` read, or what's wrong with it (its shape, and the guarantee).
@@ -332,7 +485,7 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     };
     let mut bad = Vec::new();
     for k in t.keys() {
-        if !["theme", "primary", "within", "share", "metric"].contains(&k.as_str()) {
+        if !["theme", "primary", "within", "share", "metric", "label", "ramp", "shade"].contains(&k.as_str()) {
             bad.push(format!("`{k}` isn't one of a score's fields"));
         }
     }
@@ -360,6 +513,40 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     if share.is_none() {
         bad.push("`share` is required, a number from 0 to under 1".into());
     }
+    let label = match t.get("label") {
+        None => None,
+        Some(v) => match v.as_str().filter(|s| !s.trim().is_empty()) {
+            Some(s) => Some(s.to_string()),
+            None => {
+                bad.push("`label` (the score layer's name) isn't a name".into());
+                None
+            }
+        },
+    };
+    let ramp: Vec<Colour> = match t.get("ramp").map(|r| r.as_array().filter(|r| r.len() >= 2)) {
+        None => Vec::new(),
+        Some(Some(r)) => r
+            .iter()
+            .filter_map(|c| {
+                let got = c.as_str().and_then(colour_of);
+                if got.is_none() {
+                    bad.push(format!("`ramp`: {c} isn't \"#rrggbb\""));
+                }
+                got
+            })
+            .collect(),
+        Some(None) => {
+            bad.push("`ramp` isn't a list of two or more colours, worst to best".into());
+            Vec::new()
+        }
+    };
+    let shade = match t.get("shade") {
+        None => 0.0,
+        Some(v) => num(v).filter(|s| (0.0..=1.0).contains(s)).unwrap_or_else(|| {
+            bad.push("`shade` isn't a number from 0 to 1".into());
+            0.0
+        }),
+    };
     let mut metrics = BTreeMap::new();
     for (name, m) in tables {
         match metric(name, m, *name == primary) {
@@ -382,8 +569,11 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
             _ => bad.push(format!("the primary metric, {primary}, has a log scale (the guarantee is a factor)")),
         }
     }
+    if shade > 0.0 && metrics.get(&primary).is_some_and(|m| m.classes.is_empty()) {
+        bad.push(format!("`shade` shades the score layer's classes, the primary's: {primary} has no `classes`"));
+    }
     match (bad.is_empty(), within, share) {
-        (true, Some(within), Some(share)) => Ok(Score { theme, primary, within, share, metrics }),
+        (true, Some(within), Some(share)) => Ok(Score { theme, primary, within, share, metrics, label, ramp, shade }),
         _ => Err(bad),
     }
 }
@@ -886,7 +1076,7 @@ impl Checks for Extents {
     }
 
     fn version(&self) -> u32 {
-        1
+        2
     }
 
     fn recursive(&self) -> bool {

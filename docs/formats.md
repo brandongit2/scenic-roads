@@ -1167,10 +1167,11 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   out past a byte or entry budget).
 - **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=open|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
-  `best`, `{layer}` `score` or a metric of the theme's `score.toml`: an RGBA PNG, each pixel its
-  set's best value among the pieces passing `avail` (default `open`: availability `open`; `all`:
-  every piece) through the layer's ramp, transparent where none passes; 204 where no pixel is
-  coloured. ETag `"av-<packs' version>-<extents' version>-<layer>-<avail>-z-x-y"`; `?v=` cached for
+  `best`, `{layer}` `score` or a metric of the theme's `score.toml`: an RGBA PNG, each pixel the
+  layer's colour of its set's best piece among those passing `avail` (default `open`: availability
+  `open`; `all`: every piece) as `score.toml` declares it (its class's, its word's, or the ramp at
+  its value; the score, the primary's class shaded by the tie-break: docs/inputs.md §6.11),
+  transparent where none passes; 204 where no pixel is coloured. ETag `"av-<packs' version>-<extents' version>-<layer>-<avail>-z-x-y"`; `?v=` cached for
   good while it is meta's version of `available-<theme>` (or `available-<theme>-<pole>`): the
   layer's packs' version and `-` the extents' accepted version's hash, 16 hex digits (the layer's
   packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
@@ -1180,10 +1181,17 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   stated, values, score}` (`metrics` as the piece states them, `stated` the publisher's classes
   where a metric is one, docs/inputs.md §6.11, `values` their 0–1 values). `GET
   /api/available/{theme}` → `{theme, sets, primary, within, share, metrics: [{id, label, unit,
-  weight, scale, worst, best, values, primary}], layers: [{id, label, unit, ramp: [[at, colour]],
-  stops: [{value, label, colour}]}], sources: [{id, name, credit, licence, licence_url, link,
-  availability, pieces, classes: {class: n}, unknown: [piece]}]}` (without a score, `layers` and
-  `sources` empty); 404 for a theme the accepted extents don't have.
+  weight, scale, worst, best, values, primary}], layers: [{id, label, unit, legend, stops, …}],
+  sources: [{id, name, credit, licence, licence_url, link, availability, pieces, classes: {class:
+  n}, unknown: [piece]}]}` (without a score, `layers` and `sources` empty), the score's layer first
+  (its `label` score.toml's or "Score"), then the metrics', the primary first. A layer's `legend`
+  is what its legend draws: `classes` (`stops: [{label, upto, colour}]`, finest first, the last's
+  `upto` null; the score's also with `classes_of` the primary, `shade`, `shaded_by` the
+  tie-breaking metrics and each stop's `shaded`, its colour at the worst tie-break), `values`
+  (`stops: [{value, label, colour}]`, a word each) or `ramp` (`ramp: [[at, colour]]`, the colours at
+  their places 0–1, and five `stops: [{value, label, colour}]`, `label` the value in the metric's
+  unit; the score's, the score); colours `#rrggbb`. 404 for a theme the accepted extents don't
+  have.
 - **Ways:** `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=…`, `/api/road/{id}?at=…`: `at` picks
   the hidata of the z6 tile holding it, or a neighbour's whose `here` holds the way.
 - `/api/railfreq`: sorted `(u32 way id, f32 trains a day each way)`; negative: a lower bound. ETag: its

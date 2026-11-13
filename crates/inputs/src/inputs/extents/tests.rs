@@ -184,6 +184,84 @@ fn a_score_and_its_guarantee() {
     assert_eq!(checks_of("terrain/score.toml", b"x = ["), one(SCORE_CHECK, Level::Error));
     let other = SCORE_TOML.replacen("theme = \"terrain\"", "theme = \"buildings\"", 1);
     assert_eq!(checks_of("terrain/score.toml", other.as_bytes()), one(THEME, Level::Error));
+    // (A score with no colours declared, as above, is taken: the server draws it on its own ramp.)
+    assert!(s.ramp.is_empty() && s.label.is_none() && s.shade == 0.0);
+    assert!(s.metrics.values().all(|m| m.classes.is_empty() && m.colours.is_empty()));
+}
+
+/// The layers' colours in the real score.toml: its classes, ramp, shade and words' colours, and
+/// each field's mistakes refused.
+#[test]
+fn a_scores_colours() {
+    let real = std::str::from_utf8(REAL[0].1).unwrap();
+    let s = score(real.as_bytes()).unwrap();
+    let m = &s.metrics["spacing_m"];
+    let labels: Vec<&str> = m.classes.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["0.5 m", "1 m", "2 m", "3–5 m", "10 m", "30 m", "90 m", "coarser"]);
+    assert_eq!(s.ramp.len(), m.classes.len(), "a colour a class");
+    assert_eq!(s.label.as_deref(), Some("Best data"));
+    assert_eq!(colour_of("#56b4e9"), Some([0x56, 0xb4, 0xe9]));
+    assert_eq!(s.metrics["surface"].colours["ground"], [0x56, 0xb4, 0xe9]);
+    // Every spacing the real pieces state (and the units' near twins) in its class; the edges in
+    // their class, the finest best.
+    let class = |v: f64| m.classes[m.class_of(v).unwrap()].label.as_str();
+    for (v, want) in [
+        (0.5, "0.5 m"),
+        (0.6096, "0.5 m"),
+        (0.625, "0.5 m"),
+        (0.9144, "1 m"),
+        (1.0, "1 m"),
+        (2.0, "2 m"),
+        (3.0, "3–5 m"),
+        (5.0, "3–5 m"),
+        (10.3, "10 m"),
+        (30.0, "30 m"),
+        (90.0, "90 m"),
+        (1000.0, "coarser"),
+    ] {
+        assert_eq!(class(v), want, "{v}");
+    }
+    assert_eq!(m.class_at(0), 1.0);
+    assert_eq!(m.class_at(7), 0.0);
+    assert_eq!(s.metrics["year"].class_of(2020.0), None);
+    for (from, to) in [
+        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 0.5, label = \"1 m\" }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 0.625, label = \"1 m\" }"),
+        ("{ upto = 0.625, label = \"0.5 m\" }", "{ upto = -1, label = \"0.5 m\" }"),
+        ("{ upto = 0.625, label = \"0.5 m\" }", "{ upto = 0, label = \"0.5 m\" }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = \"x\", label = \"1 m\" }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "{ label = \"1 m\" }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 1.25 }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 1.25, label = \" \" }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "{ upto = 1.25, label = \"1 m\", colour = \"#ffffff\" }"),
+        ("{ upto = 1.25, label = \"1 m\" }", "3"),
+        ("{ label = \"coarser\" }", "{ upto = 500, label = \"coarser\" }"),
+        ("classes = [", "classes = [{ label = \"x\" }]\nx = ["),
+        ("\"#803041\",", "\"#80304\","),
+        ("\"#803041\",", "\"803041\","),
+        ("\"#803041\",", "\"#80304g\","),
+        ("\"#803041\",", "3,"),
+        ("ramp = [", "ramp = [\"#ffffff\"]\nx = ["),
+        ("shade = 0.4", "shade = 1.5"),
+        ("shade = 0.4", "shade = -0.1"),
+        ("shade = 0.4", "shade = \"some\""),
+        ("label = \"Best data\"", "label = \"\""),
+        ("label = \"Best data\"", "label = 3"),
+        ("surface = \"#e69f00\" }", "surface = \"#e69f00\", rock = \"#000000\" }"),
+        ("ground = \"#56b4e9\", ", ""),
+        ("ground = \"#56b4e9\"", "ground = \"blue\""),
+        ("colours = {", "colours = 3\nx = {"),
+        ("best = 2026\n", "best = 2026\ncolours = { a = \"#ffffff\" }\n"),
+        ("colours = { ground", "classes = [{ upto = 1, label = \"a\" }, { label = \"b\" }]\nx = { ground"),
+    ] {
+        let bad = real.replacen(from, to, 1);
+        assert_ne!(bad, real, "{from}");
+        assert_eq!(checks_of("terrain/score.toml", bad.as_bytes()), one(SCORE_CHECK, Level::Error), "{from} → {to}");
+    }
+    // A shade with no classes to shade.
+    let flat = SCORE_TOML.replacen("share = 0.02\n", "share = 0.02\nshade = 0.4\n", 1);
+    assert_eq!(checks_of("terrain/score.toml", flat.as_bytes()), one(SCORE_CHECK, Level::Error));
+    assert!(score(SCORE_TOML.replacen("share = 0.02\n", "share = 0.02\nshade = 0\n", 1).as_bytes()).is_ok());
 }
 
 #[test]

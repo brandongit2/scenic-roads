@@ -20,17 +20,49 @@ within = 1.25
 # The other metrics' share: under the bound, k / (1 + k) = 0.0237 for these numbers.
 share = 0.02
 
+# How the layers are drawn (nothing is built again for a change here).
+# The score layer's name in the app's legend.
+label = "Best data"
+# The layers' ramp, worst to best, evenly spaced: the grid spacing's classes take its colours (one
+# each), the year and the accuracy run along it. A spiral in OKLCH: lightness 0.43 to 0.96 (the
+# finest data brightest on the dark map), chroma 0.11, the hue turning 250° from 120°, found by
+# searching for the largest least ΔE2000 between neighbours, for normal sight and simulated
+# protanopia, deuteranopia and tritanopia (Machado 2009): 14.7, 8.6, 8.2 and 7.2 (viridis sampled
+# alike: 13.6, 4.4, 7.1 and 7.0, its 0.5 m and 1 m nearly one colour for protanopes); each colour
+# at least 16 from the land's, #0b0e13.
+ramp = ["#803041", "#8a4a7e", "#846ab3", "#6d90d5", "#4fb6df", "#58d7d2", "#9aefba", "#e7fda7"]
+# The score layer is the spacing's classes (the spacing decides the score), each shaded by the
+# tie-break: a piece whose other metrics are all at their worst is drawn `shade` of the way to the
+# next coarser class's colour, one with them at their best in its class's own.
+shade = 0.4
+
 [metric.spacing_m]
 label = "Grid spacing"
 unit = "m"
 scale = "log"
 worst = 1000
 best = 0.1
+# Classes by the nominal spacings published, each edge a factor of `within` above its nominal: so
+# 2 ft (0.6096 m) is 0.5 m's, 3 ft (0.9144 m) 1 m's, 1/9 arc-second (3 m) and 5 m one class, and
+# 1/3 arc-second (10.3 m) 10 m's.
+classes = [
+  { upto = 0.625, label = "0.5 m" },
+  { upto = 1.25, label = "1 m" },
+  { upto = 2.5, label = "2 m" },
+  { upto = 6.25, label = "3–5 m" },
+  { upto = 12.5, label = "10 m" },
+  { upto = 37.5, label = "30 m" },
+  { upto = 112.5, label = "90 m" },
+  { label = "coarser" },
+]
 
 [metric.surface]
 label = "Bare earth or surface"
 weight = 0.4
 values = { ground = 1.0, surface = 0.0 }
+# Two colours, not ordered (Okabe and Ito's sky blue and orange: ΔE2000 over 50 between them for
+# each sight above, both bright on the land).
+colours = { ground = "#56b4e9", surface = "#e69f00" }
 
 [metric.vertical_rmse_m]
 label = "Stated vertical accuracy (RMSE)"

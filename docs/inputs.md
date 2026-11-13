@@ -1845,7 +1845,7 @@ Task #1334.
 ```
 inputs/extents/
   terrain/
-    score.toml          the theme's score: its metrics, their scales and weights (below)
+    score.toml          the theme's score: its metrics, their scales and weights, and its layers' colours (below)
     <source>.toml       a source: its description, availability, and how each piece's extent is found
     <source>.geojson    its pieces, made by producers/extents/extents.py from the declaration
 ```
@@ -1992,6 +1992,51 @@ a piece doesn't state were as good as what it does, so stating a middling accura
 piece just below the same piece silent about it; it never crosses a spacing step larger than the
 factor.
 
+**How the layers are drawn** is declared in `score.toml` too (the server reads it, docs/steps.md
+§14; nothing is built again for a change, as for the weights). Every field is optional, so a
+`score.toml` declaring none is drawn on the server's own ramp (viridis's ends and middle), every
+layer a ramp over its 0–1 value:
+- `label`: the score layer's name in the legend (the server's own: "Score");
+- `ramp`: the theme's sequential ramp, two or more `#rrggbb` colours, worst to best, evenly spaced;
+  a metric on a log or linear scale without classes is drawn along it;
+- a metric's `classes` (a log or linear scale's): a list of two or more `{ upto, label }`, each
+  class the values up to `upto` (in the metric's unit, positive, each above the one before) above
+  the class before's, the last (no `upto`) the rest; its layer draws each class in one colour, the
+  ramp's at the class's place (the classes spread evenly over it, the class nearer `best` the
+  better end), so a piece's colour says its class whatever its exact value;
+- a `values` metric's `colours`: each of its words' `#rrggbb` (every word one), drawn as they are,
+  not along the ramp;
+- `shade` (0 to 1, default 0; it needs the primary's classes): the score layer is drawn by the
+  primary's classes, since the primary decides the score, each pixel its best piece's class shaded
+  by the tie-break (the rest, above): a piece with the rest at 1 in its class's own colour, one at
+  0 `shade` of the way to the next coarser class's colour (the coarsest class towards its finer
+  neighbour's mirrored), so a shade stays inside its class's band. Without classes on the primary
+  the score layer is the ramp at the score.
+
+The terrain's: `label = "Best data"`; the spacing in eight classes, each edge a factor of `within`
+above a nominal spacing published, so a product's twin in other units falls in its class:
+
+| Class | Up to | Holds (real pieces of 13 Nov) |
+|---|---|---|
+| 0.5 m | 0.625 m | IGN LiDAR HD, Luxembourg (0.5 m); 2 ft, 0.6096 m |
+| 1 m | 1.25 m | NRCan HRDEM projects, GeoBC, Wales (1 m); 3 ft, 0.9144 m |
+| 2 m | 2.5 m | NRCan HRDEM projects and its ArcticDEM-based mosaic, GeoBC, ArcticDEM, REMA (2 m) |
+| 3–5 m | 6.25 m | 1/9 arc-second (3 m), 5 m (none yet) |
+| 10 m | 12.5 m | 1/3 arc-second, 10.3 m (none yet) |
+| 30 m | 37.5 m | Copernicus GLO-30, AW3D30 |
+| 90 m | 112.5 m | Copernicus GLO-90 |
+| coarser | | |
+
+The ramp, worst to best, `#803041 #8a4a7e #846ab3 #6d90d5 #4fb6df #58d7d2 #9aefba #e7fda7`, a
+colour a class: a spiral in OKLCH (lightness 0.43 to 0.96, the finest brightest on the dark map;
+chroma 0.11; the hue turning 250° from 120°), chosen for the largest least ΔE2000 between
+neighbours under normal sight and simulated protanopia, deuteranopia and tritanopia (Machado
+2009): 14.7, 8.6, 8.2 and 7.2, where viridis sampled alike gives 13.6, 4.4, 7.1 and 7.0 (its 0.5 m
+and 1 m nearly one colour for a protanope); every colour at least 16 from the land's, `#0b0e13`.
+`shade = 0.4`. The surface's `colours`: `ground` `#56b4e9`, `surface` `#e69f00` (Okabe and Ito's
+sky blue and orange, ΔE2000 over 50 apart for each sight above). The year (linear) and the stated
+accuracy (log) run along the ramp. `score.py --examples` names each piece's class.
+
 **Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` so
 far). Errors:
 - a file not of the shape (`<theme>/<source>.toml`, `<theme>/<source>.geojson`,
@@ -2025,7 +2070,12 @@ far). Errors:
   primary not on a log scale or with a weight, `within` not above 1, `share` not from 0 to under 1
   or breaking the guarantee, a metric without its `label`, a scale whose `worst` = `best` or a log
   scale's not positive, a `values` table not of numbers from 0 to 1, a weight missing or
-  negative: `ex-score`); a theme with no `score.toml` (`ex-noscore`);
+  negative; of the drawing: a `label` not a name, a `ramp` not two or more `#rrggbb`, a `shade` not
+  from 0 to 1 or with no classes on the primary, `classes` fewer than two, on a `values` metric, or
+  a class without its `label`, with a field not its own, an `upto` not positive or not above the
+  class before's, missing (but the last's) or on the last, `colours` on a scale that isn't
+  `values`, naming a word not its own, missing one, or a colour not `#rrggbb`: `ex-score`); a theme
+  with no `score.toml` (`ex-noscore`);
 - a metric the theme's score doesn't name, in a declaration's block or a piece (its `stated`
   too), or a value off its scale's kind: a positive number on a log scale, a number on a linear
   one, one of the `values` words (a declaration's constants and its `map`s' values alike;

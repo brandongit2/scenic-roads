@@ -77,10 +77,22 @@ EXAMPLES = [
 ]
 
 
+def class_of(m, v):
+    """The label of the class of metric `m`'s `classes` holding `v` (the first whose `upto` is at or
+    above it, else the last; the server's Metric::class_of), or None where it has none."""
+    classes = m.get("classes") or []
+    for c in classes:
+        if "upto" not in c or v <= c["upto"]:
+            return c["label"]
+    return None
+
+
 def said(decl, piece):
     s, vals = score(decl, piece)
     parts = ", ".join(f"{k} {piece[k]} → {vals[k]:.3f}" if vals[k] is not None else f"{k} not stated" for k in decl["metric"])
-    return f"  {s:.3f}  {parts}" if s is not None else f"  none   {parts}"
+    c = class_of(decl["metric"][decl["primary"]], piece[decl["primary"]]) if s is not None else None
+    drawn = f"  [{c}]" if c else ""
+    return f"  {s:.3f}{drawn}  {parts}" if s is not None else f"  none   {parts}"
 
 
 def expected(decl, pieces_path):

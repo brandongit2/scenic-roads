@@ -1103,20 +1103,34 @@ crate::inputs::extents). The server keeps the extents' accepted version on the M
 translations' (crate::accepted, synced every minute while the map is in use), and reads each
 theme's `score.toml` and pieces from it (the `.geojson`s' properties and `read`, the declarations'
 descriptions). For each palette entry, its pieces that pass the availability switch (`avail=open`,
-the default: those whose availability is `open`; `all`: every one): the score layer's value is
-their best score, a metric layer's their best 0–1 value of that metric (the finest spacing, bare
-earth over surface, the newest year, the best stated accuracy; a piece not stating it takes no
-part); none passing, transparent. The same function (`Theme::best`) colours a tile and the same
-pieces answer a click, so the two can't disagree. `Score::of` is producers/extents/score.py's
-formula: tested on score.toml's own examples and more pieces (`score_pieces.json`) against what
-score.py makes of them (`score_expected.json`, made by `score.py <score.toml> --json
-<pieces.json>`; producers/extents/test_extents.py makes it again and checks the file), to 10⁻¹²
-and to the three digits score.py shows. Every layer is drawn on one sequential ramp (viridis's
-ends and middle, dark to light) over its 0–1 value, so bare earth and surface are its two ends;
-the stops `/api/available/<theme>` gives say each colour's value in the metric's own unit.
+the default: those whose availability is `open`; `all`: every one): the score layer's piece is
+the one of the best score, a metric layer's the one of the best 0–1 value of that metric (the
+finest spacing, bare earth over surface, the newest year, the best stated accuracy; a piece not
+stating it takes no part; of equal values, the first id); none passing, transparent
+(`Theme::best`). That piece's colour (`Theme::colour`) is as `score.toml` declares the layer
+(docs/inputs.md §6.11): a metric with classes, its class's (by its value in the metric's unit: the
+terrain's spacing in eight, 0.5 m to coarser); a word's colour where the metric gives them (bare
+earth and surface); otherwise the theme's ramp at its value (the year, the accuracy). The score
+layer is the primary's classes, since the primary decides the score: the piece's class, shaded by
+its tie-break `shade` of the way at most towards the next coarser class's colour, so 0.5 m, 1 m and
+2 m lidar read as three colours, not three near-equal scores on one ramp. A `score.toml` declaring
+no colours (one older than these fields) is drawn as before them, every layer on the server's own
+ramp (viridis's ends and middle) over its 0–1 value. The score and the colours are read at each
+sync, so changing either draws within a minute and builds nothing again. `Score::of` is
+producers/extents/score.py's formula: tested on score.toml's own examples and more pieces
+(`score_pieces.json`) against what score.py makes of them (`score_expected.json`, made by
+`score.py <score.toml> --json <pieces.json>`; producers/extents/test_extents.py makes it again and
+checks the file), to 10⁻¹² and to the three digits score.py shows. The legend
+`/api/available/<theme>` gives each layer (docs/formats.md) is the same colours: the classes with
+their labels and edges, the words', or the ramp with stops in the metric's own unit. The server's
+tests (crate::available's): each layer's best piece under the switch, each layer's colours and
+legend from the real `score.toml`, one declaring no colours drawn on the built-in ramp, the tiles
+and the click; and `renders_the_real_pieces`, which with `SCENIC_RENDER_DIR` set builds every real
+piece and writes each layer as PNGs over the land's colour (the world at z2, France at z5,
+Vancouver at z8; ~1 min), a look at the colours by hand.
 
 **Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile coloured by the
-server through the layer's ramp (PNG; 204 where no piece is, or none passes the switch), so the map
+server as above (PNG; 204 where no piece is, or none passes the switch), so the map
 draws a plain raster layer and holds no logic of its own; a tile not stored is its ancestor's part
 over it (codecs::available::tile_at). Past 85.05°, `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y`
 (z0–3 of the pole's grid). `<set>`: `best` (`built` is planned). `<layer>`: `score` or a metric of
@@ -1128,7 +1142,7 @@ the pieces at a point (the z12 pixel holding it; past 85.05°, the pole's z3 pix
 with its source's name, credit, licence and link, its metrics, their 0–1 values and its score, its
 availability, extent class and what its extent was read from (§6.11's `read`: its block's reading,
 with the method, its grain, its date). `/api/available/<theme>`: the score's metrics, scales and
-weights as declared, each layer's ramp and stops, and the sources with their pieces counted by
+weights as declared, each layer's legend, and the sources with their pieces counted by
 class (those of class `unknown` named here, as they're drawn nowhere). Away from the NAS a tile
 partly downloaded is cut to the downloads as every layer's (its pixels outside hold no piece).
 
