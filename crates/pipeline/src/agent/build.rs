@@ -4488,7 +4488,11 @@ pub fn chains_left(x: &KeyCtx, done: &Keys) -> [Vec<Work>; 5] {
         remaining(done, |d| landmarks_chain(x, d)),
         remaining(done, |d| bld_next(x, d)),
         remaining(done, |d| depth_next(x, d)),
-        remaining(done, |d| polar_next(x, d)).into_iter().chain(available_work(x, done)).chain(region_tiles_work(x, done)).collect(),
+        remaining(done, |d| polar_next(x, d))
+            .into_iter()
+            .chain(available_work(x, done))
+            .chain(region_tiles_work(x, done))
+            .collect(),
     ]
 }
 
@@ -6443,6 +6447,13 @@ mod tests {
         );
         let mut inputs = spaced(&bld_inputs(&c, "d"));
         inputs.insert("extents:terrain".into(), "terrain/a.geojson 3636363636363636\n".into());
+        // (The regions accepted, their stored geometry as the planner reads it from their index:
+        // theplan::geometry_lines.)
+        m.insert(
+            inputs::inputs::logical(inputs::inputs::regions::UNIT),
+            "sources/inputs/regions/@index.3737373737373737.json".into(),
+        );
+        inputs.insert("regions:geometry".into(), "europe/france.json 3838383838383838\n".into());
         let plain = |m: &BTreeMap<String, String>| tiles_for(m);
         // (With the pass's basemap the depth reads its water from: its digests not made yet.)
         let mut water = m.clone();

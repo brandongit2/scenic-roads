@@ -47,7 +47,12 @@ pub fn area_of(g: &inputs::inputs::regions::stored::Geometry) -> Vec<Vec<[i32; 2
     let shapes: Vec<Vec<Vec<[i64; 2]>>> = g
         .shapes
         .iter()
-        .map(|s| s.rings.iter().map(|r| r.iter().map(|q| [(q[0] as i64).clamp(-h, h), (q[1] as i64).clamp(-p, p)]).collect()).collect())
+        .map(|s| {
+            s.rings
+                .iter()
+                .map(|r| r.iter().map(|q| [(q[0] as i64).clamp(-h, h), (q[1] as i64).clamp(-p, p)]).collect())
+                .collect()
+        })
         .collect();
     let rings = orient::oriented(&shapes).unwrap_or_else(|| union(&shapes));
     rings.into_iter().map(|r| r.into_iter().map(|q| [q[0] as i32, q[1] as i32]).collect()).collect()
@@ -107,7 +112,13 @@ pub fn build(out: &mut Out, regions: &[Region], report: &dyn Fn(u64, u64, &str))
             tiles.lock().unwrap()[z as usize] += 1;
             bytes.lock().unwrap()[z as usize] += gz.len() as u64;
             let (l, scope, root) = pack_logical(z, x, y);
-            packs.lock().unwrap().entry(l).or_insert_with(|| (scope, root, Vec::new())).2.push((z, x, y, gz, raw.len() as u32));
+            packs.lock().unwrap().entry(l).or_insert_with(|| (scope, root, Vec::new())).2.push((
+                z,
+                x,
+                y,
+                gz,
+                raw.len() as u32,
+            ));
         },
         &|z| report(3 + u64::from(z), total, "the tiles"),
     );
@@ -123,7 +134,11 @@ pub fn build(out: &mut Out, regions: &[Region], report: &dyn Fn(u64, u64, &str))
     let names: BTreeSet<String> = packs.keys().cloned().collect();
     for (l, (scope, root, mut ts)) in packs {
         ts.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
-        let Some(p) = crate::layers::write_pack_local(out, fmt::LAYER, fmt::ENCODING, true, scope, root, &mut ts.into_iter())? else { continue };
+        let Some(p) =
+            crate::layers::write_pack_local(out, fmt::LAYER, fmt::ENCODING, true, scope, root, &mut ts.into_iter())?
+        else {
+            continue;
+        };
         if out.get(&l) == Some(p.content_name()?.as_str()) {
             std::fs::remove_file(&p.local).ok();
             made.kept += 1;

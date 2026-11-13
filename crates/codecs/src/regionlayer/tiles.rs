@@ -79,7 +79,9 @@ fn encode(topo: &Topology, z: u8, x: u32, y: u32, runs: &[(u32, Vec<[f64; 2]>)])
         (x + 1) as f64 / n + BUFFER / n,
         ((y + 1) as f64 / n + BUFFER / n).min(1.0),
     ];
-    let to = |p: [f64; 2]| -> (i32, i32) { (((p[0] * n - x as f64) * e).round() as i32, ((p[1] * n - y as f64) * e).round() as i32) };
+    let to = |p: [f64; 2]| -> (i32, i32) {
+        (((p[0] * n - x as f64) * e).round() as i32, ((p[1] * n - y as f64) * e).round() as i32)
+    };
     let mut keys: Vec<String> = Vec::new();
     let mut values: Vec<Value> = Vec::new();
     let mut vix: HashMap<Value, u32> = HashMap::new();
@@ -188,7 +190,9 @@ pub fn zoom(topo: &Topology, s: &Simplified, z: u8, emit: &(dyn Fn(Made) + Sync)
             for w in kept.windows(2) {
                 ts.clear();
                 tiles_of(l.pts[w[0]], l.pts[w[1]], n, &mut ts);
-                out.extend(ts.iter().map(|&(x, y)| (((x as u64) << 32) | y as u64, k as u32, w[0] as u32, w[1] as u32)));
+                out.extend(
+                    ts.iter().map(|&(x, y)| (((x as u64) << 32) | y as u64, k as u32, w[0] as u32, w[1] as u32)),
+                );
             }
             out
         })

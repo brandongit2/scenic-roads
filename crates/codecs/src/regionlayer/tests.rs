@@ -58,9 +58,14 @@ fn run(regions: &[Region]) -> (Topology, Simplified, HashMap<(u8, u32, u32), Vec
     let topo = build(regions);
     let s = simplify(&topo, &|_, _| {});
     let tiles = std::sync::Mutex::new(HashMap::new());
-    tiles::all(&topo, &s, &|(z, x, y, b)| {
-        tiles.lock().unwrap().insert((z, x, y), b);
-    }, &|_| {});
+    tiles::all(
+        &topo,
+        &s,
+        &|(z, x, y, b)| {
+            tiles.lock().unwrap().insert((z, x, y), b);
+        },
+        &|_| {},
+    );
     (topo, s, tiles.into_inner().unwrap())
 }
 
@@ -162,7 +167,12 @@ fn neighbours_share_one_arc_at_every_zoom() {
     let regions = vec![region("east", &["c"], vec![e]), region("west", &["c"], vec![w])];
     let (topo, s, _) = run(&regions);
     let shared: Vec<usize> = (0..topo.arcs.len()).filter(|&k| topo.arcs[k].l != 0 && topo.arcs[k].r != 0).collect();
-    assert_eq!(shared.len(), 1, "one arc between them: {:?}", topo.arcs.iter().map(|a| (a.l, a.r, a.pts.len())).collect::<Vec<_>>());
+    assert_eq!(
+        shared.len(),
+        1,
+        "one arc between them: {:?}",
+        topo.arcs.iter().map(|a| (a.l, a.r, a.pts.len())).collect::<Vec<_>>()
+    );
     let k = shared[0];
     let a = &topo.arcs[k];
     assert_eq!(a.pts.len(), be.len(), "the border's every point, the east's extra one too");
@@ -195,7 +205,9 @@ fn land_and_water_rounded_apart_are_one_region() {
     let regions = vec![region("r", &[], vec![land, water])];
     let (topo, s, _) = run(&regions);
     assert_eq!(topo.arcs.len(), 1, "{:?}", topo.arcs.iter().map(|a| (a.l, a.r, a.pts.len())).collect::<Vec<_>>());
-    let on_box = |p: &[i32; 2]| p[0] == e7(9.0, 0.0)[0] || p[0] == e7(11.0, 0.0)[0] || p[1] == e7(0.0, 40.0)[1] || p[1] == e7(0.0, 41.0)[1];
+    let on_box = |p: &[i32; 2]| {
+        p[0] == e7(9.0, 0.0)[0] || p[0] == e7(11.0, 0.0)[0] || p[1] == e7(0.0, 40.0)[1] || p[1] == e7(0.0, 41.0)[1]
+    };
     assert!(topo.arcs[0].closed() && topo.arcs[0].pts.iter().all(on_box), "the box: {:?}", topo.arcs[0].pts);
     check_every_zoom(&topo, &s, world_box(9.0, 40.0, 11.0, 41.0));
 }
@@ -241,14 +253,16 @@ fn a_narrow_strip_stays_whole() {
     // each wandering 20 km: simplified apart, they would cross at most zooms.
     let b1 = wiggle(10.0, 40.0, 42.0, 0.2, 400, 1);
     // (East of the west one at each point, by 250 m and up to 2 km more: so at every latitude.)
-    let b2: Vec<[i32; 2]> = b1.iter().enumerate().map(|(i, p)| [p[0] + 22_000 + ((i as i32 * 7919) % 180_000), p[1]]).collect();
+    let b2: Vec<[i32; 2]> =
+        b1.iter().enumerate().map(|(i, p)| [p[0] + 22_000 + ((i as i32 * 7919) % 180_000), p[1]]).collect();
     let (west, _) = split_box(9.0, 40.0, 11.0, 42.0, &b1);
     let (_, east) = split_box(9.0, 40.0, 11.0, 42.0, &b2);
     // (Counter-clockwise: along the foot, up the east border, down the west one.)
     let mut strip = vec![b1[0]];
     strip.extend(b2.iter().copied());
     strip.extend(b1.iter().rev().take(b1.len() - 1).copied());
-    let regions = vec![region("east", &[], vec![east]), region("strip", &[], vec![strip]), region("west", &[], vec![west])];
+    let regions =
+        vec![region("east", &[], vec![east]), region("strip", &[], vec![strip]), region("west", &[], vec![west])];
     let (topo, s, _) = run(&regions);
     check_every_zoom(&topo, &s, world_box(9.0, 40.0, 11.0, 42.0));
     assert!(s.zooms.iter().any(|z| z.restored > 0), "points given back to keep them apart: {:?}", s.zooms);
@@ -264,14 +278,22 @@ fn an_island_and_an_enclave() {
     let tiny = vec![boxed(0.5, 0.5, 0.5002, 0.5002)];
     let mut sea = sea;
     sea.push(rev(boxed(0.5, 0.5, 0.5002, 0.5002)));
-    let regions = vec![region("enclave", &["x"], enclave), region("land", &["x"], land), region("sea", &[], sea), region("tiny", &[], tiny)];
+    let regions = vec![
+        region("enclave", &["x"], enclave),
+        region("land", &["x"], land),
+        region("sea", &[], sea),
+        region("tiny", &[], tiny),
+    ];
     let (topo, s, _) = run(&regions);
     let rings: Vec<&topo::Arc> = topo.arcs.iter().filter(|a| a.closed()).collect();
     assert_eq!(rings.len(), 5, "the box's outline, the island's, the islet's, the enclave's, the tiny region's");
     let enc = rings.iter().find(|a| has(&topo, a.l, "enclave") || has(&topo, a.r, "enclave")).unwrap();
     assert!(has(&topo, enc.l, "land") || has(&topo, enc.r, "land"));
     assert_eq!(topo.level(enc), 1);
-    let isl = rings.iter().find(|a| (has(&topo, a.l, "sea") || has(&topo, a.r, "sea")) && a.pts.len() == 5 && a.pts[0] == e7(1.0, 1.0)).unwrap();
+    let isl = rings
+        .iter()
+        .find(|a| (has(&topo, a.l, "sea") || has(&topo, a.r, "sea")) && a.pts.len() == 5 && a.pts[0] == e7(1.0, 1.0))
+        .unwrap();
     assert_eq!(topo.level(isl), 0, "the land's coast with the sea: different top folders");
     check_every_zoom(&topo, &s, world_box(-0.5, -0.5, 4.5, 4.5));
     let at = |p: [i32; 2]| topo.arcs.iter().position(|a| a.closed() && a.pts[0] == p).unwrap();
@@ -296,7 +318,12 @@ fn across_the_antimeridian() {
     // Fiji's cut: on both meridians, not drawn; tonga against wsea across it: drawn on both.
     let cut: Vec<&topo::Arc> = topo.arcs.iter().filter(|a| x(a) && !a.drawn).collect();
     let drawn: Vec<&topo::Arc> = topo.arcs.iter().filter(|a| x(a) && a.drawn).collect();
-    assert_eq!(cut.len(), 2, "fiji's cut on each meridian: {:?}", topo.arcs.iter().filter(|a| x(a)).map(|a| (&a.pts, a.drawn)).collect::<Vec<_>>());
+    assert_eq!(
+        cut.len(),
+        2,
+        "fiji's cut on each meridian: {:?}",
+        topo.arcs.iter().filter(|a| x(a)).map(|a| (&a.pts, a.drawn)).collect::<Vec<_>>()
+    );
     assert!(cut.iter().all(|a| a.pts.iter().all(|p| p[1] >= -200_000_000)));
     assert_eq!(drawn.len(), 2);
     for a in drawn {
@@ -311,7 +338,11 @@ fn across_the_antimeridian() {
             let Some(b) = tiles.get(&(z, tx, ty)) else { continue };
             let t = names::mvt::Tile::decode(b).unwrap();
             for f in &t.layers[0].features {
-                let l = f.tags.chunks(2).map(|kv| t.layers[0].values[kv[1] as usize].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+                let l = f
+                    .tags
+                    .chunks(2)
+                    .map(|kv| t.layers[0].values[kv[1] as usize].as_str().unwrap_or("").to_string())
+                    .collect::<Vec<_>>();
                 assert!(!(l[0] == "fiji" && l[1] == "fiji"), "a cut drawn");
             }
         }
@@ -391,7 +422,9 @@ fn a_border_across_a_tile_edge_is_whole() {
         let shared: Vec<Vec<(i32, i32)>> = t.layers[0]
             .features
             .iter()
-            .filter(|f| f.tags.chunks(2).all(|kv| t.layers[0].values[kv[1] as usize].as_str().is_none_or(|s| !s.is_empty())))
+            .filter(|f| {
+                f.tags.chunks(2).all(|kv| t.layers[0].values[kv[1] as usize].as_str().is_none_or(|s| !s.is_empty()))
+            })
             .flat_map(|f| decode(&f.geometry))
             .collect();
         (e, shared)
@@ -414,7 +447,9 @@ fn the_regions_at_a_point() {
     let w = vec![w, rev(boxed(9.2, 41.0, 9.21, 41.01))];
     let (_, _, tiles) = run(&[region("east", &[], e.clone()), region("west", &[], w)]);
     let mut get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> { Ok(tiles.get(&(z, x, y)).cloned()) };
-    let at = |lon: f64, lat: f64, get: &mut dyn FnMut(u8, u32, u32) -> anyhow::Result<Option<Vec<u8>>>| hit::regions_at(get, lon, lat).unwrap();
+    let at = |lon: f64, lat: f64, get: &mut dyn FnMut(u8, u32, u32) -> anyhow::Result<Option<Vec<u8>>>| {
+        hit::regions_at(get, lon, lat).unwrap()
+    };
     assert_eq!(at(9.1, 41.5, &mut get), ["west"]);
     assert_eq!(at(10.9, 41.5, &mut get), ["east"]);
     assert_eq!(at(9.205, 41.005, &mut get), ["east"], "on the island");
@@ -443,7 +478,14 @@ fn a_node_where_three_meet() {
     assert_eq!(topo.arcs.iter().filter(|x| x.l != 0 && x.r != 0).count(), 3);
     let mut get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> { Ok(tiles.get(&(z, x, y)).cloned()) };
     // (North-west of the node, its nearest point is the node itself.)
-    for (lon, lat, want) in [(5.0, 4.999, "a"), (5.001, 5.0, "b"), (4.999, 5.0, "d"), (5.0, 5.001, "d"), (4.999, 5.001, "d"), (5.0, 4.99, "a")] {
+    for (lon, lat, want) in [
+        (5.0, 4.999, "a"),
+        (5.001, 5.0, "b"),
+        (4.999, 5.0, "d"),
+        (5.0, 5.001, "d"),
+        (4.999, 5.001, "d"),
+        (5.0, 4.99, "a"),
+    ] {
         assert_eq!(hit::regions_at(&mut get, lon, lat).unwrap(), [want], "{lon}, {lat}");
     }
 }
@@ -479,7 +521,16 @@ fn a_hair_of_a_region_on_its_own_edge() {
     let a = [-940293830, 611769680];
     let a2 = [-940293828, 611769680];
     let c = [-940252851, 611767923];
-    let ring = vec![[-940400000, 611700000], [-940200000, 611700000], [-940200000, 611760000], a, c, a2, a, [-940400000, 611800000]];
+    let ring = vec![
+        [-940400000, 611700000],
+        [-940200000, 611700000],
+        [-940200000, 611760000],
+        a,
+        c,
+        a2,
+        a,
+        [-940400000, 611800000],
+    ];
     let t = build(&[region("n", &[], vec![ring])]);
     assert_eq!(t.arcs.len(), 1, "{:?}", t.arcs);
     assert!(t.arcs[0].closed() && !t.arcs[0].pts.contains(&c), "{:?}", t.arcs[0].pts);

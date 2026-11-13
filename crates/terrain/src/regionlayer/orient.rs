@@ -130,7 +130,11 @@ fn cross(o: P, a: P, b: P) -> i128 {
 }
 
 fn on_segment(a: P, b: P, p: P) -> bool {
-    cross(a, b, p) == 0 && p[0] >= a[0].min(b[0]) && p[0] <= a[0].max(b[0]) && p[1] >= a[1].min(b[1]) && p[1] <= a[1].max(b[1])
+    cross(a, b, p) == 0
+        && p[0] >= a[0].min(b[0])
+        && p[0] <= a[0].max(b[0])
+        && p[1] >= a[1].min(b[1])
+        && p[1] <= a[1].max(b[1])
 }
 
 /// Twice a ring's signed area (positive: counter-clockwise).
@@ -174,7 +178,11 @@ pub fn oriented(shapes: &[Vec<Vec<P>>]) -> Option<Vec<Vec<P>>> {
                 let Some(b) = boxes[ti].filter(|_| ti != si) else { continue };
                 let meets = |p: &P| p[0] > b[0] && p[0] < b[2] && p[1] > b[1] && p[1] < b[3];
                 let near = 2 * fmt::topo::NEAR;
-                if r.iter().copied().chain(mids(r)).any(|m| meets(&m) && t.parity(m, None) == Some(true) && !t.within(m, near)) {
+                if r.iter()
+                    .copied()
+                    .chain(mids(r))
+                    .any(|m| meets(&m) && t.parity(m, None) == Some(true) && !t.within(m, near))
+                {
                     return None;
                 }
             }

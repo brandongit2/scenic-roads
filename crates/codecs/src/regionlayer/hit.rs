@@ -10,6 +10,7 @@
 
 use super::{MAXZ, SOURCE_LAYER};
 use anyhow::{Context, Result};
+use det::Det;
 use names::mvt::Tile;
 
 /// A tile's line part: its points in tile units (y down) and the regions left and right of it.
@@ -50,7 +51,8 @@ fn parts(raw: &[u8]) -> Result<(u32, Vec<Part>)> {
                 2 => {
                     let p = out.last_mut().context("a line without its start")?;
                     for _ in 0..n {
-                        let (dx, dy) = (*g.get(i).context("a short geometry")?, *g.get(i + 1).context("a short geometry")?);
+                        let (dx, dy) =
+                            (*g.get(i).context("a short geometry")?, *g.get(i + 1).context("a short geometry")?);
                         cur = (cur.0 + un(dx), cur.1 + un(dy));
                         i += 2;
                         p.pts.push([cur.0 as f64, cur.1 as f64]);
@@ -90,7 +92,8 @@ fn side(parts: &[Part], p: [f64; 2]) -> Option<String> {
     let (a, b) = (part.pts[i], part.pts[i + 1]);
     // Left of a line running a → b on a map with north up: in tile units (y down), the cross
     // product is negative.
-    let left = |a: [f64; 2], b: [f64; 2], p: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) < 0.0;
+    let left =
+        |a: [f64; 2], b: [f64; 2], p: [f64; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) < 0.0;
     let pick = |part: &Part, l: bool| Some(if l { part.l.clone() } else { part.r.clone() });
     if t > 0.0 && t < 1.0 {
         return pick(part, left(a, b, p));
@@ -99,7 +102,7 @@ fn side(parts: &[Part], p: [f64; 2]) -> Option<String> {
     // the first one turning counter-clockwise from the point's direction bounds its face, which is on
     // that line's right as it leaves the vertex.
     let v = if t <= 0.0 { a } else { b };
-    let ang = |q: [f64; 2]| (-(q[1] - v[1])).atan2(q[0] - v[0]);
+    let ang = |q: [f64; 2]| (-(q[1] - v[1])).datan2(q[0] - v[0]);
     let dir = ang(p);
     // (Each line leaving v: its angle, its part, and whether the part runs out from v.)
     let mut leaving: Vec<(f64, usize, bool)> = Vec::new();
@@ -128,7 +131,11 @@ fn side(parts: &[Part], p: [f64; 2]) -> Option<String> {
 
 /// The regions at (`lon`, `lat`) by the layer's tiles (`get`: a tile's MVT bytes, not gzip'd, or None
 /// for one not made), their ids; empty where no region is, or past the tiles (±85.05°).
-pub fn regions_at(get: &mut dyn FnMut(u8, u32, u32) -> Result<Option<Vec<u8>>>, lon: f64, lat: f64) -> Result<Vec<String>> {
+pub fn regions_at(
+    get: &mut dyn FnMut(u8, u32, u32) -> Result<Option<Vec<u8>>>,
+    lon: f64,
+    lat: f64,
+) -> Result<Vec<String>> {
     if !(-roadcore::geo::MERCATOR_LAT..=roadcore::geo::MERCATOR_LAT).contains(&lat) {
         return Ok(Vec::new());
     }

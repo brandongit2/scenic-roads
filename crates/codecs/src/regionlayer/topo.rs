@@ -20,6 +20,7 @@
 //! (±90°) are never drawn.
 
 use super::{Region, HALF, POLE};
+use det::Det;
 use rayon::prelude::*;
 use std::collections::HashMap;
 
@@ -196,7 +197,9 @@ fn splits(verts: &[[i32; 2]], cand: &[u32], edges: &[(u32, u32)]) -> Vec<Vec<u32
                     if a[0] == b[0] {
                         None
                     } else {
-                        Some(a[1] as f64 + (b[1] as f64 - a[1] as f64) * (x - a[0] as f64) / (b[0] as f64 - a[0] as f64))
+                        Some(
+                            a[1] as f64 + (b[1] as f64 - a[1] as f64) * (x - a[0] as f64) / (b[0] as f64 - a[0] as f64),
+                        )
                     }
                 };
                 let (ya, yb) = match (y_at(x0), y_at(x1)) {
@@ -273,7 +276,8 @@ pub fn build(regions: &[Region]) -> Topology {
         .collect();
     cand.par_sort_unstable();
     cand.dedup();
-    let spans: Vec<(u32, u32)> = one_sided.iter().map(|&(s, _)| ((edges[s].0 >> 32) as u32, edges[s].0 as u32)).collect();
+    let spans: Vec<(u32, u32)> =
+        one_sided.iter().map(|&(s, _)| ((edges[s].0 >> 32) as u32, edges[s].0 as u32)).collect();
     let on = splits(&verts, &cand, &spans);
     let mut added: Vec<Edge> = Vec::new();
     let mut gone: Vec<bool> = vec![false; edges.len()];
@@ -326,8 +330,10 @@ pub fn build(regions: &[Region]) -> Topology {
     // (Going up the edge, u → v: on x = -180° the plane is on its right, on +180° on its left.)
     let on_meridian = |b: &(u32, u32, u32, u32), x: i32| verts[b.0 as usize][0] == x && verts[b.1 as usize][0] == x;
     let lat = |b: &(u32, u32, u32, u32)| (verts[b.0 as usize][1], verts[b.1 as usize][1]);
-    let west: HashMap<(i32, i32), u32> = border.iter().filter(|b| on_meridian(b, -HALF)).map(|b| (lat(b), b.3)).collect();
-    let east: HashMap<(i32, i32), u32> = border.iter().filter(|b| on_meridian(b, HALF)).map(|b| (lat(b), b.2)).collect();
+    let west: HashMap<(i32, i32), u32> =
+        border.iter().filter(|b| on_meridian(b, -HALF)).map(|b| (lat(b), b.3)).collect();
+    let east: HashMap<(i32, i32), u32> =
+        border.iter().filter(|b| on_meridian(b, HALF)).map(|b| (lat(b), b.2)).collect();
     // (u, v, l, r, drawn, ld, rd)
     type Labelled = (u32, u32, u32, u32, bool, u32, u32);
     let labelled: Vec<Labelled> = border
@@ -417,7 +423,7 @@ fn slivers(arcs: Vec<Arc>) -> (Vec<Arc>, u64) {
             (a.pts.iter().rev().copied().collect(), a.r, a.l)
         }
     };
-    let len = |pts: &[[f64; 2]]| pts.windows(2).map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1])).sum::<f64>();
+    let len = |pts: &[[f64; 2]]| pts.windows(2).map(|w| (w[1][0] - w[0][0]).dhypot(w[1][1] - w[0][1])).sum::<f64>();
     let mut gone = vec![false; arcs.len()];
     let mut added = Vec::new();
     let mut pairs: Vec<_> = by.into_iter().filter(|(k, v)| v.len() == 2 && k.0 != k.1).collect();
@@ -425,7 +431,13 @@ fn slivers(arcs: Vec<Arc>) -> (Vec<Arc>, u64) {
     for ((from, _), v) in pairs {
         let (a, b) = (along(&arcs[v[0]], from), along(&arcs[v[1]], from));
         // (The left one's right side is the sliver, as is the right one's left.)
-        let (left, right) = if a.2 == b.1 { (a, b) } else if b.2 == a.1 { (b, a) } else { continue };
+        let (left, right) = if a.2 == b.1 {
+            (a, b)
+        } else if b.2 == a.1 {
+            (b, a)
+        } else {
+            continue;
+        };
         let ml: Vec<[f64; 2]> = left.0.iter().map(|&p| super::simplify::merc(p)).collect();
         let mr: Vec<[f64; 2]> = right.0.iter().map(|&p| super::simplify::merc(p)).collect();
         let ring: Vec<[f64; 2]> = ml.iter().chain(mr.iter().rev()).copied().collect();

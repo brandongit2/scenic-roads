@@ -359,7 +359,10 @@ pub fn meet(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     if ((o1 > 0.0 && o2 < 0.0) || (o1 < 0.0 && o2 > 0.0)) && ((o3 > 0.0 && o4 < 0.0) || (o3 < 0.0 && o4 > 0.0)) {
         return true;
     }
-    (o1 == 0.0 && on_seg(a, b, c)) || (o2 == 0.0 && on_seg(a, b, d)) || (o3 == 0.0 && on_seg(c, d, a)) || (o4 == 0.0 && on_seg(c, d, b))
+    (o1 == 0.0 && on_seg(a, b, c))
+        || (o2 == 0.0 && on_seg(a, b, d))
+        || (o3 == 0.0 && on_seg(c, d, a))
+        || (o4 == 0.0 && on_seg(c, d, b))
 }
 
 /// Zoom `z`'s lines kept apart (the module's comment): points given back to the segments skipping
@@ -376,7 +379,9 @@ fn untangle(lines: &mut [Line], z: u8) -> (u64, u32) {
             .enumerate()
             .flat_map_iter(|(k, l)| {
                 let kept: Vec<usize> = l.kept(z).collect();
-                (1..kept.len()).map(move |i| Seg { line: k as u32, a: kept[i - 1] as u32, b: kept[i] as u32 }).collect::<Vec<_>>()
+                (1..kept.len())
+                    .map(move |i| Seg { line: k as u32, a: kept[i - 1] as u32, b: kept[i] as u32 })
+                    .collect::<Vec<_>>()
             })
             .collect();
         let mut at: Vec<(i64, i64, u32)> = segs
@@ -417,7 +422,9 @@ fn untangle(lines: &mut [Line], z: u8) -> (u64, u32) {
         for k in bad {
             let s = segs[k as usize];
             let l = &mut lines[s.line as usize];
-            let m = (s.a as usize + 1..s.b as usize).max_by(|&i, &j| l.imp[i].total_cmp(&l.imp[j])).expect("a segment skipping points");
+            let m = (s.a as usize + 1..s.b as usize)
+                .max_by(|&i, &j| l.imp[i].total_cmp(&l.imp[j]))
+                .expect("a segment skipping points");
             l.keep[m] |= bit;
             dirty[s.line as usize] = true;
             restored += 1;

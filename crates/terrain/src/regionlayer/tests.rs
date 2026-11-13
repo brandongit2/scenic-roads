@@ -1,4 +1,5 @@
 use super::*;
+use det::Det;
 use std::path::Path;
 use store::nasfs::NasRoot;
 
@@ -75,10 +76,21 @@ fn a_region_read_with_its_inside_on_the_left() {
         r.reverse();
         r
     };
-    let shape = |rings: Vec<Vec<[i32; 2]>>, water: bool| Shape { from: "x".into(), country: String::new(), tolerance_m: 0, rings, water };
-    let geometry = |shapes| Geometry { id: "r".into(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] };
+    let shape = |rings: Vec<Vec<[i32; 2]>>, water: bool| Shape {
+        from: "x".into(),
+        country: String::new(),
+        tolerance_m: 0,
+        rings,
+        water,
+    };
+    let geometry =
+        |shapes| Geometry { id: "r".into(), osm: "2026-09-28".into(), shapes, relations: vec![], ways: vec![] };
     let a2 = |r: &Vec<[i32; 2]>| -> i128 {
-        (0..r.len()).map(|i| r[i][0] as i128 * r[(i + 1) % r.len()][1] as i128 - r[(i + 1) % r.len()][0] as i128 * r[i][1] as i128).sum()
+        (0..r.len())
+            .map(|i| {
+                r[i][0] as i128 * r[(i + 1) % r.len()][1] as i128 - r[(i + 1) % r.len()][0] as i128 * r[i][1] as i128
+            })
+            .sum()
     };
     // Land of two cells' pieces (one drawn clockwise: even-odd reads it all the same), a lake in the
     // first (its ring counter-clockwise: a hole all the same), and water touching them along the
@@ -98,7 +110,7 @@ fn a_region_read_with_its_inside_on_the_left() {
         .arcs
         .iter()
         .flat_map(|a| a.pts.windows(2))
-        .map(|w| f64::from(w[1][0] - w[0][0]).hypot(f64::from(w[1][1] - w[0][1])) * 1e-7)
+        .map(|w| f64::from(w[1][0] - w[0][0]).dhypot(f64::from(w[1][1] - w[0][1])) * 1e-7)
         .sum();
     assert!((len - 10.0).abs() < 1e-6, "{len}");
     // Two parts overlapping: unioned, one ring.
@@ -107,7 +119,10 @@ fn a_region_read_with_its_inside_on_the_left() {
     assert_eq!(rings.len(), 1, "{rings:?}");
     assert!(a2(&rings[0]) > 0);
     // A point past the antimeridian held to it.
-    let g = geometry(vec![shape(vec![vec![e7(179.0, 0.0), [fmt::HALF + 1, 0], [fmt::HALF + 1, 10_000_000], e7(179.0, 1.0)]], false)]);
+    let g = geometry(vec![shape(
+        vec![vec![e7(179.0, 0.0), [fmt::HALF + 1, 0], [fmt::HALF + 1, 10_000_000], e7(179.0, 1.0)]],
+        false,
+    )]);
     assert!(area_of(&g).iter().flatten().all(|p| p[0] <= fmt::HALF));
 }
 
@@ -130,14 +145,20 @@ fn real_regions() {
     let root = std::path::PathBuf::from(env("SCENIC_REGIONS_OUT"));
     let mut o = out(&root);
     let t2 = std::time::Instant::now();
-    let made = build(&mut o, &regions, &|d, n, what| eprintln!("{:.1} s: {d}/{n} {what}", t2.elapsed().as_secs_f64())).unwrap();
+    let made = build(&mut o, &regions, &|d, n, what| eprintln!("{:.1} s: {d}/{n} {what}", t2.elapsed().as_secs_f64()))
+        .unwrap();
     o.save().unwrap();
     eprintln!("built in {:.1} s", t2.elapsed().as_secs_f64());
     println!("{}", serde_json::to_string_pretty(&made).unwrap());
     let Ok(map) = std::env::var("SCENIC_REGIONS_MAP") else { return };
     let (m, _) = store::map::Snapshot::decode(&std::fs::read(&map).unwrap()).unwrap();
     let mut cat = m.catalogue().unwrap();
-    let mut layer = store::catalogue::Layer { encoding: fmt::ENCODING.into(), minzoom: 0, maxzoom: fmt::MAXZ, ..Default::default() };
+    let mut layer = store::catalogue::Layer {
+        encoding: fmt::ENCODING.into(),
+        minzoom: 0,
+        maxzoom: fmt::MAXZ,
+        ..Default::default()
+    };
     for (l, c) in o.manifest.iter().filter(|(l, _)| l.starts_with("layers/regions/")) {
         let size = std::fs::metadata(root.join(c)).unwrap().len();
         cat.files.insert(l.clone(), store::catalogue::FileRef { file: c.clone(), size, fmt: 1, ..Default::default() });

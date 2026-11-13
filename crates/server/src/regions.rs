@@ -475,7 +475,8 @@ pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
             land += a;
         }
         for p in &area.polys {
-            let poly: Vec<Vec<[f64; 2]>> = p.iter().map(|r| r.iter().map(|q| [q[0] as f64 * 1e-7, q[1] as f64 * 1e-7]).collect()).collect();
+            let poly: Vec<Vec<[f64; 2]>> =
+                p.iter().map(|r| r.iter().map(|q| [q[0] as f64 * 1e-7, q[1] as f64 * 1e-7]).collect()).collect();
             let outer = poly.first().map_or(0.0, |r| ring_area(r).abs());
             if largest.as_ref().is_none_or(|l| outer > l.0) {
                 largest = Some((outer, poly));
@@ -650,9 +651,7 @@ pub fn sync_accepted(s: &crate::AppState) {
     }
     let read =
         |p: &str| -> anyhow::Result<Vec<u8>> { Ok(store::PooledFile::new(root.join(p), pool.clone()).read_all()?) };
-    if let Err(e) =
-        inputs::inputs::served::sync_with(&read, inputs::inputs::regions::UNIT, &accepted_dir(s), &[])
-    {
+    if let Err(e) = inputs::inputs::served::sync_with(&read, inputs::inputs::regions::UNIT, &accepted_dir(s), &[]) {
         eprintln!("regions: the accepted copy wasn't brought up to date: {e:#}");
     }
 }
@@ -1084,7 +1083,8 @@ mod tests {
     #[test]
     fn a_name_inside_its_largest_polygon() {
         // A ring round a bay: the parallel through its centroid crosses the bay, the box's middle doesn't.
-        let ring = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 6.0], [8.0, 6.0], [8.0, 4.0], [0.0, 4.0]];
+        let ring =
+            vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0], [0.0, 6.0], [8.0, 6.0], [8.0, 4.0], [0.0, 4.0]];
         let p = label_point(&[ring.clone()]).unwrap();
         assert!(p[1] < 4.0 || p[1] > 6.0 || p[0] > 8.0, "{p:?}");
         assert!(label_point(&[]).is_none());
