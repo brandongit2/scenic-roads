@@ -1,11 +1,17 @@
 // The task board's SQLite file: the tables, and documents <-> rows. No rules here (schema.mjs and
-// server.mjs have them); a document is written as given, and a field no column holds isn't written.
+// board.mjs have them); a document is written as given, and a field no column holds isn't written.
 import { DatabaseSync } from "node:sqlite";
-import { STAGES } from "./schema.mjs";
+import { STATUSES } from "./schema.mjs";
 
-// A task's stage is also enforced by the table itself (a CHECK constraint). A changed list rebuilds
+// The file's form, its PRAGMA user_version (README.md: a change of a database's form sets it, so the
+// M6's update can put the file back if the version that changed it doesn't start). 1: #1229's names
+// (status, assigned, meta/now). A file of another form is refused at open, except form 0, the one
+// before it, which is moved to this form once (migrateTo1).
+export const FORM = 1;
+
+// A task's status is also enforced by the table itself (a CHECK constraint). A changed list rebuilds
 // the table at open.
-const STAGE_CHECK = `CHECK (stage IN (${STAGES.map((s) => `'${s}'`).join(", ")}))`;
+const STATUS_CHECK = `CHECK (status IN (${STATUSES.map((s) => `'${s}'`).join(", ")}))`;
 const itemsTable = (name) => `CREATE TABLE ${name} (
     id TEXT PRIMARY KEY,
     kind TEXT,                 -- 'task' | 'folder'
@@ -13,8 +19,8 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     parent TEXT,
     "order" REAL,
     num INTEGER,               -- the item's number, #57
-    stage TEXT ${STAGE_CHECK},  -- schema.mjs STAGES, '' queued
-    "where" TEXT,              -- who or what it runs on
+    status TEXT ${STATUS_CHECK},  -- schema.mjs STATUSES, '' queued
+    assigned TEXT,             -- who or what it's assigned to (free text)
     note TEXT,
     reply TEXT,
     priority REAL,
@@ -22,43 +28,94 @@ const itemsTable = (name) => `CREATE TABLE ${name} (
     archived INTEGER,          -- 0/1
     archivedAt TEXT,
     added TEXT, started TEXT, finished TEXT,   -- ISO times
-    photos TEXT,               -- JSON array of blob ids
-    extra TEXT                 -- (unused: kept so old files need no rebuild; always null)
+    photos TEXT                -- JSON array of blob ids
   )`;
-const ITEMS_INDEXES = `
+const eventsTable = (name) => `CREATE TABLE ${name} (id TEXT PRIMARY KEY, item TEXT, kind TEXT, t TEXT, text TEXT)`;
+const INDEXES = `
   CREATE INDEX IF NOT EXISTS items_parent ON items(parent);
   CREATE INDEX IF NOT EXISTS items_num ON items(num);
-  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;`;
+  CREATE UNIQUE INDEX IF NOT EXISTS items_num_unique ON items(num) WHERE num IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS events_item ON events(item);
+  CREATE INDEX IF NOT EXISTS events_t ON events(t);`;
 
 export const COLS = {
-  items: ["kind", "text", "parent", "order", "num", "stage", "where", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
+  items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
   events: ["item", "kind", "t", "text"],
 };
 const BOOL = new Set(["discuss", "archived"]);
 const JSONCOL = new Set(["photos"]);
 const q = (c) => `"${c}"`;
 
-export function openStore(file) {
+function inTx(db, fn) {
+  db.exec("BEGIN IMMEDIATE");
+  try { const r = fn(); db.exec("COMMIT"); return r; } catch (e) { db.exec("ROLLBACK"); throw e; }
+}
+
+// ONE-TIME (#1229; delete this function, and its call, once the M6's board has been moved to form 1):
+// form 0 → 1, in one transaction (a failure leaves the file as it was). Items' stage and where become
+// status and assigned; the unused extra columns of items and events go; status events (kind "stage",
+// "Stage Queued → Under way (by curl)") become kind "status", "Status …"; meta/status {now} becomes
+// meta/now {text}. And no item that isn't archived may be inside an archived folder (board.mjs keeps
+// it so from now on): each archived folder holding one, at any depth, is unarchived, with an
+// `archive` event saying why. Returns the folders unarchived, [{num, for: [num]}].
+function migrateTo1(db) {
+  return inTx(db, () => {
+    db.exec(`${itemsTable("items_new")};
+      INSERT INTO items_new (id, kind, text, parent, "order", num, status, assigned, note, reply, priority, discuss, archived, archivedAt, added, started, finished, photos)
+        SELECT id, kind, text, parent, "order", num, stage, "where", note, reply, priority, discuss, archived, archivedAt, added, started, finished, photos FROM items;
+      DROP TABLE items; ALTER TABLE items_new RENAME TO items;
+      ${eventsTable("events_new")};
+      INSERT INTO events_new (id, item, kind, t, text)
+        SELECT id, item, CASE kind WHEN 'stage' THEN 'status' ELSE kind END, t,
+          CASE WHEN kind = 'stage' AND text LIKE 'Stage %' THEN 'Status ' || substr(text, 7) ELSE text END FROM events;
+      DROP TABLE events; ALTER TABLE events_new RENAME TO events;
+      INSERT INTO meta (key, value) SELECT 'now', json_object('text', coalesce(json_extract(value, '$.now'), ''), 'updated', json_extract(value, '$.updated')) FROM meta WHERE key = 'status';
+      DELETE FROM meta WHERE key = 'status';
+      ${INDEXES}`);
+    const rows = db.prepare(`SELECT id, parent, num, archived FROM items`).all();
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const why = new Map(); // archived folder id → the numbers of the items not archived inside it
+    for (const r of rows) {
+      if (r.archived) continue;
+      for (let p = byId.get(r.parent), n = 0; p && n < 10000; p = byId.get(p.parent), n++) if (p.archived) (why.get(p.id) || why.set(p.id, []).get(p.id)).push(r.num);
+    }
+    const t = new Date().toISOString();
+    const out = [];
+    for (const [id, nums] of [...why].sort((a, b) => byId.get(a[0]).num - byId.get(b[0]).num)) {
+      db.prepare(`UPDATE items SET archived = 0, archivedAt = NULL WHERE id = ?`).run(id);
+      const list = nums.map((n) => `#${n}`).join(", ");
+      db.prepare(`INSERT INTO events (id, item, kind, t, text) VALUES (?, ?, 'archive', ?, ?)`).run(crypto.randomUUID(), id, t, `Unarchived when the board moved to its new names (#1229): it held ${list}, not archived, and no item that isn't archived may be inside an archived folder`);
+      out.push({ num: byId.get(id).num, for: nums });
+    }
+    db.exec(`PRAGMA user_version = ${FORM}`);
+    return out;
+  });
+}
+
+// `log`: where the open says what it changed in the file (a migration), e.g. console.log.
+export function openStore(file, { log = () => {} } = {}) {
   const db = new DatabaseSync(file);
   db.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA foreign_keys = ON;
-    CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, item TEXT, kind TEXT, t TEXT, text TEXT, extra TEXT);
-    CREATE INDEX IF NOT EXISTS events_item ON events(item);
-    CREATE INDEX IF NOT EXISTS events_t ON events(t);
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);   -- JSON
     CREATE TABLE IF NOT EXISTS blobs (id TEXT PRIMARY KEY, type TEXT NOT NULL, data BLOB NOT NULL, sha256 TEXT, created TEXT);
   `);
-  const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
-  if (!cur) db.exec(itemsTable("items") + ";" + ITEMS_INDEXES);
-  else if (!cur.sql.includes(STAGE_CHECK)) {
-    // (Rows with a stage outside the list are refused by the copy: the rebuild fails, nothing changes.)
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.exec(`${itemsTable("items_new")}; INSERT INTO items_new SELECT * FROM items; DROP TABLE items; ALTER TABLE items_new RENAME TO items;${ITEMS_INDEXES}`);
-      db.exec("COMMIT");
-    } catch (e) { db.exec("ROLLBACK"); throw e; }
-  }
+  try {
+    const form = db.prepare(`PRAGMA user_version`).get().user_version;
+    const cur = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'`).get();
+    if (!cur) {
+      inTx(db, () => db.exec(`${itemsTable("items")}; ${eventsTable("events")}; ${INDEXES} PRAGMA user_version = ${FORM};`));
+    } else if (form === 0) {
+      const un = migrateTo1(db);
+      log(`${file}: moved to form ${FORM} (status, assigned, meta/now)${un.length ? `; unarchived ${un.map((u) => `#${u.num} (it held ${u.for.map((n) => `#${n}`).join(", ")})`).join(", ")}` : ""}`);
+    } else if (form !== FORM) {
+      throw new Error(`${file} is of form ${form} (PRAGMA user_version); this version reads form ${FORM}`);
+    } else if (!cur.sql.includes(STATUS_CHECK)) {
+      // (Rows with a status outside the list are refused by the copy: the rebuild fails, nothing changes.)
+      inTx(db, () => db.exec(`${itemsTable("items_new")}; INSERT INTO items_new SELECT * FROM items; DROP TABLE items; ALTER TABLE items_new RENAME TO items;${INDEXES}`));
+    }
+  } catch (e) { db.close(); throw e; }
 
   const stmts = {};
   const stmt = (sql) => (stmts[sql] ||= db.prepare(sql));
@@ -84,11 +141,11 @@ export function openStore(file) {
     put(col, id, doc) {
       if (col === "meta") { stmt(`INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(id, JSON.stringify(doc)); return; }
       const vals = COLS[col].map((c) => { const v = doc[c]; return v == null ? null : BOOL.has(c) ? (v ? 1 : 0) : JSONCOL.has(c) ? JSON.stringify(v) : v; });
-      const names = ["id", ...COLS[col], "extra"];
-      stmt(`INSERT OR REPLACE INTO ${col} (${names.map(q).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`).run(id, ...vals, null);
+      const names = ["id", ...COLS[col]];
+      stmt(`INSERT OR REPLACE INTO ${col} (${names.map(q).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`).run(id, ...vals);
     },
     del(col, id) { return stmt(`DELETE FROM ${col} WHERE id = ?`).run(id).changes; },
-    // [{id, data}], in the order asked (an `orderBy` that is a column; else by id).
+    // [{id, data}], in the order asked (an `orderBy` that is a column, or "id"; else by id).
     list(col, { orderBy, dir, limit } = {}) {
       if (col === "meta") return db.prepare(`SELECT key, value FROM meta ORDER BY key`).all().map((r) => ({ id: r.key, data: JSON.parse(r.value) }));
       const o = orderBy && (COLS[col].includes(orderBy) || orderBy === "id") ? ` ORDER BY ${q(orderBy)} ${dir === "desc" ? "DESC" : "ASC"}, id` : " ORDER BY id";

@@ -12,7 +12,7 @@
 const CLOSED = new Set(["done", "abandoned"]);
 
 // `inArchived`: whether a folder it is inside is archived.
-export const isOpen = (task, inArchived) => !CLOSED.has(task.stage) && !task.archived && !inArchived;
+export const isOpen = (task, inArchived) => !CLOSED.has(task.status) && !task.archived && !inArchived;
 
 // A task's priority set to `x`, among `others`: the other open tasks, [{id, priority}] (one without a
 // number doesn't count). Returns {to: its number, moves: [{id, from, to}], in the order made}.

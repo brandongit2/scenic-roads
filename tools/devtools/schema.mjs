@@ -5,14 +5,23 @@
 
 // The fixed lists are the values in use on 26 Oct 2026, kept in one place (scripts read them from
 // GET /api/schema). To allow a new one, add it here.
-export const STAGES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"]; // "" = queued
+export const STATUSES = ["", "working", "backgrounded", "integrating", "review", "waiting", "done", "abandoned"]; // "" = queued
 export const ITEM_KINDS = ["task", "folder"];
-export const WHERES = [
-  "", "Subagent", "Subagent (Opus)", "Subagent (Sonnet)", "Subagent (Fable)", "Fable subagent (high effort)", "Sonnet subagent",
+// Who a task is assigned to is free text; these are what the page's editor suggests.
+export const ASSIGNED_SUGGESTIONS = [
+  "Subagent", "Subagent (Opus)", "Subagent (Sonnet)", "Subagent (Fable)", "Fable subagent (high effort)", "Sonnet subagent",
   "worktree agent (Opus)", "worktree agent on the M1 (Opus)", "agent, this Mac", "PM (M4)", "Claude", "You", "Pipeline (lead)",
-  "Build Mac process (dem/bldfetch.py, started by hand)",
 ];
-export const EVENT_KINDS = ["note", "owner", "stage", "priority", "added", "start", "delegate", "progress", "review", "merge", "publish", "done", "wait", "stop", "bug", "decision"];
+// `status` and `archive`: the server's own (a task's status changed; an item archived or unarchived).
+export const EVENT_KINDS = ["note", "owner", "status", "archive", "priority", "added", "start", "delegate", "progress", "review", "merge", "publish", "done", "wait", "stop", "bug", "decision"];
+// Names from before #1229, refused with the name to use instead.
+export const RENAMED = {
+  itemFields: { stage: "status", where: "assigned" },
+  eventKinds: { stage: "status" },
+  meta: { status: "now" },
+  metaFields: { now: "text" },
+};
+const renamedText = (old, now) => `is renamed: send ${JSON.stringify(now)}, not ${JSON.stringify(old)}`;
 
 // Times are one format everywhere: ISO 8601, UTC, to the millisecond (what Date#toISOString gives),
 // which also sorts as text. Accepted on the way in: the same with or without the fraction
@@ -46,8 +55,8 @@ export const ITEM_FIELDS = {
   archived: { type: "bool" },
   archivedAt: { type: "time" },
   photos: { type: "photos" }, // blob ids (POST /api/blob)
-  stage: { type: "enum", values: STAGES, task: true },
-  where: { type: "enum", values: WHERES, task: true },
+  status: { type: "enum", values: STATUSES, task: true },
+  assigned: { ...F.string(200), task: true }, // who or what it's assigned to: free text ("" nobody)
   priority: { type: "number", min: 0, task: true },
   discuss: { type: "bool", task: true },
   started: { type: "time", task: true },
@@ -61,12 +70,12 @@ export const EVENT_FIELDS = {
   t: { type: "time", server: true },
 };
 export const META_FIELDS = {
-  status: { now: F.string(5000), updated: { type: "time", server: true } },
+  now: { text: F.string(5000), updated: { type: "time", server: true } }, // the now line: what Claude is on
   counter: { next: { ...F.int(1), server: true } },
 };
 // What a client may send when it creates one (the server fills the rest: ids, num, order, added, t,
 // and the defaults).
-export const ITEM_CREATE = ["kind", "text", "parent", "note", "where", "priority", "stage", "discuss"];
+export const ITEM_CREATE = ["kind", "text", "parent", "note", "assigned", "priority", "status", "discuss"];
 export const EVENT_CREATE = ["item", "kind", "text"];
 // What a client may change in one that exists (null removes an optional field).
 export const ITEM_EDIT = Object.keys(ITEM_FIELDS).filter((k) => !ITEM_FIELDS[k].server);
@@ -106,7 +115,7 @@ export function itemErrors(doc) {
     else { const w = badValue(s, doc[k]); if (w) bad(k, w); }
   }
   for (const k of ["kind", "text", "parent", "order", "num", "added"]) if (doc[k] === undefined) bad(k, "is required");
-  if (task) for (const k of ["stage", "where"]) if (doc[k] === undefined) bad(k, "is required for a task");
+  if (task) for (const k of ["status", "assigned"]) if (doc[k] === undefined) bad(k, "is required for a task");
   if (typeof doc.text === "string" && !doc.text.trim()) bad("text", "must not be empty");
   if (doc.archivedAt !== undefined && doc.archived !== true) bad("archivedAt", "is only for an archived item (archived: true)");
   return errs;
@@ -117,7 +126,7 @@ export function eventErrors(doc) {
   if (!isObj(doc)) return [{ field: "", message: "must be an object" }];
   for (const k of Object.keys(doc)) {
     const s = EVENT_FIELDS[k];
-    const w = s ? badValue(s, doc[k]) : "is not a field of an event";
+    const w = k === "kind" && RENAMED.eventKinds[doc.kind] ? renamedText(doc.kind, RENAMED.eventKinds[doc.kind]) : s ? badValue(s, doc[k]) : "is not a field of an event";
     if (w) errs.push({ field: k, message: w });
   }
   for (const k of ["item", "kind", "text", "t"]) if (doc[k] === undefined) errs.push({ field: k, message: "is required" });
@@ -127,6 +136,7 @@ export function eventErrors(doc) {
 // Every way `doc` breaks meta/<key>'s schema (an unknown key is no document at all).
 export function metaErrors(key, doc) {
   const fields = META_FIELDS[key];
+  if (RENAMED.meta[key]) return [{ field: "", message: renamedMeta(key) }];
   if (!fields) return [{ field: "", message: `there is no meta/${key}; the documents are ${list(Object.keys(META_FIELDS))}` }];
   if (!isObj(doc)) return [{ field: "", message: "must be an object" }];
   const errs = [];
@@ -139,13 +149,16 @@ export function metaErrors(key, doc) {
 }
 export const docErrors = (col, id, doc) => (col === "items" ? itemErrors(doc) : col === "events" ? eventErrors(doc) : metaErrors(id, doc));
 
-// A request body's keys against what a client may send: the server's own fields are named as such.
-export function sentErrors(sent, allowed, owned) {
+// meta/<old>'s refusal: its new name and fields.
+export const renamedMeta = (key) => `meta/${key} is renamed meta/${RENAMED.meta[key]} (its fields: ${Object.keys(META_FIELDS[RENAMED.meta[key]]).join(", ")}; "now" is "text")`;
+// A request body's keys against what a client may send: the server's own fields, and names from
+// before a rename (`renamed`: old → new), are named as such.
+export function sentErrors(sent, allowed, owned, renamed = {}) {
   const errs = [];
   if (!isObj(sent)) return [{ field: "", message: "the body must be a JSON object" }];
   for (const k of Object.keys(sent)) {
     if (allowed.includes(k)) continue;
-    errs.push({ field: k, message: owned.includes(k) ? "is set by the server; don't send it" : `is not a field you can send here (these are: ${allowed.join(", ")})` });
+    errs.push({ field: k, message: owned.includes(k) ? "is set by the server; don't send it" : renamed[k] ? renamedText(k, renamed[k]) : `is not a field you can send here (these are: ${allowed.join(", ")})` });
   }
   return errs;
 }
@@ -155,7 +168,7 @@ export const errorText = (errs) => errs.map((e) => (e.field ? `${e.field}: ${e.m
 export function describe() {
   const f = (fields) => Object.fromEntries(Object.entries(fields).map(([k, s]) => [k, { type: s.type, ...(s.values ? { values: s.values } : {}), ...(s.max ? { max: s.max } : {}), ...(s.min !== undefined ? { min: s.min } : {}), ...(s.server ? { server: true } : {}), ...(s.task ? { taskOnly: true } : {}) }]));
   return {
-    stages: STAGES, itemKinds: ITEM_KINDS, wheres: WHERES, eventKinds: EVENT_KINDS, timeFormat: TIME_FORMAT,
+    statuses: STATUSES, itemKinds: ITEM_KINDS, assignedSuggestions: ASSIGNED_SUGGESTIONS, eventKinds: EVENT_KINDS, timeFormat: TIME_FORMAT, renamed: RENAMED,
     items: { fields: f(ITEM_FIELDS), create: ITEM_CREATE, edit: ITEM_EDIT },
     events: { fields: f(EVENT_FIELDS), create: EVENT_CREATE, edit: EVENT_EDIT },
     meta: Object.fromEntries(Object.entries(META_FIELDS).map(([k, v]) => [k, f(v)])),

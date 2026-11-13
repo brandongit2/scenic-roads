@@ -40,15 +40,15 @@ test("placePriority: a whole number as it is; a fraction rounded up, running int
   assert.deepEqual(placePriority(0.5, others), { to: 1, moves: [] });
   assert.deepEqual(placePriority(4.5, [{ id: "x", priority: 5 }, { id: "y", priority: 5 }, { id: "z", priority: 6 }]).moves,
     [{ id: "x", from: 5, to: 6 }, { id: "y", from: 5, to: 6 }, { id: "z", from: 6, to: 7 }], "tasks sharing a number move together");
-  assert.equal(isOpen({ stage: "" }), true);
-  assert.equal(isOpen({ stage: "working" }), true);
-  for (const t of [{ stage: "done" }, { stage: "abandoned" }, { stage: "", archived: true }]) assert.equal(isOpen(t), false, JSON.stringify(t));
-  assert.equal(isOpen({ stage: "" }, true), false, "inside an archived folder");
+  assert.equal(isOpen({ status: "" }), true);
+  assert.equal(isOpen({ status: "working" }), true);
+  for (const t of [{ status: "done" }, { status: "abandoned" }, { status: "", archived: true }]) assert.equal(isOpen(t), false, JSON.stringify(t));
+  assert.equal(isOpen({ status: "" }, true), false, "inside an archived folder");
 });
 
 test("PATCH with a fraction: the task takes it rounded up, the open tasks it runs into move down one, each recorded", async (t) => {
   const b = await board(t);
-  const [p5, p6, p7, p9, w8] = [await b.add({ priority: 5 }), await b.add({ priority: 6 }), await b.add({ priority: 7, stage: "working" }), await b.add({ priority: 9 }), await b.add({ priority: 12 })];
+  const [p5, p6, p7, p9, w8] = [await b.add({ priority: 5 }), await b.add({ priority: 6 }), await b.add({ priority: 7, status: "working" }), await b.add({ priority: 9 }), await b.add({ priority: 12 })];
   const r = await b.patch(w8, { priority: 5.5, note: "moved up" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const num = (id) => b.store.get("items", id).num;
@@ -86,14 +86,14 @@ test("done, abandoned and archived tasks, and tasks inside an archived folder, k
   const b = await board(t);
   const folder = await b.add({ kind: "folder" });
   const inner = await b.add({ kind: "folder", parent: folder });
-  const done = await b.add({ priority: 6, stage: "done" });
-  const gone = await b.add({ priority: 6, stage: "abandoned" });
+  const done = await b.add({ priority: 6, status: "done" });
+  const gone = await b.add({ priority: 6, status: "abandoned" });
   const arch = await b.add({ priority: 6 });
   const deep = await b.add({ priority: 6, parent: inner });
-  const open6 = await b.add({ priority: 6, stage: "review" });
-  const done7 = await b.add({ priority: 7, stage: "done" });
+  const open6 = await b.add({ priority: 6, status: "review" });
+  const done7 = await b.add({ priority: 7, status: "done" });
   const open8 = await b.add({ priority: 8 });
-  for (const id of [folder, arch]) assert.equal((await b.patch(id, { archived: true })).status, 200);
+  for (const id of [folder, arch]) assert.equal((await b.patch(id, { archived: true, cascade: true })).status, 200);
   const r = await b.patch(await b.add({}), { priority: 5.5 });
   assert.deepEqual(r.body.moved.map((m) => m.id), [open6], "the open 6 moves to 7, a closed task's number; 8 is past it");
   assert.deepEqual([done, gone, arch, deep, open6, done7, open8].map(b.prio), [6, 6, 6, 6, 7, 7, 8]);
@@ -128,7 +128,7 @@ test("a priority that isn't a number from 0, or on a folder, is refused, nothing
   const b = await board(t);
   const [a, c] = [await b.add({ priority: 3 }), await b.add({ priority: 4 })];
   const before = JSON.stringify([b.store.list("items"), b.store.list("events")]);
-  for (const bad of [{ priority: "2.5" }, { priority: -0.5 }, { priority: true }, { priority: 2.5, stage: "nope" }]) {
+  for (const bad of [{ priority: "2.5" }, { priority: -0.5 }, { priority: true }, { priority: 2.5, status: "nope" }]) {
     assert.equal((await b.patch(a, bad)).status, 400, JSON.stringify(bad));
   }
   assert.equal((await b.call("POST", "/api/c/items", { kind: "folder", text: "f", priority: 1.5 })).status, 400);
@@ -141,7 +141,7 @@ test("a priority that isn't a number from 0, or on a folder, is refused, nothing
 test("PUT with a fraction is placed too", async (t) => {
   const b = await board(t);
   const [a, c] = [await b.add({ priority: 2 }), await b.add({ priority: 9 })];
-  const r = await b.call("PUT", `/api/c/items/${c}`, { kind: "task", text: "t", parent: "", stage: "", where: "Subagent", priority: 1.5 });
+  const r = await b.call("PUT", `/api/c/items/${c}`, { kind: "task", text: "t", parent: "", status: "", assigned: "Subagent", priority: 1.5 });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual([r.body.priority, r.body.moved.map((m) => [m.id, m.from, m.to])], [2, [[a, 2, 3]]]);
   assert.deepEqual([b.prio(a), b.prio(c)], [3, 2]);

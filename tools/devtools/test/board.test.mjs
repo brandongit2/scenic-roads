@@ -8,7 +8,7 @@ import path from "node:path";
 import { openStore } from "../store.mjs";
 import { openJobs } from "../jobs.mjs";
 import { makeServer } from "../server.mjs";
-import { STAGES, WHERES, EVENT_KINDS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
+import { STATUSES, ASSIGNED_SUGGESTIONS, EVENT_KINDS, itemErrors, eventErrors, metaErrors, errorText } from "../schema.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "taskboard-test-"));
 const store = openStore(path.join(dir, "t.db"));
@@ -47,7 +47,7 @@ async function call(method, url, body, headers = {}) {
 const post = (col, b) => call("POST", `/api/c/${col}`, b);
 const patch = (col, id, b) => call("PATCH", `/api/c/${col}/${id}`, b);
 const get = async (col, id) => (await call("GET", `/api/c/${col}/${id}`)).body.data;
-const count = () => ({ items: store.list("items").length, events: store.list("events").length, counter: store.get("meta", "counter").next, status: JSON.stringify(store.get("meta", "status")) });
+const count = () => ({ items: store.list("items").length, events: store.list("events").length, counter: store.get("meta", "counter").next, now: JSON.stringify(store.get("meta", "now")) });
 const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
 const refused = async (p, what) => {
   const before = count(), dump = JSON.stringify([store.list("items"), store.list("events")]);
@@ -70,7 +70,7 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   assert.equal(f.body.order, 1);
   assert.match(f.body.added, ISO);
   const a = await post("items", { text: "First", parent: folder, note: "n", priority: 2 });
-  const b = await post("items", { text: "Second", parent: folder, stage: "working", where: "You" });
+  const b = await post("items", { text: "Second", parent: folder, status: "working", assigned: "You" });
   const g = await post("items", { kind: "folder", text: "Another folder" });
   const c = await post("items", { text: "Third" });
   t1 = a.body.id;
@@ -78,13 +78,13 @@ test("POST items: the server assigns num, id, order and added, and keeps the cou
   assert.deepEqual([a.body.num, b.body.num, g.body.num, c.body.num], [2, 3, 4, 5], "tasks and folders from one counter");
   assert.deepEqual([a.body.order, b.body.order, g.body.order, c.body.order], [2, 3, 4, 5], "last in the one order over all items");
   assert.match(a.body.added, ISO);
-  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2, stage: "", where: "Subagent", num: a.body.num, order: 2, added: a.body.added });
+  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "First", parent: folder, note: "n", priority: 2, status: "", assigned: "Subagent", num: a.body.num, order: 2, added: a.body.added });
   assert.equal((await get("items", g.body.id)).num, 4);
   assert.equal((await get("meta", "counter")).next, c.body.num + 1);
-  // working at birth leaves a stage event, dated by the server
+  // working at birth leaves a status event, dated by the server
   const ev = store.list("events").filter((e) => e.data.item === b.body.id);
   assert.equal(ev.length, 1);
-  assert.equal(ev[0].data.kind, "stage");
+  assert.equal(ev[0].data.kind, "status");
   assert.match(ev[0].data.t, ISO);
 });
 
@@ -113,8 +113,11 @@ const BAD_POSTS = {
   "order sent": [{ text: "x", order: 3 }, /order: is set by the server/],
   "added sent": [{ text: "x", added: "2026-10-26T08:35:48Z" }, /added: is set by the server/],
   "added as epoch ms": [{ text: "x", added: "1792000000000.0" }, /added: is set by the server/],
-  "bad stage": [{ text: "x", stage: "finished" }, /stage: must be one of/],
-  "bad where": [{ text: "x", where: "somewhere" }, /where: must be one of/],
+  "bad status": [{ text: "x", status: "finished" }, /status: must be one of/],
+  "assigned too long": [{ text: "x", assigned: "x".repeat(201) }, /assigned: is too long/],
+  "assigned a number": [{ text: "x", assigned: 5 }, /assigned: must be a string/],
+  "stage (renamed)": [{ text: "x", stage: "working" }, /stage: is renamed: send "status", not "stage"/],
+  "where (renamed)": [{ text: "x", where: "You" }, /where: is renamed: send "assigned", not "where"/],
   "bad kind": [{ text: "x", kind: "epic" }, /kind: must be one of/],
   "parent that isn't there": [{ text: "x", parent: "nope" }, /parent: no item "nope"/],
   "parent not a string": [{ text: "x", parent: 4 }, /parent: must be a string/],
@@ -124,9 +127,9 @@ const BAD_POSTS = {
   "slot (gone: order is the order)": [{ text: "x", slot: 1 }, /slot: is not a field you can send here/],
   "inside a task": [{ text: "x", parent: "T1" }, /parent: i\d+ is a task; only folders hold items/],
   "note a number": [{ text: "x", note: 1 }, /note: must be a string/],
-  "folder with a stage": [{ text: "x", kind: "folder", stage: "done" }, /stage: is only for tasks/],
-  "folder with a where": [{ text: "x", kind: "folder", where: "You" }, /where: is only for tasks/],
-  "several at once": [{ stage: "no", where: "no" }, /(?=.*text: is required)(?=.*stage: must be one of)(?=.*where: must be one of)/],
+  "folder with a status": [{ text: "x", kind: "folder", status: "done" }, /status: is only for tasks/],
+  "folder with an assigned": [{ text: "x", kind: "folder", assigned: "You" }, /assigned: is only for tasks/],
+  "several at once": [{ status: "no", assigned: 1 }, /(?=.*text: is required)(?=.*status: must be one of)(?=.*assigned: must be a string)/],
   "an array": [[], /the body must be a JSON object/],
   "a string": ['"x"', /the body must be a JSON object/],
   "not JSON": ["{", /not valid JSON/],
@@ -135,13 +138,20 @@ for (const [name, [body, says]] of Object.entries(BAD_POSTS)) test(`POST items r
 
 test("PATCH items: edits an existing item only", async () => {
   await refused(() => patch("items", "nope", { text: "x" }), { status: 404, code: "not_found", says: /no item "nope"/ });
-  await refused(() => call("PUT", "/api/c/items/nope", { kind: "task", text: "x", parent: "", stage: "", where: "" }), { status: 404, code: "not_found" });
-  const r = await patch("items", t1, { stage: "review", priority: 3 });
+  await refused(() => call("PUT", "/api/c/items/nope", { kind: "task", text: "x", parent: "", status: "", assigned: "" }), { status: 404, code: "not_found" });
+  const r = await patch("items", t1, { status: "review", priority: 3 });
   assert.equal(r.status, 200);
-  assert.equal((await get("items", t1)).stage, "review");
+  assert.equal((await get("items", t1)).status, "review");
   const ev = store.list("events").filter((e) => e.data.item === t1);
-  assert.match(ev.at(-1).data.text, /Stage Queued → In review \(by curl\)/);
+  assert.match(ev.at(-1).data.text, /Status Queued → In review \(by curl\)/);
   assert.match(ev.at(-1).data.t, ISO);
+});
+test("assigned is free text: anything up to 200 characters, the suggestions or not", async () => {
+  for (const a of ["Subagent (Fable, low effort)", "", "someone new", "x".repeat(200)]) {
+    assert.equal((await patch("items", t1, { assigned: a })).status, 200, a);
+    assert.equal((await get("items", t1)).assigned, a);
+  }
+  assert.equal((await post("items", { text: "Freeform", assigned: "Subagent (Fable, low effort)" })).status, 200);
 });
 test("PATCH: null removes an optional field, and never a required one", async () => {
   await patch("items", t1, { note: null, priority: null });
@@ -149,7 +159,7 @@ test("PATCH: null removes an optional field, and never a required one", async ()
   assert.equal("note" in d, false);
   assert.equal("priority" in d, false);
   await refused(() => patch("items", t1, { text: null }), { says: /text: is required/ });
-  await refused(() => patch("items", t1, { stage: null }), { says: /stage: is required for a task/ });
+  await refused(() => patch("items", t1, { status: null }), { says: /status: is required for a task/ });
 });
 const BAD_PATCHES = {
   "num": [{ num: 1 }, /num: is set by the server/],
@@ -161,8 +171,10 @@ const BAD_PATCHES = {
   "date only": [{ started: "2026-10-26" }, /started: must be a time/],
   "an offset": [{ started: "2026-10-26T08:00:00+02:00" }, /started: must be a time/],
   "impossible date": [{ started: "2026-02-30T00:00:00Z" }, /started: must be a time/],
-  "bad stage": [{ stage: "nope" }, /stage: must be one of/],
-  "bad where": [{ where: "Elsewhere" }, /where: must be one of/],
+  "bad status": [{ status: "nope" }, /status: must be one of/],
+  "assigned too long": [{ assigned: "x".repeat(201) }, /assigned: is too long/],
+  "stage (renamed)": [{ stage: "done" }, /stage: is renamed: send "status"/],
+  "where (renamed)": [{ where: "You", priority: 2 }, /where: is renamed: send "assigned"/],
   "parent missing": [{ parent: "gone" }, /parent: no item "gone"/],
   "parent itself": [{ parent: "SELF" }, /inside itself/],
   "order a string": [{ order: "1" }, /order: must be a number/],
@@ -179,6 +191,11 @@ test("PATCH: times are stored in one format; reorder, archive and the rest go th
   assert.equal(d.finished, "2026-10-26T09:00:00.500Z");
   assert.equal(d.archivedAt, "2026-10-26T10:00:00.000Z");
   assert.equal(d.order, 7.5);
+  // (Unarchived alone: its time goes with it.)
+  assert.equal((await patch("items", t1, { archived: false })).status, 200);
+  const u = await get("items", t1);
+  assert.equal(u.archived, false);
+  assert.equal("archivedAt" in u, false);
 });
 test("PATCH: a cycle of parents is refused; a move into a folder is not, into a task is", async () => {
   const inner = await post("items", { kind: "folder", text: "Inner", parent: folder });
@@ -190,23 +207,23 @@ test("PATCH: a cycle of parents is refused; a move into a folder is not, into a 
 test("a folder and a task change kind keeping their number; a folder holding items stays one", async () => {
   const f = await post("items", { kind: "folder", text: "Becomes a task" });
   const n = f.body.num;
-  const r = await patch("items", f.body.id, { kind: "task", stage: "", where: "You" });
+  const r = await patch("items", f.body.id, { kind: "task", status: "", assigned: "You" });
   assert.equal(r.status, 200);
   assert.equal(r.body.num, n);
-  await patch("items", f.body.id, { kind: "folder", stage: null, where: null });
+  await patch("items", f.body.id, { kind: "folder", status: null, assigned: null });
   assert.equal((await get("items", f.body.id)).num, n);
-  assert.equal((await patch("items", f.body.id, { kind: "task", stage: "", where: "You" })).body.num, n, "the same number again");
-  await refused(() => patch("items", f.body.id, { kind: "folder" }), { says: /stage: is only for tasks.*where: is only for tasks/ });
-  await patch("items", f.body.id, { kind: "folder", stage: null, where: null });
+  assert.equal((await patch("items", f.body.id, { kind: "task", status: "", assigned: "You" })).body.num, n, "the same number again");
+  await refused(() => patch("items", f.body.id, { kind: "folder" }), { says: /status: is only for tasks.*assigned: is only for tasks/ });
+  await patch("items", f.body.id, { kind: "folder", status: null, assigned: null });
   await post("items", { text: "Inside", parent: f.body.id });
-  await refused(() => patch("items", f.body.id, { kind: "task", stage: "", where: "You" }), { says: /holds 1 item\(s\); only folders hold items/ });
+  await refused(() => patch("items", f.body.id, { kind: "task", status: "", assigned: "You" }), { says: /holds 1 item\(s\); only folders hold items/ });
 });
 test("PUT items: replaces what a client writes, and keeps num, added and order", async () => {
   const a = await post("items", { text: "Put me", note: "gone soon", priority: 4 });
   const before = await get("items", a.body.id);
-  const r = await call("PUT", `/api/c/items/${a.body.id}`, { kind: "task", text: "Put", parent: "", stage: "done", where: "You" });
+  const r = await call("PUT", `/api/c/items/${a.body.id}`, { kind: "task", text: "Put", parent: "", status: "done", assigned: "You" });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "Put", parent: "", stage: "done", where: "You", num: before.num, added: before.added, order: before.order });
+  assert.deepEqual(await get("items", a.body.id), { kind: "task", text: "Put", parent: "", status: "done", assigned: "You", num: before.num, added: before.added, order: before.order });
   await refused(() => call("PUT", `/api/c/items/${a.body.id}`, { text: "only text" }), { says: /kind: is required/ });
 });
 
@@ -224,6 +241,7 @@ const BAD_EVENTS = {
   "no item": [{ kind: "note", text: "x" }, /item: is required/],
   "no kind": [{ item: "T1", text: "x" }, /kind: is required/],
   "bad kind": [{ item: "T1", kind: "shout", text: "x" }, /kind: must be one of/],
+  "kind stage (renamed)": [{ item: "T1", kind: "stage", text: "x" }, /kind: is renamed: send "status", not "stage"/],
   "no text": [{ item: "T1", kind: "note" }, /text: is required/],
   "empty text": [{ item: "T1", kind: "note", text: " " }, /text: must not be empty/],
   "t sent as epoch ms": [{ item: "T1", kind: "note", text: "x", t: "1792000000000.0" }, /t: is set by the server/],
@@ -244,19 +262,22 @@ test("events: PATCH changes text and kind only; PUT and PATCH need an existing i
   assert.equal(await get("events", ev1), null);
 });
 
-test("meta: the counter is the server's; the status line's time is too", async () => {
+test("meta: the counter is the server's; the now line's time is too", async () => {
   await refused(() => patch("meta", "counter", { next: 1 }), { status: 403, code: "forbidden", says: /server's/ });
   await refused(() => call("PUT", "/api/c/meta/counter", { next: 1 }), { status: 403, code: "forbidden" });
-  await refused(() => patch("meta", "status", { now: "x", updated: 1793004672000 }), { says: /updated: is set by the server/ });
-  await refused(() => patch("meta", "status", { now: 5 }), { says: /now: must be a string/ });
-  await refused(() => patch("meta", "status", { other: 1 }), { says: /other: is not a field you can send here/ });
-  await refused(() => patch("meta", "mystery", { now: "x" }), { says: /there is no meta\/mystery/ });
-  await refused(() => call("DELETE", "/api/c/meta/status"), { status: 405 });
-  await refused(() => call("POST", "/api/c/meta", { now: "x" }), { status: 405 });
-  const r = await patch("meta", "status", { now: "Working on it" });
+  await refused(() => patch("meta", "now", { text: "x", updated: 1793004672000 }), { says: /updated: is set by the server/ });
+  await refused(() => patch("meta", "now", { text: 5 }), { says: /text: must be a string/ });
+  await refused(() => patch("meta", "now", { other: 1 }), { says: /other: is not a field you can send here/ });
+  await refused(() => patch("meta", "now", { now: "x" }), { says: /now: is renamed: send "text", not "now"/ });
+  await refused(() => patch("meta", "mystery", { text: "x" }), { says: /there is no meta\/mystery/ });
+  await refused(() => call("DELETE", "/api/c/meta/now"), { status: 405 });
+  await refused(() => call("POST", "/api/c/meta", { text: "x" }), { status: 405 });
+  // (The status line's old name, refused whatever is asked of it.)
+  for (const [m, b] of [["GET"], ["PATCH", { now: "x" }], ["PUT", { now: "x" }]]) await refused(() => call(m, "/api/c/meta/status", b), { says: /meta\/status is renamed meta\/now \(its fields: text, updated; "now" is "text"\)/ });
+  const r = await patch("meta", "now", { text: "Working on it" });
   assert.equal(r.status, 200);
-  const s = await get("meta", "status");
-  assert.equal(s.now, "Working on it");
+  const s = await get("meta", "now");
+  assert.equal(s.text, "Working on it");
   assert.match(s.updated, ISO);
 });
 
@@ -286,9 +307,14 @@ test("routes: nothing else is open", async () => {
   await refused(() => call("GET", "/api/c/things"), { status: 404, code: "not_found" });
   await refused(() => call("POST", "/api/lease", { name: "counter", holder: "x" }), { status: 404, code: "not_found" });
   const s = await call("GET", "/api/schema");
-  assert.deepEqual(s.body.stages, STAGES);
-  assert.deepEqual(s.body.wheres, WHERES);
+  assert.deepEqual(s.body.statuses, STATUSES);
+  assert.deepEqual(s.body.assignedSuggestions, ASSIGNED_SUGGESTIONS);
   assert.deepEqual(s.body.eventKinds, EVENT_KINDS);
+  assert.deepEqual(s.body.renamed.itemFields, { stage: "status", where: "assigned" });
+  // (A sort by a field's old name, or by no field, is refused.)
+  await refused(() => call("GET", "/api/c/items?orderBy=stage"), { says: /orderBy: "stage" is renamed "status"/ });
+  await refused(() => call("GET", "/api/c/items?orderBy=colour"), { says: /orderBy: "colour" isn't a field of items/ });
+  assert.equal((await call("GET", "/api/c/events?orderBy=t&dir=desc&limit=2")).status, 200);
 });
 
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
@@ -307,7 +333,7 @@ test("the app's pages, the board's schema and the dashboard's timeline are serve
   assert.equal(old.status, 301);
   assert.equal(old.headers.get("location"), "task-board/709?x=1");
   // (And its page's API, at the old proxy path's.)
-  assert.deepEqual(await (await fetch(base + "/task-board/api/c/meta/status")).json(), await (await fetch(base + "/api/c/meta/status")).json());
+  assert.deepEqual(await (await fetch(base + "/task-board/api/c/meta/now")).json(), await (await fetch(base + "/api/c/meta/now")).json());
   // (Only the build page's modules the dashboard imports, nothing else of the checkout.)
   for (const url of ["/lib/buildpage/dash.js", "/lib/buildpage/../../../README.md", "/../server.mjs", "/task-board/../../jobs.mjs"]) assert.equal((await fetch(base + url)).status, 404, url);
 });
