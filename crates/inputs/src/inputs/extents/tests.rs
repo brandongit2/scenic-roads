@@ -699,7 +699,7 @@ fn the_real_terrain_files_are_taken() {
         warnings.extend(c.findings.iter().filter(|f| f.level == Level::Warning).map(|f| f.message.clone()));
         if p.ends_with(".geojson") {
             assert!(c.facts["pieces"].as_u64().unwrap() > 0, "{p}");
-            // (A source whose only pieces are of unknown extent, Belize's, has no box.)
+            // (A source whose only pieces are of unknown extent, Belize's and four more, has no box.)
             let unknown = c.facts["classes"].as_object().is_some_and(|k| k.keys().all(|k| k == "unknown"));
             assert!(c.facts.contains_key("box") || unknown, "{p}");
         }
@@ -709,10 +709,13 @@ fn the_real_terrain_files_are_taken() {
     let errors: Vec<&Finding> = whole.iter().filter(|f| f.level == Level::Error).collect();
     assert!(errors.is_empty(), "{errors:#?}");
     warnings.extend(whole.iter().map(|f| f.message.clone()));
-    // (Belize's lidar: where its 17 % lies isn't stated.)
+    // (Where they lie isn't stated: Belize's 17 %, Greater Santo Domingo's 380 km², Dominica's,
+    // Guatemala's and Saint Kitts and Nevis's coverage.)
+    let unknown =
+        |s: &str| format!("terrain/{s}.geojson: 1 piece of class unknown: listed in the sources, drawn nowhere");
     assert_eq!(
         warnings,
-        ["terrain/belize-crip.geojson: 1 piece of class unknown: listed in the sources, drawn nowhere"]
+        ["belize-crip", "dominica-dvrp", "dominicanrep-sgn", "guatemala-ign", "stkitts-lidar"].map(unknown)
     );
     // NRCan's 950 projects and its mosaic, its box the country's north.
     let c = Extents.file("terrain/nrcan-hrdem.geojson", &files["terrain/nrcan-hrdem.geojson"]);

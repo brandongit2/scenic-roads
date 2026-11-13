@@ -1916,9 +1916,9 @@ a new source of a kind it knows is a new declaration, no code):
 
 | `method` | Reads | Class |
 |---|---|---|
-| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on; a layer whose rows share an id, a join, is refused), in WGS 84, generalised by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it, as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
+| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on), the pages coming to the count the service gives first (`returnCountOnly`), so none is skipped or read twice at a page's edge: a layer whose rows share an id (a join), on a page or across its edge, is refused, in WGS 84, generalised by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it, as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
 | `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
-| `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once): each file it links with its own `bbox`, else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
+| `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once, by their `alternate` links: never `up` or `self`, back to the service's every dataset): each file it links with its own `bbox`, else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
 | `wfs` | a WFS feature type (GetFeature as GeoJSON, paged; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
 | `file` | a published index file fetched whole (GeoJSON, read as `wfs`'s answers are, or a zipped shapefile: `member` names one of several), its size checked first | `index` or `service` |
 | `listing` | a bucket's listing, a page's links or a text file of names (`list`), each name georeferenced by a declared `pattern` (its groups `x`, `y`, and `ew`, `ns`; `unit`, `size`, `corner`, `crs`) | `index` |
@@ -2025,8 +2025,8 @@ above a nominal spacing published, so a product's twin in other units falls in i
 | 0.5 m | 0.625 m | IGN LiDAR HD, Luxembourg (0.5 m); 2 ft, 0.6096 m |
 | 1 m | 1.25 m | NRCan HRDEM projects, GeoBC, Wales (1 m); 3 ft, 0.9144 m |
 | 2 m | 2.5 m | NRCan HRDEM projects and its ArcticDEM-based mosaic, GeoBC, ArcticDEM, REMA (2 m) |
-| 3–5 m | 6.25 m | 1/9 arc-second (3 m), 5 m (none yet) |
-| 10 m | 12.5 m | 1/3 arc-second, 10.3 m (none yet) |
+| 3–5 m | 6.25 m | 3DEP's 1/9 arc-second (3.4 m) and Alaska's 5 m IfSAR, INEGI's 5 m sheets |
+| 10 m | 12.5 m | 3DEP's 1/3 arc-second (10.3 m), Turks and Caicos' 10 m, Honduras's 12.5 m |
 | 30 m | 37.5 m | Copernicus GLO-30, AW3D30 |
 | 90 m | 112.5 m | Copernicus GLO-90 |
 | coarser | | |
@@ -2102,13 +2102,13 @@ America read on 13 Nov, its large indexes on the Mac mini):
 | `pgc-arcticdem` | 1: the 2 m mosaic | `index` | `file`: the centre's tile index (a zipped shapefile, EPSG:3413) |
 | `pgc-rema` | 1: the 2 m mosaic | `index` | `file`: the same, EPSG:3031; its hole round the South Pole kept (no data south of ~89° S) |
 | `jaxa-aw3d30` | 1 | `claimed` (a free account) | `listing`: the agency's public list of 1° tiles |
-| `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline (its `extent` asset: the items' own footprints, hulls for many, summed 5.07 million km²; the extent files 2.29 million, against the 2,230,605 km² NRCan states), cell and year (from its name, or its item's `datetime` for the 145 names holding none); `raster`: the mosaic's 36 squares, each's mask at its overview of ~1 km pixels (`grain_m` 1,024) |
+| `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline (its `extent` asset: the items' own footprints, hulls for many, summed 5.07 million km²; the extent files 2.29 million, against the 2,230,605 km² NRCan states; 4.5 MB, their 1 km tiles' staircase edges, which a 200 m tolerance cuts by 6 % only), cell and year (from its name, or its item's `datetime` for the 145 names holding none); `raster`: the mosaic's 36 squares, each's mask at its overview of ~1 km pixels (`grain_m` 1,024) |
 | `geobc-lidar` | 17: the DEM sheets by cell and year | `index` | `arcgis`: the portal's two sheet indexes, each sheet's cell as stated (1,659 sheets of 2016 are 2 m) |
 | `wales-lidar` | 4: the 1 km tiles by year flown | `index` | `wfs`: the tile catalogue (EPSG:27700) |
 | `ign-lidar-hd` | 6: the 1 km tiles by the year their flights ended (2021 to 2026) | `index` | `wfs`: the programme's tile index, 524,687 tiles (metropolitan France and the overseas tiles so far): 105 requests, 155 MB, 3 min 9 s and 477 MB of memory on the M1, to 174 KB; each year's area within 0.3 % of its tiles' count in km² |
 | `luxembourg-lidar` | 1 | `files` | `raster`: the one GeoTIFF's header and its mask at an overview of 64 m pixels |
 | `usgs-3dep` | 1,050: the 1 m DEM by project and year (1,021), the 1/9 arc-second DEM and Alaska's 5 m IfSAR DTM by year, the 1/3, 1 and 2 arc-second layers | `index` | `arcgis`: the bare-earth DEM service's catalogue (an ImageServer, Esri JSON), 143,630 items, 81 requests, 306 MB, 16 min on the mini, 429 MB of memory, to 1.1 MB; the 1 m DEM's 126,836 10 km tiles sum 12.67 million km² (their count × 100 km²: within 0.1 %), its pieces within 0.001 % of the tiles' unions by project. The index service with the 0.5 m source DEMs refuses every feature query |
-| `usiei` | 1,015: the US inventory's surveys by spacing, year and availability | `service`; `claimed` (paid, closed) | `arcgis`: NOAA's and the USGS's interagency inventory (topographic and topobathymetric lidar, 3,523 surveys complete or partly delivered, of every agency, state and city): each survey's stated point spacing and year; 18 MB read; 8.9 MB at a 500 m tolerance |
+| `usiei` | 1,015: the US inventory's surveys by spacing, year and availability | `service`; `claimed` (paid, closed) | `arcgis`: NOAA's and the USGS's interagency inventory (topographic and topobathymetric lidar, 3,523 surveys complete or partly delivered, of every agency, state and city): each survey's stated point spacing and year; 18 MB read; 8.9 MB at a 500 m tolerance (408,165 positions: the surveys' own outlines, a piece per spacing, year and availability; at 1 km 5.0 MB and four small surveys dropped as specks, at 2 km 2.8 MB and sixteen) |
 | `quebec-lidar` | 200: the point clouds by project, density and year; the 1 m DTM | `index` | `wfs`: the province's 614,801 latest 1 km tiles, 62 requests, 408 MB, 6 min 43 s on the mini, to 199 pieces summing 615,301 km² (the tiles' count, about 1 km² each: within 0.1 %); `file`: the DTM's 2,630 sheets |
 | `ontario-lidar` | 51: the DTM by project, cell and year; the forest inventory's single-photon DTM | `index` | `arcgis`: the province's two lidar image services' catalogues, 203,904 and 419,331 1 km tiles, 626 requests, 161 MB, 12 min 45 s on the mini, 484 MB of memory (a run from the cache), to 518 KB; the pieces' areas within 0.03 % of the tiles' own unions (187,791 and 411,748 km²) |
 | `saskatchewan-lidar` | 2 | `index` | `arcgis`: the province's lidar image service's catalogue (964 rasters, Consul and the Great Sand Hills) |
@@ -2117,8 +2117,8 @@ America read on 13 Nov, its large indexes on the Mac mini):
 | `novascotia-lidar` | 100: the projects | `service` | `arcgis`: the province's 100 project areas, each its required pulse spacing |
 | `inegi-mde` | 3: the 5 m and 1.5 m sheets, the 15 m CEM | `index`; `claimed` | `file`: the institute's sheet indexes (26,333 and 1,843 sheets: 1,027,835 and 73,357 km², within 0.3 % of its own figures), and its national outline for the CEM |
 | `haiti-dtm` | 2: the 1.5 m DTM's tiles; the southern peninsula | `files`; `claimed` | `raster`: OpenTopography's bucket listing, 357 10 km tiles, each's header and its mask at its overview of 24 m pixels (675 requests, 44 MB, 16,259 km²); `file`: the four departments its 12 southern 50 km tiles span (7,807 km²), those tiles having no overviews (2.4 GB, a mask of theirs the whole file) |
-| 22 claimed sources | 26 | `claimed` | `file`: Natural Earth's admin-1 areas the publishers state, filtered: Guatemala, El Salvador, Honduras, Santo Domingo, the Cayman Islands, Turks and Caicos, Antigua and Barbuda, Saint Kitts and Nevis, Dominica, Saint Lucia, Grenada, Barbados, Trinidad, Saint Vincent, Bonaire, Saba, Sint Eustatius, Greenland (GHM), Bermuda, Saint-Pierre-et-Miquelon, Martinique, Saint-Barthélemy, Saint-Martin, Nuevo León, Connecticut, the District of Columbia |
-| `belize-crip` | 1 | `unknown` | `none`: the 17 % of Belize the project's lidar covers isn't stated |
+| 18 claimed sources | 22 | `claimed` | `file`: the areas the publishers state their data covers, as Natural Earth's 1:10m admin-1 areas (v5.1.2, public domain) draw them, filtered: El Salvador, Honduras, the Cayman Islands, Turks and Caicos, Antigua and Barbuda, Saint Lucia, Grenada, Barbados, Trinidad, Saint Vincent, Bonaire, Saba, Sint Eustatius, Greenland (GHM, at a 1 km tolerance), Bermuda, Saint-Pierre-et-Miquelon, Martinique, Saint-Barthélemy, Saint-Martin, Nuevo León, Connecticut, the District of Columbia |
+| `belize-crip`, `dominicanrep-sgn`, `dominica-dvrp`, `guatemala-ign`, `stkitts-lidar` | 1 each | `unknown` | `none`: where they lie isn't stated (Belize's 17 %, Saint Kitts and Nevis's 2024 survey, Guatemala's elevation model, Dominica's lidar, seen only village by village), or their area would overstate them (Greater Santo Domingo's 380 km², in administrative areas of some 1,400 km²) |
 
 **Not obtained** (North America, 13 Nov): 3DEP's 0.5 m source DEMs (its index service refuses
 every feature query, by `where`, object ids, `find` and `identify`; it has no FeatureServer; its WESM
@@ -2128,10 +2128,15 @@ year: the extent files are read instead); Nova Scotia's tile and 10K-sheet layer
 their object ids); Manitoba's own project DEMs (13 to 14 GB zips with no index read; NRCan's HRDEM
 holds the province's projects); Newfoundland's 5 m DEM (one 4 GB zip, its Labrador coverage not
 stated); Anegada's USGS 1 m DEM (Natural Earth draws the British Virgin Islands as one area);
-Belize's lidar (no outline: listed, `unknown`); North Carolina's 2024 Phase 3 counties, Indiana's 2026
+Belize's, Dominica's and Saint Kitts and Nevis's lidar, Guatemala's elevation model and Greater Santo Domingo's lidar (no outline, or their areas would overstate them: listed, `unknown`); North Carolina's 2024 Phase 3 counties, Indiana's 2026
 block and the Mexican states' and municipalities' local lidar (Jalisco, Querétaro, Quintana Roo,
 Tabasco), whose areas aren't stated or have no outline to claim; NOAA Digital Coast's per-dataset tile
 indexes (its surveys are in `usiei`, at the inventory's outlines); Haiti's 12 southern 50 km tiles' masks (no overviews: 2.4 GB read whole; claimed by department instead).
+
+The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
+where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
+areas, 63,636 against 55,284; GLO-30's 1° tiles round every coast), and the layers draw them as
+they are, not cut to the land.
 
 **Bathymetry and buildings** (planned) take the same folder, declaration, piece properties and
 score, with their own metrics in their own `score.toml`. Nothing in the format is the terrain's

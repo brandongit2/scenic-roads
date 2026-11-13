@@ -1041,8 +1041,8 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   goes too), and leaves the other packs as they are; a record missing, of another `KEY_V` or not
   readable makes every tile again; the root is made again from the record's z6
   tiles whenever one moved. A run with nothing moved writes the record again as it was (the same
-  bytes, the same content name), and nothing else. On the 984 pieces of 13 Nov (below), 3,820 z6
-  tiles are keyed and 1,355 have a pack.
+  bytes, the same content name), and nothing else. On the 3,519 pieces with an extent of 13 Nov
+  (below), 3,820 z6 tiles are keyed and 1,409 have a pack.
 - **The score and the layers' values are the server's**, from `score.toml` and the pieces'
   metrics, which it reads from the accepted unit (below).
 - **Why raster tiles and not vector:** the maximum over overlapping pieces is a per-place rule,
@@ -1069,10 +1069,13 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
   South Pole.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
-  On the 984 pieces of 13 Nov (producers/extents/terrain/, taken in by `scenic-build inputs
-  extents` on a scratch root; the M1 Pro, the test profile's build): 44 s (2 min 29 s of CPU), a
-  peak footprint of 366 MB, 1,355 hi packs of 400,709 tiles in 140 MB, the root 0.8 MB, the poles'
-  44 and 25 KB, the record 1.0 MB; run again with nothing moved, 0.5 s.
+  On the 3,519 pieces with an extent of 13 Nov (producers/extents/terrain/, North America's
+  sources among them; `build` on them in a scratch folder, the test profile's build, on the Mac
+  mini beside its jobs): 47 s (3 min 34 s of CPU), a peak footprint of 1.03 GB, 1,409 hi packs of
+  610,482 tiles, 321 MB with the root (2.3 MB) and the record (2.1 MB); 681 tiles have more than
+  256 sets (two bytes a pixel; the most, 9,163, in z4's tile over Texas and northern Mexico, where
+  3DEP's and the US inventory's thousand pieces each overlap); run again with nothing moved,
+  0.4 s.
 - **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent

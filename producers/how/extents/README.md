@@ -20,8 +20,9 @@ that holds it until accepted on the build page.
 
 A source with a large index (3DEP's catalogue of 143,599 files, Quebec's 614,801 tiles, Ontario's
 623,235, NRCan's 950 extent files) runs on the Mac mini, in a scratch folder of its own; its
-`--cache` folder is kept between runs, so a run made again fetches nothing it has (13 Nov 2026:
-`~/scratch-t1350-cache` on the mini).
+`--cache` folder is kept between runs, so a run made again fetches nothing it has but an ArcGIS
+layer's count of its features, asked afresh each run (13 Nov 2026: `~/scratch-t1350-cache` on the
+mini).
 
 `producers/extents/score.py <score.toml> --examples` prints what the score's weights do on a few
 pairs of pieces; edit `score.toml` to tune them.
@@ -29,5 +30,8 @@ pairs of pieces; edit `score.toml` to tune them.
 A new source of a kind the producer reads (an ArcGIS REST layer or ImageServer catalogue, a STAC or
 OGC API collection, a WFS type, an ATOM download feed, an index file, a listing of georeferenced
 names, a file's own header) is a new declaration, no code. A source that publishes no footprint is
-a `claimed` piece: the administrative area the publisher states, read from Natural Earth's 1:10m
-admin-1 file with a `filter` (`{adm0_a3 = ["GTM"]}`, and `name` for a part of a country).
+a `claimed` piece: the administrative area the publisher states its data covers, read from Natural
+Earth's 1:10m admin-1 file (public domain) with a `filter` (`{adm0_a3 = ["LCA"]}`, and `name` for
+a part of a country). Where the publisher doesn't state what its data covers, or the smallest area
+holding it would overstate it (a city's survey and its province), the piece is `none`: listed,
+not drawn.

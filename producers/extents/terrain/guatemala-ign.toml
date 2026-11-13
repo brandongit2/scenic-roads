@@ -5,15 +5,12 @@ licence_url = "https://web.archive.org/web/2026/http://www.ign.gob.gt/ventas.htm
 source = "https://sites.google.com/ign.gob.gt/catalogo/productos-frecuentes/modelos-de-elevaci%C3%B3n"
 theme = "terrain"
 availability = "paid"
-notes = "The institute's \"Modelo de elevación\" (TIN and TIFF, product 103, Q120.00 each, bought at the institute), of 2006; its grid and coverage aren't stated, so the country is its claim and it has no spacing (no score). Its extent is the area the publisher states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+notes = "The institute's \"Modelo de elevación\" (TIN and TIFF, product 103, Q120.00 each, bought at the institute), of 2006; its grid and coverage aren't stated, so it has no spacing (no score), and the country would be a claim the publisher doesn't make: listed, not drawn."
 
 [[piece]]
 id = "dem"
 label = "Modelo de elevación (IGN)"
-method = "file"
-class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-filter = { adm0_a3 = ["GTM"] }
-tolerance_m = 200
+method = "none"
+why = "the product's coverage isn't stated (nor its grid)"
 [piece.metrics]
 year = 2006

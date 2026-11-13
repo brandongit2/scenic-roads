@@ -14,7 +14,7 @@ method = "file"
 class = "claimed"
 url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
 filter = { adm0_a3 = ["GRL"] }
-tolerance_m = 200
+tolerance_m = 1000
 [piece.metrics]
 surface = "surface"
 spacing_m = 2
