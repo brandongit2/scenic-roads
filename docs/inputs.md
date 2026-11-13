@@ -2220,23 +2220,25 @@ EPSG:3035, against the tiles' count times their area or the publisher's figure.
 | `cy-dls`: `dsm-2019`, `dsm-2014`; `bg-mzh`: `dsm-alternative` | Cyprus's 0.5 m DSMs (1,068 and 1,063 tiles of 6.25 km²); Bulgaria's Dem_Alternative 4 m (110,095 km²) | `index`; `files` | the INSPIRE folder's listing; the WCS at a coarse scale |
 | `lv-lgia-lidar`, `mk-akn`: listed | Latvia's 1 m DTM and DSM (public bodies only), North Macedonia's DSM | `unknown` | `none` |
 
-**Not obtained** (surface models, 13 Nov): Saxony's DOM2 and Baden-Württemberg's nDOM (heights
-above ground), Bavaria's DOM mesh (not a grid), Brandenburg's TDOM (no download); Schleswig-Holstein's
-DOM1 (no feed found); Hessen publishes no bDOM; Brussels' (a point cloud only), Trento's,
-Emilia-Romagna's (its WCS answers 401), Tailte Éireann's, Madeira's, Andorra's, Strasbourg's (nDSMs
-only) and the Litto3D surveys' (none published); La Rioja's (403s) and Aberdeen's 2025 (listed, not
-in the bucket); the Basque Country's MDS (listed: its WCS answers 0 outside the Community with no
-nodata stated, which `raster` can't take as no data); Bern's, Schaffhausen's, Fribourg's and
-Florence's city DSMs and the other point clouds (LiDAR HD's, Scotland's, Portugal's, AHN's and
-Luxembourg's LAZ, their grids declared); Czechia's DMP 1G (a TIN, no spacing stated, withdrawn
-from 2027); Finland's (no DSM published), Croatia's, Hungary's, Moldova's and Lithuania's (none or
-no grid stated); Vorarlberg's 2024 re-flight (no outline); Kärnten's (its host unreachable); the
-older editions of a model whose newer one covers its area (the ICGC's 2018–23 correlation models,
-Geneva's 2023 MNS). In North America: Quebec publishes no DSM (its lidar products are the DTM, a
-canopy height model and the point clouds, declared); the US inventory's IfSAR surveys are 3DEP's
-Alaska IfSAR (its DSM declared); the states' own DSMs (Illinois's, Montana's, Utah's, Hawaii's,
-the District of Columbia's) and NEON's sites, of the same surveys as 3DEP's 1 m DEM, are for a
-later run; NRCan's CDEM and MRDEM-30 (ground models, 20 and 30 m) aren't declared.
+**Not obtained** (surface models, 13 Nov): Saxony's DOM2 (its DOM1, coarser), Baden-Württemberg's
+nDOM (heights above ground), Bavaria's DOM mesh (not a grid), Brandenburg's TDOM (no download);
+Schleswig-Holstein's DOM1 (no feed found); Hessen publishes no bDOM; Trento's, Emilia-Romagna's (its
+WCS answers 401), Tailte Éireann's, Madeira's, Andorra's, Strasbourg's (nDSMs only) and the Litto3D
+surveys' (none published); La Rioja's (403s) and Aberdeen's 2025 (listed, not in the bucket); the
+Basque Country's MDS (listed: its WCS answers 0 outside the Community with no nodata stated, which
+`raster` can't take as no data); Bern's, Schaffhausen's, Fribourg's and Florence's city DSMs (not
+read); the other point clouds, not yet declared, though the rule above declares them (a later run's:
+LiDAR HD's, Scotland's, Portugal's, AHN's, Luxembourg's and Brussels' LAZ, and those the Länder's,
+Tirol's and Slovakia's notes name as their grids' source); Czechia's DMP 1G (a TIN, no spacing
+stated, withdrawn from 2027); Finland's (no DSM published), Croatia's, Hungary's, Moldova's and
+Lithuania's (none or no grid stated); Vorarlberg's 2024 re-flight (no outline); Kärnten's (its host
+unreachable); the older editions of a model whose newer one covers its area (the ICGC's 2018–23
+correlation models, Geneva's 2023 MNS). In North America: Quebec publishes no DSM (its lidar
+products are the DTM, a canopy height model and the point clouds, declared); the US inventory's
+IfSAR surveys are 3DEP's Alaska IfSAR (its DSM declared); the states' own DSMs (Illinois's,
+Montana's, Utah's, Hawaii's, the District of Columbia's) and NEON's sites, of the same surveys as
+3DEP's 1 m DEM, are for a later run; NRCan's CDEM and MRDEM-30 (ground models, 20 and 30 m) aren't
+declared.
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
