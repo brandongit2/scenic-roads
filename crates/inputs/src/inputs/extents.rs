@@ -195,7 +195,7 @@ pub struct Score {
     pub within: f64,
     pub share: f64,
     pub metrics: BTreeMap<String, Metric>,
-    /// The score layer's name (None: the server's own).
+    /// The score layer's name in the app (None: the server's own).
     pub label: Option<String>,
     /// How availability ranks pieces whose primary ties (within `within` of the finest), best
     /// first: AVAILABILITY's ids, each once (empty: it ranks none).
@@ -298,24 +298,27 @@ impl Score {
         out
     }
 
-    /// The scale a layer's values are drawn on and served in: the score's, the primary's (a score
-    /// is drawn as the primary's value it equals, `primary_of`); a metric's, its own.
-    pub fn scale_of(&self, layer: &str) -> Option<&Scale> {
-        self.metrics.get(if layer == SCORE_LAYER { self.primary.as_str() } else { layer }).map(|m| &m.scale)
+    /// The metric a layer draws (`SCORE_LAYER`: the primary) and so its values' scale; None for a
+    /// layer that isn't one of the score's: the primary has no layer of its own.
+    pub fn metric_of<'a>(&'a self, layer: &'a str) -> Option<(&'a str, &'a Metric)> {
+        let name = match layer {
+            SCORE_LAYER => self.primary.as_str(),
+            l if l == self.primary => return None,
+            l => l,
+        };
+        Some((name, self.metrics.get(name)?))
     }
 
-    /// The primary's value in its unit whose 0–1 value is `v` (`value`'s inverse on the primary's
-    /// scale): a score drawn on the spacing's own axis, 0.75 → 10 m for the terrain's.
-    pub fn primary_of(&self, v: f64) -> Option<f64> {
-        match self.metrics.get(&self.primary)?.scale {
-            Scale::Log { worst, best } => Some(worst * (best / worst).dpowf(v)),
-            Scale::Linear { worst, best } => Some(worst + v * (best - worst)),
-            Scale::Values(_) => None,
-        }
+    /// The layers, in the app's order: the score's (`SCORE_LAYER`), then each other metric's,
+    /// by name.
+    pub fn layers(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(SCORE_LAYER).chain(self.metrics.keys().map(String::as_str).filter(|k| *k != self.primary))
     }
 }
 
-/// The score layer's id; the theme's other layers are its metrics.
+/// The score's layer: the best piece (`Score::best`) drawn at its primary's own value (the
+/// terrain's: its grid spacing). The theme's other layers are its other metrics, each drawing the
+/// piece of the best value of it; the primary has none of its own, the score's being it.
 pub const SCORE_LAYER: &str = "score";
 
 /// A piece as `Score::best` ranks it: its primary's 0–1 value, its availability and its score.

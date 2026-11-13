@@ -89,7 +89,6 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     // A metric's layer: the best value among those stating it (the year: the open piece alone).
     assert_eq!(t.best("year", both, true).unwrap().source, "open-lidar");
     assert_eq!(best("year", &["fine/dtm"], true), None, "a piece not stating it takes no part");
-    assert_eq!(t.best("spacing_m", both, true).unwrap().source, "fine");
     assert_eq!(best(SCORE_LAYER, &["fine/dtm"], false), None);
     // The click: best first, each with its source's description, metrics, values and reading.
     let l = t.listed(both, true);
@@ -105,7 +104,8 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     let d = t.described("terrain");
     assert_eq!(d["primary"], "spacing_m");
     let layers: Vec<&str> = d["layers"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap()).collect();
-    assert_eq!(layers, ["score", "spacing_m", "surface", "vertical_rmse_m", "year"]);
+    assert_eq!(layers, ["score", "surface", "vertical_rmse_m", "year"], "the primary's layer is the score's");
+    assert!(!t.has_layer("spacing_m") && t.has_layer(SCORE_LAYER) && t.has_layer("year"));
     let fine = d["sources"].as_array().unwrap().iter().find(|s| s["id"] == "fine").unwrap();
     assert_eq!(fine["pieces"], 2);
     assert_eq!(fine["classes"]["unknown"], 1);
@@ -119,12 +119,11 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     for (k, _) in ex::CLASSES {
         assert!(d["labels"]["extent"][k].as_str().is_some_and(|w| !w.is_empty()), "{k}");
     }
-    // The piece each layer paints, as the tiles do: of every one, the score's and the grid
-    // spacing's the finer, the year's the one stating it; of open data alone, the open one; none
-    // where nothing passes.
+    // The piece each layer paints, as the tiles do: of every one, the score's the finer, the
+    // year's the one stating it; of open data alone, the open one; none where nothing passes.
     let p = t.painted(&both, true);
     assert_eq!(p[SCORE_LAYER], "fine/dtm");
-    assert_eq!(p["spacing_m"], "fine/dtm");
+    assert!(p.get("spacing_m").is_none(), "no layer of the primary's own");
     assert_eq!(p["year"], "open-lidar/dtm");
     assert_eq!(t.painted(&both, false)[SCORE_LAYER], "open-lidar/dtm");
     assert!(t.painted(&["fine/dtm"], false).is_empty());
@@ -139,7 +138,7 @@ fn an_open_piece_wins_a_tie() {
     let (open, paid) = (&t.pieces["open-lidar/dtm"], &t.pieces["paid-twin/dtm"]);
     assert!(paid.score > open.score);
     let twins = ["paid-twin/dtm", "open-lidar/dtm"];
-    for layer in [SCORE_LAYER, "spacing_m", "surface"] {
+    for layer in [SCORE_LAYER, "surface"] {
         assert_eq!(t.best(layer, twins, true).unwrap().source, "open-lidar", "{layer}");
     }
     // The year isn't tied: the paid one's is newer.
@@ -155,45 +154,48 @@ fn an_open_piece_wins_a_tie() {
 #[test]
 fn each_layer_carries_its_value() {
     let t = theme();
-    let s = ex::score(SCORE).unwrap();
     let (a, b, pole) = (&t.pieces["open-lidar/dtm"], &t.pieces["fine/dtm"], &t.pieces["open-lidar/pole"]);
     let near = |x: Option<f64>, y: f64| assert!(x.is_some_and(|x| (x - y).abs() < 1e-9), "{x:?} against {y}");
-    // The spacing as log10 of metres; the words' values; the year as it is.
-    near(t.code("spacing_m", a), 0.0);
-    near(t.code("spacing_m", b), 0.25f64.dlog10());
+    // The score's: the piece's own grid spacing, as log10 of metres, whatever its tie-break (the
+    // 1 m of 2021 bare earth at 1 m, the 2 m surface at 2 m); the words' values; the year as it is.
+    assert!(a.score.is_some() && pole.score.is_some());
+    near(t.code(SCORE_LAYER, a), 0.0);
+    near(t.code(SCORE_LAYER, b), 0.25f64.dlog10());
+    near(t.code(SCORE_LAYER, pole), 2f64.dlog10());
+    assert_eq!(t.code("spacing_m", a), None, "not a layer");
     near(t.code("surface", a), 1.0);
     near(t.code("surface", pole), 0.0);
     near(t.code("year", a), 2021.0);
     assert_eq!(t.code("year", b), None);
     assert_eq!(t.code("vertical_rmse_m", a), None);
-    // The score on the spacing's axis: stating nothing but the spacing, the spacing itself; a
-    // better tie-break, finer than it, a worse one coarser, both within the factor.
-    let mut bare = a.clone();
-    bare.props.retain(|k, _| k == "spacing_m");
-    (bare.score, bare.values) = s.of(&bare.props);
-    near(t.code(SCORE_LAYER, &bare), 0.0);
-    let (good, poor) = (t.code(SCORE_LAYER, a).unwrap(), t.code(SCORE_LAYER, pole).unwrap());
-    assert!(good < 0.0 && good > -s.within.dlog10(), "{good}");
-    assert!(poor > 2f64.dlog10() && poor < (2.0 * s.within).dlog10(), "{poor}");
-    // The layers: the score's first, on the primary's scale.
+    // The layers: the score's first, on the primary's scale and in its unit, under score.toml's
+    // label.
     let d = t.described("terrain");
     let l = d["layers"].as_array().unwrap();
     let ids: Vec<&str> = l.iter().map(|l| l["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["score", "spacing_m", "surface", "vertical_rmse_m", "year"]);
-    assert_eq!(l[0]["label"], "Best data");
+    assert_eq!(ids, ["score", "surface", "vertical_rmse_m", "year"]);
     assert_eq!(
-        (&l[0]["scale"], &l[0]["of"], &l[0]["unit"], &l[0]["best"]),
-        (&json!("log"), &json!("spacing_m"), &json!("m"), &json!("low"))
+        (&l[0]["label"], &l[0]["scale"], &l[0]["unit"], &l[0]["best"]),
+        (&json!("Best data"), &json!("log"), &json!("m"), &json!("low"))
     );
-    assert_eq!(l[1]["range"], json!([0.25, 2.0]), "the values present, of pieces with an extent");
-    assert_eq!((&l[2]["scale"], &l[2]["best"]), (&json!("values"), &json!("high")));
-    assert_eq!(l[2]["words"], json!([{"value": 0.0, "label": "surface"}, {"value": 1.0, "label": "ground"}]));
-    assert!(l[3]["range"].is_null(), "no piece states its accuracy");
+    assert_eq!(l[0]["range"], json!([0.25, 2.0]), "the spacings present, of pieces with an extent");
+    assert_eq!((&l[1]["scale"], &l[1]["best"]), (&json!("values"), &json!("high")));
+    assert_eq!(l[1]["words"], json!([{"value": 0.0, "label": "surface"}, {"value": 1.0, "label": "ground"}]));
+    assert!(l[2]["range"].is_null(), "no piece states its accuracy");
     assert_eq!(
-        (&l[4]["scale"], &l[4]["best"], &l[4]["range"]),
+        (&l[3]["scale"], &l[3]["best"], &l[3]["range"]),
         (&json!("linear"), &json!("high"), &json!([2021.0, 2024.0]))
     );
     assert_eq!(d["availability"], json!(["open", "login", "paid", "closed"]));
+    // The metrics as declared, the primary among them (the click's rows).
+    let m: Vec<&str> = d["metrics"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
+    assert_eq!(m, ["spacing_m", "surface", "vertical_rmse_m", "year"]);
+    // A score.toml naming no label: the server's own.
+    let mut files: BTreeMap<String, Vec<u8>> = fixture().into_iter().collect();
+    let unnamed = std::str::from_utf8(SCORE).unwrap().replacen("label = \"Best data\"\n", "", 1);
+    assert_ne!(unnamed.as_bytes(), SCORE);
+    files.insert("terrain/score.toml".into(), unnamed.into_bytes());
+    assert_eq!(theme_of(&files).described("terrain")["layers"][0]["label"], "Best data");
 }
 
 /// A score.toml as the NAS holds it before the new one is placed (its classes, colours, ramp and
@@ -315,6 +317,7 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
         assert!((terrarium(px) - want).abs() <= 0.5 / 256.0, "{} against {want}", terrarium(px));
     };
     near(png_pixel(&open, 128, 128), t.code(SCORE_LAYER, &t.pieces["open-lidar/dtm"]).unwrap());
+    near(png_pixel(&open, 128, 128), 0.0);
     let all = body(get("score", 12, x, y, Some("avail=all"), headers(None)).await).await;
     near(png_pixel(&all, 128, 128), t.code(SCORE_LAYER, &t.pieces["fine/dtm"]).unwrap());
     let year = body(get("year", 12, x, y, Some("avail=all"), headers(None)).await).await;
@@ -341,6 +344,7 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
     assert_eq!(get("score", 12, 0, 0, None, headers(None)).await.status(), StatusCode::NO_CONTENT);
     assert_eq!(get("year", 0, 0, 0, None, headers(None)).await.status(), StatusCode::OK);
     assert_eq!(get("slope", 0, 0, 0, None, headers(None)).await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(get("spacing_m", 0, 0, 0, None, headers(None)).await.status(), StatusCode::NOT_FOUND, "the score's");
     assert_eq!(get("score", 13, 0, 0, None, headers(None)).await.status(), StatusCode::NOT_FOUND);
     let built = mercator_tile(
         State(s.clone()),
@@ -413,6 +417,7 @@ async fn a_click_answers_the_pieces_there_best_first() {
     let v: Value = serde_json::from_slice(&body(click(2.3, 44.2, Some("all")).await).await).unwrap();
     assert_eq!(ids(&v), ["fine/dtm", "open-lidar/dtm"]);
     assert_eq!(v["painted"]["score"], "fine/dtm");
+    assert!(v["painted"].get("spacing_m").is_none());
     assert!(v["pieces"][0]["score"].as_f64().unwrap() > v["pieces"][1]["score"].as_f64().unwrap());
     let v: Value = serde_json::from_slice(&body(click(2.3, 44.2, None).await).await).unwrap();
     assert_eq!(ids(&v), ["open-lidar/dtm"]);

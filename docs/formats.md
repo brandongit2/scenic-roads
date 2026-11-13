@@ -1211,7 +1211,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   out past a byte or entry budget).
 - **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=open|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
-  `best`, `{layer}` `score` or a metric of the theme's `score.toml`: a PNG of values (sent as it
+  `best`, `{layer}` `score` or a metric of the theme's `score.toml` other than the primary: a PNG of values (sent as it
   is, no Content-Encoding: a body made here is labelled gzip only when it is gzip), each pixel the
   layer's value of its set's best piece among those passing `avail` (default `open`: availability
   `open`; `all`: every piece; the best: docs/inputs.md §6.11, `Score::best`), Terrarium-coded in
@@ -1219,11 +1219,11 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   reads −32,768) where none passes; 204 where no pixel has a value. The value is on the layer's
   scale: on a `log` one log10 of the value in its unit (a spacing of 0.1 m to 1,000 m: −1 to 3, to
   a factor of 1.009), on a `linear` one the value (a year), on a `values` one the word's value (0
-  to 1); the score's on the primary's scale, the primary's value its score equals (worst × (best ÷
-  worst)^score: in metres of grid spacing). ETag `"av-<packs' version>-<format>-<extents'
+  to 1); the score's the best piece's own value of the primary, on its scale (its grid spacing in
+  metres, as log10). ETag `"av-<packs' version>-<format>-<extents'
   version>-<layer>-<avail>-z-x-y"`; `?v=` cached for good while it is meta's version of
   `available-<theme>` (or `available-<theme>-<pole>`): the layer's packs' version, `-`, the tiles'
-  format (`values1`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
+  format (`values2`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
   packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
   `{lng, lat, avail, pieces: [...], painted: {layer: id}}`, the pieces passing `avail` at the z12 pixel holding the point
   (past 85.05°, the pole's z3 pixel), best first (`Score::ranked`; none with no score last), each
@@ -1233,7 +1233,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   published (a string, "QL 2", "1 arc-second") for each metric whose value was read from one,
   docs/inputs.md §6.11, the metric's value beside it in `metrics` where the class maps to one;
   `values` their 0–1 values, null where not stated), and `painted` the id of the piece each layer
-  (`score` and each metric) draws at that pixel, as its tile does (a layer drawing none there left
+  (`score` and each metric but the primary) draws at that pixel, as its tile does (a layer drawing none there left
   out). `GET /api/available/{theme}` → `{theme, sets, primary, within, share, availability,
   metrics: [{id, label, unit, weight, scale, worst, best, values, primary}], layers: [{id, label,
   unit, scale, best, words, range}], sources: [{id, name, credit, licence, licence_url, link,
@@ -1242,8 +1242,8 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   score.toml's order of availability among tied pieces (empty: none), `labels` each set's,
   availability's and extent class's words for the app, by id (crate::available `SETS`,
   crate::inputs::extents `AVAILABILITY` and `CLASSES`), the score's layer first (its `label`
-  score.toml's or "Score", and `of` the primary, whose `unit`, `scale` and `best` it takes), then
-  the metrics', the primary first. A layer's `scale` is what its tiles carry (`log`, `linear` or
+  score.toml's or "Best data"; the primary's `unit`, `scale` and `best`, since it draws the best
+  piece's primary), then the other metrics', by id: the primary has no layer of its own. A layer's `scale` is what its tiles carry (`log`, `linear` or
   `values`, as above), `best` its better end (`low`: a finer spacing, a better accuracy; `high`),
   `words` a `values` layer's `[{value, label}]` by value (else null), and `range` the least and
   greatest value present over the pieces with an extent, in its unit (null where none states it).

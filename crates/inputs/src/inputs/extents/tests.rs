@@ -287,10 +287,12 @@ fn an_open_piece_wins_a_tie() {
         Ranked { lead: open.0, availability: Some("open"), score: open.2 },
     ];
     assert_eq!(plain.best(&rs), Some(0));
-    // The score drawn on the spacing's own axis: a score of v is the spacing whose value is v.
-    assert!((s.primary_of(0.75).unwrap() - 1.0).abs() < 1e-9);
-    assert!((s.primary_of(open.0).unwrap() - 1.0).abs() < 1e-9);
-    assert_eq!(s.scale_of(SCORE_LAYER), s.scale_of("spacing_m"));
+    // The layers: the score's, drawing the primary, then the other metrics; the primary none of
+    // its own.
+    assert_eq!(s.layers().collect::<Vec<_>>(), [SCORE_LAYER, "surface", "vertical_rmse_m", "year"]);
+    assert_eq!(s.metric_of(SCORE_LAYER), Some(("spacing_m", &s.metrics["spacing_m"])));
+    assert_eq!(s.metric_of("year"), Some(("year", &s.metrics["year"])));
+    assert_eq!((s.metric_of("spacing_m"), s.metric_of("slope")), (None, None));
 }
 
 #[test]

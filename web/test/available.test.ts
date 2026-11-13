@@ -22,8 +22,7 @@ const THEME = {
     { id: 'year', label: 'Year surveyed', unit: null, weight: 0.2, scale: 'linear', worst: 2000, best: 2026, values: null, primary: false },
   ],
   layers: [
-    { id: 'score', label: 'Best data', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.1, 90], of: 'spacing_m' },
-    { id: 'spacing_m', label: 'Grid spacing', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.1, 90] },
+    { id: 'score', label: 'Best data', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.1, 90] },
     { id: 'surface', label: 'Bare earth or surface', unit: null, scale: 'values', best: 'high', range: [0, 1],
       words: [{ value: 1, label: 'ground' }, { value: 0, label: 'surface' }] },
     { id: 'vertical_rmse_m', label: 'Stated vertical accuracy (RMSE)', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.05, 16] },
@@ -59,14 +58,14 @@ test('the catalogue’s themes, with their poles', () => {
 });
 
 test('a theme read: its layers in the server’s order, one it can’t draw left out', () => {
-  assert.deepEqual(theme.layers.map((l) => l.id), ['score', 'spacing_m', 'surface', 'vertical_rmse_m', 'year']);
+  assert.deepEqual(theme.layers.map((l) => l.id), ['score', 'surface', 'vertical_rmse_m', 'year']);
   assert.deepEqual(theme.layers[0], { id: 'score', label: 'Best data', unit: 'm', scale: 'log', best: 'low', range: [0.1, 90], words: [] });
-  assert.deepEqual(theme.layers[2].words, [{ value: 0, label: 'surface' }, { value: 1, label: 'ground' }], 'by value');
+  assert.deepEqual(theme.layers[1].words, [{ value: 0, label: 'surface' }, { value: 1, label: 'ground' }], 'by value');
   assert.deepEqual(theme.sets, ['best']);
   assert.equal(parseTheme({ theme: 'terrain', layers: [], sources: [] }), null, 'no score: no layers');
   assert.equal(parseTheme('nope'), null);
   // The painted tiles' description (an older server): no layer the app can draw, so none shown.
-  assert.equal(parseTheme({ ...THEME, layers: [THEME.layers[6]] }), null);
+  assert.equal(parseTheme({ ...THEME, layers: [THEME.layers[5]] }), null);
   // A metric the app has never seen: shown as any other; no values present: the layer kept, its
   // range none; a log range not above 0, or words missing: left out.
   const more = structuredClone(THEME) as Record<string, unknown> & typeof THEME;
@@ -84,11 +83,13 @@ test('the layer and set shown: the state’s where the theme has them, else its 
   const s: AvailableState = { ...BASE, on: true, layer: 'year' };
   assert.equal(shown(s, theme).layer.id, 'year');
   assert.equal(shown({ ...s, layer: 'gone', set: 'built' }, theme).layer.id, 'score');
+  // A save or link naming the grid spacing's own layer, which the score's took over: the score's.
+  assert.equal(shown({ ...s, layer: 'spacing_m' }, theme).layer.id, 'score');
   assert.equal(shown({ ...s, set: 'built' }, theme).set, 'best');
 });
 
 test('a layer’s axis: log10 of its unit on a log layer, labelled in the unit, round ticks', () => {
-  const [score, , surface, acc, year] = theme.layers;
+  const [score, surface, acc, year] = theme.layers;
   const a = axisOf(score);
   assert.deepEqual(a.domain.map((v) => +v.toFixed(6)), [+(-1 - 1 / 256).toFixed(6), +(Math.log10(90) + 1 / 256).toFixed(6)], "the values present and a 1/256th");
   assert.equal(a.step, 0.01);
@@ -118,7 +119,7 @@ test('a layer’s axis: log10 of its unit on a log layer, labelled in the unit, 
 });
 
 test('a layer’s colour map: its own once changed, else the profile’s, reversed where low is better', () => {
-  const [score, , surface] = theme.layers;
+  const [score, surface] = theme.layers;
   assert.equal(scaleOf(BASE, score).palette, 'viridis_r', 'the finest spacing at the ramp’s bright end');
   assert.equal(scaleOf(BASE, surface).palette, 'viridis');
   assert.equal(scaleOf({ ...BASE, colours: { ...COLOURS, palette: 'magma_r' } }, score).palette, 'magma');
@@ -126,7 +127,7 @@ test('a layer’s colour map: its own once changed, else the profile’s, revers
   assert.equal(scaleOf({ ...BASE, scales: { score: own } }, score), own);
   // The highlight's value on the layer's own axis: the profile's 0 is 1 m on a log layer, off the
   // year's axis (its middle instead).
-  const year = theme.layers[4];
+  const year = theme.layers[3];
   assert.equal(scaleOf(BASE, score).threshold.value, 0);
   assert.equal(scaleOf(BASE, year).threshold.value, 2012);
   assert.equal(scaleOf({ ...BASE, scales: { year: { ...COLOURS, threshold: { on: true, dir: 'below', value: 2010 } } } }, year).threshold.value, 2010);
@@ -180,7 +181,7 @@ const PARIS = {
       values: { spacing_m: 0.381, year: 0.423 }, score: 0.376 },
   ],
   // (The piece each layer paints there: the server's pick.)
-  painted: { score: 'ign-lidar-hd/mnt/year=2023', spacing_m: 'ign-lidar-hd/mnt/year=2023', vertical_rmse_m: 'cop-dem/glo-30', year: 'ign-lidar-hd/mnt/year=2023' },
+  painted: { score: 'ign-lidar-hd/mnt/year=2023', vertical_rmse_m: 'cop-dem/glo-30', year: 'ign-lidar-hd/mnt/year=2023' },
 };
 
 test('the click’s rows: best first, the painted one marked, metrics with units, plain words', () => {

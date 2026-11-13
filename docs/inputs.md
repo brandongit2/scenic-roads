@@ -2031,8 +2031,9 @@ its availability, and among tied grids an open source wins before the score's ti
 owner's rule, 13 Nov: in Berlin the BKG's paid 1 m DGM of 2022 scores above Brandenburg and
 Berlin's open 1 m of 2021, which is drawn). The order: the best, then the best of the rest, and so
 on. A `score.toml` without `availability` ranks by the score alone. The terrain's: `availability =
-["open", "login", "paid", "closed"]`. Its `label` names the score layer in the app ("Best data";
-none: "Score"). The layers' colours are the app's (its colour maps, docs/steps.md §14); a
+["open", "login", "paid", "closed"]`. Its `label` names the score's layer in the app ("Best data";
+none: the server's, "Best data"): the best piece drawn at its own primary value, the grid spacing,
+which so has no layer of its own beside it. The layers' colours are the app's (its colour maps, docs/steps.md §14); a
 `score.toml` still holding the fields that drew them as classes (`ramp`, `shade`, a metric's
 `classes` and `colours`) is read as if it didn't, and the check warns.
 

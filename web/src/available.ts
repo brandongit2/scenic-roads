@@ -50,9 +50,9 @@ export interface AvMetric {
   id: string;
   label: string;
   unit: string | null;
-  primary: boolean;
 }
-/** A theme as the server describes it: its sets, metrics and layers (the score's first), and the
+/** A theme as the server describes it: its sets, its metrics (the click's rows) and its layers
+ * (the score's first: the best piece at its own grid spacing; then the other metrics'), and the
  * words it shows for the sets' ids, the pieces' availability and extent classes (`labels`; an id
  * the server gives no word for is shown as it is). */
 export interface AvTheme {
@@ -131,7 +131,7 @@ export function parseTheme(j: unknown): AvTheme | null {
   const o = obj(j);
   if (!o || typeof o.theme !== 'string') return null;
   const metrics = arr(o.metrics).map(obj).filter((m): m is Record<string, unknown> => !!m && typeof m.id === 'string')
-    .map((m) => ({ id: m.id as string, label: str(m.label) ?? (m.id as string), unit: str(m.unit), primary: m.primary === true }));
+    .map((m) => ({ id: m.id as string, label: str(m.label) ?? (m.id as string), unit: str(m.unit) }));
   const layers = arr(o.layers).map(obj).map((l) => (l ? layerOf(l) : null)).filter((l): l is AvLayer => !!l);
   if (!layers.length) return null;
   const lb = obj(o.labels);

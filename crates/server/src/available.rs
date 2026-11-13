@@ -9,8 +9,9 @@
 //!   `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y`: the tile as a PNG, each pixel the
 //!   layer's value of the best piece there that passes the switch (`avail=open`, the default:
 //!   those that download freely; `all`: every one; `Theme::best`), Terrarium-coded (`code`),
-//!   transparent where none does; 204 where no piece is. `layer`: `score`, or a metric of the
-//!   theme's score. `set`: `best` (the best data any declared source has).
+//!   transparent where none does; 204 where no piece is. `layer`: `score` (the best piece, at its
+//!   primary's own value: its grid spacing), or another metric of the theme's score. `set`: `best`
+//!   (the best data any declared source has).
 //! - `/api/available/<theme>/<set>?lng&lat&avail`: the pieces at a point, best first, and the one
 //!   each layer draws there (`painted`).
 //! - `/api/available/<theme>`: the score as declared, each layer's scale (its unit, kind, words and
@@ -41,12 +42,14 @@ fn set_served(set: &str) -> bool {
 }
 
 /// The score layer's name where `score.toml` gives none.
-const DEFAULT_LABEL: &str = "Score";
+const DEFAULT_LABEL: &str = "Best data";
 
 /// The tiles' format, in the layers' versions (`Available::version`): a page made for another
 /// format (the painted tiles before it) reads the theme again at the new version, and an old one
-/// can't, so it shows nothing until it's loaded again rather than values as colours.
-const TILE_FORMAT: &str = "values1";
+/// can't, so it shows nothing until it's loaded again rather than values as colours; and a tile
+/// kept for good under an older one (`?v=`) isn't read again. `values2`: the score layer's pixels
+/// are the best piece's own primary value, no longer the value its score equals.
+const TILE_FORMAT: &str = "values2";
 
 /// What a tile's pixel carries for a value `v` of a layer on `scale` (docs/formats.md, Data
 /// available): log10(v) on a log scale (a grid spacing of 0.1 m to 1,000 m: −1 to 3), `v` on a
@@ -94,9 +97,10 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Whether `layer` is one of the theme's: the score or a metric.
+    /// Whether `layer` is one of the theme's (`Score::layers`): the score or a metric but the
+    /// primary.
     pub fn has_layer(&self, layer: &str) -> bool {
-        self.score.as_ref().is_some_and(|s| layer == SCORE_LAYER || s.metrics.contains_key(layer))
+        self.score.as_ref().is_some_and(|s| s.metric_of(layer).is_some())
     }
 
     /// The pieces `ids` that pass the switch (`all`: every one; else those whose availability is
@@ -113,7 +117,7 @@ impl Theme {
 
     /// The piece `layer` draws among pieces `ids` that pass the switch, None where none does:
     /// - the score's: the best (`Score::best`: of the pieces whose primary ties the finest's,
-    ///   those of the best availability, then the best score);
+    ///   those of the best availability, then the best score; of equals, the first id);
     /// - a metric's: the best 0–1 value of it (a piece not stating it takes no part), then the
     ///   best availability; of equals, the first id.
     pub fn best<'a>(&self, layer: &str, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Option<&PieceInfo> {
@@ -160,28 +164,19 @@ impl Theme {
     /// none there absent. The click marks it, so the app ranks nothing itself.
     pub fn painted<'a>(&self, ids: &[&'a str], all: bool) -> Map<String, Value> {
         let Some(s) = &self.score else { return Map::new() };
-        std::iter::once(SCORE_LAYER)
-            .chain(s.metrics.keys().map(String::as_str))
-            .filter_map(|l| Some((l.to_string(), json!(self.best_id(l, ids.iter().copied(), all)?.0))))
-            .collect()
+        s.layers().filter_map(|l| Some((l.to_string(), json!(self.best_id(l, ids.iter().copied(), all)?.0)))).collect()
     }
 
-    /// The value a tile carries for a piece on `layer` (`code`): the score's, the primary's value
-    /// it equals (`Score::primary_of`: a score drawn on the spacing's own axis, the tie-break
-    /// moving it within the factor `within`); a metric's, the piece's own value of it. None where
-    /// the piece doesn't state it.
+    /// The value a tile carries for a piece on `layer` (`code`): the piece's own value of the
+    /// metric the layer draws (`Score::metric_of`: the score's, the primary). None where the
+    /// piece doesn't state it.
     pub fn code(&self, layer: &str, p: &PieceInfo) -> Option<f64> {
-        let s = self.score.as_ref()?;
-        let scale = s.scale_of(layer)?;
-        let raw = if layer == SCORE_LAYER {
-            s.primary_of(p.score?)?
-        } else {
-            match scale {
-                Scale::Values(_) => p.values.get(layer).copied().flatten()?,
-                _ => p.props.get(layer).and_then(Value::as_f64).filter(|v| v.is_finite())?,
-            }
+        let (name, m) = self.score.as_ref()?.metric_of(layer)?;
+        let raw = match m.scale {
+            Scale::Values(_) => p.values.get(name).copied().flatten()?,
+            _ => p.props.get(name).and_then(Value::as_f64).filter(|v| v.is_finite())?,
         };
-        let c = code(scale, raw);
+        let c = code(&m.scale, raw);
         c.is_finite().then_some(c)
     }
 
@@ -231,12 +226,11 @@ impl Theme {
     /// The values `layer`'s tiles can carry, in the layer's unit: their least and greatest over the
     /// pieces drawn (those with an extent); None where no piece states it.
     fn present(&self, layer: &str) -> Option<[f64; 2]> {
-        let s = self.score.as_ref()?;
-        let scale = s.scale_of(layer)?;
+        let (_, m) = self.score.as_ref()?.metric_of(layer)?;
         let mut r: Option<[f64; 2]> = None;
         for p in self.pieces.values().filter(|p| p.props.get("extent").and_then(Value::as_str) != Some("unknown")) {
             let Some(c) = self.code(layer, p) else { continue };
-            let v = if matches!(scale, Scale::Log { .. }) { 10f64.dpowf(c) } else { c };
+            let v = if matches!(m.scale, Scale::Log { .. }) { 10f64.dpowf(c) } else { c };
             r = Some(r.map_or([v, v], |[lo, hi]| [lo.min(v), hi.max(v)]));
         }
         r
@@ -246,7 +240,8 @@ impl Theme {
     /// A layer is its `label`, `unit`, `scale` (`log`, `linear` or `values`: what its tiles carry,
     /// `code`), which end is the better (`best`: `low` or `high`), its `words` (a `values` one's,
     /// each with its value) and `range`, the least and greatest value present (in its unit; none
-    /// where no piece states it). The score's is the primary's scale (`of`).
+    /// where no piece states it). The score's is the primary's, under the score's `label`; the
+    /// primary has no other.
     pub fn described(&self, theme: &str) -> Value {
         let Some(s) = &self.score else { return json!({"theme": theme, "layers": [], "sources": []}) };
         let layer = |id: &str, label: &str, m: &ex::Metric| {
@@ -263,10 +258,17 @@ impl Theme {
             json!({"id": id, "label": label, "unit": m.unit, "scale": kind, "best": best, "words": words,
                 "range": self.present(id)})
         };
-        let primary = &s.metrics[&s.primary];
-        let mut score_layer = layer(SCORE_LAYER, s.label.as_deref().unwrap_or(DEFAULT_LABEL), primary);
-        score_layer["of"] = json!(s.primary);
-        let mut layers = vec![score_layer];
+        let layers: Vec<Value> = s
+            .layers()
+            .filter_map(|id| {
+                let (_, m) = s.metric_of(id)?;
+                Some(layer(
+                    id,
+                    if id == SCORE_LAYER { s.label.as_deref().unwrap_or(DEFAULT_LABEL) } else { &m.label },
+                    m,
+                ))
+            })
+            .collect();
         let mut metrics = Vec::new();
         // (The primary first, then the others by name.)
         let mut names: Vec<&String> = s.metrics.keys().collect();
@@ -280,7 +282,6 @@ impl Theme {
             };
             metrics.push(json!({"id": name, "label": m.label, "unit": m.unit, "weight": m.weight, "scale": scale,
                 "worst": worst, "best": best, "values": values, "primary": *name == s.primary}));
-            layers.push(layer(name, &m.label, m));
         }
         let mut counted: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
         for p in self.pieces.values() {

@@ -34,7 +34,7 @@ export class AvailableMap {
     }
     const src = m.getSource(SOURCE) as RasterDEMTileSource | undefined;
     // (Another layer's values: its tiles dropped, not drawn by the new ramp while the new ones
-    // load (a score's metres by a year's ramp: one colour everywhere); the switch's or a new
+    // load (a grid spacing's metres by a year's ramp: one colour everywhere); the switch's or a new
     // version's tiles stay until replaced, their values on the same axis.)
     if (src && (this.maxzoom !== d.maxzoom || this.scale !== d.scale)) {
       m.removeLayer(AVAILABLE_LAYER);
