@@ -2033,9 +2033,9 @@ Berlin's open 1 m of 2021, which is drawn). The order: the best, then the best o
 on. A `score.toml` without `availability` ranks by the score alone. The terrain's: `availability =
 ["open", "login", "paid", "closed"]`. Its `label` names the score's layer in the app ("Best data";
 none: the server's, "Best data"): the best piece drawn at its own primary value, the grid spacing,
-which so has no layer of its own beside it. The layers' colours are the app's (its colour maps, docs/steps.md §14); a
-`score.toml` still holding the fields that drew them as classes (`ramp`, `shade`, a metric's
-`classes` and `colours`) is read as if it didn't, and the check warns.
+which so has no layer of its own beside it. The layers' colours are the app's (its colour maps,
+docs/steps.md §14); a `score.toml` still holding the fields that drew them as classes (`ramp`,
+`shade`, a metric's `classes` and `colours`) is read as if it didn't, and the check warns.
 
 **Checks** (the unit `extents`, crate::inputs::extents; its themes the app's list, `terrain` so
 far). Errors:

@@ -1109,16 +1109,15 @@ declarations' descriptions). For each palette entry, its pieces that pass the av
 (`avail=open`, the default: those whose availability is `open`; `all`: every one): the score
 layer's piece is the best (`Score::best`, docs/inputs.md §6.11: of those whose spacing ties the
 finest's within `within`, the best availability in `score.toml`'s order, then the best score, then
-the first id), a metric layer's the one of the best 0–1 value of that metric (the finest spacing,
-bare earth over surface, the newest year, the best stated accuracy; a piece not stating it takes
-no part; of equal values, the best availability, then the first id); none passing, transparent
-(`Theme::best`). The pixel carries that piece's own value of the metric the layer draws
-(`Score::metric_of`, `Theme::code`; docs/formats.md, Data available, the encoding), on that
-metric's scale (the spacing and the accuracy as log10 of metres, the year as it is, bare earth 1 and
-surface 0, their `values`): the score's layer draws the primary, so the best piece's own grid
-spacing (a 1 m grid at 1 m, whatever its tie-break); the primary has no layer of its own
-(`Score::layers`: the score's, then the other metrics by name). The colours are the app's (below).
-The score is read at each
+the first id), a metric layer's the one of the best 0–1 value of that metric (bare earth over
+surface, the newest year, the best stated accuracy; a piece not stating it takes no part; of equal
+values, the best availability, then the first id); none passing, transparent (`Theme::best`). The
+pixel carries that piece's own value of the metric the layer draws (`Score::metric_of`,
+`Theme::code`; docs/formats.md, Data available, the encoding), on that metric's scale (the spacing
+and the accuracy as log10 of metres, the year as it is, bare earth 1 and surface 0, their `values`):
+the score's layer draws the primary, so the best piece's own grid spacing (a 1 m grid at 1 m,
+whatever its tie-break); the primary has no layer of its own (`Score::layers`: the score's, then the
+other metrics by name). The colours are the app's (below). The score is read at each
 sync, so a weight changed draws within a minute and builds nothing again. `Score::of` and
 `Score::ranked` are producers/extents/score.py's `score` and `ranked`: tested on score.toml's own
 examples and more pieces, and on groups of pieces with their availability (`score_pieces.json`),
@@ -1141,8 +1140,9 @@ above (PNG; 204 where no piece is, or none passes the switch); a tile not stored
 part over it (codecs::available::tile_at). Past 85.05°,
 `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y` (z0–3 of the pole's grid). `<set>`:
 `best` (`built` is planned). `<layer>`: `score` or a metric of the theme's score other than the
-primary; anything else (the primary's id too), or past the zooms, 404. Its ETag names the layer's packs' version, the tiles' format and the extents'
-version, the layer, the switch and the tile; `?v=` with the version `/api/meta` gives the layer
+primary; anything else (the primary's id too), or past the zooms, 404. Its ETag names the layer's
+packs' version, the tiles' format and the extents' version, the layer, the switch and the tile;
+`?v=` with the version `/api/meta` gives the layer
 (`available-<theme>`, `available-<theme>-<n|s>`: the packs' version, the tiles' format and the
 extents' version's hash) is cached for good while it's current. The format in the version means a
 page made for another format reads the theme again at the new version, so one too old to draw it
@@ -1160,10 +1160,11 @@ no piece).
 
 **In the app** (tasks #1348, #1373). A section "Data available" in the layers panel, shown once the
 catalogue lists a theme (`available-<theme>`), its switch the group's: each theme's layers as
-`/api/available/<theme>` lists them, the score's first under its label (score.toml's `label`:
-"Best data"; none, the server's "Best data"), one shown at a time (a layer a save or a link names
-that the theme no longer lists, the grid spacing's own `spacing_m` among them, shows the first); the set (`best` now; its control appears once a theme lists two: `built`,
-task #1349, is one more id in `sets`, named by the theme's `labels`); the availability switch (Open
+`/api/available/<theme>` lists them, the score's first under its label (score.toml's `label`: "Best
+data"; none, the server's "Best data"), one shown at a time (a layer a save or a link names that the
+theme doesn't list shows the first); the set (`best` now; its control appears once a theme lists
+two: `built`, task #1349, is one more id in `sets`, named by the theme's `labels`); the
+availability switch (Open
 data | All data); the opacity (85 % by default); and the layer's colour map: the sidebar's own
 control (ui/scale.ts ScaleControls, as the terrain tint's, the depth's and the roads'), over the
 layer's values in view (sampled from the tiles drawn, each sample by the ground it stands for:

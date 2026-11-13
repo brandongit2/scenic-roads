@@ -281,7 +281,7 @@ impl Theme {
                 Scale::Values(w) => ("values", None, None, Some(w.clone())),
             };
             metrics.push(json!({"id": name, "label": m.label, "unit": m.unit, "weight": m.weight, "scale": scale,
-                "worst": worst, "best": best, "values": values, "primary": *name == s.primary}));
+                "worst": worst, "best": best, "values": values}));
         }
         let mut counted: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
         for p in self.pieces.values() {

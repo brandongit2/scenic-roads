@@ -1211,8 +1211,9 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   out past a byte or entry budget).
 - **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=open|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
-  `best`, `{layer}` `score` or a metric of the theme's `score.toml` other than the primary: a PNG of values (sent as it
-  is, no Content-Encoding: a body made here is labelled gzip only when it is gzip), each pixel the
+  `best`, `{layer}` `score` or a metric of the theme's `score.toml` other than the primary: a PNG of
+  values (sent as it is, no Content-Encoding: a body made here is labelled gzip only when it is
+  gzip), each pixel the
   layer's value of its set's best piece among those passing `avail` (default `open`: availability
   `open`; `all`: every piece; the best: docs/inputs.md §6.11, `Score::best`), Terrarium-coded in
   RGB (value + 32,768 = R × 256 + G + B ÷ 256, to 1/256), alpha 255; transparent (all 0, which
@@ -1233,18 +1234,18 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   published (a string, "QL 2", "1 arc-second") for each metric whose value was read from one,
   docs/inputs.md §6.11, the metric's value beside it in `metrics` where the class maps to one;
   `values` their 0–1 values, null where not stated), and `painted` the id of the piece each layer
-  (`score` and each metric but the primary) draws at that pixel, as its tile does (a layer drawing none there left
-  out). `GET /api/available/{theme}` → `{theme, sets, primary, within, share, availability,
-  metrics: [{id, label, unit, weight, scale, worst, best, values, primary}], layers: [{id, label,
-  unit, scale, best, words, range}], sources: [{id, name, credit, licence, licence_url, link,
+  (`score` and each metric but the primary) draws at that pixel, as its tile does (a layer drawing
+  none there left out). `GET /api/available/{theme}` → `{theme, sets, primary, within, share,
+  availability, metrics: [{id, label, unit, weight, scale, worst, best, values}], layers: [{id,
+  label, unit, scale, best, words, range}], sources: [{id, name, credit, licence, licence_url, link,
   availability, pieces, classes: {class: n}, unknown: [piece]}], labels: {sets, availability,
   extent}}` (without a score, `layers` and `sources` empty, no `labels`), `availability`
   score.toml's order of availability among tied pieces (empty: none), `labels` each set's,
   availability's and extent class's words for the app, by id (crate::available `SETS`,
   crate::inputs::extents `AVAILABILITY` and `CLASSES`), the score's layer first (its `label`
   score.toml's or "Best data"; the primary's `unit`, `scale` and `best`, since it draws the best
-  piece's primary), then the other metrics', by id: the primary has no layer of its own. A layer's `scale` is what its tiles carry (`log`, `linear` or
-  `values`, as above), `best` its better end (`low`: a finer spacing, a better accuracy; `high`),
+  piece's primary), then the other metrics', by id: the primary has no layer of its own. A layer's
+  `scale` is what its tiles carry (`log`, `linear` or `values`, as above), `best` its better end (`low`: a finer spacing, a better accuracy; `high`),
   `words` a `values` layer's `[{value, label}]` by value (else null), and `range` the least and
   greatest value present over the pieces with an extent, in its unit (null where none states it).
   404 for a theme the accepted extents don't have.

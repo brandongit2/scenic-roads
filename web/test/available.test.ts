@@ -16,10 +16,10 @@ import type { ScaleFields } from '../src/state.ts';
 const THEME = {
   theme: 'terrain', sets: ['best'], primary: 'spacing_m', within: 1.25, share: 0.02, availability: ['open', 'login', 'paid', 'closed'],
   metrics: [
-    { id: 'spacing_m', label: 'Grid spacing', unit: 'm', weight: null, scale: 'log', worst: 1000, best: 0.1, values: null, primary: true },
-    { id: 'surface', label: 'Bare earth or surface', unit: null, weight: 0.4, scale: 'values', worst: null, best: null, values: { ground: 1, surface: 0 }, primary: false },
-    { id: 'vertical_rmse_m', label: 'Stated vertical accuracy (RMSE)', unit: 'm', weight: 0.4, scale: 'log', worst: 10, best: 0.05, values: null, primary: false },
-    { id: 'year', label: 'Year surveyed', unit: null, weight: 0.2, scale: 'linear', worst: 2000, best: 2026, values: null, primary: false },
+    { id: 'spacing_m', label: 'Grid spacing', unit: 'm', weight: null, scale: 'log', worst: 1000, best: 0.1, values: null },
+    { id: 'surface', label: 'Bare earth or surface', unit: null, weight: 0.4, scale: 'values', worst: null, best: null, values: { ground: 1, surface: 0 } },
+    { id: 'vertical_rmse_m', label: 'Stated vertical accuracy (RMSE)', unit: 'm', weight: 0.4, scale: 'log', worst: 10, best: 0.05, values: null },
+    { id: 'year', label: 'Year surveyed', unit: null, weight: 0.2, scale: 'linear', worst: 2000, best: 2026, values: null },
   ],
   layers: [
     { id: 'score', label: 'Best data', unit: 'm', scale: 'log', best: 'low', words: null, range: [0.1, 90] },
