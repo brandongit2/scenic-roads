@@ -1,0 +1,39 @@
+name = "LGL Baden-Württemberg DGM025"
+credit = "LGL, www.lgl-bw.de"
+licence = "DL-DE-BY-2.0"
+licence_url = "https://www.govdata.de/dl-de/by-2-0"
+source = "https://www.lgl-bw.de/Produkte/3D-Produkte/Digitale-Gelaendemodelle/"
+theme = "terrain"
+availability = "open"
+notes = "Baden-Württemberg's 0.25 m bare-earth model (DGM025, GeoTIFF; \"Die Rasterweite beträgt landesweit 0,25 m\"), open data under dl-de/by-2-0 in the LGL's Open GeoData portal by 2 km tile, beside the 1 m DGM1 of the same surveys (not a piece: the same tiles coarser), from the second statewide laser scanning (ALS_2, 2016 to 2021, at least 8 points per m²) and the third, under way since 2022 (ALS_3, about an eighth of the Land a year). Two tile indexes of the LGL's, 1 km tiles, EPSG:25832, by the year each was flown (fortfuehrungsdatum, the flights' dates): the ALS_2 one (WFS_LGL-BW_ATKIS_HIST_DGM_ALS, its \"Bearbeitungsübersicht\", every tile, 2016 to 2022), and the current currency map (WFS_LGL-BW_ATKIS_DGM_Aktualitaet) for the tiles updated from ALS_3 (those it dates, 2022 to 2024; the rest it leaves blank, still ALS_2's). An updated tile is in both, each with its year. The 2024 metadata record of the DGM1 of ALS_2 still names a licence agreement, which the portal, the product page and the DGM025 records (2025) don't: dl-de/by-2-0 kept. The height accuracy stated, ±15 cm, isn't an RMSE: left out."
+
+[[piece]]
+id = "als2"
+label = "DGM025 ALS_2"
+method = "wfs"
+class = "index"
+url = "https://owsproxy.lgl-bw.de/owsproxy/wfs/WFS_LGL-BW_ATKIS_HIST_DGM_ALS"
+type = "verm:v_dgm_kacheln_als_2_2016_2021"
+fields = ["fortfuehrungsdatum", "geom"]
+page = 10000
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = { field = "fortfuehrungsdatum", date = "iso" }
+
+[[piece]]
+id = "als3"
+label = "DGM025 ALS_3"
+method = "wfs"
+class = "index"
+url = "https://owsproxy.lgl-bw.de/owsproxy/wfs/WFS_LGL-BW_ATKIS_DGM_Aktualitaet"
+type = "verm:v_dgm_kacheln"
+fields = ["fortfuehrungsdatum", "genauigkeit", "geom"]
+page = 10000
+filter = { genauigkeit = ["+/-15cm"] }
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = { field = "fortfuehrungsdatum", date = "iso" }

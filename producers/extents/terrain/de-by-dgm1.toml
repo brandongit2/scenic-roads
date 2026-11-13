@@ -1,0 +1,22 @@
+name = "Bayerische Vermessungsverwaltung DGM1"
+credit = "Bayerische Vermessungsverwaltung – www.geodaten.bayern.de"
+licence = "CC-BY-4.0"
+licence_url = "https://www.geodaten.bayern.de/odd/m/3/html/nutzungsbedingungen.html"
+source = "https://geodaten.bayern.de/opengeodata/json/opengeodata_produkte.json"
+theme = "terrain"
+availability = "open"
+notes = "Bavaria's 1 m bare-earth model (DGM1, 1 km GeoTIFF tiles), open data under CC BY 4.0 with no registration, updated flight lot by flight lot (its open-data record's currency: \"losweise\"): the airborne laser scanning flight lots the LDBV publishes with the DGM (Laserscanningbefliegungen_Shape.zip, EPSG:25832; 82 lots flown 2016 to 2026, each \"DGM-Gitterweite: 1 m\"), a piece per lot, its year the year its flights ended (Ende_Befl). The lots are footprints, not the tiles: the tile list (the Land's metalink, 09.meta4) states no year. Tiles in lots that ended in 2026 were last modified after them (Partenkirchen's, 23 Sep 2026), so the downloads hold them. Point density at least 4 per m²; the height accuracy stated, \"97,0%<=0,12m\" (0.16 m for 2016 to 2018), and the DGM1's \"besser ± 0,2 m\" aren't RMSEs: left out. Lots overlap where a lot was flown again; each says its own year."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1 Bayern"
+method = "file"
+class = "service"
+url = "https://www.geodaten.bayern.de/download/uebersicht_DGM/Laserscanningbefliegungen_Shape.zip"
+by = ["Losnummer", "Losname"]
+name = "Losname"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "Ende_Befl", date = "iso" }

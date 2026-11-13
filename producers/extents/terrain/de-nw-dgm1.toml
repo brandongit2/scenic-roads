@@ -1,0 +1,24 @@
+name = "Geobasis NRW DGM1"
+credit = "Geobasis NRW"
+licence = "DL-DE-ZERO-2.0"
+licence_url = "https://www.govdata.de/dl-de/zero-2-0"
+source = "https://www.opengeodata.nrw.de/produkte/geobasis/hm/dgm1_tiff/dgm1_tiff/"
+theme = "terrain"
+availability = "open"
+notes = "North Rhine-Westphalia's 1 m bare-earth model (DGM1, GeoTIFF) from airborne laser scanning flown in a five-year cycle: the open-data folder's index of its 1 km tiles (35,860, EPSG:25832), by the year in each tile's name, which is its survey's (the folder's tile list, dgm1_meta.zip, gives each tile's capture date, Aktualitaet, in the same year for every tile: 2020 to 2025). \"Kostenfrei und zur Nutzung ohne Einschränkungen oder Bedingungen\" (dl-de/zero-2-0). The height accuracy stated, up to ±10 cm + 5 % of the grid in open flat terrain and + 20 % on steep wooded slopes at 95 % (2σ), and the tile list's `Genauigkeit` of 0.2, aren't RMSEs: left out."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1 NRW"
+method = "listing"
+url = "https://www.opengeodata.nrw.de/produkte/geobasis/hm/dgm1_tiff/dgm1_tiff/"
+list = "lines"
+pattern = 'dgm1_32_(?P<x>\d{3})_(?P<y>\d{4})_1_nw_(?P<year>\d{4})\.tif'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }

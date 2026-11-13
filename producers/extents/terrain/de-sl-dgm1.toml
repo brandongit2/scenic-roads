@@ -1,0 +1,31 @@
+name = "LVGL Saarland DGM1 (2025)"
+credit = "GeoBasis DE/LVGL-SL"
+licence = "DL-DE-BY-2.0"
+licence_url = "https://www.govdata.de/dl-de/by-2-0"
+source = "https://geoportal.saarland.de/mapbender/php/mod_dataISOMetadata.php?outputFormat=iso19139&id=d73285be-e3a1-46ef-9562-88883dc0f9c0"
+theme = "terrain"
+availability = "open"
+notes = "Saarland's 1 m bare-earth model \"ATKIS - DGM1 (2025)\" from the Land's 2025 airborne laser scanning (\"Laserscanbefliegung 2025\"), published as one zip of 1 km GeoTIFF tiles per district on the LVGL's public cloud share (the share its INSPIRE ATOM feed links; the feed's own box is the Land's rectangle): the tiles' names, read from the zips' central directories by range request, a tile each (EPSG:25832; dgm1_32_<x>_<y>_1_SL_2025). Open data, dl-de/by-2-0, with no access restriction. The share also holds the 2025 point cloud (LAZ), not a piece: its grid is this one. No accuracy or density was read: none stated."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1 Saarland 2025"
+method = "listing"
+list = "zip"
+urls = [
+  "https://www.shop.lvgl.saarland.de/cloud/public.php/dav/files/NK8ndP55qAqGEZD/OD_DGM1_2025_tif_LK/DGM1_tif_MZG_EPSG-25832_Entstehung-2025.zip",
+  "https://www.shop.lvgl.saarland.de/cloud/public.php/dav/files/NK8ndP55qAqGEZD/OD_DGM1_2025_tif_LK/DGM1_tif_NK_EPSG-25832_Entstehung-2025.zip",
+  "https://www.shop.lvgl.saarland.de/cloud/public.php/dav/files/NK8ndP55qAqGEZD/OD_DGM1_2025_tif_LK/DGM1_tif_SB_EPSG-25832_Entstehung-2025.zip",
+  "https://www.shop.lvgl.saarland.de/cloud/public.php/dav/files/NK8ndP55qAqGEZD/OD_DGM1_2025_tif_LK/DGM1_tif_SLS_EPSG-25832_Entstehung-2025.zip",
+  "https://www.shop.lvgl.saarland.de/cloud/public.php/dav/files/NK8ndP55qAqGEZD/OD_DGM1_2025_tif_LK/DGM1_tif_SPK_EPSG-25832_Entstehung-2025.zip",
+  "https://www.shop.lvgl.saarland.de/cloud/public.php/dav/files/NK8ndP55qAqGEZD/OD_DGM1_2025_tif_LK/DGM1_tif_WND_EPSG-25832_Entstehung-2025.zip",
+]
+pattern = 'dgm1_32_(?P<x>\d{3})_(?P<y>\d{4})_1_SL_(?P<year>\d{4})\.tif$'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }

@@ -1,0 +1,23 @@
+name = "Mecklenburg-Vorpommern DGM1 (LAiV)"
+credit = "GeoBasis-DE/MV"
+licence = "CC-BY-4.0"
+licence_url = "https://laiv.geodaten-mv.de/afgvk/Sonstiges/Nutzungsbedingungen"
+source = "https://www.geodaten-mv.de/dienste/dgm_atom"
+theme = "terrain"
+availability = "open"
+notes = "The state's bare-earth model, 1 m in 2 km tiles (EPSG:25833): the INSPIRE download feed's tile files (6,407 in each of its six formats; dgm1_33_<east km>_<north km>_2_….tif, the south-west corner). Free downloads are CC BY 4.0 by the LAiV's terms (\"©GeoBasis-DE/MV/CC BY 4.0\"). The feed's own `bbox`es are latitude first and the tiles' boxes in degrees, so the names are read instead. No year: the tiles' dates are in the download page's application only; the LAiV's yearly update overviews (shapefiles for 2022, 2024 and 2025: 3,220, 4,040 and 260 km²) cover a part, the rest (2011 to 2020, on a ten-year cycle) only as pictures. No accuracy figure is stated in what was read. The laser point clouds are paid."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1 - Digitales Geländemodell des Landes Mecklenburg-Vorpommern"
+method = "listing"
+url = "https://www.geodaten-mv.de/dienste/dgm_atom?type=dataset&id=ca268792-s2q1-4a39-b34c-9ec5bf9a4469"
+list = "links"
+pattern = 'file=dgm1_33_(?P<x>\d{3})_(?P<y>\d{4})_2_'
+unit = 1000
+size = 2000
+crs = "EPSG:25833"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1

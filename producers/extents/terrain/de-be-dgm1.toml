@@ -1,0 +1,24 @@
+name = "Berlin ATKIS DGM1"
+credit = "Senatsverwaltung für Stadtentwicklung, Bauen und Wohnen Berlin"
+licence = "DL-DE-ZERO-2.0"
+licence_url = "https://www.govdata.de/dl-de/zero-2-0"
+source = "https://gdi.berlin.de/geonetwork/srv/api/records/f0e8ff09-2887-3446-9c53-81dbc45af03c"
+theme = "terrain"
+availability = "open"
+notes = "The city's bare-earth model, 1 m in 2 km tiles (EPSG:25833), with a buffer of about 250 m into Brandenburg: the INSPIRE download feed's 297 tile files (DGM1_<east km>_<north km>.zip, the south-west corner). The record states it from the airborne laser scan flown on 24 and 25 February and 2 March 2021, updated from the image flights of March 2022, April 2023, March 2025 and August 2025 by stereo plotting: the year is the laser survey's. Its accuracy is stated as ±10 cm + 5 % of the grid at 2 sigma, not an RMSE, so left out. The ALS point cloud (9.8 pts/m²) is the grid's source and makes no piece of its own."
+
+[[piece]]
+id = "dgm1"
+label = "ATKIS DGM (1m-Rasterweite)"
+method = "listing"
+url = "https://gdi.berlin.de/data/dgm1/atom/0.atom"
+list = "links"
+pattern = 'DGM1_(?P<x>\d{3})_(?P<y>\d{4})\.zip'
+unit = 1000
+size = 2000
+crs = "EPSG:25833"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2021

@@ -1,0 +1,24 @@
+name = "HVBG Hessen DGM1"
+credit = "Hessische Verwaltung für Bodenmanagement und Geoinformation (HVBG)"
+licence = "DL-DE-ZERO-2.0"
+licence_url = "https://www.govdata.de/dl-de/zero-2-0"
+source = "https://www.geoportal.hessen.de/mapbender/php/mod_dataISOMetadata.php?outputFormat=iso19139&id=dbf48a95-b44d-48b3-a5b4-981e4c1bd8e6"
+theme = "terrain"
+availability = "open"
+notes = "Hesse's 1 m bare-earth model (ATKIS-DGM 1, GeoTIFF) from airborne laser scanning, free in the Downloadcenter by municipality (\"Jede Nutzung ... ohne Einschränkung oder Bedingung\"; its record: dl-de/zero-2-0, no access restriction): the Downloadcenter's list of the tiles' flight dates (\"Metadatenliste DGM1 und DOM1\", Metadaten_DGM-DOM_August-2026.xlsx: each 1 km tile's name, its SW corner in km, EPSG:25832, and its Bildflugdatum, as of 5 Aug 2026), a tile each, by the year it was flown (2019 to 2025; a tile listed under two municipalities once). The tiles' file names hold no year, and the Downloadcenter's tile shapefile (Shape-Kachelname_1x1km.zip) none either. The height accuracy stated, up to ±0.3 m for the DGM 1 at 95 % (2σ), isn't an RMSE: left out."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1 Hessen"
+method = "listing"
+url = "https://gds.hessen.de/INTERSHOP/static/WFS/HLBG-Geodaten-Site/-/HLBG-Geodaten/de_DE/Downloadcenter/Daten/3D-Daten/Metadaten_DGM-DOM_August-2026.xlsx"
+list = "xlsx"
+pattern = '^(?P<x>\d{3})(?P<y>\d{4});(?P<flown>\d{4}-\d\d-\d\d);'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "flown", date = "iso" }

@@ -1,0 +1,28 @@
+name = "Sachsen-Anhalt DGM1 (LVermGeo)"
+credit = "Landesamt für Vermessung und Geoinformation Sachsen-Anhalt (LVermGeo)"
+licence = "DL-DE-BY-2.0"
+licence_url = "https://www.govdata.de/dl-de/by-2-0"
+source = "https://www.lvermgeo.sachsen-anhalt.de/de/gdp-dgm1-landesweit.html"
+theme = "terrain"
+availability = "open"
+notes = "The state's bare-earth model, 1 m in 2 km tiles (EPSG:25832): the statewide download's four archives (DGM1_1.zip to DGM1_4.zip, 11.5 GB the first, zip64), each tile's file a member (dgm1_32_<east km>_<north km>_2_st.tif), read from the archives' central directories by range request. No year: the tiles' years (2021 to 2025, as of 5 Dec 2025) are in an overview PDF only, and each tile's .meta file is a member of the archives. No accuracy figure is stated in what was read. The 3D-Messdaten point cloud is had on request, with fees."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1"
+method = "listing"
+urls = [
+  "https://www.geodatenportal.sachsen-anhalt.de/gfds_webshare/download/LVermGeo/Geodatenportal/Online-Bereitstellung-LVermGeo/DGM/DGM1_1.zip",
+  "https://www.geodatenportal.sachsen-anhalt.de/gfds_webshare/download/LVermGeo/Geodatenportal/Online-Bereitstellung-LVermGeo/DGM/DGM1_2.zip",
+  "https://www.geodatenportal.sachsen-anhalt.de/gfds_webshare/download/LVermGeo/Geodatenportal/Online-Bereitstellung-LVermGeo/DGM/DGM1_3.zip",
+  "https://www.geodatenportal.sachsen-anhalt.de/gfds_webshare/download/LVermGeo/Geodatenportal/Online-Bereitstellung-LVermGeo/DGM/DGM1_4.zip",
+]
+list = "zip"
+pattern = 'dgm1_32_(?P<x>\d{3})_(?P<y>\d{4})_2_st\.tif$'
+unit = 1000
+size = 2000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1

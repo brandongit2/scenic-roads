@@ -1,0 +1,22 @@
+name = "Niedersachsen DGM1 (LGLN)"
+credit = "GeoBasis-DE/LGLN"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://dgm.stac.lgln.niedersachsen.de/collections/dgm1"
+theme = "terrain"
+availability = "open"
+notes = "The state's bare-earth model, 1 m cloud-optimised GeoTIFFs in 1 km tiles (EPSG:25832), from airborne laser scanning at 4 pts/m² or more: the LGLN's STAC collection's items, each tile's footprint, its survey lot (`los`) and its date (`datetime`, the tile metadata's AKTUALITAET), by lot and the date's year. The collection holds every edition still published: 70,285 items for 49,708 tiles (20,211 tiles in two or three editions, an older lot's and a newer's), so the lots' pieces overlap where a tile was flown again; the newest edition of each tile is of 2016 or 2017 for 55 % of the tiles, of 2025 for 15 %. Each tile states a `genauigkeit` of 0.3 (m; the AdV standard's height accuracy as a standard deviation, not stated as an RMSE, so left out). The ordered 3D-Messdaten point cloud (fees by the KOVerm) is the grid's source and makes no piece of its own."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1"
+method = "stac"
+url = "https://dgm.stac.lgln.niedersachsen.de/collections/dgm1"
+page = 1000
+by = ["los"]
+name = "los"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "datetime", date = "iso" }

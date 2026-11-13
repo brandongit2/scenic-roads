@@ -1,0 +1,24 @@
+name = "LVermGeoRP DGM1"
+credit = "GeoBasis-DE / LVermGeoRP"
+licence = "DL-DE-BY-2.0"
+licence_url = "https://www.govdata.de/dl-de/by-2-0"
+source = "https://geoshop.rlp.de/opendata-dgm1.html"
+theme = "terrain"
+availability = "open"
+notes = "Rhineland-Palatinate's 1 m bare-earth model (DGM1, GeoTIFF) from airborne laser scanning, a quarter of the Land flown again each year since 2022: the open-data folder's listing of its 1 km tiles (EPSG:25832), by the year in each tile's name, which is its capture's (each tile's metadata file states its Erfassung on 15 March of that year: 2022 to 2026). Where a tile has been flown again both files are published (5,392 tiles of 2022 have a 2026 successor), so each year's piece is its own files and those years overlap. Open data, dl-de/by-2-0, with no access restriction (the tiles' metadata). The height accuracy stated, up to ±10 cm + 5 % of the grid in open flat terrain, isn't an RMSE: left out."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1 Rheinland-Pfalz"
+method = "listing"
+url = "https://geobasis-rlp.de/data/dgm1/current/tif/"
+list = "links"
+pattern = 'dgm1_32_(?P<x>\d{3})_(?P<y>\d{4})_1_rp_(?P<year>\d{4})\.tif$'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }

@@ -1,0 +1,24 @@
+name = "Schleswig-Holstein DGM1 (LVermGeo SH)"
+credit = "GeoBasis-DE/LVermGeo SH"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
+source = "https://opendata.schleswig-holstein.de/dataset/digitales-gelandemodell-1-dgm1"
+theme = "terrain"
+availability = "open"
+notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25832), from airborne laser scanning at 3 to 4 pts/m²: the INSPIRE download feed's tile entries, each named for its tile and its year (dgm1_32_<east km>_<north km>_1_sh_<year>), by that year. The open-data portal states CC BY 4.0 (\"© GeoBasis-DE/LVermGeo SH/CC BY 4.0\"). Accuracy stated as ≤ 15 cm in flat terrain, not an RMSE, so left out. The download client's host fails TLS verification; the feed's doesn't. No open point cloud was found."
+
+[[piece]]
+id = "dgm1"
+label = "DGM1"
+method = "listing"
+url = "https://service.gdi-sh.de/INSPIRE_Atom/EL/SH_INSPIREDOWNLOAD_AII_EL_DGM1.xml"
+list = "lines"
+pattern = 'dgm1_32_(?P<x>\d{3})_(?P<y>\d{4})_1_sh_(?P<year>\d{4})'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "year", date = "year" }
