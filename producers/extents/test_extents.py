@@ -255,6 +255,19 @@ class Pieces(unittest.TestCase):
         self.assertEqual(len(pieces), 1)
         self.assertEqual(read["features"], 1)
 
+    def test_each_feature_is_generalised_to_a_quarter_of_the_tolerance_and_its_repair_counted(self):
+        # A square with a fine saw along its top (a mask's pixel staircase, teeth of a metre) and a
+        # bow tie (invalid: repaired, counted).
+        d = 1 / extents.M_PER_DEG
+        saw = [(x * d, 1000 * d + (d if x % 2 else 0)) for x in range(1000, -1, -1)]
+        feats = [(sg.Polygon([(0, 0), (1000 * d, 0), *saw]), {}), (sg.Polygon([(2000 * d, 0), (3000 * d, 1000 * d), (3000 * d, 0), (2000 * d, 1000 * d)]), {})]
+        block = {"id": "dtm", "method": "fake", "class": "index", "url": "u", "metrics": {}, "tolerance_m": 100}
+        pieces, [read] = self.run_block(block, feats)
+        self.assertEqual(read["repaired"], 1)
+        g = sg.shape(pieces[0]["geometry"])
+        self.assertLess(shapely.get_num_coordinates(g), 30)
+        self.assertAlmostEqual(g.bounds[3], 1000 * d, delta=2 * d)
+
     def test_a_feature_whose_field_is_excluded_is_left_out_an_empty_one_by_its_empty_string(self):
         feats = [(sg.box(0, 0, 1, 1), {"dtm": "a.tif"}), (sg.box(1, 0, 2, 1), {"dtm": ""}), (sg.box(2, 0, 3, 1), {}),
                  (sg.box(3, 0, 4, 1), {"dtm": "b.tif"})]

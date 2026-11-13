@@ -986,6 +986,7 @@ def block_pieces(net, decl, b, today):
     r0, b0 = net.mark()
     net.since()
     groups, n, flt, exc = {}, 0, b.get("filter") or {}, b.get("exclude") or {}
+    repaired, quarter = 0, {}
     feats = READERS[method](net, b, tol_deg)
     for geom, props in (latest_versions(feats, b["latest"]) if b.get("latest") else feats):
         if any(str(props.get(k)) not in [str(x) for x in want] for k, want in flt.items()):
@@ -1000,6 +1001,16 @@ def block_pieces(net, decl, b, today):
             geom = geom()
             if geom is None:
                 continue
+        if not geom.is_valid:
+            repaired += 1
+            geom = shapely.make_valid(geom)
+        # (Each feature generalised to a quarter of the tolerance before they're dissolved, as
+        # `arcgis` asks its service to: a source mask's pixel staircases, RGE ALTI's 290,932 polygons
+        # of some 120 million positions, took hours to dissolve and tidy unsimplified.)
+        crs = b.get("crs", "OGC:CRS84")
+        if crs not in quarter:
+            quarter[crs] = (tol_deg if pyproj.CRS.from_user_input(crs).is_geographic else tol_m) / 4
+        geom = geom.simplify(quarter[crs], preserve_topology=True)
         n += 1
         by = tuple(str(props.get(k)) for k in b.get("by", []))
         ms = {k: metric(s, props) for k, s in specs.items()}
@@ -1013,14 +1024,11 @@ def block_pieces(net, decl, b, today):
             "date": net.fetched or today, "tolerance_m": tol_m}
     if "grain_m" in b:
         read["grain_m"] = b["grain_m"]
-    repaired = 0
     feats = []
     shared = {}
     for by, _ in groups:
         shared[by] = shared.get(by, 0) + 1
     for (by, varying), g in sorted(groups.items(), key=lambda kv: str(kv[0])):
-        bad = [x for x in g["geoms"] if not x.is_valid]
-        repaired += len(bad)
         native = shapely.union_all([polygons(shapely.make_valid(x)) for x in g["geoms"]])
         c = pyproj.CRS.from_user_input(crs)
         step = tol_deg if c.is_geographic else tol_m * 20
