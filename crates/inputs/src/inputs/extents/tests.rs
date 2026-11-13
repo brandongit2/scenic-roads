@@ -402,9 +402,10 @@ fn the_version_whole() {
         ("terrain/lidar.geojson", &p),
     ]);
     assert_eq!(ids(&f), [(METRIC, Level::Error)]);
-    // A piece's metric the score doesn't name, of the wrong kind, or stated of no metric (its
-    // block's constant beside it, so it's made from the declaration).
+    // A piece's metric the score doesn't name, of the wrong kind, or stated of no metric (of a
+    // declaration with no constant, so the pieces are made from it).
     let g = mp(&[square(0.0, 0.0, 1.0, true)]);
+    let free = DECL.replacen("surface = \"ground\"\n", "", 1);
     let dem = |extra: &str| {
         let surface = if extra.contains("\"surface\"") { "" } else { r#","surface":"ground""# };
         piece("dem/a", &format!("{surface}{extra}"), &g)
@@ -416,8 +417,12 @@ fn the_version_whole() {
         r#","year":"2020""#,
         r#","stated":{"depth":"QL 2"}"#,
     ] {
-        let bad = fc("lidar", &["dem", "rest"], &[dem(extra)]);
-        let f = whole_of(&[("terrain/score.toml", s), ("terrain/lidar.toml", d), ("terrain/lidar.geojson", &bad)]);
+        let bad = fc("lidar", &["dem", "rest"], &[piece("dem/a", extra, &g)]);
+        let f = whole_of(&[
+            ("terrain/score.toml", s),
+            ("terrain/lidar.toml", free.as_bytes()),
+            ("terrain/lidar.geojson", &bad),
+        ]);
         assert_eq!(ids(&f), [(METRIC, Level::Error)], "{extra}");
         assert_eq!(f[0].files, ["terrain/lidar.geojson", "terrain/score.toml"]);
         assert_eq!(f[0].lines[0].0, 1);
