@@ -164,7 +164,8 @@ impl Tile {
 
 /// `b` gzip'd with no time or name in its header.
 pub fn gzip(b: &[u8]) -> Vec<u8> {
-    let mut e = flate2::GzBuilder::new().mtime(0).write(Vec::with_capacity(b.len() / 4 + 64), flate2::Compression::default());
+    let mut e =
+        flate2::GzBuilder::new().mtime(0).write(Vec::with_capacity(b.len() / 4 + 64), flate2::Compression::default());
     e.write_all(b).expect("gzip to memory");
     e.finish().expect("gzip to memory")
 }

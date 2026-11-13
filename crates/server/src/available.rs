@@ -105,8 +105,11 @@ impl Theme {
     /// The pieces `ids` that pass the switch, best first (by score; a piece with none last), as the
     /// click shows them.
     pub fn listed<'a>(&self, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Vec<Value> {
-        let mut ps: Vec<(&str, &PieceInfo)> =
-            ids.into_iter().filter_map(|id| Some((id, self.pieces.get(id)?))).filter(|(_, p)| all || p.open()).collect();
+        let mut ps: Vec<(&str, &PieceInfo)> = ids
+            .into_iter()
+            .filter_map(|id| Some((id, self.pieces.get(id)?)))
+            .filter(|(_, p)| all || p.open())
+            .collect();
         ps.sort_by(|a, b| b.1.score.unwrap_or(-1.0).total_cmp(&a.1.score.unwrap_or(-1.0)).then(a.0.cmp(b.0)));
         ps.into_iter()
             .map(|(id, p)| {
@@ -208,7 +211,9 @@ pub fn theme_of(files: &BTreeMap<String, Vec<u8>>) -> Theme {
         match ex::kind(p) {
             ex::Kind::Score(_) => t.score = ex::score(b).ok(),
             ex::Kind::Declaration(_, id) => {
-                let Ok(d) = std::str::from_utf8(b).map_err(|_| ()).and_then(|s| toml::from_str::<toml::Table>(s).map_err(|_| ()))
+                let Ok(d) = std::str::from_utf8(b)
+                    .map_err(|_| ())
+                    .and_then(|s| toml::from_str::<toml::Table>(s).map_err(|_| ()))
                 else {
                     continue;
                 };
@@ -225,14 +230,21 @@ pub fn theme_of(files: &BTreeMap<String, Vec<u8>>) -> Theme {
                     let Some(props) = f["properties"].as_object() else { continue };
                     let Some(piece) = props.get("piece").and_then(Value::as_str) else { continue };
                     let block = piece.split('/').next().unwrap_or(piece);
-                    let read = reads.iter().find(|r| r["piece"].as_str() == Some(block)).map_or(Value::Null, |r| (*r).clone());
+                    let read =
+                        reads.iter().find(|r| r["piece"].as_str() == Some(block)).map_or(Value::Null, |r| (*r).clone());
                     if f["geometry"].is_null() {
                         let label = props.get("name").and_then(Value::as_str).unwrap_or(piece);
                         t.unknown.entry(id.to_string()).or_default().push(label.to_string());
                     }
                     t.pieces.insert(
                         format!("{id}/{piece}"),
-                        PieceInfo { source: id.to_string(), props: props.clone(), read, score: None, values: BTreeMap::new() },
+                        PieceInfo {
+                            source: id.to_string(),
+                            props: props.clone(),
+                            read,
+                            score: None,
+                            values: BTreeMap::new(),
+                        },
                     );
                 }
             }
@@ -396,7 +408,18 @@ type Made = Lru<(String, String, bool, u8, u32, u32, u64, String), bytes::Bytes>
 static MADE: LazyLock<Mutex<Made>> = LazyLock::new(|| Mutex::new(Lru::new(64 << 20)));
 
 #[allow(clippy::too_many_arguments)]
-async fn tile(s: S, grid: Grid, theme: String, set: String, layer: String, z: u8, x: u32, y: u32, q: Option<String>, headers: HeaderMap) -> Response {
+async fn tile(
+    s: S,
+    grid: Grid,
+    theme: String,
+    set: String,
+    layer: String,
+    z: u8,
+    x: u32,
+    y: u32,
+    q: Option<String>,
+    headers: HeaderMap,
+) -> Response {
     let Some(th) = s.available.theme(&theme) else { return StatusCode::NOT_FOUND.into_response() };
     if !SETS.contains(&set.as_str()) || !th.has_layer(&layer) || z > fmt::maxz(grid) || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
@@ -405,7 +428,8 @@ async fn tile(s: S, grid: Grid, theme: String, set: String, layer: String, z: u8
     let all = all_of(q.as_deref());
     let g = s.data.generation.load(std::sync::atomic::Ordering::Relaxed);
     let uv = s.available.version();
-    let etag = format!("\"av-{}-{uv}-{layer}-{}-{z}-{x}-{y}\"", s.data.layer_version(&stl), if all { "all" } else { "open" });
+    let etag =
+        format!("\"av-{}-{uv}-{layer}-{}-{z}-{x}-{y}\"", s.data.layer_version(&stl), if all { "all" } else { "open" });
     let key = (stl.clone(), layer.clone(), all, z, x, y, g, uv);
     let v = cache::versioned(q.as_deref());
     let s2 = s.clone();

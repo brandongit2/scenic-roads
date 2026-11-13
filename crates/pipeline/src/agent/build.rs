@@ -4284,10 +4284,8 @@ fn polar_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
 /// key isn't the one recorded; none before the extents are accepted, or while their index can't
 /// be read.
 pub fn available_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
-    let targets: Vec<(String, String)> = available_targets(x)
-        .into_iter()
-        .filter(|(t, k)| done.lo.get(t) != Some(k))
-        .collect();
+    let targets: Vec<(String, String)> =
+        available_targets(x).into_iter().filter(|(t, k)| done.lo.get(t) != Some(k)).collect();
     (!targets.is_empty()).then(|| Work { step: "available".into(), targets })
 }
 

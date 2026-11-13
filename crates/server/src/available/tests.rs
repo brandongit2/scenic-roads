@@ -38,7 +38,11 @@ fn fixture() -> Vec<(String, Vec<u8>)> {
         "open",
         &[
             ("dtm", json!({"spacing_m": 1, "surface": "ground", "year": 2021}), Some(square(2.0, 44.0, 2.4, 44.3))),
-            ("pole", json!({"spacing_m": 2, "surface": "surface"}), Some(json!([[[-180.0, 86.0], [180.0, 86.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, 86.0]]]))),
+            (
+                "pole",
+                json!({"spacing_m": 2, "surface": "surface"}),
+                Some(json!([[[-180.0, 86.0], [180.0, 86.0], [180.0, 90.0], [-180.0, 90.0], [-180.0, 86.0]]])),
+            ),
         ],
     );
     let b = source(
@@ -248,7 +252,9 @@ async fn a_click_answers_the_pieces_there_best_first() {
             Query(At { lng, lat, avail: avail.map(str::to_string) }),
         )
     };
-    let ids = |v: &Value| v["pieces"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let ids = |v: &Value| {
+        v["pieces"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+    };
     let v: Value = serde_json::from_slice(&body(click(2.3, 44.2, Some("all")).await).await).unwrap();
     assert_eq!(ids(&v), ["fine/dtm", "open-lidar/dtm"]);
     assert!(v["pieces"][0]["score"].as_f64().unwrap() > v["pieces"][1]["score"].as_f64().unwrap());

@@ -854,9 +854,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 }
                 drop(p);
                 let p = phase("drawing the pieces' tiles");
-                let made = terrain::available::build(&mut out, theme, &pieces, &|d, n| {
-                    jobrt::jobs::report(d, n, "z6 tiles")
-                })?;
+                let made =
+                    terrain::available::build(&mut out, theme, &pieces, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))?;
                 drop(p);
                 out.save()?;
                 eprintln!(

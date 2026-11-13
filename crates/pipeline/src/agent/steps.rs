@@ -2267,9 +2267,15 @@ fn w_polar_slope(l: &str, _: bool) -> bool {
 /// The data-available layers' packs (the Web Mercator root and z6 packs, a pole's root) and the
 /// step's mids (codecs::available).
 fn w_available(l: &str, _: bool) -> bool {
-    pack_of(l, &|ly| codecs::available::of_layer(ly).is_some_and(|(_, g)| g == codecs::available::Grid::Mercator), &["root", "hi"])
-        || pack_of(l, &|ly| matches!(codecs::available::of_layer(ly), Some((_, codecs::available::Grid::Polar(_)))), &["root"])
-        || matches!(parts(l).as_slice(), ["work", w, "mids"] if w.strip_prefix("available-").is_some_and(|t| !t.is_empty()))
+    pack_of(
+        l,
+        &|ly| codecs::available::of_layer(ly).is_some_and(|(_, g)| g == codecs::available::Grid::Mercator),
+        &["root", "hi"],
+    ) || pack_of(
+        l,
+        &|ly| matches!(codecs::available::of_layer(ly), Some((_, codecs::available::Grid::Polar(_)))),
+        &["root"],
+    ) || matches!(parts(l).as_slice(), ["work", w, "mids"] if w.strip_prefix("available-").is_some_and(|t| !t.is_empty()))
 }
 
 fn w_polar_root(l: &str, _: bool) -> bool {

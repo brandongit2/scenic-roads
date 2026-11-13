@@ -25,9 +25,9 @@
 use anyhow::{ensure, Context, Result};
 use buildstore::out::Out;
 use codecs::available::{self as fmt, Tile, PIXELS, SIDE};
+use rayon::prelude::*;
 use roadcore::polar::Pole;
 use serde_json::Value;
-use rayon::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What a piece's polygons make of a tile: bumped with any change to the tiles' bytes for the same
@@ -68,12 +68,8 @@ pub fn pieces(source: &str, geojson: &[u8]) -> Result<Vec<Piece>> {
             let mut bbox = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
             let mut rings = Vec::new();
             for r in p.as_array().into_iter().flatten() {
-                let ring: Vec<[f64; 2]> = r
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|q| Some([q[0].as_f64()?, q[1].as_f64()?]))
-                    .collect();
+                let ring: Vec<[f64; 2]> =
+                    r.as_array().into_iter().flatten().filter_map(|q| Some([q[0].as_f64()?, q[1].as_f64()?])).collect();
                 for q in &ring {
                     bbox = [bbox[0].min(q[0]), bbox[1].min(q[1]), bbox[2].max(q[0]), bbox[3].max(q[1])];
                 }
@@ -146,7 +142,13 @@ impl Sets {
     /// Sets over `base`'s, adding their own.
     fn over(base: std::sync::Arc<Sets>) -> Sets {
         let first = base.first + base.list.len() as u32;
-        Sets { base: Some(base), first, list: Vec::new(), index: HashMap::with_hasher(Fast), unions: HashMap::with_hasher(Fast) }
+        Sets {
+            base: Some(base),
+            first,
+            list: Vec::new(),
+            index: HashMap::with_hasher(Fast),
+            unions: HashMap::with_hasher(Fast),
+        }
     }
 
     /// Set `k`'s pieces.
@@ -510,7 +512,11 @@ fn cell_of(t: &Tile, by_id: &HashMap<&str, u32>, sets: &mut Sets) -> Result<Cell
         v.sort_unstable();
         ids.push(sets.id(v));
     }
-    Ok(if ids.len() == 1 { Cell::Uniform(ids[0]) } else { Cell::Raster(t.px.iter().map(|&p| ids[p as usize]).collect()) })
+    Ok(if ids.len() == 1 {
+        Cell::Uniform(ids[0])
+    } else {
+        Cell::Raster(t.px.iter().map(|&p| ids[p as usize]).collect())
+    })
 }
 
 // ---- The step ----------------------------------------------------------------------------------
@@ -645,13 +651,7 @@ fn read_mids(out: &Out, theme: &str) -> Result<(MidsMeta, BTreeMap<String, Vec<u
 }
 
 /// Writes a pack of `tiles` (zoom, x, y, cell; any order) as `logical` and puts it; how many tiles.
-fn put_pack(
-    out: &mut Out,
-    layer: &str,
-    scope: &str,
-    root: (u8, u32, u32),
-    mut tiles: Vec<Stored>,
-) -> Result<usize> {
+fn put_pack(out: &mut Out, layer: &str, scope: &str, root: (u8, u32, u32), mut tiles: Vec<Stored>) -> Result<usize> {
     tiles.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
     let n = tiles.len();
     match crate::layers::write_pack_local(out, layer, fmt::ENCODING, true, scope, root, &mut tiles.into_iter())? {

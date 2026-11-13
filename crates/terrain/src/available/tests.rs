@@ -204,8 +204,7 @@ fn a_changed_piece_makes_only_its_tiles_again() {
     let before = packs(d.path());
     // B moved: only B's z6 tiles (as it was, and as it is) are made again; A's packs are as they were.
     let m = run(d.path(), &[a.clone(), b(-68.0)].concat());
-    let b_tiles: BTreeSet<String> =
-        tile_keys(&b(-69.0)).into_keys().chain(tile_keys(&b(-68.0)).into_keys()).collect();
+    let b_tiles: BTreeSet<String> = tile_keys(&b(-69.0)).into_keys().chain(tile_keys(&b(-68.0)).into_keys()).collect();
     assert!(!m.remade.is_empty());
     for t in &m.remade {
         assert!(b_tiles.contains(t), "{t} isn't B's");
@@ -255,13 +254,23 @@ fn real_checks(all: &[Piece]) -> Made {
     let d = tempfile::tempdir().unwrap();
     let t = std::time::Instant::now();
     let m = run(d.path(), all);
-    eprintln!("{} pieces: {} z6 tiles, {} packs, {} tiles in {:.1?}", all.len(), m.remade.len(), m.packs, m.tiles, t.elapsed());
+    eprintln!(
+        "{} pieces: {} z6 tiles, {} packs, {} tiles in {:.1?}",
+        all.len(),
+        m.remade.len(),
+        m.packs,
+        m.tiles,
+        t.elapsed()
+    );
     let o = out(d.path());
     let read = |l: &str| -> BTreeMap<(u8, u32, u32), Tile> {
         let b = o.path(o.get(l).unwrap()).read().unwrap();
         let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
         assert!(!idx.entries.is_empty(), "{l}");
-        idx.entries.iter().map(|e| (e.zxy(), Tile::decode(&b[e.offset as usize..][..e.len as usize]).unwrap())).collect()
+        idx.entries
+            .iter()
+            .map(|e| (e.zxy(), Tile::decode(&b[e.offset as usize..][..e.len as usize]).unwrap()))
+            .collect()
     };
     // Child c (at cz/cx/cy) against its parent's pixels over it.
     let check = |parent: &Tile, (cz, cx, cy): (u8, u32, u32), c: &Tile| {
