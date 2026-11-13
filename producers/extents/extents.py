@@ -7,8 +7,8 @@ A reader per kind of service, none per source:
            `where`; paged by `page`), as GeoJSON or Esri JSON, whichever the layer answers
   stac     a STAC API collection's items (`url`: the collection; paged by its `next` links), each
            item's footprint or (`geometry`) the GeoJSON file of its asset of that name
-  atom     an ATOM download feed (`url`; `follow` the feeds it links): its files' `bbox`es, or its
-           entries' GeoRSS polygons and boxes
+  atom     an ATOM download feed (`url`; `follow` the feeds it links): its files' `bbox`es
+           (`latfirst` where they're south west north east), or its entries' GeoRSS polygons and boxes
   wfs      a WFS feature type (`url`, `type`; `crs` where the answer doesn't name its own), as
            GeoJSON or GML (`format`; `version`)
   file     an index file fetched whole (`url`): GeoJSON, GML or a GeoPackage (`layer`), or a zip
@@ -294,35 +294,41 @@ def esri_shape(g):
     return None if out is None or out.is_empty else polygons(out)
 
 
+def stac_items(net, url, page=500):
+    """A STAC or OGC API Features collection's items, `page` a request, paged by its `next` links up
+    to the first page with no items. A next link without the page size asked for gets it back: a
+    server whose links drop it (Luzern's) answers the next page of its default size, so the pages
+    would skip or repeat."""
+    url, seen = url.rstrip("/") + "/items?limit=" + str(page), set()
+    while url:
+        if url in seen:
+            sys.exit(f"{url}: a `next` link back to a page already read")
+        seen.add(url)
+        d = net.json(url)
+        if not d.get("features"):
+            # (Some OGC API servers link a `next` from an empty page: Ellipsis Drive's, back to the first.)
+            return
+        yield from d["features"]
+        url = next((l["href"] for l in d.get("links") or [] if l.get("rel") == "next"), None)
+        if url and "limit" not in urllib.parse.parse_qs(urllib.parse.urlsplit(url).query):
+            url += ("&" if urllib.parse.urlsplit(url).query else "?") + "limit=" + str(page)
+
+
 def read_stac(net, b, _tol):
     """A STAC collection's items: each item's footprint, or with `geometry` the GeoJSON file its
     asset of that name is (a finer outline than the item's own, where a publisher gives one)."""
-    for d in stac_pages(net, b["url"], b.get("page", 500)):
-        for f in d.get("features") or []:
-            props = {**(f.get("properties") or {}), "id": f.get("id"), "collection": f.get("collection")}
-            asset = (f.get("assets") or {}).get(b["geometry"]) if b.get("geometry") else None
-            if asset:
-                g = json.loads(net.get(asset["href"]))
-                parts = [sg.shape(x["geometry"]) for x in (g.get("features") or [g]) if x.get("geometry")]
-                if parts:
-                    # (In WGS 84 like the items' own footprints, whatever CRS the file names.)
-                    shape = shapely.union_all([polygons(shapely.make_valid(x)) for x in parts])
-                    yield (to_wgs84(shape, answer_crs(g), 20.0) if answer_crs(g) else shape), props
-            elif f.get("geometry"):
-                yield sg.shape(f["geometry"]), props
-
-
-def stac_pages(net, collection, limit):
-    """A STAC or OGC API collection's pages of items, by their `next` links. A next link without the
-    page size asked for gets it back: a server whose links drop it (Luzern's) answers the next page
-    of its default size, which may be the whole collection, so the pages would skip or repeat."""
-    url = collection.rstrip("/") + "/items?limit=" + str(limit)
-    while url:
-        d = net.json(url)
-        yield d
-        url = next((l["href"] for l in d.get("links") or [] if l.get("rel") == "next"), None)
-        if url and "limit" not in urllib.parse.parse_qs(urllib.parse.urlsplit(url).query):
-            url += ("&" if urllib.parse.urlsplit(url).query else "?") + "limit=" + str(limit)
+    for f in stac_items(net, b["url"], b.get("page", 500)):
+        props = {**(f.get("properties") or {}), "id": f.get("id"), "collection": f.get("collection")}
+        asset = (f.get("assets") or {}).get(b["geometry"]) if b.get("geometry") else None
+        if asset:
+            g = json.loads(net.get(asset["href"]))
+            parts = [sg.shape(x["geometry"]) for x in (g.get("features") or [g]) if x.get("geometry")]
+            if parts:
+                # (In WGS 84 like the items' own footprints, whatever CRS the file names.)
+                shape = shapely.union_all([polygons(shapely.make_valid(x)) for x in parts])
+                yield (to_wgs84(shape, answer_crs(g), 20.0) if answer_crs(g) else shape), props
+        elif f.get("geometry"):
+            yield sg.shape(f["geometry"]), props
 
 
 def read_wfs(net, b, _tol):
@@ -537,7 +543,8 @@ GEORSS = "{http://www.georss.org/georss}"
 def read_atom(net, b, _tol):
     """An ATOM download feed (an INSPIRE download service's): each file it links (`rel="section"`,
     or any non-feed link) with its own `bbox` attribute (west south east north), else each entry's
-    GeoRSS polygon or box (latitude first, as GeoRSS writes them). `follow = true` reads the
+    GeoRSS polygon or box (latitude first, as GeoRSS writes them; `latfirst = true` where a feed
+    writes its `bbox`es latitude first too, Brussels's). `follow = true` reads the
     feeds its entries link (`type="application/atom+xml"`, `rel="alternate"`) too, each once. A file's properties: its
     entry's `title`, `updated` and `id`, and its own `href`, `title` and `length`."""
     todo, seen = [b["url"]], set()
@@ -561,7 +568,7 @@ def read_atom(net, b, _tol):
                 if l.get("bbox"):
                     w, s, east, n = (float(v) for v in l.get("bbox").split())
                     boxed = True
-                    yield sg.box(w, s, east, n), {**entry, "href": l.get("href"), "link_title": l.get("title"), "length": l.get("length")}
+                    yield xy(sg.box(w, s, east, n), b), {**entry, "href": l.get("href"), "link_title": l.get("title"), "length": l.get("length")}
             if boxed:
                 continue
             for p in e.iter(GEORSS + "polygon"):
@@ -740,8 +747,7 @@ def raster_files(net, b):
         return sorted({urllib.parse.urljoin(base, n) for n in listed_names(net, b) if re.search(b["pattern"], n)})
     if "stac" not in b:
         return b["urls"]
-    return sorted(f["assets"][b["asset"]]["href"] for d in stac_pages(net, b["stac"], 500)
-                  for f in d.get("features") or [] if b["asset"] in f.get("assets", {}))
+    return sorted(f["assets"][b["asset"]]["href"] for f in stac_items(net, b["stac"]) if b["asset"] in f.get("assets", {}))
 
 
 def read_raster(net, b, _tol):
@@ -979,10 +985,14 @@ def block_pieces(net, decl, b, today):
     tol_deg = tol_m / M_PER_DEG
     r0, b0 = net.mark()
     net.since()
-    groups, n, flt = {}, 0, b.get("filter") or {}
+    groups, n, flt, exc = {}, 0, b.get("filter") or {}, b.get("exclude") or {}
     feats = READERS[method](net, b, tol_deg)
     for geom, props in (latest_versions(feats, b["latest"]) if b.get("latest") else feats):
         if any(str(props.get(k)) not in [str(x) for x in want] for k, want in flt.items()):
+            continue
+        # (`exclude`, the filter's counterpart: a feature whose field is one of these is left out,
+        # "" for a field empty or missing.)
+        if any(("" if props.get(k) is None else str(props.get(k))) in [str(x) for x in drop] for k, drop in exc.items()):
             continue
         if callable(geom):
             # (A reader's geometry built only for the features the filter keeps: a national file's

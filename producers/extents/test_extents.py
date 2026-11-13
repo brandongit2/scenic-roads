@@ -255,6 +255,14 @@ class Pieces(unittest.TestCase):
         self.assertEqual(len(pieces), 1)
         self.assertEqual(read["features"], 1)
 
+    def test_a_feature_whose_field_is_excluded_is_left_out_an_empty_one_by_its_empty_string(self):
+        feats = [(sg.box(0, 0, 1, 1), {"dtm": "a.tif"}), (sg.box(1, 0, 2, 1), {"dtm": ""}), (sg.box(2, 0, 3, 1), {}),
+                 (sg.box(3, 0, 4, 1), {"dtm": "b.tif"})]
+        block = {"id": "dtm", "method": "fake", "class": "index", "url": "u", "exclude": {"dtm": ["", "b.tif"]}, "metrics": {}}
+        pieces, [read] = self.run_block(block, feats)
+        self.assertEqual(read["features"], 1)
+        self.assertEqual(sg.shape(pieces[0]["geometry"]).bounds, (0.0, 0.0, 1.0, 1.0))
+
     def test_features_of_one_reading_are_one_piece(self):
         feats = [(sg.box(0, 0, 1, 1), {"y": 2020}), (sg.box(1, 0, 2, 1), {"y": 2020}), (sg.box(5, 5, 6, 6), {"y": 2021})]
         block = {"id": "dtm", "method": "fake", "class": "index", "url": "u", "metrics": {"surface": "ground", "year": {"field": "y", "date": "year"}}}
@@ -521,6 +529,12 @@ class Atom(unittest.TestCase):
         # Not followed unless the declaration says.
         self.assertEqual(len(list(extents.read_atom(FakeNet({"https://h/top.xml": self.TOP}), {"url": "https://h/top.xml"}, 0))), 2)
 
+    def test_a_feed_writing_its_bboxes_latitude_first(self):
+        feed = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>DTM</title>
+          <link rel="section" href="https://h/t.zip" type="image/tiff" bbox="50.8134 4.2268 50.8224 4.2410"/></entry></feed>"""
+        [(g, _)] = list(extents.read_atom(FakeNet({"u": feed}), {"url": "u", "latfirst": True}, 0))
+        self.assertEqual(g.bounds, (4.2268, 50.8134, 4.241, 50.8224))
+
 
 def geopackage(rows, srs=25832):
     """A GeoPackage of one features table `tiles` (name, year, geom), as bytes."""
@@ -661,6 +675,19 @@ class StacAssets(unittest.TestCase):
                        "https://h/c/items?page=3&limit=1": page(3, None)})
         got = list(extents.read_stac(net, {"url": "https://h/c", "page": 1}, 0))
         self.assertEqual([p["id"] for _, p in got], ["t1", "t2", "t3"])
+
+    def test_paged_to_the_first_page_with_no_items_whatever_it_links(self):
+        # (Ellipsis Drive's OGC API: an empty page links `next` back to the first.)
+        item = {"id": "s", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}}
+        first = "https://h/c/items?limit=500"
+        net = FakeNet({first: json.dumps({"features": [item], "links": [{"rel": "next", "href": "https://h/c/items?offset=a&limit=500"}]}).encode(),
+                       "https://h/c/items?offset=a&limit=500": json.dumps({"features": [], "links": [{"rel": "next", "href": first}]}).encode()})
+        self.assertEqual(len(list(extents.read_stac(net, {"url": "https://h/c"}, 0))), 1)
+        self.assertEqual(net.requests, 2)
+        # A `next` back to a page already read, after items, stops the run (they'd be read twice).
+        net = FakeNet({first: json.dumps({"features": [item], "links": [{"rel": "next", "href": first}]}).encode()})
+        with self.assertRaises(SystemExit):
+            list(extents.read_stac(net, {"url": "https://h/c"}, 0))
 
 
 class RasterFiles(unittest.TestCase):
