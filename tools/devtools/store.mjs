@@ -42,6 +42,13 @@ export const COLS = {
   items: ["kind", "text", "parent", "order", "num", "status", "assigned", "note", "reply", "priority", "discuss", "archived", "archivedAt", "added", "started", "finished", "photos"],
   events: ["item", "kind", "t", "text"],
 };
+// (The events a list keeps: one item's, and those after a given event.)
+const eventsWhere = (item, before) => {
+  const w = [], args = [];
+  if (item !== undefined) { w.push("item = ?"); args.push(item); }
+  if (before) { w.push("(t < ? OR (t = ? AND id > ?))"); args.push(before[0], before[0], before[1]); }
+  return [w.length ? ` WHERE ${w.join(" AND ")}` : "", args];
+};
 const BOOL = new Set(["discuss", "archived"]);
 const JSONCOL = new Set(["photos"]);
 const q = (c) => `"${c}"`;
@@ -161,14 +168,26 @@ export function openStore(file, { log = () => {} } = {}) {
       stmt(`INSERT OR REPLACE INTO ${col} (${names.map(q).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`).run(id, ...vals);
     },
     del(col, id) { return stmt(`DELETE FROM ${col} WHERE id = ?`).run(id).changes; },
-    // [{id, data}], in the order asked (an `orderBy` that is a column, or "id"; else by id).
-    list(col, { orderBy, dir, limit } = {}) {
+    // [{id, data}], in the order asked (an `orderBy` that is a column, or "id"; else by id). Events
+    // only: `item` keeps one item's events ("" the board's own); `before` ([t, id]) the ones after that
+    // event in the order t newest first, then id (the next page of a history, read from where the last
+    // one ended).
+    list(col, { orderBy, dir, limit, item, before } = {}) {
       if (col === "meta") return db.prepare(`SELECT key, value FROM meta ORDER BY key`).all().map((r) => ({ id: r.key, data: JSON.parse(r.value) }));
       const o = orderBy && (COLS[col].includes(orderBy) || orderBy === "id") ? ` ORDER BY ${q(orderBy)} ${dir === "desc" ? "DESC" : "ASC"}, id` : " ORDER BY id";
       const lim = Number.isFinite(limit) && limit > 0 ? ` LIMIT ${Math.min(limit, 10000)}` : "";
-      return db.prepare(`${SELECT[col]}${o}${lim}`).all().map((r) => ({ id: r.id, data: toDoc(col, r) }));
+      const [where, args] = eventsWhere(item, before);
+      return db.prepare(`${SELECT[col]}${where}${o}${lim}`).all(...args).map((r) => ({ id: r.id, data: toDoc(col, r) }));
     },
-    count: (col) => (col === "meta" ? stmt(`SELECT COUNT(*) AS n FROM meta`) : stmt(`SELECT COUNT(*) AS n FROM ${col}`)).get().n,
+    // How many there are (of one item's events, with `item`).
+    count: (col, item) => (item === undefined ? stmt(`SELECT COUNT(*) AS n FROM ${col}`) : stmt(`SELECT COUNT(*) AS n FROM events WHERE item = ?`)).get(...(item === undefined ? [] : [item])).n,
+    // Each item's events in short, for the lists that show a count and the latest change and nothing
+    // of the history itself: {item ("" the board's own): [how many, the latest one's t]}.
+    history() {
+      const out = {};
+      for (const r of stmt(`SELECT item, COUNT(*) AS n, MAX(t) AS last FROM events GROUP BY item`).all()) out[r.item] = [r.n, r.last];
+      return out;
+    },
     childrenOf: (id) => stmt(`SELECT id FROM items WHERE parent = ?`).all(id).map((r) => r.id),
     eventsOf: (id) => stmt(`SELECT id FROM events WHERE item = ?`).all(id).map((r) => r.id),
     maxNum: () => stmt(`SELECT MAX(num) AS m FROM items`).get().m || 0,

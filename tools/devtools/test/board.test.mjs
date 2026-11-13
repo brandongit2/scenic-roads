@@ -326,6 +326,56 @@ test("routes: nothing else is open", async () => {
   assert.match((await call("PATCH", `/api/c/items/${t1}`, { stage: "done" })).body.error.message, /reload it/);
 });
 
+test("history is read by item and in pages, and in short for the lists; no cap hides any of it", async () => {
+  const a = (await post("items", { text: "History A" })).body.id, b = (await post("items", { text: "History B" })).body.id;
+  const made = [];
+  for (let i = 0; i < 7; i++) made.push((await post("events", { item: a, kind: "note", text: `a${i}` })).body.id);
+  await post("events", { item: b, kind: "note", text: "b0" });
+  const board = (await post("events", { item: "", kind: "note", text: "top" })).body;
+  const one = async (qs) => (await call("GET", `/api/c/events?${qs}`)).body;
+  // One item's events, newest first (ties by id), and its own total.
+  const all = await one(`item=${a}&orderBy=t&dir=desc`);
+  assert.equal(all.docs.length, 7);
+  assert.equal(all.total, 7, "the total is the item's, not the board's");
+  assert.ok(all.docs.every((d) => d.data.item === a));
+  assert.deepEqual(all.docs.map((d) => d.id).sort(), [...made].sort());
+  assert.deepEqual(all.docs.map((d) => [d.data.t, d.id]), all.docs.map((d) => [d.data.t, d.id]).sort((x, y) => (x[0] < y[0] ? 1 : x[0] > y[0] ? -1 : x[1] < y[1] ? -1 : 1)));
+  // Pages of 3 from where the last ended give exactly the same, none twice, none missed (ties in t too).
+  const pages = [];
+  let cur = await one(`item=${a}&orderBy=t&dir=desc&limit=3`);
+  while (cur.docs.length) {
+    pages.push(...cur.docs);
+    const e = cur.docs.at(-1);
+    cur = await one(`item=${a}&orderBy=t&dir=desc&limit=3&before=${encodeURIComponent(e.data.t)}&beforeId=${e.id}`);
+  }
+  assert.deepEqual(pages.map((d) => d.id), all.docs.map((d) => d.id));
+  // The board's own events are item "".
+  assert.deepEqual((await one("item=&orderBy=t&dir=desc")).docs.map((d) => d.id).includes(board.id), true);
+  assert.equal((await one(`item=${b}`)).docs.length, 1);
+  assert.equal((await one("item=nothing")).docs.length, 0);
+  // In short: each item's count and its latest time, for the rows and the recent view.
+  const h = (await call("GET", "/api/history")).body;
+  assert.equal(h[a][0], 7);
+  assert.equal(h[a][1], all.docs[0].data.t);
+  assert.deepEqual([h[b][0], h[""][0] >= 1], [1, true]);
+  assert.equal(Object.values(h).reduce((n, v) => n + v[0], 0), store.count("events"), "every event is counted once");
+  // A write moves it at once.
+  await post("events", { item: b, kind: "note", text: "b1" });
+  assert.equal((await call("GET", "/api/history")).body[b][0], 2);
+  // Bad queries are refused.
+  await refused(() => call("GET", `/api/c/events?item=${a}&before=2026-01-01T00:00:00.000Z&beforeId=x`), { says: /before: needs orderBy=t&dir=desc/ });
+  await refused(() => call("GET", `/api/c/events?orderBy=t&dir=desc&before=2026-01-01T00:00:00.000Z`), { says: /beforeId: go together/ });
+  await refused(() => call("GET", `/api/c/events?orderBy=t&dir=desc&before=yesterday&beforeId=x`), { says: /before: must be a time/ });
+  await refused(() => call("GET", `/api/c/items?item=${a}`), { says: /item: isn't a query this takes/ });
+});
+
+test("the page reads no whole list of events and caps none (history is read by item, in short for the lists)", () => {
+  const page = fs.readFileSync(new URL("../public/task-board/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(page, /collection\("events"\)/, "no read of the events collection as a whole");
+  assert.doesNotMatch(page, /limit\(10000\)|oldest weren't loaded/);
+  assert.match(page, /get\("history"\)/);
+});
+
 test("the app's pages, the board's schema and the dashboard's timeline are served", async () => {
   for (const [url, type] of [["/", /text\/html/], ["/task-board/", /text\/html/], ["/task-board/709", /text\/html/], ["/task-board/shim.js", /javascript/],
     ["/task-board/schema.mjs", /javascript/], ["/task-board/priority.mjs", /javascript/], ["/jobs/", /text\/html/], ["/jobs/jobs.js", /javascript/], ["/lib/buildpage/timeline.js", /javascript/], ["/lib/buildpage/dom.js", /javascript/], ["/lib/buildpage/words.js", /javascript/], ["/favicon.svg", /svg/]]) {

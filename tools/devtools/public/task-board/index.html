@@ -287,6 +287,8 @@
   .meter i { display: block; height: 100%; background: var(--st-done-fg); border-radius: 2px; }
   .hist-list { margin: -3px 10px 6px calc(43px + var(--d) * var(--indent)); padding: 3px 0 3px 10px; display: grid; gap: 1px; border-left: 1px solid var(--line-strong); font-size: 12px; color: var(--muted); }
   .hist-list .none { color: var(--faint); }
+  .btn.older { margin-top: 6px; justify-self: start; align-self: flex-start; color: var(--dim, var(--fg)); }
+  .btn.older:disabled { opacity: .6; }
   .ev { display: flex; gap: 8px; min-width: 0; }
   .ev time { flex: none; width: 5.6em; color: var(--faint); font: 11px/18px var(--mono); }
   .ev span { min-width: 0; overflow-wrap: anywhere; }
@@ -619,7 +621,6 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
         if (typeof d.item === "string" && d.item && S.loaded.items && !S.raw.items.has(d.item)) say("events", id, [{ field: "item", message: `item ${d.item} doesn't exist` }]);
       }
     }
-    if (S.unread.events) bad.push(`events: the ${S.unread.events} oldest weren't loaded (the page reads the newest 10000)`);
     if (same(bad, S.bad)) return;
     S.bad = bad;
     $("bad").hidden = !bad.length;
@@ -642,8 +643,16 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     readOnly: false,
     writable: null, // (what the platform says: true, false, or null for not told)
     failed: "",
-    raw: { items: new Map(), events: new Map() },
-    loaded: { items: false, events: false },
+    raw: { items: new Map(), events: new Map() }, // events: those of the items whose history is open (below)
+    loaded: { items: false },
+    // History is read as it is wanted (README, "The task board's API"): `sum`, every item's count and
+    // latest time ("" the board's own) for the rows and the recent view; `raw.events`, the events of the
+    // items open in a row or the details: the newest HIST_PAGE of each, and older pages asked for.
+    sum: new Map(), // item id → {n, last}
+    evHead: new Set(), // the items whose newest events are in raw.events
+    evAsk: new Set(), // the items asked for and not yet read
+    evBusy: new Set(), // the items an older page is being read for
+    evWatch: null, // the subscription (shim.js watch)
     meta: null,
     overlay: new Map(), // "items/<id>" → [{tok, op: "patch" | "set" | "del", body}]: writes under way, shown at once
     sel: null, // the selected item: in the address and the details
@@ -661,7 +670,6 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     dragging: false,
     needRender: false,
     bad: [], // the records that don't fit the schema (checkRaw)
-    unread: { events: 0 }, // events the server has beyond the newest 10000 asked for
     synced: false, // (the items' latest snapshot is the server's, not a cached one)
     stuck: false, // (a write unanswered for a minute: changes paused)
     down: false, // (the items' subscription failed: retrying)
@@ -746,15 +754,21 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     };
     for (const it of order) if (it.$folder && !it.$p) stat(it);
     for (const it of order) if (it.$folder && it.$open == null) stat(it);
-    const ev = new Map();
+    // The events read (newest first) and, for the ones this page made and the server hasn't counted
+    // yet, how many each item has more than its count says.
+    const ev = new Map(), made = new Map();
     for (const [id, e] of merged("events")) {
       if (!e || typeof e.item !== "string") continue;
       (ev.get(e.item) || (ev.set(e.item, []), ev.get(e.item))).push(Object.assign({}, e, { id }));
+      if (!S.raw.events.has(id)) made.set(e.item, (made.get(e.item) || 0) + 1);
     }
-    for (const l of ev.values()) l.sort((a, b) => (ms(b.t) ?? 0) - (ms(a.t) ?? 0));
+    for (const l of ev.values()) l.sort((a, b) => (ms(b.t) ?? 0) - (ms(a.t) ?? 0) || (a.id < b.id ? -1 : 1));
+    // An item's events in all, and the time of its latest.
+    const evN = (id) => Math.max((S.sum.get(id)?.n ?? 0) + (made.get(id) || 0), ev.get(id)?.length || 0);
+    const evLast = (id) => Math.max(ms(S.sum.get(id)?.last) ?? -Infinity, ms(ev.get(id)?.[0]?.t) ?? -Infinity);
     const queued = tasks.filter((t) => statusOf(t) === "" && !t.archived && !t.$archAnc && isNum(t.priority));
     const next = queued.length ? Math.min(...queued.map((t) => t.priority)) : null;
-    return { byId, kids, order, tasks, ev, next, byNum, byOrder: [...byId.values()].sort(byOrder) };
+    return { byId, kids, order, tasks, ev, evN, evLast, next, byNum, byOrder: [...byId.values()].sort(byOrder) };
   }
   const kidsOf = (id) => M.kids.get(id) || [];
   function under(id) {
@@ -769,8 +783,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // Open: not done or abandoned, nor archived (priority.mjs).
   const isOpen = (t) => openTask(t, t.$archAnc);
   const hiddenArch = (it) => !S.showArch && isArch(it);
-  const lastEvent = (id) => ms(M.ev.get(id)?.[0]?.t);
-  const changedAt = (t) => Math.max(ms(t.finished) ?? -Infinity, ms(t.started) ?? -Infinity, lastEvent(t.id) ?? -Infinity);
+  const changedAt = (t) => Math.max(ms(t.finished) ?? -Infinity, ms(t.started) ?? -Infinity, M.evLast(t.id));
 
   // Search: every word somewhere in the title, description, who it's assigned to, Claude's note or the
   // folders it's in. A word "#57" is task 57, and nothing else; a bare 57 is task 57 or the text.
@@ -1367,6 +1380,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (S.view === "tree") renderTree();
     else renderSorted();
     renderEditor();
+    askHistory();
     if ($("list-scroll").scrollTop !== scroll) $("list-scroll").scrollTop = scroll;
     restoreFocus(focus);
     $("app").classList.toggle("sheet", !!(S.sel && S.sheet));
@@ -1409,7 +1423,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       : S.loaded.items && !S.synced && !S.readOnly ? "Catching up with the latest changes; editing resumes in a moment." : "";
     $("banner").textContent = banner;
     $("banner").hidden = !banner;
-    const topEv = M.ev.get("")?.length || 0;
+    const topEv = M.evN("");
     const tree = S.view === "tree";
     $("top-hist").hidden = !topEv || !tree;
     $("top-hist").setAttribute("aria-expanded", String(S.hist.has("")));
@@ -1469,7 +1483,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     return h("button", { class: "ic disc" + (on ? " on" : ""), type: "button", tabindex: "-1", "data-act": "disc", "aria-pressed": String(on), "aria-label": "Needs discussion", title: on ? "Needs discussion (click to clear)" : "Mark as needing discussion" }, icon("bubble"));
   }
   function histBtn(t) {
-    const n = M.ev.get(t.id)?.length || 0;
+    const n = M.evN(t.id);
     if (!n) return null;
     const open = S.hist.has(t.id);
     return h("button", { class: "ic hist" + (open ? " open" : ""), type: "button", tabindex: "-1", "data-act": "hist", "aria-expanded": String(open), "aria-label": `History, ${n} event${n === 1 ? "" : "s"}`, title: `History (${n})` }, icon("clock"), String(n));
@@ -1480,7 +1494,13 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   const moreBtn = (it) => (canWrite() ? h("button", { class: "ic more", type: "button", tabindex: "-1", "data-act": "menu", "aria-haspopup": "menu", "aria-label": `Actions for ${title(it)}`, title: "Actions" }, icon("more")) : null);
   function histList(it, depth) {
     const evs = M.ev.get(it.id) || [];
-    return h("div", { class: "hist-list", style: `--d:${depth}`, "data-for": it.id }, evs.length ? evs.map((e) => h("div", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "", { row: true })), e.kind === "owner" ? h("span", { class: "who" }, "you") : null)) : h("span", { class: "none" }, "Nothing yet."));
+    return h("div", { class: "hist-list", style: `--d:${depth}`, "data-for": it.id }, evs.length ? evs.map((e) => h("div", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "", { row: true })), e.kind === "owner" ? h("span", { class: "who" }, "you") : null)) : h("span", { class: "none" }, S.evHead.has(it.id) || !M.evN(it.id) ? "Nothing yet." : "Loading…"), olderBtn(it.id));
+  }
+  // The rest of an item's history, a page at a time: "Show older" while it has events not read yet.
+  function olderBtn(id) {
+    const left = M.evN(id) - (M.ev.get(id)?.length || 0);
+    if (left <= 0 || !S.evHead.has(id)) return null;
+    return h("button", { class: "btn older", type: "button", "data-act": "ev-older", "data-item": id, disabled: S.evBusy.has(id) }, S.evBusy.has(id) ? "Loading…" : `Show older (${left} more)`);
   }
   function rowBase(it, depth, extra) {
     const st = it.$folder ? "" : statusOf(it);
@@ -1564,7 +1584,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
         if (searching()) frag.append(h("div", { class: "empty" }, h("div", null, S.q.trim() ? `Nothing matches ${quote(S.q.trim())}${chipsOn() ? " with these filters" : ""}.` : "No task matches these filters."), h("button", { class: "btn", type: "button", "data-act": "clear-search" }, "Clear the search and filters")));
         else frag.append(h("div", { class: "empty" }, h("div", null, M.order.length ? "Everything here is archived." : "No folders or tasks yet."), canWrite() && !M.order.length ? h("button", { class: "btn", type: "button", "data-act": "add-top" }, "Add the first task") : null));
       }
-      if (S.hist.has("") && M.ev.get("")?.length) frag.append(h("div", { class: "top-hist" }, h("h3", { class: "sec-h" }, "Top level: history"), histList({ id: "" }, 0)));
+      if (S.hist.has("") && M.evN("")) frag.append(h("div", { class: "top-hist" }, h("h3", { class: "sec-h" }, "Top level: history"), histList({ id: "" }, 0)));
       let tabbed = false;
       for (const r of rows) {
         if (r.add && !canWrite()) frag.append(h("div", { class: "gap", "aria-hidden": "true" }));
@@ -1905,7 +1925,8 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     f.times.replaceChildren(...(times.length ? [h("h3", { class: "sec-h" }, "Times"), h("dl", { class: "times" }, times.map(([k, v]) => [h("dt", null, k), h("dd", null, fullTime(v), " ", h("span", null, "· "), timeEl(v))]))] : []));
     f.times.hidden = !times.length;
     const evs = M.ev.get(it.id) || [];
-    f.trail.replaceChildren(h("h3", { class: "sec-h" }, "History", h("span", { class: "n" }, String(evs.length))), evs.length ? h("ul", { class: "trail" }, evs.map((e) => h("li", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "")), e.kind === "owner" ? h("span", { class: "who" }, "you") : null))) : h("p", { class: "hint" }, it.$folder ? "Nothing yet. Deletions inside it are noted here." : "Nothing yet. Claude notes each step here: delegated, reviewed, merged, published."));
+    const n = M.evN(it.id);
+    f.trail.replaceChildren(h("h3", { class: "sec-h" }, "History", h("span", { class: "n" }, String(n))), evs.length ? h("ul", { class: "trail" }, evs.map((e) => h("li", { class: "ev" }, timeEl(e.t), h("span", null, rich(e.text || "")), e.kind === "owner" ? h("span", { class: "who" }, "you") : null))) : n && !S.evHead.has(it.id) ? h("p", { class: "hint" }, "Loading…") : h("p", { class: "hint" }, it.$folder ? "Nothing yet. Deletions inside it are noted here." : "Nothing yet. Claude notes each step here: delegated, reviewed, merged, published."), olderBtn(it.id));
   }
 
   // Photos: added from a file or a paste, removed, opened large.
@@ -2551,6 +2572,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       const a = act.dataset.act;
       if (a === "clear-search") return clearSearch();
       if (a === "add-top") return startDraft("task", "");
+      if (a === "ev-older") return olderEvents(act.dataset.item);
       if (a === "add-task" || a === "add-folder") return startDraft(a === "add-task" ? "task" : "folder", act.dataset.parent || "");
       if (!it) return;
       if (a === "toggle") { if (!searching()) { setCollapsed(it.id, expanded(it)); render(); } return; }
@@ -2687,6 +2709,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (b.dataset.ref) return goRef(b.dataset.ref);
     const a = b.dataset.act;
     if (a === "ed-close") { const id = S.sel; if (sheetOnly.matches) { S.sheet = false; render(); } else select(null); rowEl(id)?.focus({ preventScroll: true }); }
+    else if (a === "ev-older") olderEvents(b.dataset.item);
     else if (a === "ed-menu" && it) openMenu(b, it.id);
     else if (a === "ed-unarchive" && it && canWrite()) unarchive(it);
     else if (a === "copy-num" && it) copyNum(it, b);
@@ -2775,6 +2798,59 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     };
     start();
   }
+  // History (see S): never all of it. Each read, on a change of the events too, is every item's count
+  // and latest time, and the newest page of the history of each item shown open (in a row, or the
+  // details). An older page is read when asked for.
+  const HIST_PAGE = 100;
+  const evUrl = (id, more = "") => `c/events?item=${encodeURIComponent(id)}&orderBy=t&dir=desc&limit=${HIST_PAGE}${more}`;
+  const wantedHistory = () => new Set([...S.hist, ...(S.sel ? [S.sel] : [])]);
+  async function readHistory(get) {
+    const ids = [...wantedHistory()];
+    const [sum, ...pages] = await Promise.all([get("history"), ...ids.map((id) => get(evUrl(id)))]);
+    return { sum, ids, pages: pages.map((p) => p.docs) };
+  }
+  // (The events of an item read before and older than its newest page stay, as long as that page
+  // reaches the newest ones read before: else there may be a gap, and a "Show older" fills from the page on.)
+  function takeHistory({ sum, ids, pages }) {
+    S.sum = new Map(Object.entries(sum).map(([id, [n, last]]) => [id, { n, last }]));
+    const before = new Map();
+    for (const [id, e] of S.raw.events) (before.get(e.item) || before.set(e.item, []).get(e.item)).push([id, e]);
+    const next = new Map();
+    ids.forEach((item, i) => {
+      const docs = pages[i];
+      for (const d of docs) next.set(d.id, d.data);
+      const old = before.get(item) || [];
+      const edge = docs.at(-1);
+      if (docs.length < HIST_PAGE || !old.length || !edge) return;
+      const newest = old.reduce((a, b) => (b[1].t > a[1].t || (b[1].t === a[1].t && b[0] < a[0]) ? b : a));
+      if (!docs.some((d) => d.id === newest[0])) return;
+      for (const [id, e] of old) if (e.t < edge.data.t || (e.t === edge.data.t && id > edge.id)) next.set(id, e);
+    });
+    S.raw.events = next;
+    S.evHead = new Set(ids);
+    for (const id of ids) S.evAsk.delete(id);
+  }
+  // Asks for the history of what is shown open that hasn't been read (render calls it).
+  function askHistory() {
+    const need = [...wantedHistory()].filter((id) => !S.evHead.has(id) && !S.evAsk.has(id));
+    if (!need.length || !S.evWatch) return;
+    for (const id of need) S.evAsk.add(id);
+    S.evWatch.refresh();
+  }
+  async function olderEvents(id) {
+    if (S.evBusy.has(id) || !S.db) return;
+    const mine = [...S.raw.events].filter(([, e]) => e.item === id);
+    const edge = mine.reduce((a, b) => (!a || b[1].t < a[1].t || (b[1].t === a[1].t && b[0] > a[0]) ? b : a), null);
+    if (!edge) return;
+    S.evBusy.add(id);
+    render();
+    try {
+      const r = await S.db.get(evUrl(id, `&before=${encodeURIComponent(edge[1].t)}&beforeId=${encodeURIComponent(edge[0])}`));
+      S.raw.events = new Map([...S.raw.events, ...r.docs.map((d) => [d.id, d.data])]);
+    } catch (e) { toast(`Couldn't read the older history: ${why(e)}.`, { bad: true }); }
+    S.evBusy.delete(id);
+    render();
+  }
   function listen() {
     sub(() => S.db.collection("items"), (snap) => {
       const paused = !canWrite();
@@ -2790,10 +2866,9 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       if (paused && canWrite()) setTimeout(() => { render(); resume(); }, 0);
       soon();
     }, true);
-    sub(() => S.db.collection("events").orderBy("t", "desc").limit(10000), (snap) => {
-      S.raw.events = new Map(snap.docs.map((d) => [d.id, d.data() || {}]));
-      S.unread.events = Math.max(0, (snap.total ?? 0) - snap.size);
-      S.loaded.events = true;
+    S.evWatch = S.db.watch("events", readHistory);
+    sub(() => S.evWatch, (j) => {
+      takeHistory(j);
       unhold("events");
       checkRaw();
       soon();

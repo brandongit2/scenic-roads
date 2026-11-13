@@ -55,7 +55,9 @@
     const l = { col, run };
     listeners.add(l);
     run();
-    return () => { dead = true; listeners.delete(l); };
+    const stop = () => { dead = true; listeners.delete(l); };
+    stop.run = run; // (read again now)
+    return stop;
   }
 
   function docRef(col, id) {
@@ -79,7 +81,16 @@
       onSnapshot: (next, error) => listen(col, () => call("GET", qs()), querySnap, next, error),
     };
   }
+  // A subscription to a read of the page's own: `read(get)` is run (get(path): the answer of GET ../api/<path>)
+  // when it starts and whenever `col` changes; `refresh()` runs it again at once (what it reads has changed).
+  const get = (path) => call("GET", `../api/${path}`);
+  const watch = (col, read) => {
+    let cur = null;
+    return { onSnapshot: (next, error) => (cur = listen(col, () => read(get), (j) => j, next, error)), refresh: () => cur && cur.run() };
+  };
   const db = {
+    get,
+    watch,
     // add(content): the server makes the doc (its id, and an item's num, order and added time) and says them.
     collection: (col) => Object.assign(query(col, {}), { doc: (id) => docRef(col, id), add: (data) => call("POST", `../api/c/${encodeURIComponent(col)}`, data) }),
     doc: (path) => { const [col, id] = path.split("/"); return docRef(col, id); },

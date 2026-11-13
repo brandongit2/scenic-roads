@@ -46,7 +46,7 @@ test("placePriority: a whole number as it is; a fraction rounded up, running int
   assert.equal(isOpen({ status: "" }, true), false, "inside an archived folder");
 });
 
-test("PATCH with a fraction: the task takes it rounded up, the open tasks it runs into move down one, each recorded", async (t) => {
+test("PATCH with a fraction: the task takes it rounded up, the open tasks it runs into move down one, one event for the cascade", async (t) => {
   const b = await board(t);
   const [p5, p6, p7, p9, w8] = [await b.add({ priority: 5 }), await b.add({ priority: 6 }), await b.add({ priority: 7, status: "working" }), await b.add({ priority: 9 }), await b.add({ priority: 12 })];
   const r = await b.patch(w8, { priority: 5.5, note: "moved up" });
@@ -56,10 +56,10 @@ test("PATCH with a fraction: the task takes it rounded up, the open tasks it run
   assert.equal(r.body.priority, 6);
   assert.deepEqual([b.prio(p5), b.prio(p6), b.prio(p7), b.prio(p9), b.prio(w8)], [5, 7, 8, 9, 6]);
   assert.equal(b.store.get("items", w8).note, "moved up", "the rest of the PATCH is written too");
-  assert.deepEqual(b.events(p6), [`Priority 6 → 7: moved down by #${num(w8)} placed at 5.5 (by curl)`]);
-  assert.deepEqual(b.events(p7), [`Priority 7 → 8: moved down by #${num(w8)} placed at 5.5 (by curl)`]);
-  assert.deepEqual(b.events(w8), ["Priority 12 → 6: asked for 5.5, 2 moved down (by curl)"]);
-  assert.deepEqual([b.events(p5), b.events(p9)], [[], []]);
+  // One event for the whole cascade, on the task placed; the ones it pushed get none.
+  assert.deepEqual(b.events(w8), [`Priority 12 → 6: asked for 5.5; 2 others moved down one, from priority 6–7 (#${num(p6)}, #${num(p7)}) (by curl)`]);
+  assert.deepEqual([b.events(p5), b.events(p6), b.events(p7), b.events(p9)], [[], [], [], []]);
+  assert.equal(b.store.list("events").filter((e) => e.data.kind === "priority").length, 1);
 });
 
 test("a whole number is stored as given: nothing moves, nothing more in the answer", async (t) => {
@@ -79,7 +79,8 @@ test("ties: tasks sharing a number all move down, and so do those they run into"
   const r = await b.patch(w, { priority: 5.5 });
   assert.deepEqual(r.body.moved.map((m) => [m.id, m.from, m.to]), [[x, 6, 7], [y, 6, 7], [z, 7, 8]]);
   assert.deepEqual([b.prio(x), b.prio(y), b.prio(z), b.prio(w)], [7, 7, 8, 6]);
-  assert.deepEqual(b.events(w), ["Priority 6: asked for 5.5, 3 moved down (by curl)"], "it had none before");
+  assert.match(b.events(w)[0], /^Priority 6: asked for 5\.5; 3 others moved down one, from priority 6–7 \(#\d+, #\d+, #\d+\) \(by curl\)$/, "it had none before");
+  assert.deepEqual([b.events(x), b.events(y), b.events(z)], [[], [], []]);
 });
 
 test("done, abandoned and archived tasks, and tasks inside an archived folder, keep their numbers and aren't run into", async (t) => {
@@ -110,7 +111,7 @@ test("POST with a fraction is placed the same way, in its answer too", async (t)
   assert.equal(r.body.priority, 1);
   assert.deepEqual(r.body.moved.map((m) => [m.id, m.from, m.to]), [[a, 1, 2], [c, 2, 3]]);
   assert.deepEqual([b.prio(r.body.id), b.prio(a), b.prio(c)], [1, 2, 3]);
-  assert.deepEqual(b.events(r.body.id), ["Priority 1: asked for 0.5, 2 moved down (by curl)"]);
+  assert.deepEqual(b.events(r.body.id), [`Priority 1: asked for 0.5; 2 others moved down one, from priority 1–2 (#${b.store.get("items", a).num}, #${b.store.get("items", c).num}) (by curl)`]);
   assert.equal("moved" in (await b.call("POST", "/api/c/items", { text: "Whole", priority: 2 })).body, false);
 });
 

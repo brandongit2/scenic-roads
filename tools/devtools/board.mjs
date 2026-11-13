@@ -8,7 +8,7 @@
 import crypto from "node:crypto";
 import {
   ITEM_FIELDS, ITEM_CREATE, EVENT_CREATE, ITEM_EDIT, EVENT_EDIT, RENAMED,
-  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, validId, describe, renamedMeta,
+  itemErrors, eventErrors, metaErrors, sentErrors, errorText, normTime, TIME_FORMAT, validId, describe, renamedMeta,
 } from "./schema.mjs";
 import { COLS } from "./store.mjs";
 import { refuse, send, fail, readBody, jsonBody } from "./http.mjs";
@@ -95,8 +95,8 @@ export function makeBoard(store, changed) {
 
   // A task's priority sent with a fraction (`doc`, about to be written as `id`; `before`, what it
   // was): placed by priority.mjs, in the caller's transaction. The task's own number is set in `doc`;
-  // each open task it runs into is written moved down one. Each change leaves a `kind: "priority"`
-  // event. Returns {priority, moved: [{id, num, from, to}]}, or null for a whole number (stored as sent).
+  // each open task it runs into is written moved down one. The whole move leaves one `kind: "priority"`
+  // event, on the task placed, saying how many moved and from which numbers. Returns {priority, moved: [{id, num, from, to}]}, or null for a whole number (stored as sent).
   function placeIfFraction(id, doc, before, req) {
     const x = doc.priority;
     if (doc.kind !== "task" || typeof x !== "number" || Number.isInteger(x)) return null;
@@ -113,10 +113,13 @@ export function makeBoard(store, changed) {
     const moved = moves.map((m) => {
       const o = items.get(m.id);
       store.put("items", m.id, { ...o, priority: m.to });
-      logEvent(m.id, "priority", `Priority ${m.from} → ${m.to}: moved down by #${doc.num} placed at ${x} (by ${by})`);
       return { id: m.id, num: o.num, from: m.from, to: m.to };
     });
-    logEvent(id, "priority", `Priority ${typeof old === "number" && old !== to ? `${old} → ` : ""}${to}: asked for ${x}${moved.length ? `, ${moved.length} moved down` : ""} (by ${by})`);
+    // (One event for the whole cascade, on the task placed. The ones it pushed get none: their number
+    // shows, and this event names them.)
+    const lo = moved.length ? Math.min(...moved.map((m) => m.from)) : 0, hi = moved.length ? Math.max(...moved.map((m) => m.from)) : 0;
+    const cascade = moved.length ? `; ${moved.length} other${moved.length === 1 ? "" : "s"} moved down one, from priority ${lo === hi ? lo : `${lo}–${hi}`} (${nums(moved)})` : "";
+    logEvent(id, "priority", `Priority ${typeof old === "number" && old !== to ? `${old} → ` : ""}${to}: asked for ${x}${cascade} (by ${by})`);
     return { priority: to, moved };
   }
 
@@ -336,9 +339,13 @@ export function makeBoard(store, changed) {
 
   // A list's query: `orderBy` a field of the collection, or "id" (an old name refused with its new
   // one), `dir` asc or desc, `limit` a whole number from 1; anything else is refused, not ignored.
+  // Events also take `item` (one item's, "" the board's own) and, to read a history in pages,
+  // `before` (a time) with `beforeId`: the events after that one in the order t newest first, then id
+  // (the last one a page ended with); they need `orderBy=t&dir=desc`.
   function listQuery(col, params) {
     const errs = [];
-    for (const k of params.keys()) if (!["orderBy", "dir", "limit"].includes(k)) errs.push({ field: k, message: "isn't a query this takes (these are: orderBy, dir, limit)" });
+    const allowed = ["orderBy", "dir", "limit", ...(col === "events" ? ["item", "before", "beforeId"] : [])];
+    for (const k of params.keys()) if (!allowed.includes(k)) errs.push({ field: k, message: `isn't a query this takes (these are: ${allowed.join(", ")})` });
     const orderBy = params.get("orderBy"), dir = params.get("dir"), limit = params.get("limit");
     if (orderBy && col !== "meta") {
       if (col === "items" && RENAMED.itemFields[orderBy]) errs.push({ field: "orderBy", message: `${JSON.stringify(orderBy)} is renamed ${JSON.stringify(RENAMED.itemFields[orderBy])}` });
@@ -346,8 +353,13 @@ export function makeBoard(store, changed) {
     }
     if (dir !== null && dir !== "asc" && dir !== "desc") errs.push({ field: "dir", message: "must be asc or desc" });
     if (limit !== null && !/^[1-9]\d{0,8}$/.test(limit)) errs.push({ field: "limit", message: "must be a whole number from 1" });
+    const item = params.get("item"), t = params.get("before"), beforeId = params.get("beforeId");
+    if (item !== null && item !== "" && !validId(item)) errs.push({ field: "item", message: "isn't an item's id (or \"\" for the board itself)" });
+    if (t !== null && normTime(t) !== t) errs.push({ field: "before", message: `must be a time, ${TIME_FORMAT}` });
+    if ((t === null) !== (beforeId === null)) errs.push({ field: t === null ? "before" : "beforeId", message: "go together: the time and the id of the event a page ended with" });
+    if (t !== null && !(orderBy === "t" && dir === "desc")) errs.push({ field: "before", message: "needs orderBy=t&dir=desc: it is the place in that order a page ended" });
     refuseIf(errs);
-    return { orderBy, dir, limit: Number(limit) };
+    return { orderBy, dir, limit: Number(limit), ...(item !== null ? { item } : {}), ...(t !== null ? { before: [t, beforeId] } : {}) };
   }
 
   async function api(req, res, url, parts) {
@@ -364,12 +376,13 @@ export function makeBoard(store, changed) {
       store.stmt(`INSERT OR IGNORE INTO blobs (id, type, data, sha256, created) VALUES (?, ?, ?, ?, ?)`).run(bid, type, data, sha, nowIso());
       return send(res, 200, { id: bid });
     }
+    if (what === "history" && req.method === "GET") return send(res, 200, store.history());
     if (what !== "c" || !["items", "events", "meta"].includes(col)) return fail(res, 404, "not_found", "no such route");
     const m = req.method;
 
     if (!id) {
       // (`total`: how many there are, so a reader that asked for fewer can say so.)
-      if (m === "GET") return send(res, 200, { docs: store.list(col, listQuery(col, url.searchParams)), total: store.count(col) });
+      if (m === "GET") { const q = listQuery(col, url.searchParams); return send(res, 200, { docs: store.list(col, q), total: store.count(col, q.item) }); }
       if (m === "POST" && col !== "meta") return send(res, 200, (col === "items" ? createItem : createEvent)(await jsonBody(req), req));
       return fail(res, 405, "invalid_argument", col === "meta" ? "meta documents are changed by PATCH meta/now" : "method not allowed: POST creates, PATCH/DELETE need an id");
     }

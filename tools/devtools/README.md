@@ -134,10 +134,11 @@ at 8 if one was moved there, …) move down one, as far as the first free number
 number move together, and the rest keep theirs. Open: not done or abandoned, not archived, nor inside
 an archived folder; the others keep their numbers and are never run into. A whole number is stored
 as sent and moves nothing; 0.5 gives 1; a negative number or one sent as text is refused (400) with
-the rest of the write, nothing moved. Each change leaves a `kind: "priority"` event on its task ("Priority 7 →
-8: moved down by #1100 placed at 6.5 (by curl)"; on the task itself "Priority 12 → 7: asked for 6.5,
-2 moved down (by curl)"; its number unchanged, "Priority 7: asked for 6.5, …"), and the answer adds
-what it got and what moved (below). The page works the moves out with the same module and sends each
+the rest of the write, nothing moved. The whole move leaves ONE `kind: "priority"` event, on the task
+placed ("Priority 12 → 7: asked for 6.5; 2 others moved down one, from priority 7–8 (#1042, #1043) (by
+curl)"; its number unchanged, "Priority 7: asked for 6.5; …"; up to 10 numbers listed, then "and N
+more"); the tasks pushed down get none (their new number is visible, and that event names them). The
+answer adds what it got and what moved (below). The page works the moves out with the same module and sends each
 as a whole number, its own edit, so Undo puts each back: those leave no `priority` event (a drag or
 ⌥↑ leaves the page's own note on the task it moved).
 
@@ -170,6 +171,8 @@ curl -s -X PATCH $B/api/c/meta/now -H 'content-type: application/json' -d '{"tex
 **Delete**: `DELETE /api/c/items/<id>` also deletes what is inside it and every event about any of them (a reference never points at nothing); `DELETE /api/c/events/<id>` one event. The page's Undo puts it back with `POST /api/c/<collection>/<id>/restore` (the server keeps the last 100 deletions in memory; a restart forgets them). A deleted item's number is never given again.
 
 **Read**: `GET /api/c/items/<id>` (`{exists, data}`), `GET /api/c/items` (`{docs: [{id, data}], total}`; `?orderBy=<field>&dir=asc|desc&limit=<n>`: a field of the collection, or `id`; any other query, field or value is a 400), the same for `events` and `meta`. `GET /api/schema` lists the fields and the fixed lists.
+
+**History is read by item, never all at once** (#1333). `GET /api/c/events` also takes `item=<id>` (one item's events, `item=` the board's own; `total` is then that item's count) and, to read a history in pages, `before=<t>&beforeId=<id>` (the `t` and id of the last event a page ended with: the events after it, in the order t newest first, then id; needs `orderBy=t&dir=desc`; a tie in `t` loses or repeats none): `?item=i57&orderBy=t&dir=desc&limit=100`. `GET /api/history` is every item's events in short, for lists that show a count and the latest change: `{"<item id>": [count, latest t], …}` (`""` the board's own). The page reads that, kept live, and the newest 100 events of each item it shows open (in a row or the details) with a "Show older" for the rest: no cap hides any history. (A `limit` on any list read is still cut at 10000.)
 
 ### The schema (`schema.mjs`)
 
