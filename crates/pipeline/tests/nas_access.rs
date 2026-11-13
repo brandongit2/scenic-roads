@@ -112,7 +112,6 @@ const TOOLS_MARKERS: &[&str] = &["/Volumes/", "fishandchips", "personal/projects
 /// The scripts allowed to name the NAS (D4: listed, not migrated): (path prefix, why).
 const TOOLS: &[(&str, &str)] = &[
     ("tools/nas/", "tar over SSH and the moves: the bulk path, where a per-file layer would be slower"),
-    ("tools/app/publish.sh", "publishing: copies the app to the NAS and the Macs"),
     ("tools/app/install.sh", "installing a Mac: the share's mount"),
     ("tools/app/remote-tests.sh", "the test Mac's run: whether the NAS is mounted"),
     ("tools/dev/health.sh", "the health check: the share's mount"),
