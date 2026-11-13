@@ -1,10 +1,10 @@
 8bcf6142e37c6573b4dc32df0470f1b9a7c4db77
-# The first line names the floor, a commit on origin's main; publish.sh --rollback refuses to go to
+# The first line names the floor, a commit on origin's main (its full id); publish.sh --rollback refuses to go to
 # a version whose commit doesn't contain it (tools/app/lib.zsh rollback_ok): an app from before it
 # can't run the pool safely beside this one's NAS state. Raise it, with the reason here, once the
 # change that makes a rollback past it unsafe is on origin's main (its commit there: a branch's
 # commit, rebased as it merges, is another), and before the next publish; tools/app/guards.sh
-# refuses a first line that isn't a commit this tree contains.
+# refuses a first line that isn't the full id of a commit this tree contains.
 #
 # 8bcf6142e (task #1175, its last change to the app): an app before it leads by writing the lead's
 # contact, its addresses and the pool's token, to the NAS's state/coordinator.json each beat (the

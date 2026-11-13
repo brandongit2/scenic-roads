@@ -307,10 +307,14 @@ rm -f $rel/previous.json
 
 # rollback_ok: back to a version whose commit contains the live one's floor (a commit), the floor
 # itself and one made before the floor was raised to it included, or from one with no floor:
-# allowed; to one that lacks it: refused, saying why. A floor that names no commit (the releases
-# before #1342's) holds the previous version to the same first line. An unknown commit: refused.
+# allowed, one whose own floor is a word included; to one that lacks it: refused, saying why. A
+# floor that isn't a full commit id (the releases before #1342's, or an abbreviated one) holds the
+# previous version to the same first line. A version's or the floor's commit not here: refused,
+# saying so.
 rf() { mkdir -p $g/tools/app; print -r -- "$1"$'\n'"# why $1" > $g/tools/app/rollback-floor; git -C $g add -A; c $2; }
-E=$(c e); F=$(c f); G=$(rf $E g); H=$(c h); I=$(rf $H i); W=$(rf one w); X=$(c x)
+full() { git -C $g rev-parse $1 }
+E=$(c e); F=$(c f); G=$(rf $(full $E) g); H=$(c h); I=$(rf $(full $H) i); W=$(rf one w); X=$(c x); Y=$(rf $(full $W) y)
+Z=$(rf $(full $H | cut -c1-9) z); Q=$(rf ${(l:40::0:)} q)
 prev=$rel/previous.json
 ro() { print -r -- "{\"version\": \"20261026-0953-$1\"}" > $cur; print -r -- "{\"version\": \"20261026-0900-$2\"}" > $prev
   (cd $g && zsh -c "source ${(q)lib}; rollback_ok $cur $prev" 2>&1) }
@@ -321,7 +325,10 @@ out=$(ro $G $C) && no "rollback_ok to one without the floor" "allowed" || { [[ $
 out=$(ro $I $G) && no "rollback_ok past a raised floor" "allowed" || { [[ $out == *"rollback floor $H"*'refused'* ]] && ok "rollback_ok past a raised floor refused" || no "rollback_ok past a raised floor" "$out"; }
 out=$(ro $X $W) && ok "rollback_ok a word floor, the same word" || no "rollback_ok the same word" "$out"
 out=$(ro $X $I) && no "rollback_ok a word floor, another" "allowed" || { [[ $out == *'refused'*'why one'* ]] && ok "rollback_ok a word floor, another refused" || no "rollback_ok another word" "$out"; }
-out=$(ro $G 0000000) && no "rollback_ok unknown commit" "allowed" || ok "rollback_ok unknown commit refused"
+out=$(ro $Y $X) && ok "rollback_ok to one with a word floor that contains the live one's floor commit" || no "rollback_ok word floor under a commit" "$out"
+out=$(ro $Z $H) && no "rollback_ok an abbreviated floor" "allowed" || { [[ $out == *'refused'* ]] && ok "rollback_ok an abbreviated floor taken as a word: refused" || no "rollback_ok abbreviated floor" "$out"; }
+out=$(ro $Q $I) && no "rollback_ok a floor commit not here" "allowed" || { [[ $out == *"commit ${(l:40::0:)} isn't in this repository"*'refused'* ]] && ok "rollback_ok a floor commit not here refused, saying so" || no "rollback_ok missing floor" "$out"; }
+out=$(ro $G 0000000) && no "rollback_ok unknown commit" "allowed" || { [[ $out == *"commit 0000000 isn't in this repository"* ]] && ok "rollback_ok unknown commit refused, saying so" || no "rollback_ok unknown commit" "$out"; }
 rm -f $prev
 
 # The services (tools/app/services.zsh), in a sandbox of their own.
