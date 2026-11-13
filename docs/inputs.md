@@ -2012,12 +2012,13 @@ far). Errors:
   numbers, a longitude outside ±180° or a latitude outside ±90°, a ring not closed, of fewer than
   four positions, of no area or crossing itself, an exterior wound clockwise or a hole
   counter-clockwise (RFC 7946), an edge stepping more than half a turn of longitude (not cut at
-  the antimeridian) but one from −180° to 180° (a piece spanning the turn, along a parallel or
-  a pole); a piece's id twice (`ex-twice`). Each finding
+  the antimeridian) but one from −180° to 180° along a parallel (a piece spanning the turn, or
+  closed along a pole); a piece's id twice (`ex-twice`). Each finding
   lists its pieces. Whether a polygon's holes lie inside it, or its polygons overlap, isn't checked;
 - a `.geojson` without its declaration (`ex-pair`), or not made from it as it is: the blocks its
-  `read` names aren't the declaration's, or a piece's id doesn't start with one of them
-  (`ex-made`);
+  `read` names aren't the declaration's, a piece's id doesn't start with one of them, or a
+  piece isn't of its block's class (its method's or the one it says; `claimed` where it says so or
+  its availability isn't `open`), availability or constant metrics (`ex-made`);
 - a `score.toml` not of its shape (above: an unknown field, no `primary` among its metrics, the
   primary not on a log scale or with a weight, `within` not above 1, `share` not from 0 to under 1
   or breaking the guarantee, a metric without its `label`, a scale whose `worst` = `best` or a log

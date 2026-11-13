@@ -18,7 +18,8 @@
 //!   and latitude, a ring not closed, of fewer than four positions, of no area, crossing itself,
 //!   wound against RFC 7946, or stepping across the antimeridian rather than cut there); a piece's
 //!   id twice; a `.geojson` without its declaration, or not made from it (its blocks read aren't the
-//!   declaration's, a piece of no block); a `score.toml` not of its shape (below), or breaking the
+//!   declaration's, a piece of no block, or not of its block's class, availability or constant
+//!   metrics); a `score.toml` not of its shape (below), or breaking the
 //!   guarantee; a theme with no `score.toml`; a metric the theme's score doesn't name, in a
 //!   declaration or a piece, or a value not of its scale's kind.
 //! - **Warnings:** a declaration with no `.geojson` yet; pieces of class `unknown` (listed, not
@@ -233,7 +234,7 @@ fn metric(name: &str, t: &toml::Value, primary: bool) -> std::result::Result<Met
         },
     };
     let scale = match (t.get("values"), t.get("scale").map(|s| s.as_str())) {
-        (Some(v), None | Some(Some("values"))) => match v.as_table() {
+        (Some(v), None) => match v.as_table() {
             Some(w) if !w.is_empty() => {
                 let mut out = BTreeMap::new();
                 for (word, x) in w {
@@ -357,8 +358,40 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub id: String,
+    /// The extent class its pieces are: its method's or the one it says, `claimed` where it says so
+    /// or its availability isn't `open` (as producers/extents/extents.py makes them).
+    pub extent: String,
+    /// Its own availability, or the declaration's.
+    pub availability: String,
     /// Its metrics' declarations: a constant, or a reading (`{field = …}`).
     pub metrics: toml::Table,
+}
+
+impl Block {
+    /// How piece `p` isn't as this block makes it (its class, availability and constant metrics), or
+    /// None.
+    fn unlike(&self, p: &Piece) -> Option<String> {
+        let mut why = Vec::new();
+        if p.extent != self.extent {
+            why.push(format!("of class {}, its block's {}", p.extent, self.extent));
+        }
+        if p.availability != self.availability {
+            why.push(format!("availability {}, its block's {}", p.availability, self.availability));
+        }
+        for (name, spec) in self.metrics.iter().filter(|(_, s)| !s.is_table()) {
+            let want = serde_json::to_value(spec).unwrap_or(Value::Null);
+            let same = |got: &Value| match (got.as_f64(), want.as_f64()) {
+                (Some(a), Some(b)) => a == b,
+                _ => *got == want,
+            };
+            match p.metrics.get(name) {
+                Some(got) if same(got) => {}
+                Some(got) => why.push(format!("{name} {got}, its block's {want}")),
+                None => why.push(format!("no {name}, its block's {want}")),
+            }
+        }
+        (!why.is_empty()).then(|| why.join(", "))
+    }
 }
 
 /// A declaration's own fields.
@@ -477,6 +510,14 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
         if own.is_none() && availability.is_none() && b.get("availability").is_none() {
             bad.push(format!("piece {id}: no `availability`, its own or the declaration's"));
         }
+        let piece_avail = own.or_else(|| availability.clone()).unwrap_or_default();
+        let extent = match (method, class) {
+            ("none", _) => "unknown",
+            (_, Some("claimed")) => "claimed",
+            _ if piece_avail != "open" => "claimed",
+            _ => (*fixed).or(class).unwrap_or(""),
+        }
+        .to_string();
         if method == "none" && !b.get("why").and_then(|v| v.as_str()).is_some_and(|s| !s.trim().is_empty()) {
             bad.push(format!("piece {id}: a none block says `why` it has no extent"));
         }
@@ -524,7 +565,7 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
                 }
             },
         };
-        blocks.push(Block { id, metrics });
+        blocks.push(Block { id, extent, availability: piece_avail, metrics });
     }
     if bad.is_empty() {
         Ok(Declaration { theme, availability, blocks })
@@ -588,8 +629,7 @@ pub fn summary(bytes: &[u8]) -> Arc<Summary> {
 
 /// A ring's fault, or None: positions of longitude and latitude, closed, four or more, an area, not
 /// crossing itself, cut at the antimeridian (no edge of more than half a turn but one from −180° to
-/// 180°),
-/// wound as RFC 7946 says (`outer`: counter-clockwise; a hole clockwise).
+/// 180° along a parallel), wound as RFC 7946 says (`outer`: counter-clockwise; a hole clockwise).
 fn ring(r: &Value, outer: bool, bbox: &mut [f64; 4]) -> Option<String> {
     let Some(ps) = r.as_array() else { return Some("a ring that isn't a list of positions".into()) };
     let mut pts: Vec<[f64; 2]> = Vec::with_capacity(ps.len());
@@ -609,9 +649,10 @@ fn ring(r: &Value, outer: bool, bbox: &mut [f64; 4]) -> Option<String> {
         return Some("a ring not closed (its last position isn't its first)".into());
     }
     for w in pts.windows(2) {
-        // (A long edge from one side of the antimeridian to the other, as a piece cut there and
-        // spanning the turn has along a parallel or a pole, is fine; any other is a step across.)
-        let ends_on_it = w[0][0].abs() == 180.0 && w[1][0].abs() == 180.0;
+        // (A long edge from one side of the antimeridian to the other along a parallel, as a piece
+        // cut there and spanning the turn has, or one closed along a pole, is fine; any other is a
+        // step across.)
+        let ends_on_it = w[0][0].abs() == 180.0 && w[1][0].abs() == 180.0 && w[0][1] == w[1][1];
         if (w[1][0] - w[0][0]).abs() > 180.0 && !ends_on_it {
             return Some(format!(
                 "a ring stepping across the antimeridian at ({}, {}) (pieces are cut there)",
@@ -1050,8 +1091,10 @@ impl Checks for Extents {
                 if s.broken.is_some() {
                     continue;
                 }
-                // (Made from this declaration: its blocks read, each piece of one of them.)
-                let blocks: BTreeSet<&str> = d.blocks.iter().map(|b| b.id.as_str()).collect();
+                // (Made from this declaration: its blocks read, each piece of one of them and as it
+                // makes them.)
+                let by_id: BTreeMap<&str, &Block> = d.blocks.iter().map(|b| (b.id.as_str(), b)).collect();
+                let blocks: BTreeSet<&str> = by_id.keys().copied().collect();
                 let read: BTreeSet<&str> = s.read.iter().map(String::as_str).collect();
                 let mut why = Vec::new();
                 if s.read_bad.is_none() && read != blocks {
@@ -1061,11 +1104,16 @@ impl Checks for Extents {
                 let strays: Vec<(usize, String, String)> = s
                     .pieces
                     .iter()
-                    .filter(|p| !blocks.contains(p.id.split('/').next().unwrap_or("")))
-                    .map(|p| (p.n, p.id.clone(), "of no block of the declaration".into()))
+                    .filter_map(|p| {
+                        match by_id.get(p.id.split('/').next().unwrap_or("")) {
+                            None => Some("of no block of the declaration".to_string()),
+                            Some(b) => b.unlike(p),
+                        }
+                        .map(|w| (p.n, p.id.clone(), w))
+                    })
                     .collect();
                 if !strays.is_empty() {
-                    why.push(format!("{} of no block", plural(strays.len(), "piece", "pieces")));
+                    why.push(format!("{} not as its blocks make them", plural(strays.len(), "piece", "pieces")));
                 }
                 if !why.is_empty() {
                     let mut found = why.clone();

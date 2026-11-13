@@ -171,6 +171,7 @@ fn a_score_and_its_guarantee() {
         ("theme = \"terrain\"", "theme = \"terrain\"\nweights = 1"),
         ("label = \"Year surveyed\"\n", ""),
         ("values = {", "scale = \"log\"\nvalues = {"),
+        ("values = {", "scale = \"values\"\nvalues = {"),
     ] {
         let bad = SCORE_TOML.replacen(from, to, 1);
         assert_ne!(bad, SCORE_TOML);
@@ -341,6 +342,7 @@ fn geometry() {
         "[[0,95],[1,95],[1,96],[0,96],[0,95]]",        // a latitude out of range
         "[[170,0],[-170,0],[-170,1],[170,1],[170,0]]", // across the antimeridian, uncut
         "[[180,0],[-170,0],[-170,1],[180,1],[180,0]]", // the same from 180°
+        "[[-180,0],[180,10],[180,20],[-180,0]]",       // from −180° to 180° off a parallel
         "[[0,0],[1,0],[\"1\",1],[0,1],[0,0]]",         // a position not two numbers
     ] {
         assert_eq!(at(&[bad.to_string()]), geom, "{bad}");
@@ -399,8 +401,13 @@ fn the_version_whole() {
         ("terrain/lidar.geojson", &p),
     ]);
     assert_eq!(ids(&f), [(METRIC, Level::Error)]);
-    // A piece's metric the score doesn't name, of the wrong kind, or stated of no metric.
+    // A piece's metric the score doesn't name, of the wrong kind, or stated of no metric (its
+    // block's constant beside it, so it's made from the declaration).
     let g = mp(&[square(0.0, 0.0, 1.0, true)]);
+    let dem = |extra: &str| {
+        let surface = if extra.contains("\"surface\"") { "" } else { r#","surface":"ground""# };
+        piece("dem/a", &format!("{surface}{extra}"), &g)
+    };
     for extra in [
         r#","depth":3"#,
         r#","surface":"rock""#,
@@ -408,28 +415,65 @@ fn the_version_whole() {
         r#","year":"2020""#,
         r#","stated":{"depth":"QL 2"}"#,
     ] {
-        let bad = fc("lidar", &["dem", "rest"], &[piece("dem/a", extra, &g)]);
+        let bad = fc("lidar", &["dem", "rest"], &[dem(extra)]);
         let f = whole_of(&[("terrain/score.toml", s), ("terrain/lidar.toml", d), ("terrain/lidar.geojson", &bad)]);
         assert_eq!(ids(&f), [(METRIC, Level::Error)], "{extra}");
         assert_eq!(f[0].files, ["terrain/lidar.geojson", "terrain/score.toml"]);
         assert_eq!(f[0].lines[0].0, 1);
     }
     // A stated class beside its metric is fine, the value unknown.
-    let stated = fc("lidar", &["dem", "rest"], &[piece("dem/a", r#","stated":{"spacing_m":"2 feet"}"#, &g)]);
+    let stated = fc("lidar", &["dem", "rest"], &[dem(r#","stated":{"spacing_m":"2 feet"}"#)]);
     assert_eq!(
         ids(&whole_of(&[("terrain/score.toml", s), ("terrain/lidar.toml", d), ("terrain/lidar.geojson", &stated)])),
         []
     );
-    // Not made from this declaration: other blocks read, or a piece of no block.
+    // Not made from this declaration as it is: other blocks read, a piece of no block, or not of
+    // its block's class, availability or constants.
+    let ground = r#","surface":"ground""#;
     for bad in [
-        fc("lidar", &["dem"], &[piece("dem/a", "", &g)]),
-        fc("lidar", &["dem", "rest", "old"], &[piece("dem/a", "", &g)]),
-        fc("lidar", &["dem", "rest"], &[piece("old/a", "", &g)]),
+        fc("lidar", &["dem"], &[dem("")]),
+        fc("lidar", &["dem", "rest", "old"], &[dem("")]),
+        fc("lidar", &["dem", "rest"], &[piece("old/a", ground, &g)]),
+        fc("lidar", &["dem", "rest"], &[piece("dem/a", "", &g)]),
+        fc("lidar", &["dem", "rest"], &[dem(r#","surface":"surface""#)]),
+        fc(
+            "lidar",
+            &["dem", "rest"],
+            &[feature(r#""piece":"dem/a","extent":"service","availability":"open","surface":"ground""#, &g)],
+        ),
+        fc(
+            "lidar",
+            &["dem", "rest"],
+            &[feature(r#""piece":"dem/a","extent":"index","availability":"paid","surface":"ground""#, &g)],
+        ),
+        fc(
+            "lidar",
+            &["dem", "rest"],
+            &[feature(r#""piece":"rest","extent":"unknown","availability":"login""#, "null")],
+        ),
     ] {
         let f = whole_of(&[("terrain/score.toml", s), ("terrain/lidar.toml", d), ("terrain/lidar.geojson", &bad)]);
-        assert_eq!(ids(&f), [(MADE, Level::Error)]);
+        assert_eq!(ids(&f), [(MADE, Level::Error)], "{}", String::from_utf8_lossy(&bad));
         assert_eq!(f[0].files, ["terrain/lidar.geojson", "terrain/lidar.toml"]);
     }
+    // A block that isn't open is claimed, whatever its method: its pieces say so.
+    let paid = DECL.replacen("availability = \"open\"", "availability = \"paid\"", 1);
+    let claimed = fc(
+        "lidar",
+        &["dem", "rest"],
+        &[
+            feature(r#""piece":"dem/a","extent":"claimed","availability":"paid","surface":"ground""#, &g),
+            feature(r#""piece":"rest","extent":"unknown","availability":"paid""#, "null"),
+        ],
+    );
+    assert_eq!(
+        ids(&whole_of(&[
+            ("terrain/score.toml", s),
+            ("terrain/lidar.toml", paid.as_bytes()),
+            ("terrain/lidar.geojson", &claimed)
+        ])),
+        []
+    );
     // A theme the app doesn't know is the file check's alone.
     assert_eq!(ids(&whole_of(&[("lava/lidar.toml", d)])), []);
 }
@@ -501,4 +545,40 @@ fn the_real_terrain_files_are_taken() {
     let c = Extents.file("terrain/nrcan-hrdem.geojson", &files["terrain/nrcan-hrdem.geojson"]);
     assert_eq!(c.facts["pieces"], 951);
     assert_eq!(c.facts["classes"], serde_json::json!({"files": 1, "index": 950}));
+}
+
+/// Malformed files are findings, never a panic: each kind's fixture cut short at every few bytes,
+/// and values of the wrong type in its fields, through the file check and the whole version's.
+#[test]
+fn malformed_files_are_findings() {
+    let pieces = good();
+    let wrong = [
+        ("terrain/score.toml", SCORE_TOML.replace("0.1\n", "\"x\"\n").replace("[metric.year]", "[metric.year.x]")),
+        ("terrain/lidar.toml", DECL.replace("\"year\"]", "1]").replace("metrics]", "metrics.x]").replace("[[piece]]\nid = \"rest\"", "piece = 3\n[[x]]")),
+        ("terrain/lidar.geojson", String::from_utf8(pieces.clone()).unwrap().replace("[0.0,0.0]", "[null]").replace("\"read\":[", "\"read\":[3,")),
+        ("terrain/lidar.geojson", r#"{"type":"FeatureCollection","features":[3,{"type":"Feature","properties":{"piece":"a","extent":"index","availability":"open"},"geometry":{"type":"MultiPolygon","coordinates":[3,[[]],[[[0,0],[1,0]]]]}}]}"#.to_string()),
+    ];
+    let mut cases: Vec<(&str, Vec<u8>)> = wrong.iter().map(|(p, b)| (*p, b.clone().into_bytes())).collect();
+    for (p, b) in [
+        ("terrain/score.toml", SCORE_TOML.as_bytes()),
+        ("terrain/lidar.toml", DECL.as_bytes()),
+        ("terrain/lidar.geojson", &pieces[..]),
+    ] {
+        cases.extend((0..b.len() - 2).step_by(7).map(|n| (p, b[..n].to_vec())));
+    }
+    for (k, (p, b)) in cases.iter().enumerate() {
+        let c = Extents.file(p, b);
+        // (The wrong values are errors; a file cut short may still parse, so it need only not panic.)
+        if k < wrong.len() {
+            assert!(c.findings.iter().any(|f| f.level == Level::Error), "{p}: {}", String::from_utf8_lossy(b));
+        }
+        let mut files = vec![
+            ("terrain/score.toml", SCORE_TOML.as_bytes()),
+            ("terrain/lidar.toml", DECL.as_bytes()),
+            ("terrain/lidar.geojson", &pieces[..]),
+        ];
+        files.retain(|(q, _)| q != p);
+        files.push((p, b));
+        whole_of(&files);
+    }
 }
