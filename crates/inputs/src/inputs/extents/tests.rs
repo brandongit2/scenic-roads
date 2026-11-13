@@ -291,6 +291,7 @@ fn a_declaration() {
         ("{ field = \"year\", date = \"year\" }", "{ date = \"year\" }"),
         ("{ field = \"spacing\",", "{ field = \"spacing\", index = -1,"),
         ("url = \"https", "tolerance_m = 0\nurl = \"https"),
+        ("url = \"https", "timeout_s = \"long\"\nurl = \"https"),
         ("url = \"https", "filter = { year = 2020 }\nurl = \"https"),
         ("url = \"https", "exclude = { year = 2020 }\nurl = \"https"),
         ("{ field = \"year\", date = \"year\" }", "[]"),

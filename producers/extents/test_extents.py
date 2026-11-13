@@ -1,9 +1,11 @@
 """extents.py's own rules, with no network: the metrics' readings, a piece's making, the
 antimeridian and the poles, a listing's names, the range reader."""
+import io
 import json
 import math
 import os
 import random
+import re
 import ssl
 import tomllib
 import unittest
@@ -850,6 +852,102 @@ class Chains(unittest.TestCase):
         self.assertFalse(ctx.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN)
         self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(ctx.check_hostname)
+        # A server (host.test) sending its own certificate alone, signed by an intermediate under a
+        # root no store has (test_chain.pem: made for this test, valid to 2126): its intermediate
+        # added, the handshake is still refused, as no root of the store is reached.
+        leaf, key, inter, root = pem_blocks()
+        der = ssl.PEM_cert_to_DER_cert
+        with self.assertRaises(ssl.SSLCertVerificationError) as e:
+            handshake(extents.tls_with([der(inter)]), leaf, key)
+        self.assertIn(e.exception.verify_code, extents.NO_ISSUER)
+        # (The test's own check: with its root loaded too, the same chain is taken. So the root a
+        # server's AIA names is never loaded.)
+        ctx = extents.tls_with([der(inter)])
+        ctx.load_verify_locations(cadata=der(root))
+        handshake(ctx, leaf, key)
+        self.assertTrue(extents.self_signed(der(root)))
+        self.assertEqual(extents.ca_issuers(der(leaf)), ["http://ca.test/i.der"])
+
+    def test_an_aia_address_is_plain_http_to_a_public_host(self):
+        # (Read before the certificate naming it is verified: never this Mac's files or network.)
+        for url in ("file:///etc/passwd", "https://127.0.0.1/i.der", "ftp://ca.test/i.der", "http://127.0.0.1/i.der",
+                    "http://localhost:8077/api/c/items", "http://10.0.0.1/i.der", "http://192.168.1.2/i.der",
+                    "http://169.254.169.254/latest", "http://[::1]/i.der", "http://[fe80::1]/i.der"):
+            with self.assertRaises(extents.ChainError, msg=url):
+                extents.aia_get(url)
+
+
+class Answer(io.BytesIO):
+    headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+
+class Cache(unittest.TestCase):
+    def test_an_answer_that_stopped_the_run_isnt_kept(self):
+        import tempfile
+        import unittest.mock
+        asked = []
+        def urlopen(req, timeout, context):
+            asked.append((req.full_url, timeout))
+            if "returnCountOnly" in req.full_url:
+                return Answer(b'{"error": {"code": 400, "message": "Unable to complete operation."}}')
+            return Answer({"https://h/layer?f=json": b'{"objectIdField": "OBJECTID"}', "https://h/ok": b'{"a": 1}'}[req.full_url])
+        decl = {"id": "s"}
+        block = {"id": "p", "method": "arcgis", "url": "https://h/layer", "class": "index", "availability": "open", "timeout_s": 600}
+        with tempfile.TemporaryDirectory() as cache, unittest.mock.patch("urllib.request.urlopen", urlopen):
+            net = extents.Fetcher(cache, 1 << 30, 0)
+            with self.assertRaises(SystemExit):
+                list(extents.block_pieces(net, decl, dict(block), "2026-11-13"))
+            # (An ArcGIS layer's error sent as a 200: the run stopped on it, and it's not in the
+            # cache; the layer's answer before it is.)
+            self.assertEqual([t for _, t in asked], [600.0, 600.0])
+            self.assertEqual(len(os.listdir(cache)), 1)
+            # One read on from is kept once the next is asked for, or the source is done.
+            self.assertEqual(net.json("https://h/ok"), {"a": 1})
+            self.assertEqual(len(os.listdir(cache)), 1)
+            net.keep()
+            self.assertEqual(len(os.listdir(cache)), 2)
+            self.assertEqual(net.json("https://h/ok"), {"a": 1})
+            self.assertEqual(len(asked), 3)
+
+
+def pem_blocks():
+    """test_chain.pem's leaf certificate, its key, the intermediate and the root, as PEM."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_chain.pem")) as f:
+        text = f.read()
+    return [m.group(0) for m in re.finditer(r"-----BEGIN ([A-Z ]+)-----.*?-----END \1-----\n", text, re.S)]
+
+
+def handshake(client, leaf, key):
+    """A TLS handshake in memory: a server for host.test sending `leaf` alone, `client` verifying it."""
+    import tempfile
+    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    with tempfile.NamedTemporaryFile("w", suffix=".pem") as f:
+        f.write(leaf + key)
+        f.flush()
+        server.load_cert_chain(f.name)
+    bios = [ssl.MemoryBIO() for _ in range(4)]
+    c = client.wrap_bio(bios[0], bios[1], server_hostname="host.test")
+    s = server.wrap_bio(bios[2], bios[3], server_side=True)
+    done = [False, False]
+    for _ in range(20):
+        for k, end in enumerate((c, s)):
+            if not done[k]:
+                try:
+                    end.do_handshake()
+                    done[k] = True
+                except ssl.SSLWantReadError:
+                    pass
+        bios[2].write(bios[1].read())
+        bios[0].write(bios[3].read())
+        if all(done):
+            return
+    raise AssertionError("no handshake")
 
 
 if __name__ == "__main__":

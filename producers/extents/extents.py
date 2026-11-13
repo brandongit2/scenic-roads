@@ -37,12 +37,15 @@ usage: extents.py <declaration.toml>... --out <folder> [--cache <folder>] [--max
 import argparse
 import datetime
 import hashlib
+import http.client
 import io
+import ipaddress
 import json
 import math
 import os
 import re
 import shutil
+import socket
 import ssl
 import sys
 import time
@@ -118,6 +121,49 @@ def tls_with(issuers):
     for der in issuers:
         ctx.load_verify_locations(cadata=der)
     return ctx
+# Why a chain is completed: the server's certificate's issuer wasn't found (OpenSSL's
+# X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT, _LOCALLY); never for an expired, revoked or misnamed one.
+NO_ISSUER = (2, 20)
+
+
+class ChainError(Exception):
+    pass
+
+
+def aia_get(url, timeout=30, limit=1 << 16):
+    """An issuer's certificate from the URL a certificate's AIA names, read before that certificate
+    is verified, so its URL is the server's to choose: plain http only (RFC 5280's caIssuers), to a
+    public address only (never this Mac, its network or its files), the address checked the one
+    connected to, no redirect followed, no more than `limit` bytes in `timeout` seconds in all."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "http" or not parts.hostname:
+        raise ChainError(f"{url}: an AIA address that isn't http")
+    port = parts.port or 80
+    addrs = {a[4][0] for a in socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)}
+    if not addrs or not all(ipaddress.ip_address(a.partition("%")[0]).is_global for a in addrs):
+        raise ChainError(f"{url}: an AIA address that isn't public ({', '.join(sorted(addrs))})")
+    addr = sorted(addrs)[0]
+    deadline = time.monotonic() + timeout
+    conn = http.client.HTTPConnection(f"[{addr}]" if ":" in addr else addr, port, timeout=timeout)
+    try:
+        conn.request("GET", (parts.path or "/") + (f"?{parts.query}" if parts.query else ""),
+                     headers={"Host": parts.netloc, "User-Agent": UA})
+        r = conn.getresponse()
+        if r.status != 200:
+            raise ChainError(f"{url}: {r.status} (no redirect followed)")
+        body = b""
+        while len(body) <= limit and time.monotonic() < deadline:
+            part = r.read(4096)
+            if not part:
+                break
+            body += part
+        if len(body) > limit or time.monotonic() >= deadline:
+            raise ChainError(f"{url}: over {limit} bytes or {timeout} s")
+        return body
+    finally:
+        conn.close()
+
+
 # What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): documented services and published files.
 FETCHES = "api, data"
 CLASSES = ("mask", "files", "index", "service", "claimed", "unknown")
@@ -141,6 +187,12 @@ class Fetcher:
         self.last = 0.0
         # A host's TLS context, where its chain needed completing (`tls_with`).
         self.tls = {}
+        # A request's time limit: a piece block's `timeout_s`, else 180 s.
+        self.timeout = 180.0
+        # The answer fetched last, kept in the cache only once what read it has asked for more or
+        # finished (`keep`): one that stopped the run (an error page, a service's error answer sent
+        # as a 200) is fetched afresh next run, never read again from the cache.
+        self.pending = None
         # The newest date an answer read since `since()` was fetched on (a cached one's: its file's).
         self.fetched = None
 
@@ -156,7 +208,20 @@ class Fetcher:
     def mark(self):
         return self.requests, self.bytes
 
+    def keep(self):
+        """The answer fetched last into the cache: what read it went on."""
+        if self.pending:
+            path, body, lenpath, total = self.pending
+            self.pending = None
+            if lenpath:
+                with open(lenpath, "w") as f:
+                    f.write(total)
+            with open(path + ".part", "wb") as f:
+                f.write(body)
+            os.replace(path + ".part", path)
+
     def get(self, url, rng=None):
+        self.keep()
         key = hashlib.sha1((url + (f"#{rng[0]}-{rng[1]}" if rng else "")).encode()).hexdigest()
         path = os.path.join(self.cache, key) if self.cache else None
         if path and os.path.exists(path):
@@ -176,7 +241,7 @@ class Fetcher:
                 time.sleep(wait)
             try:
                 host = urllib.parse.urlsplit(url).hostname
-                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180, context=self.tls.get(host, TLS)) as r:
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=self.timeout, context=self.tls.get(host, TLS)) as r:
                     n = r.headers.get("Content-Length")
                     if n and int(n) > self.left():
                         sys.exit(f"{url}: {int(n) / 1e6:.0f} MB, over what --max-gb leaves this source: not fetched")
@@ -198,11 +263,17 @@ class Fetcher:
                     raise
                 time.sleep(5 * (attempt + 1))
             except (urllib.error.URLError, TimeoutError) as e:
-                if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError) and host not in self.tls and attempt < 3:
-                    # (Its chain completed once from the AIA, then verified to a root as strictly.)
-                    self.tls[host] = self.completed_chain(url)
+                why = getattr(e, "reason", None)
+                if isinstance(why, ssl.SSLCertVerificationError) and why.verify_code in NO_ISSUER and host not in self.tls and attempt < 3:
+                    # (Its chain completed once from the AIA, then verified to a root as strictly;
+                    # a chain that can't be completed is refused as it was.)
+                    try:
+                        self.tls[host] = self.completed_chain(url)
+                    except (ChainError, OSError, ValueError, ssl.SSLError, http.client.HTTPException) as c:
+                        raise urllib.error.URLError(f"{why}; its chain not completed from the AIA: {c}") from e
                     continue
-                if attempt == 3:
+                if isinstance(why, ssl.SSLCertVerificationError) or attempt == 3:
+                    # (A certificate refused is refused again: not tried four times.)
                     raise
                 time.sleep(5 * (attempt + 1))
             finally:
@@ -214,32 +285,30 @@ class Fetcher:
         if rng and total.isdigit():
             self.lengths[url] = int(total)
         if path:
-            if rng and total.isdigit():
-                with open(os.path.join(self.cache, hashlib.sha1(url.encode()).hexdigest() + ".len"), "w") as f:
-                    f.write(total)
-            with open(path + ".part", "wb") as f:
-                f.write(body)
-            os.replace(path + ".part", path)
+            lenpath = os.path.join(self.cache, hashlib.sha1(url.encode()).hexdigest() + ".len") if rng and total.isdigit() else None
+            self.pending = (path, body, lenpath, total)
         return body
 
     def completed_chain(self, url):
         """A TLS context for a server whose chain doesn't reach a root: its certificate's issuers,
-        fetched from the AIA URLs each names (up to three links), added to the store."""
+        fetched from the AIA URLs each names (`aia_get`; up to three links, a root never loaded),
+        added to the store as links only (`tls_with`)."""
         parts = urllib.parse.urlsplit(url)
-        der = ssl.PEM_cert_to_DER_cert(ssl.get_server_certificate((parts.hostname, parts.port or 443), timeout=60))
+        der = ssl.PEM_cert_to_DER_cert(ssl.get_server_certificate((parts.hostname, parts.port or 443), timeout=30))
         chain = []
         for _ in range(3):
             links = ca_issuers(der)
             if not links:
                 break
-            with urllib.request.urlopen(urllib.request.Request(links[0], headers={"User-Agent": UA}), timeout=60) as r:
-                der = r.read(1 << 16)
+            der = aia_get(links[0])
             if der.lstrip()[:1] == b"-":
                 der = ssl.PEM_cert_to_DER_cert(der.decode("ascii"))
             if self_signed(der):
                 # (A root the server names would be trusted by being loaded: only the store's are.)
                 break
             chain.append(der)
+        if not chain:
+            raise ChainError("no issuer named")
         return tls_with(chain)
 
     def spend(self, url, n):
@@ -1062,6 +1131,15 @@ def tidy(geom, tol_deg):
     return g if g.geom_type == "MultiPolygon" else sg.MultiPolygon([g])
 
 
+def unkept_on_error(net, feats):
+    """A reader's features; where it stops on an error, the answer it stopped on isn't kept."""
+    try:
+        yield from feats
+    except (Exception, SystemExit, KeyboardInterrupt):
+        net.pending = None
+        raise
+
+
 def block_pieces(net, decl, b, today):
     """A piece block's features and what was read for them."""
     method = b["method"]
@@ -1085,12 +1163,14 @@ def block_pieces(net, decl, b, today):
     if b.get("name") and b["name"] not in b.get("by", []):
         sys.exit(f"{decl['id']}/{b['id']}: name {b['name']!r} isn't one of `by`: a piece's features would name it apart")
     tol_m = float(b.get("tolerance_m", 50))
+    # (A server slower than the default 180 s to answer, a coverage made on request: its block says.)
+    net.timeout = float(b.get("timeout_s", 180))
     tol_deg = tol_m / M_PER_DEG
     r0, b0 = net.mark()
     net.since()
     groups, n, flt, exc = {}, 0, b.get("filter") or {}, b.get("exclude") or {}
     repaired, quarter = 0, {}
-    feats = READERS[method](net, b, tol_deg)
+    feats = unkept_on_error(net, READERS[method](net, b, tol_deg))
     for geom, props in (latest_versions(feats, b["latest"]) if b.get("latest") else feats):
         if any(str(props.get(k)) not in [str(x) for x in want] for k, want in flt.items()):
             continue
@@ -1222,6 +1302,7 @@ def main():
     today = datetime.date.today().isoformat()
     for path in a.declarations:
         produce(net, path, a.out, today)
+        net.keep()
 
 
 if __name__ == "__main__":

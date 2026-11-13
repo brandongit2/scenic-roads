@@ -779,8 +779,10 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
                 bad.push(format!("piece {id}: `{k}` isn't a string"));
             }
         }
-        if b.get("tolerance_m").is_some_and(|v| !num(v).is_some_and(|x| x > 0.0)) {
-            bad.push(format!("piece {id}: `tolerance_m` isn't a positive number"));
+        for key in ["tolerance_m", "timeout_s"] {
+            if b.get(key).is_some_and(|v| !num(v).is_some_and(|x| x > 0.0)) {
+                bad.push(format!("piece {id}: `{key}` isn't a positive number"));
+            }
         }
         for key in ["filter", "exclude"] {
             if b.get(key).is_some_and(|v| !v.as_table().is_some_and(|f| f.values().all(|x| x.is_array()))) {
