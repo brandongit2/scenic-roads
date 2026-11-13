@@ -35,7 +35,7 @@ function form0(file) {
   item.run("i4", "task", "Left open", "i3", 4, 4, "waiting", "Subagent (Opus)", null, null, '["0123456789abcdef0123456789abcdef"]');
   item.run("i5", "folder", "All archived", "", 5, 5, null, null, 1, T, null);
   item.run("i6", "task", "Archived too", "i5", 6, 6, "", "Claude", 1, T, null);
-  item.run("i7", "task", "Plain", "", 7, 7, "working", "Build Mac process (dem/bldfetch.py, started by hand)", 0, null, null);
+  item.run("i7", "task", "Plain", "", 7, 7, "working", "worktree agent on the M1 (Opus)", 0, null, null);
   item.run("i8", "task", "Abandoned, left in", "i5", 8, 8, "abandoned", "You", null, null, null);
   item.run("i9", "folder", "Left in", "i5", 9, 9, null, null, 0, null, null);
   item.run("i10", "task", "Done, left in", "i9", 10, 10, "done", "You", null, null, null);
@@ -67,7 +67,7 @@ test("a form-0 file is moved to form 1 once: names, history, the now line, no ex
   assert.equal(said.length, 1);
   assert.equal(said[0], `${file}: moved to form 1 (status, assigned, meta/now); unarchived #1 (it held #4), #3 (it held #4); archived #8 (inside #5), #9 (inside #5), #10 (inside #5)`);
   assert.deepEqual(s.get("items", "i4"), { kind: "task", text: "Left open", parent: "i3", order: 4, num: 4, status: "waiting", assigned: "Subagent (Opus)", added: "2026-10-26T08:00:00.000Z", photos: ["0123456789abcdef0123456789abcdef"] });
-  assert.equal(s.get("items", "i7").assigned, "Build Mac process (dem/bldfetch.py, started by hand)", "a value the old list had, kept");
+  assert.equal(s.get("items", "i7").assigned, "worktree agent on the M1 (Opus)", "a value the old list had, kept");
   assert.deepEqual(["i1", "i2", "i3", "i5", "i6", "i8", "i9", "i10"].map((id) => s.get("items", id).archived), [false, true, false, true, true, true, true, true]);
   const at = s.get("items", "i8").archivedAt;
   assert.ok(at > "2026-11-01T00:00:00.000Z", "archived at the move's time, not the folder's");
