@@ -68,7 +68,7 @@ on one disk.
 | The records' brief | `GET /pool/brief` (`ETag` its (epoch, seq)) | the last save's, gzipped, in memory | `state/build/brief.json`, written each save for the map server and the CLI |
 | The records | — | `agent/pool/records.json`, the lead's disk copy | `state/build/records.json`, written whole each save (pool.md §6.2) |
 | GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/storage.md, GC) | the lead's GC queue | — |
-| The history | `/api/history` (the page's; the CLI's on another Mac) | the coordinator's `history.jsonl` (the last week's), which the page's view reads (pool.md §7.5) | each finished day packed into the archive by the daily `gc` job, `state/coord/history-archive/<day>.tar` |
+| The history | `/api/history` (the page's, from the coordinator's memory; the CLI's on another Mac, with `data`, from its file); a member's notes in its beat (`notes`, decision 4) | the coordinator's memory (the week's events, without their `data`) and its `history.jsonl` (the week's, whole) (pool.md §7.5, §10) | each finished day packed into the archive by the daily `gc` job, `state/coord/history-archive/<day>.tar` |
 | How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | read for it by no app since task #1119: with no `lead.json` (a new Mac) or one naming another member than the declaration, or a root that doesn't answer, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`); a root that answers and declares no lead, none. The lead still writes `state/coordinator.json` each 5 min while it leads (`coordwire::OLD_CONTACT`, when it differs), for the apps before #1119 alone, whose agents, map servers and updaters find the lead by it (§9) |
 
 ### 3.2 On the NAS
@@ -151,7 +151,7 @@ rule):
 
 | Call | From | Answer |
 | --- | --- | --- |
-| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/roles.md §3.4), who leads while it leads (`leading`), and what it has of the jobs' spans the beat carried (`spans`: docs/formats.md, Job spans) |
+| `POST /pool/beat` | each member's **beat** poster, every 10 s and on a change | the epoch, the leases it listed that aren't its (`released`), the words the lead speaks, the others' heartbeats (`members`), its hold, the settings' generation, the hand-offs merged (`merged`) and lacking (`lacks`), progress released, its running jobs' threads re-decided (`threads`), the lead's line for the menu bar (`lead`: docs/roles.md §3.4), who leads while it leads (`leading`), and what it has of the jobs' spans the beat carried (`spans`: docs/formats.md, Job spans), and the last of its notes it has (`noted`, decision 4) |
 | `POST /pool/handoff` | the beat poster, for each hand-off the answer says the lead lacks | taken (durable) |
 | `POST /pool/mail` | a member's agent: a page's `Cancel` or `Retry` | `took` |
 | `POST /pool/hold`, `/pool/settings` | any Mac's agent, for the owner's CLI, menu and page | the new state (the settings: a post naming none reads them) |
@@ -222,7 +222,7 @@ can tell "holder gone" from "holder unreachable" only by hearing from it, so it 
 (`crate::coord::held`).
 
 - **The beat** (`POST /pool/beat {member, speaks, held, held_age_s, heartbeat, status, handoffs,
-  cap, progress, sent, spans}`, every `agent::beat::EVERY`, 10 s, from its own poster thread, whatever the
+  cap, progress, sent, spans, notes}`, every `agent::beat::EVERY`, 10 s, from its own poster thread, whatever the
   loop waits on): `held` is the list the loop made last, `held_age_s` its age, so the lead releases
   only leases granted before the list was made (a loop stuck after a grant never loses it).
 - **The grant is durable before its answer.** A lead crashing after the `fsync` and before the
@@ -363,9 +363,42 @@ PM, 30 Oct, with what was built:
    keep the NAS's copy.
 3. **The store is a JSON log plus a JSON snapshot:** no new dependency, readable by hand, a few MB
    (against SQLite: a new dependency, fewer hand-written recovery paths).
-4. **History: members' events in the beat, to one file on the lead.** Not built: no member's events reach
-   the lead (its broker's stay on its Mac; task #1160). The lead's own events are its coordinator's
-   file on its disk (`history.jsonl`), which the page's view reads every 12 s (`pageview::EVERY`,
-   no NAS read since task #1119); each finished day is packed into the NAS's archive by GC.
+4. **History: one, the lead's coordinator's, in its memory; a member's notes in its beat**
+   (task #1160, 13 Nov).
+   - **The page's history is served from the coordinator's memory** (`/api/history`, and the
+     swarm's `seq`, `epoch` and `rates`), in and out of the pool: no file or NAS read on a page's
+     path or on a timer feeding it. Memory holds the week's events, the week (`history::KEEP_S`)
+     its one bound, each event without its `data`: measured 13 Nov on the lead's file, the week was
+     58,113 events (~8,300 a day), ~21 MB in memory; ten times that, ~215 MB on the mini's 32 GB,
+     so no count caps it, and the page has the 7 days it says. Why no
+     `data`: it is ~70 % of an event's memory, and only publishing's times read it, from the file
+     and the archive. Older than the week: the NAS's archive, which the page doesn't read (its
+     schedule's card says so) and `scenic timings publish` and the forecast check do.
+   - **After a restart** the coordinator reads its file once, a line at a time, before it listens
+     (168 ms for the 39 MB file of 13 Nov; ~2 s at ten times): no "loading" state is needed, the
+     first answer has the week. One numbering, the coordinator's, whose numbers go on across its
+     restarts (they're in the file): a page keeps its cursor, and `/api/tocome`'s `after` is in
+     it (no renumbering on another Mac: the page is the lead's alone).
+   - **A member's notes ride in its beat** (`crate::coord::notes`): the events only a member sees
+     reach the lead no other way (its agent's start, its conditions changing, its build caches
+     cleared or freed, the owner's clear asked from the page among them, its broker's jobs' tasks
+     done or given back), and the page's activity and its hours show them. Its jobs' starts and
+     ends, failures and memory-guard stops are not notes: the lead has them by their leases
+     (`lease`, `done`, `fail`, with the member's own words in `note`), and noting them too would
+     count their work twice. The forecast reads none of these kinds, and lacks nothing. Bounded
+     (50 a beat, `notes::BEAT_MAX`; a note older than the week goes unsent), sent again until the
+     answer's `noted` says the lead has it, taken once by its agent's process and its number there,
+     the lead keeping the last per member in its store (`noted/<member>`), so a lost answer and a
+     lead's restart double none. Mixed apps: a member sends notes only to a lead whose answer says
+     `notes` (`beats::NOTES`), keeping them meanwhile; a member before it sends none and is
+     answered as before (its events stay on it, as they did). In a member's memory only: a note
+     made in the seconds before its agent stops is lost with it. A member's broker keeps its
+     history in memory alone.
+   - **The NAS's day files**: none is written since task #1119. The lead's `history.jsonl` stays
+     the one file (written by its coordinator, a line an event, no `fsync`; rewritten whole with
+     the week's lines once it holds twice as many), for the archive (`agent::histarchive`, packed by
+     the daily `gc` job: one tar a day on the NAS) and for publishing's times on another Mac
+     (`/api/history` with `data`, read from the file on demand, never the page's). The day folders
+     an older app wrote (`state/coord/history/<day>/`, to 12 Nov) are packed as they pass the week.
 5. **A switch was deleted only once it read on for every member;** one still off anywhere became a
    setting (`/pool/settings`).

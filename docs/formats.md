@@ -958,6 +958,31 @@ under `lease` in a history event: read as `0-<n>` (its epoch unsaid). An app bef
 no `job`, and passes over a history event's run. A run's later lease, held again for it while it
 runs on (its own lapsed, or lost to a lead's restart), carries the run's id (`lease/<id>`'s `job`).
 
+## The build's history (`<agent>/coord/history.jsonl`, `/api/history`; agentcore::coord::history)
+
+The lead's coordinator's file, on its disk: a line an event (`history::Event` as JSON: `{seq, t,
+kind, worker?, job?, step?, targets?, secs?, ok?, what?, note?, n?, data?, after?, v?, still_s?,
+rates?, gap_s?, threads?}`, each absent when empty), appended as it happens (no `fsync`), rewritten
+whole (a temporary name, renamed over it) with its lines of the last 7 days once it holds twice the
+events kept and a thousand more; `seq` rises by one an event, across the coordinator's restarts
+(read back as it starts). Its coordinator holds the same week in memory, each event without its
+`data`. A member's broker keeps no file. Each finished day goes to the NAS's archive (below,
+`state/coord/history-archive/`).
+
+- **`POST /api/history {since, max?, data?}`** (the lead's port; `max` 500 by default, 5 000 at
+  most): `{seq, epoch, events}`, the events after number `since`, oldest first; `seq` the last
+  number, `epoch` the numbering (`coordinator <member>`: the swarm's and `/api/tocome`'s too). From
+  memory, without `data`; with `data: true` (publishing's times on another Mac, crate::pubtimes),
+  from the file, each with its `data` (none when the file can't be read).
+- **A member's notes** ride in its beat (`POST /pool/beat`, docs/coordination.md decision 4):
+  `notes: {process, notes: [{n, event}]}` (`process` its agent's start in unix ms, `n` the note's
+  number in it, `event` as above, a kind of `coord::notes::KINDS`: `agent`, `conditions`,
+  `caches`, `task`, `task-fail`, `task-back`), at most 50 a beat, to a lead whose answer says
+  `notes` (`coord::beats::NOTES`); the answer's `noted: {process, n}` is the last it has of that
+  member (kept as `noted/<member>` in its store): the member drops those up to it, and the lead
+  takes none at or below it again. A beat without `notes` (an app before them) is answered as
+  before, without `noted`.
+
 ## Job spans (jobrt::spans, agentcore::agent::spans, agentcore::coord::jobspans; task #1104)
 
 A job run's timeline, which its timings' record (above) sums: every phase and sub-phase a span with
@@ -1394,7 +1419,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `kept::Beat`); `inbox/<member>` (its mail not yet read); `hold/<member>` and `settings` (the
     owner's asks, `agentcore::coord::asks`); `handoff/<key>` (a hand-off taken, until a saved
     snapshot names it); `progress/<member>`, `answers-lease` and `budget-hold`
-    (`agentcore::coord::budgets`): docs/coordination.md §3.1). Read once, into a store not made yet (an agent before the store's), and
+    (`agentcore::coord::budgets`); `noted/<member>` (`{process, n}`: the last of a member's notes
+    the lead took, `agentcore::coord::notes`): docs/coordination.md §3.1). Read once, into a store not made yet (an agent before the store's), and
     no longer written: `leases.json` (`{next, leases: [{id, worker, work, progress}]}`); `costs.json` (`{<cost key>: {peak_mb,
     secs, worker, v, sizes}}`, `sizes` as in `costs.jsonl`, absent before task #235; keys: a z6 tile, `"<step> <target>"`, or `"<kind> <tile>"` for tasks: `tail 6/x/y`,
     `bldtile 8/x/y`, `treeblock 8/x/y`, `terrainsub 8/x/y`); `floors.json` (`{<cost key>: {mb, alone,

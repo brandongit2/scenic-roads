@@ -194,7 +194,7 @@ Common rules:
   events, the file stream and the internet by website: `activity.js`); Details (leases, waits, each Mac's capacity, workers, the steps table with each step's measured
   phase shares: the lead's status's `phase_shares`, docs/pool.md §10). It reads
   `/api/steps` once (the steps table: every word about a step), `/api/swarm` every 10 s and
-  `/api/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs); `/api/regions` (each region's folders, download size and
+  `/api/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs: the week's, from the coordinator's memory; older ones are in the NAS's archive, which the page doesn't read); `/api/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the map changes, else every ten minutes (an answer
   the same as the last, its map and version, isn't shown again);
   each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/api/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
@@ -203,8 +203,9 @@ Common rules:
   world map draws the regions' outlines, the countries' and the large lakes' (`countries.json`, `lakes.json`, the page's
   files). A 503 (the Mac hasn't read the build's state yet) says so quietly and asks
   again every 2 s, what's shown said to be stale if it had an answer before, an error only after a
-  minute of them; a new `epoch` (the
-  Mac's agent restarted) starts the events again. "Since you last looked" goes by the events' time,
+  minute of them; a new `epoch` (another Mac
+  leads: the numbering is the lead's coordinator's, going on across its restarts) starts the
+  events again, as does a `seq` below the page's last event. "Since you last looked" goes by the events' time,
   so it outlives a restart.
 - **A job's page** (task #1105; `web/buildpage/job.html`, `job.js`, its sums `jobview.js`, a run's
   lanes `runlanes.js`, the theme `theme.css` with the build page; docs/pipeline.md §5, A job's page)

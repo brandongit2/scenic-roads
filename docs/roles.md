@@ -183,7 +183,8 @@ A whole write cut off (`helper.json.<host>.<pid>.<n>.tmp`, five on each laptop o
 the list: `store::whole::write` sweeps its folder's day-old ones itself, hourly.
 
 Kept: `coord/` itself, the member's broker's folder (§3.2), with `jobs-token`, `page`,
-`history.jsonl` (written on the M1 on 6 Nov), `workers-token` (the pool's, copied in by
+`history.jsonl` where the Mac once led (a member's broker keeps its history in memory alone, its
+agent noting its tasks to the lead: docs/coordination.md decision 4), `workers-token` (the pool's, copied in by
 `pool::seed` at each broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every
 broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
 its own jobs' timings there (`take_timings`, crates/agentcore/src/agent/mod.rs), which `scenic`

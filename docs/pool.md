@@ -1495,8 +1495,9 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   and readers take none as nothing known. The build page's schedule draws its arrows from it.
 - **The history** is the lead's coordinator's file on its disk (`<agent>/coord/history.jsonl`, the
   last `history::DAYS` (7) days', its coordinator's start among them: its "agent" event, how
-  `history::mend_runs` knows a restart), which the page view reads (`pageview::LocalFiles`); no
-  copy on the NAS (task #1119). Each day before today is packed as one tar,
+  `history::mend_runs` knows a restart; a member's notes among them, its start, its conditions,
+  its caches and its broker's tasks, carried by its beats: docs/coordination.md decision 4), held
+  in its memory for the page (§10, The page's history); no copy on the NAS (task #1119). Each day before today is packed as one tar,
   `state/coord/history-archive/<day>.tar` (member `<day>/<member>.jsonl`, the declared lead's), by
   the `gc` job's daily duties (`--history`), so the lead alone, outside its loop and the pool's lock
   (`agent::histarchive`, task #531): the day's lines merged into what its tar holds (a line there
@@ -1514,7 +1515,7 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   512 MB, a deadline, an unreadable tar) is left as it is and said as a warning in the job's
   note. Every call goes through `nasread`'s deadlines. `pubtimes::load_history` (`scenic
   timings publish`, the forecast check) reads the days' tars and the lead's file (on another Mac,
-  asked of the lead: `/api/history`); a lead's planned notes after a change of lead, the tars.
+  asked of the lead: `/api/history` with `data`, which the lead reads from its file); a lead's planned notes after a change of lead, the tars.
 - **The contact** (`coordwire::lead`, task #1119): each Mac's agent keeps its lead's in its folder
   (`lead.json`: member, host, addresses, token, page), the lead's agent its own coordinator's
   (`Coordinator::reach`, each 5 minutes), a member's from its beats' answers (`reach`, while the
@@ -2649,35 +2650,38 @@ asks passed on are one-shot: the lead's store keeps them (below).
   Handed to the lead's coordinator for `/pool/view` and to the forecast inputs' archive (§7.9). Read by each Mac's page data (below).
 - **The page's data on the lead** (`agent::pageview`, task #409; the lead's alone since #882 step 4,
   docs/roles.md §3.3: a member's port sends the page there): in the pool, the lead's port 8090
-  answers `/api/swarm` and `/api/history` from its pageview (`/api/steps` is the steps table);
-  out of the pool the coordinator answers from its memory, as before. While a page has asked in
-  the last 60 s, a thread of the agent asks the lead's view every 2 s (its coordinator in process,
-  as `POST /pool/view` answers): its coordinator's view, the pause (on the lead the
-  answer's is its coordinator's own), the Macs' addresses, and the lead's status, the forecast's input
-  and the regions when their time changed (the last status kept meanwhile); with the lead down, the last view is kept and the answer says its age
-  (`view_age_s`) and since when the lead isn't reached (`view_unreached`). Another thread reads, every 12 s at most, by
-  known name (no listing), what each member's history
-  file of the last 7 days (today's and the six before: `pageview::DAYS`) gained since the offset
-  it last read to (whole lines, 4 MiB of a file a read at most, `CHUNK_MAX`, the rest the next
-  time; a whole 4 MiB without a line's end passed over, counted and logged; from the start again when the file is now shorter than that). A day before yesterday
-  read to its end isn't read again. Of the events, the last week's are kept, without their
-  `data` (the page doesn't show it), the newest 50 000 at most (`history::KEEP_MAX`, as the
-  lead's own history): `/api/history` answers from those. Measured on the NAS's real history (23 Oct: two writers, 3.9 MB over the
-  days kept, 9 719 events in the week): the first read 1.4–10 s (the NAS's own speed: a plain
-  `cat` of the same files took 4.6 s), its peak memory about 20 MB; each read after it 0.13–0.15 s;
-  `/api/history` with all 9 719 events about 1.9 MB of JSON, made in ~20 ms. The reads are off
-  the answers' path, so a page waits only on its first (the 503s above). The agent's loop hands it only what it
-  holds already (the members' ids from the pool's driver, this Mac's app): no NAS
-  read on the loop, and this Mac's lanes worked out only while a page asks. Every read is done
-  before the pageview's state is locked, and the results swapped in after, so a slow NAS never
-  holds up an answer. The history is merged by time, writer and number, and numbered by this Mac
-  as it arrives (a start's or lease's `after`, its writer's numbers, renumbered with it: a job not
-  taken in here dropped; task #797 review); the answers carry the numbering's `epoch` (new with each process's first read),
-  and the page starts its cursor again when the epoch changes (the Jobs tab's past jobs are asked further back by `since`, at most 5 000 a time) or `seq` falls below its last event
-  ("since you last looked" goes by the events' time, so it outlives a restart). Until its first
-  read a Mac answers 503 (never its memory's views: another numbering), and the page says it's
-  reading the build's state (quietly, not as an error) and asks again every 2 s, saying it as an
-  error only after a minute of 503s (`sums.js` `notRead`; a 503 from `/api/history` alone waits for the next 10 s poll; no retry while the page is hidden). The forecast is run here from the input, its time brought
+  answers `/api/swarm` and `/api/tocome` from its pageview (`/api/steps` is the steps table), and
+  `/api/history` and the swarm's history parts (`seq`, `epoch`, `rates`) from its coordinator's
+  memory (task #1160: the history below); out of the pool the coordinator answers all from its
+  memory. While a page has asked in the last 60 s, a thread of the agent asks the lead's view every
+  2 s (its coordinator in process, as `POST /pool/view` answers): its coordinator's view, the pause
+  (on the lead the answer's is its coordinator's own), the Macs' addresses, and the lead's status,
+  the forecast's input and the regions when their time changed (the last status kept meanwhile);
+  with the lead down, the last view is kept and the answer says its age (`view_age_s`) and since
+  when the lead isn't reached (`view_unreached`). The agent's loop hands it only what it holds
+  already (this Mac's app, its own coordinator): no NAS read on the loop or on any page's path, and
+  this Mac's lanes worked out only while a page asks. Until the lead's first view (a second or two
+  after a page first asks) a Mac answers the swarm 503, and the page says it's reading the build's
+  state (quietly, not as an error) and asks again every 2 s, saying it as an error only after a
+  minute of 503s (`sums.js` `notRead`; no retry while the page is hidden).
+- **The page's history** is the coordinator's, held in its memory (`coord::history`, task #1160):
+  the week's events (`history::KEEP_S`, its one bound), each without its `data` (the catalogues'
+  and merges' details, which only publishing's times read: from the file and the archive). Measured
+  13 Nov on the lead's file (39 MB, 99,653 lines): the week was 58,113 events (~8,300 a day,
+  ~2.9 MB of JSON a day), ~21 MB in memory (~0.37 KB an event; with their `data`, ~1.34 KB); ten
+  times that volume, ~215 MB. The file is read once, a line at a time, as the coordinator starts
+  (168 ms for the 39 MB at the tests' build, before it listens: a restarted lead's page has its
+  week at its first answer); `/api/history` takes the events after a number by a binary search
+  (1,000 in ~0.6 ms, ~160 KB of JSON), and the swarm's `rates` are summed from a shared copy off the
+  coordinator's lock (~13 ms for the week). One numbering, the coordinator's (`epoch`
+  `coordinator <member>`): its numbers go on across its restarts, as they're in the file, so a
+  page keeps its cursor over a lead's restart; the page starts its cursor again when the epoch
+  changes (another Mac leads) or `seq` falls below its last event (a file lost), and the Jobs tab's
+  past jobs are asked further back by `since`, at most 5 000 a time ("since you last looked" goes
+  by the events' time). `/api/tocome`'s `after` is in the same numbering. Older than the week, the
+  history is in the NAS's archive (§7.5), which the page doesn't read (its schedule's
+  "Older history" card says so); `scenic timings publish` and the forecast check read it.
+  The pageview's forecast is run from the lead's input, its time brought
   to now and this Mac's own lanes as its slots are now, worked out as the lead works out its own
   (`forecast::SlotJob`: its own estimate, or its targets left at its speed, a minute at least; its
   running job too); a target missing from the cost table is a bug, logged once. It runs on a
@@ -2690,8 +2694,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   page sent to the lead as a broker sends it (docs/roles.md §3.3), its live store, settings and
   hold, every other call refused (its key's too); no state folder of the agent's (its token alone,
   in a scratch folder removed as it stops, a dead process's as the next starts), no history, no
-  background loop. The usual Origin rules hold. A history file written again in its place (its
-  inode or first line changed) is read from its start, the events taken in already passed over.
+  background loop. The usual Origin rules hold.
 - **Phase shares** (task #511): for each step, its top-level phases' mean share of a run's wall
   time and of the bytes its phases counted as read or written (local disk, NAS and internet alike:
   `timings::count`; the page says "I/O"), over its last 10 runs that ended well

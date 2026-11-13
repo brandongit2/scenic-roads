@@ -322,9 +322,10 @@ from the first (`edit_held`).
   a range. It says when each step, region and everything will be done, when each region is all on
   the map, when each cadenced step may next go, and each machine's schedule, or why there's no
   finish.
-- **The history** (`coord::history`): the last week's events (50,000 at most) on the lead's disk
-  (`coord/history.jsonl`): jobs, leases, tasks, map tiles planned, map updates, pauses, workers,
-  agents, conditions, cache clears and freeings. Summed by the hour for the build page, and the
+- **The history** (`coord::history`): the last week's events on the lead's disk
+  (`coord/history.jsonl`) and in its coordinator's memory: jobs, leases, tasks, map tiles planned,
+  map updates, pauses, workers, agents, conditions, cache clears and freeings (a member's noted to
+  the lead with its beats: docs/coordination.md decision 4). Summed by the hour for the build page, and the
   forecast's measure of members' pace and of the map updates' time.
 - **Timings** (`jobrt::timings`; `dem/timings.py`): every
   job's run is broken into named phases, each with wall time, its own CPU time (task #1116: each

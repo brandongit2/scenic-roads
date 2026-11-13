@@ -294,10 +294,11 @@ stepped it for `QUIET_S` (25 s), so a long plan or a slow share never stops it.
   coordinator took and its own jobs' hand-offs, saves the records (its disk, then the NAS's one
   path, under `nasread`'s deadlines), and tells its coordinator what it may grant
   (`agent::pool::moving`, docs/pool.md §6.5).
-- **Its HTTP is beat's:** **beat**'s poster carries the heartbeat, the leases the round listed and
-  the hand-offs' keys to the lead, posts the hand-offs and asks the lead lacks or hasn't taken,
-  and puts the answer in the pool's registry (crate::coord::beats): the lead, the leases released,
-  this Mac's hold, the settings' generation, the hand-offs merged. The pool's step and the round
+- **Its HTTP is beat's:** **beat**'s poster carries the heartbeat, the leases the round listed,
+  the hand-offs' keys and this Mac's notes (crate::coord::notes: the history only it sees) to the
+  lead, posts the hand-offs and asks the lead lacks or hasn't taken, and puts the answer in the
+  pool's registry (crate::coord::beats): the lead, the leases released, this Mac's hold, the
+  settings' generation, the hand-offs merged, the notes it has. The pool's step and the round
   read the registry; **pool** itself sends nothing.
 
 Its gates (`pool_step`'s `gates`: `leads`, `duties`, `caught_up`) are `PoolView`,

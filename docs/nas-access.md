@@ -27,10 +27,10 @@ it (store::nasio), retries the reads, stats and listings the share fails for a m
     (`Agent::root`), and so the pool's tick, its `Deadlined` NAS, the coordinator's and the
     budgets' proxy's: their reads fail at once, as before #663, and the next beat reads again
     (25 Oct: a loop stalled on slow reads stops planning and the pool).
-    Two page readers on threads of their own read often and are asked again soon, so neither takes
+    A page reader on a thread of its own reads often and is asked again soon, so it doesn't take
     the long schedule: the map's finished tiles (agent::builtview, a minute apart) read on the
-    server's short one, a blip ridden out and an outage shown at once; the build page's view
-    (agent::pageview, the pause each second) reads on the loop's root, under nasread's deadline.
+    server's short one, a blip ridden out and an outage shown at once. (The build page's view,
+    agent::pageview, reads nothing of the NAS: the lead's coordinator in process.)
 - **`NasPath`** is a file or folder under a root: the root, and a `/`-joined relative path with no
   `..` and no absolute part (`join` panics on either). Two are equal when they name the same file.
   Path parts: `join`, `parent`, `file_name`, `extension`, `with_file_name`, `with_extension`,
