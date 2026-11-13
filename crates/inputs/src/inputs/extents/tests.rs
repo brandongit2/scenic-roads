@@ -375,7 +375,8 @@ fn the_version_whole() {
     let f = whole_of(&[("terrain/lidar.toml", d), ("terrain/lidar.geojson", &p)]);
     assert_eq!(ids(&f), [(NO_SCORE, Level::Error)]);
     assert_eq!(f[0].files, ["terrain/lidar.geojson", "terrain/lidar.toml"]);
-    // A declaration's metric the score doesn't name, or a constant not of its kind: the score held too.
+    // A declaration's metric the score doesn't name, or a constant not of its kind: the score held
+    // too (and the pieces, made before the constant changed, no longer as its block makes them).
     for (from, to) in [
         ("surface = \"ground\"", "depth = 3"),
         ("surface = \"ground\"", "surface = \"rock\""),
@@ -387,7 +388,7 @@ fn the_version_whole() {
             ("terrain/lidar.toml", bad.as_bytes()),
             ("terrain/lidar.geojson", &p),
         ]);
-        assert_eq!(ids(&f), [(METRIC, Level::Error)], "{to}");
+        assert_eq!(ids(&f), [(METRIC, Level::Error), (MADE, Level::Error)], "{to}");
         assert_eq!(f[0].files, ["terrain/lidar.toml", "terrain/score.toml"]);
     }
     let mapped = DECL.replacen(
