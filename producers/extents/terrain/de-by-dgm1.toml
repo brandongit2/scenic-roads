@@ -5,7 +5,7 @@ licence_url = "https://www.geodaten.bayern.de/odd/m/3/html/nutzungsbedingungen.h
 source = "https://geodaten.bayern.de/opengeodata/json/opengeodata_produkte.json"
 theme = "terrain"
 availability = "open"
-notes = "Bavaria's 1 m bare-earth model (DGM1, 1 km GeoTIFF tiles), open data under CC BY 4.0 with no registration, updated flight lot by flight lot (its open-data record's currency: \"losweise\"): the airborne laser scanning flight lots the LDBV publishes with the DGM (Laserscanningbefliegungen_Shape.zip, EPSG:25832; 82 lots flown 2016 to 2026, each \"DGM-Gitterweite: 1 m\"), a piece per lot, its year the year its flights ended (Ende_Befl). The lots are footprints, not the tiles: the tile list (the Land's metalink, 09.meta4) states no year. Tiles in lots that ended in 2026 were last modified after them (Partenkirchen's, 23 Sep 2026), so the downloads hold them. Point density at least 4 per m²; the height accuracy stated, \"97,0%<=0,12m\" (0.16 m for 2016 to 2018), and the DGM1's \"besser ± 0,2 m\" aren't RMSEs: left out. Lots overlap where a lot was flown again; each says its own year."
+notes = "Bavaria's 1 m bare-earth model (DGM1, 1 km GeoTIFF tiles), open data under CC BY 4.0 with no registration, updated flight lot by flight lot (its open-data record's currency: \"losweise\"): the airborne laser scanning flight lots the LDBV publishes with the DGM (Laserscanningbefliegungen_Shape.zip, EPSG:25832; 82 lots flown 2016 to 2026, each \"DGM-Gitterweite: 1 m\"), a piece per lot, its year the year its flights ended (Ende_Befl). The lots are footprints, not the tiles: the tile list (the Land's metalink, 09.meta4) states no year. Tiles in lots that ended in 2026 were last modified after them (Partenkirchen's, 23 Sep 2026), so the downloads hold them. Point density at least 4 per m²; the height accuracy stated, \"97,0%<=0,12m\" (0.16 m for 2016 to 2018), and the DGM1's \"besser ± 0,2 m\" aren't RMSEs: left out. Lots overlap where a lot was flown again; each says its own year. The surface model DOM20 is a piece beside it: image-matched (\"mittels dichter Korrelation der orientierten Luftbilder erzeugt\", from the Bayernbefliegung's 20 cm aerial images, renewed in its cycle), 0.2 m (\"Bodenpixelgröße von 0,2 Metern\"), 1 km GeoTIFF tiles, CC BY 4.0. Its tiles' headers name their image flight (BILDFLUG_NUMMER, BILDFLUG_DATUM), and the flights are those of the LDBV's DOP metadata (dopmetadaten.gpkg, EPSG:25832: the current Bayernbefliegung's 100 flight areas, flown 2023 to 2026, each with its number and date; six tiles read, from Munich, Augsburg, Würzburg, Nördlingen, Kempten and Tirschenreuth, each named its area's flight): a piece per flight, its year its date's (aufnahmedatum). No accuracy is stated for the DOM20."
 
 [[piece]]
 id = "dgm1"
@@ -20,3 +20,17 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = 1
 year = { field = "Ende_Befl", date = "iso" }
+
+[[piece]]
+id = "dom20"
+label = "DOM20 Bayern"
+method = "file"
+class = "service"
+url = "https://geodaten.bayern.de/odd/m/4/dop/dopmetadaten.gpkg"
+by = ["bildflugnummer", "gebiet"]
+name = "gebiet"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.2
+year = { field = "aufnahmedatum", date = "iso" }

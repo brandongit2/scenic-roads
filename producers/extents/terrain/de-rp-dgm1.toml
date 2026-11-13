@@ -5,7 +5,7 @@ licence_url = "https://www.govdata.de/dl-de/by-2-0"
 source = "https://geoshop.rlp.de/opendata-dgm1.html"
 theme = "terrain"
 availability = "open"
-notes = "Rhineland-Palatinate's 1 m bare-earth model (DGM1, GeoTIFF) from airborne laser scanning, a quarter of the Land flown again each year since 2022: the open-data folder's listing of its 1 km tiles (EPSG:25832), by the year in each tile's name, which is its capture's (each tile's metadata file states its Erfassung on 15 March of that year: 2022 to 2026). Where a tile has been flown again both files are published (5,392 tiles of 2022 have a 2026 successor), so each year's piece is its own files and those years overlap. Open data, dl-de/by-2-0, with no access restriction (the tiles' metadata). The height accuracy stated, up to ±10 cm + 5 % of the grid in open flat terrain, isn't an RMSE: left out."
+notes = "Rhineland-Palatinate's 1 m bare-earth model (DGM1, GeoTIFF) from airborne laser scanning, a quarter of the Land flown again each year since 2022: the open-data folder's listing of its 1 km tiles (EPSG:25832), by the year in each tile's name, which is its capture's (each tile's metadata file states its Erfassung on 15 March of that year: 2022 to 2026). Where a tile has been flown again both files are published (5,392 tiles of 2022 have a 2026 successor), so each year's piece is its own files and those years overlap. Open data, dl-de/by-2-0, with no access restriction (the tiles' metadata). The height accuracy stated, up to ±10 cm + 5 % of the grid in open flat terrain, isn't an RMSE: left out. Two surface models in the same open-data host are pieces beside it. The DOM1 (1 m, from the laser scans' first and last pulses, dom1/current/tif/: 21,160 1 km tiles, 2022 to 2025 in their names, read alike; each tile's metadata dates its capture, 2025-03-19 for one of 2025). And the image-matched bDOM20 (\"Bildbasiertes digitales Oberflächenmodell 0,2 m\", from image correlation of the aerial survey's 20 cm images, LAZ, bdom20rgbi/current/las/: 5,266 2 km tiles, bdom20rgbi_32_<east km>_<north km>_2_rp.laz, \"Landesweite Flächendeckung\"): no year, which only each tile's own metadata file states (the one read: flight 4425 Bitburg, created 2025-06-21). Its stated height accuracy, about 1 m in open terrain, isn't an RMSE: left out."
 
 [[piece]]
 id = "dgm1"
@@ -22,3 +22,34 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = 1
 year = { field = "year", date = "year" }
+
+[[piece]]
+id = "dom1"
+label = "DOM1 Rheinland-Pfalz"
+method = "listing"
+url = "https://geobasis-rlp.de/data/dom1/current/tif/"
+list = "links"
+pattern = 'dom1_32_(?P<x>\d{3})_(?P<y>\d{4})_1_rp_(?P<year>\d{4})\.tif$'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "bdom20"
+label = "bDOM20 Rheinland-Pfalz"
+method = "listing"
+url = "https://geobasis-rlp.de/data/bdom20rgbi/current/las/"
+list = "links"
+pattern = 'bdom20rgbi_32_(?P<x>\d{3})_(?P<y>\d{4})_2_rp\.laz$'
+unit = 1000
+size = 2000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.2

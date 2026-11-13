@@ -5,7 +5,7 @@ licence_url = "https://sg.geodatenzentrum.de/web_public/gdz/lizenz/deu/nutzungsb
 source = "https://gdz.bkg.bund.de/index.php/default/digitale-geodaten/digitale-gelandemodelle/digitales-gelandemodell-gitterweite-1-m-dgm1.html"
 theme = "terrain"
 availability = "paid"
-notes = "The federal 1 m bare-earth model (DGM1, about 1 TB of GeoTIFF): the 16 Länder's DGM1 joined by the BKG into one dataset for all Germany, its heights evened out at the Länder's borders. For third parties a licence against a fee through the ZSGT, delivered whole on a data carrier (since 8 Jun 2024); free only to federal and Land users (V GeoBund, V GeoLänder): `paid`, so claimed, whatever its index says. Its extent is the BKG's own currency map of it (wfs_info, info:dgm1: each Land's 1 km tiles, cut to the Land, EPSG:25832, with their date, aktualitaet), by year: the area the BKG states it covers, not checked against data. The federal DGM5 and DGM25 aren't pieces: coarser, and for federal users only (the DGM5 not supplied to others since 8 Jun 2024); the free DGM200 is coarser than 30 m. No accuracy stated for the mosaic."
+notes = "The federal 1 m bare-earth model (DGM1, about 1 TB of GeoTIFF): the 16 Länder's DGM1 joined by the BKG into one dataset for all Germany, its heights evened out at the Länder's borders. For third parties a licence against a fee through the ZSGT, delivered whole on a data carrier (since 8 Jun 2024); free only to federal and Land users (V GeoBund, V GeoLänder): `paid`, so claimed, whatever its index says. Its extent is the BKG's own currency map of it (wfs_info, info:dgm1: each Land's 1 km tiles, cut to the Land, EPSG:25832, with their date, aktualitaet), by year: the area the BKG states it covers, not checked against data. The federal DGM5 and DGM25 aren't pieces: coarser, and for federal users only (the DGM5 not supplied to others since 8 Jun 2024); the free DGM200 is coarser than 30 m. No accuracy stated for the mosaic. The federal surface model DOM1 (1 m, the Länder's DOM1 joined alike; \"Aktualitätsstand: 2021\" on its page, 8,000 € a licence, delivered whole on a data carrier) is a piece beside it, claimed likewise: the same currency map's info:dom1 (183,684 tile parts, each with its date and its method, `erfassungsmethode`: ALS for 93,090, bDOM, image matching, for the rest), by year."
 
 [[piece]]
 id = "dgm1"
@@ -19,5 +19,20 @@ page = 10000
 tolerance_m = 200
 [piece.metrics]
 surface = "ground"
+spacing_m = 1
+year = { field = "aktualitaet", date = "iso" }
+
+[[piece]]
+id = "dom1"
+label = "DOM1 Deutschland"
+method = "wfs"
+class = "claimed"
+url = "https://sg.geodatenzentrum.de/wfs_info"
+type = "info:dom1"
+fields = ["aktualitaet", "geom"]
+page = 10000
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
 spacing_m = 1
 year = { field = "aktualitaet", date = "iso" }

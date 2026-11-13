@@ -5,7 +5,7 @@ licence_url = "https://www.govdata.de/dl-de/by-2-0"
 source = "https://geomis.geoportal-th.de/geonetwork/srv/ger/csw?REQUEST=GetRecordById&SERVICE=CSW&VERSION=2.0.2&Elementsetname=full&outputSchema=http://www.isotc211.org/2005/gmd&ID=14418d25-fcd7-4a3f-99a9-e3059a2772af"
 theme = "terrain"
 availability = "open"
-notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25832), from airborne laser scanning, published by survey period (1996-2006, 2010-2013, 2014-2019, 2020-2025; the period in each tile's name, dgm1_32_<east km>_<north km>_1_th_2020-2025). Its tile index couldn't be read on 13 Nov 2026: the download feed (geoportal.geoportal-th.de/dienste/atom_th_hoehendaten_dgm) and the periods' tile overviews (hoehendaten/Uebersichten/Stand_<period>.zip) answer the host's outage page, the Internet Archive holds the feed's top only, not its dataset feed nor the overviews, and the new portal (geoportal.thueringen.de) answers a CAPTCHA. The dataset's record states the model \"landesweit flächendeckend vorhanden\": its extent is Thüringen as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, claimed, not checked against data. No year: which period covers where isn't known without the index. The feed states dl-de/by-2-0 and the record CC BY 4.0 (\"© GDI-Th\"): dl-de/by-2-0, the download service's own, kept. The laser point clouds (LAZ, 4 pts/m²) are the grid's source and make no piece of their own."
+notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25832), from airborne laser scanning, published by survey period (1996-2006, 2010-2013, 2014-2019, 2020-2025; the period in each tile's name, dgm1_32_<east km>_<north km>_1_th_2020-2025). Its tile index couldn't be read on 13 Nov 2026: the download feed (geoportal.geoportal-th.de/dienste/atom_th_hoehendaten_dgm) and the periods' tile overviews (hoehendaten/Uebersichten/Stand_<period>.zip) answer the host's outage page, the Internet Archive holds the feed's top only, not its dataset feed nor the overviews, and the new portal (geoportal.thueringen.de) answers a CAPTCHA. The dataset's record states the model \"landesweit flächendeckend vorhanden\": its extent is Thüringen as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, claimed, not checked against data. No year: which period covers where isn't known without the index. The feed states dl-de/by-2-0 and the record CC BY 4.0 (\"© GDI-Th\"): dl-de/by-2-0, the download service's own, kept. The laser point clouds (LAZ, 4 pts/m²) are the grid's source and make no piece of their own. The surface model DOM1 is a piece beside it: the Höhendaten download publishes each 1 km tile of each period as DGM, DOM and LAZ (README_Hoehendaten_2020-2025.pdf, read in the Internet Archive: \"Rasterweite 1 m, 1 km x 1 km Kachel / nicht redundant\", dom1_32_<east km>_<north km>_1_th_<period>, from the same laser points, classes 2, 18 and 20), so its extent is the DGM1's claim, claimed alike, with no year; its own feed (atom_th_hoehendaten_dom) answers the outage page too. The image-matched bDOM (\"Punktgitterweite ... 20 cm\", CC BY 4.0, its record 1c2a4b6b) names no download and no coverage, only the TLBG's fee schedule among its terms: listed, not drawn."
 
 [[piece]]
 id = "dgm1"
@@ -18,3 +18,25 @@ tolerance_m = 200
 [piece.metrics]
 surface = "ground"
 spacing_m = 1
+
+[[piece]]
+id = "dom1"
+label = "DOM1 (Höhendaten)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["DE-TH"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+
+[[piece]]
+id = "bdom"
+label = "Bildbasiertes Digitales Oberflächenmodell - bDOM"
+method = "none"
+availability = "paid"
+why = "its record names no download and no coverage, only the TLBG's fee schedule among its terms"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.2

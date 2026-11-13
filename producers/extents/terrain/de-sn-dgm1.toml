@@ -5,7 +5,7 @@ licence_url = "https://www.govdata.de/dl-de/by-2-0"
 source = "https://www.geodaten.sachsen.de/downloadbereich-digitale-hoehenmodelle-4851.html"
 theme = "terrain"
 availability = "open"
-notes = "The state's bare-earth model, 1 m in 2 km tiles (EPSG:25833), from airborne laser scanning: the product download's tile layer (rest_geosn_downloadlinks, layer DGM1: 4,981 tiles, each with its download link and its actuality, `Stand`), by the actuality's year. The terms (Sächsische Geodatennutzungsverordnung) are those of dl-de/by-2-0, naming \"GeoSN\". The laser data's accuracy is stated as ±0.15 m and ±0.30 m at 95 %, not an RMSE, so left out. The laser point clouds (LAZ, tile by tile) are the grid's source and make no piece of their own."
+notes = "The state's bare-earth model, 1 m in 2 km tiles (EPSG:25833), from airborne laser scanning: the product download's tile layer (rest_geosn_downloadlinks, layer DGM1: 4,981 tiles, each with its download link and its actuality, `Stand`), by the actuality's year. The terms (Sächsische Geodatennutzungsverordnung) are those of dl-de/by-2-0, naming \"GeoSN\". The laser data's accuracy is stated as ±0.15 m and ±0.30 m at 95 %, not an RMSE, so left out. The laser point clouds (LAZ, tile by tile) are the grid's source and make no piece of their own. The surface model DOM1 (1 m, 2 km tiles, \"durch Interpolation der Ausgangsdaten (Laserscandaten)\") is a piece beside it, from the same service's layer DOM1 (4,981 tiles, each with its `Stand`), read alike; the DOM2 (2 m, 20 km tiles) is the same coarser and makes no piece. No image-matched model is published."
 
 [[piece]]
 id = "dgm1"
@@ -17,5 +17,18 @@ page = 2000
 tolerance_m = 100
 [piece.metrics]
 surface = "ground"
+spacing_m = 1
+year = { field = "Stand", date = "iso" }
+
+[[piece]]
+id = "dom1"
+label = "DOM1"
+method = "arcgis"
+class = "index"
+url = "https://geodienste.sachsen.de/ags-relay/ArcGISServer/guest/arcgis/rest/services/geosn/rest_geosn_downloadlinks/MapServer/4"
+page = 2000
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
 spacing_m = 1
 year = { field = "Stand", date = "iso" }

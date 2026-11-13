@@ -5,7 +5,7 @@ licence_url = "https://www.govdata.de/dl-de/by-2-0"
 source = "https://suche.transparenz.hamburg.de/api/3/action/package_show?id=gelaendemodelle-hamburg-dgm2"
 theme = "terrain"
 availability = "open"
-notes = "The city's bare-earth model, 1 m, from the airborne laser scan of 2022 (the transparency portal's newest edition, a 1.36 GB GeoTIFF archive): its 1 km tiles are the archive's members' names (dgm1_32_<east km>_<north km>_1_hh_2022.tif, EPSG:25832), read from its central directory by range request. Neuwerk's tiles are derived from an image-based surface model, not laser, as the dataset states. Accuracy stated as about ±15 cm on roads, not an RMSE, so left out. A new laser scan flown January to March 2026 isn't published, nor is a point cloud."
+notes = "The city's bare-earth model, 1 m, from the airborne laser scan of 2022 (the transparency portal's newest edition, a 1.36 GB GeoTIFF archive): its 1 km tiles are the archive's members' names (dgm1_32_<east km>_<north km>_1_hh_2022.tif, EPSG:25832), read from its central directory by range request. Neuwerk's tiles are derived from an image-based surface model, not laser, as the dataset states. Accuracy stated as about ±15 cm on roads, not an RMSE, so left out. A new laser scan flown January to March 2026 isn't published, nor is a point cloud. The image-matched surface model bDOM (\"Ableitung ... durch Bildkorrelation (i. d. R. Dense-Image-Matching) aus orientierten digitalen Luftbildern\", 1 m, for the city without its Wadden Sea) is a piece beside it: the transparency portal's newest edition (package digitales-hoehenmodell-hamburg-bdom8, its GeoTIFF archive dom1_hh_2022-11-21.zip, 1.34 GB), its 883 1 km tiles the archive's members' names (dom1_32_<east km>_<north km>_1_hh_2022.tif), by the year in each name (its tile list: Aktualitaet 2022-11, Erfassungsmethode 5040, image matching). Its tile list's Genauigkeit of 0.5 isn't stated as an RMSE: left out."
 
 [[piece]]
 id = "dgm1"
@@ -22,3 +22,19 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = 1
 year = 2022
+
+[[piece]]
+id = "bdom"
+label = "bDOM 1 (2022)"
+method = "listing"
+url = "https://daten-hamburg.de/opendata/Digitales_Hoehenmodell_bDOM/dom1_hh_2022-11-21.zip"
+list = "zip"
+pattern = 'dom1_32_(?P<x>\d{3})_(?P<y>\d{4})_1_hh_(?P<year>\d{4})\.tif$'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = { field = "year", date = "year" }

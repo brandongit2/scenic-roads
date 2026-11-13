@@ -5,7 +5,7 @@ licence_url = "https://www.govdata.de/dl-de/zero-2-0"
 source = "https://gdi.berlin.de/geonetwork/srv/api/records/f0e8ff09-2887-3446-9c53-81dbc45af03c"
 theme = "terrain"
 availability = "open"
-notes = "The city's bare-earth model, 1 m in 2 km tiles (EPSG:25833), with a buffer of about 250 m into Brandenburg: the INSPIRE download feed's 297 tile files (DGM1_<east km>_<north km>.zip, the south-west corner). The record states it from the airborne laser scan flown on 24 and 25 February and 2 March 2021, updated from the image flights of March 2022, April 2023, March 2025 and August 2025 by stereo plotting: the year is the laser survey's. Its accuracy is stated as ±10 cm + 5 % of the grid at 2 sigma, not an RMSE, so left out. The ALS point cloud (9.8 pts/m²) is the grid's source and makes no piece of its own."
+notes = "The city's bare-earth model, 1 m in 2 km tiles (EPSG:25833), with a buffer of about 250 m into Brandenburg: the INSPIRE download feed's 297 tile files (DGM1_<east km>_<north km>.zip, the south-west corner). The record states it from the airborne laser scan flown on 24 and 25 February and 2 March 2021, updated from the image flights of March 2022, April 2023, March 2025 and August 2025 by stereo plotting: the year is the laser survey's. Its accuracy is stated as ±10 cm + 5 % of the grid at 2 sigma, not an RMSE, so left out. The ALS point cloud (9.8 pts/m²) is the grid's source and makes no piece of its own. Two surface models are pieces beside it: the DOM1 (1 m, 2 km tiles, its own feed's 297 files, DOM1_<east km>_<north km>.zip), from the same laser scan of 2021 (its record, ffa05de2: \"Airborne Laserscanning Flug 24.02.2021, 25.02.2021 und 02.03.2021\"), and the image-matched bDOM (\"bildbasiertes Digitales Oberflächenmodell\", 1 m, 2 km tiles, its feed's 282 files, <east km>_<north km>.zip), made from the aerial images of 5, 6 and 9 March 2026 (its record, c1eac52b); both dl-de/zero-2-0, no accuracy stated."
 
 [[piece]]
 id = "dgm1"
@@ -22,3 +22,35 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = 1
 year = 2021
+
+[[piece]]
+id = "dom1"
+label = "DOM - Digitales Oberflächenmodell (1m)"
+method = "listing"
+url = "https://gdi.berlin.de/data/dom/atom/0.atom"
+list = "links"
+pattern = 'DOM1_(?P<x>\d{3})_(?P<y>\d{4})\.zip'
+unit = 1000
+size = 2000
+crs = "EPSG:25833"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2021
+
+[[piece]]
+id = "bdom"
+label = "bDOM - bildbasiertes Digitales Oberflächenmodell (1m)"
+method = "listing"
+url = "https://gdi.berlin.de/data/bdom/atom/0.atom"
+list = "links"
+pattern = '/bdom/atom/(?P<x>\d{3})_(?P<y>\d{4})\.zip'
+unit = 1000
+size = 2000
+crs = "EPSG:25833"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2026

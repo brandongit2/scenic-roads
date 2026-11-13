@@ -5,7 +5,7 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.geo.bremen.de/produkte/3d-produkte/hoehenmodelle-12482"
 theme = "terrain"
 availability = "open"
-notes = "The Land's bare-earth model, 1 m in 1 km tiles (EPSG:25832), published as two archives, the city of Bremen's (from the laser scan of 2017; 1.09 GB) and Bremerhaven's (2015), as the dataset's record states (MetaVer 2351ABA6, read in the Internet Archive's copy of 22 Aug 2025 as metaver.de answered 429; its licence CC BY 4.0): each archive's tiles are its members' names (dgm1_32<east km>_<north km>_1_hb.xyz), read from its central directory by range request. Accuracy stated as ±10 cm + 5 % of the grid, not an RMSE, so left out. A new laser scan was flown on 18 and 19 March 2026 and isn't published; the raw laser data is had on request."
+notes = "The Land's bare-earth model, 1 m in 1 km tiles (EPSG:25832), published as two archives, the city of Bremen's (from the laser scan of 2017; 1.09 GB) and Bremerhaven's (2015), as the dataset's record states (MetaVer 2351ABA6, read in the Internet Archive's copy of 22 Aug 2025 as metaver.de answered 429; its licence CC BY 4.0): each archive's tiles are its members' names (dgm1_32<east km>_<north km>_1_hb.xyz), read from its central directory by range request. Accuracy stated as ±10 cm + 5 % of the grid, not an RMSE, so left out. A new laser scan was flown on 18 and 19 March 2026 and isn't published; the raw laser data is had on request. The surface model DOM1 (open data since 9 Jun 2024 with the DGM, from the same laser scans, \"Als Datengrundlage dienen in der Regel Laserscandaten\") is a piece per archive beside it: its two archives in the same download folder (Gitternetz_DOM1_2017_HB_ASCII_XYZ.zip, 395 tiles, and Gitternetz_DOM1_2015_BHV_ASCII_XYZ.zip, 114), their members' names read alike. The image-matched bDOM (from the image flight of late March 2025) is had only on order, against a fee, in a resolution asked for: no spacing is stated and its tile overview is the Land's 500 m grid, so it is listed, not drawn."
 
 [[piece]]
 id = "dgm1-hb"
@@ -38,3 +38,45 @@ tolerance_m = 100
 surface = "ground"
 spacing_m = 1
 year = 2015
+
+[[piece]]
+id = "dom1-hb"
+label = "DOM1 Stadt Bremen 2017"
+method = "listing"
+url = "https://gdi2.geo.bremen.de/inspire/download/DOM/data/Gitternetz_DOM1_2017_HB_ASCII_XYZ.zip"
+list = "zip"
+pattern = 'dom1_32(?P<x>\d{3})_+(?P<y>\d{4})_1_hb\.xyz$'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2017
+
+[[piece]]
+id = "dom1-bhv"
+label = "DOM1 Stadt Bremerhaven 2015"
+method = "listing"
+url = "https://gdi2.geo.bremen.de/inspire/download/DOM/data/Gitternetz_DOM1_2015_BHV_ASCII_XYZ.zip"
+list = "zip"
+pattern = 'dom1_32(?P<x>\d{3})_+(?P<y>\d{4})_1_hb\.xyz$'
+unit = 1000
+size = 1000
+crs = "EPSG:25832"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2015
+
+[[piece]]
+id = "bdom"
+label = "bDOM Bremen"
+method = "none"
+availability = "paid"
+why = "had only on order, against a fee, in a resolution asked for; no spacing or outline of it is published (its tile overview is the Land's 500 m grid)"
+[piece.metrics]
+surface = "surface"
+year = 2025
