@@ -56,6 +56,12 @@ rely on the agent.
 - **No hand-kept figures:** a step's requirements are measured, enforced where used, or derived from
   the code.
 
+## Spelling
+
+- **Canadian English** in everything a person reads (the app's text, docs, comments, commit
+  messages, board notes, reports): -ize and -yze, not -ise and -yse (equalize, generalize,
+  rasterize, analyze); -our (colour), -re (centre, metre) as they are.
+
 ## Screenshots
 
 - **Proof screenshots are full resolution, saved to a file:** the real capture at 2× pixel density,
