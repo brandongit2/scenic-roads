@@ -5,7 +5,7 @@ licence_url = "https://open.canada.ca/en/open-government-licence-canada"
 source = "https://datacube.services.geo.ca/stac/api/collections/hrdem-lidar"
 theme = "terrain"
 availability = "open"
-notes = "CanElevation's lidar projects (each a bare-earth and a surface model; the bare-earth one is the piece) and its ArcticDEM-derived surface mosaic of the north. A project's outline is its `extent` asset, the project's extent.geojson (the items' own footprints, hulls for many, summed 5.07 million km² on 13 Nov; the extent files sum 2.29 million, against the 2,230,605 km² of lidar NRCan states it holds); its year the last in its name, or for the 145 names holding none, the year of its item's `datetime` (on the 805 items with both, the same year on 743 and a year later on the rest); its cell its files' own (the STAC item's transform). The projects' coverage files (coverage.gpkg, their valid-data polygons) come to 8.4 GB, over a source's 5 GB, and hold no year: not read."
+notes = "CanElevation's lidar projects, each a bare-earth model (DTM) and a lidar surface model (DSM) of one cell and extent (the item's `dtm` and `dsm` assets, named alike: ON-Lower_Thames_2025-1m-dtm.tif and -1m-dsm.tif; every one of the 950 items has both), a piece each; its ArcticDEM-derived surface mosaic of the north; and the Canadian Digital Surface Model (CDSM), a legacy surface model from the SRTM's 1 arc-second DSM of February 2000, one GeoTIFF of 16 m cells (EPSG:3979), read as the mosaic is: its mask 6.91 million km². A project's outline is its `extent` asset, the project's extent.geojson (the items' own footprints, hulls for many, summed 5.07 million km² on 13 Nov; the extent files sum 2.29 million, against the 2,230,605 km² of lidar NRCan states it holds); its year the last in its name, or for the 145 names holding none, the year of its item's `datetime` (on the 805 items with both, the same year on 743 and a year later on the rest); its cell its files' own (the STAC item's transform). The projects' coverage files (coverage.gpkg, their valid-data polygons) come to 8.4 GB, over a source's 5 GB, and hold no year: not read."
 
 [[piece]]
 id = "lidar"
@@ -16,6 +16,19 @@ by = ["id"]
 name = "id"
 [piece.metrics]
 surface = "ground"
+spacing_m = { field = "proj:transform", index = 1 }
+year = [{ field = "id", date = "text" }, { field = "datetime", date = "iso" }]
+
+[[piece]]
+id = "lidar-dsm"
+label = "HRDEM lidar DSM"
+method = "stac"
+url = "https://datacube.services.geo.ca/stac/api/collections/hrdem-lidar"
+geometry = "extent"
+by = ["id"]
+name = "id"
+[piece.metrics]
+surface = "surface"
 spacing_m = { field = "proj:transform", index = 1 }
 year = [{ field = "id", date = "text" }, { field = "datetime", date = "iso" }]
 
@@ -31,3 +44,16 @@ tolerance_m = 1000
 [piece.metrics]
 surface = "surface"
 spacing_m = { field = "res_m" }
+
+[[piece]]
+id = "cdsm"
+label = "Canadian Digital Surface Model (CDSM)"
+method = "raster"
+stac = "https://datacube.services.geo.ca/stac/api/collections/cdsm"
+asset = "dem"
+mask_m = 2000
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }
+year = 2000
