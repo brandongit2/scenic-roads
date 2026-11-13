@@ -157,6 +157,7 @@
   .chip { height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
   .chip:hover { border-color: var(--line-strong); color: var(--fg); }
   .chip[aria-pressed="true"] { background: var(--sel); border-color: var(--sel-line); color: var(--fg); }
+  .chip .cl { max-width: 14rem; overflow: hidden; text-overflow: ellipsis; }
   .chip .n { font: 11px var(--mono); color: var(--faint); font-variant-numeric: tabular-nums; }
   .chip[aria-pressed="true"] .n { color: var(--muted); }
   .chip .sw { width: 8px; height: 8px; border-radius: 50%; }
@@ -246,6 +247,7 @@
   .row.arch > .main, .row.arch > .tail, .row.arch > .box, .row.arch > .pr { opacity: 0.55; }
   .row.ctx > .main .ttl { color: var(--muted); font-weight: 500; }
   .row.ctx > .main, .row.ctx > .tail { opacity: 0.7; }
+  .st .st-w { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .st { flex: none; height: 18px; max-width: 15rem; padding: 0 6px; display: inline-flex; align-items: center; gap: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; font: 500 11px/18px var(--sans); }
   .st.s-working { color: var(--st-work-fg); background: var(--st-work-bg); }
   .st.s-backgrounded { color: var(--st-work-fg); background: transparent; box-shadow: inset 0 0 0 1px var(--st-work-bg); }
@@ -591,10 +593,9 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // Statuses, filters, the model.
   const STATUSES = { "": "Queued", working: "Under way", backgrounded: "Backgrounded", integrating: "Integrating", review: "In review", waiting: "Waiting on you", done: "Done", abandoned: "Abandoned" };
   const statusOf = (t) => (typeof t.status === "string" && t.status in STATUSES ? t.status : "");
-  const shortAssigned = (w) => String(w ?? "").replace(/\s*\(.*$/s, "").trim();
   function statusText(t) {
     switch (statusOf(t)) {
-      case "working": return `under way · ${shortAssigned(t.assigned) || schema.DEFAULT_ASSIGNED}`;
+      case "working": return `under way · ${t.assigned || schema.DEFAULT_ASSIGNED}`;
       case "backgrounded": return "backgrounded";
       case "integrating": return "integrating";
       case "review": return "in review";
@@ -1457,13 +1458,11 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const assignees = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     if (assignees.length) out.push(h("span", { class: "sep", "aria-hidden": "true" }));
     if (assignees.length <= 4) {
-      // (Shortened, unless that makes two alike: "Subagent (Opus)" and "Subagent (Fable)".)
-      const short = (w) => (assignees.some(([o]) => o !== w && shortAssigned(o) === shortAssigned(w)) ? w : shortAssigned(w) || w);
       for (const [w, n] of assignees) {
-        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, short(w), h("span", { class: "n" }, String(n))));
+        out.push(h("button", { class: "chip", type: "button", "data-chip": "assigned:" + w, "aria-pressed": String(S.assigned === w), title: `Only tasks assigned to: ${w}` }, h("span", { class: "cl" }, w), h("span", { class: "n" }, String(n))));
       }
     } else {
-      const sel = h("select", { "aria-label": "Who tasks are assigned to", "data-chip": "assigned" }, h("option", { value: "" }, "Anyone"), assignees.map(([w, n]) => h("option", { value: w, selected: S.assigned === w }, `${shortAssigned(w) || w} (${n})`)));
+      const sel = h("select", { "aria-label": "Who tasks are assigned to", "data-chip": "assigned" }, h("option", { value: "" }, "Anyone"), assignees.map(([w, n]) => h("option", { value: w, selected: S.assigned === w }, `${w} (${n})`)));
       out.push(h("label", { class: "chip", "aria-pressed": String(S.assigned != null) }, "Assigned to:", sel));
     }
     const na = M.order.filter((it) => it.archived).length;
@@ -1475,7 +1474,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   }
 
   // Row pieces shared by both panes.
-  const stChip = (t) => (statusOf(t) ? h("span", { class: `st s-${statusOf(t)}`, title: `${STATUSES[statusOf(t)]}${t.assigned ? ` · assigned to: ${t.assigned}` : ""}` }, statusOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${shortAssigned(t.assigned) || schema.DEFAULT_ASSIGNED}`)] : statusText(t)) : null);
+  const stChip = (t) => (statusOf(t) ? h("span", { class: `st s-${statusOf(t)}`, title: `${STATUSES[statusOf(t)]}${t.assigned ? ` · assigned to: ${t.assigned}` : ""}` }, statusOf(t) === "working" ? ["under way", h("span", { class: "st-w" }, ` · ${t.assigned || schema.DEFAULT_ASSIGNED}`)] : statusText(t)) : null);
   function discBtn(t) {
     const on = !!t.discuss;
     if (!canWrite() || isArch(t)) return on ? h("span", { class: "ic disc on", role: "img", "aria-label": "Needs discussion", title: "Needs discussion" }, icon("bubble")) : null;
@@ -1565,7 +1564,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       tail.append(h("span", { class: "cnt", title: `${it.$open} open, ${it.$done} done${isArch(it) ? "" : " (archived ones left out)"}` }, it.$open ? `${it.$open} open` : all ? "all done" : "empty"));
       if (all) tail.append(h("span", { class: "meter", role: "img", "aria-label": `${it.$done} of ${all} done`, title: `${it.$done} of ${all} done` }, h("i", { style: `width:${(100 * it.$done) / all}%` })));
     } else {
-      add(tail, histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, st === "working" ? "" : hl(shortAssigned(it.assigned))), h("span", { class: "pr" + (isNum(it.priority) ? "" : " none") + (statusOf(it) === "" && isNum(it.priority) && it.priority === M.next && !isArch(it) ? " next" : ""), title: isNum(it.priority) ? `Priority ${it.priority}` : "No priority" }, fmtP(it.priority)));
+      add(tail, histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, st === "working" ? "" : hl(String(it.assigned ?? ""))), h("span", { class: "pr" + (isNum(it.priority) ? "" : " none") + (statusOf(it) === "" && isNum(it.priority) && it.priority === M.next && !isArch(it) ? " next" : ""), title: isNum(it.priority) ? `Priority ${it.priority}` : "No priority" }, fmtP(it.priority)));
     }
     row.append(tail);
     return row;
@@ -1638,7 +1637,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const l1 = h("span", { class: "l1" }, numEl(it), h("span", { class: "ttl", title: title(it) }, hl(title(it))), stChip(it), isArch(it) ? h("span", { class: "tag" }, "Archived") : null);
     const crumbs = it.$crumbs.map(title).join(" › ");
     row.append(h("span", { class: "main" }, l1, crumbs ? h("span", { class: "l2 crumbs", title: crumbs }, hl(crumbs)) : null));
-    row.append(h("span", { class: "tail" }, acts(it), histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, statusOf(it) === "working" ? "" : hl(shortAssigned(it.assigned)))));
+    row.append(h("span", { class: "tail" }, acts(it), histBtn(it), it.discuss ? discBtn(it) : null, h("span", { class: "assigned", title: it.assigned || null }, statusOf(it) === "working" ? "" : hl(String(it.assigned ?? "")))));
     return row;
   }
   function renderSorted() {
