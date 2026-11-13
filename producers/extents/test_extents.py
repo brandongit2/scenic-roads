@@ -4,10 +4,12 @@ import json
 import math
 import os
 import random
+import ssl
 import tomllib
 import unittest
 import urllib.parse
 
+import certifi
 import shapely
 import shapely.geometry as sg
 
@@ -796,6 +798,44 @@ class Ranges(unittest.TestCase):
         self.assertEqual(f.read(), body[-5:])
         with self.assertRaises(FileNotFoundError):
             extents.RangeFile(net, "test/test")
+
+
+def der(tag, *parts):
+    body = b"".join(parts)
+    n = len(body)
+    return bytes([tag]) + (bytes([n]) if n < 0x80 else bytes([0x82]) + n.to_bytes(2, "big")) + body
+
+
+def certificate(issuer, subject, aia=b""):
+    """A DER certificate's shape (its tbsCertificate's fields to the subject, an extension of the
+    AIA's bytes): enough for the chain's helpers, which read no signature."""
+    name = lambda cn: der(0x30, der(0x31, der(0x30, der(0x06, bytes.fromhex("550403")), der(0x0C, cn.encode()))))
+    tbs = der(0x30, der(0xA0, der(0x02, b"\x02")), der(0x02, b"\x01"), der(0x30), name(issuer), der(0x30), name(subject), der(0xA3, aia))
+    return der(0x30, tbs, der(0x30), der(0x03, b"\x00"))
+
+
+class Chains(unittest.TestCase):
+    def test_the_aia_names_the_issuers_certificate(self):
+        uri = b"http://ca.test/issuer.crt"
+        aia = der(0x30, extents.CA_ISSUERS + der(0x86, uri), der(0x30, bytes.fromhex("06082b06010505073001") + der(0x86, b"http://ocsp.test")))
+        self.assertEqual(extents.ca_issuers(certificate("Issuer", "host.test", aia)), [uri.decode()])
+        self.assertEqual(extents.ca_issuers(certificate("Issuer", "host.test")), [])
+
+    def test_a_root_is_told_from_an_intermediate(self):
+        self.assertTrue(extents.self_signed(certificate("Root", "Root")))
+        self.assertFalse(extents.self_signed(certificate("Root", "Intermediate")))
+        # (A real root of the store, with its long lengths.)
+        with open(certifi.where()) as f:
+            pem = f.read()
+        end = "-----END CERTIFICATE-----"
+        root = ssl.PEM_cert_to_DER_cert(pem[pem.index("-----BEGIN CERTIFICATE-----"):pem.index(end) + len(end)])
+        self.assertTrue(extents.self_signed(root))
+
+    def test_an_added_intermediate_is_a_link_never_an_anchor(self):
+        ctx = extents.tls_with([])
+        self.assertFalse(ctx.verify_flags & ssl.VERIFY_X509_PARTIAL_CHAIN)
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
 
 
 if __name__ == "__main__":

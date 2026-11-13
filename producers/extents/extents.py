@@ -63,6 +63,61 @@ UA = "scenic-roads/0.1 (personal offline map)"
 # Mozilla's trust store (certifi's), not the system's file, which lacks roots some publishers chain to
 # (Quebec's: Sectigo's R46); verified as strictly.
 TLS = ssl.create_default_context(cafile=certifi.where())
+# The id-ad-caIssuers access method's OID, DER-encoded: in a certificate's Authority Information
+# Access, the URI after it is where its issuer's certificate is published.
+CA_ISSUERS = bytes.fromhex("06082b06010505073002")
+
+
+def ca_issuers(der):
+    """The issuer certificate URLs a DER certificate's Authority Information Access names (each a
+    context-specific URI, tag 0x86, after the caIssuers OID)."""
+    out, i = [], der.find(CA_ISSUERS)
+    while i >= 0:
+        j = i + len(CA_ISSUERS)
+        if der[j:j + 1] == b"\x86" and der[j + 1] < 0x80:
+            out.append(der[j + 2:j + 2 + der[j + 1]].decode("ascii"))
+        i = der.find(CA_ISSUERS, j)
+    return out
+
+
+def der_children(der, i=0):
+    """The DER elements inside the one at `i`: (start, end) of each, its tag and length bytes
+    included."""
+    def span(j):
+        n, k = der[j + 1], j + 2
+        if n & 0x80:
+            k += n & 0x7F
+            n = int.from_bytes(der[j + 2:k], "big")
+        return k, k + n
+    body, end = span(i)
+    out = []
+    while body < end:
+        out.append((body, span(body)[1]))
+        body = out[-1][1]
+    return out
+
+
+def self_signed(der):
+    """Whether a DER certificate's issuer and subject are one name (a root's)."""
+    tbs = der_children(der, 0)[0][0]
+    parts = der_children(der, tbs)
+    # (tbsCertificate: [0] version where present, serial, signature algorithm, issuer, validity,
+    # subject.)
+    k = 1 if der[parts[0][0]] == 0xA0 else 0
+    issuer, subject = parts[k + 2], parts[k + 4]
+    return der[slice(*issuer)] == der[slice(*subject)]
+
+
+def tls_with(issuers):
+    """Mozilla's trust store with intermediate certificates (DER) added, for a server that sends
+    its own certificate without the intermediate it's signed by (as a browser completes the chain
+    from the AIA). Partial chains refused: an added intermediate is a link to one of the store's
+    roots, never trusted by itself."""
+    ctx = ssl.create_default_context(cafile=certifi.where())
+    ctx.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
+    for der in issuers:
+        ctx.load_verify_locations(cadata=der)
+    return ctx
 # What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): documented services and published files.
 FETCHES = "api, data"
 CLASSES = ("mask", "files", "index", "service", "claimed", "unknown")
@@ -84,6 +139,8 @@ class Fetcher:
         self.requests = self.bytes = 0
         self.lengths = {}
         self.last = 0.0
+        # A host's TLS context, where its chain needed completing (`tls_with`).
+        self.tls = {}
         # The newest date an answer read since `since()` was fetched on (a cached one's: its file's).
         self.fetched = None
 
@@ -118,7 +175,8 @@ class Fetcher:
             if wait > 0:
                 time.sleep(wait)
             try:
-                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180, context=TLS) as r:
+                host = urllib.parse.urlsplit(url).hostname
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180, context=self.tls.get(host, TLS)) as r:
                     n = r.headers.get("Content-Length")
                     if n and int(n) > self.left():
                         sys.exit(f"{url}: {int(n) / 1e6:.0f} MB, over what --max-gb leaves this source: not fetched")
@@ -139,7 +197,11 @@ class Fetcher:
                 if e.code not in (429, 500, 502, 503, 504) or attempt == 3:
                     raise
                 time.sleep(5 * (attempt + 1))
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError) as e:
+                if isinstance(getattr(e, "reason", None), ssl.SSLCertVerificationError) and host not in self.tls and attempt < 3:
+                    # (Its chain completed once from the AIA, then verified to a root as strictly.)
+                    self.tls[host] = self.completed_chain(url)
+                    continue
                 if attempt == 3:
                     raise
                 time.sleep(5 * (attempt + 1))
@@ -159,6 +221,26 @@ class Fetcher:
                 f.write(body)
             os.replace(path + ".part", path)
         return body
+
+    def completed_chain(self, url):
+        """A TLS context for a server whose chain doesn't reach a root: its certificate's issuers,
+        fetched from the AIA URLs each names (up to three links), added to the store."""
+        parts = urllib.parse.urlsplit(url)
+        der = ssl.PEM_cert_to_DER_cert(ssl.get_server_certificate((parts.hostname, parts.port or 443), timeout=60))
+        chain = []
+        for _ in range(3):
+            links = ca_issuers(der)
+            if not links:
+                break
+            with urllib.request.urlopen(urllib.request.Request(links[0], headers={"User-Agent": UA}), timeout=60) as r:
+                der = r.read(1 << 16)
+            if der.lstrip()[:1] == b"-":
+                der = ssl.PEM_cert_to_DER_cert(der.decode("ascii"))
+            if self_signed(der):
+                # (A root the server names would be trusted by being loaded: only the store's are.)
+                break
+            chain.append(der)
+        return tls_with(chain)
 
     def spend(self, url, n):
         self.spent += n
