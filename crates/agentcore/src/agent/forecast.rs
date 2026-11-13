@@ -537,7 +537,7 @@ pub type CostTable = BTreeMap<String, BTreeMap<String, Cost>>;
 
 /// The targets of `works` done at the key they're planned at whose records the plan hasn't read
 /// (the coordinator's done set, `done`: crate::coord::Coordinator::done_unread): a plan made from
-/// records read before a job's hand-off was merged (one under way as the job ended) still offers
+/// records read before a job's hand-off was merged (such as one under way as the job ended) still offers
 /// them, the coordinator grants none of them again, and none is work to come (task #1375).
 pub fn unread<'a>(
     done: &BTreeMap<(String, String), String>,

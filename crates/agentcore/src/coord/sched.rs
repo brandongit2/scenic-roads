@@ -160,7 +160,7 @@ pub struct Sched {
     pub drops: std::collections::HashSet<(String, String)>,
     /// Work done (a member's hand-off taken, or this Mac's job ended), (step, target) → key, its
     /// record not yet read by a plan: a plan that read the records before its hand-off was merged
-    /// (one under way as the job ended) still offers it at that key. Never granted again meanwhile
+    /// (such as one under way as the job ended) still offers it at that key. Never granted again meanwhile
     /// (`pack`, Coordinator::hold_for), said "done (its record not read yet)" in a refusal
     /// (`Refused::words`), and no work to come in the forecast (crate::agent::forecast::unread);
     /// let go by the first plan that doesn't offer it at that key (Coordinator::offer).
@@ -852,7 +852,7 @@ impl Sched {
         self.offered.get(step)?.get(target).copied()
     }
 
-    /// `step`'s work done under a key the plan hasn't shown yet (`done`): target → key.
+    /// `step`'s work done whose record the plan hasn't read yet (`done`): target → key.
     fn done_of(&self, step: &str) -> std::collections::HashMap<&str, &str> {
         let from = (step.to_string(), String::new());
         self.done

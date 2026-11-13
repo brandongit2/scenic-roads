@@ -2184,7 +2184,12 @@ impl Planner {
             None => BTreeSet::new(),
         };
         let left_of = |w: &jobs::Work| -> Vec<(String, String)> {
-            w.targets.iter().filter(|t| !unread.contains(&(w.step.clone(), t.0.clone()))).cloned().collect()
+            // (No pair made a target while nothing is done so: the usual case.)
+            w.targets
+                .iter()
+                .filter(|t| unread.is_empty() || !unread.contains(&(w.step.clone(), t.0.clone())))
+                .cloned()
+                .collect()
         };
         let backfill: Vec<jobs::Work> =
             backfill.iter().map(|w| jobs::Work { targets: left_of(w), ..w.clone() }).collect();

@@ -133,7 +133,7 @@ Common rules:
   member to the lead and merged by the lead (docs/pool.md §7.3). A task's files go back to the
   broker that offered it; a hand-back for a gone lease is refused (410). The targets a job ended
   with are held done at their keys (`Sched::done`) until a plan reads their record: a plan made
-  from records read before the hand-off was merged (one under way as the job ended) still offers
+  from records read before the hand-off was merged (such as one under way as the job ended) still offers
   them, never granted again; a refusal says them "done (its record not read yet)", the forecast
   counts none of them as work to come, and the first plan that doesn't offer one at its key lets
   it go.

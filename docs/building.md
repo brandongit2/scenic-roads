@@ -310,8 +310,8 @@ from the first (`edit_held`).
   sustained room over the last 48 hours: a best case, as the build page says.
   Z6 tiles reading stale terrain count `forecast::EXPECTED_STALE` (0.6) as work to come. A target
   the coordinator holds done at the key the plan has, its record not yet read by the plan (a plan
-  made from records read before the job's hand-off was merged: one under way as the job ended,
-  task #1375), is not work to come (`forecast::unread`). The map is
+  made from records read before the job's hand-off was merged, such as one under way as the job
+  ended, task #1375), is not work to come (`forecast::unread`). The map is
   updated per z6 tile: a region's map tiles (`RegionLeft::packs`: its z6 tiles' map tiles stale now or to be
   once its z6 tiles left are built) are drawn once its z6 tiles are, ahead of the regions' work, each at
   its own measured time; a region is all on the map as it's built now (`map_at`) at its last
