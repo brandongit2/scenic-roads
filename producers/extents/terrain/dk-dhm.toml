@@ -5,7 +5,7 @@ licence_url = "https://www.klimadatastyrelsen.dk/om-klimadatastyrelsen/vilkaar-o
 source = "https://www.eng.klimadatastyrelsen.dk/green-transition-and-climate-adaptation/the-danish-elevation-model-dk-dem"
 theme = "terrain"
 availability = "login"
-notes = "The Danish elevation model (DK-DEM, DHM): the Agency for Climate Data states its terrain model as \"an 0.4m grid for the entire country\". Free under CC BY 4.0 (the agency's terms for its free geodata), downloaded from Dataforsyningen after creating a free user (its token): login, so claimed, Denmark as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (its five regions; the Faroes and Greenland apart). The scan's year isn't stated on the agency's pages read (a third party's record gives 2014-2015 and another reports a 2025 version): left out."
+notes = "The Danish elevation model (DK-DEM, DHM): the Agency for Climate Data states its terrain model as \"an 0.4m grid for the entire country\"; its surface model, DHM/Overflade, is the same lidar's (DHM/Punktsky's classes of the surface, power lines and noise left out) \"omregnet til et grid med en størrelse på 0,4 meter\", its accuracy given as an RMS of 0.06 m vertically on well-defined surfaces, over Denmark (its record, geodata-info.dk 6cedf383-ad5d-4040-a88d-54d037d467b5; the model is kept up to date by yearly spring scanning of about 11 of the country's 55 blocks, a five-year cycle). Free under CC BY 4.0 (the agency's terms for its free geodata), downloaded from Dataforsyningen after creating a free user (its token; the WCS, dhm_wcs_DAF, answers \"User not authorized\" to anything but its capabilities without one): login, so claimed, Denmark as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (its five regions; the Faroes and Greenland apart). No year is stated for either model as a whole (blocks are rescanned in turn; a third party's record gives 2014-2015 and another reports a 2025 version): left out."
 
 [[piece]]
 id = "dtm"
@@ -18,3 +18,16 @@ tolerance_m = 500
 [piece.metrics]
 surface = "ground"
 spacing_m = 0.4
+
+[[piece]]
+id = "dsm"
+label = "DHM/Overflade 0.4 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["DNK"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4
+vertical_rmse_m = 0.06

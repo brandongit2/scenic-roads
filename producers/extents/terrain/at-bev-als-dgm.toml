@@ -1,11 +1,11 @@
-name = "BEV ALS-DGM Höhenraster"
+name = "BEV ALS-DGM and ALS-DOM Höhenraster"
 credit = "Bundesamt für Eich- und Vermessungswesen (BEV), with the Länder"
 licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.bev.gv.at/Services/Produkte/Digitales-Gelaendehoehenmodell/ALS-Hoehenraster.html"
 theme = "terrain"
 availability = "open"
-notes = "Austria's 1 m bare-earth model from the federal and Länder lidar, a mosaic made each year of the newest surveys (Stichtag 15 September; the 2025 mosaic's 55 tiles of 50 km, EPSG:3035, download with no login). Its pieces are the BEV's own map of the surveys behind the 2025 mosaic (Metadatenübersicht SHP DTM/DSM 20250915: each area's Land, `Gebiet`, and flight years, `Flugjahr`), by Land and year: the year the last of a span (2011-12: 2012; 'DTM:2019, DSM:2009': 2019, the DTM's). The mosaic's Stichtag is when it was made, not flown: not a year. Its accuracy is stated as ±0.50 m in height, more in high mountains, not as an RMSE: left out. The tiles' own headers and overviews would say where the mosaic has data but not when it was flown, so the survey map is the extent read (its pieces come to 83,975 km², Austria's 83,879). Of the Länder's own grids, only those finer (Burgenland, Oberösterreich, Tirol, Vorarlberg at 0.5 m) are declared apart: Salzburg's, Steiermark's and Wien's 1 m models are these surveys at this grid (Steiermark's 0.5 m grids of its campaign since 2022 are in none of its open services, which give 1 m), Niederösterreich's and Kärnten's open ones coarser (10 m, 5 m; Kärnten's campaign since 2022: at-ktn-als)."
+notes = "Austria's 1 m models from the federal and Länder lidar, the bare-earth DTM (ALS-DGM) and the surface model (ALS-DOM, the same points' surface grid: \"jeweils ein DGM und ein DOM als regelmäßiger Raster mit einer Rasterweite von 1 m\"), each a mosaic made each year of the newest surveys (Stichtag 15 September; the 2025 mosaics' 55 tiles of 50 km, EPSG:3035, download with no login). Their pieces are the BEV's own map of the surveys behind the 2025 mosaics (Metadatenübersicht SHP DTM/DSM 20250915: each area's Land, `Gebiet`, and flight years, `Flugjahr`), by Land and year: the year the last of a span (2011-12: 2012); where the map gives the two models apart ('DTM:2019, DSM:2009', 23 of Steiermark's areas), the DTM's year for the DTM and the DSM's for the DSM, the text kept as `stated`. The mosaics' Stichtag is when they were made, not flown: not a year. Their accuracy is stated as ±0.50 m in height, more in high mountains, not as an RMSE: left out. The tiles' own headers and overviews would say where the mosaic has data but not when it was flown, so the survey map is the extent read (its DTM pieces come to 83,975 km², Austria's 83,879). The BEV also sells a 0.5 m surface model matched from its aerial photographs (DOM aus Luftbildern: stereo image matching, not edited, ±1 m in height, updated with the photo flights, the country every 3 years; 6 € a km²): its pieces are the BEV's actuality map of it (Aktualität Digitales Oberflächenmodell 2022-2024: 13,828 sheets, each its flight's year, `Jahr`), by year; paid, so claimed. Of the Länder's own grids, only those finer (Burgenland, Oberösterreich, Tirol, Vorarlberg at 0.5 m, their DTMs and DOMs) are declared apart: Salzburg's, Steiermark's and Wien's 1 m models are these surveys at this grid (Steiermark's 0.5 m grids of its campaign since 2022 are in none of its open services, which give 1 m), Niederösterreich's and Kärnten's open ones coarser (10 m, 5 m; Kärnten's campaign since 2022: at-ktn-als)."
 
 [[piece]]
 id = "dgm"
@@ -19,3 +19,29 @@ tolerance_m = 200
 surface = "ground"
 spacing_m = 1.0
 year = { field = "Flugjahr", date = "text" }
+
+[[piece]]
+id = "dom"
+method = "file"
+class = "service"
+url = "https://www.bev.gv.at/dam/jcr:ba481b45-0f40-4aa1-8184-e6e05fe4b79f/Metadatenuebersicht_SHP_DTM_DSM_20250915.zip"
+by = ["Gebiet"]
+name = "Gebiet"
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+year = [{ field = "Flugjahr", map = { "DTM:2019, DSM:2009" = 2009, "DTM:2019, DSM:2010" = 2010, "DTM:2019, DSM:2011" = 2011, "DTM:2019, DSM:2012" = 2012, "DTM:2019, DSM:2017" = 2017 } }, { field = "Flugjahr", date = "text" }]
+
+[[piece]]
+id = "dom-luftbild"
+label = "DOM aus Luftbildern 0.5 m"
+method = "file"
+class = "claimed"
+availability = "paid"
+url = "https://www.bev.gv.at/dam/jcr:e5032b65-a7a7-46c8-9b1a-0e21615bb55e/Aktualitaet_Digitales_Oberflaechenmodell_2022-2024.zip"
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = { field = "Jahr", date = "year" }

@@ -5,7 +5,7 @@ licence_url = "https://aknlidarappprod.katastar.gov.mk/LiDARInfoStrana/index.htm
 source = "https://aknlidarappprod.katastar.gov.mk/LiDARInfoStrana/index.html"
 theme = "terrain"
 availability = "closed"
-notes = "The cadastre agency's lidar survey of part of North Macedonia, with Norway's mapping authority (agreement of March 2018), flown by MGGP Aero: point clouds and precise DTM and DSM for 11,072 km² of the country in 14 blocks, shown only as a picture on its information page (read through the Wayback Machine; the live portal timed out on 13 Nov 2026). The products \"will be publicly available\" through the LiDAR portal, which has a login and test data only. Its blocks have no published outline, its grid, density and year aren't stated: listed, not drawn."
+notes = "The cadastre agency's lidar survey of part of North Macedonia, with Norway's mapping authority (agreement of March 2018), flown by MGGP Aero: point clouds and precise DTM and DSM for 11,072 km² of the country in 14 blocks, shown only as a picture on its information page (read through the Wayback Machine; the live portal timed out on 13 Nov 2026). The products \"will be publicly available\" through the LiDAR portal, which has a login and test data only. Its blocks have no published outline, its grid, density and year aren't stated: the DTM and the DSM listed, not drawn."
 
 [[piece]]
 id = "lidar"
@@ -14,3 +14,11 @@ method = "none"
 why = "its 14 blocks are drawn only in a picture; no outline or index is published"
 [piece.metrics]
 surface = "ground"
+
+[[piece]]
+id = "dsm"
+label = "LiDAR DSM (14 blocks, 11,072 km²)"
+method = "none"
+why = "its 14 blocks are drawn only in a picture; no outline or index is published"
+[piece.metrics]
+surface = "surface"

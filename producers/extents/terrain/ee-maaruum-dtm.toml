@@ -1,11 +1,11 @@
-name = "Eesti maapinna kõrgusmudel"
+name = "Eesti kõrgusmudelid (DTM, DSM)"
 credit = "Maa- ja Ruumiamet"
 licence = "Maa- ja Ruumiameti avaandmete litsents (equivalent to CC BY 4.0)"
 licence_url = "https://geoportaal.maaruum.ee/opendata-licence"
 source = "https://metadata.geoportaal.ee/geonetwork/srv/api/records/7bad4f0d-79aa-4ca3-8e55-4b77eadc470d/formatters/xml"
 theme = "terrain"
 availability = "open"
-notes = "Estonia's bare-earth model (DTM) from the national airborne laser scanning, downloaded free by map sheet: its record states models of the whole country (\"kogu Eestimaa ulatuses\") at 1, 5, 10 and 25 m from the spring mapping flights, and 1 m from the low flights over towns; the geoportal says the latest models are made from the 2021 to 2024 scanning. No index of the 1 m files is published: the download page lists one sheet's files at a time, by its number (asking it sheet by sheet would be a crawl), its WCS (wcs-dtm) is one coverage, and the catalogue's records link no tile index. So its extent is the country the record states, as Natural Earth's 1:10m administrative areas (v5.1.2) draw Estonia: claimed, not checked against the sheets. No vertical accuracy is stated."
+notes = "Estonia's elevation models from the national airborne laser scanning, downloaded free by map sheet: its record states bare-earth models (DTM) of the whole country (\"kogu Eestimaa ulatuses\") at 1, 5, 10 and 25 m from the spring mapping flights, and 1 m from the low flights over towns; the geoportal's elevation page says \"All of the Estonian territory is covered by LiDAR collected elevation data\", lists surface models (DSM) at 1 and 5 m beside them (\"DSM's ... are made of both springtime and summertime flight data\"), and that the latest models are made from the 2021 to 2024 scanning. No index of the 1 m files is published: the download page lists one sheet's files at a time, by its number (asking it sheet by sheet would be a crawl), its WCS (wcs-dtm) is one coverage, and the catalogue's records link no tile index. So their extent is the country stated, as Natural Earth's 1:10m administrative areas (v5.1.2) draw Estonia: claimed, not checked against the sheets. No vertical accuracy is stated."
 
 [[piece]]
 id = "dtm"
@@ -17,5 +17,18 @@ filter = { adm0_a3 = ["EST"] }
 tolerance_m = 500
 [piece.metrics]
 surface = "ground"
+spacing_m = 1
+year = 2024
+
+[[piece]]
+id = "dsm"
+label = "DSM 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["EST"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
 spacing_m = 1
 year = 2024

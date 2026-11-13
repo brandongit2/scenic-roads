@@ -5,7 +5,7 @@ licence_url = "http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&r
 source = "http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&request=GetCapabilities&version=2.0.1"
 theme = "terrain"
 availability = "open"
-notes = "The agriculture ministry's elevation models made with its orthophotos, a third of the country a year (its INSPIRE GeoServer, RasterData workspace): the 1 m terrain models Dem_2023, Dem_2024 and Dem_2025 (\"DTM\", cells of 1.0 m in UTM 35N as each coverage's DescribeCoverage states) and the 4 m surface models Dem_2020, Dem_2021 and Dem_2022 (\"DSM\", cells of 4.0 m; the 2021 one 4.016 m). Its WCS answers GetCoverage without a login, so they download: open. Each coverage's extent is its valid data in a GetCoverage asked for at a coarse scale (2 km cells: SCALEFACTOR 0.0005 for the 1 m models, 0.002 for the 4 m ones): `files`, its grain the coarse cell; the spacing is the coverage's own. The server takes 2 to 5 minutes to make each 1 m model's coarse answer (Dem_2025: 301 s), longer than the producer waits by default (180 s): their blocks wait 600 s (`timeout_s`). Dem_Alternative (a 4 m surface model of the whole country, its year and making not stated) is left out. No accuracy is stated."
+notes = "The agriculture ministry's elevation models made with its orthophotos, a third of the country a year (its INSPIRE GeoServer, RasterData workspace): the 1 m terrain models Dem_2023, Dem_2024 and Dem_2025 (\"DTM\", cells of 1.0 m in UTM 35N as each coverage's DescribeCoverage states), the 4 m surface models Dem_2020, Dem_2021 and Dem_2022 (\"DSM\", cells of 4.0 m; the 2021 one 4.016 m), and Dem_Alternative (\"DSM\", its keywords Dem, DSM, Alternative, Bulgaria; cells of 4.005 m over the whole country's box; its year and making not stated, so no year). Its WCS answers GetCoverage without a login, so they download: open. Each coverage's extent is its valid data in a GetCoverage asked for at a coarse scale (2 km cells: SCALEFACTOR 0.0005 for the 1 m models, 0.002 for the 4 m ones): `files`, its grain the coarse cell; the spacing is the coverage's own. The server takes 2 to 5 minutes to make each 1 m model's coarse answer (Dem_2025: 301 s), longer than the producer waits by default (180 s): their blocks wait 600 s (`timeout_s`). No accuracy is stated."
 
 [[piece]]
 id = "dtm-2023"
@@ -81,3 +81,15 @@ tolerance_m = 1000
 surface = "surface"
 spacing_m = 4
 year = 2022
+
+[[piece]]
+id = "dsm-alternative"
+label = "Dem_Alternative DSM 4 m"
+method = "raster"
+urls = ["http://inspire.mzh.government.bg:8080/geoserver/ows?service=WCS&version=2.0.1&request=GetCoverage&coverageId=RasterData__Dem_Alternative&format=image/tiff&SCALEFACTOR=0.002"]
+timeout_s = 600
+mask_m = 1900
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = 4

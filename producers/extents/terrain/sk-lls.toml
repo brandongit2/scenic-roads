@@ -1,11 +1,11 @@
-name = "ÚGKK SR LLS DMR"
+name = "ÚGKK SR LLS DMR and DMP"
 credit = "ÚGKK SR"
 licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.skgeodesy.sk/geoportal/zbgis/lls/poskytovanie/"
 theme = "terrain"
 availability = "open"
-notes = "The bare-earth models of the national airborne laser scanning (LLS), as the geodesy office provides them, by its collection lots (lokality): the outlines are its lots' overview shapefiles (prehlad_lokalit_lls_1_cyklus.zip, 42 lots; prehlad_lokalit_lls_2_cyklus.zip, 73 lots; S-JTSK [JTSK03], their text cp1250 with no .cpg), each lot its number and name. Cycle 1 (2017 to 2023): DMR 5.0, a 1 m grid of the whole country, downloaded as one country ZIP. Cycle 2 (2022 to 2026): DMR 6.0, a 0.5 m grid, downloaded by lot for the 16 lots the download page lists (04, 06, 07, 08, 09, 10, 11, 12, 13, 16, 17, 20, 27, 29, 31, 32); the other 57 lots aren't published yet and are left out. Each lot's year is the last of its scanning period in the office's lot parameter tables (parametre-lokality-zberu-udajov-lls-1-cyklus.pdf and -2-cyklus.pdf), a block a cycle and year. Lots 40 to 42 of cycle 1 are completed with the national forestry centre's (NLC) 2018 to 2021 scanning. The tables give each cycle-1 lot's height accuracy of the DMR 5.0 (0.02 to 0.10 m; the specification m_H ≤ 0.20 m), not called an RMSE: left out. The classified point clouds are ordered offline and the DMP surface models sit beside these grids: not pieces."
+notes = "The bare-earth and surface models of the national airborne laser scanning (LLS), as the geodesy office provides them, by its collection lots (lokality): the outlines are its lots' overview shapefiles (prehlad_lokalit_lls_1_cyklus.zip, 42 lots; prehlad_lokalit_lls_2_cyklus.zip, 73 lots; S-JTSK [JTSK03], their text cp1250 with no .cpg), each lot its number and name. Cycle 1 (2017 to 2023): DMR 5.0 and DMP 1.0, 1 m grids of the whole country, each downloaded as one country ZIP. Cycle 2 (2022 to 2026): DMR 6.0 and DMP 2.0, 0.5 m grids, downloaded by lot for the 16 lots the download page lists, each with both (04, 06, 07, 08, 09, 10, 11, 12, 13, 16, 17, 20, 27, 29, 31, 32); the other 57 lots aren't published yet and are left out. The DMP surface models are the lidar's, made with the DMR from the same scanning: their blocks (dmp1-, dmp2-) are the DMR's (dmr5-, dmr6-), lot for lot. Each lot's year is the last of its scanning period in the office's lot parameter tables (parametre-lokality-zberu-udajov-lls-1-cyklus.pdf and -2-cyklus.pdf), a block a cycle and year. Lots 40 to 42 of cycle 1 are completed with the national forestry centre's (NLC) 2018 to 2021 scanning. The tables give each cycle-1 lot's height accuracy of the DMR 5.0 (0.02 to 0.10 m; the specification m_H ≤ 0.20 m), not called an RMSE: left out. The classified point clouds are ordered offline on a form (their density not stated on the download page): not pieces."
 
 [[piece]]
 id = "dmr5-2018"
@@ -139,5 +139,140 @@ name = "LOT_nazov"
 tolerance_m = 100
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.5
+year = 2025
+
+[[piece]]
+id = "dmp1-2018"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["01", "02", "03", "04", "05", "07", "08", "09", "10", "11", "17", "19", "24", "26"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2018
+
+[[piece]]
+id = "dmp1-2019"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["06", "12", "13", "20", "21", "22"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2019
+
+[[piece]]
+id = "dmp1-2020"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["14", "15", "16", "18", "23", "25", "27", "29"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2020
+
+[[piece]]
+id = "dmp1-2021"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["28", "30", "31", "32", "33", "34", "35", "36", "39"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2021
+
+[[piece]]
+id = "dmp1-2022"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["37", "38", "40", "41", "42"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2022
+
+[[piece]]
+id = "dmp2-2022"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["07", "10", "20"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "dmp2-2023"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["04", "06"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "dmp2-2024"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["08", "09", "11", "12", "13", "17", "31"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2024
+
+[[piece]]
+id = "dmp2-2025"
+method = "file"
+class = "service"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["16", "27", "29", "32"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.5
 year = 2025

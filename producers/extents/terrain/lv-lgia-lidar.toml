@@ -5,7 +5,7 @@ licence_url = "https://www.lgia.gov.lv/sites/lgia/files/document/Atverto%20datu%
 source = "https://geolatvija.lv/geonetwork/srv/api/records/d0673187-b7a9-49b4-afb9-4666e9a02e6a/formatters/xml"
 theme = "terrain"
 availability = "open"
-notes = "Two open products of the agency's first airborne laser scanning of the country (scanned 2014 to 2019, as its service record says). The classified points (\"digitālā augstuma modeļa pamatdati\": at least 4 points/m² in all, 1.5 on the ground; LAS in 1 km sheets of the TKS-93 nomenclature in LKS-92 TM, EPSG:3059): the agency's own list of the files' links (LGIA_OpenData_las_saites.txt, 65,917 sheets and a Thumbs.db), each name placed by its nomenclature (2434-15-15: the 100 km row 2 and column 4, the 50 km and 25 km quadrants 3 and 4, the 5 km and 1 km rows and columns from the south-west, as the files' own headers place them); taken at their nominal spacing, 1/√4 = 0.5 m, and the cycle's last year. The 1 m bare-earth and surface grids made from them are for public bodies only, so the open points are the piece. The 20 m bare-earth grid (DTM_Latvija_20m.7z, one archive of the country, text) is the other: its extent the country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw Latvia, claimed. The second cycle (2022 to 2024, about half the country, at least 6 points/m²) isn't open. No vertical accuracy as an RMSE is stated (12 cm at 2 sigma, 95 %)."
+notes = "Two open products of the agency's first airborne laser scanning of the country (scanned 2014 to 2019, as its service record says). The classified points (\"digitālā augstuma modeļa pamatdati\": at least 4 points/m² in all, 1.5 on the ground; LAS in 1 km sheets of the TKS-93 nomenclature in LKS-92 TM, EPSG:3059): the agency's own list of the files' links (LGIA_OpenData_las_saites.txt, 65,917 sheets and a Thumbs.db), each name placed by its nomenclature (2434-15-15: the 100 km row 2 and column 4, the 50 km and 25 km quadrants 3 and 4, the 5 km and 1 km rows and columns from the south-west, as the files' own headers place them); taken at their nominal spacing, 1/√4 = 0.5 m, and the cycle's last year. The 1 m bare-earth, surface and normalized surface grids (\"Digitālais reljefa modelis\", \"Digitālais virsmas modelis\", \"izšķirtspēja – 1 m\", TIFF of 1 km²) are free only to public bodies and those doing their delegated work (the agency's 2025 presentation, Kartogrāfu_diena_2025_pakalpojumi.pdf), so the open points are the piece; the 1 m DTM and DSM are listed (closed), what area they cover isn't stated. The 20 m bare-earth grid (DTM_Latvija_20m.7z, one archive of the country, text) is the other: its extent the country, as Natural Earth's 1:10m administrative areas (v5.1.2) draw Latvia, claimed. The second cycle (2022 to 2024, about half the country, at least 6 points/m²) isn't open. No vertical accuracy as an RMSE is stated (12 cm at 2 sigma, 95 %)."
 
 [[piece]]
 id = "points"
@@ -43,3 +43,23 @@ tolerance_m = 500
 [piece.metrics]
 surface = "ground"
 spacing_m = 20
+
+[[piece]]
+id = "dtm1"
+label = "LĢIA DTM 1 m (public bodies)"
+availability = "closed"
+method = "none"
+why = "free to public bodies only; the area it covers isn't stated"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+
+[[piece]]
+id = "dsm1"
+label = "LĢIA DSM 1 m (public bodies)"
+availability = "closed"
+method = "none"
+why = "free to public bodies only; the area it covers isn't stated"
+[piece.metrics]
+surface = "surface"
+spacing_m = 1

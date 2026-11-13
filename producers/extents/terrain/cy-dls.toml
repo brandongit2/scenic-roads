@@ -5,7 +5,7 @@ licence_url = "https://www.data.gov.cy/el/dataset/ypsometria-inspire"
 source = "https://www.data.gov.cy/el/dataset/ypsometria-inspire"
 theme = "terrain"
 availability = "open"
-notes = "The Department of Lands and Surveys' elevation models, downloaded without a login from its INSPIRE folder (the open-data portal's \"Elevation Directory\", eservices.dls.moi.gov.cy/inspire_downloads/EL/rasters/, an IIS directory listing). The 2019 and 2014 DTMs are 1 m grids (their files' metadata: the \"Pancyprian Dtm 1m Area1 & Area2\" of 2019, cells of 1.0e-5° in ETRS89) cut into 2.5 km tiles of the Cyprus LTM grid (CGRS93, EPSG:6312), each named by its south-west corner in hundreds of metres (ETRS89_1325_3800.tif: 132,500 E, 380,000 N): the listing's 1,070 and 1,063 tiles, the government-controlled areas. The Pancyprian DEM of 1963 (Pancyprian_Dem_1963_ETRS89.tif, cells of 1.0e-4°, ten times the 1 m DTMs' own: a 10 m grid reprojected as theirs were, its box 32.25–34.63° E, 34.54–35.73° N: the whole island) has no overviews in the file (an external .ovr only), so a mask of it is the whole 344 MB file read: it is claimed for the island, Natural Earth's 1:10m Cyprus, Northern Cyprus, Akrotiri and Dhekelia (v5.1.2), not checked against data. Its 1993 5 m model lies within the 1 m DTMs' areas and is left out. No accuracy is stated."
+notes = "The Department of Lands and Surveys' elevation models, downloaded without a login from its INSPIRE folder (the open-data portal's \"Elevation Directory\", eservices.dls.moi.gov.cy/inspire_downloads/EL/rasters/, an IIS directory listing). The 2019 and 2014 DTMs and DSMs, from the surveys' lidar (their files' metadata place them in each survey's \"Dtm_Dsm_Contours-Lidar\" folder; the DSMs \"Dsm 50cm\", cells of 5.0e-6° in ETRS89; the 2019 DSM a mosaic of \"Pancyprian DSM of Area1 (2019) & Area2 (From All Product Files 2014)\", so partly the 2014 survey's), are 1 m (DTM) and 0.5 m (DSM) grids (their files' metadata: the \"Pancyprian Dtm 1m Area1 & Area2\" of 2019, cells of 1.0e-5° in ETRS89) cut into 2.5 km tiles of the Cyprus LTM grid (CGRS93, EPSG:6312), each named by its south-west corner in hundreds of metres (ETRS89_1325_3800.tif: 132,500 E, 380,000 N): the listings' 1,070 and 1,063 DTM tiles and 1,068 and 1,063 DSM tiles (2019, 2014), the government-controlled areas; the 2019 DSM, partly of 2014, states no year. The Pancyprian DEM of 1963 (Pancyprian_Dem_1963_ETRS89.tif, cells of 1.0e-4°, ten times the 1 m DTMs' own: a 10 m grid reprojected as theirs were, its box 32.25–34.63° E, 34.54–35.73° N: the whole island) has no overviews in the file (an external .ovr only), so a mask of it is the whole 344 MB file read: it is claimed for the island, Natural Earth's 1:10m Cyprus, Northern Cyprus, Akrotiri and Dhekelia (v5.1.2), not checked against data. Its 1993 5 m model lies within the 1 m DTMs' areas and is left out. No accuracy is stated."
 
 [[piece]]
 id = "dtm-2019"
@@ -50,3 +50,34 @@ tolerance_m = 200
 [piece.metrics]
 spacing_m = 10
 year = 1963
+
+[[piece]]
+id = "dsm-2019"
+label = "DSM 2019 0.5 m"
+method = "listing"
+list = "links"
+url = "http://eservices.dls.moi.gov.cy/inspire_downloads/EL/rasters/2019_DSM/"
+pattern = 'ETRS89_(?P<x>\d+)_(?P<y>\d+)\.tif$'
+unit = 100
+size = 2500
+crs = "EPSG:6312"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+
+[[piece]]
+id = "dsm-2014"
+label = "DSM 2014 0.5 m"
+method = "listing"
+list = "links"
+url = "http://eservices.dls.moi.gov.cy/inspire_downloads/EL/rasters/2014_DSM/"
+pattern = 'ETRS89_(?P<x>\d+)_(?P<y>\d+)\.tif$'
+unit = 100
+size = 2500
+crs = "EPSG:6312"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2014

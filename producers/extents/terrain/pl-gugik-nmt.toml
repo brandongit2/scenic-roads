@@ -1,11 +1,11 @@
-name = "GUGiK NMT"
+name = "GUGiK NMT and NMPT"
 credit = "Główny Urząd Geodezji i Kartografii (GUGiK)"
 licence = "free of charge, any use (\"dostępne bezpłatnie i możliwe do dowolnego wykorzystania\")"
 licence_url = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
-source = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
+source = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-pokrycia-terenu-nmpt/"
 theme = "terrain"
 availability = "open"
-notes = "The national bare-earth model (NMT): by the regulation of 16 December 2022 its basic model is the 1 m grid, kept up to date from airborne laser scanning (and, for cities, from stereo measurement for the 10 cm orthophoto); a 5 m grid is also made, from the 25 cm orthophoto's stereo measurement. Downloaded free by sheet. Its sheet indexes (the WFS SkorowidzNMT layers by year, its WMS sheet layers, the OGC API and ATOM services) are all on hosts that time out from outside Poland (mapy.geoportal.gov.pl, ogcapi.geoportal.gov.pl, opendata.geoportal.gov.pl, integracja.gugik.gov.pl, api.dane.gov.pl, from both Macs, 13 Nov 2026); the Wayback Machine holds only the WFS's capabilities and single 1,000-sheet pages. So its extent is the area the agency states: \"W Polsce mamy pokrycie całego kraju danymi ALS\" (the whole country covered by its laser scanning, 4 to 20 points/m², from which the 1 m model is made), as Natural Earth's 1:10m administrative areas (v5.1.2) draw Poland: claimed, not checked against the sheets. No year or vertical accuracy is stated for the model as a whole. Warsaw's and Kraków's city-commissioned surveys (12 and 10 points/m²) are published within it, as the same 1 m NMT."
+notes = "The national bare-earth model (NMT) and surface model (NMPT): by the regulation of 16 December 2022 the NMT's basic model is the 1 m grid, kept up to date from airborne laser scanning (and, for cities, from stereo measurement for the 10 cm orthophoto); a 5 m grid is also made, from the 25 cm orthophoto's stereo measurement. The NMPT (\"powierzchni terenu wraz z obiektami wystającymi ponad tę powierzchnię\") is kept \"w siatce 0,5 x 0,5m na terenach miejskich i w siatce 1,0 x 1,0m na pozostałym obszarze\" (its page): 0.5 m in urban areas, 1 m elsewhere. Both downloaded free by sheet. Their sheet indexes (the WFS SkorowidzNMT and SkorowidzNMPT layers by year, the WMS sheet layers, the OGC API and ATOM services) are all on hosts that time out from outside Poland (mapy.geoportal.gov.pl, ogcapi.geoportal.gov.pl, opendata.geoportal.gov.pl, integracja.gugik.gov.pl, api.dane.gov.pl, from both Macs, 13 Nov 2026; again from the M1 the same day); the Wayback Machine holds only the WFS's capabilities and single 1,000-sheet pages. So the NMT's extent is the area the agency states: \"W Polsce mamy pokrycie całego kraju danymi ALS\" (the whole country covered by its laser scanning, 4 to 20 points/m², from which the 1 m model is made), as Natural Earth's 1:10m administrative areas (v5.1.2) draw Poland: claimed, not checked against the sheets; the NMPT's 1 m grid, the rest of the country beside its urban areas, the same, and its urban 0.5 m grid, whose areas aren't drawn anywhere read, listed only. No year or vertical accuracy is stated for the models as a whole. Warsaw's and Kraków's city-commissioned surveys (12 and 10 points/m²) are published within them, as the same 1 m NMT and the 0.5 m NMPT."
 
 [[piece]]
 id = "nmt"
@@ -18,3 +18,24 @@ tolerance_m = 500
 [piece.metrics]
 surface = "ground"
 spacing_m = 1
+
+[[piece]]
+id = "nmpt"
+label = "NMPT 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["POL"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+
+[[piece]]
+id = "nmpt-urban"
+label = "NMPT 0.5 m (urban areas)"
+method = "none"
+why = "the urban areas its 0.5 m grid covers aren't outlined in anything read, and its sheet indexes time out"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5

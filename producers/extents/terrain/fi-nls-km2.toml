@@ -5,7 +5,7 @@ licence_url = "https://www.maanmittauslaitos.fi/en/maps-and-spatial-data/dataset
 source = "https://tilannekartta.maanmittauslaitos.fi/km2"
 theme = "terrain"
 availability = "open"
-notes = "The 2 m elevation model of the ground (from laser scanning of at least 0.5 points/m²; \"in some parts of the outer archipelago or the eastern border, the elevation model is not available\"): the NLS status map's OGC API Features collection km2 (the model's map sheets, dissolved by its quality class and the year each was updated, `update_year`), by year. The quality classes' accuracy is stated as \"on average 0.3 metres\" (class I) and \"between 0.3 metres and one metre\" (class II), not as an RMSE: left out. Free from MapSite's Download geospatial data section, an order whose e-mail gives the download link (the WCS and the file service need a free API key). The 0.5 p open lidar, thinned from the 5 p, is what the model is made from: not a piece."
+notes = "The 2 m elevation model of the ground (from laser scanning of at least 0.5 points/m²; \"in some parts of the outer archipelago or the eastern border, the elevation model is not available\"): the NLS status map's OGC API Features collection km2 (the model's map sheets, dissolved by its quality class and the year each was updated, `update_year`), by year. The quality classes' accuracy is stated as \"on average 0.3 metres\" (class I) and \"between 0.3 metres and one metre\" (class II), not as an RMSE: left out. Free from MapSite's Download geospatial data section, an order whose e-mail gives the download link (the WCS and the file service need a free API key). The open laser scanning data 0.5 p (the point clouds, at least 0.5 points/m²: a nominal spacing of 1/√0.5, 1.414 m; no surface stated, a point cloud holding both) is what the model is made from, so its piece is claimed on the model's sheets, by the same years: the point clouds publish no index of their own."
 
 [[piece]]
 id = "km2"
@@ -17,4 +17,16 @@ tolerance_m = 200
 [piece.metrics]
 surface = "ground"
 spacing_m = 2
+year = { field = "update_year", date = "year" }
+
+[[piece]]
+id = "lidar05p"
+label = "Laserkeilausaineisto 0.5 p"
+method = "stac"
+class = "claimed"
+url = "https://tilannekartta.maanmittauslaitos.fi/api/collections/km2"
+page = 1000
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 1.4142
 year = { field = "update_year", date = "year" }

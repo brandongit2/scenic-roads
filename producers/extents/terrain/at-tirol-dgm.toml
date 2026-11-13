@@ -1,11 +1,11 @@
-name = "tiris DGM 50 cm"
+name = "tiris DGM and DOM 50 cm"
 credit = "Amt der Tiroler Landesregierung, Abteilung Geoinformation (tiris)"
 licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.data.gv.at/api/hub/search/datasets/0454f5f3-1d8c-464e-847d-541901eb021a"
 theme = "terrain"
 availability = "open"
-notes = "Tyrol's bare-earth model at 0.5 m (GeoTIFF on 1:2,000 sheets of 1.25 km², with a WCS), from the Land's second lidar scan. Its pieces are the Land's flight-year layer in its Laserscan Download app (als_flugjahr: 21 areas, each a `JAHR`, 2017 to 2023), by year. The app's sheet layer (als_tif: 11,278 sheets, each with its file's URL) is a finer tile index but holds no year: the flight-year areas are read instead. No accuracy is stated in the record; the classified point clouds are had on request at a charge: not declared."
+notes = "Tyrol's bare-earth model (DGM) and surface model (DOM) at 0.5 m (GeoTIFF on 1:2,000 sheets of 1.25 km², with a WCS), both from the Land's second lidar scan, one record for both (\"Grundlage ... sind Airborne Laserscanning Daten und daraus generierte Gelände- bzw. Oberflächenmodelle mit 50cm Bodenauflösung\"). Their pieces are the Land's flight-year layer in its Laserscan Download app (als_flugjahr: 21 areas, each a `JAHR`, 2017 to 2023), by year. The app's sheet layer (als_tif: 11,278 sheets, each with its file's URL) is a finer tile index but holds no year: the flight-year areas are read instead. No accuracy is stated in the record; the classified point clouds are had on request at a charge: not declared."
 
 [[piece]]
 id = "dgm"
@@ -15,5 +15,16 @@ url = "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/als_fl
 tolerance_m = 100
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.5
+year = { field = "JAHR", date = "text" }
+
+[[piece]]
+id = "dom"
+method = "arcgis"
+class = "service"
+url = "https://services3.arcgis.com/hG7UfxX49PQ8XkXh/arcgis/rest/services/als_flugjahr_3857/FeatureServer/0"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.5
 year = { field = "JAHR", date = "text" }

@@ -5,7 +5,7 @@ licence_url = "https://eprostor.gov.si/imps/srv/slv/catalog.search#/metadata/951
 source = "https://clss.si/"
 theme = "terrain"
 availability = "open"
-notes = "The survey administration's cyclic laser scanning of Slovenia, flown 2023 to 2025 (a three-year cycle for the whole country, at least 10 last returns per m²). Its public viewer's 1 km tile grid (the GeoServer layer fmp_clss:tileindex_clss_zdruzeno behind clss.si, EPSG:3794), each tile with its block (`orig_ime`, `ime_ob`), its capture dates (`datum_za_1`, \"od 07.04.2025 do 09.04.2025\": the last year taken) and its files' links, downloaded without a login (20 a day). The bare-earth model DMR is a regular 0.5 m grid of points interpolated from the ground and water returns, published as LAZ (the blocks' technical reports, e.g. Jesenice_porocilo.pdf); the tender's height accuracy RMSE_H ≤ 10 cm (Jesenice achieved 5 cm). Pieces by block and year."
+notes = "The survey administration's cyclic laser scanning of Slovenia, flown 2023 to 2025 (a three-year cycle for the whole country, at least 10 last returns per m²). Its public viewer's 1 km tile grid (the GeoServer layer fmp_clss:tileindex_clss_zdruzeno behind clss.si, EPSG:3794), each tile with its block (`orig_ime`, `ime_ob`), its capture dates (`datum_za_1`, \"od 07.04.2025 do 09.04.2025\": the last year taken) and its files' links, downloaded without a login (20 a day). Of its products (the blocks' technical reports, e.g. Jesenice_porocilo.pdf), three are elevation: the bare-earth model DMR, a regular 0.5 m grid of points interpolated from the ground and water returns; the surface model DMP, the first or only returns themselves (off objects above the ground, the ground and water), not a grid; and the classified point cloud GKOT, holding both. All three are LAZ; the DMP and the GKOT are taken at the scan's nominal spacing, 1/√10 = 0.3162 m (the tender's at least 10 last returns per m², one per pulse, as many as the first returns), the GKOT stating no surface. A tile is in a block's pieces where its file is listed (`path_dmr`, `path_dmp`, `path_gkot`). The tender's height accuracy of the laser points on bare surfaces, ≤ 0.10 m (RMSE_H ≤ 10 cm; Jesenice achieved 5 cm), is each piece's. Pieces by block and year."
 
 [[piece]]
 id = "dmr"
@@ -14,13 +14,51 @@ method = "wfs"
 class = "index"
 url = "https://lift.clss.si/geoserver/fmp_clss/wfs"
 type = "fmp_clss:tileindex_clss_zdruzeno"
-fields = ["orig_ime", "ime_ob", "datum_za_1", "geom"]
+fields = ["orig_ime", "ime_ob", "datum_za_1", "path_dmr", "geom"]
 page = 5000
 by = ["orig_ime", "ime_ob"]
 name = "ime_ob"
+exclude = { path_dmr = [""] }
 tolerance_m = 100
 [piece.metrics]
 surface = "ground"
 spacing_m = 0.5
+vertical_rmse_m = 0.1
+year = { field = "datum_za_1", date = "text" }
+
+[[piece]]
+id = "dmp"
+label = "CLSS DMP (first returns)"
+method = "wfs"
+class = "index"
+url = "https://lift.clss.si/geoserver/fmp_clss/wfs"
+type = "fmp_clss:tileindex_clss_zdruzeno"
+fields = ["orig_ime", "ime_ob", "datum_za_1", "path_dmp", "geom"]
+page = 5000
+by = ["orig_ime", "ime_ob"]
+name = "ime_ob"
+exclude = { path_dmp = [""] }
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3162
+vertical_rmse_m = 0.1
+year = { field = "datum_za_1", date = "text" }
+
+[[piece]]
+id = "gkot"
+label = "CLSS GKOT point cloud"
+method = "wfs"
+class = "index"
+url = "https://lift.clss.si/geoserver/fmp_clss/wfs"
+type = "fmp_clss:tileindex_clss_zdruzeno"
+fields = ["orig_ime", "ime_ob", "datum_za_1", "path_gkot", "geom"]
+page = 5000
+by = ["orig_ime", "ime_ob"]
+name = "ime_ob"
+exclude = { path_gkot = [""] }
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.3162
 vertical_rmse_m = 0.1
 year = { field = "datum_za_1", date = "text" }

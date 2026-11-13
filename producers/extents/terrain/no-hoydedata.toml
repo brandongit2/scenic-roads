@@ -2,10 +2,10 @@ name = "Kartverket Høydedata"
 credit = "© Kartverket"
 licence = "CC-BY-4.0"
 licence_url = "https://www.kartverket.no/en/api-and-data/terms-of-use"
-source = "https://hoydedata.no/arcgis/rest/services/Prosjekt_DTM/ImageServer"
+source = "https://hoydedata.no/arcgis/rest/services"
 theme = "terrain"
 availability = "open"
-notes = "The projects of hoydedata.no (the national detailed elevation model's lidar and the older lidar, image-matching, mobile-laser and topobathymetric projects; the catalogue's `TYPE` 1 to 4, as the site's viewer names them): the catalogue of the project terrain models' image service (Prosjekt_DTM), its primary items (CATEGORY 1; its overviews and the 10 m fill, items with no project, left out), a piece per project (`LAS_PROJECT_NAME`), its cell the item's (`OPPLOSNING`, its LOWPS too: 0.25, 0.5 or 1 m; the site's export gives a project's terrain model at its own cell, beside the national 1 m model, NHM DTM 1, that covers the same projects), its year (`AARSTALL`). The catalogue's `TILGANG` is a project's access: \"1\" open (the only ones the viewer lists to a visitor not logged in), \"2\" for Norge digitalt users only (Geonorge's record: most projects are open data, some limited through Norge digitalt's user access): `closed`, their outlines claimed. The project-outline WFS (wfs.hoyde-hoydedata-metadata-prosjekt) answers GeoJSON cut short and broken after a few hundred features, and the viewer's own project layer needs a token: not read. The pieces sum 430,716 km² (the items' own areas: 432,284). No vertical accuracy is stated per project."
+notes = "The projects of hoydedata.no (the national detailed elevation model's lidar and the older lidar, image-matching, mobile-laser and topobathymetric projects; the catalogue's `TYPE` 1 to 4, as the site's viewer names them), from the catalogues of its two project image services: the terrain models' (Prosjekt_DTM) and the surface models' (Prosjekt_DOM, the same fields). Of each, the primary items (CATEGORY 1; its overviews and the 10 m fill, items with no project, left out), a piece per project (`LAS_PROJECT_NAME`), its cell the item's (`OPPLOSNING`, its LOWPS too: 0.25, 0.5 or 1 m; the site's export gives a project's model at its own cell, beside the national 1 m models, NHM DTM 1 and NHM DOM 1, that cover the same projects), its year (`AARSTALL`). The surface models' catalogue also holds the image-matching projects (424 named \"Bilde …\", `TYPE` 2: surface models matched from aerial photographs, with no terrain model in Prosjekt_DTM), so it reaches further than the terrain models'. The catalogue's `TILGANG` is a project's access: \"1\" open (the only ones the viewer lists to a visitor not logged in), \"2\" for Norge digitalt users only (Geonorge's record: most projects are open data, some limited through Norge digitalt's user access): `closed`, their outlines claimed. The project-outline WFS (wfs.hoyde-hoydedata-metadata-prosjekt) answers GeoJSON cut short and broken after a few hundred features, and the viewer's own project layer needs a token: not read. The terrain models' open pieces sum 430,716 km² (the items' own areas: 432,284), the surface models' 978,350 (the items' own, 981,192: projects overlap where an area was flown or photographed again). The pieces are 9.1 MB at a 200 m tolerance: 3,520 irregular block outlines, half of them the surface models' (the terrain models' alone 4.1 MB; a coarser tolerance drops corridor projects as specks). No vertical accuracy is stated per project."
 
 [[piece]]
 id = "dtm"
@@ -35,5 +35,36 @@ by = ["LAS_PROJECT_NAME"]
 name = "LAS_PROJECT_NAME"
 [piece.metrics]
 surface = "ground"
+spacing_m = { field = "OPPLOSNING" }
+year = { field = "AARSTALL", date = "year" }
+
+[[piece]]
+id = "dom"
+method = "arcgis"
+class = "index"
+url = "https://hoydedata.no/arcgis/rest/services/Prosjekt_DOM/ImageServer"
+where = "CATEGORY = 1 AND TILGANG = '1'"
+page = 150
+tolerance_m = 200
+by = ["LAS_PROJECT_NAME"]
+name = "LAS_PROJECT_NAME"
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "OPPLOSNING" }
+year = { field = "AARSTALL", date = "year" }
+
+[[piece]]
+id = "dom-restricted"
+method = "arcgis"
+class = "claimed"
+availability = "closed"
+url = "https://hoydedata.no/arcgis/rest/services/Prosjekt_DOM/ImageServer"
+where = "CATEGORY = 1 AND TILGANG = '2'"
+page = 150
+tolerance_m = 200
+by = ["LAS_PROJECT_NAME"]
+name = "LAS_PROJECT_NAME"
+[piece.metrics]
+surface = "surface"
 spacing_m = { field = "OPPLOSNING" }
 year = { field = "AARSTALL", date = "year" }

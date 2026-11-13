@@ -1,11 +1,11 @@
-name = "VoGIS Geländehöhenmodell 2023"
+name = "VoGIS Gelände- und Oberflächenhöhenmodell 2023"
 credit = "Land Vorarlberg, Landesamt für Vermessung und Geoinformation (VoGIS)"
 licence = "CC-BY-4.0"
 licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://vogis.cnv.at/geonetwork/srv/api/records/bd8bc975-a1e9-4374-811f-5773c7a84e33/formatters/xml"
 theme = "terrain"
 availability = "login"
-notes = "Vorarlberg's bare-earth model of its fourth lidar survey, 2023, at 0.5 m (one cloud-optimised GeoTIFF, gt2023_50cm.tif, as its record says). Its record and data.gv.at's link only a WMS; the files are had free from the Land's SFTP server with a login whose password the server hands out (vogis.cnv.at/download): not a direct download, and no tile index or footprint is published. Its extent is the Land, which the survey covers (the BEV's survey map gives all of Vorarlberg as flown in 2023), as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No accuracy is stated in the record."
+notes = "Vorarlberg's bare-earth and surface models of its fourth lidar survey, 2023, at 0.5 m (each one cloud-optimised GeoTIFF as its record says: the Geländehöhenmodell gt2023_50cm.tif, and the Oberflächenhöhenmodell gs2023_50cm.tif, record 3794f75b-958b-4f5b-a3e3-52288fb604d5). Their records and data.gv.at's link only a WMS; the files are had free from the Land's SFTP server with a login whose password the server hands out (vogis.cnv.at/download): not a direct download, and no tile index or footprint is published. Their extent is the Land, which the survey covers (the BEV's survey map gives all of Vorarlberg as flown in 2023), as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The 2024 re-flights of small areas (Dornbirn, Hohenems, Schoppernau, Brand-Bürserberg, Hörbranz-Lochau-Eichenberg) are records of their own with no outline read: not declared. No accuracy is stated in the records."
 
 [[piece]]
 id = "dgm"
@@ -17,5 +17,18 @@ filter = { adm0_a3 = ["AUT"], name = ["Vorarlberg"] }
 tolerance_m = 200
 [piece.metrics]
 surface = "ground"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "dom"
+label = "Oberflächenhöhenmodell 2023 0.5 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["AUT"], name = ["Vorarlberg"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
 spacing_m = 0.5
 year = 2023
