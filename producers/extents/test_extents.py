@@ -311,6 +311,48 @@ class Listing(unittest.TestCase):
         with self.assertRaises(SystemExit):
             extents.grid_ref("NS123", "osgb")
 
+    def test_a_tile_listed_twice_is_one_and_its_successor_another(self):
+        net = FakeNet({"u": b"dgm1_32_433_5426_1_rp_2022.tif dgm1_32_433_5426_1_rp_2022.tif dgm1_32_433_5426_1_rp_2026.tif"})
+        b = {"url": "u", "list": "lines", "pattern": r"_(?P<x>\d{3})_(?P<y>\d{4})_1_rp_(?P<year>\d{4})", "unit": 1000, "size": 1000}
+        self.assertEqual([p for _, p in extents.read_listing(net, b, 0)], [{"year": "2022"}, {"year": "2026"}])
+
+    def test_zips_members_from_their_central_directories_alone(self):
+        import io
+        import zipfile
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            for name in ("SB/dgm1_32_308_5488_1_SL_2025.tif", "SB/dgm1_32_309_5488_1_SL_2025.tif"):
+                z.writestr(name, bytes(200_000))
+        body = out.getvalue()
+        net = FakeNet({"https://h/a.zip": body})
+        b = {"urls": ["https://h/a.zip"], "list": "zip", "pattern": r"_(?P<x>\d{3})_(?P<y>\d{4})_1_SL_", "unit": 1000, "size": 1000}
+        self.assertEqual([g.bounds[:2] for g, _ in extents.read_listing(net, b, 0)], [(308000.0, 5488000.0), (309000.0, 5488000.0)])
+        # (The end of the file read, not its members' data.)
+        self.assertLess(net.bytes, len(body) / 2)
+
+    def test_a_spreadsheets_rows_with_their_dates(self):
+        import io
+        import zipfile
+        main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        rid = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+        out = io.BytesIO()
+        with zipfile.ZipFile(out, "w") as z:
+            z.writestr("xl/workbook.xml", f'<workbook {main} {rid}><sheets><sheet name="notes" r:id="rId2"/><sheet name="tiles" r:id="rId1"/></sheets></workbook>')
+            z.writestr("xl/_rels/workbook.xml.rels", '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                       '<Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="/xl/worksheets/sheet2.xml"/></Relationships>')
+            z.writestr("xl/sharedStrings.xml", f"<sst {main}><si><t>Kachelname</t></si><si><t>Erbach</t></si></sst>")
+            z.writestr("xl/styles.xml", f'<styleSheet {main}><cellXfs><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs></styleSheet>')
+            z.writestr("xl/worksheets/sheet1.xml", f'<worksheet {main}><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row>'
+                       '<row r="2"><c r="A2"><v>4985500</v></c><c r="B2" s="1"><v>43803</v></c><c r="D2" t="s"><v>1</v></c></row></sheetData></worksheet>')
+            z.writestr("xl/worksheets/sheet2.xml", f'<worksheet {main}><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a note</t></is></c></row></sheetData></worksheet>')
+        net = FakeNet({"u": out.getvalue()})
+        self.assertEqual(list(extents.listed_names(net, {"url": "u", "list": "xlsx", "sheet": "tiles"})), ["Kachelname", "4985500;2019-12-04;;Erbach"])
+        self.assertEqual(list(extents.listed_names(net, {"url": "u", "list": "xlsx"})), ["a note"])
+        b = {"url": "u", "list": "xlsx", "sheet": "tiles", "pattern": r"^(?P<x>\d{3})(?P<y>\d{4});(?P<flown>[\d-]+);", "unit": 1000, "size": 1000}
+        self.assertEqual([(g.bounds[:2], p) for g, p in extents.read_listing(net, b, 0)], [((498000.0, 5500000.0), {"flown": "2019-12-04"})])
+        with self.assertRaises(SystemExit):
+            list(extents.listed_names(net, {"url": "u", "list": "xlsx", "sheet": "other"}))
+
 
 class ArcGIS(unittest.TestCase):
     LAYER = "https://h/rest/services/X/ImageServer"

@@ -13,8 +13,10 @@ A reader per kind of service, none per source:
            GeoJSON or GML (`format`; `version`)
   file     an index file fetched whole (`url`): GeoJSON, GML or a GeoPackage (`layer`), or a zip
            of one of them or of a shapefile (`member`)
-  listing  a listing of georeferenced names: `url` an S3 bucket (`prefix`), a page of links or a
-           text file (`list` = "s3", "links", "lines"); `pattern`, a regular expression with the
+  listing  a listing of georeferenced names: `url` an S3 bucket (`prefix`), a page of links, a
+           text file, the members of zips (`url` or `urls`, their central directories by range
+           request) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
+           "lines", "zip", "xlsx"); `pattern`, a regular expression with the
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
            `crs`; or the group `ref`, a national grid's lettered reference (`grid`: "osgb",
@@ -569,6 +571,12 @@ def listed_names(net, b):
         yield from re.findall(r'href="([^"]+)"', net.get(b["url"]).decode("utf-8", "replace"))
     elif kind == "lines":
         yield from net.get(b["url"]).decode("utf-8", "replace").split()
+    elif kind == "zip":
+        # (Each zip's central directory, by range request: its members' names, none of its data.)
+        for url in b.get("urls") or [b["url"]]:
+            yield from zipfile.ZipFile(RangeFile(net, url)).namelist()
+    elif kind == "xlsx":
+        yield from sheet_rows(net.get(b["url"]), b.get("sheet"))
     else:
         sys.exit(f"unknown list {kind!r}")
 
@@ -594,6 +602,46 @@ def grid_ref(ref, grid):
         side //= 2
         x, y = x + side * (quad[1] == "E"), y + side * (quad[0] == "N")
     return x, y, side
+
+
+XLSX = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+
+
+def sheet_rows(body, sheet=None):
+    """A spreadsheet's (xlsx) rows, the first sheet's or the one named: each its cells' text joined
+    by ";", a cell left empty as nothing between two, a number formatted as a date as its ISO date
+    (the workbook's count of days from 1899-12-30)."""
+    z = zipfile.ZipFile(io.BytesIO(body))
+    names = z.namelist()
+    strings = ["".join(t.text or "" for t in si.iter(XLSX + "t")) for si in ET.fromstring(z.read("xl/sharedStrings.xml"))] if "xl/sharedStrings.xml" in names else []
+    dated = []
+    if "xl/styles.xml" in names:
+        styles = ET.fromstring(z.read("xl/styles.xml"))
+        custom = {f.get("numFmtId"): re.sub(r'"[^"]*"|\[[^]]*\]', "", f.get("formatCode", "")) for f in styles.iter(XLSX + "numFmt")}
+        # (Excel's own date formats are 14 to 22; a workbook's own, a code writing a year or a day.)
+        xfs = styles.find(XLSX + "cellXfs")
+        dated = [14 <= int(x.get("numFmtId", 0)) <= 22 or bool(re.search(r"[yd]", custom.get(x.get("numFmtId"), ""), re.I))
+                 for x in (xfs if xfs is not None else [])]
+    rel = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    sheets = [(s.get("name"), s.get(rel)) for s in ET.fromstring(z.read("xl/workbook.xml")).iter(XLSX + "sheet")]
+    pick = next((r for n, r in sheets if sheet in (None, n)), None)
+    if pick is None:
+        sys.exit(f"no sheet {sheet!r} in the workbook: its sheets are {[n for n, _ in sheets]}")
+    target = next(x.get("Target") for x in ET.fromstring(z.read("xl/_rels/workbook.xml.rels")) if x.get("Id") == pick)
+    for row in ET.fromstring(z.read("xl/" + target.lstrip("/").removeprefix("xl/"))).iter(XLSX + "row"):
+        cells = {}
+        for c in row.iter(XLSX + "c"):
+            col = sum((ord(ch) - 64) * 26 ** i for i, ch in enumerate(reversed(re.match(r"[A-Z]+", c.get("r")).group())))
+            v, kind = c.findtext(XLSX + "v"), c.get("t")
+            if kind == "s":
+                v = strings[int(v)]
+            elif kind == "inlineStr":
+                v = "".join(t.text or "" for t in c.iter(XLSX + "t"))
+            elif v is not None and kind in (None, "n") and int(c.get("s", 0)) < len(dated) and dated[int(c.get("s", 0))]:
+                v = (datetime.date(1899, 12, 30) + datetime.timedelta(days=int(float(v)))).isoformat()
+            cells[col] = v or ""
+        if cells:
+            yield ";".join(cells.get(k, "") for k in range(1, max(cells) + 1))
 
 
 def read_listing(net, b, _tol):
@@ -622,11 +670,15 @@ def read_listing(net, b, _tol):
                 y = -y
             if corner == "nw":
                 y -= h
-        if (x, y, w) in seen:
+        props = {k: v for k, v in g.items() if k not in ("x", "y", "ew", "ns", "ref")}
+        # (A name listed twice is one tile; a tile's two files of different readings, a survey and
+        # its successor, are two.)
+        key = (x, y, w, tuple(sorted(props.items())))
+        if key in seen:
             continue
-        seen.add((x, y, w))
+        seen.add(key)
         sides.add(max(w, h))
-        yield sg.box(x, y, x + w, y + h), {k: v for k, v in g.items() if k not in ("x", "y", "ew", "ns", "ref")}
+        yield sg.box(x, y, x + w, y + h), props
     # (The extent is good to a tile, the largest read: its grain.)
     b["grain_m"] = round(max(sides | ({max(size)} if size else set()), default=0) * (M_PER_DEG if geographic else 1), 1)
 
