@@ -1,0 +1,53 @@
+name = "Queensland elevation data extents: LiDAR DEMs and Ortho DEMs"
+credit = "State of Queensland (Department of Natural Resources and Mines, Manufacturing and Regional and Rural Development)"
+licence = "CC-BY-4.0 (the lidar older than three years, through ELVIS; the extents CC-BY-3.0-AU)"
+licence_url = "https://www.data.qld.gov.au/dataset/queensland-elevation-data-extents"
+source = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Elevation/ElevationProjectExtents/MapServer/0"
+theme = "terrain"
+availability = "open"
+notes = "Queensland's elevation data extents layer (567 footprints on 13 Nov 2026), each its project, its DEM's cell (`res_value`, m), its year and its capture's end: the lidar projects' DEMs (1 m and 0.5 m, bare earth, 2008 to 2026) and the Ortho DEMs (5 m to 25 m, made for the state's orthophotography, 2006 to 2017). Lidar older than three years is free in ELVIS (\"Less than 3 years old see fees\"): the projects whose capture ended before 13 Nov 2023 are open, the later ones paid (claimed). The Ortho DEMs are free in ELVIS as the state's derived DEMs; their kind (ground or surface) isn't stated. The bathymetry in the layer (the Great Barrier Reef's 30 m and 100 m depth models, Moreton Bay's satellite-derived depths, GA's 250 m bathymetry and topography) and the state's clip of GA's SRTM 1 s DEM-H (au-ga-srtm1s's) are left out. Vertical accuracies are stated at 67, 68 or 95 % (mixed): not taken as RMSEs."
+
+[[piece]]
+id = "lidar"
+label = "Queensland lidar DEM"
+method = "arcgis"
+class = "service"
+url = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Elevation/ElevationProjectExtents/MapServer/0"
+where = "res_value <= 1 AND captureend < DATE '2023-11-13'"
+by = ["project_name", "title"]
+name = "title"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_value" }
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "lidar-recent"
+label = "Queensland lidar DEM, under three years old"
+method = "arcgis"
+class = "service"
+availability = "paid"
+url = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Elevation/ElevationProjectExtents/MapServer/0"
+where = "res_value <= 1 AND captureend >= DATE '2023-11-13'"
+by = ["project_name", "title"]
+name = "title"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_value" }
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "odem"
+label = "Queensland Ortho DEM"
+method = "arcgis"
+class = "service"
+url = "https://spatial-gis.information.qld.gov.au/arcgis/rest/services/Elevation/ElevationProjectExtents/MapServer/0"
+where = "project_name LIKE '%ODEM'"
+by = ["project_name", "title"]
+name = "title"
+tolerance_m = 200
+[piece.metrics]
+spacing_m = { field = "res_value" }
+year = { field = "year", date = "year" }

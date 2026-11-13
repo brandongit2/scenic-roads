@@ -1,0 +1,18 @@
+name = "SRI18 Nile Delta coastal DEM"
+credit = "Survey Research Institute, National Water Research Center, Egypt"
+licence = "none found"
+licence_url = "https://link.springer.com/article/10.1007/s43621-020-00006-7"
+source = "https://link.springer.com/article/10.1007/s43621-020-00006-7"
+theme = "terrain"
+availability = "closed"
+notes = "A local DEM of the Nile Delta coast, from 184,000 GNSS and levelling points from the shoreline to about 1 km inland, at 1.3 arc-seconds (about 40 m) and about 5 cm vertical (a secondary citation's figures). The article states no data availability and the institute's host doesn't connect: listed."
+
+[[piece]]
+id = "dem"
+label = "SRI18 Nile Delta coast about 40 m"
+method = "none"
+why = "the coastal strip it covers has no published outline, and no route to the data was found"
+[piece.metrics]
+surface = "ground"
+spacing_m = 40.0
+year = 2018

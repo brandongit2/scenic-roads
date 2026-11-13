@@ -1,0 +1,27 @@
+name = "Landgate LiDAR (Capture WA); Landgate DEMs"
+credit = "Western Australian Land Information Authority (Landgate)"
+licence = "Landgate Personal Use Licence (personal, non-commercial; no copies or derivatives without Landgate's written consent)"
+licence_url = "https://www.landgate.wa.gov.au/siteassets/documents/location-data-and-services/licensing/slip-transaction-personal-use-licence-300523.pdf"
+source = "https://public-services.slip.wa.gov.au/public/rest/services/SLIP_Public_Services/Imagery_and_Maps/MapServer/281"
+theme = "terrain"
+availability = "paid"
+notes = "Landgate's lidar captures since 2017 (Capture WA, the Perth metropolitan capture of 2021-22 among them), as its LiDAR index (LGATE-351, 94 areas on 13 Nov 2026): each its point density (`lidar`, \"6ppm\": its nominal spacing; one \"60-90ppm\" stated, no value) and its capture's end (`enddate`). Sold per km² (raw lidar $68.85 to $154.10 per km², derived DEMs $3.90 to $8.65) on a transaction form under the Personal Use Licence: paid, claimed. Landgate's DEMs, \"edited DSMs that remove the majority of buildings and trees to create pseudo-DTMs\" at \"various postings around mainland Western Australia\", have their coverage only in a PDF map: listed. ELVIS gives Western Australia only the national 5 m and 1 s grids (au-ga-dem5m, au-ga-srtm1s)."
+
+[[piece]]
+id = "lidar"
+label = "Landgate lidar"
+method = "arcgis"
+class = "service"
+url = "https://public-services.slip.wa.gov.au/public/rest/services/SLIP_Public_Services/Imagery_and_Maps/MapServer/281"
+by = ["projectnum", "townsite_n"]
+name = "townsite_n"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = { field = "lidar", text = "ppm", density = true }
+year = { field = "enddate", date = "epoch-ms" }
+
+[[piece]]
+id = "dem"
+label = "Landgate DEMs (edited DSMs)"
+method = "none"
+why = "their postings and coverage are stated only in a PDF map (dem_coverage_19_september_2024.pdf)"

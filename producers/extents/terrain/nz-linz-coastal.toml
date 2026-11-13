@@ -1,0 +1,36 @@
+name = "LINZ coastal: New Zealand Coastal LiDAR 1m DEM and DSM"
+credit = "Toitū Te Whenua Land Information New Zealand"
+licence = "CC-BY-4.0"
+licence_url = "https://registry.opendata.aws/nz-coastal/"
+source = "https://nz-coastal.s3.ap-southeast-2.amazonaws.com/catalog.json"
+theme = "terrain"
+availability = "open"
+notes = "LINZ's coastal mapping bucket (s3://nz-coastal, a static STAC catalogue of 116 collections on 13 Nov 2026): the National Coastal Mapping programme's topobathymetric lidar surveys, each a 1 m DEM of the land and the seabed to about 25 m depth (with 2 m and 10 m versions of the same, not declared apart) and a 1 m DSM, and national composites of each. A composite's `capture-dates.geojson` is its surveys' outlines where they are on top (28 for the DEM, 2024 to 2026), the year taken from `flown_to`. No accuracy is stated in the composites."
+
+[[piece]]
+id = "dem"
+label = "LINZ coastal 1 m topobathy DEM"
+method = "file"
+class = "service"
+url = "https://nz-coastal.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dem_1m/2193/capture-dates.geojson"
+by = ["linz:slug", "title"]
+name = "title"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = { field = "flown_to", date = "iso" }
+
+[[piece]]
+id = "dsm"
+label = "LINZ coastal 1 m DSM"
+method = "file"
+class = "service"
+url = "https://nz-coastal.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dsm_1m/2193/capture-dates.geojson"
+by = ["linz:slug", "title"]
+name = "title"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+year = { field = "flown_to", date = "iso" }

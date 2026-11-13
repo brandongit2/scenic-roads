@@ -1,0 +1,24 @@
+name = "Greater Accra lidar (GARID) and UAV-lidar DTMs"
+credit = "Government of Ghana (Greater Accra Resilient and Integrated Development project, World Bank); Trepekli et al. (2022)"
+licence = "none found"
+licence_url = "https://documents.worldbank.org/curated/en/675901559440929710/pdf/Ghana-Greater-Accra-Resilient-and-Integrated-Development-Project.pdf"
+source = "https://documents.worldbank.org/curated/en/675901559440929710/pdf/Ghana-Greater-Accra-Resilient-and-Integrated-Development-Project.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "The GARID project budgets lidar for the Odaw basin's flood works (no product, grid or release found), and Trepekli et al. (Natural Hazards, 2022) made 0.3 m DTMs with buildings (a surface-like model) of three Accra sites by UAV lidar, with no data statement. Neither publishes an outline or a download: listed."
+
+[[piece]]
+id = "uav-dtm"
+label = "Accra UAV-lidar DTMs 0.3 m (three sites)"
+method = "none"
+why = "three research sites with no published outline or data"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3
+year = 2021
+
+[[piece]]
+id = "garid"
+label = "Odaw basin lidar (GARID)"
+method = "none"
+why = "budgeted in the project appraisal; no product, grid or outline found"

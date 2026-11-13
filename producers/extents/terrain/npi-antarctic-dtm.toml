@@ -1,0 +1,31 @@
+name = "Norwegian Polar Institute: Bouvetøya DTM 20; Peter I Øy terrain model (P0 Terrengmodell)"
+credit = "Norwegian Polar Institute (Norsk Polarinstitutt)"
+licence = "CC-BY-4.0 (Bouvetøya; Peter I Øy's record states none)"
+licence_url = "https://data.npolar.no/dataset/63eaa452-c264-4bd8-8ebd-97e09e1a5a1a"
+source = "https://kartkatalog.geonorge.no/api/getdata/0cfe0ce1-603a-4692-a3c3-5f6427f63a19"
+theme = "terrain"
+availability = "open"
+notes = "The institute's terrain models of Norway's southern islands: Bouvetøya's DTM 20 (20 m, from the B20 map data, UTM 31S, made 5 Mar 2018), from Geonorge's download API, its extent the island as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; and Peter I Øy's 20 m model from the contours and coastline of the P50 map data of 1987 (the record modified 3 Oct 2024; no licence stated), its record giving a bounding box only and Natural Earth drawing no area for the island: listed. Both are interpolated from map contours, bare earth."
+
+[[piece]]
+id = "bouvetoya"
+label = "Bouvetøya DTM 20"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["NO-X01~"] }
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 20.0
+year = 2018
+
+[[piece]]
+id = "peter-i"
+label = "Peter I Øy terrain model 20 m"
+method = "none"
+why = "its record gives only a bounding box, and Natural Earth draws no area for the island"
+[piece.metrics]
+surface = "ground"
+spacing_m = 20.0
+year = 1987

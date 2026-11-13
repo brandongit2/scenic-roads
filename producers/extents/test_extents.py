@@ -121,6 +121,8 @@ class Metrics(unittest.TestCase):
         # A class kept as stated survives a later reading's lack of a value.
         self.assertEqual(extents.metric([{"field": "q", "map": {"QL 1": 0.1}}, {"field": "x"}], {"q": "Other"}), (None, "Other"))
         self.assertEqual(extents.wanted_fields({"metrics": {"year": spec, "surface": "ground"}}), {"id", "datetime"})
+        # A filter's and an exclusion's fields are read too: a feature without them is filtered out.
+        self.assertEqual(extents.wanted_fields({"filter": {"STATUS": ["Completed"]}, "exclude": {"KIND": ["x"]}, "by": ["A"]}), {"STATUS", "KIND", "A"})
 
 
 class Score(unittest.TestCase):
@@ -720,6 +722,12 @@ class IndexFiles(unittest.TestCase):
         got = [g().bounds for g, _ in extents.read_file(net, {"urls": ["t/1", "t/2"]}, 0)]
         self.assertEqual(got, [(0.0, 0.0, 2.0, 2.0), (0.0, 0.0, 3.0, 3.0)])
 
+    def test_a_lone_feature_is_one(self):
+        # (A STAC collection's capture-area file, LINZ's: a Feature, not a collection.)
+        body = b'{"geometry": {"type": "Polygon", "coordinates": [[[0,0],[2,0],[2,1],[0,0]]]}, "properties": {}, "type": "Feature"}'
+        got = [(g().bounds, p) for g, p in extents.read_file(FakeNet({"u": body}), {"url": "u"}, 0)]
+        self.assertEqual(got, [((0.0, 0.0, 2.0, 1.0), {})])
+
     def test_a_shapefiles_text_in_its_encoding(self):
         import io
         import zipfile
@@ -868,6 +876,26 @@ class RasterFiles(unittest.TestCase):
         self.assertEqual(b["grain_m"], 2.0)
         valid = extents.to_wgs84(sg.box(650256, 2069488, 650512, 2070000), "EPSG:32618", 1)
         self.assertAlmostEqual(geom.symmetric_difference(valid).area / valid.area, 0, places=2)
+
+
+    def test_e_a_declared_no_data_value_is_no_data(self):
+        # (GA's 5 m DEM's WCS answers its no data as 0 and states none: the declaration's `nodata`.)
+        import numpy as np
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_origin
+        data = np.zeros((64, 64), np.float32)
+        data[:, 48:] = 12.5
+        with MemoryFile() as mem:
+            with mem.open(driver="GTiff", width=64, height=64, count=1, dtype="float32", crs="EPSG:32618",
+                          transform=from_origin(650000, 2070000, 4, 4)) as ds:
+                ds.write(data, 1)
+            body = mem.read()
+        url = "https://h/wcs?request=GetCoverage&coverage=1"
+        [(whole, _)] = list(extents.read_raster(WholeNet({url: body}), {"urls": [url], "mask_m": 4}, 0))
+        [(geom, _)] = list(extents.read_raster(WholeNet({url: body}), {"urls": [url], "mask_m": 4, "nodata": 0}, 0))
+        valid = extents.to_wgs84(sg.box(650192, 2069744, 650256, 2070000), "EPSG:32618", 1)
+        self.assertAlmostEqual(geom.symmetric_difference(valid).area / valid.area, 0, places=2)
+        self.assertGreater(whole.area, 3 * geom.area)
 
 
 class WholeNet(FakeNet):

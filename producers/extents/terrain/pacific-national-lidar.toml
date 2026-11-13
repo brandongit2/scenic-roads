@@ -1,0 +1,53 @@
+name = "National lidar of Samoa (2015), Tonga (2021, 2026) and Tuvalu (2019)"
+credit = "Government of Samoa (MNRE; World Bank PPCR); Government of Tonga (Ministry of Lands, Survey and Natural Resources; World Bank PREP, GCF, UNDP, SPC); Government of Tuvalu (Department of Lands and Survey; UNDP, GCF)"
+licence = "none found"
+licence_url = "https://www.adaptation-undp.org/tuvalu-wields-state-art-new-data-fight-against-climate-change"
+source = "https://www.fig.net/resources/proceedings/fig_proceedings/fig2016/papers/ts05e/TS05E_quadros_chamberlain_8169.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "Three governments' national lidar, none released: Samoa's whole-country topographic and bathymetric lidar by Fugro for the World Bank's PPCR (Upolu and Savai'i, 6 Jul to 9 Aug 2015, about 4 points per m², 22 cm vertical at 95 %; parts of Savai'i from radar and satellite data), held by the MNRE; Tonga's 2021 World Bank PREP lidar of 'Eua and Vava'u (and of Tafahi and Niuatoputapu, in the Niuas, which Natural Earth draws with Niuafo'ou: not claimed) and its 2026 survey of Tongatapu and Ha'apai by Fugro (21 Mar to 18 Apr 2026), to be merged into one national baseline by the Ministry of Lands; Tuvalu's 2019 survey of all nine atolls (about 500 km² with reefs and lagoons), held by the Department of Lands and Survey (its 5 m derived DEMs by request through SPC). Each extent is the areas its publisher states, as Natural Earth's 1:10m administrative areas (v5.1.2) draw them: claimed, not checked against data. Tonga's and Tuvalu's grids and densities aren't stated."
+
+[[piece]]
+id = "samoa-2015"
+label = "Samoa national lidar 2015"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["WSM"] }
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 0.5
+year = 2015
+
+[[piece]]
+id = "tonga-2021"
+label = "Tonga lidar 2021 ('Eua, Vava'u)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["TO-01", "TO-05"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2021
+
+[[piece]]
+id = "tonga-2026"
+label = "Tonga lidar 2026 (Tongatapu, Ha'apai)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["TO-04", "TO-02"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2026
+
+[[piece]]
+id = "tuvalu-2019"
+label = "Tuvalu national lidar 2019"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["TUV"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2019

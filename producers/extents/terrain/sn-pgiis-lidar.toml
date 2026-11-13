@@ -1,0 +1,14 @@
+name = "PGIIS lidar DEM (Projet de Gestion Intégrée des Inondations au Sénégal)"
+credit = "Government of Senegal (PGIIS); IGN FI"
+licence = "none found"
+licence_url = "https://ignfi.fr/en/references/integrated-flood-management-in-senegal-pgiis/"
+source = "https://ignfi.fr/en/references/integrated-flood-management-in-senegal-pgiis/"
+theme = "terrain"
+availability = "closed"
+notes = "IGN FI's lidar DEM of the Dakar-Thiès-Joal triangle and six other urban areas for the PGIIS flood project. The project's hosts (pgiis.sec.gouv.sn, geoportail.sec.gouv.sn) don't answer and have no archived copy; no grid, year or outline is stated: listed."
+
+[[piece]]
+id = "dem"
+label = "PGIIS lidar DEM"
+method = "none"
+why = "the areas aren't outlined anywhere read, and the project's hosts don't answer"

@@ -1,0 +1,26 @@
+name = "Limpopo and Zambezi river basins lidar DEM (Enhancing Spatial Data for Flood Risk Management, P149629)"
+credit = "ARA-Sul, ARA-Zambeze, CENACARTA and DNGRH, Mozambique; World Bank / GFDRR"
+licence = "none (not public)"
+licence_url = "https://documents.worldbank.org/curated/en/901811499286454073/pdf/ICR00004056-06162017.pdf"
+source = "https://documents.worldbank.org/curated/en/901811499286454073/pdf/ICR00004056-06162017.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "Airborne lidar flown in 2015 and 2016 for the basin agencies: 13,460 km² of the Limpopo (9,460 and a 4,000 km² extension) and 13,951 km² of the Zambezi, a 1 m by 1 m DEM. The project's completion report says the indicator for data \"available for public\" was not achieved; the data are held by ARA-Sul, ARA-Zambeze, CENACARTA and DNGRH. No outline of the surveyed areas is published: listed."
+
+[[piece]]
+id = "limpopo"
+label = "Limpopo basin lidar DEM 1 m"
+method = "none"
+why = "the 13,460 km² surveyed has no published outline, and the data aren't public"
+[piece.metrics]
+spacing_m = 1.0
+year = 2016
+
+[[piece]]
+id = "zambezi"
+label = "Zambezi basin lidar DEM 1 m"
+method = "none"
+why = "the 13,951 km² surveyed has no published outline, and the data aren't public"
+[piece.metrics]
+spacing_m = 1.0
+year = 2016

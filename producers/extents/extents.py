@@ -27,7 +27,8 @@ A reader per kind of service, none per source:
   raster   each file's own header and an overview, by range request (`urls`; `list` and `pattern`,
            a listing's names as `listing` reads one; or `stac` and `asset`, a STAC collection's
            items' files): its bounds and where it has data, at the coarsest overview, or with
-           `mask_m` at the coarsest whose pixels are no wider than that (a file with none stops it)
+           `mask_m` at the coarsest whose pixels are no wider than that (a file with none stops it);
+           `nodata`, a value that is no data too (a coverage service answering it as 0)
   none     no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
 
 Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, and no
@@ -577,7 +578,8 @@ def index_features(body, b):
         d = json.loads(body)
         if answer_crs(d) and "crs" not in b:
             b["crs"] = answer_crs(d)
-        for f in d["features"]:
+        # (A lone Feature is one: a STAC collection's capture-area file, LINZ's.)
+        for f in d["features"] if "features" in d else [d]:
             # (One without geometry is still a feature: a WFS page's count is all of them.)
             yield (lambda f=f: xy(flat_shape(f["geometry"]), b) if f.get("geometry") else None), f.get("properties") or {}
 
@@ -1026,6 +1028,10 @@ def read_raster(net, b, _tol):
                 f = fine[-1] if fine else levels[0 if "mask_m" in b else -1]
                 h, w = max(1, math.ceil(ds.height / f)), max(1, math.ceil(ds.width / f))
                 mask = ds.dataset_mask(out_shape=(h, w))
+                if "nodata" in b:
+                    # (A coverage service answering its no-data as a value, 0 for GA's resampled
+                    # 5 m DEM: the declared value is no data too.)
+                    mask = mask * (ds.read(1, out_shape=(h, w)) != float(b["nodata"]))
                 tr = ds.transform @ ds.transform.scale(ds.width / w, ds.height / h)
                 shapes = [sg.shape(s) for s, v in rasterio.features.shapes((mask > 0).astype(np.uint8), mask=mask > 0, transform=tr) if v]
                 geom = shapely.union_all(shapes)
@@ -1058,7 +1064,9 @@ def latest_versions(feats, spec):
 
 
 def wanted_fields(b):
-    out = set(b.get("by", []))
+    """The fields a block reads: its `by`, `name`, metrics' readings, and its `filter`'s and
+    `exclude`'s, which a service asked only for the others would leave every feature without."""
+    out = set(b.get("by", [])) | set(b.get("filter") or {}) | set(b.get("exclude") or {})
     if b.get("name"):
         out.add(b["name"])
     for m in (b.get("metrics") or {}).values():

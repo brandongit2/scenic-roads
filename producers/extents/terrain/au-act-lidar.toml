@@ -1,0 +1,31 @@
+name = "ACT LiDAR 2020 and 2015"
+credit = "© Australian Capital Territory and Aerometrex Limited"
+licence = "CC-BY-4.0"
+licence_url = "https://www.planning.act.gov.au/professionals/survey-spatial/spatial-information/lidar-data"
+source = "https://www.planning.act.gov.au/professionals/survey-spatial/spatial-information/lidar-data"
+theme = "terrain"
+availability = "open"
+notes = "The ACT Government \"acquired Airborne LiDAR in 2020 and 2015 for the entire ACT\": the 2020 point cloud at 12 pulses per m² (its nominal spacing 0.29 m), ground classified to level 3, LAS 1.4, from ELVIS. The 2015 survey's density isn't stated on the page. Their extent is the territory the government states they cover, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data (ELVIS publishes no footprint readable outside its page)."
+
+[[piece]]
+id = "lidar-2020"
+label = "ACT lidar 2020"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AU-ACT"] }
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 0.2887
+year = 2020
+
+[[piece]]
+id = "lidar-2015"
+label = "ACT lidar 2015"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AU-ACT"] }
+tolerance_m = 200
+[piece.metrics]
+year = 2015

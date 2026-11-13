@@ -1,0 +1,41 @@
+name = "Australian Antarctic Data Centre: station area DEMs (Windmill Islands, Holme Bay, Larsemann Hills, Vestfold Hills)"
+credit = "Australian Antarctic Data Centre"
+licence = "CC-BY-4.0 (Holme Bay's record)"
+licence_url = "https://cmr.earthdata.nasa.gov/search/concepts/C1611351038-AU_AADC.umm_json"
+source = "https://cmr.earthdata.nasa.gov/search/collections.json?keyword=Antarctica%20digital%20elevation%20model&page_size=30"
+theme = "terrain"
+availability = "open"
+notes = "The AADC's DEMs round Australia's Antarctic stations, made from 1994 to 2005: Shirley Island's 2 m (Windmill Islands, near Casey, 2005), Holme Bay's 10 m (near Mawson, interpolated from contours), the Larsemann Hills' 10 m and the Vestfold Hills' (near Davis). Their records give bounding boxes only: listed. REMA's 2 m mosaic (pgc-rema) covers them all."
+
+[[piece]]
+id = "windmill"
+label = "Shirley Island DEM 2 m (Windmill Islands)"
+method = "none"
+why = "its record gives a bounding box only"
+[piece.metrics]
+spacing_m = 2.0
+year = 2005
+
+[[piece]]
+id = "holme-bay"
+label = "Holme Bay DEM 10 m"
+method = "none"
+why = "its record gives a bounding box only"
+[piece.metrics]
+surface = "ground"
+spacing_m = 10.0
+
+[[piece]]
+id = "larsemann"
+label = "Larsemann Hills DEM 10 m"
+method = "none"
+why = "its record gives a bounding box only"
+[piece.metrics]
+spacing_m = 10.0
+
+[[piece]]
+id = "vestfold"
+label = "Vestfold Hills DEM"
+method = "none"
+why = "its record gives a bounding box only"
+[piece.metrics]

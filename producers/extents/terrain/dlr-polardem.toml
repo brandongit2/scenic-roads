@@ -1,0 +1,21 @@
+name = "TanDEM-X PolarDEM 90m of Antarctica"
+credit = "German Aerospace Center (DLR)"
+licence = "DLR's TanDEM-X data licence (not read)"
+licence_url = "https://geoservice.dlr.de/web/datasets"
+source = "https://geoservice.dlr.de/web/datasets"
+theme = "terrain"
+availability = "login"
+notes = "DLR's edited 90 m surface model of the whole Antarctic continent from TanDEM-X radar interferometry (Wessel et al., The Cryosphere 15, 5241, 2021), in Antarctic polar stereographic, from DLR's EOC Geoservice after registering. Its extent is the continent it states it covers, as Natural Earth's 1:10m administrative areas (v5.1.2) draw Antarctica: claimed, not checked against data. Its year is the paper's (its acquisitions' dates weren't read). No accuracy is stated per piece."
+
+[[piece]]
+id = "polardem"
+label = "TanDEM-X PolarDEM 90 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ATA"] }
+tolerance_m = 2000
+[piece.metrics]
+surface = "surface"
+spacing_m = 90.0
+year = 2021

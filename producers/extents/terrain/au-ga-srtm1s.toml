@@ -1,0 +1,46 @@
+name = "SRTM-derived 1 Second Digital Elevation Models (DEM, DEM-S, DEM-H) version 1.0"
+credit = "Geoscience Australia, from NASA's Shuttle Radar Topography Mission"
+licence = "CC-BY-4.0"
+licence_url = "https://explorer.dea.ga.gov.au/stac/collections/ga_srtm_dem1sv1_0"
+source = "https://explorer.dea.ga.gov.au/stac/collections/ga_srtm_dem1sv1_0"
+theme = "terrain"
+availability = "open"
+notes = "GA's three national 1 arc-second (about 30 m) models from the SRTM of February 2000, in Digital Earth Australia's STAC (one item, its three cloud-optimized GeoTIFFs in dea-public-data): the DEM (stripes, voids and vegetation offsets removed), DEM-S (smoothed) and DEM-H (hydrologically enforced), each a bare-earth model as GA describes them, made from the SRTM's surface by removing its vegetation offsets. Each file's extent is its valid data at an overview of about 1 km; the DEM and DEM-S fill the sea of the SRTM's coastal tiles with 0 (some 7 % of their cells, 1.1 million km² read at 1 km), so a cell at exactly 0 is taken as no data in those two (`nodata`). No accuracy is stated per piece."
+
+[[piece]]
+id = "dem"
+label = "GA SRTM 1 s DEM"
+method = "raster"
+urls = ["https://dea-public-data.s3.ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dem1sv1_0.tif"]
+mask_m = 1000
+nodata = 0
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2000
+
+[[piece]]
+id = "dem-s"
+label = "GA SRTM 1 s DEM-S (smoothed)"
+method = "raster"
+urls = ["https://dea-public-data.s3.ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/dems1sv1_0.tif"]
+mask_m = 1000
+nodata = 0
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2000
+
+[[piece]]
+id = "dem-h"
+label = "GA SRTM 1 s DEM-H (hydrological)"
+method = "raster"
+urls = ["https://dea-public-data.s3.ap-southeast-2.amazonaws.com/projects/elevation/ga_srtm_dem1sv1_0/demh1sv1_0.tif"]
+mask_m = 1000
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+year = 2000

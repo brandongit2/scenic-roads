@@ -1,0 +1,20 @@
+name = "Cape Town Ground Level Map 2019 (CCT GLM 2019) 5 m DEM, the City of Cape Town's"
+credit = "City of Cape Town"
+licence = "City of Cape Town Open Data Terms of Use"
+licence_url = "https://odp-cctegis.opendata.arcgis.com/"
+source = "https://cityimg.capetown.gov.za/erdas-iws/esri/GeoSpatial%20Datasets/rest/services/Elevation_CCT_GLM2019_5m_DEM/MapServer"
+theme = "terrain"
+availability = "login"
+notes = "The City's 5 m bare-earth DEM from its lidar of 2018 and 2019 (2 to 3 points per m²), vertical accuracy 30 cm, approved by Council on 27 Jul 2023. Its REST service renders an image, not heights; the grid itself is had from the City Maps office on request (login). Its extent is the city the publisher states it covers, as the City's own boundary layer (Base_Data_LDTL_VTC, the Municipal Demarcation Board's) draws it: claimed, not checked against data. The City's 2 m and 5 m contours (the latter from its 2025-26 lidar at 15 points per m²) are not grids and aren't declared."
+
+[[piece]]
+id = "glm-2019"
+label = "Cape Town GLM 2019 5 m DEM"
+method = "arcgis"
+class = "claimed"
+url = "https://citymaps.capetown.gov.za/agsext/rest/services/Background_Maps/Base_Data_LDTL_VTC/MapServer/0"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5.0
+year = 2019

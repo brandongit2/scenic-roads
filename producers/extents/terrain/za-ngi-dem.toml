@@ -1,0 +1,84 @@
+name = "South Africa's national DEMs: CD:NGI 25 m DEM; GeoSmart DEMSA2 and SUDEM5; GeoSpace 1 m DSM"
+credit = "Chief Directorate: National Geo-spatial Information (CD:NGI), Department of Agriculture, Land Reform and Rural Development; GeoSmart Space; GeoSpace International / Hexagon"
+licence = "none found (the NGI DEM); commercial licences (the others)"
+licence_url = "https://web.archive.org/web/20251103125941/https://ngi.dalrrd.gov.za/index.php/what-we-do/maps-and-geospatial-information/40-elevation-data"
+source = "https://web.archive.org/web/20251103125941/https://ngi.dalrrd.gov.za/index.php/what-we-do/maps-and-geospatial-information/40-elevation-data"
+theme = "terrain"
+availability = "login"
+notes = "The country's national elevation grids, none open: the NGI's hybrid DEM (photogrammetric or from vectorized contours) at 25 m \"or multiples thereof\", supplied on request (free by a 2022 paper's account, with missing tiles and bad pixels; no licence text read; its kind not stated); GeoSmart's DEMSA2, 2 m from stereo aerial imagery (L1 and L2 surface models, L3 a terrain model; about 50 cm vertical, not stated as an RMSE), sold by area; GeoSmart's SUDEM5 (Stellenbosch University's 5 m DEM, from 1:10,000 and 1:50,000 contours and spot heights fused with the SRTM), sold; and GeoSpace International's 1 m DSM with 2 m and 5 m DTMs of the whole country (from 2022, Hexagon's case study), commercial. Each covers the whole country as its publisher states, so its extent is South Africa as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The DEMSA2 products' years aren't stated on the product page."
+
+[[piece]]
+id = "ngi-25m"
+label = "NGI national DEM 25 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ZAF"] }
+tolerance_m = 1000
+[piece.metrics]
+spacing_m = 25.0
+
+[[piece]]
+id = "demsa2-dsm"
+label = "GeoSmart DEMSA2 2 m DSM"
+method = "file"
+class = "claimed"
+availability = "paid"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ZAF"] }
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = 2.0
+
+[[piece]]
+id = "demsa2-dtm"
+label = "GeoSmart DEMSA2 2 m DTM (L3)"
+method = "file"
+class = "claimed"
+availability = "paid"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ZAF"] }
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 2.0
+
+[[piece]]
+id = "sudem5"
+label = "SUDEM5 5 m"
+method = "file"
+class = "claimed"
+availability = "paid"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ZAF"] }
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 5.0
+
+[[piece]]
+id = "geospace-dsm"
+label = "GeoSpace 1 m DSM"
+method = "file"
+class = "claimed"
+availability = "paid"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ZAF"] }
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+
+[[piece]]
+id = "geospace-dtm"
+label = "GeoSpace 2 m DTM"
+method = "file"
+class = "claimed"
+availability = "paid"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ZAF"] }
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = 2.0

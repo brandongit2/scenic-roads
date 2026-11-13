@@ -1,0 +1,20 @@
+name = "2014 Digital Elevation Model for St Helena (Airbus Pléiades)"
+credit = "St Helena Government; Airbus; SAERI data portal"
+licence = "Other (Not Open): \"End use is highly restricted\""
+licence_url = "https://dataportal.saeri.org/dataset/2014-digital-elevation-model-airbus-pleaides"
+source = "https://dataportal.saeri.org/dataset/2014-digital-elevation-model-airbus-pleaides"
+theme = "terrain"
+availability = "closed"
+notes = "A surface model of St Helena from Pléiades stereo imagery of 2014 (ASCII grid, EPSG:4326 and 32730), on the SAERI portal with no files to download and a restricted licence; its cell isn't stated. Its extent is the island the record names, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. With no spacing it has no score."
+
+[[piece]]
+id = "dem"
+label = "St Helena Pléiades DEM 2014"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["SH-HL"] }
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+year = 2014

@@ -1,0 +1,47 @@
+name = "Litto3D of the Indian Ocean: Mayotte 2012, La Réunion 2016, the Îles Éparses 2012"
+credit = "Shom - IGN"
+licence = "Licence Ouverte 2.0"
+licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
+source = "https://services.data.shom.fr/geonetwork/srv/api/records/BATHYMETRIE_LITTO3D_REUNION_2016.xml/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Shom's and IGN's continuous land-sea models of Mayotte, La Réunion and the Îles Éparses (airborne topographic lidar on land, bathymetric lidar or multibeam at sea, 300 m overlapping): a 1 m DTM each, in 5 km packages from Shom's INSPIRE download service, without a login. Each campaign's extent is its package grid (Shom's WFS LITTO3D_<campaign>_GRILLE_WFS: 192, 134 and 80 packages on 13 Nov 2026), squares over land and sea; its year the one its name and record give (Mayotte's dated 10 Dec 2012, La Réunion's 2 May 2016, the Éparses' 1 Mar 2012). The two departments also have IGN's LiDAR HD (La Réunion) and RGE ALTI (both): ign-lidar-hd's and fr-rgealti's."
+
+[[piece]]
+id = "mayotte"
+label = "Litto3D Mayotte 2012"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_MAYOT_2012_GRILLE_WFS:grille_litto3d_mayot2012"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2012
+
+[[piece]]
+id = "reunion"
+label = "Litto3D La Réunion 2016"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_REUNION_2016_GRILLE_WFS:grille_litto3d_reunion2016"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2016
+
+[[piece]]
+id = "eparses"
+label = "Litto3D Îles Éparses 2012"
+method = "wfs"
+class = "index"
+url = "https://services.data.shom.fr/INSPIRE/wfs"
+type = "LITTO3D_EPARSES_2012_GRILLE_WFS:grille_litto3d_eparses2012"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2012

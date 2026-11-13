@@ -1,0 +1,18 @@
+name = "One-meter Topobathymetric Digital Elevation Model for Majuro Atoll, Republic of the Marshall Islands, 1944 to 2016"
+credit = "U.S. Geological Survey (Coastal National Elevation Database, CoNED)"
+licence = "public domain (U.S. Government work)"
+licence_url = "https://www.sciencebase.gov/catalog/item/59557881e4b04e08be532c9a"
+source = "https://www.sciencebase.gov/catalog/item/59557881e4b04e08be532c9a"
+theme = "terrain"
+availability = "open"
+notes = "The USGS's 1 m topobathymetric model of Majuro Atoll (published 21 Sep 2017; its sources 1944 to 2016, the newest the RTK surveys of September 2016), one 2.36 GB zip on ScienceBase; some northern islets are outside the grid. The item states only a bounding box, and Natural Earth draws the Marshall Islands as their two chains: listed. No USGS 1/3 arc-second tile covers the Marshall Islands."
+
+[[piece]]
+id = "tbdem"
+label = "Majuro topobathy DEM 1 m"
+method = "none"
+why = "its item states only a bounding box (one zip), and the atoll has no outline in Natural Earth"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2016

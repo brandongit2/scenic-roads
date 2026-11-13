@@ -1,0 +1,21 @@
+name = "Heard Island RADARSAT (2002) DEM"
+credit = "Australian Antarctic Data Centre"
+licence = "CC-BY-3.0-AU"
+licence_url = "https://data.gov.au/data/dataset/aad-heard-dem-radarsat02"
+source = "https://data.gov.au/data/dataset/aad-heard-dem-radarsat02"
+theme = "terrain"
+availability = "open"
+notes = "The AADC's 10 m DEM of Heard Island, made by interferometry from RADARSAT images of 17 Feb and 13 Mar 2002, merged with the 1997 stereo RADARSAT DEM and the island's coastline: a radar surface model. Its extent is Heard Island as the record states it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, which hold the McDonald Islands (about 2.5 km², 44 km west) in the same area: claimed, not checked against data. No accuracy is stated."
+
+[[piece]]
+id = "dem"
+label = "Heard Island DEM 2002 10 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HMD"] }
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 10.0
+year = 2002

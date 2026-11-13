@@ -1836,8 +1836,8 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 table at this section's end (`producers/extents/`), and the unit `extents` that checks them
-(crate::inputs::extents, the checks below; task #1346); North America's and Europe's sources
-(task #1350); the step `available` that draws the pieces' tiles, and the server's score, layers
+(crate::inputs::extents, the checks below; task #1346); North America's, Europe's, Oceania's, Africa's and the polar south's
+sources (task #1350); the step `available` that draws the pieces' tiles, and the server's score, layers
 and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the surface models of
 North America and Europe (task #1370); Asia's sources (task #1350's third run). Planned: the
 rest of the world's sources (task #1350's later runs) and `piece.dataset` (extents from the build's
@@ -1932,9 +1932,9 @@ a new source of a kind it knows is a new declaration, no code):
 | `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links up to the first page with no items, a link without the page size asked for given it back, a link back to a page already read stopping the run), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
 | `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once, by their `alternate` links: never `up` or `self`, back to the service's every dataset): each file it links with its own `bbox` (`latfirst = true` where a feed writes it latitude first), else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
 | `wfs` | a WFS feature type (GetFeature, paged by `startIndex`, every feature counted, those without geometry too; as GeoJSON, or GML where the server answers only that, the `format` asked for; `version` 2.0.0 or a 1.x's; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
-| `file` | a published index file fetched whole, its size checked first: GeoJSON or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several); `urls`, several such files read in turn | `index` or `service` |
+| `file` | a published index file fetched whole, its size checked first: GeoJSON (a collection, or a lone Feature: LINZ's capture areas) or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several); `urls`, several such files read in turn | `index` or `service` |
 | `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names (gzipped too, or the file a download page's meta refresh sends on to, that page not cached: its signed link expires), a zip's member names (its central directory by range request, none of its members read; with `prefix`, each zip's in a bucket's folder) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it; `jp-kihonzu`, Japan's national base map sheets in the plane rectangular zone of `crs` (JGD2011 or JGD2000): 09LD35 a 1:5,000 sheet, 4 by 3 km, from the zone, the 1:50,000 sheet's row and column letters, then its quarter (1–4), its 1:5,000 row and column, the 1:2,500 quarter, the 1:1,000 row and column letter, or the 1:500 row and column; `jp-kihonzu-1250`, the same with four digits read as map level 1250, a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m; a sheet of another zone than the block's refused); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
-| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges | `files` |
+| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS) | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
 Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, TLS
@@ -2086,14 +2086,13 @@ crate::inputs::extents's, with the real files of `producers/extents/terrain/` ta
 error.
 
 **The sources so far** (terrain; `producers/extents/terrain/`, read 13 Nov 2026; the worldwide
-models, the polar mosaics, BC, Wales, France and Luxembourg the same outlines as on 12 Nov; North
-America read on 13 Nov, its large indexes on the Mac mini; Europe below):
+models, ArcticDEM's mosaic, BC, Wales, France and Luxembourg the same outlines as on 12 Nov; North
+America read on 13 Nov, its large indexes on the Mac mini; Europe and the polar south below):
 
 | Declaration | Pieces | Class | Read by |
 |---|---|---|---|
 | `cop-dem` | 2: GLO-30, GLO-90 | `index` | `listing`: each bucket's list of its 1° tiles (GLO-30 withholds Armenia's and Azerbaijan's) |
 | `pgc-arcticdem` | 1: the 2 m mosaic | `index` | `file`: the centre's tile index (a zipped shapefile, EPSG:3413) |
-| `pgc-rema` | 1: the 2 m mosaic | `index` | `file`: the same, EPSG:3031; its hole round the South Pole kept (no data south of ~89° S) |
 | `jaxa-aw3d30` | 1 | `claimed` (a free account) | `listing`: the agency's public list of 1° tiles |
 | `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline (its `extent` asset: the items' own footprints, hulls for many, summed 5.07 million km²; the extent files 2.29 million, against the 2,230,605 km² NRCan states; 4.5 MB, their 1 km tiles' staircase edges, which a 200 m tolerance cuts by 6 % only), cell and year (from its name, or its item's `datetime` for the 145 names holding none); `raster`: the mosaic's 36 squares, each's mask at its overview of ~1 km pixels (`grain_m` 1,024) |
 | `geobc-lidar` | 17: the DEM sheets by cell and year | `index` | `arcgis`: the portal's two sheet indexes, each sheet's cell as stated (1,659 sheets of 2016 are 2 m) |
@@ -2269,6 +2268,46 @@ IfSAR surveys are 3DEP's Alaska IfSAR (its DSM declared); the states' own DSMs (
 Montana's, Utah's, Hawaii's, the District of Columbia's) and NEON's sites, of the same surveys as
 3DEP's 1 m DEM, are for a later run; NRCan's CDEM and MRDEM-30 (ground models, 20 and 30 m) aren't
 declared.
+
+**Oceania, Africa and the polar south** (read 13 Nov 2026, task #1350; REMA's indexes on the Mac
+mini, the rest on the M1): 39 declarations, 1,339 pieces, 1,302 with an extent. Areas are checked in
+an equal-area projection against the publisher's figure or the tiles' count times their area.
+
+| Declaration | Pieces | Class | Read by |
+|---|---|---|---|
+| `nz-linz-elevation` | 163: the national 1 m DEM's and DSM's surveys where each is on top (82, 80), the 8 m DEM | `service` | `file`: each composite's `capture-dates.geojson` in LINZ's bucket (by survey; its flown year and stated cell) and the 8 m DEM's capture area (a lone GeoJSON Feature); 2.0 MB; the DEM's surveys 233,062 km², the DSM's 232,716, the 8 m 267,543 |
+| `nz-linz-coastal` | 54: the coastal topobathymetric 1 m DEM's surveys (28) and the DSM's (26) | `service` | `file`: the same composites' capture dates in the coastal bucket; 3,160 and 488 km² |
+| `au-nsw-elevation` | 2: the 5 m DEM's 1:100,000 sheets; the lidar DEMs listed | `index`; `unknown` | `arcgis`: the Elevation Index's 343 sheets naming a 5 m DEM, 885,791 km² |
+| `au-vic-elevation` | 155: the 1 m DEM footprints, open (40, 30,450 km²) and licensed (paid: claimed, 113, 108,232 km²); the 10 m DEM over the state; VCDEM listed | `service`; `claimed`; `unknown` | `wfs`: Vicmap's footprints by project, cell, year and vertical accuracy |
+| `au-qld-elevation` | 562: the lidar projects' DEMs (535 free, 15 under three years old and sold: claimed), the Ortho DEMs (12, no surface stated) | `service`; `claimed` | `arcgis`: the elevation extents layer, split by `res_value` and the capture's end |
+| `au-sa-dew` | 15: the lidar DEMs (12; three for the SA Government only: claimed) | `service`; `claimed` | `file`: the department's zipped GeoJSON (GDA2020), the SRTM folder left out |
+| `au-tas-elevation` | 253: the statewide 2 m DEM (70,817 km²); the completed lidar projects' areas (252, 54,798 km² as their union), each its density's nominal spacing and year | `files`; `service` | `raster`: the 95 GB COG's mask at a 256 m overview; `arcgis`: the LIST's lidar index (`filter` on `STATUS`) |
+| `au-wa-landgate`, `au-act-lidar` | 47; 2 | `claimed`; `unknown` | Landgate's LiDAR index (`arcgis`, sold per km²: claimed), its DEMs listed (a PDF map only); the ACT's 2015 and 2020 lidar claimed over the territory |
+| `au-ga-dem5m` | 1: GA's national 5 m lidar DEM (236 surveys of 2001 to 2015) | `files` | `raster`: the service's WCS 1.0.0 at 0.01° over the country, its 0 answers taken as no data (`nodata`); 239,135 km² against the stated "in excess of 245,000" |
+| `au-ga-srtm1s` | 3: GA's 1 arc-second DEM, DEM-S and DEM-H | `files` | `raster`: Digital Earth Australia's three COGs at a 1 km overview; the DEM and DEM-S fill the sea with 0, taken as no data (`nodata`): 7,849,835 km², DEM-H 7,763,134 |
+| `au-iot-dem`, `nf-csiro-lidar`, `hm-aad-dem` | 2; 2; 1 | `claimed` | Christmas Island's and the Cocos' 1 m DEMs, Norfolk Island's 0.5 m DEM and 1 m DSM, Heard and McDonald's 10 m surface model, over the territories as Natural Earth draws them |
+| `au-ga-surveys` | 2 | `unknown` | `none`: Kakadu's lidar and the urban DEMs (no outlines published) |
+| `oi-litto3d` | 3: Mayotte (2012), La Réunion (2016) and the Îles Éparses (2012), 1 m land-sea DTMs | `index` | `wfs`: Shom's package grids, 192, 134 and 80 squares of 5 km |
+| `pacific-national-lidar`, `nc-dittt-bdalti`, `sh-saeri-dem` | 4; 2; 1 | `claimed`; `unknown` | Samoa's 2015, Tonga's 2021 and 2026 and Tuvalu's 2019 lidar (closed) over the islands each covers; New Caledonia's 10 m BD ALTI (its serial lidar listed); St Helena's DEM (closed, no cell stated) |
+| `rw-nla-dem` | 1: Rwanda's 10 m national DEM | `files` | `raster`: the COG's mask at a 640 m overview (a grain of about 320 m), 26,930 km² |
+| `za-ngi-dem`, `za-capetown-glm`, `za-kruger-ceda` | 6; 1; 2 | `claimed` | South Africa's national grids (the NGI's 25 m on request; DEMSA2's DSM and DTM, SUDEM5, GeoSpace's DSM and DTM, sold) over the country; Cape Town's 5 m DEM (on request) by the City's boundary, 2,455 km²; Kruger's 0.25 m DSM and DTM (open, but no overviews and a loose sheet index) by the park's WDPA outline, 19,175 km² |
+| `ga-afrisar-lvis` | 1: LVIS's 25 m ground elevation of five Gabonese forest sites (2016) | `claimed` | `stac`: NASA's CMR, the five ground-elevation granules' footprints (login), 15,709 km² |
+| `pgc-rema` | 21: REMA's 2 m, 10 m and 32 m mosaic tiles; the 2 m strips by the year of their imagery (2007 to 2024) | `index` | `file`: the Polar Geospatial Center's tile indexes (EPSG:3031; the hole round the South Pole kept, no data south of ~89° S) and its strip index's zipped shapefile (at a 2 km tolerance), 3.6 MB; 95 s and a peak of 2.8 GB on the mini |
+| `dlr-polardem`, `npi-antarctic-dtm` | 1; 2 | `claimed`; `unknown` | DLR's 90 m TanDEM-X model of Antarctica (login) over the continent; Bouvetøya's DTM over the island, Peter I Island's listed |
+| 12 sources listed only | 30 | `unknown` | `none`, each with its `why`: French Polynesia's MNTs (no overviews), PACCSAP's and other Pacific islands' lidar, Majuro's, Johannesburg's, Mozambique's, Accra's, Senegal's, Fogo's (no overviews), Egypt's, East Africa's local models and the Australian Antarctic stations' |
+
+**Not obtained** (Oceania, Africa and the polar south, 13 Nov): ELVIS's per-survey footprints (its
+API answers 403 outside its own page), so NSW's lidar DEMs are listed and GA's 5 m is its WCS's
+valid data at about 1.1 km (a cell at exactly 0 m reads as no data); the older New Zealand surveys
+beneath the composites (their own collections; the composites' capture dates cover where each is on
+top); New Zealand's coastal 2 m and 10 m models, REMA's 100 m, 500 m and 1 km mosaics and Kruger's
+1 m and 5 m (the same models resampled); French Polynesia's, Kruger's and Fogo's files (no
+overviews: a mask would be the files read whole); Durban's, Cape Town's and Macquarie Island's
+contours (not grids); Lord Howe Island (nothing found); the Solomon Islands (a survey planned);
+New Caledonia's Litto3D (not yet flown). Guam's, the Northern Marianas', American Samoa's and
+Hawaii's, the Federated States of Micronesia's and Palau's 1/3 arc-second tiles are 3DEP's
+(`usgs-3dep`); La Réunion's and Mayotte's lidar are `ign-lidar-hd`'s and `fr-rgealti`'s; McMurdo's
+and OpenTopography's other datasets, and South Georgia's, are other runs'.
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project

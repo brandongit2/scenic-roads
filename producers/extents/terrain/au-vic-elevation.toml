@@ -1,0 +1,65 @@
+name = "Vicmap Elevation: 1m DEM; DEM 10m; Victorian Coastal DEM 2021"
+credit = "State of Victoria (Department of Transport and Planning, Vicmap)"
+licence = "CC-BY-4.0 (the footprints, the open projects, the 10 m and coastal DEMs); the licensed projects by subscription"
+licence_url = "https://discover.data.vic.gov.au/dataset/vicmap-elevation-1m-digital-elevation-model-dem-footprints"
+source = "https://opendata.maps.vic.gov.au/geoserver/wfs"
+theme = "terrain"
+availability = "open"
+notes = "Victoria's lidar DEMs by source project, as the Vicmap 1m DEM footprints (WFS, 322 footprints on 13 Nov 2026, updated 10 Jun 2025): each its `availability` (46 \"Open\", downloaded from ELVIS; 276 \"Licensed\", sold through Vicmap's resellers under the Vicmap Elevation subscription: paid, claimed), its `source_resolution` (1 m or 0.5 m), its `source_date` (the year taken) and `vertical_accuracy` (\"0.1m\": the product's ±10 cm RMSE). The product page states \"Coverage 60% of Victoria\". The open Vicmap Elevation DEM 10 m (hydro-enforced, 5 m vertical) covers the state, claimed as Natural Earth's 1:10m administrative areas (v5.1.2) draw it. The Victorian Coastal DEM 2021 (VCDEM, 2.5 m, CC BY) has no published footprint: listed. Digital Twin Victoria's lidar of 2021-24 (1 m DEM and DSM) is among the licensed footprints."
+
+[[piece]]
+id = "open"
+label = "Vicmap 1 m DEM, open projects"
+method = "wfs"
+class = "service"
+url = "https://opendata.maps.vic.gov.au/geoserver/wfs"
+type = "open-data-platform:vicmap_elevation_1m_dem_footprints"
+filter = { availability = ["Open"] }
+by = ["filename"]
+name = "filename"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "source_resolution", text = "m" }
+year = { field = "source_date", date = "iso" }
+vertical_rmse_m = { field = "vertical_accuracy", text = "m" }
+
+[[piece]]
+id = "licensed"
+label = "Vicmap 1 m DEM, licensed projects"
+method = "wfs"
+class = "service"
+availability = "paid"
+url = "https://opendata.maps.vic.gov.au/geoserver/wfs"
+type = "open-data-platform:vicmap_elevation_1m_dem_footprints"
+filter = { availability = ["Licensed"] }
+by = ["filename"]
+name = "filename"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "source_resolution", text = "m" }
+year = { field = "source_date", date = "iso" }
+vertical_rmse_m = { field = "vertical_accuracy", text = "m" }
+
+[[piece]]
+id = "dem-10m"
+label = "Vicmap Elevation DEM 10 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AU-VIC"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10.0
+
+[[piece]]
+id = "vcdem"
+label = "Victorian Coastal DEM 2021 2.5 m"
+method = "none"
+why = "the coastal zone it covers has no published footprint (the record's downloads are by area order)"
+[piece.metrics]
+surface = "ground"
+spacing_m = 2.5
+year = 2021

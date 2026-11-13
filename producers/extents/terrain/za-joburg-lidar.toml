@@ -1,0 +1,17 @@
+name = "Johannesburg lidar (2023), the City of Johannesburg's"
+credit = "City of Johannesburg, Corporate Geo-Informatics (CGIS)"
+licence = "none found (on request)"
+licence_url = "https://eservices.joburg.org.za/Sites/cgismaps/Pages/default.aspx"
+source = "https://eservices.joburg.org.za/Sites/cgismaps/Pages/default.aspx"
+theme = "terrain"
+availability = "login"
+notes = "The City's lidar delivered from October 2023 (at least 4 points per m², ground and non-ground points, 25 cm contours derived), \"available on request\" from the CGIS Projects Section. Its area isn't stated beyond the City, which Natural Earth's 1:10m areas don't draw (only Gauteng): listed."
+
+[[piece]]
+id = "lidar"
+label = "Johannesburg lidar 2023"
+method = "none"
+why = "the area it covers isn't stated, and Natural Earth draws no outline of the City (only Gauteng)"
+[piece.metrics]
+spacing_m = 0.5
+year = 2023

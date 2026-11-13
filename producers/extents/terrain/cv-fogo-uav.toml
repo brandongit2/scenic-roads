@@ -1,0 +1,18 @@
+name = "Digital surface model and orthomosaic of the Chã das Caldeiras lava fields (Fogo Island, Cape Verde, December 2016)"
+credit = "The record's authors (Zenodo 4553932)"
+licence = "CC-BY-4.0"
+licence_url = "https://zenodo.org/records/4553932"
+source = "https://zenodo.org/records/4553932"
+theme = "terrain"
+availability = "open"
+notes = "A UAV photogrammetric survey of the Chã das Caldeiras lava fields (23.9 km²) of December 2016: DSMs at 10 cm (a 4.6 GB zip) and 25 cm (a 2.6 GB GeoTIFF with no overviews), a densified point cloud and 50 cm contours. A mask would be the files read whole, and the caldera has no administrative outline (Natural Earth draws only Fogo's municipalities): listed."
+
+[[piece]]
+id = "dsm"
+label = "Chã das Caldeiras UAV DSM 10 cm"
+method = "none"
+why = "its files have no overviews (a mask would be a 2.6 GB read) and the caldera has no administrative outline"
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.1
+year = 2016

@@ -1,0 +1,50 @@
+name = "Pacific island lidar surveys: Vanuatu 2022, Fiji (Moana), Kiribati 2023-24, Palau 2021, Cook Islands 2022"
+credit = "The surveying governments: Vanuatu (MoLNR, SPC; Woolpert), Fiji (Moana Data Service, Kahuto Pacific), Kiribati (KOITIIP, World Bank and ADB; IIC Technologies), Palau (PALARIS; Fugro, Woolpert), the Cook Islands (Infrastructure Cook Islands; Woolpert)"
+licence = "none found"
+licence_url = "https://ggim.un.org/meetings/2024/Suva_Fiji/documents/Day2_Vanuatu_Country_Status.pdf"
+source = "https://ggim.un.org/meetings/2024/Suva_Fiji/documents/Day2_Vanuatu_Country_Status.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "Lidar of some islands of each country, none released, none outlined: Vanuatu's 2022 Woolpert lidar of Malakula, Efate and Tanna (SPC and the MoLNR; \"further work required toward geo-rectification\"); Fiji's Moana Data Service, a private platform of Kahuto Pacific (some 700 to 1,000 km² over Suva and Nadi, 2024-26, its Suva-Rewa lidar released to a ministry; no grid, licence or price stated); Kiribati's topographic and bathymetric lidar by IIC Technologies for KOITIIP (Tabiteuea, Nonouti, Abaiang, Beru and Tarawa, March 2023 to April 2024); Palau's two 2021 surveys (Fugro's 100 m shoreline buffer and Woolpert's main islands, 1 m DEMs and DSMs; \"to be uploaded for public use\", not found); and the Cook Islands' 2022 Woolpert topobathy lidar of twelve inhabited islands (outcome not found). Listed."
+
+[[piece]]
+id = "vanuatu-2022"
+label = "Vanuatu lidar 2022 (Malakula, Efate, Tanna)"
+method = "none"
+why = "not released, and its areas aren't outlined"
+[piece.metrics]
+year = 2022
+
+[[piece]]
+id = "fiji-moana"
+label = "Fiji Moana lidar (Suva, Nadi)"
+method = "none"
+availability = "paid"
+why = "a private platform's, with no outline, grid or terms published"
+[piece.metrics]
+year = 2025
+
+[[piece]]
+id = "kiribati-2024"
+label = "Kiribati lidar 2023-24"
+method = "none"
+why = "not released, and its islands aren't outlined in Natural Earth"
+[piece.metrics]
+year = 2024
+
+[[piece]]
+id = "palau-2021"
+label = "Palau lidar 2021 1 m"
+method = "none"
+why = "not released; the shoreline buffer and the main islands surveyed aren't outlined"
+[piece.metrics]
+spacing_m = 1.0
+year = 2021
+
+[[piece]]
+id = "cook-2022"
+label = "Cook Islands lidar 2022"
+method = "none"
+why = "commissioned in 2022, no delivery or outline found"
+[piece.metrics]
+year = 2022

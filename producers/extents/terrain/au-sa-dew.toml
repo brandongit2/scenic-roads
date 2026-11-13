@@ -1,0 +1,41 @@
+name = "DEW ELVIS Digital Elevation Model and Imagery Catalog (South Australia)"
+credit = "Department for Environment and Water, Government of South Australia"
+licence = "CC-BY-4.0"
+licence_url = "https://data.sa.gov.au/data/dataset/elvis-digital-elevation-model-imagery-catalog"
+source = "https://apps.waterconnect.sa.gov.au/GISDownloads/MAPS_ELVIS_DEW_ElevationCatalog_geojson.zip"
+theme = "terrain"
+availability = "open"
+notes = "The department's catalogue of the state's elevation data in ELVIS (its GeoJSON of 23 Mar 2021, 16 footprints: the GDA2020 file read): each its grid (`GRID_SIZE`, m), its capture's end (`CAPTURE_EN`, the year taken) and its licence. The lidar DEMs (1 m and 2 m, bare earth; most also with a DSM) are \"Unrestricted, available for resale\" through ELVIS, but three are for the SA Government only (closed, claimed): Northern Adelaide's and Victor Harbor's of 2011 (`LICENSE` \"SA GOVT\") and the South East Region's 2 m of 2007 (named \"RESTRICTED TO SA GOVT ONLY\"). The state's clip of GA's SRTM 1 s DEM-H is au-ga-srtm1s's. The catalogue predates the surveys after 2020, which aren't in it. `VERTICAL_A` isn't stated as an RMSE: left out."
+
+[[piece]]
+id = "lidar"
+label = "South Australia lidar DEM"
+method = "file"
+class = "service"
+url = "https://apps.waterconnect.sa.gov.au/GISDownloads/MAPS_ELVIS_DEW_ElevationCatalog_geojson.zip"
+member = "GDA2020"
+exclude = { FOLDER = ["SRTM", "2011_SA_Coastal_ LiDAR_1m", "2007_SouthEastLiDAR_2m_DEWNR ONLY"] }
+by = ["FILENAME", "NAME"]
+name = "NAME"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "GRID_SIZE" }
+year = { field = "CAPTURE_EN", date = "epoch-ms" }
+
+[[piece]]
+id = "lidar-sagovt"
+label = "South Australia lidar DEM, SA Government only"
+method = "file"
+class = "service"
+availability = "closed"
+url = "https://apps.waterconnect.sa.gov.au/GISDownloads/MAPS_ELVIS_DEW_ElevationCatalog_geojson.zip"
+member = "GDA2020"
+filter = { FOLDER = ["2011_SA_Coastal_ LiDAR_1m", "2007_SouthEastLiDAR_2m_DEWNR ONLY"] }
+by = ["FILENAME", "NAME"]
+name = "NAME"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "GRID_SIZE" }
+year = { field = "CAPTURE_EN", date = "epoch-ms" }

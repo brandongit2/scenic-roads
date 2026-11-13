@@ -1,0 +1,48 @@
+name = "PACCSAP Pacific lidar 2012-13 (Papua New Guinea, Vanuatu, Samoa, Tonga)"
+credit = "Geoscience Australia and the Pacific-Australia Climate Change Science and Adaptation Planning programme (AusAID); AAM; the partner governments"
+licence = "none found"
+licence_url = "https://png-data.sprep.org/resource/9515"
+source = "https://png-data.sprep.org/resource/9515"
+theme = "terrain"
+availability = "closed"
+notes = "The Australian-funded lidar of 2012 and 2013, its products per the programme's factsheets a 1 m ground DEM, a 1 m DSM and 5 m seamless models: Papua New Guinea's north coast (Vanimo, Wewak, Madang, Lae and the coast between, flown 5 May to 13 Jul 2012, a mean point spacing of 0.43 m achieved; the final report is on the PNG SPREP portal, the DEM nowhere found), Vanuatu's Efate and Malekula (September to November 2012) and Espiritu Santo (May 2013, viewable only as a Google Earth KML, raw data on request to the VMGD), Samoa's Apia and Faleolo, Tonga's Tongatapu, Lifuka and Foa. No product or footprint is published: listed, a block a country."
+
+[[piece]]
+id = "png"
+label = "PACCSAP lidar, Papua New Guinea north coast 2012"
+method = "none"
+why = "no DEM or footprint published (only the survey report)"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2012
+
+[[piece]]
+id = "vanuatu"
+label = "PACCSAP lidar, Vanuatu 2012-13"
+method = "none"
+why = "viewable only as a KML viewer, data on request; no footprint"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2013
+
+[[piece]]
+id = "samoa"
+label = "PACCSAP lidar, Apia and Faleolo 2012"
+method = "none"
+why = "no product or footprint published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2012
+
+[[piece]]
+id = "tonga"
+label = "PACCSAP lidar, Tongatapu, Lifuka and Foa 2012"
+method = "none"
+why = "no product or footprint published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2012

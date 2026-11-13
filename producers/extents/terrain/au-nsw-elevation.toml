@@ -1,0 +1,29 @@
+name = "NSW Foundation Spatial Data Framework, Elevation and Depth: Digital Elevation Model"
+credit = "DCS Spatial Services, New South Wales Government"
+licence = "CC-BY-4.0"
+licence_url = "https://data.nsw.gov.au/data/dataset/nsw-foundation-spatial-data-framework-elevation-and-depth-digital-elevation-model"
+source = "https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/Elevation_Index_Public/FeatureServer/0"
+theme = "terrain"
+availability = "open"
+notes = "Spatial Services' bare-earth DEM of NSW: \"DEM derived from LiDAR: 1m or 2m resolution ... DEM derived photogrammetry: data is 5m\", not hydrologically enforced. Its NSW Elevation Data Service delivers the 5 m DEM by 1:100,000 map sheet (0.5° squares): the service's Elevation Index layer lists the 343 sheets, each naming its 5 m DEM (`dems5mid`, every one filled on 13 Nov 2026), so the 5 m piece is those sheets, the whole state. The 1 m and 2 m lidar DEMs and the point clouds download from ELVIS, which publishes no footprint readable outside its page (its file API answers 403); the state's own theme service has only spot heights, relative heights and contours, so their extent isn't known: listed. Contours are not a grid and aren't declared."
+
+[[piece]]
+id = "dem-5m"
+label = "NSW 5 m DEM (1:100,000 sheets)"
+method = "arcgis"
+class = "index"
+url = "https://portal.spatial.nsw.gov.au/server/rest/services/Hosted/Elevation_Index_Public/FeatureServer/0"
+where = "dems5mid IS NOT NULL"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5.0
+
+[[piece]]
+id = "lidar-dem"
+label = "NSW lidar DEM 1 m and 2 m"
+method = "none"
+why = "the lidar DEMs download from ELVIS only, whose footprints aren't readable outside its page, and the state's services publish no index of them"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0

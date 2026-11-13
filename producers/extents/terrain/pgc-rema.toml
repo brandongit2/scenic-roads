@@ -1,11 +1,11 @@
-name = "Reference Elevation Model of Antarctica mosaic, version 2"
+name = "Reference Elevation Model of Antarctica, version 2: mosaics and strips"
 credit = "Polar Geospatial Center, University of Minnesota"
 licence = "CC-BY-4.0"
 licence_url = "https://www.pgc.umn.edu/data/rema/"
 source = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Mosaic_Index_latest_shp.zip"
 theme = "terrain"
 availability = "open"
-notes = "The centre's index of the mosaic's 2 m tiles (50 km squares, EPSG:3031). A surface model from stereo satellite imagery of 2009 to 2021."
+notes = "The centre's indexes of REMA v2 (EPSG:3031), surface models from stereo satellite imagery, registered to CryoSat-2 and ICESat altimetry: the mosaic's 2 m tiles (50 km squares, 5,800), its 10 m and 32 m tiles (100 km squares, 1,523 each; the same area at a coarser cell), all of imagery from 2009 to 2021; and the 2 m strips, each one pair of images as taken, not registered, from the strip index (by the year of its imagery). The full-domain 100 m, 500 m and 1 km mosaics are the same model resampled: not declared apart. The index's tiles hold no data south of about 89° S (a hole round the pole)."
 
 [[piece]]
 id = "2m"
@@ -19,3 +19,41 @@ tolerance_m = 100
 surface = "surface"
 spacing_m = { field = "gsd" }
 year = 2021
+
+[[piece]]
+id = "10m"
+label = "REMA 10 m mosaic"
+method = "file"
+class = "index"
+url = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Mosaic_Index_latest_shp.zip"
+member = "_10m"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "gsd" }
+year = 2021
+
+[[piece]]
+id = "32m"
+label = "REMA 32 m mosaic"
+method = "file"
+class = "index"
+url = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Mosaic_Index_latest_shp.zip"
+member = "_32m"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "gsd" }
+year = 2021
+
+[[piece]]
+id = "strips"
+label = "REMA 2 m strips"
+method = "file"
+class = "index"
+url = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Strip_Index_latest_shp.zip"
+tolerance_m = 2000
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "gsd" }
+year = { field = "acqdate1", date = "iso" }

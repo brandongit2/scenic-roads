@@ -1,0 +1,19 @@
+name = "Rwanda 10 m DEM"
+credit = "National Land Authority (NLA), Republic of Rwanda; provided by WASAC Ltd"
+licence = "CC-BY-4.0"
+licence_url = "https://github.com/WASAC/rwanda-dem"
+source = "https://geohub.data.undp.org/data/00d5add9be37e465398b081683c3ec03"
+theme = "terrain"
+availability = "open"
+notes = "The National Land Authority's 10 m DEM of Rwanda, from an aerial survey (\"likely around 2008/2009\" by EMD's account, which cleaned its north-western outliers and patched a small south-western gap from the Copernicus DEM), published by WASAC as one cloud-optimized GeoTIFF of 649 MB: its extent its valid data at an overview of about 320 m. Called a DEM; whether it is bare earth isn't stated (EMD thinks it likely a surface model): its kind left out. No accuracy is stated."
+
+[[piece]]
+id = "dem"
+label = "Rwanda NLA 10 m DEM"
+method = "raster"
+urls = ["https://wasac-data.water-gis.com/dem/Rwanda_DEM-10m-ARD.cog.tif"]
+mask_m = 640
+tolerance_m = 500
+[piece.metrics]
+spacing_m = { field = "res_m" }
+year = 2009

@@ -1,0 +1,21 @@
+name = "AfriSAR: Gridded Forest Biomass and Canopy Metrics Derived from LVIS, Gabon, 2016"
+credit = "NASA ORNL DAAC; the AfriSAR campaign (NASA, ESA)"
+licence = "NASA EOSDIS data use: openly shared, without restriction"
+licence_url = "https://www.earthdata.nasa.gov/data/catalog/ornl-cloud-afrisar-lvis-biomass-vprofiles-1775-1"
+source = "https://cmr.earthdata.nasa.gov/stac/ORNL_CLOUD/collections/Afrisar_LVIS_Biomass_VProfiles_1775_1"
+theme = "terrain"
+availability = "login"
+notes = "NASA's LVIS full-waveform lidar of five forest sites in Gabon (Lopé, Mondah, Pongara, Rabi, Mabounié), flown 20 Feb to 8 Mar 2016: among the dataset's 25 m grids, each site's bare-ground elevation (`l3c1_ground_elev`), downloaded from the ORNL DAAC after an Earthdata login. Its extent is the five ground-elevation granules' footprints in NASA's CMR STAC (each a bounding box of its site's flights): claimed, not checked against data."
+
+[[piece]]
+id = "ground"
+label = "AfriSAR LVIS ground elevation 25 m"
+method = "stac"
+url = "https://cmr.earthdata.nasa.gov/stac/ORNL_CLOUD/collections/Afrisar_LVIS_Biomass_VProfiles_1775_1"
+page = 100
+filter = { id = ["Afrisar_LVIS_Biomass_VProfiles.lvis2_lope_2016022020160308_l3c1_ground_elev_e32732_v0301_r025m.tif", "Afrisar_LVIS_Biomass_VProfiles.lvis2_mond_2016022020160308_l3c1_ground_elev_e32732_v0301_r025m.tif", "Afrisar_LVIS_Biomass_VProfiles.lvis2_pong_2016022020160308_l3c1_ground_elev_e32732_v0301_r025m.tif", "Afrisar_LVIS_Biomass_VProfiles.lvis2_rabi_2016022020160308_l3c1_ground_elev_e32732_v0301_r025m.tif", "Afrisar_LVIS_Biomass_VProfiles.lvis2_mabo_2016022020160308_l3c1_ground_elev_e32732_v0301_r025m.tif"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 25.0
+year = 2016

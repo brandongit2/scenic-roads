@@ -1,0 +1,27 @@
+name = "Geoscience Australia: Kakadu LiDAR 2011; Urban DEMs (UDEM) 2008-10"
+credit = "Geoscience Australia"
+licence = "CC-BY-4.0 (Kakadu); not specified (the UDEMs)"
+licence_url = "https://ecat.ga.gov.au/geonetwork/srv/api/records/17985bca-869a-4122-8d08-e552603f1033/formatters/xml"
+source = "https://ecat.ga.gov.au/geonetwork/srv/api/records/17985bca-869a-4122-8d08-e552603f1033/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "GA's own surveys outside the states' indexes: Kakadu LiDAR 2011, a 1 m DEM from ground-classified lidar (about 2 points per m², 0.3 m vertical) of the West, South and East Alligator river systems in the Northern Territory, flown 22 Oct to 16 Nov 2011, its record giving only a bounding box (131.68 to 133.24° E, 13.09 to 11.89° S); and the Urban DEM Project's 5 m hydro-DEMs of 2008 to 2010 (Adelaide, Brisbane, the Gold Coast, the Hunter coast, Melbourne, Sydney, Perth to Bunbury; data.gov.au package 6acf3d07), zips with no footprint. Neither publishes an outline: listed. The Northern Territory's own portal holds no lidar or DEM; its surveys are in GA's 5 m DEM (au-ga-dem5m)."
+
+[[piece]]
+id = "kakadu"
+label = "Kakadu lidar DEM 2011 1 m"
+method = "none"
+why = "its record gives only a bounding box of the three river systems, no footprint"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2011
+
+[[piece]]
+id = "udem"
+label = "GA Urban DEMs 5 m (2008-10)"
+method = "none"
+why = "the seven cities' zips are published with no footprint"
+[piece.metrics]
+spacing_m = 5.0
+year = 2010

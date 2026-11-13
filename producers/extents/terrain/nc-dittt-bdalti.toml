@@ -1,0 +1,32 @@
+name = "Modèle numérique de Terrain (BDALTI-NC); SERAIL Grand Nouméa lidar 2025"
+credit = "Direction des Infrastructures, de la Topographie et des Transports Terrestres (DITTT), Nouvelle-Calédonie; GIE SERAIL"
+licence = "Licence Ouverte 2.0 (BDALTI-NC)"
+licence_url = "https://data.gouv.nc/explore/dataset/modele-numerique-de-terrain-bdalti-nc/"
+source = "https://data.gouv.nc/api/explore/v2.1/catalog/datasets/modele-numerique-de-terrain-bdalti-nc"
+theme = "terrain"
+availability = "open"
+notes = "New Caledonia's 10 m terrain model, made from the BDTOPO-NC's 3D data (last updated 2020), on data.gouv.nc: its extent the territory the record states, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The GIE SERAIL's lidar of Grand Nouméa (Nouméa, Dumbéa, Mont-Dore, Païta and partner communes; 2025, about 20 points per m², 1 m MNT, MNS and MNE tiles) is for the GIE's members: listed. Litto3D-NC (Shom and the DITTT) is flown from August 2026, its first deliveries due in 2027: not declared until it is."
+
+[[piece]]
+id = "bdalti"
+label = "BDALTI-NC 10 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["NCL"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10.0
+year = 2020
+
+[[piece]]
+id = "serail"
+label = "SERAIL Grand Nouméa lidar 2025 1 m"
+method = "none"
+availability = "closed"
+why = "for the GIE's members only, and the communes it covers have no outline in Natural Earth"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2025

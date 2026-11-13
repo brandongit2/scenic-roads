@@ -1,0 +1,48 @@
+name = "LINZ elevation: New Zealand LiDAR 1m DEM and DSM; Contour-Interpolated 8m DEM"
+credit = "Toitū Te Whenua Land Information New Zealand, with the regional councils and other licensors each survey names"
+licence = "CC-BY-4.0"
+licence_url = "https://registry.opendata.aws/nz-elevation/"
+source = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/catalog.json"
+theme = "terrain"
+availability = "open"
+notes = "LINZ's open elevation bucket (s3://nz-elevation, a static STAC catalogue of 224 collections on 13 Nov 2026: 107 surveys' 1 m DEMs and 104 their 1 m DSMs, the national composites of each, hillshades and the 8 m DEM). The national 1 m DEM and DSM are composites of the surveys, each place's newest survey on top; each composite's `capture-dates.geojson` is its surveys' outlines where they are on top (82 for the DEM, flown 2008 to 2026), each its title, slug and `flown_to`, the year taken. So the pieces are the surveys as the composite holds them: an earlier survey of a place re-flown since is in its own collection (the same 1 m grid, older) beneath the newer, not drawn apart. The capture areas exclude the surveys' no-data and are simplified by LINZ. Fiordland's west and south and Stewart Island's interior have no 1 m survey; there and on the outlying islands the national 8 m DEM is the finest, made by Geographx in 2012 by interpolating LINZ's 20 m contours (fit for cartographic visualization only, as LINZ states; ground, its one capture area). The DSMs are first-return lidar surface models of the same surveys. No accuracy is stated in the composites. The surveys' point clouds aren't in the bucket (OpenTopography holds LINZ's, the lead's); the coastal topobathy surveys are nz-linz-coastal's."
+
+[[piece]]
+id = "dem"
+label = "LINZ 1 m DEM"
+method = "file"
+class = "service"
+url = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dem_1m/2193/capture-dates.geojson"
+by = ["linz:slug", "title"]
+name = "title"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = { field = "flown_to", date = "iso" }
+
+[[piece]]
+id = "dsm"
+label = "LINZ 1 m DSM"
+method = "file"
+class = "service"
+url = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dsm_1m/2193/capture-dates.geojson"
+by = ["linz:slug", "title"]
+name = "title"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+year = { field = "flown_to", date = "iso" }
+
+[[piece]]
+id = "dem-8m"
+label = "NZ Contour-Interpolated 8 m DEM"
+method = "file"
+class = "service"
+url = "https://nz-elevation.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand-contour/dem_8m/2193/capture-area.geojson"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 8.0
+year = 2012

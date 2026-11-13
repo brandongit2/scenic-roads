@@ -1,0 +1,55 @@
+name = "East Africa and Indian Ocean local elevation models: Maasai Mara, Dar es Salaam (Msimbazi), Kampala, Antananarivo, Aldabra"
+credit = "The publishers each block names: the Maasai Mara DEM (open.africa), the World Bank (Msimbazi study), UKCEH (Kampala), CIRAD (Antananarivo), MARBEC (Aldabra)"
+licence = "various; none found for most"
+licence_url = "https://documents.worldbank.org/curated/en/310991567574404522/pdf/Bathymetric-and-Topographic-Surveying-of-Flood-Prone-Rivers-in-Dar-Es-Salaam-Comparative-Case-of-UAV-Photogrammetry-and-UAV-LiDAR-for-Generation-of-Digital-Terrain-Models-for-Flood-Modelling-Purposes-Msimbazi-River-Dar-es-Salaam.pdf"
+source = "https://documents.worldbank.org/curated/en/310991567574404522/pdf/Bathymetric-and-Topographic-Surveying-of-Flood-Prone-Rivers-in-Dar-Es-Salaam-Comparative-Case-of-UAV-Photogrammetry-and-UAV-LiDAR-for-Generation-of-Digital-Terrain-Models-for-Flood-Modelling-Purposes-Msimbazi-River-Dar-es-Salaam.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "Local models found in East Africa and the Indian Ocean, none with an outline: a 20 m InSAR DEM of the Maasai Mara catchment (Kenya; open.africa, open); the World Bank's 2019 comparison of UAV lidar and photogrammetry DTMs (0.25 m) on a 4 km² site of the lower Msimbazi in Dar es Salaam, no data released; a 5 m DEM used for UKCEH's Kampala flood model, not provided; a 1 m lidar DSM over part of Antananarivo used by CIRAD, not released; and a drone DEM of Aldabra's arm01 (Seychelles, flown 2022, on Zenodo, open). Listed."
+
+[[piece]]
+id = "maasai-mara"
+label = "Maasai Mara InSAR DEM 20 m"
+method = "none"
+availability = "open"
+why = "its catchment has no published outline"
+[piece.metrics]
+surface = "surface"
+spacing_m = 20.0
+
+[[piece]]
+id = "msimbazi"
+label = "Msimbazi UAV-lidar DTM 0.25 m (Dar es Salaam)"
+method = "none"
+why = "a study site of 4 km², no data released"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2019
+
+[[piece]]
+id = "kampala"
+label = "Kampala flood-model DEM 5 m"
+method = "none"
+why = "the DEM isn't provided, nor its area"
+[piece.metrics]
+spacing_m = 5.0
+
+[[piece]]
+id = "antananarivo"
+label = "Antananarivo lidar DSM 1 m (part of the city)"
+method = "none"
+why = "not released; its reduced area isn't outlined"
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+
+[[piece]]
+id = "aldabra"
+label = "Aldabra arm01 drone DEM (2022)"
+method = "none"
+availability = "open"
+why = "a drone patch of the atoll with no outline read"
+[piece.metrics]
+surface = "surface"
+year = 2022

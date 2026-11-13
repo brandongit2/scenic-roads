@@ -1,0 +1,37 @@
+name = "Modèles Numériques de Terrain (MNT) des îles de la Polynésie-Française; Litto3D Polynésie française 2015"
+credit = "Section Cadastre-Topographie, Service de l'urbanisme de la Polynésie française; Shom"
+licence = "CC-BY (the MNTs, data.gouv.fr); Licence Ouverte 2.0 (Litto3D)"
+licence_url = "https://www.data.gouv.fr/datasets/modeles-numeriques-de-terrain-mnt-des-iles-de-la-polynesie-francaise"
+source = "https://www.data.gouv.fr/api/1/datasets/5ea751a00c9e61e46e0176ca/"
+theme = "terrain"
+availability = "open"
+notes = "The Service de l'urbanisme's terrain models of French Polynesia's islands, 36 GeoTIFFs on data.gouv.fr (2 MB to 3.5 GB): lidar MNTs of 2015 at 1 m (Tahiti's urban zone from Mahina to Paea, Moorea, Bora Bora), and photogrammetric MNTs from aerial or satellite stereo pairs of 1997 to 2015 for some thirty islands of the Society, Marquesas, Tuamotu, Gambier and Austral archipelagos (5 m where read: Hiva Oa's). Shom's Litto3D lidar of 2015 (Moorea whole, Tahiti's north-west, Bora Bora's island, lagoon and reef, the Taharuu mouth; 1 m and 5 m tiles, a point cloud), from diffusion.shom.fr behind an account form, has no package grid in Shom's WFS. The GeoTIFFs have no overviews (a mask would be each read whole, 6.4 GB in all), and Natural Earth draws only the archipelagos: listed."
+
+[[piece]]
+id = "lidar-2015"
+label = "French Polynesia lidar MNT 2015 1 m"
+method = "none"
+why = "its files have no overviews (Tahiti's 3.5 GB) and the islands have no outline finer than an archipelago"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2015
+
+[[piece]]
+id = "photogrammetric"
+label = "French Polynesia photogrammetric MNTs (1997-2015)"
+method = "none"
+why = "its files have no overviews, and the islands have no outline finer than an archipelago"
+[piece.metrics]
+surface = "ground"
+
+[[piece]]
+id = "litto3d-2015"
+label = "Litto3D Polynésie française 2015"
+method = "none"
+availability = "login"
+why = "Shom's WFS has no package grid for it, and its zones have no outline"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2015
