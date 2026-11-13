@@ -1,0 +1,25 @@
+name = "National Cartographic Center DEM"
+credit = "سازمان نقشه‌برداری کشور (National Cartographic Center of Iran, NCC)"
+licence = "NCC price list 1403 (commercial, rials)"
+licence_url = "https://ana.ir/en/news/8945/iran-digitizes-elevation-mapping"
+source = "https://ana.ir/en/news/8945/iran-digitizes-elevation-mapping"
+theme = "terrain"
+availability = "paid"
+notes = "The NCC's elevation models on its price list (1403, 2024-25): the coverage DEM at 10 m per 1:25,000 sheet and 30 m per 1:250,000 sheet, sold by sheet, and DEMs at the 1:2,000 scale of other areas; a national DEM is also shown as a WMS on its geoportal (2025 news; its host's certificate had expired). The coverage DEM's extent is Iran, as its price list names it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; the 1:2,000 DEMs' areas aren't listed. No accuracy is stated."
+
+[[piece]]
+id = "dem10"
+label = "coverage DEM 10 m (1:25,000 sheets)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["IRN"] }
+tolerance_m = 500
+[piece.metrics]
+spacing_m = 10.0
+
+[[piece]]
+id = "dem-2000"
+label = "DEMs at 1:2,000"
+method = "none"
+why = "their areas aren't listed"

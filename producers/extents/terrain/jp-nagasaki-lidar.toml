@@ -1,0 +1,16 @@
+name = "オープンナガサキ 3次元点群データ"
+credit = "長崎県 (Nagasaki Prefecture) and its municipalities"
+licence = "Creative Commons (variant not stated)"
+licence_url = "https://opennagasaki.nerc.or.jp/"
+source = "https://opennagasaki.nerc.or.jp/"
+theme = "terrain"
+availability = "open"
+notes = "Nagasaki Prefecture's point clouds from its own works in every municipality, 2012 to 2021 (2012 Iki, 2014 Tsushima, 2017 Ojika, Goto and Shin-Goto, 2019-21 the rest), on its Open Nagasaki portal, whose download links are made by its scripts: no file list or outline was found. The grid and ground split and the density aren't stated."
+
+[[piece]]
+id = "points"
+label = "point clouds (2012-21)"
+method = "none"
+why = "the portal's links are made by its scripts; no file list or outline is published"
+[piece.metrics]
+year = 2021

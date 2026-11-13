@@ -1,0 +1,23 @@
+name = "宮城県 航空レーザ測量成果 グリッドデータ"
+credit = "宮城県 (Miyagi Prefecture)"
+licence = "not stated (the record notes a Survey Act s.44 approval, R6JHs966)"
+licence_url = "https://miyagi.dataeye.jp/datasets/915"
+source = "https://miyagi.dataeye.jp/datasets/915"
+theme = "terrain"
+availability = "open"
+notes = "Miyagi Prefecture's airborne-lidar grid data at 1 m, listed per map-level-1250 sheet (a quarter of a 1:2,500 sheet's quarter, 1,000 by 750 m) in the CSV its portal's record publishes (040002_point_cloud_url_1mcsv.csv, 2023: 9,571 sheets, each a ZIP on gic-miyagi/2024/1mcsv), the portal's download page sending on to it by a meta refresh; each sheet placed by its code (JGD2011, plane rectangular zone X): The record states no licence beyond its Survey Act approval and no survey year: the list's, 2023, is taken. Its micro-relief maps and orthophotos (the record's other lists) aren't elevations. No accuracy is stated."
+
+[[piece]]
+id = "dem1"
+label = "grid data 1 m (2023 list)"
+method = "listing"
+url = "https://miyagi.dataeye.jp/resource_download/1523"
+list = "lines"
+pattern = '/1mcsv/\d+/(?P<ref>10[A-Z]{2}\d{4})\.zip'
+grid = "jp-kihonzu-1250"
+crs = "EPSG:6678"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2023

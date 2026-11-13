@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"lk-survey-lidar","theme":"terrain","read":[{"piece":"dem","method":"none","why":"issued on request; no outline published","date":"2026-11-13"}],"features":[{"type":"Feature","properties":{"piece":"dem","extent":"unknown","availability":"paid","spacing_m":1.0,"year":2016,"name":"lidar DEM 1 m (2015-16)"},"geometry":null}]}

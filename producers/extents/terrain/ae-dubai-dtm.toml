@@ -1,0 +1,32 @@
+name = "Dubai Municipality Digital Terrain Model"
+credit = "Dubai Municipality, Survey Department / GIS Centre"
+licence = "none found"
+licence_url = "https://www.dm.gov.ae/about-dubai-municipality/awards-and-certifications/services/"
+source = "https://www.dm.gov.ae/about-dubai-municipality/awards-and-certifications/services/"
+theme = "terrain"
+availability = "paid"
+notes = "Dubai Municipality's DTM and DSM, updated by its 2021 aerial survey of the whole emirate (Hatta included), supplied by its \"Request for Digital Terrain Model Data\" service; the service page states no grid, fee or terms. Its extent is the emirate, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "DTM (2021)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AE-DU"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+year = 2021
+
+[[piece]]
+id = "dsm"
+label = "DSM (2021)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["AE-DU"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+year = 2021

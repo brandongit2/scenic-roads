@@ -1,0 +1,40 @@
+name = "CartoDEM; CartoDSM; Survey of India DTM"
+credit = "National Remote Sensing Centre (NRSC), ISRO; Survey of India"
+licence = "NRSC data policy"
+licence_url = "https://www.nrsc.gov.in/nrscnew/Dataproducts_Thematic_cartodem.php"
+source = "https://www.nrsc.gov.in/nrscnew/Dataproducts_Thematic_cartodem.php"
+theme = "terrain"
+availability = "login"
+notes = "NRSC's Cartosat-1 elevation models of India: CartoDEM at 1 arc-second (about 30 m; the policy's \"30m or coarser posting shall be made available as free download\"), from Bhuvan after signing up; CartoDSM at 1/12 arc-second (about 2.5 m, 8 m LE90), sold, and to private and foreign users only after clearance by an ISRO committee. Both are surface models (WGS84). The CartoDEM piece's extent is India, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (its India, not every claimed border): claimed, not checked against data. CartoDSM's coverage isn't stated. The Survey of India's 10 m DTM, sold per sheet (Rs 3,300) on its online maps portal after registering, states no coverage either. No accuracy is stated beyond CartoDSM's LE90."
+
+[[piece]]
+id = "cartodem"
+label = "CartoDEM about 30 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["IND"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 30.0
+
+[[piece]]
+id = "cartodsm"
+label = "CartoDSM about 2.5 m"
+method = "none"
+why = "its coverage isn't stated; sold and cleared"
+availability = "paid"
+[piece.metrics]
+surface = "surface"
+spacing_m = 2.5
+
+[[piece]]
+id = "soi-dtm"
+label = "Survey of India DTM 10 m"
+method = "none"
+why = "its coverage isn't stated; sold per sheet"
+availability = "paid"
+[piece.metrics]
+surface = "ground"
+spacing_m = 10.0

@@ -1,0 +1,37 @@
+name = "富山県 数値標高モデル (DEM)"
+credit = "富山県 (Toyama Prefecture), 森林政策課"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/dem"
+theme = "terrain"
+availability = "open"
+notes = "Toyama Prefecture's 0.5 m bare-earth DEM from airborne lidar (its survey years not stated on the record), as GeoTIFFs in ZIPs per 1:50,000 base map sheet that the G-spatial record lists, each zip's members its map-level-1250 sheets (dem_07GD4442.tif: a 1:2,500 quarter's quarter, 1,000 by 750 m, as the files' own TFWs place them), read from the zips' central directories by range request; each sheet placed by its code (JGD2011, plane rectangular zone VII): the prefecture's terms of use for its forest data (its PDFs on the record) apply besides the CC BY of the record. No year or accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m"
+method = "listing"
+list = "zip"
+urls = [
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/35d842e3-48ac-468c-91bf-cfee0b41d043/download/gd.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/5123a0d4-16c1-4375-9f52-000a4a337fed/download/ge.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/1bbfdedb-2a9f-4895-9c25-27c6b0e1eef9/download/gf.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/ad2d6085-4c22-45b3-b7e2-bd7e9be27d74/download/hd.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/4efebd11-36c7-4890-aea4-bdec9cbd1df1/download/hd2.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/31977973-64e7-4cb4-8a92-f239b6e4b0c0/download/he.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/5ec3fbb9-f517-462b-b843-e26625967eac/download/he2.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/d37b693a-a1e5-43f4-a558-5a770e1feeef/download/he3.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/f73efbac-d99c-4f04-a630-4a5f626f4ceb/download/hf.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/e4636b24-dddb-4c61-ac7b-a2beb3e475cd/download/id.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/50cf8202-31a1-4505-9325-9d0326ea5681/download/id2.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/f04f4e8a-162f-46f2-9c97-2583aba1651a/download/ie.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/7587eb01-5cc0-460b-ba8e-ad66eb0cbffe/download/ie2.zip",
+  "https://www.geospatial.jp/ckan/dataset/af567c48-6f2b-45fc-80b4-8a12d5a13146/resource/fd2a4cbf-0330-400b-9bff-5c66067a50ae/download/if.zip",
+]
+pattern = 'dem_(?P<ref>07[A-Za-z]{2}\d{4})\.tif$'
+grid = "jp-kihonzu-1250"
+crs = "EPSG:6675"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5

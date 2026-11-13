@@ -1,0 +1,43 @@
+name = "GEOSA Digital Surface and Terrain Models"
+credit = "General Authority for Survey and Geospatial Information (GEOSA), Kingdom of Saudi Arabia"
+licence = "GEOSA open-data licence (the page's)"
+licence_url = "https://www.geosa.gov.sa/en/About/Pages/Open_data.aspx"
+source = "https://www.geosa.gov.sa/en/About/Pages/Open_data.aspx"
+theme = "terrain"
+availability = "closed"
+notes = "GEOSA's open-data page lists the surface and terrain models held at the authority; its spreadsheet states a DTM (2016-17) at 3, 5 and 10 m and a DSM (2016-17) at 1.5, 3, 5 and 10 m of the whole Kingdom, and 50 cm DEMs of 13 cities (2009) and of Riyadh (2011). The files aren't offered for download and no request route was found. The national pieces' extent is the Kingdom, as GEOSA states it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; the cities' outlines aren't published. No accuracy is stated."
+
+[[piece]]
+id = "dtm3"
+label = "DTM 3 m (2016-17)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["SAU"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 3.0
+year = 2017
+
+[[piece]]
+id = "dsm15"
+label = "DSM 1.5 m (2016-17)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["SAU"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.5
+year = 2017
+
+[[piece]]
+id = "city-dem05"
+label = "city DEMs 0.5 m (2009, Riyadh 2011)"
+method = "none"
+why = "the cities' outlines aren't published"
+[piece.metrics]
+spacing_m = 0.5
+year = 2011

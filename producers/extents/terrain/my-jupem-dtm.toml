@@ -1,0 +1,70 @@
+name = "JUPEM DTM Semenanjung Malaysia; DTM and DSM Sabah dan Sarawak"
+credit = "Jabatan Ukur dan Pemetaan Malaysia (JUPEM)"
+licence = "none found"
+licence_url = "https://jupem.gov.my/en/orang-awam"
+source = "https://www.jupem.gov.my/ms/carian/papar/post/104"
+theme = "terrain"
+availability = "paid"
+notes = "The national survey department's elevation models for sale: DTM Semenanjung Malaysia (DTM_MY501T, 2017) and DTM and DSM Sabah dan Sarawak (DTM_MY511T, DSM_MY511T, 2008), each at a 10 m interval, sold through its product sales; the terms weren't read. Each piece's extent is the area its name states (the peninsula's states and federal territories; Sabah and Sarawak), as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its open river-basin lidar entries (the Kelantan and Terengganu basins, 2016, CC BY on data.gov.my) are tables whose files the archive doesn't hold: listed. No accuracy is stated."
+
+[[piece]]
+id = "dtm-peninsula"
+label = "DTM 10 m, Peninsular Malaysia (2017)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = [
+  "MY-01",
+  "MY-02",
+  "MY-03",
+  "MY-04",
+  "MY-05",
+  "MY-06",
+  "MY-07",
+  "MY-08",
+  "MY-09",
+  "MY-10",
+  "MY-11",
+  "MY-14",
+  "MY-16",
+] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10.0
+year = 2017
+
+[[piece]]
+id = "dtm-borneo"
+label = "DTM 10 m, Sabah and Sarawak (2008)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["MY-12", "MY-13"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10.0
+year = 2008
+
+[[piece]]
+id = "dsm-borneo"
+label = "DSM 10 m, Sabah and Sarawak (2008)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["MY-12", "MY-13"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 10.0
+year = 2008
+
+[[piece]]
+id = "lidar-basins"
+label = "river-basin lidar DTM and DSM (2016)"
+method = "none"
+why = "open as tables (XLSX, CSV) whose files weren't retrievable; no outline"
+availability = "open"
+[piece.metrics]
+year = 2016

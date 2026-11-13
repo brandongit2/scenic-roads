@@ -1,0 +1,23 @@
+name = "栃木県 数値標高モデル (DEM) 0.5m"
+credit = "栃木県 (Tochigi Prefecture), 森林整備課"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/dem05_tochigi"
+theme = "terrain"
+availability = "open"
+notes = "Tochigi Prefecture's 0.5 m bare-earth DEM from its airborne lidar of FY2021 and FY2022: a GeoTIFF per quarter of a 1:50,000 base map sheet (dem_09fd4.tif: 20 by 15 km), the files the G-spatial record lists (read from its API answer), each sheet placed by its code (JGD2011, plane rectangular zone IX): the quarters hold data over the surveyed areas only, so the outline overstates the DEM. No accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (FY2021-22)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=dem05_tochigi"
+list = "lines"
+pattern = '/download/dem_(?P<ref>09[a-z]{2}[1-4])\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

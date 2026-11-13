@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"qa-cgis-dem","theme":"terrain","read":[{"piece":"dem","method":"none","why":"not published; no outline","date":"2026-11-13"}],"features":[{"type":"Feature","properties":{"piece":"dem","extent":"unknown","availability":"closed","name":"DEM (lidar)"},"geometry":null}]}

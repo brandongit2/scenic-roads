@@ -1,0 +1,20 @@
+name = "Survey of Israel DTM"
+credit = "Survey of Israel (מפ\"י, the Israel Mapping Center)"
+licence = "none found"
+licence_url = "https://geospatial.com/country_profiles/israel/"
+source = "https://geospatial.com/country_profiles/israel/"
+theme = "terrain"
+availability = "paid"
+notes = "The Survey of Israel's DTM, captured from its maps at 25, 50 and 100 m for the whole country (East View's profile of it), an ordered product; its 117 data.gov.il datasets hold no elevation layer, and the national tender of point clouds, DSM and DTM its staff describe (ISPRS 2022) states no grid or release. Its extent is Israel, as East View states it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Mapterhorn's 10 m layer (isr10) is ASTER GDEM resampled by a company, not this: not declared."
+
+[[piece]]
+id = "dtm25"
+label = "DTM 25 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ISR"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 25.0

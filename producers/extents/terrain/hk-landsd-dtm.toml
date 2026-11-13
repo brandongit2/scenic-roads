@@ -1,0 +1,20 @@
+name = "Lands Department 5m Grid DTM"
+credit = "Survey and Mapping Office, Lands Department, The Government of the Hong Kong SAR"
+licence = "DATA.GOV.HK terms and conditions"
+licence_url = "https://data.gov.hk/en/terms-and-conditions"
+source = "https://data.gov.hk/en-data/dataset/hk-landsd-openmap-5m-grid-dtm"
+theme = "terrain"
+availability = "open"
+notes = "The Lands Department's 5 m grid of the whole territory, one ZIP (Whole_HK_DTM_5m.zip, 28.7 MB: an Arc ASCII grid of 12,751 by 9,601 cells in the HK1980 Grid, sea written as 0), free for any use with attribution. Its heights take in elevated roads and bridges and, under vegetation, the canopy, so it is a surface model (accuracy ±5 m, stated, not an RMSE). Its extent is the territory, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The 3D-BIT00 terrain TIN (Cesium 3D Tiles) isn't a grid: not declared."
+
+[[piece]]
+id = "dtm5"
+label = "5 m grid (surface-like)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HKG"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 5.0

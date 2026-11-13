@@ -1,0 +1,29 @@
+name = "국토지리정보원 수치표고모형 (DEM)"
+credit = "국토지리정보원 (National Geographic Information Institute, NGII), Republic of Korea"
+licence = "free, \"이용허락범위 제한 없음\" (data.go.kr)"
+licence_url = "https://www.data.go.kr/data/15059920/fileData.do"
+source = "https://www.ngii.go.kr/kor/content.do?sq=204"
+theme = "terrain"
+availability = "login"
+notes = "The national mapping agency's DEMs: 5 m of South Korea, per 1:5,000 sheet or city and county, built from reference points and the 1:5,000 digital maps and updated every year from 2021; and a 1 m grid from airborne lidar of the urban areas, built 2005 to 2021 and updated every two years from 2022. Free with no restriction on use (data.go.kr), but downloaded only after a login on the NGII platform (map.ngii.go.kr, 공개DEM), which refused this client (400 \"Request Blocked\"): not attempted. The Spatial Information Act (s.16) forbids taking basic survey products out of the country without permission, so a build abroad holding them would be an export. The 5 m piece's extent is the country, as the NGII states it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; the urban 1 m areas aren't listed anywhere read. No accuracy is stated."
+
+[[piece]]
+id = "dem5"
+label = "DEM 5 m (2021-)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["KOR"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 5.0
+
+[[piece]]
+id = "dem1-urban"
+label = "urban lidar DEM 1 m (2005-21)"
+method = "none"
+why = "the urban areas flown aren't listed; the platform needs a login"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0

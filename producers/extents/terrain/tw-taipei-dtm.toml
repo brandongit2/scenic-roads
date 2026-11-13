@@ -1,0 +1,30 @@
+name = "臺北市 數值地形模型"
+credit = "臺北市政府都市發展局 (Taipei City Government, Department of Urban Development)"
+licence = "the city's regulation on the use and fees of its topographic products"
+licence_url = "https://map.udd.gov.taipei/Downloads/%E8%87%BA%E5%8C%97%E5%B8%82%E5%9C%B0%E5%BD%A2%E5%9C%96%E6%95%B8%E5%80%BC%E5%9C%96%E6%AA%94%E7%94%B3%E8%AB%8B%E4%BD%BF%E7%94%A8%E5%8F%8A%E6%94%B6%E8%B2%BB%E8%BE%A6%E6%B3%95.pdf"
+source = "https://map.udd.gov.taipei/"
+theme = "terrain"
+availability = "paid"
+notes = "Taipei City's digital topographic products, among them its terrain and surface models, supplied on application and for a fee under the city's regulation (some applicant classes only to ROC nationals resident in Taiwan); the regulation, read in part, states no grid. Its extent is the city, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data."
+
+[[piece]]
+id = "dtm"
+label = "digital terrain model"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["TW-TPE"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+
+[[piece]]
+id = "dsm"
+label = "digital surface model"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["TW-TPE"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"

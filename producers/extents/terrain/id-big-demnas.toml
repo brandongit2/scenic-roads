@@ -1,0 +1,20 @@
+name = "DEMNAS (DEM Nasional)"
+credit = "Badan Informasi Geospasial (BIG), Republik Indonesia"
+licence = "none found"
+licence_url = "https://big.go.id/en/content/produk/demnas"
+source = "https://big.go.id/en/content/produk/demnas"
+theme = "terrain"
+availability = "login"
+notes = "The geospatial agency's seamless national DEM: IFSAR (5 m), TerraSAR-X (5 m) and ALOS PALSAR (11.25 m) surface models with stereo-plotted mass points blended in, at 0.27 arc-seconds (about 8 m), EGM2008, as GeoTIFF sheets by the 1:50,000 and 1:25,000 map numbers; downloaded after registering an account (with an e-mail and phone number check), not attempted. The mass points are blended into a surface model, so it is a surface model. No licence text was found. Its extent is Indonesia, as the agency states it (nasional), as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No accuracy is stated."
+
+[[piece]]
+id = "demnas"
+label = "DEMNAS about 8 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["IDN"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 8.0

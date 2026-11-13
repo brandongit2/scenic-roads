@@ -1,0 +1,35 @@
+name = "長野県 0.5mDEM"
+credit = "長野県 (Nagano Prefecture), 林業総合センター; 建設部砂防課 (the FY2021-22 survey)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/nagano-dem"
+theme = "terrain"
+availability = "open"
+notes = "Nagano Prefecture's 0.5 m bare-earth DEMs. The forestry department's, from its airborne lidar of 2013 and 2014 (平成25年～26年): GeoTIFFs in ZIPs per region in the G-spatial centre's public bucket, each member named by its map-level-1250 sheet and its year (08KC8523_2013.tif: a 1:2,500 quarter's quarter, 1,000 by 750 m), read from the zips' central directories by range request, each sheet placed by its code (JGD2011, plane rectangular zone VIII): each sheet's year its name's. The erosion-control division's 0.5 m DEM of FY2021 and FY2022 (the record r3-4-50cmdem, 89 ZIPs by municipality) names its files by a local grid (C8-d4.tif) the record doesn't define: listed. No accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (2013-14)"
+method = "listing"
+url = "https://gsic-opendata.s3.ap-northeast-1.amazonaws.com"
+list = "zip"
+prefix = "local-gov/nagano/forestry-research-center/dem/nagano-dem/download/nagano/dem/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})_(?P<year>\d{4})\.tif$'
+by = ["year"]
+grid = "jp-kihonzu-1250"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "year", date = "year" }
+
+[[piece]]
+id = "dem05-sabo"
+label = "DEM 0.5 m (FY2021-22, erosion control)"
+method = "none"
+why = "its files are named by a local grid (C8-d4.tif) the record doesn't define; no outline published"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

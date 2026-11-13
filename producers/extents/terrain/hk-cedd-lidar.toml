@@ -1,0 +1,60 @@
+name = "CEDD Territory-wide Airborne LiDAR"
+credit = "Geotechnical Engineering Office, Civil Engineering and Development Department (CEDD), The Government of the Hong Kong SAR"
+licence = "CEDD order conditions (2013, for the 2010 set): use for the stated project only, no distribution"
+licence_url = "https://www.ginfo.cedd.gov.hk/GEOOpenData/eng/LIDAR.aspx"
+source = "https://www.ginfo.cedd.gov.hk/GEOOpenData/eng/LIDAR.aspx"
+theme = "terrain"
+availability = "closed"
+notes = "CEDD's airborne lidar of all of Hong Kong's territories, flown 1 Dec 2010 to 8 Jan 2011 (fixed wing) and 19 Dec 2019 to 1 Feb 2020 (helicopter): point clouds (LAS) and 0.5 m grids of the ground (DTM) and surface (DSM), ordered through the CEDD Spatial Data Portal under conditions allowing use only for the stated project and no distribution (the 2020 set's terms weren't readable). Its extent is the territory, as its metadata states, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No accuracy is stated."
+
+[[piece]]
+id = "dtm-2020"
+label = "DTM 0.5 m (2019-20)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HKG"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "dsm-2020"
+label = "DSM 0.5 m (2019-20)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HKG"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "dtm-2010"
+label = "DTM 0.5 m (2010-11)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HKG"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2011
+
+[[piece]]
+id = "dsm-2010"
+label = "DSM 0.5 m (2010-11)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["HKG"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2011

@@ -1,0 +1,17 @@
+name = "岐阜県 標高データマップ（航空レーザ測量）"
+credit = "岐阜県 (Gifu Prefecture)"
+licence = "not read"
+licence_url = "https://www.pref.gifu.lg.jp/site/smart/469571.html"
+source = "https://www.pref.gifu.lg.jp/site/smart/469571.html"
+theme = "terrain"
+availability = "open"
+notes = "Gifu Prefecture's elevation data map on its GIS (県域統合型GISぎふ, opened 2025-09-01): original points, ground points and a 0.5 m grid from airborne lidar flown since FY2013. Its host (gis-gifu.jp) didn't answer on 13 Nov 2026, and no sheet list or outline was found elsewhere. The forestry research institute's G-spatial records hold CS relief maps and slope maps made from the DEM (rendered images, not elevations): not declared."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (FY2013-)"
+method = "none"
+why = "its GIS host didn't answer and no outline is published elsewhere"
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5

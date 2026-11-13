@@ -1,0 +1,35 @@
+name = "內政部 全臺灣數值地形模型 (DTM)"
+credit = "內政部地政司 (Department of Land Administration, Ministry of the Interior), Taiwan"
+licence = "政府資料開放授權條款 第1版 (Open Government Data License 1.0)"
+licence_url = "https://data.gov.tw/license"
+source = "https://data.gov.tw/dataset/169807"
+theme = "terrain"
+availability = "open"
+notes = "The Ministry of the Interior's DTM of the whole of Taiwan (全臺灣) from aerial photogrammetry: the 20 m grid is open data (2024 edition, listed by data.gov.tw's record as a CSV of ZIPs on TGOS, the whole island in one, 不分幅_全台20MDEM(2024).zip, and per county by sheet; a 2025 update of parts), TWD97. The 1 m lidar DTM (the national lidar database finished in 2016) is classed general official-secret (一般公務機密) on the MOI's DTM platform: agency-internal use only, no service to outsiders (dtm.moi.gov.tw). Both pieces' extent is Taiwan, as the ministry states it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No accuracy is stated."
+
+[[piece]]
+id = "dtm20"
+label = "DTM 20 m (2024)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["TWN"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 20.0
+year = 2024
+
+[[piece]]
+id = "dtm1"
+label = "lidar DTM 1 m (to 2016)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["TWN"] }
+tolerance_m = 500
+availability = "closed"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2016

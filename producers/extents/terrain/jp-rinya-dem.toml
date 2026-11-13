@@ -1,0 +1,211 @@
+name = "林野庁 DEM（森林計画区・災害）"
+credit = "林野庁 (Forestry Agency); the prefectures and municipalities whose lidar it converted"
+licence = "公共データ利用規約 (第1.0版) (PDL 1.0)"
+licence_url = "https://www.digital.go.jp/resources/open_data/public_data_license_v1.0"
+source = "https://www.geospatial.jp/ckan/dataset/r6_noto-peninsula-earthquake"
+theme = "terrain"
+availability = "open"
+notes = "The Forestry Agency's bare-earth DEMs converted to the forest GIS forum's standard specification (\"森林資源データ解析・管理標準仕様書\") from prefectures' and municipalities' airborne lidar, per forest planning area (Aichi's Owari-Nishimikawa and Higashimikawa, Mie's Kitaise, Tokushima's Yoshinogawa and Naka-Kaifugawa, Nagano's Inadani, Yamagata's Shonai, south Oita's of FY2020), and from its own surveys after disasters (the 2016 Kumamoto earthquake, the floods of July 2018 and July 2020, the 2024 Noto Peninsula earthquake, flown with the GSI after it), each a G-spatial record under the public data licence (PDL 1.0). A GeoTIFF per quarter of a 1:50,000 base map sheet (dem_07md1_2025.tif: 20 by 15 km; JGD2011, plane rectangular zones II to X, a block per record and zone), the files each record lists (read from its API answer), placed by their codes: the quarters hold data over the surveyed areas only, so the outlines overstate them. The DEM's cell is 0.5 m (the files' own headers, read for two of them); a planning area's survey year isn't stated on its record (its data sheet PDF), so only the disaster sets' and south Oita's years are. The disaster sets' ground points (ground_data_*.7z, by the same quarters) aren't declared apart. No accuracy is stated."
+
+[[piece]]
+id = "owarinishimikawa-078"
+label = "DEM 0.5 m, Aichi, Owari-Nishimikawa planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=owarinishimikawa_078"
+list = "lines"
+pattern = 'dem_(?P<ref>07[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6675"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "higashimikawa-079"
+label = "DEM 0.5 m, Aichi, Higashimikawa planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=higashimikawa_079"
+list = "lines"
+pattern = 'dem_(?P<ref>07[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6675"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "kitaise-081"
+label = "DEM 0.5 m, Mie, Kitaise planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=kitaise_081"
+list = "lines"
+pattern = 'dem_(?P<ref>06[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6674"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "yoshinokawa-116"
+label = "DEM 0.5 m, Tokushima, Yoshinogawa planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=yoshinokawa_116"
+list = "lines"
+pattern = 'dem_(?P<ref>04[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6672"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "tokushima"
+label = "DEM 0.5 m, Tokushima, Naka-Kaifugawa planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=tokushima_aerial_laser"
+list = "lines"
+pattern = 'dem_(?P<ref>04[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6672"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "inatani-067"
+label = "DEM 0.5 m, Nagano, Inadani planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=inatani_067"
+list = "lines"
+pattern = 'dem_(?P<ref>08[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "028-syounai"
+label = "DEM 0.5 m, Yamagata, Shonai planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=028_syounai"
+list = "lines"
+pattern = 'dem_(?P<ref>10[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6678"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "oita"
+label = "DEM 0.5 m, Oita, south Oita planning area"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=oita_aerial_laser"
+list = "lines"
+pattern = 'dem_(?P<ref>02[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6670"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "h28-kumamoto"
+label = "DEM 0.5 m, the 2016 Kumamoto earthquake"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=h28_kumamoto_earthquake_aerial_laser"
+list = "lines"
+pattern = 'dem_(?P<ref>02[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6670"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2016
+
+[[piece]]
+id = "h30-7-gouu-zone3"
+label = "DEM 0.5 m, the July 2018 floods (zone 3)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=h30_7_gouu"
+list = "lines"
+pattern = 'dem_(?P<ref>03[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6671"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2018
+
+[[piece]]
+id = "h30-7-gouu-zone5"
+label = "DEM 0.5 m, the July 2018 floods (zone 5)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=h30_7_gouu"
+list = "lines"
+pattern = 'dem_(?P<ref>05[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6673"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2018
+
+[[piece]]
+id = "r2-7-gouu"
+label = "DEM 0.5 m, the July 2020 floods"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=r2_7_gouu"
+list = "lines"
+pattern = 'dem_(?P<ref>02[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6670"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "r6-noto-zone7"
+label = "DEM 0.5 m, the 2024 Noto Peninsula earthquake (zone 7)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=r6_noto-peninsula-earthquake"
+list = "lines"
+pattern = 'dem_(?P<ref>07[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6675"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2024
+
+[[piece]]
+id = "r6-noto-zone8"
+label = "DEM 0.5 m, the 2024 Noto Peninsula earthquake (zone 8)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=r6_noto-peninsula-earthquake"
+list = "lines"
+pattern = 'dem_(?P<ref>08[a-z]{2}[1-4])_2025\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2024

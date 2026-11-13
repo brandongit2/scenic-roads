@@ -1,0 +1,36 @@
+name = "京都府 数値標高モデル (DEM)"
+credit = "京都府 (Kyoto Prefecture), 林業振興課"
+licence = "京都府 own terms of use (独自利用規約)"
+licence_url = "https://www.geospatial.jp/ckan/dataset/a7c25ae6-cc29-4f3a-98e9-d32b946dd06b/resource/ce464ec1-da1e-4ae5-ba73-3e06e670d639/download/_.pdf"
+source = "https://www.geospatial.jp/ckan/dataset/dem05_kyoto"
+theme = "terrain"
+availability = "open"
+notes = "Kyoto Prefecture's 0.5 m bare-earth DEM from airborne lidar flown from 2019 to 2023 (平成31年～令和5年; the last year taken), as GeoTIFFs in ZIPs per 1:50,000 base map sheet that the G-spatial record lists, each zip's members its map-level-1250 sheets (dem_06KB9914.tif: a 1:2,500 quarter's quarter, 1,000 by 750 m, as the files' own TFWs place them), read from the zips' central directories by range request; each sheet placed by its code (JGD2011, plane rectangular zone VI): the terms are the prefecture's own (its 利用規約 PDF on the record). No accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (2019-23)"
+method = "listing"
+list = "zip"
+urls = [
+  "https://www.geospatial.jp/ckan/dataset/a7c25ae6-cc29-4f3a-98e9-d32b946dd06b/resource/eee37677-cd7e-4ace-b396-5081c47f76bd/download/06kb.zip",
+  "https://www.geospatial.jp/ckan/dataset/a7c25ae6-cc29-4f3a-98e9-d32b946dd06b/resource/2ee0eb84-3aa6-4849-b695-428c00b4f512/download/06kc.zip",
+  "https://www.geospatial.jp/ckan/dataset/a7c25ae6-cc29-4f3a-98e9-d32b946dd06b/resource/2220cd71-47be-4408-a048-87bb6ceac012/download/06lb.zip",
+  "https://www.geospatial.jp/ckan/dataset/a7c25ae6-cc29-4f3a-98e9-d32b946dd06b/resource/df582950-0148-4963-ac9c-259d3a10c6d8/download/06lc.zip",
+  "https://www.geospatial.jp/ckan/dataset/a7c25ae6-cc29-4f3a-98e9-d32b946dd06b/resource/8ac337ad-5342-4c4b-8f0d-2ad88a84319d/download/06mb.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06MC.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06MD.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06NC.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06ND.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06OC.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06OD.zip",
+  "https://gic-kyoto.s3.ap-northeast-1.amazonaws.com/2024/dem/06OE.zip",
+]
+pattern = 'dem_(?P<ref>06[A-Za-z]{2}\d{4})\.tif$'
+grid = "jp-kihonzu-1250"
+crs = "EPSG:6674"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023

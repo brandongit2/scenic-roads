@@ -1,0 +1,56 @@
+name = "山梨県点群データ（航空LP）"
+credit = "山梨県 (Yamanashi Prefecture); 国土交通省関東地方整備局富士川砂防事務所; 東京都 (parts)"
+licence = "CC-BY-4.0 / ODbL"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/yamanashi-pointcloud-2024"
+theme = "terrain"
+availability = "open"
+notes = "Yamanashi Prefecture's airborne lidar of the whole prefecture, flown 2019 to 2022 (令和1年～4年) by the prefecture and in parts by the Fujikawa erosion-control office and Tokyo, CC BY 4.0 and ODbL both: per 1:500 sheet of the national base map, ZIPs in the public bucket the G-spatial download pages link (japan-pointcloud, Yamanashi/2024: 01, 02 and 03 the grids, which the record lists as DSM1, DSM2 and the DEM, all 0.5 m; told apart by a sheet's heights, 03's 7 m below the others under trees), each sheet placed by its code (JGD2011, plane rectangular zone VIII): 400 by 300 m. The two DSMs differ by millimetres on the sheet read; the record doesn't say how. The points (LAS) state no density, so they aren't declared apart; nor are the mobile mapping (MMS) points of its roads. No accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (2019-22)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Yamanashi/2024/03/LP/Grid/"
+pattern = '/(?P<ref>08[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "dsm1"
+label = "DSM1 0.5 m (2019-22)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Yamanashi/2024/01/LP/Grid/"
+pattern = '/(?P<ref>08[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "dsm2"
+label = "DSM2 0.5 m (2019-22)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Yamanashi/2024/02/LP/Grid/"
+pattern = '/(?P<ref>08[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2022

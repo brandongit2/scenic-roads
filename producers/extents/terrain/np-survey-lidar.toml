@@ -1,0 +1,17 @@
+name = "Survey Department airborne lidar, western Terai"
+credit = "Survey Department, Government of Nepal"
+licence = "none found"
+licence_url = "https://nepjol.info/index.php/NJG/article/view/39481"
+source = "https://nepjol.info/index.php/NJG/article/view/39481"
+theme = "terrain"
+availability = "closed"
+notes = "The Survey Department's airborne lidar programme of the western Terai (Chitwan to Kanchanpur, from about 2020): a 1 m DTM (0.25 m accuracy, planned) and 0.5 m contours. No release was found; the national geoportal didn't answer."
+
+[[piece]]
+id = "dtm1"
+label = "lidar DTM 1 m (western Terai)"
+method = "none"
+why = "no release or outline found"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0

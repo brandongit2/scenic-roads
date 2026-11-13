@@ -1,0 +1,36 @@
+name = "石川県 能登 グラウンドデータ（発災前）"
+credit = "石川県 (Ishikawa Prefecture), 森林情報整備業務"
+licence = "石川県 own terms: free, no application, no commercial use"
+licence_url = "https://www.geospatial.jp/ckan/dataset/876606af-4e92-401d-9ded-a9e901e91617/resource/61417fc8-f7f4-4e2b-bf39-9af6da57e0e4/download/license.pdf"
+source = "https://www.geospatial.jp/ckan/dataset/2024-notowest-ground"
+theme = "terrain"
+availability = "open"
+notes = "Ishikawa Prefecture's ground points of the Noto peninsula from before the 2024 earthquake, from its forest-information surveys (west Noto FY2020, east Noto FY2022), released for the recovery under its own terms (free, no commercial use): TXT per base map sheet in three ZIPs of 6 to 7 GB in the public bucket the records link (japan-pointcloud, Ishikawa/2024/01/LP/Ground), the members named by their sheets (the west's 1:2,500, 07ed583_grd.txt; the east's map level 1250, 07ed4844_grd.txt, its 1,121 names' last digits 1 to 4 only), read from the zips' central directories by range request; each sheet placed by its code (JGD2011, plane rectangular zone VII): Ground points hold the bare earth only; they state no density, so no spacing. The surveys' original points (LAS, with colours and geoid heights in a second set) aren't declared apart."
+
+[[piece]]
+id = "west"
+label = "west Noto ground points (FY2020)"
+method = "listing"
+list = "zip"
+urls = ["https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com/Ishikawa/2024/01/LP/Ground/TXT/07/notowestground1.zip", "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com/Ishikawa/2024/01/LP/Ground/TXT/07/notowestground2.zip"]
+pattern = '(?P<ref>07[a-z]{2}\d{3,4})_grd\.txt$'
+grid = "jp-kihonzu-1250"
+crs = "EPSG:6675"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+year = 2020
+
+[[piece]]
+id = "east"
+label = "east Noto ground points (FY2022)"
+method = "listing"
+list = "zip"
+urls = ["https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com/Ishikawa/2024/01/LP/Ground/TXT/07/notoeastground.zip"]
+pattern = '(?P<ref>07[a-z]{2}\d{3,4})_grd\.txt$'
+grid = "jp-kihonzu-1250"
+crs = "EPSG:6675"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+year = 2022

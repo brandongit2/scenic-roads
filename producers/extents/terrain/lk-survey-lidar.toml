@@ -1,0 +1,17 @@
+name = "Survey Department lidar DEM"
+credit = "Survey Department of Sri Lanka, Air Survey Branch"
+licence = "none found"
+licence_url = "https://www.parliament.lk/uploads/documents/paperspresented/1719205686008907.pdf"
+source = "https://www.parliament.lk/uploads/documents/paperspresented/1719205686008907.pdf"
+theme = "terrain"
+availability = "paid"
+notes = "The Survey Department's airborne lidar (with JICA, 2015-16, about 75 % of the country per its authors): point clouds, DEMs at 1, 2 and 5 m and contours, issued at customers' requests (DEMs of 1,785 km² in 2022 and 1,575 km² in 2023, its annual reports); no fee table or outline is published."
+
+[[piece]]
+id = "dem"
+label = "lidar DEM 1 m (2015-16)"
+method = "none"
+why = "issued on request; no outline published"
+[piece.metrics]
+spacing_m = 1.0
+year = 2016

@@ -1,0 +1,14 @@
+name = "CGIS digital elevation model"
+credit = "Ministry of Municipality, Centre for GIS (CGIS), State of Qatar"
+licence = "none found"
+licence_url = "https://www.gulf-times.com/story/716135/Ministry-of-Municipality-completes-aerial-photography-to-update-digital-maps-of-Qatar"
+source = "https://www.gulf-times.com/story/716135/Ministry-of-Municipality-completes-aerial-photography-to-update-digital-maps-of-Qatar"
+theme = "terrain"
+availability = "closed"
+notes = "The Centre for GIS's aerial survey programme (aerial and terrestrial lidar, imagery of all Qatar and Halul Island) produces a DEM; no release, grid or terms are published, and data.gov.qa has no terrain dataset."
+
+[[piece]]
+id = "dem"
+label = "DEM (lidar)"
+method = "none"
+why = "not published; no outline"

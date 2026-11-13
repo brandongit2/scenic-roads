@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"np-survey-lidar","theme":"terrain","read":[{"piece":"dtm1","method":"none","why":"no release or outline found","date":"2026-11-13"}],"features":[{"type":"Feature","properties":{"piece":"dtm1","extent":"unknown","availability":"closed","surface":"ground","spacing_m":1.0,"name":"lidar DTM 1 m (western Terai)"},"geometry":null}]}

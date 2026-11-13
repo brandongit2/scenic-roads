@@ -1,0 +1,16 @@
+name = "Ministry of Planning 5 m elevation data"
+credit = "Palestinian Ministry of Planning and Development (per UN-OCHA)"
+licence = "none found"
+licence_url = "https://unispal.un.org/pdfs/OCHA_WBElevationMap.pdf"
+source = "https://unispal.un.org/pdfs/OCHA_WBElevationMap.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "A 5 m elevation model of the West Bank that UN-OCHA's 2015 elevation map credits to the Palestinian Ministry of Planning and Development; ARIJ lists 2009 terrain maps of the West Bank and Gaza (maps, not data). No download or outline was found."
+
+[[piece]]
+id = "dem5"
+label = "elevation data 5 m"
+method = "none"
+why = "not published; no outline"
+[piece.metrics]
+spacing_m = 5.0

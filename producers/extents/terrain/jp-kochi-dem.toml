@@ -1,0 +1,38 @@
+name = "高知県 数値標高モデル (DEM) 0.5m"
+credit = "高知県 (Kochi Prefecture), 森づくり推進課; 林野庁 (the FY2018 survey)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/dem05_kochi"
+theme = "terrain"
+availability = "open"
+notes = "Kochi Prefecture's 0.5 m bare-earth DEM made from the Forestry Agency's airborne lidar of FY2018: a GeoTIFF per quarter of a 1:50,000 base map sheet (dem_04gd3.tif: 20 by 15 km, untiled, with no overviews, so its mask would be a whole download), the files the G-spatial record lists (read from its API answer), each sheet placed by its code (JGD2011, plane rectangular zone IV): the quarters hold data over the surveyed forests only, so the DEM's outline overstates it. The ground points it was made from (グラウンドデータ, LAS in ZIPs per municipality in the G-spatial centre's public bucket, 2025) are the finer piece: each zip's members its 1:2,500 sheets (04HE324.las), read from the central directories by range request; they hold the bare earth only and state no density, so no spacing. No accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (FY2018)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=dem05_kochi"
+list = "lines"
+pattern = '/download/dem_(?P<ref>04[a-z]{2}[1-4])\.tif"'
+grid = "jp-kihonzu"
+crs = "EPSG:6672"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2018
+
+[[piece]]
+id = "ground"
+label = "ground points (FY2018)"
+method = "listing"
+url = "https://gsic-opendata.s3.ap-northeast-1.amazonaws.com"
+list = "zip"
+prefix = "local-gov/kochi/forestry-promotion/ground-data/2025/ground/"
+pattern = '(?P<ref>04[A-Za-z]{2}\d{3})\.las$'
+grid = "jp-kihonzu"
+crs = "EPSG:6672"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+year = 2018

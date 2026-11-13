@@ -1,0 +1,22 @@
+name = "埼玉県 山間部点群データ"
+credit = "埼玉県 (Saitama Prefecture), 県土整備部"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/mountainous-area-pointcloud-saitama"
+theme = "terrain"
+availability = "open"
+notes = "Saitama Prefecture's airborne lidar of its mountain areas, flown in 2024 (\"令和6年に取得したデータ\"), CC BY 4.0: per 1:2,500 base map sheet, ZIPs of LAS in the public bucket its download page links (japan-pointcloud, Saitama/2025/01/LP/Sabo, a folder per area: 09jb852.zip), each sheet placed by its code (JGD2011, plane rectangular zone IX): 2,000 by 1,500 m. The points state no density, so no spacing; a point cloud states no surface. Its river and road point clouds (named by river and route, not by sheet) aren't declared."
+
+[[piece]]
+id = "points"
+label = "mountain-area lidar points (2024)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Saitama/2025/01/LP/Sabo/"
+pattern = '/(?P<ref>09[a-zA-Z]{2}\d{3})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2024

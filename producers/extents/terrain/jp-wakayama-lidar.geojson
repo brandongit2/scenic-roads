@@ -1,0 +1,1 @@
+{"type":"FeatureCollection","source":"jp-wakayama-lidar","theme":"terrain","read":[{"piece":"ground","method":"none","why":"its GIS (the only listing) refused an anonymous request (403)","date":"2026-11-13"}],"features":[{"type":"Feature","properties":{"piece":"ground","extent":"unknown","availability":"open","surface":"ground","name":"ground points"},"geometry":null}]}

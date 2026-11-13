@@ -1,0 +1,24 @@
+name = "愛媛県 数値標高モデル (DEM) 0.5m"
+credit = "愛媛県 (Ehime Prefecture), 林業政策課; 林野庁 (the FY2018 survey)"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/dem05_ehime"
+theme = "terrain"
+availability = "open"
+notes = "Ehime Prefecture's 0.5 m bare-earth DEM (\"建物や樹木などを取り除いた地表面の高さ\") made from the Forestry Agency's airborne lidar of FY2018, as GeoTIFFs in ZIPs per municipality in the G-spatial centre's public bucket (gsic-opendata), each zip's members its 1:5,000 sheets (dem_04FC17.tif), read from the zips' central directories by range request; each sheet placed by its code (JGD2011, plane rectangular zone IV): 4,000 by 3,000 m. No accuracy is stated."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (FY2018)"
+method = "listing"
+url = "https://gsic-opendata.s3.ap-northeast-1.amazonaws.com"
+list = "zip"
+prefix = "local-gov/ehime/forestry-policy/dem/2024/dem05_ehime/dem/"
+pattern = 'dem_(?P<ref>04[A-Za-z]{2}\d\d)\.tif$'
+grid = "jp-kihonzu"
+crs = "EPSG:6672"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2018

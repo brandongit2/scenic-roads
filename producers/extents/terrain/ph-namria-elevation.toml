@@ -1,0 +1,62 @@
+name = "NAMRIA IfSAR and LiDAR DTM/DSM; Phil-LiDAR (LiPAD)"
+credit = "National Mapping and Resource Information Authority (NAMRIA); UP DREAM / Phil-LiDAR programme, Republic of the Philippines"
+licence = "NAMRIA Citizen's Charter 2026: fees, no re-use clause"
+licence_url = "https://namria.gov.ph/Downloads/CitizensCharter/2026/External/Purchase%20of%20Digital%20Products.pdf"
+source = "https://namria.gov.ph/Downloads/CitizensCharter/2026/External/Purchase%20of%20Digital%20Products.pdf"
+theme = "terrain"
+availability = "paid"
+notes = "NAMRIA's One-Stop Shop sells IfSAR DTM and DSM (GeoTIFF, BIL; Php 3,000 a sheet, 1,000 a km²) and LiDAR DTM and DSM (Php 2,500 a sheet, 250 a km²) in person, by sheet, area or hectare; the charter states neither their grids nor their coverage. The Phil-LiDAR programmes' DTMs, DSMs and classified points (nominal 1 m) are given on request through LiPAD, and the Taal volcano lidar is open with citation; no outline of any was read."
+
+[[piece]]
+id = "ifsar-dtm"
+label = "IfSAR DTM"
+method = "none"
+why = "the charter states no coverage; no sheet list"
+[piece.metrics]
+surface = "ground"
+
+[[piece]]
+id = "ifsar-dsm"
+label = "IfSAR DSM"
+method = "none"
+why = "the charter states no coverage; no sheet list"
+[piece.metrics]
+surface = "surface"
+
+[[piece]]
+id = "lidar-dtm"
+label = "LiDAR DTM 1 m"
+method = "none"
+why = "the charter states no coverage; no sheet list"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+
+[[piece]]
+id = "lidar-dsm"
+label = "LiDAR DSM 1 m"
+method = "none"
+why = "the charter states no coverage; no sheet list"
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+
+[[piece]]
+id = "lipad"
+label = "Phil-LiDAR DTM 1 m (LiPAD)"
+method = "none"
+why = "on request; no outline read"
+availability = "closed"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+
+[[piece]]
+id = "taal"
+label = "Taal lidar DTM 1 m"
+method = "none"
+why = "open, but no outline was read"
+availability = "open"
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0

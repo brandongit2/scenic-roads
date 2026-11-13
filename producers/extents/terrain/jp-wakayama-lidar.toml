@@ -1,0 +1,16 @@
+name = "和歌山県 3次元点群データ"
+credit = "和歌山県 (Wakayama Prefecture)"
+licence = "open data (licence text not read)"
+licence_url = "https://www.pref.wakayama.lg.jp/prefg/012100/d00213012.html"
+source = "https://www.pref.wakayama.lg.jp/prefg/012100/d00213012.html"
+theme = "terrain"
+availability = "open"
+notes = "Wakayama Prefecture's airborne-lidar point clouds of about 65 % of the prefecture (published 2023-03-01): original and ground points as text files in plane rectangular coordinates, the grid data viewable in the web viewer only, through its GIS (wakayamaken.geocloud.jp/mp/22), which answered 403 on 13 Nov 2026. No outline is published elsewhere; the points state no density."
+
+[[piece]]
+id = "ground"
+label = "ground points"
+method = "none"
+why = "its GIS (the only listing) refused an anonymous request (403)"
+[piece.metrics]
+surface = "ground"

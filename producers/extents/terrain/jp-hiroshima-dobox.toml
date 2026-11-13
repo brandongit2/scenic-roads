@@ -1,0 +1,21 @@
+name = "広島県 DoboX 3次元点群データ（航空レーザ測量成果）"
+credit = "広島県 (Hiroshima Prefecture), 土木建築局"
+licence = "広島県 DoboX terms: free for commercial and non-commercial use"
+licence_url = "https://hiroshima-dobox.jp/datasets/1434"
+source = "https://hiroshima-dobox.jp/datasets/1434"
+theme = "terrain"
+availability = "open"
+notes = "Hiroshima Prefecture's airborne lidar of the whole prefecture (the 2022 prefecture-wide survey in 7 lots at map information level 500, delivered 2023, with the landslide basic surveys from 2018 on): grid data, contours and orthophotos downloadable without application from its DoboX portal (dataset 1434, some 38,000 resources, a page per file, its API keyed); the original points on request. No sheet list was read, so its extent is the prefecture, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The page states no grid spacing: level 500 grid data is 0.5 m under the public-survey rules (作業規程の準則), taken as the spacing. No accuracy is stated."
+
+[[piece]]
+id = "grid"
+label = "grid data, level 500 (2022)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["JP-34"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022

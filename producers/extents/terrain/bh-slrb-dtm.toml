@@ -1,0 +1,20 @@
+name = "SLRB Digital Terrain Model - 1 meter spacing"
+credit = "Survey and Land Registration Bureau (SLRB), Kingdom of Bahrain"
+licence = "SLRB digital data licence agreement"
+licence_url = "https://www.slrb.gov.bh/en/digital-terrain-model"
+source = "https://www.slrb.gov.bh/en/digital-terrain-model"
+theme = "terrain"
+availability = "paid"
+notes = "The SLRB's 1 m DTM (GeoTIFF, IMG, DGN, DXF, Shapefile, XYZ), sold at BD 50 a km² under a licence agreement, by request form; the page says its coverage \"varies from year to year\", full or partial, so the kingdom is claimed for it, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. No accuracy is stated."
+
+[[piece]]
+id = "dtm1"
+label = "DTM 1 m"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["BHR"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0

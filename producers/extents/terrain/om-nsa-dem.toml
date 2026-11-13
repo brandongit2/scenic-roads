@@ -1,0 +1,24 @@
+name = "National Survey Authority DSM and DTM"
+credit = "National Survey Authority (NSA), Sultanate of Oman"
+licence = "none found"
+licence_url = "https://gisserver.nsaomangeoportal.gov.om/en/about-nsa"
+source = "https://gisserver.nsaomangeoportal.gov.om/en/about-nsa"
+theme = "terrain"
+availability = "closed"
+notes = "The NSA states it produces DSMs, DTMs and orthophotos and supplies data on request; no grid, coverage or terms were read (its geoportal answered 502)."
+
+[[piece]]
+id = "dtm"
+label = "DTM"
+method = "none"
+why = "no coverage stated"
+[piece.metrics]
+surface = "ground"
+
+[[piece]]
+id = "dsm"
+label = "DSM"
+method = "none"
+why = "no coverage stated"
+[piece.metrics]
+surface = "surface"

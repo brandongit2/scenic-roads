@@ -1,0 +1,28 @@
+name = "LDD DEM; RID/JICA Chao Phraya lidar DTM"
+credit = "กรมพัฒนาที่ดิน (Land Development Department, LDD); กรมชลประทาน (Royal Irrigation Department) and JICA, Thailand"
+licence = "none found"
+licence_url = "https://openjicareport.jica.go.jp/pdf/12081568.pdf"
+source = "https://openjicareport.jica.go.jp/pdf/12081568.pdf"
+theme = "terrain"
+availability = "closed"
+notes = "Two Thai agency DTMs a flood-modelling study obtained from the agencies: LDD's 5 m DEM from aerial stereo photographs (2004, EGM96) and the Royal Irrigation Department and JICA's 2 m airborne lidar DTM of the Chao Phraya basin (2012, EGM2008), with a merged 2 m model. None is published; the agencies' hosts (RTSD, LDD, DMR, data.go.th) refused or timed out. No outline is published."
+
+[[piece]]
+id = "ldd-dem5"
+label = "LDD DEM 5 m (2004)"
+method = "none"
+why = "not published; no outline"
+[piece.metrics]
+surface = "ground"
+spacing_m = 5.0
+year = 2004
+
+[[piece]]
+id = "jica-dtm2"
+label = "Chao Phraya lidar DTM 2 m (2012)"
+method = "none"
+why = "not published; no outline"
+[piece.metrics]
+surface = "ground"
+spacing_m = 2.0
+year = 2012
