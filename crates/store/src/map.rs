@@ -613,8 +613,7 @@ pub fn write_in(dir: &std::path::Path, m: &Map) -> Result<()> {
 }
 
 /// The map of the root `root` (a test root, a `--root`: `ROOT_DIR`'s newest snapshot); None when
-/// it holds none, and for the NAS's (`nasfs::is_live_path`), whose map is the lead's alone: what an
-/// older app left in its `map/` is never read as the map.
+/// it holds none, and for the NAS's (`nasfs::is_live_path`), whose map is the lead's alone.
 pub fn root_map(root: &std::path::Path) -> Result<Option<Map>> {
     if crate::nasfs::is_live_path(root) {
         return Ok(None);

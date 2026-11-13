@@ -10,7 +10,7 @@
 //!   `helpers`) read these first.
 //! - **On a member** the lead's answer fills the same registry (`answered`); its leases released
 //!   wait for the agent's loop (`take_released`).
-//! - **The words** a beat and an answer say (`SPEAKS`, `VIEW`, `ASKS`, `HANDOFF`, `BUDGETS`, `NAS_CHECK`,
+//! - **The words** a beat and an answer say (`SPEAKS`, `VIEW`, `ASKS`, `HANDOFF`, `BUDGETS`,
 //!   `BY_LEAD`): steps 3 to 7's rollout gates read them, deleted with their NAS paths (task #1036;
 //!   step 6's, the journal, task #1125); each is still said, for the app before, which falls back to
 //!   the NAS without it.
@@ -66,14 +66,6 @@ pub const SPANS: &str = "spans";
 /// history only they see, in their beats (`held::Beat::notes`), the last it has in its answer. A
 /// member sends them only to a lead saying it: one before it would read past them.
 pub const NOTES: &str = "notes";
-
-/// What a member's beat says: its app neither writes nor reads the map's snapshots on the NAS
-/// (`map/`, task #1119: the lead's log alone holds the map) and checks the NAS by `inputs/`
-/// (crate::agent::NAS_CHECK). The NAS's `map/` may be removed once every member's beat says it (the
-/// lead keeps what each says: its store's `member/<host>`, kept::Heard): an app
-/// before it stats `map/` to tell the NAS answers, and sees the NAS away without it. The word goes
-/// with that folder.
-pub const NAS_CHECK: &str = "nas-check-inputs";
 
 /// A lead whose last answer is older than this (s) is taken for not reachable by a member's page:
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.

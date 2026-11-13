@@ -1455,8 +1455,7 @@ pub fn find_root(mount: bool) -> Option<NasRoot> {
 }
 
 /// The folder whose stat says the NAS answers (`answers`): the inputs (docs/inputs.md), there for
-/// good, as the build reads them. (An app before task #1119 stats `map/`, the map's NAS snapshots
-/// it wrote, instead: that folder stays until every member's beat says `coord::beats::NAS_CHECK`.)
+/// good, as the build reads them.
 pub const NAS_CHECK: &str = "inputs";
 
 /// Whether `root` answers: a stat of `NAS_CHECK`, on **nas**'s look worker under its deadline
@@ -13920,9 +13919,7 @@ mod tests {
     }
 
     /// Task #1119: the NAS check is the inputs' folder (`NAS_CHECK`), there for good; the map's
-    /// NAS snapshots (`map/`) are no longer written. On a root without `map/`, this app sees the
-    /// NAS; an app before it, whose check stats `map/`, sees it away: why the NAS's `map/` stays
-    /// until every member's beat says `coord::beats::NAS_CHECK` (and this app's does).
+    /// NAS snapshots (`map/`) are not written. On a root without `map/`, the NAS is seen.
     #[test]
     fn the_nas_is_checked_by_its_inputs_not_the_maps_old_snapshots() {
         let d = tempfile::tempdir().unwrap();
@@ -13937,24 +13934,19 @@ mod tests {
         );
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         std::fs::create_dir_all(root.join(NAS_CHECK)).unwrap();
-        assert!(!root.join("map").exists());
-        let old_check: fn(&NasRoot) -> bool = |r| r.join("map").is_dir();
-        let opts = |home: &str| Options {
+        let mut a = test_agent(Options {
             the_plan: crate::agent::seam::for_tests(),
             root: Some(nas.clone()),
-            home: d.path().join(home),
+            home: d.path().join("home"),
             bin: PathBuf::from("/nonexistent/bin"),
             dry_run: true,
             once: true,
             member: false,
-        };
-        let mut a = test_agent(opts("home")).unwrap();
+        })
+        .unwrap();
         a.round().unwrap();
+        assert!(!root.join("map").exists());
         assert!(read_status(Some(&nas), &d.path().join("home")).unwrap().conditions.nas);
-        let mut old = test_agent_with(opts("old"), old_check).unwrap();
-        old.round().unwrap();
-        assert!(!read_status(Some(&nas), &d.path().join("old")).unwrap().conditions.nas, "an older app's check");
-        assert!(crate::agent::beat::speaks().iter().any(|w| w == crate::coord::beats::NAS_CHECK));
     }
 
     /// Task #971: a check's listing stays while a job may read it, its folder changed meanwhile:

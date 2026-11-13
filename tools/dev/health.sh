@@ -33,7 +33,7 @@ since=$(cat .claude/health-stamp 2>/dev/null)
 date +%s > .claude/health-stamp
 print "== health $(date '+%F %T')"
 df -h / | awk 'NR==2{print "disk: "$4" free of "$2}'
-print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/map ]] && echo mounted || echo NOT MOUNTED)"
+print "NAS: $([[ -d /Volumes/personal/projects/scenic-roads/inputs ]] && echo mounted || echo NOT MOUNTED)"
 if [[ ! -f .claude/nas-links || -n $(find .claude/nas-links -mmin +360) ]]; then
   # (On the NAS, POSIX sh: the candidates, then each checked; a find cut short says so. ~70 s on
   # 7 Nov; bounded: 5 s to connect, find's 180 s, a silent link dropped after 45 s.)

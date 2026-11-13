@@ -249,18 +249,9 @@ impl ToLead {
 /// What a member's beat says it speaks (`held::Beat::speaks`).
 pub(crate) fn speaks() -> Vec<String> {
     use crate::coord::{beats, held};
-    [
-        held::SPEAKS,
-        beats::SPEAKS,
-        beats::VIEW,
-        beats::ASKS,
-        beats::HANDOFF,
-        beats::BUDGETS,
-        beats::BY_LEAD,
-        beats::NAS_CHECK,
-    ]
-    .map(str::to_string)
-    .to_vec()
+    [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS, beats::BY_LEAD]
+        .map(str::to_string)
+        .to_vec()
 }
 
 type LeadBox = Arc<Snap<Option<(ToLead, crate::coord::held::Beat)>>>;
