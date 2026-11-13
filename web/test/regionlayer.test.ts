@@ -16,6 +16,7 @@ function evaluate(e: unknown, p: Props): unknown {
     case 'any': return a.some((x) => evaluate(x, p) === true);
     case '!=': return evaluate(a[0], p) !== evaluate(a[1], p);
     case 'case': return evaluate(a[0], p) === true ? evaluate(a[1], p) : evaluate(a[2], p);
+    case 'match': return (a[1] as string[]).includes(String(evaluate(a[0], p))) ? evaluate(a[2], p) : evaluate(a[3], p);
     default: throw new Error(`no ${op}`);
   }
 }
@@ -30,6 +31,9 @@ const shared = { l: 'es,es-cat', r: 'fr' };
 
 assert.equal(evaluate(sideHas('l', ['fr']), corsica), false, 'a prefix is not the region');
 assert.equal(evaluate(sideHas('l', ['es-cat']), shared), true);
+assert.equal(evaluate(sideHas('l', ['es']), shared), true, 'one of several');
+assert.equal(evaluate(sideHas('l', ['fr', 'es']), land), true);
+assert.equal(evaluate(sideHas('r', ['fr', 'es']), coast), false, 'none');
 assert.equal(sideHas('l', []), false);
 
 // A region's border: where it is on one side only.

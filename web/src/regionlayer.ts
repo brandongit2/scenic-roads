@@ -34,12 +34,15 @@ export function pick(ids: readonly string[], byId: ReadonlyMap<string, Listed>):
   return best;
 }
 
-/** Whether a border's side (`l` or `r`) has any of `ids` (false for none). */
+/** Whether a border's side (`l` or `r`) has any of `ids` (false for none): a side of one region
+ * looked up by its id (`match`: the colour's every enabled region at once costs a lookup per
+ * border), a side of several (overlapping regions) searched for each. */
 export function sideHas(side: 'l' | 'r', ids: readonly string[]): ExpressionSpecification | false {
   if (!ids.length) return false;
   // (Padded with commas: "fr" isn't found in "fr-cor".)
   const padded: ExpressionSpecification = ['concat', ',', ['get', side], ','];
-  return ['any', ...ids.map((id): ExpressionSpecification => ['in', `,${id},`, padded])];
+  const each: ExpressionSpecification = ['any', ...ids.map((id): ExpressionSpecification => ['in', `,${id},`, padded])];
+  return ['case', ['in', ',', ['get', side]], each, ['match', ['get', side], [...new Set(ids)], true, false]];
 }
 
 /** The borders of the regions `ids` taken as one (a folder's): those with them on one side only. */
