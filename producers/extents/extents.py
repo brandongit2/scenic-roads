@@ -191,10 +191,24 @@ class RangeFile:
         if not url.startswith("http"):
             raise FileNotFoundError(url)
         self.net, self.url, self.pos, self.blocks = net, url, 0, {}
-        self._block(0)
-        self.size = net.length(url)
+        # (A server that ignores the range, a coverage service's answer made on request, sends the
+        # whole file: it is then read from that answer, which --max-gb bounds as any other.)
+        self.whole = None
+        first = self._block(0)
+        if len(first) > self.BLOCK:
+            self.whole = first
+        else:
+            try:
+                self.size = net.length(url)
+            except (KeyError, FileNotFoundError):
+                # (No length said: a whole answer shorter than a block.)
+                self.whole = first
+        if self.whole is not None:
+            self.size = len(first)
 
     def _block(self, k):
+        if self.whole is not None:
+            return self.whole[k * self.BLOCK:(k + 1) * self.BLOCK]
         if k not in self.blocks:
             self.blocks[k] = self.net.get(self.url, (k * self.BLOCK, (k + 1) * self.BLOCK - 1))
         return self.blocks[k]
@@ -763,7 +777,9 @@ def read_raster(net, b, _tol):
         for url in raster_files(net, b):
             with rasterio.open(url, opener=lambda p, mode="rb", net=net: RangeFile(net, p)) as ds:
                 px = max(abs(ds.transform.a), abs(ds.transform.e)) * (M_PER_DEG if ds.crs.is_geographic else 1)
-                levels = ds.overviews(1)
+                # (A file whose own cells are no finer than `mask_m`, a coverage service's answer
+                # asked for at a coarse scale, is its own mask.)
+                levels = ds.overviews(1) or ([1] if px >= float(b.get("mask_m", math.inf)) else [])
                 if not levels:
                     # Its mask would be the whole file read (every block); a declaration's
                     # `pattern` leaves such files out.

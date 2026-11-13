@@ -752,8 +752,39 @@ class RasterFiles(unittest.TestCase):
         valid = extents.to_wgs84(sg.box(650256, 2069488, 650512, 2070000), "EPSG:32618", 1)
         self.assertAlmostEqual(geom.symmetric_difference(valid).area / valid.area, 0, places=2)
 
+    def test_d_a_coarse_coverage_is_its_own_mask(self):
+        # A coverage service's answer asked for at a coarse scale: no overviews, its cells (2 m
+        # here) no finer than `mask_m`, sent whole whatever range is asked.
+        url = "https://h/wcs?request=GetCoverage&coverageId=x&SCALEFACTOR=0.01"
+        net = WholeNet({url: self.tif(False)})
+        b = {"urls": [url], "mask_m": 2}
+        [(geom, props)] = list(extents.read_raster(net, b, 0))
+        self.assertEqual(b["grain_m"], 2.0)
+        valid = extents.to_wgs84(sg.box(650256, 2069488, 650512, 2070000), "EPSG:32618", 1)
+        self.assertAlmostEqual(geom.symmetric_difference(valid).area / valid.area, 0, places=2)
+
+
+class WholeNet(FakeNet):
+    """A server that ignores Range and says no length: the whole answer every time."""
+
+    def get(self, url, rng=None):
+        return super().get(url)
+
+    def length(self, url):
+        raise KeyError(url)
+
 
 class Ranges(unittest.TestCase):
+    def test_b_a_server_ignoring_ranges_is_read_from_its_answer(self):
+        for n in (100, 200_000):
+            body = bytes(range(256)) * (n // 256 + 1)
+            net = WholeNet({"https://h/c": body})
+            f = extents.RangeFile(net, "https:/h/c")
+            self.assertEqual(f.seek(0, 2), len(body))
+            f.seek(70_000 % len(body))
+            self.assertEqual(f.read(20), body[70_000 % len(body):70_000 % len(body) + 20])
+            self.assertEqual(net.requests, 1)
+
     def test_a_remote_file_reads_as_a_file(self):
         body = bytes(range(256)) * 1000
         net = FakeNet({"https://h/f.tif": body})
