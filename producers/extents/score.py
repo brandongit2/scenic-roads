@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""A theme's score (docs/inputs.md §6.11), as its score.toml declares it: each metric's 0-1 value
-and the weighted mean over the metrics a piece states. The producers don't score pieces (the build
+"""A theme's score (docs/inputs.md §6.11), as its score.toml declares it: each metric's 0-1 value,
+the primary metric's deciding and the weighted mean of the others the piece states breaking
+near-ties, its guarantee checked. The producers don't score pieces (the build
 step is to, from the same file); this prints what a score.toml does, for tuning its weights.
 
 usage: score.py <score.toml> --examples
@@ -23,21 +24,38 @@ def value(m, v):
     return min(1.0, max(0.0, (v - worst) / (best - worst)))
 
 
+def check(decl):
+    """The guarantee a score.toml states holds for its numbers: a piece finer by more than `within`
+    scores higher whatever the other metrics say. (1 - share) × the primary's least step, ln(within)
+    over its scale's span, must outweigh `share` × the rest's whole range."""
+    m = decl["metric"][decl["primary"]]
+    k = math.log(float(decl["within"])) / abs(math.log(float(m["worst"]) / float(m["best"])))
+    if not 0 <= decl["share"] < k / (1 + k):
+        sys.exit(f"share {decl['share']} breaks the guarantee: it must be under {k / (1 + k):.4f} for within = {decl['within']}")
+    for name, other in decl["metric"].items():
+        if name != decl["primary"] and other["weight"] < 0:
+            sys.exit(f"{name}: a negative weight")
+
+
 def score(decl, piece):
     """(score or None, {metric: value or None}) of a piece's metrics."""
     vals = {k: value(m, piece.get(k)) for k, m in decl["metric"].items()}
-    known = {k: v for k, v in vals.items() if v is not None}
-    w = sum(decl["metric"][k]["weight"] for k in known)
-    if not w:
+    lead = vals[decl["primary"]]
+    if lead is None:
         return None, vals
-    return sum(decl["metric"][k]["weight"] * v for k, v in known.items()) / w, vals
+    rest = {k: v for k, v in vals.items() if k != decl["primary"] and v is not None}
+    w = sum(decl["metric"][k]["weight"] for k in rest)
+    r = sum(decl["metric"][k]["weight"] * v for k, v in rest.items()) / w if w else lead
+    return (1 - decl["share"]) * lead + decl["share"] * r, vals
 
 
 EXAMPLES = [
     ("a 2 m surface model against a 5 m bare-earth one, both of 2020, accuracy not stated",
      [{"spacing_m": 2, "surface": "surface", "year": 2020}, {"spacing_m": 5, "surface": "ground", "year": 2020}]),
-    ("a 0.4 m surface model against the same 5 m bare-earth one",
-     [{"spacing_m": 0.4, "surface": "surface", "year": 2020}, {"spacing_m": 5, "surface": "ground", "year": 2020}]),
+    ("a 1.2 m surface model against a 1.25 m bare-earth one: within the factor, the kind decides",
+     [{"spacing_m": 1.2, "surface": "surface", "year": 2020}, {"spacing_m": 1.25, "surface": "ground", "year": 2020}]),
+    ("a 3 ft (0.9144 m) surface model of 2010 against a 1 m bare-earth one of 2024",
+     [{"spacing_m": 0.9144, "surface": "surface", "year": 2010}, {"spacing_m": 1, "surface": "ground", "year": 2024}]),
     ("old fine against new coarse: 1 m bare earth of 2005 against 2 m bare earth of 2024",
      [{"spacing_m": 1, "surface": "ground", "year": 2005}, {"spacing_m": 2, "surface": "ground", "year": 2024}]),
     ("the same with accuracies stated: 1 m of 2005 at 0.30 m RMSE against 2 m of 2024 at 0.10 m",
@@ -47,6 +65,8 @@ EXAMPLES = [
      [{"spacing_m": 1, "surface": "ground", "year": 2005}, {"spacing_m": 5, "surface": "ground", "year": 2024}]),
     ("a 30 m surface model of 2013 at 2 m RMSE against a 10 m bare-earth one, year and accuracy not stated",
      [{"spacing_m": 30, "surface": "surface", "year": 2013, "vertical_rmse_m": 2}, {"spacing_m": 10, "surface": "ground"}]),
+    ("what an unknown metric does: the same 1 m bare earth of 2024, stating a 0.5 m RMSE, and stating none",
+     [{"spacing_m": 1, "surface": "ground", "year": 2024, "vertical_rmse_m": 0.5}, {"spacing_m": 1, "surface": "ground", "year": 2024}]),
 ]
 
 
@@ -61,6 +81,7 @@ def main(argv):
         sys.exit(__doc__)
     with open(argv[1], "rb") as f:
         decl = tomllib.load(f)
+    check(decl)
     if argv[2] == "--examples":
         for title, pieces in EXAMPLES:
             print(title)

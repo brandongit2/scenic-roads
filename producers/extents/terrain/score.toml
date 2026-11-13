@@ -1,34 +1,48 @@
 # The terrain's score (docs/inputs.md §6.11): how a piece's metrics make one number, 0 to 1.
-# score = Σ weight × value / Σ weight, over the metrics the piece states; a metric it doesn't state
-# is left out of both sums (its weight goes to the others in proportion), never counted as 0.
+# The grid spacing decides (the owner, 13 Nov): the other metrics only break near-ties.
+#
+#   score = (1 - share) × value(spacing) + share × rest
+#   rest  = Σ weight × value / Σ weight over the other metrics the piece states
+#           (a metric it doesn't state leaves both sums; none stated: rest = value(spacing))
+#
 # Each metric's value is 0 at `worst` and 1 at `best`, clamped; `log` scales by the logarithm.
-# Availability is not a term: it's a filter (the layer's switch).
+# The guarantee: a piece finer than another by more than a factor of `within` scores higher,
+# whatever else either states (both spacings between `best` and `worst`). It holds when
+# share < k / (1 + k), k = ln(within) / ln(worst / best): score.py refuses a file where it doesn't.
+# Availability is not a term: it's a filter (the layer's switch). A piece not stating its spacing
+# has no score.
 theme = "terrain"
+primary = "spacing_m"
+# 1.25: spacings closer than a quarter are the same grid in different units or products (1 m
+# against 3 ft, 0.9144 m; 0.5 m against 2 ft, 0.6096 m; 10 m against 1/3 arc-second, 10.3 m),
+# where the kind, the accuracy and the year should decide.
+within = 1.25
+# The other metrics' share: under the bound, k / (1 + k) = 0.0237 for these numbers.
+share = 0.02
 
 [metric.spacing_m]
 label = "Grid spacing"
 unit = "m"
-weight = 0.5
 scale = "log"
-worst = 90
-best = 0.25
+worst = 1000
+best = 0.1
 
 [metric.surface]
 label = "Bare earth or surface"
-weight = 0.2
+weight = 0.4
 values = { ground = 1.0, surface = 0.0 }
 
 [metric.vertical_rmse_m]
 label = "Stated vertical accuracy (RMSE)"
 unit = "m"
-weight = 0.2
+weight = 0.4
 scale = "log"
 worst = 10
 best = 0.05
 
 [metric.year]
 label = "Year surveyed"
-weight = 0.1
+weight = 0.2
 scale = "linear"
 worst = 2000
 best = 2026

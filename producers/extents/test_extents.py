@@ -1,6 +1,9 @@
 """extents.py's own rules, with no network: the metrics' readings, a piece's making, the
 antimeridian and the poles, a listing's names, the range reader."""
 import math
+import os
+import random
+import tomllib
 import unittest
 
 import shapely.geometry as sg
@@ -14,6 +17,10 @@ class FakeNet:
 
     def __init__(self, answers):
         self.answers, self.requests, self.bytes, self.lengths = answers, 0, 0, {}
+        self.fetched = None
+
+    def since(self):
+        self.fetched = None
 
     def mark(self):
         return self.requests, self.bytes
@@ -64,26 +71,81 @@ class Metrics(unittest.TestCase):
         self.assertEqual(extents.metric({"field": "d", "date": "iso"}, {"d": "2019-06-30T00:00:00Z"})[0], 2019)
         self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "NB-Fundy_2015_2018-1m"})[0], 2018)
         self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "AAFC-Admiral-1m"})[0], None)
+        # A compact date's year (a file's name: flown 30 Sep 2023 to 15 Mar 2024); a map sheet's
+        # number is no year.
+        self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "bc_092b041_xli1m_utm10_20230930_20240315.tif"})[0], 2024)
+        self.assertEqual(extents.metric({"field": "d", "date": "text"}, {"d": "bc_092g028144_xl2m_utm10_20160630_dem.tif"})[0], 2016)
+
+    def test_a_number_written_with_its_unit(self):
+        spec = {"field": "s", "text": "metre"}
+        self.assertEqual(extents.metric(spec, {"s": "2 metre"}), (2.0, None))
+        self.assertEqual(extents.metric(spec, {"s": "0.5 metres"}), (0.5, None))
+        # Another unit is not read as this one: kept as stated, the metric unknown.
+        self.assertEqual(extents.metric(spec, {"s": "3 feet"}), (None, "3 feet"))
 
     def test_a_point_density_is_its_nominal_spacing(self):
         self.assertEqual(extents.metric({"field": "ppsm", "density": True}, {"ppsm": 4})[0], 0.5)
 
 
 class Score(unittest.TestCase):
-    DECL = {"metric": {"spacing_m": {"weight": 0.5, "scale": "log", "worst": 90, "best": 0.25},
-                       "surface": {"weight": 0.2, "values": {"ground": 1.0, "surface": 0.0}},
-                       "year": {"weight": 0.1, "scale": "linear", "worst": 2000, "best": 2026}}}
+    with open(os.path.join(os.path.dirname(__file__), "terrain", "score.toml"), "rb") as f:
+        DECL = tomllib.load(f)
 
     def test_an_unknown_metric_leaves_both_sums(self):
-        s, vals = score.score(self.DECL, {"spacing_m": 90, "surface": "ground"})
+        d = self.DECL
+        s, vals = score.score(d, {"spacing_m": 1, "surface": "ground"})
         self.assertIsNone(vals["year"])
-        self.assertAlmostEqual(s, 0.2 / 0.7)
-        self.assertEqual(score.score(self.DECL, {})[0], None)
+        lead = vals["spacing_m"]
+        # The rest is the surface's value alone (its weight not shrunk by the unknown ones).
+        self.assertAlmostEqual(s, (1 - d["share"]) * lead + d["share"] * 1.0)
+        # Nothing but the spacing stated: the rest is the spacing's own value.
+        self.assertAlmostEqual(score.score(d, {"spacing_m": 1})[0], lead)
+        # No spacing, no score.
+        self.assertIsNone(score.score(d, {"surface": "ground", "year": 2020})[0])
 
     def test_the_scales_clamp(self):
-        self.assertEqual(score.value(self.DECL["metric"]["spacing_m"], 0.1), 1.0)
-        self.assertEqual(score.value(self.DECL["metric"]["spacing_m"], 500), 0.0)
-        self.assertAlmostEqual(score.value(self.DECL["metric"]["spacing_m"], 4.743416490252569), 0.5)
+        m = self.DECL["metric"]["spacing_m"]
+        self.assertEqual(score.value(m, 0.01), 1.0)
+        self.assertEqual(score.value(m, 5000), 0.0)
+        self.assertAlmostEqual(score.value(m, 10), 0.5)
+
+    def test_a_finer_piece_beyond_the_factor_always_scores_higher(self):
+        """The owner's rule (13 Nov), as score.toml states it, over random pieces: finer by more
+        than `within` beats coarser whatever the kind, the accuracy and the year, each stated or
+        not; within it, the others may decide."""
+        d, rng = self.DECL, random.Random(1334)
+        m = d["metric"]["spacing_m"]
+        lo, hi = math.log(m["best"]), math.log(m["worst"])
+
+        def piece():
+            p = {"spacing_m": math.exp(rng.uniform(lo, hi))}
+            if rng.random() < 0.7:
+                p["surface"] = rng.choice(["ground", "surface"])
+            if rng.random() < 0.5:
+                p["vertical_rmse_m"] = math.exp(rng.uniform(math.log(0.01), math.log(50)))
+            if rng.random() < 0.7:
+                p["year"] = rng.randint(1990, 2030)
+            return p
+
+        tested = 0
+        for _ in range(20000):
+            a, b = piece(), piece()
+            if a["spacing_m"] * d["within"] < b["spacing_m"]:
+                tested += 1
+                self.assertGreater(score.score(d, a)[0], score.score(d, b)[0], (a, b))
+        self.assertGreater(tested, 5000)
+        # At the edge: finer by just over the factor, every other metric at its worst against its best.
+        a = {"spacing_m": 1.0, "surface": "surface", "vertical_rmse_m": 10, "year": 2000}
+        b = {"spacing_m": 1.0 * d["within"] * 1.0001, "surface": "ground", "vertical_rmse_m": 0.05, "year": 2026}
+        self.assertGreater(score.score(d, a)[0], score.score(d, b)[0])
+        # Within the factor the rest decides: a 1.2 m surface model below a 1.25 m bare-earth one.
+        self.assertLess(score.score(d, {"spacing_m": 1.2, "surface": "surface"})[0],
+                        score.score(d, {"spacing_m": 1.25, "surface": "ground"})[0])
+
+    def test_a_share_breaking_the_guarantee_is_refused(self):
+        score.check(self.DECL)
+        with self.assertRaises(SystemExit):
+            score.check({**self.DECL, "share": 0.03})
 
 
 class Geometry(unittest.TestCase):
@@ -118,6 +180,16 @@ class Geometry(unittest.TestCase):
         self.assertTrue(g.contains(sg.Point(10.0, -87.0)))
         self.assertGreater(g.bounds[1], -90.0)
 
+    def test_rings_wind_as_rfc_7946_says(self):
+        g = extents.tidy(sg.Polygon([(0, 0), (0, 1), (1, 1), (1, 0)], [[(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8)]]), 50 / extents.M_PER_DEG)
+        self.assertTrue(g.geoms[0].exterior.is_ccw)
+        self.assertFalse(g.geoms[0].interiors[0].is_ccw)
+
+    def test_an_answer_declared_latitude_first_is_read_east_first(self):
+        p = sg.Point(52.0, -3.5)
+        self.assertEqual(extents.xy(p, {"latfirst": True}).coords[0], (-3.5, 52.0))
+        self.assertEqual(extents.xy(p, {}).coords[0], (52.0, -3.5))
+
     def test_the_north_pole_too(self):
         g = extents.to_wgs84(sg.box(-300000, -300000, 300000, 300000), "EPSG:3413", 20000)
         self.assertEqual(g.bounds[3], 90.0)
@@ -143,6 +215,12 @@ class Pieces(unittest.TestCase):
         self.assertEqual(pieces[0]["geometry"]["type"], "MultiPolygon")
         self.assertEqual(len(pieces[0]["geometry"]["coordinates"]), 1)
         self.assertEqual(reads[0]["features"], 3)
+        self.assertEqual(reads[0]["tolerance_m"], 50)
+
+    def test_a_name_is_one_of_the_fields_a_piece_is_told_apart_by(self):
+        block = {"id": "p", "method": "fake", "class": "index", "url": "u", "name": "project"}
+        with self.assertRaises(SystemExit):
+            self.run_block(block, [(sg.box(0, 0, 1, 1), {"project": "a"})])
 
     def test_what_does_not_download_directly_is_claimed(self):
         block = {"id": "x", "method": "fake", "class": "index", "url": "u"}
@@ -164,6 +242,8 @@ class Listing(unittest.TestCase):
         b = {"url": "u", "list": "lines", "pattern": r"_(?P<ns>[NS])(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM", "size": 1}
         boxes = sorted(g.bounds for g, _ in extents.read_listing(net, b, 0))
         self.assertEqual(boxes, [(-10.0, -1.0, -9.0, 0.0), (6.0, 0.0, 7.0, 1.0)])
+        # The extent is good to a tile: its grain, recorded.
+        self.assertEqual(b["grain_m"], 111320.0)
 
     def test_a_north_west_corner_and_a_unit(self):
         net = FakeNet({"u": b"LHD_FXX_0371_6389_MNT.tif"})

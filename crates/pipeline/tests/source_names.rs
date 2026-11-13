@@ -5,7 +5,8 @@
 //!
 //! What counts as naming one, in a line's code or strings (comments aside):
 //! - a declared source's host, from the declarations staged in `producers/` (each `.toml`'s `source`,
-//!   `url`/`urls`, and its index's files' URLs; a path-style S3 URL's bucket with its host), and its
+//!   `url`/`urls`, and its index's files' URLs; an extents declaration's pieces' `url`, `urls` and
+//!   `stac`; a path-style S3 URL's bucket with its host), and its
 //!   `name` and `credit`, whole or up to their first `,`, `(`, `:` or `;` (two words or more), the
 //!   name's first two words in any case, and its id (the file's first word) where it's a name;
 //! - any other URL, but those of this machine, the tailnet (100.64.0.0/10), the documentation names
@@ -108,6 +109,21 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
         let data = d.get("data").and_then(|v| v.as_table());
         let mut urls: Vec<String> = Vec::new();
         urls.extend(d.get("source").and_then(|v| v.as_str()).map(str::to_string));
+        // (An extents declaration's pieces, docs/inputs.md §6.11: where each is read.)
+        for piece in d.get("piece").and_then(|v| v.as_array()).into_iter().flatten() {
+            for k in ["url", "stac"] {
+                urls.extend(piece.get(k).and_then(|v| v.as_str()).map(str::to_string));
+            }
+            urls.extend(
+                piece
+                    .get("urls")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string),
+            );
+        }
         if let Some(data) = data {
             urls.extend(data.get("url").and_then(|v| v.as_str()).map(str::to_string));
             urls.extend(
@@ -636,6 +652,11 @@ fn the_scanner_finds_sources_by_their_declarations() {
         "const M: &str = r#\"{\"u\":\"https://a.org\"}\"#; "
     );
     assert_eq!(cut_comment("x = \"#a\"  # https://b.org", true, &['"', '\'']), "x = \"#a\"  ");
+    // An extents declaration's piece is read where its `url` says: that host is a marker too.
+    assert_eq!(
+        markers(&root()).get("copernicus-dem-90m.s3.amazonaws.com").map(String::as_str),
+        Some("producers/extents/terrain/cop-dem.toml")
+    );
     let (code, _) = code_lines(
         "a.py",
         "def f():\n    \"\"\"Reads https://b.org.\n    more\"\"\"\n    q = f\"\"\"\n    <https://c.org/>\n    \"\"\"\n",

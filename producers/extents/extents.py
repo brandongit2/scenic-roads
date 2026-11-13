@@ -17,10 +17,11 @@ A reader per kind of service, none per source:
            overview, or with `mask_m` at the coarsest whose pixels are no wider than that
   none     no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
 
-Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, nothing
-larger than --max-mb in one answer (the run stops, naming it).
+Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, and no
+more than --max-gb (5) read for one source, its answers together (the run stops, naming it):
+headers, indexes and overviews, never a source's data but a small one's.
 
-usage: extents.py <declaration.toml>... --out <folder> [--cache <folder>] [--max-mb 50] [--pause 0.3]
+usage: extents.py <declaration.toml>... --out <folder> [--cache <folder>] [--max-gb 5] [--pause 0.3]
 """
 import argparse
 import datetime
@@ -44,7 +45,6 @@ import pyproj
 import shapely
 import shapely.affinity
 import shapely.geometry as sg
-import shapely.ops
 
 UA = "scenic-roads/0.1 (personal offline map)"
 # What it fetches (crate::fetch::Kind, docs/inputs.md §6.9): documented services and published files.
@@ -62,9 +62,23 @@ class Fetcher:
 
     def __init__(self, cache, max_bytes, pause):
         self.cache, self.max_bytes, self.pause = cache, max_bytes, pause
+        # What a source's reads have come to so far (`source()` starts a source): its limit is
+        # --max-gb, its cached answers counted as fetched ones.
+        self.spent = 0
         self.requests = self.bytes = 0
         self.lengths = {}
         self.last = 0.0
+        # The newest date an answer read since `since()` was fetched on (a cached one's: its file's).
+        self.fetched = None
+
+    def since(self):
+        self.fetched = None
+
+    def source(self):
+        self.spent = 0
+
+    def left(self):
+        return self.max_bytes - self.spent
 
     def mark(self):
         return self.requests, self.bytes
@@ -77,6 +91,8 @@ class Fetcher:
                 body = f.read()
             self.requests += 1
             self.bytes += len(body)
+            self.spend(url, len(body))
+            self.saw(datetime.date.fromtimestamp(os.path.getmtime(path)).isoformat())
             return body
         headers = {"User-Agent": UA}
         if rng:
@@ -88,12 +104,20 @@ class Fetcher:
             try:
                 with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=180) as r:
                     n = r.headers.get("Content-Length")
-                    if n and int(n) > self.max_bytes:
-                        sys.exit(f"{url}: {int(n) / 1e6:.0f} MB, over --max-mb: not fetched")
-                    body = r.read(self.max_bytes + 1)
+                    if n and int(n) > self.left():
+                        sys.exit(f"{url}: {int(n) / 1e6:.0f} MB, over what --max-gb leaves this source: not fetched")
+                    # (In blocks: read(n) would set aside n bytes first.)
+                    parts, got = [], 0
+                    while got <= self.left():
+                        part = r.read(1 << 20)
+                        if not part:
+                            break
+                        parts.append(part)
+                        got += len(part)
+                    body = b"".join(parts)
                     total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
-                    if len(body) > self.max_bytes:
-                        sys.exit(f"{url}: over --max-mb: stopped")
+                    if len(body) > self.left():
+                        sys.exit(f"{url}: over what --max-gb leaves this source: stopped")
                 break
             except urllib.error.HTTPError as e:
                 if e.code not in (429, 500, 502, 503, 504) or attempt == 3:
@@ -107,6 +131,8 @@ class Fetcher:
                 self.last = time.monotonic()
         self.requests += 1
         self.bytes += len(body)
+        self.spend(url, len(body))
+        self.saw(datetime.date.today().isoformat())
         if rng and total.isdigit():
             self.lengths[url] = int(total)
         if path:
@@ -117,6 +143,14 @@ class Fetcher:
                 f.write(body)
             os.replace(path + ".part", path)
         return body
+
+    def spend(self, url, n):
+        self.spent += n
+        if self.spent > self.max_bytes:
+            sys.exit(f"{url}: this source has read {self.spent / 1e9:.2f} GB, over --max-gb: stopped")
+
+    def saw(self, day):
+        self.fetched = max(self.fetched or day, day)
 
     def length(self, url):
         """A file's whole length, as a ranged answer for it said."""
@@ -179,12 +213,15 @@ class RangeFile:
 
 def read_arcgis(net, b, tol_deg):
     """An ArcGIS REST layer, as GeoJSON in WGS 84, generalised by the service."""
-    fields = sorted(wanted_fields(b)) or ["OBJECTID"]
+    layer = net.json(b["url"].rstrip("/") + "?f=json")
+    oid = layer.get("objectIdField") or "OBJECTID"
+    fields = sorted(wanted_fields(b)) or [oid]
     page, off = int(b.get("page", 500)), 0
     while True:
+        # (Ordered by the object id, so the pages hold the same features in the same order each run.)
         q = {"where": b.get("where", "1=1"), "outFields": ",".join(fields), "outSR": "4326", "f": "geojson",
              "returnGeometry": "true", "geometryPrecision": "6", "maxAllowableOffset": f"{tol_deg / 4:.7f}",
-             "resultOffset": str(off), "resultRecordCount": str(page)}
+             "orderByFields": oid, "resultOffset": str(off), "resultRecordCount": str(page)}
         d = net.json(b["url"].rstrip("/") + "/query?" + urllib.parse.urlencode(q))
         if "error" in d:
             sys.exit(f"{b['url']}: {d['error']}")
@@ -221,7 +258,7 @@ def read_wfs(net, b, _tol):
         feats = d.get("features") or []
         for f in feats:
             if f.get("geometry"):
-                yield sg.shape(f["geometry"]), f.get("properties") or {}
+                yield xy(sg.shape(f["geometry"]), b), f.get("properties") or {}
         off += len(feats)
         if len(feats) < page:
             return
@@ -229,8 +266,14 @@ def read_wfs(net, b, _tol):
 
 def answer_crs(d):
     """The CRS a GeoJSON answer names (its legacy `crs` member), if any."""
-    name = ((d.get("crs") or {}).get("properties") or {}).get("name")
-    return name
+    return ((d.get("crs") or {}).get("properties") or {}).get("name")
+
+
+def xy(g, b):
+    """A geometry east first, as the rest reads it: swapped where the declaration says its
+    answers are latitude first (`latfirst`). Not guessed from the CRS an answer names: data.geopf.fr
+    names urn:ogc:def:crs:EPSG::4326 and answers longitude first."""
+    return shapely.transform(g, lambda c: c[:, ::-1]) if b.get("latfirst") else g
 
 
 def read_file(net, b, _tol):
@@ -255,7 +298,7 @@ def read_file(net, b, _tol):
         b["crs"] = answer_crs(d)
     for f in d["features"]:
         if f.get("geometry"):
-            yield sg.shape(f["geometry"]), f.get("properties") or {}
+            yield xy(sg.shape(f["geometry"]), b), f.get("properties") or {}
 
 
 def listed_names(net, b):
@@ -291,6 +334,8 @@ def read_listing(net, b, _tol):
     unit = float(b.get("unit", 1))
     size = b["size"] if isinstance(b["size"], list) else [b["size"], b["size"]]
     corner = b.get("corner", "sw")
+    geographic = pyproj.CRS.from_user_input(b.get("crs", "OGC:CRS84")).is_geographic
+    b["grain_m"] = round(max(size) * (M_PER_DEG if geographic else 1), 1)
     seen = set()
     for name in listed_names(net, b):
         m = pat.search(name)
@@ -336,6 +381,8 @@ def read_raster(net, b, _tol):
                 px = max(abs(ds.transform.a), abs(ds.transform.e)) * (M_PER_DEG if ds.crs.is_geographic else 1)
                 levels = ds.overviews(1) or [1]
                 fine = [f for f in levels if f * px <= float(b.get("mask_m", 0))]
+                # (No overview as fine as `mask_m`: the finest there is, never the full resolution,
+                # which would be a whole download; the grain recorded says how fine it was.)
                 f = fine[-1] if fine else levels[0 if "mask_m" in b else -1]
                 h, w = max(1, math.ceil(ds.height / f)), max(1, math.ceil(ds.width / f))
                 mask = ds.dataset_mask(out_shape=(h, w))
@@ -346,8 +393,8 @@ def read_raster(net, b, _tol):
                 if ds.crs.is_geographic:
                     mid = math.radians((ds.bounds.top + ds.bounds.bottom) / 2)
                     res = max(abs(ds.transform.e) * M_PER_DEG, abs(ds.transform.a) * M_PER_DEG * math.cos(mid))
-                props = {"file": url.rsplit("/", 1)[-1], "res_m": round(res, 4), "overview": f}
-                yield to_wgs84(geom, ds.crs.to_wkt(), abs(tr.a)), props
+                b["grain_m"] = max(b.get("grain_m", 0), round(f * px, 1))
+                yield to_wgs84(geom, ds.crs.to_wkt(), abs(tr.a)), {"res_m": round(res, 4)}
 
 
 READERS = {"arcgis": read_arcgis, "stac": read_stac, "wfs": read_wfs, "file": read_file, "listing": read_listing, "raster": read_raster}
@@ -380,10 +427,17 @@ def metric(spec, props):
         how = spec["date"]
         if how == "epoch-ms":
             return datetime.datetime.fromtimestamp(float(v) / 1000, datetime.UTC).year, None
-        years = [int(y) for y in re.findall(r"(?<!\d)(?:19|20)\d\d(?!\d)", str(v))]
+        # A year alone or opening a compact date (20230930).
+        years = [int(y) for y in re.findall(r"(?<!\d)((?:19|20)\d\d)(?:[01]\d[0-3]\d)?(?!\d)", str(v))]
         if not years:
             return None, None
         return (years[0] if how == "iso" else max(years)), None
+    if "text" in spec:
+        # A number written with its unit ("2 metre"): the unit must be the one declared.
+        m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(\w+)\s*", str(v))
+        if not m or not m.group(2).lower().startswith(spec["text"].lower()):
+            return None, str(v)
+        v = m.group(1)
     try:
         v = float(v)
     except (TypeError, ValueError):
@@ -479,6 +533,8 @@ def tidy(geom, tol_deg):
     g = polygons(shapely.make_valid(g))
     if g.is_empty:
         return None
+    # RFC 7946's winding: exteriors counter-clockwise, holes clockwise.
+    g = shapely.orient_polygons(g, exterior_cw=False)
     return g if g.geom_type == "MultiPolygon" else sg.MultiPolygon([g])
 
 
@@ -502,9 +558,12 @@ def block_pieces(net, decl, b, today):
             props["name"] = b["label"]
         yield {"type": "Feature", "properties": props, "geometry": None}, {"piece": b["id"], "method": "none", "why": b["why"], "date": today}
         return
+    if b.get("name") and b["name"] not in b.get("by", []):
+        sys.exit(f"{decl['id']}/{b['id']}: name {b['name']!r} isn't one of `by`: a piece's features would name it apart")
     tol_m = float(b.get("tolerance_m", 50))
     tol_deg = tol_m / M_PER_DEG
     r0, b0 = net.mark()
+    net.since()
     groups, n, flt = {}, 0, b.get("filter") or {}
     for geom, props in READERS[method](net, b, tol_deg):
         if any(str(props.get(k)) not in [str(x) for x in want] for k, want in flt.items()):
@@ -516,7 +575,10 @@ def block_pieces(net, decl, b, today):
         g = groups.setdefault((by, varying), {"geoms": [], "ms": ms, "name": props.get(b["name"]) if b.get("name") else b.get("label")})
         g["geoms"].append(geom)
     crs = b.get("crs", "OGC:CRS84")
-    read = {"piece": b["id"], "method": method, "url": b.get("url") or b.get("stac") or b["urls"][0], "features": n, "date": today}
+    read = {"piece": b["id"], "method": method, "url": b.get("url") or b.get("stac") or b["urls"][0], "features": n,
+            "date": net.fetched or today, "tolerance_m": tol_m}
+    if "grain_m" in b:
+        read["grain_m"] = b["grain_m"]
     repaired = 0
     feats = []
     shared = {}
@@ -577,6 +639,7 @@ def produce(net, path, out, today):
         if not decl.get(k):
             sys.exit(f"{path}: no {k}")
     feats, reads = [], []
+    net.source()
     for b in decl.get("piece") or []:
         for f, read in block_pieces(net, decl, dict(b), today):
             if f:
@@ -605,12 +668,12 @@ def main():
     ap.add_argument("declarations", nargs="+")
     ap.add_argument("--out", required=True)
     ap.add_argument("--cache")
-    ap.add_argument("--max-mb", type=float, default=50)
+    ap.add_argument("--max-gb", type=float, default=5)
     ap.add_argument("--pause", type=float, default=0.3)
     a = ap.parse_args()
     if a.cache:
         os.makedirs(a.cache, exist_ok=True)
-    net = Fetcher(a.cache, int(a.max_mb * 1e6), a.pause)
+    net = Fetcher(a.cache, int(a.max_gb * 1e9), a.pause)
     today = datetime.date.today().isoformat()
     for path in a.declarations:
         produce(net, path, a.out, today)

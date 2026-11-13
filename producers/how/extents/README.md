@@ -12,8 +12,8 @@ reads only the service it names:
     uv run --project producers python producers/extents/extents.py producers/extents/terrain/<source>.toml --out <folder> --cache <scratch>
 
 It writes `<folder>/terrain/<source>.geojson` and a copy of the declaration, and says what it read
-(requests, bytes, features), which each file also records (`read`). Nothing over `--max-mb` (50) is
-fetched in one answer. The declarations and their pieces are kept in the repository's
+(requests, bytes, features), which each file also records (`read`). No more than `--max-gb` (5) is
+read for one source. The declarations and their pieces are kept in the repository's
 `producers/extents/terrain/`; add both, and `score.toml`, to `inputs/extents/terrain/`.
 
 `producers/extents/score.py <score.toml> --examples` prints what the score's weights do on a few

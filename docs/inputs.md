@@ -1834,7 +1834,8 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 table at this section's end (`producers/extents/`). Planned: the folder on the NAS and its unit
-(the checks below), the step and the layers (docs/steps.md §14). Task #1334.
+(the checks below), `piece.dataset` (extents from the build's own data), the step, the server's
+score and the layers (docs/steps.md §14). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1847,12 +1848,13 @@ inputs/extents/
     <source>.geojson    its pieces, made by producers/extents/extents.py from the declaration
 ```
 
-**A piece** is a source's extent with one set of metrics: the area a source covers at one grid
-spacing, of one kind, from one survey. A source has as many as its data has (a national lidar
-programme: one per project; a worldwide model: one). The `.geojson` is a FeatureCollection, a
-feature per piece (RFC 7946: WGS 84, cut at the antimeridian, a polygon holding a pole closed along
-its 90° parallel), its geometry a MultiPolygon, or `null` for a piece whose extent isn't known
-(listed on a click nowhere, counted in the sources' list, never drawn). Its properties:
+**A piece** is a source's extent with one set of metrics: the area where the source's data has the
+same metrics (for the terrain: one grid spacing, one kind, one survey). A source has as many as its
+data has (a national lidar programme: one per project; a worldwide model: one). The `.geojson` is a
+FeatureCollection, a feature per piece (RFC 7946: WGS 84, exteriors counter-clockwise and holes
+clockwise, cut at the antimeridian, a polygon holding a pole closed along its 90° parallel), its
+geometry a MultiPolygon, or `null` for a piece whose extent isn't known (drawn nowhere, so on no
+click; named in the sources' list). Its properties:
 
 | Property | Meaning |
 |---|---|
@@ -1860,26 +1862,32 @@ its 90° parallel), its geometry a MultiPolygon, or `null` for a piece whose ext
 | `name` | what the publisher calls it (a project's name), where it has one |
 | `extent` | how its extent was found, the **extent class** (below) |
 | `availability` | `open` (downloads with no further step), `login` (free, after a login or a request), `paid`, `closed` (exists, can't be had) |
-| the theme's metrics | terrain: `spacing_m` (the grid's spacing in metres; a point cloud with no grid: 1/√density, its nominal point spacing), `surface` (`ground`: bare earth, a DTM; `surface`: with trees and buildings, a DSM; the elevation declarations' words, §6.8), `year` (the survey's last year), `vertical_rmse_m` (the vertical accuracy the publisher states, as an RMSE in metres). A metric the source doesn't state is absent, never guessed |
+| the theme's metrics | the metrics its `score.toml` names; terrain: `spacing_m` (the grid's spacing in metres; a point cloud with no grid: 1/√density, its nominal point spacing), `surface` (`ground`: bare earth, a DTM; `surface`: with trees and buildings, a DSM; the elevation declarations' words, §6.8), `year` (the survey's last year), `vertical_rmse_m` (the vertical accuracy the publisher states, as an RMSE in metres). A metric the source doesn't state is absent, never guessed |
 | `stated` | where a metric's value is the publisher's class and not a number (a quality level), the class as published |
 
 The collection's own members: `source` (the declaration's id), `theme`, and `read`: what the
-producer read to make it (per piece: the method, the address, requests, bytes, features, and the
-date), so every extent says what it stands on.
+producer read to make it, per piece block: the method, the address, the requests, bytes and
+features read, the date the newest of those answers was fetched on (a cached answer's: when it was
+fetched, so a run again from the cache writes the same bytes), the simplification's
+`tolerance_m`, and where the extent itself is no finer than a cell, its `grain_m`: a listing's tile
+side, a raster's mask pixel. So every extent says what it stands on and how fine it is.
 
 **Extent classes**, best first; a declaration takes the best its source allows, and a piece
 records which it got:
 
 | Class | The extent is | For |
 |---|---|---|
-| `mask` | where the build's own copy of the data has valid values | data the build has downloaded (§6.8's datasets: the "built into the map" layers) |
+| `mask` | where the build's own copy of the data has valid values | data the build has downloaded (§6.8's datasets): every built-in piece, and a source's piece naming the dataset that holds its files (`dataset`), there (planned: docs/steps.md §14) |
 | `files` | the files' own bounds and valid-data masks, read from their headers and coarsest overviews by range request | a source that downloads directly, whose files are few enough to open each |
 | `index` | the publisher's list of its files: a tile index, STAC items, a directory listing of georeferenced names | a source that downloads directly, with too many files to open |
 | `service` | the publisher's footprint service: project or survey outlines | a source that downloads directly, with no per-file index |
 | `claimed` | the coverage the publisher states (an administrative area, a map on a page), not checked against data | a source that doesn't download directly (`login`, `paid`, `closed`), or publishes no footprint |
 | `unknown` | not known: no geometry | a source whose extent couldn't be had; listed, not drawn |
 
-Never a whole download to learn an extent, unless the source is small.
+The owner's order (12 Nov) is mask; then the files' own headers and overviews, or the
+publisher's per-file index (`files` and `index`, `files` first as it's the data's own); then a
+footprint service; then a claim. Never a whole download to learn an extent, unless the source is
+small.
 
 **A declaration** is a description (§5.1: `name`, `credit`, `licence`, `licence_url`, `source`,
 `notes`) and:
@@ -1895,89 +1903,137 @@ Never a whole download to learn an extent, unless the source is small.
 | `piece.url` and the method's own fields | where to read: a layer, a collection, a file, a listing |
 | `piece.where`, `piece.filter` | a filter in an ArcGIS service's own language; `{field = [values]}`, applied to what any reader read |
 | `piece.by` | fields a piece is told apart by: features sharing their values, and every metric's reading, are dissolved into one piece (none: a piece per distinct reading of the metrics) |
-| `piece.name`, `piece.label` | the field a piece's `name` is read from, or the name itself |
+| `piece.name`, `piece.label` | the field a piece's `name` is read from (one of `by`, so the features of a piece share it), or the name itself |
 | `piece.tolerance_m` | the simplification, default 50 |
-| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `date` (how a date is written: `epoch-ms`, `iso`, `year`, or `text`, the last year a name holds; the year is taken), `density = true` (a point density per m², taken as 1/√density) |
+| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`: the unit's word, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, or `text`, the last year a name holds, alone or opening a compact date, `20240315`; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS) |
+| `piece.dataset` | planned (docs/steps.md §14): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
 a new source of a kind it knows is a new declaration, no code):
 
 | `method` | Reads | Class |
 |---|---|---|
-| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`, paged, in WGS 84, generalised by the service to the piece's tolerance) | `index` or `service` |
+| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`, paged in the order of the layer's object id, in WGS 84, generalised by the service to a quarter of the piece's tolerance) | `index` or `service` |
 | `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links), their footprints and properties | `index` |
-| `wfs` | a WFS feature type (GetFeature as GeoJSON, paged) | `index` or `service` |
-| `file` | a published index file fetched whole (GeoJSON, or a zipped shapefile: `member` names one of several), its size checked first | `index` or `service` |
+| `wfs` | a WFS feature type (GetFeature as GeoJSON, paged; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
+| `file` | a published index file fetched whole (GeoJSON, read as `wfs`'s answers are, or a zipped shapefile: `member` names one of several), its size checked first | `index` or `service` |
 | `listing` | a bucket's listing, a page's links or a text file of names (`list`), each name georeferenced by a declared `pattern` (its groups `x`, `y`, and `ew`, `ns`; `unit`, `size`, `corner`, `crs`) | `index` |
-| `raster` | each file's header and an overview by range request (`urls`, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider | `files` |
+| `raster` | each file's header and an overview by range request (`urls`, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution); the overview's pixel is the piece's `grain_m` | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
-Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, a size
-limit per answer (`--max-mb`, 50: a larger answer stops the run, never a silent bulk download). It
+Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, the
+provider's 429s and 5xx retried (four tries, waiting longer each time), and a limit on what one source's reads come to (`--max-gb`, 5,
+the owner's of 13 Nov; cached answers count: a source over it stops the run, never a silent bulk
+download). Headers, indexes and overviews come first; a source's data is read whole only where
+that's the only way to its extent and the source is small. No fetch waits for a go-ahead; a run
+reading a large index goes to the Mac mini (tools/dev/agent-rules.md). It
 then makes each piece: its features repaired where invalid (counted in `read`), dissolved in their
 own CRS (a tile index's squares become their outline), brought to longitude and latitude with
 their edges densified, cut at the antimeridian and closed along 90° round a pole
-(`extents.ring_region`), hairline gaps closed, simplified to the tolerance with the topology kept,
-holes and specks smaller than the tolerance squared dropped, coordinates to 5 decimals (about a
-metre). British Columbia's 98,964 map sheets become 17 outlines, 246 KB. Tests:
-`producers/extents/test_extents.py`.
+(`extents.ring_region`), gaps narrower than half the tolerance closed (a quarter's buffer out and
+back: the service's generalisation of neighbouring features apart leaves no wider ones),
+simplified to the tolerance with the topology kept, holes and specks smaller than the tolerance
+squared dropped, coordinates to 5 decimals (about a metre). So an outline is within one and a half
+tolerances of its features' (the tolerance taken in degrees of latitude: east-west it's tighter
+by the cosine of the latitude), plus the grain where there is one. British Columbia's 98,964 map
+sheets become 17 outlines, 246 KB. Tests: `producers/extents/test_extents.py`.
 
 **The score** is declared in the theme's `score.toml`, the one place its formula's numbers live
-(the build step reads it, the map shows it): a table per metric with its `weight` and its scale,
-the metric's value from 0 at `worst` to 1 at `best` (`scale = "log"`: by the logarithm; `linear`;
-or `values`, a word's value), clamped.
+(the server reads it, the map shows it; planned: docs/steps.md §14): its `primary` metric, the
+factor `within`, the others' `share`, and a table per metric with its `label`, `unit`, scale and
+(but the primary) `weight`, the metric's value from 0 at `worst` to 1 at `best` (`scale = "log"`:
+by the logarithm; `linear`; or `values`, a word's value), clamped. The primary metric decides,
+the others only break near-ties (the owner, 13 Nov: for the terrain, a finer grid always wins,
+whatever its kind or age):
 
-    score = Σ weight × value / Σ weight, over the metrics the piece states
+    score = (1 − share) × value(primary) + share × rest
+    rest  = Σ weight × value / Σ weight, over the other metrics the piece states
 
-A metric a piece doesn't state is unknown: it leaves both sums, so its weight goes to the piece's
-other metrics in proportion, and the piece is scored as if the unknown metric were as good as its
-known ones on average; it's never a zero. A piece stating no metric has no score. Availability is
-not a term: it's a filter. The terrain's, as proposed (the owner's to tune):
+A metric a piece doesn't state is unknown: it leaves both of the rest's sums, so its weight goes
+to the piece's other metrics in proportion; it's never a zero. A piece stating none of the others
+has its primary's value for the rest (they move it neither way); a piece not stating the primary
+has no score. Availability is not a term: it's a filter. A metric of weight 0 has its layer and
+its line on a click and takes no part in the score.
 
-| Metric | Weight | Scale |
+**The guarantee:** a piece whose primary is better than another's by more than the factor
+`within` scores higher, whatever either states of the rest (both between the scale's `best` and
+`worst`; outside it the values clamp). It holds when (1 − share) × k > share, k = ln(within) ÷
+ln(worst ÷ best), the primary's least step that counts: `score.py` refuses a `score.toml` where it
+doesn't, and `test_extents.py` tries it on 20,000 random pairs of pieces and at its edge. The
+terrain's, as proposed (the owner's to tune):
+
+| | Value |
+|---|---|
+| `primary` | `spacing_m`, log: 1000 m → 0, 0.1 m → 1 (every terrain source's spacing inside it) |
+| `within` | 1.25: spacings closer than a quarter are one grid in different units or products (1 m and 3 ft, 0.9144 m; 0.5 m and 2 ft, 0.6096 m; 10 m and 1/3 arc-second, 10.3 m), where the rest should decide |
+| `share` | 0.02 (the bound for these numbers is 0.0237) |
+| `surface` | weight 0.4: `ground` 1, `surface` 0 |
+| `vertical_rmse_m` | weight 0.4, log: 10 m → 0, 0.05 m → 1 |
+| `year` | weight 0.2, linear: 2000 → 0, 2026 → 1 |
+
+What it does (`producers/extents/score.py <score.toml> --examples` prints them):
+
+| Pieces | Scores | Best |
 |---|---|---|
-| `spacing_m` | 0.5 | log: 90 m → 0, 0.25 m → 1 |
-| `surface` | 0.2 | `ground` 1, `surface` 0 |
-| `vertical_rmse_m` | 0.2 | log: 10 m → 0, 0.05 m → 1 |
-| `year` | 0.1 | linear: 2000 → 0, 2026 → 1 |
+| a 2 m surface model; a 5 m bare-earth one (both 2020, accuracy not stated) | 0.666; 0.582 | the 2 m surface model: finer |
+| a 1.2 m surface model; a 1.25 m bare-earth one (both 2020) | 0.721; 0.730 | the bare-earth one: within the factor, the kind decides |
+| a 3 ft (0.9144 m) surface model of 2010; a 1 m bare-earth one of 2024 | 0.747; 0.754 | the 1 m bare earth: within the factor |
+| 1 m bare earth of 2005; 2 m bare earth of 2024 (accuracy not stated) | 0.750; 0.681 | the old fine one |
+| the same, 0.30 m and 0.10 m RMSE stated | 0.749; 0.680 | the old fine one |
+| 1 m bare earth of 2005; 5 m bare earth of 2024 | 0.750; 0.583 | the old fine one |
+| a 30 m surface model of 2013 at 2 m RMSE; a 10 m bare-earth one, nothing else stated | 0.378; 0.510 | the 10 m one |
+| 1 m bare earth of 2024 stating a 0.5 m RMSE; the same stating none | 0.751; 0.754 | the one stating none, narrowly |
 
-What these weights do (`producers/extents/score.py <score.toml> --examples` prints them):
-
-| Pieces | Scores | Which is best |
-|---|---|---|
-| a 2 m surface model; a 5 m bare-earth one (both 2020, accuracy not stated) | 0.500; 0.653 | bare earth: a surface model must be 10.5 times finer to tie (0.2 ÷ 0.5 of the spacing's scale) |
-| a 0.4 m surface model; the same 5 m bare-earth one | 0.671; 0.653 | the surface model, 12.5 times finer |
-| 1 m bare earth of 2005; 2 m bare earth of 2024 (accuracy not stated) | 0.752; 0.770 | the new one, narrowly: 19 years outweigh a factor of 2 (the whole span of years is worth a factor of 3.2 in spacing) |
-| the same, 0.30 m and 0.10 m RMSE stated | 0.734; 0.790 | the new one |
-| 1 m bare earth of 2005; 5 m bare earth of 2024 | 0.752; 0.672 | the old fine one |
-| a 30 m surface model of 2013 at 2 m RMSE; a 10 m bare-earth one, nothing else stated | 0.204; 0.552 | the bare-earth one |
+The last row is what redistributing an unknown metric's weight does: the rest is scored as if what
+a piece doesn't state were as good as what it does, so stating a middling accuracy can rank a
+piece just below the same piece silent about it; it never crosses a spacing step larger than the
+factor.
 
 **Checks** (the unit `extents`, crate::inputs::extents, planned). Errors: a file not of the shape;
 a description field wrong; an unknown theme, method, class, availability or metric; a `.geojson`
 with no declaration, or whose `source` isn't its declaration's; a feature without `piece`,
 `extent` and `availability`, or with a metric the theme's score doesn't name or a value off its
-scale's kind; invalid geometry (§5.3); a `score.toml` whose weights aren't positive or whose scale
-has `worst` = `best`. Warnings: a declaration with no `.geojson` yet; a piece of class `unknown`.
+scale's kind; invalid geometry (§5.3), or rings wound against RFC 7946; a `score.toml` with a
+negative weight, no `primary` among its metrics, a `share` breaking the guarantee, or a scale
+whose `worst` = `best`. Warnings: a declaration with no `.geojson` yet; a piece of class `unknown`.
 Facts read at check time: each file's pieces, by class and availability, and its box.
 
-**The sources so far** (terrain; `producers/extents/terrain/`, read 12 Nov 2026):
+**The sources so far** (terrain; `producers/extents/terrain/`, read 13 Nov 2026, the same
+outlines as on 12 Nov):
 
 | Declaration | Pieces | Class | Read by |
 |---|---|---|---|
-| `cop-dem` | 2: GLO-30, GLO-90 | `index` | `listing`: each bucket's list of its 1° tiles |
+| `cop-dem` | 2: GLO-30, GLO-90 | `index` | `listing`: each bucket's list of its 1° tiles (GLO-30 withholds Armenia's and Azerbaijan's) |
 | `pgc-arcticdem` | 1: the 2 m mosaic | `index` | `file`: the centre's tile index (a zipped shapefile, EPSG:3413) |
-| `pgc-rema` | 1: the 2 m mosaic | `index` | `file`: the same, EPSG:3031; the hole at the pole kept |
+| `pgc-rema` | 1: the 2 m mosaic | `index` | `file`: the same, EPSG:3031; its hole round the South Pole kept (no data south of ~89° S) |
 | `jaxa-aw3d30` | 1 | `claimed` (a free account) | `listing`: the agency's public list of 1° tiles |
-| `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline, cell and year; `raster`: the mosaic's 36 squares, each at an overview of 2 km pixels or finer |
-| `geobc-lidar` | 17: the DEM sheets by year flown | `index` | `arcgis`: the portal's two sheet indexes |
+| `nrcan-hrdem` | 951: 950 lidar projects, the ArcticDEM-derived mosaic | `index`; `files` | `stac`: each project's outline (its item's geometry), cell and year (from its name: 146 names hold none); `raster`: the mosaic's 36 squares, each's mask at its overview of ~1 km pixels (`grain_m` 1,024) |
+| `geobc-lidar` | 17: the DEM sheets by cell and year | `index` | `arcgis`: the portal's two sheet indexes, each sheet's cell as stated (1,659 sheets of 2016 are 2 m) |
 | `wales-lidar` | 4: the 1 km tiles by year flown | `index` | `wfs`: the tile catalogue (EPSG:27700) |
-| `luxembourg-lidar` | 1 | `files` | `raster`: the one GeoTIFF's header and an overview of 100 m pixels or finer |
-| `usgs-3dep` | none yet | `service` | `arcgis`: declared; the index service refused every feature query on 12 Nov ("Failed to execute query") |
+| `luxembourg-lidar` | 1 | `files` | `raster`: the one GeoTIFF's header and its mask at an overview of 64 m pixels |
+| `usgs-3dep` | none yet | `service` | `arcgis`: declared; its index service answers a layer's description and a count but refused every feature query on 12 and 13 Nov ("Failed to execute query"). Its quality levels' words checked against WESM.csv on 13 Nov |
 
-**Bathymetry and buildings** (planned) take the same folder, declaration and piece properties,
-with their own metrics and `score.toml`: bathymetry `spacing_m`, `method` (multibeam, single-beam,
-lidar, satellite-derived, interpolated), a survey quality class, `year`; buildings `detail`
-(footprints, heights, LoD1, LoD2, LoD3, textured mesh), `completeness`, `year`.
+**Bathymetry and buildings** (planned) take the same folder, declaration, piece properties and
+score, with their own metrics in their own `score.toml`. Nothing in the format is the terrain's
+but its metrics' names: a piece is an outline, an availability, an extent class, metrics and what
+was read. A bathymetry piece (a survey, or a class of a composite grid's source grid):
+
+    {"piece": "tid/multibeam", "extent": "files", "availability": "open", "spacing_m": 15,
+     "method": "multibeam", "density": 0.9, "year": 2019}
+
+with `method` a word on a `values` scale (multibeam, lidar, single-beam, satellite-derived,
+interpolated), `density` the survey's share of cells holding a sounding (a `linear` scale), and
+`spacing_m` the grid's, which for a composite says little and weighs little. A buildings piece:
+
+    {"piece": "city/2023", "extent": "mask", "availability": "open", "detail": "LoD2",
+     "completeness": 0.97, "year": 2023}
+
+with `detail` on a `values` scale (footprints, heights, LoD1, LoD2, LoD3, textured mesh). What
+they'll need that the terrain doesn't (planned with their research): a `raster` reading by value,
+a piece per class of a source-identifier grid (GEBCO's type identifier grid, EMODnet's source
+references), where the terrain's reader takes one valid-data mask a file; and, for the buildings
+the build already downloads (Overture's, docs/steps.md §7), extents of class `mask` from the
+build's own data, per source the features name.
 
 ## 7. The guards
 

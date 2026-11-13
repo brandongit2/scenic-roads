@@ -5,7 +5,7 @@ licence_url = "https://www2.gov.bc.ca/gov/content/data/policy-standards/open-dat
 source = "https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_BC_S3_Public/FeatureServer"
 theme = "terrain"
 availability = "open"
-notes = "The portal's indexes of its bare-earth DEM files, a map sheet each (1:20,000 and 1:2,500), by the year flown. The DEMs are 1 m (the portal's product specification)."
+notes = "The portal's indexes of its bare-earth DEM files, a map sheet each (1:20,000 and 1:2,500), with each sheet's cell as the index states it (`spacing`: \"1 metre\", or \"2 metre\" for 1,659 sheets of 2016) and its year (the index's `year`, its folder's: a survey flown over a new year, such as 30 Sep 2023 to 15 Mar 2024 by its file's name, is 2023; the names don't all hold dates)."
 
 [[piece]]
 id = "dem-20k"
@@ -16,7 +16,7 @@ url = "https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_
 page = 1000
 [piece.metrics]
 surface = "ground"
-spacing_m = 1
+spacing_m = { field = "spacing", text = "metre" }
 year = { field = "year", date = "year" }
 
 [[piece]]
@@ -28,5 +28,5 @@ url = "https://services6.arcgis.com/ubm4tcTYICKBpist/arcgis/rest/services/LiDAR_
 page = 1000
 [piece.metrics]
 surface = "ground"
-spacing_m = 1
+spacing_m = { field = "spacing", text = "metre" }
 year = { field = "year", date = "year" }
