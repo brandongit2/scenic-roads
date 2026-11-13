@@ -1835,13 +1835,13 @@ One format serves three **themes**, each with its own metrics and score: `terrai
 and `bathymetry` and `buildings` (planned, when their research is done).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
-table at this section's end (`producers/extents/`), and the unit `extents` that checks them
-(crate::inputs::extents, the checks below; task #1346); North America's, Europe's, Oceania's, Africa's and the polar south's
-sources (task #1350); the step `available` that draws the pieces' tiles, and the server's score, layers
-and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the surface models of
-North America and Europe (task #1370); Asia's sources (task #1350's third run). Planned: the
-rest of the world's sources (task #1350's later runs) and `piece.dataset` (extents from the build's
-own data; task #1349). Task #1334.
+tables at this section's end (`producers/extents/`), and the unit `extents` that checks them
+(crate::inputs::extents, the checks below; task #1346); every region's sources: North America's and
+Europe's (task #1350), the surface models of both (task #1370), Asia's, Latin America's and the
+Caribbean's, Oceania's, Africa's, the polar south's and the worldwide models not declared before
+(task #1350's third run); the step `available` that draws the pieces' tiles, and the server's
+score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348). Planned:
+`piece.dataset` (extents from the build's own data; task #1349). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1932,8 +1932,8 @@ a new source of a kind it knows is a new declaration, no code):
 | `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links up to the first page with no items, a link without the page size asked for given it back, a link back to a page already read stopping the run), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
 | `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once, by their `alternate` links: never `up` or `self`, back to the service's every dataset): each file it links with its own `bbox` (`latfirst = true` where a feed writes it latitude first), else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
 | `wfs` | a WFS feature type (GetFeature, paged by `startIndex`, every feature counted, those without geometry too; as GeoJSON, or GML where the server answers only that, the `format` asked for; `version` 2.0.0 or a 1.x's; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
-| `file` | a published index file fetched whole, its size checked first: GeoJSON (a collection, or a lone Feature: LINZ's capture areas) or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several); `urls`, several such files read in turn | `index` or `service` |
-| `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names (gzipped too, or the file a download page's meta refresh sends on to, that page not cached: its signed link expires), a zip's member names (its central directory by range request, none of its members read; with `prefix`, each zip's in a bucket's folder) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it; `jp-kihonzu`, Japan's national base map sheets in the plane rectangular zone of `crs` (JGD2011 or JGD2000): 09LD35 a 1:5,000 sheet, 4 by 3 km, from the zone, the 1:50,000 sheet's row and column letters, then its quarter (1–4), its 1:5,000 row and column, the 1:2,500 quarter, the 1:1,000 row and column letter, or the 1:500 row and column; `jp-kihonzu-1250`, the same with four digits read as map level 1250, a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m; a sheet of another zone than the block's refused); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
+| `file` | a published index file fetched whole, its size checked first: GeoJSON (a collection, or a lone Feature: LINZ's capture areas) or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several); `urls`, several such files read in turn; or a catalogue's JSON answer that isn't GeoJSON (`records`, the dotted path of its list of records; `footprint`, the dotted path in each to its GeoJSON outline, a geometry, Feature or FeatureCollection, its polygons one feature; its properties the record's other values by their dotted paths, `Dataset.identifier.value`: OpenTopography's otCatalog) | `index` or `service` |
+| `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names (gzipped too, or the file a download page's meta refresh sends on to, that page not cached: its signed link expires), a zip's member names (its central directory by range request, none of its members read; with `prefix`, each zip's in a bucket's folder; with `links`, each zip's a page links, FABDEM's folder) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it; `jp-kihonzu`, Japan's national base map sheets in the plane rectangular zone of `crs` (JGD2011 or JGD2000): 09LD35 a 1:5,000 sheet, 4 by 3 km, from the zone, the 1:50,000 sheet's row and column letters, then its quarter (1–4), its 1:5,000 row and column, the 1:2,500 quarter, the 1:1,000 row and column letter, or the 1:500 row and column; `jp-kihonzu-1250`, the same with four digits read as map level 1250, a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m; a sheet of another zone than the block's refused); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
 | `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS) | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
@@ -2087,7 +2087,8 @@ error.
 
 **The sources so far** (terrain; `producers/extents/terrain/`, read 13 Nov 2026; the worldwide
 models, ArcticDEM's mosaic, BC, Wales, France and Luxembourg the same outlines as on 12 Nov; North
-America read on 13 Nov, its large indexes on the Mac mini; Europe and the polar south below):
+America read on 13 Nov, its large indexes on the Mac mini; Europe, Asia, Latin America, Oceania,
+Africa, the polar south and the worldwide models declared in task #1350's third run below):
 
 | Declaration | Pieces | Class | Read by |
 |---|---|---|---|
@@ -2181,68 +2182,6 @@ its county); Slovenia's 2011–15 index (ARSO's lidar pages answer 503: claimed)
 ANCPI's geoportal is down after an outage; Mapterhorn's file list names 325 LAKI II units by code);
 Turkey's, Greece's and Russia's coverage (unstated or unreachable: listed); Jersey, Guernsey and
 Gibraltar (nothing finer than 30 m published).
-
-**Asia** (read 13 Nov 2026 on the M1): 44 declarations, 24 of them Japan's. Japan's prefectures
-publish their lidar per sheet of the national base map (国土基本図), read with `jp-kihonzu`:
-
-| Declaration | Pieces | Class | Read by |
-|---|---|---|---|
-| `jp-gsi-dem` | 6: DEM1A, 5A, 5B, 5C, 10A, 10B | `index` | `listing` (lines): the Source Cooperative mirror's gzipped file list, each file by its standard regional mesh code (JIS X 0410, `digits`); DEM1A 298,858 km² against the GSI's footprint layer's 298,936. `open`: the mirror and the GSI's tiles are anonymous, the GSI's own bulk download needs a login |
-| `jp-gsi-pointcloud` | 1 | `claimed` (paid) | `file`: three zoom-5 tiles of the GSI's footprint layer, 45,801 km² |
-| `jp-tokyo-lidar`, `jp-hyogo-lidar`, `jp-shizuoka-lidar`, `jp-kanagawa-lidar`, `jp-yamanashi-lidar`, `jp-shimane-river-dem`, `jp-saitama-lidar` | 6; 6; 14; 14; 3; 1; 1 | `index` | `listing` (s3): the public bucket the G-spatial download pages link (japan-pointcloud, kanagawa-pointcloud, virtual-shizuoka), each ZIP by its sheet; ground grids, DSMs and point clouds by year (Tokyo's 0.25 m and 0.5 m, Hyogo's 0.5 m and 1 m, Yamanashi's 0.5 m of the whole prefecture, 4,552 km²) |
-| `jp-tottori-dem`, `jp-ehime-dem`, `jp-nagano-dem`, `jp-kochi-dem` (ground) | 1; 1; 3; 2 | `index` | `listing` (zip, `prefix`): the G-spatial centre's bucket (gsic-opendata), each zip's members by their sheets (3,873, 8,005, 10,537 and 195 km²) |
-| `jp-kyoto-dem`, `jp-toyama-dem`, `jp-ishikawa-noto-ground` | 1; 1; 2 | `index` | `listing` (zip, `urls`): the record's ZIPs, their members by map-level-1250 sheet |
-| `jp-kochi-dem` (DEM), `jp-tochigi-dem`, `jp-rinya-dem` | 2; 1; 14 | `index` | `listing` (lines): the G-spatial record's API answer, each GeoTIFF by its 1:50,000 quarter (20 by 15 km, data over the surveyed forests only: the outline overstates them); the Forestry Agency's 0.5 m DEMs by planning area and disaster |
-| `jp-miyagi-dem` | 1 | `index` | `listing` (lines): the CSV the portal's download page sends on to, 9,570 level-1250 sheets, 7,179 km² |
-| `jp-hiroshima-dobox` | 1 | `claimed` | `file`: the prefecture (its DoboX portal lists some 38,000 files, a page each, its API keyed) |
-| `kr-ngii-dem`, `tw-moi-dtm`, `tw-taipei-dtm`, `hk-landsd-dtm`, `hk-cedd-lidar` | 2; 2; 2; 1; 4 | `claimed` | `file`: South Korea (5 m, a login; its export needs a permit), Taiwan (20 m open, 1 m official-secret), Taipei (sold), Hong Kong (the 5 m surface-like grid; CEDD's 0.5 m DTM and DSM of 2010–11 and 2019–20, ordered for a project only) |
-| 8 claimed national sources | 12 | `claimed` | `file`: Malaysia's 10 m (the peninsula 2017; Sabah and Sarawak 2008, DTM and DSM; sold), Indonesia's DEMNAS (about 8 m, a surface model, an account), India's CartoDEM (30 m, an account), Israel's 25 m (sold), Iran's 10 m (sold), Saudi Arabia's 3 m DTM and 1.5 m DSM (on request), Bahrain's 1 m (sold), Dubai's DTM and DSM (on request) |
-| 11 sources listed only, and 7 pieces of those above | 18; 7 | `unknown` | `none`, each with its `why`: Osaka's ground points (18 of its 105 ZIPs answer 500, then the host's firewall refused this client), Gifu's 0.5 m (its GIS host didn't answer), Wakayama's points (403), Nagasaki's (links made by scripts), the Philippines' IfSAR and lidar (sold, request-only, Taal open), Thailand's, Sri Lanka's, Nepal's, Palestine's, Oman's and Qatar's; Nagano's erosion-control DEM (an undefined local grid), Korea's urban 1 m, Malaysia's river-basin lidar, India's CartoDSM and Survey of India 10 m, Iran's 1:2,000, Saudi Arabia's city DEMs |
-
-**Not obtained** (Asia, 13 Nov): China (DEMs finer than 15 m height accuracy over 25 km² are
-secret: no product published), North Korea, Mongolia, Macau, Vietnam, Laos, Cambodia, Myanmar,
-Singapore, Brunei, Timor-Leste, Bangladesh, Bhutan, the Maldives, Afghanistan, Pakistan, the five
-Central Asian states, Jordan, Lebanon, Syria, Iraq, Kuwait, Yemen, Abu Dhabi and the northern
-emirates (nothing finer than the global models published); Russia east of the Urals (no product
-beyond `ru-ffpd`'s federal fund); OpenTopography's research patches (Almaty, Bishkek, Melamchi,
-Yasman and Vakhsh, Serdar, Ugam-Chatkal: left to a later run); Hokkaido's small records, MLIT's
-river surveys, castles and mobile-mapping (MMS) road point clouds, Shimane's 2017 folders (no
-record), Kanagawa's and Saitama's river and road sets (named by river or route, not by sheet);
-Hiroshima's sheets (DoboX's API needs a key: claimed); the GSI's point clouds' sheets (paid:
-claimed from its footprint tiles); Osaka's, Gifu's, Wakayama's and Nagasaki's sheets (listed).
-
-**Latin America and the Caribbean** (read 13 Nov 2026 on the M1, task #1350's third run): 28
-declarations, 598 pieces, with Mexico's surface models added to `inegi-mde` (above); the claimed
-areas Natural Earth's 1:10m admin-1 areas, or its map subunits for Easter Island, South Georgia and
-Clipperton. French Guiana is in `fr-rgealti`, Puerto Rico and the US Virgin Islands with North America
-(above). Areas geodesic.
-
-| Declaration | Pieces | Class | Read by; area |
-|---|---|---|---|
-| `ar-ign-mde` | 347: the IGN's 5 m and 0.5 m surface and terrain models by sheet name and year (login), the external models, MDE-Ar 30 m (open) | `claimed`; `index` | `wfs`: the IGN's geoserver's five model layers (5,106 sheets, 94 MB; the 5 m surface model 190,139 km², its terrain model 4,820, the 0.5 m 1,648 and 1,069, the external models 5,059, their cell unstated); MDE-Ar's sheet layer, 3.14 million km² |
-| `ar-cba-idecor` | 1: Córdoba's 5 m DEM | `files` | `raster`: IDECOR's WCS at a coarse scale (`SCALEFACTOR` 0.01, 500 m mask), 8,021 km² (97 % inside the IGN's sheets) |
-| `uy-ide-mdt`, `uy-montevideo-lidar`, `uy-mtop-vergara` | 175: the national 2.5 m DTM, the towns' 1 m DTM and 0.1 m DSM (86 towns), Minas's 2025 DSM and lidar; 3: Montevideo's 2024 lidar and DSM, its 2021 DSM flight grid (login); 1: Vergara's lidar | `index`; `claimed` | `file`: the IDE's grids (the national DTM 184,978 km²); `wfs`: the city's layers (~670 km² each); `listing`: the zip's 20 1 km tile names (20 km²) |
-| `br-es-geobases`, `br-ce-fortaleza-lidar`, `br-sp-geosampa-lidar`, `br-ba-salvador-lidar` | 2 each: Espírito Santo's 2 m DTM and DSM (RMSE 1.6 m, 2015), Fortaleza's 0.5 m (2023), São Paulo city's 2017 and 2020 point clouds, Salvador's 0.5 m (2017) | `index`; `files` | `file`: the 10 km grid (54,497 and 54,697 km²); `raster`: Fortaleza's COGs (64 m masks, ~400 km²), Salvador's WCS lots (392 and 538 km²); `wfs`: GeoSampa's sheet grids (~1,680 km²) |
-| `br-sp-estado-mdt`, `br-df-mdt`, `br-ba-sei` | 2: São Paulo state's 2010 DTM grid (closed), its 30 m model; 2: Brasília's 1 m lidar DTM (closed), its 5 m one listed; 4: Bahia's Chapada Diamantina 5 m DTM and DSM and Medeiros Neto's 0.05 m DSM (2023–24, image services only), the 2010 statewide 5 m DSM | `claimed`; `unknown` | `wfs`: the grid (223,426 km²); `arcgis`: the DF's demboundary layer (1,186 km²), the SEI's image catalogues (~23,100 km²); the state areas |
-| `br-pe-pe3d`, `br-sc-sigsc`, `br-ap-sema-insar`, `br-ibge-mde` | 3; 2; 2; 3: Pernambuco's and Santa Catarina's statewide 1 m lidar models, Amapá's InSAR models (logins), the IBGE's RJ25 20 m | `claimed`; `unknown` | the states; PE3D's 0.5 m towns and the IBGE's SC25 and SPMGGO50 listed |
-| `co-igac-mdt` | 18: the cadastral programme's urban DTMs by cell (1 m, 2 m) and year, its rural DTMs by year | `claimed` | `arcgis`: the programme's progress layers on its ArcGIS Online organization (1,154 towns, `Oficializado` only; 114 municipalities), each cell from its model's path (a `pattern` reading); the towns' and municipalities' official areas, not the models' |
-| `ec-sigtierras-mdt` | 9: SIGTIERRAS's 3 to 5 m photogrammetric DTM by year (2010–12, login; 5 m, its coarsest), the open 50 m DTM | `claimed` | `file`: the programme's orthophoto flight index (`observacio` ORTOFOTO; the DTM made with the orthophotos, as its availability map says); Ecuador without the Galápagos |
-| `cl-ciren-dem`, `gs-sggis-dem`, `clipperton-shom` | 2: Easter Island's 4 m DEM, Juan Fernández's listed; 2: South Georgia's 20 m DEM (2017), the Shackleton Crossing's 5 m listed; 1: Clipperton's 20 m DTM (2015) | `claimed`; `unknown` | the islands' map subunits |
-| 7 sources listed only | 12 | `unknown` | `none`, each with its `why`: Rio de Janeiro city's 5 m DTM, Belo Horizonte's DTM and lidar, the DSG's Radiografia da Amazônia InSAR models, Medellín's 1 m lidar models, Chile's SAF lidar (by quotation), Peru's ANIN Piura and IGN drone lidar, Panamá's 2013 SAR models |
-
-**Not obtained** (Latin America, 13 Nov): Santa Catarina's SIGSC and Pernambuco's PE3D sheet
-indexes and São Paulo's IGC WCS (their hosts unreachable from the M1: claimed or listed); IGAC's
-image services themselves (mapas.igac.gov.co answered 502 or timed out: the progress layers read
-instead), its TanDEM-X TREx surface models and national SRTM (no coverage layer); CIREN's ALOS
-PALSAR 12.5 m mosaics and Brazil's TOPODATA (resampled SRTM, not declared); ANADEM's file (a
-sample region only); Jamaica's 30 m DEM (no producer stated, the World Bank's catalogue
-rate-limited); Montevideo's point densities (unstated: no spacing); the IBGE's SC25 and SPMGGO50
-sheets (MI numbers in zips, no sheet index); Juan Fernández (Natural Earth draws it with mainland
-Chile) and the Shackleton Crossing (its CRS, EPSG:404000, unnamed); Belo Horizonte's and Rio's
-outlines (none published); Vergara's survey zip has no shapefile (its tile names read instead);
-Rio Grande do Sul's and Paraná's statewide lidar (not yet delivered); Embrapa's, EBA's and
-OpenTopography's research lidar (not declared); Venezuela, Guyana, Suriname, Paraguay, Bolivia,
-Cuba, Nicaragua and Costa Rica publish nothing finer than the worldwide models.
 
 **Surface models** (read 13 Nov 2026, task #1370; England's, swissSURFACE3D's, PST-A's, mainland
 Portugal's, Sweden's Ythöjdmodell, 3DEP's, NRCan's and Laserdata Skog on the Mac mini, the rest, Ontario's among them, on the M1): the
@@ -2340,7 +2279,69 @@ contours (not grids); Lord Howe Island (nothing found); the Solomon Islands (a s
 New Caledonia's Litto3D (not yet flown). Guam's, the Northern Marianas', American Samoa's and
 Hawaii's, the Federated States of Micronesia's and Palau's 1/3 arc-second tiles are 3DEP's
 (`usgs-3dep`); La Réunion's and Mayotte's lidar are `ign-lidar-hd`'s and `fr-rgealti`'s; McMurdo's
-and OpenTopography's other datasets, and South Georgia's, are other runs'.
+and OpenTopography's other datasets are in `opentopography` (below), South Georgia's in `gs-sggis-dem`.
+
+**Asia** (read 13 Nov 2026 on the M1): 44 declarations, 24 of them Japan's. Japan's prefectures
+publish their lidar per sheet of the national base map (国土基本図), read with `jp-kihonzu`:
+
+| Declaration | Pieces | Class | Read by |
+|---|---|---|---|
+| `jp-gsi-dem` | 6: DEM1A, 5A, 5B, 5C, 10A, 10B | `index` | `listing` (lines): the Source Cooperative mirror's gzipped file list, each file by its standard regional mesh code (JIS X 0410, `digits`); DEM1A 298,858 km² against the GSI's footprint layer's 298,936. `open`: the mirror and the GSI's tiles are anonymous, the GSI's own bulk download needs a login |
+| `jp-gsi-pointcloud` | 1 | `claimed` (paid) | `file`: three zoom-5 tiles of the GSI's footprint layer, 45,801 km² |
+| `jp-tokyo-lidar`, `jp-hyogo-lidar`, `jp-shizuoka-lidar`, `jp-kanagawa-lidar`, `jp-yamanashi-lidar`, `jp-shimane-river-dem`, `jp-saitama-lidar` | 6; 6; 14; 14; 3; 1; 1 | `index` | `listing` (s3): the public bucket the G-spatial download pages link (japan-pointcloud, kanagawa-pointcloud, virtual-shizuoka), each ZIP by its sheet; ground grids, DSMs and point clouds by year (Tokyo's 0.25 m and 0.5 m, Hyogo's 0.5 m and 1 m, Yamanashi's 0.5 m of the whole prefecture, 4,552 km²) |
+| `jp-tottori-dem`, `jp-ehime-dem`, `jp-nagano-dem`, `jp-kochi-dem` (ground) | 1; 1; 3; 2 | `index` | `listing` (zip, `prefix`): the G-spatial centre's bucket (gsic-opendata), each zip's members by their sheets (3,873, 8,005, 10,537 and 195 km²) |
+| `jp-kyoto-dem`, `jp-toyama-dem`, `jp-ishikawa-noto-ground` | 1; 1; 2 | `index` | `listing` (zip, `urls`): the record's ZIPs, their members by map-level-1250 sheet |
+| `jp-kochi-dem` (DEM), `jp-tochigi-dem`, `jp-rinya-dem` | 2; 1; 14 | `index` | `listing` (lines): the G-spatial record's API answer, each GeoTIFF by its 1:50,000 quarter (20 by 15 km, data over the surveyed forests only: the outline overstates them); the Forestry Agency's 0.5 m DEMs by planning area and disaster |
+| `jp-miyagi-dem` | 1 | `index` | `listing` (lines): the CSV the portal's download page sends on to, 9,570 level-1250 sheets, 7,179 km² |
+| `jp-hiroshima-dobox` | 1 | `claimed` | `file`: the prefecture (its DoboX portal lists some 38,000 files, a page each, its API keyed) |
+| `kr-ngii-dem`, `tw-moi-dtm`, `tw-taipei-dtm`, `hk-landsd-dtm`, `hk-cedd-lidar` | 2; 2; 2; 1; 4 | `claimed` | `file`: South Korea (5 m, a login; its export needs a permit), Taiwan (20 m open, 1 m official-secret), Taipei (sold), Hong Kong (the 5 m surface-like grid; CEDD's 0.5 m DTM and DSM of 2010–11 and 2019–20, ordered for a project only) |
+| 8 claimed national sources | 12 | `claimed` | `file`: Malaysia's 10 m (the peninsula 2017; Sabah and Sarawak 2008, DTM and DSM; sold), Indonesia's DEMNAS (about 8 m, a surface model, an account), India's CartoDEM (30 m, an account), Israel's 25 m (sold), Iran's 10 m (sold), Saudi Arabia's 3 m DTM and 1.5 m DSM (on request), Bahrain's 1 m (sold), Dubai's DTM and DSM (on request) |
+| 11 sources listed only, and 7 pieces of those above | 18; 7 | `unknown` | `none`, each with its `why`: Osaka's ground points (18 of its 105 ZIPs answer 500, then the host's firewall refused this client), Gifu's 0.5 m (its GIS host didn't answer), Wakayama's points (403), Nagasaki's (links made by scripts), the Philippines' IfSAR and lidar (sold, request-only, Taal open), Thailand's, Sri Lanka's, Nepal's, Palestine's, Oman's and Qatar's; Nagano's erosion-control DEM (an undefined local grid), Korea's urban 1 m, Malaysia's river-basin lidar, India's CartoDSM and Survey of India 10 m, Iran's 1:2,000, Saudi Arabia's city DEMs |
+
+**Not obtained** (Asia, 13 Nov): China (DEMs finer than 15 m height accuracy over 25 km² are
+secret: no product published), North Korea, Mongolia, Macau, Vietnam, Laos, Cambodia, Myanmar,
+Singapore, Brunei, Timor-Leste, Bangladesh, Bhutan, the Maldives, Afghanistan, Pakistan, the five
+Central Asian states, Jordan, Lebanon, Syria, Iraq, Kuwait, Yemen, Abu Dhabi and the northern
+emirates (nothing finer than the global models published); Russia east of the Urals (no product
+beyond `ru-ffpd`'s federal fund); OpenTopography's research patches (Almaty, Bishkek, Melamchi,
+Yasman and Vakhsh, Serdar, Ugam-Chatkal: in `opentopography`, below); Hokkaido's small records, MLIT's
+river surveys, castles and mobile-mapping (MMS) road point clouds, Shimane's 2017 folders (no
+record), Kanagawa's and Saitama's river and road sets (named by river or route, not by sheet);
+Hiroshima's sheets (DoboX's API needs a key: claimed); the GSI's point clouds' sheets (paid:
+claimed from its footprint tiles); Osaka's, Gifu's, Wakayama's and Nagasaki's sheets (listed).
+
+**Latin America and the Caribbean** (read 13 Nov 2026 on the M1, task #1350's third run): 28
+declarations, 598 pieces, with Mexico's surface models added to `inegi-mde` (above); the claimed
+areas Natural Earth's 1:10m admin-1 areas, or its map subunits for Easter Island, South Georgia and
+Clipperton. French Guiana is in `fr-rgealti`, Puerto Rico and the US Virgin Islands with North America
+(above). Areas geodesic.
+
+| Declaration | Pieces | Class | Read by; area |
+|---|---|---|---|
+| `ar-ign-mde` | 347: the IGN's 5 m and 0.5 m surface and terrain models by sheet name and year (login), the external models, MDE-Ar 30 m (open) | `claimed`; `index` | `wfs`: the IGN's geoserver's five model layers (5,106 sheets, 94 MB; the 5 m surface model 190,139 km², its terrain model 4,820, the 0.5 m 1,648 and 1,069, the external models 5,059, their cell unstated); MDE-Ar's sheet layer, 3.14 million km² |
+| `ar-cba-idecor` | 1: Córdoba's 5 m DEM | `files` | `raster`: IDECOR's WCS at a coarse scale (`SCALEFACTOR` 0.01, 500 m mask), 8,021 km² (97 % inside the IGN's sheets) |
+| `uy-ide-mdt`, `uy-montevideo-lidar`, `uy-mtop-vergara` | 175: the national 2.5 m DTM, the towns' 1 m DTM and 0.1 m DSM (86 towns), Minas's 2025 DSM and lidar; 3: Montevideo's 2024 lidar and DSM, its 2021 DSM flight grid (login); 1: Vergara's lidar | `index`; `claimed` | `file`: the IDE's grids (the national DTM 184,978 km²); `wfs`: the city's layers (~670 km² each); `listing`: the zip's 20 1 km tile names (20 km²) |
+| `br-es-geobases`, `br-ce-fortaleza-lidar`, `br-sp-geosampa-lidar`, `br-ba-salvador-lidar` | 2 each: Espírito Santo's 2 m DTM and DSM (RMSE 1.6 m, 2015), Fortaleza's 0.5 m (2023), São Paulo city's 2017 and 2020 point clouds, Salvador's 0.5 m (2017) | `index`; `files` | `file`: the 10 km grid (54,497 and 54,697 km²); `raster`: Fortaleza's COGs (64 m masks, ~400 km²), Salvador's WCS lots (392 and 538 km²); `wfs`: GeoSampa's sheet grids (~1,680 km²) |
+| `br-sp-estado-mdt`, `br-df-mdt`, `br-ba-sei` | 2: São Paulo state's 2010 DTM grid (closed), its 30 m model; 2: Brasília's 1 m lidar DTM (closed), its 5 m one listed; 4: Bahia's Chapada Diamantina 5 m DTM and DSM and Medeiros Neto's 0.05 m DSM (2023–24, image services only), the 2010 statewide 5 m DSM | `claimed`; `unknown` | `wfs`: the grid (223,426 km²); `arcgis`: the DF's demboundary layer (1,186 km²), the SEI's image catalogues (~23,100 km²); the state areas |
+| `br-pe-pe3d`, `br-sc-sigsc`, `br-ap-sema-insar`, `br-ibge-mde` | 3; 2; 2; 3: Pernambuco's and Santa Catarina's statewide 1 m lidar models, Amapá's InSAR models (logins), the IBGE's RJ25 20 m | `claimed`; `unknown` | the states; PE3D's 0.5 m towns and the IBGE's SC25 and SPMGGO50 listed |
+| `co-igac-mdt` | 18: the cadastral programme's urban DTMs by cell (1 m, 2 m) and year, its rural DTMs by year | `claimed` | `arcgis`: the programme's progress layers on its ArcGIS Online organization (1,154 towns, `Oficializado` only; 114 municipalities), each cell from its model's path (a `pattern` reading); the towns' and municipalities' official areas, not the models' |
+| `ec-sigtierras-mdt` | 9: SIGTIERRAS's 3 to 5 m photogrammetric DTM by year (2010–12, login; 5 m, its coarsest), the open 50 m DTM | `claimed` | `file`: the programme's orthophoto flight index (`observacio` ORTOFOTO; the DTM made with the orthophotos, as its availability map says); Ecuador without the Galápagos |
+| `cl-ciren-dem`, `gs-sggis-dem`, `clipperton-shom` | 2: Easter Island's 4 m DEM, Juan Fernández's listed; 2: South Georgia's 20 m DEM (2017), the Shackleton Crossing's 5 m listed; 1: Clipperton's 20 m DTM (2015) | `claimed`; `unknown` | the islands' map subunits |
+| 7 sources listed only | 12 | `unknown` | `none`, each with its `why`: Rio de Janeiro city's 5 m DTM, Belo Horizonte's DTM and lidar, the DSG's Radiografia da Amazônia InSAR models, Medellín's 1 m lidar models, Chile's SAF lidar (by quotation), Peru's ANIN Piura and IGN drone lidar, Panamá's 2013 SAR models |
+
+**Not obtained** (Latin America, 13 Nov): Santa Catarina's SIGSC and Pernambuco's PE3D sheet
+indexes and São Paulo's IGC WCS (their hosts unreachable from the M1: claimed or listed); IGAC's
+image services themselves (mapas.igac.gov.co answered 502 or timed out: the progress layers read
+instead), its TanDEM-X TREx surface models and national SRTM (no coverage layer); CIREN's ALOS
+PALSAR 12.5 m mosaics and Brazil's TOPODATA (resampled SRTM, not declared); ANADEM's file (a
+sample region only); Jamaica's 30 m DEM (no producer stated, the World Bank's catalogue
+rate-limited); Montevideo's point densities (unstated: no spacing); the IBGE's SC25 and SPMGGO50
+sheets (MI numbers in zips, no sheet index); Juan Fernández (Natural Earth draws it with mainland
+Chile) and the Shackleton Crossing (its CRS, EPSG:404000, unnamed); Belo Horizonte's and Rio's
+outlines (none published); Vergara's survey zip has no shapefile (its tile names read instead);
+Rio Grande do Sul's and Paraná's statewide lidar (not yet delivered); Embrapa's and EBA's research lidar (not declared; OpenTopography's is
+in `opentopography`, below); Venezuela, Guyana, Suriname, Paraguay, Bolivia,
+Cuba, Nicaragua and Costa Rica publish nothing finer than the worldwide models.
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
