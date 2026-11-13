@@ -315,10 +315,13 @@ pub fn nothing(_t: &str, _x: &KeyCtx) -> Option<Vec<String>> {
 
 /// A z6 tile of the roads (`unit`): the tile, its reach (one the coverage builds at the spacing
 /// the declared datasets give, `build::builds`) and that spacing.
-fn unit_of<'a>(t: &str, x: &KeyCtx<'a>) -> Option<(TileId, &'a roads::reach::Reach, inputs::dem::spacing::Fine)> {
+fn unit_of<'a>(
+    t: &str,
+    x: &KeyCtx<'a>,
+) -> Option<(TileId, &'a roads::reach::Reach, std::sync::Arc<inputs::dem::spacing::Fine>)> {
     let u = TileId::parse(t).filter(|u| u.z == 6)?;
-    let fine = super::build::spacing_now(x.m, x.tiles);
-    let r = x.reach?.get(u).filter(|r| r.builds(x.cov, &fine))?;
+    let fine = x.tiles.spacing(x.m);
+    let r = x.reach?.get(u).filter(|r| r.builds(x.cov, &*fine))?;
     Some((u, r, fine))
 }
 
@@ -339,7 +342,7 @@ pub fn roads(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
 pub fn ways(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let (u, r, fine) = unit_of(t, x)?;
     Some(vec![
-        format!("coverage {}", r.coverage_key(x.cov, u, &fine)),
+        format!("coverage {}", r.coverage_key(x.cov, u, &*fine)),
         format!("rules {}", inputs::rules::versions_meeting(r.extent(u))),
         format!("spacing {}", fine.key(&r.cells)),
     ])
@@ -406,11 +409,11 @@ pub fn water_pin(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     Some(vec![terrain::terrain_pack::water_source_pin(x.m)?])
 }
 
-/// What the depth's targets read of the water (`build::depth_water_reads`): what the terrain-water
+/// What the depth's targets read of the water (`build::depth_water_wants`): what the terrain-water
 /// job digests, "<target> <from>" each; None while the depth's sources can't be read.
 pub fn water_wants(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let d = x.tiles.depth(x.m)?;
-    Some(super::build::depth_water_reads(x.cov, &d).into_iter().map(|(t, f, _)| format!("{t} {f}")).collect())
+    Some(super::build::depth_water_wants(x.cov, &d).into_iter().map(|(t, f)| format!("{t} {f}")).collect())
 }
 
 /// The elevation pool's datasets meeting a terrain target's tile (`TerrainTiles::terrain_datasets`:

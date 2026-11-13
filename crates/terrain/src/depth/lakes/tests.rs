@@ -246,6 +246,12 @@ fn packs_are_named_by_source_and_tile() {
     assert_eq!(l, "work/lake-depth/smalllakes/6-40-21");
     assert_eq!(tile_of(&l), Some(("smalllakes", (40, 21))));
     assert_eq!(tile_of("work/lake-depth/smalllakes/7-40-21"), None);
+    // (Only as `logical` spells it.)
+    for other in
+        ["work/lake-depth/smalllakes/6-040-21", "work/lake-depth/smalllakes/6-40-21/x", "work/lake-depth/6-40-21"]
+    {
+        assert_eq!(tile_of(other), None, "{other}");
+    }
     let m: BTreeMap<String, String> = [(l.clone(), "c".to_string()), ("work/other".into(), "d".into())].into();
     assert_eq!(named(&m).collect::<Vec<_>>(), vec![("smalllakes", (40, 21), "c")]);
 }

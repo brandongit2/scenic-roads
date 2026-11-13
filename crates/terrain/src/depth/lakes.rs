@@ -69,7 +69,8 @@ pub fn logical(id: &str, t: (u32, u32)) -> String {
 pub fn tile_of(l: &str) -> Option<(&str, (u32, u32))> {
     let (id, t) = l.strip_prefix(PREFIX)?.split_once('/')?;
     let u = codecs::legacy::TileId::parse(t).filter(|u| u.z == 6)?;
-    (logical(id, (u.x, u.y)) == l).then_some((id, (u.x, u.y)))
+    // (As `logical` writes it, and no other spelling of the tile.)
+    store::naming::prints_as(t, format_args!("6-{}-{}", u.x, u.y)).then_some((id, (u.x, u.y)))
 }
 
 /// Z6 tile `t` and the 8 around it (columns across the date line, no rows past the poles).

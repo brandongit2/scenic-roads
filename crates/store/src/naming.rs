@@ -89,6 +89,34 @@ pub fn xxh3(bytes: &[u8]) -> u64 {
     xxhash_rust::xxh3::xxh3_64(bytes)
 }
 
+/// `xxh3` of the text `write` writes, hashed as it is written and never held whole.
+pub fn xxh3_text(write: impl FnOnce(&mut dyn std::fmt::Write) -> std::fmt::Result) -> u64 {
+    struct Hashed(xxhash_rust::xxh3::Xxh3);
+    impl std::fmt::Write for Hashed {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.update(s.as_bytes());
+            Ok(())
+        }
+    }
+    let mut h = Hashed(xxhash_rust::xxh3::Xxh3::new());
+    // (The hasher's `write_str` never fails.)
+    write(&mut h).ok();
+    h.0.digest()
+}
+
+/// Whether `text` is exactly what `args` prints, compared as it is printed (no text made).
+pub fn prints_as(text: &str, args: std::fmt::Arguments) -> bool {
+    struct Left<'a>(&'a str);
+    impl std::fmt::Write for Left<'_> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0 = self.0.strip_prefix(s).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut left = Left(text);
+    std::fmt::write(&mut left, args).is_ok() && left.0.is_empty()
+}
+
 /// `<logical>.<hash16>.<ext>`.
 pub fn content_name(logical: &str, hash16: &str, ext: &str) -> String {
     debug_assert!(valid_logical(logical) && is_hash16(hash16) && valid_ext(ext), "{logical}.{hash16}.{ext}");
@@ -521,6 +549,25 @@ pub(crate) fn replace_file(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A text hashed as it is written has the hash of the whole text; a text is what a format
+    /// prints only when it is all of it, to the letter.
+    #[test]
+    fn a_text_is_hashed_and_compared_as_written() {
+        use std::fmt::Write as _;
+        let whole = "lake-a (3, 14) 0123\nlake-b (60, 2) 4567";
+        let streamed = xxh3_text(|w| {
+            write!(w, "lake-a {:?} 0123", (3, 14))?;
+            write!(w, "\nlake-b {:?} {}", (60, 2), 4567)
+        });
+        assert_eq!(streamed, xxh3(whole.as_bytes()));
+        assert_eq!(xxh3_text(|_| Ok(())), xxh3(b""));
+        assert!(prints_as("6-3-14", format_args!("6-{}-{}", 3, 14)));
+        for other in ["6-03-14", "6-3-140", "6-3-1", "6-3-14 ", ""] {
+            assert!(!prints_as(other, format_args!("6-{}-{}", 3, 14)), "{other}");
+        }
+        assert!(prints_as("", format_args!("")));
+    }
 
     #[test]
     fn hashes() {

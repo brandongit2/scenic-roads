@@ -500,12 +500,6 @@ pub fn builds(cov: &Coverage, reach: &Reaches, u: TileId, fine: &Fine) -> bool {
     reach.get(u).is_some_and(|r| r.builds(cov, fine))
 }
 
-/// Where the declared elevation datasets `m` names are fine (inputs::dem::spacing): none before the
-/// build reads them or while they can't be read (every way at the coarse spacing; the z6 tiles wait).
-pub fn spacing_now(m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Fine {
-    tiles.elevation(m).ok().flatten().map(|e| Fine::of(&e)).unwrap_or_default()
-}
-
 /// The z6 tiles the coverage builds (`builds`), each with its key (`steps::derived_key`); None for
 /// one whose key can't be worked out now (a terrain pack's index unread: agent::tiles; the declared
 /// elevation datasets or the buildings' release unread), which waits. Which z6 tiles the coverage
@@ -515,10 +509,10 @@ pub fn unit_keys(x: &KeyCtx) -> Vec<(TileId, Option<String>)> {
     let (cov, date, m, reach, tiles) = (x.cov, x.date, x.m, x.reach, x.tiles);
     let mut units = Vec::new();
     let Some(reach) = reach else { return units };
-    let fine = spacing_now(m, tiles);
+    let fine = tiles.spacing(m);
     for (l, _) in m.range(format!("sources/osm/{date}/pieces/")..) {
         let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(TileId::parse) else { break };
-        if reach.get(u).is_some_and(|r| r.builds(cov, &fine)) {
+        if reach.get(u).is_some_and(|r| r.builds(cov, &*fine)) {
             units.push((u, super::steps::derived_key("unit", &u.slash(), x)));
         }
     }
@@ -964,7 +958,7 @@ pub fn trees_targets(x: &KeyCtx) -> trees::treepacks::Targets {
 fn region_states_alone(x: &KeyCtx, regions: &[(String, Coverage)], done: &Keys) -> BTreeMap<String, RegionState> {
     let (m, reach, tiles) = (x.m, x.reach, x.tiles);
     let keys = unit_keys(x);
-    let fine = spacing_now(m, tiles);
+    let fine = tiles.spacing(m);
     regions
         .iter()
         .map(|(id, rc)| {
@@ -1004,7 +998,7 @@ pub fn region_steps(
     let trw = tree_work(&trees, m, done);
     let packs = pack_lo_targets(m, Some(reach)).0;
     let packs: BTreeMap<&str, bool> = packs.iter().map(|(t, k)| (t.as_str(), done.pack.get(t) == Some(k))).collect();
-    let fine = spacing_now(m, tiles);
+    let fine = tiles.spacing(m);
     let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
     // (Each z6 tile's map tiles and terrain z3 tiles, worked out once, as asked for.)
     let unit_tiles: Vec<std::cell::OnceCell<Vec<String>>> = units.iter().map(|_| Default::default()).collect();
@@ -1446,14 +1440,13 @@ pub fn piece_coverage(cov: &Coverage, sets: &[terrain::terrain_zoom::Set], t: (u
 }
 
 /// The terrain-water job (one, "terrain-water"): the water source's digests of what the depth's
-/// targets read (`depth_water_reads`), when its digests' file lacks one of them (the source new, or
+/// targets read (`depth_water_wants`), when its digests' file lacks one of them (the source new, or
 /// the coverage grown); keyed on its version, the source's pin and what's wanted. None with nothing
 /// lacking, no water source, the depth's sources unread, or once run for the same.
 pub fn terrain_water_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     let (cov, m, tiles) = (x.cov, x.m, x.tiles);
     let pin = terrain::terrain_pack::water_source_pin(m)?;
-    let wants: Vec<(String, String)> =
-        depth_water_reads(cov, &tiles.depth(m)?).into_iter().map(|(t, f, _)| (t, f)).collect();
+    let wants = depth_water_wants(cov, &tiles.depth(m)?);
     let idx = tiles.water_idx(m, &pin);
     if wants.iter().all(|(t, from)| idx.is_some_and(|w| w.get(t, from).is_some())) {
         return None;
@@ -2476,7 +2469,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         slope_near: BTreeSet<String>,
     }
     nasread::PLAN.enter("build::plan: the regions");
-    let fine = spacing_now(m, tiles);
+    let fine = tiles.spacing(m);
     let regions: Vec<Region> = updates
         .each
         .iter()
@@ -3970,22 +3963,31 @@ pub fn depth_kept(
     Some(agentcore::agent::gc::DepthKeep { at: now, lo: lo.into_iter().collect(), hi })
 }
 
-/// The water the depth's targets read, as the terrain-water job works their digests out: an
-/// assembly's z6–8 tiles ("depth 3/x/y"), a z6 tile's `depth_hi_water` ("depth 6/x/y"), the rivers
-/// in both.
+/// The depth's targets that read the water, each with what decides the tiles it reads
+/// (`WaterIdx`'s from): the assemblies ("depth 3/x/y"), then the z6 tiles ("depth 6/x/y"). What the
+/// plan asks of the water's digests: the names alone, never the tiles (`depth_water_reads`: a z6
+/// tile's are tens of thousands, 3 GB for the world's targets held at once, task #1251).
+pub fn depth_water_wants(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(String, String)> {
+    let (lo, hi) = depth_tiles(cov, sources);
+    let lo = lo.into_iter().map(|q| (format!("depth 3/{}/{}", q.0, q.1), DEPTH_LO_WATER_FROM.to_string()));
+    lo.chain(hi.into_iter().map(|(x, y)| (format!("depth 6/{x}/{y}"), DEPTH_WATER_FROM.to_string()))).collect()
+}
+
+/// The water the depth's targets read (`depth_water_wants`, each with its tiles), as the
+/// terrain-water job works their digests out: an assembly's z6–8 tiles, a z6 tile's
+/// `depth_hi_water`, the rivers in both.
 pub fn depth_water_reads(
     cov: &Coverage,
     sources: &[terrain::depth::grids::Source],
 ) -> Vec<codecs::terrain_water::Reads> {
-    let (lo, hi) = depth_tiles(cov, sources);
-    let mut out: Vec<codecs::terrain_water::Reads> = lo
+    depth_water_wants(cov, sources)
         .into_iter()
-        .map(|q| (format!("depth 3/{}/{}", q.0, q.1), DEPTH_LO_WATER_FROM.to_string(), depth_lo_water(q)))
-        .collect();
-    for (x, y) in hi {
-        out.push((format!("depth 6/{x}/{y}"), DEPTH_WATER_FROM.to_string(), depth_hi_water(sources, (x, y))));
-    }
-    out
+        .map(|(t, from)| {
+            let u = TileId::parse(t.strip_prefix("depth ").unwrap_or(&t)).expect("a depth target names its tile");
+            let tiles = if u.z == 3 { depth_lo_water((u.x, u.y)) } else { depth_hi_water(sources, (u.x, u.y)) };
+            (t, from, tiles)
+        })
+        .collect()
 }
 
 /// The water tiles z3 tile `q`'s assembly reads: its tiles at each zoom it composes (z3–8).

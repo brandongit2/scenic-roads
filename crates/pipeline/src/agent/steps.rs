@@ -2027,8 +2027,7 @@ fn date(s: &str) -> bool {
 /// Whether `l` is a pack of layer `layer` (or of a layer `layer` accepts) at one of `scopes` ("root",
 /// "lo", "hi"): `layers/<layer>/root/0-0-0`, `…/lo/3-x-y`, `…/hi/6-x-y`.
 fn pack_of(l: &str, layer: &dyn Fn(&str) -> bool, scopes: &[&str]) -> bool {
-    let p: Vec<&str> = l.split('/').collect();
-    match p.as_slice() {
+    match parts(l).as_slice() {
         ["layers", ly, scope, t] if layer(ly) && scopes.contains(scope) => match *scope {
             "root" => *t == "0-0-0",
             "lo" => tile(t, 3),
@@ -2046,8 +2045,25 @@ fn pack(l: &str, layer: &str, scopes: &[&str]) -> bool {
 
 const ALL: [&str; 3] = ["root", "lo", "hi"];
 
-fn parts(l: &str) -> Vec<&str> {
-    l.split('/').collect()
+/// A logical name's parts (split at each '/'): its first five and, sixth, whatever is left, held in
+/// place (a write-set's test runs for every entry of the manifest, for every key that reads a step
+/// whole: as a `Vec` each these were 10 GB of blocks a plan, task #1251). No pattern here names
+/// more than five parts, so a name of six or more matches only those ending in `..`.
+struct Parts<'a>([&'a str; 6], usize);
+
+impl<'a> Parts<'a> {
+    fn as_slice(&self) -> &[&'a str] {
+        &self.0[..self.1]
+    }
+}
+
+fn parts(l: &str) -> Parts<'_> {
+    let mut p = Parts([""; 6], 0);
+    for s in l.splitn(6, '/') {
+        p.0[p.1] = s;
+        p.1 += 1;
+    }
+    p
 }
 
 fn w_none(_: &str, _: bool) -> bool {
@@ -2379,6 +2395,28 @@ fn w_prune(l: &str, removal: bool) -> bool {
 // (The plan's own tests: pipeline's alone, not where agentcore compiles the plan in, agentcore/build.rs.)
 #[cfg(all(test, not(in_agentcore)))]
 mod tests {
+    /// A write-set tests a name by its parts, held in place (`parts`): a name deeper than a
+    /// pattern is not that pattern's, however deep; one ending in `..` takes any depth.
+    #[test]
+    fn a_names_parts_match_as_a_split_does() {
+        use super::{pack, parts, w_heritage_sites, w_osm_pass};
+        for l in ["", "a", "a/b/c/d/e", "a/b/c/d/e/f", "a/b/c/d/e/f/g/h", "a//b/", "/"] {
+            let whole: Vec<&str> = l.split('/').collect();
+            let p = parts(l);
+            assert_eq!(p.as_slice().len(), whole.len().min(6), "{l}");
+            assert_eq!(p.as_slice()[..whole.len().min(5)], whole[..whole.len().min(5)], "{l}");
+        }
+        assert!(pack("layers/terrain/lo/3-1-2", "terrain", &["lo"]));
+        assert!(!pack("layers/terrain/lo/3-1-2/x", "terrain", &["lo"]));
+        assert!(!pack("layers/terrain/lo", "terrain", &["lo"]));
+        assert!(w_heritage_sites("work/heritage/2026-01-02/pos/6-1-2", false));
+        assert!(!w_heritage_sites("work/heritage/2026-01-02/pos/6-1-2/x", false));
+        assert!(!w_heritage_sites("work/heritage/2026-01-02/pos/6-1-2/x/y", false));
+        assert!(w_osm_pass("sources/osm/2026-01-02/roads", false));
+        assert!(w_osm_pass("sources/osm/2026-01-02/roads/6-1-2/a/b/c", false));
+        assert!(!w_osm_pass("sources/osm/2026-01-02", false));
+    }
+
     /// A z6 tile waits for the terrain packs along its own long ways, which it stages (task #853,
     /// roads::stage::Area), not only for its box's: they're its `Read::Along`s, worked out from its
     /// reach into the view (the planner's `Left::along`, the forecast's input). Without them it

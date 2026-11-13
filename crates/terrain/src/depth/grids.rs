@@ -293,8 +293,16 @@ pub fn with_estimates(
 /// What a plan's depth sources (`with_estimates`) hold of the lake-depth step's packs, as a digest:
 /// they're made again when it changes.
 pub fn estimates_key(manifest: &std::collections::BTreeMap<String, String>) -> String {
-    let lines: Vec<String> = crate::depth::lakes::named(manifest).map(|(id, t, c)| format!("{id} {t:?} {c}")).collect();
-    format!("{:016x}", store::naming::xxh3(lines.join("\n").as_bytes()))
+    // (A line a pack, "<id> <tile> <content>", hashed as written: a plan asks for this with every
+    // key that reads the depth's sources.)
+    let n = store::naming::xxh3_text(|w| {
+        use std::fmt::Write as _;
+        for (i, (id, t, c)) in crate::depth::lakes::named(manifest).enumerate() {
+            write!(w, "{}{id} {t:?} {c}", if i == 0 { "" } else { "\n" })?;
+        }
+        Ok(())
+    });
+    format!("{n:016x}")
 }
 
 /// `sources` as a job reads them over lon/lat boxes `boxes`: a lake-depth source's packs meeting

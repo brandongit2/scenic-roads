@@ -54,9 +54,10 @@ pub struct TerrainTiles {
     /// name: read as the indexes are (kept beside them as `<hash16>.water`), a few KB each.
     water: HashMap<String, codecs::terrain_water::WaterIdx>,
     /// The declared elevation datasets the z6 tiles' keys name once the build reads them
-    /// (inputs::inputs::elevation): the accepted index's content name, and each dataset with where
-    /// it has data.
-    elevation: Option<(String, std::sync::Arc<Elevation>)>,
+    /// (inputs::inputs::elevation): the accepted index's content name, each dataset with where
+    /// it has data, and where they are fine (`spacing`: made once from them, not by every key
+    /// that names it).
+    elevation: Option<(String, std::sync::Arc<Elevation>, std::sync::Arc<inputs::dem::spacing::Fine>)>,
     /// The geoid sources that converted the held datasets' heights (inputs::dem::geoid), as the keys
     /// name them (`Source::named`).
     elevation_geoid: Vec<String>,
@@ -214,7 +215,7 @@ impl TerrainTiles {
             return;
         };
         let named: Vec<String> = geoid.iter().map(inputs::inputs::sources::Source::named).collect();
-        if self.elevation.as_ref().is_some_and(|(c, _)| c == want) && self.elevation_geoid == named {
+        if self.elevation.as_ref().is_some_and(|e| e.0 == *want) && self.elevation_geoid == named {
             return;
         }
         let got = inputs::inputs::open(root, m, elevation::UNIT).and_then(|a| {
@@ -234,7 +235,7 @@ impl TerrainTiles {
             Ok(ds) => {
                 self.unread.remove(want);
                 let e: Elevation = ds.into_iter().map(|(c, d)| (d, c)).collect();
-                self.elevation = Some((want.clone(), std::sync::Arc::new(e)));
+                self.hold_elevation(want, e);
             }
             Err(e) => {
                 self.elevation = None;
@@ -570,11 +571,21 @@ impl TerrainTiles {
             Unread("the build reads the declared elevation datasets, but the records name no accepted version".into())
         })?;
         match &self.elevation {
-            Some((c, e)) if c == want => Ok(Some(e.clone())),
+            Some((c, e, _)) if c == want => Ok(Some(e.clone())),
             _ => Err(Unread(format!(
                 "the elevation datasets' index {want} isn't read{}",
                 self.unread.get(want).map(|w| format!(": {w}")).unwrap_or_default()
             ))),
+        }
+    }
+
+    /// Where the declared elevation datasets `m` names are fine (inputs::dem::spacing): none before
+    /// the build reads them or while they can't be read (every way at the coarse spacing; the z6
+    /// tiles wait).
+    pub fn spacing(&self, m: &BTreeMap<String, String>) -> std::sync::Arc<inputs::dem::spacing::Fine> {
+        match (self.elevation(m), &self.elevation) {
+            (Ok(Some(_)), Some((_, _, fine))) => fine.clone(),
+            _ => Default::default(),
         }
     }
 
@@ -632,7 +643,8 @@ impl TerrainTiles {
     /// Holds a water source's digests as given, under content name `content` (tests: no file).
     /// Holds the declared elevation datasets of accepted index `content` (as `load` reads them).
     pub fn hold_elevation(&mut self, content: &str, e: Elevation) {
-        self.elevation = Some((content.to_string(), std::sync::Arc::new(e)));
+        let fine = inputs::dem::spacing::Fine::of(&e);
+        self.elevation = Some((content.to_string(), std::sync::Arc::new(e), std::sync::Arc::new(fine)));
     }
 
     pub fn hold_water(&mut self, content: &str, w: codecs::terrain_water::WaterIdx) {
