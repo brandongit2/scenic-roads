@@ -78,7 +78,7 @@ test("a move that fails leaves the file as it was", (t) => {
   after.close();
 });
 
-test("a file of a form this version doesn't read is refused, untouched (form 0 too: #1229's move is gone)", (t) => {
+test("a file of a form this version doesn't read is refused, untouched (form 0 too)", (t) => {
   for (const form of [0, 7]) {
     const file = tmp(t);
     openStore(file).close();
