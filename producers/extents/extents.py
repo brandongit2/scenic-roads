@@ -463,11 +463,11 @@ def xy(g, b):
     return shapely.transform(g, lambda c: c[:, ::-1]) if b.get("latfirst") else g
 
 
-INDEX_KINDS = (".shp", ".gpkg", ".geojson", ".json", ".gml", ".xml")
+INDEX_KINDS = (".shp", ".gpkg", ".geojson", ".json", ".gml", ".kml", ".xml")
 
 
 def read_file(net, b, _tol):
-    """An index file fetched whole: GeoJSON, GML, a GeoPackage, or a zip holding one of them or a
+    """An index file fetched whole: GeoJSON, GML or KML, a GeoPackage, or a zip (a KMZ too) holding one of them or a
     shapefile (`member`: a part of the name of the one to read, where it holds several)."""
     body = net.get(b["url"])
     if body[:2] == b"PK":
@@ -561,8 +561,9 @@ def gpkg_geometry(blob):
     return shapely.from_wkb(bytes(blob[8 + envelope:]))
 
 
-GML = ("http://www.opengis.net/gml", "http://www.opengis.net/gml/3.2")
-GML_SHAPES = ("Polygon", "Surface", "MultiSurface", "MultiPolygon", "Envelope")
+# (KML's polygons are GML 2's, in its own namespace: read alike, its Placemarks the features.)
+GML = ("http://www.opengis.net/gml", "http://www.opengis.net/gml/3.2", "http://www.opengis.net/kml/2.2")
+GML_SHAPES = ("Polygon", "Surface", "MultiSurface", "MultiPolygon", "MultiGeometry", "Envelope")
 
 
 def gml_features(body, b):
@@ -589,10 +590,13 @@ def gml_features(body, b):
 
 def gml_members(root):
     """A GML collection's features: the children of its member elements (wfs:member,
-    gml:featureMember, gml:featureMembers)."""
+    gml:featureMember, gml:featureMembers); a KML document's Placemarks."""
     for el in root.iter():
-        if el.tag.rpartition("}")[2] in ("member", "featureMember", "featureMembers"):
+        tag = el.tag.rpartition("}")[2]
+        if tag in ("member", "featureMember", "featureMembers"):
             yield from el
+        elif tag == "Placemark":
+            yield el
 
 
 def gml_shape(el):

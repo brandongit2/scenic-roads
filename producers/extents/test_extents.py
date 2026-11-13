@@ -663,6 +663,20 @@ class IndexFiles(unittest.TestCase):
         self.assertEqual(got[1][0].bounds, (481000.0, 5500000.0, 482000.0, 5501000.0))
         self.assertIsNone(got[2][0])
 
+    def test_a_kmz_gives_its_placemarks_polygons(self):
+        kml = b"""<?xml version="1.0" encoding="UTF-8"?><kml xmlns="http://www.opengis.net/kml/2.2"><Document><Folder>
+          <Placemark id="a"><name>436-4474</name><description><![CDATA[<table><tr><td>x</td></tr></table>]]></description>
+            <Polygon><outerBoundaryIs><LinearRing><coordinates>-3.7,40.4,0 -3.6,40.4,0 -3.6,40.5,0 -3.7,40.5,0 -3.7,40.4,0</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>
+          <Placemark><name>two</name><ExtendedData><Data name="k"><value>v</value></Data></ExtendedData><MultiGeometry>
+            <Polygon><outerBoundaryIs><LinearRing><coordinates>0,0 1,0 1,1 0,1 0,0</coordinates></LinearRing></outerBoundaryIs></Polygon>
+            <Polygon><outerBoundaryIs><LinearRing><coordinates>2,0 3,0 3,1 2,1 2,0</coordinates></LinearRing></outerBoundaryIs></Polygon></MultiGeometry></Placemark>
+        </Folder></Document></kml>"""
+        b = {"url": "u"}
+        got = [(g(), p) for g, p in extents.read_file(FakeNet({"u": zipped("doc.kml", kml)}), b, 0)]
+        self.assertEqual([p["name"] for _, p in got], ["436-4474", "two"])
+        self.assertEqual(got[0][0].bounds, (-3.7, 40.4, -3.6, 40.5))
+        self.assertEqual(round(got[1][0].area, 9), 2)
+
     def test_a_wfs_answering_gml_is_paged_by_every_feature(self):
         # (Three features a page, one without geometry: the page is full, so a second is asked for.)
         def url(off):
