@@ -4586,11 +4586,12 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
         }
     }
     // (The data-available layers once the source extents are accepted: known once their index is
-    // read.)
+    // read, a theme with no pieces having none.)
     if m.contains_key(&inputs::inputs::logical(inputs::inputs::extents::UNIT)) {
-        let at = available_targets(x);
-        let known = at.len() == inputs::inputs::extents::THEMES.len();
-        out.push(sized("available", &at, &done.lo, known));
+        let known = inputs::inputs::extents::THEMES
+            .iter()
+            .all(|th| x.inputs.get(&format!("extents:{th}")).is_some_and(|v| v != "?"));
+        out.push(sized("available", &available_targets(x), &done.lo, known));
     }
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(x);

@@ -632,22 +632,33 @@ struct MidsMeta {
     poles: BTreeMap<String, String>,
 }
 
-/// The mids pack as it was: its meta and its z6 tiles' blobs (gzip'd) by "6/x/y".
-fn read_mids(out: &Out, theme: &str) -> Result<(MidsMeta, BTreeMap<String, Vec<u8>>)> {
-    let Some(c) = out.get(&fmt::mids_logical(theme)) else { return Ok(Default::default()) };
+/// The mids pack as it was: its meta and its z6 tiles' blobs (gzip'd) by "6/x/y", and whether it
+/// was there to read (none, of another version, or not readable whole: everything made again).
+fn read_mids(out: &Out, theme: &str) -> Result<(MidsMeta, BTreeMap<String, Vec<u8>>, bool)> {
+    let Some(c) = out.get(&fmt::mids_logical(theme)) else { return Ok((Default::default(), BTreeMap::new(), false)) };
     let b = out.path(c).read().with_context(|| format!("read {c}"))?;
-    let idx = store::pack::PackIndex::parse_bytes(&b)?;
-    let meta: MidsMeta = serde_json::from_value(idx.meta.clone()).context("the mids' meta")?;
-    if meta.v != KEY_V {
+    let parsed = || -> Result<(MidsMeta, BTreeMap<String, Vec<u8>>)> {
+        let idx = store::pack::PackIndex::parse_bytes(&b)?;
+        let meta: MidsMeta = serde_json::from_value(idx.meta.clone()).context("the mids' meta")?;
+        let mut blobs = BTreeMap::new();
+        for e in &idx.entries {
+            let (z, x, y) = e.zxy();
+            let blob =
+                b.get(e.offset as usize..).and_then(|r| r.get(..e.len as usize)).context("a blob past the pack")?;
+            Tile::decode(blob).with_context(|| format!("{z}/{x}/{y}"))?;
+            blobs.insert(format!("{z}/{x}/{y}"), blob.to_vec());
+        }
+        Ok((meta, blobs))
+    };
+    match parsed() {
         // (Made by another version: everything made again.)
-        return Ok(Default::default());
+        Ok((meta, _)) if meta.v != KEY_V => Ok((Default::default(), BTreeMap::new(), false)),
+        Ok((meta, blobs)) => Ok((meta, blobs, true)),
+        Err(e) => {
+            eprintln!("available: the record {c} isn't readable ({e:#}): every tile made again");
+            Ok((Default::default(), BTreeMap::new(), false))
+        }
     }
-    let mut blobs = BTreeMap::new();
-    for e in &idx.entries {
-        let (z, x, y) = e.zxy();
-        blobs.insert(format!("{z}/{x}/{y}"), b[e.offset as usize..][..e.len as usize].to_vec());
-    }
-    Ok((meta, blobs))
 }
 
 /// Writes a pack of `tiles` (zoom, x, y, cell; any order) as `logical` and puts it; how many tiles.
@@ -728,7 +739,7 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
     let layer = fmt::layer(theme);
     let ids: Vec<String> = pieces.iter().map(|p| p.id.clone()).collect();
     let by_id: HashMap<&str, u32> = ids.iter().enumerate().map(|(k, s)| (s.as_str(), k as u32)).collect();
-    let (old, mut blobs) = read_mids(out, theme)?;
+    let (old, mut blobs, trusted) = read_mids(out, theme)?;
     let keys = tile_keys(pieces);
     let mut made = Made::default();
     let mut sets = Sets::default();
@@ -745,14 +756,23 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
         })
         .map(|(t, _)| xy(t))
         .collect();
-    for t in old.keys.keys().filter(|t| !keys.contains_key(*t)) {
-        let (x, y) = xy(t);
+    // (Those the record names, and any z6 pack in the records: one left by a record lost or of
+    // another version is dropped too, never served.)
+    let prefix = format!("layers/{layer}/hi/");
+    let packed = out
+        .manifest
+        .range(prefix.clone()..)
+        .take_while(|(l, _)| l.starts_with(&prefix))
+        .map(|(l, _)| l[prefix.len()..].replace('-', "/"));
+    let gone: BTreeSet<String> = old.keys.keys().cloned().chain(packed).filter(|t| !keys.contains_key(t)).collect();
+    for t in gone {
+        let (x, y) = xy(&t);
         let l = fmt::pack_logical(&layer, x, y);
         if out.get(&l).is_some() {
             out.remove(&l);
         }
-        blobs.remove(t);
-        made.dropped.push(t.clone());
+        blobs.remove(&t);
+        made.dropped.push(t);
     }
 
     // The stale z6 tiles a row of them at a time: the row's runs, then each tile's quadtree.
@@ -815,9 +835,9 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
         }
     }
 
-    // The root, from every z6 tile's own, when one moved or it's missing.
+    // The root, from every z6 tile's own, when one moved, it's missing or the record wasn't read.
     let root_l = fmt::root_logical(&layer);
-    if !stale.is_empty() || !made.dropped.is_empty() || (out.get(&root_l).is_none() && !blobs.is_empty()) {
+    if !trusted || !stale.is_empty() || !made.dropped.is_empty() || (out.get(&root_l).is_none() && !blobs.is_empty()) {
         made.root = true;
         let mut tiles = Vec::new();
         let cell = root_cell(0, 0, 0, &blobs, &by_id, &ids, &mut sets, &mut tiles)?;

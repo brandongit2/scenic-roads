@@ -1037,7 +1037,9 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   The step keeps each z6 tile's key, and its z6 tile, in its own record
   (`work/available-<theme>/mids`, an RDPACK of the z6 tiles holding a piece, its meta the keys):
   a run makes again the z6 tiles whose key moved or whose pack is missing, drops those no polygon
-  meets now, and leaves the other packs as they are; the root is made again from the record's z6
+  meets now (any z6 pack in the records, so one a record lost or of another version doesn't name
+  goes too), and leaves the other packs as they are; a record missing, of another `KEY_V` or not
+  readable makes every tile again; the root is made again from the record's z6
   tiles whenever one moved. A run with nothing moved writes the record again as it was (the same
   bytes, the same content name), and nothing else. On the 984 pieces of 13 Nov (below), 3,820 z6
   tiles are keyed and 1,355 have a pack.
@@ -1090,7 +1092,8 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   one set not stored, an overview keeping a piece smaller than its pixel, overlapping polygons of
   one piece and a hole, a piece cut at the antimeridian, the polar caps with a pole held and a
   ring's hole round the other, a moved piece making only its z6 tiles again, a removed one dropping
-  them, a fresh run making the same files, and a run with nothing moved making nothing; and the real pieces round Vancouver, two sources overlapping: every piece
+  them, a fresh run making the same files, a run with nothing moved making nothing, and a record
+  lost or unreadable making everything again, a pack it doesn't name dropped; and the real pieces round Vancouver, two sources overlapping: every piece
   in some tile, z0 naming every piece a finer tile does, each stored tile holding what its stored
   children do; every real piece the same, `every_real_piece`, a benchmark run by hand);
   codecs::available's (the format, the layers' names and packs); the server's below.

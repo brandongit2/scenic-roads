@@ -534,8 +534,8 @@ A tile ("RDAV", format 1, little-endian), its palette first:
 |---|---|
 | magic, format | `RDAV`, u8 1 |
 | width | u8: 1 (a pixel's index a byte: 256 sets or fewer) or 2 (a u16) |
-| ids | u32 count; each u16 length + UTF-8: the pieces met in the tile, `<source>/<piece>`, in the order their sets first meet them |
-| sets | u32 count; each u32 count + u32 indices into ids: a pixel's pieces, sorted; set 0 empty, the rest in the order the pixels first meet them (row by row) |
+| ids | u32 count; each u16 length + UTF-8: the pieces met in the tile, `<source>/<piece>`, sorted |
+| sets | u32 count; each u32 count + u32 indices into ids: a pixel's pieces, ascending (the empty set among them where a pixel holds none), in the order the pixels first meet them (row by row) |
 | pixels | 65,536 indices into sets, row by row from the north-west |
 
 A pixel at z12 holds the pieces whose polygons hold its centre (docs/steps.md §14: even-odd per
@@ -1177,7 +1177,8 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   `{lng, lat, avail, pieces: [...]}`, the pieces passing `avail` at the z12 pixel holding the point
   (past 85.05°, the pole's z3 pixel), best score first (none last), each `{id, source, piece,
   name, source_name, credit, licence, licence_url, link, availability, extent, read, metrics,
-  values, score}` (`metrics` as the piece states them, `values` their 0–1 values). `GET
+  stated, values, score}` (`metrics` as the piece states them, `stated` the publisher's classes
+  where a metric is one, docs/inputs.md §6.11, `values` their 0–1 values). `GET
   /api/available/{theme}` → `{theme, sets, primary, within, share, metrics: [{id, label, unit,
   weight, scale, worst, best, values, primary}], layers: [{id, label, unit, ramp: [[at, colour]],
   stops: [{value, label, colour}]}], sources: [{id, name, credit, licence, licence_url, link,

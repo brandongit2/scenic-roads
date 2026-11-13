@@ -228,6 +228,38 @@ fn a_changed_piece_makes_only_its_tiles_again() {
     assert_eq!(packs(fresh.path()), packs(d.path()));
 }
 
+/// The step's record lost (or of another version, or unreadable): every tile is made again from
+/// the pieces, and a pack no polygon meets now is dropped, not left to be served.
+#[test]
+fn a_record_lost_or_unreadable_makes_everything_again() {
+    let d = tempfile::tempdir().unwrap();
+    let a = source("a", &[("p", vec![vec![square(2.0, 44.0, 3.0, 45.0)]])]);
+    let b = source("b", &[("p", vec![vec![square(-70.0, 40.0, -69.0, 41.0)]])]);
+    run(d.path(), &[a.clone(), b.clone()].concat());
+    let ml = fmt::mids_logical("terrain");
+    let mut o = out(d.path());
+    o.remove(&ml);
+    o.save().unwrap();
+    let m = run(d.path(), &a);
+    assert!(m.root && !m.remade.is_empty(), "{m:?}");
+    assert!(at(d.path(), -69.5, 40.5).is_empty(), "B's pack dropped with no record naming it");
+    let fresh = tempfile::tempdir().unwrap();
+    run(fresh.path(), &a);
+    assert_eq!(packs(d.path()), packs(fresh.path()));
+    // Its bytes not a pack (a record of A and B, then A alone): made again, not an error each run.
+    run(d.path(), &[a.clone(), b].concat());
+    let o = out(d.path());
+    let f = o.path(o.get(&ml).unwrap()).unchecked_path();
+    let mut perm = std::fs::metadata(&f).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(false);
+    std::fs::set_permissions(&f, perm).unwrap();
+    std::fs::write(&f, b"not a pack").unwrap();
+    let m = run(d.path(), &a);
+    assert!(m.root && !m.remade.is_empty(), "{m:?}");
+    assert_eq!(packs(d.path()), packs(fresh.path()));
+}
+
 /// The real pieces (producers/extents/terrain/, as the unit takes them), each kept to the polygons
 /// `keep` keeps (a piece left none goes).
 fn real_pieces(keep: impl Fn(&Polygon) -> bool) -> Vec<Piece> {
@@ -247,9 +279,10 @@ fn real_pieces(keep: impl Fn(&Polygon) -> bool) -> Vec<Piece> {
 }
 
 /// Builds `all` and checks what any pieces' tiles must hold: every piece in some tile (or a pole's),
-/// z0 naming every piece a finer tile does, and each stored tile's pixel holding every piece its
-/// stored children's pixels under it do (sampled every 7th pixel). One pack is in memory at once
-/// beside the root (a pack's tiles' parents are in it, its z6 tile's in the root).
+/// z0 naming every piece a finer tile does, each stored tile's pixel holding every piece its
+/// stored children's pixels under it do (sampled every 7th pixel), and the pixels at the polygons'
+/// edges and the tiles' edges near them exactly the polygons' (`exact_at_the_edges`). One pack is
+/// in memory at once beside the root (a pack's tiles' parents are in it, its z6 tile's in the root).
 fn real_checks(all: &[Piece]) -> Made {
     let d = tempfile::tempdir().unwrap();
     let t = std::time::Instant::now();
@@ -325,6 +358,8 @@ fn real_checks(all: &[Piece]) -> Made {
         assert!(ids_of[&0].contains(id), "{id} is in a finer tile, not in z0");
     }
     assert!(checked > 100, "{checked} tiles checked against their parents");
+    let n = exact_at_the_edges(d.path(), all);
+    assert!(n > 10_000, "{n} pixels checked at the edges");
     m
 }
 
@@ -348,4 +383,91 @@ fn every_real_piece() {
     assert!(all.len() > 900, "{}", all.len());
     let m = real_checks(&all);
     assert!(m.poles.contains(&'n') && m.poles.contains(&'s'));
+}
+
+/// Stored tiles read from the records, kept as read (a pack's index and bytes, a tile decoded).
+struct Stores<'a> {
+    o: &'a Out,
+    packs: HashMap<String, Option<(Vec<u8>, store::pack::PackIndex)>>,
+    tiles: HashMap<(u8, u32, u32), Option<Tile>>,
+}
+
+impl Stores<'_> {
+    fn get(&mut self, z: u8, x: u32, y: u32) -> Option<Tile> {
+        if let Some(t) = self.tiles.get(&(z, x, y)) {
+            return t.clone();
+        }
+        let (scope, key) = fmt::pack_of(Grid::Mercator, z, x, y)?;
+        let l = format!("layers/available-terrain/{scope}/{}", key.replace('/', "-"));
+        let o = self.o;
+        let p = self.packs.entry(l.clone()).or_insert_with(|| {
+            let b = o.path(o.get(&l)?).read().unwrap();
+            let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
+            Some((b, idx))
+        });
+        let t = p.as_ref().and_then(|(b, idx)| {
+            let e = idx.find(z, x, y)?;
+            Some(Tile::decode(&b[e.offset as usize..][..e.len as usize]).unwrap())
+        });
+        self.tiles.insert((z, x, y), t.clone());
+        t
+    }
+}
+
+/// The pieces whose polygons (in the plane, as the step cuts them) hold pixel (`px`, `py`)'s
+/// centre: an odd number of their edges' crossings of its row left of it.
+fn held_at(polys: &[PlanePoly], ids: &[String], px: u64, py: u64) -> BTreeSet<String> {
+    let (cx, c) = (px as f64 + 0.5, py as f64 + 0.5);
+    let mut s = BTreeSet::new();
+    for p in polys.iter().filter(|p| p.ymin <= c && c <= p.ymax) {
+        let n = p
+            .edges
+            .iter()
+            .filter(|e| (e[1] > c) != (e[3] > c) && e[0] + (c - e[1]) * (e[2] - e[0]) / (e[3] - e[1]) < cx)
+            .count();
+        if n % 2 == 1 {
+            s.insert(ids[p.piece as usize].clone());
+        }
+    }
+    s
+}
+
+/// Every pixel near each polygon's edges (a square of 6 round points along them) and on both sides
+/// of the z12 and z6 tile edges nearest them, read from the stored tiles as the server reads them
+/// (`pieces_at`), against the polygons at its centre: no seam, gap or overlap at a tile's edge.
+fn exact_at_the_edges(root: &Path, all: &[Piece]) -> usize {
+    let o = out(root);
+    let ids: Vec<String> = all.iter().map(|p| p.id.clone()).collect();
+    let polys: Vec<PlanePoly> = all
+        .iter()
+        .enumerate()
+        .flat_map(|(i, p)| p.polygons.iter().map(move |q| (i, q)))
+        .map(|(i, q)| plane_poly(i as u32, q, &merc_px))
+        .collect();
+    let w = u64::from(MERC_W);
+    let mut samples = BTreeSet::new();
+    for p in &polys {
+        for e in p.edges.iter().step_by(p.edges.len().div_ceil(12)) {
+            let (x, y) = (e[0].clamp(0.0, (w - 1) as f64) as u64, e[1].clamp(0.0, (w - 1) as f64) as u64);
+            for d in 0..36u64 {
+                samples.insert(((x + d % 6).saturating_sub(3).min(w - 1), (y + d / 6).saturating_sub(3).min(w - 1)));
+            }
+            for step in [256u64, 256 << 6] {
+                let (bx, by) = ((x + step / 2) / step * step, (y + step / 2) / step * step);
+                for d in 0..8u64 {
+                    for side in [0, 1] {
+                        samples.insert(((bx + side).saturating_sub(1).min(w - 1), (y + d).min(w - 1)));
+                        samples.insert(((x + d).min(w - 1), (by + side).saturating_sub(1).min(w - 1)));
+                    }
+                }
+            }
+        }
+    }
+    let mut st = Stores { o: &o, packs: HashMap::new(), tiles: HashMap::new() };
+    for &(x, y) in &samples {
+        let mut get = |z, x, y| Ok(st.get(z, x, y));
+        let got: BTreeSet<String> = fmt::pieces_at(Grid::Mercator, x, y, &mut get).unwrap().into_iter().collect();
+        assert_eq!(got, held_at(&polys, &ids, x, y), "pixel {x}, {y} of z12");
+    }
+    samples.len()
 }

@@ -134,6 +134,7 @@ impl Theme {
                     "extent": p.props.get("extent"),
                     "read": p.read,
                     "metrics": metrics,
+                    "stated": p.props.get("stated"),
                     "values": p.values,
                     "score": p.score,
                 })
