@@ -554,7 +554,6 @@ mod tests {
     /// prints only when it is all of it, to the letter.
     #[test]
     fn a_text_is_hashed_and_compared_as_written() {
-        use std::fmt::Write as _;
         let whole = "lake-a (3, 14) 0123\nlake-b (60, 2) 4567";
         let streamed = xxh3_text(|w| {
             write!(w, "lake-a {:?} 0123", (3, 14))?;
@@ -567,6 +566,69 @@ mod tests {
             assert!(!prints_as(other, format_args!("6-{}-{}", 3, 14)), "{other}");
         }
         assert!(prints_as("", format_args!("")));
+    }
+
+    /// Hashed as written is the whole text's hash for any text cut anywhere (lengths across xxh3's
+    /// short, middle and streamed paths and its buffer's edges), and for what every kind of format
+    /// writes (floats, widths, fills, escapes, debug forms) as `format!` writes it; a text is what a
+    /// format prints exactly when `format!`'s text is it.
+    #[test]
+    fn written_is_formatted_for_any_text_and_format() {
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            s
+        };
+        const CHARS: [char; 8] = ['a', '/', ' ', '\n', '"', 'é', '\u{1F600}', '0'];
+        for len in (0..=1100).chain([2047, 2048, 2049, 4096, 10_000]) {
+            let text: String = (0..len).map(|_| CHARS[(next() % 8) as usize]).collect();
+            let mut at: Vec<usize> = (0..next() % 7).map(|_| (next() as usize) % (text.len() + 1)).collect();
+            at.retain(|&i| text.is_char_boundary(i));
+            at.sort_unstable();
+            let streamed = xxh3_text(|w| {
+                let mut from = 0;
+                for &i in at.iter().chain([&text.len()]) {
+                    w.write_str(&text[from..i])?;
+                    from = i;
+                }
+                Ok(())
+            });
+            assert_eq!(streamed, xxh3(text.as_bytes()), "{len} cut at {at:?}");
+        }
+        for _ in 0..2000 {
+            let (f, i, u) = (f64::from_bits(next()), next() as i64, next() as u32);
+            let t = (u, (next() % 100_000) as u32);
+            let word: String = (0..next() % 12).map(|_| CHARS[(next() % 8) as usize]).collect();
+            let w = (next() % 20) as usize;
+            let whole = format!(
+                "{f} {f:?} {f:.3} {f:e} {i:>w$} {i:+08} {u:x} {u:#010b} {t:?} {word:?} {word:^w$} {word:-<9} {:?}",
+                (word.as_str(), f)
+            );
+            let streamed = xxh3_text(|o| {
+                write!(
+                    o,
+                    "{f} {f:?} {f:.3} {f:e} {i:>w$} {i:+08} {u:x} {u:#010b} {t:?} {word:?} {word:^w$} {word:-<9} {:?}",
+                    (word.as_str(), f)
+                )
+            });
+            assert_eq!(streamed, xxh3(whole.as_bytes()), "{whole}");
+            let printed = format!("6-{}-{} {word}", t.0, t.1);
+            let mut others = vec![printed.clone(), String::new(), format!("{printed} "), format!("0{printed}")];
+            for k in [0, printed.len() / 2, printed.len().saturating_sub(1)] {
+                others.extend(printed.get(..k).map(str::to_string));
+                others.extend(printed.get(k..).map(str::to_string));
+            }
+            others.push(printed.replacen('-', "--", 1));
+            for o in others {
+                assert_eq!(
+                    prints_as(&o, format_args!("6-{}-{} {word}", t.0, t.1)),
+                    o == printed,
+                    "{o:?} against {printed:?}"
+                );
+            }
+        }
     }
 
     #[test]

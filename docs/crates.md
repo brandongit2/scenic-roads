@@ -990,9 +990,8 @@ commit; re-exports at the old paths as before.
         `SCENIC_FROZEN_SIZES` adds each plan's blocks by size (asked for, the most live at once,
         live now); `SCENIC_FROZEN_SITES=<n>` the `n` functions and sites allocating the most
         bytes in the plans after the first, from one stack sampled per 4 MB asked for
-        (`SCENIC_FROZEN_SITES_LEAST=<bytes>`: of blocks that large alone);
-        `SCENIC_FROZEN_GAP` seconds between plans; `SCENIC_FROZEN_LINGER` seconds it stays up
-        after, for `footprint <pid>`. With `SCENIC_FROZEN_APP` the lead's app, as the check.
+        (`SCENIC_FROZEN_SITES_LEAST=<bytes>`: of blocks that large alone). With
+        `SCENIC_FROZEN_APP` the lead's app, as the check.
       - **Check of the merge** (7 Nov, the lead's term 771 seq 67 on the M4, test profile; the check's
         commit with these knobs against the merge, each pair side by side, a run's own
         folder named alike before comparing): the same bytes on all nine states, 1.7 KB to 1.0 MB,

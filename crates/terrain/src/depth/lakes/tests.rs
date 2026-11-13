@@ -262,6 +262,59 @@ fn packs_are_named_by_source_and_tile() {
     assert_eq!(crate::depth::grids::estimates_key(&BTreeMap::new()), format!("{:016x}", store::naming::xxh3(b"")));
 }
 
+/// The packs' digest and names for any manifest: the digest the hash of their lines joined (each
+/// formatted whole), a name a pack's only when it is exactly `logical`'s (other zooms, padded or
+/// signed numbers, a deeper or shallower path, a tile past u32, entries around the prefix).
+#[test]
+fn the_packs_digest_is_their_lines_hash_for_any_manifest() {
+    let mut s = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = move || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
+    };
+    for _ in 0..500 {
+        let mut m = BTreeMap::new();
+        for _ in 0..next() % 40 {
+            let id = ["globathy", "smalllakes", "a-b", "x", ""][(next() % 5) as usize];
+            let (x, y) = (next() % 70, next() % 70);
+            let tile = match next() % 10 {
+                0 => format!("7-{x}-{y}"),
+                1 => format!("6-0{x}-{y}"),
+                2 => format!("6-{x}-+{y}"),
+                3 => format!("6-{x}-{y}/z"),
+                4 => format!("6-{x}"),
+                5 => format!("262-{x}-{y}"),
+                6 => format!("6-{x}-99999999999"),
+                _ => format!("6-{x}-{y}"),
+            };
+            let name = match next() % 12 {
+                0 => format!("work/lake-depth{id}/{tile}"),
+                1 => format!("work/lake-deptg/{id}/{tile}"),
+                _ => format!("work/lake-depth/{id}/{tile}"),
+            };
+            m.insert(name, format!("c{}", next() % 1000));
+        }
+        // (As before #1251: each name checked against `logical`'s, the lines made whole and joined.)
+        let packs: Vec<(String, (u32, u32), String)> = m
+            .iter()
+            .filter_map(|(l, c)| {
+                let (id, t) = l.strip_prefix("work/lake-depth/")?.split_once('/')?;
+                let u = codecs::legacy::TileId::parse(t).filter(|u| u.z == 6)?;
+                (logical(id, (u.x, u.y)) == *l).then(|| (id.to_string(), (u.x, u.y), c.clone()))
+            })
+            .collect();
+        assert_eq!(named(&m).map(|(id, t, c)| (id.to_string(), t, c.to_string())).collect::<Vec<_>>(), packs, "{m:?}");
+        let lines: Vec<String> = packs.iter().map(|(id, t, c)| format!("{id} {t:?} {c}")).collect();
+        assert_eq!(
+            crate::depth::grids::estimates_key(&m),
+            format!("{:016x}", store::naming::xxh3(lines.join("\n").as_bytes())),
+            "{m:?}"
+        );
+    }
+}
+
 /// Terrain rising 0.05 m a ground metre eastwards from 100 m at (−73.1°, 45°), or 0 (the sea)
 /// where `flat`.
 struct Plane {

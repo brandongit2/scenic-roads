@@ -306,8 +306,9 @@ What a plan asks of the allocator (task #1251, 13 Nov; `plan::tests::frozen_plan
 copy of the lead's state of that day, everything built, the M4, test profile; blocks counted by
 the test's allocator, a block grown counted again whole): a plan after the first asks for
 8.0 GB in 75 M blocks and takes 19 s, where before #1251 it asked for 37.5 GB in 311 M blocks
-and took 44 s; the first plan after a start (the terrain's targets made, the deep answers cold)
-137 GB in 930 M blocks and 199 s, where 166 GB, 1 166 M and 235 s. Before, by the function
+and took 40-45 s; the first plan after a start (the terrain's targets made, the deep answers
+cold) 137 GB in 930 M blocks and 170-199 s, where 166 GB, 1 166 M and 191-235 s (two runs
+each, the M4's load apart). Before, by the function
 allocating (sampled stacks, GB a plan): `build::depth_water_reads` 13.0 (every depth target's
 water tiles, listed to ask for their names), `steps::pack_of` 9.7 (a `Vec` of a name's parts per
 manifest entry, for every key reading a step whole), `depth::grids::estimates_key` 4.0 (the

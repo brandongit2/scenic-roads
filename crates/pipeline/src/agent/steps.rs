@@ -2400,11 +2400,29 @@ mod tests {
     #[test]
     fn a_names_parts_match_as_a_split_does() {
         use super::{pack, parts, w_heritage_sites, w_osm_pass};
-        for l in ["", "a", "a/b/c/d/e", "a/b/c/d/e/f", "a/b/c/d/e/f/g/h", "a//b/", "/"] {
+        // (Every name of up to 12 letters of "a", "b" and "/": empty parts, a leading or trailing
+        // '/', any depth. Up to six parts, a split's; deeper, a split's first five and the rest
+        // whole, so a pattern of five parts or fewer, or of four and `..`, matches as on a split.)
+        let mut names = vec![String::new()];
+        for len in 1..=12 {
+            let mut at = vec![0usize; len];
+            loop {
+                names.push(at.iter().map(|&i| ['a', 'b', '/'][i]).collect());
+                let Some(i) = at.iter().rposition(|&i| i < 2) else { break };
+                at[i] += 1;
+                at[i + 1..].fill(0);
+            }
+        }
+        assert_eq!(names.len(), (3usize.pow(13) - 1) / 2);
+        for l in &names {
             let whole: Vec<&str> = l.split('/').collect();
             let p = parts(l);
-            assert_eq!(p.as_slice().len(), whole.len().min(6), "{l}");
-            assert_eq!(p.as_slice()[..whole.len().min(5)], whole[..whole.len().min(5)], "{l}");
+            if whole.len() <= 6 {
+                assert_eq!(p.as_slice(), whole.as_slice(), "{l}");
+            } else {
+                assert_eq!(p.as_slice()[..5], whole[..5], "{l}");
+                assert_eq!(p.as_slice()[5], whole[5..].join("/"), "{l}");
+            }
         }
         assert!(pack("layers/terrain/lo/3-1-2", "terrain", &["lo"]));
         assert!(!pack("layers/terrain/lo/3-1-2/x", "terrain", &["lo"]));

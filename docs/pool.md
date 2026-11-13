@@ -856,10 +856,10 @@ counts as any other process).
     - *What leaves them* (task #1251; macOS 27.2 on the M4, with `MallocLargeCache=0` as the
       agent and its jobs run, a program allocating blocks of one size, writing to them and
       freeing them, wave after wave): macOS's malloc keeps a freed block's pages for blocks of
-      that size. A block under about 2 MB is never unmapped (1.9 MB kept, 2.2 MB unmapped as it
-      is freed) and its pages are never given to another size, but that the larger ones
-      share theirs in part (1.2 MB blocks took 100 KB blocks' whole; 1.1, 1.3, 1.5 and 1.9 MB
-      in turn left 0.74 GB for 0.42 to 0.57 GB each): 0.5 GB of 600-byte blocks, then of
+      that size. A block under about 2 MB is never unmapped (1.9 MB kept, 2.3 MB unmapped as it
+      is freed), and its pages go to blocks of another size only in part, among the larger sizes
+      (1.2 MB blocks took 100 KB blocks' whole; 1.1, 1.3, 1.5 and 1.9 MB in turn left 0.74 GB
+      for 0.42 to 0.57 GB each): 0.5 GB of 600-byte blocks, then of
       100 KB, 48-byte and 4 KB blocks, each wave freed before the next, left 2.0 GB resident and
       reusable beside a footprint of 10 MB; waves of one size reused their own (0.46 GB however
       many).
@@ -906,8 +906,12 @@ counts as any other process).
       planner alone, seven plans in a row, the M4, test profile) the reusable pages after the
       seventh plan are 1.04 GB where they were 3.71, the resident size 3.04 GB where 5.73 (1.3
       GB of each the coverage's mapped file), the footprint's most 0.59 GB where 1.95; what is
-      left is the first plan's (1.04 GB after it, and no more after the six that follow). (The
-      lead's own after #1251's rollout: not yet read.)
+      left is the first plan's (1.04 GB after it, and no more after the six that follow). That
+      copy runs the planner alone: no coordinator, forecast, gate watch or pool driver, whose
+      own blocks the live agent's pages hold too. The lead before #1251's rollout, 15 min after
+      a start (app 20261113-0334, `footprint <pid>`): 7.0 GB resident, 4.6 GB of it Malloc
+      Small's reclaimable pages, footprint 1.08 GB (at most 2.44). (The lead's own after the
+      rollout: not yet read.)
   - *By compressing:* idle app memory macOS compresses cheaply counted as used made a 32 GB Mac
     mini at normal pressure show 6.2 GB available. The kernel's pressure follows its compressor:
     on the three Macs' live series (the 10 s ring, 2–4 Nov, the compressor's share of the memory

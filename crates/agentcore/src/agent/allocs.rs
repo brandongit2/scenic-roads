@@ -57,7 +57,7 @@ struct Sample {
 thread_local! {
     /// The bytes this thread asked for since its last sample.
     static SINCE: Cell<u64> = const { Cell::new(0) };
-    /// Set while this thread samples: the sample's own allocations aren't counted.
+    /// Set while this thread samples: the sample's own allocations are counted, never sampled.
     static SAMPLING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -106,7 +106,7 @@ fn count(size: usize) {
 }
 
 // SAFETY: every call goes to the system's allocator as given; the counting allocates only while
-// `SAMPLING` keeps it from counting itself.
+// `SAMPLING` keeps it from sampling itself.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         count(l.size());

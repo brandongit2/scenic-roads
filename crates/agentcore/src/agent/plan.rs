@@ -3690,19 +3690,19 @@ mod tests {
             lines.len()
         );
     }
+
     /// The planner's memory over plans in a row (task #1251), on a frozen root as
     /// `frozen_plan_on_a_private_root`'s (`SCENIC_FROZEN_ROOT`, `SCENIC_FROZEN_HOME`, sandboxed
     /// alike): the coverage read, then `SCENIC_FROZEN_ROUNDS` plans (7 without), each with its
     /// checklist, its forecast when one is due and the view published, as the plan thread's look
-    /// makes them, `SCENIC_FROZEN_GAP` seconds apart (none without). A line per plan to
+    /// makes them. A line per plan to
     /// `SCENIC_FROZEN_OUT`: its time, the bytes it asked the allocator for, and the process's
     /// footprint, its peak, its resident size and its reusable pages after it
     /// (crate::agent::allocs). With `SCENIC_FROZEN_SITES=<n>`, the stacks of the plans after the
     /// first are sampled and the `n` functions and sites allocating the most bytes listed after
     /// (slower: the plans' times are then the sampling's too; with `SCENIC_FROZEN_SITES_LEAST=<bytes>`,
     /// of the blocks of that size or more alone). With `SCENIC_FROZEN_SIZES`, each
-    /// plan's blocks by size after its line (`allocs::sizes`). `SCENIC_FROZEN_LINGER`: seconds it
-    /// stays up after the last plan, saying its pid, for `vmmap --summary` or `footprint` of it.
+    /// plan's blocks by size after its line (`allocs::sizes`).
     #[test]
     #[ignore]
     fn frozen_plans_memory() {
@@ -3759,7 +3759,6 @@ mod tests {
         let sizes = num("SCENIC_FROZEN_SIZES").is_some();
         for round in 1..=rounds {
             if round > 1 {
-                std::thread::sleep(Duration::from_secs(num("SCENIC_FROZEN_GAP").unwrap_or(0)));
                 allocs::on(sites.is_some(), num("SCENIC_FROZEN_SITES_LEAST").unwrap_or(0));
             }
             let (t, a) = (Instant::now(), allocs::asked());
@@ -3795,10 +3794,5 @@ mod tests {
             }
         }
         std::fs::write(&out, lines.join("\n") + "\n").unwrap();
-        if let Some(s) = num("SCENIC_FROZEN_LINGER") {
-            eprintln!("frozen: pid {} stays {s} s", std::process::id());
-            std::thread::sleep(Duration::from_secs(s));
-            eprintln!("frozen: {}", memory("at the end", Duration::ZERO, (0, 0)));
-        }
     }
 }

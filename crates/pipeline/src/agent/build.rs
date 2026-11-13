@@ -8389,6 +8389,31 @@ mod tests {
         assert_eq!(none.terrain_datasets(&m, [0.0, 0.0, 1.0, 1.0]), None);
     }
 
+    /// The spacing a plan reads (`TerrainTiles::spacing`) is made from the datasets held as `m`
+    /// names them, whenever they are held again (another index, other datasets): the coarse one
+    /// for an index not held, or before the build reads the datasets.
+    #[test]
+    fn the_spacing_is_the_held_datasets_own() {
+        let mut m = BTreeMap::new();
+        elevation_inputs(&mut m);
+        let index = m[&inputs::inputs::logical(inputs::inputs::elevation::UNIT)].clone();
+        let lidar =
+            |keyed: &str, b: [f64; 4]| vec![dataset("lidar", keyed, Some(vec![b])), dataset("world", "w1", None)];
+        let (a, b) = (lidar("l1", [-22.0, 64.0, -21.0, 65.0]), lidar("l2", [10.0, 45.0, 11.0, 46.0]));
+        let mut t = TerrainTiles::new(None);
+        assert_eq!(*t.spacing(&m), Fine::default(), "none held");
+        for e in [a.clone(), b, a] {
+            t.hold_elevation(&index, e.clone());
+            assert_eq!(*t.spacing(&m), Fine::of(&e));
+            assert_ne!(*t.spacing(&m), Fine::default());
+        }
+        t.hold_elevation("another", lidar("l1", [-22.0, 64.0, -21.0, 65.0]));
+        assert_eq!(*t.spacing(&m), Fine::default(), "another index held");
+        m.remove(&inputs::inputs::switched_logical(inputs::inputs::elevation::UNIT));
+        t.hold_elevation(&index, lidar("l1", [-22.0, 64.0, -21.0, 65.0]));
+        assert_eq!(*t.spacing(&m), Fine::default(), "the datasets not read by the build");
+    }
+
     /// Task #810: the pyramids' fill is planned for the z6 tiles near the coverage that a pyramid
     /// read tile by tile meets (Terrarium's isn't one), each once for its key, and again when what
     /// it reads changes: the pyramid's declaration, the coverage near it; none while the declared
