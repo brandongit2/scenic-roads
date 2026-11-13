@@ -620,8 +620,9 @@ fn archived(root: &store::nasfs::NasRoot, since: u64, days: u64) -> Vec<Event> {
     out
 }
 
-/// The lead's history as its coordinator answers it (`/api/history`, a page of events at a time):
-/// none when there's no lead to ask, or it doesn't answer.
+/// The lead's history as its coordinator answers it (`/api/history`, a page of events at a time,
+/// each with its `data`, which the lead reads from its file for it): none when there's no lead to
+/// ask, or it doesn't answer.
 fn asked_of_the_lead(root: Option<&store::nasfs::NasRoot>) -> Vec<Event> {
     let home = coordwire::lead::this_macs_agent();
     let Ok(Some(c)) = crate::coord::client::Client::to_lead(home.as_deref(), root, &store::sys::host_name()) else {
@@ -629,9 +630,10 @@ fn asked_of_the_lead(root: Option<&store::nasfs::NasRoot>) -> Vec<Event> {
     };
     let mut out: Vec<Event> = Vec::new();
     let mut after = 0;
-    // (At most 200 pages of 5,000: a week's history, `history::KEEP_MAX`, ten times over.)
-    for _ in 0..200 {
-        let Ok((200, v)) = c.post_json("/api/history", &serde_json::json!({ "since": after, "max": 5000 })) else {
+    // (Pages of 5,000 until one isn't full, or its numbers don't go on.)
+    loop {
+        let ask = serde_json::json!({ "since": after, "max": 5000, "data": true });
+        let Ok((200, v)) = c.post_json("/api/history", &ask) else {
             break;
         };
         let page: Vec<Event> = serde_json::from_value(v["events"].clone()).unwrap_or_default();

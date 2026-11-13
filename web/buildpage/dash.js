@@ -471,14 +471,10 @@ function askToCome(m) {
   if (!m.fc || toCome.key === key || toCome.asking || Date.now() < toCome.again) return;
   toCome.asking = true;
   const lead = (last?.macs || []).find((x) => x.host === m.a.host);
-  // (A member's agent answers `making`, no `at`: it made no forecast, so the lead is asked.)
-  // (The lead's answer, its `after` as the lead wrote it (`raw`), is given to this Mac's own agent to
-  // renumber into this page's history: its `epoch` and `after` come back.)
-  const fromLead = () => remote(lead, toCome.st, { raw: true }, "/api/tocome").then(async (v) => {
-    if (!v?.after) return v;
-    const [code, r] = await ctx.call("/api/tocome", { renumber: { by: v.by, after: v.after } }).catch(() => [0, null]);
-    return { ...v, epoch: code === 200 ? r?.epoch ?? null : null, after: code === 200 && r?.epoch != null ? r.after : [] };
-  });
+  // (A member's agent answers `making`, no `at`: it made no forecast, so the lead is asked. Its
+  // `after` is in its history's numbering, its `epoch` saying which: the page's history's when the
+  // lead's is (task #1160).)
+  const fromLead = () => remote(lead, toCome.st, {}, "/api/tocome");
   // (This Mac's own answer for another forecast than the status's (the lead's tiles lag its
   // status's forecast by one, seen 29 Oct; or a Mac that led before): the lead asked, this one kept
   // when the lead can't be read (an HTTP page whose origin another Mac's port refuses: #833 review,

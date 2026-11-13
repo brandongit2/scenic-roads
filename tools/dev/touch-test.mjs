@@ -190,8 +190,7 @@ function serve() {
               const f = JSON.parse(readFileSync(TOCOME, "utf8"));
               const at = await fetch(`http://${AGENT.host}:${AGENT.port}/api/swarm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json()).then((w) => w.agent?.forecast?.at ?? f.at, () => f.at);
               a = { at, macs: Object.fromEntries(Object.entries(f.macs).map(([mac, steps]) => [mac, Object.fromEntries(Object.entries(steps).map(([k, ts]) => [k, ts.map(([t, s]) => [t, Math.max(0, s + f.at - at)])]))])) };
-            } else if (v.raw || v.renumber) a = await ask(v);
-            else {
+            } else {
               a = await ask(v.at == null ? {} : { at: v.at });
               if (Array.isArray(a.macs)) {
                 const each = await Promise.all(a.macs.map((mac) => ask({ mac })));

@@ -533,8 +533,9 @@ pub struct Shared {
     /// (`http::HEADERS_MAX`; a test's shorter, set before it connects). Read by the accept loop
     /// without this lock (#1112 review: a handler holding it never holds up a connection).
     pub headers_max_ms: Arc<std::sync::atomic::AtomicU64>,
-    /// The page's data as this Mac reads it from the NAS (crate::agent::pageview): `/api/swarm`
-    /// and `/api/history` answered from it once it has a snapshot.
+    /// The page's view of the lead (crate::agent::pageview, the lead's in the pool): `/api/swarm`
+    /// and `/api/tocome` answered from it once it has the lead's view (the history's parts from
+    /// this coordinator's memory).
     pub pageview: Option<Arc<crate::agent::pageview::PageView>>,
     /// This Mac's live store (crate::agent::live): `/api/live`. None: not given one (503).
     pub live: Option<Arc<crate::agent::live::Store>>,
@@ -2683,9 +2684,9 @@ impl Coordinator {
         }
     }
 
-    /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions.
-    pub fn note(&self, e: history::Event) {
-        self.shared.lock().unwrap().history.add(e);
+    /// Notes what happened (`history`): this Mac's jobs started and ended, catalogues, its conditions; its number.
+    pub fn note(&self, e: history::Event) -> u64 {
+        self.shared.lock().unwrap().history.add(e)
     }
 
     /// What the forecast reads (crate::agent::forecast): what each target cost, the jobs leased now
@@ -3289,6 +3290,27 @@ impl Coordinator {
     /// Every event the history keeps, shared rather than copied (history::History::all).
     pub fn history(&self) -> history::Events {
         self.shared.lock().unwrap().history.all()
+    }
+
+    /// `/api/history`'s answer: the events after number `since`, at most `max`, from memory (each
+    /// without its `data`), or with `data` from its file on this Mac's disk (publishing's times on
+    /// another Mac, crate::pubtimes: never the page's); its last number and its numbering
+    /// (`history_epoch`).
+    pub fn history_answer(&self, since: u64, max: usize, data: bool) -> serde_json::Value {
+        history_answer(&self.shared, since, max, data)
+    }
+
+    /// What a pageview's forecast works its waits out from (history::History::waits_basis_from),
+    /// the history's number now and its numbering (crate::agent::pageview::Lead::waits_basis).
+    pub fn history_waits_basis(&self, old: Arc<history::Waits>, set_at: u64) -> (history::WaitsBasis, u64, String) {
+        let s = self.shared.lock().unwrap();
+        let (b, seq) = s.history.waits_basis_from(old, set_at);
+        (b, seq, history_epoch(&s))
+    }
+
+    /// The history's last number by time `t` (history::History::seq_at).
+    pub fn history_seq_at(&self, t: u64) -> u64 {
+        self.shared.lock().unwrap().history.seq_at(t)
     }
 
     /// Its port.
@@ -4033,13 +4055,50 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
     }
 }
 
-/// The page's views before this Mac's first read of the NAS (crate::agent::pageview): not ready.
 /// How long a page's ask keeps the regions' steps counted (crate::agent's heartbeat counts them
 /// again after a job ends, or each minute, while asked).
 pub const REGION_STEPS_ASKING: Duration = Duration::from_secs(120);
 
+/// The page's views before this Mac's pageview has the lead's first view
+/// (crate::agent::pageview): not ready.
 fn not_ready() -> (u16, serde_json::Value) {
     (503, serde_json::json!({ "error": "this Mac hasn't read the build's state yet; ask again in a few seconds" }))
+}
+
+/// The history's numbering (`/api/history`'s and the swarm's `epoch`, `/api/tocome`'s): this
+/// coordinator's, its numbers going on across its restarts (history::History::load), so a page
+/// keeps its cursor over a restart of the lead; another Mac leading is another numbering (and one
+/// whose numbers went back, a file lost, the page starts again by its `seq`).
+fn history_epoch(s: &Shared) -> String {
+    format!("coordinator {}", s.lead_name)
+}
+
+/// `Coordinator::history_answer`.
+fn history_answer(shared: &Mutex<Shared>, since: u64, max: usize, data: bool) -> serde_json::Value {
+    let (seq, epoch, events, path) = {
+        let s = shared.lock().unwrap();
+        let events = if data { Vec::new() } else { s.history.since(since, max) };
+        (s.history.seq(), history_epoch(&s), events, s.history.path().map(Path::to_path_buf))
+    };
+    // (The file read off the lock.)
+    let events = match path.filter(|_| data) {
+        Some(p) => history::since_in_file(&p, since, max),
+        None => events,
+    };
+    serde_json::json!({ "seq": seq, "epoch": epoch, "events": events })
+}
+
+/// The swarm's history parts at `now` into its answer `a`: the history's last number (the page asks
+/// `/api/history` for what's after the one it has), its numbering and the last day by the hour
+/// (history::rates_of, summed off the lock from a shared copy).
+fn history_swarm(shared: &Mutex<Shared>, now: u64, a: &mut serde_json::Value) {
+    let (seq, epoch, all) = {
+        let mut s = shared.lock().unwrap();
+        (s.history.seq(), history_epoch(&s), s.history.all())
+    };
+    a["seq"] = seq.into();
+    a["epoch"] = epoch.into();
+    a["rates"] = serde_json::to_value(history::rates_of(all.iter(), now, 24)).unwrap_or_default();
 }
 
 /// A page view this Mac's agent hasn't made yet (its loop busy, or just started): 200, not 503, so a
@@ -5187,8 +5246,8 @@ fn route(
             Ok((200, ok))
         }
         "/api/swarm" => {
-            // (In the pool, from this Mac's pageview, the lead's view: the same on every Mac; none yet, not
-            // ready. Never the memory's meanwhile: its numbering isn't the read's.)
+            // (In the pool, from this Mac's pageview, the lead's view; none yet, not ready. The
+            // history's parts from this coordinator's memory, in and out of the pool.)
             // (The pause, from the lead's memory: its NAS mirror waits for the agent's next loop,
             // many seconds on a busy lead.)
             let (pv, own) = {
@@ -5198,6 +5257,7 @@ fn route(
             if let Some(p) = pv {
                 return Ok(p.swarm().map_or_else(not_ready, |mut a| {
                     a["pause"] = serde_json::to_value(own).unwrap_or_default();
+                    history_swarm(shared, a["now"].as_u64().unwrap_or(0), &mut a);
                     (200, a)
                 }));
             }
@@ -5205,37 +5265,35 @@ fn route(
             // agent's status, written each loop beside this folder: its job, the checklist to the
             // end, the forecast, the regions, its helpers), the leases, the workers, the tasks and
             // the history's hours.
-            let s = shared.lock().unwrap();
-            let agent: serde_json::Value = s
-                .dir
-                .parent()
-                .and_then(|h| std::fs::read(h.join("status.json")).ok())
-                .and_then(|b| serde_json::from_slice(&b).ok())
-                .unwrap_or(serde_json::Value::Null);
-            // Each lease (whose, what, for how long, what it last said and how far, since its last
-            // beat and until it lapses), each worker (and for one that does the shared steps, how
-            // the work offered fits it), the tasks by state: `view_of`, its times as ages.
-            let view = view_of(&s);
-            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            // The history's last number (the page asks `/api/history` for what's after the one it
-            // has) and the last day by the hour.
-            let (leases, workers) = ages(&view, unix);
-            Ok((
-                200,
-                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "seq": s.history.seq(), "rates": s.history.rates(unix, 24), "app": s.app, "epoch": format!("coordinator {}", s.lead_name) }),
-            ))
+            let mut a = {
+                let s = shared.lock().unwrap();
+                let agent: serde_json::Value = s
+                    .dir
+                    .parent()
+                    .and_then(|h| std::fs::read(h.join("status.json")).ok())
+                    .and_then(|b| serde_json::from_slice(&b).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                // Each lease (whose, what, for how long, what it last said and how far, since its
+                // last beat and until it lapses), each worker (and for one that does the shared
+                // steps, how the work offered fits it), the tasks by state: `view_of`, its times as
+                // ages.
+                let view = view_of(&s);
+                let unix =
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                let (leases, workers) = ages(&view, unix);
+                serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": view["tasks"], "app": s.app })
+            };
+            history_swarm(shared, a["now"].as_u64().unwrap_or(0), &mut a);
+            Ok((200, a))
         }
         "/api/history" => {
-            // What happened after event `since` (the oldest first, at most `max`, 500 by default).
+            // What happened after event `since` (the oldest first, at most `max`, 500 by default),
+            // from this coordinator's memory; with `{"data": true}` (publishing's times on another
+            // Mac, crate::pubtimes) each event's `data` too, from its file.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
             let since = b["since"].as_u64().unwrap_or(0);
             let max = b["max"].as_u64().map_or(500, |m| m.min(5000)) as usize;
-            let pv = shared.lock().unwrap().pageview.clone().filter(|p| p.active());
-            if let Some(p) = pv {
-                return Ok(p.history(since, max).map_or_else(not_ready, |a| (200, a)));
-            }
-            let s = shared.lock().unwrap();
-            Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
+            Ok((200, history_answer(shared, since, max, b["data"].as_bool() == Some(true))))
         }
         "/api/live" => {
             // This Mac's measures over time (crate::agent::live): a window, or the points since.
@@ -5269,52 +5327,22 @@ fn route(
             // the build page's map's queue, asked once a forecast.
             // None made (a member's, or the lead's before its first): 200 with why (`making`), not
             // an error: the page asks the lead, or waits.
-            // With the history's `epoch`, the numbering its `after` is in: the page's history's,
-            // a pageview's (its `after` renumbered there from this coordinator's, as this
-            // member wrote them: crate::agent::pageview) when it serves the page.
-            // `{"raw": true}` (a member's page asking the lead): `after` as this coordinator wrote
-            // it, with `by`, the member name its numbers are under; the page gives them to its own
-            // Mac's pageview as `{"renumber": {"by", "after"}}`, answered `{epoch, after}` in that
-            // pageview's numbering (`epoch` null when it can't).
+            // With the history's `epoch`, the numbering its `after` is in: this coordinator's
+            // history's, the page's.
             let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
-            let (tc, epoch, pv, member) = {
+            let (tc, epoch, pv) = {
                 let s = shared.lock().unwrap();
-                let pv = s.pageview.clone().filter(|p| p.active());
-                (s.tocome.clone(), format!("coordinator {}", s.lead_name), pv, s.pool_member.clone())
+                (s.tocome.clone(), history_epoch(&s), s.pageview.clone().filter(|p| p.active()))
             };
-            if let Some(r) = b.get("renumber") {
-                let by = r["by"].as_str().unwrap_or("");
-                let after: Vec<Vec<u64>> = serde_json::from_value(r["after"].clone()).unwrap_or_default();
-                return Ok(match pv.and_then(|p| p.renumber(by, &after)) {
-                    Some((e, after)) => (200, serde_json::json!({ "epoch": e, "after": after })),
-                    None => (200, serde_json::json!({ "epoch": null })),
-                });
-            }
-            let raw = b["raw"].as_bool() == Some(true);
             // (In the pool, this Mac's pageview's, of the forecast it runs for the swarm's answer
-            // (task #836): its `at` the page's status's (`{"at"}`, the one the page read), on the
-            // lead and every member alike, so no page needs another Mac's port.)
-            if let Some(a) = pv.as_ref().filter(|_| !raw).and_then(|p| p.tocome(b["at"].as_u64())) {
+            // (task #836): its `at` the page's status's (`{"at"}`, the one the page read).)
+            if let Some(a) = pv.as_ref().and_then(|p| p.tocome(b["at"].as_u64())) {
                 return Ok((200, a));
             }
             Ok(tc.map_or_else(
                 || making("this Mac has made no forecast yet"),
                 |t| {
                     let mut a = t.answer();
-                    let (epoch, after) = match &pv {
-                        _ if raw => {
-                            a["by"] = member.into();
-                            (Some(epoch), None)
-                        }
-                        None => (Some(epoch), None),
-                        Some(p) => match member.as_deref().and_then(|m| p.renumber(m, &t.runs.after)) {
-                            Some((e, after)) => (Some(e), Some(after)),
-                            None => (None, Some(Vec::new())),
-                        },
-                    };
-                    if let Some(after) = after {
-                        a["after"] = serde_json::json!(after);
-                    }
                     a["epoch"] = epoch.into();
                     (200, a)
                 },
@@ -13163,17 +13191,13 @@ mod tests {
         let root = d.path().join("nas");
         std::fs::create_dir_all(&root).unwrap();
         let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
+        let files: Arc<dyn crate::agent::pageview::Lead> = Arc::new(crate::agent::pageview::tests::Files(root.clone()));
         pv.set_inputs(crate::agent::pageview::Inputs {
-            history: crate::agent::pageview::tests::files(&["m-lead"]),
+            lead: crate::agent::pageview::LeadAt(Some(files)),
             ..Default::default()
         });
         pv.touch();
-        assert!(crate::agent::pageview::tests::read(
-            &pv,
-            &root,
-            &crate::agent::pageview::tests::Dir::at(&root),
-            unix_now()
-        ));
+        assert!(crate::agent::pageview::tests::read(&pv, &root, unix_now()));
         c.set_pageview(pv);
         let pause = || send(&addr, "POST", "/api/swarm", None, &[], &serde_json::json!({})).2["pause"].clone();
         assert!(pause().is_null());
@@ -13666,104 +13690,128 @@ mod tests {
         assert_eq!(a["after"], serde_json::json!([]));
     }
 
-    /// A member's page (docs/pool.md §10, To come): the lead answers `raw` with `after` as it wrote
-    /// it and `by`, and the member's own pageview renumbers it in its numbering, with its epoch;
-    /// a number it hasn't taken in is dropped, and with no history read, no epoch.
-    #[test]
-    fn a_members_page_has_the_leads_after_renumbered_by_its_own_pageview() {
-        let (d, c, w) = start();
-        let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let post = |b: serde_json::Value| {
-            let r =
-                raw(&addr, "POST", "/api/tocome", &[("Content-Type", "application/json")], b.to_string().as_bytes());
-            serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
-        };
-        // The lead's answer, raw: its numbers and the name they're under.
-        c.set_member(Some("m-lead"));
-        let mut tc = crate::agent::forecast::ToCome::default();
-        tc.runs.after = vec![vec![40], vec![7]];
-        c.set_tocome(Arc::new(tc));
-        let a = post(serde_json::json!({ "raw": true }));
-        assert_eq!(
-            (a["by"].as_str(), a["epoch"].as_str().map(|e| e.starts_with("coordinator "))),
-            (Some("m-lead"), Some(true))
-        );
-        assert_eq!(a["after"], serde_json::json!([[40], [7]]));
-        // This Mac's pageview, before it has read anything: no numbering.
-        let root = d.path().join("nas");
-        std::fs::create_dir_all(&root).unwrap();
-        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
-        pv.set_inputs(crate::agent::pageview::Inputs {
-            history: crate::agent::pageview::tests::files(&["m-lead"]),
-            ..Default::default()
-        });
-        pv.touch();
-        c.set_pageview(pv.clone());
-        let ask = || post(serde_json::json!({ "renumber": { "by": "m-lead", "after": [[40], [7], []] } }));
-        assert!(ask()["epoch"].is_null());
-        // After it read the lead's history, where job 40 is numbered anew.
-        let now = unix_now();
-        let day = crate::pool::journal::day(now).unwrap();
-        let nas = store::nasfs::NasRoot::local_for_test(&root);
-        let put = |p: &str, b: &[u8]| {
-            let p = nas.join(p);
-            p.parent().unwrap().create_dir_all().unwrap();
-            p.write(b).unwrap();
-        };
-        let done = crate::coord::history::Event {
-            seq: 40,
-            t: now - 15,
-            step: Some("unit".into()),
-            targets: vec!["6/1/1".into()],
-            ..crate::coord::history::Event::new("done")
-        };
-        let ev = serde_json::to_string(&done).unwrap() + "\n";
-        put(&format!("history/{day}/m-lead.jsonl"), ev.as_bytes());
-        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::tests::Dir::at(&root), now));
-        let a = ask();
-        let n = pv.history(0, 10).unwrap()["events"][0]["seq"].as_u64().unwrap();
-        assert_ne!(n, 40);
-        assert_eq!(a["after"], serde_json::json!([[n], [], []]));
-        assert_eq!(a["epoch"], pv.history(0, 10).unwrap()["epoch"]);
-    }
-
     /// (Task #836 review) In the pool, `/api/tocome` is this Mac's pageview's, of the run the
-    /// swarm's answer carries: asked with that `at`, that run's tiles, in the pageview's epoch (not
-    /// the coordinator's own forecast, set here too); `raw` (an older page asking the lead) still
-    /// the coordinator's.
+    /// swarm's answer carries: asked with that `at`, that run's tiles, in the history's numbering
+    /// (the swarm's `epoch`, this coordinator's: task #1160), not the coordinator's own forecast,
+    /// set here too.
     #[test]
     fn in_the_pool_the_tiles_to_come_are_the_pageviews_run() {
-        let (d, c, w) = start();
-        let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        let post = |b: serde_json::Value| {
-            let r =
-                raw(&addr, "POST", "/api/tocome", &[("Content-Type", "application/json")], b.to_string().as_bytes());
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let c = Arc::new(c);
+        let addr = format!("127.0.0.1:{port}");
+        let post = |path: &str, b: serde_json::Value| {
+            let r = raw(&addr, "POST", path, &[("Content-Type", "application/json")], b.to_string().as_bytes());
             serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
         };
         c.set_tocome(Arc::new(crate::agent::forecast::ToCome { at: 5, ..Default::default() }));
-        let root = d.path().join("nas");
-        std::fs::create_dir_all(&root).unwrap();
-        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        std::fs::write(d.path().join("status.json"), r#"{"host":"m4"}"#).unwrap();
         let now = unix_now();
-        crate::agent::pageview::tests::fixture(&nas, now);
+        c.set_page_forecast(&crate::agent::pageview::tests::record(now).bytes().unwrap());
         let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
+        let lead: Arc<dyn crate::agent::pageview::Lead> = c.clone();
         pv.set_inputs(crate::agent::pageview::Inputs {
-            history: crate::agent::pageview::tests::files(&["m-a", "m-b"]),
+            lead: crate::agent::pageview::LeadAt(Some(lead)),
             ..Default::default()
         });
         pv.touch();
         c.set_pageview(pv.clone());
         // (Before the pageview's first run: the coordinator's.)
-        assert_eq!(post(serde_json::json!({ "at": now }))["at"], 5);
-        assert!(crate::agent::pageview::tests::read(&pv, &root, &crate::agent::pageview::tests::Dir::at(&root), now));
+        assert_eq!(post("/api/tocome", serde_json::json!({ "at": now }))["at"], 5);
+        assert!(pv.tick_lead(now));
         crate::agent::pageview::tests::settle(&pv);
-        let sw = pv.swarm().unwrap();
+        let sw = post("/api/swarm", serde_json::json!({}));
         let at = sw["agent"]["forecast"]["at"].as_u64().unwrap();
-        let a = post(serde_json::json!({ "at": at }));
+        let a = post("/api/tocome", serde_json::json!({ "at": at }));
         assert_eq!(a["at"].as_u64(), Some(at), "{a}");
+        assert!(sw["epoch"].as_str().is_some_and(|e| e.starts_with("coordinator ")), "{sw}");
         assert_eq!(a["epoch"], sw["epoch"]);
         assert!(a["macs"].as_object().is_some_and(|m| !m.is_empty()), "{a}");
-        assert_eq!(post(serde_json::json!({ "raw": true }))["at"], 5);
+    }
+
+    /// Task #1160: in the pool, the page's history (`/api/history`, and the swarm's `seq`, `epoch`
+    /// and `rates`) is the lead's coordinator's, from its memory: answered with its file
+    /// unreadable (a folder in its place) and no NAS on the path at all, each event without its
+    /// `data`, the swarm's last number its last; asked with `data` (publishing's times on another
+    /// Mac), from the file, none without one.
+    #[test]
+    fn the_pages_history_is_the_coordinators_memory_with_its_file_unreadable() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
+        let c = Arc::new(c);
+        let addr = format!("127.0.0.1:{port}");
+        let post = |path: &str, b: serde_json::Value| {
+            let r = raw(&addr, "POST", path, &[("Content-Type", "application/json")], b.to_string().as_bytes());
+            serde_json::from_str::<serde_json::Value>(r.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+        };
+        let now = unix_now();
+        c.set_page_forecast(&crate::agent::pageview::tests::record(now).bytes().unwrap());
+        let pv = crate::agent::pageview::PageView::new(crate::agent::seam::for_tests());
+        let lead: Arc<dyn crate::agent::pageview::Lead> = c.clone();
+        pv.set_inputs(crate::agent::pageview::Inputs {
+            lead: crate::agent::pageview::LeadAt(Some(lead)),
+            ..Default::default()
+        });
+        pv.touch();
+        c.set_pageview(pv.clone());
+        assert!(pv.tick_lead(now));
+        let cat = c.note(crate::coord::history::Event {
+            n: Some(7),
+            data: Some(serde_json::json!({ "files": 3 })),
+            ..crate::coord::history::Event::new("catalog")
+        });
+        let done = c.note(crate::coord::history::Event {
+            worker: Some("m1".into()),
+            step: Some("unit".into()),
+            targets: vec!["6/1/1".into()],
+            ok: Some(true),
+            ..crate::coord::history::Event::new("end")
+        });
+        let file = d.path().join("coord/history.jsonl");
+        let kept = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let h = post("/api/history", serde_json::json!({ "since": 0 }));
+        let evs = h["events"].as_array().unwrap();
+        let kinds: Vec<&str> = evs.iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["agent", "catalog", "end"], "{h}");
+        assert_eq!(h["seq"].as_u64(), Some(done));
+        assert!(evs.iter().all(|e| e.get("data").is_none()), "the page's events without their data");
+        let sw = post("/api/swarm", serde_json::json!({}));
+        assert_eq!((sw["seq"].as_u64(), &sw["epoch"]), (Some(done), &h["epoch"]), "{sw}");
+        assert_eq!(sw["rates"]["rows"].as_array().map(Vec::len), Some(24));
+        assert_eq!(sw["rates"]["rows"][23]["done"]["m1"]["unit"], 1, "the hour's work from memory");
+        assert_eq!(post("/api/history", serde_json::json!({ "since": cat }))["events"][0]["kind"], "end");
+        // (With `data`: from the file, here unreadable, so none; the file back, the catalogue's.)
+        assert!(post("/api/history", serde_json::json!({ "since": 0, "data": true }))["events"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        std::fs::remove_dir(&file).unwrap();
+        std::fs::write(&file, kept).unwrap();
+        let h = post("/api/history", serde_json::json!({ "since": cat - 1, "data": true }));
+        assert_eq!(h["events"][0]["data"]["files"], 3, "{h}");
+    }
+
+    /// Task #1160: a lead restarted has its history back from its file, once, as it starts: the
+    /// same events under the same numbers and numbering (a page keeps its cursor), its start after.
+    #[test]
+    fn a_restarted_lead_answers_its_history_in_the_same_numbering() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        let (c, _) = start_for_test(&dir, "m4", "");
+        let paused =
+            c.note(crate::coord::history::Event { note: "x".into(), ..crate::coord::history::Event::new("pause") });
+        let before = c.history_answer(0, 100, false);
+        c.stop();
+        drop(c);
+        let (c, _) = start_for_test(&dir, "m4", "");
+        let after = c.history_answer(0, 100, false);
+        assert_eq!(after["epoch"], before["epoch"]);
+        let evs = after["events"].as_array().unwrap();
+        assert_eq!(evs[..2], before["events"].as_array().unwrap()[..], "the same events, the same numbers");
+        assert_eq!(evs[1]["seq"].as_u64(), Some(paused));
+        assert_eq!((evs[2]["kind"].as_str(), evs[2]["seq"].as_u64()), (Some("agent"), Some(paused + 1)));
     }
 
     /// The pool's members' pages (docs/pool.md §8): a page from another member's address reads this

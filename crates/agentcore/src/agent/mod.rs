@@ -8090,9 +8090,11 @@ impl Agent {
                 self.page_acts = acts;
             }
         }
-        // (The history's file, its coordinator's on this Mac's disk: the one writer, this lead.)
-        let Some(p) = self.pool_seen.as_ref().filter(|_| self.pool.is_some()) else { return };
-        let history = vec![(p.member.clone(), self.o.home.join("coord/history.jsonl").display().to_string())];
+        // (In the pool: the page's view of the lead, its own coordinator's, asked in process; the
+        // history the coordinator's own, from its memory.)
+        if self.pool_seen.is_none() || self.pool.is_none() {
+            return;
+        }
         // (This Mac's lanes, only while a page asks: each slot's done targets are a read.)
         let own = if self.pageview.wanted(now_s()) {
             (0..self.slots.len())
@@ -8104,7 +8106,6 @@ impl Agent {
         // (The lead's view: its own coordinator's, in process.)
         let lead: std::sync::Arc<dyn pageview::Lead> = coord;
         self.pageview.set_inputs(pageview::Inputs {
-            history,
             app: self.app.clone(),
             own,
             keep: Some(self.o.home.join("pageview-waits.json")),

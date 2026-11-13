@@ -2,22 +2,26 @@
 //! each job the lead started and ended, each lease a worker took, handed back, failed or let
 //! lapse, each task done or failed, the catalogues written and the map tiles planned, the pauses,
 //! the workers first heard from, the devices let help or not, the agents started, the
-//! lead's conditions changing, and each Mac's build caches cleared or freed. Kept on the
-//! lead's disk (`history.jsonl`, a line an event, the last week's, KEEP_MAX at most), served by
-//! `/api/history` (the events after a number) and summed by the hour for the page (`rates`).
+//! lead's conditions changing, and each Mac's build caches cleared or freed (a member's: noted
+//! to the lead with its beats, crate::coord::notes). Kept on the lead's disk (`history.jsonl`, a
+//! line an event, the last week's) and in its coordinator's memory (the week's, each event without
+//! its `data`), served from memory by `/api/history` (the events after a number) and summed by the
+//! hour for the page (`rates`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
-/// The days of history kept (today's and the six before), on the lead's disk (`history.jsonl`);
-/// each finished day is packed into the NAS's archive, a tar a day (crate::agent::histarchive).
+/// The days of history kept (today's and the six before), on the lead's disk (`history.jsonl`) and
+/// in its memory; each finished day is packed into the NAS's archive, a tar a day
+/// (crate::agent::histarchive).
 pub const DAYS: u64 = 7;
-/// How long events are kept (seconds), and the most kept (the lead's week to 4 Nov had 62,500,
-/// held ~75 MB in memory: the count bounds a busy week).
+/// How long events are kept (seconds): the one bound of what memory holds. Measured 13 Nov on the
+/// lead's file (task #1160): a week was 58,113 events, ~21 MB in memory without their `data`
+/// (~0.37 KB an event; with it ~1.34 KB: the catalogues' and merges' `data`, read by publishing's
+/// times alone, crate::pubtimes, from the file and the archive); ten times that, ~215 MB.
 pub const KEEP_S: u64 = DAYS * 86400;
-pub const KEEP_MAX: usize = 50_000;
 
 /// One thing that happened.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -483,21 +487,24 @@ impl History {
             waits: Default::default(),
             set_at: 0,
         };
-        let Some(text) = path.and_then(|p| std::fs::read_to_string(p).ok()) else { return h };
+        let Some(f) = path.and_then(|p| std::fs::File::open(p).ok()) else { return h };
         let from = now_s().saturating_sub(KEEP_S);
         let events = std::sync::Arc::make_mut(&mut h.events);
-        for l in text.lines() {
+        // (Read a line at a time: a week's file is tens of MB, held in memory as its events alone.)
+        for l in std::io::BufReader::new(f).split(b'\n') {
+            let Ok(l) = l else { break };
             h.lines += 1;
             // (A line cut short by a crash is passed over.)
-            let Ok(e) = serde_json::from_str::<Event>(l) else { continue };
+            let Ok(mut e) = serde_json::from_slice::<Event>(&l) else { continue };
             h.seq = h.seq.max(e.seq);
             if e.t >= from {
+                e.data = None;
                 events.push_back(e);
             }
         }
-        while events.len() > KEEP_MAX {
-            events.pop_front();
-        }
+        // (Appended in their numbers' order; sorted by them whatever the file holds, as `since`
+        // searches them.)
+        events.make_contiguous().sort_by_key(|e| e.seq);
         mend_runs(events.make_contiguous());
         let ends: Vec<Event> = h.events.iter().filter(|e| finished(e)).cloned().collect();
         for e in &ends {
@@ -519,8 +526,9 @@ impl History {
     }
 
     /// `waits_basis` from waits kept apart from the history's own (`old`, made when its event
-    /// number was `set_at`; a pageview's, crate::agent::pageview, whose events' `after` are the
-    /// lead's renumbered, never filled from them), and this history's number now: the next set's.
+    /// number was `set_at`: a pageview's, crate::agent::pageview, of the forecast it runs for the
+    /// page, never what this history's starts and leases name), and this history's number now: the
+    /// next set's.
     pub fn waits_basis_from(&self, old: std::sync::Arc<Waits>, set_at: u64) -> (WaitsBasis, u64) {
         (WaitsBasis { old, built: self.built.clone(), from: Some(set_at) }, self.seq)
     }
@@ -550,6 +558,11 @@ impl History {
     /// The last event's number.
     pub fn seq(&self) -> u64 {
         self.seq
+    }
+
+    /// The highest number of an event kept at time `t` or before (unix s; 0: none).
+    pub fn seq_at(&self, t: u64) -> u64 {
+        self.events.iter().filter(|e| e.t <= t).map(|e| e.seq).max().unwrap_or(0)
     }
 
     /// How long each step's jobs go with nothing moving, as usual: the 90th percentile of the
@@ -610,16 +623,18 @@ impl History {
             }
             self.lines += 1;
         }
+        // (Its `data` in the file alone: none of the lead's readers reads it from memory.)
+        e.data = None;
         let events = std::sync::Arc::make_mut(&mut self.events);
         events.push_back(e);
         let from = now.saturating_sub(KEEP_S);
-        while events.front().is_some_and(|e| e.t < from) || events.len() > KEEP_MAX {
+        while events.front().is_some_and(|e| e.t < from) {
             events.pop_front();
         }
         if self.lines > 2 * self.events.len() + 1000 {
             let first = self.events.front().map_or(0, |e| e.seq);
             self.built.retain(|_, &mut s| s >= first);
-            self.rewrite();
+            self.rewrite(from);
         }
         self.seq
     }
@@ -637,21 +652,56 @@ impl History {
         out
     }
 
-    /// The file rewritten with the events kept (whole: a crash leaves the old one).
-    fn rewrite(&mut self) {
+    /// The file rewritten with its lines of events from `from` (unix s) on, their `data` with them
+    /// (whole: a crash leaves the old one).
+    fn rewrite(&mut self, from: u64) {
         let Some(p) = &self.path else { return };
-        let text: String = self.events.iter().map(|e| serde_json::to_string(e).unwrap_or_default() + "\n").collect();
-        match store::whole::write(p, text.as_bytes()) {
-            Ok(()) => self.lines = self.events.len(),
+        let kept = std::fs::File::open(p).map(|f| {
+            let mut out: Vec<u8> = Vec::new();
+            let mut n = 0;
+            for l in std::io::BufReader::new(f).split(b'\n').map_while(Result::ok) {
+                if serde_json::from_slice::<Event>(&l).is_ok_and(|e| e.t >= from) {
+                    out.extend_from_slice(&l);
+                    out.push(b'\n');
+                    n += 1;
+                }
+            }
+            (out, n)
+        });
+        match kept.map_err(anyhow::Error::from).and_then(|(text, n)| Ok((store::whole::write(p, &text)?, n))) {
+            Ok(((), n)) => self.lines = n,
             Err(e) => eprintln!("coordinator: rewriting the history: {e:#}"),
         }
     }
 
     /// The events after number `seq`, oldest first, at most `max` (the earliest of them).
     pub fn since(&self, seq: u64, max: usize) -> Vec<Event> {
-        self.events.iter().filter(|e| e.seq > seq).take(max).cloned().collect()
+        let at = self.events.partition_point(|e| e.seq <= seq);
+        self.events.range(at..).take(max).cloned().collect()
     }
 
+    /// The file it keeps (None: in memory alone).
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+/// `History::since` with each event's `data`, read from its file `p` (`History::path`): the
+/// week's events after number `seq`, at most `max`. For publishing's times on another Mac
+/// (`/api/history` asked with `data`, crate::pubtimes), never the page's.
+pub fn since_in_file(p: &Path, seq: u64, max: usize) -> Vec<Event> {
+    let Ok(f) = std::fs::File::open(p) else { return Vec::new() };
+    let from = now_s().saturating_sub(KEEP_S);
+    std::io::BufReader::new(f)
+        .split(b'\n')
+        .map_while(Result::ok)
+        .filter_map(|l| serde_json::from_slice::<Event>(&l).ok())
+        .filter(|e| e.seq > seq && e.t >= from)
+        .take(max)
+        .collect()
+}
+
+impl History {
     /// Every event kept, oldest first, shared rather than copied (`Events`): what the forecast and
     /// placement read on nearly every pass of the lead's loop, where a copy was ~75 MB of a
     /// week's events (#930).
@@ -669,6 +719,14 @@ impl History {
     /// seconds it was busy (a job from its start to its end, a lease from its grant to its end, a
     /// task its time back from its end), and the seconds the build was paused.
     pub fn rates(&self, now: u64, hours: u64) -> Rates {
+        rates_of(self.events.iter(), now, hours)
+    }
+}
+
+/// `History::rates` of `events` (oldest first): of a shared copy (`History::all`), summed off the
+/// coordinator's lock.
+pub fn rates_of<'a>(events: impl IntoIterator<Item = &'a Event>, now: u64, hours: u64) -> Rates {
+    {
         const H: u64 = 3600;
         let first = (now / H).saturating_sub(hours.saturating_sub(1)) * H;
         let mut rows: Vec<Row> = (0..hours).map(|i| Row { t: first + i * H, ..Default::default() }).collect();
@@ -678,7 +736,7 @@ impl History {
         let mut started: BTreeMap<String, u64> = BTreeMap::new();
         let mut leased: BTreeMap<jobrt::jobid::JobId, (String, u64)> = BTreeMap::new();
         let mut pause_from: Option<u64> = None;
-        for e in self.events.iter() {
+        for e in events {
             let w = e.worker.clone().unwrap_or_default();
             match e.kind.as_str() {
                 "start" => {
@@ -1103,5 +1161,43 @@ mod tests {
         set(&mut h, graph());
         let s = h.add(ev_of("start", "unit", "6/1/1"));
         assert_eq!(h.since(s - 1, 1)[0].after, [d]);
+    }
+
+    /// Task #1160: memory holds the week's events (`KEEP_S`, its one bound: no count), each
+    /// without its `data`; the file keeps their `data` (`since_in_file`), and its rewrite keeps the
+    /// week's lines as written, the older dropped; loaded again, the same events and numbers.
+    #[test]
+    fn the_week_is_held_in_memory_without_data_and_in_the_file_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let now = now_s();
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
+        let with = |t: u64, i: u64| Event { t, data: Some(serde_json::json!({ "i": i })), ..Event::new("merged") };
+        // (Over a week old: let go of at once, and from the file at its rewrite.)
+        for i in 0..1100 {
+            h.add_at(with(now - KEEP_S - 10, i), now);
+        }
+        let new: Vec<u64> = (0..3).map(|i| h.add_at(with(now - 5, 100 + i), now)).collect();
+        // (No count bounds it: all kept, for the week.)
+        for _ in 0..60_000 {
+            h.add_at(Event::new("task"), now);
+        }
+        let kept = h.since(0, usize::MAX);
+        assert_eq!(kept.len(), 60_003);
+        assert_eq!(kept[..3].iter().map(|e| e.seq).collect::<Vec<_>>(), new);
+        assert!(kept.iter().all(|e| e.data.is_none()), "no data in memory");
+        let lines = std::fs::read_to_string(&p).unwrap();
+        // (Rewritten as its lines passed twice the events kept and a thousand: the old ones written
+        // by then dropped, those since left for the next.)
+        assert!(!lines.contains(r#"{"i":0}"#) && lines.lines().count() < 60_003 + 1100, "the old lines dropped");
+        let filed = since_in_file(&p, 0, 3);
+        assert_eq!(
+            filed.iter().map(|e| e.data.as_ref().unwrap()["i"].as_u64().unwrap()).collect::<Vec<_>>(),
+            [100, 101, 102]
+        );
+        assert_eq!(since_in_file(&p, new[1], 1)[0].seq, new[2]);
+        let again = History::load(crate::agent::seam::for_tests(), Some(&p));
+        assert_eq!((again.seq(), again.since(0, usize::MAX)), (h.seq(), kept));
+        assert_eq!(again.since(new[0], 1)[0].seq, new[1], "after a number, by its search");
     }
 }
