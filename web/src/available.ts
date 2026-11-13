@@ -52,15 +52,19 @@ export interface AvMetric {
   unit: string | null;
   primary: boolean;
 }
-/** A theme as the server describes it: its sets, metrics and layers (the score's first). */
+/** A theme as the server describes it: its sets, metrics and layers (the score's first), and the
+ * words it shows for the sets' ids, the pieces' availability and extent classes (`labels`; an id
+ * the server gives no word for is shown as it is). */
 export interface AvTheme {
   theme: string;
   sets: string[];
   metrics: AvMetric[];
   layers: AvLayer[];
+  labels: { sets: Record<string, string>; availability: Record<string, string>; extent: Record<string, string> };
 }
 
-/** A piece at a point, as the click answers it (the server's `pieces`, best first). */
+/** A piece at a point, as the click answers it (the server's `pieces`, best first; `painted`, the
+ * layers it is the piece painted of there: the server's own pick, the app ranks nothing). */
 export interface AvPiece {
   id: string;
   source: string;
@@ -76,6 +80,7 @@ export interface AvPiece {
   stated: Record<string, unknown> | null;
   values: Record<string, number | null>;
   score: number | null;
+  painted: string[];
 }
 
 /** The score layer's id (the server's `SCORE_LAYER`). */
@@ -147,31 +152,38 @@ export function parseTheme(j: unknown): AvTheme | null {
     if (legend) layers.push({ id: l.id, label: str(l.label) ?? l.id, unit: str(l.unit), legend });
   }
   if (!layers.length) return null;
-  return { theme: o.theme, sets: arr(o.sets).filter((x): x is string => typeof x === 'string'), metrics, layers };
+  const lb = obj(o.labels);
+  const words = (v: unknown) => Object.fromEntries(Object.entries(obj(v) ?? {}).filter((e): e is [string, string] => typeof e[1] === 'string'));
+  return {
+    theme: o.theme, sets: arr(o.sets).filter((x): x is string => typeof x === 'string'), metrics, layers,
+    labels: { sets: words(lb?.sets), availability: words(lb?.availability), extent: words(lb?.extent) },
+  };
 }
 
 /** The layer and set shown of a theme: the state's where the theme lists them, else its first. */
 export function shown(s: AvailableState, t: AvTheme): { layer: AvLayer; set: string } {
   const layer = t.layers.find((l) => l.id === s.layer) ?? t.layers[0];
-  return { layer, set: t.sets.includes(s.set) ? s.set : t.sets[0] ?? 'best' };
+  return { layer, set: t.sets.includes(s.set) ? s.set : t.sets[0] ?? s.set };
 }
 
-/** A set's name in the panel (the server lists its ids). */
-const SET_LABELS: Record<string, string> = { best: 'Best available anywhere', built: 'Built into the map' };
-export const setLabel = (id: string) => SET_LABELS[id] ?? id;
+/** An id's word in the server's `labels` (none: the id as it is). */
+export const word = (words: Record<string, string>, id: string) => (Object.hasOwn(words, id) ? words[id] : id);
+
+/** Ids as a URL's path segments (the server's ids, escaped). */
+const path = (...ids: string[]) => ids.map(encodeURIComponent).join('/');
 
 /** The Mercator tiles' URL template (`{z}/{x}/{y}`), from `origin` (the data host), at version `v`
  * (meta's `available-<theme>`). */
 export const tileUrl = (origin: string, theme: string, set: string, layer: string, avail: Avail, v: string) =>
-  `${origin}/tiles/available/${theme}/${set}/${layer}/{z}/{x}/{y}?avail=${avail}${v ? `&v=${v}` : ''}`;
+  `${origin}/tiles/available/${path(theme, set, layer)}/{z}/{x}/{y}?avail=${avail}${v ? `&v=${encodeURIComponent(v)}` : ''}`;
 
 /** A polar tile's URL (z0–3 of the pole's grid), at version `v` (meta's `available-<theme>-<pole>`). */
 export const polarTileUrl = (origin: string, pole: 'n' | 's', theme: string, set: string, layer: string, avail: Avail, v: string, z: number, x: number, y: number) =>
-  `${origin}/tiles/polar-available/${pole}/${theme}/${set}/${layer}/${z}/${x}/${y}?avail=${avail}${v ? `&v=${v}` : ''}`;
+  `${origin}/tiles/polar-available/${pole}/${path(theme, set, layer)}/${z}/${x}/${y}?avail=${avail}${v ? `&v=${encodeURIComponent(v)}` : ''}`;
 
 /** The click's URL: the pieces at a point. */
 export const atUrl = (theme: string, set: string, lng: number, lat: number, avail: Avail) =>
-  `/api/available/${theme}/${set}?lng=${lng.toFixed(6)}&lat=${lat.toFixed(6)}&avail=${avail}`;
+  `/api/available/${path(theme, set)}?lng=${lng.toFixed(6)}&lat=${lat.toFixed(6)}&avail=${avail}`;
 
 /** The legend as drawn: swatches with labels (a class's or a word's; the score's classes each
  * from its own colour to its shaded one, `caption` saying what shades it), or a ramp with ticks. */
@@ -181,9 +193,6 @@ export type LegendModel =
 
 /** A value in a metric's unit ("0.5 m"; none: as it is). */
 const withUnit = (v: string, unit: string | null) => (unit ? `${v} ${unit}` : v);
-
-/** "a, b and c". */
-const listed = (xs: string[]) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
 export function legendModel(l: AvLayer, t: AvTheme): LegendModel {
   const g = l.legend;
@@ -200,40 +209,9 @@ export function legendModel(l: AvLayer, t: AvTheme): LegendModel {
   return {
     kind: 'swatches',
     rows: g.stops.map((s) => ({ colour: s.colour, ...(s.shaded ? { to: s.shaded } : {}), label: s.label })),
-    caption: shaded && by.length ? `Each class from its best (left) to its worst (right) ${listed(by.map((x) => x.charAt(0).toLowerCase() + x.slice(1)))}` : '',
+    caption: shaded && by.length ? `Within a class, left its best and right its worst by ${by.join(' · ')}` : '',
   };
 }
-
-/** The index of the piece a layer paints among those at a point (the server's Theme::best): the
- * best score, or the best 0–1 value of the metric (a piece not stating it takes no part; of equal
- * values, the first id); -1 where none does. */
-export function paintedIndex(pieces: AvPiece[], layer: string): number {
-  let best = -1;
-  for (let i = 0; i < pieces.length; i++) {
-    const v = layer === SCORE ? pieces[i].score : pieces[i].values[layer];
-    if (typeof v !== 'number') continue;
-    const b = best < 0 ? null : layer === SCORE ? pieces[best].score! : pieces[best].values[layer]!;
-    if (b === null || v > b || (v === b && pieces[i].id < pieces[best].id)) best = i;
-  }
-  return best;
-}
-
-/** A piece's availability in plain words (docs/inputs.md §6.11). */
-const AVAILABILITY: Record<string, string> = {
-  open: 'downloads freely',
-  login: 'free after a login or a request',
-  paid: 'paid',
-  closed: 'exists, not to be had',
-};
-/** How a piece's extent was found, in plain words (docs/inputs.md §6.11's extent classes). */
-const EXTENT: Record<string, string> = {
-  mask: 'where the map’s own copy has data',
-  files: 'from the files’ own headers',
-  index: 'from the publisher’s tile index',
-  service: 'from the publisher’s footprint service',
-  claimed: 'claimed area, not checked against the data',
-  unknown: 'not known',
-};
 
 /** A value as the click shows it: a number to at most three decimals, else as it is. */
 function shownValue(v: unknown): string | null {
@@ -266,8 +244,7 @@ export interface PieceRow {
 }
 
 export function pieceRows(pieces: AvPiece[], layer: string, t: AvTheme): PieceRow[] {
-  const painted = paintedIndex(pieces, layer);
-  return pieces.map((p, i) => {
+  return pieces.map((p) => {
     const metrics: [string, string][] = [];
     for (const m of t.metrics) {
       const v = shownValue(p.metrics[m.id]);
@@ -282,12 +259,12 @@ export function pieceRows(pieces: AvPiece[], layer: string, t: AvTheme): PieceRo
     return {
       title,
       sub: p.name && p.name !== title ? p.name : '',
-      painted: i === painted,
+      painted: p.painted.includes(layer),
       score: p.score === null ? '' : p.score.toFixed(2),
       metrics,
-      availability: p.availability ? AVAILABILITY[p.availability] ?? p.availability : '',
+      availability: p.availability ? word(t.labels.availability, p.availability) : '',
       open: p.availability === 'open',
-      extent: p.extent ? EXTENT[p.extent] ?? p.extent : '',
+      extent: p.extent ? word(t.labels.extent, p.extent) : '',
       read,
       licence: p.licence ? { text: p.licence, url: p.licence_url } : null,
       link: p.link,
@@ -295,10 +272,12 @@ export function pieceRows(pieces: AvPiece[], layer: string, t: AvTheme): PieceRo
   });
 }
 
-/** The click's answer read (its pieces), null when it isn't one. */
+/** The click's answer read (its pieces, each with the layers it is painted of), null when it isn't
+ * one. */
 export function parsePieces(j: unknown): AvPiece[] | null {
   const o = obj(j);
   if (!o || !Array.isArray(o.pieces)) return null;
+  const painted = Object.entries(obj(o.painted) ?? {});
   return o.pieces.map(obj).filter((p): p is Record<string, unknown> => !!p && typeof p.id === 'string').map((p) => ({
     id: p.id as string,
     source: str(p.source) ?? '',
@@ -314,6 +293,7 @@ export function parsePieces(j: unknown): AvPiece[] | null {
     stated: obj(p.stated),
     values: Object.fromEntries(Object.entries(obj(p.values) ?? {}).map(([k, v]) => [k, num(v)])),
     score: num(p.score),
+    painted: painted.filter(([, id]) => id === p.id).map(([l]) => l),
   }));
 }
 

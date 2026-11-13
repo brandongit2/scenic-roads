@@ -357,7 +357,8 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
     { stops: null, colours: null, key: null, n: 0 },
     { stops: null, colours: null, key: null, n: 0 },
   ];
-  // The overlay, and its tiles by z/x/y (at most 85 to z3: kept until its key changes).
+  // The overlay, and its tiles by z/x/y (at most 85 to z3: kept until its key changes; a tile's
+  // bytes until uploaded, then its texture).
   let overlay: CapOverlay | null = null;
   const ovTiles = new Map<string, { px: Uint8ClampedArray | null; tex: WebGLTexture | null }>();
   let ovGen = 0;
@@ -659,7 +660,10 @@ export function polarGlobeLayer(o: PolarGlobeOptions): CustomLayerInterface & { 
           const oz = Math.min(t.z, overlay.maxZoom), k = t.z - oz, n = 2 ** k;
           const [ox, oy] = [t.x >> k, t.y >> k];
           const ot = ovTile(overlay, oz, ox, oy);
-          if (ot.px && !ot.tex) ot.tex = texture(w, ot.px, false);
+          if (ot.px && !ot.tex) {
+            ot.tex = texture(w, ot.px, false);
+            ot.px = null; // (Uploaded: the bytes not kept.)
+          }
           ovTex = ot.tex;
           w.uniform2f(ovOff, (t.x - ox * n) / n, (t.y - oy * n) / n);
           w.uniform1f(ovScale, 1 / n);

@@ -628,6 +628,7 @@ dialog.credits details.flags a { color: var(--text); }
 .av-pop .sub { margin: 1px 0 3px; }
 .av-pop .av-mark { color: var(--accent); font-size: 10px; margin-bottom: 2px; }
 .av-pop .links { margin-top: 3px; }
+.av-pop .av-note { border-top: 1px solid var(--line); padding-top: 5px; font-size: 10px; }
 #layers .bld-chips { flex-wrap: wrap; gap: 3px 10px; }
 #layers [hidden] { display: none !important; }
 .picks-meta .show-map { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); cursor: pointer; }

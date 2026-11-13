@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  atUrl, cleanState, fromField, legendModel, paintedIndex, parsePieces, parseTheme, pieceRows, polarTileUrl, shown, themesOf, tileUrl, toField,
+  atUrl, cleanState, fromField, legendModel, parsePieces, parseTheme, pieceRows, polarTileUrl, shown, themesOf, tileUrl, toField,
   type AvailableState,
 } from '../src/available.ts';
 
@@ -32,6 +32,11 @@ const THEME = {
     { id: 'odd', label: 'Odd', legend: 'pie', stops: [] },
   ],
   sources: [],
+  labels: {
+    sets: { best: 'Best available anywhere' },
+    availability: { open: 'downloads freely', login: 'free after a login or a request', paid: 'paid', closed: 'exists, not to be had' },
+    extent: { index: 'from the publisher’s tile index', claimed: 'claimed area, not checked against the data' },
+  },
 };
 
 const theme = parseTheme(THEME)!;
@@ -51,6 +56,17 @@ test('a theme read: its layers in the server’s order, one it can’t draw left
   assert.deepEqual(theme.sets, ['best']);
   assert.equal(parseTheme({ theme: 'terrain', layers: [], sources: [] }), null, 'no score: no layers');
   assert.equal(parseTheme('nope'), null);
+  assert.equal(theme.labels.sets.best, 'Best available anywhere');
+  // A metric the app has never seen, drawn by a legend it knows: shown as any other; a server
+  // without `labels` (before they were sent): no words, the ids shown as they are.
+  const more = structuredClone(THEME) as Record<string, unknown> & typeof THEME;
+  more.metrics.push({ id: 'density', label: 'Point density', unit: 'pt/m²', weight: 0.1, scale: 'log', worst: 0.1, best: 20, values: null, primary: false });
+  (more.layers as unknown[]).push({ id: 'density', label: 'Point density', unit: 'pt/m²', legend: 'ramp', ramp: [[0, '#000000'], [1, '#ffffff']], stops: [{ value: 0, label: '0.1', colour: '#000000' }, { value: 1, label: '20', colour: '#ffffff' }] });
+  delete more.labels;
+  const m = parseTheme(more)!;
+  assert.deepEqual(m.layers.at(-1)!.id, 'density');
+  assert.deepEqual(legendModel(m.layers.at(-1)!, m), { kind: 'ramp', gradient: 'linear-gradient(90deg, #000000 0%, #ffffff 100%)', ticks: ['0.1 pt/m²', '20 pt/m²'] });
+  assert.deepEqual(m.labels, { sets: {}, availability: {}, extent: {} });
   // A colour not #rrggbb: the layer is left out, not drawn wrong.
   const bad = structuredClone(THEME);
   bad.layers[1].stops[0].colour = 'red';
@@ -70,7 +86,7 @@ test('legends: classes finest first with the score’s shading, words, a ramp', 
   if (score.kind !== 'swatches') return;
   assert.deepEqual(score.rows[0], { colour: '#e7fda7', to: '#c8f6b3', label: '0.5 m' });
   assert.equal(score.rows.at(-1)!.label, 'coarser');
-  assert.match(score.caption, /bare earth or surface, stated vertical accuracy \(RMSE\) and year surveyed/);
+  assert.equal(score.caption, 'Within a class, left its best and right its worst by Bare earth or surface · Stated vertical accuracy (RMSE) · Year surveyed');
   const spacing = legendModel(theme.layers[1], theme);
   assert.deepEqual(spacing, { kind: 'swatches', rows: [{ colour: '#e7fda7', label: '0.5 m' }, { colour: '#803041', label: 'coarser' }], caption: '' });
   const words = legendModel(theme.layers[2], theme);
@@ -86,6 +102,8 @@ test('the URLs: tiles at the meta version, polar tiles, the click', () => {
   assert.equal(tileUrl('', 'terrain', 'best', 'year', 'all', ''), '/tiles/available/terrain/best/year/{z}/{x}/{y}?avail=all');
   assert.equal(polarTileUrl('', 's', 'terrain', 'best', 'score', 'open', 'v1', 2, 1, 3), '/tiles/polar-available/s/terrain/best/score/2/1/3?avail=open&v=v1');
   assert.equal(atUrl('terrain', 'best', 2.35, 48.85, 'all'), '/api/available/terrain/best?lng=2.350000&lat=48.850000&avail=all');
+  // Ids from the server escaped.
+  assert.equal(tileUrl('', 'terrain', 'best', 'a/b?c', 'open', 'v&1'), '/tiles/available/terrain/best/a%2Fb%3Fc/{z}/{x}/{y}?avail=open&v=v%261');
 });
 
 /** The click at Paris (shortened from the server's answer). */
@@ -104,6 +122,8 @@ const PARIS = {
       availability: 'login', extent: 'claimed', read: null, metrics: { spacing_m: 30, year: 2011, stated_class: 'x' }, stated: { spacing_m: '1 arc-second' },
       values: { spacing_m: 0.381, year: 0.423 }, score: 0.376 },
   ],
+  // (The piece each layer paints there: the server's pick.)
+  painted: { score: 'ign-lidar-hd/mnt/year=2023', spacing_m: 'ign-lidar-hd/mnt/year=2023', vertical_rmse_m: 'cop-dem/glo-30', year: 'ign-lidar-hd/mnt/year=2023' },
 };
 
 test('the click’s rows: best first, the painted one marked, metrics with units, plain words', () => {
@@ -129,16 +149,21 @@ test('the click’s rows: best first, the painted one marked, metrics with units
   assert.equal(parsePieces({}), null);
 });
 
-test('the piece a layer paints: the best value, none where none states it, the first id on a tie', () => {
+test('the piece a layer paints: the server’s pick, none where it names none', () => {
   const ps = parsePieces(PARIS)!;
-  assert.equal(paintedIndex(ps, 'score'), 0);
-  assert.equal(paintedIndex(ps, 'vertical_rmse_m'), 1);
-  assert.equal(paintedIndex(ps, 'year'), 0);
-  assert.equal(paintedIndex(ps, 'nothing'), -1);
-  // cop-dem and jaxa state the same spacing value; with LiDAR gone the first id of the two wins.
-  assert.equal(paintedIndex(ps.slice(1), 'spacing_m'), 0);
-  assert.equal(paintedIndex(ps.slice(1).reverse(), 'spacing_m'), 1);
-  assert.equal(paintedIndex([], 'score'), -1);
+  assert.deepEqual(pieceRows(ps, 'vertical_rmse_m', theme).map((r) => r.painted), [false, true, false]);
+  assert.deepEqual(pieceRows(ps, 'surface', theme).map((r) => r.painted), [false, false, false]);
+  // A server not naming them (before `painted` was sent), or naming a piece not listed: none marked.
+  assert.deepEqual(pieceRows(parsePieces({ ...PARIS, painted: undefined })!, 'score', theme).map((r) => r.painted), [false, false, false]);
+  assert.deepEqual(pieceRows(parsePieces({ ...PARIS, painted: { score: 'gone', year: 3 } })!, 'score', theme).map((r) => r.painted), [false, false, false]);
+  // Without the theme's words: the ids as they are.
+  const bare = { ...theme, labels: { sets: {}, availability: {}, extent: {} } };
+  assert.deepEqual(pieceRows(ps, 'score', bare).map((r) => [r.availability, r.extent]), [['open', 'index'], ['open', 'index'], ['login', 'claimed']]);
+  // Malformed pieces: those without an id left out, fields of the wrong kind empty.
+  const odd = parsePieces({ pieces: [3, null, { source: 'x' }, { id: 'a', source: 5, metrics: [], values: { year: 'x' }, score: 'high', read: 'no' }] })!;
+  assert.equal(odd.length, 1);
+  assert.deepEqual([odd[0].source, odd[0].metrics, odd[0].values, odd[0].score, odd[0].read], ['', {}, { year: null }, null, null]);
+  assert.deepEqual(pieceRows(odd, 'score', theme)[0].metrics, []);
 });
 
 test('the settings in a link, and from a save', () => {

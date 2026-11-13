@@ -1,7 +1,7 @@
 // The layers panel's Data available section (ui/layers.ts) and the click's panel: the themes'
 // layers from the server's description (available.ts), one shown at a time, the set, the
 // availability switch, the opacity, and the legend of the layer shown.
-import { legendModel, setLabel, shown, type AvailableState, type AvLayer, type AvTheme, type PieceRow, OPACITY_RANGE } from '../available';
+import { legendModel, shown, word, type AvailableState, type AvLayer, type AvTheme, type PieceRow, OPACITY_RANGE } from '../available';
 import type { Store } from '../state';
 import { Slider, pct } from './controls';
 import { h } from './dom';
@@ -72,7 +72,7 @@ export class AvailableSection {
     for (const t of this.themes) {
       if (this.themes.length > 1) rows.push(h('div', { class: 'av-theme muted' }, t.theme));
       if (t.desc === 'loading') rows.push(h('div', { class: 'muted av-wait' }, h('span', { class: 'spin' }), ' Reading the layers…'));
-      else if (t.desc === 'failed') rows.push(h('div', { class: 'muted av-wait' }, 'The layers could not be read: the server is away.'));
+      else if (t.desc === 'failed') rows.push(h('div', { class: 'muted av-wait' }, 'The layers could not be read; asked again in a minute.'));
       else {
         const sel = t === cur ? shown(s, t.desc).layer.id : null;
         for (const l of t.desc.layers) {
@@ -89,7 +89,7 @@ export class AvailableSection {
     const sets = desc?.sets ?? [];
     this.setRow.hidden = sets.length < 2;
     const set = desc ? shown(s, desc).set : '';
-    this.setSeg.replaceChildren(...sets.map((k) => h('button', { class: k === set ? 'on' : '', onclick: () => A({ set: k }) }, setLabel(k))));
+    this.setSeg.replaceChildren(...sets.map((k) => h('button', { class: k === set ? 'on' : '', onclick: () => A({ set: k }) }, word(desc ? desc.labels.sets : {}, k))));
     this.legend.replaceChildren(...(desc ? legendNodes(shown(s, desc).layer, desc) : []));
   }
 }
@@ -108,6 +108,9 @@ function legendNodes(l: AvLayer, t: AvTheme): HTMLElement[] {
   ];
 }
 
+/** Why a click picks no road or area while the group is on. */
+const note = () => h('div', { class: 'faint av-note' }, 'Roads and areas aren’t picked while Data available is on.');
+
 /** The click's panel: the pieces at the point, best first, the one the layer paints marked. */
 export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLayer, all: boolean): HTMLElement {
   const box = h('div', { class: 'pop av-pop' });
@@ -121,7 +124,7 @@ export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLay
   }
   box.append(h('div', { class: 'ttl' }, 'Data available here'));
   if (!rows.length) {
-    box.append(h('div', { class: 'muted' }, all ? 'No source is known to have data here.' : 'No source known here downloads freely (All data shows the others).'));
+    box.append(h('div', { class: 'muted' }, all ? 'No source is known to have data here.' : 'No source known here downloads freely (All data shows the others).'), note());
     return box;
   }
   box.append(h('div', { class: 'faint av-count' }, `${rows.length} source${rows.length > 1 ? 's' : ''}, best first${all ? '' : ', those that download freely'}`));
@@ -139,5 +142,6 @@ export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLay
         r.link ? h('a', { href: r.link, target: '_blank', rel: 'noopener' }, 'Source ↗') : null),
     ));
   }
+  box.append(note());
   return box;
 }

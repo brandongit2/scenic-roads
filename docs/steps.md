@@ -1153,10 +1153,10 @@ partly downloaded is cut to the downloads as every layer's (its pixels outside h
 catalogue lists a theme (`available-<theme>`), its switch the group's: each theme's layers as
 `/api/available/<theme>` lists them, the score's first under its label (score.toml's: "Best data"),
 one shown at a time; the set (`best` now; its control appears once a theme lists two: `built`,
-task #1349, is one more id in `sets`); the availability switch (Open data | All data); the
+task #1349, is one more id in `sets`, named by the theme's `labels`); the availability switch (Open data | All data); the
 opacity (85 % by default: the classes stay apart over the dark land); and the legend of the layer
 shown, by its `legend`: classes as a swatch each, finest first, the score's split from its own
-colour to its `shaded` one with a caption naming `shaded_by`'s metrics; words a swatch each; a ramp
+colour to its `shaded` one with a caption naming `shaded_by`'s metrics by their labels; words a swatch each; a ramp
 as a gradient with its stops' labels in the metric's unit; then a line saying that zoomed out a
 pixel shows the best data anywhere under it. Nothing in the app is written per metric: labels,
 units, legends and colours are the server's, so a new metric or palette needs no app change. The
@@ -1171,9 +1171,10 @@ ground as an overlay, a cap's finer tiles taking their part of the overlay's z3 
 pole has a cap: the south today). A click while the group is on, when it hits no landmark or ferry,
 opens a panel of the pieces there (`/api/available/<theme>/<set>`), best first: each source's name,
 its piece's, its score, the metrics it states (with their units, and a class as published), its
-availability and extent class in plain words, its licence and a link to the source; the piece the
-layer shown paints is marked (the server's `Theme::best` again: the best score, or the best value of
-the metric). Roads and areas aren't picked while the group is on. In the code: `web/src/available.ts`
+availability and extent class in the words of the theme's `labels` (the id where it gives none),
+its licence and a link to the source; the piece the layer shown paints is marked, as the answer's
+`painted` names it (the app ranks nothing itself). Roads and areas aren't picked while the group is
+on, and the panel says so. In the code: `web/src/available.ts`
 (the catalogue's themes, the description read, the legends, the URLs, the click's rows, the link
 field: no MapLibre, tested by `web/test/available.test.ts`), `ctl/available.ts` (the controller),
 `ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only part that is
