@@ -280,6 +280,18 @@ for (const b of [base.s, seed]) {
   for (const o of saves) assert.deepEqual(st.fromSaved(structuredClone(o), b), b, JSON.stringify(o));
   // … and beside a current value, that one applies.
   assert.deepEqual(st.fromSaved({ mapScheme: 'neon', fitUnit: 'pct', globe: !b.globe }, b), { ...b, globe: !b.globe });
+  // A number too large to be one (1e309, Infinity once read) is unreadable: the profile's.
+  // (Over the same link with that field as written: a link's numbers are rounded.)
+  const fy = linkFields(b, true).get('fy')!.split(',');
+  for (const i of [9, 10, 14, 15]) {
+    const f = [...fy];
+    f[i] = i === 14 ? '-1e309' : '1e309';
+    const want = fromHash(`${at}&fy=${fy.join(',')}`, true, b).ferry;
+    assert.deepEqual(fromHash(`${at}&fy=${f.join(',')}`, true, b).ferry, i < 14 ? { ...want, [i === 9 ? 'freqMin' : 'freqMax']: b.ferry[i === 9 ? 'freqMin' : 'freqMax'] } : { ...want, range: b.ferry.range }, `fy[${i}]`);
+  }
+  assert.deepEqual(fromHash(`${at}&rl=1e309,5`, true, b).roadLen, [b.roadLen[0], 5]);
+  const huge = st.fromSaved(JSON.parse('{"range":[0,1e309],"view":{"zoom":5,"lat":46,"lng":-71,"bearing":1e309,"pitch":-1e309}}'), b);
+  assert.deepEqual([huge.range, huge.view], [b.range, { zoom: 5, lat: 46, lng: -71, bearing: 0, pitch: 0, elev: 0 }]);
 }
 // A profile's settings in an older shape: each such value is the seed's.
 assert.deepEqual(fromProfile({ mapScheme: 'neon', weights: [1, 2, 3], rail: { colour: 'group' }, terrain: { tintPalette: 'terrain' } }), seed);

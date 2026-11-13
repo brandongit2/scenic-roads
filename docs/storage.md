@@ -259,6 +259,23 @@ days something changed (kept 30 days), mirrored to the lead's own disk (`<home>/
 `inputs/inputs`, failed the backup on 7 Nov). Everything else can be regenerated. A laptop's server
 on demand keeps a list of profiles of its own, in its own app folder, not backed up.
 
+**Settings profiles.** The web app reads a profile's settings only in the shape it writes, and fills
+a setting the profile lacks from `web/default-profile.json` (README, Using it: Settings): a profile
+saved before a setting was renamed or reshaped would follow the seed for it. So a change that renames
+or reshapes a stored setting converts the stored lists at its rollout, each Mac's (the map server's,
+`~/Library/Application Support/scenic/profiles.json`, and each laptop's own), with
+`tools/app/profiles-reshape.mjs` (its header), `--app` a checkout of the app before the change:
+1. Try it on a copy (`GET /api/profiles` saved to a file, or the file copied): `profiles-reshape.mjs
+   --app <before> <copy> <out.json>` prints each profile's changes and refuses unless the app before
+   and after the change read the result as the app before read the original; read the diff.
+2. With the owner's go, before the change is published: `profiles-reshape.mjs --app <before>
+   --apply <profiles.json>` on each Mac. It keeps the original beside the file,
+   `profiles.json.before-reshape`, and refuses while one is there or when the file changed as it ran.
+3. Undo if needed: `--restore <profiles.json>` puts the backup back.
+4. Last, delete the backup: `--drop-backup <profiles.json>` on each Mac, once the owner has opened
+   each converted profile on the published map and confirmed it, and at the latest 7 days after
+   step 2 (the daily backup above keeps the map server's list for 30 days).
+
 **Links.** None belongs in the project folder. A link made from a Mac is stored on the NAS as an
 XSym file and lists as a file over SMB; only its stat says it's a link. No walk of the NAS's folders
 goes through one: each goes down by the listing's type or by an entry's stat, which doesn't follow a

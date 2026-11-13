@@ -1,7 +1,8 @@
 // node web/test/names.test.ts (tools/dev/check.sh's web part): the names links, saved state,
 // profiles and preset lists use (task #855): the colourings' keys, the score factors keyed as the
 // metric of their channel, the preset lists' localStorage keys. A name the app doesn't have is
-// ignored: the profile's colouring stays, a weight under an unknown key isn't read.
+// ignored: the profile's colouring stays; a preset list weighing a factor the app doesn't have
+// isn't read (the built-ins).
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 
@@ -30,8 +31,8 @@ Object.defineProperty(globalThis, 'localStorage', {
 });
 mem.set('scenic-roads:presets.rail', JSON.stringify([
   { id: 'balanced', name: 'Balanced', weights: { view: 1, water: 1.2, vista: 0.8, drama: 1, ridge: 0.8, elev: 0.4, viaduct: 0.8, tunnel: -1, grade: 0.4, curvy: 0.3, freq: 0.3 } },
-  // No trains a day: a factor at 0 isn't listed. Keys the factors don't have aren't read.
-  { id: 'zero-trains', name: 'Zero trains', weights: { view: 1.1, views: 9, water: 1.3, vista: 0.9, drama: 1.1, ridge: 0.9, ledge: 9, elev: 0.5, viaduct: 0.9, tunnel: -0.9, grade: 0.5, curvy: 0.4 } },
+  // No trains a day: a factor at 0 isn't listed.
+  { id: 'zero-trains', name: 'Zero trains', weights: { view: 1.1, water: 1.3, vista: 0.9, drama: 1.1, ridge: 0.9, elev: 0.5, viaduct: 0.9, tunnel: -0.9, grade: 0.5, curvy: 0.4 } },
 ]));
 mem.set('scenic-roads:weightPresets', JSON.stringify([{ id: 'mine', name: 'Mine', weights: { view: 3 } }]));
 mem.set('scenic-roads:railWeightPresets', JSON.stringify([{ id: 'other', name: 'Other', weights: { view: 3 } }]));
@@ -113,8 +114,13 @@ const at = '#map=9.00/46.00000/-71.00000';
   const reset = new PresetList('presets.rail', RAIL_COMPONENTS, rails.default.presets);
   assert.equal(reset.custom, false);
   assert.deepEqual(reset.list, reset.builtin);
-  // A stored value that isn't a list of presets: the built-ins.
-  for (const bad of ['{"a":1}', '[{"id":"x"}]', '[7]', 'not json']) {
+  // A stored value that isn't a list of presets, or a list where a preset weighs a factor by a name
+  // the app doesn't have (an older app's `views`, `ledge`) or a weight that isn't a number: the
+  // built-ins, whole (its other presets aren't read either).
+  const ok = { id: 'ok', name: 'Ok', weights: { view: 1 } };
+  const one = (weights: Record<string, unknown>) => JSON.stringify([ok, { id: 'x', name: 'X', weights }]);
+  for (const bad of ['{"a":1}', '[{"id":"x"}]', '[7]', 'not json', '[{"id":"x","name":"X","weights":[1,2]}]',
+    one({ views: 1, water: 1 }), one({ view: 1, ledge: 2 }), one({ view: '1' }), one({ view: null }), one({ view: 1, waterfront: 0 })]) {
     mem.set('scenic-roads:presets.rail', bad);
     assert.deepEqual(new PresetList('presets.rail', RAIL_COMPONENTS, rails.default.presets).list, reset.builtin, bad);
   }

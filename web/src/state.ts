@@ -995,6 +995,9 @@ export function toHash(s: AppState, buildings: boolean, base: LinkBase): string 
   return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',');
 }
 
+/** A link field's number: `d` when it is empty or not a finite number. */
+const fin = (v: string | undefined, d: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
+
 /** The state a link gives: `base` (the profile it names, else the default profile) with the
  * settings it carries, each param read whole or not at all (above). `buildings`: whether the
  * catalogue has the 3D buildings; without, their `bd=` is left out, as `toHash` leaves it out. */
@@ -1059,7 +1062,8 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   if (g && g.length === NGROUP) s.groups = [...g].map((c) => c === '1');
   const un = p.get('un');
   if (un && un.length === NGROUP) s.unnamed = [...un].map((c) => c === '1');
-  const rl = p.get('rl')?.split(',').map((v) => Math.max(0, Number(v) || 0));
+  // (An empty bound is none, 0; one unreadable, the profile's.)
+  const rl = p.get('rl')?.split(',').map((v, i) => (v === '' ? 0 : Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : s.roadLen[i]));
   if (rl && rl.length === 2) s.roadLen = [rl[0], rl[1]];
   if (p.has('rlo')) s.roadLenOn = p.get('rlo') !== '0';
   const rmv = p.get('rm')?.split(',');
@@ -1135,13 +1139,13 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       single: /^[0-9a-f]{6}$/i.test(fy[6]) ? `#${fy[6]}` : f.single,
       opacity: fy[7] !== '' && Number.isFinite(op) ? Math.min(1, Math.max(0.05, op)) : f.opacity,
       freqOn: fy[8] === '1',
-      freqMin: Math.max(0, Number(fy[9]) || 0),
-      freqMax: Math.max(0, Number(fy[10]) || 0),
+      freqMin: Math.max(0, fin(fy[9], f.freqMin)),
+      freqMax: Math.max(0, fin(fy[10], f.freqMax)),
       freqUnknown: fy[11] === '1',
       metric,
       looks: looksOfField(fy[28], metric, FERRY_KEYS, ferryFreshLook),
       auto: fy[13] === '1',
-      range: fy[14] !== '' && fy[15] !== '' && Number(fy[15]) > Number(fy[14]) ? [Number(fy[14]), Number(fy[15])] : f.range,
+      range: fin(fy[15], NaN) > fin(fy[14], NaN) ? [Number(fy[14]), Number(fy[15])] : f.range,
       lowFade: Number.isFinite(Number(fy[19])) && fy[19] !== '' ? Math.min(1, Math.max(0, Number(fy[19]))) : f.lowFade,
       ...parseScaleTail([fy[16], fy[17], fy[18], fy[20], fy[21], fy[22], fy[23]], f),
       fitLens: fitLensOfFields(fy[24], fy[25], fy[27], FERRY_FIT_KEYS),
@@ -1383,7 +1387,7 @@ export function fromSaved(o: unknown, base: AppState): AppState {
       if (!(k in from)) continue;
       const d = dst[k], v = from[k];
       if (Array.isArray(d)) {
-        if (Array.isArray(v) && v.length === d.length && v.every((x, i) => typeof x === typeof d[i])) dst[k] = v;
+        if (Array.isArray(v) && v.length === d.length && v.every((x, i) => typeof x === typeof d[i] && (typeof x !== 'number' || Number.isFinite(x)))) dst[k] = v;
       } else if (d !== null && typeof d === 'object') {
         if (v && typeof v === 'object') merge(d as Record<string, unknown>, v as Record<string, unknown>);
       } else if (typeof v === typeof d && (typeof v !== 'number' || Number.isFinite(v))) {
@@ -1485,7 +1489,8 @@ export function fromSaved(o: unknown, base: AppState): AppState {
   }
   const v = view as AppState['view'];
   if (v && [v.zoom, v.lat, v.lng].every(Number.isFinite)) {
-    s.view = { zoom: v.zoom, lat: v.lat, lng: v.lng, bearing: Number(v.bearing) || 0, pitch: Number(v.pitch) || 0, elev: Number(v.elev) || 0 };
+    const n = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
+    s.view = { zoom: v.zoom, lat: v.lat, lng: v.lng, bearing: n(v.bearing), pitch: n(v.pitch), elev: n(v.elev) };
   }
   return s;
 }

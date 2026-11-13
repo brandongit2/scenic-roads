@@ -152,16 +152,20 @@ the World zoomed out, a region, or the view). The map supports Chrome and Safari
     flags of another length; a preset's name without its weights or the weights without the
     name): ignored whole, so that setting is the profile's (in a comma-separated value, fields past
     those the app writes are ignored);
-  - *within a value of the right shape, a field that is empty, unreadable or names something the
-    app doesn't offer* (a rail colouring `group`, a display type that is gone): that field is the
-    profile's; a number out of range is clamped, or for an opacity left at the profile's;
+  - *within a value of the right shape, a field that is empty, unreadable (a number too large to
+    be one, `1e309`, too) or names something the app doesn't offer* (a rail colouring `group`, a
+    display type that is gone): that field is the profile's; a number out of range is clamped, or for an opacity left at the profile's;
   - *a link naming a profile that is gone*: its settings over the Default profile, with a notice;
   - *saved settings* (the browser's last session, and a profile's own): read key by key; a key the
     app doesn't have is ignored, and a value missing, of another type or list length, or naming
     something the app doesn't offer is the profile's (in a profile: `web/default-profile.json`'s);
-  - *a weight preset list stored in the browser*: one that isn't a list of presets gives the
-    built-in presets; in a preset, a weight under a name the factors don't have is ignored and a
-    factor it doesn't list weighs 0; lists stored under other names aren't read.
+  - *a weight preset list stored in the browser*: read whole or not at all: one that isn't a list
+    of presets, or where a preset weighs a factor by a name the app doesn't have or holds a weight
+    that isn't a number, gives the built-in presets (the stored list stays until the next edit of
+    the list); a factor a preset doesn't list weighs 0; lists stored under other names aren't read.
+  - *a profile saved before a setting was renamed or reshaped*: that setting is the seed's, so such
+    a change converts the servers' stored profiles at its rollout (docs/storage.md, Settings
+    profiles).
 
   A new server's Default holds
   `web/default-profile.json` (the owner's Default as of 12 Nov), which is also what the map shows

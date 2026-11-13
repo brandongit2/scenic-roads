@@ -2,8 +2,10 @@
 // data (data/weight-presets.json, data/rail-presets.json: weights keyed by component). Once a list
 // is edited in the app (save, save as, rename, delete), the edited list is kept in localStorage
 // (presets.roads, presets.rail) and used instead; "Built-ins" goes back to the file's. A stored
-// list is read whole or not at all (one that isn't a list of presets: the built-ins); in a preset,
-// a weight under a key the components don't have is ignored, and a factor it doesn't list weighs 0.
+// list is read whole or not at all: one that isn't a list of presets, or where a preset weighs a
+// factor the app doesn't have (an older name: the rest of its weights would mean something else)
+// or holds a weight that isn't a number, gives the built-ins. A factor a preset doesn't list
+// weighs 0 (a factor at 0 isn't stored).
 import builtin from './data/weight-presets.json';
 import railBuiltin from './data/rail-presets.json';
 import * as prefs from './prefs';
@@ -17,7 +19,7 @@ export interface Preset {
   w: number[];
 }
 
-type Stored = { id: string; name: string; weights: Record<string, number> };
+type Stored = { id: string; name: string; weights: Record<string, unknown> };
 type Comp = { key: string };
 
 export const sameWeights = (a: number[], b: number[]) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1e-6);
@@ -36,12 +38,12 @@ export class PresetList {
     this.list = saved ?? this.builtin.map((p) => ({ ...p, w: [...p.w] }));
   }
 
-  // A factor at 0 isn't stored: one not listed weighs 0.
-  private toVec(ws: Record<string, number>) {
-    return this.comps.map((c) => {
-      const v = Number(ws[c.key]);
-      return Number.isFinite(v) ? v : 0;
-    });
+  /** A preset's weights in the factors' order (one not listed: 0), or null when it lists a factor
+   * the app doesn't have or a weight that isn't a number. */
+  private toVec(ws: Record<string, unknown>): number[] | null {
+    const keys = new Set(this.comps.map((c) => c.key));
+    if (Object.entries(ws).some(([k, v]) => !keys.has(k) || typeof v !== 'number' || !Number.isFinite(v))) return null;
+    return this.comps.map((c) => (ws[c.key] as number | undefined) ?? 0);
   }
   private toMap(w: number[]) {
     return Object.fromEntries(this.comps.map((c, i) => [c.key, +w[i].toFixed(2)] as const).filter(([, v]) => v !== 0));
@@ -50,8 +52,10 @@ export class PresetList {
     if (!Array.isArray(list)) return null;
     const out: Preset[] = [];
     for (const p of list as Stored[]) {
-      if (!p || typeof p.id !== 'string' || typeof p.name !== 'string' || !p.weights || typeof p.weights !== 'object') return null;
-      out.push({ id: p.id, name: p.name, w: this.toVec(p.weights) });
+      if (!p || typeof p.id !== 'string' || typeof p.name !== 'string' || !p.weights || typeof p.weights !== 'object' || Array.isArray(p.weights)) return null;
+      const w = this.toVec(p.weights);
+      if (!w) return null;
+      out.push({ id: p.id, name: p.name, w });
     }
     return out;
   }
