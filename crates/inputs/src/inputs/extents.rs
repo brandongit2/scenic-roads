@@ -79,7 +79,7 @@ pub const METHODS: [(&str, Option<&str>); 8] = [
 const SAID: [&str; 3] = ["index", "service", "claimed"];
 
 /// How a metric's reading writes a date.
-const DATES: [&str; 4] = ["epoch-ms", "iso", "year", "text"];
+const DATES: [&str; 5] = ["epoch-ms", "iso", "year", "text", "yymmdd"];
 
 /// A theme's score file.
 pub const SCORE: &str = "score.toml";
@@ -782,8 +782,10 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
         if b.get("tolerance_m").is_some_and(|v| !num(v).is_some_and(|x| x > 0.0)) {
             bad.push(format!("piece {id}: `tolerance_m` isn't a positive number"));
         }
-        if b.get("filter").is_some_and(|v| !v.as_table().is_some_and(|f| f.values().all(|x| x.is_array()))) {
-            bad.push(format!("piece {id}: `filter` isn't a table of lists, {{field = [values]}}"));
+        for key in ["filter", "exclude"] {
+            if b.get(key).is_some_and(|v| !v.as_table().is_some_and(|f| f.values().all(|x| x.is_array()))) {
+                bad.push(format!("piece {id}: `{key}` isn't a table of lists, {{field = [values]}}"));
+            }
         }
         let metrics = match b.get("metrics") {
             None => toml::Table::new(),
@@ -793,15 +795,18 @@ pub fn declaration(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>
                         if let Some(r) = spec.as_table() {
                             reading(&id, name, r, &mut bad);
                         } else if let Some(rs) = spec.as_array() {
-                            // (Readings in turn, the first giving a value.)
+                            // (Readings in turn, the first giving a value; the last may be a
+                            // constant, the value where none of them gives one.)
                             if rs.is_empty() {
                                 bad.push(format!("piece {id}: metrics.{name}: an empty list of readings"));
                             }
-                            for r in rs {
+                            for (k, r) in rs.iter().enumerate() {
                                 match r.as_table() {
                                     Some(r) => reading(&id, name, r, &mut bad),
+                                    None if k + 1 == rs.len() && !r.is_array() => {}
                                     None => bad.push(format!(
-                                        "piece {id}: metrics.{name}: a list holds readings ({{field = …}}) only"
+                                        "piece {id}: metrics.{name}: a list holds readings ({{field = …}}), a \
+                                         constant only last"
                                     )),
                                 }
                             }
@@ -1091,7 +1096,7 @@ fn declared_kind(m: &Metric, spec: &toml::Value) -> Option<String> {
     };
     match (spec.as_table(), spec.as_array()) {
         (Some(r), _) => mapped(r),
-        (None, Some(rs)) => rs.iter().filter_map(|r| r.as_table()).find_map(mapped),
+        (None, Some(rs)) => rs.iter().find_map(|r| r.as_table().map_or_else(|| m.scale.refuses(&json(r)), mapped)),
         (None, None) => m.scale.refuses(&json(spec)),
     }
 }
