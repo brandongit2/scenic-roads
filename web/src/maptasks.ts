@@ -5,8 +5,7 @@
 // errored); a GeoJSON source still being tiled in MapLibre's worker shows as processing; glyphs
 // still to be drawn on the page (the fork's GlyphManager#waiting) and shader programs still
 // linking in the background (glprog.ts, the fork's Context.pendingPrograms, as of the last frame
-// drawn). The regions' own
-// sources aren't counted: downloads have their own panel.
+// drawn).
 // MapLibre keeps these in its internals (style.tileManagers), read defensively: none of it is
 // public API, and a change there only empties this list.
 import type { Map as MLMap } from 'maplibre-gl';
@@ -23,10 +22,10 @@ interface ManagerLike {
   _inViewTiles?: { getAllTiles?: () => TileLike[] };
 }
 
-/** Sources not counted: the regions panel's own (downloads); the viewshed's image (its search is a
- * task of its own); the app's own GeoJSON it fills itself (the selection, the drives and
- * their highlight, the marks). Any other id shows by itself: a loader new since. */
-const SKIP = new Set(['region-hover', 'regions', 'regions-labels', 'viewshed', 'selection', 'drives', 'drive-hl', 'marks']);
+/** Sources not counted: the viewshed's image (its search is a task of its own); the app's own
+ * GeoJSON it fills itself (the regions' names, the selection, the drives and their highlight, the
+ * marks). Any other id shows by itself: a loader new since. */
+const SKIP = new Set(['regions-labels', 'viewshed', 'selection', 'drives', 'drive-hl', 'marks']);
 
 function labelOf(id: string): string | null {
   if (SKIP.has(id)) return null;
@@ -41,6 +40,7 @@ function labelOf(id: string): string | null {
   if (id === 'contours') return 'Contours';
   if (id.startsWith('trees-')) return 'Trees';
   if (id === 'stations') return 'Stations';
+  if (id === 'regions') return 'Region borders';
   if (id === 'ferries') return 'Ferries';
   if (id === 'whs') return 'World Heritage outlines';
   if (id === POI_SOURCE) return 'Stops & sights';

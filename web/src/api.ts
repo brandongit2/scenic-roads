@@ -146,7 +146,7 @@ export function packChanged(layer: string, z: number, x: number, y: number): boo
  * request transform; the polar caps' fetches, polarcaps.ts, whose `polar-terrain/s` is the layer
  * `polar-terrain-s`): others, and layers without packs, as they are. */
 export function packUrl(url: string): string {
-  const m = /\/tiles\/(roads|rails|labels|slope|terrain|stations|buildings|depth|depth-class|trees\/[a-z]+|ov\/[a-z-]+|polar-[a-z]+\/[ns])\/(\d+)\/(\d+)\/(\d+)(?:\.\w+)?(\?[^#]*)?$/.exec(url);
+  const m = /\/tiles\/(roads|rails|labels|slope|terrain|stations|buildings|depth|depth-class|regions|trees\/[a-z]+|ov\/[a-z-]+|polar-[a-z]+\/[ns])\/(\d+)\/(\d+)\/(\d+)(?:\.\w+)?(\?[^#]*)?$/.exec(url);
   if (!m) return url;
   const v = packVersion(m[1].replace('/', '-'), +m[2], +m[3], +m[4]);
   if (v === undefined) return url;

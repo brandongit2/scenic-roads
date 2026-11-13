@@ -13,7 +13,7 @@ import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setRe
 import { countryFlag, regionFlag, type Flag } from '../flags';
 import * as prefs from '../prefs';
 import { allIds, areaText, countryCode, entries, filter, folderCountry, type Shown } from '../regionlist';
-import { RegionLayers, RegionsError, getOutlines, listRegions, type Folder, type Region, type RegionOutline } from '../regions';
+import { RegionLayers, RegionsError, listRegions, type Folder, type Region } from '../regions';
 import { h } from './dom';
 import { fmt } from '../fmt';
 
@@ -21,22 +21,18 @@ import { fmt } from '../fmt';
 const FRESH_MS = 10_000;
 
 type Bbox = [number, number, number, number];
-/** The zoom of the outlines the panel asks for its rows (their areas and boxes; a row's hover asks
- * the map's zoom's, RegionLayers.setHover). */
-const PANEL_Z = 4;
-
 /** An error in plain words. */
 function says(e: unknown): string {
   if (!(e instanceof RegionsError)) return 'Something went wrong';
-  if (e.status === 404 && /^no outlines yet/i.test(e.message)) return 'No area outlines yet: the OpenStreetMap pass makes them';
   return e.message;
 }
 
-/** The box around some outlines. */
-function bboxOf(fs: RegionOutline[]): Bbox | null {
+/** The box around some regions' boxes (null: none has one yet). */
+function bboxOf(rs: Region[]): Bbox | null {
   let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  for (const f of fs) {
-    const b = f.properties.bbox;
+  for (const r of rs) {
+    const b = r.bbox;
+    if (!b) continue;
     w = Math.min(w, b[0]);
     s = Math.min(s, b[1]);
     e = Math.max(e, b[2]);
@@ -121,8 +117,6 @@ export class RegionsPanel {
   /** The folders the list is grouped by (null: a server from before folders). */
   private tree: Folder | null = null;
   private bad: [string, string][] = [];
-  /** Each region's outline at PANEL_Z (its area: its flag and country; its box). */
-  private outlines = new Map<string, RegionOutline>();
   private loadedAt = -Infinity;
   private loadTok = 0;
   private open = false;
@@ -213,16 +207,16 @@ export class RegionsPanel {
 
   // ---- the regions ------------------------------------------------------------------
 
-  /** The regions and their outlines (at PANEL_Z) again. */
+  /** The regions again. */
   private async refresh() {
     const tok = ++this.loadTok;
     if (!this.regions.length) this.note.replaceChildren(h('span', { class: 'spin' }), ' Loading the regions…');
-    const [list, outlines] = await Promise.allSettled([listRegions(), getOutlines(PANEL_Z)]);
+    const [list] = await Promise.allSettled([listRegions()]);
     if (tok !== this.loadTok) return;
     this.loadedAt = performance.now();
-    if (outlines.status === 'fulfilled') this.outlines = new Map(outlines.value.features.map((f) => [f.properties.region, f]));
     if (list.status === 'fulfilled') {
       this.regions = list.value.regions;
+      this.layers.setRegions(this.regions);
       this.tree = list.value.tree ?? null;
       this.bad = list.value.bad;
       this.note.replaceChildren();
@@ -252,18 +246,13 @@ export class RegionsPanel {
         const now = unsized(l.regions);
         if (now < before) {
           this.regions = l.regions;
+          this.layers.setRegions(this.regions);
           this.tree = l.tree ?? this.tree;
           this.renderList();
         }
         this.watchSizes(now < before ? 0 : stalled + 1);
       }, () => this.watchSizes(stalled + 1));
     }, SIZE_POLL_MS);
-  }
-
-  /** A region's outline (none until loaded, or for a region with no accepted outline). */
-  private outlinesOf(r: Region): RegionOutline[] {
-    const f = this.outlines.get(r.id);
-    return f ? [f] : [];
   }
 
   /** The heights the sticky search bar and folder headings sit under: the section's header (under
@@ -337,7 +326,7 @@ export class RegionsPanel {
     const name = h('span', { class: 'rg-name', title: `${f.name}: show it` }, f.name);
     name.addEventListener('click', (e) => {
       e.preventDefault();
-      const b = bboxOf(regs.flatMap((r) => this.outlinesOf(r)));
+      const b = bboxOf(regs);
       if (b) this.onFit(b);
     });
     const slot = h('span', { class: 'rg-dlslot' });
@@ -371,14 +360,14 @@ export class RegionsPanel {
    * code); null when it has none of its own: never its folder's or its country's. */
   private flagOf(r: Region): Flag | null {
     const rel = r.outline.find((p) => /^osm:\d+$/.test(p))?.slice(4);
-    return regionFlag(rel, this.outlines.get(r.id)?.properties.area?.iso || undefined);
+    return regionFlag(rel, r.area?.iso || undefined);
   }
 
   /** A region's country (ISO 3166-1), for its folder's flag. */
   private countryOf(id: string): string | null {
     const r = this.byId.get(id);
     if (!r) return null;
-    const a = this.outlines.get(id)?.properties.area;
+    const a = r.area;
     return countryCode({ iso: a?.iso, country: a?.country, in: a?.in, geo: r.country });
   }
 
@@ -430,12 +419,11 @@ export class RegionsPanel {
   }
 
   private regionRow(r: Region): HTMLElement {
-    const fs = this.outlinesOf(r);
     const row = h('div', { class: r.disabled ? 'rg off' : 'rg' });
     const state = this.stateOf(r);
     const name = h('span', { class: 'rg-name', title: `${r.name}: show it` }, r.name);
     name.addEventListener('click', () => {
-      const b = bboxOf(fs);
+      const b = bboxOf([r]);
       if (b) this.onFit(b);
     });
     const slot = h('span', { class: 'rg-dlslot' });

@@ -11,7 +11,7 @@ import type { Available } from './available';
 import { loadDetail, peekDetail, refKey } from '../details';
 import type { Ferries } from '../ferries';
 import { AREA_LAYERS, POINT_LAYERS, summariseFeature, withDetails, type FeatureSummary, type Overlays } from '../overlays';
-import { regionAt, type RegionLayers } from '../regions';
+import type { RegionLayers } from '../regions';
 import type { HoverInfo, RoadLayer } from '../roads/layer';
 import type { Store } from '../state';
 import type { RegionsPanel } from '../ui/regions';
@@ -58,12 +58,14 @@ export class Hover {
   /** The feature in the bottom bar, whose details are awaited. */
   private featKey = '';
   private hoverAreas: FeatureSummary[] = [];
-  /** The pick a water answer (depth.water) is for: one newer, or the cursor gone, drops it. */
-  private waterTok = 0;
-  /** The newest water pick still to ask about, and whether a probe is out: one at a time, the
-   * newest pick next, so fast moves don't queue probes in the depth workers. */
-  private waterAt: { tok: number; pt: { x: number; y: number }; ll: maplibregl.LngLat } | null = null;
-  private waterBusy = false;
+  /** The pick an answer asked for (the region there, the water) is for: one newer, or the cursor
+   * gone, drops it. */
+  private askTok = 0;
+  /** The newest pick still to ask about, and whether an ask is out: one at a time, the newest pick
+   * next, so fast moves don't queue asks (the server's /api/regions/at, the depth workers). With
+   * `areas`, the region there is asked first (Show regions on map), then the areas, then the water. */
+  private askAt: { tok: number; pt: { x: number; y: number }; ll: maplibregl.LngLat; areas?: FeatureSummary[] } | null = null;
+  private asking = false;
   /** The hovered building highlighted (null: none), when it changed. */
   private hoveredBuilding: unknown = null;
   private listTok = 0;
@@ -100,7 +102,7 @@ export class Hover {
     // hover readout mid-gesture is of no use.
     if (!pt || this.p.driving() || this.p.moving() || hudOff()) return;
     this.featKey = '';
-    this.waterTok++; // (a water answer still to come is for an older pick)
+    this.askTok++; // (an answer still to come is for an older pick)
     // Markers first (small targets), then the nearest road or rail line, then the highlighted
     // areas under the cursor.
     const feats = overlays.hoverAt(pt);
@@ -147,19 +149,18 @@ export class Hover {
         rails.setHover(null);
         return strip.showFeature(buildingSummary(bf), feats.areas);
       }
-      // A region (Show regions on map), before the areas inside it.
       const ll = this.cursorLL ?? map.unproject([pt.x, pt.y]);
-      const rg = feats.point ? null : regionAt(this.p.regionLayers.shown, [ll.lng, ll.lat]);
-      if (rg) {
-        roads.setHover(null);
-        rails.setHover(null);
-        return strip.showRegion(this.p.regions.regionInfo(rg.properties.region, rg.properties.name));
+      // A region (Show regions on map), before the areas inside it: asked of the server.
+      if (!feats.point && this.p.regionLayers.shown) {
+        this.askAt = { tok: this.askTok, pt, ll, areas: feats.areas };
+        if (!this.asking) void this.ask();
+        return;
       }
       const f = feats.point ?? feats.areas[0];
       if (f) return this.showFeat(f, feats.areas);
       // Nothing else here: water, if the depth has it (else the strip goes idle).
-      this.waterAt = { tok: this.waterTok, pt, ll: this.cursorLL ?? map.unproject([pt.x, pt.y]) };
-      if (!this.waterBusy) void this.askWater();
+      this.askAt = { tok: this.askTok, pt, ll };
+      if (!this.asking) void this.ask();
       return;
     }
     this.hoverBuilding(null);
@@ -173,14 +174,31 @@ export class Hover {
     }
   };
 
-  private async askWater() {
-    this.waterBusy = true;
+  private async ask() {
+    this.asking = true;
     try {
-      while (this.waterAt) {
-        const q = this.waterAt;
-        this.waterAt = null;
+      while (this.askAt) {
+        const q = this.askAt;
+        this.askAt = null;
+        if (q.areas) {
+          const id = await this.p.regionLayers.at(q.ll).catch((e) => {
+            console.warn('regions: at', e);
+            return null;
+          });
+          if (q.tok !== this.askTok) continue;
+          if (id) {
+            this.p.rd.roads.setHover(null);
+            this.p.rd.rails.setHover(null);
+            this.p.strip.showRegion(this.p.regions.regionInfo(id, this.p.regionLayers.region(id)?.name ?? id));
+            continue;
+          }
+          if (q.areas[0]) {
+            this.showFeat(q.areas[0], q.areas);
+            continue;
+          }
+        }
         const w = await this.p.depth().water(q.ll);
-        if (q.tok !== this.waterTok) continue;
+        if (q.tok !== this.askTok) continue;
         if (!w) this.p.strip.show(null, null);
         else {
           const n = waterNameAt(this.map, q.pt, w.water);
@@ -188,7 +206,7 @@ export class Hover {
         }
       }
     } finally {
-      this.waterBusy = false;
+      this.asking = false;
     }
   }
 
@@ -203,7 +221,7 @@ export class Hover {
   /** No hover: the cursor left the map, or the HUD went off. */
   unhover() {
     this.pickAt = null;
-    this.waterTok++;
+    this.askTok++;
     this.hovered = null;
     this.p.rd.roads.setHover(null);
     this.p.rd.rails.setHover(null);

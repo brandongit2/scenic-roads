@@ -346,7 +346,7 @@ export function applyOverlayOpacity(map: import('maplibre-gl').Map, f: number) {
   }
 }
 
-/** The boundary lines' opacity (Layers → Map → Boundaries), × their own; the regions' outlines
+/** The boundary lines' opacity (Layers → Map → Boundaries), × their own; the regions' borders
  * (regions.ts) follow it too. */
 export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) {
   for (const id of [...LAYER_GROUPS.boundaries, 'boundary-country-disputed', 'regions-line']) {
@@ -362,7 +362,7 @@ export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) 
  * layers. */
 const LINE_WIDTHS: [string, LineKind | 'global'][] = [
   ['boundary-county', 'borders'], ['boundary-state', 'borders'], ['boundary-country', 'borders'], ['boundary-country-disputed', 'borders'],
-  // The regions' outlines (Regions → Show regions on map) as the borders.
+  // The regions' borders (Regions → Show regions on map) as the boundaries.
   ['regions-line', 'borders'],
   ['waterway', 'rivers'],
   ['park-line', 'outlines'], ['indigenous-line', 'outlines'], ['special-line', 'outlines'], ['heritage-area-line', 'outlines'], ['whs-line', 'outlines'],
