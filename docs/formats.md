@@ -792,8 +792,8 @@ run/<name>              what the launcher runs, one argument per line: server, a
                         Scenic.app when it opens)
 agent/quit-request.json Scenic's ask to quit (control::Quit: finish or now), until the agent exits
 app/<version>/          server, scenic, scenic-build, dem/, Scenic.app,
-                        web/, fonts/ (app/current → the one in use), unpacked from the NAS's
-                        app/releases/<version>.tgz (docs/storage.md)
+                        web/, fonts/ (app/current → the one in use), unpacked from its
+                        release's archive, app/releases/<version>.tgz (docs/macs.md, The updater)
 pyenv/<key>/            the Python steps' environment of a lock file (dem/uv.lock + .python-version),
                         shared by the versions with it (jobrt::pyenv); .used: its last use
 pyenv/.lock-<key>       flock'd by the one making of that key (kept: removing a held lock breaks it)

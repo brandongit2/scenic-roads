@@ -327,7 +327,7 @@ mod tests {
         let (store, src) = (d.path().join("releases"), d.path().join("src"));
         std::fs::create_dir_all(&src).unwrap();
         let (c, w) = lead(&d.path().join("coord"), &store);
-        assert_eq!(rel::live(&w).unwrap(), Some(Live::default()));
+        assert_eq!(rel::live(&w).unwrap(), Live::default());
         assert_eq!(jobrt::appupdate::Source::live(&w).unwrap(), None, "holds none yet");
         let (a1, m1) = release(&src, V1);
         assert_eq!(done(rel::push(&w, &a1, &m1, None).unwrap()), (s(V1), None));
@@ -401,11 +401,11 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         let (c, w) = lead(&d.path().join("coord"), &store);
         let home = member(&d.path().join("m1"));
-        assert_eq!(jobrt::appupdate::check(&home, &w, None, V0).unwrap(), None, "none yet");
+        assert_eq!(jobrt::appupdate::check(&home, &w, V0).unwrap(), None, "none yet");
         let ((a1, m1), (a2, m2)) = (release(&src, V1), release(&src, V2));
         done(rel::push(&w, &a1, &m1, None).unwrap());
         done(rel::push(&w, &a2, &m2, Some(V1)).unwrap());
-        assert_eq!(jobrt::appupdate::check(&home, &w, None, V0).unwrap(), s(V2));
+        assert_eq!(jobrt::appupdate::check(&home, &w, V0).unwrap(), s(V2));
         assert_eq!(current(&home), V2);
         assert_eq!(std::fs::read(home.join("app").join(V2).join("web/index.html")).unwrap(), V2.as_bytes());
         assert_eq!(versions(&Releases::of_home(&home).live().unwrap()), (s(V2), s(V1)));
@@ -414,7 +414,7 @@ mod tests {
         let (a3, m3) = release(&src, V3);
         done(rel::push(&w, &a3, &m3, Some(V2)).unwrap());
         c.stop();
-        assert!(jobrt::appupdate::check(&home, &w, None, V2).is_err());
+        assert!(jobrt::appupdate::check(&home, &w, V2).is_err());
         assert_eq!(current(&home), V2);
         assert_eq!(versions(&Releases::of_home(&home).live().unwrap()), (s(V2), s(V1)));
     }
@@ -432,19 +432,19 @@ mod tests {
         done(rel::push(&w, &a1, &m1, None).unwrap());
         done(rel::push(&w, &a2, &m2, Some(V1)).unwrap());
         let b = member(&d.path().join("b"));
-        assert_eq!(jobrt::appupdate::check(&b, &w, None, V0).unwrap(), s(V2));
+        assert_eq!(jobrt::appupdate::check(&b, &w, V0).unwrap(), s(V2));
         old.stop();
         // B leads: its coordinator serves its own Mac's releases.
         let (new, w) = lead(&d.path().join("b/agent/coord"), &b.join(jobrt::appupdate::RELEASES));
-        assert_eq!(rel::live(&w).unwrap().map(|l| versions(&l)), Some((s(V2), s(V1))));
+        assert_eq!(versions(&rel::live(&w).unwrap()), (s(V2), s(V1)));
         let m = member(&d.path().join("m"));
-        assert_eq!(jobrt::appupdate::check(&m, &w, None, V0).unwrap(), s(V2));
+        assert_eq!(jobrt::appupdate::check(&m, &w, V0).unwrap(), s(V2));
         assert_eq!(done(rel::rollback(&w, V2, V1).unwrap()), (s(V1), s(V2)));
-        assert_eq!(jobrt::appupdate::check(&m, &w, None, V2).unwrap(), s(V1));
+        assert_eq!(jobrt::appupdate::check(&m, &w, V2).unwrap(), s(V1));
         assert_eq!(done(rel::push(&w, &a3, &m3, Some(V1)).unwrap()), (s(V3), s(V1)));
         // (B's own updater, asking its own coordinator, holds what it serves already: only its app
         // changes.)
-        assert_eq!(jobrt::appupdate::check(&b, &w, None, V2).unwrap(), s(V3));
+        assert_eq!(jobrt::appupdate::check(&b, &w, V2).unwrap(), s(V3));
         assert_eq!(versions(&Releases::of_home(&b).live().unwrap()), (s(V3), s(V1)));
         new.stop();
     }

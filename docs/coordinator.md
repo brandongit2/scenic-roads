@@ -299,5 +299,4 @@ Common rules:
   its data and asks at `/work/<name>`, and asks them there; this app serves and asks them at `/`
   and `/api/<name>` alone, and its coordinator refuses the page's old addresses (`/work/` holds
   only the workers' calls).
-- **Planned:** nothing of it on the NAS once the rollout ends (docs/building.md, The NAS's `app/`
-  until then).
+- Nothing of it is on the NAS.

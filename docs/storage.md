@@ -24,9 +24,6 @@ global/        worldwide files: road values per z6 tile, road → z6 tiles, rail
 layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
 cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
-app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
-               current.json (the live one's manifest: {version, sha256, archive_sha256}),
-               previous.json (docs/building.md, The NAS's layout of the app); publish.lock
 state/         build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history's archive (a tar a finished day: the history
                itself is the lead's, on its disk), the forecasts' and forecast inputs' archives),

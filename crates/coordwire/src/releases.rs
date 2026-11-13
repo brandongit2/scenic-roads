@@ -17,19 +17,17 @@ pub const INSTALL: &str = "/release/install";
 /// The live release and the one before swapped (`POST`).
 pub const ROLLBACK: &str = "/release/rollback";
 
-/// What the lead holds: Some (perhaps no release yet), or None from a lead on an app before #1118
-/// (its router's bare 404: it keeps no releases).
-pub fn live(c: &Client) -> Result<Option<Live>> {
+/// What the lead holds (perhaps no release yet).
+pub fn live(c: &Client) -> Result<Live> {
     match c.request("GET", LIVE, None)? {
-        (200, b) => Ok(Some(serde_json::from_slice(&b).context("the lead's releases")?)),
-        (404, b) if b.is_empty() => Ok(None),
+        (200, b) => serde_json::from_slice(&b).context("the lead's releases"),
         (code, b) => bail!("the lead's releases: {code} {}", String::from_utf8_lossy(&b)),
     }
 }
 
 impl Source for Client {
     fn live(&self) -> Result<Option<Live>> {
-        Ok(live(self)?.filter(|l| l.current.is_some()))
+        Ok(Some(live(self)?).filter(|l| l.current.is_some()))
     }
 
     fn fetch(&self, v: &str, to: &Path) -> Result<()> {
@@ -76,13 +74,11 @@ pub fn rollback(c: &Client, current: &str, previous: &str) -> Result<Asked> {
 
 /// One check of this Mac's app (in the app's folder `home`) against the lead's releases
 /// (jobrt::appupdate::check), the lead found as crate::lead says: the one its agent keeps (no NAS
-/// needed), else the declared one's; with none, nothing. The NAS's releases stand in while the lead
-/// holds none (the rollout's), with the NAS there.
+/// needed), else the declared one's; with none, nothing.
 pub fn check(home: &Path, root: Option<&store::nasfs::NasRoot>, running: &str) -> Result<Option<String>> {
     let agent = (!buildstore::out::testing()).then(|| home.join("agent"));
     let Some(lead) = Client::to_lead(agent.as_deref(), root, &store::sys::host_name())? else { return Ok(None) };
-    let nas = root.map(jobrt::appupdate::NasReleases);
-    jobrt::appupdate::check(home, &lead, nas.as_ref().map(|n| n as &dyn jobrt::appupdate::Source), running)
+    jobrt::appupdate::check(home, &lead, running)
 }
 
 /// Checks every five minutes on a thread of its own, from a program run from an installed

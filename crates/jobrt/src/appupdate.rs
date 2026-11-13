@@ -10,8 +10,7 @@
 //! and the program that checked restarts into it by its own rule (the agent by its update drain, the
 //! map server once the map has been idle a minute). A copy is complete before it's used: it's
 //! unpacked in a folder of the copier's own, `<version>.<pid>.tmp/`, whose app is renamed into
-//! place. While the lead holds no release (one on an app before #1118, or none published to it
-//! yet), the NAS's `app/releases/` stands in (`NasReleases`): the rollout's, docs/building.md.
+//! place. While the lead holds no release (none published to it yet), there is nothing to do.
 //!
 //! Every Mac's agent checks (coordwire::releases::spawn, from `scenic agent`); the Mac mini's map
 //! server checks too (crates/server/src/updater.rs), so the map updates while the agent there is
@@ -24,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// A Mac's releases, under its app's home; and the NAS's (the rollout's, `NasReleases`).
+/// A Mac's releases, under its app's home.
 pub const RELEASES: &str = "app/releases";
 
 /// A published version's manifest (tools/app/lib.zsh's app_manifest): every file's SHA-256 and the
@@ -64,35 +63,12 @@ pub fn sha256(b: &[u8]) -> String {
     format!("{:x}", sha2::Sha256::digest(b))
 }
 
-/// Where a check gets releases: the lead (coordwire::releases), or the NAS (the rollout's).
+/// Where a check gets releases: the lead (coordwire::releases).
 pub trait Source {
-    /// Its live release and the one before; None while it holds none (or, the lead, an app from
-    /// before #1118 that keeps none).
+    /// Its live release and the one before; None while it holds none.
     fn live(&self) -> Result<Option<Live>>;
     /// Version `v`'s archive, written to `to`.
     fn fetch(&self, v: &str, to: &Path) -> Result<()>;
-}
-
-/// The NAS's releases (`app/releases/`: `current.json`, `previous.json`, `<version>.tgz`), read
-/// while the lead holds none. Rollout only (docs/building.md, The lead's releases): goes once every
-/// Mac has fetched from the lead.
-pub struct NasReleases<'a>(pub &'a store::nasfs::NasRoot);
-
-impl Source for NasReleases<'_> {
-    fn live(&self) -> Result<Option<Live>> {
-        let read = |n: &str| -> Option<Manifest> {
-            serde_json::from_slice(&self.0.join(format!("{RELEASES}/{n}")).read().ok()?).ok()
-        };
-        Ok(read("current.json").map(|c| Live { current: Some(c), previous: read("previous.json") }))
-    }
-
-    fn fetch(&self, v: &str, to: &Path) -> Result<()> {
-        self.0
-            .join(format!("{RELEASES}/{v}.tgz"))
-            .copy_to_local(to)
-            .map(drop)
-            .with_context(|| format!("app {v}: its archive"))
-    }
 }
 
 /// How long a `<version>.tmp/` folder or a release's upload goes untouched before it's a leftover:
@@ -271,10 +247,9 @@ impl Drop for Staged {
 
 /// Follows `lead`: its live release made this Mac's, the one before it kept beside it, and
 /// `current` pointed at the live one: the version it switched to, None when there's nothing to do
-/// (or another check holds the lock). While the lead holds no release, `nas`'s (the rollout's).
-/// `running` is the caller's own version, kept by the pruning. A lead that doesn't answer is an
-/// error: the update waits for it.
-pub fn check(home: &Path, lead: &dyn Source, nas: Option<&dyn Source>, running: &str) -> Result<Option<String>> {
+/// (or another check holds the lock, or the lead holds no release). `running` is the caller's own
+/// version, kept by the pruning. A lead that doesn't answer is an error: the update waits for it.
+pub fn check(home: &Path, lead: &dyn Source, running: &str) -> Result<Option<String>> {
     let dir = home.join("app");
     // (A copy that failed, or a version superseded before its copy finished, leaves its `.tmp`
     // folder; checked at every check, not only after a switch.)
@@ -283,13 +258,7 @@ pub fn check(home: &Path, lead: &dyn Source, nas: Option<&dyn Source>, running: 
     if lock.try_lock().is_err() {
         return Ok(None);
     }
-    let (live, from) = match lead.live()? {
-        Some(l) => (l, lead),
-        None => match nas.map(|n| n.live().map(|l| (l, n))).transpose()? {
-            Some((Some(l), n)) => (l, n),
-            _ => return Ok(None),
-        },
-    };
+    let Some(live) = lead.live()? else { return Ok(None) };
     let Some(cur) = live.current.clone() else { return Ok(None) };
     if !valid_version(&cur.version) || live.previous.as_ref().is_some_and(|p| !valid_version(&p.version)) {
         bail!("not a version's name: {:?}", live.versions());
@@ -303,7 +272,7 @@ pub fn check(home: &Path, lead: &dyn Source, nas: Option<&dyn Source>, running: 
         }
         let p = releases.incoming_file(&m.version)?;
         staged.0.push((m.version.clone(), p.clone()));
-        from.fetch(&m.version, &p)?;
+        lead.fetch(&m.version, &p)?;
         archive_checked(&p, m)?;
         // (On the disk before `commit` names it: a power cut after leaves no torn archive that
         // `holds` would take, unchecked, to unpack or serve as the lead.)
@@ -509,8 +478,26 @@ fn remove_stale_copies(dir: &Path, age: Duration) {
 mod tests {
     use super::*;
 
-    /// The NAS's live manifest, as publish.sh writes it.
-    const LIVE: &str = "app/releases/current.json";
+    /// A stand-in lead: a folder holding its live release's manifest (`LIVE`), the one before's
+    /// (`previous.json`) and their archives (`<version>.tgz`).
+    struct Published<'a>(&'a Path);
+
+    impl Source for Published<'_> {
+        fn live(&self) -> Result<Option<Live>> {
+            let read =
+                |n: &str| -> Option<Manifest> { serde_json::from_slice(&std::fs::read(self.0.join(n)).ok()?).ok() };
+            Ok(read(LIVE).map(|c| Live { current: Some(c), previous: read("previous.json") }))
+        }
+
+        fn fetch(&self, v: &str, to: &Path) -> Result<()> {
+            std::fs::copy(self.0.join(format!("{v}.tgz")), to)
+                .map(drop)
+                .with_context(|| format!("app {v}: its archive"))
+        }
+    }
+
+    /// The stand-in lead's live manifest.
+    const LIVE: &str = "current.json";
 
     fn age(p: &Path, secs: u64) {
         let t = SystemTime::now() - Duration::from_secs(secs);
@@ -603,21 +590,19 @@ mod tests {
         assert!(app.join("20261003-0000-ccccccc").exists(), "the one to roll back to");
     }
 
-    /// A version published to the stand-in NAS as publish.sh publishes it (lib.zsh's app_pack and
-    /// app_manifest): its files, the programs among them executable, packed in
-    /// `app/releases/<v>.tgz`, and its manifest made live; `tweak` changes the manifest first.
-    fn publish(nas: &Path, v: &str, files: &[(&str, &[u8])], tweak: impl FnOnce(&mut serde_json::Value)) {
+    /// A version published to the stand-in lead as publish.sh publishes it (lib.zsh's app_pack and
+    /// app_manifest): its files, the programs among them executable, packed in `<v>.tgz`, and its
+    /// manifest made live; `tweak` changes the manifest first.
+    fn publish(lead: &Path, v: &str, files: &[(&str, &[u8])], tweak: impl FnOnce(&mut serde_json::Value)) {
         use std::os::unix::fs::PermissionsExt;
-        let src = nas.join("staging").join(v);
+        let src = lead.join("staging").join(v);
         for (f, b) in files {
             std::fs::create_dir_all(src.join(f).parent().unwrap()).unwrap();
             std::fs::write(src.join(f), b).unwrap();
             let mode = if b.starts_with(b"#!") { 0o755 } else { 0o644 };
             std::fs::set_permissions(src.join(f), std::fs::Permissions::from_mode(mode)).unwrap();
         }
-        let rel = nas.join("app/releases");
-        std::fs::create_dir_all(&rel).unwrap();
-        let archive = rel.join(format!("{v}.tgz"));
+        let archive = lead.join(format!("{v}.tgz"));
         let st = store::spawn::status(
             store::spawn::command("/usr/bin/tar").arg("-czf").arg(&archive).arg("-C").arg(&src).arg("."),
         )
@@ -627,7 +612,7 @@ mod tests {
             files.iter().map(|(f, b)| (f.to_string(), sha256(b).into())).collect();
         let mut cur = serde_json::json!({"version": v, "sha256": sha, "archive_sha256": sha256(&std::fs::read(&archive).unwrap())});
         tweak(&mut cur);
-        std::fs::write(nas.join(LIVE), cur.to_string()).unwrap();
+        std::fs::write(lead.join(LIVE), cur.to_string()).unwrap();
     }
 
     fn current(home: &Path) -> String {
@@ -636,14 +621,13 @@ mod tests {
 
     #[test]
     fn a_new_version_is_unpacked_checked_and_made_current() {
-        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (home, n) = (home.path(), nas.path());
+        let (home, lead) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (home, n) = (home.path(), lead.path());
         let a = "20261001-0000-aaaaaaa";
         std::fs::create_dir_all(home.join("app").join(a)).unwrap();
         std::os::unix::fs::symlink(a, home.join("app/current")).unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(n);
         // Nothing published yet: nothing to do.
-        assert_eq!(check(home, &NasReleases(&root), None, a).unwrap(), None);
+        assert_eq!(check(home, &Published(n), a).unwrap(), None);
         let v = "20261002-0000-bbbbbbb";
         let app: &[(&str, &[u8])] =
             &[("scenic", b"#!/bin/sh\n"), ("web/index.html", b"x"), ("fonts/Noto Sans Regular/0-255.pbf", b"g")];
@@ -651,9 +635,9 @@ mod tests {
         // Another check holding the lock: skipped.
         let held = std::fs::File::create(home.join("app/update.lock")).unwrap();
         held.lock().unwrap();
-        assert_eq!(check(home, &NasReleases(&root), None, a).unwrap(), None);
+        assert_eq!(check(home, &Published(n), a).unwrap(), None);
         drop(held);
-        assert_eq!(check(home, &NasReleases(&root), None, a).unwrap().as_deref(), Some(v));
+        assert_eq!(check(home, &Published(n), a).unwrap().as_deref(), Some(v));
         assert_eq!(current(home), v);
         assert_eq!(std::fs::read(home.join("app").join(v).join("fonts/Noto Sans Regular/0-255.pbf")).unwrap(), b"g");
         use std::os::unix::fs::PermissionsExt;
@@ -669,13 +653,13 @@ mod tests {
             .collect();
         assert!(left.is_empty(), "{left:?}");
         // In place: nothing more to do.
-        assert_eq!(check(home, &NasReleases(&root), None, v).unwrap(), None);
+        assert_eq!(check(home, &Published(n), v).unwrap(), None);
         // A version unpacked here already (by the other updater on this Mac): used as it is.
         let u = "20261002-0000-uuuuuuu";
         publish(n, u, &[("scenic", b"#!/bin/sh\n")], |_| {});
         std::fs::create_dir_all(home.join("app").join(u)).unwrap();
         std::fs::write(home.join("app").join(u).join("theirs"), b"").unwrap();
-        assert_eq!(check(home, &NasReleases(&root), None, v).unwrap().as_deref(), Some(u));
+        assert_eq!(check(home, &Published(n), v).unwrap().as_deref(), Some(u));
         assert_eq!(current(home), u);
         assert!(home.join("app").join(u).join("theirs").exists());
         // Refused, `current` left as it was, nothing left behind: an archive that isn't its
@@ -693,7 +677,7 @@ mod tests {
         ];
         for (why, tweak) in refused {
             publish(n, w, app, tweak);
-            let e = format!("{:#}", check(home, &NasReleases(&root), None, u).unwrap_err());
+            let e = format!("{:#}", check(home, &Published(n), u).unwrap_err());
             assert!(e.contains(why), "{why}: {e}");
             assert_eq!(current(home), u);
             assert!(!home.join("app").join(w).exists());
@@ -707,7 +691,7 @@ mod tests {
         }
         // Once right, it goes in.
         publish(n, w, app, |_| {});
-        assert_eq!(check(home, &NasReleases(&root), None, u).unwrap().as_deref(), Some(w));
+        assert_eq!(check(home, &Published(n), u).unwrap().as_deref(), Some(w));
     }
 
     /// An archive that would write outside its folder (a path climbing out, an absolute one, a file
@@ -715,18 +699,16 @@ mod tests {
     /// nothing written outside, `current` as it was, nothing left behind.
     #[test]
     fn an_archive_reaching_outside_its_folder_is_refused() {
-        let (home, nas, out) =
+        let (home, lead, out) =
             (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (home, n, out) = (home.path(), nas.path(), out.path().canonicalize().unwrap());
+        let (home, n, out) = (home.path(), lead.path(), out.path().canonicalize().unwrap());
         let a = "20261001-0000-aaaaaaa";
         std::fs::create_dir_all(home.join("app").join(a)).unwrap();
         std::os::unix::fs::symlink(a, home.join("app/current")).unwrap();
-        let root = store::nasfs::NasRoot::local_for_test(n);
         let src = n.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("f"), b"hi").unwrap();
         std::os::unix::fs::symlink(&out, src.join("l")).unwrap();
-        std::fs::create_dir_all(n.join("app/releases")).unwrap();
         let abs = format!("|^f$|{}/abs|", out.display());
         let cases: [(&str, &[&str]); 4] = [
             ("climbing", &["-s", "|^f$|../../../esc|", "f"]),
@@ -736,7 +718,7 @@ mod tests {
         ];
         for (i, (what, args)) in cases.into_iter().enumerate() {
             let v = format!("2026100{}-0000-bbbbbbb", i + 2);
-            let archive = n.join(format!("app/releases/{v}.tgz"));
+            let archive = n.join(format!("{v}.tgz"));
             let st = store::spawn::status(
                 store::spawn::command("/usr/bin/tar").arg("-czf").arg(&archive).arg("-C").arg(&src).args(args),
             )
@@ -745,7 +727,7 @@ mod tests {
             let cur = serde_json::json!({"version": v, "sha256": {"f": sha256(b"hi")},
                 "archive_sha256": sha256(&std::fs::read(&archive).unwrap())});
             std::fs::write(n.join(LIVE), cur.to_string()).unwrap();
-            let e = check(home, &NasReleases(&root), None, a);
+            let e = check(home, &Published(n), a);
             assert!(e.is_err(), "{what}: {e:?}");
             assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "{what}: written outside");
             assert!(!home.join("esc").exists() && !n.join("esc").exists(), "{what}");
@@ -771,7 +753,7 @@ mod tests {
         }
     }
 
-    /// A lead holding no release (an app before #1118, or none published to it yet).
+    /// A lead holding no release (none published to it yet).
     struct HoldsNone;
     impl Source for HoldsNone {
         fn live(&self) -> Result<Option<Live>> {
@@ -782,10 +764,10 @@ mod tests {
         }
     }
 
-    /// `publish`, the live manifest kept as the one before first (as nas_install does).
-    fn publish_after(nas: &Path, v: &str, files: &[(&str, &[u8])]) {
-        std::fs::copy(nas.join(LIVE), nas.join("app/releases/previous.json")).unwrap();
-        publish(nas, v, files, |_| {});
+    /// `publish`, the live manifest kept as the one before first (as the lead does).
+    fn publish_after(lead: &Path, v: &str, files: &[(&str, &[u8])]) {
+        std::fs::copy(lead.join(LIVE), lead.join("previous.json")).unwrap();
+        publish(lead, v, files, |_| {});
     }
 
     fn held(home: &Path) -> (Option<String>, Option<String>) {
@@ -810,22 +792,21 @@ mod tests {
     /// release it holds already (a rollback's) isn't fetched again.
     #[test]
     fn the_releases_follow_the_source_and_keep_the_one_before() {
-        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (home, n) = (home.path(), nas.path());
-        let root = store::nasfs::NasRoot::local_for_test(n);
+        let (home, lead) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (home, n) = (home.path(), lead.path());
         let a = "20261001-0000-aaaaaaa";
         std::fs::create_dir_all(home.join("app").join(a)).unwrap();
         std::os::unix::fs::symlink(a, home.join("app/current")).unwrap();
         let app: &[(&str, &[u8])] = &[("scenic", b"#!/bin/sh\n"), ("web/index.html", b"x")];
         let (v1, v2, v3) = ("20261002-0000-bbbbbbb", "20261003-0000-ccccccc", "20261004-0000-ddddddd");
         publish(n, v1, app, |_| {});
-        assert_eq!(check(home, &NasReleases(&root), None, a).unwrap().as_deref(), Some(v1));
+        assert_eq!(check(home, &Published(n), a).unwrap().as_deref(), Some(v1));
         assert_eq!(held(home), (Some(v1.into()), None));
         publish_after(n, v2, app);
-        assert_eq!(check(home, &NasReleases(&root), None, v1).unwrap().as_deref(), Some(v2));
+        assert_eq!(check(home, &Published(n), v1).unwrap().as_deref(), Some(v2));
         assert_eq!(held(home), (Some(v2.into()), Some(v1.into())));
         publish_after(n, v3, app);
-        assert_eq!(check(home, &NasReleases(&root), None, v2).unwrap().as_deref(), Some(v3));
+        assert_eq!(check(home, &Published(n), v2).unwrap().as_deref(), Some(v3));
         assert_eq!(held(home), (Some(v3.into()), Some(v2.into())));
         let rel = home.join(RELEASES);
         assert_eq!(
@@ -834,40 +815,36 @@ mod tests {
         );
         assert!(names(&rel.join("incoming")).is_empty());
         // Rolled back at the source (its two manifests swapped), its archives gone: both are held.
-        let (cur, prev) = (n.join(LIVE), n.join("app/releases/previous.json"));
+        let (cur, prev) = (n.join(LIVE), n.join("previous.json"));
         let (c, p) = (std::fs::read(&cur).unwrap(), std::fs::read(&prev).unwrap());
         std::fs::write(&cur, p).unwrap();
         std::fs::write(&prev, c).unwrap();
         for v in [v1, v2, v3] {
-            std::fs::remove_file(n.join(format!("app/releases/{v}.tgz"))).ok();
+            std::fs::remove_file(n.join(format!("{v}.tgz"))).ok();
         }
-        assert_eq!(check(home, &NasReleases(&root), None, v3).unwrap().as_deref(), Some(v2));
+        assert_eq!(check(home, &Published(n), v3).unwrap().as_deref(), Some(v2));
         assert_eq!(held(home), (Some(v2.into()), Some(v3.into())));
         // In place: nothing to do, nothing changed.
-        assert_eq!(check(home, &NasReleases(&root), None, v2).unwrap(), None);
+        assert_eq!(check(home, &Published(n), v2).unwrap(), None);
         assert_eq!(held(home), (Some(v2.into()), Some(v3.into())));
     }
 
-    /// A lead that doesn't answer: the update waits (an error, nothing changed, the NAS not read).
-    /// A lead holding none: the NAS's release (the rollout's); with no NAS to stand in, nothing.
+    /// A lead that doesn't answer: the update waits (an error, nothing changed). A lead holding
+    /// none: nothing to do.
     #[test]
-    fn a_lead_down_waits_and_the_nas_stands_in_while_it_holds_none() {
-        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let (home, n) = (home.path(), nas.path());
-        let root = store::nasfs::NasRoot::local_for_test(n);
+    fn a_lead_down_waits_and_one_holding_none_leaves_the_app() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
         let a = "20261001-0000-aaaaaaa";
         std::fs::create_dir_all(home.join("app").join(a)).unwrap();
         std::os::unix::fs::symlink(a, home.join("app/current")).unwrap();
-        let v = "20261002-0000-bbbbbbb";
-        publish(n, v, &[("scenic", b"#!/bin/sh\n")], |_| {});
-        let e = check(home, &Down, Some(&NasReleases(&root)), a).unwrap_err();
+        let e = check(home, &Down, a).unwrap_err();
         assert!(format!("{e:#}").contains("connection refused"), "{e:#}");
         assert_eq!(current(home), a);
         assert_eq!(held(home), (None, None));
-        assert_eq!(check(home, &HoldsNone, None, a).unwrap(), None);
+        assert_eq!(check(home, &HoldsNone, a).unwrap(), None);
         assert_eq!(current(home), a);
-        assert_eq!(check(home, &HoldsNone, Some(&NasReleases(&root)), a).unwrap().as_deref(), Some(v));
-        assert_eq!(held(home), (Some(v.into()), None));
+        assert_eq!(held(home), (None, None));
     }
 
     /// A commit goes only from what it was read as: refused, nothing changes and what is live

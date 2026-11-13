@@ -162,7 +162,11 @@ and codesign.
    yes), since the build's `ssh` runs in batch mode and refuses an unknown host. Check:
    `ssh -o BatchMode=yes brandontsang@fishandchips.local ls /volume1/personal/projects/scenic-roads`.
    The share `/Volumes/personal` is `/volume1/personal` on the NAS.
-6. `tools/app/install.sh`, then open Scenic.app once. On the map's Mac (the one
+6. `tools/app/install.sh`, then open Scenic.app once. It fetches the lead's live release (from the
+   lead this Mac's agent keeps, else the declared lead's host by its LAN name, with the pool's key),
+   or, on a Mac with no lead to fetch from (setting up the lead itself), takes a release's archive
+   by its path (`--archive <version>.tgz`: one a Mac keeps in `app/releases/`); a Mac holding no
+   releases yet keeps it as its own. On the map's Mac (the one
    `services.zsh setup caddy` gave the map's name, a name in `~/.config/scenic/names`, or the one
    `state/build/lead-member.json` declares the lead: either) it also creates the map server's
    LaunchAgent; on any other it removes one, leaving the Mac's offline map.
@@ -205,9 +209,8 @@ and codesign.
   into it by its update drain. It keeps the lead's live release and the one before
   (`app/releases/`: `live.json` and their archives, each change under its lock and only from what
   it was read as), so a Mac made the lead holds them; one it holds isn't fetched again. The lead
-  not answering, the update waits. While the lead holds no release (an app before #1118 there, or
-  none published to it yet) it reads the NAS's `app/releases/` instead (the rollout's:
-  docs/building.md, The NAS's `app/` until then). On the Mac mini the map server
+  not answering, the update waits; the lead holding no release (none published to it yet), there
+  is nothing to do. On the Mac mini the map server
   checks too (so the map updates with the agent stopped, while the lead's coordinator answers: on
   the lead itself that's the agent's, so there the update waits for the agent), one check at a time
   (`app/update.lock`), and restarts into the new version once the map has been idle a minute. Each

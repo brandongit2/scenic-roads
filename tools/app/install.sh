@@ -1,6 +1,8 @@
 #!/bin/zsh
-# Install the published app on this Mac (once; after that it updates itself): unpack the live
-# version's archive from the NAS (app/releases), point ~/Library/Application
+# Install the published app on this Mac (once; after that it updates itself): fetch the live
+# release from the lead (its archive and manifest, as every Mac's updater does: docs/macs.md, The
+# updater), or take a release's archive by its path (a Mac with no lead to fetch from: setting up the
+# lead itself), unpack it, point ~/Library/Application
 # Support/scenic/app/current at it, set up the map server on the Mac that serves the map (the Mac
 # mini: the one `services.zsh setup caddy` gave the
 # map's name, ~/.config/scenic/names; its run file, its launchd job started; on any other Mac an
@@ -14,16 +16,23 @@
 #   tools/app/install.sh --legacy   the login items as before Scenic was an app, Scenic.app
 #                                   unregistered and removed: the way back, until both Macs have
 #                                   switched over
+#   … --archive <version>.tgz       that release, not the lead's (its name says its version: a
+#                                   release's archive as every Mac keeps it, in
+#                                   ~/Library/Application Support/scenic/app/releases/)
 set -euo pipefail
-legacy=0
-usage="usage: tools/app/install.sh [--legacy]"
-case $#:${1:-} in
-  0:) ;;
-  1:--legacy) legacy=1 ;;
-  1:-h|1:--help) print -r -- $usage; exit 0 ;;
-  *) print -ru2 -- "install.sh: unexpected arguments: $*"$'\n'"$usage"; exit 2 ;;
-esac
-source ${0:A:h}/lib.zsh  # (live_version, stop_program)
+legacy=0 archive=
+usage="usage: tools/app/install.sh [--legacy] [--archive <version>.tgz]"
+while (( $# )); do
+  case $1 in
+    --legacy) legacy=1 ;;
+    --archive) (( $# > 1 )) || { print -ru2 -- "install.sh: --archive names a file"$'\n'"$usage"; exit 2; }
+      archive=${2:A}; shift ;;
+    -h|--help) print -r -- $usage; exit 0 ;;
+    *) print -ru2 -- "install.sh: unexpected argument: $1"$'\n'"$usage"; exit 2 ;;
+  esac
+  shift
+done
+source ${0:A:h}/lib.zsh  # (live_version, app_manifest, stop_program)
 NAS=/Volumes/personal/projects/scenic-roads
 HOME_S="$HOME/Library/Application Support/scenic"
 uid=$(id -u)
@@ -53,20 +62,68 @@ if [[ -z $uv ]]; then
   echo "uv not found: the agent's unit builds need it (https://docs.astral.sh/uv/)" >&2
   exit 1
 fi
-live=$NAS/app/releases/current.json
-version=$(live_version $live) || { echo "no release on the NAS ($live)" >&2; exit 1; }
 mkdir -p "$HOME_S/app" "$HOME_S/run" "$HOME/Library/Logs/scenic" "$HOME/Library/LaunchAgents"
-if [[ ! -d "$HOME_S/app/$version" ]]; then
-  # The version's archive copied here and checked by its SHA-256 (the manifest's), then unpacked
-  # (tar keeps the programs' modes) beside its folder and moved in.
-  tmp="$HOME_S/app/$version.tmp"
-  rm -rf "$tmp"; mkdir -p "$tmp/app"
-  cp -X "$NAS/app/releases/$version.tgz" "$tmp/app.tgz"
-  want=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["archive_sha256"])' $live)
-  [[ $(shasum -a 256 < "$tmp/app.tgz") == "$want "* ]] || { echo "$version.tgz doesn't match its SHA-256" >&2; exit 1; }
-  tar -xzf "$tmp/app.tgz" -C "$tmp/app"
-  mv "$tmp/app" "$HOME_S/app/$version"
-  rm -rf "$tmp"
+tmp=$(mktemp -d "$HOME_S/app/install.XXXXXX")
+trap 'rm -rf $tmp' EXIT
+if [[ -z $archive ]]; then
+  # The lead's live release (coordwire::releases: GET /release/live, then its archive), from the
+  # lead's coordinator as this Mac's agent keeps it (agent/lead.json: its addresses and the workers'
+  # key), else the declared lead's (state/build/lead-member.json's host, by its LAN name) with the
+  # pool's key (state/coord/token), each address in turn.
+  python3 - "$HOME_S/agent/lead.json" $NAS $tmp <<'EOF' || exit 1
+import json, socket, sys, urllib.request
+saved, nas, out = sys.argv[1:]
+try:
+    k = json.load(open(saved)); urls, token = k["urls"], k["token"]
+except (OSError, ValueError, KeyError):
+    try:
+        host = json.load(open(nas + "/state/build/lead-member.json"))["host"]
+        token = open(nas + "/state/coord/token").read().strip()
+    except (OSError, ValueError, KeyError) as e:
+        sys.exit(f"no lead to fetch from (none kept by this Mac's agent, none declared on the NAS: {e}); give a release's archive: --archive <version>.tgz")
+    urls = [f"http://{host}.local:8090"]
+def get(path, to=None):
+    err = None
+    for u in urls:
+        req = urllib.request.Request(u + path, headers={"Authorization": "Bearer " + token, "X-Worker": socket.gethostname()})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                if to is None: return r.read()
+                with open(to, "wb") as f:
+                    while b := r.read(1 << 20): f.write(b)
+                return
+        except OSError as e: err = f"{u}: {e}"
+    sys.exit(f"the lead's coordinator didn't answer ({err})")
+cur = json.loads(get("/release/live")).get("current")
+if not cur: sys.exit("the lead holds no release yet: publish one, or give a release's archive: --archive <version>.tgz")
+json.dump(cur, open(out + "/manifest.json", "w"))
+get(f"/release/{cur['version']}.tgz", out + "/app.tgz")
+EOF
+  version=$(live_version $tmp/manifest.json)
+else
+  version=${${archive:t}%.tgz}
+  [[ $archive == *.tgz && $version =~ '^[0-9][A-Za-z0-9-]*$' && -f $archive ]] \
+    || { print -ru2 -- "install.sh: not a release's archive: $archive (<version>.tgz)"; exit 2; }
+  cp -X $archive $tmp/app.tgz
+fi
+# The version unpacked (tar keeps the programs' modes) beside its folder and moved in; the lead's
+# archive checked by its SHA-256 first.
+if [[ -f $tmp/manifest.json ]]; then
+  want=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["archive_sha256"])' $tmp/manifest.json)
+  [[ $(shasum -a 256 < $tmp/app.tgz) == "$want "* ]] || { echo "$version.tgz doesn't match its SHA-256" >&2; exit 1; }
+fi
+mkdir $tmp/app && tar -xzf $tmp/app.tgz -C $tmp/app
+# (An archive by path: its manifest made from what it holds, as publish.sh makes one.)
+[[ -f $tmp/manifest.json ]] || app_manifest $tmp/app $version $tmp/app.tgz > $tmp/manifest.json
+[[ -d "$HOME_S/app/$version" ]] || mv $tmp/app "$HOME_S/app/$version"
+# This Mac's releases (jobrt::appupdate::Releases), when it holds none yet: this one, as its updater
+# keeps the lead's, so a lead set up so serves it.
+rel="$HOME_S/app/releases"
+if [[ ! -e $rel/live.json ]]; then
+  mkdir -p $rel
+  cp -X $tmp/app.tgz "$rel/$version.tgz"
+  python3 -c 'import json, sys; json.dump({"current": json.load(open(sys.argv[1])), "previous": None}, open(sys.argv[2], "w"))' $tmp/manifest.json $tmp/live.json
+  mv $tmp/live.json $rel/live.json
 fi
 # The Python steps' environment for this version's lock file, made if no installed version has it
 # yet (in $HOME_S/pyenv/, shared by the versions with that lock; the version's folder untouched).

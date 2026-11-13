@@ -644,28 +644,16 @@ or its siblings' order:
 everything is rebuilt.
 
 **App publishing:** `tools/app/publish.sh`, run on any Mac with the "Scenic Code Signing" identity
-in its login keychain that reaches the lead and the NAS's Mac (below), at home or away; normally on the Mac mini
-over ssh: `ssh m6 'cd ~/projets/scenic-roads && tools/app/publish.sh'` (it puts brew's and rustup's
-folders on the PATH itself and takes the rest from mise.toml, so no shell profile is needed).
-A release goes live on **the lead** (The lead's releases, below), over HTTP. Until every Mac has
-fetched from the lead for a day it also goes to the NAS's `app/` (The NAS's `app/` until then,
-below). Every read and write of the NAS's `app/` runs on **the NAS's Mac**, the Mac mini, on the NAS's
-LAN (`tools/app/lib.zsh`'s `on_nas_mac`: here when this is it, by its LocalHostName; else over
-`ssh m6`, a fresh connection with keepalives, in its checkout `~/projets/scenic-roads`, whose git
-checks the order): the publishing Mac's own NAS mount plays no part. Away from home that mount is
-through Tailscale (each file several round trips of the link, and stale after a network change),
-and the app is ~840 files; so the app goes to the mini as one archive instead. (Measured from the M4 away, 11 Nov 2026: an
-app of 113 MB in 832 files, packed to 43 MB in 4.7 s, reached the mini in 4.5 s; the same files
-copied through the M4's mount had 699 written, 51 MB, when the copy failed on SMB timeouts after
-23 min. The NAS's ~1–3 file creates a second that day, from the mini too, set the mini's 11 min
-to write them; later that day, with no file's time set (`tar -m`), the mini wrote the 840 files in
-5–9 s, against 23–37 s with them, and reading them back took 89–170 s.) It
+in its login keychain and the app installed (`tools/app/install.sh`), that reaches the lead, at home
+or away; normally on the Mac mini over ssh: `ssh m6 'cd ~/projets/scenic-roads && tools/app/publish.sh'`
+(it puts brew's and rustup's folders on the PATH itself and takes the rest from mise.toml, so no
+shell profile is needed). A release goes live on **the lead** (The lead's releases, below), over
+HTTP: the app's ~840 files as one archive. It
 1. builds the tip of origin's main, fetched now, in its own snapshot
    (`~/Library/Caches/scenic-publish/tree`, kept as a build cache), whatever this checkout holds;
    refuses without the signing identity, or when codesign can't use its key unprompted;
-2. reads the live version on the NAS's Mac, within 60 s, and stops there when it's unreachable or
-   without the NAS; reads the lead's live release (through this Mac's installed app's `scenic
-   releases`, when it has the command) and stops there when the lead's coordinator doesn't answer; refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
+2. reads the lead's live release (through this Mac's installed app's `scenic releases`) and
+   stops there when the lead's coordinator doesn't answer; refuses while the lead's role's old name appears in the code, docs or UI (the task board's list
    of where tasks ran, `tools/devtools/schema.mjs`, exempt), or when its commit doesn't contain the live version's (below);
 3. builds the server and pipeline, and runs the release server through `crates/server/tests/serves.rs`
    (below), on this Mac, before the suite: the suite's run of it starts the test profile's program,
@@ -680,32 +668,14 @@ to write them; later that day, with no file's time set (`tar -m`), the mini wrot
 5. signs the programs and Scenic.app;
 6. puts the app's folder together in a scratch folder and packs it as the version's archive (a
    gzipped tar of its files, modes kept: `app_pack`), makes its manifest (every file's SHA-256 and
-   the archive's, `app_manifest`), and sends the archive and the manifest in one tar to the NAS's Mac (`nas_send`), whose `nas_install`:
-   receives it whole into `~/Library/Caches/scenic-publish/incoming/<pid>.tar` and checks its size
-   and SHA-256 (an upload cut short installs nothing), unpacks it and the archive beside it and
-   checks the app against the manifest (on the mini's disk); checks the order; writes the archive
-   beside its name (`app/releases/<version>.tgz.tmp`) and checks the copy's SHA-256; takes the lock
-   on the NAS (`app/publish.lock`, create-new; one over six hours old taken over, as is one whose
-   process on the NAS's Mac is gone), waiting while another publish holds it, so the write runs
-   beside another install, the lock held only to go live; checks the order again; then, on the
-   publishing Mac's go-ahead (asked for once all that passed; none within 5 min, nothing goes in),
-   whatever the connection or signals do next, renames the archive to `app/releases/<version>.tgz`,
-   the old `current.json` to
-   `previous.json` in `app/releases/`, writes `current.json` there (the manifest), and frees the
-   lock. Its errors go to a file beside the upload, shown as it ends (zsh ends at once on a write
-   to a closed stderr, so a lost connection would otherwise end it with the lock held). The upload
-   and its unpacked copy are removed as it ends, and any left by a receiver that's gone at the
-   next install.
-
-   Before the NAS's install, the release goes live on the lead (`lead_install`, through the
+   the archive's, `app_manifest`), and puts it live on the lead (`lead_install`, through the
    snapshot's own `scenic releases`): the lead's releases read, the order checked (`fast_forward`,
    on the lead's live release, a rollback since the publish began refusing it), the archive
    uploaded and put live from the live version read; the lead checks the archive's SHA-256, unpacks
    it and checks every file's, and takes it only while that version is still live. Refused for
    that (another publish or a rollback went in meanwhile), it reads and checks again, up to three
    times. A push that fails otherwise counts as live when the lead's releases, read again, say so
-   (its answer lost after the lead took it). A lead on an app before #1118 keeps no releases: then
-   the NAS's install alone.
+   (its answer lost after the lead took it).
 
 **The lead's releases** (#1118, docs/coordinator.md §10): the lead keeps the live release (its
 archive and manifest) and the one before, and serves them over HTTP with the workers' key; every
@@ -716,48 +686,22 @@ keeps two publishes from both going in over one. Every Mac holds the lead's two 
 (`~/Library/Application Support/scenic/app/releases/`), so a Mac made the lead serves them as they
 were. The lead down, nothing is published and the updates wait.
 
-**The NAS's layout of the app** (#1148): each version is one file, `app/releases/<version>.tgz`,
-beside `app/releases/current.json` (the live version's manifest: `version`, `sha256` of each file
-and `archive_sha256`) and `previous.json` (the one before), so a publish writes three files to the NAS (the archive, `current.json` and
-`previous.json`) where a version's folder was 840 files, and then, still under the lock, removes
-every archive neither manifest names (an updater reads no other; a rollback swaps the two):
-the NAS creates 1–3 files a second when busy. Each Mac's updater copies the archive and unpacks it locally (docs/macs.md,
-The updater). Measured from the M1 at home through the mini to a scratch root on 12 Nov 2026, the same app
-(118 MB in 840 files; the archive 45 MB, sent in ~2 s): a whole install, upload to live, took 177 s
-and then 42 s in the folder layout, 15, 9 and 11 s as a release; on the mini alone, writing the
-archive took 0.5–1.1 s and reading it back 0.7–2.4 s, against 15–43 s for the 840 files; the M1 copied the archive from the NAS in 5.5 s and unpacked it
-in 0.4 s.
-
-**The NAS's `app/` until then** (#1118's rollout): publish.sh writes the NAS's `app/releases/`
-as above beside the lead, and `--rollback` rolls both back, and an updater reads the NAS's
-`app/releases/` only while the lead holds no release (a lead on an app before #1118, or none
-published to it yet). Once every Mac has fetched from the lead for a day (#642's rule: its
-updater's `app/releases/live.json` written by the new app on every Mac a day ago), these become
-dead and go, as a change of their own: the NAS's `app/releases/` and `app/publish.lock`;
-publish.sh's "NAS's Mac" step (`nas_current`), its `nas_send` of the release, and `--rollback`'s
-`nas_rollback`; lib.zsh's `nas_current`, `nas_lock`/`nas_unlock`, `nas_install`'s release writes
-and `nas_rollback`; jobrt::appupdate's `NasReleases` and `check`'s `nas` argument, with coordwire::releases::check's; and the CLI's exit 4 (a lead before
-#1118) with publish.sh's cases for it.
-
 Two publishes may run at once: the second takes a second tree (`tree-2`, kept as a build cache
 like the first, failed builds included, and removed by a publish that finds it unused for 3 days;
 each publish prunes the `target/` of the tree it builds in; a third waits, polling every 2 s and
 saying so once, until one of the two frees, never making a third tree), and
-its tests wait for the first's (`tests.busy`, per Mac), then it installs once the first has freed
-the lock. Publishes from two Macs queue their tests only through the test Mac's `publish` key
+its tests wait for the first's (`tests.busy`, per Mac); the lead takes the second only over the
+first (its compare of the `base`, under the releases' lock), so the second, refused, reads the
+lead's releases again and goes in after it. Publishes from two Macs queue their tests only through the test Mac's `publish` key
 (tools/app/remote-tests.sh: after 30 min one runs on its own Mac), and the test Mac's own publish
 runs its suite there beside them. A publish installs only when its commit contains the live
 version's (fast-forward; a live commit published from the other Mac since this one's fetch is
 fetched): one of an older or diverged commit fails, saying so, as does one begun before a rollback
-(`--rollback` no longer waits for a publish's build, only its install). Its last line is
-`published <version>` or `publish: FAILED …`: `FAILED, nothing published` when the NAS's Mac
-installed nothing (unreachable, the upload cut short, a check failed, no go-ahead), or, when the
-go-ahead was sent and the answer lost and the live manifest, read again, doesn't name the version,
-`FAILED, unknown whether <version> went live` (the NAS's Mac goes on once it has the go-ahead), or
-`FAILED: <version> is live on the lead, but the NAS's app/ … wasn't written` (the Macs on an app
-before #1118 don't get it).
+(a rollback waits for no publish). Its last line is
+`published <version>` or `publish: FAILED, nothing published (exit N)` (the lead unreachable, a
+check failed, the lead refused it).
 
-`publish.sh --rollback` puts the release before back live on the lead (`lead_rollback`, through this Mac's installed app: the lead's two releases read, then swapped only from them; an installed app without `scenic releases` rolls back the NAS's alone only while it is the NAS's live release, else refuses, since it can't tell whether the lead keeps releases) and swaps `app/releases/current.json` and `previous.json` on the NAS's Mac (`nas_rollback`, under the lock, not waiting for it; within 120 s), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
+`publish.sh --rollback` puts the release before back live on the lead (`lead_rollback`, through this Mac's installed app: the lead's two releases read, then swapped only from them), unless the previous version is before the live one's rollback floor (the first line of `tools/app/rollback-floor` differs in its tree, `lib.zsh`'s `rollback_ok`): a release after which an older app can't run the pool safely names a new floor, with why (now `878-8c`: docs/coordination.md step 8c), and a fix goes forward instead. The agent never fetches from git.
 
 The publishing Mac's signing identity, set up once by the owner at that Mac (the key never leaves
 the keychains). An ssh session can't use the login keychain the desktop unlocked, so a Mac that

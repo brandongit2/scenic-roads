@@ -288,9 +288,8 @@ pub enum Cmd {
     /// The input gate (docs/inputs.md §4): every gate unit, its accepted version, its state, what
     /// holds it, its acceptances (those no check raises any more marked stale)
     Inputs(Inputs),
-    /// The app's releases the lead keeps (docs/coordinator.md §10): the live one and the one before
-    /// (a lead on an app before them: exit 4); and tools/app/publish.sh's asks of the lead, a
-    /// release put live or rolled back
+    /// The app's releases the lead keeps (docs/coordinator.md §10): the live one and the one
+    /// before; and tools/app/publish.sh's asks of the lead, a release put live or rolled back
     Releases(Releases),
 }
 

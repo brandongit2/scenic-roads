@@ -104,8 +104,7 @@ fn lead_client(root: Option<&store::nasfs::NasRoot>) -> Result<Option<agentcore:
 }
 
 /// `scenic releases`: the lead's releases (coordwire::releases), and publish.sh's asks of it. Exit
-/// 3: refused as the lead's releases stand (what is live printed as JSON); 4: a lead on an app
-/// before them.
+/// 3: refused as the lead's releases stand (what is live printed as JSON).
 fn releases(a: &cli::Releases) -> Result<()> {
     use coordwire::releases::{self as rel, Asked};
     // (The NAS not needed: the lead this Mac's agent keeps is reached without it.)
@@ -126,10 +125,7 @@ fn releases(a: &cli::Releases) -> Result<()> {
     };
     match &a.cmd {
         None => {
-            let Some(l) = rel::live(&c)? else {
-                eprintln!("the lead runs an app that keeps no releases (before task #1118)");
-                std::process::exit(4)
-            };
+            let l = rel::live(&c)?;
             if a.json {
                 println!("{}", serde_json::to_string(&l)?);
             } else {
