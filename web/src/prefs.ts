@@ -38,21 +38,3 @@ export function saveSoon(key: string, value: () => unknown, ms = 300) {
   clearTimeout(timers.get(key));
   timers.set(key, window.setTimeout(() => save(key, value()), ms));
 }
-
-/** Every saved preference whose key starts with `prefix` gone. */
-export function removePrefix(prefix: string) {
-  try {
-    for (const k of Object.keys(localStorage)) if (k.startsWith(NS + prefix)) localStorage.removeItem(k);
-  } catch {
-    /* storage unavailable */
-  }
-}
-
-/** A saved preference gone (a setting the app no longer has). */
-export function remove(key: string) {
-  try {
-    localStorage.removeItem(NS + key);
-  } catch {
-    /* storage unavailable */
-  }
-}

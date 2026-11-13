@@ -2,6 +2,7 @@
 // (src/state.ts toHash/fromHash, task #819). A link names its profile and carries only the settings
 // that differ from it; read back over the same profile it gives the same settings, every one a
 // link can carry; a link naming no profile reads over the base it is given (the default profile).
+// A param or saved value not in the shape the app writes is ignored, whole: the profile's stays.
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 
@@ -132,27 +133,15 @@ for (const b of [base.s, seed]) {
   }
 }
 
-// A link's water from before the whitewater (ten fields) keeps the whitewater's defaults; a full
-// steepness at or under the start is moved past it.
+// The whitewater's full steepness at or under its start is moved past it.
 {
-  const old = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0', true, seed);
-  assert.equal(old.water.colour, '#123456');
-  for (const k of ['foam', 'foamFrom', 'foamTo', 'foamCover', 'foamColour'] as const) assert.equal(old.water[k], seed.water[k]);
-  const w = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0,0.8,30,10,0.75,cee0ec', true, seed).water;
+  const w = fromHash('#map=5/46/-71&wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0,0.8,30,10,0.75,cee0ec,1', true, seed).water;
+  assert.equal(w.colour, '#123456');
   assert.deepEqual([w.foamFrom, w.foamTo], [30, 31]);
 }
 
-// Older links' depth (#854): its palette, 'fit' (now Auto, the ramp log-spaced) and the ramp's end
-// (now the range from 0) in dp=; saved settings alike.
+// A link over a profile carrying dp= alone keeps the profile's colour scale.
 {
-  const tail = '1,0.45,315,1,8fae7d,0,zoom,10,5,1,9ec3dc,1,0.55,0';
-  const fit = fromHash(`#map=5/46/-71&dp=1,quiet,fit,900,${tail}`, true, seed).depth;
-  assert.deepEqual([fit.scale, fit.colours.palette, fit.colours.auto, fit.colours.range], ['log', 'quiet', true, [0, 900]]);
-  const lin = fromHash(`#map=5/46/-71&dp=1,nautical,linear,40,${tail}`, true, seed).depth;
-  assert.deepEqual([lin.scale, lin.colours.auto, lin.colours.range], ['linear', false, [0, 40]]);
-  const saved = st.fromSaved({ depth: { ...seed.depth, colours: undefined, palette: 'quiet', scale: 'fit', max: 120 } }, seed).depth;
-  assert.deepEqual([saved.scale, saved.colours.palette, saved.colours.auto, saved.colours.range], ['log', 'quiet', true, [0, 120]]);
-  // A link over a profile carrying dp= alone keeps the profile's colour scale.
   const p = structuredClone(seed);
   p.depth.colours = { ...p.depth.colours, auto: true, palette: 'quiet' };
   const s = structuredClone(p);
@@ -162,10 +151,9 @@ for (const b of [base.s, seed]) {
   assert.deepEqual(fromHash(h, true, p).depth.colours, p.depth.colours);
 }
 
-// Older links: no profile named, each setting where it differs from the default profile (given as
-// the base), the palette in p=.
+// A link naming no profile: each setting where it differs from the default profile (given as the base).
 {
-  const s = fromHash('#map=5/46/-71&p=cividis&eq=1&gb=0', true, base.s);
+  const s = fromHash('#map=5/46/-71&pa=cividis&eq=1&gb=0', true, base.s);
   assert.equal(s.palette, 'cividis');
   assert.equal(s.equalize, true);
   assert.equal(s.globe, false);
@@ -178,7 +166,7 @@ for (const b of [base.s, seed]) {
 }
 
 // The Map look and road look exactly back from a link (each colour, opacity, zoom), over a profile
-// and over the defaults; older links' Map preset (ms=) sets the preset's look.
+// and over the defaults.
 {
   const s = structuredClone(base.s);
   s.roadMap = { ...presetLook(preset('michelin')), kind: 'speed' };
@@ -190,26 +178,20 @@ for (const b of [base.s, seed]) {
     assert.deepEqual(back.roadMap, s.roadMap);
     assert.deepEqual(back.roadLook, s.roadLook);
   }
-  const old = fromHash('#map=5/46/-71&ms=os', true, seed);
-  assert.equal(presetOfLook(old.roadMap)?.key, 'os');
   // A preset cases the road classes, not ferries (as the Map styles did before #820: 0x1ff).
   const { lookUniforms } = await import('../src/mapschemes.ts');
   for (const m of MAP_SCHEMES) assert.equal(lookUniforms(presetLook(m)).casedMask, 0x1ff, m.key);
-  // An unknown preset or a malformed look leaves the defaults'.
-  assert.deepEqual(fromHash('#ms=nope&rm=class,zz,zz,1,a,b,c,d', true, seed).roadMap.fill, seed.roadMap.fill);
-  // A look colouring by what the app no longer has (the signed routes, removed by #853), linked,
-  // saved or as a preset's name: the default look, whole.
+  // A malformed look leaves the defaults'.
+  assert.deepEqual(fromHash('#rm=class,zz,zz,1,a,b,c,d', true, seed).roadMap.fill, seed.roadMap.fill);
+  // A look colouring by what the app doesn't offer, linked or saved: the profile's look, whole.
   const signed = toHash({ ...structuredClone(s), roadMap: { ...s.roadMap, kind: 'network' as never } }, true, { id: 'base', name: 'Default', s: seed });
   assert.match(signed, /rm=network,/);
   assert.deepEqual(fromHash(signed, true, seed).roadMap, seed.roadMap);
-  assert.deepEqual(fromHash('#map=5/46/-71&ms=network', true, seed).roadMap, seed.roadMap);
   assert.deepEqual(st.fromSaved({ roadMap: { ...s.roadMap, kind: 'network' } }, seed).roadMap, seed.roadMap);
-  assert.deepEqual(st.fromSaved({ mapScheme: 'network' }, seed).roadMap, seed.roadMap);
   assert.deepEqual(fromHash('#rx=1.2,3&wd=1,2', true, seed).roadLook, seed.roadLook);
   // Out-of-range values clamped.
   assert.equal(fromHash(`#rx=${new Array(10).fill(40).join('_')},99,-1,0,1,1`, true, seed).roadLook.casingFrom, st.ROAD_LOOK_RANGE.casingFrom[1]);
-  // Saved before the Map look: its preset (mapScheme); and in a profile, the look itself.
-  assert.equal(presetOfLook(st.fromSaved({ mapScheme: 'neon' }, seed).roadMap)?.key, 'neon');
+  // In a profile, the look itself.
   const kept = fromProfile(JSON.parse(JSON.stringify(profileSettings(s))));
   assert.deepEqual(kept.roadMap, s.roadMap);
   assert.deepEqual(kept.roadLook, s.roadLook);
@@ -254,5 +236,52 @@ for (const b of [base.s, seed]) {
   const got = st.fromSaved(bad, p);
   assert.deepEqual([got.roadLook.widths, got.depth.colours.palette], [p.roadLook.widths, 'quiet']);
 }
+
+// Links and saves in shapes the app doesn't write (a param it doesn't have, a value with too few
+// fields, a list of another length, a key it doesn't have): each is ignored, whole, and the
+// profile's setting stays; nothing throws and nothing else changes. Over a profile far from the
+// seed and over the seed.
+for (const b of [base.s, seed]) {
+  const at = '#map=5/46/-71';
+  const unchanged: string[] = [
+    // params the app doesn't have
+    'p=cividis', 'ms=os', 'hl=10101', 'w=1.5', 'tn=terrain,custom,0,900,0,1,0.6,elev', 'tf=0.5,0.6,0.5,0.6', 'k=abc',
+    // too few fields
+    'wa=123456,1,28,0.22,1.8,4f7fa8,0.25,0,0.35,0', 'rs=1,11111,group,rscore,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1',
+    'fy=0,1111,freq,oslo,1.5,1,8fc8ff', 'dp=1,quiet,fit,900,0.5,0.45,315,1,8fae7d,0,zoom,10,5,1,9ec3dc,1,0.55', 'bd=1,0,height,0.9,1',
+    'cl=1,0.4,0.8,ffffff,0,0.5,1,6', 'lm=0.5,1,0,1,0.5,0,100,0,0.6,0,a,0.5', 'rk=2', 'pl=ff0000', 'te=viridis,1,0,900', 'ts=viridis', 'ds=quiet,1', 'bh=viridis,1',
+    'lk=1010', 't3=1,2,1', 'tv=elev,0', 'lw=1,1,1', 'o=101',
+    // weight lists of another length, a preset named without its weights, weights without their preset
+    'pr=custom&wt=1,2,3,4,5,6,7,8,9,10,11', 'pr=custom&wt=1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16', 'pr=vistas', `wt=${b.weights.map((w) => w + 1).join(',')}`,
+    'rp=custom&rw=1,2,3,4,5,6,7,8,9,10', 'rw=1,2,3,4,5,6,7,8,9,10,11', 'rp=balanced',
+    // values of another kind
+    'wt=a,b&pr=custom', 'lx=%7Bnot-json', 'rm=nope', 'rx=1.2,3', 'wd=1,2', 'ld=1,2', 'lf=x,y', 'r=5', 'm=nope', 'fg=1,2', 'tc=1', 's=12',
+  ];
+  for (const q of unchanged) {
+    const got = fromHash(`${at}&${q}`, true, b);
+    assert.deepEqual({ ...got, view: null }, { ...b, view: null }, q);
+  }
+  // All of them at once, with one current param: only that one applies.
+  const all = fromHash(`${at}&${unchanged.filter((q) => !/^(pr|wt|rp|rw|r|m)=/.test(q)).join('&')}&gb=${b.globe ? 0 : 1}`, true, b);
+  assert.deepEqual({ ...all, view: null }, { ...b, view: null, globe: !b.globe });
+  // A dp= with something in its unused fields 2 and 4: they are ignored, the rest read.
+  const dp = fromHash(`${at}&dp=1,quiet,linear,900,0.5,0.45,315,1,8fae7d,0,zoom,10,5,1,9ec3dc,1,0.55,0`, true, b).depth;
+  assert.deepEqual(dp.colours, b.depth.colours);
+  assert.deepEqual([dp.on, dp.scale, dp.opacity], [true, 'linear', 0.5]);
+  // Saved state and profiles' settings: keys the app doesn't have, values of another type or length.
+  const saves: unknown[] = [
+    { mapScheme: 'neon', heritageLevels: [true, false, true, false, true], weight: 1.5, fitUnit: 'pct', fitLen: [10, 1], roadWidths: [[1]] },
+    { weights: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], rail: { weights: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], weight: 2, stopOutline: '#aabbcc', stopOutlineOpacity: 0.3, fitUnit: 'pct', fitLen: [20, 2], colour: 'group' } },
+    { ferry: { weight: 2, colour: 'freq', fitUnit: 'pct', fitLen: [12, 1] }, depth: { palette: 'quiet', scale: 'fit', max: 120 } },
+    { terrain: { tintPalette: 'terrain', tintRange: 'custom', tintMin: 0, tintMax: 900, tintFade: { elev: 0.5 } }, buildings: { height: 'x', heritage: 1 } },
+    { mode: 'nope', palette: 7, range: [1], groups: [true], labelKinds: 'all', lineWeights: null, water: [], landmarks: { top: 'x' } },
+    'text', 7, [], null,
+  ];
+  for (const o of saves) assert.deepEqual(st.fromSaved(structuredClone(o), b), b, JSON.stringify(o));
+  // … and beside a current value, that one applies.
+  assert.deepEqual(st.fromSaved({ mapScheme: 'neon', fitUnit: 'pct', globe: !b.globe }, b), { ...b, globe: !b.globe });
+}
+// A profile's settings in an older shape: each such value is the seed's.
+assert.deepEqual(fromProfile({ mapScheme: 'neon', weights: [1, 2, 3], rail: { colour: 'group' }, terrain: { tintPalette: 'terrain' } }), seed);
 
 console.log('links: ok');

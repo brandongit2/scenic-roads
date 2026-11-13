@@ -132,10 +132,6 @@ export class RegionsPanel {
   private hovered = false;
 
   constructor(private layers: RegionLayers) {
-    // (The switches before #868, "Coverage on the map" and "Regions on the map", gone.)
-    prefs.remove('regions.coverage');
-    prefs.remove('regions.layer');
-    prefs.removePrefix('regions.folder.'); // (folders' opened state was once kept)
     this.regBox.checked = prefs.load('regions.shown', false);
     this.regBox.addEventListener('change', () => {
       prefs.save('regions.shown', this.regBox.checked);

@@ -1,6 +1,6 @@
 // node --test tools/check/autofit.test.mjs: auto-fitting colour ranges by screen widths or by
 // percentiles of line length (web/src/autofit.ts, which Node loads with its types stripped), and
-// each metric's unit and numbers through a link and saved settings, old ones too (web/src/state.ts, loaded
+// each metric's unit and numbers through a link and saved settings (web/src/state.ts, loaded
 // through Vite for its imports).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -102,8 +102,8 @@ const FX = st.fromProfile(JSON.parse(readFileSync(new URL('../../web/test/profil
 const ROAD = st.ROAD_FIT_KEYS, RAIL = st.RAIL_FIT_KEYS, FERRY = st.FERRY_FIT_KEYS;
 /** The three layers' units, each as a sorted list of its metrics in percentiles. */
 const pcts = (s) => [s.fitUnits, s.rail.fitUnits, s.ferry.fitUnits].map((u) => Object.keys(u).filter((k) => u[k] === 'pct').sort());
-/** An older link `h` written again (task #819: a link carries only what differs from the profile,
- * here the defaults): the state it gave, and none of the defaults it spelled out. */
+/** A link `h` that spells out defaults, written again (task #819: a link carries only what differs
+ * from the profile, here the defaults): the state it gave, and none of the defaults it spelled out. */
 const rewritten = (h, b) => {
   const again = st.toHash(b, true, { id: 'base', name: 'Default', s: FX });
   assert.deepEqual(st.fromHash(again, true, FX), b);
@@ -176,7 +176,7 @@ test('one metric in percentiles, another in screen widths, through a link (roads
   assert.deepEqual(pcts(back), [['view'], ['curvy', 'freq'], ['freq']]);
   assert.deepEqual(back.fit, [85, 99]);
   assert.deepEqual(back.rail.fit, [60, 99.5]);
-  // Every scenic metric in percentiles: a link's p, as before the unit per metric.
+  // Every scenic metric in percentiles: a link's p.
   const all = structuredClone(FX);
   all.fitUnits = allPct(ROAD);
   all.rail.fitUnits = allPct(RAIL);
@@ -200,12 +200,11 @@ test('one metric in percentiles, another in screen widths, through a link (roads
   }
 });
 
-test('per-layer links (fu=p, a last p in rs and fy) open with every metric of that layer in percentiles', () => {
-  // A link the app with the unit per layer wrote (711d7ff's toHash): views, rail by frequency,
-  // every layer in percentiles.
+test('fu=p and a last p in rs and fy: every metric of that layer in percentiles', () => {
+  // Views, rail by frequency, every layer in percentiles.
   const h = '#m=view&fp=85,99&fu=p&un=11101&rl=0.5,'
     + '&rs=1,11111,metric,freq,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1,70,99.8,0,0.6,0,a,50,1,15,1,p'
-    + '&fy=1,1111,freq,oslo,,1,8fc8ff,0.9,0,0,0,1,freq,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,15,1,p&sqx=waterfall&oc=1';
+    + '&fy=1,1111,metric,oslo,,1,8fc8ff,0.9,0,0,0,1,freq,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,15,1,p&sqx=waterfall&oc=1';
   const b = st.fromHash(h, true, FX);
   assert.equal(b.mode, 'view');
   assert.deepEqual(pcts(b), [[...ROAD].sort(), [...RAIL].sort(), ['freq']]);
@@ -221,13 +220,13 @@ test('per-layer links (fu=p, a last p in rs and fy) open with every metric of th
 /** Every one of `keys` at `v`. */
 const allOf = (keys, v) => Object.fromEntries(keys.map((k) => [k, [...v]]));
 
-test('older links, without the unit, read as screen widths, their one screen-widths fit every metric\'s', () => {
+test('a link without units reads as screen widths, its one screen-widths fit every metric\'s', () => {
   const s = structuredClone(FX);
   s.rail.fitLens = allOf(RAIL, [20, 2]);
   s.ferry.fitLens = { freq: [12, 1] };
   s.fitLens = allOf(ROAD, [10, 1]);
   const h = st.toHash(s, true, { id: 'base', name: 'Default', s: FX });
-  // One fit for every metric, all in screen widths: the link as before either was per metric.
+  // One fit for every metric, all in screen widths: nothing after the base.
   assert.match(h, /(^|[#&])fl=10,1(&|$)/);
   assert.ok(!/flm=|fpm=/.test(h), h);
   assert.match(h, /rs=[^&]*,20,2(&|$)/);
@@ -237,10 +236,10 @@ test('older links, without the unit, read as screen widths, their one screen-wid
   assert.deepEqual(b.rail.fitLens, allOf(RAIL, [20, 2]));
   assert.deepEqual(b.ferry.fitLens, { freq: [12, 1] });
   assert.deepEqual(b.fitLens, allOf(ROAD, [10, 1]));
-  // Shorter, older rail and ferry fields too.
+  // Rail and ferry values without the base's two fields aren't the app's: ignored, whole.
   const o = st.fromHash(h.replace(/(rs=[^&]*),20,2/, '$1').replace(/(fy=[^&]*),12,1/, '$1'), true, FX);
-  assert.deepEqual(pcts(o), [[], [], []]);
-  assert.deepEqual([o.rail.fitLens, o.ferry.fitLens], [{}, {}]);
+  assert.deepEqual([o.rail, o.ferry], [FX.rail, FX.ferry]);
+  assert.deepEqual(o.fitLens, allOf(ROAD, [10, 1]));
 });
 
 test('per-metric pairs in a link: the most common as the base, the others listed', () => {
@@ -325,12 +324,11 @@ test('a scenic metric keeps its own percentiles when another is picked, and gets
   assert.deepEqual(store.s.fit, [90, 99.5]);
 });
 
-test('per-layer links\' numbers (fl, fp, rail\'s and ferries\' fit) open as every metric\'s', () => {
-  // A link the app with the numbers per layer wrote (e6d1a8f's toHash): views shown in %, 10 screen
-  // widths to 1 for roads, rail by frequency at 20 to 2, ferries 12 to 1.
+test('a link\'s base numbers alone (fl, fp, rail\'s and ferries\' fit) are every metric\'s', () => {
+  // Views shown in %, 10 screen widths to 1 for roads, rail by frequency at 20 to 2, ferries 12 to 1.
   const h = '#m=view&fp=85,99&fl=10,1&fu=p&un=11101&rl=0.5,'
     + '&rs=1,11111,metric,freq,rocket,1,0,100,,,,e8ecf2,0.6,0,0,0,1,70,99.8,0,0.6,0,a,50,1,20,2'
-    + '&fy=1,1111,freq,oslo,,1,8fc8ff,0.9,0,0,0,1,freq,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,12,1&sqx=waterfall&oc=1';
+    + '&fy=1,1111,metric,oslo,,1,8fc8ff,0.9,0,0,0,1,freq,1,-0.845,2,0,100,0,0.45,0.5,0,a,0.577,12,1&sqx=waterfall&oc=1';
   const b = st.fromHash(h, true, FX);
   assert.deepEqual(b.fitLens, allOf(ROAD, [10, 1]));
   assert.deepEqual(b.fit, [85, 99]);
@@ -343,13 +341,13 @@ test('per-layer links\' numbers (fl, fp, rail\'s and ferries\' fit) open as ever
   store.setMode('drama');
   assert.deepEqual(store.s.fit, [85, 99]);
   // Shown with elevation, fp was elevation's: the scenic metrics keep the default.
-  const be = st.fromHash('#m=elev&p=viridis&fp=1,99&fl=10,1&un=11101&rl=0.5,&sqx=waterfall&lf=0.7,0.6&oc=1', true, FX);
+  const be = st.fromHash('#m=elev&pa=viridis&fp=1,99&fl=10,1&un=11101&rl=0.5,&sqx=waterfall&lf=0.7,0.6&oc=1', true, FX);
   assert.deepEqual(be.fit, [1, 99]);
   assert.deepEqual(be.scenicFits, {});
   assert.deepEqual(be.fitLens, allOf(ROAD, [10, 1]));
 });
 
-test('saved settings: each metric\'s numbers kept; the per-layer ones saved before apply to every metric', () => {
+test('saved settings: each metric\'s numbers kept; keys the app doesn\'t have ignored', () => {
   const s = structuredClone(FX);
   s.fitLens = { score: [10, 1] };
   s.scenicFits = { view: [70, 99] };
@@ -357,36 +355,28 @@ test('saved settings: each metric\'s numbers kept; the per-layer ones saved befo
   s.ferry.fitLens = { freq: [12, 1] };
   const b = st.fromSaved(JSON.parse(JSON.stringify(s)), FX);
   assert.deepEqual([b.fitLens, b.scenicFits, b.rail.fitLens, b.ferry.fitLens], [{ score: [10, 1] }, { view: [70, 99] }, { freq: [8, 1] }, { freq: [12, 1] }]);
-  // Saved with the numbers per layer, a scenic metric shown: its fit every scenic metric's.
-  const old = st.fromSaved({ mode: 'view', fit: [85, 99], fitLen: [10, 1], rail: { fitLen: [20, 2] }, ferry: { fitLen: [12, 1] } }, FX);
+  // A save holding none of them (a `fitLen` isn't the app's): the profile's.
+  const P = structuredClone(FX);
+  P.fitLens = { drama: [9, 1] };
+  P.scenicFits = { water: [60, 99], view: [50, 99] };
+  P.rail.fitLens = { curvy: [7, 1] };
+  const old = st.fromSaved({ mode: 'view', fit: [85, 99], fitLen: [10, 1], rail: { fitLen: [20, 2] }, ferry: { fitLen: [12, 1] } }, P);
   assert.deepEqual(old.fit, [85, 99]);
-  assert.deepEqual(old.scenicFits, allOf(ROAD.filter((k) => k !== 'view'), [85, 99]));
-  assert.deepEqual(old.fitLens, allOf(ROAD, [10, 1]));
-  assert.deepEqual(old.rail.fitLens, allOf(RAIL, [20, 2]));
-  assert.deepEqual(old.ferry.fitLens, { freq: [12, 1] });
-  // … another display type shown: the scenic look's.
-  const lk = { palette: 'pubugn', fit: [70, 99], equalize: false, lowFade: 0.8, lowSpan: 0.6, thrOn: false, thrDir: 'above' };
-  const oe = st.fromSaved({ mode: 'elev', fit: [1, 99], looks: { scenic: lk } }, FX);
-  assert.deepEqual(oe.scenicFits, allOf(ROAD, [70, 99]));
-  assert.deepEqual(oe.fit, [1, 99]);
-  // The defaults saved before: nothing kept.
-  const od = st.fromSaved({ mode: 'score', fit: [80, 99.9], fitLen: [15, 1] }, FX);
-  assert.deepEqual([od.fitLens, od.scenicFits], [{}, {}]);
+  assert.deepEqual(old.scenicFits, { water: [60, 99] }); // (never the one shown)
+  assert.deepEqual([old.fitLens, old.rail.fitLens, old.ferry.fitLens], [P.fitLens, P.rail.fitLens, P.ferry.fitLens]);
   // Bad values dropped.
   const bad = st.fromSaved({ fitLens: { score: [1, 10], view: [10, 1], elev: [10, 1], zz: [9, 1] }, scenicFits: { view: [99, 80], water: [60, 99] }, rail: { fitLen: 'x' } }, FX);
   assert.deepEqual([bad.fitLens, bad.scenicFits, bad.rail.fitLens], [{ view: [10, 1] }, { water: [60, 99] }, {}]);
 });
 
-test('saved settings: each metric\'s unit kept; the per-layer unit saved before it applies to every metric', () => {
-  // As saved now.
+test('saved settings: each metric\'s unit kept; a `fitUnit` isn\'t the app\'s', () => {
   const s = structuredClone(FX);
   s.fitUnits = { score: 'pct' };
   s.rail.fitUnits = { viaduct: 'pct' };
   s.ferry.fitUnits = { freq: 'pct' };
   assert.deepEqual(pcts(st.fromSaved(JSON.parse(JSON.stringify(s)), FX)), [['score'], ['viaduct'], ['freq']]);
-  // As saved with the unit per layer.
-  const old = st.fromSaved({ fitUnit: 'pct', rail: { fitUnit: 'widths' }, ferry: { fitUnit: 'pct' } }, FX);
-  assert.deepEqual(pcts(old), [[...ROAD].sort(), [], ['freq']]);
+  // A save holding none: the profile's.
+  assert.deepEqual(pcts(st.fromSaved({ fitUnit: 'pct', rail: { fitUnit: 'widths' }, ferry: { fitUnit: 'pct' } }, s)), [['score'], ['viaduct'], ['freq']]);
   // Bad values: screen widths; unknown metrics and values dropped.
   const bad = st.fromSaved({ fitUnit: 'furlongs', rail: { fitUnits: { rscore: 'pct', elev: 'pct', freq: 'widths', curvy: 1 } }, ferry: { fitUnit: 3 } }, FX);
   assert.deepEqual(pcts(bad), [[], ['rscore'], []]);
@@ -460,13 +450,12 @@ test('the scenic metric shown is never kept in scenicFits', () => {
   for (const x of [b, sv]) assert.ok(!(x.mode in x.scenicFits));
 });
 
-test('old saved settings with a mode that no longer exists: the default mode, its fit every scenic metric\'s', () => {
-  const o = st.fromSaved({ mode: 'bogus', fit: [75, 99], fitLen: [8, 1] }, FX);
+test('saved settings with a mode the app doesn\'t have: the profile\'s mode', () => {
+  const o = st.fromSaved({ mode: 'bogus', fit: [75, 99] }, FX);
   assert.equal(o.mode, FX.mode);
   assert.deepEqual(o.fit, [75, 99]);
-  assert.deepEqual(o.scenicFits, allOf(ROAD.filter((k) => k !== FX.mode), [75, 99]));
+  assert.deepEqual([o.scenicFits, o.fitLens], [FX.scenicFits, FX.fitLens]);
   assert.ok(!(o.mode in o.scenicFits));
-  assert.deepEqual(o.fitLens, allOf(ROAD, [8, 1]));
 });
 
 test('every rail and ferry metric\'s palette and percentiles through a link, those as first picked left out', () => {
@@ -496,11 +485,10 @@ test('every rail and ferry metric\'s palette and percentiles through a link, tho
   assert.deepEqual(st.fromHash(odd, true, FX).rail.looks.drama, { ...st.railFreshLook('drama'), palette: 'inferno', fit: [5, 95] });
 });
 
-test('links from before every metric\'s look travelled: the shown one\'s as before, the others as first picked', () => {
-  // A link in the older form (nothing after the screen widths): rail by frequency (magma, 10–90),
-  // ferries by season length.
+test('a link listing no other metric\'s look: the shown one\'s, the others as first picked', () => {
+  // Nothing after the screen widths: rail by frequency (magma, 10–90), ferries by season length.
   const h = '#un=11101&rl=0.5,&rs=1,11111,metric,freq,magma,1,0,2.5,,,,e8ecf2,0.4,0,0,0,1,10,90,0,0.6,0,a,1.25,1,15,1'
-    + '&fy=1,1111,freq,oslo,,1,8fc8ff,0.9,0,0,0,1,months,1,0,12,0,100,0,0,0.6,0,a,6,15,1&sqx=waterfall';
+    + '&fy=1,1111,metric,oslo,,1,8fc8ff,0.9,0,0,0,1,months,1,0,12,0,100,0,0,0.6,0,a,6,15,1&sqx=waterfall';
   const b = st.fromHash(h, true, FX);
   assert.equal(b.rail.metric, 'freq');
   assert.equal(b.rail.palette, 'magma');
@@ -536,7 +524,7 @@ test('the ride score\'s and sailings\' first looks are fixed (rocket, oslo), wha
   assert.equal(b.rail.looks.rscore.lowFade, 0.6);
 });
 
-test('an older link showing rail frequency, then the ride score picked: the defaults\' ride score', () => {
+test('a link showing rail frequency, then the ride score picked: the ride score\'s first look', () => {
   const h = '#un=11101&rl=0.5,&rs=1,11111,metric,freq,magma,1,0,2.5,,,,e8ecf2,0.4,0,0,0,1,10,90,0,0.6,0,a,1.25,1,15,1&sqx=waterfall';
   const b = st.fromHash(h, true, FX);
   assert.deepEqual(b.rail.looks, {});

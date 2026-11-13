@@ -64,28 +64,24 @@ export const modeDef = (k: Mode) => MODES.find((m) => m.key === k) ?? MODES[0];
 
 export interface Component {
   key: string;
-  /** The key presets saved before the rename used (presets.ts reads both). */
-  was?: string;
   label: string;
   help: string;
-  /** Weight for weight lists and presets saved before this factor existed (else 0). */
-  def?: number;
   /** Measured factors (not yes/no flags): short label, unit and value (a number) for the hover bars. */
   bar?: { short: string; unit: string; text: (ch: ArrayLike<number>) => string };
 }
 
 
 export const COMPONENTS: Component[] = [
-  { key: 'view', was: 'views', label: 'Views', help: 'Visible area (trees & terrain block the view)', bar: { short: 'Views', unit: 'km²', text: (c) => fmt.area(u8Area(c[0])) } },
+  { key: 'view', label: 'Views', help: 'Visible area (trees & terrain block the view)', bar: { short: 'Views', unit: 'km²', text: (c) => fmt.area(u8Area(c[0])) } },
   { key: 'water', label: 'Water in view', help: 'Visible lake / river / sea area', bar: { short: 'Water', unit: 'km²', text: (c) => fmt.area(u8Area(c[1])) } },
   { key: 'vista', label: 'Long vistas', help: 'Farthest visible distance (full at 15 km)', bar: { short: 'Vista', unit: 'km', text: (c) => (c[8] / 17).toFixed(1) } },
-  { key: 'drama', was: 'relief', label: 'Mountains', help: 'Terrain relief within 3 km (full at 600 m)', bar: { short: 'Mountains', unit: 'm', text: (c) => fmt.n(c[2] * 3) } },
+  { key: 'drama', label: 'Mountains', help: 'Terrain relief within 3 km (full at 600 m)', bar: { short: 'Mountains', unit: 'm', text: (c) => fmt.n(c[2] * 3) } },
   { key: 'ridge', label: 'Ridge roads', help: 'Road above its surroundings (full at +60 m)', bar: { short: 'Ridge', unit: 'm', text: (c) => fmt.signed((c[3] - 128) * 2) } },
   { key: 'curvy', label: 'Twisty', help: 'Curvature (full at 400 °/km)', bar: { short: 'Twisty', unit: '°/km', text: (c) => fmt.n(c[4] * 4) } },
-  { key: 'openness', was: 'unblocked', label: 'No tree walls', help: 'Not enclosed by roadside trees / cuts', bar: { short: 'Open', unit: '%', text: (c) => fmt.n(100 - c[5] / 2.55) } },
+  { key: 'openness', label: 'No tree walls', help: 'Not enclosed by roadside trees / cuts', bar: { short: 'Open', unit: '%', text: (c) => fmt.n(100 - c[5] / 2.55) } },
   { key: 'forest', label: 'Forest', help: 'Forest cover (foliage); negative = prefer open country', bar: { short: 'Forest', unit: '%', text: (c) => fmt.n(c[10] / 2.55) } },
   { key: 'built', label: 'Built-up', help: 'Towns nearby (negative = away from towns)', bar: { short: 'Built-up', unit: '%', text: (c) => fmt.n(c[6] / 2.55) } },
-  { key: 'bldg', label: 'Roadside buildings', def: -1, help: 'Buildings lining the road, the closer together the more (negative = away from villages and strip development)', bar: { short: 'Buildings', unit: '%', text: (c) => fmt.n(c[12] / 2.55) } },
+  { key: 'bldg', label: 'Roadside buildings', help: 'Buildings lining the road, the closer together the more (negative = away from villages and strip development)', bar: { short: 'Buildings', unit: '%', text: (c) => fmt.n(c[12] / 2.55) } },
   { key: 'route', label: 'Scenic route', help: 'Designated byway / route touristique' },
   { key: 'viewpoint', label: 'Viewpoints', help: 'Mapped viewpoint within 1 km' },
 ];
@@ -108,28 +104,6 @@ export function components(ch: ArrayLike<number>): number[] {
     (ch[12] ?? 0) / 255,
     b(1), b(4),
   ];
-}
-
-const finiteList = (w: unknown): w is number[] => Array.isArray(w) && w.every((v) => typeof v === 'number' && Number.isFinite(v));
-
-/** A weight list in `comps`' order, from one saved before the factors with a `def` were added
- * (each then weighs its def); null for anything else. */
-export function addedWeights(w: unknown, comps: readonly { def?: number }[]): number[] | null {
-  if (!finiteList(w)) return null;
-  if (w.length === comps.length) return w;
-  if (w.length !== comps.filter((c) => c.def === undefined).length) return null;
-  let i = 0;
-  return comps.map((c) => c.def ?? w[i++]);
-}
-
-/**
- * Older road weight lists → the current 12: 16 values (before waterfront, parks, heritage,
- * UNESCO/dark-sky and farmland were dropped from the score), 11 (before roadside buildings, which
- * then weigh their def, −1).
- */
-export function migrateWeights(w: unknown): number[] | null {
-  if (!finiteList(w)) return null;
-  return addedWeights(w.length === 16 ? [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11].map((i) => w[i]) : w, COMPONENTS);
 }
 
 export function scoreOf(ch: ArrayLike<number>, w: number[]): number {

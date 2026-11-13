@@ -21,11 +21,11 @@ export function withUnit<K extends string>(u: FitUnits<K>, key: K, unit: FitUnit
   return out;
 }
 
-/** Every one of `keys` in percentiles (an older link's or saved setting's unit for the layer). */
+/** Every one of `keys` in percentiles. */
 export const allPct = <K extends string>(keys: readonly K[]): FitUnits<K> => Object.fromEntries(keys.map((k) => [k, 'pct'])) as FitUnits<K>;
 
 /** A layer's units in a link, `keys` being its metrics that can fit either way: '' all screen
- * widths; 'p' all percentiles (as the per-layer unit's links had it); else the keys in
+ * widths; 'p' all percentiles; else the keys in
  * percentiles, in `keys`' order, joined by '.' ("score.view"), or, when that is shorter, '-' and
  * the keys in screen widths ("-drama": all but terrain drama). */
 export function unitsField<K extends string>(u: FitUnits<K>, keys: readonly K[]): string {
@@ -49,15 +49,12 @@ export function unitsOfField<K extends string>(v: string | null | undefined, key
   return Object.fromEntries(keys.filter((k) => named.has(k) !== but).map((k) => [k, 'pct'])) as FitUnits<K>;
 }
 
-/** A layer's units from saved settings: its `fitUnits` (keys among `keys`, values 'pct'), else
- * the per-layer `fitUnit` they replaced ('pct': every metric). */
-export function unitsOfSaved<K extends string>(o: { fitUnits?: unknown; fitUnit?: unknown } | null | undefined, keys: readonly K[]): FitUnits<K> {
+/** A layer's units from saved settings: its `fitUnits` (keys among `keys`, values 'pct'). */
+export function unitsOfSaved<K extends string>(o: { fitUnits?: unknown } | null | undefined, keys: readonly K[]): FitUnits<K> {
   const u = o?.fitUnits;
-  if (u && typeof u === 'object' && !Array.isArray(u)) {
-    const r = u as Record<string, unknown>;
-    return Object.fromEntries(keys.filter((k) => r[k] === 'pct').map((k) => [k, 'pct'])) as FitUnits<K>;
-  }
-  return o?.fitUnit === 'pct' ? allPct(keys) : {};
+  if (!u || typeof u !== 'object' || Array.isArray(u)) return {};
+  const r = u as Record<string, unknown>;
+  return Object.fromEntries(keys.filter((k) => r[k] === 'pct').map((k) => [k, 'pct'])) as FitUnits<K>;
 }
 
 /** A pair of numbers kept per metric: a screen-widths fit (the best so many to the best so few)
@@ -105,8 +102,8 @@ export function perMetric<K extends string>(keys: readonly K[], at: (k: K) => Pa
 }
 
 /** A layer's per-metric pairs in a link: a base (the most common pair, `d` when it ties for
- * that, else the first metric's; or `base` if given), which the link's layer-wide field carries
- * as before, and the metrics with another as `key_lo_hi` joined by '/' ("score_10_1/view_20_2"). */
+ * that, else the first metric's; or `base` if given), which the link's layer-wide field carries,
+ * and the metrics with another as `key_lo_hi` joined by '/' ("score_10_1/view_20_2"). */
 export function pairsField<K extends string>(at: (k: K) => Pair, keys: readonly K[], d: Pair, base?: Pair): { base: Pair; rest: string } {
   let b = base;
   if (!b) {
@@ -134,16 +131,13 @@ export function pairsOfField<K extends string>(v: string | null | undefined, key
 }
 
 /** A layer's screen-widths fits from saved settings: its `fitLens` (keys among `keys`, valid
- * pairs), else the per-layer `fitLen` they replaced, for each of its metrics. */
-export function fitLensOfSaved<K extends string>(o: { fitLens?: unknown; fitLen?: unknown } | null | undefined, keys: readonly K[]): PerMetric<K> {
+ * pairs). */
+export function fitLensOfSaved<K extends string>(o: { fitLens?: unknown } | null | undefined, keys: readonly K[]): PerMetric<K> {
   const pair = (v: unknown): v is Pair => Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'number') && validFitLen(v as Pair);
   const r = o?.fitLens;
-  if (r && typeof r === 'object' && !Array.isArray(r)) {
-    const m = r as Record<string, unknown>;
-    return perMetric(keys, (k) => (pair(m[k]) ? (m[k] as Pair) : FIT_LEN_DEFAULT), FIT_LEN_DEFAULT);
-  }
-  const old = o?.fitLen;
-  return pair(old) ? perMetric(keys, () => old, FIT_LEN_DEFAULT) : {};
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return {};
+  const m = r as Record<string, unknown>;
+  return perMetric(keys, (k) => (pair(m[k]) ? (m[k] as Pair) : FIT_LEN_DEFAULT), FIT_LEN_DEFAULT);
 }
 
 /** A distribution of line length over a metric (roads/stats.ts Dist). */

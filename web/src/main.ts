@@ -27,7 +27,7 @@ import { applyTrees } from './trees';
 import { Depth } from './depth';
 import { heritageChanged, heritagePoints, roofAt, drawnTalls, setBuildingsCredit, SOURCE as BUILDINGS_SOURCE, switchBuildings } from './buildings';
 import * as prefs from './prefs';
-import { Store, cleanRoadLook, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, seed, toHash, type AppState } from './state';
+import { Store, labelShown, fromHash, fromProfile, fromSaved, profileIdOf, seed, toHash, type AppState } from './state';
 import { applyLabelLooks, defaultLooks, labelLayerShown, labelSizeOf } from './labellook';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, cacheTerrainRays, setTerrainAreas, switchContours } from './terrain';
@@ -101,11 +101,6 @@ async function main() {
   // Terrain, slope and tree tiles are images: more of them at once than MapLibre's default 16, now
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
-  // (An address from when the map had a key, `#k=…`: the key dropped, the view kept.)
-  if (/(^#|&)k=/.test(location.hash)) {
-    const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
-    history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
-  }
   // The profile in use: the link's (one it names that's gone, or a link naming none: the default
   // profile; the link's settings are laid over it), else the last session's. The self-benchmark and
   // the eval modes take the seed: fixed settings, whatever the server's profiles.
@@ -176,22 +171,10 @@ async function main() {
   let hasBuildings = !!meta.layers?.buildings;
   // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
   // only with the buildings: without, the saved settings stay.)
-  // Widths edited before they were a setting (this browser's own save, applied under every link):
-  // into the saved settings, written at once (nothing else may save before the save is dropped).
-  const oldWidths = BENCH ? null : prefs.load<number[][] | null>('roadWidths', null);
-  if (oldWidths) {
-    if (!(prefs.load<Record<string, unknown> | null>('state', null)?.roadLook)) {
-      saved.roadLook = cleanRoadLook({ ...saved.roadLook, widths: oldWidths }, saved.roadLook);
-      prefs.save('state', { ...saved, selected: null });
-    }
-    prefs.save('roadWidths', null);
-  }
   if (listing === FALLBACK) toast('The settings profiles didn\u2019t load: the built-in Default is shown, and profiles can\u2019t be changed');
   else if (linkPid && !known(linkPid)) toast('The link\u2019s profile is gone: its changes are shown over the default profile\u2019s');
   // (The self-benchmark, `#bench` (selfbench.ts): its view, as a `#map=` link.)
   const linked = BENCH ? fromHash(benchHash(), hasBuildings, seed) : hasLink ? { ...fromHash(location.hash, hasBuildings, linkBase), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
-  // (A link without widths of its own, opened the session the widths moved in: they apply, as before.)
-  if (oldWidths && hasLink && !/(^#|&)wd=/.test(location.hash)) linked.roadLook = cleanRoadLook({ ...linked.roadLook, widths: oldWidths }, linked.roadLook);
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
   const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings, seed)) : CMP ? cmpState(fromHash(location.hash, hasBuildings, seed)) : linked);
   const profiles = new Profiles(store, listing, activePid, () => hasBuildings);

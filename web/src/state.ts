@@ -1,7 +1,7 @@
 import seedJson from '../default-profile.json';
 import { GROUPS, NCLASS, NGROUP, NRAIL, NROAD, WIDTH_RANGE, WIDTH_Z } from './config';
 import { RAIL_COMPONENTS, RAIL_METRICS, railMetricDef, type RailColour, type RailMetric } from './rail';
-import { CAT_KINDS, MAP_KINDS, MAP_SCHEMES, presetLook, type RoadMapLook } from './mapschemes';
+import { CAT_KINDS, MAP_KINDS, type RoadMapLook } from './mapschemes';
 import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetric } from './ferry';
 import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
@@ -9,8 +9,8 @@ import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './t
 import { DEPTH_PALETTES, type DepthState } from './depthlook';
 import type { BuildingColour, BuildingState } from './buildings';
 import { cleanLooks, type LabelLook, type LabelLooks } from './labellook';
-import { BUILTIN, RAIL_DEFAULT_PRESET, presets, railPresets, sameWeights } from './presets';
-import { MODES, addedWeights, isScenic, migrateWeights, modeDef, type Mode } from './scenic';
+import { railPresets } from './presets';
+import { MODES, NCOMP, isScenic, modeDef, type Mode } from './scenic';
 import {
   FIT_DEFAULT, FIT_LEN_DEFAULT, fitLensOfSaved, pairOf, pairsField, pairsOfField, perMetric, samePair, unitsField, unitsOfField, unitsOfSaved, validFit, validFitLen,
   withPair, type FitUnits, type Pair, type PerMetric,
@@ -195,8 +195,8 @@ export interface WaterLook {
 /** The whitewater's settings' ranges (the slope layer's steepness is coded to 400 %). */
 export const FOAM_RANGE = { from: [0, 100], to: [1, 400], cover: [0, 1] } as const;
 
-/** The whitewater's settings from a link's `wa` fields past the tenth (an older link's: `d`'s); its
- * full steepness kept past its start. */
+/** The whitewater's settings from a link's `wa` fields past the tenth (one unreadable or out of
+ * range: `d`'s); its full steepness kept past its start. */
 export function foamOf(v: string[], d: WaterLook): Pick<WaterLook, 'foam' | 'foamFrom' | 'foamTo' | 'foamCover' | 'foamColour'> {
   const n = (x: string | undefined, dv: number, [lo, hi]: readonly [number, number]) =>
     x !== undefined && x !== '' && Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : dv;
@@ -264,29 +264,6 @@ function parseScale(v: string[], d: ScaleFields): ScaleFields {
   };
 }
 
-/** The tint from settings saved or linked before its colour scale: the old palette, range mode
- * (whole region, fitted to the view, the roads', custom min–max) and fades, per variable. */
-function migrateTint(t: Terrain, o: Record<string, unknown>): Terrain {
-  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-  const tv: TintVar = o.tintVar === 'elev' ? 'elev' : o.tintVar === 'slope' ? 'slope' : t.tintVar;
-  const sc = { ...t.tintScales[tv] };
-  if (typeof o.tintPalette === 'string' && o.tintPalette) sc.palette = o.tintPalette;
-  const full: [number, number] = tv === 'slope' ? [0, 100] : [0, 1900];
-  if (o.tintRange === 'view') sc.auto = true;
-  else if (o.tintRange === 'region') Object.assign(sc, { auto: false, range: full });
-  else if (o.tintRange === 'custom' && num(o.tintMin) && num(o.tintMax) && o.tintMax > o.tintMin) Object.assign(sc, { auto: false, range: [o.tintMin, o.tintMax] });
-  const fade = o.tintFade as Record<string, unknown> | undefined, span = o.tintFadeSpan as Record<string, unknown> | undefined;
-  const out: Terrain = { ...t, tintVar: tv, tintMatch: o.tintRange === 'roads', tintScales: { ...t.tintScales, [tv]: sc } };
-  for (const k of ['elev', 'slope'] as const) {
-    const f = fade?.[k], sp = span?.[k];
-    if (num(f) || num(sp)) out.tintScales[k] = { ...out.tintScales[k], ...(num(f) ? { lowFade: Math.min(1, Math.max(0, f)) } : {}), ...(num(sp) ? { lowSpan: Math.min(1, Math.max(0.05, sp)) } : {}) };
-  }
-  if (num(o.tintBands)) out.tintBands = Math.max(0, o.tintBands);
-  if (num(o.tintCurve)) out.tintCurve = Math.min(3, Math.max(0.3, o.tintCurve));
-  if (num(o.tintOpacity)) out.tintOpacity = Math.min(1, Math.max(0, o.tintOpacity));
-  return out;
-}
-
 /** Landmark fit ranks: whole numbers, the low end's rank below (after) the top end's. */
 export const topRanks = (lo: number, hi: number): [number, number] => {
   const h = Math.max(1, Math.round(hi));
@@ -306,11 +283,9 @@ export const FERRY_FIT_KEYS: FerryMetric[] = FERRY_METRICS.filter((m) => m.byLen
 /** Every rail and ferry metric (each keeps its own look). */
 const RAIL_KEYS: RailMetric[] = RAIL_METRICS.map((m) => m.key);
 const FERRY_KEYS: FerryMetric[] = FERRY_METRICS.map((m) => m.key);
-/** A layer's screen-widths fits in its link value (rail, ferries): the base in the two fields
- * the per-layer fit had, then after them the units (unitsField), the metrics with another fit
- * (pairsField) and the other metrics' palettes and percentiles (looksField), empty fields at the
- * end left out, so a layer all in screen widths at one fit, its other metrics as first picked,
- * writes what it did before any of these were per metric. */
+/** A layer's screen-widths fits in its link value (rail, ferries): the base in two fields, then
+ * after them the units (unitsField), the metrics with another fit (pairsField) and the other
+ * metrics' palettes and percentiles (looksField), empty fields at the end left out. */
 function fitFields<K extends string>(lens: PerMetric<K>, units: FitUnits<K>, keys: readonly K[], looks: string): (string | number)[] {
   const { base, rest } = pairsField((k) => pairOf(lens, k, FIT_LEN_DEFAULT), keys, FIT_LEN_DEFAULT);
   const tail = [unitsField(units, keys), rest, looks];
@@ -318,7 +293,7 @@ function fitFields<K extends string>(lens: PerMetric<K>, units: FitUnits<K>, key
   return [base[0], base[1], ...tail];
 }
 /** A layer's screen-widths fits from its link value's fields (fitFields): the base for every
- * metric not listed (older links: their one fit for every metric). */
+ * metric not listed. */
 function fitLensOfFields<K extends string>(a: string | undefined, b: string | undefined, rest: string | undefined, keys: readonly K[]): PerMetric<K> {
   const base = fitLenOf(a, b, FIT_LEN_DEFAULT), own = pairsOfField(rest, keys, validFitLen);
   return perMetric(keys, (k) => own[k] ?? base, FIT_LEN_DEFAULT);
@@ -457,13 +432,8 @@ export interface RailState extends ScaleFields {
   stopContrast: number;
 }
 const RAIL_COLOURS: RailColour[] = ['line', 'service', 'metric', 'single'];
-/** A colouring by its key, older links' and saves' keys read as their new ones; else `fallback`. */
-function colourOf<C extends string>(v: unknown, keys: readonly C[], renamed: Record<string, C>, fallback: C): C {
-  const k = typeof v === 'string' ? renamed[v] ?? v : v;
-  return keys.includes(k as C) ? (k as C) : fallback;
-}
-/** Rail colourings' older keys: 'group' (by service). */
-const RAIL_COLOURS_WERE: Record<string, RailColour> = { group: 'service' };
+/** A colouring by its key; else `fallback`. */
+const colourOf = <C extends string>(v: unknown, keys: readonly C[], fallback: C): C => (keys.includes(v as C) ? (v as C) : fallback);
 /** The ties' and stop dots' settings' ranges (the rail card's sliders). */
 export const TIES_RANGE: [number, number] = [1, 5];
 export const STOP_SIZE_RANGE: [number, number] = [0.25, 4];
@@ -498,8 +468,6 @@ export interface FerryState extends ScaleFields {
   fitUnits: FitUnits<FerryMetric>;
 }
 const FERRY_COLOURS: FerryColour[] = ['service', 'metric', 'season', 'operator', 'single'];
-/** Ferry colourings' older keys: 'freq' (the metric colouring, from before its other metrics). */
-const FERRY_COLOURS_WERE: Record<string, FerryColour> = { freq: 'metric' };
 /** A display type's colour settings (free of units). */
 export interface Look {
   palette: string;
@@ -692,7 +660,7 @@ export function cleanRoadLook(l: RoadLook, base: RoadLook): RoadLook {
 }
 const HEX8 = /^#[0-9a-f]{6}([0-9a-f]{2})?$/i;
 /** A Map look with every colour valid (else the default look's there); one colouring by what the
- * app doesn't offer (a kind not in MAP_KINDS: an old link's or save's "network"), the default look. */
+ * app doesn't offer (a kind not in MAP_KINDS), the default look. */
 function cleanMapLook(l: RoadMapLook, d: RoadMapLook): RoadMapLook {
   if (!MAP_KINDS.some(([k]) => k === l.kind)) return structuredClone(d);
   const col = (v: string[], dv: string[], re: RegExp) => dv.map((x, i) => (typeof v[i] === 'string' && re.test(v[i]) ? v[i].toLowerCase() : x));
@@ -783,13 +751,6 @@ export function classMask(s: AppState): number {
   return m;
 }
 
-/** Heritage kinds of the old five levels (links and saved settings from before the kinds). */
-const LEVEL_TIERS = [['w.c', 'w.n'], ['n.top', 'n.hist', 'n.fed'], ['n.second', 'n.mon', 'n.land'], ['n.lower', 'p.des', 'p.reg', 'p.area'],
-  ['m.des', 'm.reg', 'm.area', 'm.agr']];
-function offFromLevels(levels: boolean[]): string[] {
-  return levels.flatMap((on, i) => (on ? [] : LEVEL_TIERS[i]));
-}
-
 export function surfaceMask(s: AppState): number {
   return (s.surface.paved ? 1 : 0) | (s.surface.unpaved ? 2 : 0);
 }
@@ -841,8 +802,11 @@ export function groupMask(s: AppState): number {
 // ---- URL hash ------------------------------------------------------------------------------
 // #map=zoom/lat/lng/bearing/pitch&p=<profile id>-<name>&m=score&pa=viridis&r=lo,hi&eq=1&pr=vistas&wt=…
 //  &g=11111&sf=pu&lw=1,1,1,1,1,1,1&l=rwbp&o=<overlay bits>&t3=…&t=a500&s=<way>,<lng>,<lat>: each setting
-//  only where it differs from the profile's (older links: no p=, over the default profile;
-//  p=<palette>, hl=<levels>)
+//  only where it differs from the profile's. A link naming no profile, or one that is gone, is read
+//  over the default profile. A param is read whole or not at all: one the app doesn't have, or whose
+//  value hasn't the shape the app writes (too few fields, another kind of value), is ignored and the
+//  profile's setting stays; within a value of the right shape, a field unreadable or out of range is
+//  the profile's or clamped (README.md, Using it: Settings).
 
 const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
@@ -860,7 +824,7 @@ export function profileParam(id: string, name: string): string {
   return slug ? `${id}-${slug}` : id;
 }
 
-/** The profile id a link's `p=` names, if it has the shape of one (else it is an older link's palette). */
+/** The profile id a link's `p=` names, if it has the shape of one. */
 export function profileIdOf(hash: string): string | null {
   const v = new URLSearchParams(hash.replace(/^#/, '')).get('p');
   return v && /^[a-z0-9]{4}(-[a-z0-9-]*)?$/.test(v) ? v.slice(0, 4) : null;
@@ -905,7 +869,7 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('rx', rx(s.roadLook));
   p.set('wd', s.roadLook.widths.map((r) => r.map((v) => +v.toFixed(3)).join('_')).join(','));
   const r = s.rail;
-  // (Fields 8–10, empty: line weight, ties and casing in older links.)
+  // (Fields 8–10 are empty: unused.)
   const rs = [
     r.on ? 1 : 0, r.groups.map((g) => (g ? 1 : 0)).join(''), r.colour, r.metric, r.palette, r.auto ? 1 : 0,
     +r.range[0].toFixed(2), +r.range[1].toFixed(2), '', '', '', r.single.replace('#', ''), +r.lowFade.toFixed(2),
@@ -919,7 +883,7 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('rk', rk(r));
   p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
   p.set('rp', r.preset || 'custom');
-  // (Field 4, empty: line weight in older links.)
+  // (Field 4 is empty: unused.)
   const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
@@ -927,7 +891,7 @@ export function linkFields(s: AppState, buildings: boolean): Map<string, string>
   p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   p.set('tc', tc(s.trees));
-  // (Fields 2 and 4, empty: the palette and the ramp's end in older links, now in `ds`.)
+  // (Fields 2 and 4 are empty: unused.)
   const dp = (d: DepthState) => [d.on ? 1 : 0, '', d.scale, '', +d.opacity.toFixed(2), +d.shade.toFixed(2), Math.round(d.light), d.dry ? 1 : 0, d.dryColour.slice(1),
     d.contours ? 1 : 0, d.interval, d.fixed, d.index, d.labels ? 1 : 0, d.colour.slice(1), +d.weight.toFixed(2), +d.lineOpacity.toFixed(2), d.floor ? 1 : 0].join(',');
   p.set('dp', dp(s.depth));
@@ -1031,26 +995,23 @@ export function toHash(s: AppState, buildings: boolean, base: LinkBase): string 
   return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',');
 }
 
-
 /** The state a link gives: `base` (the profile it names, else the default profile) with the
- * settings it carries (`buildings`: whether the catalogue has the 3D buildings; without, their
- * `bd=` is left out, as `toHash` leaves it out). */
+ * settings it carries, each param read whole or not at all (above). `buildings`: whether the
+ * catalogue has the 3D buildings; without, their `bd=` is left out, as `toHash` leaves it out. */
 export function fromHash(hash: string, buildings: boolean, base: AppState): AppState {
   const s: AppState = { ...structuredClone(base), view: null, selected: null, stretch: null };
   const p = new URLSearchParams(hash.replace(/^#/, ''));
   const map = p.get('map')?.split('/').map(Number);
   if (map && map.length >= 3 && map.every(Number.isFinite))
     s.view = { zoom: map[0], lat: map[1], lng: map[2], bearing: map[3] ?? 0, pitch: map[4] ?? 0, elev: map[5] ?? 0 };
-  const m = p.get('m');
-  if (m && MODES.some((d) => d.key === m)) {
-    const d = modeDef(m as Mode);
-    s.mode = d.key;
-    s.auto = d.auto;
-    s.range = [...d.range] as [number, number];
-    s.threshold.value = d.thrDefault;
+  const m = MODES.find((d) => d.key === p.get('m'));
+  if (m) {
+    s.mode = m.key;
+    s.auto = m.auto;
+    s.range = [...m.range] as [number, number];
+    s.threshold.value = m.thrDefault;
   }
-  // (Older links: the palette in p=, where p= names no profile.)
-  const pal = p.get('pa') ?? (profileIdOf(hash) ? null : p.get('p'));
+  const pal = p.get('pa');
   if (pal) s.palette = pal;
   const rs = p.get('r');
   if (rs === 'auto') s.auto = true;
@@ -1062,34 +1023,38 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
     }
   }
   // Percentiles (toHash): fp the display type's, or while a scenic metric is shown the base of
-  // every scenic metric fpm doesn't list (older links: their one set for every scenic metric);
-  // while another display type is shown, that base in fpb.
+  // every scenic metric fpm doesn't list; while another display type is shown, that base in fpb.
   const pctPair = (k: string): Pair | null => {
     const v = p.get(k)?.split(',').map(Number);
     return v && v.length === 2 && validFit([v[0], v[1]]) ? [v[0], v[1]] : null;
   };
-  if (p.has('fp') || p.has('fpb') || p.has('fpm') || p.has('m')) {
+  if (p.has('fp') || p.has('fpb') || p.has('fpm') || m) {
     const fp = pctPair('fp');
     const fpm = pairsOfField(p.get('fpm'), ROAD_FIT_KEYS, validFit);
     const fitBase: Pair = (isScenic(s.mode) ? fp : pctPair('fpb')) ?? FIT_DEFAULT;
     s.fit = isScenic(s.mode) ? pairOf(fpm, s.mode, fitBase) : fp ?? FIT_DEFAULT;
     s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => fpm[k] ?? fitBase, FIT_DEFAULT);
   }
-  // Screen widths: fl every scenic metric's but those flm lists (older links: every one's).
+  // Screen widths: fl every scenic metric's but those flm lists.
   if (p.has('fl') || p.has('flm')) {
     const flv = p.get('fl')?.split(',');
     const flOwn = pairsOfField(p.get('flm'), ROAD_FIT_KEYS, validFitLen);
     const flBase = flv && flv.length === 2 ? fitLenOf(flv[0], flv[1], FIT_LEN_DEFAULT) : FIT_LEN_DEFAULT;
     s.fitLens = perMetric(ROAD_FIT_KEYS, (k) => flOwn[k] ?? flBase, FIT_LEN_DEFAULT);
   }
-  // ('p': every scenic metric, as links from before the unit per metric have it.)
   if (p.has('fu')) s.fitUnits = unitsOfField(p.get('fu'), ROAD_FIT_KEYS);
   if (p.has('eq')) s.equalize = p.get('eq') === '1';
-  const pr = p.get('pr');
-  const wt = migrateWeights(p.get('wt')?.split(',').map(Number));
-  if (pr !== null) s.preset = pr === 'custom' ? '' : pr;
-  if (wt) s.weights = wt;
-  else if (pr) s.weights = [...(presets.get(pr)?.w ?? BUILTIN.find((b) => b.id === pr)?.w ?? base.weights)]; // older links
+  // The preset and its weights, together (LINKED): a preset's name alone says nothing here, where
+  // presets are per browser.
+  const weightsOf = (k: string, n: number) => {
+    const w = p.get(k)?.split(',').map((v) => (v === '' ? NaN : Number(v)));
+    return w && w.length === n && w.every(Number.isFinite) ? w : null;
+  };
+  const pr = p.get('pr'), wt = weightsOf('wt', NCOMP);
+  if (pr && wt) {
+    s.preset = pr === 'custom' ? '' : pr;
+    s.weights = wt;
+  }
   const g = p.get('g');
   if (g && g.length === NGROUP) s.groups = [...g].map((c) => c === '1');
   const un = p.get('un');
@@ -1097,9 +1062,6 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   const rl = p.get('rl')?.split(',').map((v) => Math.max(0, Number(v) || 0));
   if (rl && rl.length === 2) s.roadLen = [rl[0], rl[1]];
   if (p.has('rlo')) s.roadLenOn = p.get('rlo') !== '0';
-  // The Map look (older links: the preset it was, in ms=).
-  const ms = MAP_SCHEMES.find((m) => m.key === p.get('ms'));
-  if (ms && !p.has('rm')) s.roadMap = presetLook(ms, s.roadMap);
   const rmv = p.get('rm')?.split(',');
   if (rmv && rmv.length === 4 + CAT_KINDS.length) {
     const cols = (v: string) => v.split('.').map((c) => `#${c}`);
@@ -1118,7 +1080,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   const wd = p.get('wd')?.split(',').map((r) => r.split('_').map(Number));
   if (wd && wd.length === NCLASS && wd.every((r) => r.length === WIDTH_Z.length && r.every(Number.isFinite))) s.roadLook = cleanRoadLook({ ...s.roadLook, widths: wd }, base.roadLook);
   const rsv = p.get('rs')?.split(',');
-  if (rsv && rsv.length >= 13) {
+  if (rsv && rsv.length >= 27) {
     const rs = rsv;
     const num = (v: string, d: number) => (Number.isFinite(Number(v)) && v !== '' ? Number(v) : d);
     const r = s.rail;
@@ -1127,9 +1089,9 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       ...r,
       on: rs[0] === '1',
       groups: rs[1].length === NRAIL ? [...rs[1]].map((c) => c === '1') : r.groups,
-      colour: colourOf(rs[2], RAIL_COLOURS, RAIL_COLOURS_WERE, r.colour),
+      colour: colourOf(rs[2], RAIL_COLOURS, r.colour),
       metric,
-      // The other metrics' palettes and percentiles (older links: none, as first picked).
+      // The other metrics' palettes and percentiles (none listed: as first picked).
       looks: looksOfField(rs[29], metric, RAIL_KEYS, railFreshLook),
       palette: rs[4] || r.palette,
       auto: rs[5] === '1',
@@ -1137,53 +1099,51 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       single: /^[0-9a-f]{6}$/i.test(rs[11]) ? `#${rs[11]}` : r.single,
       lowFade: Math.min(1, Math.max(0, num(rs[12], r.lowFade))),
       freqOn: rs[13] === '1',
-      freqMin: Math.max(0, num(rs[14] ?? '', r.freqMin)),
-      freqMax: Math.max(0, num(rs[15] ?? '', r.freqMax)),
-      freqUnknown: rs[16] === undefined ? r.freqUnknown : rs[16] === '1',
-      ...(rs.length >= 24 ? parseScaleTail(rs.slice(17), r) : {}),
-      opacity: rs[24] ? Math.min(1, Math.max(0.1, num(rs[24], r.opacity))) : r.opacity,
+      freqMin: Math.max(0, num(rs[14], r.freqMin)),
+      freqMax: Math.max(0, num(rs[15], r.freqMax)),
+      freqUnknown: rs[16] === '1',
+      ...parseScaleTail(rs.slice(17), r),
+      opacity: Math.min(1, Math.max(0.1, num(rs[24], r.opacity))),
       fitLens: fitLensOfFields(rs[25], rs[26], rs[28], RAIL_FIT_KEYS),
       fitUnits: unitsOfField(rs[27], RAIL_FIT_KEYS),
     };
-    // Older links: the rail card's line weight.
-    if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
   }
-  // Ties and stop dots (older links: the base; and the stops' outline, now the map's).
+  // Ties and stop dots.
   const rk = p.get('rk')?.split(',');
-  if (rk) {
+  if (rk && rk.length >= 3) {
     const n = (v: string | undefined, d: number) => (v !== undefined && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
     const r = s.rail;
     s.rail = clampRailLook({ ...r, ties: n(rk[0], r.ties), stopSize: n(rk[1], r.stopSize), stopContrast: n(rk[2], r.stopContrast) });
-    if (rk.length >= 5) Object.assign(s, migrateOutline(s, { stopOutline: `#${rk[3]}`, stopOutlineOpacity: Number(rk[4]) }));
   }
   const pl = p.get('pl')?.split(',');
-  if (pl) Object.assign(s, migrateOutline(s, { stopOutline: `#${pl[0]}`, stopOutlineOpacity: Number(pl[1]) }));
+  if (pl && pl.length >= 2) {
+    const a = pl[1] === '' ? NaN : Number(pl[1]);
+    if (HEX.test(`#${pl[0]}`)) s.pointOutline = `#${pl[0].toLowerCase()}`;
+    if (Number.isFinite(a)) s.pointOutlineOpacity = Math.min(1, Math.max(0, a));
+  }
   const fy = p.get('fy')?.split(',');
-  if (fy && fy.length >= 7) {
+  if (fy && fy.length >= 26) {
     const f = s.ferry;
     const op = Number(fy[7]);
     const metric = FERRY_METRICS.some((m) => m.key === fy[12]) ? (fy[12] as FerryMetric) : f.metric;
-    // Older links: the ferry card's line weight.
-    if (fy[4] && Number.isFinite(Number(fy[4]))) s.lineWeights.ferries = clampWeight(Number(fy[4]));
     s.ferry = {
       on: fy[0] === '1',
       groups: fy[1].length === NFERRY ? [...fy[1]].map((c) => c === '1') : f.groups,
-      colour: colourOf(fy[2], FERRY_COLOURS, FERRY_COLOURS_WERE, f.colour),
+      colour: colourOf(fy[2], FERRY_COLOURS, f.colour),
       palette: fy[3] || f.palette,
       dashed: fy[5] === '1',
       single: /^[0-9a-f]{6}$/i.test(fy[6]) ? `#${fy[6]}` : f.single,
-      opacity: fy[7] !== undefined && fy[7] !== '' && Number.isFinite(op) ? Math.min(1, Math.max(0.05, op)) : f.opacity,
+      opacity: fy[7] !== '' && Number.isFinite(op) ? Math.min(1, Math.max(0.05, op)) : f.opacity,
       freqOn: fy[8] === '1',
       freqMin: Math.max(0, Number(fy[9]) || 0),
       freqMax: Math.max(0, Number(fy[10]) || 0),
-      freqUnknown: fy[11] === undefined ? f.freqUnknown : fy[11] === '1',
+      freqUnknown: fy[11] === '1',
       metric,
       looks: looksOfField(fy[28], metric, FERRY_KEYS, ferryFreshLook),
-      auto: fy[13] === undefined ? f.auto : fy[13] === '1',
-      range: fy.length >= 16 && fy[14] !== '' && fy[15] !== '' && Number(fy[15]) > Number(fy[14]) ? [Number(fy[14]), Number(fy[15])] : f.range,
-      lowFade: fy[19] !== undefined && Number.isFinite(Number(fy[19])) && fy[19] !== '' ? Math.min(1, Math.max(0, Number(fy[19]))) : f.lowFade,
-      ...(fy.length >= 24 ? parseScaleTail([fy[16], fy[17], fy[18], fy[20], fy[21], fy[22], fy[23]], f) : {
-        fit: f.fit, equalize: f.equalize, lowSpan: f.lowSpan, threshold: f.threshold, palette: fy[3] || f.palette }),
+      auto: fy[13] === '1',
+      range: fy[14] !== '' && fy[15] !== '' && Number(fy[15]) > Number(fy[14]) ? [Number(fy[14]), Number(fy[15])] : f.range,
+      lowFade: Number.isFinite(Number(fy[19])) && fy[19] !== '' ? Math.min(1, Math.max(0, Number(fy[19]))) : f.lowFade,
+      ...parseScaleTail([fy[16], fy[17], fy[18], fy[20], fy[21], fy[22], fy[23]], f),
       fitLens: fitLensOfFields(fy[24], fy[25], fy[27], FERRY_FIT_KEYS),
       fitUnits: unitsOfField(fy[26], FERRY_FIT_KEYS),
     };
@@ -1206,22 +1166,14 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
     };
   }
   const dpv = p.get('dp')?.split(',');
-  if (dpv && dpv.length >= 17) {
+  if (dpv && dpv.length >= 18) {
     const d = s.depth;
     const n = (v: string, dflt: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : dflt);
     const col = (v: string, dflt: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v}` : dflt);
-    // Older links (a palette in field 2): 'fit' as a third scale (now Auto) and the ramp's end in
-    // field 4 (now the range, 0 to it); their colour scale is then this, not ds='s.
-    const colours = { ...d.colours };
-    if (dpv[1] !== '') {
-      if (DEPTH_PALETTES.some((pp) => pp.key === baseKey(dpv[1]))) colours.palette = dpv[1];
-      colours.auto = dpv[2] === 'fit';
-      colours.range = [0, n(dpv[3], d.colours.range[1], 5, 6000)];
-    }
     s.depth = {
       on: dpv[0] === '1',
-      scale: dpv[2] === 'linear' ? 'linear' : dpv[2] === 'log' || dpv[2] === 'fit' ? 'log' : d.scale,
-      colours,
+      scale: dpv[2] === 'linear' || dpv[2] === 'log' ? dpv[2] : d.scale,
+      colours: d.colours,
       opacity: n(dpv[4], d.opacity, 0.1, 1),
       shade: n(dpv[5], d.shade, 0, 1),
       light: n(dpv[6], d.light, 0, 359),
@@ -1241,7 +1193,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   const dsv = p.get('ds')?.split(',');
   if (dsv && dsv.length >= 12) s.depth = { ...s.depth, colours: cleanDepthColours(parseScale(dsv, s.depth.colours), base.depth.colours) };
   const bdv = buildings ? p.get('bd')?.split(',') : undefined;
-  if (bdv && bdv.length >= 5) {
+  if (bdv && bdv.length >= 7) {
     const b = s.buildings;
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
     // (The scale 0 means "× the terrain's exaggeration": a negative one is no scale, not that.)
@@ -1253,29 +1205,20 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       colour: (['plain', 'height', 'source'] as BuildingColour[]).includes(bdv[2] as BuildingColour) ? (bdv[2] as BuildingColour) : b.colour,
       opacity: n(bdv[3], b.opacity, 0.1, 1),
       scale: bdv[4] !== '' && scale >= 0 ? n(bdv[4], b.scale, 0, 3) : b.scale,
-      // (Links from before the heritage tint have five fields: it on.)
       heritage: bdv[5] !== '0',
-      // (Links from before the plain colour: the default.)
-      plain: /^[0-9a-f]{6}$/i.test(bdv[6] ?? '') ? `#${bdv[6].toLowerCase()}` : b.plain,
+      plain: /^[0-9a-f]{6}$/i.test(bdv[6]) ? `#${bdv[6].toLowerCase()}` : b.plain,
     };
   }
   const bhv = buildings ? p.get('bh')?.split(',') : undefined;
-  if (bhv) s.buildings = { ...s.buildings, height: parseScale(bhv, s.buildings.height) };
-  const rw = p.get('rw')?.split(',').map(Number);
-  // (Links from before the service-frequency factor carry one weight fewer: its def.)
-  const rwv = addedWeights(rw, RAIL_COMPONENTS);
-  if (rwv) s.rail = { ...s.rail, weights: rwv };
-  // Rail preset: a link to one this browser has (else custom, keeping the weights), or the default.
-  const rp = p.get('rp');
-  if (rp !== null) s.rail = { ...s.rail, preset: rp !== 'custom' && railPresets.get(rp) ? rp : '' };
-  else if (rw) s.rail = { ...s.rail, preset: sameWeights(s.rail.weights, railPresets.get(RAIL_DEFAULT_PRESET)?.w ?? []) ? RAIL_DEFAULT_PRESET : '' };
+  if (bhv && bhv.length >= 12) s.buildings = { ...s.buildings, height: parseScale(bhv, s.buildings.height) };
+  // The ride factors' weights and their preset, together (LINKED): a preset this browser has (else
+  // custom, keeping the weights).
+  const rp = p.get('rp'), rw = weightsOf('rw', RAIL_COMPONENTS.length);
+  if (rp && rw) s.rail = { ...s.rail, weights: rw, preset: rp !== 'custom' && railPresets.get(rp) ? rp : '' };
   const sf = p.get('sf');
   if (sf !== null) s.surface = { paved: sf.includes('p'), unpaved: sf.includes('u') };
   const tl = p.get('tl');
   if (tl !== null) s.toll = { free: tl.includes('f'), toll: tl.includes('t') };
-  // Older links: the road line weight (0.5 by default), which scaled rail and ferries too.
-  const w = Number(p.get('w'));
-  if (p.get('w') && w > 0) s.lineWeights.global = clampWeight(w / ROAD_WEIGHT);
   const lw = p.get('lw')?.split(',').map(Number);
   if (lw && lw.length === LINE_KINDS.length + 1 && lw.every((v) => Number.isFinite(v) && v > 0)) {
     s.lineWeights = { global: clampWeight(lw[0]), ...(Object.fromEntries(LINE_KINDS.map(([k], i) => [k, clampWeight(lw[i + 1])])) as Record<LineKind, number>) };
@@ -1291,8 +1234,6 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   if (l !== null) s.layers = { roads: l.includes('r'), water: l.includes('w'), boundaries: l.includes('b'), places: l.includes('p') };
   const o = p.get('o');
   if (o && o.length === OVERLAYS.length) OVERLAYS.forEach(([k], i) => (s.overlays[k] = o[i] === '1'));
-  const hl = p.get('hl');
-  if (hl && hl.length === 5) s.heritageOff = offFromLevels([...hl].map((c) => c === '1'));
   const ht = p.get('ht');
   if (ht !== null) s.heritageOff = ht.split(',').filter((k) => /^[wnpm]\.[a-z]+$/.test(k));
   const bl = p.get('bl');
@@ -1301,8 +1242,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   const sqx = p.get('sqx');
   if (sqx !== null) s.stopUnknown = Object.fromEntries(sqx.split(',').filter((k) => OVERLAYS.some((o) => o[0] === k)).map((k) => [k, false]));
   const lk = p.get('lk');
-  // Kinds added since the link was made (beyond its length) stay on.
-  if (lk && lk.length <= LABEL_KINDS.length) s.labelKinds = Object.fromEntries(LABEL_KINDS.map(([k], i) => [k, i >= lk.length || lk[i] === '1'])) as Record<LabelKind, boolean>;
+  if (lk && lk.length === LABEL_KINDS.length) s.labelKinds = Object.fromEntries(LABEL_KINDS.map(([k], i) => [k, lk[i] === '1'])) as Record<LabelKind, boolean>;
   const t3 = p.get('t3')?.split(',').map(Number);
   if (t3 && t3.length >= 9 && t3.every(Number.isFinite)) {
     s.terrain = {
@@ -1311,11 +1251,6 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       light: t3[4], shade: Math.min(1, Math.max(0, t3[5])), tint: t3[6] === 1, contours: t3[7] === 1, sky: t3[8] === 1,
     };
   }
-  // Links from before the tint's scale (palette, range mode, min, max, …; fades per variable).
-  const tn = p.get('tn')?.split(','), tf = p.get('tf')?.split(',').map(Number);
-  if (tn && tn.length >= 7) s.terrain = migrateTint(s.terrain, { tintPalette: tn[0], tintRange: tn[1], tintMin: Number(tn[2]), tintMax: Number(tn[3]),
-    tintBands: Number(tn[4]), tintCurve: Number(tn[5]), tintOpacity: Number(tn[6]), tintVar: tn[7],
-    ...(tf && tf.length === 4 && tf.every(Number.isFinite) ? { tintFade: { elev: tf[0], slope: tf[2] }, tintFadeSpan: { elev: tf[1], slope: tf[3] } } : {}) });
   const tvv = p.get('tv')?.split(',');
   if (tvv && tvv.length >= 5) {
     const n = (v: string, d: number) => (v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -1325,7 +1260,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
     };
   }
   const cl = p.get('cl')?.split(',');
-  if (cl && cl.length >= 8) {
+  if (cl && cl.length >= 9) {
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
     const d = base.terrain.contour;
     s.terrain = {
@@ -1334,7 +1269,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
         weight: n(cl[0], d.weight, 0.25, 3), minor: n(cl[1], d.minor, 0, 1), major: n(cl[2], d.major, 0, 1),
         colour: /^[0-9a-f]{6}$/i.test(cl[3]) ? `#${cl[3].toLowerCase()}` : d.colour, density: Math.round(n(cl[4], d.density, -2, 2)),
         perspective: n(cl[5], d.perspective, 0, 1), labels: cl[6] !== '0', ring: Math.round(n(cl[7], d.ring, 0, 24)),
-        labelSize: n(cl[8] ?? '', d.labelSize, 0.5, 2.5),
+        labelSize: n(cl[8], d.labelSize, 0.5, 2.5),
       },
     };
   }
@@ -1353,7 +1288,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   }
   for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
     const v = p.get(key)?.split(',');
-    if (v) s.terrain = { ...s.terrain, tintScales: { ...s.terrain.tintScales, [k]: parseScale(v, s.terrain.tintScales[k]) } };
+    if (v && v.length >= 12) s.terrain = { ...s.terrain, tintScales: { ...s.terrain.tintScales, [k]: parseScale(v, s.terrain.tintScales[k]) } };
   }
   const lf = p.get('lf')?.split(',').map(Number);
   if (lf && lf.length === 2 && lf.every(Number.isFinite)) {
@@ -1369,7 +1304,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   const ln = p.get('ln');
   if (ln && HEX.test(`#${ln}`)) s.land = `#${ln.toLowerCase()}`;
   const wa = p.get('wa')?.split(',');
-  if (wa && wa.length >= 10) {
+  if (wa && wa.length >= 16) {
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
     const hex = (v: string, d: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v.toLowerCase()}` : d);
     const d = base.water;
@@ -1394,14 +1329,14 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
   const pe = Number(p.get('pe'));
   if (p.get('pe') && pe >= 0 && pe <= 1) s.poiEmphasis = pe;
   const lmv = p.get('lm')?.split(',');
-  if (lmv && lmv.length >= 12) {
+  if (lmv && lmv.length >= 14) {
     const d = base.landmarks;
     const num = (x: string, dv: number, lo: number, hi: number) => (x !== '' && Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : dv);
     const r0 = num(lmv[2], d.range[0], 0, 1), r1 = num(lmv[3], d.range[1], 0, 1);
     s.landmarks = {
       ...s.landmarks, balance: num(lmv[0], d.balance, 0, 1), auto: lmv[1] !== '0', range: r1 > r0 ? [r0, r1] : d.range,
       lowFade: num(lmv[4], d.lowFade, 0, 1), ...parseScaleTail(lmv.slice(5), d),
-      top: lmv.length >= 14 ? topRanks(num(lmv[12], d.top[0], 1, 100000), num(lmv[13], d.top[1], 1, 100000)) : d.top,
+      top: topRanks(num(lmv[12], d.top[0], 1, 100000), num(lmv[13], d.top[1], 1, 100000)),
     };
   }
   const t = p.get('t');
@@ -1415,7 +1350,7 @@ export function fromHash(hash: string, buildings: boolean, base: AppState): AppS
       /* a broken value: the profile's */
     }
   }
-  // The selected way and a point on it (older links, a way index alone: no selection).
+  // The selected way and a point on it.
   const sel = p.get('s')?.match(/^(\d+),(-?[\d.]+),(-?[\d.]+)$/);
   if (sel) {
     const [way, lng, lat] = sel.slice(1).map(Number);
@@ -1434,20 +1369,10 @@ export { ob as overlayIndex };
 /** A #rrggbb colour. */
 const HEX = /^#[0-9a-f]{6}$/i;
 
-/** The point outline from the rail stops' outline (`stopOutline`, `stopOutlineOpacity`: the rail
- * card's before it was the map's, in saves and links), where valid; else the state's. */
-function migrateOutline(s: AppState, o: Record<string, unknown>): Pick<AppState, 'pointOutline' | 'pointOutlineOpacity'> {
-  const c = o.stopOutline, a = o.stopOutlineOpacity;
-  return {
-    pointOutline: typeof c === 'string' && HEX.test(c) ? c.toLowerCase() : s.pointOutline,
-    pointOutlineOpacity: typeof a === 'number' && Number.isFinite(a) ? Math.min(1, Math.max(0, a)) : s.pointOutlineOpacity,
-  };
-}
-
 /**
- * State saved in localStorage, merged onto `base` (the profile in use) key by key (unknown or mistyped
- * values are dropped, so older saves keep working after new settings are added; a value broken or
- * missing is the profile's).
+ * State saved in localStorage, or a profile's settings, merged onto `base` (the profile in use; for
+ * a profile, the seed) key by key: a key the app doesn't have is ignored, and a value missing,
+ * mistyped, of another length or out of what the app offers is `base`'s (numbers in range clamped).
  */
 export function fromSaved(o: unknown, base: AppState): AppState {
   const s: AppState = structuredClone(base);
@@ -1467,41 +1392,21 @@ export function fromSaved(o: unknown, base: AppState): AppState {
     }
   };
   const { view, selected: _sel, stretch: _st, looks, scales, ...rest } = src;
-  const w = migrateWeights(rest.weights);
-  if (w) rest.weights = w;
-  // Rail weights saved before the service-frequency factor: one fewer (its def).
-  const rs = rest.rail as { weights?: unknown } | undefined;
-  const rsw = rs && addedWeights(rs.weights, RAIL_COMPONENTS);
-  if (rsw) rest.rail = { ...rs, weights: rsw };
   merge(s as unknown as Record<string, unknown>, rest);
   s.labelLooks = cleanLooks(rest.labelLooks);
-  // Each metric's auto-fit unit (merge() only keeps keys the base has); saved before the unit
-  // per metric, the layer's (fitUnit) for each of its metrics.
+  // Each metric's auto-fit unit (merge() only keeps keys the base has).
   s.fitUnits = unitsOfSaved(src, ROAD_FIT_KEYS);
   s.rail.fitUnits = unitsOfSaved(src.rail as Record<string, unknown> | undefined, RAIL_FIT_KEYS);
   s.ferry.fitUnits = unitsOfSaved(src.ferry as Record<string, unknown> | undefined, FERRY_FIT_KEYS);
-  // Each metric's screen-widths fit; saved before it was per metric, the layer's (fitLen).
+  // Each metric's screen-widths fit.
   s.fitLens = fitLensOfSaved(src, ROAD_FIT_KEYS);
   s.rail.fitLens = fitLensOfSaved(src.rail as Record<string, unknown> | undefined, RAIL_FIT_KEYS);
   s.ferry.fitLens = fitLensOfSaved(src.ferry as Record<string, unknown> | undefined, FERRY_FIT_KEYS);
-  const oldT = rest.terrain as Record<string, unknown> | undefined;
-  if (oldT && 'tintPalette' in oldT && !('tintScales' in oldT)) s.terrain = migrateTint(s.terrain, oldT);
-  // Saved before the point outline was the map's: the rail stops' outline, once.
-  const oldR = rest.rail as Record<string, unknown> | undefined;
-  if (oldR && 'stopOutline' in oldR && !('pointOutline' in rest)) Object.assign(s, migrateOutline(s, oldR));
   s.pointOutline = HEX.test(s.pointOutline) ? s.pointOutline.toLowerCase() : base.pointOutline;
   s.pointOutlineOpacity = Math.min(1, Math.max(0, s.pointOutlineOpacity));
-  if (!rest.lineWeights) {
-    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
-    const w = num(rest.weight), rw = num((rest.rail as { weight?: unknown } | undefined)?.weight), fw = num((rest.ferry as { weight?: unknown } | undefined)?.weight);
-    if (w) s.lineWeights.global = clampWeight(w / ROAD_WEIGHT);
-    if (rw) s.lineWeights.rail = clampWeight(rw);
-    if (fw) s.lineWeights.ferries = clampWeight(fw);
-  }
   for (const k of ['global', ...LINE_KINDS.map(([k]) => k)] as const) s.lineWeights[k] = clampWeight(s.lineWeights[k]);
   s.roadPersp = clampPersp(s.roadPersp);
   if (Array.isArray(rest.heritageOff)) s.heritageOff = rest.heritageOff.filter((k): k is string => typeof k === 'string');
-  else if (Array.isArray(rest.heritageLevels) && rest.heritageLevels.length === 5) s.heritageOff = offFromLevels(rest.heritageLevels.map(Boolean));
   // Saved settings of the other display types and modes.
   const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
   const pair = (v: unknown): v is [number, number] => Array.isArray(v) && v.length === 2 && v.every(num);
@@ -1519,50 +1424,26 @@ export function fromSaved(o: unknown, base: AppState): AppState {
     if (v && typeof v.auto === 'boolean' && pair(v.range) && num(v.thrValue)) s.scales[m.key] = { auto: v.auto, range: v.range, thrValue: v.thrValue! };
   }
   if (!MODES.some((m) => m.key === s.mode)) s.mode = base.mode;
-  // The other scenic metrics' percentiles (merge() only keeps keys the base has); saved
-  // before they were per metric, the scenic metrics' one set (fit while one was shown, else
-  // their display type's look) for each.
-  const others = ROAD_FIT_KEYS.filter((k) => k !== s.mode);
+  // The other scenic metrics' percentiles (merge() only keeps keys the base has; none saved: the
+  // base's), never the one shown.
   const sf = src.scenicFits;
-  if (sf && typeof sf === 'object' && !Array.isArray(sf)) {
-    const m = sf as Record<string, unknown>;
-    s.scenicFits = perMetric(others, (k) => (pair(m[k]) && validFit(m[k] as Pair) ? (m[k] as Pair) : FIT_DEFAULT), FIT_DEFAULT);
-  } else {
-    const shared = isScenic(s.mode) ? s.fit : s.looks.scenic?.fit ?? FIT_DEFAULT;
-    s.scenicFits = perMetric(others, () => shared, FIT_DEFAULT);
-  }
-  // Saved before the Map look: the preset it was.
-  const oldMs = MAP_SCHEMES.find((m) => m.key === src.mapScheme);
-  if (oldMs && !src.roadMap) s.roadMap = presetLook(oldMs, s.roadMap);
+  const fits = (sf && typeof sf === 'object' && !Array.isArray(sf) ? sf : base.scenicFits) as Record<string, unknown>;
+  s.scenicFits = perMetric(ROAD_FIT_KEYS.filter((k) => k !== s.mode), (k) => (pair(fits[k]) && validFit(fits[k] as Pair) ? (fits[k] as Pair) : FIT_DEFAULT), FIT_DEFAULT);
   s.roadMap = cleanMapLook(s.roadMap, base.roadMap);
   s.roadLook = cleanRoadLook(s.roadLook, base.roadLook);
   const lt = s.landmarks.top as unknown;
   s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : base.landmarks.top;
-  s.rail.colour = colourOf(s.rail.colour, RAIL_COLOURS, RAIL_COLOURS_WERE, base.rail.colour);
+  s.rail.colour = colourOf(s.rail.colour, RAIL_COLOURS, base.rail.colour);
   s.rail = clampRailLook(s.rail);
   if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = base.rail.metric;
-  s.ferry.colour = colourOf(s.ferry.colour, FERRY_COLOURS, FERRY_COLOURS_WERE, base.ferry.colour);
+  s.ferry.colour = colourOf(s.ferry.colour, FERRY_COLOURS, base.ferry.colour);
   if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = base.buildings.colour;
   s.buildings.opacity = Math.min(1, Math.max(0.1, s.buildings.opacity));
   s.buildings.scale = Math.min(3, Math.max(0, s.buildings.scale));
-  // (Saved by an app from before the height scale and the heritage tint.)
-  const bh = s.buildings.height as Partial<ScaleFields> | undefined;
-  if (!bh || typeof bh.palette !== 'string' || !pair(bh.range) || !pair(bh.fit) || typeof bh.auto !== 'boolean' || !num(bh.lowFade) || !num(bh.lowSpan) || typeof bh.threshold !== 'object') {
-    s.buildings.height = { ...base.buildings.height };
-  }
   if (!HEX.test(s.buildings.plain)) s.buildings.plain = base.buildings.plain;
   if (!HEX.test(s.land)) s.land = base.land;
-  // Depth saved before its colour scale: the palette, 'fit' as a third scale (now Auto) and the
-  // ramp's end (now its range).
-  const sd = (rest.depth ?? {}) as { palette?: unknown; scale?: unknown; max?: unknown; colours?: unknown };
-  if (!sd.colours) {
-    if (typeof sd.palette === 'string') s.depth.colours.palette = sd.palette;
-    if (sd.scale === 'fit') s.depth.colours.auto = true;
-    if (typeof sd.max === 'number' && Number.isFinite(sd.max)) s.depth.colours.range = [0, sd.max];
-  }
-  if (s.depth.scale !== 'linear') s.depth.scale = 'log';
+  if (s.depth.scale !== 'linear' && s.depth.scale !== 'log') s.depth.scale = base.depth.scale;
   s.depth.colours = cleanDepthColours(s.depth.colours, base.depth.colours);
-  if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = base.buildings.heritage;
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = base.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the base has).
   const sfv = (rest.stopFilters ?? {}) as Record<string, Partial<StopFilter>>;
@@ -1587,20 +1468,19 @@ export function fromSaved(o: unknown, base: AppState): AppState {
     const v = validLook(fl[m.key]);
     if (v) s.ferry.looks[m.key] = v;
   }
-  // Saved before the ferry metric scale existed: its range in the metric's units.
+  // A range that doesn't ascend: the metric's own.
   if (!(s.ferry.range[1] > s.ferry.range[0])) s.ferry.range = [...ferryMetricDef(s.ferry.metric).range];
   if (!(s.rail.range[1] > s.rail.range[0])) s.rail.range = [...railMetricDef(s.rail.metric).range];
-  // The settings rebuilt above from the save alone: a save holding none of one (not even an older
-  // form of it) has the profile's.
+  // The settings rebuilt above from the save alone: a save holding none of one has the profile's.
   const holds = (o: unknown, ...ks: string[]) => !!o && typeof o === 'object' && ks.some((k) => k in o);
   const keep = <T,>(from: T): T => structuredClone(from);
   if (!holds(src, 'labelLooks')) s.labelLooks = keep(base.labelLooks);
-  if (!holds(src, 'fitUnits', 'fitUnit')) s.fitUnits = keep(base.fitUnits);
-  if (!holds(src, 'fitLens', 'fitLen')) s.fitLens = keep(base.fitLens);
+  if (!holds(src, 'fitUnits')) s.fitUnits = keep(base.fitUnits);
+  if (!holds(src, 'fitLens')) s.fitLens = keep(base.fitLens);
   if (!holds(src, 'stopFilters')) s.stopFilters = keep(base.stopFilters);
   for (const k of ['rail', 'ferry'] as const) {
-    if (!holds(src[k], 'fitUnits', 'fitUnit')) s[k].fitUnits = keep(base[k].fitUnits);
-    if (!holds(src[k], 'fitLens', 'fitLen')) s[k].fitLens = keep(base[k].fitLens);
+    if (!holds(src[k], 'fitUnits')) s[k].fitUnits = keep(base[k].fitUnits);
+    if (!holds(src[k], 'fitLens')) s[k].fitLens = keep(base[k].fitLens);
     if (!holds(src[k], 'looks')) s[k].looks = keep(base[k].looks);
   }
   const v = view as AppState['view'];

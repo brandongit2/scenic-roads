@@ -1,5 +1,5 @@
 {
-  "about": "Built-in scenic score weight presets. Weights are keyed by component (see COMPONENTS in scenic.ts); a missing component weighs its `def` there, else 0. Edits made in the app are kept in the browser and replace this list there.",
+  "about": "Built-in scenic score weight presets. Weights are keyed by component (see COMPONENTS in scenic.ts); a missing component weighs 0. Edits made in the app are kept in the browser and replace this list there.",
   "presets": [
     {
       "id": "balanced",

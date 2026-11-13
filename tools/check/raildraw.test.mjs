@@ -82,34 +82,29 @@ test('ties, stop dots and the point outline survive a link', () => {
   assert.deepEqual(look(st.fromHash(h, true, st.seed)), look(s));
 });
 
-test('older links, without them, read as the defaults; bad values are clamped or dropped', () => {
+test('a link without them reads as the profile\'s; bad values are clamped or dropped', () => {
   const s = structuredClone(st.seed);
   s.rail.single = '#123456'; // some rail field in the link, so it has an rs= but no rk=
   const b = st.fromHash(st.toHash(s, true, { id: 'base', name: 'Default', s: st.seed }), true, st.seed);
   assert.deepEqual(look(b), look(st.seed));
-  const c = st.fromHash('#rk=99,0.01,7,nothex,-1', true, st.seed);
+  const c = st.fromHash('#rk=99,0.01,7&pl=nothex,-1', true, st.seed);
   assert.deepEqual(look(c), { ties: 5, stopSize: 0.25, stopContrast: 1, outline: st.seed.pointOutline, outlineOpacity: 0 });
-  const d = st.fromHash('#rk=2', true, st.seed);
-  assert.deepEqual(look(d), { ...look(st.seed), ties: 2 });
+  assert.deepEqual(look(st.fromHash('#rk=2,,x', true, st.seed)), { ...look(st.seed), ties: 2 });
+  // Too few fields: not the app's, ignored whole. Fields past the three: ignored.
+  assert.deepEqual(look(st.fromHash('#rk=2&pl=aabbcc', true, st.seed)), look(st.seed));
+  assert.deepEqual(look(st.fromHash('#rk=2,1,0.5,AABBCC,0.3', true, st.seed)), { ...look(st.seed), ties: 2, stopSize: 1, stopContrast: 0.5 });
+  assert.deepEqual(look(st.fromHash('#pl=AABBCC,0.3', true, st.seed)), { ...look(st.seed), outline: '#aabbcc', outlineOpacity: 0.3 });
 });
 
-test('a link with the rail card\'s old stop outline carries it to the point outline', () => {
-  const e = st.fromHash('#rk=2,1,0.5,AABBCC,0.3', true, st.seed);
-  assert.deepEqual(look(e), { ...look(st.seed), ties: 2, stopContrast: 0.5, outline: '#aabbcc', outlineOpacity: 0.3 });
-});
-
-test('saved settings keep them, and settings saved before them take the defaults', () => {
+test('saved settings keep them, and settings without them take the profile\'s', () => {
   const s = st.fromSaved({ rail: { ties: 1.5, stopSize: 3, stopContrast: 0.9 }, pointOutline: '#AABBCC', pointOutlineOpacity: 0.3 }, st.seed);
   assert.deepEqual(look(s), { ties: 1.5, stopSize: 3, stopContrast: 0.9, outline: '#aabbcc', outlineOpacity: 0.3 });
   assert.deepEqual(look(st.fromSaved({ rail: { on: true } }, st.seed)), look(st.seed));
   assert.deepEqual(look(st.fromSaved({ rail: { ties: 'x', stopOutline: 'red' } }, st.seed)), look(st.seed));
 });
 
-test('the rail card\'s saved stop outline moves to the point outline once', () => {
-  const old = st.fromSaved({ rail: { stopOutline: '#AABBCC', stopOutlineOpacity: 0.3 } }, st.seed);
-  assert.deepEqual([old.pointOutline, old.pointOutlineOpacity], ['#aabbcc', 0.3]);
-  assert.ok(!('stopOutline' in old.rail));
-  // Saved since: the map's wins over a leftover rail one.
-  const now = st.fromSaved({ rail: { stopOutline: '#AABBCC', stopOutlineOpacity: 0.3 }, pointOutline: '#112233', pointOutlineOpacity: 0.7 }, st.seed);
-  assert.deepEqual([now.pointOutline, now.pointOutlineOpacity], ['#112233', 0.7]);
+test('a saved key the app doesn\'t have (a rail stopOutline) is ignored', () => {
+  const s = st.fromSaved({ rail: { stopOutline: '#AABBCC', stopOutlineOpacity: 0.3 } }, st.seed);
+  assert.deepEqual(look(s), look(st.seed));
+  assert.ok(!('stopOutline' in s.rail));
 });

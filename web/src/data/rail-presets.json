@@ -1,6 +1,5 @@
 {
-  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); a missing factor weighs its `def` there, else 0. `default` is the app's default preset (else the first). Edits made in the app are kept in the browser and replace this list there.",
-  "default": "my-preset",
+  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); a missing factor weighs 0. Edits made in the app are kept in the browser and replace this list there.",
   "presets": [
     {
       "id": "balanced",

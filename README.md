@@ -143,7 +143,27 @@ the World zoomed out, a region, or the view). The map supports Chrome and Safari
 - **Settings** persist in the browser, and the URL carries them, so a link shares the view. A
   **settings profile** (the menu atop the panel) is every setting of the panel, shared by everyone
   using the map. A link or first load naming no profile opens the Default profile (starred in the
-  menu); a link's own settings go on top of the profile it names. A new server's Default holds
+  menu); a link's own settings go on top of the profile it names. Links and saved settings are read
+  only in the form the app writes now; anything else is ignored, piece by piece, and the profile's
+  setting shows instead (nothing is converted from an older form, and nothing fails):
+  - *a link's parameter the app doesn't have* (`ms=`, `hl=`, `w=`, `tn=`, a palette in `p=`): ignored;
+  - *a parameter whose value isn't in the shape the app writes* (fewer comma-separated fields
+    than it writes, say an `rs=` of 17 fields or a `wa=` of 10; a weight list or a row of on/off
+    flags of another length; a preset's name without its weights or the weights without the
+    name): ignored whole, so that setting is the profile's (in a comma-separated value, fields past
+    those the app writes are ignored);
+  - *within a value of the right shape, a field that is empty, unreadable or names something the
+    app doesn't offer* (a rail colouring `group`, a display type that is gone): that field is the
+    profile's; a number out of range is clamped, or for an opacity left at the profile's;
+  - *a link naming a profile that is gone*: its settings over the Default profile, with a notice;
+  - *saved settings* (the browser's last session, and a profile's own): read key by key; a key the
+    app doesn't have is ignored, and a value missing, of another type or list length, or naming
+    something the app doesn't offer is the profile's (in a profile: `web/default-profile.json`'s);
+  - *a weight preset list stored in the browser*: one that isn't a list of presets gives the
+    built-in presets; in a preset, a weight under a name the factors don't have is ignored and a
+    factor it doesn't list weighs 0; lists stored under other names aren't read.
+
+  A new server's Default holds
   `web/default-profile.json` (the owner's Default as of 12 Nov), which is also what the map shows
   when the profiles don't answer within 5 s or there are none (nothing can be saved to a profile
   then), and what fills a setting a profile was saved without. A control's reset (double-click, ↺)
