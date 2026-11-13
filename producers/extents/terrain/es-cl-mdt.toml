@@ -1,0 +1,21 @@
+name = "Junta de Castilla y León MDT 2008-2011"
+credit = "JCyL, IGN-CNIG, FEGA (CC BY 4.0 scne.es)"
+licence = "CC-BY-4.0"
+licence_url = "https://idecyl.jcyl.es/geonetwork/srv/api/records/SPAGOBCYLCITDTSELMDT0811/formatters/xml"
+source = "https://opendata.jcyl.es/ficheros/carto/territorio/relieve/mdt_cyl_2008_2011/mdt_cyl_2008_2011/"
+theme = "terrain"
+availability = "open"
+notes = "The Junta's 5 m bare-earth model of Castilla y León, 2008 to 2011: the south-west quadrant from stereo-correlation of digital images edited in 3D (\"Error Medio Cuadrático\" around 80 cm), the north-west, north-east and south-east from the PNOA's first-coverage lidar (around 20 cm; the IGN-CNIG's MDT05 there, es-pnoa's). Published as one zipped GeoTIFF per province (no index or footprint beyond its WMS layer and the record's box), so its extent is the area it states, Castilla y León, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its accuracy differs by quadrant, with no outline of them, so none is stated."
+
+[[piece]]
+id = "mdt-5m"
+label = "MDT de Castilla y León 2008-2011 (5 m)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { region_cod = ["ES.CL"] }
+tolerance_m = 300
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+year = 2011

@@ -1,0 +1,47 @@
+name = "ICV Modelo Digital del Terreno de LIDAR de 1 metro"
+credit = "Institut Cartogràfic Valencià, Generalitat Valenciana"
+licence = "CC-BY-4.0"
+licence_url = "https://dadesobertes.gva.es/dataset/modelo-digital-del-terreno-mdt-de-lidar-de-1-metro-de-resolucion-de-la-provincia-de-valenc-2015"
+source = "https://dadesobertes.gva.es/api/3/action/package_search?q=MDT&rows=100"
+theme = "terrain"
+availability = "open"
+notes = "The Valencian Community's 1 m bare-earth models, made by the ICV from the PNOA's second-coverage lidar, one per province (Valencia 2015, Alicante 2016, Castellón 2017), each a GeoTIFF per 1:50,000 sheet downloading without a login. Each model's download WFS (terramapas.icv.gva.es/030201_<model>_hojas, ms:distribucion_descargas) lists its files as whole 1:50,000 sheets, 89 of them summing 48,086 km², where the files hold data only inside their province (the westernmost Valencia sheet, 0718, has data in 0 to 6 % of the rows sampled): the sheets would double the area. The files have no overviews (a mask of theirs would be each 200 MB file read whole). So each model's extent is the province it states, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The year is each model's, in its name."
+
+[[piece]]
+id = "mdt-valencia-2015"
+label = "MDT LIDAR 1 m provincia de Valencia 2015"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["ES-V"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2015
+
+[[piece]]
+id = "mdt-alicante-2016"
+label = "MDT LIDAR 1 m provincia de Alicante 2016"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["ES-A"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2016
+
+[[piece]]
+id = "mdt-castellon-2017"
+label = "MDT LIDAR 1 m provincia de Castellón 2017"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["ES-CS"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2017

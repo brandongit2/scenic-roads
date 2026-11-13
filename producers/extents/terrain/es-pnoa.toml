@@ -1,0 +1,240 @@
+name = "PNOA-LiDAR"
+credit = "Instituto Geográfico Nacional, PNOA-LiDAR (CC BY 4.0 scne.es)"
+licence = "CC-BY-4.0"
+licence_url = "https://www.ign.es/resources/licencia/Condiciones_licenciaUso_IGN.pdf"
+source = "https://centrodedescargas.cnig.es/CentroDescargas/modelo-digital-terreno-mdt50cm"
+theme = "terrain"
+availability = "open"
+notes = "The bare-earth models of the national lidar programme (PNOA-LiDAR), from the CNIG's download centre (file by file; no account for up to 20 files). The third coverage's MDT50cm v1 (0.5 m, from the provisional NPC01 classification; \"cobertura por completar\"): the sheet index the centre publishes with it (Informacion_Auxiliar_MDT50cm.zip, a shapefile of 1:5,000 sheets per community and UTM zone, each its file's name and `FECHA`, a year), read in each shapefile's own projected CRS; 29,494 sheets in 13 communities and Ceuta and Melilla (September 2026). Catalonia's MDT50cm, published too, is in no shapefile of the index (its own 0.5 m model is es-ct-icgc's). The second coverage's MDT02 (2 m, flown 2015 to 2021, \"Cobertura completa\" in its IDEE record, every lot's MDT02 published) and the first coverage's MDT05 (5 m, flown 2009 to 2015, \"publicada en su totalidad\"): their sheet lists are only the centre's file search, which answers 403 to a request without its page's session, so their extent is the area the IGN states, Spain, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data; their years vary by lot (no per-lot outline is readable: the lots' outlines are RAR archives), so no year is stated. Ceuta's, Melilla's and Alborán's MDT02 and MDT05 sheets are from photogrammetric stereo-correlation, not lidar. The surface models (MDS50cm) cover a subset of the MDT50cm's communities and are left out. The programme's RMSE z of at most 10 cm is the point cloud's specification, not the models' stated accuracy, and is left out. Heights orthometric (EPSG:5782 on the mainland)."
+
+[[piece]]
+id = "mdt50cm-andalucia-h29"
+label = "MDT50cm v1, Andalucía (UTM 29)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Andalucia/H29/Entornos_MDTv1_AND_25829"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-andalucia-h30"
+label = "MDT50cm v1, Andalucía (UTM 30)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Andalucia/H30/Entornos_MDTv1_AND_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-baleares"
+label = "MDT50cm v1, Illes Balears"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Baleares/Entornos_MDTv1_BAL_25831"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-canarias"
+label = "MDT50cm v1, Canarias"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Canarias/Entornos_MDT_V1_Canarias_3040"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-cantabria"
+label = "MDT50cm v1, Cantabria"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Cantabria/Entornos_MDTv1_CANT_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-ceuta"
+label = "MDT50cm v1, Ceuta"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Ceuta/Entornos_MDTv1_Ceuta_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-extremadura-h29"
+label = "MDT50cm v1, Extremadura (UTM 29)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Extremadura/H29/Entornos_MDTv1_EXT_25829"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-extremadura-h30"
+label = "MDT50cm v1, Extremadura (UTM 30)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Extremadura/H30/Entornos_MDTv1_EXT_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-la-rioja"
+label = "MDT50cm v1, La Rioja"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "La_Rioja/Entornos_MDTv1_La_Rioja_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-madrid"
+label = "MDT50cm v1, Comunidad de Madrid"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Madrid/Entornos_MDT1_Madrid_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-melilla"
+label = "MDT50cm v1, Melilla"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Melilla/Entornos_MDTv1_Melilla_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-murcia"
+label = "MDT50cm v1, Región de Murcia"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Murcia/Entornos_MDTv1_MUR_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-navarra"
+label = "MDT50cm v1, Navarra"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "NAVARRA/Entornos_MDTv1_NAVARRA_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-pais-vasco"
+label = "MDT50cm v1, País Vasco"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "PAIS VASCO/Entornos_MDTv1_PAIS VASCO_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-valencia-h30"
+label = "MDT50cm v1, Comunitat Valenciana (UTM 30)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Valencia/H30/Entornos_MDTv1_VAL_25830"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt50cm-valencia-h31"
+label = "MDT50cm v1, Comunitat Valenciana (UTM 31)"
+method = "file"
+class = "index"
+url = "https://centrodedescargas.cnig.es/CentroDescargas/documentos/Informacion_Auxiliar_MDT50cm.zip"
+member = "Valencia/H31/Entornos_MDTv1_VAL_25831"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "FECHA", date = "year" }
+
+[[piece]]
+id = "mdt02"
+label = "MDT02 (2ª cobertura)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ESP"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+
+[[piece]]
+id = "mdt05"
+label = "MDT05 (1ª cobertura)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["ESP"] }
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 5

@@ -1,0 +1,21 @@
+name = "Gobierno de La Rioja MDT LiDAR 2016"
+credit = "Gobierno de La Rioja"
+licence = "CC-BY-4.0"
+licence_url = "https://iderioja.github.io/doc_lidar_2016_processing_en/license/"
+source = "https://iderioja.github.io/doc_lidar_2016_processing_en/dtm_dsm/digital_terrain_models/"
+theme = "terrain"
+availability = "open"
+notes = "La Rioja's own bare-earth models from its September 2016 lidar flight (2 pulses/m², 2 × 2 km blocks): elevation grids of 1, 2 and 5 m \"covering in all cases the entire territory of the Autonomous Community\" (5,034 km²), as the government's processing documentation states, published through its own download site and OGC services. Those hosts (www.iderioja.larioja.org, iderioja.larioja.org, www.larioja.org) answer 403 to a script, so no index or footprint was read: its extent is the area it states, La Rioja, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The point cloud's stated RMSE (Z ≤ 0.15, its unit misprinted as cm) is the lidar's, not the model's, and is left out."
+
+[[piece]]
+id = "mdt-1m-2016"
+label = "MDT 1 m LiDAR 2016"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["ES-LO"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2016

@@ -1,0 +1,33 @@
+name = "Ayuntamiento de Madrid modelos de elevaciones"
+credit = "Ayuntamiento de Madrid, Geoportal"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/legalcode.es"
+source = "https://datos.madrid.es/api/3/action/package_search?q=MDT&rows=10"
+theme = "terrain"
+availability = "open"
+notes = "The City of Madrid's own photogrammetric elevation models, on its open-data portal. The surface model of 2023 (MDS 2023: automatic image correlation of the 2023 flight, a 100 points/m² cloud refined with the city's vector map), in 1 × 1 km tiles of 10 cm cells: the tile grid the dataset publishes (Malla_Amb_Rest_2023.zip, 544 tiles of the restitution's area, EPSG:25830). The terrain model of 2019 (MDT 2019, from the summer 2019 photogrammetric flight's ground-level features, a 1 m mosaic with \"error medio cuadrático en coordenada Z 0,40 m\"): the area of its restitution, a KMZ of the same kind of 1 km grid (Ambito_Restitucion_2019.kml, 544 cells), the footprint of the one mosaic file."
+
+[[piece]]
+id = "mds-2023"
+label = "MDS 2023 (10 cm)"
+method = "file"
+class = "index"
+url = "https://geoportal.madrid.es/fsdescargas/IDEAM_WBGEOPORTAL/ELEVACIONES/2023/MALLA/Malla_Amb_Rest_2023.zip"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.1
+year = 2023
+
+[[piece]]
+id = "mdt-2019"
+label = "MDT 2019 (1 m)"
+method = "file"
+class = "service"
+url = "https://geoportal.madrid.es/fsdescargas/IDEAM_WBGEOPORTAL/ELEVACIONES/2019/MDT/Ambito_Restitucion_2019.kml"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2019
+vertical_rmse_m = 0.4

@@ -1,0 +1,21 @@
+name = "DROTe MDT do Arquipélago da Madeira"
+credit = "Direção Regional do Ordenamento do Território (DROTe), Região Autónoma da Madeira"
+licence = "CC-BY-4.0 (the more restrictive of two readings: \"Acesso e uso sem condições\" in the record, CC BY 4.0 in Mapterhorn's sources)"
+licence_url = "https://snig.dgterritorio.gov.pt/rndg/srv/api/records/abba9a83-cb1c-4d2c-ad1d-ccb592247754/formatters/xml"
+source = "https://snig.dgterritorio.gov.pt/rndg/srv/api/records/abba9a83-cb1c-4d2c-ad1d-ccb592247754/formatters/xml"
+theme = "terrain"
+availability = "open"
+notes = "Madeira's photogrammetric bare-earth model (automatic image correlation of the UltraCam Falcon Mark II flight of 3 October 2018 to 19 June 2019, edited to the ground), \"da totalidade da Região Autónoma da Madeira, cobrindo as Ilhas da Madeira, Porto Santo, Desertas e Selvagens\": one GeoTIFF in a zip without a login (MDT_2m.zip, 460,132,910 bytes, its world file a 2 m cell; the record's abstract says 5 m, mdt_5m.zip, and an original GSD of 10 m). The tif is inside the zip, so its own header and mask can't be read by range; its extent is the area it states, the Autonomous Region of Madeira, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. Its vertical RMSE (EMQz) differs by island, 0.145 m on Madeira and 0.051 m on Porto Santo, with one outline for both, so none is stated. LICENCE CONFLICT: the record says \"Acesso e uso sem condições\", Mapterhorn lists Madeira (at 10 m) as CC BY 4.0; the more restrictive, CC BY 4.0 (with its attribution), is kept."
+
+[[piece]]
+id = "mdt-2m"
+label = "MDT 2 m (2018-19)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["PT-30"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 2
+year = 2019

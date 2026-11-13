@@ -1,0 +1,21 @@
+name = "Gobierno de Cantabria MDS LiDAR 2018-19"
+credit = "Gobierno de Cantabria, IGN-CNIG (Sistema Cartográfico Nacional)"
+licence = "none found"
+licence_url = "https://geoservicios.cantabria.es/inspire/rest/services/MDT/MapServer"
+source = "https://geoservicios.cantabria.es/inspire/rest/services/MDT/MapServer/33"
+theme = "terrain"
+availability = "closed"
+notes = "Cantabria's 1 m surface model with buildings but not vegetation (\"MDS 2018-19 sin vegetación\"), from the 2018-19 lidar campaign the government flew with the IGN-CNIG, filled where those data were missing or poor with the 2010-12 campaign's, \"un conjunto de datos homogéneo y continuo de toda la Comunidad Autónoma\": seen only as the government's map service's raster layer (no download of its grid and no licence found), so closed. Its extent is the area it states, Cantabria, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it: claimed, not checked against data. The service's 5 m terrain models (2001 to 2012) are coarser than the PNOA's and left out."
+
+[[piece]]
+id = "mds-1m-2019"
+label = "MDS 2018-19 sin vegetación (1 m)"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { iso_3166_2 = ["ES-S"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2019

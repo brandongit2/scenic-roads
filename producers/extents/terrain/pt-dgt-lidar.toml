@@ -1,0 +1,20 @@
+name = "LiDAR de Portugal continental"
+credit = "Direção-Geral do Território (DGT)"
+licence = "CC-BY-4.0"
+licence_url = "https://snig.dgterritorio.gov.pt/rndg/srv/api/records/077a8c94-8b46-4a8a-8796-0d7fc4662f0c/formatters/xml"
+source = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/collections"
+theme = "terrain"
+availability = "login"
+notes = "The DGT's first national airborne lidar of mainland Portugal (an average of 10 points/m², flown April 2024 to July 2025), its 0.5 m bare-earth model (MDT-50cm, Float32 GeoTIFF on 1 km tiles, EPSG:3763) in the Centro de Dados Geográficos' STAC collection: the items' footprints (91,202 tiles), each item's year from its id, which ends in a month and year (…-07-2025; 2024 and 2025). The STAC is open, but every file's link redirects to the centre's login (a free account), so the pieces are claimed, drawn from the index. The 2 m model (MDT-2m) and the surface models are of the same tiles and left out; the stated altimetric accuracy (10 cm) isn't said to be an RMSE and is left out."
+
+[[piece]]
+id = "mdt-50cm"
+label = "MDT 50 cm"
+method = "stac"
+url = "https://dgt-be.a.incd.pt:8081/collections/MDT-50cm"
+page = 500
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = { field = "id", date = "text" }

@@ -1,0 +1,20 @@
+name = "Cobertura Aérea LiDAR dos Açores"
+credit = "Governo dos Açores (SRAAC)"
+licence = "non-commercial use only (the more restrictive of two readings: CC BY 4.0 in the DGT's and the region's records, non-commercial in Mapterhorn's EXCLUDED.md)"
+licence_url = "https://sma.idea.azores.gov.pt/geonetwork/srv/api/records/291673dc-2636-4d9f-9917-4434a5073588/formatters/xml"
+source = "https://dgt-be.a.incd.pt:8081/collections/ACORES-MDE-1"
+theme = "terrain"
+availability = "login"
+notes = "The Azores government's lidar of all nine islands (15 points/m², Riegl VQ-780II, flown from May 2024), its 1 m bare-earth model (ACORES-MDE-1, the region's MDE) in the DGT's Centro de Dados Geográficos STAC: the items' footprints (1,820 tiles of 1.6 × 1.0 km), each item's year from its id (2024_SMG_…). Its files download only after the centre's login (a free account), so the pieces are claimed, drawn from the index. LICENCE CONFLICT: the region's and the DGT's records say CC BY 4.0, Mapterhorn's EXCLUDED.md says the Azores lidar is non-commercial; the more restrictive, non-commercial, is kept. The stated RMSEz of 9.3 cm is São Miguel's alone and is left out. The 5 m and 10 m models and the surface models cover the same tiles and are left out."
+
+[[piece]]
+id = "mde-1m"
+label = "MDE 1 m"
+method = "stac"
+url = "https://dgt-be.a.incd.pt:8081/collections/ACORES-MDE-1"
+page = 500
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = { field = "id", date = "text" }
