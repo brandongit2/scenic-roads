@@ -30,15 +30,16 @@ test("a new file is made at this form, with its indexes", (t) => {
 });
 
 test("a file of a form this version doesn't read is refused, untouched (form 0 too)", (t) => {
-  for (const form of [0, 1, 7]) {
+  for (const form of [0, 1, FORM + 1]) {
     const file = tmp(t);
     openStore(file).close();
+    // (Its form, its schema and the schema's version, as they were.)
+    const shape = () => { const db = new DatabaseSync(file); try { return [db.prepare("PRAGMA user_version").get().user_version, db.prepare("PRAGMA schema_version").get().schema_version, db.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY name").all()]; } finally { db.close(); } };
     const db = new DatabaseSync(file);
     db.exec(`PRAGMA user_version = ${form}`);
     db.close();
-    assert.throws(() => openStore(file), new RegExp(`is of form ${form} \\(PRAGMA user_version\\); this version reads form 2`));
-    const after = new DatabaseSync(file);
-    assert.equal(after.prepare("PRAGMA user_version").get().user_version, form);
-    after.close();
+    const before = shape();
+    assert.throws(() => openStore(file), new RegExp(`is of form ${form} \\(PRAGMA user_version\\); this version reads form ${FORM}`));
+    assert.deepEqual(shape(), before);
   }
 });
