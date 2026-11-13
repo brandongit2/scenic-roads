@@ -10,8 +10,9 @@
 //!   each finished day is on the NAS by the next run, and the lead's disk lost loses today's alone
 //!   (and those since the last run).
 //! - **The day folders an app before #1119 wrote** (`state/coord/history/<day>/`, a file per
-//!   writer): a day the page view no longer reads (`history::DAYS`) is packed and its folder
-//!   removed, until none is left (then this part finds nothing). A day:
+//!   writer): a day older than the history's week (`history::DAYS`) is packed and its folder
+//!   removed, until none is left (then this part finds nothing: on 13 Nov the NAS held seven,
+//!   the last written 12 Nov). A day:
 //! - its files read whole (one read each) and merged into what its tar already holds (`merge`:
 //!   a late write, an event of an old day appended after the day was packed, is added, never
 //!   written over the tar; a tar that can't be read is never replaced, the day waits, said);

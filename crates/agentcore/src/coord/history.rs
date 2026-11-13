@@ -17,10 +17,14 @@ use std::path::{Path, PathBuf};
 /// in its memory; each finished day is packed into the NAS's archive, a tar a day
 /// (crate::agent::histarchive).
 pub const DAYS: u64 = 7;
-/// How long events are kept (seconds): the one bound of what memory holds. Measured 13 Nov on the
-/// lead's file (task #1160): a week was 58,113 events, ~21 MB in memory without their `data`
-/// (~0.37 KB an event; with it ~1.34 KB: the catalogues' and merges' `data`, read by publishing's
-/// times alone, crate::pubtimes, from the file and the archive); ten times that, ~215 MB.
+/// How long events are kept (seconds): the one bound of what memory holds. Measured 13 Nov on a
+/// copy of the lead's file (task #1160 review, the M1): a week was 57,800 events, ~55 MB in memory
+/// without their `data` (~0.95 KB an event, a copy's growth of the process; its JSON ~18 MB), the
+/// process ~80 MB larger once loaded; ten times that, ~0.55 GB and ~0.75 GB. A reader holding the
+/// last copy (`History::all`: the forecast, the swarm's rates) as an event comes makes another
+/// (0.03 s, 0.3 s at ten times, under the coordinator's lock). The `data` (the catalogues', the
+/// merges', the leases' sizing) is read by publishing's times alone, crate::pubtimes, from the file
+/// and the archive, but a "planned"'s (`keeps_data`).
 pub const KEEP_S: u64 = DAYS * 86400;
 
 /// One thing that happened.
@@ -107,6 +111,11 @@ pub struct Event {
     /// that had no more (`Paces`). Events before task #990 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
+    /// The member's note it was (crate::coord::notes), on an event a member noted to the lead: its
+    /// line in the file is the lead's word that it took that note (`History::noted`), so a note is
+    /// taken once whatever the lead's crashes. Events before task #1160 have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub noted: Option<Box<super::notes::From>>,
 }
 
 /// The fewest jobs a step's usual pace is taken from (`History::paces`): its 10th and 90th
@@ -198,6 +207,33 @@ pub struct History {
     /// The event number when the last `Graph` came (or the history was loaded): the next graph's
     /// items were made after it, so a job of theirs that finished by it is an older one (`Waits::from`).
     set_at: u64,
+    /// The last note taken of each member (`Event::noted`, crate::coord::notes): from the file's
+    /// lines as it loads, then as notes are taken.
+    noted: HashMap<String, super::notes::Noted>,
+    /// No rewrite of the file is tried before this time (unix s): a rewrite that failed is tried
+    /// again `REWRITE_AGAIN_S` later, not at every event (each a read of the whole file).
+    rewrite_at: u64,
+}
+
+/// How long after a failed rewrite of the file the next is tried (s).
+pub const REWRITE_AGAIN_S: u64 = 600;
+
+/// Whether an event of `kind` keeps its `data` in memory: a "planned" (the map tiles' keys a
+/// restarted lead reads back from its coordinator's memory: crate::pubtimes::PlannedNotes::begin;
+/// a few hundred a week, ~0.3 MB). Every other's `data` is read from the file alone
+/// (`since_in_file`: publishing's times).
+fn keeps_data(kind: &str) -> bool {
+    kind == "planned"
+}
+
+/// An event's number and time, read from its line without the rest (`since_in_file`'s search, the
+/// rewrite's filter).
+#[derive(Deserialize)]
+struct SeqT {
+    #[serde(default)]
+    seq: u64,
+    #[serde(default)]
+    t: u64,
 }
 
 /// The forecast's dependencies (crate::agent::forecast's items): each item (step, target), the
@@ -486,6 +522,8 @@ impl History {
             built: HashMap::new(),
             waits: Default::default(),
             set_at: 0,
+            noted: HashMap::new(),
+            rewrite_at: 0,
         };
         let Some(f) = path.and_then(|p| std::fs::File::open(p).ok()) else { return h };
         let from = now_s().saturating_sub(KEEP_S);
@@ -497,8 +535,13 @@ impl History {
             // (A line cut short by a crash is passed over.)
             let Ok(mut e) = serde_json::from_slice::<Event>(&l) else { continue };
             h.seq = h.seq.max(e.seq);
+            if let Some(f) = &e.noted {
+                super::notes::taken(&mut h.noted, f);
+            }
             if e.t >= from {
-                e.data = None;
+                if !keeps_data(&e.kind) {
+                    e.data = None;
+                }
                 events.push_back(e);
             }
         }
@@ -623,20 +666,40 @@ impl History {
             }
             self.lines += 1;
         }
-        // (Its `data` in the file alone: none of the lead's readers reads it from memory.)
-        e.data = None;
+        if let Some(f) = &e.noted {
+            super::notes::taken(&mut self.noted, f);
+        }
+        // (Its `data` in the file alone but a "planned"'s, `keeps_data`.)
+        if !keeps_data(&e.kind) {
+            e.data = None;
+        }
         let events = std::sync::Arc::make_mut(&mut self.events);
         events.push_back(e);
         let from = now.saturating_sub(KEEP_S);
         while events.front().is_some_and(|e| e.t < from) {
             events.pop_front();
         }
-        if self.lines > 2 * self.events.len() + 1000 {
+        if self.lines > 2 * self.events.len() + 1000 && now >= self.rewrite_at {
             let first = self.events.front().map_or(0, |e| e.seq);
             self.built.retain(|_, &mut s| s >= first);
-            self.rewrite(from);
+            if !self.rewrite(from) {
+                self.rewrite_at = now + REWRITE_AGAIN_S;
+            }
         }
         self.seq
+    }
+
+    /// The last note taken of member `member` (crate::coord::notes).
+    pub fn noted(&self, member: &str) -> Option<super::notes::Noted> {
+        self.noted.get(member).copied()
+    }
+
+    /// Member `member`'s note `n` taken without an event of its own (a kind not noted to the
+    /// history, crate::coord::notes::take): known until this coordinator stops, its member's next
+    /// beat dropping it.
+    pub fn set_noted(&mut self, member: &str, n: super::notes::Noted) {
+        let e = self.noted.entry(member.to_string()).or_insert(n);
+        *e = (*e).max(n);
     }
 
     /// What a job of `step` on `targets` waits on, as `Event::after` says.
@@ -653,14 +716,17 @@ impl History {
     }
 
     /// The file rewritten with its lines of events from `from` (unix s) on, their `data` with them
-    /// (whole: a crash leaves the old one).
-    fn rewrite(&mut self, from: u64) {
-        let Some(p) = &self.path else { return };
+    /// (whole: a crash leaves the old one); false when it couldn't be. Under the coordinator's lock:
+    /// measured 13 Nov (task #1160 review, the M1, the test build) 0.1 s for the lead's 39 MB of
+    /// two weeks, 0.7 s for ten times that (each line's time read alone, `SeqT`), well within a
+    /// request's 15 s (coordwire's client) and a beat's 10 s (crate::agent::beat::EVERY).
+    fn rewrite(&mut self, from: u64) -> bool {
+        let Some(p) = &self.path else { return true };
         let kept = std::fs::File::open(p).map(|f| {
             let mut out: Vec<u8> = Vec::new();
             let mut n = 0;
             for l in std::io::BufReader::new(f).split(b'\n').map_while(Result::ok) {
-                if serde_json::from_slice::<Event>(&l).is_ok_and(|e| e.t >= from) {
+                if serde_json::from_slice::<SeqT>(&l).is_ok_and(|e| e.t >= from) {
                     out.extend_from_slice(&l);
                     out.push(b'\n');
                     n += 1;
@@ -669,8 +735,14 @@ impl History {
             (out, n)
         });
         match kept.map_err(anyhow::Error::from).and_then(|(text, n)| Ok((store::whole::write(p, &text)?, n))) {
-            Ok(((), n)) => self.lines = n,
-            Err(e) => eprintln!("coordinator: rewriting the history: {e:#}"),
+            Ok(((), n)) => {
+                self.lines = n;
+                true
+            }
+            Err(e) => {
+                eprintln!("coordinator: rewriting the history (tried again in {REWRITE_AGAIN_S} s): {e:#}");
+                false
+            }
         }
     }
 
@@ -690,13 +762,39 @@ impl History {
 /// week's events after number `seq`, at most `max`. For publishing's times on another Mac
 /// (`/api/history` asked with `data`, crate::pubtimes), never the page's.
 pub fn since_in_file(p: &Path, seq: u64, max: usize) -> Vec<Event> {
-    let Ok(f) = std::fs::File::open(p) else { return Vec::new() };
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(p) else { return Vec::new() };
     let from = now_s().saturating_sub(KEEP_S);
-    std::io::BufReader::new(f)
-        .split(b'\n')
-        .map_while(Result::ok)
+    // (Its lines are in their numbers' order, as `add` appends them: where the first after `seq`
+    // can be is found by halving the file, a line's number read at each try, so each page of
+    // publishing's times reads its own lines, not the file up to them.)
+    let len = f.metadata().map_or(0, |m| m.len());
+    let first_seq_from = |f: &mut std::fs::File, at: u64| -> Option<u64> {
+        f.seek(SeekFrom::Start(at)).ok()?;
+        let mut lines = std::io::BufReader::new(f).split(b'\n').map_while(Result::ok);
+        if at > 0 {
+            lines.next();
+        }
+        lines.find_map(|l| serde_json::from_slice::<SeqT>(&l).ok()).map(|e| e.seq)
+    };
+    let (mut lo, mut hi) = (0, len);
+    while hi - lo > 1 << 16 {
+        let mid = lo + (hi - lo) / 2;
+        match first_seq_from(&mut f, mid) {
+            Some(s) if s <= seq => lo = mid,
+            _ => hi = mid,
+        }
+    }
+    if f.seek(SeekFrom::Start(lo)).is_err() {
+        return Vec::new();
+    }
+    let mut lines = std::io::BufReader::new(f).split(b'\n').map_while(Result::ok);
+    if lo > 0 {
+        lines.next();
+    }
+    lines
+        .filter(|l| serde_json::from_slice::<SeqT>(l).is_ok_and(|e| e.seq > seq && e.t >= from))
         .filter_map(|l| serde_json::from_slice::<Event>(&l).ok())
-        .filter(|e| e.seq > seq && e.t >= from)
         .take(max)
         .collect()
 }
@@ -1199,5 +1297,77 @@ mod tests {
         let again = History::load(crate::agent::seam::for_tests(), Some(&p));
         assert_eq!((again.seq(), again.since(0, usize::MAX)), (h.seq(), kept));
         assert_eq!(again.since(new[0], 1)[0].seq, new[1], "after a number, by its search");
+    }
+
+    /// Task #1160 review: a rewrite of the file that fails (here its folder takes no new file) is
+    /// tried again `REWRITE_AGAIN_S` later, not at each event after it: each try reads the whole
+    /// file under the coordinator's lock (0.2 s a week today, ~2 s at ten times), and a disk that
+    /// can't take the file had held the lead up that long at every event.
+    #[test]
+    fn a_failed_rewrite_is_tried_again_later_not_at_each_event() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        std::fs::create_dir(&dir).unwrap();
+        let p = dir.join("history.jsonl");
+        let now = now_s();
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
+        let old = || Event { t: now - KEEP_S - 10, ..Event::new("pause") };
+        h.add_at(old(), now);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // (Its lines past a thousand more than twice the events kept, none: the rewrite tried.)
+        for _ in 0..1099 {
+            h.add_at(old(), now);
+        }
+        assert_eq!(h.rewrite_at, now + REWRITE_AGAIN_S, "failed: tried again later");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let lines = || std::fs::read_to_string(&p).unwrap().lines().count();
+        h.add_at(Event::new("pause"), now + 1);
+        assert_eq!(lines(), 1101, "not at the next event");
+        h.add_at(Event::new("pause"), now + REWRITE_AGAIN_S);
+        assert_eq!(lines(), 2, "once its time came");
+    }
+
+    /// Task #1160 review: a "planned"'s `data` is kept in memory, loaded again too: a restarted
+    /// lead reads the map tiles noted planned since the last catalogue from its coordinator's
+    /// memory (crate::pubtimes::PlannedNotes::begin), where without it every tile was noted again.
+    #[test]
+    fn a_planned_event_keeps_its_data_in_memory() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let mut h = History::load(crate::agent::seam::for_tests(), Some(&p));
+        let mut planned =
+            crate::pubtimes::planned_event(&[("6/1/1".into(), "aaaaaaaaaaaaaaaa".into())], Default::default());
+        planned.t = now_s();
+        h.add(planned);
+        let noted = |h: &mut History| crate::pubtimes::planned_since(h.all().iter(), 0);
+        assert_eq!(noted(&mut h).len(), 1);
+        let mut again = History::load(crate::agent::seam::for_tests(), Some(&p));
+        assert_eq!(noted(&mut again).len(), 1, "loaded again");
+    }
+
+    /// Task #1160 review: `since_in_file` finds where its page begins by halving the file (each
+    /// page of publishing's times had read the file from its start): the same events as reading it
+    /// all, after any number, past a line cut short and over a file of many search steps.
+    #[test]
+    fn since_in_file_finds_its_page_by_halving() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("history.jsonl");
+        let now = now_s();
+        let mut text = String::new();
+        for seq in 1..=4000u64 {
+            let e = Event { seq, t: now - 10, note: "x".repeat(100), ..Event::new("pause") };
+            text += &(serde_json::to_string(&e).unwrap() + "\n");
+            if seq == 2500 {
+                text += "{\"seq\":2500,\"t\n";
+            }
+        }
+        std::fs::write(&p, &text).unwrap();
+        assert!(text.len() > 8 << 16, "several halvings");
+        for since in [0, 1, 999, 2499, 2500, 2501, 3999, 4000, 5000] {
+            let got: Vec<u64> = since_in_file(&p, since, 300).iter().map(|e| e.seq).collect();
+            let want: Vec<u64> = (since + 1..=4000).take(300).collect();
+            assert_eq!(got, want, "after {since}");
+        }
     }
 }

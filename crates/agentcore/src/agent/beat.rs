@@ -722,7 +722,7 @@ mod tests {
     /// Task #1160: a member's notes (crate::coord::notes) reach the lead's history with its beats,
     /// once the lead has said it takes them (none to a lead before it); a beat whose answer was lost
     /// carries them again and they're taken once, by a restarted lead too (what it took of the
-    /// member in its store); the answer drops them on the member. A member before them sends a beat
+    /// member in its history's file); the answer drops them on the member. A member before them sends a beat
     /// without notes, answered as before.
     #[test]
     fn a_member_s_notes_reach_the_lead_s_history_once() {
@@ -755,16 +755,18 @@ mod tests {
         x.beats.note(ev("on mains power"), now_s());
         assert!(!beat_once(&x));
         assert_eq!(noted(&c), ["on battery (40%)", "on mains power"]);
-        // A restarted lead takes the old ones again never (its store has what it took).
+        // A restarted lead takes the old ones again never: what it took is its history's, read
+        // from its file (its store lost here, as a crash before its write would leave it).
         c.stop();
         drop(c);
+        std::fs::remove_dir_all(dir.join("store")).unwrap();
         let (c, port) = crate::coord::start_for_test(&dir, "lead", "");
         c.set_beats(Some(Arc::new(Beats::default())));
         let again =
             crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), X);
         let a = again.pool_beat(&lost).unwrap().unwrap();
         assert_eq!(noted(&c), ["on battery (40%)", "on mains power"], "loaded from its file, the old notes not again");
-        assert_eq!(a.noted.map(|n| n.n), Some(2), "what it took of this member, from its store");
+        assert_eq!(a.noted.map(|n| n.n), Some(2), "what it took of this member, from its history");
         // (A member before them: its beat has no notes, answered as before.)
         let old = serde_json::json!({ "member": Y, "speaks": ["held-leases", "beat"], "held": [] });
         let (code, v) = again.post_json("/pool/beat", &old).unwrap();

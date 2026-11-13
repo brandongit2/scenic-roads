@@ -94,16 +94,12 @@ pub struct Sent {
 /// This process's next `Sent` (an agent's beats and asks, crate::agent::beat and
 /// crate::coord::client::LeaseCalls::ask).
 pub fn sent() -> Sent {
-    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    Sent { process: process(), n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
-}
-
-/// This process's start (unix ms): a later process's is greater (`Sent`, crate::coord::notes).
-pub fn process() -> u64 {
     static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *PROCESS.get_or_init(|| {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let process = *PROCESS.get_or_init(|| {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-    })
+    });
+    Sent { process, n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
 }
 
 /// Request `sent` of member `member` taken: whether it's the newest taken from it (kept so),
@@ -257,17 +253,12 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
     if s.jobspans.is_some() {
         a.speaks.push(super::beats::SPANS.to_string());
     }
-    // (Its notes, into the history, each once: what it took of this member kept in its store. A
-    // broker keeps no history of the pool's: it takes none.)
+    // (Its notes, into the history, each once: what it took of this member is the history's own,
+    // each event saying which note it was. A broker keeps no history of the pool's: it takes none.)
     if !s.broker {
         a.speaks.push(super::beats::NOTES.to_string());
         if let Some(n) = &b.notes {
-            let key = super::notes::key(&b.member);
-            let last = s.keep.store().and_then(|st| st.doc(&key)).and_then(|v| serde_json::from_value(v).ok());
-            a.noted = super::notes::take(&mut s.history, last, n);
-            if let Some(to) = a.noted.filter(|to| Some(*to) != last) {
-                s.keep.put(&key, serde_json::to_value(to).unwrap_or_default());
-            }
+            a.noted = super::notes::take(&mut s.history, &b.member, n);
         }
     }
     // (As its answers' headers say it: its leases' epoch, its member said; a member's broker none.)
