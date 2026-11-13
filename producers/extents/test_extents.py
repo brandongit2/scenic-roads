@@ -1,5 +1,6 @@
 """extents.py's own rules, with no network: the metrics' readings, a piece's making, the
 antimeridian and the poles, a listing's names, the range reader."""
+import gzip
 import io
 import json
 import math
@@ -366,9 +367,49 @@ class Listing(unittest.TestCase):
         self.assertEqual([g.bounds for g, _ in extents.read_listing(net, b, 0)],
                          [(320000, 1000000, 330000, 1010000), (215000, 665000, 220000, 670000), (120000, 804000, 121000, 805000)])
         self.assertEqual(b["grain_m"], 10000)
-        self.assertEqual(extents.grid_ref("O1234", "irish"), (312000, 234000, 1000))
+        self.assertEqual(extents.grid_ref("O1234", "irish"), (312000, 234000, 1000, 1000))
         with self.assertRaises(SystemExit):
             extents.grid_ref("NS123", "osgb")
+
+    def test_japanese_base_map_sheets(self):
+        # Tokyo's 1:500 sheet 09KD6874 (its 0.5 m grid's GeoTIFF holds -6174.5 to -6000 east,
+        # -20400 to -20222 north, in its sheet's south-east corner), Saitama's 1:2,500 quarter
+        # 09jb852 (the north-east), Hyogo's 1:5,000 sheet 05LE31, a 1:1,000 sheet; JGD2011's zone IX.
+        net = FakeNet({"u": b"Tokyo/2024/02/LP/Grid/TIFF/09/KD/68/09KD6874.zip LAS/chichibu/09jb852.zip 09LD352B.las readme"})
+        b = {"url": "u", "list": "lines", "pattern": r"(?P<ref>09[A-Ta-t][A-Ha-h]\d\d(?:\d\d|[1-4]|\d[A-E])?)\.", "grid": "jp-kihonzu", "crs": "EPSG:6677"}
+        self.assertEqual([g.bounds for g, _ in extents.read_listing(net, b, 0)],
+                         [(-6400.0, -20400.0, -6000.0, -20100.0), (-98000.0, 4500.0, -96000.0, 6000.0), (-19200.0, -40800.0, -18400.0, -40200.0)])
+        self.assertEqual(extents.grid_ref("05LE31", "jp-kihonzu", 5), (4000.0, -42000.0, 4000.0, 3000.0))
+        # Kochi's 0.5 m DEM file dem_04gd3.tif, a 1:50,000 sheet's south-west quarter: its
+        # GeoTIFF's bounds, -40000 to -20000 east, 90000 to 105000 north (EPSG:6672).
+        self.assertEqual(extents.grid_ref("04gd3", "jp-kihonzu", 4), (-40000.0, 90000.0, 20000.0, 15000.0))
+        self.assertEqual(extents.jp_zone("EPSG:6677"), 9)
+        self.assertEqual(extents.jp_zone("EPSG:2447"), 5)
+        self.assertIsNone(extents.jp_zone("EPSG:27700"))
+        # A sheet of another zone than the block's CRS stops the run: it would be placed wrongly.
+        with self.assertRaises(SystemExit):
+            extents.grid_ref("08ME5023", "jp-kihonzu", 9)
+        # Toyama's level-1250 sheet 07GD4442: its file's TFW puts its north-west corner at
+        # (-21000, 106500), 2,000 by 1,500 cells of 0.5 m; read as 1:500 it would be another sheet.
+        self.assertEqual(extents.grid_ref("07GD4442", "jp-kihonzu-1250", 7), (-21000.0, 105750.0, 1000.0, 750.0))
+        self.assertEqual(extents.grid_ref("07GD4442", "jp-kihonzu", 7), (-23200.0, 106500.0, 400.0, 300.0))
+        with self.assertRaises(SystemExit):
+            extents.grid_ref("07GD4450", "jp-kihonzu-1250", 7)
+        # Rows go on past T, south of the 300 km: Hachijō-jima's sheets in row U (33.16° N).
+        self.assertEqual(extents.grid_ref("09UD4892", "jp-kihonzu", 9), (-7200.0, -315000.0, 400.0, 300.0))
+        with self.assertRaises(SystemExit):
+            extents.grid_ref("09LD5", "jp-kihonzu", 9)
+
+    def test_japanese_standard_mesh_codes_as_nested_digits(self):
+        # The standard regional mesh (JIS X 0410) is a nested nomenclature in latitude and
+        # longitude: Tokyo station's third mesh 5339-46-11 (35.675 to 35.68333° N, 139.7625 to 139.775° E).
+        net = FakeNet({"u": gzip.compress(b"url,size\nhttps://h/1/FG-GML-5339-46-11-DEM1A-20250423.tif,1\n")})
+        b = {"url": "u", "list": "lines", "pattern": r"FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-(?P<r>\d)(?P<w>\d)-DEM1A-",
+             "size": [0.0125, 1 / 120], "origin": [100, 0],
+             "digits": [{"group": "p", "y": 2 / 3, "base": 0}, {"group": "u", "x": 1, "base": 0}, {"group": "q", "y": 1 / 12, "base": 0},
+                        {"group": "v", "x": 0.125, "base": 0}, {"group": "r", "y": 1 / 120, "base": 0}, {"group": "w", "x": 0.0125, "base": 0}]}
+        (g, _), = extents.read_listing(net, b, 0)
+        self.assertEqual([round(v, 5) for v in g.bounds], [139.7625, 35.675, 139.775, 35.68333])
 
     def test_a_tile_listed_twice_is_one_and_its_successor_another(self):
         net = FakeNet({"u": b"dgm1_32_433_5426_1_rp_2022.tif dgm1_32_433_5426_1_rp_2022.tif dgm1_32_433_5426_1_rp_2026.tif"})
@@ -388,6 +429,23 @@ class Listing(unittest.TestCase):
         self.assertEqual([g.bounds[:2] for g, _ in extents.read_listing(net, b, 0)], [(308000.0, 5488000.0), (309000.0, 5488000.0)])
         # (The end of the file read, not its members' data.)
         self.assertLess(net.bytes, len(body) / 2)
+
+    def test_each_zip_of_a_buckets_folder(self):
+        # Tottori's 0.5 m DEM: a zip a 1:50,000 quarter in the folder, its members the 1:2,500 sheets.
+        import io
+        import zipfile
+        def zip_of(*names):
+            out = io.BytesIO()
+            with zipfile.ZipFile(out, "w") as z:
+                for n in names:
+                    z.writestr(n, b"x")
+            return out.getvalue()
+        listing = (b'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Contents><Key>dem/dem_05lb4.zip</Key></Contents>'
+                   b'<Contents><Key>dem/H24-27(kamiina).zip</Key></Contents><Contents><Key>dem/readme.pdf</Key></Contents></ListBucketResult>')
+        net = FakeNet({"https://b/?list-type=2&prefix=dem%2F": listing, "https://b/dem/dem_05lb4.zip": zip_of("dem_05lb753.tif"),
+                       "https://b/dem/H24-27%28kamiina%29.zip": zip_of("x/dem_05lb994.tif")})
+        b = {"url": "https://b", "list": "zip", "prefix": "dem/"}
+        self.assertEqual(list(extents.listed_names(net, b)), ["dem_05lb753.tif", "x/dem_05lb994.tif"])
 
     def test_a_spreadsheets_rows_with_their_dates(self):
         import io
@@ -645,6 +703,14 @@ class IndexFiles(unittest.TestCase):
         self.assertEqual(got, [((0.0, 0.0, 2.0, 2.0), {"y": 1})])
         with self.assertRaises(SystemExit):
             list(extents.read_file(FakeNet({"u": zipped("a/tiles.geojson", gj)}), {"url": "u", "member": "other"}, 0))
+
+    def test_several_files_in_turn(self):
+        # A footprint layer's tiles (GSI's z5 GeoJSON tiles), a zipped one among them: every tile's features.
+        gj = b'{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"y":1},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,0]]]}}]}'
+        gj2 = gj.replace(b"2", b"3")
+        net = FakeNet({"t/1": gj, "t/2": zipped("a/tiles.geojson", gj2)})
+        got = [g().bounds for g, _ in extents.read_file(net, {"urls": ["t/1", "t/2"]}, 0)]
+        self.assertEqual(got, [(0.0, 0.0, 2.0, 2.0), (0.0, 0.0, 3.0, 3.0)])
 
     def test_a_shapefiles_text_in_its_encoding(self):
         import io

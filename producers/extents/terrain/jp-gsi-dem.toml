@@ -1,0 +1,148 @@
+name = "基盤地図情報 数値標高モデル"
+credit = "国土地理院 (Geospatial Information Authority of Japan), 基盤地図情報 数値標高モデル"
+licence = "国土地理院コンテンツ利用規約 (Public Data License 1.0 based; attribution); a survey product under the Survey Act, its reproduction for the public by the GSI's approval (ss. 29, 30)"
+licence_url = "https://www.gsi.go.jp/kikakuchousei/kikakuchousei40182.html"
+source = "https://www.gsi.go.jp/kiban/index.html"
+theme = "terrain"
+availability = "open"
+notes = "The GSI's national digital elevation models, bare earth (buildings and vegetation removed), by mesh: DEM1A (from airborne lidar, a 0.04\" mesh, about 1 m), DEM5A (lidar), DEM5B (photogrammetry) and DEM5C (photogrammetry, contour-derived where it has no stereo points: 0.2\", about 5 m), DEM10A (the 26 volcanoes' contour maps) and DEM10B (the 1:25,000 contours, all of Japan: 0.4\", about 10 m); the RMSEs the GSI states as averages (its FAQ, Q4-10: 1A and 5A 0.3 m, 2.0 m where a mesh holds no lidar point; 5B 0.7 m; 5C 1.4 m; 10A 2.5 m; 10B 5.0 m). The GSI's own download needs a free registration and login; every file is mirrored openly as GeoTIFF (the UN Smart Maps Group's japan-geotiff-dem on Source Cooperative, what Mapterhorn reads) and the GSI's elevation tiles (dem1a_png and the rest) load anonymously, so the models download with no further step: open. Each extent is the mirror's file list (latest_file_list.csv.gz, read 13 Nov 2026), each file named by the GSI's own code (FG-GML-5339-46-11-DEM1A-20250423: the standard regional mesh, JIS X 0410: the 1st mesh's 40' rows and 1° columns, the 2nd mesh's 5' by 7.5', the 3rd mesh's 30\" by 45\"; DEM10 files by 2nd mesh), so a piece is good to a mesh (about 1 km; 10 km for DEM10). The date a name ends with is the file's publication (DEM5A's all 2025 and 2026), not its survey: no year is stated. A mesh's file may hold data over part of it (a coast). The GSI's footprint layers (fgd_dem1a_area_dtil and the rest, on maps.gsi.go.jp) draw the same meshes. The GSI's point clouds are jp-gsi-pointcloud's."
+
+[[piece]]
+id = "dem1a"
+label = "DEM1A (lidar, 1 m)"
+method = "listing"
+list = "lines"
+url = "https://data.source.coop/smartmaps/japan-geotiff-dem/1/latest_file_list.csv.gz"
+pattern = '(?i)/FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-(?P<r>\d)(?P<w>\d)-DEM1A-\d{8}\.tif,'
+size = [0.0125, 0.008333333333333333]
+origin = [100, 0]
+digits = [
+  { group = "p", y = 0.6666666666666666, base = 0 },
+  { group = "u", x = 1, base = 0 },
+  { group = "q", y = 0.08333333333333333, base = 0 },
+  { group = "v", x = 0.125, base = 0 },
+  { group = "r", y = 0.008333333333333333, base = 0 },
+  { group = "w", x = 0.0125, base = 0 },
+]
+crs = "EPSG:6668"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+vertical_rmse_m = 0.3
+
+[[piece]]
+id = "dem5a"
+label = "DEM5A (lidar, 5 m)"
+method = "listing"
+list = "lines"
+url = "https://data.source.coop/smartmaps/japan-geotiff-dem/5/latest_file_list.csv.gz"
+pattern = '(?i)/FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-(?P<r>\d)(?P<w>\d)-DEM5A-\d{8}\.tif,'
+size = [0.0125, 0.008333333333333333]
+origin = [100, 0]
+digits = [
+  { group = "p", y = 0.6666666666666666, base = 0 },
+  { group = "u", x = 1, base = 0 },
+  { group = "q", y = 0.08333333333333333, base = 0 },
+  { group = "v", x = 0.125, base = 0 },
+  { group = "r", y = 0.008333333333333333, base = 0 },
+  { group = "w", x = 0.0125, base = 0 },
+]
+crs = "EPSG:6668"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+vertical_rmse_m = 0.3
+
+[[piece]]
+id = "dem5b"
+label = "DEM5B (photogrammetry, 5 m)"
+method = "listing"
+list = "lines"
+url = "https://data.source.coop/smartmaps/japan-geotiff-dem/5/latest_file_list.csv.gz"
+pattern = '(?i)/FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-(?P<r>\d)(?P<w>\d)-DEM5B-\d{8}\.tif,'
+size = [0.0125, 0.008333333333333333]
+origin = [100, 0]
+digits = [
+  { group = "p", y = 0.6666666666666666, base = 0 },
+  { group = "u", x = 1, base = 0 },
+  { group = "q", y = 0.08333333333333333, base = 0 },
+  { group = "v", x = 0.125, base = 0 },
+  { group = "r", y = 0.008333333333333333, base = 0 },
+  { group = "w", x = 0.0125, base = 0 },
+]
+crs = "EPSG:6668"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+vertical_rmse_m = 0.7
+
+[[piece]]
+id = "dem5c"
+label = "DEM5C (photogrammetry, 5 m)"
+method = "listing"
+list = "lines"
+url = "https://data.source.coop/smartmaps/japan-geotiff-dem/5/latest_file_list.csv.gz"
+pattern = '(?i)/FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-(?P<r>\d)(?P<w>\d)-DEM5C-\d{8}\.tif,'
+size = [0.0125, 0.008333333333333333]
+origin = [100, 0]
+digits = [
+  { group = "p", y = 0.6666666666666666, base = 0 },
+  { group = "u", x = 1, base = 0 },
+  { group = "q", y = 0.08333333333333333, base = 0 },
+  { group = "v", x = 0.125, base = 0 },
+  { group = "r", y = 0.008333333333333333, base = 0 },
+  { group = "w", x = 0.0125, base = 0 },
+]
+crs = "EPSG:6668"
+tolerance_m = 200
+[piece.metrics]
+surface = "ground"
+spacing_m = 5
+vertical_rmse_m = 1.4
+
+[[piece]]
+id = "dem10a"
+label = "DEM10A (volcano contour maps, 10 m)"
+method = "listing"
+list = "lines"
+url = "https://data.source.coop/smartmaps/japan-geotiff-dem/10/latest_file_list.csv.gz"
+pattern = '(?i)/FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-DEM10A-\d{8}\.tif,'
+size = [0.125, 0.08333333333333333]
+origin = [100, 0]
+digits = [
+  { group = "p", y = 0.6666666666666666, base = 0 },
+  { group = "u", x = 1, base = 0 },
+  { group = "q", y = 0.08333333333333333, base = 0 },
+  { group = "v", x = 0.125, base = 0 },
+]
+crs = "EPSG:6668"
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10
+vertical_rmse_m = 2.5
+
+[[piece]]
+id = "dem10b"
+label = "DEM10B (1:25,000 contours, 10 m)"
+method = "listing"
+list = "lines"
+url = "https://data.source.coop/smartmaps/japan-geotiff-dem/10/latest_file_list.csv.gz"
+pattern = '(?i)/FG-GML-(?P<p>\d\d)(?P<u>\d\d)-(?P<q>\d)(?P<v>\d)-DEM10B-\d{8}\.tif,'
+size = [0.125, 0.08333333333333333]
+origin = [100, 0]
+digits = [
+  { group = "p", y = 0.6666666666666666, base = 0 },
+  { group = "u", x = 1, base = 0 },
+  { group = "q", y = 0.08333333333333333, base = 0 },
+  { group = "v", x = 0.125, base = 0 },
+]
+crs = "EPSG:6668"
+tolerance_m = 500
+[piece.metrics]
+surface = "ground"
+spacing_m = 10
+vertical_rmse_m = 5.0

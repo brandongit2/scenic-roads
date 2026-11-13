@@ -1,0 +1,227 @@
+name = "VIRTUAL SHIZUOKA 点群データ"
+credit = "静岡県 (Shizuoka Prefecture), VIRTUAL SHIZUOKA"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/virtual-shizuoka-mw"
+theme = "terrain"
+availability = "open"
+notes = "Shizuoka Prefecture's point cloud database (VIRTUAL SHIZUOKA), nearly the whole prefecture scanned and open to any use (the prefecture's page; the G-spatial records CC BY 4.0, the centre and west's CC BY 4.0 and ODbL both): its airborne lidar (LP, up to 16 points/m², \"点密度16点/m2未満の場合があります\") and the airborne bathymetric lidar of its coasts and rivers (ALB), per 1:500 sheet of the national base map (JGD2011, plane rectangular zone VIII; 08ME2849: 400 by 300 m), ZIPs in the public bucket its download pages link (virtual-shizuoka), a folder per survey year: 2019 (south-east of Mount Fuji, east Izu), 2020 (west Izu), 2021 (Mount Fuji, the east, the centre and west), 2022 (the north, the Southern Alps), 2025 (the north-west, the centre-west coast's ALB, and the additions measured in FY2024-25). Each sheet placed by its code. The grids are bare-earth DEMs (ALB's of land and bed), 0.5 m (each folder's files' own spacing, read from a sheet of each; the 2019 ALB grid's 1 m); each year its folder's. The points: each survey's classified original points (LP 2021 and 2025, ALB 2025) or, where only those are published, its ground points (2019, 2022; 2020's ground folder repeats 2019's 10,230 sheets among its own, so its points aren't declared apart: its grid is), taken at the nominal spacing of 16 points/m², 0.25 m, the records' stated density; a point cloud states no surface. The mobile mapping (MMS), UAV and backpack scans of roads and slopes aren't declared here. No accuracy is stated."
+
+[[piece]]
+id = "lp-dem-2019"
+label = "LP DEM 0.5 m (2019)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2019/LP/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "alb-dem-2019"
+label = "ALB DEM 1 m (2019)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2019/ALB/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2019
+
+[[piece]]
+id = "lp-dem-2020"
+label = "LP DEM 0.5 m (2020)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2020/LP/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "alb-dem-2020"
+label = "ALB DEM 0.5 m (2020)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2020/ALB/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "lp-dem-2021"
+label = "LP DEM 0.5 m (2021)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2021/LP/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "alb-dem-2021"
+label = "ALB DEM 0.5 m (2021)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2021/ALB/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "lp-dem-2022"
+label = "LP DEM 0.5 m (2022)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2022/LP/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "lp-dem-2025"
+label = "LP DEM 0.5 m (2025)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2025/LP/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2025
+
+[[piece]]
+id = "alb-dem-2025"
+label = "ALB DEM 0.5 m (2025)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2025/ALB/Grid/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2025
+
+[[piece]]
+id = "lp-points-2019"
+label = "LP points (2019, ground)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2019/LP/Ground/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2019
+
+[[piece]]
+id = "lp-points-2021"
+label = "LP points (2021, original)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2021/LP/Original/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2021
+
+[[piece]]
+id = "lp-points-2022"
+label = "LP points (2022, ground)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2022/LP/Ground/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2022
+
+[[piece]]
+id = "lp-points-2025"
+label = "LP points (2025, original)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2025/LP/Original/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2025
+
+[[piece]]
+id = "alb-points-2025"
+label = "ALB points (2025, original)"
+method = "listing"
+url = "https://virtual-shizuoka.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2025/ALB/Original/"
+pattern = '/(?P<ref>08[A-Za-z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6676"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2025

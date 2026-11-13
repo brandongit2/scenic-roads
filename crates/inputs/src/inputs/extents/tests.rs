@@ -618,7 +618,7 @@ fn partners_are_a_sources_two_files() {
 }
 
 /// The terrain's declarations, pieces and score as producers/extents/ made them.
-const REAL: [(&str, &[u8]); 331] = [
+const REAL: [(&str, &[u8]); 343] = [
     ("score.toml", include_bytes!("../../../../../producers/extents/terrain/score.toml")),
     ("ad-mdt.geojson", include_bytes!("../../../../../producers/extents/terrain/ad-mdt.geojson")),
     ("ad-mdt.toml", include_bytes!("../../../../../producers/extents/terrain/ad-mdt.toml")),
@@ -888,6 +888,18 @@ const REAL: [(&str, &[u8]); 331] = [
     ("it-veneto-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/it-veneto-lidar.toml")),
     ("jaxa-aw3d30.geojson", include_bytes!("../../../../../producers/extents/terrain/jaxa-aw3d30.geojson")),
     ("jaxa-aw3d30.toml", include_bytes!("../../../../../producers/extents/terrain/jaxa-aw3d30.toml")),
+    ("jp-gsi-dem.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-gsi-dem.geojson")),
+    ("jp-gsi-dem.toml", include_bytes!("../../../../../producers/extents/terrain/jp-gsi-dem.toml")),
+    ("jp-gsi-pointcloud.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-gsi-pointcloud.geojson")),
+    ("jp-gsi-pointcloud.toml", include_bytes!("../../../../../producers/extents/terrain/jp-gsi-pointcloud.toml")),
+    ("jp-hyogo-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-hyogo-lidar.geojson")),
+    ("jp-hyogo-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/jp-hyogo-lidar.toml")),
+    ("jp-kanagawa-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-kanagawa-lidar.geojson")),
+    ("jp-kanagawa-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/jp-kanagawa-lidar.toml")),
+    ("jp-shizuoka-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-shizuoka-lidar.geojson")),
+    ("jp-shizuoka-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/jp-shizuoka-lidar.toml")),
+    ("jp-tokyo-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/jp-tokyo-lidar.geojson")),
+    ("jp-tokyo-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/jp-tokyo-lidar.toml")),
     ("lt-nzt-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/lt-nzt-lidar.geojson")),
     ("lt-nzt-lidar.toml", include_bytes!("../../../../../producers/extents/terrain/lt-nzt-lidar.toml")),
     ("luxembourg-lidar.geojson", include_bytes!("../../../../../producers/extents/terrain/luxembourg-lidar.geojson")),

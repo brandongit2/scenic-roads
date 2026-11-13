@@ -1,0 +1,100 @@
+name = "兵庫県 航空レーザ測量 DEM・DSM"
+credit = "兵庫県 (Hyogo Prefecture); 国土交通省近畿地方整備局六甲砂防事務所 (the 2010-2018 models' Rokko surveys)"
+licence = "兵庫県オープンデータ利用規約 (the records show CC BY 4.0)"
+licence_url = "https://web.pref.hyogo.lg.jp/kk26/johoseisaku/documents/kiyaku_opendata.pdf"
+source = "https://www.geospatial.jp/ckan/dataset/2022-hyougo-geo-dem"
+theme = "terrain"
+availability = "open"
+notes = "Hyogo Prefecture's airborne lidar models of the whole prefecture, as XYZ text in ZIPs per 1:5,000 sheet of the national base map (JGD2000, plane rectangular zone V, as the records state; 05LE31: 4 by 3 km), each sheet placed by its code. The 0.5 m bare-earth DEM and the 0.5 m DSM (with buildings and vegetation) from the prefecture's surveys of FY2021 and FY2022 (令和2～3年度 on the tile record; the G-spatial records 2022-hyougo-geo-dem and -dsm): the files in the public bucket their download pages link (japan-pointcloud, Hyogo/2022: 797 sheets; Hyogo/2021 holds 523 of them, the FY2021 release, the same files). Hyogo/2025 holds 31 of those sheets again (the north-west's LE and ME sheets), no record of it found: declared with no year. The older whole-prefecture 1 m DEM and DSM (FY2010 to FY2018, the prefecture's and the Rokko erosion-control office's surveys): the 826 sheet ZIPs of the G-spatial records 2010-2018-hyogo-geo-dem-old and -dsm-old, read from their resource lists (the package's API answer). The 0.5 m Terrain-RGB tiles (dem05_hyogo) are the same DEM. No accuracy is stated; each year is the last fiscal year of its surveys."
+
+[[piece]]
+id = "dem05"
+label = "DEM 0.5 m (FY2021-22)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Hyogo/2022/01/LP/DEM/"
+pattern = '/(?P<ref>05[A-Z]{2}\d\d)\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:2447"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "dsm05"
+label = "DSM 0.5 m (FY2021-22)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Hyogo/2022/01/LP/DSM/"
+pattern = '/(?P<ref>05[A-Z]{2}\d\d)\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:2447"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "dem05-2025"
+label = "DEM 0.5 m (Hyogo/2025)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Hyogo/2025/01/LP/DEM/"
+pattern = '/(?P<ref>05[A-Z]{2}\d\d)\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:2447"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+
+[[piece]]
+id = "dsm05-2025"
+label = "DSM 0.5 m (Hyogo/2025)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Hyogo/2025/01/LP/DSM/"
+pattern = '/(?P<ref>05[A-Z]{2}\d\d)\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:2447"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+
+[[piece]]
+id = "dem1"
+label = "DEM 1 m (FY2010-18)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=2010-2018-hyogo-geo-dem-old"
+list = "lines"
+pattern = '/download/(?P<ref>05[a-z]{2}\d\d)\.zip"'
+grid = "jp-kihonzu"
+crs = "EPSG:2447"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+year = 2018
+
+[[piece]]
+id = "dsm1"
+label = "DSM 1 m (FY2010-18)"
+method = "listing"
+url = "https://www.geospatial.jp/ckan/api/3/action/package_show?id=2010-2018-hyogo-geo-dsm-old"
+list = "lines"
+pattern = '/download/(?P<ref>05[a-z]{2}\d\d)\.zip"'
+grid = "jp-kihonzu"
+crs = "EPSG:2447"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+year = 2018

@@ -11,16 +11,18 @@ A reader per kind of service, none per source:
            (`latfirst` where they're south west north east), or its entries' GeoRSS polygons and boxes
   wfs      a WFS feature type (`url`, `type`; `crs` where the answer doesn't name its own), as
            GeoJSON or GML (`format`; `version`)
-  file     an index file fetched whole (`url`): GeoJSON, GML or a GeoPackage (`layer`), or a zip
-           of one of them or of a shapefile (`member`; `encoding`, its text's, else its .cpg's or UTF-8)
+  file     an index file fetched whole (`url`, or several in turn: `urls`, a footprint layer's
+           tiles): GeoJSON, GML or a GeoPackage (`layer`), or a zip of one of them or of a
+           shapefile (`member`; `encoding`, its text's, else its .cpg's or UTF-8)
   listing  a listing of georeferenced names (`url`, or several in turn: `urls`): an S3 bucket
            (`prefix`), a page of links, a text file, a zip's members (its central directory by
-           range request) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
-           "lines", "zip", "xlsx"); `pattern`, a regular expression with the
+           range request; with `prefix`, each zip's in a bucket's folder) or a spreadsheet's rows, cells joined by ";" (`sheet`) (`list` = "s3", "links",
+           "lines", a gzipped one too, "zip", "xlsx"); `pattern`, a regular expression with the
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
            name's; `size`, a tile's side(s) in CRS units; `corner`, the corner named ("sw", "nw");
            `crs`; or the group `ref`, a national grid's lettered reference (`grid`: "osgb",
-           "irish"), its square and side read from it; or, for a nested sheet nomenclature,
+           "irish"; "jp-kihonzu", Japan's base map sheets in the plane rectangular zone `crs`
+           is), its sheet read from it; or, for a nested sheet nomenclature,
            `digits` (each a group's steps) and `origin`
   raster   each file's own header and an overview, by range request (`urls`; `list` and `pattern`,
            a listing's names as `listing` reads one; or `stac` and `asset`, a STAC collection's
@@ -36,6 +38,7 @@ usage: extents.py <declaration.toml>... --out <folder> [--cache <folder>] [--max
 """
 import argparse
 import datetime
+import gzip
 import hashlib
 import http.client
 import io
@@ -544,21 +547,23 @@ INDEX_KINDS = (".shp", ".gpkg", ".geojson", ".json", ".gml", ".kml", ".xml")
 
 
 def read_file(net, b, _tol):
-    """An index file fetched whole: GeoJSON, GML or KML, a GeoPackage, or a zip (a KMZ too) holding one of them or a
-    shapefile (`member`: a part of the name of the one to read, where it holds several)."""
-    body = net.get(b["url"])
-    if body[:2] == b"PK":
-        z = zipfile.ZipFile(io.BytesIO(body))
-        names = [n for n in z.namelist() if n.lower().endswith(INDEX_KINDS) and (not b.get("member") or b["member"] in n)]
-        if not names:
-            sys.exit(f"{b['url']}: no index file in the zip{' named ' + repr(b['member']) if b.get('member') else ''}")
-        # (A shapefile first: its .xml is its metadata.)
-        name = next((n for n in names if n.lower().endswith(".shp")), names[0])
-        if name.lower().endswith(".shp"):
-            yield from shapefile_features(z, name[:-4], b)
-            return
-        body = z.read(name)
-    yield from index_features(body, b)
+    """An index file fetched whole (`url`, or each of `urls` in turn: a footprint layer's tiles):
+    GeoJSON, GML or KML, a GeoPackage, or a zip (a KMZ too) holding one of them or a shapefile
+    (`member`: a part of the name of the one to read, where it holds several)."""
+    for url in b.get("urls") or [b["url"]]:
+        body = net.get(url)
+        if body[:2] == b"PK":
+            z = zipfile.ZipFile(io.BytesIO(body))
+            names = [n for n in z.namelist() if n.lower().endswith(INDEX_KINDS) and (not b.get("member") or b["member"] in n)]
+            if not names:
+                sys.exit(f"{url}: no index file in the zip{' named ' + repr(b['member']) if b.get('member') else ''}")
+            # (A shapefile first: its .xml is its metadata.)
+            name = next((n for n in names if n.lower().endswith(".shp")), names[0])
+            if name.lower().endswith(".shp"):
+                yield from shapefile_features(z, name[:-4], b)
+                continue
+            body = z.read(name)
+        yield from index_features(body, b)
 
 
 def index_features(body, b):
@@ -787,21 +792,40 @@ def names_at(net, b, url):
         # (An attribute's name in any case: an IIS directory listing writes HREF.)
         yield from re.findall(r'href="([^"]+)"', net.get(url).decode("utf-8", "replace"), re.I)
     elif kind == "lines":
-        yield from net.get(url).decode("utf-8", "replace").split()
+        body = net.get(url)
+        if body[:2] == b"\x1f\x8b":
+            # (A gzipped list, a mirror's file_list.csv.gz: its text.)
+            body = gzip.decompress(body)
+        yield from body.decode("utf-8", "replace").split()
     elif kind == "zip":
-        # (A zip's central directory, by range request: its members' names, none of its data.)
-        yield from zipfile.ZipFile(RangeFile(net, url)).namelist()
+        # (A zip's central directory, by range request: its members' names, none of its data; with
+        # a `prefix`, each zip of a bucket's folder in turn, its keys under `url` as "s3" lists them.)
+        zips = [url] if "prefix" not in b else [url.rstrip("/") + "/" + urllib.parse.quote(k) for k in names_at(net, {**b, "list": "s3"}, url) if k.lower().endswith(".zip")]
+        for z in zips:
+            yield from zipfile.ZipFile(RangeFile(net, z)).namelist()
     elif kind == "xlsx":
         yield from sheet_rows(net.get(url), b.get("sheet"))
     else:
         sys.exit(f"unknown list {kind!r}")
 
 
-def grid_ref(ref, grid):
-    """A national grid's lettered reference: its square's south-west corner and side, in the
-    grid's metres. `grid` "osgb": the British National Grid's (EPSG:27700) two letters, its 500 km
+def grid_ref(ref, grid, zone=None):
+    """A national grid's lettered reference: its sheet's south-west corner, width and height, in
+    the grid's metres. `grid` "osgb": the British National Grid's (EPSG:27700) two letters, its 500 km
     and 100 km squares; "irish": the Irish Grid's (EPSG:29903) one, its 100 km square. Then
-    digits, the eastings' half first (NS16: 10 km, NG2004: 1 km), and a quadrant (NS16NE: 5 km)."""
+    digits, the eastings' half first (NS16: 10 km, NG2004: 1 km), and a quadrant (NS16NE: 5 km).
+    "jp-kihonzu": Japan's national base map sheets (国土基本図図郭) in a plane rectangular
+    system, `zone` its number (`jp_zone`): the zone's two digits, a 1:50,000 sheet's row (A to T
+    from 300 km north of the zone's origin, 30 km each, the letters after T going on south: Tokyo's
+    Hachijō-jima in row U, 330 km south) and column (A to H from 160 km west, 40 km each), then a
+    quarter of it (1 to 4: north-west, north-east, south-west, south-east; the forestry sets'
+    files) or a 1:5,000 sheet's row and column (0 to 9 from the north-west, 3 by 4 km), then a
+    1:2,500 quarter (1 to 4 likewise), a 1:1,000 sheet's row (0 to 4) and column (A to E), or a
+    1:500 sheet's row and column (0 to 9): 04GD3, 09LD35, 09JB852, 09KD6874. "jp-kihonzu-1250":
+    the same, but four digits after the 1:5,000 sheet are a 1:2,500 quarter and a quarter of that
+    (map level 1250, 1,000 by 750 m: 07GD4442), not a 1:500 sheet, the one code read two ways."""
+    if grid in ("jp-kihonzu", "jp-kihonzu-1250"):
+        return kihonzu_sheet(ref, zone, grid.endswith("1250"))
     m = re.fullmatch(r"([A-HJ-Z]{1,2})(\d*)(NE|NW|SE|SW)?", ref.upper())
     if not m or len(m.group(1)) != {"osgb": 2, "irish": 1}[grid] or len(m.group(2)) % 2:
         sys.exit(f"{ref!r} isn't a {grid} grid reference")
@@ -817,7 +841,48 @@ def grid_ref(ref, grid):
     if quad:
         side //= 2
         x, y = x + side * (quad[1] == "E"), y + side * (quad[0] == "N")
-    return x, y, side
+    return x, y, side, side
+
+
+def kihonzu_sheet(ref, zone, level1250=False):
+    """A Japanese base map sheet's south-west corner (easting, northing), width and height (`grid_ref`)."""
+    m = re.fullmatch(r"(\d\d)([A-Z])([A-Z])(?:(\d)(\d)(?:([1-4])|([0-4])([A-E])|(\d)(\d))?|([1-4]))?", ref.upper())
+    if not m:
+        sys.exit(f"{ref!r} isn't a jp-kihonzu sheet code")
+    z, row, col, r5, c5, quarter, r1, c1, r05, c05, q50 = m.groups()
+    if zone is None or int(z) != zone:
+        sys.exit(f"{ref!r} is a sheet of zone {int(z)}, not of the block's CRS (zone {zone}): a block per zone")
+    # (The 1:50,000 sheet's north-west corner, then each sheet within it, rows from the north.)
+    x, y, w, h = -160_000 + (ord(col) - 65) * 40_000, 300_000 - (ord(row) - 65) * 30_000, 40_000, 30_000
+    parts = []
+    if q50:
+        parts.append(((int(q50) - 1) // 2, (int(q50) - 1) % 2, 2))
+    elif r5 is not None:
+        parts.append((int(r5), int(c5), 10))
+        if quarter:
+            parts.append(((int(quarter) - 1) // 2, (int(quarter) - 1) % 2, 2))
+        elif r1 is not None:
+            parts.append((int(r1), ord(c1) - 65, 5))
+        elif r05 is not None and level1250:
+            if not {r05, c05} <= set("1234"):
+                sys.exit(f"{ref!r} isn't a level-1250 sheet: its last two digits are quarters, 1 to 4")
+            parts += [((int(q) - 1) // 2, (int(q) - 1) % 2, 2) for q in (r05, c05)]
+        elif r05 is not None:
+            parts.append((int(r05), int(c05), 10))
+    for r, c, n in parts:
+        w, h = w / n, h / n
+        x, y = x + c * w, y - r * h
+    return x, y - h, w, h
+
+
+def jp_zone(crs):
+    """A Japanese plane rectangular system's number (1 to 19) from its CRS: JGD2011's EPSG:6669 to
+    6687, JGD2000's 2443 to 2461; None for another CRS."""
+    code = pyproj.CRS.from_user_input(crs).to_epsg()
+    for first in (6669, 2443):
+        if code is not None and first <= code < first + 19:
+            return code - first + 1
+    return None
 
 
 XLSX = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -870,6 +935,7 @@ def read_listing(net, b, _tol):
     geographic = pyproj.CRS.from_user_input(b.get("crs", "OGC:CRS84")).is_geographic
     digits = b.get("digits") or []
     where = {"x", "y", "ew", "ns", "ref"} | {d["group"] for d in digits}
+    zone = jp_zone(b["crs"]) if b.get("grid", "").startswith("jp-kihonzu") else None
     seen, sides = set(), set()
     for name in listed_names(net, b):
         m = pat.search(name)
@@ -877,8 +943,7 @@ def read_listing(net, b, _tol):
             continue
         g = m.groupdict()
         if "ref" in g:
-            x, y, w = grid_ref(g["ref"], b["grid"])
-            h = w
+            x, y, w, h = grid_ref(g["ref"], b["grid"], zone)
         else:
             x, y = sheet_corner(g, b) if digits else (float(g["x"]) * unit, float(g["y"]) * unit)
             w, h = size

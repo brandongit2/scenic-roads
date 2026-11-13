@@ -1,0 +1,23 @@
+name = "国土地理院 点群データ（航空レーザ測量）"
+credit = "国土地理院 (Geospatial Information Authority of Japan), 点群データ"
+licence = "sold by the Japan Map Center; copying or using a survey product needs an application under the Survey Act (ss. 29, 30)"
+licence_url = "https://www.gsi.go.jp/gazochosa/tengun.html"
+source = "https://www.gsi.go.jp/gazochosa/tengun.html"
+theme = "terrain"
+availability = "paid"
+notes = "The GSI's classified airborne lidar points (ground, water and other classes; at least 4 points/m² since FY2020, often more; a point's height to about 25 cm RMS), sold by the Japan Map Center as LAZ in 3rd-mesh files, 13,900 yen a 2nd mesh. Taken at the nominal spacing of the stated least density, 1/√4 = 0.5 m; a point cloud, holding both, states no surface; no year (its surveys' years vary; the published area is as of 30 Sep 2026). Its extent is the GSI's published-area layer (3d_pcd_area_dtil, its three zoom-5 GeoJSON tiles on maps.gsi.go.jp that hold features; the other tiles over Japan answer 404): paid, so claimed."
+
+[[piece]]
+id = "points"
+label = "点群データ (airborne lidar)"
+method = "file"
+class = "service"
+urls = [
+  "https://maps.gsi.go.jp/xyz/3d_pcd_area_dtil/5/27/12.geojson",
+  "https://maps.gsi.go.jp/xyz/3d_pcd_area_dtil/5/28/11.geojson",
+  "https://maps.gsi.go.jp/xyz/3d_pcd_area_dtil/5/28/12.geojson",
+]
+tolerance_m = 200
+[piece.metrics]
+spacing_m = 0.5
+vertical_rmse_m = 0.25

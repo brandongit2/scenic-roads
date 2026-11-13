@@ -1,0 +1,220 @@
+name = "神奈川県 3次元点群データ"
+credit = "神奈川県 (Kanagawa Prefecture), デジタル戦略本部室"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/kanagawa-2024-pointcloud"
+theme = "terrain"
+availability = "open"
+notes = "Kanagawa Prefecture's airborne lidar of FY2019 to FY2024 (the G-spatial records kanagawa-2019-pointcloud to kanagawa-2024-pointcloud, CC BY: FY2019 the west, Odawara to Yugawara; FY2020 the centre, and Sagamihara's Midori ward apart; FY2021 south Yokohama, Shōnan, Yokosuka and Miura; FY2022 north Yokohama and Kawasaki; FY2024 the west and Sagamihara again), per 1:500 sheet of the national base map (JGD2011, plane rectangular zone IX; 09LC8143: 400 by 300 m), ZIPs (FY2024's points LAZ) in the public bucket the records' download pages link (kanagawa-pointcloud, a folder per fiscal year, 2020's 01 the centre and 02 Sagamihara), each sheet placed by its code. The grid data are bare-earth DEMs, 0.5 m (their files say so, 09lc8143_0.5g.txt; FY2022's 1 m grid besides, its 02 folder); the 0.5 m DSM (with buildings and trees) of north Yokohama and Kawasaki is in the FY2021 folder's DSM (its sheets FY2022's, as that record lists the DSM). The original points (LAS, TXT, LAZ) state no density, so no spacing; a point cloud states no surface. Each year the fiscal year of its record. No accuracy is stated."
+
+[[piece]]
+id = "dem05-2019"
+label = "DEM 0.5 m (2019, west)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2019/01/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "dem05-2020"
+label = "DEM 0.5 m (2020, centre)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2020/01/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "dem05-2020-sagamihara"
+label = "DEM 0.5 m (2020, Sagamihara)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2020/02/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2020
+
+[[piece]]
+id = "dem05-2021"
+label = "DEM 0.5 m (2021, south Yokohama, Shonan, Yokosuka-Miura)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2021/01/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "dem05-2022"
+label = "DEM 0.5 m (2022, north Yokohama, Kawasaki)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2022/01/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "dem05-2024"
+label = "DEM 0.5 m (2024, west, Sagamihara)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2024/01/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2024
+
+[[piece]]
+id = "dem1-2022"
+label = "DEM 1 m (2022, north Yokohama, Kawasaki)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2022/02/LP/Grid/MESH/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 1.0
+year = 2022
+
+[[piece]]
+id = "dsm05-2022"
+label = "DSM 0.5 m (2022, north Yokohama, Kawasaki)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2021/01/LP/DSM/TXT/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "points-2019"
+label = "lidar points (2019)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2019/01/LP/Original/TXT/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2019
+
+[[piece]]
+id = "points-2020"
+label = "lidar points (2020)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2020/01/LP/Original/TXT/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2020
+
+[[piece]]
+id = "points-2020-sagamihara"
+label = "lidar points (2020)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2020/02/LP/Original/TXT/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2020
+
+[[piece]]
+id = "points-2021"
+label = "lidar points (2021)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2021/01/LP/Original/TXT/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2021
+
+[[piece]]
+id = "points-2022"
+label = "lidar points (2022)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2022/01/LP/Original/TXT/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2022
+
+[[piece]]
+id = "points-2024"
+label = "lidar points (2024)"
+method = "listing"
+url = "https://kanagawa-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "2024/01/LP/Original/LAZ/"
+pattern = '/(?P<ref>09[A-Za-z]{2}\d{4})\.(?:zip|laz)$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+year = 2024

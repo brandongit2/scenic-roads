@@ -1,0 +1,102 @@
+name = "東京都デジタルツイン実現プロジェクト 点群データ"
+credit = "東京都 (Tokyo Metropolitan Government), デジタルツイン実現プロジェクト"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/deed.ja"
+source = "https://www.geospatial.jp/ckan/dataset/tokyopc-23ku-2024"
+theme = "terrain"
+availability = "open"
+notes = "Tokyo's airborne lidar of all Tokyo but Ogasawara (at least 16 points/m²): the 23 wards flown March to April 2023 (released 31 Oct 2024), the Tama area and the islands from July 2022 to January 2023 (released September 2023; the islands' coasts by bathymetric lidar and multibeam), usable for any purpose (the metropolis's press release of 31 Oct 2024; the G-spatial records' CC BY). Per 1:500 sheet of the national base map (JGD2011, plane rectangular zone IX), ZIPs in the public bucket the G-spatial centre's download pages link (japan-pointcloud: Tokyo/2024 the wards, Tokyo/2023 Tama and the islands; in each, 01 the 0.25 m grid and the points, 02 the 0.5 m grid, as the files' own GeoTIFFs say), each sheet placed by its code (09KD6874: 400 by 300 m). The grids are bare-earth DEMs: the wards' made to both 0.25 m and 0.5 m specifications; Tama's and the islands' to 0.5 m, their 0.25 m published as reference data where the density allowed (the records' notes). The points (\"オリジナルデータ（DSM）及びグラウンドデータ（DEM）\", LAS) are taken at the nominal spacing of the stated least density, 1/√16 = 0.25 m; a point cloud states no surface. No accuracy is stated."
+
+[[piece]]
+id = "wards-dem025"
+label = "23 wards DEM 0.25 m (2023)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Tokyo/2024/01/LP/Grid/"
+pattern = '/(?P<ref>09[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2023
+
+[[piece]]
+id = "wards-dem05"
+label = "23 wards DEM 0.5 m (2023)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Tokyo/2024/02/LP/Grid/"
+pattern = '/(?P<ref>09[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "wards-points"
+label = "23 wards lidar points (2023)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Tokyo/2024/01/LP/Original/"
+pattern = '/(?P<ref>09[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2023
+
+[[piece]]
+id = "tama-islands-dem025"
+label = "Tama and islands DEM 0.25 m, reference (2022-23)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Tokyo/2023/01/LP/Grid/"
+pattern = '/(?P<ref>09[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.25
+year = 2023
+
+[[piece]]
+id = "tama-islands-dem05"
+label = "Tama and islands DEM 0.5 m (2022-23)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Tokyo/2023/02/LP/Grid/"
+pattern = '/(?P<ref>09[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "tama-islands-points"
+label = "Tama and islands lidar points (2022-23)"
+method = "listing"
+url = "https://japan-pointcloud.s3.ap-northeast-1.amazonaws.com"
+list = "s3"
+prefix = "Tokyo/2023/01/LP/Original/"
+pattern = '/(?P<ref>09[A-Z]{2}\d{4})\.zip$'
+grid = "jp-kihonzu"
+crs = "EPSG:6677"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.25
+year = 2023
