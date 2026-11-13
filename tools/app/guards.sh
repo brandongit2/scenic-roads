@@ -27,6 +27,10 @@ in_check=${SCENIC_GUARDS_IN_CHECK:-}
 # No test measures the machine (#441): no short elapsed() bound asserted, no fixed sleep then an
 # assert (tools/app/test_timing.py says why and what instead).
 python3 tools/app/test_timing.py || exit 1
+# Canadian spelling (#1374, tools/dev/agent-rules.md): no -ise/-yse spelling from tools/check/spelling.py's
+# word list in anything tracked (a deliberate use says `spelling: kept`); its own test first.
+python3 tools/check/test_spelling.py > $log 2>&1 || { cat $log; exit 1; }
+python3 tools/check/spelling.py || exit 1
 # One strict mode for tools/dev's programs (consistency T13): each runs under `set -uo pipefail`
 # (unset names and failed pipelines are errors; no errexit: each says itself why it stops), set
 # before its first command or, one its test sources, after its source guard. A file only sourced

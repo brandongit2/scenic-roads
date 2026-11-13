@@ -60,7 +60,10 @@ rely on the agent.
 
 - **Canadian English** in everything a person reads (the app's text, docs, comments, commit
   messages, board notes, reports): -ize and -yze, not -ise and -yse (equalize, generalize,
-  rasterize, analyze); -our (colour), -re (centre, metre) as they are.
+  rasterize, analyze); -our (colour), -re (centre, metre) as they are. `tools/check/spelling.py`
+  (run by check.sh and publish, through tools/app/guards.sh) refuses an -ise/-yse spelling from its
+  word list; a deliberate use (a stored name kept, a quotation, a body's proper name) says
+  `spelling: kept` and why on its own line.
 
 ## Screenshots
 
