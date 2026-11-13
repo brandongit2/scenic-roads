@@ -6,15 +6,17 @@
   python3 tools/check/spelling.py PATH ...   scan these files only
 
 The list is explicit: each STEMS entry is a word's base without its ending, flagged as
-stem + is(e|es|ed|ing|ation|ations|er|ers|able), or for YSE_STEMS stem + ys(e|ed|es|ing|er|ers)
-("analyses" is analysis's plural, so it is not flagged). Words that only look like -ise stay
+stem + is(e|es|ed|ing|ation|ations|er|ers|able), or for YSE_STEMS stem + ys(e|ed|ing|er|ers) (not
+-yses: "analyses" and "paralyses" are also the plurals of analysis and paralysis). A listed word is
+found with a prefix too (unrecognised, deserialise, reorganisation). Words that only look like -ise stay
 unlisted (raise, otherwise, exercise, promise, precise, supervise, emphasis, ...), and -our and
 -re spellings are not checked at all. Identifiers are split at camelCase, digits and underscores,
 so `equaliseHistogram` and `EQUALISE_MAX` are found as well as prose.
 
 Not flagged: URLs, vendored or generated code (web/maplibre/, crates/geos-src/, lockfiles), data files (geojson, csv),
-binary files. A deliberate use is marked on its own line with `spelling: kept` (and why), e.g. a
-stored name an older file or peer still sends, a quotation, a body's proper name ("Organisation").
+binary files, untracked files under .claude/. A deliberate use is marked on its own line with
+`spelling: kept` (and why), e.g. a stored name an older file or peer still sends, a quotation, a
+body's proper name ("Organisation").
 This file and its test name the forbidden words, so they are not scanned.
 """
 import os
@@ -32,14 +34,14 @@ theor urban vocal memorial fossil magnet ion oxid militar national natural margi
 immun jeopard mechan apolog critic colon fertil steril scrutin traumat terror ital galvan hypothes
 monet subsid tyrann vandal energ crystal cannibal commercial conceptual contextual criminal decentral
 demoral fantas formul hybrid individual legitim lobotom moral monopol orchestr plagiar pressur proselyt
-satir sensit social stereotyp strateg subordinat tantal universal verbal vaporiz
+satir sensit social stereotyp strateg tantal universal verbal vapor
 """.split()
 STEMS = sorted(set(STEMS))
 # The list is a net of real words: a stem that builds a non-word never matches anything. A real
 # word of another meaning is marked where it is used (`spelling: kept`).
 
 ISE_END = ("e", "es", "ed", "ing", "ation", "ations", "er", "ers", "able")
-YSE_END = ("e", "ed", "es", "ing", "er", "ers")
+YSE_END = ("e", "ed", "ing", "er", "ers")  # not "es": "analyses" is also a plural
 
 
 def build_words():
@@ -49,16 +51,17 @@ def build_words():
             words[s + "is" + e] = s + "iz" + e
     for s in YSE_STEMS:
         for e in YSE_END:
-            if s == "anal" and e == "es":
-                continue  # "analyses": the plural of analysis
             words[s + "ys" + e] = s + "yz" + e
     return words
 
 
 WORDS = build_words()
+MIN_WORD = min(map(len, WORDS))
 URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+|\b[0-9a-f]{16,}\b")
 PART = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 MARK = "spelling: kept"
+# Every listed word holds one of these (a quick look before the full one: most lines have none).
+HINT = re.compile(r"[iy]s(?:e|ing|ation|er|able)", re.I)
 SKIP_PREFIX = ("web/maplibre/", "crates/geos-src/")
 SKIP_NAME = re.compile(r"(?:\.lock|-lock\.yaml|-lock\.json|\.min\.js|\.geojson|\.csv|\.tsv|\.ndjson)$")
 SELF = {"tools/check/spelling.py", "tools/check/test_spelling.py"}
@@ -67,22 +70,30 @@ SELF = {"tools/check/spelling.py", "tools/check/test_spelling.py"}
 def scan_text(text):
     """[(line number, word, suggestion)] of the -ise/-yse words in text."""
     found = []
+    if not HINT.search(text):
+        return found
     for n, line in enumerate(text.split("\n"), 1):
-        if MARK in line:
+        if MARK in line or not HINT.search(line):
             continue
         line = URL.sub(" ", line)
         for tok in re.finditer(r"[A-Za-z]+", line):
             for p in PART.finditer(tok.group(0)):
                 w = p.group(0).lower()
-                if w in WORDS:
-                    found.append((n, p.group(0), WORDS[w]))
+                # the word itself, or a listed word with a prefix (un-, de-, re-, ...)
+                for i in range(len(w) - MIN_WORD + 1):
+                    if w[i:] in WORDS:
+                        found.append((n, p.group(0), w[:i] + WORDS[w[i:]]))
+                        break
     return found
 
 
 def files(root):
     out = subprocess.run(["git", "ls-files", "-z", "-c", "-o", "--exclude-standard"], cwd=root,
                          capture_output=True, text=True, check=True).stdout
-    return [f for f in out.split("\0") if f]
+    # An untracked file under .claude/ (the PM's own notes in the main checkout) isn't the repository's.
+    tracked = set(subprocess.run(["git", "ls-files", "-z", "-c"], cwd=root, capture_output=True, text=True,
+                                 check=True).stdout.split("\0"))
+    return [f for f in out.split("\0") if f and (f in tracked or not f.startswith(".claude/"))]
 
 
 def scan(root, paths=None):

@@ -29,6 +29,11 @@ class Spelling(unittest.TestCase):
                          [("analyse", "analyze"), ("paralysed", "paralyzed"), ("catalysing", "catalyzing")])
         self.assertEqual(found("two analyses, an analysis, the emphasis"), [])
 
+    def test_finds_a_listed_word_with_a_prefix(self):
+        self.assertEqual(found("unrecognised, deserialise and reorganisation"),
+                         [("unrecognised", "unrecognized"), ("deserialise", "deserialize"), ("reorganisation", "reorganization")])
+        self.assertEqual(found("paralyses, dialyses; vaporised"), [("vaporised", "vaporized")])
+
     def test_finds_words_inside_identifiers(self):
         self.assertEqual(found("summariseFeature(x)"), [("summarise", "summarize")])
         self.assertEqual(found("let n = EQUALISE_MAX + measure_quantisation_drift()"),
