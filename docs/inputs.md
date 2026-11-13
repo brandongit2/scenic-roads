@@ -1964,7 +1964,7 @@ Facts read at check time: each file's pieces, by class and availability, and its
 
 | Declaration | Pieces | Class | Read by |
 |---|---|---|---|
-| `copernicus-dem` | 2: GLO-30, GLO-90 | `index` | `listing`: each bucket's list of its 1° tiles |
+| `cop-dem` | 2: GLO-30, GLO-90 | `index` | `listing`: each bucket's list of its 1° tiles |
 | `pgc-arcticdem` | 1: the 2 m mosaic | `index` | `file`: the centre's tile index (a zipped shapefile, EPSG:3413) |
 | `pgc-rema` | 1: the 2 m mosaic | `index` | `file`: the same, EPSG:3031; the hole at the pole kept |
 | `jaxa-aw3d30` | 1 | `claimed` (a free account) | `listing`: the agency's public list of 1° tiles |
