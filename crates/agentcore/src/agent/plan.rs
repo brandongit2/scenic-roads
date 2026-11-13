@@ -2005,6 +2005,7 @@ impl Planner {
                 &planned.drops,
                 &planned.backfill,
                 chains,
+                &plan,
                 blind,
                 &planned.left,
                 &peak,
@@ -2149,7 +2150,9 @@ impl Planner {
     /// The forecast (crate::agent::forecast) of the work left: `before`, the lead's jobs before
     /// the regions'; `regions`, the plan's; `backfill`, the z6 tiles whose mids it makes in
     /// idle time (seam::Planned::backfill); `chains`, the trains', landmarks', 3D buildings' and depths' work to come
-    /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
+    /// (build::chains_left); `work`, the plan's work at the keys it's planned at; `blind`, why the
+    /// work can't all be listed now. None of it done whose record the plan didn't read (the
+    /// coordinator's done set at that key: a plan made as its job ended, task #1375). Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done. As data
@@ -2162,11 +2165,43 @@ impl Planner {
         drops: &[(String, String)],
         backfill: &[jobs::Work],
         chains: [Vec<jobs::Work>; 5],
+        work: &[jobs::Work],
         blind: Option<String>,
         left: &seam::Left,
         peak: &dyn Fn(&str, &str) -> u64,
     ) -> forecast::Record<'static> {
         use forecast::{Cost, Machine};
+        // (Work done whose record the plan didn't read yet, offered still by a plan made from
+        // records read before its hand-off was merged: none of it is to come, task #1375.)
+        let unread = match &self.coord {
+            Some(c) => forecast::unread(
+                &c.done_unread(),
+                work.iter()
+                    .chain(backfill)
+                    .chain(chains.iter().flatten())
+                    .chain(before.iter().filter_map(|j| j.record.as_ref())),
+            ),
+            None => BTreeSet::new(),
+        };
+        let left_of = |w: &jobs::Work| -> Vec<(String, String)> {
+            w.targets.iter().filter(|t| !unread.contains(&(w.step.clone(), t.0.clone()))).cloned().collect()
+        };
+        let backfill: Vec<jobs::Work> =
+            backfill.iter().map(|w| jobs::Work { targets: left_of(w), ..w.clone() }).collect();
+        let chains = chains.map(|ws| {
+            ws.iter()
+                .map(|w| jobs::Work { targets: left_of(w), ..w.clone() })
+                .filter(|w| !w.targets.is_empty())
+                .collect::<Vec<_>>()
+        });
+        // (A job before the regions' whose targets are all done so: none.)
+        let before: Vec<&JobSpec> = before
+            .iter()
+            .filter(|j| j.record.as_ref().is_none_or(|w| w.targets.is_empty() || !left_of(w).is_empty()))
+            .collect();
+        let drops: Vec<&(String, String)> = drops.iter().filter(|d| !unread.contains(d)).collect();
+        let mut regions = regions.to_vec();
+        forecast::without_unread(&mut regions, &unread);
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
             None => Default::default(),
@@ -2262,7 +2297,7 @@ impl Planner {
         let before: Vec<forecast::Job> = before
             .iter()
             .map(|j| {
-                (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))
+                (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| left_of(w).len())))
             })
             .collect();
         // (A region's map tiles each at its measured time, `cost`; the whole-map steps by their
@@ -2495,8 +2530,8 @@ impl Planner {
             now: now_s(),
             before,
             drops,
-            regions: std::borrow::Cow::Owned(regions.to_vec()),
-            costs: forecast::cost_table(regions, &cost),
+            costs: forecast::cost_table(&regions, &cost),
+            regions: std::borrow::Cow::Owned(regions),
             cadence,
             blind,
             chains: chain_jobs,

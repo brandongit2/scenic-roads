@@ -131,7 +131,12 @@ Common rules:
   by `scenic pool release <member>`.
 - **Handing back:** a job's saves, done record and costs go back as one hand-off, posted by its
   member to the lead and merged by the lead (docs/pool.md §7.3). A task's files go back to the
-  broker that offered it; a hand-back for a gone lease is refused (410).
+  broker that offered it; a hand-back for a gone lease is refused (410). The targets a job ended
+  with are held done at their keys (`Sched::done`) until a plan reads their record: a plan made
+  from records read before the hand-off was merged (one under way as the job ended) still offers
+  them, never granted again; a refusal says them "done (its record not read yet)", the forecast
+  counts none of them as work to come, and the first plan that doesn't offer one at its key lets
+  it go.
 - **Restarts:** leases and costs are kept in the lead's store on its disk, the token in
   `state/coord/` (docs/pool.md §7.5); a
   worker finds the lead again (`coordwire::lead`: the lead its Mac's agent keeps, else the declared one's) when it can't reach the coordinator or its token fails.

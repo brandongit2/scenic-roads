@@ -2058,8 +2058,9 @@ impl Coordinator {
         s.leases.renew_live(id, &self.me, progress, live, now)
     }
 
-    /// Ends this Mac's job's lease; `done`: the targets it recorded (not offered again until the plan
-    /// shows them; the rest are free again).
+    /// Ends this Mac's job's lease; `done`: the targets it recorded (not granted again while a plan
+    /// made before their record was read offers them at those keys: `offer`; the rest are free
+    /// again).
     pub fn finish(&self, id: u64, done: &[(String, String)]) {
         self.end_own(id, done, false);
     }
@@ -2153,8 +2154,10 @@ impl Coordinator {
     }
 
     /// The plan's work, in plan order, and its pass: the steps offered to every member, and the
-    /// lead's own planned jobs (`Offer::job`). The plan's keys include what's journaled, so work done
-    /// under the key the plan has now is no longer kept out by hand.
+    /// lead's own planned jobs (`Offer::job`). Work done (`sched::Sched::done`) is kept out while
+    /// the plan still offers it at the key it was done under (a plan made from records read before
+    /// its hand-off was merged); else let go: a plan that read its record offers it no more, and
+    /// one done under another key than the plan's now is to do again.
     pub fn offer(&self, pass: &str, offers: Vec<Offer>) {
         let mut s = self.shared.lock().unwrap();
         let planned: BTreeMap<(&str, &str), &str> = offers
@@ -2731,6 +2734,13 @@ impl Coordinator {
             .collect();
         let mem = s.workers.iter().map(|(n, w)| (n.clone(), w.mem_mb)).collect();
         (s.costs.clone(), leased, s.history.all(), mem)
+    }
+
+    /// The work done whose record the plan hasn't read yet (`sched::Sched::done`: (step, target) → the
+    /// key it was done under), for the forecast, which counts none of it as work to come at that
+    /// key (crate::agent::forecast::unread).
+    pub fn done_unread(&self) -> BTreeMap<(String, String), String> {
+        self.shared.lock().unwrap().done.clone()
     }
 
     /// For GC's queue (crate::agent::gcqueue, docs/storage.md, GC): when the oldest live lease
@@ -11477,8 +11487,9 @@ mod tests {
     }
 
     /// Task #1367 review: the lead's state of 13 Nov 2026, plan complete by the coordinator: the
-    /// one target offered done under its key (`nothing offered is free to take: 1 done`), else no
-    /// offer at all (said complete by the lead's status: flags::nothing_words); never the room.
+    /// one target offered done under its key, its record not yet read by the plan offering it (task
+    /// #1375: a plan under way as its job ended), said so, else no offer at all (said complete by the
+    /// lead's status: flags::nothing_words); never the room.
     #[test]
     fn a_done_plan_says_its_targets_are_done_not_the_room() {
         let (_d, c, w, _clock) = every((0, 0));
@@ -11487,7 +11498,7 @@ mod tests {
         c.offer("p", vec![o]);
         c.shared.lock().unwrap().done.insert(("available".into(), "terrain".into()), "k".into());
         assert!(w.ask(&a).unwrap().is_none());
-        assert_eq!(c.refusals()["m1"], "nothing offered is free to take: 1 done");
+        assert_eq!(c.refusals()["m1"], "nothing offered is free to take: 1 done (its record not read yet)");
         c.offer("p", Vec::new());
         assert!(w.ask(&a).unwrap().is_none());
         assert_eq!(c.refusals()["m1"], sched::EMPTY);

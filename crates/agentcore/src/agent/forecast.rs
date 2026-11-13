@@ -535,6 +535,59 @@ pub fn target_cost(
 /// What each target of the regions takes, by step, then target.
 pub type CostTable = BTreeMap<String, BTreeMap<String, Cost>>;
 
+/// The targets of `works` done at the key they're planned at whose records the plan hasn't read
+/// (the coordinator's done set, `done`: crate::coord::Coordinator::done_unread): a plan made from
+/// records read before a job's hand-off was merged (one under way as the job ended) still offers
+/// them, the coordinator grants none of them again, and none is work to come (task #1375).
+pub fn unread<'a>(
+    done: &BTreeMap<(String, String), String>,
+    works: impl IntoIterator<Item = &'a super::jobs::Work>,
+) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    if done.is_empty() {
+        return out;
+    }
+    for w in works {
+        for (t, k) in &w.targets {
+            let at = (w.step.clone(), t.clone());
+            if done.get(&at) == Some(k) {
+                out.insert(at);
+            }
+        }
+    }
+    out
+}
+
+/// `regions` without the targets in `unread` (`unread`), each list by the step whose targets it
+/// holds, as the run reads them.
+pub fn without_unread(regions: &mut [RegionLeft], unread: &BTreeSet<(String, String)>) {
+    if unread.is_empty() {
+        return;
+    }
+    let keep = |step: &str, v: &mut Vec<String>| v.retain(|t| !unread.contains(&(step.to_string(), t.clone())));
+    for r in regions {
+        for (step, v) in [
+            ("terrain-hi", &mut r.terrain),
+            ("terrain-hi", &mut r.own_terrain),
+            ("terrain-lo", &mut r.terrain_lo),
+            ("terrain-lo", &mut r.own_terrain_lo),
+            ("terrain-deep", &mut r.terrain_deep),
+            ("terrain-deep", &mut r.own_terrain_deep),
+            ("unit", &mut r.units),
+            ("unit", &mut r.own_units),
+            ("unit", &mut r.expected),
+            ("slope-deep", &mut r.slope_deep),
+            ("slope-hi", &mut r.slope),
+            ("slope-lo", &mut r.slope_lo),
+            ("trees", &mut r.trees),
+            ("trees-lo", &mut r.trees_lo),
+        ] {
+            keep(step, v);
+        }
+        r.packs.retain(|(t, _)| !unread.contains(&("pack".to_string(), t.clone())));
+    }
+}
+
 /// The cost table of `regions`' targets the forecast lists (`forecast`: each region's own terrain
 /// and assemblies, own and expected z6 tiles, map tiles, slope and tree cover), each by `cost`.
 pub fn cost_table(regions: &[RegionLeft], cost: &dyn Fn(&str, &str) -> Cost) -> CostTable {

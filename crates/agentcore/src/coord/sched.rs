@@ -158,8 +158,12 @@ pub struct Sched {
     /// crate::agent::build::is_none_key): sized by their step's drops (crate::needs::Book::drop_need)
     /// until their own run says, never by its builds.
     pub drops: std::collections::HashSet<(String, String)>,
-    /// Work done (journaled, or recorded by this Mac's job), (step, target) → key, under a key the
-    /// plan hasn't shown yet: not offered again meanwhile.
+    /// Work done (a member's hand-off taken, or this Mac's job ended), (step, target) → key, its
+    /// record not yet read by a plan: a plan that read the records before its hand-off was merged
+    /// (one under way as the job ended) still offers it at that key. Never granted again meanwhile
+    /// (`pack`, Coordinator::hold_for), said "done (its record not read yet)" in a refusal
+    /// (`Refused::words`), and no work to come in the forecast (crate::agent::forecast::unread);
+    /// let go by the first plan that doesn't offer it at that key (Coordinator::offer).
     pub done: BTreeMap<(String, String), String>,
     /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
     /// it again for an hour, doubling each time.
@@ -572,9 +576,11 @@ impl Refused {
     /// targets offered.
     fn words(&self, a: &Ask, room: &Ask, copies: u64) -> String {
         let gb = |mb: u64| format!("{:.1} GB", mb as f64 / 1024.0);
+        // (Done, its hand-off merged after the records the plan offering it read: `Sched::done`.)
+        let done = if self.done == 1 { "done (its record not read yet)" } else { "done (their records not read yet)" };
         let others: Vec<String> = [
             (self.held, "held by jobs"),
-            (self.done, "done"),
+            (self.done, done),
             (self.backoff, "in backoff after failing here"),
             (self.other, "free but held back otherwise (no measure yet, the NAS budget or placement)"),
         ]

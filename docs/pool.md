@@ -2780,7 +2780,9 @@ asks passed on are one-shot: the lead's store keeps them (below).
   `packing`: a cold job of the lead's own waiting for room, cores short for the next job open, a job
   offered refused for its room (the first that didn't fit, what it needs against what there is,
   said even beside work offered to other Macs), the targets offered all held by jobs, done or in
-  backoff ("nothing offered is free to take: 1 done"), steps offered but not to this Mac (the
+  backoff ("nothing offered is free to take: 1 done (its record not read yet)": a job that ended
+  while the plan offering it was being made, from records read before its hand-off was merged;
+  never granted again, and gone at the next plan), steps offered but not to this Mac (the
   lead's own, a step it doesn't run; `Rule::Away`: "3 steps offered are the lead's alone:
   names-todo, rail, pack"), or no job offered at all (`Rule::Empty`, also while the plan has no
   pass). The lead's status words the last two with the plan's waits (`flags::nothing_words`, each

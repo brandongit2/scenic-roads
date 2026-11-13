@@ -17729,8 +17729,17 @@ mod pool_tests {
         let work: Vec<jobs::Work> = (0..40)
             .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec =
-            a.planner().forecast_record(&[], &[], &[], &work, Default::default(), None, &Default::default(), &|_, _| 0);
+        let rec = a.planner().forecast_record(
+            &[],
+            &[],
+            &[],
+            &work,
+            Default::default(),
+            &[],
+            None,
+            &Default::default(),
+            &|_, _| 0,
+        );
         let fc = rec.forecast(crate::agent::seam::for_tests());
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
         assert!(
@@ -17787,6 +17796,7 @@ mod pool_tests {
             &drops,
             &[],
             Default::default(),
+            &[],
             None,
             &Default::default(),
             &|_, _| 0,
@@ -17800,6 +17810,50 @@ mod pool_tests {
         assert!((old.secs / now.secs - mean / 10.0).abs() < 0.01, "{old:?} {now:?}");
         let drop = &rec.input.drops.iter().find(|j| j.1 == "10/97/0").unwrap().2;
         assert_eq!((drop.secs, drop.known), (2.0, true), "its step's drops' of the way it runs now");
+    }
+
+    /// Task #1375: the lead's state of 13 Nov 2026, 15:35: a plan made from records read before a
+    /// job's hand-off was merged (under way as the job ended) offers its targets still, at the key
+    /// they were done under; the coordinator holds them done (granting none again), and the
+    /// forecast counts none of them as work to come, a world step's (`available-terrain`, in the
+    /// polar chain) or a region's z6 tile alike. Done under another key than the plan's (the input
+    /// changed since), a target is still to come.
+    #[test]
+    fn the_forecast_counts_no_work_done_whose_record_the_plan_did_not_read() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        let co = crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0;
+        for (step, t, k) in
+            [("available", "available-terrain", "k1"), ("unit", "6/1/1", "ku"), ("region-tiles", "region-tiles", "old")]
+        {
+            let id = co.hold(step, &[(t.to_string(), k.to_string())]).unwrap();
+            co.finish(id, &[(t.to_string(), k.to_string())]);
+        }
+        a.coord = Some(std::sync::Arc::new(co));
+        let w = |step: &str, ts: &[(&str, &str)]| jobs::Work {
+            step: step.into(),
+            targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect(),
+        };
+        let work = [w("unit", &[("6/1/1", "ku"), ("6/1/2", "ku")])];
+        let regions = [crate::agent::seam::RegionLeft {
+            id: "a".into(),
+            units: vec!["6/1/1".into(), "6/1/2".into()],
+            own_units: vec!["6/1/1".into(), "6/1/2".into()],
+            ..Default::default()
+        }];
+        let polar = vec![w("available", &[("available-terrain", "k1")]), w("region-tiles", &[("region-tiles", "new")])];
+        let chains = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), polar];
+        let rec =
+            a.planner().forecast_record(&[], &regions, &[], &[], chains, &work, None, &Default::default(), &|_, _| 0);
+        let chained: Vec<&str> = rec.input.chains.iter().map(|j| j.0.as_str()).collect();
+        assert_eq!(chained, ["region-tiles"], "done under the plan's key: not to come; under another: to come");
+        assert_eq!(rec.input.regions[0].own_units, ["6/1/2"]);
+        assert_eq!(rec.input.regions[0].units, ["6/1/2"]);
+        let fc = rec.forecast(crate::agent::seam::for_tests());
+        let placed: Vec<&str> = fc.placed.iter().map(|p| p.target.as_str()).collect();
+        assert!(!placed.contains(&"available-terrain") && !placed.contains(&"6/1/1"), "{placed:?}");
+        assert!(placed.contains(&"6/1/2"), "{placed:?}");
     }
 
     #[test]
@@ -17819,8 +17873,17 @@ mod pool_tests {
         let work: Vec<jobs::Work> = (0..200)
             .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec =
-            a.planner().forecast_record(&[], &[], &[], &work, Default::default(), None, &Default::default(), &|_, _| 0);
+        let rec = a.planner().forecast_record(
+            &[],
+            &[],
+            &[],
+            &work,
+            Default::default(),
+            &[],
+            None,
+            &Default::default(),
+            &|_, _| 0,
+        );
         let names: Vec<&str> = rec.input.machines.iter().map(|m| m.name.as_str()).collect();
         let mut unique = names.clone();
         unique.sort_unstable();
@@ -17843,8 +17906,17 @@ mod pool_tests {
         let work: Vec<jobs::Work> = (0..40)
             .map(|i| jobs::Work { step: "bldtiles".into(), targets: vec![(format!("6/{i}/1"), "k".into())] })
             .collect();
-        let rec =
-            a.planner().forecast_record(&[], &[], &[], &work, Default::default(), None, &Default::default(), &|_, _| 0);
+        let rec = a.planner().forecast_record(
+            &[],
+            &[],
+            &[],
+            &work,
+            Default::default(),
+            &[],
+            None,
+            &Default::default(),
+            &|_, _| 0,
+        );
         assert!(rec.input.machines.iter().all(|m| m.mac.as_deref() != Some(a.host.as_str())));
         let fc = rec.forecast(crate::agent::seam::for_tests());
         let named = |h: &str| fc.lanes.keys().chain(fc.next.keys()).any(|k| is_slot_of(k, h));
