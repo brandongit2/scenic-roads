@@ -1169,21 +1169,28 @@ low end. Its axis is the layer's own (available.ts `axisOf`): a log layer's valu
 its unit's, so the control's even axis is a log one, labelled in the unit (0.5 m … 90 m) with
 ticks at 1, 2 and 5 times the powers of ten; the year's whole years; bare earth or surface, two
 words, is a two-stop ramp: the control has no categorical mode, so the range is fixed to the two
-words' values (its caption says so) and each pixel takes one end's colour. Each layer keeps its own
-colour map (`scales`, by layer id, a profile's like every layer's); a layer shown the first time
-takes the profile's `colours`, its palette reversed where the layer's better end is its low one,
-so the best data takes the ramp's same end on every layer (viridis's bright end by default). Nothing
+words' values (its caption says so), each pixel takes one end's colour, Equalize isn't offered (it
+can't move the ends) and the highlight's slider steps from one word to the other. Each layer keeps
+its own colour map (`scales`, by layer id, a profile's like every layer's); a layer shown the first
+time takes the profile's `colours`, its palette reversed where the layer's better end is its low
+one, so the best data takes the ramp's same end on every layer (viridis's bright end by default),
+and its highlight's value the axis's middle where the profile's is off the layer's axis (a year's
+0). Nothing
 in the app is written per metric: labels, units and scales are the server's, so a new metric needs
 no app change. The description is read again at each new version of the theme (meta's
 `available-<theme>`), and the tiles' URLs carry that version. The settings (`available`: on, theme,
 layer, set, avail, opacity, `colours`, `scales`) are a profile's, as every layer's: their values
 when a profile lacks them come from `web/default-profile.json` alone (task #1199; the group off,
-open data only), and a link carries the first six as `av=`. The layer is a raster-dem source of the
+open data only), and a link carries the first six as `av=`, the profile's first colour map as
+`ac=` and each layer's own as `am=` (`<layer>~<map>`, joined by `*`), as `te=` and `ds=` carry the
+tint's and the depth's (a reload reads the link). The layer is a raster-dem source of the
 tiles (Terrarium) and a colour-relief layer (`available`) over the hill-shading and under the map's
 lines and labels, coloured on the GPU by the ramp's stops (available.ts `rampStops`: the colour map
 at even steps over the range, clamped outside it, a pixel with no value transparent, the
 highlight's edge sharp at the tiles' precision), nearest-sampled (a pixel is one piece's value,
-never a blend), its tiles overzoomed past the theme's finest zoom, draped with the 3D terrain; past
+never a blend: measured at z13 to z17 on a 1 m against 30 m border, two colours and nothing
+between), another layer's tiles dropped as it's chosen (not drawn by the new ramp while its own
+load), its tiles overzoomed past the theme's finest zoom, draped with the 3D terrain; past
 85.05° the polar caps (polarglobe.ts) draw the pole's tiles (z0–3) over their ground as an overlay
 of values coloured by the same layer's ramp, a cap's finer tiles taking their part of the overlay's
 z3 tile (only where a pole has a cap: the south today). The values in view don't count the caps'
@@ -1317,31 +1324,3 @@ hovered in the panel: the borders with its region, or its folder's regions, on o
 `borderOf`), both draped under the roads; the names from the listing's `label` points as a
 country's name. The footer asks `/api/regions/at` for the point hovered, one ask at a time, and
 tells the smallest region there by its box (`pick`); the panel frames the map on a row's `bbox`.
-||||||| parent of f0c304e97 (Task #1373: docs: the tiles carry values (Terrarium, on each layer's scale), the app colours them through the sidebar's colour-map control, and an open source wins a tie (score.toml's availability order); the retired colour fields read as absent, warned by ex-retired)
-task #1349, is one more id in `sets`, named by the theme's `labels`); the availability switch (Open data | All data); the
-opacity (85 % by default: the classes stay apart over the dark land); and the legend of the layer
-shown, by its `legend`: classes as a swatch each, finest first, the score's split from its own
-colour to its `shaded` one with a caption naming `shaded_by`'s metrics by their labels; words a swatch each; a ramp
-as a gradient with its stops' labels in the metric's unit; then a line saying that zoomed out a
-pixel shows the best data anywhere under it. Nothing in the app is written per metric: labels,
-units, legends and colours are the server's, so a new metric or palette needs no app change. The
-description is read again at each new version of the theme (meta's `available-<theme>`), and the
-tiles' URLs carry that version. The settings (`available`: on, theme, layer, set, avail, opacity)
-are a profile's, as every layer's: their values when a profile lacks them come from
-`web/default-profile.json` alone (task #1199; the group off, open data only), and a link carries
-them as `av=`. The layer is a raster source and layer (`available`) over the hill-shading and
-under the map's lines and labels, its tiles overzoomed past the theme's finest zoom, draped with the
-3D terrain; past 85.05° the polar caps (polarglobe.ts) draw the pole's tiles (z0–3) over their
-ground as an overlay, a cap's finer tiles taking their part of the overlay's z3 tile (only where a
-pole has a cap: the south today). A click while the group is on, when it hits no landmark or ferry,
-opens a panel of the pieces there (`/api/available/<theme>/<set>`), best first: each source's name,
-its piece's, its score, the metrics it states (with their units, and a class as published), its
-availability and extent class in the words of the theme's `labels` (the id where it gives none),
-its licence and a link to the source; the piece the layer shown paints is marked, as the answer's
-`painted` names it (the app ranks nothing itself). Roads and areas aren't picked while the group is
-on, and the panel says so. In the code: `web/src/available.ts`
-(the catalogue's themes, the description read, the legends, the URLs, the click's rows, the link
-field: no MapLibre, tested by `web/test/available.test.ts`), `ctl/available.ts` (the controller),
-`ui/available.ts` (the section and the click's panel) and `availablemap.ts`, the only part that is
-MapLibre's (the raster layer); in the native port it is a ground layer painted into the drapes
-(docs/native-port.md, Land).
