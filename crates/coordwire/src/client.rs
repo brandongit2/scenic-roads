@@ -785,7 +785,6 @@ impl Client {
     }
 }
 
-/// The contact on the NAS: None when there's no file, an error when it can't be read now.
 #[cfg(test)]
 mod tests {
     use super::*;

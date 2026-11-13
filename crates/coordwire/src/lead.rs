@@ -1,5 +1,5 @@
-//! How a Mac finds the lead's coordinator (docs/coordination.md §3.1, task #1119); nothing it reads
-//! on the NAS says where it is (the lead's `crate::OLD_CONTACT` is for the apps before alone).
+//! How a Mac finds the lead's coordinator (docs/coordination.md §3.1, task #1119); nothing on the
+//! NAS says where it is.
 //!
 //! - Each Mac's agent keeps its lead's contact in its folder (`SAVED`, `<agent home>/lead.json`):
 //!   the lead's agent its own coordinator's, a member's as each beat's answer says it (`leading`,

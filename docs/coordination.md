@@ -69,7 +69,7 @@ on one disk.
 | The records | — | `agent/pool/records.json`, the lead's disk copy | `state/build/records.json`, written whole each save (pool.md §6.2) |
 | GC's queue and cursors | `/gc/chunk`, `/gc/gone`, `/gc/orphans`, `/gc/removing` (docs/storage.md, GC) | the lead's GC queue | — |
 | The history | `/api/history` (the page's, from the coordinator's memory; the CLI's on another Mac, with `data`, from its file); a member's notes in its beat (`notes`, decision 4) | the coordinator's memory (the week's events, without their `data`) and its `history.jsonl` (the week's, whole) (pool.md §7.5, §10) | each finished day packed into the archive by the daily `gc` job, `state/coord/history-archive/<day>.tar` |
-| How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | read for it by no app since task #1119: with no `lead.json` (a new Mac) or one naming another member than the declaration, or a root that doesn't answer, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`); a root that answers and declares no lead, none. The lead still writes `state/coordinator.json` each 5 min while it leads (`coordwire::OLD_CONTACT`, when it differs), for the apps before #1119 alone, whose agents, map servers and updaters find the lead by it (§9) |
+| How to reach the lead | the beat's answer while it leads (`reach`: its addresses and page) | each Mac's agent keeps its lead's contact in its folder (`lead.json`, `coordwire::lead`) | none: with no `lead.json` (a new Mac) or one naming another member than the declaration, or a root that doesn't answer, the declared lead's host is reached by its tailnet address (as `tailscale status` lists that host) and its LAN name, with the pool's token (`state/coord/token`); a root that answers and declares no lead, none |
 
 ### 3.2 On the NAS
 
@@ -332,22 +332,13 @@ old coordination folders are gone):
   `agent::fccheck::inputs` reads for the backtest where the forecast inputs' archive
   (`state/coord/forecast-inputs/`, from 4 Nov) lacks them, until the archive covers them or the
   check no longer reads term folders;
-- **remove** (task #1119: what the lead alone wrote, now on its disk or asked of it), once every
-  Mac runs an app since #1119 (#642's rule: each Mac's updater's `app/releases/live.json` written by
-  such an app a day ago; an older app reads them): `state/status.json` and its
-  `status.json.<host>.<pid>.<n>.tmp` asides (an older `scenic status` and map server show the lead's
-  status by it), `state/pool/nas-probes.json`, `state/tmp/` (empty), `state/logs/` (logs of 2 and
-  6 Oct), and `settings/` (the map's profiles, which an older map server reads and writes; and once
-  a daily backup lists `mac/profiles.json`); `map/` once every Mac's beat says `nas-check-inputs`
-  (docs/storage.md);
+- **remove** (task #1175: what the lead alone wrote, now on its disk or asked of it; no app reads
+  or writes them): `state/coordinator.json` (the lead's contact), `state/pool/nas-probes.json`,
+  `state/tmp/` (empty), `state/logs/` (an old bld-fetch's log, of 6 Oct), `settings/` (the map's
+  profiles: a daily backup lists `mac/profiles.json`) and `map/` (the map's snapshots);
 - **remove** once the lead runs an app since task #1183 (which writes it no more; an older lead reads it at a take-up
   only to pass over its own, and a member never): `state/lead/store.json`, the lead's store's old
   backup, and the `state/lead/` folder;
-- **still written, for older apps**: `state/coordinator.json`, the lead's contact, which an app
-  before #1119 finds the lead by (its agent, its map server, and its updater, which so reaches the
-  new app: an older lead's agent took the file off as it stopped for its own update). At #642's rule
-  above, a change of its own deletes `coordwire::OLD_CONTACT`, `keep_old_contact` and its call in
-  the agent's pool step, then the file.
 
 `state/coord/history/<day>/` goes by itself: the `gc` job packs each day into the archive and
 removes it as it passes the week.

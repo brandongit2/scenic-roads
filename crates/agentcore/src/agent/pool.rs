@@ -1112,7 +1112,7 @@ pub struct Cx {
     pub broker: Option<crate::coord::Brokering>,
     pub broker_https: Option<String>,
     pub broker_lan: Vec<String>,
-    /// Where this Mac's client reaches the lead's coordinator (its contact on the NAS), and when a
+    /// Where this Mac's client reaches the lead's coordinator (its contact: coordwire::lead), and when a
     /// request of its last reached none of them, and why: what it tries, and a failure it counts
     /// (crate::pool::reachable).
     pub lead_urls: Vec<String>,

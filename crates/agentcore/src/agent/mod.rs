@@ -4529,11 +4529,6 @@ impl Agent {
                         eprintln!("agent: the pool's token on the NAS: {e:#}");
                     }
                     coordwire::lead::announce(r, &me.host, Some(contact.urls.clone()));
-                    // (Where an app before #1119 finds the lead, till every Mac runs this one:
-                    // coordwire::OLD_CONTACT.)
-                    if let Err(e) = coordwire::keep_old_contact(r, &contact) {
-                        eprintln!("agent: the lead's contact for older apps on the NAS: {e:#}");
-                    }
                 }
                 let k = coordwire::lead::Known { member: me.member, host: me.host, contact };
                 match coordwire::lead::save(&self.o.home, &k) {
@@ -13480,38 +13475,10 @@ mod tests {
         let tif = codecs::whole::testfiles::tiff(false);
         put(&c.join("chm10/a.tif"), &tif);
         let mut a = running_agent(&store::nasfs::NasRoot::local_for_test(&root), &home, true);
-        let beat = |at: u64, done: bool, job: Option<&str>| {
-            let job = job.map(|id| JobView {
-                job: None,
-                id: id.into(),
-                what: format!("Ranking the world's place labels ({id})"),
-                started: at,
-                paused: None,
-                pausing: None,
-                tail: String::new(),
-                parts: Vec::new(),
-                part: None,
-                progress: None,
-                mem_mb: None,
-                threads: None,
-                waiting: None,
-                slot: Some(0),
-                live: None,
-            });
-            let st = Status {
-                host: "the-lead".into(),
-                beat: at,
-                job,
-                forecast: Some(forecast::Forecast { at, ..forecast_now(done) }),
-                ..Default::default()
-            };
-            std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
-        };
-        // No word from the lead: nothing stops a clear (the build never ends).
+        // Nothing of the build's stops a clear (a member reads none of it for one).
         assert_eq!(a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root))), None);
         assert!(c.join("chm10/a.tif").exists() && a.caches_task.is_none(), "nothing cleared unasked");
-        // The build with work left and a job of the lead's running: asked, cleared.
-        beat(now_s(), false, Some("labels 2026-09-28"));
+        // Asked: cleared.
         let r = room::request_clear(&home, "scenic clean on m1", room::Level::Caches).unwrap();
         a.tend_caches(Some(&store::nasfs::NasRoot::local_for_test(&root)));
         while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
@@ -15979,7 +15946,7 @@ mod pool_tests {
         a.mem.last_ok.insert("backup".into(), now_s());
         crate::agent::gc::sweeps_done_for_tests(&a.o.home);
         a.round().unwrap();
-        assert!(a.published.is_some() && a.pool_hung.is_none(), "it leads, its contact on the NAS");
+        assert!(a.published.is_some() && a.pool_hung.is_none(), "it leads, its contact kept");
         let moving = |a: &Agent| a.coord.as_ref().unwrap().shared.lock().unwrap().moving.clone();
         // The pool's thread's moment's check (no tick): waited for, never a skip.
         let shared = a.pool.clone().unwrap();
@@ -16113,7 +16080,7 @@ mod pool_tests {
         until(&mut a, |a| a.pooled().and_then(|p| p.gates.leads).is_some());
         assert!(!r.join("state/lead").exists());
         // (Task #1119 review: its contact kept in its folder, readable by its user alone (the pool's
-        // token), and on the NAS where an older app finds the lead, the same: coordwire::OLD_CONTACT.)
+        // token), and nowhere on the NAS.)
         let kept = coordwire::lead::saved(&home).expect("its lead.json");
         assert_eq!(
             (kept.member.as_str(), kept.contact.urls.clone()),
@@ -16124,9 +16091,7 @@ mod pool_tests {
             let mode = std::fs::metadata(home.join(coordwire::lead::SAVED)).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "{mode:o}");
         }
-        let old: crate::coord::Contact =
-            serde_json::from_slice(&std::fs::read(r.join(coordwire::OLD_CONTACT)).unwrap()).unwrap();
-        assert_eq!(old, kept.contact, "the older apps' contact is the lead's own");
+        assert!(!r.join("state/coordinator.json").exists(), "no contact on the NAS");
         // (Its history on its own disk alone, task #1119, with its coordinator's start, which mends
         // the runs across a restart as read: task #988.)
         assert!(!r.join("state/coord/history").exists(), "no history on the NAS");

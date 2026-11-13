@@ -203,8 +203,8 @@ live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])
 
 # The lead's releases (#1118, docs/coordinator.md §10): the lead keeps the live release and the one
 # before and serves them to every Mac's updater; a publish puts one live there, and a rollback goes
-# back there, through `scenic releases` (<scenic>: a program that has it; the lead found by the
-# NAS's contact, with the workers' key). The order is checked here (fast_forward, rollback_ok: they
+# back there, through `scenic releases` (<scenic>: a program that has it; the lead found as
+# coordwire::lead says, with the workers' key). The order is checked here (fast_forward, rollback_ok: they
 # need git) on what the lead says is live, and the lead takes it only from that (its base).
 
 # lead_live <scenic> <dir>: the lead's live release and the one before, written as <dir>/current.json

@@ -29,25 +29,6 @@ pub struct Contact {
     pub page: Option<String>,
 }
 
-/// The rollout's bridge (task #1119 review): where an app before #1119 finds the lead, its agent,
-/// its map server and its updater alike (`state/coordinator.json` on the NAS, `Contact` as JSON).
-/// No app since reads it; the lead writes it (`keep_old_contact`) so a Mac still on an older app
-/// reaches the lead and so updates: without it, the older lead's agent stopping for its own update
-/// took the file off, and no older member could reach the new lead or update again. It goes, with
-/// the file, once every Mac's updater has run the new app for a day (#642's rule: docs/storage.md,
-/// What the NAS's state/ holds).
-pub const OLD_CONTACT: &str = "state/coordinator.json";
-
-/// `OLD_CONTACT` written whole as `c`, when what's there differs (read first: one small read each
-/// time the lead keeps its contact, a write only when it changed).
-pub fn keep_old_contact(root: &store::nasfs::NasRoot, c: &Contact) -> anyhow::Result<()> {
-    let p = root.join(OLD_CONTACT);
-    if p.read().ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok()).as_ref() != Some(c) {
-        p.write_whole(serde_json::to_vec_pretty(c)?)?;
-    }
-    Ok(())
-}
-
 /// The headers every answer of a pool's lead's coordinator carries: the epoch its leases are
 /// granted in (docs/coordination.md §4.3; 0 from a member's broker) and its member.
 pub const POOL_EPOCH: &str = "x-pool-epoch";

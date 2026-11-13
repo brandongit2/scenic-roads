@@ -24,16 +24,14 @@ global/        worldwide files: road values per z6 tile, road → z6 tiles, rail
 layers/<layer>/  root, lo and hi packs, or one bundle (all); basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates, not served
 cache/         what z6 tiles keep for later runs, shared by both Macs: scenic-units/
-map/           <seq>.json.zst: the map's snapshots that apps before task #1119 wrote (hourly, the
-               newest three) and stat to tell the NAS answers; written and read by no app since.
-               Removed once every Mac's beat says `nas-check-inputs` (coord::beats::NAS_CHECK):
-               the map is the lead's log's alone (docs/formats.md, The map and its log)
+map/           <seq>.json.zst: old snapshots of the map, written and read by no app (the map is the
+               lead's log's alone: docs/formats.md, The map and its log); the PM's to remove
+               (docs/coordination.md §9)
 app/           releases/: the live app version's and the one before's, each one archive, <version>.tgz;
                current.json (the live one's manifest: {version, sha256, archive_sha256}),
                previous.json (docs/building.md, The NAS's layout of the app); publish.lock
-settings/      profiles.json: read and written by no app since task #1119 (an older map server's): the
-               map's server keeps its settings profiles on its own Mac (Backups, below); the PM's to
-               remove once every Mac runs a newer app (docs/coordination.md §9)
+settings/      profiles.json: read and written by no app (the map's server keeps its settings
+               profiles on its own Mac: Backups, below); the PM's to remove (docs/coordination.md §9)
 state/         build/ (the records, their brief, the lead's declaration),
                coord/ (the token, the history's archive (a tar a finished day: the history
                itself is the lead's, on its disk), the forecasts' and forecast inputs' archives),
@@ -42,14 +40,12 @@ state/         build/ (the records, their brief, the lead's declaration),
                day), backups/;
                coord/history/ (the days an app before task #1119 wrote: GC packs each into the
                archive and removes it as it passes the week, the last on 19 Nov);
-               coordinator.json (the lead's contact, written for the apps before task #1119 alone,
-               read by no app since: docs/coordination.md §9);
                lead/store.json (the lead's store's old backup, which an older lead reads at a take-up
                only to pass its own over: the PM's to remove once the lead runs an app since task
                #1183, which writes it no more, docs/coordination.md §9);
-               what no app since task #1119 reads or writes, the PM's to remove once every Mac runs
-               one (§9): status.json, pool/nas-probes.json, tmp/ (empty), logs/ (the
-               NAS's planet fetch's and an old bld-fetch's logs, of 2 and 6 Oct); taskboard/ (copies
+               what no app reads or writes, the PM's to remove (docs/coordination.md §9):
+               coordinator.json, pool/nas-probes.json, tmp/ (empty), logs/ (an old bld-fetch's
+               log, of 6 Oct); taskboard/ (copies
                of the task board's database from its moves, 21 Oct and 5 Nov: the owner's); and the
                old coordination files no app writes (journal/, the terms' folders: §9)
 ```
