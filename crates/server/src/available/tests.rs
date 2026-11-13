@@ -131,6 +131,14 @@ fn each_layer_is_drawn_as_score_toml_says() {
     let rest = (0.4 + 0.2 * 21.0 / 26.0) / 0.6;
     assert_eq!(t.colour(SCORE_LAYER, a), Some(mix(r[n - 2], r[n - 3], s.shade * (1.0 - rest))));
     assert_ne!(t.colour(SCORE_LAYER, a), Some(r[n - 2]));
+    // Stating none of the tie-break's metrics: the class's own colour, as the best (not shaded by
+    // the primary's own value, which would darken every coarser class more).
+    let mut bare = a.clone();
+    bare.props.retain(|k, _| k == "spacing_m");
+    (bare.score, bare.values) = s.of(&bare.props);
+    assert_eq!(t.colour(SCORE_LAYER, &bare), Some(r[n - 2]));
+    let lead = bare.values["spacing_m"].unwrap();
+    assert!((bare.score.unwrap() - lead).abs() < 1e-12, "the score: the primary's value alone");
     // Two words, two colours; the year along the ramp.
     let surface = &s.metrics["surface"].colours;
     assert_eq!(t.colour("surface", a), Some(surface["ground"]));
@@ -332,6 +340,39 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
     let c = t.colour(SCORE_LAYER, &t.pieces["open-lidar/pole"]).unwrap();
     assert_eq!(png_pixel(&body(r).await, 128, 128), [c[0], c[1], c[2], 255]);
     assert_eq!(polar(4, 0, 0).await.status(), StatusCode::NOT_FOUND);
+}
+
+/// A tile's headers say what its body is: a PNG painted here goes out with no Content-Encoding
+/// (the live server sent `gzip` over a plain PNG: through Caddy over HTTP/2, an empty body),
+/// made or kept, on both grids.
+#[tokio::test]
+async fn a_tiles_headers_describe_its_body() {
+    let (_nas, _home, s) = served();
+    let (x, y) = z12(2.3, 44.2);
+    let mercator = || {
+        mercator_tile(
+            State(s.clone()),
+            Path(("terrain".into(), "best".into(), "score".into(), 12, x, y)),
+            RawQuery(None),
+            headers(None),
+        )
+    };
+    let polar = || {
+        polar_tile(
+            State(s.clone()),
+            Path(("n".into(), "terrain".into(), "best".into(), "surface".into(), 0, 0, 0)),
+            RawQuery(Some("avail=all".into())),
+            headers(None),
+        )
+    };
+    // (Each twice: made, then from the tiles kept.)
+    for r in [mercator().await, mercator().await, polar().await, polar().await] {
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "image/png");
+        assert!(r.headers().get(header::CONTENT_ENCODING).is_none(), "{:?}", r.headers());
+        let b = body(r).await;
+        assert!(b.starts_with(b"\x89PNG\r\n\x1a\n"), "a PNG");
+    }
 }
 
 #[tokio::test]

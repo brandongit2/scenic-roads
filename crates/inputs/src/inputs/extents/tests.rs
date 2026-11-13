@@ -243,6 +243,7 @@ fn a_scores_colours() {
         ("\"#803041\",", "3,"),
         ("ramp = [", "ramp = [\"#ffffff\"]\nx = ["),
         ("shade = 0.4", "shade = 1.5"),
+        ("shade = 0.4", "shade = 1"),
         ("shade = 0.4", "shade = -0.1"),
         ("shade = 0.4", "shade = \"some\""),
         ("label = \"Best data\"", "label = \"\""),

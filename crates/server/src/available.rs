@@ -153,7 +153,8 @@ impl Theme {
     /// - a metric with classes: its class's (by its value in the metric's unit);
     /// - a metric with words' colours: its word's;
     /// - the score, where the primary has classes: the class of the piece's primary, gone `shade` ×
-    ///   (1 − its tie-break) of the way towards the next coarser class's;
+    ///   (1 − its tie-break) of the way towards the next coarser class's (a piece stating none of
+    ///   the tie-break's metrics: its class's own colour);
     /// - otherwise the ramp at its 0–1 value.
     pub fn colour(&self, layer: &str, p: &PieceInfo) -> Option<Colour> {
         let s = self.score.as_ref()?;

@@ -1167,7 +1167,8 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   out past a byte or entry budget).
 - **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=open|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
-  `best`, `{layer}` `score` or a metric of the theme's `score.toml`: an RGBA PNG, each pixel the
+  `best`, `{layer}` `score` or a metric of the theme's `score.toml`: an RGBA PNG (sent as it is,
+  no Content-Encoding: a body made here is labelled gzip only when it is gzip), each pixel the
   layer's colour of its set's best piece among those passing `avail` (default `open`: availability
   `open`; `all`: every piece) as `score.toml` declares it (its class's, its word's, or the ramp at
   its value; the score, the primary's class shaded by the tie-break: docs/inputs.md §6.11),

@@ -2006,11 +2006,12 @@ layer a ramp over its 0–1 value:
   better end), so a piece's colour says its class whatever its exact value;
 - a `values` metric's `colours`: each of its words' `#rrggbb` (every word one), drawn as they are,
   not along the ramp;
-- `shade` (0 to 1, default 0; it needs the primary's classes): the score layer is drawn by the
-  primary's classes, since the primary decides the score, each pixel its best piece's class shaded
-  by the tie-break (the rest, above): a piece with the rest at 1 in its class's own colour, one at
-  0 `shade` of the way to the next coarser class's colour (the coarsest class towards its finer
-  neighbour's mirrored), so a shade stays inside its class's band. Without classes on the primary
+- `shade` (0 to under 1, default 0; it needs the primary's classes): the score layer is drawn by
+  the primary's classes, since the primary decides the score, each pixel its best piece's class
+  shaded by the tie-break (the rest, above): a piece with the rest at 1, or stating none of the
+  other metrics, in its class's own colour, one at 0 `shade` of the way to the next coarser class's
+  colour (the coarsest class towards its finer neighbour's mirrored), so a shade never reaches the
+  neighbouring class's colour. Without classes on the primary
   the score layer is the ramp at the score.
 
 The terrain's: `label = "Best data"`; the spacing in eight classes, each edge a factor of `within`
@@ -2071,7 +2072,7 @@ far). Errors:
   or breaking the guarantee, a metric without its `label`, a scale whose `worst` = `best` or a log
   scale's not positive, a `values` table not of numbers from 0 to 1, a weight missing or
   negative; of the drawing: a `label` not a name, a `ramp` not two or more `#rrggbb`, a `shade` not
-  from 0 to 1 or with no classes on the primary, `classes` fewer than two, on a `values` metric, or
+  from 0 to under 1 or with no classes on the primary, `classes` fewer than two, on a `values` metric, or
   a class without its `label`, with a field not its own, an `upto` not positive or not above the
   class before's, missing (but the last's) or on the last, `colours` on a scale that isn't
   `values`, naming a word not its own, missing one, or a colour not `#rrggbb`: `ex-score`); a theme

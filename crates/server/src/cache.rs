@@ -114,9 +114,10 @@ pub async fn blocking<T: Send + 'static>(
     }
 }
 
-/// Serves something made here and gzip'd (names attached, tiles merged): a 304 for its ETag, else
-/// from `kept`, else made now (`make`, on a blocking thread: None when there's nothing, 204) and kept
-/// under `key`.
+/// Serves something made here (names attached, tiles merged, a tile painted): a 304 for its ETag,
+/// else from `kept`, else made now (`make`, on a blocking thread: None when there's nothing, 204)
+/// and kept under `key`. Its Content-Encoding is the body's own (`gzipped`): gzip where `make` gave
+/// gzip, none where it gave the thing itself (a PNG).
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_made<K: Hash + Eq + Clone + Send + 'static>(
     kept: &'static Mutex<Lru<K, bytes::Bytes>>,
@@ -132,17 +133,24 @@ pub async fn serve_made<K: Hash + Eq + Clone + Send + 'static>(
         return not_modified(etag, versioned);
     }
     if let Some(b) = kept.lock().unwrap().get(&key) {
-        return respond(b, content_type, true, Some(etag), versioned);
+        let gz = gzipped(&b);
+        return respond(b, content_type, gz, Some(etag), versioned);
     }
     match blocking(what, make).await {
         Ok(Some(b)) => {
             let b = bytes::Bytes::from(b);
             kept.lock().unwrap().put(key, b.clone(), b.len() as u64);
-            respond(b, content_type, true, Some(etag), versioned)
+            let gz = gzipped(&b);
+            respond(b, content_type, gz, Some(etag), versioned)
         }
         Ok(None) => none(),
         Err(r) => r,
     }
+}
+
+/// Whether `b` is gzip (its magic number): a made body's Content-Encoding says what it is.
+fn gzipped(b: &[u8]) -> bool {
+    b.starts_with(&[0x1f, 0x8b])
 }
 
 /// The server's one cache:a map that drops its least recently used entries past a total weight

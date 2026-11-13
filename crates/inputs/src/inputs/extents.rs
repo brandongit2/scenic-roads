@@ -227,7 +227,8 @@ pub struct Score {
     /// own).
     pub ramp: Vec<Colour>,
     /// How far the score layer's class colour goes towards the next coarser class's as the
-    /// tie-break goes from best to worst (0 to 1 of the way; 0: not at all).
+    /// tie-break goes from best to worst (0 to under 1 of the way, so never reaching it; 0: not at
+    /// all).
     pub shade: f64,
 }
 
@@ -268,8 +269,8 @@ impl Score {
     }
 
     /// The tie-break of a piece's metric values (`of`'s rest): the weighted mean of the other
-    /// metrics it states; none stated, or their weights 0, the primary's value (None where that's
-    /// unstated too).
+    /// metrics it states; None where it states none of them (or their weights are 0), which `of`
+    /// takes as the primary's value.
     pub fn rest(&self, vals: &BTreeMap<String, Option<f64>>) -> Option<f64> {
         let (mut w, mut sum) = (0.0, 0.0);
         for (k, v) in vals {
@@ -279,11 +280,7 @@ impl Score {
                 sum += weight * v;
             }
         }
-        if w > 0.0 {
-            Some(sum / w)
-        } else {
-            vals.get(&self.primary).copied().flatten()
-        }
+        (w > 0.0).then(|| sum / w)
     }
 }
 
@@ -542,8 +539,8 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     };
     let shade = match t.get("shade") {
         None => 0.0,
-        Some(v) => num(v).filter(|s| (0.0..=1.0).contains(s)).unwrap_or_else(|| {
-            bad.push("`shade` isn't a number from 0 to 1".into());
+        Some(v) => num(v).filter(|s| (0.0..1.0).contains(s)).unwrap_or_else(|| {
+            bad.push("`shade` isn't a number from 0 to under 1".into());
             0.0
         }),
     };
