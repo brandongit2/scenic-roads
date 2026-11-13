@@ -500,7 +500,8 @@ mod tests {
         // (A wait of no step, as the disk room target's, is no work of the plan.)
         let disk = Waiting { what: "The disk room target".into(), why: "short".into(), step: None };
         assert_eq!(nothing_words(plan, &[disk], true), "the plan is complete: no job is left to offer");
-        let waits = [wait("slope-hi", "wait for terrain-root"), wait("terrain-root", "waits for the lead's NAS budget")];
+        let waits =
+            [wait("slope-hi", "wait for terrain-root"), wait("terrain-root", "waits for the lead's NAS budget")];
         let member = nothing_words(plan, &waits, false);
         assert_eq!(
             member,
