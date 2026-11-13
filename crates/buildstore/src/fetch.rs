@@ -226,7 +226,7 @@ pub const USER_AGENT: &str = "scenic-roads/0.1 (personal offline map)";
 /// read first: robots.txt is for crawlers, so only a crawl's is. An API, a data download or a page
 /// read as a person would follows its provider's usage policy instead: `USER_AGENT`, the pool's
 /// rate limits (jobrt::budget), a back-off on 429, the credit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// A documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service.

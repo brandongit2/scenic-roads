@@ -3,7 +3,7 @@
 //! build's User-Agent (buildstore::fetch::USER_AGENT), every request refused offline first
 //! (buildstore::fetch::online), through the job's proxy (`HTTPS_PROXY`, which takes each from the pool's
 //! budget by its rate class: jobrt::budget). What it asks is declared APIs and data downloads
-//! (buildstore::fetch::Kind's `api` and `data`), never pages, so no robots.txt is read. Answers are read
+//! (buildstore::fetch::Kind's `api` and `data`), never a crawl, so no robots.txt is read. Answers are read
 //! as Python's `json` reads them (pyport::pyjson), for caches whose bytes stay the Python's.
 //!
 //! What a service answers is sorted three ways besides an answer (`sort`):
