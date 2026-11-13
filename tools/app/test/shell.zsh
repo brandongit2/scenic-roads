@@ -305,17 +305,22 @@ out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-1000-$C" 
 out=$(cd $g && zsh -c "source ${(q)lib}; fast_forward $cur $C 20261026-0953-$B" 2>&1) && ok "fast_forward begun after a rollback" || no "fast_forward after rollback" "$out"
 rm -f $rel/previous.json
 
-# rollback_ok: back to a version with the live one's rollback floor, or both without one: allowed;
-# to one before the live one's floor (none, or another): refused, saying why; an unknown commit: refused.
+# rollback_ok: back to a version whose commit contains the live one's floor (a commit), the floor
+# itself and one made before the floor was raised to it included, or from one with no floor:
+# allowed; to one that lacks it: refused, saying why. A floor that names no commit (the releases
+# before #1342's) holds the previous version to the same first line. An unknown commit: refused.
 rf() { mkdir -p $g/tools/app; print -r -- "$1"$'\n'"# why $1" > $g/tools/app/rollback-floor; git -C $g add -A; c $2; }
-E=$(c e); F=$(rf one f); G=$(c g); H=$(rf two h)
+E=$(c e); F=$(c f); G=$(rf $E g); H=$(c h); I=$(rf $H i); W=$(rf one w); X=$(c x)
 prev=$rel/previous.json
 ro() { print -r -- "{\"version\": \"20261026-0953-$1\"}" > $cur; print -r -- "{\"version\": \"20261026-0900-$2\"}" > $prev
   (cd $g && zsh -c "source ${(q)lib}; rollback_ok $cur $prev" 2>&1) }
-out=$(ro $E $C) && ok "rollback_ok neither has a floor" || no "rollback_ok no floors" "$out"
-out=$(ro $G $F) && ok "rollback_ok same floor" || no "rollback_ok same floor" "$out"
-out=$(ro $F $E) && no "rollback_ok past a floor" "allowed" || { [[ $out == *'refused'*'why one'* ]] && ok "rollback_ok past a floor refused" || no "rollback_ok past a floor" "$out"; }
-out=$(ro $H $G) && no "rollback_ok past a new floor" "allowed" || { [[ $out == *'refused'* ]] && ok "rollback_ok past a new floor refused" || no "rollback_ok past a new floor" "$out"; }
+out=$(ro $E $C) && ok "rollback_ok from no floor" || no "rollback_ok from no floor" "$out"
+out=$(ro $G $F) && ok "rollback_ok to one made past the floor before it was raised" || no "rollback_ok past the floor" "$out"
+out=$(ro $H $E) && ok "rollback_ok to the floor itself" || no "rollback_ok to the floor" "$out"
+out=$(ro $G $C) && no "rollback_ok to one without the floor" "allowed" || { [[ $out == *"refused"*"why $E"* ]] && ok "rollback_ok to one without the floor refused, saying why" || no "rollback_ok without the floor" "$out"; }
+out=$(ro $I $G) && no "rollback_ok past a raised floor" "allowed" || { [[ $out == *"rollback floor $H"*'refused'* ]] && ok "rollback_ok past a raised floor refused" || no "rollback_ok past a raised floor" "$out"; }
+out=$(ro $X $W) && ok "rollback_ok a word floor, the same word" || no "rollback_ok the same word" "$out"
+out=$(ro $X $I) && no "rollback_ok a word floor, another" "allowed" || { [[ $out == *'refused'*'why one'* ]] && ok "rollback_ok a word floor, another refused" || no "rollback_ok another word" "$out"; }
 out=$(ro $G 0000000) && no "rollback_ok unknown commit" "allowed" || ok "rollback_ok unknown commit refused"
 rm -f $prev
 

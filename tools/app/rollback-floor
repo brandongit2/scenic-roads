@@ -1,11 +1,16 @@
-878-8c
-# The first line names the floor; publish.sh --rollback refuses to go to a version whose tree's
-# first line differs (tools/app/lib.zsh rollback_ok): an app on the other side of it can't run the
-# pool safely beside this one's NAS state. Change the first line, with the reason here, in the
-# commit that makes a rollback past it unsafe.
+8bcf6142e37c6573b4dc32df0470f1b9a7c4db77
+# The first line names the floor, a commit on origin's main; publish.sh --rollback refuses to go to
+# a version whose commit doesn't contain it (tools/app/lib.zsh rollback_ok): an app from before it
+# can't run the pool safely beside this one's NAS state. Raise it, with the reason here, once the
+# change that makes a rollback past it unsafe is on origin's main (its commit there: a branch's
+# commit, rebased as it merges, is another), and before the next publish; tools/app/guards.sh
+# refuses a first line that isn't a commit this tree contains.
 #
-# 878-8c (task #1124, docs/coordination.md step 8c): the lead leads its store's epoch, the records
-# and leases numbered by it (past every term made). An app before it makes terms again, numbering
-# leases below every epoch (a later lease's hand-offs passed over), and a lead on it without its
-# own records takes up a term's old snapshot, losing what was acknowledged since. To go back past
-# it, publish a fix forward instead.
+# 8bcf6142e (task #1175, its last change to the app): an app before it leads by writing the lead's
+# contact, its addresses and the pool's token, to the NAS's state/coordinator.json each beat (the
+# #1119 rollout's bridge, which #1175 deleted with the file), so an app from before task #1119
+# finds the lead again. That app is unsafe beside this NAS: it checks the NAS by `map/`, removed
+# (it sees the NAS away), finds no lead without that file, and writes a `snapshot` cursor the
+# lead's feed no longer drops, which holds GC for up to 6 h after a roll forward (store::map::feed). Before #1124
+# (docs/coordination.md step 8c) an app makes terms again and numbers leases below the epoch. To go
+# back past the floor, publish a fix forward instead.

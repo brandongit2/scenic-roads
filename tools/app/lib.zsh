@@ -147,27 +147,31 @@ fast_forward() {
   fi
   return 0
 }
-# rollback_ok <current.json> <previous.json>: 0 when the previous version's tree has the live one's
-# rollback floor (the first line of tools/app/rollback-floor; none on either side counts as one
-# floor); else says why and returns 1: a rollback never goes back past a release after which an
-# older app is unsafe. A commit this repository lacks is fetched once; still missing, refused. Run in
-# the repository.
+# rollback_ok <current.json> <previous.json>: 0 when the previous version's commit contains the live
+# one's rollback floor (the commit the first line of tools/app/rollback-floor names in the live
+# version's tree; no file there, no floor); else says why and returns 1: a rollback never goes back
+# past a change after which an older app is unsafe. A floor that names no commit (`878-8c`, in the
+# releases before task #1342) holds the previous version to the same first line. A commit this
+# repository lacks is fetched once; still missing, refused. Run in the repository.
 rollback_ok() {
-  local v pv c f=tools/app/rollback-floor live prev
+  local v pv c f=tools/app/rollback-floor floor
   v=$(live_version $1) || { print -r -- "can't read $1"; return 1; }
   pv=$(live_version $2) || { print -r -- "can't read $2"; return 1; }
   for c in ${v##*-} ${pv##*-}; do
     git cat-file -e "$c^{commit}" 2>/dev/null || git fetch -q origin main 2>/dev/null
     git cat-file -e "$c^{commit}" 2>/dev/null || { print -r -- "the version's commit $c isn't in this repository: refused"; return 1; }
   done
-  live=$(git show "${v##*-}:$f" 2>/dev/null | head -1)
-  prev=$(git show "${pv##*-}:$f" 2>/dev/null | head -1)
-  if [[ $live != $prev ]]; then
-    print -r -- "$pv is before the live version $v's rollback floor ${live:-(none)} (its ${prev:-none}): refused. Why, from $f:"
-    git show "${v##*-}:$f" 2>/dev/null | sed -n 's/^# \{0,1\}//p'
-    return 1
+  floor=$(git show "${v##*-}:$f" 2>/dev/null | head -1)
+  [[ -n $floor ]] || return 0
+  if git cat-file -e "$floor^{commit}" 2>/dev/null; then
+    git merge-base --is-ancestor $floor ${pv##*-} && return 0
+    print -r -- "$pv is before the live version $v's rollback floor $floor (its commit doesn't contain $floor): refused. Why, from $f:"
+  else
+    [[ $(git show "${pv##*-}:$f" 2>/dev/null | head -1) == $floor ]] && return 0
+    print -r -- "$pv is before the live version $v's rollback floor $floor (its $f doesn't say $floor): refused. Why, from $f:"
   fi
-  return 0
+  git show "${v##*-}:$f" 2>/dev/null | sed -n 's/^# \{0,1\}//p'
+  return 1
 }
 # live_version <current.json>: its version's name.
 live_version() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' $1 2>/dev/null; }

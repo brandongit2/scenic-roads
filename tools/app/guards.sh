@@ -39,6 +39,10 @@ for f in tools/dev/*.sh; do
   [[ $(head -c2 $f) == '#!' ]] || continue
   grep -qx 'set -uo pipefail' $f || { echo "$f: a tools/dev program sets 'set -uo pipefail' (tools/app/guards.sh says where)"; exit 1; }
 done
+# The rollback floor names a commit this tree contains (tools/app/rollback-floor, #1342): a branch's
+# commit rebased away as it merged, or a mistyped one, would refuse every rollback after it.
+floor=$(head -1 tools/app/rollback-floor)
+git merge-base --is-ancestor "$floor" HEAD 2>/dev/null || { echo "tools/app/rollback-floor's first line, $floor, isn't a commit this tree contains (the file says what it names)"; exit 1; }
 # A test reading the repo's own files says which (#662): `//! scans: <path prefix> …`, so
 # tools/dev/affected-tests.sh runs it when any of them changes (write_sets missed #660's room.rs).
 python3 - <<'PY' || exit 1
