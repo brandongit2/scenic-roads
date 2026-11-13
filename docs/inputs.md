@@ -1834,9 +1834,9 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 table at this section's end (`producers/extents/`), and the unit `extents` that checks them
-(crate::inputs::extents, the checks below; task #1346); North America's sources (task #1350); the
-step `available` that draws the pieces' tiles, and the server's score, layers and click
-(docs/steps.md §14; task #1347); the app's layers (task #1348). Planned: Europe's, Asia's and the
+(crate::inputs::extents, the checks below; task #1346); North America's and Europe's sources
+(task #1350); the step `available` that draws the pieces' tiles, and the server's score, layers
+and click (docs/steps.md §14; task #1347); the app's layers (task #1348). Planned: Asia's and the
 rest of the world's sources (task #1350's later runs) and `piece.dataset` (extents from the build's
 own data; task #1349). Task #1334.
 
@@ -1904,11 +1904,12 @@ small.
 | `piece.method` | the producer's generic reader (below) |
 | `piece.class` | the extent class its extents are: `index` or `service` for a reader that can be either (`arcgis`, `wfs`, `file`), or `claimed` where the outline read is a stated coverage and not the data's (an administrative area's); fixed by the method otherwise. A piece that doesn't download directly (its availability not `open`) is `claimed` whatever lists it |
 | `piece.url` and the method's own fields | where to read: a layer, a collection, a file, a listing |
-| `piece.where`, `piece.filter` | a filter in an ArcGIS service's own language; `{field = [values]}`, applied to what any reader read |
+| `piece.where`, `piece.filter`, `piece.exclude` | a filter in an ArcGIS service's own language; `{field = [values]}`, applied to what any reader read: `filter` keeps the features whose field is one of the values, `exclude` leaves them out (`""` for a field empty or missing) |
+| `piece.latest` | `{field, pattern, order}`: of the features naming one tile (the match of `pattern` in `field`), only the one greatest in `order` is read, where a collection keeps each tile's earlier versions beside its newest (swissALTI3D's); a feature naming none is kept |
 | `piece.by` | fields a piece is told apart by: features sharing their values, and every metric's reading, are dissolved into one piece (none: a piece per distinct reading of the metrics) |
 | `piece.name`, `piece.label` | the field a piece's `name` is read from (one of `by`, so the features of a piece share it), or the name itself |
 | `piece.tolerance_m` | the simplification, default 50 |
-| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, or `text`, the last year a name holds, alone or opening a compact date, `20240315`; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
+| `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, `text`, the last year a name holds, alone or opening a compact date, `20240315`, or ending a span in two digits, `2011-12`, not a date's month, or `yymmdd`, six-digit dates of the 2000s alone or as a span, the last taken; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another), its last one may be a constant, the value where none gives one (PST-A's 1 m grid's tiles stating no cell: `[{field = "risoluzion"}, 1.0]`). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
 | `piece.dataset` | planned (docs/steps.md §14): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
@@ -1916,29 +1917,33 @@ a new source of a kind it knows is a new declaration, no code):
 
 | `method` | Reads | Class |
 |---|---|---|
-| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on), the pages coming to the count the service gives first (`returnCountOnly`), so none is skipped or read twice at a page's edge: a layer whose rows share an id (a join), on a page or across its edge, is refused, in WGS 84, generalised by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it, as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
-| `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
-| `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once, by their `alternate` links: never `up` or `self`, back to the service's every dataset): each file it links with its own `bbox`, else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
+| `arcgis` | an ArcGIS REST layer's features (FeatureServer or MapServer `query`) or an ImageServer's catalogue (its items, a file each), paged by the layer's object id (each page the ids after the last one's, in their order: no deep offsets, which a catalogue of 100,000 items times out on), the pages coming to the count the service gives first (`returnCountOnly`), so none is skipped or read twice at a page's edge: a layer whose rows share an id (a join), on a page or across its edge, is refused, in WGS 84, generalised by the service to a quarter of the piece's tolerance; as GeoJSON where the layer offers it (a position's z and m dropped), as Esri JSON otherwise (an ImageServer offers only that; its rings taken by the even-odd rule) | `index` or `service` |
+| `stac` | a STAC API or OGC API Features collection's items (paged by its `next` links up to the first page with no items, a link without the page size asked for given it back, a link back to a page already read stopping the run), their footprints and properties, or with `geometry` the GeoJSON file of each item's asset of that name (a finer outline than the item's own, where the publisher gives one) | `index` |
+| `atom` | an ATOM download feed (an INSPIRE download service's; `follow = true` reads the feeds its entries link too, each once, by their `alternate` links: never `up` or `self`, back to the service's every dataset): each file it links with its own `bbox` (`latfirst = true` where a feed writes it latitude first), else each entry's GeoRSS polygon or box; a file's properties its entry's `title`, `updated` and `id` and its own `href`, `title` and `length` | `index` |
 | `wfs` | a WFS feature type (GetFeature, paged by `startIndex`, every feature counted, those without geometry too; as GeoJSON, or GML where the server answers only that, the `format` asked for; `version` 2.0.0 or a 1.x's; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
-| `file` | a published index file fetched whole, its size checked first: GeoJSON or GML (read as `wfs`'s answers are), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile or one of those (`member`, a part of its name, picking one of several) | `index` or `service` |
-| `listing` | a bucket's listing, a page's links or a text file of names (`list`), each name georeferenced by a declared `pattern` (its groups `x`, `y`, and `ew`, `ns`; `unit`, `size`, `corner`, `crs`) | `index` |
-| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out); the overview's pixel is the piece's `grain_m` | `files` |
+| `file` | a published index file fetched whole, its size checked first: GeoJSON or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several) | `index` or `service` |
+| `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names, a zip's member names (its central directory by range request, none of its members read) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
+| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
 Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, TLS
 verified against Mozilla's trust store (certifi's: the system's file lacks roots some publishers chain
-to, Quebec's), the provider's 429s and 5xx retried (four tries, waiting longer each time), and a limit on what one source's reads come to (`--max-gb`, 5,
+to, Quebec's; a server sending its certificate without its intermediate, the CNIG's and the IDEE's,
+has its chain completed once from the certificate's AIA, the issuers fetched added with partial
+chains refused, so each is a link to one of the store's roots, never trusted by itself), the provider's 429s and 5xx retried (four tries, waiting longer each time), and a limit on what one source's reads come to (`--max-gb`, 5,
 the owner's of 13 Nov; cached answers count: a source over it stops the run, never a silent bulk
 download). Headers, indexes and overviews come first; a source's data is read whole only where
 that's the only way to its extent and the source is small. No fetch waits for a go-ahead; a run
 reading a large index goes to the Mac mini (tools/dev/agent-rules.md). It
-then makes each piece: its features repaired where invalid (counted in `read`), dissolved in their
+then makes each piece: its features repaired where invalid (counted in `read`), each generalised to
+a quarter of the tolerance (as `arcgis` asks its service to: RGE ALTI's 290,932 source polygons of
+some 120 million positions took hours to dissolve unsimplified), dissolved in their
 own CRS (a tile index's squares become their outline), brought to longitude and latitude with
 their edges densified, cut at the antimeridian and closed along 90° round a pole
 (`extents.ring_region`), gaps narrower than half the tolerance closed (a quarter's buffer out and
 back: the service's generalisation of neighbouring features apart leaves no wider ones),
 simplified to the tolerance with the topology kept, holes and specks smaller than the tolerance
-squared dropped, coordinates to 5 decimals (about a metre). So an outline is within one and a half
+squared dropped, coordinates to 5 decimals (about a metre). So an outline is within one and three quarters
 tolerances of its features' (the tolerance taken in degrees of latitude: east-west it's tighter
 by the cosine of the latitude), plus the grain where there is one. British Columbia's 98,964 map
 sheets become 17 outlines, 246 KB. Tests: `producers/extents/test_extents.py`.
@@ -2022,11 +2027,11 @@ above a nominal spacing published, so a product's twin in other units falls in i
 
 | Class | Up to | Holds (real pieces of 13 Nov) |
 |---|---|---|
-| 0.5 m | 0.625 m | IGN LiDAR HD, Luxembourg (0.5 m); 2 ft, 0.6096 m |
-| 1 m | 1.25 m | NRCan HRDEM projects, GeoBC, Wales (1 m); 3 ft, 0.9144 m |
-| 2 m | 2.5 m | NRCan HRDEM projects and its ArcticDEM-based mosaic, GeoBC, ArcticDEM, REMA (2 m) |
-| 3–5 m | 6.25 m | 3DEP's 1/9 arc-second (3.4 m) and Alaska's 5 m IfSAR, INEGI's 5 m sheets |
-| 10 m | 12.5 m | 3DEP's 1/3 arc-second (10.3 m), Turks and Caicos' 10 m, Honduras's 12.5 m |
+| 0.5 m | 0.625 m | IGN LiDAR HD, Luxembourg, swissALTI3D, AHN, PNOA-LiDAR's MDT 0.5 m, Tirol, Slovenia's CLSS (0.5 m), Denmark (0.4 m), Baden-Württemberg (0.25 m); 2 ft, 0.6096 m |
+| 1 m | 1.25 m | NRCan HRDEM projects, GeoBC, Wales, the German Länder's DGM1, the BEV, Sweden, England, PST-A (1 m); 3 ft, 0.9144 m |
+| 2 m | 2.5 m | NRCan HRDEM projects and its ArcticDEM-based mosaic, GeoBC, ArcticDEM, REMA, Finland, Iceland, PNOA-LiDAR's MDT02 (2 m) |
+| 3–5 m | 6.25 m | 3DEP's 1/9 arc-second (3.4 m) and Alaska's 5 m IfSAR, INEGI's 5 m sheets, Czechia's DMR 4G, Italy's regional 5 m models, Hungary's DDM5 |
+| 10 m | 12.5 m | 3DEP's 1/3 arc-second (10.3 m), Turks and Caicos' 10 m, Honduras's 12.5 m, TINITALY, Northern Ireland's 10 m |
 | 30 m | 37.5 m | Copernicus GLO-30, AW3D30 |
 | 90 m | 112.5 m | Copernicus GLO-90 |
 | coarser | | |
@@ -2094,7 +2099,7 @@ error.
 
 **The sources so far** (terrain; `producers/extents/terrain/`, read 13 Nov 2026; the worldwide
 models, the polar mosaics, BC, Wales, France and Luxembourg the same outlines as on 12 Nov; North
-America read on 13 Nov, its large indexes on the Mac mini):
+America read on 13 Nov, its large indexes on the Mac mini; Europe below):
 
 | Declaration | Pieces | Class | Read by |
 |---|---|---|---|
@@ -2132,6 +2137,65 @@ Belize's, Dominica's and Saint Kitts and Nevis's lidar, Guatemala's elevation mo
 block and the Mexican states' and municipalities' local lidar (Jalisco, Querétaro, Quintana Roo,
 Tabasco), whose areas aren't stated or have no outline to claim; NOAA Digital Coast's per-dataset tile
 indexes (its surveys are in `usiei`, at the inventory's outlines); Haiti's 12 southern 50 km tiles' masks (no overviews: 2.4 GB read whole; claimed by department instead).
+
+**Europe** (read 13 Nov 2026; England's, swissALTI3D's, PST-A's, mainland Portugal's, RGE ALTI's
+and the BKG's indexes on the Mac mini, the rest on the M1): 119 declarations, 2,502 pieces, 2,469
+with an extent. Areas are checked in EPSG:3035 against the publisher's figure or the tiles' count
+times their area.
+
+| Declaration | Pieces | Class | Read by |
+|---|---|---|---|
+| `gb-eng-lidar` | 97: the National LIDAR Programme's tiles by year, the composite DTMs' coverages (1 m, 2 m) by year, the time-stamped surveys' 50 and 25 cm | `index`; `service` | `wfs` ×5: the Environment Agency's indexes (EPSG:27700; the 50 and 25 cm blocks with a `CQL_FILTER` in their `url`, the server timing out on their filters as fields); 108 requests, 308 MB, 9.3 min from the cache on the mini, a peak of 3.7 GB; 1.54 MB at 100 and 200 m tolerances; the programme's 7,139 5 km tiles 178,475 km², its pieces 177,472; the composites' 1 m 138,593 km² (England is 130,279: the tiles over the sea) |
+| `gb-sct-lidar`, `gb-sct-hes-lidar` | 11; 7: the portal's phases (I to VI, the National LiDAR Programme, Outer Hebrides, Orkney, the coast) and Historic Environment Scotland's sets | `index` | `listing` (s3): the portal's bucket, each file's lettered grid reference (NS16NE, NG2004) its square; each piece within 0.1 % of its tiles' count × area. The phases' extents are their point clouds' tiles: the DTM sheets hold corridors in 10 km sheets (Phase I's 382 sheets span 38,215 km² against its stated 11,845) |
+| `gb-nir-osni-dtm`, `gb-nir-river-basin-lidar` | 1; 77 | `index` | `file`: OSNI's 10 m DTM's quarter-sheets (1,057 × 15.36 km²); DfI's 1 km tiles by basin, cell (1 or 0.5 m) and survey date, 3,721 km² against 3,722 tiles |
+| `ie-gsi-lidar` | 99: the GSI's, TII's and the OPW's surveys | `index` | `arcgis` ×9: each survey's 2 km tiles, their `RESOLUTION`, last capture year and `RMS_ERROR` ("Within +/- 150mm" taken as 0.15 m, the class kept as `stated`); photogrammetric surveys `surface` |
+| `de-*-dgm1` (14 Länder), `de-bw-dgm025` | 1 to 82 each, 199 in all | `index`; Bayern's `service` | each Land's own index: Berlin's, Mecklenburg-Vorpommern's and Schleswig-Holstein's ATOM feeds' tile names (`listing`), Brandenburg's OGC API and Niedersachsen's STAC (`stac`; Niedersachsen's every edition, so its lots overlap where re-flown), Bremen's, Hamburg's, Sachsen-Anhalt's and Saarland's archives' members (`listing` zip), Hessen's tile table (`listing` xlsx), Nordrhein-Westfalen's and Rheinland-Pfalz's folder listings (`listing`; Rheinland-Pfalz's 2022 tiles and their 2026 successors both), Sachsen's ArcGIS layer, Bayern's 82 flight lots (`file`), Baden-Württemberg's two WFS (0.25 m: ALS_2 by flight year, and ALS_3's re-flown tiles); each within 0.5 % of its tiles' count × area; years where the index states them (none for Mecklenburg-Vorpommern and Sachsen-Anhalt) |
+| `ch-swissalti3d` | 7: by year (2019, 2021 to 2026) | `index` | `stac` with `latest`: 88,775 items for 43,650 tiles, each tile's newest; 888 requests, 248 MB, 17 min on the mini; 43,646 km² (Liechtenstein's whole) |
+| `ch-ge-mnt`, `ch-zh-dtm`, `ch-lu-dtm` | 1 each | `files`; `index` | Geneva's 0.2 m COG (`raster`, a 12.8 m overview), Zürich's 0.25 m tile links (`listing`, 7,784 × 0.25 km²), Luzern's 0.25 m STAC (1,804 sheets) |
+| `at-bev-als-dgm`, `at-ooe-dgm`, `at-tirol-dgm` | 59; 12; 7 | `service` | the BEV's metadata shapefile (its 1 m mosaic by flight area and year, 83,975 km² against Austria's 83,879), Oberösterreich's flight-year sheets and Tirol's flight areas (0.5 m) |
+| `it-pst-lidar` | 51: the national PST-A lidar's 1 m, 2 m and land-sea grids by tile cell and year | `index` | `arcgis` ×3: the ministry's download grids (the empty cells left out, `pst <> ' '`), 164,063 1 m tiles uniting to 147,796 km²; 93 requests, 51 MB on the mini; 842 KB |
+| `it-tn-lidar`, `it-er-lidar`, `it-veneto-lidar` | 1; 6; 1 | `index` | Trento's 0.5 m tiles (`listing`, 25,201 × 0.25 km²), Emilia-Romagna's campaigns' 0.5 m tiles (`arcgis`; 2023-24's 11,276 km² against the 9,240 stated: its index holds January 2025's flights too), Veneto's 5 m mosaic's outline (`wfs`) |
+| `nl-ahn` | 5: AHN4, AHN5 (2023, 2024), AHN6 (2025, 2026) | `index` | `atom` (AHN4's 1,373 sheets, 42,971 km² against 1,373 × 31.25) and `stac` (AHN5's and AHN6's DTM sheets, each within 0.1 %) |
+| `be-wal-mnt`, `be-bru-urbis` | 3; 1 | `index` | Wallonia's 0.5 m tiles by year (`arcgis`, 69,438 × 0.25 km²); Brussels' 1 km tiles (`atom`, its bboxes latitude first) |
+| `fr-rgealti` | 8: RGE ALTI's 1 m grid by the class of its source (lidar, radar, photogrammetry, the topo-bathy lidar …), each its source's stated cell and RMSE (Emq) class | `service` | `wfs`: the source mask (`source_fra`), 290,932 polygons, 2.23 GB, 6.5 min and a peak of 13.9 GB on the mini; 2.4 MB at a 1 km tolerance (16 MB at 200 m, 5.9 MB at 500 m: the mask is pixel-edged; each class within 6 % of its 200 m outline), 651,700 km² |
+| `fr-litto3d`, `fr-craig-lidar`, `fr-strasbourg-lidar`, `fr-lyon-lidar` | 5; 28; 1; 1 | `index`; `files` | Litto3D's campaigns' 5 km packages (`wfs`), the CRAIG's 2021 tiles by zone (`file`, a GeoPackage), Strasbourg's 2025 and Lyon's 2023 0.5 m COGs (`raster`, 64 m overviews) |
+| `es-pnoa` | 18: the MDT 0.5 m sheets by UTM zone and year (16); MDT02 and MDT05 | `index`; `claimed` | `file`: the CNIG's auxiliary zip of 16 sheet shapefiles, 29,494 sheets, 248,078 km² (each piece within 0.1 % of its sheets' union); the 2 m and 5 m products over Spain as their records state ("cobertura completa") |
+| `es-ct-icgc`, `es-an-rediam`, `es-na-mde`, `es-md-madrid` | 2; 1; 3; 2 | `files`; `index`; `service` | Catalonia's 0.5 m and Barcelona's 0.25 m COGs and Andalucía's 1 m (a 203 GB COG, its 256 m overview) by `raster`; Navarre's 0.5 m by its 1:10,000 sheets (`file`); Madrid's 0.1 m surface model's tiles and its 2019 DTM's KMZ (`file`) |
+| `no-hoydedata` | 1,546: Norway's projects by cell (0.25, 0.5, 1 m) and year, 463 restricted (closed: claimed) | `index`; `claimed` | `arcgis`: hoydedata.no's DTM ImageServer catalogue (its fill items left out), 62 MB, 4 min on the M1; 4.1 MB at a 200 m tolerance (8.0 MB at 50 m: 1,546 irregular block outlines; a coarser tolerance drops corridor projects as specks); 430,716 km² against the items' stated 432,284 |
+| `se-markhojdmodell`, `se-goteborg-hojdmodell` | 17; 1 | `index` | Lantmäteriet's STAC (`dtm-cog`, 5,004 10 km tiles by year, 473,195 km²); Gothenburg's 0.5 m tile index (a zipped shapefile) |
+| `fi-nls-km2`, `fi-nls-lidar` | 18; 7 | `index`; `claimed` | the NLS's OGC API collections: the 2 m model's sheets by year (Åland's whole), the paid 5 p lidar's areas with products by year |
+| `cz-cuzk-dmr4g`, `sk-lls` | 1; 58 | `index`; `service` | the ČÚZK's ATOM feed (16,301 5 km² sheets of DMR 4G, 5 m); Slovakia's lot outlines (`file`, cp1250 shapefiles), cycle 1's 1 m and cycle 2's 0.5 m lots by year, each within 0.3 % of its stated area |
+| `lv-lgia-lidar` | 2: the point clouds' 1 km sheets; the open 20 m DTM | `index`; `claimed` | `listing` of the LAS names by their nested sheet numbers (`digits`), 65,941 km²; the country |
+| `si-clss`, `cy-dls` | 19; 3 | `index`; `claimed` | Slovenia's 2023–25 scan's 1 km tiles by block and year (`wfs`, 23,038 tiles; 0.5 m, RMSE 0.10 m as tendered); Cyprus's 2019 and 2014 1 m DTMs' 2.5 km tiles (`listing` of the INSPIRE folder) and its 1963 DEM claimed over the island |
+| `md-agcc`, `bg-mzh` | 4; 6 | `files` | each coverage's own mask, read from the WCS at a scale factor of 0.01 to 0.05 (`raster`): Moldova's 5 m models of 2007, 2020 and 2021 and a 0.5 m reserve; Bulgaria's 1 m DTMs of 2023 to 2025 and 4 m DSMs of 2020 to 2022 (110,900 km², the country 110,994). The server takes 2 to 5 minutes for a 1 m coverage, past the fetcher's 180 s: those three answers were fetched by hand into the M1's cache under the producer's key |
+| 46 claimed sources | 72 | `claimed` | `file`: the areas the publishers state their data covers, as Natural Earth's 1:10m admin-1 areas draw them: Ireland (Tailte Éireann, sold), the Isle of Man (sold), Thüringen (its index unreachable), Germany (the BKG's DGM1, sold; drawn from the Länder's tiles, `wfs`), Basel-Landschaft, Burgenland, Vorarlberg, Andorra, Flanders, TINITALY, Bolzano, Valle d'Aosta, Lombardia, Piemonte, Liguria, Friuli-Venezia Giulia, Sicilia, Sardegna, Campania, Puglia, Lazio, Marche, Malta, Valencia's provinces, the Basque Country, La Rioja, the Balearics, Cantabria, Castilla y León, mainland Portugal (login; its STAC's 91,202 tiles), the Azores (login; non-commercial kept), Madeira, Svalbard's DTM 20, Denmark (login), the Faroes, Iceland, Poland, Estonia, Lithuania (login), Hungary (paid; its 25 m free after a login), Prague, Slovenia's 2011–15 survey, Croatia (paid), Bosnia and Herzegovina (paid), Albania (closed; no grid stated, so no score), Sofia |
+| 23 sources listed only | 33 | `unknown` | `none`, each with its `why`: Kärnten's 2022–29 campaign, Bolzano's 0.5 m and Adige 0.2 m, Valle d'Aosta's 0.5 m corridors, Sardegna's 1 m, Toscana's lidar (public bodies only), Navarre's Pamplona 12.5 cm, Northern Ireland's coastal, heritage and roads surveys, Tailte Éireann's 2005–14 lidar, Svalbard's DTM 5 and Jan Mayen's, Stockholm's (sold), Helsinki's (the WCS's rectangle only), Brno's and Riga's, the Federation of Bosnia and Herzegovina's river-corridor lidar, Republika Srpska's, Serbia's, North Macedonia's, Greece's, Turkey's, Romania's and Russia's |
+
+**Not obtained** (Europe, 13 Nov): Thüringen's tile index (its ATOM host answers an outage page,
+its new portal a CAPTCHA; claimed); Mecklenburg-Vorpommern's and Sachsen-Anhalt's tile years (only
+in a page's own application, a PDF and per-tile files); Kärnten's sheet indexes (its host timed
+out from both Macs); Steiermark's 0.5 m campaign (no download stated; its finished blocks are in the
+BEV's 1 m); Basel-Landschaft's, Burgenland's and Vorarlberg's indexes (an order form, a PDF, an SFTP
+login: claimed); Flanders' DHMV II tiles (its WFS redirects to an error, its OGC API is 404, its
+download API's 43 NGI sheets would double the region: claimed); Poland's NMT sheet indexes (every
+GUGiK host times out from both Macs: claimed); Estonia's and Lithuania's indexes (a sheet at a
+time, or none published: claimed); the Czech update years (its metadata layer returns no
+geometry); Brno's DTM (its ImageServer has no catalogue, its zip answers 403); Spain's MDT02 and
+MDT05 lot outlines (RAR files; the download centre's search answers 403 without its session:
+claimed); Valencia's, the Basque Country's, La Rioja's, the Balearics' and Cantabria's grids'
+indexes (sheets holding data only in their province, a WCS envelope, 403s, null footprints, a map
+service only: claimed); Pamplona's quarter-sheets (no outline); Toscana's sheet index (only in its
+Cartoteca app); Emilia-Romagna's restricted surveys (WCS 401); Bolzano's and Valle d'Aosta's finer
+models (WCS only, a token: listed); Basilicata's 5 m (no record found) and Abruzzo's model (grid
+and vintage unread); Svalbard's DTM 5 cells (codes with no geometry) and Jan Mayen's (one zip, no
+index); the Faroes' and Iceland's files (no overviews: masks would be whole downloads; claimed);
+Helsinki's DTM (the WCS describes a rectangle with the sea); Stockholm's (Natural Earth has only
+its county); Slovenia's 2011–15 index (ARSO's lidar pages answer 503: claimed); Romania's (the
+ANCPI's geoportal is down after an outage; Mapterhorn's file list names 325 LAKI II units by code);
+Turkey's, Greece's and Russia's coverage (unstated or unreachable: listed); Jersey, Guernsey and
+Gibraltar (nothing finer than 30 m published); the Länder's image-matched surface models (bDOM,
+0.1 to 0.2 m, finer than every DTM: left out, as surface models where a DTM is published, the
+owner's call).
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
