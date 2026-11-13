@@ -230,11 +230,30 @@ pub(super) fn key_inputs(
             inputs.insert(format!("extents:{theme}"), v);
         }
     }
+    // The regions' stored geometry as the region layer's key names it ("regions:geometry": each
+    // region file's path and its geometry's content name, a line each), "?" while their index can't
+    // be read (and the step waits).
+    if let Some(ix) = manifest.get(&inputs::inputs::logical(inputs::inputs::regions::UNIT)) {
+        let v = inputs::inputs::read_index(root, ix).map_or_else(|_| "?".to_string(), |i| geometry_lines(&i));
+        inputs.insert("regions:geometry".into(), v);
+    }
     inputs.insert(
         inputs::dem::spacing::INPUT.into(),
         inputs::dem::spacing::digest_read(root, manifest).unwrap_or_else(|_| "?".into()),
     );
     inputs
+}
+
+/// The regions' accepted index's stored geometry: each region file's path and its geometry's content
+/// name (`facts.geometry`), a line each; a region that resolved to nothing has none.
+pub(super) fn geometry_lines(index: &inputs::inputs::Index) -> String {
+    let mut v = String::new();
+    for (p, f) in &index.files {
+        if let Some(g) = f.facts.get("geometry").and_then(|g| g.as_str()) {
+            v.push_str(&format!("{p} {g}\n"));
+        }
+    }
+    v
 }
 
 /// A theme's pieces in the extents' accepted index: each `<theme>/<source>.geojson`'s path and keyed

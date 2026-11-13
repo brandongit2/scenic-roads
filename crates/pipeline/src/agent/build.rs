@@ -2407,6 +2407,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         work.extend(depth_work_in(x, done, &mut left));
         work.extend(polar_work_in(x, done, &mut left));
         work.extend(available_work(x, done));
+        work.extend(region_tiles_work(x, done));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(x) {
             Some(r) => format!("the regions' z6 tiles wait for the pass's heritage sites: {r}"),
@@ -2979,6 +2980,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     work.extend(depth);
     work.extend(polar);
     work.extend(available_work(x, done));
+    work.extend(region_tiles_work(x, done));
     // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
     Planned {
@@ -4289,6 +4291,20 @@ pub fn available_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     (!targets.is_empty()).then(|| Work { step: "available".into(), targets })
 }
 
+/// The region layer (terrain::regionlayer; docs/steps.md §15): its one target (`region-tiles`,
+/// recorded with the worldwide steps' keys) when its key isn't the one recorded; none before the
+/// regions are accepted, or while their index can't be read.
+pub fn region_tiles_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+    let (t, k) = region_tiles_target(x)?;
+    (done.lo.get(&t) != Some(&k)).then(|| Work { step: "region-tiles".into(), targets: vec![(t, k)] })
+}
+
+/// The region layer's target with its key.
+fn region_tiles_target(x: &KeyCtx) -> Option<(String, String)> {
+    let k = super::steps::derived_key("region-tiles", "region-tiles", x)?;
+    Some(("region-tiles".to_string(), k))
+}
+
 /// Every data-available target with its key (`available_work`): a theme's whose accepted extents
 /// have pieces (bathymetry and buildings have none yet: no layer).
 fn available_targets(x: &KeyCtx) -> Vec<(String, String)> {
@@ -4398,7 +4414,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 37] = [
+pub const COUNTED: [&str; 38] = [
     "heritage-sites",
     "terrain-hi",
     "terrain-deep",
@@ -4422,6 +4438,7 @@ pub const COUNTED: [&str; 37] = [
     "ferries",
     "slope-root",
     "available",
+    "region-tiles",
     "rail-feeds",
     "rail",
     "pois",
@@ -4471,7 +4488,7 @@ pub fn chains_left(x: &KeyCtx, done: &Keys) -> [Vec<Work>; 5] {
         remaining(done, |d| landmarks_chain(x, d)),
         remaining(done, |d| bld_next(x, d)),
         remaining(done, |d| depth_next(x, d)),
-        remaining(done, |d| polar_next(x, d)).into_iter().chain(available_work(x, done)).collect(),
+        remaining(done, |d| polar_next(x, d)).into_iter().chain(available_work(x, done)).chain(region_tiles_work(x, done)).collect(),
     ]
 }
 
@@ -4592,6 +4609,11 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
             .iter()
             .all(|th| x.inputs.get(&format!("extents:{th}")).is_some_and(|v| v != "?"));
         out.push(sized("available", &available_targets(x), &done.lo, known));
+    }
+    // (The region layer once the regions are accepted: known once their index is read.)
+    if m.contains_key(&inputs::inputs::logical(inputs::inputs::regions::UNIT)) {
+        let known = x.inputs.get("regions:geometry").is_some_and(|v| v != "?");
+        out.push(sized("region-tiles", &region_tiles_target(x).into_iter().collect::<Vec<_>>(), &done.lo, known));
     }
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(x);
@@ -6273,6 +6295,7 @@ mod tests {
             "depth-lo" => depth_targets(x).map(|d| d.lo),
             "depth-root" => world(depth_root_key(x)),
             "available" => Some(available_targets(x)),
+            "region-tiles" => Some(region_tiles_target(x).into_iter().collect()),
             "polar-terrain" => polar_targets(x).map(|p| p.terrain),
             "polar-slope" => polar_targets(x).map(|p| p.slope),
             "polar-root" => polar_targets(x).map(|p| p.root),

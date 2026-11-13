@@ -76,6 +76,18 @@ pub fn extents_pieces(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }
 }
 
+/// The region layer's geometry (`region-tiles`): each accepted region's file path and its stored
+/// geometry's content name, a line each (theplan::key_inputs' "regions:geometry"), disabled
+/// regions' too (the layer draws them); never a name or a flag, which the app reads from the list:
+/// renaming or disabling a region builds nothing. Required; None while the index can't be read.
+pub fn regions_geometry(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    x.m.get(&inputs::inputs::logical(inputs::inputs::regions::UNIT))?;
+    match x.inputs.get("regions:geometry").map(String::as_str) {
+        None | Some("?") => None,
+        Some(lines) => Some(lines.lines().map(str::to_string).collect()),
+    }
+}
+
 /// The languages input's accepted index (docs/inputs.md §6.2), required.
 pub fn language_table(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [inputs::inputs::logical(inputs::inputs::languages::UNIT)])

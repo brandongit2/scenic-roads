@@ -870,6 +870,33 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 );
             }
         }
+        "region-tiles" => {
+            // region-tiles [region-tiles]: the region layer (terrain::regionlayer; docs/steps.md §15)
+            // from the regions' accepted version the records name.
+            let src = ::inputs::inputs::regions::read::source(out.root(), &out.manifest)?;
+            let p = phase("reading the regions' geometry");
+            let regions = terrain::regionlayer::regions(out.root(), &src)?;
+            drop(p);
+            let p = phase("drawing the regions' borders");
+            let made = terrain::regionlayer::build(&mut out, &regions, &|d, n, what| {
+                stage(d, n, what);
+            })?;
+            drop(p);
+            out.save()?;
+            eprintln!(
+                "region-tiles: {} regions, {} arcs ({} border edges, {} split at a T-junction, {} with no region on one side); {} tiles, {} MB; {} packs written, {} as they were, {} dropped",
+                regions.len(),
+                made.topology.arcs,
+                made.topology.borders,
+                made.topology.split,
+                made.topology.one_sided,
+                made.tiles.iter().sum::<u64>(),
+                made.bytes.iter().sum::<u64>() >> 20,
+                made.written.len(),
+                made.kept,
+                made.dropped.len()
+            );
+        }
         "depth-root" => {
             let n = terrain::depth::build::build_root(&mut out)?;
             eprintln!("depth root: {n} tiles");
@@ -1939,6 +1966,7 @@ fn layer_encoding(layer: &str) -> &'static str {
         l if l.starts_with("polar-terrain-") => codecs::terrain_codec::ENCODING,
         l if l.starts_with("polar-slope-") => codecs::shade_codec::ENCODING,
         l if codecs::available::of_layer(l).is_some() => codecs::available::ENCODING,
+        codecs::regionlayer::LAYER => codecs::regionlayer::ENCODING,
         _ => "unknown",
     }
 }
@@ -1973,6 +2001,8 @@ fn layer_zooms(layer: &str, root: bool) -> Option<(u8, u8)> {
         // The polar caps: z0–3 in the root, z4 to the cap's finest in the blocks (terrain::polar),
         // the deepest the map stores at most.
         l if l.starts_with("polar-") => (0, terrain::terrain_zoom::DEEPEST),
+        // The region layer: z0–2 in the root, z3–8 in the lo packs, z9–12 in the hi.
+        codecs::regionlayer::LAYER => (0, codecs::regionlayer::MAXZ),
         // The data-available layers: z0–5 in the root, z6–12 in the z6 packs; a pole's z0–3 in its
         // root (codecs::available).
         l => (0, codecs::available::maxz(codecs::available::of_layer(l)?.1)),

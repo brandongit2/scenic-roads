@@ -10,6 +10,7 @@ pub mod depth;
 pub mod layers;
 pub mod polar;
 pub mod pyramids;
+pub mod regionlayer;
 pub mod road_terrain;
 pub mod slope_pack;
 pub mod terrain_base;

@@ -121,7 +121,7 @@ pub const STAGES: [Stage; 14] = [
     Stage { id: "depth", does: "The depth under the seas and lakes and its shading from the depth sources: a tile at a time where a source has fine detail, then zoomed out by z3 tile as the means of the finer." },
     Stage { id: "roads", does: "Each tile's roads, their elevations and scenery: the base packs the map's details and profiles read." },
     Stage { id: "tiles", does: "The road and rail map tiles drawn from the base packs, by tile and zoomed out by z3 tile." },
-    Stage { id: "finish", does: "What a map update adds around the tiles: the road index, rail stops, ferries, the world levels, the data-available layers, and a prune." },
+    Stage { id: "finish", does: "What a map update adds around the tiles: the road index, rail stops, ferries, the world levels, the data-available layers, the regions' borders, and a prune." },
     Stage { id: "trains", does: "Trains a day on the regions' rail, from timetables." },
     Stage { id: "landmarks", does: "The landmarks: candidates, peaks, Wikidata facts, heritage details, ranked and drawn, and the area overlays." },
     Stage { id: "buildings", does: "Every building in the coverage, raised in 3D, a tile at a time." },
@@ -843,7 +843,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 63] = [
+pub const TABLE: [Step; 64] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -1379,6 +1379,20 @@ pub const TABLE: [Step; 63] = [
             "available",
             "Draws where each declared source has data, as the pieces met at each pixel, for the data-available layers.",
             w_available,
+        )
+    },
+    // The region layer (terrain::regionlayer; docs/steps.md §15): the regions' borders as vector
+    // tiles from their full geometry, each shared border simplified once per zoom.
+    Step {
+        versions: &[("region-tiles", || terrain::regionlayer::KEY_V.to_string())],
+        reads: &[In { name: "regions:geometry", of: idents::regions_geometry }],
+        ..step(
+            "finish",
+            Pack,
+            World,
+            "region-tiles",
+            "Draws the regions' borders as vector tiles from their full geometry, each border two regions share simplified once per zoom.",
+            w_region_tiles,
         )
     },
     Step {
@@ -2278,6 +2292,11 @@ fn w_available(l: &str, _: bool) -> bool {
     ) || matches!(parts(l).as_slice(), ["work", w, "mids"] if w.strip_prefix("available-").is_some_and(|t| !t.is_empty()))
 }
 
+/// The region layer's packs (codecs::regionlayer: the root, lo and hi packs).
+fn w_region_tiles(l: &str, _: bool) -> bool {
+    pack(l, codecs::regionlayer::LAYER, &["root", "lo", "hi"])
+}
+
 fn w_polar_root(l: &str, _: bool) -> bool {
     polar_pack(l, "terrain", "root") || polar_pack(l, "slope", "root")
 }
@@ -2984,6 +3003,7 @@ mod tests {
                 "ferries",
                 "slope-root",
                 "available",
+                "region-tiles",
                 "rail-feeds",
                 "rail",
                 "pois",
