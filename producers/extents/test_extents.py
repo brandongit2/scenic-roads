@@ -6,7 +6,9 @@ import os
 import random
 import tomllib
 import unittest
+import urllib.parse
 
+import shapely
 import shapely.geometry as sg
 
 import extents
@@ -416,6 +418,99 @@ class Atom(unittest.TestCase):
         self.assertEqual(net.requests, 2)
         # Not followed unless the declaration says.
         self.assertEqual(len(list(extents.read_atom(FakeNet({"https://h/top.xml": self.TOP}), {"url": "https://h/top.xml"}, 0))), 2)
+
+
+def geopackage(rows, srs=25832):
+    """A GeoPackage of one features table `tiles` (name, year, geom), as bytes."""
+    import sqlite3
+    import struct
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "t.gpkg")
+        db = sqlite3.connect(path)
+        db.executescript(f"""
+            CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT, srs_id INTEGER PRIMARY KEY, organization TEXT, organization_coordsys_id INTEGER, definition TEXT);
+            INSERT INTO gpkg_spatial_ref_sys VALUES ('etrs89', {srs}, 'EPSG', {srs}, 'undefined');
+            CREATE TABLE gpkg_contents (table_name TEXT, data_type TEXT);
+            INSERT INTO gpkg_contents VALUES ('tiles', 'features');
+            CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, srs_id INTEGER);
+            INSERT INTO gpkg_geometry_columns VALUES ('tiles', 'geom', {srs});
+            CREATE TABLE tiles (fid INTEGER PRIMARY KEY, name TEXT, year INTEGER, geom BLOB);""")
+        for k, (name, year, g) in enumerate(rows):
+            # (The header with an envelope of four doubles, flags 0b0011: little-endian, xy envelope.)
+            blob = None if g is None else b"GP\x00\x03" + struct.pack("<i", srs) + struct.pack("<4d", *g.bounds) + shapely.to_wkb(g)
+            db.execute("INSERT INTO tiles VALUES (?, ?, ?, ?)", (k, name, year, blob))
+        db.commit()
+        db.close()
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def zipped(name, body):
+    import io
+    import zipfile
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as z:
+        z.writestr("readme.txt", "x")
+        z.writestr(name, body)
+    return out.getvalue()
+
+
+GML_ANSWER = b"""<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:dgm="https://h/dgm">
+  <wfs:member><dgm:kachel gml:id="k1"><dgm:name>32_480_5500</dgm:name><dgm:jahr>2021</dgm:jahr>
+    <dgm:geom><gml:Polygon srsName="urn:ogc:def:crs:EPSG::25832"><gml:exterior><gml:LinearRing>
+      <gml:posList srsDimension="2">480000 5500000 481000 5500000 481000 5501000 480000 5501000 480000 5500000</gml:posList>
+    </gml:LinearRing></gml:exterior><gml:interior><gml:LinearRing>
+      <gml:posList>480100 5500100 480100 5500200 480200 5500200 480200 5500100 480100 5500100</gml:posList>
+    </gml:LinearRing></gml:interior></gml:Polygon></dgm:geom></dgm:kachel></wfs:member>
+  <wfs:member><dgm:kachel gml:id="k2"><dgm:name>32_481_5500</dgm:name><dgm:jahr>2023</dgm:jahr>
+    <dgm:geom><gml:MultiSurface srsName="urn:ogc:def:crs:EPSG::25832"><gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing>
+      <gml:coordinates>481000,5500000 482000,5500000 482000,5501000 481000,5501000 481000,5500000</gml:coordinates>
+    </gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember></gml:MultiSurface></dgm:geom></dgm:kachel></wfs:member>
+  <wfs:member><dgm:kachel gml:id="k3"><dgm:name>no geometry</dgm:name></dgm:kachel></wfs:member>
+</wfs:FeatureCollection>"""
+
+
+class IndexFiles(unittest.TestCase):
+    def test_a_geopackage_gives_its_rows_in_its_crs(self):
+        body = geopackage([("a", 2020, sg.box(480000, 5500000, 481000, 5501000)), ("b", 2022, None)])
+        b = {"url": "u"}
+        got = [(g(), p) for g, p in extents.read_file(FakeNet({"u": body}), b, 0)]
+        self.assertEqual(b["crs"], "EPSG:25832")
+        self.assertEqual(got[0][0].bounds, (480000.0, 5500000.0, 481000.0, 5501000.0))
+        self.assertEqual(got[0][1], {"fid": 0, "name": "a", "year": 2020})
+        # A row with no geometry is a feature with none.
+        self.assertEqual((got[1][0], got[1][1]["name"]), (None, "b"))
+
+    def test_a_zip_gives_the_index_file_it_holds(self):
+        body = zipped("index/kacheln.gpkg", geopackage([("a", 2020, sg.box(0, 0, 1, 1))], srs=4326))
+        got = [g().bounds for g, _ in extents.read_file(FakeNet({"u": body}), {"url": "u"}, 0)]
+        self.assertEqual(got, [(0.0, 0.0, 1.0, 1.0)])
+        gj = b'{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"y":1},"geometry":{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,0]]]}}]}'
+        got = [(g().bounds, p) for g, p in extents.read_file(FakeNet({"u": zipped("a/tiles.geojson", gj)}), {"url": "u"}, 0)]
+        self.assertEqual(got, [((0.0, 0.0, 2.0, 2.0), {"y": 1})])
+        with self.assertRaises(SystemExit):
+            list(extents.read_file(FakeNet({"u": zipped("a/tiles.geojson", gj)}), {"url": "u", "member": "other"}, 0))
+
+    def test_gml_gives_polygons_surfaces_and_their_properties(self):
+        b = {"url": "u"}
+        got = [(g(), p) for g, p in extents.read_file(FakeNet({"u": GML_ANSWER}), b, 0)]
+        self.assertEqual(b["crs"], "urn:ogc:def:crs:EPSG::25832")
+        self.assertEqual([p for _, p in got], [{"name": "32_480_5500", "jahr": "2021"}, {"name": "32_481_5500", "jahr": "2023"}, {"name": "no geometry"}])
+        self.assertEqual(got[0][0].area, 1000 * 1000 - 100 * 100)
+        self.assertEqual(got[1][0].bounds, (481000.0, 5500000.0, 482000.0, 5501000.0))
+        self.assertIsNone(got[2][0])
+
+    def test_a_wfs_answering_gml_is_paged_by_every_feature(self):
+        # (Three features a page, one without geometry: the page is full, so a second is asked for.)
+        def url(off):
+            return "https://h/wfs?" + urllib.parse.urlencode({"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": "dgm:kachel",
+                                                              "outputFormat": "text/xml; subtype=gml/3.2", "count": "3", "startIndex": str(off)})
+        net = FakeNet({url(0): GML_ANSWER, url(3): b'<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0"/>'})
+        b = {"url": "https://h/wfs", "type": "dgm:kachel", "format": "text/xml; subtype=gml/3.2", "page": 3}
+        got = list(extents.read_wfs(net, b, 0))
+        self.assertEqual(len(got), 3)
+        self.assertEqual(net.requests, 2)
 
 
 class StacAssets(unittest.TestCase):

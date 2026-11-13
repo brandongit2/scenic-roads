@@ -9,8 +9,10 @@ A reader per kind of service, none per source:
            item's footprint or (`geometry`) the GeoJSON file of its asset of that name
   atom     an ATOM download feed (`url`; `follow` the feeds it links): its files' `bbox`es, or its
            entries' GeoRSS polygons and boxes
-  wfs      a WFS feature type (`url`, `type`; `crs` where the answer doesn't name its own)
-  file     an index file fetched whole (`url`; GeoJSON, or a zipped shapefile)
+  wfs      a WFS feature type (`url`, `type`; `crs` where the answer doesn't name its own), as
+           GeoJSON or GML (`format`; `version`)
+  file     an index file fetched whole (`url`): GeoJSON, GML or a GeoPackage (`layer`), or a zip
+           of one of them or of a shapefile (`member`)
   listing  a listing of georeferenced names: `url` an S3 bucket (`prefix`), a page of links or a
            text file (`list` = "s3", "links", "lines"); `pattern`, a regular expression with the
            groups `x` and `y` (and `ew`, `ns`: W and S negate); `unit`, the CRS units of one of the
@@ -302,19 +304,24 @@ def read_stac(net, b, _tol):
 
 
 def read_wfs(net, b, _tol):
+    """A WFS feature type's features, paged (`page`, by `startIndex`), as GeoJSON or GML, whichever
+    the server answers in the `format` asked for; `version` 2.0.0 (the default) or a 1.x's
+    (`typeName`, `maxFeatures`)."""
     page, off = int(b.get("page", 2000)), 0
+    version = b.get("version", "2.0.0")
+    old = version.startswith("1.")
     while True:
-        q = {"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": b["type"],
-             "outputFormat": b.get("format", "application/json"), "count": str(page), "startIndex": str(off)}
+        q = {"service": "WFS", "version": version, "request": "GetFeature", ("typeName" if old else "typeNames"): b["type"],
+             "outputFormat": b.get("format", "application/json"), ("maxFeatures" if old else "count"): str(page),
+             "startIndex": str(off)}
         if b.get("fields"):
             q["propertyName"] = ",".join(b["fields"])
-        d = net.json(b["url"] + ("&" if "?" in b["url"] else "?") + urllib.parse.urlencode(q))
-        if answer_crs(d) and "crs" not in b:
-            b["crs"] = answer_crs(d)
-        feats = d.get("features") or []
-        for f in feats:
-            if f.get("geometry"):
-                yield (lambda f=f: xy(sg.shape(f["geometry"]), b)), f.get("properties") or {}
+        body = net.get(b["url"] + ("&" if "?" in b["url"] else "?") + urllib.parse.urlencode(q))
+        if b"ExceptionReport" in body[:1000]:
+            sys.exit(f"{b['url']}: {body[:1000].decode('utf-8', 'replace')}")
+        # (Every feature, those without geometry too, so a page's count is the server's.)
+        feats = list(index_features(body, b))
+        yield from feats
         off += len(feats)
         if len(feats) < page:
             return
@@ -332,31 +339,167 @@ def xy(g, b):
     return shapely.transform(g, lambda c: c[:, ::-1]) if b.get("latfirst") else g
 
 
+INDEX_KINDS = (".shp", ".gpkg", ".geojson", ".json", ".gml", ".xml")
+
+
 def read_file(net, b, _tol):
+    """An index file fetched whole: GeoJSON, GML, a GeoPackage, or a zip holding one of them or a
+    shapefile (`member`: a part of the name of the one to read, where it holds several)."""
     body = net.get(b["url"])
     if body[:2] == b"PK":
-        import shapefile
         z = zipfile.ZipFile(io.BytesIO(body))
-        shp = next(n for n in z.namelist() if n.lower().endswith(".shp") and (not b.get("member") or b["member"] in n))
-        stem = shp[:-4]
-        opened = {ext: io.BytesIO(z.read(next(n for n in z.namelist() if n.lower() == (stem + "." + ext).lower()))) for ext in ("shp", "shx", "dbf")}
-        prj = next((n for n in z.namelist() if n.lower() == (stem + ".prj").lower()), None)
-        if prj and "crs" not in b:
-            b["crs"] = z.read(prj).decode("utf-8", "replace")
-        r = shapefile.Reader(**opened)
-        names = [f[0] for f in r.fields[1:]]
-        def shape(k):
-            sh = r.shape(k)
-            return sg.shape(sh.__geo_interface__) if sh.shapeType else None
-        for k, rec in enumerate(r.iterRecords()):
-            yield (lambda k=k: shape(k)), dict(zip(names, rec))
-        return
-    d = json.loads(body)
-    if answer_crs(d) and "crs" not in b:
-        b["crs"] = answer_crs(d)
-    for f in d["features"]:
-        if f.get("geometry"):
-            yield (lambda f=f: xy(sg.shape(f["geometry"]), b)), f.get("properties") or {}
+        names = [n for n in z.namelist() if n.lower().endswith(INDEX_KINDS) and (not b.get("member") or b["member"] in n)]
+        if not names:
+            sys.exit(f"{b['url']}: no index file in the zip{' named ' + repr(b['member']) if b.get('member') else ''}")
+        # (A shapefile first: its .xml is its metadata.)
+        name = next((n for n in names if n.lower().endswith(".shp")), names[0])
+        if name.lower().endswith(".shp"):
+            yield from shapefile_features(z, name[:-4], b)
+            return
+        body = z.read(name)
+    yield from index_features(body, b)
+
+
+def index_features(body, b):
+    """An index file's features, by what it is: a GeoPackage, GML, or GeoJSON."""
+    if body[:16] == b"SQLite format 3\0":
+        yield from geopackage_features(body, b)
+    elif body.lstrip()[:1] == b"<":
+        yield from gml_features(body, b)
+    else:
+        d = json.loads(body)
+        if answer_crs(d) and "crs" not in b:
+            b["crs"] = answer_crs(d)
+        for f in d["features"]:
+            # (One without geometry is still a feature: a WFS page's count is all of them.)
+            yield (lambda f=f: xy(sg.shape(f["geometry"]), b) if f.get("geometry") else None), f.get("properties") or {}
+
+
+def shapefile_features(z, stem, b):
+    import shapefile
+    opened = {ext: io.BytesIO(z.read(next(n for n in z.namelist() if n.lower() == (stem + "." + ext).lower()))) for ext in ("shp", "shx", "dbf")}
+    prj = next((n for n in z.namelist() if n.lower() == (stem + ".prj").lower()), None)
+    if prj and "crs" not in b:
+        b["crs"] = z.read(prj).decode("utf-8", "replace")
+    r = shapefile.Reader(**opened)
+    names = [f[0] for f in r.fields[1:]]
+    def shape(k):
+        sh = r.shape(k)
+        return sg.shape(sh.__geo_interface__) if sh.shapeType else None
+    for k, rec in enumerate(r.iterRecords()):
+        yield (lambda k=k: shape(k)), dict(zip(names, rec))
+
+
+def geopackage_features(body, b):
+    """A GeoPackage's features table (`layer`, where it has several), its CRS from the package's own
+    table of them; each row's columns its properties, its geometry the GeoPackage blob's WKB."""
+    import sqlite3
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".gpkg") as tmp:
+        tmp.write(body)
+        tmp.flush()
+        db = sqlite3.connect(f"file:{tmp.name}?mode=ro", uri=True)
+        try:
+            layers = db.execute("SELECT c.table_name, g.column_name, s.organization, s.organization_coordsys_id, s.definition "
+                                "FROM gpkg_contents c JOIN gpkg_geometry_columns g ON g.table_name = c.table_name "
+                                "JOIN gpkg_spatial_ref_sys s ON s.srs_id = g.srs_id WHERE c.data_type = 'features'").fetchall()
+            pick = [x for x in layers if not b.get("layer") or x[0] == b["layer"]]
+            if len(pick) != 1:
+                sys.exit(f"{b['url']}: its feature tables are {[x[0] for x in layers]}: name one with `layer`")
+            table, col, org, code, wkt = pick[0]
+            if "crs" not in b:
+                b["crs"] = f"{org}:{code}" if org and org.upper() == "EPSG" else wkt
+            cur = db.execute(f'SELECT * FROM "{table}"')
+            names = [d[0] for d in cur.description]
+            for row in cur:
+                props = dict(zip(names, row))
+                blob = props.pop(col)
+                yield (lambda blob=blob: xy(gpkg_geometry(blob), b) if blob else None), props
+        finally:
+            db.close()
+
+
+def gpkg_geometry(blob):
+    """A GeoPackage geometry blob's shape: its header ("GP", a version, flags saying the envelope's
+    size and the byte order, the SRS id, the envelope), then WKB."""
+    if blob[:2] != b"GP":
+        sys.exit("a GeoPackage geometry without its GP header")
+    flags = blob[3]
+    if flags & 0x10:
+        return None
+    envelope = (0, 32, 48, 48, 64)[(flags >> 1) & 7]
+    return shapely.from_wkb(bytes(blob[8 + envelope:]))
+
+
+GML = ("http://www.opengis.net/gml", "http://www.opengis.net/gml/3.2")
+GML_SHAPES = ("Polygon", "Surface", "MultiSurface", "MultiPolygon", "Envelope")
+
+
+def gml_features(body, b):
+    """A GML feature collection's features (a WFS's answer, or a file), each its simple child
+    elements' text as properties and its first polygon, surface or envelope as its geometry, in
+    the CRS its `srsName` names (where the declaration names none)."""
+    root = ET.fromstring(body)
+    for feat in gml_members(root):
+        props, geom = {}, None
+        for child in feat:
+            if len(child) == 0:
+                if child.text and child.text.strip():
+                    props[child.tag.rpartition("}")[2]] = child.text.strip()
+            elif geom is None:
+                geom = next((e for e in child.iter() if e.tag.rpartition("}")[2] in GML_SHAPES and e.tag[1:].partition("}")[0] in GML), None)
+        if geom is None:
+            yield (lambda: None), props
+            continue
+        srs = geom.get("srsName") or next((e.get("srsName") for e in geom.iter() if e.get("srsName")), None)
+        if srs and "crs" not in b:
+            b["crs"] = srs
+        yield (lambda geom=geom: xy(gml_shape(geom), b)), props
+
+
+def gml_members(root):
+    """A GML collection's features: the children of its member elements (wfs:member,
+    gml:featureMember, gml:featureMembers)."""
+    for el in root.iter():
+        if el.tag.rpartition("}")[2] in ("member", "featureMember", "featureMembers"):
+            yield from el
+
+
+def gml_shape(el):
+    """A GML polygon, surface, multi-surface or envelope as a shapely geometry, in its own axes'
+    order."""
+    tag = el.tag.rpartition("}")[2]
+    if tag == "Envelope":
+        lo = [float(v) for v in el.findtext("{*}lowerCorner").split()]
+        hi = [float(v) for v in el.findtext("{*}upperCorner").split()]
+        return sg.box(lo[0], lo[1], hi[0], hi[1])
+    polys = []
+    for p in el.iter():
+        if p.tag.rpartition("}")[2] not in ("Polygon", "PolygonPatch"):
+            continue
+        rings = {"exterior": [], "interior": []}
+        for r in p:
+            kind = r.tag.rpartition("}")[2]
+            kind = {"outerBoundaryIs": "exterior", "innerBoundaryIs": "interior"}.get(kind, kind)
+            if kind in rings:
+                ring = next((x for x in r.iter() if x.tag.rpartition("}")[2] == "LinearRing"), None)
+                if ring is not None:
+                    rings[kind].append(gml_ring(ring))
+        if rings["exterior"]:
+            polys.append(shapely.make_valid(sg.Polygon(rings["exterior"][0], rings["interior"])))
+    return polygons(shapely.union_all(polys)) if polys else None
+
+
+def gml_ring(ring):
+    pos = ring.find("{*}posList")
+    if pos is not None:
+        dim = int(pos.get("srsDimension") or ring.get("srsDimension") or 2)
+        v = [float(x) for x in pos.text.split()]
+        return list(zip(v[0::dim], v[1::dim]))
+    coords = ring.findtext("{*}coordinates")
+    if coords is not None:
+        return [tuple(float(x) for x in c.split(",")[:2]) for c in coords.split()]
+    return [tuple(float(x) for x in p.text.split()[:2]) for p in ring.iterfind("{*}pos")]
 
 
 ATOM = "{http://www.w3.org/2005/Atom}"
