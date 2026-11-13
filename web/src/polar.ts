@@ -82,7 +82,7 @@ const meetsDisc = (z: number, x: number, y: number, r: number) => {
   return dx * dx + dy * dy <= r * r;
 };
 
-/** Where a view puts a ground point: [x, y] in normalised device coordinates (-1..1) and w (≤ 0: behind the eye). */
+/** Where a view puts a ground point: [x, y] in normalized device coordinates (-1..1) and w (≤ 0: behind the eye). */
 export type ViewOf = (lon: number, lat: number) => [number, number, number];
 
 /** Whether a view surely doesn't show a tile (out of the frame, or hidden: past a globe's horizon), by points spread over it (longitude, latitude). */

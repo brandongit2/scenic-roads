@@ -70,7 +70,7 @@ export class StopsCard {
     this.scale.sync();
   }
 
-  /** The landmark scores in view, the range in use and the lookup (if equalising). */
+  /** The landmark scores in view, the range in use and the lookup (if equalizing). */
   update(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
     this.scale.update(dist, range, cdf);
   }

@@ -4,7 +4,7 @@
 // the distance to it for round caps/joins, antialiasing and dashes. The colour metric — elevation,
 // grade or one of the scenic metrics, including the weighted scenic score — is computed in the
 // vertex shader from per-vertex channels and coloured through a palette lookup (optionally
-// histogram-equalised), so switching modes or re-weighting is a uniform change. In 3D the roads
+// histogram-equalized), so switching modes or re-weighting is a uniform change. In 3D the roads
 // are draped on the terrain surface (per-vertex drape heights × exaggeration) and depth-tested
 // against MapLibre's terrain.
 //
@@ -1195,7 +1195,7 @@ export class RoadLayer implements CustomLayerInterface {
     for (const t of this.tiles.values()) this.freeGpu(t);
   }
 
-  /** Histogram-equalisation lookup: 256 cumulative fractions over the colour range. */
+  /** Histogram-equalization lookup: 256 cumulative fractions over the colour range. */
   setCdf(cdf: Uint8Array | null) {
     const gl = this.gl;
     if (!gl) return;
@@ -3042,7 +3042,7 @@ export class RoadLayer implements CustomLayerInterface {
 
   /**
    * Length-weighted sample of the current metric over roads in view, for auto-fit ranges,
-   * legend histograms and histogram equalisation in the scenic modes.
+   * legend histograms and histogram equalization in the scenic modes.
    */
   metricSample(mode: Mode, weights: number[], maxSamples = 250_000): { v: Float32Array; w: Float32Array } {
     const r = this.metricSamples([mode], weights, maxSamples);

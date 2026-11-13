@@ -88,7 +88,7 @@ const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const list = (a) => a.map((x) => JSON.stringify(x)).join(", ");
 
 // Why `v` isn't a valid value of field spec `s`, or null. Times are checked in their canonical form
-// (writes normalise first).
+// (writes normalize first).
 function badValue(s, v) {
   switch (s.type) {
     case "string":

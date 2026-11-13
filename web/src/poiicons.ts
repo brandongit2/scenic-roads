@@ -1,7 +1,7 @@
 // The stops & sights' icons, one per kind (basemap.ts POI_STYLE), drawn by dots.ts as signed
 // distance fields so they take their kind's colour and the map's point outline as a halo. The
 // shapes are Maki's (Mapbox, CC0 1.0: credited in ui/strip.ts APP_CREDITS), 15 × 15 SVG paths; the
-// atlas is rasterised here, in the browser, from these paths: no sprite files, nothing fetched.
+// atlas is rasterized here, in the browser, from these paths: no sprite files, nothing fetched.
 
 /** Each kind's Maki path (the Maki icon's name after it). */
 const PATHS: Record<string, string> = {

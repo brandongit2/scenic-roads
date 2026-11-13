@@ -125,7 +125,7 @@ pub const POLYS_BYTES: usize = 48 << 20;
 /// their rings), and the z14 polygons the finer levels are drawn from, kept across them: each
 /// z14 tile's are read from the basemap and decoded once for its 4 z15 and 16 z16 children. A
 /// block's tiles it lacks are read together (`prefetch`: the basemap reads them in runs) and
-/// rasterised on the job's threads. With a `Surface`, an enclosed sea's surface too.
+/// rasterized on the job's threads. With a `Surface`, an enclosed sea's surface too.
 pub struct WaterCache {
     tiles: HashMap<(u8, u32, u32), Option<Arc<WaterTile>>>,
     /// By (y, x): the z14 tile's polygons, shared, and their bytes.
@@ -211,7 +211,7 @@ impl WaterCache {
     /// The water tiles of `keys` (zoom `z`'s x, y) this cache lacks, made together: their
     /// polygons read in one ask (`WaterSource::depth_polys_many`: the basemap reads a block's
     /// tiles in runs, task #492; at z15–16 the z14 tiles they're drawn from, those not kept) and
-    /// rasterised on the job's threads, each tile's as `tile` makes it one by one.
+    /// rasterized on the job's threads, each tile's as `tile` makes it one by one.
     fn prefetch(&mut self, src: &dyn WaterSource, z: u8, keys: &[(u32, u32)]) -> Result<()> {
         use rayon::prelude::*;
         let todo: Vec<(u32, u32)> =
@@ -821,7 +821,7 @@ fn means_down(made: &mut Made, top: u8, bottom: u8) -> Result<()> {
     Ok(())
 }
 
-/// A tile's depth (quantised: `quantise`) and class, encoded as stored.
+/// A tile's depth (quantized: `quantize`) and class, encoded as stored.
 fn encoded(depth: &[f32], class: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
     let q: Vec<f32> = depth.iter().map(|&v| super::quantise(v)).collect();
     Ok((fall::encode(&Grid::F(q))?, fall::encode(&Grid::C(class))?))

@@ -21,7 +21,7 @@ remade every build: don't edit them; answers go elsewhere (below).
 - `priority`: from fame, place class and population, or road class (a city ~70, a village 50, a
   hamlet 30; a landmark 30 + 8 × fame; a motorway 45, a residential street 20), plus log `things`.
 
-Not listed: names with English of their own (`name:en`, a romanised name, a kana reading, a
+Not listed: names with English of their own (`name:en`, a romanized name, a kana reading, a
 register's English), names already English, bilingual names with an English part, names without
 letters, and settlements in Latin script (they keep their own name).
 
@@ -57,9 +57,9 @@ page or the map's build panel).
   translate the generic ending (〜川 River, 〜山 Mount, 〜駅 Station, 〜神社 Shrine, 〜寺 Temple).
 - **Chinese (`zh`), Taiwan's readings:** Hanyu Pinyin without tone marks, a name's syllables
   joined (Zhongshan, Xinyi), but the established spellings of cities and famous places (Taipei,
-  Kaohsiung, Keelung, Tamsui, Sun Moon Lake); the proper part romanised, the generic ending
+  Kaohsiung, Keelung, Tamsui, Sun Moon Lake); the proper part romanized, the generic ending
   translated (楓樹腳溪: Fengshujiao Creek).
-- **Cantonese (`yue`), Hong Kong:** the Hong Kong Government's English names and romanisation
+- **Cantonese (`yue`), Hong Kong:** the Hong Kong Government's English names and romanization
   (Mong Kok, Tsim Sha Tsui, 深灣村 Sham Wan Tsuen).
 - **Singapore:** the English name in use.
 

@@ -11,7 +11,7 @@
 //! What it reads, all from the newest catalogue:
 //! - **Labels** (places, states, water, parks): the labels layer's zoom-12 tiles in the units' z6
 //!   tiles, each label inside the coverage the catalogue records once (its feature id). Own English:
-//!   `en`, else `kana` romanised; OSM's languages: `l`.
+//!   `en`, else `kana` romanized; OSM's languages: `l`.
 //! - **Roads, rail lines and ferries:** each named way placed once, at the centre of its box, from
 //!   the hidata's ways-here index (its owner and index there), its owner unit's base pack (ways,
 //!   names) and roads' own English (`global/roaden/<u>`) read once a record names it; by pieces of

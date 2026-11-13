@@ -1,5 +1,5 @@
 //! A unit's area flags (`grid.areas.u8`: the PARK, HERITAGE, SPECIAL_AREA and INDIGENOUS bits of
-//! roadcore::scenic::flag), rasterised onto its own z11 grid (`grid.idx`) from the heritage-sites
+//! roadcore::scenic::flag), rasterized onto its own z11 grid (`grid.idx`) from the heritage-sites
 //! job's flagged polygons near it (`area-shapes.geojsonseq`, crate::heritage::unit_inputs)
 //! (docs/phase5.md "Heritage and area flags"). Each
 //! tile is the union of its polygons' burns, so units agree wherever their grids overlap.
@@ -166,7 +166,7 @@ pub fn read_shapes(text: &str, b: [f64; 4]) -> Result<(Vec<Shape>, usize)> {
 }
 
 /// OGR's ring orientation test (OGRLineString::isClockwise, as compiled: the cross product fused,
-/// and its fallback's sum vectorised in eights before a fused tail).
+/// and its fallback's sum vectorized in eights before a fused tail).
 pub fn is_clockwise(p: &[[f64; 2]]) -> bool {
     let n = p.len();
     if n < 2 {

@@ -4,8 +4,8 @@
 //! Its own English, in order:
 //! - the English its record or tile names (`name:en`, `name_en`, our `en`: OSM's, a heritage
 //!   register's or UNESCO's, its Wikipedia article's title, as the build gave it);
-//! - its romanised name (`name:ja-Latn`, `name:ja_rm`, `name:zh-Latn-pinyin`, …);
-//! - its kana reading romanised by rule (`name:ja-Hira`, `name:ja_kana`, `name:ja-Kana`; our
+//! - its romanized name (`name:ja-Latn`, `name:ja_rm`, `name:zh-Latn-pinyin`, …);
+//! - its kana reading romanized by rule (`name:ja-Hira`, `name:ja_kana`, `name:ja-Kana`; our
 //!   `kana`), Hepburn without macrons ([`crate::romaji`]).
 //!
 //! The languages OSM gives its name: each `name:<language>` whose value is the name itself (a
@@ -24,7 +24,7 @@ pub const KANA_KEYS: [&str; 4] = ["kana", "name:ja-Hira", "name:ja_kana", "name:
 /// equal to `name` is Chinese); any other (`-Latn`, `_rm`, `_kana`) is a transliteration.
 const SAME_LANGUAGE: [&str; 7] = ["Hant", "Hans", "TW", "HK", "CN", "MO", "SG"];
 
-/// Whether a `name:…` key is a romanisation of the name (`name:ja-Latn`, `name:ja_rm`,
+/// Whether a `name:…` key is a romanization of the name (`name:ja-Latn`, `name:ja_rm`,
 /// `name:zh-Latn-pinyin`), and how much it's preferred (lower first).
 fn romanised(key: &str) -> Option<u8> {
     let rest = key.strip_prefix("name:")?;
@@ -40,7 +40,7 @@ fn romanised(key: &str) -> Option<u8> {
     }
 }
 
-/// The thing's own English: from `en_keys` (the first present, in that order), else a romanised
+/// The thing's own English: from `en_keys` (the first present, in that order), else a romanized
 /// name, else a kana reading by rule. `tags` are the thing's (key, value) pairs.
 pub fn own_english<'a>(tags: &[(&'a str, &'a str)], en_keys: &[&str]) -> Option<Cow<'a, str>> {
     let get = |k: &str| tags.iter().find(|(key, v)| *key == k && !v.trim().is_empty()).map(|(_, v)| *v);

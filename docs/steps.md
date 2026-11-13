@@ -219,7 +219,7 @@ makes the same bytes on every Mac.
   is a parent made from its children as stored, so a z6 tile's run and its assembly give the same
   tiles. (Coded again at every level, the direction drifted about a step of its 5 bits by z8 and
   up to 9 % of pixels changed between none and some by z4: `slope_pack`'s
-  `measure_quantisation_drift`, task #632's review.) Its steps split as the terrain's (task #639;
+  `measure_quantization_drift`, task #632's review.) Its steps split as the terrain's (task #639;
   "slope" was slope-hi's name before): **slope-deep**, a run per terrain-deep target's z10 tile: its
   part of its z6 tile's pyramid at the terrain's deep levels (`slope_pack::build_deep`), each of its
   z13 tiles' subtree from its deep terrain alone: its deep pack (z13–16, `layers/slope/deep/10-x-y`,
@@ -404,7 +404,7 @@ docs/formats.md, Depth), split by tile like the terrain, so downloads and the mi
   lacks (a hundred, with its margin) are read from the basemap together
   (`WaterSource::depth_polys_many`, `PmTiles::get_many`: their places sorted and those within
   64 KB of each other read in one range of at most 4 MB, 8 ranges at once; a clustered archive keeps neighbours
-  together, so a block is a few reads, not a hundred round trips), then decoded and rasterised on
+  together, so a block is a few reads, not a hundred round trips), then decoded and rasterized on
   the job's threads (task #492). The same polygons and water as one by one.
 - **Composed at the finest data's zoom** (`depth::compose::composes_at`): a block of zoom z is
   composed only where a grid of zoom z meets it (a grid's zoom taken within z3–16), and a tile kept
@@ -676,7 +676,7 @@ a scratch folder, wiped at each run:
    (crate::dem::spacing, `FLOOR_M`). U waits for the stale terrain targets under its box (U +
    `stage::MARGIN_KM`) and along its long ways (`steps::Read::Along`, from the pass's reaches), and
    its key names the terrain tiles it reads (hi and deep), along its long ways too.
-3. **Heritage:** the heritage-sites job's slices within U + `stage::MARGIN_KM`; `areaflags` rasterises the heritage and designated areas
+3. **Heritage:** the heritage-sites job's slices within U + `stage::MARGIN_KM`; `areaflags` rasterizes the heritage and designated areas
    onto U's grid.
 4. **Terrain and grids:** terrain z0–12 and the z11 grids, staged from the packs the manifest names,
    with the deep tiles step 2 reads, over U's staged area (crate::stage::Area): U grown by
@@ -1052,7 +1052,7 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   serves every layer, both settings of the switch, any weights, and the click; and the extents are
   good to their tolerance (tens of metres at best, kilometres for a mask read at a coarse overview:
   each piece's `read` says, §6.11), which a pixel of the finest level matches.
-- **Rasterising:** a piece's rings are lines in longitude and latitude (RFC 7946), densified so none
+- **Rasterizing:** a piece's rings are lines in longitude and latitude (RFC 7946), densified so none
   strays from its image by a quarter of a finest pixel (halving an edge while its midpoint's image
   lies further from the chord). Each row of pixel centres is cut by every polygon's rings: a pixel
   is in a polygon when an odd number of crossings lie left of its centre (even-odd, holes out), and

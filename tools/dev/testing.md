@@ -11,7 +11,7 @@ words hold `$( … )`, `<( … )`, `>( … )` or backticks outside single quotes
 and a comment aren't its words), and `sh -c`, `eval` or a command word built from a substitution whose script mentions cargo test); a run inside such a substitution is found.
 Not seen: a run through a shell function or alias, a script file, or a substitution's output that names cargo without the script saying it (`$(cat cmd.txt)`).
 
-- Tests build optimised (`[profile.test]` in Cargo.toml, #505: opt-level 1 for the workspace, 3 for
+- Tests build optimized (`[profile.test]` in Cargo.toml, #505: opt-level 1 for the workspace, 3 for
   dependencies; debug assertions and overflow checks stay on), so the first `cargo test` in a fresh
   worktree or after a dependency change compiles the dependencies once (~5 min); after that an edit
   rebuilds only the workspace crates.

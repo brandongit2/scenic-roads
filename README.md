@@ -38,7 +38,7 @@ and coloured by elevation, grade or one of a dozen scenic metrics computed from 
 
 The **Colour** row at the top of the settings panel picks what the roads show. Each colour scale has a
 histogram of what's in view, auto-fit (by screen widths of road or by percentiles), Lock / Full /
-Equalise, a colour map, a low-end fade and a threshold highlight.
+Equalize, a colour map, a low-end fade and a threshold highlight.
 
 | Mode | Shows |
 |---|---|
@@ -190,7 +190,7 @@ the World zoomed out, a region, or the view). The map supports Chrome and Safari
    p95 roadside tree height within 30 m.
 5. **Flags:** scenic route, viewpoint within 1 km, heritage within 500 m, parks, UNESCO/dark-sky
    areas, Indigenous lands, waterfront within 100 m.
-6. **Score:** each factor normalised to 0–1; score = Σ wᵢcᵢ / Σ max(wᵢ, 0), the same in the shader
+6. **Score:** each factor normalized to 0–1; score = Σ wᵢcᵢ / Σ max(wᵢ, 0), the same in the shader
    and the server.
 
 Rail frequencies come only from published timetables (GTFS feeds from the Mobility Database and

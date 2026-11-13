@@ -367,7 +367,7 @@ impl Pyramid<'_> {
 /// its tiles on (a z6 tile's mid to its assembly, the z3 tiles to the root) is a parent made from
 /// its children as stored. (Coded at every level, the direction drifted a step of its 5 bits by
 /// z8 and up to 9 % of pixels changed between none and some; the steepness crept up: task #632's
-/// review, `measure_quantisation_drift`.)
+/// review, `measure_quantization_drift`.)
 pub fn stored(v: &[Px]) -> (Vec<u8>, Vec<Px>) {
     (codecs::shade_codec::encode(v).expect("a tile's WebP"), quadrant(v))
 }

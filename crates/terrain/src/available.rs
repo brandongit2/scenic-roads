@@ -2,7 +2,7 @@
 //! the data-available layers' tiles, which hold at each pixel the set of pieces whose outline holds
 //! its centre (codecs::available, the tiles' and packs' format). The server scores them.
 //!
-//! - **Rasterising.** A piece's rings are lines in longitude and latitude, densified so none strays
+//! - **Rasterizing.** A piece's rings are lines in longitude and latitude, densified so none strays
 //!   from its image by more than a quarter of a finest pixel, then cut into each row of pixels'
 //!   centres: a pixel is in a polygon when an odd number of its rings' crossings of that row lie
 //!   left of its centre (even-odd: holes out), and in a piece when it's in any of the piece's
@@ -31,7 +31,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What a piece's polygons make of a tile: bumped with any change to the tiles' bytes for the same
-/// pieces (the rasterising, the quadtree, the format). Each tile's key and the step's own version.
+/// pieces (the rasterizing, the quadtree, the format). Each tile's key and the step's own version.
 pub const KEY_V: u32 = 1;
 
 /// How far a densified edge may stray from the projection of the line it stands for (pixels of

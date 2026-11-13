@@ -746,7 +746,7 @@ fn a_z14_tiles_water_is_read_once_for_its_finer_descendants() {
 /// A measure on real data, reading the NAS alone: `SCENIC_DEPTH_WATER="<root> 6/x/y <zoom> <blocks>
 /// <rounds>"` reads the water of the first `blocks` blocks of z6 tile x/y's first row at `zoom`
 /// (`WaterCache::block`, as a level's blocks read it, the z14 polygons kept: task #433), and as
-/// before it: each block's tiles' polygons read and rasterised one by one (`polys_at`,
+/// before it: each block's tiles' polygons read and rasterized one by one (`polys_at`,
 /// `water_tile`), `rounds` times each in turn; prints each round's time and the basemap tiles
 /// read.
 #[test]

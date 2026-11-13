@@ -312,7 +312,7 @@ the centroid's elevation), tiles and data-driven paint. An opacity under 1 draws
   also the by-height low end's and misses' colour and the unknown source's), lighter roofs, lit by `map.setLight` from the hill-shading's
   azimuth, intensity 0.35.
 - **By height:** the shared colour-scale controls (`ui/scale.ts`): a histogram of the heights of the
-  buildings in view (read when idle), auto-fit to percentiles, Lock / Full / Equalise, the
+  buildings in view (read when idle), auto-fit to percentiles, Lock / Full / Equalize, the
   colour-map picker, low-end fade and highlight. The far field takes the same colours (§4.8).
 - **By where the height comes from:** measured green, floors blue, Microsoft violet, neighbours
   amber, GHSL red-orange, size grey. The far field stays plain.

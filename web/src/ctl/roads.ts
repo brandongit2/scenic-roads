@@ -52,10 +52,10 @@ export class RoadsRail implements FramePart {
   readonly rails: RoadLayer;
   /** The roads' colour range as drawn, easing to its target. */
   cur: [number, number];
-  /** The roads' equalisation lookup (from the metric's distribution in view), when on. */
+  /** The roads' equalization lookup (from the metric's distribution in view), when on. */
   cdf: Uint8Array | null = null;
   private cdfKey = '';
-  /** Rail's colour range as drawn, and its equalisation lookup. */
+  /** Rail's colour range as drawn, and its equalization lookup. */
   railCur: [number, number];
   railCdf: Uint8Array | null = null;
   private railCdfKey = '';
@@ -475,7 +475,7 @@ export class RoadsRail implements FramePart {
     return { panels, easing };
   }
 
-  /** Both equalisation lookups again, for the ranges and distributions as they stand. */
+  /** Both equalization lookups again, for the ranges and distributions as they stand. */
   updateCdfs() {
     const s = this.store.s, cur = this.cur, mdist = this.mdist;
     if (!s.equalize || !mdist || mdist.total <= 0) {

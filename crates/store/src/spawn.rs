@@ -96,7 +96,7 @@ pub fn detached(program: impl AsRef<OsStr>, args: &[&str]) -> io::Result<Detache
     let (argp, envp) = (ptrs(&argv), ptrs(&envv));
     let null = c"/dev/null";
     let check = |r: libc::c_int| if r == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(r)) };
-    // SAFETY: attr and actions initialised before use and destroyed after; argv and envp are
+    // SAFETY: attr and actions initialized before use and destroyed after; argv and envp are
     // NUL-terminated arrays of NUL-terminated strings that outlive the call.
     unsafe {
         let mut attr: libc::posix_spawnattr_t = std::mem::zeroed();

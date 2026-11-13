@@ -87,7 +87,7 @@ Callers, each supplying only its `View`:
 
 | Caller | Its `View::left` | Replaces |
 |---|---|---|
-| the planner (`build::plan`, every `*_work`) | the target's recorded key isn't its key now (`Keys`, `TerrainWork::is_left` generalised to every step) | `build::waits`, the chain functions' hand orderings, `HERITAGE_WAIT` and the other wait strings (the note is `Read`-derived: "wait for {step} {targets}") |
+| the planner (`build::plan`, every `*_work`) | the target's recorded key isn't its key now (`Keys`, `TerrainWork::is_left` generalized to every step) | `build::waits`, the chain functions' hand orderings, `HERITAGE_WAIT` and the other wait strings (the note is `Read`-derived: "wait for {step} {targets}") |
 | the forecast (`forecast::items`) | not given its own `View`: it calls `read_targets_passing` (with its input's `along`, the plan's) and maps each to an item index (a `Whole` read to one shared group per step, as #867's `shared_waits`); a read not in the plan that passes waits on, to what it waits on in turn (`forecast::Waits`, the planner's `held` and `whole_left`) | `chain_deps`, `UNITS_NEED`, `reads_terrain`, the held-chain guard |
 | the page and `scenic status` | the planner's | `wait_note`'s fallbacks |
 

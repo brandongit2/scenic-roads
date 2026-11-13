@@ -30,7 +30,7 @@ pub fn lossless_rgb8(rgb: &[u8], width: u32, height: u32, level: u8) -> Result<V
     }
     entropy::install();
     let mut config = w::WebPConfig::new().map_err(|_| "libwebp: config".to_string())?;
-    // SAFETY: `config` is initialised; the preset sets its lossless fields.
+    // SAFETY: `config` is initialized; the preset sets its lossless fields.
     if unsafe { w::WebPConfigLosslessPreset(&mut config, level.into()) } == 0 {
         return Err("libwebp: lossless preset".into());
     }
@@ -40,9 +40,9 @@ pub fn lossless_rgb8(rgb: &[u8], width: u32, height: u32, level: u8) -> Result<V
     pic.use_argb = 1;
     pic.width = width as i32;
     pic.height = height as i32;
-    // SAFETY: a plain C struct, initialised by WebPMemoryWriterInit before use.
+    // SAFETY: a plain C struct, initialized by WebPMemoryWriterInit before use.
     let mut out: w::WebPMemoryWriter = unsafe { std::mem::zeroed() };
-    // SAFETY: `pic` is initialised and sized; `rgb` holds width × height × 3 bytes in rows of
+    // SAFETY: `pic` is initialized and sized; `rgb` holds width × height × 3 bytes in rows of
     // width × 3; the writer appends to `out`, cleared once below; the picture's buffers freed once.
     unsafe {
         w::WebPMemoryWriterInit(&mut out);

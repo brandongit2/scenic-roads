@@ -61,7 +61,7 @@ REFINED = {
     # Italy: South Tyrol German, Aosta Valley French, beside Italian.
     "IT-BZ": ["de", "it"],
     "IT-23": ["it", "fr"],
-    # Hong Kong's and Macau's names are read in Cantonese (the government's romanisation), not
+    # Hong Kong's and Macau's names are read in Cantonese (the government's romanization), not
     # Mandarin's Pinyin, which Chinese lines carry.
     "HK": ["yue", "en"],
     "MO": ["yue", "pt"],

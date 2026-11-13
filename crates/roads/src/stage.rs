@@ -607,7 +607,7 @@ fn stage_reading(
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    // (The area flags are rasterised per z6 tile: landmarks::heritage, codecs::areaflags.)
+    // (The area flags are rasterized per z6 tile: landmarks::heritage, codecs::areaflags.)
     for (var, mut l, packs) in grids {
         let exists = l.exists();
         for p in &packs {

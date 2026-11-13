@@ -46,7 +46,7 @@ export interface BuildingState {
 }
 
 /** The height scale as the frame has it: its range (metres; auto-fit or the user's) and, when
- * equalised, its lookup over the buildings in view (ctl/buildings.ts). */
+ * equalized, its lookup over the buildings in view (ctl/buildings.ts). */
 export interface HeightLook {
   range: [number, number];
   cdf: Uint8Array | null;
@@ -129,7 +129,7 @@ export function heightColourFn(b: BuildingState, look: HeightLook): { key: strin
 }
 
 /** The colour expression of a mode. By height: the scale's colours at 33 heights across its
- * range (equalised or not), the highlight's misses plain. */
+ * range (equalized or not), the highlight's misses plain. */
 function colourOf(b: BuildingState, look: HeightLook): ExpressionSpecification | string {
   const plain = b.plain;
   if (b.colour === 'source') return ['match', ['get', 's'], ...SOURCES.flatMap(([, c], i) => [i, c]), plain] as unknown as ExpressionSpecification;

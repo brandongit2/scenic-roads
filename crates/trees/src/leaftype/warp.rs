@@ -426,7 +426,7 @@ impl Warp {
         // Working memory: 8 bits a pixel and a validity bit, source and destination alike.
         let memory = (9.0 * src.2 as f64 * src.3 as f64 + 9.0 * dw as f64 * dh as f64) / 8.0;
         if (memory > MEMORY && (dw > 2 || dh > 2)) || (fill > 0.0 && fill < 0.5 && (dw > 100 || dh > 100)) {
-            // (The destination's blocks are its rows, a square wide: never "optimised for size".)
+            // (The destination's blocks are its rows, a square wide: never "optimized for size".)
             if dw > dh {
                 let c1 = dw / 2;
                 self.collect(dx, dy, c1, dh, out)?;

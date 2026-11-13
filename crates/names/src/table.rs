@@ -36,7 +36,7 @@ pub(crate) fn hash(bytes: &[u8]) -> u64 {
         w[..rest.len()].copy_from_slice(rest);
         h = (h.rotate_left(5) ^ u64::from_le_bytes(w)).wrapping_mul(K);
     }
-    // MurmurHash3's finaliser: every input bit reaches the low bits (the slot) and the top (the tag).
+    // MurmurHash3's finalizer: every input bit reaches the low bits (the slot) and the top (the tag).
     h ^= h >> 33;
     h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
     h ^= h >> 33;

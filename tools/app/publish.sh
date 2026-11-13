@@ -225,7 +225,7 @@ export SCENIC_PUBLISH=1
 # The release server on a fixture map (crates/server/tests/serves.rs: every route the app starts with
 # and a tile of each kind, the program on a free port, no NAS), run against target/release/server,
 # the program signed and copied below: the suite runs it against the test profile's, so a fault only
-# an optimised build shows stops the publish here, before the suite (the test itself takes under
+# an optimized build shows stops the publish here, before the suite (the test itself takes under
 # a second; its build is the test profile's of the server and the crates it uses). The test's own binary run directly,
 # with CARGO_BIN_EXE_server naming the release program: cargo and nextest set that variable as they
 # run a test, to the program they built beside it. Built as the suite builds it (the workspace's

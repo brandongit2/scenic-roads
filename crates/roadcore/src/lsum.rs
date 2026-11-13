@@ -15,7 +15,7 @@ use crate::scenic::{self, ch};
 pub const LSUM_V: u32 = 1;
 /// A bin's longest span along the road (from its first sample), metres.
 pub const BIN_M: f32 = 500.0;
-/// Roads shorter than this aren't summarised: the shortest window answered from summaries.
+/// Roads shorter than this aren't summarized: the shortest window answered from summaries.
 pub const LO_MIN_ROAD: f32 = 2000.0;
 /// `LBin::rinfo` of a bin without a `railinfo` row.
 pub const NO_RINFO: u32 = u32::MAX;

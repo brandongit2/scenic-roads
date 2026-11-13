@@ -27,7 +27,7 @@ export class TerrainTint {
   dist: Dist | null = null;
   /** The colour range as drawn, easing to its target. */
   cur: [number, number];
-  /** The equalised scale's lookup (null: not equalised). */
+  /** The equalized scale's lookup (null: not equalized). */
   cdf: Uint8Array | null = null;
   private dirty = true;
   private lastMeasured = 0;
@@ -89,7 +89,7 @@ export class TerrainTint {
     this.cdf = cdfOf(this.dist, this.cur);
   }
 
-  /** The tint drawn again: its colours, range and equalisation. */
+  /** The tint drawn again: its colours, range and equalization. */
   refresh() {
     if (!this.host.styleReady()) return;
     this.updateCdf();

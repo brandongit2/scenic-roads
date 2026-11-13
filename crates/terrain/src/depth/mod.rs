@@ -4,7 +4,7 @@
 //! - **`depth`** (Terrarium RGB as lossless WebP, 256 px): depth below the water's surface in metres, negative (the
 //!   sea's mean level; a lake's mean surface; an enclosed sea's own, `surface`), drying heights
 //!   positive, `NODATA` where there's none;
-//!   quantised to 0.1 m in the first 100 m and 1 m deeper (`quantise`). It lies on the basemap's
+//!   quantized to 0.1 m in the first 100 m and 1 m deeper (`quantize`). It lies on the basemap's
 //!   water (codecs::terrain_water), so the water's surface (sea level on the world ocean, the
 //!   terrain's heights on a lake, a river or an enclosed sea: the terrain keeps the source's at sea)
 //!   less the depth is the floor: the

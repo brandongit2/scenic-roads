@@ -551,7 +551,7 @@ fn run_osmium(mut c: Command, what: &str) -> Result<()> {
 }
 
 /// The `name:<language>` tags the basemap keeps: the coverage's languages and its neighbours',
-/// romanisations and kana readings (names::own reads them).
+/// romanizations and kana readings (names::own reads them).
 pub const BASEMAP_LANGUAGES: &str = "en,fr,es,pt,ca,eu,gl,cy,ga,gd,br,co,oc,de,it,nl,ja,ja-Latn,ja_rm,ja-Hira,ja_kana,zh,zh-Hant,zh-Hans,zh-Latn-pinyin,yue,ko,ko-Latn,ms,ta,iu";
 
 /// Runs Planetiler (`run`), how far it is (`planetiler_fraction` of each line of its log, which
@@ -1142,7 +1142,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
             "--force",
             "--nodemap-type=sparsearray",
             "--only-layers=water,waterway,boundary,place,water_name,park",
-            // The names' languages and their romanised forms and kana readings, for the thing's own
+            // The names' languages and their romanized forms and kana readings, for the thing's own
             // English and the languages OSM gives its name (docs/names.md); the 2026-09-28 pass's
             // basemap has en and fr alone.
             &format!("--languages={}", BASEMAP_LANGUAGES),

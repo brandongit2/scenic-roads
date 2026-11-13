@@ -1,6 +1,6 @@
 // The colour-scale controls shared by roads, rail and ferries: a histogram of what's in view with
 // draggable range handles, auto-fit (percentiles, ranks, or screen widths or percentiles of line by
-// the owner's pick), Auto / Lock / Full / Equalise, the colour map,
+// the owner's pick), Auto / Lock / Full / Equalize, the colour map,
 // the low-end fade and a threshold highlight. Each owner adapts it to its own state.
 import { bestOfPct, setBestPct, type FitUnit } from '../autofit';
 import { PALETTE_ITEMS, paletteCss, paletteRgb } from '../palettes';
@@ -50,7 +50,7 @@ export interface ScaleOpts {
   spanDefault: () => number;
   /** A fixed caption instead of the auto-fit controls, no dragging (e.g. relief). */
   fixedCaption?: () => string | null;
-  /** Whether Equalise is offered (default: always): not where it can't act (a scale of two
+  /** Whether Equalize is offered (default: always): not where it can't act (a scale of two
    * values at its ends, data available's words). */
   equalizable?: () => boolean;
   /** Auto-fit to ranks in view (the low end at the n-th best, the top at the m-th) instead of
@@ -80,7 +80,7 @@ export interface ScaleOpts {
 export const fadeAlpha = (u: number, lowFade: number, lowSpan: number) =>
   1 - lowFade * Math.pow(1 - Math.max(0, Math.min(1, u / Math.max(lowSpan, 1e-3))), 1.5);
 
-/** Histogram-equalisation lookup (256 steps over the range) from a distribution, or null. */
+/** Histogram-equalization lookup (256 steps over the range) from a distribution, or null. */
 export function cdfOf(dist: Dist | null, range: [number, number]): Uint8Array | null {
   if (!dist || dist.total <= 0) return null;
   const out = new Uint8Array(256);
@@ -93,7 +93,7 @@ export function cdfOf(dist: Dist | null, range: [number, number]): Uint8Array | 
   return out;
 }
 
-/** Scale position 0..1 of a value: by the spacing, or equalised when a lookup is given (built
+/** Scale position 0..1 of a value: by the spacing, or equalized when a lookup is given (built
  * over the range in proportion, cdfOf). */
 export function scaleU(v: number, range: [number, number], cdf: Uint8Array | null, sp: Spacing = 'linear'): number {
   if (cdf) {
@@ -325,7 +325,7 @@ export class ScaleControls {
     this.draw();
   }
 
-  /** The distribution in view, the range in use and the equalisation lookup (if on). */
+  /** The distribution in view, the range in use and the equalization lookup (if on). */
   update(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
     this.dist = dist;
     this.range = range;

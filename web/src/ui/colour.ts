@@ -1,5 +1,5 @@
 // How the roads are coloured (the settings panel's Roads section, ui/layers.ts): mode, legend
-// histogram with draggable range handles, palette, equalisation, threshold highlight and (for the
+// histogram with draggable range handles, palette, equalization, threshold highlight and (for the
 // scenic score) the component weights; under Map, the Map look (ui/roadmap.ts); the panel's title above it all.
 import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';

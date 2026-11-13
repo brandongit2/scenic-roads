@@ -408,7 +408,7 @@ const hitPaint = (radius: ExpressionSpecification) => ({
   'circle-radius': radius, 'circle-opacity': 0, 'circle-stroke-opacity': 0, 'circle-stroke-width': 0, 'circle-pitch-alignment': 'viewport' as const,
 });
 /** The prominence scale as the landmark names fade by it: the dots' (dots.ts nameScale), easing
- * with them. `eq`: u at 33 scores evenly over r0–r1 when equalised. */
+ * with them. `eq`: u at 33 scores evenly over r0–r1 when equalized. */
 export interface NameScale {
   r0: number;
   r1: number;

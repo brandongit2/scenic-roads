@@ -1,6 +1,6 @@
 // The settings panel's Depth section (ui/layers.ts): the depth's two layers, each with its switch:
 // the depth colour and the floor's shading (its colour scale the other layers' ScaleControls: the
-// depths in view, the range, auto-fit and equalisation, the ramp), and the depth contours with
+// depths in view, the range, auto-fit and equalization, the ramp), and the depth contours with
 // their labels; and the 3D floor's switch (depth.ts).
 import type { Dist } from '../roads/stats';
 import { DEPTH_DOMAIN, DEPTH_PALETTES, depthColour, rgba, type DepthState } from '../depthlook';
@@ -20,7 +20,7 @@ export class DepthSection {
   onPreview: (palette: string | null) => void = () => {};
   private body: HTMLDivElement;
   private scaleCtl: ScaleControls;
-  /** The range in use and the equalisation lookup (update). */
+  /** The range in use and the equalization lookup (update). */
   private range: [number, number] = [0, 300];
   private cdf: Uint8Array | null = null;
   private scaleBtns: HTMLButtonElement[] = [];
@@ -150,8 +150,8 @@ export class DepthSection {
     this.floor.checked = d.floor;
   }
 
-  /** The depths in view (null: not measured: neither auto-fit nor equalised), the range the ramp
-   * spans now and the equalisation lookup (depth.ts). */
+  /** The depths in view (null: not measured: neither auto-fit nor equalized), the range the ramp
+   * spans now and the equalization lookup (depth.ts). */
   update(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
     this.range = range;
     this.cdf = cdf;

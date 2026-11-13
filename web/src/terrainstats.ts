@@ -6,7 +6,7 @@
 // basemap.ts surfaceTiles: the terrain itself keeps its source's bathymetry), as are lakes where
 // their source flattened them (the terrain keeps a lake's source heights), where ground practically
 // never is, so a sample equal to its four neighbours (or with no steepness at all) is water. With it, an island zoomed out to a speck in the sea had the sea's 0 m take over the
-// percentiles and the equalisation.
+// percentiles and the equalization.
 import type { Map as MLMap } from 'maplibre-gl';
 import { viewArea } from './inview';
 import { MERCATOR_LAT, mercLat, mercLon } from './merc';

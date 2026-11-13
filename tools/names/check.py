@@ -94,7 +94,7 @@ SAINT = re.compile(r"^(church|chapel|cathedral|basilica|abbey|priory|castle|mona
                    r"(saint|sainte|san|santa|santo|são|sant|st\.?|notre)\b", re.I)
 MOUNT_LAST = re.compile(r"\S\s+Mount$")
 MACRON = re.compile("[āēīōūâêîôûĀĒĪŌŪÂÊÎÔÛ]")
-# Romanised Japanese words: ones that split wholly into syllables. Hepburn's, and the Kunrei-shiki /
+# Romanized Japanese words: ones that split wholly into syllables. Hepburn's, and the Kunrei-shiki /
 # Nihon-shiki ones it replaces (si ti tu hu zi di du …): a word that splits only with those is
 # Kunrei (Otubo, Isikawa, Hukuoka, Kozima, Todurasawa); English words don't split at all (Studio,
 # Medical, Shrine). Doubled consonants (Hokkaido, Matsuyama's "tt"), "tch" and n' are folded first.

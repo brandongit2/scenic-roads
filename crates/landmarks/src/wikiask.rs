@@ -41,7 +41,7 @@ pub const PREFIXES: &str =
 PREFIX schema: <http://schema.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> \
 PREFIX wikibase: <http://wikiba.se/ontology#> ";
 
-/// The IRIs Wikidata's query services give an unknown value (a blank node, skolemised).
+/// The IRIs Wikidata's query services give an unknown value (a blank node, skolemized).
 const GENID: &str = "http://www.wikidata.org/.well-known/genid/";
 
 /// Failures in a row (no answer, or an error that isn't a wait) that fail the run.

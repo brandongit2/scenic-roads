@@ -10,11 +10,11 @@
 // Each dot is one point sprite. Zoomed out, a source draws in a few calls, one per run of chunks in
 // view, positioned in world units; closer in (float precision), one per chunk in view, in its
 // units. The shader places each dot on the scale as the circles' paint did: score from fame and
-// isolation, its place u on the range (or through the equalisation stops), size and fade from u,
+// isolation, its place u on the range (or through the equalization stops), size and fade from u,
 // the highlight. The filters (the worker's masks) are a buffer of their own. Zoomed out, the
 // specks (the dots below the range, all drawn alike) are drawn once per cell of about
 // LOD_PX device pixels, with the opacity of the cell's dots over one another (dotlayout.ts): a GPU
-// pays for every point it rasterises, however small, and they pile up by the thousand where
+// pays for every point it rasterizes, however small, and they pile up by the thousand where
 // landmarks are dense.
 //
 // With 3D terrain, each dot stands on the terrain as drawn: before the frame, for every terrain
@@ -36,7 +36,7 @@ export type { DotData } from './dotlayout';
 /** The prominence scale (overlays.ts applyResult). */
 export interface DotScale {
   range: [number, number];
-  /** Equalisation: u at 33 scores evenly over the range, or null. */
+  /** Equalization: u at 33 scores evenly over the range, or null. */
   eq: number[] | null;
   lowFade: number;
   lowSpan: number;

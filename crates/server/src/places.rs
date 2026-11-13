@@ -233,7 +233,7 @@ struct Label<'a> {
     id: Option<u64>,
     name: &'a str,
     en: Option<&'a str>,
-    /// Its kana reading (romanised as its own English when it has no other) and the languages OSM
+    /// Its kana reading (romanized as its own English when it has no other) and the languages OSM
     /// gives its name (`l`).
     kana: Option<&'a str>,
     langs: Option<&'a str>,
@@ -426,7 +426,7 @@ impl Chunk {
             }
             None => return,
         };
-        // Its own English: its `en`, else its kana reading romanised.
+        // Its own English: its `en`, else its kana reading romanized.
         let kana_en = if l.en.is_none() { l.kana.and_then(names::romaji::hepburn) } else { None };
         let own = l.en.or(kana_en.as_deref());
         let shown = match names {
@@ -1238,7 +1238,7 @@ mod tests {
         }
         let f = p.place(&p.search("the castle", None, 1)[0]);
         assert_eq!((f.name, f.en, f.main, f.sub), ("Château", Some("The Castle"), "Château", Some("The Castle")));
-        // A kana reading, romanised, is its own English.
+        // A kana reading, romanized, is its own English.
         let f = p.place(&p.search("banfu", None, 1)[0]);
         assert_eq!((f.name, f.en, f.main, f.sub), ("Banff", Some("Banfu"), "Banff", Some("Banfu")));
         // Its whole main name is a whole name.

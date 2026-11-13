@@ -79,7 +79,7 @@ export class Depth {
   private floorOn = false;
   /** The auto-fitted range (m of depth). */
   private fit: [number, number] = [1, 100];
-  /** The depths in view (while the scale fits to them or equalises over them). */
+  /** The depths in view (while the scale fits to them or equalizes over them). */
   dist: Dist | null = null;
   private viewTimer = 0;
   /** Told when the depths in view or the fitted range change (the panel's scale). */
@@ -123,7 +123,7 @@ export class Depth {
     return [Math.max(0, lo), Math.max(Math.max(0, lo) + 0.5, hi)];
   }
 
-  /** The equalisation lookup over the range, while it's on and the depths in view are known. */
+  /** The equalization lookup over the range, while it's on and the depths in view are known. */
   cdf(s = this.s): Uint8Array | null {
     return s.colours.equalize ? cdfOf(this.dist, this.domain(s)) : null;
   }
@@ -277,7 +277,7 @@ export class Depth {
       m.setPaintProperty('depth-contour-label', 'text-color', s.colour);
       m.setPaintProperty('depth-contour-label', 'text-opacity', Math.min(1, s.lineOpacity * 1.5));
     }
-    // (Measured only while the scale fits to them or equalises: none otherwise, not an old view's.)
+    // (Measured only while the scale fits to them or equalizes: none otherwise, not an old view's.)
     if (!s.colours.auto && !s.colours.equalize) this.dist = null;
     this.onFit();
     this.scheduleView();
@@ -331,7 +331,7 @@ export class Depth {
     const a = spaced(s.scale, r[0]), b = spaced(s.scale, r[1]);
     const inv = (t: number) => unspaced(s.scale, a + t * (b - a));
     const stops: [number, string][] = [];
-    // Deeper than the domain: its deepest colour; then the domain, 48 steps (equalised: each at its
+    // Deeper than the domain: its deepest colour; then the domain, 48 steps (equalized: each at its
     // place among the depths in view); then 0 m.
     stops.push([-11500, rgba(depthColour(pal, 1))]);
     const n = 48;
@@ -399,7 +399,7 @@ export class Depth {
   }
 
   /** The depths in view, while the scale fits to them (its range: their percentiles, `fit`) or
-   * equalises over them. */
+   * equalizes over them. */
   private async view() {
     const pool = this.pool;
     const wanted = () => this.s.colours.auto || this.s.colours.equalize;

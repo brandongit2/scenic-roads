@@ -239,7 +239,7 @@ docs/inputs.md §6.5.2), split into two jobs so the z6 tiles never wait on Wikid
   (`pos/6-x-y`), World Heritage components among them (`parts/6-x-y`), and the area polygons meeting
   it with their flag bits (`areas/6-x-y`).
 - **The z6 tiles** read the slices within U + `stage::MARGIN_KM`: `heritage.json` feeds the flags step, and
-  `areaflags` (codecs::areaflags) rasterises the polygons onto the z6 tile's grid. Their keys name the
+  `areaflags` (codecs::areaflags) rasterizes the polygons onto the z6 tile's grid. Their keys name the
   slices.
 - **The `heritage` job** (after items, before marks) runs the rest of the chain over the same cover:
   the pass's areas and named objects within it, and for whsshapes the pass's `whs` set clipped to

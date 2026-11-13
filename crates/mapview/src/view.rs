@@ -161,7 +161,7 @@ pub fn run(dir: &Path) -> Result<()> {
 }
 
 /// Cheap pass, rerun whenever POIs, heritage or designated areas change: sample flags from
-/// viewpoints (1 km), heritage sites (500 m) and the rasterised areas (parks, heritage
+/// viewpoints (1 km), heritage sites (500 m) and the rasterized areas (parks, heritage
 /// districts, special areas, Indigenous lands), then per-vertex
 /// channels (→ samples.ch.u8, scenic.u8).
 pub fn flags(dir: &Path) -> Result<()> {

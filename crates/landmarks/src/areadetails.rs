@@ -174,7 +174,7 @@ fn parks_query(chunk: &[String]) -> String {
 /// A park's facts from its rows (`?k ?v`, `qid`'s), each picked the same way whatever order they
 /// come in: its English description and article (the least, where the service has two: QLever
 /// answered two English descriptions of Q1 on 12 Nov); its earliest inception; its largest area
-/// (normalised to m²) and visitors; its operators' English labels, distinct and in order. (What
+/// (normalized to m²) and visitors; its operators' English labels, distinct and in order. (What
 /// the map reads of them: web/src/details.ts's `enrichArea`.) An unknown value (crate::wikiask::val) is none; a value that isn't a number is left out,
 /// logged (crate::wikiask::number); an inception or visitors that isn't a literal is none.
 fn park_record(rows: &[&Py], qid: &str) -> Py {

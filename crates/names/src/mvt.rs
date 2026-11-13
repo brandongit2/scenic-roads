@@ -333,7 +333,7 @@ pub enum KindRule {
 }
 
 /// Which layers [`attach`] names, and where a feature's name, own English and kind are. Every
-/// string property is the feature's tags for [`own_english`] (romanised names, kana readings) and
+/// string property is the feature's tags for [`own_english`] (romanized names, kana readings) and
 /// [`osm_langs`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerRule<'a> {
@@ -913,7 +913,7 @@ mod tests {
             label(2.35, 48.86, 16, 11, &["n", "en"], vec![s("Église"), s("Leclerc tank")], &[0, 0, 1, 1]),
             (Some(s("Église")), Some(s("Leclerc tank")))
         );
-        // A kana reading, romanised.
+        // A kana reading, romanized.
         assert_eq!(
             label(139.69, 35.69, 28, 12, &["n", "kana"], vec![s("新宿"), s("しんじゅく")], &[0, 0, 1, 1]),
             (Some(s("新宿")), Some(s("Shinjuku")))

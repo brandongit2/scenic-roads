@@ -276,7 +276,7 @@ def main():
     print("protected areas & Indigenous lands (OSM)…")
     with phase("reading the protected areas and Indigenous lands"):
         special_feats, indigenous_feats, matched = [], [], set()
-        # The polygons in degrees, with their bits (rasterised by the units).
+        # The polygons in degrees, with their bits (rasterized by the units).
         shapes_ll: list[tuple] = []
         for line in tqdm(lines(areas_path), desc="areas", unit="poly"):
             f = json.loads(line.strip("\x1e"))

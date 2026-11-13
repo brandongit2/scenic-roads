@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 pub const TERRAIN_DEEP_V: u32 = 6;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (landmarks::heritage), the
-/// flags rasterised per z6 tile.
+/// flags rasterized per z6 tile.
 /// 4: the roads' own English (`global/roaden/<u>`); a z6 tile left with no ways drops its outputs.
 /// 5: one elevation pool (GLO-30 and the Terrarium tiles among the roads' datasets, FABDEM and MRDEM
 /// gone).
@@ -133,7 +133,7 @@ pub fn reach_key(x: &KeyCtx) -> Option<String> {
 }
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
-/// regions. (2: each label's OSM object, the languages OSM gives its name, its romanised name or
+/// regions. (2: each label's OSM object, the languages OSM gives its name, its romanized name or
 /// kana reading: docs/names.md. 3, task #862: roadcore::geo's Mercator and Earth. 4, task #668: the
 /// labels past 85.05° left out of the tiles, drawn on the polar caps, not clamped to their edge.)
 pub const LABELS_V: u32 = 4;

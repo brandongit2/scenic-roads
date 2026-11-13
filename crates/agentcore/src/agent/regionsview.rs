@@ -125,7 +125,7 @@ fn crumbs_of(tree: &Folder) -> BTreeMap<String, Vec<String>> {
     out
 }
 
-/// A folder's own name in words: hyphens as spaces, each word capitalised but the small ones.
+/// A folder's own name in words: hyphens as spaces, each word capitalized but the small ones.
 fn said(slug: &str) -> String {
     let words: Vec<String> = slug
         .split('-')

@@ -154,7 +154,7 @@ pub fn lookup_order(osm: &[Lang], here: &[Lang]) -> Vec<Lang> {
     out
 }
 
-/// An outline to rasterise: its ISO 3166 code, area, and polygons (an outer ring then its holes;
+/// An outline to rasterize: its ISO 3166 code, area, and polygons (an outer ring then its holes;
 /// lon, lat E7). Rings are closed or not, either way.
 pub struct Area {
     pub code: String,

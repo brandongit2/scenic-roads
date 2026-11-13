@@ -1,15 +1,15 @@
-//! Kana romanised by rule: modified Hepburn without macrons (docs/names.md), for a thing whose
+//! Kana romanized by rule: modified Hepburn without macrons (docs/names.md), for a thing whose
 //! only English source is OSM's kana reading of its name (`name:ja-Hira`, `name:ja_kana`).
 //!
 //! - Long vowels lose their mark: おう, おお and うう are o, o and u (とうきょう Tokyo, おおさか
 //!   Osaka), and the katakana bar is dropped; えい stays ei.
 //! - ん is n, and n' before a vowel or y (しんおおさか Shin'osaka); っ doubles the next consonant (ch
 //!   becomes tch).
-//! - Words (split on spaces and the middle dot) are capitalised.
+//! - Words (split on spaces and the middle dot) are capitalized.
 //!
 //! A reading with anything but kana, spaces and the marks above gives nothing.
 
-/// The romanisation of a kana reading, or `None` when it holds other characters.
+/// The romanization of a kana reading, or `None` when it holds other characters.
 pub fn hepburn(kana: &str) -> Option<String> {
     let chars: Vec<char> = kana.trim().chars().map(to_hiragana).collect();
     if chars.is_empty() {

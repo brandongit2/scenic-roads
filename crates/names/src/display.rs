@@ -2,7 +2,7 @@
 //!
 //! A name shows as a **main** label and an optional smaller **sub** line. A thing's English, in
 //! order:
-//! 1. its own, from a source about that thing (OSM's `name:en`, its romanised name, its kana
+//! 1. its own, from a source about that thing (OSM's `name:en`, its romanized name, its kana
 //!    reading by rule, its Wikidata label, its Wikipedia title, a register's English): the name as
 //!    main, that English as sub. It belongs to that thing alone, and wins even when wrong;
 //! 2. its name's translation: the line for its name, kind and language, the languages tried in

@@ -125,7 +125,7 @@ export class Ferries {
   private lineNames = new Map<string, { main?: string; sub?: string }>();
   private popup: MapPopup;
   private style: FerryState | null = null;
-  /** The metric colouring's range in use (auto-fitted or fixed) and equalisation lookup. */
+  /** The metric colouring's range in use (auto-fitted or fixed) and equalization lookup. */
   private range: [number, number] = [0, 1];
   private cdf: Uint8Array | null = null;
   onLoaded: () => void = () => {};
@@ -323,7 +323,7 @@ export class Ferries {
     this.map.setPaintProperty(LINE, 'line-opacity', ferryOpacityExpr(f, this.range, this.cdf, f.opacity));
   }
 
-  /** The metric scale in use: range (auto-fitted or fixed) and equalisation lookup. */
+  /** The metric scale in use: range (auto-fitted or fixed) and equalization lookup. */
   setScale(range: [number, number], cdf: Uint8Array | null) {
     const same = range[0] === this.range[0] && range[1] === this.range[1] && cdf === this.cdf;
     this.range = range;

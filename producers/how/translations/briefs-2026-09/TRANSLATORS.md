@@ -25,7 +25,7 @@ place is: place (a town, village, hamlet, neighbourhood or island), water (a lak
 canal, bay…), park (a national park, nature reserve, protected area or Indigenous reserve), peak,
 waterfall, station, rail line, ferry line, terminal (a ferry terminal), stop (a viewpoint, rest
 area, trailhead or lighthouse) or heritage site (a listed building, monument or historic area).
-`rd` is the name's reading in kana: romanise from it (本町 with ほんまち is Honmachi, with
+`rd` is the name's reading in kana: romanize from it (本町 with ほんまち is Honmachi, with
 ほんちょう Honcho).
 
 The region (the file name's prefix) says where the places are and how names are read: `jp`
@@ -56,7 +56,7 @@ later. A `null` is only for a name English leaves alone (rule 3), never for one 
 you haven't reached: a peak, pass, river, lake, spring, beach, waterfall or stop named with a
 generic word in another language gets English (Río Urdiales: Urdiales River, Pico Bajero:
 Bajero Peak). The checker rejects a batch that leaves many of them null. Keep it a name: no explanations, notes, parentheses or alternatives. Title case. Don't invent an
-established English name you aren't sure of: translate and romanise instead.
+established English name you aren't sure of: translate and romanize instead.
 
 ### Latin script: right and wrong
 
@@ -98,10 +98,10 @@ established English name you aren't sure of: translate and romanise instead.
 Every Japanese name gets English, places too (緑町 is Midoricho, 本町 Honmachi). Hepburn
 spellings: shi, chi, tsu, fu, ji, sha, sho, cha (大坪川 is Otsubo River, not Otubo; 石川 Ishikawa,
 not Isikawa); long vowels without macrons or doubled letters (大野 Ono, 東京 Tokyo, 大阪 Osaka).
-Romanise the whole name, and translate the generic ending where English maps do: 〜川 river,
+Romanize the whole name, and translate the generic ending where English maps do: 〜川 river,
 〜湖 lake, 〜池 pond, 〜山/〜岳 mount, 〜島 island, 〜駅 station, 〜線 line, 〜神社 shrine,
 〜寺 temple, 〜城 castle, 〜公園 park, 〜滝 falls, 〜峠 pass, 〜岬 cape. Keep the reading whole
-when dropping the ending would leave a single syllable. Neighbourhoods and chome stay romanised.
+when dropping the ending would leave a single syllable. Neighbourhoods and chome stay romanized.
 
 | Name | Right |
 |---|---|
@@ -131,9 +131,9 @@ Tamsui, Sun Moon Lake, Taroko Gorge). Translate the generic ending: 〜溪 river
 river, 〜圳 canal, 〜排水 drain, 〜渠 channel, 〜山 mount, 〜區 district, 〜里 village, 〜站 station,
 〜線 line, 〜宮/〜廟 temple, 觀景台 viewing platform. 嘉南大圳北幹線 is Jianan Canal North Main
 Line; 滯洪池 is Detention Pond. Hong Kong: the Hong Kong Government's English names and Cantonese
-romanisation (Mong Kok, Tsim Sha Tsui, Sha Tin, Lion Rock). Singapore: the English name in use.
+romanization (Mong Kok, Tsim Sha Tsui, Sha Tin, Lion Rock). Singapore: the English name in use.
 
-In Chinese names the proper part is romanised, not translated word by word; only the generic
+In Chinese names the proper part is romanized, not translated word by word; only the generic
 ending (and words like 北 north, 新 new, 大 big when they're separate from the name) are
 translated. 楓樹腳溪 is Fengshujiao Creek (not Maple Tree Foot Creek), 溪墘大排 Xiqian Main Drain,
 五源 Wuyuan; in Hong Kong 深灣村 is Sham Wan Tsuen, 大岩口 Tai Ngam Hau, 象門 Tseung Mun, 小石澳北山

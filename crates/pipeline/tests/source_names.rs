@@ -163,7 +163,7 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
                 }
             }
         }
-        // (A name's first two words, any case: `ci:` (as written when both are plain capitalised words); its declaration's id, its file's first word,
+        // (A name's first two words, any case: `ci:` (as written when both are plain capitalized words); its declaration's id, its file's first word,
         // when that's a word of its name, five letters or more and no role's, format's or
         // encoding's word (a `[data]` value of any declaration): `w:`, as the name writes it, a
         // whole word.)
@@ -171,7 +171,7 @@ fn markers(root: &Path) -> BTreeMap<String, String> {
         let words: Vec<&str> =
             name.split(|c: char| !(c.is_alphanumeric() || c == '&' || c == '-')).filter(|w| !w.is_empty()).collect();
         if words.len() >= 2 && words[0].starts_with(|c: char| c.is_alphabetic()) {
-            // (Two words of plain English capitalised, "Terrain Tiles", are matched as written: in
+            // (Two words of plain English capitalized, "Terrain Tiles", are matched as written: in
             // lower case they're common words.)
             let plain =
                 |w: &str| w.chars().next().is_some_and(char::is_uppercase) && w.chars().skip(1).all(char::is_lowercase);

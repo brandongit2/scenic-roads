@@ -103,7 +103,7 @@ export function operatorColour(op: string): string {
   return OPERATOR_PALETTE[(h >>> 0) % OPERATOR_PALETTE.length];
 }
 
-/** Scale position 0..1 as an expression: the range, then the equalisation lookup if any. */
+/** Scale position 0..1 as an expression: the range, then the equalization lookup if any. */
 function uExpr(st: FerryScale, range: [number, number], cdf: Uint8Array | null): Expr {
   const d = ferryMetricDef(st.metric);
   const raw: Expr = ['/', ['-', d.expr, range[0]], Math.max(1e-9, range[1] - range[0])];

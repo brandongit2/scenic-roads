@@ -20,7 +20,7 @@ impl<'a> TerrainCache<'a> {
         Self { arc, tiles: HashMap::new() }
     }
 
-    /// Elevation (m) at normalised Web-Mercator (x, y); 0 where no terrain exists.
+    /// Elevation (m) at normalized Web-Mercator (x, y); 0 where no terrain exists.
     pub fn at(&mut self, mx: f64, my: f64) -> f32 {
         let (px, py) = (mx * WORLD12 - 0.5, my * WORLD12 - 0.5);
         let (tx, ty) = (((px + 0.5) / 256.0).floor() as u32, ((py + 0.5) / 256.0).floor() as u32);

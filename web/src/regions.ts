@@ -56,7 +56,7 @@ export class RegionsError extends Error {
 }
 
 /** A JSON request to this Mac's server, for the region and download panels: its answer, else a
- * RegionsError in words (the server not answering; 503, the NAS away; its own `error`, capitalised).
+ * RegionsError in words (the server not answering; 503, the NAS away; its own `error`, capitalized).
  * An abort, before or during the answer, is thrown as the AbortError it is. */
 export async function call<T>(url: string, init?: RequestInit): Promise<T> {
   let r: Response;

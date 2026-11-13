@@ -972,7 +972,7 @@ export class LayersCard {
     }
   }
 
-  /** The terrain in view, the tint's range in use and its equalisation lookup (if on). */
+  /** The terrain in view, the tint's range in use and its equalization lookup (if on). */
   updateTint(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
     this.tintScale.update(dist, range, cdf);
   }

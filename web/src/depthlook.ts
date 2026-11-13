@@ -13,7 +13,7 @@ export interface DepthState {
   /** The ramp's spacing over its range: in proportion to depth, or more colours in the shallows. */
   scale: Spacing;
   /** The colour scale (ui/scale.ts ScaleControls): the palette, the range (m of depth; `auto`:
-   * fitted to the depths in view, between the `fit` percentiles) and equalisation. The low-end
+   * fitted to the depths in view, between the `fit` percentiles) and equalization. The low-end
    * fade and the highlight aren't offered for depth. */
   colours: ScaleFields;
   opacity: number;
@@ -71,7 +71,7 @@ export const hbin = (d: number) => Math.max(0, Math.min(HBINS - 1, Math.floor(((
 export const hdepth = (b: number) => 10 ** ((b / HBINS) * 5.08 - 1);
 
 /** The workers' histogram (HBINS log bins) as linear bins over DEPTH_DOMAIN, 2 m each, for the
- * colour scale's histogram and equalisation: each log bin's count spread evenly over its depths
+ * colour scale's histogram and equalization: each log bin's count spread evenly over its depths
  * (deeper than the domain: its last bin). */
 export function depthBins(hist: number[]): Float64Array {
   const [lo, hi] = DEPTH_DOMAIN, n = (hi - lo) / 2, w = (hi - lo) / n;

@@ -709,7 +709,7 @@ mod net {
     }
 
     /// A run of blocks (`a..=b`) being got, by whichever reader comes to it first (`got`'s
-    /// initialisation), the others wanting any of its blocks waiting for it: two threads never
+    /// initialization), the others wanting any of its blocks waiting for it: two threads never
     /// fetch the same blocks at once (task #1099: 2.8 % of a terrain-deep target's download was).
     struct Flight {
         a: u64,

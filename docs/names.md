@@ -10,8 +10,8 @@ punctuation or spacing, and not one of main's parts.
 
 **A thing's English, in order** (`names::display`):
 1. **Its own,** from a source about that thing, never copied to other things of the same name, and
-   shown even where wrong (`names::own`): OSM's `name:en`; its romanised name (`name:ja-Latn`,
-   `name:zh-Latn-pinyin`…); its kana reading romanised by modified Hepburn without macrons
+   shown even where wrong (`names::own`): OSM's `name:en`; its romanized name (`name:ja-Latn`,
+   `name:zh-Latn-pinyin`…); its kana reading romanized by modified Hepburn without macrons
    (`names::romaji`); a register's, UNESCO's or English Wikipedia's title where the heritage and
    landmark jobs put it in `en`. An own English equal to the name is none.
 2. **Its name's translation:** the line for its name, kind and language, trying first the languages

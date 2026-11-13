@@ -32,7 +32,7 @@ use std::sync::Mutex;
 pub const BASE_ID: &str = "base";
 const BASE_NAME: &str = "Default";
 const MAX_NAME: usize = 60;
-/// A profile's settings, serialised, at most (the app's are ~10 KB).
+/// A profile's settings, serialized, at most (the app's are ~10 KB).
 const MAX_SETTINGS: usize = 256 * 1024;
 const MAX_PROFILES: usize = 200;
 

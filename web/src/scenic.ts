@@ -1,5 +1,5 @@
 // Colour modes and scenic score components (weight presets: presets.ts).
-// Component normalisation must match crates/roadcore/src/scenic.rs (drive_components; rail:
+// Component normalization must match crates/roadcore/src/scenic.rs (drive_components; rail:
 // ride_components, mirrored in rail.ts and roads/layer.ts).
 
 import { fmt } from './fmt';

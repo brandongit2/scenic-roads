@@ -377,7 +377,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
                                 },
                             ),
                         };
-                        // (Given up: not memoised, as nothing was resolved.)
+                        // (Given up: not memoized, as nothing was resolved.)
                         let Some((res, needs)) = got else { return (id.clone(), Ok((Err(Vec::new()), Vec::new()))) };
                         if let Some(m) = ctx.memo {
                             m.lock().unwrap().insert(key.clone(), (res.clone(), needs.clone()));

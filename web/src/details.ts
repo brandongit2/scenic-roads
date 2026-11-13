@@ -267,7 +267,7 @@ export function enrichPoi(kind: string, props: Record<string, any>, d: Detail): 
   return { facts, desc, rows, links };
 }
 
-/** Credit for a written description: the Wikipedia article it summarises, or the sources it was
+/** Credit for a written description: the Wikipedia article it summarizes, or the sources it was
  *  researched from (research-*.out.jsonl). */
 function longSource(d: Detail): string | undefined {
   const s = d.long_src;

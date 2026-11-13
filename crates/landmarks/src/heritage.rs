@@ -292,7 +292,7 @@ fn points(coords: &serde_json::Value, out: &mut Vec<(f64, f64)>) {
 
 /// area-shapes.geojsonseq's polygons by the z6 tiles their bounding boxes meet: each slice's lines
 /// sorted by their content's hash (an unchanged polygon keeps its place when others change; the
-/// rasterising is a union, so order doesn't matter). One across the antimeridian (the Aleutians'
+/// rasterizing is a union, so order doesn't matter). One across the antimeridian (the Aleutians'
 /// refuges: parts each side) by its parts' boxes: its whole box is the world's width, which put it
 /// in every tile of its latitudes (2026-10-05: Canada's and Britain's slices, and so their units'
 /// keys, changed for Alaska's areas).

@@ -48,10 +48,10 @@ agent last started.
 | Disk in the home | `agent/` 13 GB (cache 4.8, scratch 6.2, backups 1.1, pack-idx 0.55), `mirror/` 15 GB, `accepted/` 0.9, `idx/` 0.28, `catalog/` 0.12 | `agent/` 69 GB (cache 55, scratch 12, backups 1.1, pack-idx 0.55) |
 
 On the M1 the sample put the whole busy core on the `region-states` thread
-(`build::region_states` → `unit_keys` → `coverage::Shape::meets_rect`, and serialising `Reach`
+(`build::region_states` → `unit_keys` → `coverage::Shape::meets_rect`, and serializing `Reach`
 for the terrain units' keys), taking 0.7–131 s a run, started after every job end and every 5 min.
 The member read the indexes of all 3,934 terrain packs for it (358 s over SMB on the M1). The pool
-thread spent ~10 % serialising mail (`Side::save_mail`).
+thread spent ~10 % serializing mail (`Side::save_mail`).
 
 | Service | Runs on members today | Cost measured | Decision |
 | --- | --- | --- | --- |

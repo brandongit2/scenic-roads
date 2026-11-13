@@ -54,7 +54,7 @@ const rgba = (c: RGB, a: number) =>
   `rgba(${c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)).join(',')},${Math.max(0, Math.min(1, a)).toFixed(3)})`;
 
 /** The tint's colour and opacity at a value (metres or percent), on the range in use: banded,
- * equalised (cdf over the range), faded at the low end; outside the highlight, transparent. */
+ * equalized (cdf over the range), faded at the low end; outside the highlight, transparent. */
 export function tintColourAt(t: Terrain, sc: ScaleFields, range: [number, number], cdf: Uint8Array | null, roadPalette: string): (v: number) => [RGB, number] {
   const col = tintColourFn(sc.palette, t.tintCurve, roadPalette);
   const al = fadeFn(sc);
@@ -104,7 +104,7 @@ export function applyTint(map: MLMap, t: Terrain, sc: ScaleFields, range: [numbe
     return rgba(c, a);
   };
   // Values to place stops at: band edges (each a pair of stops 1 cm apart: colour-relief only
-  // takes `interpolate`), else even steps (more when equalised: the lookup bends the ramp), and
+  // takes `interpolate`), else even steps (more when equalized: the lookup bends the ramp), and
   // the highlight's edge.
   const vs: number[] = [];
   const thr = sc.threshold;

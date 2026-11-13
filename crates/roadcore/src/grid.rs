@@ -191,7 +191,7 @@ pub fn defined(v: f32) -> bool {
     (MIN_ELEV..=MAX_ELEV).contains(&v)
 }
 
-/// Encode metres as a Terrarium RGB PNG (quantised to 1/256 m).
+/// Encode metres as a Terrarium RGB PNG (quantized to 1/256 m).
 pub fn encode_terrain_png(elev: &[f32], w: u32, h: u32) -> Result<Vec<u8>> {
     let rgb = terrarium_rgb(elev);
     let mut out = Vec::new();

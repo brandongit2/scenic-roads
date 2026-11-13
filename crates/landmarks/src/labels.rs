@@ -170,7 +170,7 @@ fn population(v: Option<&str>) -> f64 {
 const SAME_LANGUAGE: [&str; 7] = ["Hant", "Hans", "TW", "HK", "CN", "MO", "SG"];
 const KANA_KEYS: [&str; 3] = ["name:ja-Hira", "name:ja_kana", "name:ja-Kana"];
 
-/// How much a name:… key that romanises the name is preferred (lower first).
+/// How much a name:… key that romanizes the name is preferred (lower first).
 fn romanised(key: &str) -> Option<u8> {
     let rest = key.strip_prefix("name:")?;
     if rest.ends_with("_rm") {
@@ -184,7 +184,7 @@ fn romanised(key: &str) -> Option<u8> {
     }
 }
 
-/// A thing's own English (name:en, else its romanised name), its kana reading (when it has no
+/// A thing's own English (name:en, else its romanized name), its kana reading (when it has no
 /// English), and the languages OSM gives its name (comma-separated), from its tags.
 fn own(t: &Tags, name: &str) -> (Option<String>, Option<String>, Option<String>) {
     let mut en = t.get("name:en").map(pytext::strip).filter(|s| !s.is_empty()).map(str::to_string);

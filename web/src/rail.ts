@@ -1,7 +1,7 @@
 // Passenger rail: colour schemes, metrics and the scenic factors of a ride. Channels are the same
 // per-vertex scenic channels as roads (roadcore::scenic::ch), measured from a carriage window
 // (2.8 m); engineering factors come from the track itself (elevation, grade, bridges, tunnels).
-// Component normalisation must match the rail branch of metric() in roads/layer.ts.
+// Component normalization must match the rail branch of metric() in roads/layer.ts.
 
 import { fmt } from './fmt';
 import { u8Area } from './scenic';

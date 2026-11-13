@@ -7,7 +7,7 @@
 //!   pass's ISO 3166 outlines).
 //! - [`display`]: the lines ([`Names`]: loading, refreshing, versions per language for ETags), the
 //!   kinds ([`Kind`]), and the display rule ([`Names::display`], [`same_name`]).
-//! - [`own`]: a thing's own English from its tags (`name:en`, romanised names, kana by
+//! - [`own`]: a thing's own English from its tags (`name:en`, romanized names, kana by
 //!   [`romaji::hepburn`]) and the languages OSM gives its name.
 //! - [`mvt`]: vector tiles: decoding and encoding, [`mvt::attach`] and [`mvt::merge`].
 

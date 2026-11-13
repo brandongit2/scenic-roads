@@ -31,7 +31,7 @@ const POI_LABEL: Record<string, string> = {
 };
 const SPECIAL_LABEL: Record<string, string> = { biosphere: 'UNESCO Biosphere Reserve', geopark: 'UNESCO Global Geopark', dark_sky: 'Dark-sky place' };
 
-/** A hovered map feature, summarised for the bottom bar. */
+/** A hovered map feature, summarized for the bottom bar. */
 export interface FeatureSummary {
   title: string;
   kind: string;
@@ -476,7 +476,7 @@ export class Overlays {
 
   /** Size and fade the landmark dots by prominence: the scores of the visible landmarks in view (all
    * kinds, after their filters) give the histogram and the auto-fitted range; each dot is placed on
-   * that scale (landmarks: range or lock, equalisation, fade, highlight). */
+   * that scale (landmarks: range or lock, equalization, fade, highlight). */
   prominence(s: AppState = this.state!) {
     if (!s) return;
     this.state = s;
@@ -855,13 +855,13 @@ export function landmarkRef(layer: string, p: Record<string, any>, at?: [number,
   return p.mid !== undefined && at ? markRef(layer, p, at) : null;
 }
 
-/** A feature's name as the app shows it, "main (sub)" (names.ts), capitalised; '' for none. `p`:
+/** A feature's name as the app shows it, "main (sub)" (names.ts), capitalized; '' for none. `p`:
  * the properties holding its main and sub (the server's, for the feature's `name` or `n`). */
 function named(name: unknown, p: Record<string, any>): string {
   return name ? cap(displayName(p.main, String(name), p.sub)) : '';
 }
 
-/** A landmark from a list (its map layer, properties and place), summarised as a hover on it is. */
+/** A landmark from a list (its map layer, properties and place), summarized as a hover on it is. */
 export const summariseFeature = (layer: string, props: Record<string, any>, at: [number, number]): FeatureSummary | null =>
   summarise({ layer: { id: layer }, properties: props } as unknown as MapGeoJSONFeature, maplibregl.LngLat.convert(at));
 

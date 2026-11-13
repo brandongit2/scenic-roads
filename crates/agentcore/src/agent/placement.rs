@@ -75,7 +75,7 @@ pub fn slack(f: &super::forecast::Forecast) -> BTreeMap<String, u64> {
     f.steps.iter().filter_map(|s| Some((s.step.clone(), end.saturating_sub(s.done_at?)))).collect()
 }
 
-/// A stable 64-bit hash of `key` (FNV-1a, then mixed: splitmix64's finaliser), the same on every
+/// A stable 64-bit hash of `key` (FNV-1a, then mixed: splitmix64's finalizer), the same on every
 /// Mac and every run.
 pub fn hash(key: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;

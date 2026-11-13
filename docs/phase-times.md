@@ -82,7 +82,7 @@ their files opened 14 %, the whole local copies made beside 54 %).
 - **terrain-hi** (1,053 s a run on average; 512 median): `sampling the terrain pool into raw
   tiles` 820 s a run, CPU/wall 0.5 with 3 threads: the level's tiles sampled from the pool in
   chunks of 16 tiles on up to 3 threads beside the main one. Then `tiles prepared, the block
-  before them levelled, shaded and encoded` 159 s (CPU/wall 1.7: the water rasterised, lakes
+  before them levelled, shaded and encoded` 159 s (CPU/wall 1.7: the water rasterized, lakes
   levelled, rivers, WebP), the regions read 22 s, the uploads 20 s.
   - **Where the sampling threads' time goes is in their `beside` phases**, 350 s a run summed
     over the threads on average, but the average hides two populations:

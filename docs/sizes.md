@@ -13,7 +13,7 @@ z6 tile extracts ~58 GB; basemap 28.6 GB (Planetiler needs ~6× its 16.3 GB inpu
 | sources kept per pass | ~200 GB | the same |
 | roadside buildings (once per release) | ~40 GB | the same |
 | 3D buildings (`docs/buildings3d.md` §2.5): sources, normalized files, packs | 62 + 17–22 + 4.6–6.9 GB | not planned |
-| depth (docs/steps.md §3): its sources' grids; its packs | a sample's: 15″ grid 6 MB over 9.5° × 6°; 56 US coastal tiles 0.6 GB of grids → a z6 tile's packs 168 MB (4,173 tiles); the depth lab's estimate, quantised: ~25 GB seas, 5–20 GB surveyed lakes | — |
+| depth (docs/steps.md §3): its sources' grids; its packs | a sample's: 15″ grid 6 MB over 9.5° × 6°; 56 US coastal tiles 0.6 GB of grids → a z6 tile's packs 168 MB (4,173 tiles); the depth lab's estimate, quantized: ~25 GB seas, 5–20 GB surveyed lakes | — |
 | an app Mac's mirror | the World ~10.5 GB; a region tens of MB to ~20 GB | as downloaded |
 
 The NAS holds about two passes' sources at most (a retired pass's go 14 days after the next

@@ -1770,7 +1770,7 @@ start) is one job live and two or more in the forecast, each paying its start; a
 on, a run starts at the target measured to take longest among those offered (`placed_start`),
 among all of the step's live and among the first 64 in the forecast. They stay because the offer's
 size is the forecast's CPU: task #951 offered 256 and the live-scale test's three runs took 463 s
-of CPU against 135 at 64 (its bound 180 s), and memoising `placed_start`'s time of each target
+of CPU against 135 at 64 (its bound 180 s), and memoizing `placed_start`'s time of each target
 (`secs_of`) didn't bring it down: the cost is the work each ask does per target offered (the
 offers made, each target's checks and placement's draws), which an incremental run would have to
 keep between asks. **Measured** (`scenic forecast-check --replay`, its

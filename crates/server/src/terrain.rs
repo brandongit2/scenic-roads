@@ -57,7 +57,7 @@ fn flat() -> Vec<u8> {
     FLAT.get_or_init(|| encode(vec![0.0; 65536]).unwrap()).clone()
 }
 
-/// The catalogue generation, so synthesised tiles from an older catalogue aren't served.
+/// The catalogue generation, so synthesized tiles from an older catalogue aren't served.
 fn gen(s: &crate::AppState) -> u64 {
     s.data.generation.load(std::sync::atomic::Ordering::Relaxed)
 }

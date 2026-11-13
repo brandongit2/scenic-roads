@@ -1,5 +1,5 @@
 //! The translators' checker, `tools/names/check.py`, run by the translations' check (docs/inputs.md
-//! §6.3): its rules on each line (`problem`: romanisation that isn't Hepburn, English in the
+//! §6.3): its rules on each line (`problem`: romanization that isn't Hepburn, English in the
 //! original's word order, a half translation…) and its stretches of English that drifted from their
 //! names (`drift`) are the translations' warnings. One checker, so what the translators run on a
 //! batch before adding it and what the input check says of it can't differ.

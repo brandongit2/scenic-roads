@@ -2761,7 +2761,7 @@ pub(crate) mod tests {
     /// mean near zero (the owner's, 4 Nov).
     #[test]
     fn chained_means_stay_within_a_quantum_of_a_one_pass_mean() {
-        // (A synthetic z(n) → z(n−5) pyramid of quantised heights: ties at every level.)
+        // (A synthetic z(n) → z(n−5) pyramid of quantized heights: ties at every level.)
         let side = 256usize << 5;
         let fine: Vec<f32> = (0..side * 256)
             .map(|p| {

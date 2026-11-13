@@ -104,7 +104,7 @@ export interface Terrain {
   tintOpacity: number;
   /** The tint's colour scale per variable (ui/scale.ts, as the roads'): palette (terrain.ts
    * TINT_PALETTES; 'roads' follows the road palette), range auto-fitted to the terrain in view
-   * (percentiles `fit`), locked or full, equalisation, low-end fade and highlight. */
+   * (percentiles `fit`), locked or full, equalization, low-end fade and highlight. */
   tintScales: Record<TintVar, ScaleFields>;
   /** The range follows the road colours' while roads show elevation (or grade, for slope). */
   tintMatch: boolean;
@@ -233,7 +233,7 @@ function fitLenOf(a: string | undefined, b: string | undefined, d: Pair): Pair {
   return a && b && validFitLen(v) ? v : d;
 }
 
-/** fit lo, fit hi, equalise, fade span, highlight on, direction, value (hash fields). */
+/** fit lo, fit hi, equalize, fade span, highlight on, direction, value (hash fields). */
 function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 'equalize' | 'lowSpan' | 'threshold'> {
   const n = (x: string, dv: number) => (x !== '' && Number.isFinite(Number(x)) ? Number(x) : dv);
   const lo = Math.min(99.5, Math.max(0, n(v[0], d.fit[0]))), hi = Math.min(100, Math.max(lo + 0.5, n(v[1], d.fit[1])));
@@ -251,7 +251,7 @@ function cleanDepthColours(c: ScaleFields, base: ScaleFields): ScaleFields {
   return { ...c, palette: DEPTH_PALETTES.some((p) => p.key === baseKey(c.palette)) ? c.palette : base.palette, range: [lo, hi] };
 }
 
-/** A colour scale's fields in a link: palette, auto, range, fit, equalise, fades, highlight. */
+/** A colour scale's fields in a link: palette, auto, range, fit, equalize, fades, highlight. */
 function scaleStr(x: ScaleFields): string {
   return [x.palette, x.auto ? 1 : 0, +x.range[0].toFixed(3), +x.range[1].toFixed(3), +x.lowFade.toFixed(2),
     x.fit[0], x.fit[1], x.equalize ? 1 : 0, +x.lowSpan.toFixed(2), x.threshold.on ? 1 : 0, THR_CODE[x.threshold.dir], +x.threshold.value.toFixed(3)].join(',');
@@ -510,7 +510,7 @@ export interface AppState {
   /** What each scenic metric (mode) auto-fits in: screen widths (its fitLens, the default) or
    * percentiles of road length in view (its own: fit while shown, else scenicFits). */
   fitUnits: FitUnits<Mode>;
-  /** Histogram-equalised colours. */
+  /** Histogram-equalized colours. */
   equalize: boolean;
   /** Scenic-score weights (see scenic.ts COMPONENTS). */
   weights: number[];
@@ -575,7 +575,7 @@ export interface AppState {
   poiEmphasis: number;
   /** Landmark prominence: a scale over each dot's score (0–1: fame and rarity mixed by `balance`,
    * 0 fame only … 1 rarity only), like the road colour scales: range (auto-fitted to ranks of the
-   * landmarks in view, locked or full), equalisation, low-end fade and highlight. The palette only
+   * landmarks in view, locked or full), equalization, low-end fade and highlight. The palette only
    * draws the legend. `top`: the auto-fitted range runs from the score of the top[0]-th best
    * landmark in view to that of the top[1]-th (counts, not percentiles: a share of the landmarks
    * in view would light up many times more of them where they are dense, Europe against Canada;
@@ -709,7 +709,7 @@ export class Store {
   /**
    * Switch colour mode. The current display type's settings are put aside and the new one's
    * restored (defaults the first time), so each of Elevation, Grade, Relief and Scenic keeps its
-   * own palette, fades, fit, equalisation and highlight; ranges and threshold values, which are
+   * own palette, fades, fit, equalization and highlight; ranges and threshold values, which are
    * in the metric's units, are kept per mode, and so are the scenic metrics' fits (scenicFits).
    */
   setMode(mode: Mode) {

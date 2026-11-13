@@ -135,7 +135,7 @@ impl Poi {
 }
 
 /// Tags every stop & sight keeps for its details, and each kind's own (marksjob::detail_keys; plus
-/// the Japanese romanisations, the English name where there's no name:en).
+/// the Japanese romanizations, the English name where there's no name:en).
 const KEEP_COMMON: &[&str] = &[
     "name",
     "ele",

@@ -6,7 +6,7 @@
 // zoom 16 are one run, for the pass that reads their ground heights from the terrain (dots.ts).
 //
 // Zoomed out, most dots are specks (below the prominence range: all alike), piled up by the
-// thousand where landmarks are dense, and a GPU pays for every point it rasterises there, however
+// thousand where landmarks are dense, and a GPU pays for every point it rasterizes there, however
 // small. So specks are drawn once per cell of about two device pixels, by the least known visible
 // dot of the cell (the one least likely to be prominent itself), with the opacity of all the
 // cell's visible dots over one another. The cells are the Morton order's tiles at zooms 9–16, one

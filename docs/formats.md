@@ -468,7 +468,7 @@ Each a folder on the job's Mac, its files sent to the worker as `u/…`, not in 
 - **Descriptions** (`inputs/descriptions/**/*.jsonl`, §6.4): `{"qid": "Q…"}` or `{"id":
   "n…"|"w…"|"r…"}`, `long` (unless `"drop": true`), `src` a string or a list of `{"t", "u"}`;
   `about.toml` beside them (§5.1).
-- **Labels** (`layers/labels`, layer `l`): `n` name, `en` its English (`name:en`, else romanised),
+- **Labels** (`layers/labels`, layer `l`): `n` name, `en` its English (`name:en`, else romanized),
   `kana` (when no English), `l` OSM's languages of the name (comma-separated), `o` OSM object
   (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`, `ms`, `s` (crates/landmarks/src/labels.rs). Before `LABELS_V`
   2: `n`, `en`, `k`, `c`, `mz`, `ms`, `s`.
@@ -498,7 +498,7 @@ ancestor's neighbours' edges; nearest for classes).
 - **`depth`** (encoding `terrarium-webp`: Terrarium RGB as lossless WebP, as the terrain's, but
   rounded as below, not to the terrain's centimetre): metres below the water's surface (the sea's mean level, a
   lake's mean surface, an enclosed sea's own: the terrain's height there, the Caspian's −28 m), negative; drying heights positive (at most 20 m); +12,000 m where there's
-  none (≥ 9,000 is none). Quantised: 0.1 m in the first 100 m, 1 m deeper. The basemap's water
+  none (≥ 9,000 is none). Quantized: 0.1 m in the first 100 m, 1 m deeper. The basemap's water
   (`terrain_water`: half a pixel or more of sea or lake) is where it lies, and the land keeps a band
   of 3 pixels of the nearest water's value (class 0), so a finer shoreline scaled up from it never
   meets a gap; the map doesn't draw it (its relief reaches from the water's own data:

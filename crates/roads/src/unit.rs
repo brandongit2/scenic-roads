@@ -606,7 +606,7 @@ pub fn prepare_folder(
     terrain::road_terrain::Codes::of(&accepted).write(&dir.join(terrain::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated
-    // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
+    // areas rasterized onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
     let s = stage("staging the heritage inputs");
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     s.end();

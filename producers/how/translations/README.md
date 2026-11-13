@@ -19,7 +19,7 @@ English for names on the map that have none of their own (docs/inputs.md §6.3, 
 
 Converted once from the earlier translation work's per-area tables (place and road names for jp,
 tw, hk, sg, fr, ib, pt, na, gb), made in the separate place-translations repository: English from
-OSM's and Wikipedia's own first (`native`), then word rules and romanisation (`rule:…`), then Claude
+OSM's and Wikipedia's own first (`native`), then word rules and romanization (`rule:…`), then Claude
 agents (the Haiku batches of 2026-09-30, with `briefs-2026-09/TRANSLATORS.md`; the lines tagged
 `agent:sonnet`, from that repository's later session). `conversion-log.txt` is the conversion's
 log; `analysis/` the scripts used to look at the lists. Neither the conversion script nor the later
