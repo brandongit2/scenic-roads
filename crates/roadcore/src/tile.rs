@@ -166,13 +166,13 @@ pub fn encode(lines: &[TileLine], extent_log2: u8) -> Vec<u8> {
     out
 }
 
-/// Reads a tile `encode` wrote (v8, and v7's attributes of four bytes), with its log2(extent): the
+/// Reads a tile `encode` wrote, with its log2(extent): the
 /// server clips the lines of a tile only partly downloaded (crates/server clip.rs).
 pub fn decode(b: &[u8]) -> anyhow::Result<(Vec<TileLine>, u8)> {
     use anyhow::{bail, ensure};
     ensure!(b.len() >= 4 && b[0] == b'R' && b[1] == b'T', "not a road tile");
     let (v, ext) = (b[2], b[3]);
-    ensure!(v == 7 || v == VERSION, "road tile version {v}");
+    ensure!(v == VERSION, "road tile version {v}");
     let mut pos = 4;
     let get = |b: &[u8], pos: &mut usize| -> anyhow::Result<u64> {
         let (mut r, mut s) = (0u64, 0u32);
@@ -216,10 +216,8 @@ pub fn decode(b: &[u8]) -> anyhow::Result<(Vec<TileLine>, u8)> {
     for l in &mut lines {
         l.road_m = get(b, &mut pos)? as u32;
     }
-    let attr_len = if v == 7 { 4 } else { 3 };
     for l in &mut lines {
-        let a = take(b, &mut pos, attr_len)?;
-        l.attr.copy_from_slice(&a[attr_len - 3..]);
+        l.attr.copy_from_slice(&take(b, &mut pos, 3)?);
     }
     for l in &mut lines {
         l.colour = get(b, &mut pos)? as u32;
@@ -291,5 +289,13 @@ mod tests {
         assert_eq!(encode(&back, 12), encode(&lines, 12));
         assert_eq!(back[1].way, 12);
         assert_eq!(back[0].sc[2], [2; NCH]);
+    }
+
+    /// A tile of another version is refused.
+    #[test]
+    fn decode_refuses_another_version() {
+        let mut b = encode(&[], 12);
+        b[2] = VERSION - 1;
+        assert!(decode(&b).is_err());
     }
 }

@@ -1316,10 +1316,11 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   ferry blocks and marks tiles carry `main` only where it differs from the name; popup records are
   served as stored.
 
-## RT road tiles, version 7
+## RT road tiles, version 8
 
-As v6 (`roadcore::tile`), but the way column holds OSM way ids, and lines are sorted by (draw
-class, id) within a tile. The client sends the id with the clicked point.
+Laid out in `roadcore::tile`'s header comment (the packs' encoding keeps its name, "rt7"). The way
+column holds OSM way ids, and lines are sorted by (draw class, id) within a tile. The client sends
+the id with the clicked point. A reader takes version 8 only.
 
 ## Other files (listed, not specified)
 
