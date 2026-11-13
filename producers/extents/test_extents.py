@@ -635,6 +635,17 @@ class StacAssets(unittest.TestCase):
         got = list(extents.read_stac(net, {"url": "https://h/c", "geometry": "extent"}, 0))
         self.assertEqual([(p["id"], g.bounds) for g, p in got], [("p-1m", (0.0, 0.0, 1.0, 1.0)), ("q-1m", (20.0, 0.0, 21.0, 1.0))])
 
+    def test_a_next_link_dropping_the_page_size_gets_it_back(self):
+        # (Luzern's: its next link is ?page=2, whose default size answers nothing, or everything.)
+        def page(i, nxt):
+            return json.dumps({"features": [{"id": f"t{i}", "properties": {}, "geometry": {"type": "Point", "coordinates": [i, 0]}}],
+                               "links": [{"rel": "next", "href": nxt}] if nxt else []}).encode()
+        net = FakeNet({"https://h/c/items?limit=1": page(1, "https://h/c/items?page=2"),
+                       "https://h/c/items?page=2&limit=1": page(2, "https://h/c/items?page=3&limit=1"),
+                       "https://h/c/items?page=3&limit=1": page(3, None)})
+        got = list(extents.read_stac(net, {"url": "https://h/c", "page": 1}, 0))
+        self.assertEqual([p["id"] for _, p in got], ["t1", "t2", "t3"])
+
 
 class RasterFiles(unittest.TestCase):
     def test_a_buckets_files_by_their_names(self):

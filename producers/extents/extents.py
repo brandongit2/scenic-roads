@@ -297,9 +297,7 @@ def esri_shape(g):
 def read_stac(net, b, _tol):
     """A STAC collection's items: each item's footprint, or with `geometry` the GeoJSON file its
     asset of that name is (a finer outline than the item's own, where a publisher gives one)."""
-    url = b["url"].rstrip("/") + "/items?limit=" + str(b.get("page", 500))
-    while url:
-        d = net.json(url)
+    for d in stac_pages(net, b["url"], b.get("page", 500)):
         for f in d.get("features") or []:
             props = {**(f.get("properties") or {}), "id": f.get("id"), "collection": f.get("collection")}
             asset = (f.get("assets") or {}).get(b["geometry"]) if b.get("geometry") else None
@@ -312,7 +310,19 @@ def read_stac(net, b, _tol):
                     yield (to_wgs84(shape, answer_crs(g), 20.0) if answer_crs(g) else shape), props
             elif f.get("geometry"):
                 yield sg.shape(f["geometry"]), props
+
+
+def stac_pages(net, collection, limit):
+    """A STAC or OGC API collection's pages of items, by their `next` links. A next link without the
+    page size asked for gets it back: a server whose links drop it (Luzern's) answers the next page
+    of its default size, which may be the whole collection, so the pages would skip or repeat."""
+    url = collection.rstrip("/") + "/items?limit=" + str(limit)
+    while url:
+        d = net.json(url)
+        yield d
         url = next((l["href"] for l in d.get("links") or [] if l.get("rel") == "next"), None)
+        if url and "limit" not in urllib.parse.parse_qs(urllib.parse.urlsplit(url).query):
+            url += ("&" if urllib.parse.urlsplit(url).query else "?") + "limit=" + str(limit)
 
 
 def read_wfs(net, b, _tol):
@@ -730,12 +740,8 @@ def raster_files(net, b):
         return sorted({urllib.parse.urljoin(base, n) for n in listed_names(net, b) if re.search(b["pattern"], n)})
     if "stac" not in b:
         return b["urls"]
-    url, out = b["stac"].rstrip("/") + "/items?limit=500", []
-    while url:
-        d = net.json(url)
-        out += [f["assets"][b["asset"]]["href"] for f in d.get("features") or [] if b["asset"] in f.get("assets", {})]
-        url = next((l["href"] for l in d.get("links") or [] if l.get("rel") == "next"), None)
-    return sorted(out)
+    return sorted(f["assets"][b["asset"]]["href"] for d in stac_pages(net, b["stac"], 500)
+                  for f in d.get("features") or [] if b["asset"] in f.get("assets", {}))
 
 
 def read_raster(net, b, _tol):
