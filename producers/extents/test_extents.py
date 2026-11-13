@@ -465,6 +465,12 @@ class Listing(unittest.TestCase):
                        "https://b/dem/H24-27%28kamiina%29.zip": zip_of("x/dem_05lb994.tif")})
         b = {"url": "https://b", "list": "zip", "prefix": "dem/"}
         self.assertEqual(list(extents.listed_names(net, b)), ["dem_05lb753.tif", "x/dem_05lb994.tif"])
+        # (And each zip a page links, FABDEM's folder of 10° blocks, its members the 1° tiles; a
+        # link to anything else left aside.)
+        page = b'<a href="N00E000-N10E010_FABDEM_V1-2.zip">a</a> <a href="../">up</a> <a href="readme.txt">r</a>'
+        net = FakeNet({"https://f/d/": page, "https://f/d/N00E000-N10E010_FABDEM_V1-2.zip": zip_of("N00E006_FABDEM_V1-2.tif")})
+        b = {"url": "https://f/d/", "list": "zip", "links": True}
+        self.assertEqual(list(extents.listed_names(net, b)), ["N00E006_FABDEM_V1-2.tif"])
 
     def test_a_spreadsheets_rows_with_their_dates(self):
         import io
@@ -736,6 +742,21 @@ class IndexFiles(unittest.TestCase):
         body = b'{"geometry": {"type": "Polygon", "coordinates": [[[0,0],[2,0],[2,1],[0,0]]]}, "properties": {}, "type": "Feature"}'
         got = [(g().bounds, p) for g, p in extents.read_file(FakeNet({"u": body}), {"url": "u"}, 0)]
         self.assertEqual(got, [((0.0, 0.0, 2.0, 1.0), {})])
+
+    def test_a_catalogues_records(self):
+        # (OpenTopography's otCatalog: each record's footprint a FeatureCollection deep inside it, its
+        # polygons one feature, kept as they are for the repair; a z dropped.)
+        body = json.dumps({"Datasets": [
+            {"Dataset": {"name": "a", "identifier": {"value": "OT.1"}, "keywords": ["x"],
+                         "spatialCoverage": {"geo": {"geojson": {"type": "FeatureCollection", "features": [
+                             {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}},
+                             {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [[[2, 0], [3, 0], [3, 1], [2, 0]]]}}]}}}}},
+            {"Dataset": {"name": "b", "spatialCoverage": {"geo": {"geojson": {"type": "Polygon", "coordinates": [[[5, 5, 9], [6, 5, 9], [6, 6, 9], [5, 5, 9]]]}}}}},
+            {"Dataset": {"name": "c"}}]}).encode()
+        b = {"url": "u", "records": "Datasets", "footprint": "Dataset.spatialCoverage.geo.geojson"}
+        got = [(g() and g().bounds, p.get("Dataset.name"), p.get("Dataset.identifier.value"), "Dataset.keywords" in p)
+               for g, p in extents.read_file(FakeNet({"u": body}), b, 0)]
+        self.assertEqual(got, [((0.0, 0.0, 3.0, 1.0), "a", "OT.1", False), ((5.0, 5.0, 6.0, 6.0), "b", None, False), (None, "c", None, False)])
 
     def test_a_shapefiles_text_in_its_encoding(self):
         import io

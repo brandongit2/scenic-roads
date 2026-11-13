@@ -440,7 +440,8 @@ async fn a_click_answers_the_pieces_there_best_first() {
 /// The real pieces (producers/extents/terrain/) built and their score layer's values drawn as PNGs
 /// over the map's land colour, each value in its spacing's class (0.5, 1, 2, 5, 10, 30, 90 m and
 /// coarser, a class's edge a factor of 1.25 over its spacing, finer brighter): the world at z2,
-/// Europe at z4, France at z5, Germany at z6, Vancouver at z8, each under both settings of the
+/// Europe at z4, France at z5, Germany at z6, Vancouver at z8, Asia at z3, Japan at z5, Oceania and
+/// South America at z4, each under both settings of the
 /// switch, written to `$SCENIC_RENDER_DIR`; a look by hand at what the app's colour map will show
 /// (the step's whole build, ~1 min); nothing without the variable. It prints what the step made:
 /// its time, its peak resident set, its packs' bytes and its tiles' sets (over 256, the most).
@@ -514,12 +515,16 @@ fn renders_the_real_pieces() {
         [0x80, 0x30, 0x41],
     ];
     // (place, zoom, first column and row, tiles a side)
-    let places: [(&str, u8, u32, u32, u32); 5] = [
+    let places: [(&str, u8, u32, u32, u32); 9] = [
         ("world", 2, 0, 0, 4),
         ("europe", 4, 6, 3, 4),
         ("france", 5, 15, 10, 2),
         ("germany", 6, 32, 20, 3),
         ("vancouver", 8, 39, 87, 3),
+        ("asia", 3, 5, 2, 3),
+        ("japan", 5, 27, 11, 3),
+        ("oceania", 4, 12, 8, 4),
+        ("south-america", 4, 4, 7, 3),
     ];
     for (place, z, x0, y0, n) in places {
         let tiles: Vec<Option<Tile>> =

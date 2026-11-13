@@ -576,12 +576,56 @@ def index_features(body, b):
         yield from gml_features(body, b)
     else:
         d = json.loads(body)
+        if "records" in b:
+            yield from record_features(d, b)
+            return
         if answer_crs(d) and "crs" not in b:
             b["crs"] = answer_crs(d)
         # (A lone Feature is one: a STAC collection's capture-area file, LINZ's.)
         for f in d["features"] if "features" in d else [d]:
             # (One without geometry is still a feature: a WFS page's count is all of them.)
             yield (lambda f=f: xy(flat_shape(f["geometry"]), b) if f.get("geometry") else None), f.get("properties") or {}
+
+
+def dotted(o, path):
+    """The value at a dotted path of a JSON document (`a.b.c`), None where any part is missing."""
+    for k in path.split(".") if path else []:
+        o = o.get(k) if isinstance(o, dict) else None
+    return o
+
+
+def flattened(o, prefix=""):
+    """A JSON record's scalar values by their dotted paths (`identifier.value`), its lists left
+    aside: a feature's properties."""
+    out = {}
+    for k, v in o.items():
+        if isinstance(v, dict):
+            out.update(flattened(v, prefix + k + "."))
+        elif not isinstance(v, list):
+            out[prefix + k] = v
+    return out
+
+
+def record_features(d, b):
+    """A catalogue's records as features (a JSON answer that isn't GeoJSON: OpenTopography's
+    otCatalog): the list at the dotted path `records`, each record's footprint the GeoJSON at its
+    dotted path `footprint` (a geometry, a Feature or a FeatureCollection, its features' geometries
+    one), its properties its scalar fields by their dotted paths."""
+    for r in dotted(d, b["records"]) or []:
+        g = dotted(r, b["footprint"]) or {}
+        if g.get("type") == "FeatureCollection":
+            parts = [f["geometry"] for f in g.get("features") or [] if f.get("geometry")]
+        else:
+            parts = [x for x in [g.get("geometry") if g.get("type") == "Feature" else g] if x]
+        # (Its polygons as they are, one feature: an invalid one is repaired, and counted, as any.)
+        yield (lambda parts=parts: xy(sg.MultiPolygon([p for x in parts for p in polygon_parts(flat_shape(x))]), b) if parts else None), flattened(r)
+
+
+def polygon_parts(g):
+    """A geometry's polygons, each: a collection's or a multipolygon's, a polygon's own."""
+    if g.geom_type == "Polygon":
+        return [g]
+    return [p for x in getattr(g, "geoms", []) for p in polygon_parts(x)]
 
 
 def shapefile_features(z, stem, b):
@@ -809,8 +853,14 @@ def names_at(net, b, url):
         yield from body.decode("utf-8", "replace").split()
     elif kind == "zip":
         # (A zip's central directory, by range request: its members' names, none of its data; with
-        # a `prefix`, each zip of a bucket's folder in turn, its keys under `url` as "s3" lists them.)
-        zips = [url] if "prefix" not in b else [url.rstrip("/") + "/" + urllib.parse.quote(k) for k in names_at(net, {**b, "list": "s3"}, url) if k.lower().endswith(".zip")]
+        # a `prefix`, each zip of a bucket's folder in turn, its keys under `url` as "s3" lists them;
+        # with `links`, each zip the page at `url` links, as "links" lists them.)
+        if "prefix" in b:
+            zips = [url.rstrip("/") + "/" + urllib.parse.quote(k) for k in names_at(net, {**b, "list": "s3"}, url) if k.lower().endswith(".zip")]
+        elif b.get("links"):
+            zips = [urllib.parse.urljoin(url, k) for k in names_at(net, {**b, "list": "links"}, url) if k.lower().endswith(".zip")]
+        else:
+            zips = [url]
         for z in zips:
             yield from zipfile.ZipFile(RangeFile(net, z)).namelist()
     elif kind == "xlsx":

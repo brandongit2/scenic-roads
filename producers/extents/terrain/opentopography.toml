@@ -1,0 +1,35 @@
+name = "OpenTopography"
+credit = "OpenTopography (each dataset's own citation and credit)"
+licence = "per dataset (most CC BY 4.0 or CC0)"
+licence_url = "https://opentopography.org/usagepolicies"
+source = "https://portal.opentopography.org/API/otCatalog"
+theme = "terrain"
+availability = "open"
+notes = "OpenTopography's own datasets, worldwide: the catalogue API's answer for the whole globe (otCatalog, include_federated=false: the federated 3DEP and NOAA collections left out, declared as usgs-3dep and usiei), its point clouds (851) and rasters (697) each a piece, its outline the record's footprint (`spatialCoverage.geo.geojson`, a FeatureCollection of the dataset's own extent), its year the last of its temporal coverage. The catalogue states no cell or point density (its descriptions do in free text for a few, as often naming an image's or a bathymetry's resolution), so its pieces state no spacing and have no score: listed and drawn with their outlines, never the best data. Left out: OpenTopography's copies of the worldwide models (Copernicus GLO-30 and GLO-90, AW3D30, NASADEM, SRTM GL1 and GL3, SRTM15+, GEBCO, GEDTM30, GEDI L3: their footprints are boxes, and each is declared from its publisher or listed) and of national sources declared from their publishers (Haiti's DTM, LINZ's 1 m DEM and DSM, Norway's, Finland's, the AHN, Switzerland's). The catalogue lists some datasets twice (1,548 records, 1,270 identifiers): one piece each. Its outlines at the default tolerance, 50 m: survey patches of a few hectares are kept."
+
+[[piece]]
+id = "points"
+label = "OpenTopography point clouds"
+method = "file"
+class = "service"
+url = "https://portal.opentopography.org/API/otCatalog?productFormat=PointCloud&minx=-180&miny=-90&maxx=180&maxy=90&detail=true&outputFormat=json&include_federated=false"
+records = "Datasets"
+footprint = "Dataset.spatialCoverage.geo.geojson"
+by = ["Dataset.identifier.value", "Dataset.name"]
+name = "Dataset.name"
+[piece.metrics]
+year = { field = "Dataset.temporalCoverage", date = "text" }
+
+[[piece]]
+id = "rasters"
+label = "OpenTopography rasters"
+method = "file"
+class = "service"
+url = "https://portal.opentopography.org/API/otCatalog?productFormat=Raster&minx=-180&miny=-90&maxx=180&maxy=90&detail=true&outputFormat=json&include_federated=false"
+records = "Datasets"
+footprint = "Dataset.spatialCoverage.geo.geojson"
+by = ["Dataset.identifier.value", "Dataset.name"]
+name = "Dataset.name"
+exclude = { "Dataset.alternateName" = ["SRTM15Plus", "GEBCOSubIceTopo", "GEBCOIceTopo", "COP30_E", "COP30", "COP90", "AW3D30", "AW3D30_E", "GEDTM30", "NASADEM", "SRTM_GL1_Ellip", "SRTM_GL1", "SRTM_GL3", "GEDI_L3", "Haiti_16", "LINZ1m_DSM", "LINZ1m_DTM", "NO_1mDEM", "FI_2mDEM", "NL22_AHN4", "CH_50cmDEM"] }
+[piece.metrics]
+year = { field = "Dataset.temporalCoverage", date = "text" }

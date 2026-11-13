@@ -1,0 +1,66 @@
+name = "NASA's global elevation models: NASADEM, SRTM, ASTER GDEM"
+credit = "NASA JPL (NASADEM, SRTM), NASA and Japan's METI (ASTER GDEM), distributed by the LP DAAC"
+licence = "NASA's data use policy (no restrictions)"
+licence_url = "https://www.earthdata.nasa.gov/engage/open-data-services-software-policies/data-use-guidance"
+source = "https://lpdaac.usgs.gov/products/nasadem_hgtv001/"
+theme = "terrain"
+availability = "login"
+notes = "Each model's 1° tiles from an index of them: NASADEM (the SRTM's February 2000 radar data reprocessed, its voids filled from ASTER GDEM, AW3D30 and ICESat; 1 arc-second, a surface model) from Microsoft's Planetary Computer, whose copy downloads with no login (open), its STAC collection's 14,520 items; the SRTM GL1 (1 arc-second) and GL3 (3 arc-second) version 3 and ASTER GDEM version 3 (1 arc-second, from ASTER stereo scenes of March 2000 to November 2013) from NASA's CMR granule search of the LP DAAC (its CSV answers, 2,000 granules a page, each granule's name holding its tile: 14,297, 14,297 and 22,912 granules; its STAC answers 500 to every page after the first), whose files download after a free Earthdata login: claimed, their outlines the index's. NASADEM's tiles' footprints are their 1° squares and half a cell beyond; the others' the squares their names give. The SRTM's reach is 60° N to 56° S; ASTER GDEM's 83° N to 83° S, Greenland's and Antarctica's tiles held to be less reliable."
+
+[[piece]]
+id = "nasadem"
+label = "NASADEM"
+availability = "open"
+method = "stac"
+url = "https://planetarycomputer.microsoft.com/api/stac/v1/collections/nasadem"
+page = 1000
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 30
+year = 2000
+
+[[piece]]
+id = "srtm-gl1"
+label = "SRTM GL1 v3"
+method = "listing"
+class = "claimed"
+list = "lines"
+urls = ["https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=1", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=2", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=3", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=4", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=5", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=6", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=7", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL1&version=003&provider=LPCLOUD&page_size=2000&page_num=8"]
+pattern = '(?P<ns>[NS])(?P<y>\d\d)(?P<ew>[EW])(?P<x>\d{3})'
+size = 1
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 30
+year = 2000
+
+[[piece]]
+id = "srtm-gl3"
+label = "SRTM GL3 v3"
+method = "listing"
+class = "claimed"
+list = "lines"
+urls = ["https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=1", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=2", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=3", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=4", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=5", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=6", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=7", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=SRTMGL3&version=003&provider=LPCLOUD&page_size=2000&page_num=8"]
+pattern = '(?P<ns>[NS])(?P<y>\d\d)(?P<ew>[EW])(?P<x>\d{3})'
+size = 1
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 90
+year = 2000
+
+[[piece]]
+id = "aster-gdem"
+label = "ASTER GDEM v3"
+method = "listing"
+class = "claimed"
+list = "lines"
+urls = ["https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=1", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=2", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=3", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=4", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=5", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=6", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=7", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=8", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=9", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=10", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=11", "https://cmr.earthdata.nasa.gov/search/granules.csv?short_name=ASTGTM&version=003&provider=LPCLOUD&page_size=2000&page_num=12"]
+pattern = '(?P<ns>[NS])(?P<y>\d\d)(?P<ew>[EW])(?P<x>\d{3})'
+size = 1
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 30
+year = 2013

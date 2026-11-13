@@ -1,0 +1,45 @@
+name = "TanDEM-X elevation models (DLR; WorldDEM, Airbus)"
+credit = "© DLR e.V. (TanDEM-X 90 m and 30 m EDEM); © Airbus Defence and Space (WorldDEM)"
+licence = "DLR's TanDEM-X 90 m licence (scientific use, no passing on); the 30 m EDEM's (scientific use); WorldDEM sold"
+licence_url = "https://geoservice.dlr.de/web/dataguide/tdm90/"
+source = "https://geoservice.dlr.de/web/dataguide/tdm90/"
+theme = "terrain"
+availability = "login"
+notes = "The TanDEM-X mission's global surface models from its radar pairs of 2010 to 2015, pole to pole: the 90 m DEM (3 arc-seconds, a free account and a scientific-use licence), the 30 m Edited DEM (EDEM: 1 arc-second, gaps filled and water flattened, the same terms), and Airbus's WorldDEM (0.4 arc-second, about 12 m, sold). Their tile lists are behind DLR's login (its download host answers a redirect to it) and Airbus's shop, so each is claimed over the land as Natural Earth's 1:10m admin-1 areas (v5.1.2, public domain) draw it, Antarctica's too, at a 5 km tolerance (islands under 25 km² dropped as specks): claimed, not checked against data. (The Copernicus DEM, `cop-dem`, is the EDEM's public edition.)"
+
+[[piece]]
+id = "tdm90"
+label = "TanDEM-X 90 m DEM"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+tolerance_m = 5000
+[piece.metrics]
+surface = "surface"
+spacing_m = 90
+year = 2015
+
+[[piece]]
+id = "edem30"
+label = "TanDEM-X 30 m EDEM"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+tolerance_m = 5000
+[piece.metrics]
+surface = "surface"
+spacing_m = 30
+year = 2015
+
+[[piece]]
+id = "worlddem"
+label = "WorldDEM (12 m)"
+availability = "paid"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+tolerance_m = 5000
+[piece.metrics]
+surface = "surface"
+spacing_m = 12
+year = 2015
