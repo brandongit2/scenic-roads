@@ -655,3 +655,33 @@ fn real_samples_one_line_no_gap_no_overlap() {
         assert!(asked > 1000, "{name}: {asked}");
     }
 }
+
+#[test]
+fn a_fold_rounding_swapped_sways_no_far_point() {
+    // The z12 tile 12/1987/1606 of 13 Nov's regions, as made: Mainland Spain north of the line,
+    // Gibraltar south (its land and waters). On the isthmus' east coast the line folds back on
+    // itself (y 2370 → 2435 → 2223 → 2308), and rounding put the fold's first leg on the wrong side
+    // of its second: the nearest point of a far point to the south-east is the fold's tip.
+    #[rustfmt::skip]
+    let xy = [
+        -128, 2113,  472, 2113,  495, 2129,  539, 2167,  544, 2173,  871, 2127,  869, 2113,  882, 2113,
+        892, 2142,  924, 2137,  941, 2134,  1014, 2132,  1059, 2128,  1109, 2127,  1192, 2124,  1202, 2124,
+        1211, 2124,  1221, 2124,  1229, 2123,  1236, 2123,  1246, 2123,  1329, 2121,  1371, 2120,
+        1383, 2119,  1402, 2119,  1413, 2118,  1429, 2118,  1453, 2117,  1460, 2117,  1469, 2117,
+        1483, 2117,  1486, 2117,  1490, 2116,  1495, 2119,  1499, 2121,  1504, 2123,  1633, 2179,
+        1788, 2247,  1811, 2256,  1844, 2269,  1874, 2281,  1918, 2299,  1928, 2303,  1984, 2324,
+        1988, 2326,  2058, 2354,  2075, 2361,  2095, 2368,  2105, 2370,  2107, 2435,  2100, 2223,
+        2103, 2308,  3695, 2302,  7172, 2645,  8320, 2639,
+    ];
+    let pts: Vec<[f64; 2]> = xy.chunks(2).map(|p: &[i32]| [f64::from(p[0]), f64::from(p[1])]).collect();
+    let parts = [hit::Part { pts, l: "mainland-spain".into(), r: "gibraltar".into() }];
+    // (Its nearest point the fold's tip: 3.2 k units away, the Rock's east face.)
+    let south =
+        [[1522.0, 5582.0], [2600.0, 4000.0], [2200.0, 7000.0], [1900.0, 3000.0], [500.0, 6000.0], [7000.0, 5000.0]];
+    for p in south {
+        assert_eq!(hit::side(&parts, p).as_deref(), Some("gibraltar"), "{p:?}");
+    }
+    for p in [[1000.0, 500.0], [2106.0, 1000.0], [6000.0, 1500.0]] {
+        assert_eq!(hit::side(&parts, p).as_deref(), Some("mainland-spain"), "{p:?}");
+    }
+}

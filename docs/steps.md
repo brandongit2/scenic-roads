@@ -1261,11 +1261,16 @@ renaming or disabling a region builds nothing.
   one recorded, and removes those no longer made; a region changed rewrites the packs its arcs
   reach (and the root), the others are left as they are.
 - **The regions at a point** (`hit`, the server's `/api/regions/at`): from z12 up, the first tile
-  made that holds the point; in it the nearest line and the point's side of it (at a node, the
-  wedge between the node's arcs). A tile not made has no border within its buffer, so the point is
-  at least a 64th of a tile from every border, eight times the tolerance of the zoom above.
-  Overlapping regions (possible only without a cover rule) aren't noded against each other, so
-  where their borders cross the answer may miss one of them.
+  made that holds the point; in it 16 rays from the point, each one's first line and the point's
+  side of it, the answer most rays give. Not the nearest line: where a line folds back on itself
+  narrower than a tile unit, rounding can swap the fold's legs, and from afar the nearest point is
+  the fold's tip, whose legs' order then gave the fold's inside (on 13 Nov's regions, 19 of 733
+  sampled z12 tiles held such a fold; one on Gibraltar's isthmus made a 3 km wedge of its waters
+  and the Rock's east face Mainland Spain's); a ray meets a fold only by passing through it, so a
+  point is swayed only within a few tile units of one. A tile not made has no border within its
+  buffer, so the point is at least a 64th of a tile from every border, eight times the tolerance
+  of the zoom above. Overlapping regions (possible only without a cover rule) aren't noded against
+  each other, so where their borders cross the answer may miss one of them.
 - **Cost, the 1,024 regions of 13 Nov** (`@index.554f50a9348f2f75`;
   `terrain::regionlayer::tests::real_regions`, by hand on the Mac mini, release, three runs):
   reading 7–8 s (geometry over the NAS), the build 38–39 s (the topology 7 s, the simplification
