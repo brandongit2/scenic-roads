@@ -66,8 +66,7 @@ enum Line {
     Taken {
         taken: String,
     },
-    /// Told and gone, by a `gc` job of before step 8b (each removed or kept as its run decided):
-    /// off the queue, marked.
+    /// A mark kept: off the queue, marked (how a rewrite of the file writes each removal it keeps).
     Deleted {
         deleted: Vec<String>,
         at: u64,

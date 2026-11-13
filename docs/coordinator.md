@@ -165,8 +165,8 @@ Common rules:
   pool box's Mac doesn't reach the NAS), batch length (minutes of measured time a shared step's
   job is sized to, docs/pool.md §7.7, task #927) and overdue factor (the status flags a job still
   past that many times its usual still stretch, and one whose progress goes on that many times
-  slower than its step's slowest tenth of jobs, docs/pool.md §10, Flags), and publishing's two
-  switches, on or off (holding publishing for review, `hold-catalog`, and slope near regions,
+  slower than its step's slowest tenth of jobs, docs/pool.md §10, Flags), and the map updates' two
+  switches, on or off (holding map updates for review, `hold-catalog`, and slope near regions,
   `near-slope`: docs/building.md §2), all but the reserve as that Mac's agent last had them from the
   lead, set through any Mac's agent. The pool box is set through the
   first Mac on the page that reaches the NAS, else the first that answered. Each Mac's `POST /api/settings`
@@ -185,7 +185,7 @@ Common rules:
 - **The build at a glance** (`web/buildpage/dash.js`, `dash.css`, `pool.js`, `settings.js`, `sums.js`, `live.js`, `nas.js`, `activity.js`, `chart.js`, `chartmath.js`, `worldmap.js`, their elements and words `dom.js` and `words.js`; docs/pipeline.md §5): a
   sticky header (the verdict: going, done when; Pause, Freeze, Resume), the world map in a left
   panel beside the tabs (`worldmap.js`: regions, the queue, running and finished tiles; a step
-  soloed from its legend, its published tiles by age, `catalogues.js`; a card of the whole stack
+  soloed from its legend, its tiles on the map by age, `catalogues.js`; a card of the whole stack
   under a point, hovered or pinned by a click or tap; docs/pipeline.md §5), a tab per part by the
   address's `#hash` in the right panel, and a fixed footer (the charts' range, the Live dot).
   Overview (the alerts, the work left in the queue, the last and next map update, the Macs); Jobs (the schedule: each

@@ -153,9 +153,9 @@ fn valid_ext(s: &str) -> bool {
     !s.is_empty() && !s.contains(['/', '\0', '\\']) && s.split('.').all(|c| !c.is_empty()) && !s.ends_with(TOMB)
 }
 
-/// What the GC before step 8b renamed a content-named file to before it removed it (removed unless
-/// a job had touched it meanwhile): one left by a run stopped between, its bytes perhaps a reused
-/// file's, stays on the share, never taken for a content-named file, so no sweep removes it.
+/// A GC tombstone's ending: a content-named file renamed so before its removal, by a GC that no
+/// longer exists. One left on the share (a run stopped between the two), its bytes perhaps a reused
+/// file's, is never taken for a content-named file, so no sweep removes it.
 pub const TOMB: &str = ".gc-tomb";
 
 fn is_hash16(s: &str) -> bool {

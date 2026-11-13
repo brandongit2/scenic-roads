@@ -275,8 +275,8 @@ Each step ships alone and keeps the build running; each ends with its tests.
 7. *Built (7a).* **The laptops' offline map on demand** (§8.3; the PM's decision 4 in §7, which the
    owner may overrule for 7b: the files deleted). Tests: the server's
    `a_server_on_demand_keeps_the_map_as_it_moves` and its command line's (`--on-demand` takes no
-   `--listen`; `a_server_on_demand_ends_at_once_when_its_port_is_held`); by hand on the M1, 6 Nov (below). Either way `catalog/` and
-   `~/Library/Caches/scenic/catalogue` go with #883 step 9 (each Mac's agent removes them at its start), not here.
+   `--listen`; `a_server_on_demand_ends_at_once_when_its_port_is_held`); by hand on the M1, 6 Nov (below). (`catalog/` and
+   `~/Library/Caches/scenic/catalogue` are gone from every Mac.)
 8. *Done by #878's gates* (§8.4; tasks #1036, #1125). **The member's NAS fallbacks**: a member
    reads no NAS switches, writes no NAS status copy (`beat-nas` starts only where there's a
    status to share, the lead's), and its pool thread neither mails nor writes a journal on the
@@ -506,7 +506,7 @@ reached by HTTP. What #882 has left is disk (§8.1: lead and server leftovers) a
   none. 7b (built) gave the mirror its cursor; on 6 Nov only the mini runs a mirror, so no
   laptop's cursor holds GC. 8a (built) and 8b are the lead's. With 7a, a laptop's two
   cursors exist only while its map runs and `CURSOR_TTL_S` drops them, so it never holds GC more
-  than 6 hours after it closes. Step 9 (built) removes `catalog/` on every Mac, at its agent's start.
+  than 6 hours after it closes. No Mac holds a `catalog/` any more.
 
 ### 8.5 What the steps left save
 

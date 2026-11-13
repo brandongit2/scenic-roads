@@ -2336,7 +2336,7 @@ impl Sched {
             // it weighs the whole (`NAS_STEPS`) and goes as the lead's own unmeasured NAS steps do,
             // beside no job weighing the whole (`fits_own_job`), so its first run measures it and no
             // burst of grants lands beside it meanwhile (task #1000: held for a quiet NAS instead,
-            // a busy pool never had one, and step 8b's gc never ran).
+            // a busy pool never had one, and gc never ran).
             let quiet_step = jobrt::budget::nas::QUIET_STEPS.contains(&o.step.as_str());
             let measured = if ts.is_empty() {
                 nw.book.nas(&o.step, "").is_some()

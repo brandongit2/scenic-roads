@@ -10132,8 +10132,8 @@ mod tests {
             }
         };
         let a = Ask { want: 1, can: vec!["gc".into()], ..every_ask("m4", "gc", 64_000, 100_000) };
-        // Unmeasured the way it runs now (task #1000: the daily job's run, the way before step 8b,
-        // the whole share read and listed, counts for nothing): it weighs the whole, as the lead's
+        // Unmeasured the way it runs now (task #1000: a run of another way, the whole share read
+        // and listed, counts for nothing): it weighs the whole, as the lead's
         // own unmeasured NAS steps do, and goes beside the member's job, none weighing the whole,
         // so its first run measures it, nothing else weighing anything granted beside it meanwhile;
         // never past the gate on the NAS's own load.
