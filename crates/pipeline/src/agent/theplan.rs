@@ -188,7 +188,7 @@ impl Plan for ThePlan {
             .collect()
     }
     fn unit_margin_km(&self) -> f64 {
-        roads::stage::MARGIN_KM
+        roads::staging::MARGIN_KM
     }
     fn held(&self, index_dir: PathBuf) -> Box<dyn PlanHeld> {
         Box::new(Held {

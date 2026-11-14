@@ -1518,7 +1518,7 @@ a row's and a column's, the rest a point's: the same bits as `Projection::projec
   terrain's there, bilinear between pixel centres at the finest zoom stored there, its native zoom
   (a deep tile, z13–16, where one is; else z12, or the latitude's cap), so a road and the ground
   under it come from one terrain and one dataset, already brought to EGM2008. The z6 tile job stages
-  into the z6 tile's folder the terrain's tiles in one archive (`terrain.tiles`, crate::stage: z0–12
+  into the z6 tile's folder the terrain's tiles in one archive (`terrain.tiles`, crate::staging: z0–12
   over its box, and the deep tiles under its vertices, from the deep packs
   `layers/terrain/deep/10-x-y`: `road_terrain::deep_tiles`) and the
   datasets' codes by coverage (`codes.json`, `road_terrain::Codes`: a vertex's `src.u8` is the

@@ -674,12 +674,12 @@ a scratch folder, wiped at each run:
    server. It writes `elev.f32`, `src.u8` and `dem-stats.json` (vertices, missing, seconds). The
    ways were densified by `extract` at the terrain's pixel there, never closer than 4 m
    (crate::dem::spacing, `FLOOR_M`). U waits for the stale terrain targets under its box (U +
-   `stage::MARGIN_KM`) and along its long ways (`steps::Read::Along`, from the pass's reaches), and
+   `staging::MARGIN_KM`) and along its long ways (`steps::Read::Along`, from the pass's reaches), and
    its key names the terrain tiles it reads (hi and deep), along its long ways too.
-3. **Heritage:** the heritage-sites job's slices within U + `stage::MARGIN_KM`; `areaflags` rasterizes the heritage and designated areas
+3. **Heritage:** the heritage-sites job's slices within U + `staging::MARGIN_KM`; `areaflags` rasterizes the heritage and designated areas
    onto U's grid.
 4. **Terrain and grids:** terrain z0–12 and the z11 grids, staged from the packs the manifest names,
-   with the deep tiles step 2 reads, over U's staged area (crate::stage::Area): U grown by
+   with the deep tiles step 2 reads, over U's staged area (crate::staging::Area): U grown by
    `MARGIN_KM` (35 km: `reach::LONG_KM`, 20 km, where the ordinary ways U owns lie, plus a sample's
    far field, `scenic::FAR_MAX_M`, 15 km), and along each long way U owns (ferries aside) its nodes
    in runs of about 15 km, each grown by 15 km. Every sample U makes sees staged terrain and canopy

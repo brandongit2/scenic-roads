@@ -3844,10 +3844,10 @@ fn layers_source<'a>(
     out: &'a Out,
     pilot: &'a Option<(store::nasfs::NasRoot, store::catalogue::Catalogue)>,
     blobs: Option<&'a store::blobs::Blobs>,
-) -> roads::stage::Source<'a> {
+) -> roads::staging::Source<'a> {
     match pilot {
-        Some((r, c)) => roads::stage::Source::Catalogue(r, c),
-        None => roads::stage::Source::Manifest(out, blobs),
+        Some((r, c)) => roads::staging::Source::Catalogue(r, c),
+        None => roads::staging::Source::Manifest(out, blobs),
     }
 }
 
@@ -3930,11 +3930,11 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
     let rep = build_folder(
         u,
-        &roads::stage::Area::of(u, reach.get(u)),
+        &roads::staging::Area::of(u, reach.get(u)),
         &local,
         &folder,
         &cov,
-        &roads::stage::Source::Manifest(out, Some(&blobs)),
+        &roads::staging::Source::Manifest(out, Some(&blobs)),
         &tools,
         &heritage,
         carry.as_ref(),
@@ -3997,7 +3997,7 @@ fn unit_resume_id(
             lines.push(get(&::bld::buildtiles::index_logical(&r)));
         }
     }
-    let area = roads::stage::Area::of(u, reach.get(u));
+    let area = roads::staging::Area::of(u, reach.get(u));
     let b = area.b;
     lines.extend(layers_source(out, pilot, Some(blobs)).pack_contents(&area));
     lines.extend(landmarks::heritage::unit_contents(out, date, b));
@@ -4106,7 +4106,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     *TILE_PROGRESS.lock().unwrap() =
         Some(roads::unit::TileProgress::new(units.len(), Some(tools.cache.join("unit-stages.json"))));
     roads::unit::on_stage(Some(Box::new(|stage, frac, took| tile_progress(|a| a.stage(stage, frac, took)))));
-    // This Mac's copies of the packs staging reads (roads::stage), kept with the agent's caches.
+    // This Mac's copies of the packs staging reads (roads::staging), kept with the agent's caches.
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
     // The next z6 tile's extract and packs, copied while this one builds (one stream: large sequential
     // reads, nothing the z6 tile building now waits on).
@@ -4154,7 +4154,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         if let Some(&next) = units.get(k + 1) {
             let o: &Out = out;
-            let area = roads::stage::Area::of(next, reach.get(next));
+            let area = roads::staging::Area::of(next, reach.get(next));
             let b = area.b;
             let mut packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(&area);
             // (Its heritage slices too: landmarks::heritage::unit_inputs_with.)
@@ -4299,7 +4299,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
             let rep = prepare_folder(
                 u,
-                &roads::stage::Area::of(u, reach.get(u)),
+                &roads::staging::Area::of(u, reach.get(u)),
                 &local_piece,
                 &dir,
                 &cov,
@@ -4607,7 +4607,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         if rep.staged.missing.get(var).copied().unwrap_or(0) == 0 {
             continue;
         }
-        let mut tiles = roads::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
+        let mut tiles = roads::staging::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
         if let Some(p) =
             layers::write_pack_local(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?
         {
@@ -7473,7 +7473,7 @@ mod tests {
     #[test]
     fn a_boxs_canopy_files() {
         // Z6 tile 6/20/22 grown by its margin (New Brunswick): one 10° square, its three files.
-        let b = roadcore::geo::tile_box_grown(6, 20, 22, roads::stage::MARGIN_KM);
+        let b = roadcore::geo::tile_box_grown(6, 20, 22, roads::staging::MARGIN_KM);
         assert_eq!(
             super::canopy_files(b),
             ["median", "p95", "cover5m"].map(|s| format!("meta_chm_lat=50.0_lon=-70.0_{s}.tif"))

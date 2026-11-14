@@ -350,9 +350,9 @@ fn unit_of<'a>(
     Some((u, r, fine))
 }
 
-/// The box a z6 tile's roads stage over (its tile + roads::stage::MARGIN_KM).
+/// The box a z6 tile's roads stage over (its tile + roads::staging::MARGIN_KM).
 fn unit_box(u: TileId) -> [f64; 4] {
-    roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM)
+    roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::staging::MARGIN_KM)
 }
 
 /// A z6 tile's road values (`sources/osm/<date>/roads/`), when made.

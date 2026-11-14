@@ -34,7 +34,7 @@ pub enum Read {
     /// An input that is no step's target: the coverage as the run cuts it, a dataset pool's lines,
     /// a pass set, an inputs folder's accepted index, the water digests, a release.
     Input { name: &'static str, of: fn(&str, &Ctx) -> Option<String> },
-    /// Some targets of another step read along the target's long ways (a z6 tile's: stage::Area),
+    /// Some targets of another step read along the target's long ways (a z6 tile's: staging::Area),
     /// from the pass's reaches, which the caller works into its view (`View::along`: the planner's
     /// `Left::along`, the forecast's `Input::along`). Waited for as a `Targets` read with `Tiles`;
     /// keyed by that read's tiles (task #853).

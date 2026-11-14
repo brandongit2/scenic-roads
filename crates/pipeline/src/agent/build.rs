@@ -45,8 +45,8 @@ pub const TERRAIN_DEEP_V: u32 = 6;
 /// 6: the roads' heights from the finished terrain (terrain::road_terrain), spaced at its pixel.
 /// 7 (task #862): roadcore::geo's one Mercator, box-grower and Earth in the staging, the heights, the
 /// lengths, the views and the area flags; `det`'s maths throughout.
-/// 8 (task #853): no route networks (a way's byte for it zero); staged over its `stage::Area`
-/// (its tile + `stage::MARGIN_KM`, 35 km, and along its own long ways); a rail sample's ground its
+/// 8 (task #853): no route networks (a way's byte for it zero); staged over its `staging::Area`
+/// (its tile + `staging::MARGIN_KM`, 35 km, and along its own long ways); a rail sample's ground its
 /// eye less a passenger's eye height (`Sample::eye_m`).
 pub const UNIT_V: u32 = 8;
 /// 3: keyed on the tile's owners alone; hidata of the tile's own ways (here, query parts, rail
@@ -520,8 +520,8 @@ pub fn unit_keys(x: &KeyCtx) -> Vec<(TileId, Option<String>)> {
 }
 
 /// The content names of the packs z6 tile `u`'s staged terrain tiles are in (z0–12 over its
-/// `stage::Area`: z4–8's lo packs, z9–12's hi packs; the root aside), for `unit_terrain`'s memo.
-pub fn unit_terrain_from(area: &roads::stage::Area, m: &BTreeMap<String, String>) -> String {
+/// `staging::Area`: z4–8's lo packs, z9–12's hi packs; the root aside), for `unit_terrain`'s memo.
+pub fn unit_terrain_from(area: &roads::staging::Area, m: &BTreeMap<String, String>) -> String {
     let mut packs: BTreeSet<String> = BTreeSet::new();
     for z in 4..=12u8 {
         let (scope, s) = if z <= 8 { ("lo", z - 3) } else { ("hi", z - 6) };
@@ -543,7 +543,7 @@ pub fn unit_terrain(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<String, Unread> {
-    let area = roads::stage::Area::of(u, Some(r));
+    let area = roads::staging::Area::of(u, Some(r));
     let from = [serde_json::to_string(r).unwrap_or_default(), unit_terrain_from(&area, m)].join("\n");
     tiles.memo(&u.slash(), &store::naming::hash16(from.as_bytes()), || {
         Ok(terrain_digest(&unit_terrain_tiles(u, r, m, tiles)?))
@@ -558,7 +558,7 @@ pub fn terrain_digest(tiles: &[Tile]) -> String {
 }
 
 /// The terrain tiles z6 tile `u` reads, by their contents (from the packs' indexes: agent::tiles),
-/// sorted. A z6 tile stages terrain z0–12 over its `stage::Area` (its tile + `stage::MARGIN_KM`, and
+/// sorted. A z6 tile stages terrain z0–12 over its `staging::Area` (its tile + `staging::MARGIN_KM`, and
 /// along its own long ways), which two steps read:
 /// - its grid (canopy, view and flags: `grid.terrain.i16`), every z11 tile staged, as it is (a
 ///   missing one reads as zeros);
@@ -579,7 +579,7 @@ pub fn unit_terrain_tiles(
     m: &BTreeMap<String, String>,
     tiles: &TerrainTiles,
 ) -> Result<Vec<Tile>, Unread> {
-    let area = roads::stage::Area::of(u, Some(r));
+    let area = roads::staging::Area::of(u, Some(r));
     let staged: Vec<HashSet<(u32, u32)>> = (0..=12u8).map(|z| area.tiles(z).into_iter().collect()).collect();
     // Each zoom's tiles with a staged tile at or under them (to z12).
     let mut under: Vec<HashSet<(u32, u32)>> = vec![HashSet::new(); 13];
@@ -638,7 +638,7 @@ pub fn unit_deep_tiles(
     tiles: &TerrainTiles,
 ) -> Result<Vec<String>, Unread> {
     let pz = terrain::terrain_deep::PACK_Z;
-    let packs: Vec<(u32, u32)> = roads::stage::Area::of(u, Some(r))
+    let packs: Vec<(u32, u32)> = roads::staging::Area::of(u, Some(r))
         .tiles(pz)
         .into_iter()
         .filter(|&(x, y)| m.contains_key(&terrain::terrain_deep::pack_logical(x, y)))
@@ -1014,7 +1014,7 @@ pub fn region_steps(
     };
     let reads = |i: usize| -> BTreeSet<String> {
         let u = units[i].0;
-        roadcore::geo::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM))
+        roadcore::geo::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::staging::MARGIN_KM))
             .into_iter()
             .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
             .collect()
@@ -2427,7 +2427,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     // (One whose key can't be worked out now is left, and isn't built: `unknown`.)
     let unit_stale: Vec<bool> =
         units.iter().map(|(u, k)| k.as_ref().is_none_or(|k| stale(&done.unit, &u.slash(), k))).collect();
-    // What each reads along its own long ways (roads::stage::Area: the terrain packs there, past its
+    // What each reads along its own long ways (roads::staging::Area: the terrain packs there, past its
     // box's), from its reach: waited for as its other reads (steps::Read::Along).
     for (u, _) in &units {
         if let Some(r) = reach.get(*u) {
@@ -2441,7 +2441,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         .map(|(u, _)| {
             let t = u.slash();
             let along = ["terrain-lo", "terrain-hi"].into_iter().flat_map(|s| left.along.get("unit", &t, s));
-            roadcore::geo::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::stage::MARGIN_KM))
+            roadcore::geo::tiles_in(6, roadcore::geo::tile_box_grown(u.z, u.x, u.y, roads::staging::MARGIN_KM))
                 .into_iter()
                 .chain(along.filter_map(|p| TileId::parse(p)).map(|p| (p.x << (6 - p.z), p.y << (6 - p.z))))
                 .map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3))
@@ -8433,7 +8433,7 @@ mod tests {
         let k1 = key(&m);
         m.insert(terrain::terrain_deep::pack_logical(0, 0), "layers/terrain/deep/10-0-0.aa".into());
         assert_eq!(key(&m), k1, "a deep pack far away");
-        let b = roadcore::geo::tile_box_grown(6, 28, 16, roads::stage::MARGIN_KM);
+        let b = roadcore::geo::tile_box_grown(6, 28, 16, roads::staging::MARGIN_KM);
         let (x, y) = roadcore::geo::tiles_in(terrain::terrain_deep::PACK_Z, b)[0];
         m.insert(terrain::terrain_deep::pack_logical(x, y), "layers/terrain/deep/x.bb".into());
         assert_eq!(key(&m), k1, "a deep pack over it where no way lies");
@@ -8832,7 +8832,7 @@ mod tests {
         assert_ne!(with(1, at(11, -17.5, 66.4), Some(7)), d0);
         assert_eq!(with(1, at(12, -17.5, 66.4), Some(7)), d0);
         assert_eq!(with(2, at(11, -8.0, 66.0), Some(7)), d0);
-        // Along its long road past its tile + its margin, staged too (roads::stage::Area): where no
+        // Along its long road past its tile + its margin, staged too (roads::staging::Area): where no
         // hi pack is, the z8 tile its points read there, not one beside the road nor the z6 tile
         // above it; under its far end, the z12 tile of the hi pack there, not the z4 tile above.
         assert_ne!(with(0, at(8, -15.5, 65.0), Some(7)), d0);

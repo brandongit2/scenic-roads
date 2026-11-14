@@ -189,7 +189,7 @@ pub enum Read {
     /// can't be worked out.
     Input { name: &'static str, of: Ident },
     /// Some targets of another step that a target reads along its own long ways (z6 tiles':
-    /// roads::stage::Area), past those its name gives (its step's `Targets` read of the same step):
+    /// roads::staging::Area), past those its name gives (its step's `Targets` read of the same step):
     /// from the pass's reaches, which the caller has worked out into its view (`View::along`: the
     /// planner's `Left::along`, the forecast's input), none where it hasn't. Waited for as a
     /// `Targets` read with a `Grain::Tiles`, only for them and not what they wait for; keyed by
@@ -708,13 +708,13 @@ fn sl_lo(t: &str) -> Vec<String> {
     named(3, at(t, 3).into_iter().flat_map(|(x, y)| with_edges(3, x, y)))
 }
 
-/// unit 6/x/y: the terrain packs over its tile + roads::stage::MARGIN_KM its staged tiles and its
+/// unit 6/x/y: the terrain packs over its tile + roads::staging::MARGIN_KM its staged tiles and its
 /// roads' heights read (`build::unit_terrain_from`, `build::unit_deep_tiles`): the lo packs of z4–8's
 /// z3 tiles, the hi packs of its box's z6 tiles (z9–12's), its box's deep packs. Those along its own
-/// long ways, which it stages too (roads::stage::Area), are its `Read::Along`s (`ua_*`).
+/// long ways, which it stages too (roads::staging::Area), are its `Read::Along`s (`ua_*`).
 fn unit_reads(t: &str, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
-    let b = roadcore::geo::tile_box_grown(6, x, y, roads::stage::MARGIN_KM);
+    let b = roadcore::geo::tile_box_grown(6, x, y, roads::staging::MARGIN_KM);
     named(z, packs_over(z, |zz| roadcore::geo::tiles_in(zz, b)))
 }
 
@@ -738,12 +738,12 @@ fn packs_over(z: u8, tiles: impl Fn(u8) -> Vec<(u32, u32)>) -> std::collections:
     v
 }
 
-/// unit 6/x/y's packs at zoom `z` along its own long ways (roads::stage::Area, its reach `r`) past
+/// unit 6/x/y's packs at zoom `z` along its own long ways (roads::staging::Area, its reach `r`) past
 /// those of its box (`unit_reads`: the packs at `z` meeting it, give or take one on its edge, which
 /// would be read twice over).
 fn unit_reads_along(t: &str, r: &roads::reach::Reach, z: u8) -> Vec<String> {
     let Some((x, y)) = at(t, 6) else { return Vec::new() };
-    let area = roads::stage::Area::of(TileId { z: 6, x, y }, Some(r));
+    let area = roads::staging::Area::of(TileId { z: 6, x, y }, Some(r));
     let [x0, x1, y0, y1] = roadcore::geo::tile_range(z, area.b);
     let boxed = |&(a, c): &(u32, u32)| (x0..=x1).contains(&a) && (y0..=y1).contains(&c);
     named(z, packs_over(z, |zz| area.along_tiles(zz)).into_iter().filter(|p| !boxed(p)))
@@ -2483,7 +2483,7 @@ mod tests {
     }
 
     /// A z6 tile waits for the terrain packs along its own long ways, which it stages (task #853,
-    /// roads::stage::Area), not only for its box's: they're its `Read::Along`s, worked out from its
+    /// roads::staging::Area), not only for its box's: they're its `Read::Along`s, worked out from its
     /// reach into the view (the planner's `Left::along`, the forecast's input). Without them it
     /// would build, then build again once they're made.
     #[test]

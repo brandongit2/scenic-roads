@@ -205,7 +205,7 @@ pub const STAGES: [(&str, f64); 24] = [
     ("cutting to the coverage", 1.0),
     ("sampling the elevations (elev)", 150.0),
     ("keeping DEM samples", 40.0),
-    (crate::stage::STAGE, 60.0),
+    (crate::staging::STAGE, 60.0),
     ("staging the heritage inputs", 8.0),
     ("flagging the areas (areaflags)", 5.0),
     ("classifying the land cover (landcover)", 4.0),
@@ -510,7 +510,7 @@ pub struct Report {
     pub kept_ways: usize,
     pub kept_verts: usize,
     pub owned: usize,
-    pub staged: crate::stage::Staged,
+    pub staged: crate::staging::Staged,
     /// Heritage sites and designated-area polygons around the z6 tile.
     pub heritage: usize,
     pub areas: usize,
@@ -521,17 +521,17 @@ pub struct Report {
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
 /// Runs the z6 tile's programs for z6 tile `u` in `dir` from `piece`, with the coverage and the global-source
-/// layers on the NAS (`src`) staged over `area` (crate::stage::Area: its reach's), and its scenic
+/// layers on the NAS (`src`) staged over `area` (crate::staging::Area: its reach's), and its scenic
 /// results from its last run (`carry`): `prepare_folder`, then its `tail`. Leaves the z6 tile folder
 /// ready for its base pack.
 #[allow(clippy::too_many_arguments)]
 pub fn build_folder(
     u: TileId,
-    area: &crate::stage::Area,
+    area: &crate::staging::Area,
     piece: &Path,
     dir: &Path,
     cov: &Coverage,
-    src: &crate::stage::Source,
+    src: &crate::staging::Source,
     tools: &Tools,
     heritage: HeritageInputs,
     carry: Option<&mapview::scache::Carry>,
@@ -551,11 +551,11 @@ pub fn build_folder(
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_folder(
     u: TileId,
-    area: &crate::stage::Area,
+    area: &crate::staging::Area,
     piece: &Path,
     dir: &Path,
     cov: &Coverage,
-    src: &crate::stage::Source,
+    src: &crate::staging::Source,
     tools: &Tools,
     heritage: HeritageInputs,
     carry: Option<&mapview::scache::Carry>,
@@ -594,12 +594,12 @@ pub fn prepare_folder(
         .context("the unit's sources: the declared sources' accepted version isn't given (docs/inputs.md §6.9)")?;
     std::fs::write(dir.join(UnitSources::FILE), serde_json::to_vec(&UnitSources::of(declared)?)?)?;
     // 4. The global-source layers the steps read, from the packs.
-    let s = stage(crate::stage::STAGE);
+    let s = stage(crate::staging::STAGE);
     let b = area.b;
     // (With the terrain the roads' heights read: the deep tiles under the vertices; and the
     // datasets' codes.)
     let deep = terrain::road_terrain::deep_tiles(roadcore::Ways::open(dir)?.verts(), &fine);
-    rep.staged = crate::stage::stage(src, area, &deep, dir, &|f| stage_said(crate::stage::STAGE, f, None))?;
+    rep.staged = crate::staging::stage(src, area, &deep, dir, &|f| stage_said(crate::staging::STAGE, f, None))?;
     terrain::road_terrain::Codes::of(&accepted).write(&dir.join(terrain::road_terrain::CODES_FILE))?;
     s.end();
     // The heritage sites around the z6 tile (the flags step's `heritage.json`), and the designated

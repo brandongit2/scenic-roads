@@ -315,7 +315,7 @@ manifest entry, for every key reading a step whole), `depth::grids::estimates_ke
 lake-depth packs' digest, made for every key reading the depth's sources),
 `dem::spacing::Fine::of` 2.2 (made for every z6 tile's key), `steps::key_lines` 1.9. The first
 four are gone. What is left is the key lines themselves, made as text for every key every plan
-(`key_lines` 1.9 GB, `build::unit_deep_tiles` 1.0, `roads::stage::Area::tiles` 0.7, a reach as
+(`key_lines` 1.9 GB, `build::unit_deep_tiles` 1.0, `roads::staging::Area::tiles` 0.7, a reach as
 JSON 0.4): steps 4-5 end that for the keys nothing changed under. Why the bytes matter beyond
 the time: macOS's malloc keeps each block size's freed pages resident (docs/pool.md §7.1,
 *What leaves them*).

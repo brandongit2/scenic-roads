@@ -7,7 +7,7 @@ pub mod candidates;
 pub mod elev;
 pub mod peaks;
 pub mod reach;
-pub mod stage;
+pub mod staging;
 pub mod summits;
 pub mod timetables;
 pub mod unit;
