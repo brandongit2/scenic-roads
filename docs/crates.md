@@ -1480,7 +1480,7 @@ planner's plan.rs 83, agent/pool.rs 81, sched 76, gc 72; `git log --numstat`).
   `agent::jobs` and `coord::sched` keep naming the same files): agent's `answered, asks, backup,
   beat, brokers, bus, cataloguesview, cond, dsm, every, fcarchive, fccheck, fcinputs, flags,
   forecast, gc, gcqueue, heal, histarchive, jobs, live, memfloor, memguard, nasread, placement,
-  progress, publish, redo, regionsview, resume, room, seam, settings, share, spans, takeover`;
+  progress, publish, redo, regionsview, resume, room, seam, settings, share, spans, stray`;
   coord's `asks, beats, brief, brokers, client, handoffs, history, inbox, jobspans, kept, lease,
   maproutes, sched, task`; pool whole; needs, paces, uses, pubtimes, answers, menu, cli. On inputs
   and the crates below it, as agentcore is now, beside the families.

@@ -528,7 +528,7 @@ through their dev-dependency on store, `features = ["testkit"]`):
   moments). Such a test never sleeps and can't race.
 - **Waiting for something on the real clock: `eventually(what, cond)` or `wait_for(what, || Option)`.**
   They poll every 10 ms under `WATCHDOG` (2 min), which only turns a hang into a failure. Never a
-  loop of your own with a deadline: `while t.elapsed() < 5 s` is what failed takeover's test.
+  loop of your own with a deadline: `while t.elapsed() < 5 s` is what failed agent::stray's test.
 - **A thread or callback saying "done": `Signal`** (`set` / `wait(what)`), not a flag polled
   with sleeps. For "has it NOT happened", a sleep marked `// (absence)` is fine: a slow Mac can only
   make it pass.
@@ -622,7 +622,7 @@ fails, and is never given more. `cargo test` runs have no such bound.
   waits on it, its run with it. A test's run never holds the shared build folder's lock (above),
   so such a hang delays only its own run, never another worktree's build.
 - **What a test calls must not block in the kernel on the NAS.** On 10 Nov
-  `agent::takeover`'s test, through `jobrt::sys::openers` (libproc's
+  `agent::stray`'s test, through `jobrt::sys::openers` (libproc's
   `proc_listpidspath(PROC_ALL_PIDS, …)`, which resolves the path of every open file of every
   process on the Mac), sat in state U for 7 min while the owner's work stalled the NAS's SMB share,
   then would not exit; the scan is gone (the agent's lock names its holder, docs/surface.md). Reading

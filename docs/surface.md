@@ -55,7 +55,7 @@
   is ended the same way) or by an older launcher at the same path's agent ends that one (the pid
   read again just before the signal, its start and executable unchanged) (SIGTERM to the orphan, or to the older launcher, which passes it
   on) and takes the lock once it lets go, waiting up to 150 s; the stopping agent leaves its jobs
-  running for it, as for an update (crates/agentcore/src/agent/takeover.rs). An agent run by hand,
+  running for it, as for an update (crates/agentcore/src/agent/stray.rs). An agent run by hand,
   or under a newer launcher, ends nothing. The holder is the one the lock file names (`<pid>
   <start µs>`, written by the agent as it takes the lock), while that pid still started then; no
   other process is looked at (#1108: a scan of every process's open files blocked in the kernel

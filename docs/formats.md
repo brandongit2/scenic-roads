@@ -854,7 +854,7 @@ state.json, job.json, logs/   job.json (job-<k>.json, slot k's past the first): 
                         begins `=== run of <name> (<unix s>, job <epoch>-<n>) ===` (no job part
                         before job ids, or for a job of no lease)
 agent.lock              the agent's lock (one agent a Mac), its text its holder's `<pid> <start µs>`
-                        (agent::takeover, docs/surface.md)
+                        (agent::stray, docs/surface.md)
 publishing.json         the lead's record of its map updates {held_at, ran}: when an update due was
                         first held back since (none: none is), the cadenced steps' runs
                         (agent::publish::LastCatalogue); when the last went out, and the last with

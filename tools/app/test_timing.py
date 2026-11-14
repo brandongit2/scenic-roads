@@ -10,7 +10,7 @@ misses both. A sleep before asserts that something did NOT happen (a stopped job
 same size, a cancelled call never run) can't fail under load: mark it `// (absence)`. Any other
 sleep whose asserts hold however long it took (file times set apart, a head start whose asserts
 hold either way) says why: `// (sleep ok: <why>)`. A mark goes on the sleep's line or the line
-above. Nor does a wait carry a watchdog of its own under a minute (task #662: takeover's 5 s, keep's
+above. Nor does a wait carry a watchdog of its own under a minute (task #662: agent::stray's 5 s, keep's
 20 s): a deadline `Instant::now() + <short>`, a loop on `elapsed() < <short>`, or a
 `recv_timeout(<short>)` expected to succeed. A bound that isn't a wait (how long a test keeps
 reading) says so: `// (bound ok: <why>)`. Comments are skipped. Prints each offence; exits 1 on any.

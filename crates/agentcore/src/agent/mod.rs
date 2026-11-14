@@ -92,7 +92,7 @@ pub mod settings;
 pub mod share;
 pub mod slots;
 pub mod spans;
-pub mod takeover;
+pub mod stray;
 
 use crate::coord::client::LeaseCalls;
 use crate::pool::lead::Role;
@@ -1488,7 +1488,7 @@ fn answers_soon(probe: fn(&NasRoot) -> bool, root: &NasRoot) -> bool {
 }
 
 /// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs,
-/// the file naming its holder (takeover::note_holder).
+/// the file naming its holder (stray::note_holder).
 pub struct AgentLock(#[allow(dead_code)] jobrt::sys::PathLock);
 
 impl AgentLock {
@@ -1496,7 +1496,7 @@ impl AgentLock {
     pub fn try_take(home: &Path) -> Result<Option<AgentLock>> {
         std::fs::create_dir_all(home)?;
         let Some(l) = jobrt::sys::PathLock::take(&home.join("agent.lock"), false)? else { return Ok(None) };
-        takeover::note_holder(&l).context("write the agent's lock's holder")?;
+        stray::note_holder(&l).context("write the agent's lock's holder")?;
         Ok(Some(AgentLock(l)))
     }
 }
@@ -1865,7 +1865,7 @@ impl Agent {
         let mut lock = AgentLock::try_take(&o.home)?;
         // (Held by an agent outside this one's launcher: ended, and the lock taken over.)
         if lock.is_none() && !o.dry_run {
-            lock = takeover::take_over(&o.home, takeover::WAIT)?;
+            lock = stray::take_over(&o.home, stray::WAIT)?;
         }
         if lock.is_none() {
             anyhow::ensure!(

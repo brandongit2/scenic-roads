@@ -257,7 +257,7 @@ final class BuildService {
     /// and exits). Unregistering doesn't always end the job's process (the M1, 22 Oct): left, its
     /// agent holds the lock under no registered job. launchd's state read afresh first, and only
     /// launchers that started before the job's own (a launcher launchd has just started is never
-    /// one). The agent ends such a holder too (crates/agentcore/src/agent/takeover.rs); this ends
+    /// one). The agent ends such a holder too (crates/agentcore/src/agent/stray.rs); this ends
     /// the launcher, which would start it again. Each pid logged once.
     func endStaleLaunchers() {
         refresh()

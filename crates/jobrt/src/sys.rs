@@ -252,7 +252,7 @@ impl PathLock {
     }
 
     /// Writes `text` as its file's whole content: who holds it, for one finding it held to read
-    /// (the agent's lock, agent::takeover). A taker's own file, made anew when the last let go, so
+    /// (the agent's lock, agent::stray). A taker's own file, made anew when the last let go, so
     /// never an earlier holder's.
     pub fn note(&self, text: &str) -> io::Result<()> {
         use std::io::{Seek, Write};
