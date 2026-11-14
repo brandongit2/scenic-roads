@@ -2473,6 +2473,29 @@ pub fn departures(
         .collect()
 }
 
+/// The jobs of a step the forecast doesn't model a Mac may be granted in an hour before the lead
+/// says so (`unforeseen_many`): one every two minutes. GC goes on through its chunks in one job and
+/// the backup is daily, so more is jobs started again and again (task #1392: hundreds of empty GC
+/// and backup jobs an hour).
+pub const UNFORESEEN_HOURLY: usize = 30;
+
+/// Each Mac and step the forecast doesn't model (`UNFORESEEN`) granted more than
+/// `UNFORESEEN_HOURLY` jobs in the hour before `now` (unix s): ((Mac, step), in words). `real`:
+/// the grants made, (unix s, Mac, step), as for `departures`.
+pub fn unforeseen_many(real: &[(u64, String, String)], now: u64) -> Vec<((String, String), String)> {
+    let mut n: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+    for (_, mac, step) in real.iter().filter(|r| r.0 + 3600 > now && r.0 < now && !foreseen(&r.2)) {
+        *n.entry((mac, step)).or_default() += 1;
+    }
+    n.into_iter()
+        .filter(|(_, got)| *got > UNFORESEEN_HOURLY)
+        .map(|((mac, step), got)| {
+            let d = format!("{mac}: {got} job(s) of {step} granted in the last hour, more than {UNFORESEEN_HOURLY}");
+            ((mac.to_string(), step.to_string()), d)
+        })
+        .collect()
+}
+
 /// Why a Mac was granted fewer jobs of `step` than the forecast foresaw, from its asks answered
 /// since (`departures`), in words: none heard (its agent asks only while a slot is free and nothing
 /// holds it back); else how many, the jobs they wanted and got, how many were offered the step (the
@@ -4131,6 +4154,17 @@ mod tests {
                 (("m4".to_string(), "unit".to_string()), "m4: 6 job(s) of unit granted, the forecast's 2"),
                 (("m6".to_string(), "inputs".to_string()), "m6: 3 job(s) of inputs granted, the forecast's 0"),
             ]
+        );
+        // Many of an unmodelled step in the hour before now are said; as many as the line allows,
+        // older ones, the modelled steps' and one at `now` itself aren't.
+        let mut many = real("gc", UNFORESEEN_HOURLY + 1);
+        many.extend(real("backup", UNFORESEEN_HOURLY));
+        many.extend(real("unit", 100));
+        many.extend((0..50).map(|_| (1000 - 1, "m6".to_string(), "osm-pass".to_string())));
+        many.extend((0..50).map(|_| (1000 + 3599, "m6".to_string(), "redo".to_string())));
+        assert_eq!(
+            unforeseen_many(&many, 1000 + 3599),
+            [(("m6".to_string(), "gc".to_string()), "m6: 31 job(s) of gc granted in the last hour, more than 30".to_string())]
         );
     }
 

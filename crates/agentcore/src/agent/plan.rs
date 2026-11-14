@@ -430,8 +430,8 @@ pub(super) struct Planner {
     pub(super) ready: std::cell::RefCell<Vec<String>>,
     /// The last plan's forecast (crate::agent::forecast), for the status.
     pub(super) forecast: std::cell::RefCell<Option<forecast::Forecast>>,
-    /// When each (Mac, step) last had its grants' departure from the forecast logged
-    /// (`forecast_now`): once an hour at most.
+    /// When each (Mac, step) last had its grants' departure from the forecast, or its many grants of
+    /// a step the forecast doesn't model, logged (`forecast_record`): once an hour at most.
     pub(super) departed: std::cell::RefCell<BTreeMap<(String, String), u64>>,
     /// The forecasts' runs of the last `forecast::PACE_MAX_S`, one each `forecast::CURVE_S` at most
     /// (`Forecast::at`, `Forecast::curve`): what the next is held to (`forecast::pace`).
@@ -2231,6 +2231,14 @@ impl Planner {
                     eprintln!("agent: the grants departed from the forecast: {d}");
                 }
             }
+            // (A step the forecast doesn't model, granted many times an hour: said, the same once an
+            // hour; its keys never a departure's.)
+            for (k, d) in forecast::unforeseen_many(&real, now) {
+                if let std::collections::btree_map::Entry::Vacant(e) = said.entry(k) {
+                    e.insert(now);
+                    eprintln!("agent: many grants of a step the forecast doesn't model: {d}");
+                }
+            }
         }
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
@@ -3452,31 +3460,45 @@ const SAMPLE_LIMIT: Duration = Duration::from_secs(300);
 mod tests {
     use super::*;
 
-    /// Task #1188: every job the plan makes is the forecast's (the regions' work, `region_work`,
-    /// whose jobs before the regions' are its `before`, and the plan's work) or of a step the
-    /// forecast declares it doesn't model (forecast::UNFORESEEN), nothing between: each job
-    /// `plan_unchecked` makes itself (a `JobSpec`, the redos') is of a step in that list, and each
-    /// step in it is made there. A new duty there, unlisted, fails here.
+    /// Task #1188: the jobs `plan_unchecked` makes besides the regions' work (`region_work`, what
+    /// the forecast is made from) are of the steps the forecast declares it doesn't model
+    /// (forecast::UNFORESEEN), and each step in that list is made there. Read from its source: each
+    /// job put in its `out` is placed (a `JobSpec` written there, by the step its id starts with;
+    /// the redos'; the regions' work; the regions' work put back after the input checks), and one
+    /// put there any other way fails here, so a new duty can't pass unlisted.
     #[test]
     fn the_jobs_planned_outside_the_forecast_are_the_ones_it_says_it_doesnt_model() {
         let src = include_str!("plan.rs");
         let start = src.find("    pub(super) fn plan_unchecked(").expect("plan_unchecked");
         let body = &src[start..];
         let body = &body[..body[1..].find("\n    pub(super) fn ").expect("the next fn") + 1];
-        assert!(body.contains("self.region_work("), "the regions' work: the forecast's");
         let mut made: BTreeSet<String> = BTreeSet::new();
-        for (i, _) in body.match_indices("JobSpec {") {
-            let id = body[i..].lines().nth(1).unwrap_or("").trim();
-            let step = id
-                .strip_prefix("id: format!(\"")
-                .and_then(|r| r.split_once(' '))
-                .map(|(s, _)| s)
-                .or_else(|| id.strip_prefix("id: \"").and_then(|r| r.split_once('"')).map(|(s, _)| s));
-            made.insert(step.unwrap_or_else(|| panic!("a job of a step not read here: {id}")).to_string());
+        let mut regions = 0;
+        for (n, line) in body.lines().enumerate() {
+            let Some(rest) = line.trim().strip_prefix("out").filter(|r| r.starts_with(['.', ' '])) else {
+                continue;
+            };
+            let put = [".push(", ".extend(", " = "]
+                .iter()
+                .find_map(|p| rest.strip_prefix(p))
+                .unwrap_or_else(|| panic!("the plan's jobs changed in a way the test can't place: {}", line.trim()));
+            if put == "JobSpec {" {
+                let id = body.lines().nth(n + 1).unwrap_or("").trim();
+                let step = id
+                    .strip_prefix("id: format!(\"")
+                    .and_then(|r| r.split_once(' '))
+                    .map(|(s, _)| s)
+                    .or_else(|| id.strip_prefix("id: \"").and_then(|r| r.split_once('"')).map(|(s, _)| s));
+                made.insert(step.unwrap_or_else(|| panic!("a job of a step not read here: {id}")).to_string());
+            } else if put.starts_with("self.redo_jobs(") {
+                made.insert(redo::STEP.to_string());
+            } else if put.starts_with("self.region_work(") {
+                regions += 1;
+            } else if !matches!(put, "checks;" | "rest);") {
+                panic!("a job put in the plan the test can't place: {}", line.trim());
+            }
         }
-        if body.contains("self.redo_jobs(") {
-            made.insert(redo::STEP.to_string());
-        }
+        assert_eq!(regions, 1, "the regions' work: the forecast's");
         assert_eq!(made, forecast::UNFORESEEN.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
     }
 

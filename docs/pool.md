@@ -1084,7 +1084,10 @@ the room it packs beside the job, as the next forecast (within the minute) sees 
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour, and never of a step the forecast
 doesn't model (`forecast::UNFORESEEN`, docs/building.md, The forecast: the planet's fetch, a new
-pass, the backup, the redos, GC), whose grants depart from no forecast.
+pass, the backup, the redos, GC), whose grants depart from no forecast. Of those it logs a Mac
+granted more than `forecast::UNFORESEEN_HOURLY` jobs of one in the last hour (30: GC goes on through
+its chunks in one job, the backup is daily), each Mac and step at most once an hour ("many grants
+of a step the forecast doesn't model: m6: 558 job(s) of gc granted in the last hour, more than 30").
 
 **A Mac granted fewer** (task #1163) is said with what the lead answered its asks since the
 forecast: the coordinator keeps each worker's asks answered over the last hour
