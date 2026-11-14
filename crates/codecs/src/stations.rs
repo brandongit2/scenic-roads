@@ -115,7 +115,8 @@ pub fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     12_742_000.0 * h.sqrt().min(1.0).dasin()
 }
 
-/// A name for merging: lowercase, without words like "station" and punctuation.
+/// A name for merging: lowercase, without words like "station" and punctuation (`WORDS`, kept in
+/// code, docs/inputs.md §9: part of the merge's rule, not a list of places).
 pub fn norm(name: &str) -> String {
     const WORDS: &[&str] =
         &["station", "gare", "estación", "estação", "halt", "stop", "platform", "quai", "voie", "bahnhof", "駅"];

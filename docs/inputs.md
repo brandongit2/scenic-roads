@@ -2659,8 +2659,8 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
 What could still move out of the code: names the guard (§7.2) doesn't take for a source's (short
 names, store paths, help text) or exempts. **D:** becomes a declaration
 field. **P:** moves to a producer. Configuration and generic code (formats, protocols, road network
-rules, storey heights per country, OSM name heuristics, the Wikidata properties asked for, the user
-agent) stay.
+rules, the Wikidata properties asked for, the user agent) stay; the tables of facts about the world
+are §9.1's.
 
 - **Credits:** `inputs::rules::CREDITS` and its area boxes (D: each source's description, extents
   derived), and the server's `credits_of` fallback; the tree tiles' meta source string (D); source lines in web/src's layer help and popups
@@ -2683,3 +2683,43 @@ agent) stay.
 - **Kept by design:** `budget`'s metered hosts (the polite-use budget, by
   host: §7.2); `markconv.rs`'s id schemes (`whc:`, `reg:dfhd:`, `legacy:`: ids must not
   change, docs/phase5.md, Ids); `codecs::legacy` (a name for live code).
+
+### 9.1 Facts about the world in code
+
+Tables in the code that are facts about the world rather than rules of the code (task #1402), each
+judged; what stays has a line at the table saying why. The build page's country and lake outlines
+(`web/buildpage/countries.json`, `lakes.json`, from Natural Earth) are the app's own assets.
+
+**Kept in code:**
+
+| Table | Read by | Why it stays |
+|---|---|---|
+| `bld::fill`'s `STOREY`, `SIZE` (storey heights and roof allowances, size medians: 12 countries and the coverage's) | the 3D buildings' fill (rules 1 and 5), versioned by `bld::BUILDINGS_V` | the fill's fitted parameters (B0, 6 Oct): least-absolute-deviation fits and medians on the buildings rule 0 takes, by `size_bin`'s classes; valid only with those rules, so they change with them, under a new `BUILDINGS_V` |
+| `bld::fill::ESTIMATES` (Overture's dataset whose heights are estimates) | `bld::job` (rule 0 or 2) | splits rule 0 from rule 2, and the tables were fitted on the set rule 0 takes: part of the fill's rule (§6.9) |
+| `names::spoken::READ_AS` (`zh` read as `yue`) | `names::spoken::lookup_order` | how OSM's tags are read where Cantonese is spoken and Mandarin isn't: a lookup rule, not territory data (§6.2) |
+| `SAME_LANGUAGE` (`names::own`, `landmarks::labels`: `Hant`, `Hans`, `TW`, …) | the own English's and the labels' readers | how OSM's `name:` keys are read (the BCP 47 subtags that keep the language) |
+| `namestodo::CJK_LANGS` | the to-do lists' candidates | the languages written in CJK scripts: a fact of the scripts, part of the candidates' rule |
+| `codecs::stations::norm`'s `WORDS` ("station", "gare", "駅", …) | the stations' merge | words stripped to compare names: part of the merge's rule, not a list of places |
+| `landmarks::interest::view_item`'s `WORDS` | a viewpoint's fame | words of Wikidata's English descriptions: part of the rule |
+
+Lists of OSM's tags and values (`labels::NOT_LAKE`, `areadetails::PARK_TAGS`, `ferries::ROAD_FERRY`,
+`heritage_layers::KEEP`) and the app's own classes (`landcover::GRID_CLASSES`) are the map's schema,
+not facts about the world.
+
+**Planned to move** (each a board task: facts that belong in an inputs folder or can be derived from
+one, not moved yet because the move reaches keys and needs its own proof that none moves):
+
+- `buildstore::outlines::OWN_CODED` (CN, FR, NL, US: the countries whose ISO 3166-2 codes name their
+  territories by the territories' own codes): derivable from the outlines (an outline tagged both
+  `ISO3166-1=PR` and `ISO3166-2=US-PR`).
+- `namestodo::OTHER_WORDS`, `ENGLISH_WORDS` (the coverage's languages' generic words): an input of
+  the languages, keyed into the to-do lists alone.
+- `INTERCITY_WORDS` (`codecs::stations`' and `scenic-build extract`'s, two copies that differ: the
+  stations' has the Japanese and Taiwanese services): one input of the rail's services.
+- `pageviews::LANGS`, `heritagewd`'s `LANGS`, `OTHER`, `STOP`, `heritagedetails::LOCAL` (the
+  Wikipedias read, "the map's languages"): derivable from the languages input.
+- `ferries::URBAN_NETS`, `CABLE_WORDS` (city transit networks and operators, cable ferries' words):
+  an input of the ferries' classes.
+- `lakefill::run::PROVINCES` (the Canadian regions' relations, which the regions input holds) and
+  `lakefill::REACH` (Canada's box, the lake-fill source's territory): derivable from the regions and
+  the declaration.

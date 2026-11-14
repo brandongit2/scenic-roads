@@ -166,7 +166,8 @@ fn population(v: Option<&str>) -> f64 {
 }
 
 /// Script and region subtags after a language that still name the name's language (name:zh-Hant
-/// equal to name is Chinese); any other (-Latn, _rm, _kana) is a transliteration.
+/// equal to name is Chinese); any other (-Latn, _rm, _kana) is a transliteration. Kept in code
+/// (docs/inputs.md §9): how OSM's `name:` keys are read.
 const SAME_LANGUAGE: [&str; 7] = ["Hant", "Hans", "TW", "HK", "CN", "MO", "SG"];
 const KANA_KEYS: [&str; 3] = ["name:ja-Hira", "name:ja_kana", "name:ja-Kana"];
 

@@ -66,7 +66,8 @@ impl fmt::Display for Lang {
 }
 
 /// Where OSM's language tag names a language whose names are read as another spoken there: a name
-/// tagged `name:zh` in Hong Kong is read in Cantonese.
+/// tagged `name:zh` in Hong Kong is read in Cantonese. Kept in code (docs/inputs.md §9): how OSM's
+/// tags are read, a lookup rule, not territory data.
 const READ_AS: &[(&str, &str)] = &[("zh", "yue")];
 
 /// The languages spoken per territory: an ISO 3166-1 code (`FR`) or ISO 3166-2 one (`CA-QC`), and

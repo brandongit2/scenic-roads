@@ -97,6 +97,8 @@ struct Lists<'a> {
     report: Report,
 }
 
+/// The languages written in CJK scripts (a name's script narrows its candidates). Kept in code
+/// (docs/inputs.md §9): a fact of the scripts, part of the candidates' rule.
 const CJK_LANGS: [&str; 6] = ["ja", "zh", "yue", "nan", "hak", "ko"];
 
 fn is_cjk(c: char) -> bool {
