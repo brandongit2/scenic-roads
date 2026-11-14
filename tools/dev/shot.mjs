@@ -11,11 +11,13 @@
 //   --press KEYS  keys pressed in turn, comma-separated: a character (b, +) or a key name
 //                 (Escape, ArrowUp, Enter)
 //   --click X,Y   a left click at CSS pixels X,Y (repeatable; done after the keys)
-//   --quiet MS    idle means MS ms (default 1000) with no animation frame requested and no request
-//                 in flight, fonts loaded, and no task under way where the page says (the map's
-//                 <html data-busy>, its status line's tasks: tiles, labels, searches)
-//   --timeout S   the most each wait may take (default 60 s); past it: exit 2, saying what kept
-//                 the page busy (frames requested a second, requests in flight)
+//   --quiet MS    idle means MS ms (default 1000) with no animation frame requested, no request
+//                 in flight (the page's or its workers'), no task under way where the page says
+//                 (the map's <html data-busy>, its status line's tasks: tiles, labels, searches),
+//                 and the fonts loaded
+//   --timeout S   the most each wait may take (default 60 s: the answer, the load, each idle, the
+//                 capture); past it: exit 2, saying what kept the page busy (frames requested a
+//                 second, requests in flight, the page's tasks)
 //
 // Prints one line: the file, its pixel size, the times (idle, capture, all). Exit 1 on an error,
 // 2 on a timeout, 0 with the file written and its size checked.
@@ -62,27 +64,40 @@ try {
   const page = await chrome.page();
   const errors = [];
   page.on("Runtime.exceptionThrown", (p) => errors.push(p.exceptionDetails.exception?.description?.split("\n")[0] || p.exceptionDetails.text));
-  // Requests in flight (an EventSource, or one open past 10 s, counts as a stream, not loading).
+  // Requests in flight, the page's and its workers' (the map's tiles are fetched in its workers,
+  // which the page's own Network events never show); an EventSource, or one open past 10 s,
+  // counts as a stream, not loading.
   const flight = new Map();
   let netAt = performance.now();
-  page.on("Network.requestWillBeSent", (p) => { if (p.type !== "EventSource") flight.set(p.requestId, { url: p.request.url, at: performance.now() }); netAt = performance.now(); });
-  for (const ev of ["Network.loadingFinished", "Network.loadingFailed"]) page.on(ev, (p) => { if (flight.delete(p.requestId)) netAt = performance.now(); });
+  const watchNet = (on) => {
+    on("Network.requestWillBeSent", (p) => { if (p.type !== "EventSource") flight.set(p.requestId, { url: p.request.url, at: performance.now() }); netAt = performance.now(); });
+    for (const ev of ["Network.loadingFinished", "Network.loadingFailed"]) on(ev, (p) => { if (flight.delete(p.requestId)) netAt = performance.now(); });
+  };
+  watchNet(page.on);
+  page.on("Target.attachedToTarget", ({ sessionId }) => {
+    watchNet((m, fn) => chrome.on(m, fn, sessionId));
+    chrome.send("Network.enable", {}, sessionId).catch(() => {}).then(() => chrome.send("Runtime.runIfWaitingForDebugger", {}, sessionId)).catch(() => {});
+  });
   const loading = () => [...flight.values()].filter((r) => performance.now() - r.at < 10000);
   await Promise.all(["Page.enable", "Runtime.enable", "Network.enable"].map((m) => page.send(m)));
+  await page.send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
   await page.send("Page.addScriptToEvaluateOnNewDocument", { source: COUNT_FRAMES });
   await page.send("Emulation.setDeviceMetricsOverride", { width: W, height: H, deviceScaleFactor: SCALE, mobile: false });
   if (opt.scheme) await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: opt.scheme }] });
   const js = async (expression) => { const r = await page.send("Runtime.evaluate", { expression, returnByValue: true }); if (r.exceptionDetails) throw new Error(r.exceptionDetails.text); return r.result.value; };
 
+  // At most TIMEOUT for the answer and its load event (a host that never answers holds
+  // Page.navigate itself for a minute or more).
+  const within = (p, what) => Promise.race([p, sleep(TIMEOUT).then(() => { throw new Timeout(`${what} in ${secs(TIMEOUT)}`); })]);
   const loaded = new Promise((ok) => page.on("Page.loadEventFired", ok));
-  const nav = await page.send("Page.navigate", { url });
+  const nav = await within(page.send("Page.navigate", { url }), `no answer from ${url}`);
   if (nav.errorText) throw new Error(`${url}: ${nav.errorText}`);
-  await Promise.race([loaded, sleep(TIMEOUT).then(() => { throw new Timeout(`no load event in ${secs(TIMEOUT)}`); })]);
+  await within(loaded, "no load event");
 
   // Idle: QUIET ms with no frame requested and nothing loading, the fonts in.
   const idle = async (what) => {
     const start = performance.now();
-    let frames = await js("window.__shotFrames()"), frameAt = performance.now();
+    let frames = await js("window.__shotFrames()"), frameAt = performance.now(), busyAt = 0;
     const seen = [];
     for (;;) {
       await sleep(100);
@@ -91,11 +106,12 @@ try {
       seen.push([now, n]);
       if (n !== frames) { frames = n; frameAt = now; }
       if (loading().length) netAt = now;
-      if (now - frameAt >= QUIET && now - netAt >= QUIET && fonts === "loaded" && !busy) return now - start;
+      if (busy) busyAt = now;
+      if (now - frameAt >= QUIET && now - netAt >= QUIET && now - busyAt >= QUIET && fonts === "loaded") return now - start;
       if (now - start > TIMEOUT) {
         const last = seen.filter(([t]) => now - t <= 1000), rate = last.length > 1 ? last.at(-1)[1] - last[0][1] : 0;
         const l = loading();
-        throw new Timeout(`not idle ${what} after ${secs(TIMEOUT)}: ${rate} frames requested in the last second, ${l.length} requests in flight${l.length ? ` (${l.slice(0, 3).map((r) => r.url.slice(0, 100)).join(", ")})` : ""}, fonts ${fonts}${busy ? `, the page busy with: ${busy}` : ""}`);
+        throw new Timeout(`not idle ${what} after ${secs(TIMEOUT)}: ${rate} frames requested in the last second, ${l.length} requests in flight${l.length ? ` (${l.slice(0, 3).map((r) => r.url.slice(0, 100)).join(", ")})` : ""}, fonts ${fonts}${busy ? `, the page busy with: ${busy}` : ""}; the last frame ${secs(now - frameAt)} ago, the last request ${secs(now - netAt)} ago${busyAt ? `, the last task ${secs(now - busyAt)} ago` : ""}, ${secs(QUIET)} of quiet needed`);
       }
     }
   };
@@ -115,7 +131,7 @@ try {
   }
 
   const c0 = performance.now();
-  const { data } = await Promise.race([page.send("Page.captureScreenshot", { format: "png" }), sleep(TIMEOUT).then(() => { throw new Timeout(`the capture didn't answer in ${secs(TIMEOUT)}`); })]);
+  const { data } = await within(page.send("Page.captureScreenshot", { format: "png" }), "no capture");
   const capMs = performance.now() - c0;
   const png = Buffer.from(data, "base64");
   const [pw, ph] = [png.readUInt32BE(16), png.readUInt32BE(20)], [ew, eh] = [Math.round(W * SCALE), Math.round(H * SCALE)];

@@ -5,13 +5,14 @@
 // (a PNG of ~3 MB, ~4.2 MB as base64) never answered (#1301). The pipe has no such limit.
 //
 // Chrome is our own child with a throwaway profile; close() ends it by its PID (SIGTERM, SIGKILL
-// after 5 s) and deletes the profile, and so does this process's exit, whatever ends it. Its GL is
+// after 5 s) and deletes the profile, and so does this process's exit or a SIGINT or SIGTERM to it
+// (then exit 130 or 143). Its GL is
 // Chrome's own choice: on a Mac, ANGLE on Metal, the GPU (SwiftShader, --use-angle=swiftshader,
 // draws the map at a few frames a second).
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -48,6 +49,22 @@ export async function launch({ flags = [] } = {}) {
     chrome.stdio[3].write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + "\0");
   });
   const on = (method, fn, sessionId) => { const k = `${sessionId || ""} ${method}`; subs.set(k, [...(subs.get(k) || []), fn]); };
+  // Once, however often asked (a signal and the caller's own cleanup alike).
+  let closing;
+  const close = () => (closing ||= (async () => {
+    if (chrome.pid && chrome.exitCode === null && chrome.signalCode === null) {
+      const exited = new Promise((ok) => chrome.once("exit", ok));
+      chrome.kill("SIGTERM");
+      const t = setTimeout(() => chrome.kill("SIGKILL"), 5000);
+      await exited;
+      clearTimeout(t);
+    }
+    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    process.removeListener("exit", gone).removeListener("SIGINT", signal).removeListener("SIGTERM", signal);
+  })());
+  // (A signal's own exit skips "exit" listeners: Chrome would go with its pipe, the profile stay.)
+  const signal = (sig) => close().finally(() => process.exit(128 + constants.signals[sig]));
+  process.once("SIGINT", signal).once("SIGTERM", signal);
   await send("Browser.getVersion");
   return {
     pid: chrome.pid,
@@ -61,16 +78,6 @@ export async function launch({ flags = [] } = {}) {
         close: () => send("Target.closeTarget", { targetId }).catch(() => {}),
       };
     },
-    async close() {
-      if (chrome.pid && chrome.exitCode === null && chrome.signalCode === null) {
-        const exited = new Promise((ok) => chrome.once("exit", ok));
-        chrome.kill("SIGTERM");
-        const t = setTimeout(() => chrome.kill("SIGKILL"), 5000);
-        await exited;
-        clearTimeout(t);
-      }
-      rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
-      process.removeListener("exit", gone);
-    },
+    close,
   };
 }

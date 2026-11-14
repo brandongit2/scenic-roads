@@ -308,10 +308,8 @@ async function run() {
   const srv = await serve();
   const chrome = await launch();
   const results = [];
-  // (A Ctrl-C, a kill or a run past 8 min: Chrome and its profile go too, by its own PID.)
-  const stop = () => chrome.close().finally(() => process.exit(2));
-  process.once("SIGINT", stop).once("SIGTERM", stop);
-  setTimeout(() => { console.log("FAIL the run (past 8 min)"); stop(); }, 480000).unref();
+  // (A run past 8 min: Chrome and its profile go too, by its own PID, as on a Ctrl-C or a kill.)
+  setTimeout(() => { console.log("FAIL the run (past 8 min)"); chrome.close().finally(() => process.exit(2)); }, 480000).unref();
   const check = (name, ok, note = "") => { results.push({ name, ok }); console.log(`${ok ? "PASS" : "FAIL"} ${name}${note ? ` (${note})` : ""}`); };
   try {
     const page = await chrome.page();
