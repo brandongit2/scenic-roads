@@ -1908,8 +1908,8 @@ Europe's (task #1350), the surface models of both (task #1370), the point clouds
 #1370 left (task #1379), Asia's, Latin America's and the
 Caribbean's, Oceania's, Africa's, the polar south's and the worldwide models not declared before
 (task #1350's third run); the step `available` that draws the pieces' tiles, and the server's
-score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348). Planned:
-`piece.dataset` (extents from the build's own data; task #1349). Task #1334.
+score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348); the built set, the elevation datasets each where the terrain used it, drawn from the build's own masks (the step `available-built`, task #1349). Planned:
+`piece.dataset` (extents from the build's own data; task #1403). Task #1334.
 
 **Kind:** source declarations whose data is an extent, not the source's data. **Inputs folder:**
 `inputs/extents/`, a folder per theme:
@@ -1951,7 +1951,7 @@ records which it got:
 
 | Class | The extent is | For |
 |---|---|---|
-| `mask` | where the build's own copy of the data has valid values | data the build has downloaded (§6.8's datasets): every built-in piece, and a source's piece naming the dataset that holds its files (`dataset`), there (planned: docs/steps.md §14) |
+| `mask` | where the build's own copy of the data has valid values | data the build has downloaded (§6.8's datasets): every piece of the built set (docs/steps.md §14, `available-built`), and a source's piece naming the dataset that holds its files (`dataset`), there (planned, task #1403) |
 | `files` | the files' own bounds and valid-data masks, read from their headers and coarsest overviews by range request | a source that downloads directly, whose files are few enough to open each |
 | `index` | the publisher's list of its files: a tile index, STAC items, a directory listing of georeferenced names | a source that downloads directly, with too many files to open |
 | `service` | the publisher's footprint service: project or survey outlines | a source that downloads directly, with no per-file index |
@@ -1989,7 +1989,7 @@ area; otherwise the piece is `none`, listed and not drawn.
 | `piece.tolerance_m` | the simplification, default 50 |
 | `piece.timeout_s` | a request's time limit, default 180: a server that makes its answer on request and takes longer (Bulgaria's WCS, 2 to 5 minutes) |
 | `[piece.metrics]` | each metric a constant (`surface = "ground"`), or read from a field: `{field = "…"}`, with `scale` (a factor to the metric's unit), `map` (the publisher's classes to values, the class kept as `stated`), `index` (the place in a list-valued field), `text` (a number written with its unit, `"2 metre"`, `"10 pts/m2"`, `"0.35m (spec)"`: the unit's word, a remark in brackets after it left out, the value unknown and kept as `stated` when another unit is written), `date` (how a date is written: `epoch-ms`, `iso`, `year`, `text`, the last year a name holds, alone or opening a compact date, `20240315`, or ending a span in two digits, `2011-12`, not a date's month, or `yymmdd`, six-digit dates of the 2000s alone or as a span, the last taken; the year is taken), `density = true` (a point density per m², taken as its nominal spacing 1/√density, the Lidar Base Specification's NPS), `pattern` (a regular expression whose first group is the part of the field holding the value, read as the other keys say: a file path naming its grid's cell, IGAC's `…\MDT1_05148000_20230103` with `'MDT(\d+)_\d+_\d{8}\s*$'`; no match, no value); or a list of readings, tried in turn, the first giving a value (`[{field = "id", date = "text"}, {field = "datetime", date = "iso"}]`: a field the publisher fills only sometimes, then another), its last one may be a constant, the value where none gives one (PST-A's 1 m grid's tiles stating no cell: `[{field = "risoluzion"}, 1.0]`). Features of one value but different classes (QL 1 and QL 2 both 0.10 m) are pieces apart, each stating its own |
-| `piece.dataset` | planned (docs/steps.md §14): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
+| `piece.dataset` | planned (docs/steps.md §14, task #1403): the elevation dataset (§6.8) holding this piece's files, whose mask the step takes for the piece's extent where it's accepted |
 
 **The producer's readers** (`producers/extents/extents.py`, one generic reader a kind of service;
 a new source of a kind it knows is a new declaration, no code):

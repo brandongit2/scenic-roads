@@ -6,6 +6,10 @@
 - Zoomed out, every road is drawn at every zoom. The water zoomed out looks as full detail rendered
   and shrunk would: an island or lake smaller than a pixel is as faint as its share of the pixel,
   never exaggerated nor dropped, with the coastal shading full detail gives it (docs/steps.md §4).
+- **Data available** (the layers panel; docs/steps.md §14) colours the map by its terrain data,
+  either set: Best available, the best data any source publishes for each place; or Built into the
+  map, the elevation dataset the map's terrain took its heights from there. A click lists the
+  sources, or the dataset, at the point.
 - **Scenic** (`/Applications/Scenic.app`, `tools/status`) is an app opened from Launchpad, Spotlight
   or /Applications, and at login; it has no Dock icon (LSUIElement), only its menu bar item and its
   window, and its icon is built from `tools/status/icon`. Opening it starts this Mac's build service (the agent: the app's

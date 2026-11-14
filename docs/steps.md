@@ -1003,13 +1003,15 @@ while the server is away from the NAS).
 The layers that colour the map by the best data any declared source has for each place, from the
 source extents (docs/inputs.md §6.11): for a theme (`terrain` first; `bathymetry` and `buildings`
 later), the **score**'s layer, first: the best piece at each place drawn at its own grid spacing
-(the primary metric's value), and a layer per other metric. **Built** (task #1347): the
-step `available`, its tiles, and the server's score, maxima, tiles and click; the app's layers
-(task #1348, below). **Planned:** the same layers from only the data built into the map (the set
-`built`, task #1349, with `piece.dataset`: extents from the build's own data, below). The
-map's regions play no part in the first set; in the built-in set they will enter only as the
-build's own cut of where a dataset is used (its `regions`, §6.8), which is what the map has built
-in.
+(the primary metric's value), and a layer per other metric. Two sets of these layers: `best`,
+the best data any declared source has; and `built`, the elevation data built into the map, each
+place holding the dataset the terrain took its heights from. **Built** (task #1347): the step
+`available`, its tiles, and the server's score, maxima, tiles and click; the app's layers (task
+#1348, below); the built set (task #1349): the step `available-built` (below) and the same server
+and app parts in its order. **Planned:** `piece.dataset`, a source's piece taking its extent from
+the dataset the build holds (task #1403, below). The map's regions play no part in the best set;
+in the built set they enter only as the build's own cut of where a dataset is used (its
+`regions`, §6.8), which is what the map has built in.
 
 **The step** `available` (terrain::available; stage `finish`, a target per theme,
 `available-<theme>` for a theme whose accepted extents have pieces, recorded with the worldwide steps' keys; `extents` is taken in the build: the
@@ -1080,21 +1082,12 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   as its grid is (LiDAR HD's, the Länder's, Slovakia's, most of Scotland's), or a source's surface
   model read as its ground model is (MRDEM-30's DSM, on its DTM's mask), has the grid's outline and makes no
   tile of its own.
-- **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
+- **Extents from the build's own data (the owner's rule A.1; planned, task #1403).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent
   standing only outside the dataset's coverage: Copernicus GLO-30, which the store holds whole
   with its fill masks, drawn where its own pixels are (its fill mask below 3), not where its 1°
-  tiles are.
-- **The built-in set (planned, task #1349):** palettes of the same shape whose pieces are the
-  build's own datasets, each where the terrain took its heights from it: the order's first dataset
-  with data at a place, within its `regions` (§6.8, `declared::Cover`), so a place's built-in set
-  is the one dataset the map used there, not a maximum over every dataset holding data. Its extent
-  is the dataset's valid-data mask at the layer's own pixel, read from the store's files at the
-  coarsest level no wider than ~38 m (the hollow tiles' second read, 1/1024 of a z10 tile; a GLO-30
-  tile's fill mask below 3), over the dataset's presence tiles: the z10 presence and hollow tiles
-  alone are 38 km squares, which would draw a dataset over every tile it touches. Read on the lead,
-  where the store is. Its key names the elevation unit's index and each dataset's store digest.
+  tiles are. The built set's readers of the store (below) are what it will read with.
 - **Tests:** terrain::available's (hand-made pieces: the sets and a tile's palette, a tile all of
   one set not stored, an overview keeping a piece smaller than its pixel, overlapping polygons of
   one piece and a hole, a piece cut at the antimeridian, the polar caps with a pole held and a
@@ -1104,6 +1097,60 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   in some tile, z0 naming every piece a finer tile does, each stored tile holding what its stored
   children do; every real piece the same, `every_real_piece`, a benchmark run by hand);
   codecs::available's (the format, the layers' names and packs); the server's below.
+
+**The step** `available-built` (terrain::available::built; stage `finish`, one world target,
+`available-built-terrain`, while the build takes its terrain from the elevation datasets, recorded
+with the worldwide steps' keys). The built set: tiles of the same format (`codecs::available`)
+whose pieces are the accepted elevation datasets (§6.8), each pixel the one dataset the terrain
+took its heights from at its centre: the first in the terrain's order (rank, resolution, bare
+earth over surface, id: `declared::order_key`) whose coverage holds the place (its cells, its
+regions' outlines and `exclude`: `declared::Cover`) and that has data there, as the sampler takes
+it. So a place's set is the dataset the map used, not a maximum over every dataset with data, and
+no score or availability enters it. Where a dataset has data is read from what the build holds,
+never its heights:
+- **A GeoTIFF the store keeps** (`[data] store`): its files' footprints, and in them its fill
+  masks (a value 3 or more, `declared::MASK_FILLED`, is a void, as the sampler takes it: GLO-30's)
+  or, without masks, the files' own valid pixels, read from the store (`sources/fetched/<id>/`) at
+  the coarsest overview no wider than the layer's pixel (`level_for`: GLO-30's level 2, about
+  124 m, under z10's 153 m); a read `files` or `fill masks`.
+- **A GeoTIFF read over the network** (HRDEM, 3DEP, …): its footprints within its presence tiles
+  less its hollow tiles (the input check's measures, `inputs::inputs::elevation`), a 39 km grain
+  (z10; `presence`). Finer is task #1404.
+- **A pyramid read tile by tile** (GSI's): a tile its store holds with data, by the store's index
+  of the tiles' entries (crate::pyramids, `sources/pyramids/`), no tile read (`tiles`).
+- **A pyramid published at every zoom** (the Terrarium tiles): everywhere (`everywhere`).
+- **Stored to z10** (`codecs::available::BUILT_MAXZ`), the presence tiles' zoom; z11 and z12 are
+  served from z10's pixels (`tile_at`). At z12, GLO-30's voids (5–29 % of a mountain tile:
+  N49W123's 29 %, N27E086's 19 %, N35E138's 15 %) make 36–100 % of a land tile's z12 blocks mixed,
+  so nearly every tile would be stored; at z10 a pixel is 153 m at the equator. Above it, a
+  pixel's set is the union of the four under it, as the best set's; the server draws the first in
+  order of a union (below).
+- **Its key** is its version (`built::KEY_V`), the elevation unit's datasets each by its keyed
+  digest (`idents::built_datasets`: `id keyed`, the declaration and its measures), and the
+  pyramids' fill (`pyramids-fill`, waited for: its stores' indexes are read). A z6 tile's (and a
+  pole's square's) key names the datasets meeting it: each one's line, where its regions cut it
+  there (`declared::cut_note`), its presence tiles there, and a pyramid's store's archives in the
+  z6 tile's shard; so a dataset fetched again, a region's outline or a pyramid's fill makes again
+  only the z6 tiles it moved. The record (`work/available-built-terrain/mids`), the z6 tiles made
+  again or dropped, the root and the polar caps (`available-built-terrain-<n|s>`, the pole's grid
+  at 1,024 m) are the best set's (`super::drive`, one code for both).
+- **Its datasets' descriptions** beside the tiles (`layers/available-built-terrain/datasets`, a
+  JSON list in the order, docs/formats.md): what the server shows of each.
+- **Read on the lead or the Mac mini**, where the NAS is near: the step reads the store's masks.
+  Measured on the Mac mini over the NAS (14 Nov, 14 datasets, a run from nothing): 16 min 17 s,
+  77 % of it waiting on the NAS, a peak resident set of 1.25 GB; 4,096 z6 tiles made, 2,524 packs
+  holding 349,608 tiles (228 MB), the record 4.2 MB, the polar caps 108 kB. Its target is one
+  only while a dataset is accepted (none: no layer).
+- **Safe points:** each z6 tile made but the last (`super::drive`, both sets'): the build pausing,
+  the record is written with the keys of the tiles made so far and the records saved, and the job
+  ends as paused (Err(`Paused`), `stop_if_paused`); its next run makes the rest, then the root and
+  the caps.
+- **Tests** (terrain::available::built's): a pause keeping the z6 tiles made, the next run making
+  the rest and ending with a whole run's files; the first dataset with data used (a fine dataset in its
+  presence tile and footprint, the next one past its footprint and outside its presence), nothing
+  stored past z10; a fill mask's voids and a coverage cut the next dataset's; a dataset moved
+  making only its z6 tiles again; the polar caps; a pyramid's stored tiles with data its own. The
+  server's (below): the set described, its tiles and click in the order.
 
 **The score and the layers' values** (crate::available in the server; `Score::of` and
 `Score::best` in crate::inputs::extents). The server keeps the extents' accepted version on the Mac
@@ -1137,7 +1184,7 @@ click), an open piece winning a tie on every layer that ranks it, in both views,
 to the better-founded extent (a claimed outline losing it, whatever the ids), each layer's value and scale from the real `score.toml` (the score's at
 the piece's own spacing, no layer of the primary's own, the server's label where score.toml names
 none), one still holding the retired colour fields served the same, the tiles' values (inside a
-piece and transparent outside it) and the click; and `renders_the_real_pieces`, run by hand: with
+piece and transparent outside it) and the click, the built set (described among the sets, its tiles at z0 and at z12 (its ancestor's part) drawing the first dataset in order over a finer one under either switch, its click in the order, a metric it doesn't state not drawn, its version naming its datasets); and `renders_the_real_pieces`, run by hand: with
 `SCENIC_RENDER_DIR` set it builds every real piece, prints the step's time, peak resident set,
 packs' bytes and tiles' sets (those over 256, the most in one), each zoom's tiles and bytes and the
 15 sources whose outlines cross the most tiles (and those no other source's crosses), and writes
@@ -1150,12 +1197,19 @@ switch).
 above (PNG; 204 where no piece is, or none passes the switch); a tile not stored is its ancestor's
 part over it (codecs::available::tile_at). Past 85.05°,
 `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y` (z0–3 of the pole's grid). `<set>`:
-`best` (`built` is planned). `<layer>`: `score` or a metric of the theme's score other than the
+`best`, or `built` while the catalogue lists the theme's built layer and its datasets' descriptions
+read (else 404). `<layer>`: `score` or a metric of the theme's score other than the
 primary; anything else (the primary's id too), or past the zooms, 404. Its ETag names the layer's
 packs' version, the tiles' format and the extents' version, the layer, the switch and the tile;
 `?v=` with the version `/api/meta` gives the layer
-(`available-<theme>`, `available-<theme>-<n|s>`: the packs' version, the tiles' format and the
-extents' version's hash) is cached for good while it's current. The format in the version means a
+(`available-<theme>`, `available-<theme>-<n|s>`, `available-built-<theme>`…: the packs' version,
+the tiles' format and the extents' version's hash, and the built set's datasets' descriptions'
+hash) is cached for good while it's current. **The built set** (`built_of`): its pieces are the
+datasets as described, each scored from score.toml as a piece is (its spacing the dataset's
+measured resolution, its surface its declaration's; extent class `mask`, its `read` the method
+above), drawn and listed in the order (`Theme::order`): a palette entry's piece is its first
+dataset in the order, whatever the scores and either setting of the switch (on a metric's layer, none where it doesn't state the metric; the data is built
+in, so free). The format in the version means a
 page made for another format reads the theme again at the new version, so one too old to draw it
 shows nothing (it reads no layer from the description) until it's loaded again.
 `/api/available/<theme>/<set>?lng&lat&avail`: the pieces at a point (the z12 pixel holding it; past
@@ -1173,9 +1227,10 @@ no piece).
 catalogue lists a theme (`available-<theme>`), its switch the group's: each theme's layers as
 `/api/available/<theme>` lists them, the score's first under its label (score.toml's `label`: "Best
 data"; none, the server's "Best data"), one shown at a time (a layer a save or a link names that the
-theme doesn't list shows the first); the set (`best` now; its control appears once a theme lists
-two: `built`, task #1349, is one more id in `sets`, named by the theme's `labels`); the
-availability switch (Free data, the data that costs nothing: open or after a login or a
+theme doesn't list shows the first); the set (Best available | Built into the map, the theme's
+`sets` named by its `labels`; its control appears once a theme lists two; the built set's click
+panel is titled "Built into the map here" and lists its dataset, and the availability switch is
+hidden for it, which its tiles don't depend on); the availability switch (Free data, the data that costs nothing: open or after a login or a
 request | All data, every source, also those paid or not to be had); the opacity (85 % by default); and the layer's colour map: the sidebar's own
 control (ui/scale.ts ScaleControls, as the terrain tint's, the depth's and the roads'), over the
 layer's values in view (sampled from the tiles drawn, each sample by the ground it stands for:

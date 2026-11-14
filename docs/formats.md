@@ -517,12 +517,14 @@ ancestor's neighbours' edges; nearest for classes).
   the accepted depth declarations (`grids::DepthSource::catalogue_entry`: the credits' depth line and notices, the footer's
   water info on hover, and the estimated ones named in the Depth section's note).
 
-## Data available (`layers/available-<theme>/`, `layers/available-<theme>-<n|s>/`; codecs::available)
+## Data available (`layers/available-<theme>/`, `layers/available-built-<theme>/`, their polar caps' `-<n|s>`; codecs::available)
 
-The source extents' pieces drawn as sets (docs/steps.md §14), a layer per theme, encoding
-`avail-sets`: Web Mercator tiles of 256 px, z0–12, in the root pack `root/0-0-0` (z0–5) and a pack
-per z6 tile `hi/6-x-y` (z6–12 under it); each pole's grid (docs/polar.md) in its own layer,
-`available-<theme>-n` and `-s`, a root pack (z0–3). RDPACK, gzip'd, a tile stored only where its
+Pieces drawn as sets (docs/steps.md §14), a layer per theme and set, encoding `avail-sets`: the
+best set's `available-<theme>`, its pieces the source extents'; the built set's
+`available-built-<theme>`, its pieces the elevation datasets, by id, each where the terrain used
+it, stored to z10 (`BUILT_MAXZ`). Web Mercator tiles of 256 px, z0–12, in the root pack
+`root/0-0-0` (z0–5) and a pack per z6 tile `hi/6-x-y` (z6–12 under it); each pole's grid
+(docs/polar.md) in its own layer, `<layer>-n` and `-s`, a root pack (z0–3). RDPACK, gzip'd, a tile stored only where its
 pixels aren't all of one set (z0 always, unless it holds nothing): a missing tile is its nearest
 stored ancestor's pixels over it, each of its pixels the ancestor's pixel holding its centre
 (`tile_at`).
@@ -537,14 +539,24 @@ A tile ("RDAV", format 1, little-endian), its palette first:
 | sets | u32 count; each u32 count + u32 indices into ids: a pixel's pieces, ascending (the empty set among them where a pixel holds none), in the order the pixels first meet them (row by row) |
 | pixels | 65,536 indices into sets, row by row from the north-west |
 
-A pixel at z12 holds the pieces whose polygons hold its centre (docs/steps.md §14: even-odd per
-polygon, a piece the union of its polygons'); above z12, the union of the four under it.
+A best set's pixel at z12 holds the pieces whose polygons hold its centre (docs/steps.md §14:
+even-odd per polygon, a piece the union of its polygons'); a built set's pixel at z10, the one
+dataset the terrain used at its centre (none: the empty set); above those, the union of the four
+under it.
 
-**The step's record** `work/available-<theme>/mids`: an RDPACK of each z6 tile holding a piece (as
+**The built set's datasets** `layers/available-built-<theme>/datasets` (`datasets_logical`), JSON:
+a list in the terrain's order, each `{id, order, name, label, credit, licence, licence_url, source,
+resolution_m, metrics: {surface}, read: {method, grain_m}}` (the declaration's description, its
+measured resolution in metres; `method` `fill masks`, `files`, `presence`, `tiles` or
+`everywhere`, how its extent was read, `grain_m` the ground that read tells apart, null for
+`everywhere`): what the server shows and scores of each (crate::available `built_of`).
+
+**The steps' record** `work/<layer>/mids`: an RDPACK of each z6 tile holding a piece (as
 its pack has it, or the tile all of one set the pack isn't stored for), the step's own (no
 reader but it: the root is made from it). Its meta, JSON: `{"theme", "v": the step's KEY_V, "keys":
-{"6/x/y": key}, "poles": {"n"|"s": key}}`, each key the hash of the polygons whose boxes meet the
-tile (or reach the pole's square): their pieces' ids and digests.
+{"6/x/y": key}, "poles": {"n"|"s": key}}`, each key a hash of what the tile is made from: the best
+set's, the polygons whose boxes meet the tile (or reach the pole's square), their pieces' ids and
+digests; the built set's, the datasets meeting it (docs/steps.md §14).
 
 ## The region layer (`layers/regions/`; codecs::regionlayer)
 
@@ -1210,7 +1222,9 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   out past a byte or entry budget).
 - **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=free|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
-  `best`, `{layer}` `score` or a metric of the theme's `score.toml` other than the primary: a PNG of
+  `best` or `built` (while the catalogue lists `available-built-{theme}` and its datasets are read;
+  its pieces are those datasets, its best piece a set's first in their order whatever `avail`
+  says, docs/steps.md §14), `{layer}` `score` or a metric of the theme's `score.toml` other than the primary: a PNG of
   values (sent as it is, no Content-Encoding: a body made here is labelled gzip only when it is
   gzip), each pixel the
   layer's value of its set's best piece among those passing `avail` (`free`, the default and any
@@ -1224,10 +1238,11 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   metres, as log10). ETag `"av-<packs' version>-<format>-<extents'
   version>-<layer>-<free|all>-z-x-y"`; `?v=` cached for good while it is meta's version of
   `available-<theme>` (or `available-<theme>-<pole>`): the layer's packs' version, `-`, the tiles'
-  format (`values4`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
-  packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
+  format (`values4`), `-` and the extents' accepted version's hash, 16 hex digits, and for the
+  built set's layers `-` and its datasets' file's hash, 16 hex digits (the layer's packs are left
+  out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
   `{lng, lat, avail: "free"|"all", pieces: [...], painted: {layer: id}}`, the pieces passing `avail` at the z12 pixel holding the point
-  (past 85.05°, the pole's z3 pixel), best first (`Score::ranked`; none with no score last), each
+  (past 85.05°, the pole's z3 pixel), best first (`Score::ranked`; none with no score last; the built set's in its order), each
   `{id, source, piece, name, source_name, credit, licence, licence_url, link, availability,
   extent, read, metrics, stated, values, score}` (`metrics` as the piece states them, a number in
   the metric's unit or a word; `stated` null, or `{metric: "class"}`, the publisher's class as
