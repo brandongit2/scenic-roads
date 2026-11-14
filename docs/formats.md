@@ -1498,9 +1498,15 @@ the id with the clicked point. A reader takes version 8 only.
     `{member, host, since}`, made once with create-new by the first Mac in a new pool; moved by
     the owner's edit alone. Its being there is the pool's having begun.
   - A hand-off (`buildstore::handoff`): `{changes: {logical: content name | null}, pending: {content
-    name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
+    name: ""}, checked: [content name], done: [step, [[target, key], …]] | null, raw: [[shard,
     {name, bytes}], …]}`, named `<ns>-<pid>.json` in write order; `<folder>.merged` holds the last
-    merged; `.bad` one set aside unparsed.
+    merged; `.bad` one set aside unparsed. Its `pending`, the records' (`records.json`) and
+    `pending.json` are the unverified uploads (`buildstore::pending`), by content name alone: read
+    as an object keyed by them, whatever its values (apps before task #1002 wrote each upload's
+    SHA-256 there, which nothing read), or as a list of them; written as an object of empty
+    strings, the shape every app back to the rollback floor requires (its reader a map of
+    strings, the records' `pending` required). Planned: written as a list once the rollback floor
+    is task #1002's commit or later.
   - A member's status rides in its beat (docs/coordination.md §3.1); the lead's
     status (its agent's `status.json`) lists the members' as `helpers` and their heartbeats as `beats`.
 - **The pool** (docs/pool.md):

@@ -671,7 +671,7 @@ impl Mac {
         let ts = &j.targets;
         let built = |key: &str| Handoff {
             changes: ts.iter().map(|t| (logical(t), Some(content(t, key)))).collect(),
-            pending: ts.iter().map(|t| (content(t, key), "sha".into())).collect(),
+            pending: ts.iter().map(|t| content(t, key)).collect(),
             done: Some((STEP.into(), ts.iter().map(|t| (t.clone(), key.to_string())).collect())),
             ..Default::default()
         };

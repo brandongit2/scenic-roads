@@ -91,8 +91,9 @@ state/         build/ (the records, their brief, the lead's declaration),
   needing no more). Before the pool they were `state/build/manifest.json`, `jobs.json`,
   `pending.json` and `sizes.json`, which a new pool's first take-up starts from and no lead writes
   (docs/pool.md §6.2).
-- **Unverified uploads** (content name → its SHA-256, recorded as it lands): a file a job copied to
-  the NAS is read back past the client's cache as it lands and checked against its hash, and stays
+- **Unverified uploads** (their content names, recorded as each lands: `buildstore::pending`): a
+  file a job copied to the NAS is read back past the client's cache as it lands and checked against
+  the hash its name holds, and stays
   pending until checked on the NAS itself; one a job found there and reused is pending too (nothing
   touches it, so its check is what finds it gone). The records hold pending files as they hold the
   manifest's. GC's daily duties drain them (`agent::gc`): first every pending upload the build

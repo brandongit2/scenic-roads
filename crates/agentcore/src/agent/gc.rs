@@ -358,7 +358,7 @@ pub fn drop_names(
     let kept: BTreeMap<String, String> =
         manifest.iter().filter(|(l, _)| !dropped(the_plan, l, depth)).map(|(l, c)| (l.clone(), c.clone())).collect();
     let named = read_by(root, &kept)?;
-    let unpend: Vec<&String> = pending.keys().filter(|c| !named.contains(*c)).collect();
+    let unpend: Vec<&String> = pending.iter().filter(|c| !named.contains(*c)).collect();
     let retired = names.iter().filter(|l| retired(l)).count();
     let r = Dropped { retired, depth: names.len() - retired, unpended: unpend.len() };
     if dry_run || (names.is_empty() && unpend.is_empty()) {
@@ -431,7 +431,7 @@ pub fn verify_pending(
     // (Each with its size by the records: none for a file named before they kept sizes, 17,166 of
     // the pending on 7 Nov, checked as there.)
     let todo: Vec<(String, Option<u64>)> =
-        pending.keys().filter(|c| named.contains(*c)).map(|c| (c.clone(), sizes.get(c).copied())).collect();
+        pending.iter().filter(|c| named.contains(*c)).map(|c| (c.clone(), sizes.get(c).copied())).collect();
     let mut v = Verified::default();
     if dry_run {
         v.ok = todo.len();

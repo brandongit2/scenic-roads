@@ -356,7 +356,6 @@ dependencies = [
  "roadcore",
  "serde",
  "serde_json",
- "sha2",
  "store",
  "tempfile",
  "ureq",

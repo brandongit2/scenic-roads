@@ -26,9 +26,9 @@ pub fn moved() -> u64 {
     MOVED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Counts `n` bytes moved (`MOVED`): the callers' own streamed reads too (an upload's checksum).
-/// Also into this thread's own count, if it has one (`count_here_into`).
-pub fn count_moved(n: usize) {
+/// Counts `n` bytes moved (`MOVED`), and into this thread's own count, if it has one
+/// (`count_here_into`).
+fn count_moved(n: usize) {
     MOVED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
     HERE.with(|h| {
         if let Some(c) = &*h.borrow() {
@@ -191,8 +191,7 @@ pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src:
 }
 
 /// `write_atomic` of a local file whose `hash16` and length the caller has just worked out (an
-/// upload hashing it once for its name and its checksum together: pipeline's `Out::put_file`), so
-/// it isn't read for them again. The read-back is checked against them as against its own: a wrong
+/// upload hashing it for its name: buildstore's `Out::put_file`), so it isn't read for them again. The read-back is checked against them as against its own: a wrong
 /// hash, or a file changed since, fails (the source changed since it was hashed), and leaves nothing.
 pub fn write_atomic_hashed(
     root: &crate::nasfs::NasRoot,

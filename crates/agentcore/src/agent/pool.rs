@@ -864,10 +864,10 @@ pub fn check(the_plan: &dyn crate::agent::seam::Plan, e: &Entry, _r: &Records) -
             }
         }
         let saved: BTreeSet<&String> = h.changes.values().flatten().collect();
-        if let Some(c) = h.pending.keys().find(|c| !saved.contains(c)) {
+        if let Some(c) = h.pending.iter().find(|c| !saved.contains(c)) {
             return Err(format!("{c} isn't one of its saves"));
         }
-        if let Some(c) = h.checked.iter().find(|c| !h.pending.contains_key(*c)) {
+        if let Some(c) = h.checked.iter().find(|c| !h.pending.contains(*c)) {
             return Err(format!("{c} isn't one of its uploads"));
         }
     }
@@ -1775,10 +1775,10 @@ pub fn entry_of(
     if the_plan.shared().contains(&step) {
         h.changes.retain(|l, _| done.iter().any(|(t, _)| the_plan.saves(step, t, l)));
         let kept: BTreeSet<String> = h.changes.values().flatten().cloned().collect();
-        h.pending.retain(|c, _| kept.contains(c));
+        h.pending.retain(|c| kept.contains(c));
         h.sizes.retain(|c, _| kept.contains(c));
         let pending = h.pending.clone();
-        h.checked.retain(|c| pending.contains_key(c));
+        h.checked.retain(|c| pending.contains(c));
     }
     h.done = (!done.is_empty()).then(|| (step.to_string(), done.to_vec()));
     if h.done.is_none() && h.changes.is_empty() && h.pending.is_empty() && h.checked.is_empty() && h.raw.is_empty() {
@@ -2734,7 +2734,7 @@ mod tests {
         let dir = d.path().join("1-3");
         let save = |l: &str, c: &str| Handoff {
             changes: [(l.to_string(), Some(c.to_string()))].into(),
-            pending: [(c.to_string(), "aa".to_string())].into(),
+            pending: [c.to_string()].into(),
             ..Default::default()
         };
         buildstore::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
@@ -3093,7 +3093,7 @@ mod tests {
         // The running depth job's entry, of an older lease, merged after: its pack is back.
         let mut job =
             entry(2, "depth", &[("layers/depth/hi/6-2-33", Some("layers/depth/hi/6-2-33.4444444444444444.pack"))]);
-        job.handoff.pending.insert("layers/depth/hi/6-2-33.4444444444444444.pack".into(), "0".repeat(64));
+        job.handoff.pending.insert("layers/depth/hi/6-2-33.4444444444444444.pack".into());
         job.handoff.done = Some(("depth".into(), vec![("6/2/33".into(), "k".into())]));
         run.entries.push((job, None));
         run.step();
@@ -3208,7 +3208,7 @@ mod tests {
             .unwrap_err()
             .contains("isn't one of the files of the targets it did"));
         let mut up = e.clone();
-        up.handoff.pending.insert("base/6-1-9.3333333333333333.base".into(), "aa".into());
+        up.handoff.pending.insert("base/6-1-9.3333333333333333.base".into());
         assert!(check(crate::agent::seam::for_tests(), &up, &r).unwrap_err().contains("isn't one of its saves"));
         // Another step's (the OSM pass's stages): any name of its outputs, and none outside them
         // (the z6 tile's base pack, another step's).

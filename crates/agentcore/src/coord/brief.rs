@@ -134,7 +134,7 @@ mod tests {
     fn records(seq: u64) -> Records {
         let mut r = Records { epoch: 849, seq, ..Default::default() };
         r.manifest.insert("base/6-1-1".into(), format!("base/6-1-1.{seq:016}.base"));
-        r.pending.insert("not/in-the-brief".into(), "aa".into());
+        r.pending.insert("not/in-the-brief".into());
         r
     }
 

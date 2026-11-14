@@ -148,7 +148,7 @@ fn a_quit_servers_cursor_holds_gc_hours_not_days() {
 fn entry(n: u64, content: &str) -> Entry {
     let h = Handoff {
         changes: [("base/6-1-1".to_string(), Some(content.to_string()))].into(),
-        pending: [(content.to_string(), "sha".to_string())].into(),
+        pending: [content.to_string()].into(),
         done: Some(("unit".into(), vec![("6-1-1".into(), format!("k{n}"))])),
         ..Default::default()
     };

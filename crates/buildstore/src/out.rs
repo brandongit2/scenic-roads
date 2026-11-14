@@ -20,9 +20,7 @@
 //! a function (task #916 step 6a, docs/crates.md §6; pipeline::out::open passes it).
 
 use anyhow::{bail, Context, Result};
-use sha2::Digest;
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use store::nasfs::NasPath;
 
@@ -68,8 +66,8 @@ pub struct Out {
     changes: BTreeMap<String, Option<String>>,
     /// Uploads this run checked (no longer pending), likewise.
     checked: std::collections::BTreeSet<String>,
-    /// Content name → SHA-256 (hex) of uploads not yet verified on the NAS.
-    pending: BTreeMap<String, String>,
+    /// Uploads not yet verified on the NAS (crate::pending).
+    pending: crate::pending::Pending,
     /// Content name → size (bytes) of the files this run wrote or reused, handed on with the
     /// manifest changes that name them (`SIZES`, the catalogues' sizes without a look at the NAS).
     sizes: BTreeMap<String, u64>,
@@ -149,10 +147,10 @@ struct Upload {
 struct Landed {
     logical: String,
     name: String,
-    /// Its SHA-256, its check pending: copied, or found there already and taken as it was (a
-    /// reuse is checked as an upload is: nothing touches it, docs/storage.md, GC). None: this run's
-    /// own upload again, pending already.
-    sha: Option<String>,
+    /// Its check pending: copied, or found there already and taken as it was (a reuse is checked
+    /// as an upload is: nothing touches it, docs/storage.md, GC). False: this run's own upload
+    /// again, pending already.
+    pending: bool,
     /// Whether it was copied (else found there already).
     copied: bool,
     size: u64,
@@ -234,48 +232,10 @@ pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &NasPath) -> Res
     }
 }
 
-/// `hashes_of`'s read buffer.
-const HASH_BUF: usize = 8 << 20;
-
 /// The most memory an upload holds as it goes (bytes; a step's memory bound counts one put off in
-/// flight beside its next target's work): its largest buffer, its hashes' read (`HASH_BUF`); its
-/// copy's and its read-back's (store::naming's) are no larger, each freed before the next begins.
-pub const UPLOAD_HELD: u64 = HASH_BUF as u64;
-
-const _: () = assert!(HASH_BUF >= store::naming::CHUNK, "an upload's copy buffer is its largest");
-
-/// A file's `hash16` (BLAKE3, its content name's) and SHA-256 (the records' pending holds it), from one
-/// read of it: each chunk hashed both ways at once, on two threads.
-fn hashes_of(p: &Path) -> Result<(String, String)> {
-    let mut f = std::fs::File::open(p)?;
-    let mut b3 = blake3::Hasher::new();
-    let mut sha = sha2::Sha256::new();
-    let mut buf = vec![0u8; HASH_BUF];
-    loop {
-        let mut n = 0;
-        while n < buf.len() {
-            match f.read(&mut buf[n..])? {
-                0 => break,
-                k => n += k,
-            }
-        }
-        if n == 0 {
-            break;
-        }
-        let chunk = &buf[..n];
-        // (In turn where no thread can be made.)
-        let threaded = std::thread::scope(|s| {
-            let other = std::thread::Builder::new().spawn_scoped(s, || sha.update(chunk));
-            b3.update(chunk);
-            other.is_ok()
-        });
-        if !threaded {
-            sha.update(chunk);
-        }
-        store::naming::count_moved(n);
-    }
-    Ok((store::naming::hex16(&b3.finalize()), format!("{:x}", sha.finalize())))
-}
+/// flight beside its next target's work): one buffer of store::naming's at a time (`CHUNK`): its
+/// hash's read (`hash16_file`), its copy's and its read-back's, each freed before the next begins.
+pub const UPLOAD_HELD: u64 = store::naming::CHUNK as u64;
 
 /// The records as a resumed run's identity reads them (jobrt::resume_log::names).
 impl jobrt::resume_log::Manifest for Out {
@@ -345,7 +305,7 @@ impl Out {
             lay_over(&mut manifest, &h);
         }
         // (A helper's job hands off only its own uploads.)
-        let pending = if handoff.is_some() { BTreeMap::new() } else { records.pending };
+        let pending = if handoff.is_some() { Default::default() } else { records.pending };
         Ok(Out {
             root: root.clone(),
             manifest,
@@ -377,7 +337,7 @@ impl Out {
     #[cfg(any(test, feature = "testkit"))]
     pub fn handing_off(mut self, handoff: &Path) -> Self {
         self.handoff = Some(handoff.to_path_buf());
-        self.pending = BTreeMap::new();
+        self.pending = Default::default();
         self
     }
 
@@ -452,7 +412,7 @@ impl Out {
         self.admits(logical, false)?;
         self.settle_name(logical)?;
         let size = std::fs::metadata(local)?.len();
-        let (h, sha) = hashes_of(local)?;
+        let h = store::naming::hash16_file(local)?;
         let name = store::naming::content_name(logical, &h, ext);
         if self.uploaded.get(logical) == Some(&name) {
             // Uploaded under it by this very run already: nothing to look at again.
@@ -460,7 +420,7 @@ impl Out {
             return Ok(self.landed(Landed {
                 logical: logical.to_string(),
                 name,
-                sha: None,
+                pending: false,
                 copied: false,
                 size,
                 ms: 0,
@@ -477,14 +437,14 @@ impl Out {
                 return Ok(self.landed(Landed {
                     logical: logical.to_string(),
                     name,
-                    sha: Some(sha),
+                    pending: true,
                     copied: false,
                     size,
                     ms: 0,
                 }));
             }
         }
-        let landed = upload_hashed(&self.root, logical, ext, local, (h, sha), size)?;
+        let landed = upload_hashed(&self.root, logical, ext, local, &h, size)?;
         self.uploaded.insert(landed.logical.clone(), landed.name.clone());
         if landed.copied {
             crate::costin::wrote(&self.root.join(&landed.name), landed.size, landed.ms);
@@ -523,11 +483,11 @@ impl Out {
     fn landed(&mut self, l: Landed) -> String {
         let made = if l.copied { l.size } else { 0 };
         jobrt::timings::count(made, 1);
-        if let Some(sha) = l.sha {
+        if l.pending {
             if !l.copied {
                 self.reused.insert(l.name.clone());
             }
-            self.pending.insert(l.name.clone(), sha);
+            self.pending.insert(l.name.clone());
         }
         self.sizes.insert(l.name.clone(), l.size);
         self.manifest.insert(l.logical.clone(), l.name.clone());
@@ -659,7 +619,7 @@ impl Out {
     }
 
     /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads the
-    /// file twice (its name's hash and its checksum; the copy) and the copy once more on the NAS, for
+    /// file twice (its name's hash; the copy) and the copy once more on the NAS, for
     /// a large file most of a step's time.
     pub fn put_file_with(
         &mut self,
@@ -710,7 +670,7 @@ impl Out {
             self.reused.insert(name.clone());
         }
         // (Its check pending whether copied or found there: a reuse is checked as an upload is.)
-        self.pending.insert(name.clone(), format!("{:x}", sha2::Sha256::digest(bytes)));
+        self.pending.insert(name.clone());
         Ok(name)
     }
 
@@ -806,7 +766,7 @@ impl Out {
             };
             self.changes.insert(k.clone(), v.clone());
         }
-        self.pending.extend(h.pending.clone());
+        self.pending.extend(h.pending.iter().cloned());
         self.sizes.extend(h.sizes.clone());
         self.checked.extend(h.checked.iter().cloned());
     }
@@ -833,14 +793,15 @@ impl Out {
         let named: std::collections::BTreeSet<&String> = on_disk.values().collect();
         sizes.retain(|c, _| named.contains(c));
         let pending_path = dir.join("pending.json");
-        let pending_read: BTreeMap<String, String> = read_record(&pending_path)?;
+        let pending_read: crate::pending::Pending = read_record(&pending_path)?;
         let mut pending = pending_read.clone();
-        pending.extend(self.pending.clone());
-        pending.retain(|k, _| !self.checked.contains(k));
-        for (p, v, was) in [(&self.manifest_path, &on_disk, &read), (&pending_path, &pending, &pending_read)] {
-            if v != was || !p.exists() {
-                p.write_whole(serde_json::to_vec_pretty(v)?)?;
-            }
+        pending.extend(self.pending.iter().cloned());
+        pending.retain(|k| !self.checked.contains(k));
+        if on_disk != read || !self.manifest_path.exists() {
+            self.manifest_path.write_whole(serde_json::to_vec_pretty(&on_disk)?)?;
+        }
+        if pending != pending_read || !pending_path.exists() {
+            pending_path.write_whole(serde_json::to_vec_pretty(&pending)?)?;
         }
         if sizes != sizes_read {
             sizes_path.write_whole(serde_json::to_vec(&sizes)?)?;
@@ -1043,37 +1004,36 @@ pub fn verify(
 }
 
 /// Uploads local file `local` under `logical` to `root` (`Out::put_file`), the local file removed
-/// after: its content name, and its SHA-256 when it was copied. An identical file already on the
-/// NAS is reused, not copied again; one of the same name with another size is an
-/// error (content-named files are never rewritten).
+/// after: its content name, its check pending. An identical file already on the NAS is reused, not
+/// copied again; one of the same name with another size is an error (content-named files are never
+/// rewritten).
 fn upload(root: &store::nasfs::NasRoot, logical: &str, ext: &str, local: &Path) -> Result<Landed> {
-    // (Its name's hash and its checksum from one read of it: `write_atomic_hashed` checks the
-    // read-back against the hash, as against its own.)
+    // (Its name's hash from one read of it: `write_atomic_hashed` checks the read-back against it.)
     let size = std::fs::metadata(local)?.len();
-    upload_hashed(root, logical, ext, local, hashes_of(local)?, size)
+    upload_hashed(root, logical, ext, local, &store::naming::hash16_file(local)?, size)
 }
 
-/// `upload` of a file whose hashes (`hashes_of`) and size are known.
+/// `upload` of a file whose `hash16` and size are known.
 fn upload_hashed(
     root: &store::nasfs::NasRoot,
     logical: &str,
     ext: &str,
     local: &Path,
-    (h, sha): (String, String),
+    h: &str,
     size: u64,
 ) -> Result<Landed> {
-    let name = store::naming::content_name(logical, &h, ext);
+    let name = store::naming::content_name(logical, h, ext);
     let dest = root.join(&name);
     // (There before: reused, nothing written to it, its check pending as an upload's. Removed
     // between the look and the write, it's written afresh and still taken as reused: the merge
     // refuses the hand-off, GC having removed it under its lease.)
     let existed = dest.exists();
     let t = std::time::Instant::now();
-    let got = store::naming::write_atomic_hashed(root, logical, ext, local, &h, size)?;
+    let got = store::naming::write_atomic_hashed(root, logical, ext, local, h, size)?;
     anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
     std::fs::remove_file(local).ok();
     let ms = t.elapsed().as_millis() as u64;
-    Ok(Landed { logical: logical.to_string(), name, sha: Some(sha), copied: !existed, size, ms })
+    Ok(Landed { logical: logical.to_string(), name, pending: true, copied: !existed, size, ms })
 }
 
 /// `upload`, tried again after each of `waits` while it fails transiently
@@ -1178,7 +1138,7 @@ mod tests {
         };
         let records = |root: &store::nasfs::NasRoot| {
             let m: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
-            let p: BTreeMap<String, String> = read_record(&root.join("state/build/pending.json")).unwrap();
+            let p: crate::pending::Pending = read_record(&root.join("state/build/pending.json")).unwrap();
             let s: BTreeMap<String, u64> = read_record(&root.join(SIZES)).unwrap();
             (m, p, s)
         };
@@ -1281,7 +1241,7 @@ mod tests {
         let landed = Landed {
             logical: "base/6-1-1".into(),
             name: "base/6-1-1.0123456789abcdef.base".into(),
-            sha: None,
+            pending: false,
             copied: true,
             size: 400 << 20,
             ms: 0,
@@ -1331,7 +1291,7 @@ mod tests {
             std::fs::metadata(root.join(&a)).unwrap().modified().unwrap() <= old + std::time::Duration::from_secs(1),
             "not touched"
         );
-        assert!(out.reused.contains(&a) && out.pending.contains_key(&a), "its check pending as an upload's");
+        assert!(out.reused.contains(&a) && out.pending.contains(&a), "its check pending as an upload's");
         // Gone from the NAS (a GC after an old snapshot): put back.
         std::fs::remove_file(root.join(&a)).unwrap();
         let mut out = open();
@@ -1470,19 +1430,41 @@ mod tests {
         assert!(Out::open_from(&nas, &scratch, None, hand, Some(&d.path().join("gone.json"))).is_err());
     }
 
-    /// One read gives the name's hash and the checksum, each as hashing the bytes alone gives it,
-    /// across chunks (a file larger than one, its last one short).
+    /// Task #1002: an upload reads its file for its name's hash alone (`hash16_file`: no other
+    /// hash beside it), and its check pending is handed off by its name, an empty string where
+    /// apps before it wrote its SHA-256 (crate::pending). A file the records name already, there
+    /// at its size, is read once, for that hash, and nothing else (across chunks: a file larger
+    /// than one, its last one short).
     #[test]
-    fn a_files_two_hashes_from_one_read() {
+    fn an_upload_reads_its_file_for_its_name_alone_and_hands_off_no_checksum() {
         let d = tempfile::tempdir().unwrap();
-        for len in [0usize, 5, (8 << 20) + 12345] {
-            let p = d.path().join(format!("f{len}"));
-            let bytes: Vec<u8> = (0..len).map(|i| (i * 31 % 251) as u8).collect();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        let mut out = Out::unbound(&nas, &d.path().join("scratch")).unwrap();
+        let bytes: Vec<u8> = (0..(store::naming::CHUNK * 2 + 12345)).map(|i| (i * 31 % 251) as u8).collect();
+        let local = |n: &str| {
+            let p = d.path().join(n);
             std::fs::write(&p, &bytes).unwrap();
-            let (h, sha) = hashes_of(&p).unwrap();
-            assert_eq!(h, store::naming::hash16(&bytes));
-            assert_eq!(sha, format!("{:x}", sha2::Sha256::digest(&bytes)));
-        }
+            p
+        };
+        let name = out.put_file("work/x/6-1-1", "bin", &local("a")).unwrap();
+        assert_eq!(name, store::naming::content_name("work/x/6-1-1", &store::naming::hash16(&bytes), "bin"));
+        assert!(out.pending.contains(&name));
+        // (This thread's reads alone: the one look a named file takes.)
+        let moved = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        store::naming::count_here_into(moved.clone());
+        assert_eq!(out.put_file("work/x/6-1-1", "bin", &local("b")).unwrap(), name);
+        assert_eq!(moved.load(std::sync::atomic::Ordering::Relaxed), bytes.len() as u64, "read once, for its name");
+        let hd = d.path().join("handoffs");
+        out.handoff = Some(hd.clone());
+        out.save().unwrap();
+        let b = std::fs::read(std::fs::read_dir(&hd).unwrap().next().unwrap().unwrap().path()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(v["pending"], serde_json::json!({ name.clone(): "" }));
+        // (What an app before task #1002 reads a hand-off's pending as: a map of strings.)
+        let theirs: BTreeMap<String, String> = serde_json::from_value(v["pending"].clone()).unwrap();
+        assert_eq!(theirs.into_keys().collect::<Vec<_>>(), [name]);
     }
 
     /// A file there already is reused as it is, its time left (GC goes by its queue, not by
@@ -1513,7 +1495,7 @@ mod tests {
             std::fs::metadata(&dest).unwrap().modified().unwrap() <= old + std::time::Duration::from_secs(1),
             "not touched"
         );
-        assert!(out.reused.contains(&name) && out.pending.contains_key(&name), "reused, its check pending");
+        assert!(out.reused.contains(&name) && out.pending.contains(&name), "reused, its check pending");
         // The gate's copies (`store_bytes`) likewise.
         let copy = out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap();
         out.pending.clear();
@@ -1524,12 +1506,12 @@ mod tests {
             std::fs::metadata(&cdest).unwrap().modified().unwrap() <= old + std::time::Duration::from_secs(1),
             "not touched"
         );
-        assert!(out.pending.contains_key(&copy) && out.reused.contains(&copy));
+        assert!(out.pending.contains(&copy) && out.reused.contains(&copy));
         // Gone (GC took it): written again, there, its check pending.
         std::fs::remove_file(&cdest).unwrap();
         out.reused.clear();
         assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), copy);
-        assert!(cdest.exists() && out.pending.contains_key(&copy) && !out.reused.contains(&copy));
+        assert!(cdest.exists() && out.pending.contains(&copy) && !out.reused.contains(&copy));
         // A helper's save hands the reused names off with its changes.
         let hd = d.path().join("handoffs");
         out.handoff = Some(hd.clone());

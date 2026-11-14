@@ -19,9 +19,9 @@ pub struct Handoff {
     /// Manifest changes: logical name → content name (None: removed).
     #[serde(default)]
     pub changes: BTreeMap<String, Option<String>>,
-    /// Uploads not yet verified on the NAS (content name → SHA-256), and those checked.
+    /// Uploads not yet verified on the NAS (crate::pending), and those checked.
     #[serde(default)]
-    pub pending: BTreeMap<String, String>,
+    pub pending: crate::pending::Pending,
     #[serde(default)]
     pub checked: Vec<String>,
     /// The sizes (bytes) of the files the job wrote (content name → size), as it wrote them

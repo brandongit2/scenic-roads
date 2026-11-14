@@ -3818,11 +3818,11 @@ fn check_handoff(
         }
     }
     let saved: BTreeSet<&String> = h.changes.values().flatten().collect();
-    for c in h.pending.keys() {
+    for c in &h.pending {
         anyhow::ensure!(saved.contains(c), "{c} isn't one of its saves");
     }
     for c in &h.checked {
-        anyhow::ensure!(h.pending.contains_key(c), "{c} isn't one of its uploads");
+        anyhow::ensure!(h.pending.contains(c), "{c} isn't one of its uploads");
     }
     Ok(())
 }
@@ -12740,7 +12740,7 @@ mod tests {
         h.checked.push("base/6-9-9.0000000000000009.base".into());
         assert!(check_handoff(crate::agent::seam::for_tests(), &h, "unit", &ts).is_err());
         let mut h = ok.clone();
-        h.pending.insert("base/6-1-3.0000000000000003.base".into(), "ab".into());
+        h.pending.insert("base/6-1-3.0000000000000003.base".into());
         h.checked.push("base/6-1-3.0000000000000003.base".into());
         assert!(check_handoff(crate::agent::seam::for_tests(), &h, "unit", &ts).is_ok());
         // Not its lease's record.

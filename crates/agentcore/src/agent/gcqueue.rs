@@ -33,7 +33,7 @@ pub fn lease(l: JobId) -> store::map::gc::Lease {
 
 /// The queue told of records `r` as saved (at `now`).
 pub fn records(q: &GcQueue, r: &Records, now: u64) {
-    q.records((r.epoch, r.seq), r.manifest.values().chain(r.pending.keys()), now);
+    q.records((r.epoch, r.seq), r.manifest.values().chain(r.pending.iter()), now);
 }
 
 /// Why the merge refuses journal entry `e` (at `now`): a content name it brings (a change, an
@@ -41,7 +41,7 @@ pub fn records(q: &GcQueue, r: &Records, now: u64) {
 /// it may merge, and its names are held until the records after it are seen.
 pub fn refusal(q: &GcQueue, e: &Entry, now: u64) -> Option<String> {
     let h = &e.handoff;
-    let names = h.changes.values().flatten().chain(h.pending.keys()).chain(h.reused.iter());
+    let names = h.changes.values().flatten().chain(h.pending.iter()).chain(h.reused.iter());
     Some(match q.bringing(names, lease(e.job), now)? {
         Refused::Deleted(n, at) => format!(
             "{n} was removed from the NAS by GC (told at {at}, before it went) after its lease {} was granted (its job may have found it there): its targets are done again",

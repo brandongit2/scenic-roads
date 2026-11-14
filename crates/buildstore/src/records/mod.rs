@@ -128,8 +128,8 @@ pub(crate) fn from_brief(p: &std::path::Path) -> Result<Recorded> {
 pub(crate) struct Recorded {
     /// Logical name → content name.
     pub manifest: BTreeMap<String, String>,
-    /// Uploads not yet verified on the NAS: content name → SHA-256.
-    pub pending: BTreeMap<String, String>,
+    /// Uploads not yet verified on the NAS (crate::pending).
+    pub pending: crate::pending::Pending,
     /// The sizes of the files the manifest names (crate::out::SIZES).
     #[serde(default)]
     pub sizes: BTreeMap<String, u64>,

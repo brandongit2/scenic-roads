@@ -9753,7 +9753,7 @@ mod tests {
             terrain::terrain_pack::DEEP_MIDS_MB,
             buildstore::out::UPLOAD_HELD >> 20,
         );
-        assert_eq!(upload, 8, "an upload's 8 MB hash read");
+        assert_eq!(upload, 4, "an upload's 4 MB buffer (store::naming::CHUNK)");
         assert_eq!(crate::agent::seam::for_tests().terrain_peak(1), levels + mids + upload);
         assert_eq!(crate::agent::seam::for_tests().terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
     }
@@ -16042,10 +16042,7 @@ mod pool_tests {
         until(&mut a, |a| {
             crate::pool::records::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty()
                 && a.pooled().is_some_and(|p| {
-                    p.side
-                        .driver()
-                        .records()
-                        .is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json"))
+                    p.side.driver().records().is_some_and(|r| r.pending.contains("work/backup.0123456789abcdef.json"))
                 })
         });
         let env = std::fs::read_to_string(bin.join("env-backup")).unwrap();
@@ -16098,7 +16095,7 @@ mod pool_tests {
         until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
         assert!(a.pooled().unwrap().gates.leads.is_some());
         let m = crate::pool::records::Records::now(&store::nasfs::NasRoot::local_for_test(&r)).unwrap().pending;
-        assert!(m.contains_key("work/gc.0123456789abcdef.json"), "{m:?}");
+        assert!(m.contains("work/gc.0123456789abcdef.json"), "{m:?}");
         stop_jobs(&mut a);
     }
 
@@ -16152,7 +16149,7 @@ mod pool_tests {
                 .side
                 .driver()
                 .records()
-                .is_some_and(|r| r.pending.contains_key("work/backup.0123456789abcdef.json") && r.raw.is_empty())
+                .is_some_and(|r| r.pending.contains("work/backup.0123456789abcdef.json") && r.raw.is_empty())
         });
         assert!(a.pooled().unwrap().named_raw.is_empty());
         until(&mut a, |_| {

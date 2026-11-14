@@ -255,8 +255,9 @@ opens, so once a process; a take-up leads it, its records numbered on in it. The
 ### 6.2 The records
 
 - **One snapshot, saved whole after each merge** (`crate::pool::records`, `Records::save`): the
-  manifest, keys, pending uploads (an entry's `checked` takes them out: GC's job, which checks
-  them on the NAS, docs/storage.md), the sizes of the files the manifest names (from the entries'
+  manifest, keys, pending uploads (by content name alone, `buildstore::pending`, its shapes in
+  docs/formats.md; an entry's `checked` takes them out: GC's job, which checks them on the NAS,
+  docs/storage.md), the sizes of the files the manifest names (from the entries'
   hand-offs, for the map updates: `sizes.json` beside `manifest.json`), raw archives awaiting the
   index (each taken off once the lead has named it in the raw store's index and saved that,
   `Heard::named_raw`, with the next snapshot; one named but not yet off when the lead restarts is
