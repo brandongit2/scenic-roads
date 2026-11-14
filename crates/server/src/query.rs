@@ -22,7 +22,7 @@ use axum::{
 use det::Det;
 use rayon::prelude::*;
 use roadcore::lsum::{self, LO_MIN_ROAD, LSUM_V, NO_RINFO};
-use roadcore::packs::{LBin, LPart, PSample};
+use roadcore::records::{LBin, LPart, PSample};
 use roadcore::scenic::{self, ch, FREQ, NCOMP, RNCOMP};
 use roadcore::{class, E7};
 use serde::{Deserialize, Serialize};

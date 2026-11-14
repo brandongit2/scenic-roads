@@ -136,7 +136,7 @@ pub fn bytes<T: bytemuck::Pod>(v: &[T]) -> &[u8] {
     bytemuck::cast_slice(v)
 }
 
-pub use roadcore::packs::{RailRel, RoadRec, Sub9};
+pub use roadcore::records::{RailRel, RoadRec, Sub9};
 
 /// The sections of one z6 tile's base pack, as bytes, from the folder's arrays.
 pub struct BaseSections {

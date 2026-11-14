@@ -8,7 +8,7 @@
 
 use crate::class;
 use crate::flag;
-use crate::packs::{here_extra, Here, LBin, LPart, PSample, Part, RailInfo};
+use crate::records::{here_extra, Here, LBin, LPart, PSample, Part, RailInfo};
 use crate::scenic::{self, ch};
 
 /// The sections' format (hidata meta `lsum`).

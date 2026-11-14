@@ -7044,7 +7044,7 @@ mod tests {
             }
             for (logical, sect, rec) in [
                 (format!("base/{}", u.dash()), "ways", std::mem::size_of::<roadcore::WayRec>()),
-                (format!("global/roads/{}", u.dash()), "roads", std::mem::size_of::<roadcore::packs::RoadRec>()),
+                (format!("global/roads/{}", u.dash()), "roads", std::mem::size_of::<roadcore::records::RoadRec>()),
             ] {
                 let tmp = d.path().join("tmp.sect");
                 let mut w = store::sect::SectWriter::create(&tmp, serde_json::json!({"unit": u.slash(), "extent": tb}))

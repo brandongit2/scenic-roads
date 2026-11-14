@@ -1274,7 +1274,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, bin: &
                 let v = vals[k];
                 // (u64 way id, then the RoadRec layout)
                 recs.extend_from_slice(&id.to_le_bytes());
-                recs.extend_from_slice(bytemuck::bytes_of(&roadcore::packs::RoadRec {
+                recs.extend_from_slice(bytemuck::bytes_of(&roadcore::records::RoadRec {
                     road: v.road,
                     len: v.len,
                     offset: v.offset,

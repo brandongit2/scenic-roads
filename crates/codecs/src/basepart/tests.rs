@@ -1,7 +1,7 @@
 use super::*;
 use crate::hipack::{self, tile_bounds};
 use crate::legacy::TileId;
-use roadcore::packs::{RailRel, RoadRec, Sub9};
+use roadcore::records::{RailRel, RoadRec, Sub9};
 use roadcore::scenic::ch;
 
 /// A base pack of unit 6/11/20 beside tile T = 6/10/20, its ways sorted west to east by their
