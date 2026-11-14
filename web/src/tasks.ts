@@ -107,6 +107,13 @@ class TaskBoard {
       }
     }), ...this.explicit.values()];
     const now = performance.now();
+    // The tasks under way on <html data-busy>, at once (not after SHOW_AFTER_MS): what
+    // tools/dev/shot.mjs waits out before a capture.
+    const busy = tasks.map((t) => t.label).join(' · ');
+    if (busy !== (document.documentElement.dataset.busy ?? '')) {
+      if (busy) document.documentElement.dataset.busy = busy;
+      else delete document.documentElement.dataset.busy;
+    }
     if (tasks.length) {
       this.busySince ||= now;
       this.timer = window.setTimeout(this.tick, POLL_MS);

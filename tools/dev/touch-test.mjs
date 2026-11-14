@@ -66,12 +66,12 @@
 // the page sets (the limits' drags and editor, #612) never leaves it: the page's fetch is wrapped
 // before its scripts run, a POST to any /api/settings with a setting in its body recorded in
 // `window.__posted` and sent as a read ({}) instead; this server refuses such a body anyway.
-import { spawn } from "node:child_process";
 import { createServer, request } from "node:http";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { launch } from "./chrome.mjs";
 
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const PORT = +arg("--port", 8097);
@@ -306,25 +306,15 @@ async function jobPage({ js, tap, pinch, mouse, page, check, shot, until, errors
 async function run() {
   mkdirSync(OUT, { recursive: true });
   const srv = await serve();
-  const profile = mkdtempSync(join(tmpdir(), "scenic-touch-chrome-"));
-  const chrome = spawn("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--hide-scrollbars", "about:blank"],
-    { stdio: ["ignore", "ignore", "pipe"] });
+  const chrome = await launch();
   const results = [];
   // (A Ctrl-C, a kill or a run past 8 min: Chrome and its profile go too, by its own PID.)
-  const stop = () => { chrome.kill("SIGTERM"); setTimeout(() => { rmSync(profile, { recursive: true, force: true }); process.exit(2); }, 1000); };
+  const stop = () => chrome.close().finally(() => process.exit(2));
   process.once("SIGINT", stop).once("SIGTERM", stop);
   setTimeout(() => { console.log("FAIL the run (past 8 min)"); stop(); }, 480000).unref();
   const check = (name, ok, note = "") => { results.push({ name, ok }); console.log(`${ok ? "PASS" : "FAIL"} ${name}${note ? ` (${note})` : ""}`); };
   try {
-    const wsBrowser = await new Promise((ok, no) => {
-      let err = "";
-      chrome.stderr.on("data", (d) => { err += d; const m = err.match(/ws:\/\/[^\s]+/); if (m) ok(m[0]); });
-      chrome.once("error", no); // (No Chrome there: no exit event follows.)
-      setTimeout(() => no(new Error("Chrome didn't start in 15 s")), 15000);
-    });
-    const list = await (await fetch(`http://${new URL(wsBrowser).host}/json/list`)).json();
-    const page = await cdp(list.find((t) => t.type === "page").webSocketDebuggerUrl);
+    const page = await chrome.page();
     const errors = [];
     page.on("Runtime.exceptionThrown", (p) => errors.push(p.exceptionDetails.exception?.description || p.exceptionDetails.text));
     // (The page asks the other Macs straight; they don't let this test origin read them, or are
@@ -1106,9 +1096,7 @@ async function run() {
   } catch (e) {
     if (!e.done) check("the run", false, e.message);
   } finally {
-    chrome.kill("SIGTERM");
-    await new Promise((ok) => (chrome.exitCode !== null || chrome.pid === undefined ? ok() : chrome.once("exit", ok)));
-    rmSync(profile, { recursive: true, force: true });
+    await chrome.close();
     srv.close();
   }
   const failed = results.filter((r) => !r.ok).length;
@@ -1224,18 +1212,3 @@ async function limitChecks({ js, at, touch, tap, page, check, shot, PHONE }) {
 }
 
 function sleep(ms) { return new Promise((ok) => setTimeout(ok, ms)); }
-// A CDP connection: send(method, params) → result; on(event, fn).
-function cdp(url) {
-  const ws = new WebSocket(url), wait = new Map(), subs = new Map();
-  let id = 0;
-  ws.onmessage = (m) => {
-    const v = JSON.parse(m.data);
-    if (v.id && wait.has(v.id)) { const [ok, no] = wait.get(v.id); wait.delete(v.id); v.error ? no(new Error(v.error.message)) : ok(v.result); }
-    else if (v.method) for (const fn of subs.get(v.method) || []) fn(v.params);
-  };
-  return new Promise((ok) => (ws.onopen = () => ok({
-    send: (method, params = {}) => new Promise((res, no) => { wait.set(++id, [res, no]); ws.send(JSON.stringify({ id, method, params })); }),
-    on: (ev, fn) => subs.set(ev, [...(subs.get(ev) || []), fn]),
-    close: () => ws.close(),
-  })));
-}

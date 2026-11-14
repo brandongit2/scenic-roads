@@ -69,10 +69,17 @@ rely on the agent.
 
 - **Proof screenshots are full resolution, saved to a file:** the real capture at 2× pixel density,
   never the downscaled preview a screenshot tool hands back to you (it is shrunk to fit your image
-  budget, and `scale` shrinks it more). Use headless Chrome's `--screenshot` with
-  `--force-device-scale-factor=2`, `Page.captureScreenshot` over Chrome's debugging protocol, or
-  `screencapture` for a native window, and report the files' paths.
-- **On the map, press I to hide the UI** when the panels hide what you need to see.
+  budget, and `scale` shrinks it more). For a page, use `node tools/dev/shot.mjs <url> <out.png>
+  [--size 1440x900] [--scale 2] [--hide-ui] [--press KEYS] [--click X,Y]`: headless Chrome on the
+  GPU with its own throwaway profile, the page captured once it is idle (no frame requested, no
+  request in flight and, on the map, no task in its status line for a second), the PNG checked at
+  size × scale; exit 2 on a timeout, saying what kept the page busy; no Chrome or profile left
+  behind. Use `screencapture` for a native window. Report the files' paths.
+- **Don't talk to Chrome through Node's built-in WebSocket** for captures: it drops any message
+  past 4 MiB (a 2× PNG of the map), and the call then never answers. `tools/dev/chrome.mjs` speaks
+  over Chrome's debugging pipe instead. Chrome's own `--screenshot` captures before the map has
+  loaded.
+- **On the map, press I to hide the UI** (`--hide-ui`) when the panels hide what you need to see.
 
 ## Outside services
 
