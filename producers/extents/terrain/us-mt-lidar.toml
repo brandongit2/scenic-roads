@@ -1,0 +1,67 @@
+name = "Montana Lidar Inventory DSMs (Montana State Library)"
+credit = "Montana State Library (MSDI Elevation), with the projects' funding partners"
+licence = "not stated (the State Library's free download)"
+licence_url = "https://msl.mt.gov/geoinfo/msdi/elevation/"
+source = "https://mslgis.mt.gov/arcgishosting/rest/services/GEOINFO/LidarInventory/MapServer/2"
+theme = "terrain"
+availability = "open"
+notes = "The lidar projects' surface models the Montana Lidar Inventory lists, each a project-wide GeoTIFF mosaic (Mosaics/DSM.zip on the library's file server, 2 to 44 GB each): its `DSM` field says \"Available for Download\" (136 projects) or \"Request Only\" (5: `login`, claimed). Their extents are the inventory's own project outlines (its Lidar Projects layer; `service`), a piece per project, its year the layer's `Year_Collected`. The layer states no DSM cell: each downloadable mosaic's world file (DSM.tfw in its zip, read by range request on 13 Nov 2026) gives 1 m (96 projects) or 3 ft (0.9144 m, 39), hence a block for each naming its projects; Custer County's 2019 QL2 mosaic has no world file and its header is at the end of a 14 GB member: no spacing. The request-only projects' cells aren't stated. The bare-earth DEMs of the same surveys are 3DEP's 1 m DEM (`usgs-3dep`). The layer's vertical accuracies are the point clouds': left out."
+
+[[piece]]
+id = "dsm-1m"
+label = "Montana lidar DSM 1 m"
+method = "arcgis"
+class = "service"
+url = "https://mslgis.mt.gov/arcgishosting/rest/services/GEOINFO/LidarInventory/MapServer/2"
+filter = { DSM = ["Available for Download"], ProjectName = ["BEAVERHEAD_2022_Phase4_5_BEcntyNorth", "BEAVERHEAD_2022_Phase4_6_BEcntySouth", "BEAVERHEAD_2022_Phase4_7_BEcntyQL1", "BIGHORN_2018_BighornRvr", "BLAINE_2020_Phase2WU3_BLmobreaks", "BLAINE_2021_Phase2Fed_North", "BLAINE_2021_Phase2Fed_South", "BROADWATER_2022_Phase4_5_CopperCity", "CARBON_2023_CrbnStllwtrFld", "CARTER_2017_Ekalakacty", "CARTER_2018_SGrouseCore13", "CARTER_2019_CTcntyN", "CARTER_2019_CTcntyS", "CASCADE_2020_CScntyQL1", "CASCADE_2020_CScntyQL2", "CASCADE_2021_Phase3_3", "CHOUTEAU_2021_Phase3_2", "CUSTER_2020_Phase1CUcnty", "DANIELS_2020_Phase2_1_FortPeckBndry", "DANIELS_2021_Phase2Fed", "FERGUS_2020_Phase2WU3_FEcnty", "FERGUS_2020_Phase2WU4_LewistownQL1", "FLATHEAD_2016_GNP", "FLATHEAD_2018_HogHeaven", "FLATHEAD_2020_Phase1GoodCrk", "FLATHEAD_2021_Phase3_4_QL1", "FLATHEAD_2021_Phase3_5", "GALLATIN_2020_Phase1Central", "GALLATIN_2020_Phase1WYellowstone", "GALLATIN_2021_Phase3_3", "GALLATIN_2022_Phase4_5_MdsnJffrsnThrFrks", "GARFIELD_2022_Phase4_8_GFcntyWest", "GARFIELD_2022_Phase4_9_GFcntyEast", "GLACIER_2018_Browning", "GLACIER_2020_Phase2WU5_GLcntyQL1", "GOLDENVALLEY_2010_SGrouseCore4", "GRANITE_2017_EFrkRockCrk", "GRANITE_2020_Phase1GRcnty", "HILL_2018_MilkRvrHavre", "HILL_2021_Phase3_4_QL1", "LAKE_2018_FheadRsvn", "LEWISCLARK_2018_Helena", "LEWISCLARK_2022_Phase4_4", "LIBERTY_2021_Phase2Fed", "MADISON_2022_Phase4_5_MAcntyNorth", "MADISON_2022_Phase4_6_MAcntySouth", "MADISON_2022_Phase4_7_MAcntyQL1", "MCCONE_2020_Phase2_1_FortPeckBndry", "MCCONE_2022_Phase4_9_MCcnty", "MINERAL_2022_Phase4_1", "MISSOULA_2017_LoloCrk", "MISSOULA_2021_Phase3_1", "MISSOULA_2021_Phase3_4_QL1", "MUSSELSHELL_2012_MshellRvr", "PARK_2020_PAcntyQL2", "PARK_2020_PAcntyYNPQL1", "PARK_2020_Phase1PACnty", "PARK_2023_PAcntyFld", "PETROLEUM_2022_Phase4_8_PEcnty", "PONDERA_2020_Phase2WU5_blkftQL1", "POWDERRIVER_2020_Phase1PRcnty", "POWELL_2022_Phase4_4_North", "PRAIRIE_2022_Phase4_9_PIcnty", "RAVALLI_2008_BttrtRvrN", "RAVALLI_2009_BttrtRvrC", "RAVALLI_2012_BttrtRvrS", "RAVALLI_2017_PaintedRocks", "RAVALLI_2020_Phase1Central", "RAVALLI_2020_Phase1N", "RAVALLI_2020_Phase1S", "RICHLAND_2020_Phase2WU1_RIcnty", "ROOSEVELT_2017_JamesRiverND", "ROOSEVELT_2020_Phase2_1_FortPeckBndry", "ROOSEVELT_2021_Phase2Fed", "ROSEBUD_2018_TongueRvr", "SANDERS_2020_Phase2WU2_SAcnty", "SHERIDAN_2017_JamesRiverND", "SHERIDAN_2020_Phase2WU4_PlentywoodQL1", "SHERIDAN_2020_Phase2_1_FortPeckBndry", "SHERIDAN_2021_Phase2Fed", "SILVERBOW_2022_Phase4_5_SBcnty", "STILLWATER_2022_Phase4_2", "SWEETGRASS_2016_StillwaterCmplx", "TETON_2018_TetonChouteau", "TETON_2020_TEcntyQL1", "TETON_2020_TEcntyQL2", "TOOLE_2020_Phase2WU5_ShelbyQL1", "TOOLE_2021_Phase2Fed", "VALLEY_2018_MilkRvrHinsdale", "VALLEY_2018_SGrouseCore1", "VALLEY_2020_Phase2_1_FortPeckBndry", "WHEATLAND_2015_Harlowton", "WHEATLAND_2021_Phase3_4_QL1", "WIBAUX_2021_Phase2Fed", "YELLOWSTONE_2022_Phase4_2", "YELLOWSTONE_2022_Phase4_3_BllngsQL1"] }
+by = ["ProjectName"]
+name = "ProjectName"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1.0
+year = { field = "Year_Collected", date = "year" }
+
+[[piece]]
+id = "dsm-3ft"
+label = "Montana lidar DSM 3 ft"
+method = "arcgis"
+class = "service"
+url = "https://mslgis.mt.gov/arcgishosting/rest/services/GEOINFO/LidarInventory/MapServer/2"
+filter = { DSM = ["Available for Download"], ProjectName = ["BEAVERHEAD_2017_LimaJnctnCrk", "BEAVERHEAD_2019_BlcktlCrkRubyRvr", "BIGHORN_2019_BHcntyQL1", "BIGHORN_2019_BHcntyQL2", "BLAINE_2018_MilkRvr", "CARBON_2019_CarbonStllwtr", "CUSTER_2019_CUcntyQL1", "DAWSON_2019_DawsonN", "DAWSON_2019_DawsonQL1", "DAWSON_2019_DawsonS", "DEERLODGE_2019_DLcnty", "FALLON_2018_Bakercty", "FALLON_2019_FAcnty", "FLATHEAD_2009_FheadValley", "GALLATIN_2013_BZNCrk", "GALLATIN_2013_GallatinRvr", "GALLATIN_2018_GallatinRvrTribs", "GLACIER_2021_StMaryCanal", "HILL_2018_Hillcnty", "JEFFERSON_2018_JEcnty", "JEFFERSON_2018_JEcntyQL1", "LINCOLN_2020_LNcntyQL1E", "LINCOLN_2020_LNcntyQL1W", "MADISON_2017_JeffRvr", "MADISON_2017_MadisonRvr", "MADISON_2017_VirginiaCty", "MINERAL_2017_2019_ClrkFrkStRegisTribs", "MISSOULA_2019_ClrkFrkBttrtRvr", "PHILLIPS_2018_MilkRvr", "PHILLIPS_2018_PHcntyN", "PHILLIPS_2018_PHcntyS", "POWELL_2019_Powellcnty", "POWELL_2019_PowellcntyQL1", "ROSEBUD_2019_RScntyQL1", "ROSEBUD_2019_RScntyQL2", "TREASURE_2019_TRcntyQL1", "TREASURE_2019_TRcntyQL2", "VALLEY_2018_VAcnty", "WHEATLAND_2017_MshellRvrTribs"] }
+by = ["ProjectName"]
+name = "ProjectName"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.9144
+year = { field = "Year_Collected", date = "year" }
+
+[[piece]]
+id = "dsm"
+label = "Montana lidar DSM"
+method = "arcgis"
+class = "service"
+url = "https://mslgis.mt.gov/arcgishosting/rest/services/GEOINFO/LidarInventory/MapServer/2"
+filter = { DSM = ["Available for Download"], ProjectName = ["CUSTER_2019_CUcntyQL2"] }
+by = ["ProjectName"]
+name = "ProjectName"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+year = { field = "Year_Collected", date = "year" }
+
+[[piece]]
+id = "dsm-request"
+label = "Montana lidar DSM (on request)"
+method = "arcgis"
+class = "claimed"
+availability = "login"
+url = "https://mslgis.mt.gov/arcgishosting/rest/services/GEOINFO/LidarInventory/MapServer/2"
+filter = { DSM = ["Request Only"] }
+by = ["ProjectName"]
+name = "ProjectName"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+year = { field = "Year_Collected", date = "year" }

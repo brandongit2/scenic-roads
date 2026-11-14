@@ -1,0 +1,42 @@
+name = "Comune di Firenze lidar 2023 (MDS, MDT)"
+credit = "Comune di Firenze"
+licence = "CC-BY-4.0"
+licence_url = "https://dati.toscana.it/dataset/dsm-lidar-2023"
+source = "https://dati.toscana.it/dataset/dsm-lidar-2023"
+theme = "terrain"
+availability = "open"
+notes = "The city's surface and terrain models of its lidar flight of 27 June 2023 (\"Digital Surface Model ... realizzato mediante elaborazione del rilievo Lidar effettuato in data 27/06/2023\", its records on dati.toscana.it), each one zip of 485 ASCII grids of 500 m (MDS_LIDAR_2023_ASCII.zip, 1.04 GB; MDT_LIDAR_2023_ASCII.zip), each named for its tile's south-west corner in ETRS89 / UTM 32N (32_673000_4849500.ASC: its header's lower-left cell centre 4849500.25), 0.5 m cells (the headers' CELLSIZE; the records state none). Their extents are the zips' member names, read from their central directories (no member read). The same names in both: the DSM's and the DTM's outlines are one. Its 2017 (1 m) and 2007 models are older editions over the same area: not declared. No accuracy is stated."
+
+[[piece]]
+id = "mds-2023"
+label = "MDS LIDAR 2023"
+method = "listing"
+url = "https://datigis.comune.fi.it/grid/MDS_LIDAR_2023_ASCII.zip"
+list = "zip"
+pattern = '^32_(?P<x>\d{6})_(?P<y>\d{7})\.ASC$'
+unit = 1
+size = 500
+corner = "sw"
+crs = "EPSG:25832"
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2023
+
+[[piece]]
+id = "mdt-2023"
+label = "MDT LIDAR 2023"
+method = "listing"
+url = "https://datigis.comune.fi.it/grid/MDT_LIDAR_2023_ASCII.zip"
+list = "zip"
+pattern = '^32_(?P<x>\d{6})_(?P<y>\d{7})\.ASC$'
+unit = 1
+size = 500
+corner = "sw"
+crs = "EPSG:25832"
+tolerance_m = 50
+[piece.metrics]
+surface = "ground"
+spacing_m = 0.5
+year = 2023

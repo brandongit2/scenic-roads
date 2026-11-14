@@ -1,0 +1,32 @@
+name = "NRCan Medium Resolution Digital Elevation Model (MRDEM-30)"
+credit = "Natural Resources Canada (CanElevation Series), in part from the Copernicus WorldDEM-30 (© DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018, provided under COPERNICUS by the European Union and ESA)"
+licence = "OGL-Canada-2.0"
+licence_url = "https://open.canada.ca/en/open-government-licence-canada"
+source = "https://datacube.services.geo.ca/stac/api/collections/mrdem-30"
+theme = "terrain"
+availability = "open"
+notes = "CanElevation's 30 m national model, the CDEM's replacement: \"a complete, 30 meters resolution, nationwide coverage for Canada\" whose coverage \"extends into the USA, where needed, to provide coverage for cross-border watersheds\" (its open.canada.ca record), in EPSG:3979, CGVD2013 heights. Its DSM is the Copernicus DEM's GLO-30 with the lidar HRDEM mosaic's surface resampled to 30 m where there is one; its DTM the HRDEM mosaic's terrain resampled to 30 m where there is one, elsewhere GLO-30 with a forest-removal and a settlement-removal model applied: a bare-earth estimate, `ground`. Each is one cloud-optimized GeoTIFF (the STAC item's `dtm` and `dsm` assets) of the same grid; the DTM's mask, read at an overview of about 2 km pixels, is the extent of both, as the HRDEM projects' DSMs take their DTMs' (`nrcan-hrdem`): read apart on 13 Nov 2026, the DSM's mask was 14,204,606 km² against the DTM's 14,203,895 (0.005 % more), so their outlines would be two, each of some 8,460 z12 tiles. The mask holds the sea in places (Hudson Bay's cells hold the Copernicus DEM's sea, moved to CGVD2013; the Beaufort Sea's are no data): 14.2 million km² in all, Canada's area 9.98 million. The survey years aren't stated per cell (the item's datetime, 22 June 2026, is the version's; the record's time span starts in 2006): no year. No accuracy is stated in the record."
+
+[[piece]]
+id = "dtm"
+label = "MRDEM-30 DTM"
+method = "raster"
+stac = "https://datacube.services.geo.ca/stac/api/collections/mrdem-30"
+asset = "dtm"
+mask_m = 2000
+tolerance_m = 1000
+[piece.metrics]
+surface = "ground"
+spacing_m = { field = "res_m" }
+
+[[piece]]
+id = "dsm"
+label = "MRDEM-30 DSM"
+method = "raster"
+stac = "https://datacube.services.geo.ca/stac/api/collections/mrdem-30"
+asset = "dtm"
+mask_m = 2000
+tolerance_m = 1000
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "res_m" }

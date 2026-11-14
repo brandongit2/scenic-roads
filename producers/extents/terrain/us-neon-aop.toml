@@ -1,0 +1,47 @@
+name = "NEON Airborne Observation Platform lidar (DTM, DSM, point clouds)"
+credit = "National Ecological Observatory Network (NEON), operated by Battelle for the National Science Foundation"
+licence = "CC-BY-4.0 (since June 2026; CC0 before)"
+licence_url = "https://www.neonscience.org/data-samples/guidelines-policies/usage-policies"
+source = "https://www.neonscience.org/data/spatial-data-maps"
+theme = "terrain"
+availability = "login"
+notes = "NEON's airborne lidar of its field sites, flown in rotation (a site every year or few): \"Elevation - LiDAR\" (DP3.30024.001), a DTM and a DSM \"mosaicked onto a spatially uniform grid at 1 m spatial resolution in 1 km by 1 km tiles\", and the discrete-return point clouds (DP1.30003.001, LAZ by 1 km tile; no point density stated: no spacing), for the 59 sites the data portal lists (13 Nov 2026), from 2013 to 2026. Since June 2026 a download needs a free NEON account or API token: `login`, so claimed. Their extent is the area NEON flies at each site, its AOP flight boxes (AOP_flightboxesAllSites, the Spatial Data & Maps page's shapefile of April 2024), the boxes of high priority (`priority` 1; the low-priority ones, given up first in poor weather, are left out, as which campaigns flew them isn't stated) of the sites the portal lists (`siteID`); a box several sites share (an aquatic site's within a terrestrial one's) is one piece. Which year each site was flown last isn't in the file: no year. The bare-earth DEMs of other surveys of these places are 3DEP's and the US inventory's."
+
+[[piece]]
+id = "dtm"
+label = "NEON AOP DTM 1 m"
+method = "file"
+class = "claimed"
+url = "https://www.neonscience.org/sites/default/files/AOP_flightBoxes_0.zip"
+filter = { priority = [1], siteID = ["ABBY", "ARIK", "BARR", "BART", "BLAN", "BLUE", "BONA", "CLBJ", "CPER", "CUPE", "DCFS", "DEJU", "DELA", "DSNY", "GRSM", "GUAN", "GUIL", "HARV", "HEAL", "HOPB", "JERC", "JORN", "KONA", "KONZ", "LAJA", "LENO", "LIRO", "MCDI", "MCRA", "MLBS", "MOAB", "NIWO", "NOGP", "OAES", "ONAQ", "ORNL", "OSBS", "PRIN", "PUUM", "REDB", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "SRER", "STEI", "STER", "SYCA", "TALL", "TEAK", "TOOL", "TREE", "UKFS", "UNDE", "WLOU", "WOOD", "WREF", "YELL"] }
+by = ["flightbxID"]
+name = "flightbxID"
+tolerance_m = 100
+[piece.metrics]
+surface = "ground"
+spacing_m = 1
+
+[[piece]]
+id = "dsm"
+label = "NEON AOP DSM 1 m"
+method = "file"
+class = "claimed"
+url = "https://www.neonscience.org/sites/default/files/AOP_flightBoxes_0.zip"
+filter = { priority = [1], siteID = ["ABBY", "ARIK", "BARR", "BART", "BLAN", "BLUE", "BONA", "CLBJ", "CPER", "CUPE", "DCFS", "DEJU", "DELA", "DSNY", "GRSM", "GUAN", "GUIL", "HARV", "HEAL", "HOPB", "JERC", "JORN", "KONA", "KONZ", "LAJA", "LENO", "LIRO", "MCDI", "MCRA", "MLBS", "MOAB", "NIWO", "NOGP", "OAES", "ONAQ", "ORNL", "OSBS", "PRIN", "PUUM", "REDB", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "SRER", "STEI", "STER", "SYCA", "TALL", "TEAK", "TOOL", "TREE", "UKFS", "UNDE", "WLOU", "WOOD", "WREF", "YELL"] }
+by = ["flightbxID"]
+name = "flightbxID"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+
+[[piece]]
+id = "points"
+label = "NEON AOP discrete lidar point cloud"
+method = "file"
+class = "claimed"
+url = "https://www.neonscience.org/sites/default/files/AOP_flightBoxes_0.zip"
+filter = { priority = [1], siteID = ["ABBY", "ARIK", "BARR", "BART", "BLAN", "BLUE", "BONA", "CLBJ", "CPER", "CUPE", "DCFS", "DEJU", "DELA", "DSNY", "GRSM", "GUAN", "GUIL", "HARV", "HEAL", "HOPB", "JERC", "JORN", "KONA", "KONZ", "LAJA", "LENO", "LIRO", "MCDI", "MCRA", "MLBS", "MOAB", "NIWO", "NOGP", "OAES", "ONAQ", "ORNL", "OSBS", "PRIN", "PUUM", "REDB", "RMNP", "SCBI", "SERC", "SJER", "SOAP", "SRER", "STEI", "STER", "SYCA", "TALL", "TEAK", "TOOL", "TREE", "UKFS", "UNDE", "WLOU", "WOOD", "WREF", "YELL"] }
+by = ["flightbxID"]
+name = "flightbxID"
+tolerance_m = 100

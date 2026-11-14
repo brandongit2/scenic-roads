@@ -1,0 +1,20 @@
+name = "LiDAR Fribourg 2016: MNS"
+credit = "Etat de Fribourg, Service du cadastre et de la géomatique (with the canton of Vaud's OIT for the Broye)"
+licence = "opendata.swiss terms_open, as its record states"
+licence_url = "https://opendata.swiss/fr/dataset/lidar-fribourg-2016-mns"
+source = "https://opendata.swiss/fr/dataset/lidar-fribourg-2016-mns"
+theme = "terrain"
+availability = "login"
+notes = "The canton's lidar surface model of its 2016 flights (October to December 2016; the Broye district's data flown in March 2016 by the canton of Vaud), \"Le MNS peut être fourni sous une forme brute (nuage de points [x, y, z] d'une densité minimale de 0.5 point par m²) ainsi que sous la forme de grilles interpolées. Sa précision altimétrique est de +/- 10 cm\" (its opendata.swiss record): supplied on request (`login`), the canton serving only its hillshade (Relief_de_surface_ombre_MNS_2016) and its data description naming one compiled MNS.tif with no cell. So no spacing is stated (no score), and the ±10 cm isn't an RMSE: left out. Its extent is the canton as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (the Broye's part in Vaud left out), claimed, not checked against data. swissSURFACE3D Raster (`ch-swisssurface3d`, 0.5 m) covers the canton since."
+
+[[piece]]
+id = "mns-2016"
+label = "MNS LiDAR 2016"
+method = "file"
+class = "claimed"
+url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
+filter = { adm0_a3 = ["CHE"], name = ["Fribourg"] }
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+year = 2016

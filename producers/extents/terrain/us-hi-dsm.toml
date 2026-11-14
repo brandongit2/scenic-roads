@@ -1,0 +1,33 @@
+name = "Hawaii lidar DSMs (Hawaii Statewide GIS Program)"
+credit = "Hawaii Statewide GIS Program (Office of Planning and Sustainable Development) and its data partners; Maui's 2019 DSM: Vexcel, Inc., for the County of Maui"
+licence = "not stated (the statewide DSM); Maui's 2019 DSM \"placed in the public domain\", any use but re-sale"
+licence_url = "https://files.hawaii.gov/dbedt/op/gis/data/Maui_2019_DSM.html"
+source = "https://geodata.hawaii.gov/arcgis/rest/services/SoH_Imagery"
+theme = "terrain"
+availability = "open"
+notes = "The state's two lidar surface-model image services. Hawaii_DSM: \"Digital Surface Model (DSM) for portions of the Hawaiian islands based upon lidar data collected by State of Hawaii and its data partners from 1999-2017\", a raster per island (7) at 1 m cells of its Web Mercator grid; which survey of the span each place is isn't stated: no year. Maui_2019_DSM: Vexcel's 2019 lidar DSM of parts of Maui and Molokai (Central Molokai, Kahului, Kihei, Lahaina, Pukalani), 1 ft cells (0.3048 m). Their catalogues' footprints are their rasters' boxes, sea and all, so each extent is its valid data in an exportImage of the whole service at a coarse cell (200 m and 50 m), whose cells without data are 0 with no nodata marked (`nodata`: a cell at exactly 0 m, at the shore, is read as none too). The bare-earth DEMs of the same surveys are 3DEP's and the US inventory's (`usgs-3dep`, `usiei`). No accuracy is stated."
+
+[[piece]]
+id = "dsm"
+label = "Hawaii DSM (1999-2017 lidar)"
+method = "raster"
+urls = ["https://geodata.hawaii.gov/arcgis/rest/services/SoH_Imagery/Hawaii_DSM/ImageServer/exportImage?bbox=-17837502,2137976,-17226774,2540501&bboxSR=3857&imageSR=3857&size=3054,2013&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&f=image"]
+mask_m = 150
+nodata = 0
+tolerance_m = 200
+[piece.metrics]
+surface = "surface"
+spacing_m = 1
+
+[[piece]]
+id = "maui-2019"
+label = "Maui 2019 DSM"
+method = "raster"
+urls = ["https://geodata.hawaii.gov/arcgis/rest/services/SoH_Imagery/Maui_2019_DSM/ImageServer/exportImage?bbox=-17493062,2344822,-17394300,2415632&bboxSR=3857&imageSR=3857&size=1976,1417&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&f=image"]
+mask_m = 40
+nodata = 0
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3048
+year = 2019

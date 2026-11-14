@@ -1,0 +1,23 @@
+name = "Utah lidar first-return DSMs (UGRC)"
+credit = "Utah Geospatial Resource Center (UGRC), with its acquisition partners"
+licence = "not stated (UGRC's free download)"
+licence_url = "https://gis.utah.gov/products/sgid/elevation/lidar/"
+source = "https://services1.arcgis.com/99lidPhWCzftIe9K/arcgis/rest/services/LiDAR_Extents/FeatureServer/0"
+theme = "terrain"
+availability = "open"
+notes = "The state's lidar surface models, served as tiles through raster.utah.gov and UGRC's Google Cloud bucket: the first-return DSMs of its projects (0.5 m and 1 m; the 2011 projects' and Ogden's 2009 DSMs, San Rafael River's of 2013, the 2006 first-return grid, the Great Salt Lake's 2023 topo-bathy DSM). Their extents are UGRC's own LiDAR Extents layer (each product's coverage, a feature per project, cell and UTM zone; `service`), its rows shown on the state's page (`SHOW` Y; Carbon County's 2008 row is hidden), by project, cell and year (`Year_Collected`'s last year: \"Fall 2013 Spr 2014\" 2014). The bare-earth DEMs of the same surveys are 3DEP's 1 m DEM (`usgs-3dep`) where the USGS took them. The vertical accuracy stated (10.0 cm RMSEz on most) is the bare-earth point cloud's, not the DSM's: left out. No licence is stated."
+
+[[piece]]
+id = "dsm"
+label = "Utah lidar DSM"
+method = "arcgis"
+class = "service"
+url = "https://services1.arcgis.com/99lidPhWCzftIe9K/arcgis/rest/services/LiDAR_Extents/FeatureServer/0"
+filter = { SHOW = ["Y"], Product = ["First Return DSM", "First Return DSM (zone 11)", "First Return", "DSM and point cloud", "Bare Earth DEM, DSM, point cloud", "Bare Earth DEM and DSM", "Topo-bathy DSM"] }
+by = ["Project_Name"]
+name = "Project_Name"
+tolerance_m = 100
+[piece.metrics]
+surface = "surface"
+spacing_m = { field = "Resolution", pattern = '^\s*(\d*\.?\d+)\s*[Mm]eter' }
+year = { field = "Year_Collected", date = "text" }

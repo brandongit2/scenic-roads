@@ -1,0 +1,204 @@
+name = "Illinois Height Modernization lidar DSMs (ISGS)"
+credit = "Illinois State Geological Survey (Illinois Height Modernization Program), with the counties"
+licence = "not stated (the ISGS Clearinghouse's free download); Cook County's derivatives are stated as the county's, not to be redistributed without its consent"
+licence_url = "https://clearinghouse.isgs.illinois.edu/data/elevation/illinois-height-modernization-ilhmp-lidar-data"
+source = "https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer"
+theme = "terrain"
+availability = "open"
+notes = "The ISGS's statewide lidar surface model, an image service (download enabled) mosaicking each county's newest DSM (103 rasters, 2017 to 2024; its older county DSMs, as separate services, are older editions over the same areas: not declared), each raster's cell 1, 1.5 or 2 ft (0.3048, 0.4572, 0.6096 m: its catalogue's `LowPS`) and its year in its name (wood_dsm_2022). Its catalogue's footprints are the rasters' boxes, reaching well beyond their counties, so a block per cell and year: its rasters' valid data in an exportImage of the state locked to them (`lockRasterIds`) at 250 m cells of the service's Web Mercator grid (about 190 m on the ground), whose cells without data are 0 with no nodata marked (`nodata`). The bare-earth DEMs of the same surveys are 3DEP's 1 m DEM (`usgs-3dep`). No accuracy is stated for the DSMs."
+
+# will
+[[piece]]
+id = "dsm-1ft-2021"
+label = "Illinois lidar DSM 1 ft 2021"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B4%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3048
+year = 2021
+
+# cook, mche
+[[piece]]
+id = "dsm-1ft-2022"
+label = "Illinois lidar DSM 1 ft 2022"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B657%2C3091%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3048
+year = 2022
+
+# bure, ford, ford, kank, loga, madi, pike, scot
+[[piece]]
+id = "dsm-1ft-2023"
+label = "Illinois lidar DSM 1 ft 2023"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B130%2C456%2C903%2C1175%2C1479%2C2239%2C2650%2C4088%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3048
+year = 2023
+
+# chri, iroq, livi
+[[piece]]
+id = "dsm-1ft-2024"
+label = "Illinois lidar DSM 1 ft 2024"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B1176%2C1838%2C3565%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.3048
+year = 2024
+
+# kane, lake, lasa
+[[piece]]
+id = "dsm-1_5ft-2017"
+label = "Illinois lidar DSM 1.5 ft 2017"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B1179%2C1180%2C1481%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4572
+year = 2017
+
+# boon, winn
+[[piece]]
+id = "dsm-1_5ft-2018"
+label = "Illinois lidar DSM 1.5 ft 2018"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B2%2C4090%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4572
+year = 2018
+
+# adam
+[[piece]]
+id = "dsm-1_5ft-2019"
+label = "Illinois lidar DSM 1.5 ft 2019"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B4093%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4572
+year = 2019
+
+# alex, clar, cole, craw, cumb, doug, edga, edwa, fran, gall, hami, hard, jasp, joda, john, lawr, mass, monr, pope, pul, rand, sali, stcl, unio, waba, wayn, whit, wilm
+[[piece]]
+id = "dsm-1_5ft-2020"
+label = "Illinois lidar DSM 1.5 ft 2020"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B3%2C38%2C39%2C42%2C124%2C128%2C275%2C278%2C280%2C281%2C653%2C899%2C1178%2C1482%2C1483%2C1836%2C1841%2C1843%2C2236%2C2238%2C2653%2C2654%2C2656%2C3089%2C3090%2C3092%2C3564%2C4092%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4572
+year = 2020
+
+# bond, calh, clay, clin, effi, faye, jack, jeff, jers, maco, mari, moul, perr, rich, shel, verm, wash
+[[piece]]
+id = "dsm-1_5ft-2021"
+label = "Illinois lidar DSM 1.5 ft 2021"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B40%2C43%2C129%2C277%2C458%2C461%2C902%2C905%2C1484%2C1485%2C1837%2C2651%2C2652%2C3093%2C3563%2C3569%2C4091%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4572
+year = 2021
+
+# dewi, dupa, fult, hend, knox, mars, mcdo, mcle, merc, peor, piat, putn, star, tazw, warr, wood
+[[piece]]
+id = "dsm-1_5ft-2022"
+label = "Illinois lidar DSM 1.5 ft 2022"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B1%2C41%2C125%2C127%2C279%2C457%2C459%2C654%2C656%2C658%2C901%2C1181%2C1840%2C2237%2C2655%2C3087%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.4572
+year = 2022
+
+# brow, cass, gree, hanc, macu, maso, mont, morg, schu
+[[piece]]
+id = "dsm-2ft-2017"
+label = "Illinois lidar DSM 2 ft 2017"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B131%2C462%2C652%2C900%2C904%2C1842%2C2235%2C3567%2C4089%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.6096
+year = 2017
+
+# deka, grun, kend, mena, sang
+[[piece]]
+id = "dsm-2ft-2018"
+label = "Illinois lidar DSM 2 ft 2018"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B132%2C655%2C1480%2C2234%2C3088%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.6096
+year = 2018
+
+# carr, cham, henr, lee, ogle, rock, step, whie
+[[piece]]
+id = "dsm-2ft-2020"
+label = "Illinois lidar DSM 2 ft 2020"
+method = "raster"
+urls = ["https://data.isgs.illinois.edu/arcgis/rest/services/Elevation/IL_Statewide_Lidar_DSM/ImageServer/exportImage?bbox=-10189003,4434614,-9737542,5239030&bboxSR=3857&imageSR=3857&size=1806,3218&format=tiff&pixelType=F32&interpolation=RSP_NearestNeighbor&mosaicRule=%7B%22mosaicMethod%22%3A%22esriMosaicLockRaster%22%2C%22lockRasterIds%22%3A%5B37%2C126%2C276%2C460%2C1177%2C1839%2C3566%2C3568%5D%7D&f=image"]
+mask_m = 200
+nodata = 0
+tolerance_m = 200
+timeout_s = 600
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.6096
+year = 2020
+

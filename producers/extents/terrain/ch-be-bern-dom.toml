@@ -1,0 +1,23 @@
+name = "Stadt Bern Digitales Oberflächenmodell (DOM) 2023"
+credit = "Geoinformation Stadt Bern"
+licence = "opendata.swiss terms_open (free use, also commercial)"
+licence_url = "https://opendata.swiss/terms-of-use#terms_open"
+source = "https://opendata.swiss/de/dataset/digitales-oberflachenmodell-dom-2023"
+theme = "terrain"
+availability = "open"
+notes = "The city's surface model, \"Digitales Raster-Oberflächenmodell (DOM) der Stadt Bern mit einer Auflösung von 25cm pro Pixel\" (its opendata.swiss record, with the city's geoportal, WMS and WMTS as its resources; its 2020 DOM, the same, is an older edition: not declared). The city's map server (map.bern.ch) answered every request, its geoportal and WMS capabilities too, with a 403 naming its security policy, so neither its coverage nor its download was read: its extent is the city as the record names it, the municipality of Bern as swisstopo's swissBOUNDARIES3D draws it (its current outline, through the federal geoportal's API), claimed, not checked against data. No year of flight is stated beyond the product's 2023; no accuracy is stated."
+
+[[piece]]
+id = "dom-2023"
+label = "DOM 2023 0.25 m"
+method = "file"
+class = "claimed"
+url = "https://api3.geo.admin.ch/rest/services/api/MapServer/find?layer=ch.swisstopo.swissboundaries3d-gemeinde-flaeche.fill&searchText=Bern&searchField=gemname&returnGeometry=true&geometryFormat=geojson&sr=4326&contains=false"
+records = "results"
+footprint = "geometry"
+filter = { "properties.is_current_jahr" = [true], "properties.gemname" = ["Bern"] }
+tolerance_m = 50
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.25
+year = 2023
