@@ -42,7 +42,7 @@ impl Fetch for NoneElse {
 
 #[test]
 fn tiles_blend_across_their_edges() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     let z = 10;
     let tiles = |id: &str, code: u8, url: &str| Dataset {
         convert: None,
@@ -50,7 +50,7 @@ fn tiles_blend_across_their_edges() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
+        source: Format::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
         outline: None,
     };
     let plan = Plan {
@@ -122,7 +122,7 @@ fn a_pyramids_tile_not_256_pixels_is_refused() {
 /// and clean blocks (where the sampler takes the band's full distance without reading a pixel).
 #[test]
 fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::write_f32;
     const PX: f64 = 1.0 / 3600.0;
     let (w, h) = (1200usize, 1100usize);
@@ -156,7 +156,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
         code,
         resolution: res,
         cover: None,
-        source: Source::Geotiff {
+        source: Format::Geotiff {
             crs: 4326,
             read_resolution: None,
             store: false,
@@ -233,7 +233,7 @@ fn the_distance_to_the_invalid_area_is_the_scans_whatever_the_shortcut() {
 /// edge, the other file's (its nodata and mask voids invalid) or none.
 #[test]
 fn the_distance_across_a_datasets_files_is_the_scans() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::write_f32;
     const PX: f64 = 1.0 / 3600.0;
     let nd = -9999.0f32;
@@ -288,7 +288,7 @@ fn the_distance_across_a_datasets_files_is_the_scans() {
         code: 1,
         resolution: rf,
         cover: None,
-        source: Source::Geotiff {
+        source: Format::Geotiff {
             crs: 4326,
             read_resolution: None,
             store: false,
@@ -303,7 +303,7 @@ fn the_distance_across_a_datasets_files_is_the_scans() {
         code: 2,
         resolution: rc,
         cover: None,
-        source: Source::Geotiff {
+        source: Format::Geotiff {
             crs: 4326,
             read_resolution: None,
             store: false,
@@ -457,7 +457,7 @@ fn the_nearest_invalid_pixel_is_the_windows_scan() {
 /// across a `DIST_CELL` square's border, fill mask voids by an edge, and points at the corner.
 #[test]
 fn the_distance_at_four_files_corner_is_the_scans() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::write_f32;
     const CRS: u16 = 26918;
     let p = Projection::of(CRS).unwrap();
@@ -523,7 +523,7 @@ fn the_distance_at_four_files_corner_is_the_scans() {
         code: 1,
         resolution: 5.0,
         cover: None,
-        source: Source::Geotiff {
+        source: Format::Geotiff {
             crs: CRS,
             read_resolution: None,
             store: false,
@@ -538,7 +538,7 @@ fn the_distance_at_four_files_corner_is_the_scans() {
         code: 2,
         resolution: 40.0,
         cover: None,
-        source: Source::Geotiff {
+        source: Format::Geotiff {
             crs: CRS,
             read_resolution: None,
             store: false,
@@ -651,7 +651,7 @@ fn the_distance_at_four_files_corner_is_the_scans() {
 
 #[test]
 fn sampling_says_increasing_fractions_to_one_per_chunk() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     let z = 10;
     let ds = |id: &str, code: u8, url: &str| Dataset {
         convert: None,
@@ -659,7 +659,7 @@ fn sampling_says_increasing_fractions_to_one_per_chunk() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
+        source: Format::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
         outline: None,
     };
     let plan = Plan {
@@ -828,7 +828,7 @@ impl Fetch for Counting {
 /// heights are those of a run on one thread, to the bit.
 #[test]
 fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     let z = 6;
     let n = 1i64 << z;
     let ds = |id: &str, code: u8, host: &str| Dataset {
@@ -837,7 +837,7 @@ fn a_runs_tiles_are_fetched_once_and_together_and_the_heights_are_the_same() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles {
+        source: Format::Tiles {
             url: format!("https://{host}/{{z}}/{{x}}/{{y}}.png"),
             zoom: z,
             encoding: "terrarium".into(),
@@ -938,7 +938,7 @@ fn a_failed_fetch_leaves_no_slot() {
 /// by their own conversions, so a seam blends converted heights.
 #[test]
 fn heights_are_converted_before_the_blend() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use super::super::geoid::conversion;
     let z = 10;
     // (A grid of one value over 4° around the tiles.)
@@ -960,7 +960,7 @@ fn heights_are_converted_before_the_blend() {
         code,
         resolution: tile_resolution(z, 0.0),
         cover: None,
-        source: Source::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
+        source: Format::Tiles { url: url.into(), zoom: z, encoding: "terrarium".into(), every_zoom: true },
         outline: None,
     };
     let plan = Plan {
@@ -1041,7 +1041,7 @@ impl RangeRead for SlowReads {
 /// none read ahead, to the bit.
 #[test]
 fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::write_f32;
     const PX: f64 = 1.0 / 3600.0;
     let (w, h) = (2048usize, 1536usize);
@@ -1066,7 +1066,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
         code,
         resolution: res,
         cover: None,
-        source: Source::Geotiff {
+        source: Format::Geotiff {
             crs: 4326,
             read_resolution: None,
             store: false,
@@ -1143,7 +1143,7 @@ fn a_geotiffs_blocks_are_read_ahead_once_and_the_heights_are_the_same() {
 /// of them), made once a batch (`Sampler::projections`).
 #[test]
 fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
-    use super::super::declared::{Dataset, Source};
+    use super::super::declared::{Dataset, Format};
     let f = buildstore::fetch::MapFetch::default();
     let o = Opts { fetch: &f, store: None, local: None };
     let ds = |crs: u16, id: &str| Dataset {
@@ -1152,7 +1152,7 @@ fn a_geotiff_dataset_in_degrees_keeps_no_copy_of_the_points() {
         code: 1,
         resolution: 30.0,
         cover: None,
-        source: Source::Geotiff { crs, read_resolution: None, store: false, files: Vec::new(), masks: Vec::new() },
+        source: Format::Geotiff { crs, read_resolution: None, store: false, files: Vec::new(), masks: Vec::new() },
         outline: None,
     };
     let (lon, lat) = (vec![-80.0, -79.5], vec![43.0, 44.0]);
@@ -1449,7 +1449,7 @@ fn fds_under(dir: &std::path::Path) -> usize {
 #[cfg(target_os = "macos")]
 #[test]
 fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::write_f32;
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("glo");
@@ -1482,7 +1482,7 @@ fn sampling_many_stored_tiles_holds_a_bounded_number_of_files() {
             code: 3,
             resolution: 78.0,
             cover: None,
-            source: Source::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
+            source: Format::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
             outline: None,
         }],
     };
@@ -1589,7 +1589,7 @@ fn a_mask_answers_as_its_pixels() {
 /// another length than the NAS's (a file fetched again) is deleted and copied again.
 #[test]
 fn stored_files_read_finely_are_copied_here_and_read_the_same() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::testtiff::{make_images, Opts as TOpts};
     let d = tempfile::tempdir().unwrap();
     let (nas, cache) = (d.path().join("nas"), d.path().join("cache"));
@@ -1629,7 +1629,7 @@ fn stored_files_read_finely_are_copied_here_and_read_the_same() {
             code: 3,
             resolution: 78.0,
             cover: None,
-            source: Source::Geotiff {
+            source: Format::Geotiff {
                 crs: 4326,
                 read_resolution,
                 store: true,
@@ -1722,7 +1722,7 @@ fn membership_asks_a_nan_point_alone() {
 /// a finer one had opened it, at that one's overview.
 #[test]
 fn samplers_sharing_a_memo_read_each_file_at_their_own_level() {
-    use super::super::declared::{Dataset, Plan, Source};
+    use super::super::declared::{Dataset, Format, Plan};
     use buildstore::geotiff::testtiff::{make_images, Opts as TOpts};
     let d = tempfile::tempdir().unwrap();
     let dir = d.path().join("sources/fetched/glo");
@@ -1748,7 +1748,7 @@ fn samplers_sharing_a_memo_read_each_file_at_their_own_level() {
             code: 3,
             resolution: 78.0,
             cover: None,
-            source: Source::Geotiff {
+            source: Format::Geotiff {
                 crs: 4326,
                 read_resolution,
                 store: true,

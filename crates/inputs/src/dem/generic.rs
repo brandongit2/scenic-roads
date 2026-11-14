@@ -36,7 +36,7 @@
 //!   nearest invalid pixel found so far (what a scan of the whole band finds, to the bit). The
 //!   files' decoded blocks share one cache (`CACHE_BYTES`), whatever their number.
 
-use super::declared::{Cover, Dataset, Plan, Source};
+use super::declared::{Cover, Dataset, Format, Plan};
 use super::proj::{mercator_tile, projected, Projection};
 use super::sample::{
     bilinear_above, blocks_read, sample_raster_noting, window_clean, Clean, Seen, BLOCK, NODATA_BELOW,
@@ -330,7 +330,7 @@ struct GeoSet<'a> {
     id: &'a str,
     crs: u16,
     files: &'a [(String, Option<[f64; 4]>)],
-    /// By file, its fill mask's URL (empty: none has one; `Source::Geotiff::masks`).
+    /// By file, its fill mask's URL (empty: none has one; `Format::Geotiff::masks`).
     masks: &'a [Option<String>],
     read_resolution: Option<f64>,
     /// The height in its CRS of `BLOCK` rows of its pixels at the resolution read
@@ -1724,7 +1724,7 @@ enum Set<'a> {
 impl<'a> Set<'a> {
     fn new(ds: &'a Dataset, o: &'a Opts<'a>, cache: &Arc<Mutex<BlockCache>>, memo: &Arc<TileMemo>) -> Result<Set<'a>> {
         Ok(match &ds.source {
-            Source::Tiles { url, zoom, encoding, .. } => Set::Tiles(TileSet {
+            Format::Tiles { url, zoom, encoding, .. } => Set::Tiles(TileSet {
                 url,
                 zoom: *zoom,
                 encoding,
@@ -1732,7 +1732,7 @@ impl<'a> Set<'a> {
                 clean: Mutex::new(HashMap::new()),
                 memo: memo.clone(),
             }),
-            Source::Geotiff { crs, read_resolution, store, files, masks } => {
+            Format::Geotiff { crs, read_resolution, store, files, masks } => {
                 ensure!(super::declared::known_crs(*crs), "{}: EPSG:{crs} isn't a CRS the app knows", ds.id);
                 let store = match (*store, &o.store) {
                     (false, _) => None,

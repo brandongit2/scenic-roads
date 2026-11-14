@@ -3906,7 +3906,10 @@ pub const DEPTH_LO_WATER_FROM: &str = "depth z3-8 +rivers";
 
 /// The z3 tiles (assemblies) and z6 tiles (z6 tiles) the depth builds for the coverage and its
 /// declared sources (`DepthTargets`).
-pub fn depth_tiles(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+pub fn depth_tiles(
+    cov: &Coverage,
+    sources: &[terrain::depth::grids::DepthSource],
+) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
     let deg =
         |b: [i32; 4]| [f64::from(b[0]) * 1e-7, f64::from(b[1]) * 1e-7, f64::from(b[2]) * 1e-7, f64::from(b[3]) * 1e-7];
     let (mut lo, mut hi) = (Vec::new(), Vec::new());
@@ -3968,7 +3971,7 @@ pub fn depth_kept(
 }
 
 /// The depth's targets that read the water, by tile: the assemblies (z3), then the z6 tiles.
-fn depth_water_targets(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(u8, (u32, u32))> {
+fn depth_water_targets(cov: &Coverage, sources: &[terrain::depth::grids::DepthSource]) -> Vec<(u8, (u32, u32))> {
     let (lo, hi) = depth_tiles(cov, sources);
     lo.into_iter().map(|q| (3, q)).chain(hi.into_iter().map(|t| (6, t))).collect()
 }
@@ -3983,7 +3986,7 @@ fn depth_water_want(z: u8, t: (u32, u32)) -> (String, String) {
 /// What the plan asks of the water's digests: the depth's targets that read the water, by name
 /// (`depth_water_want`), never with their tiles (`depth_water_reads`: a z6 tile's are tens of
 /// thousands, 3 GB for the world's targets held at once, task #1251).
-pub fn depth_water_wants(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(String, String)> {
+pub fn depth_water_wants(cov: &Coverage, sources: &[terrain::depth::grids::DepthSource]) -> Vec<(String, String)> {
     depth_water_targets(cov, sources).into_iter().map(|(z, t)| depth_water_want(z, t)).collect()
 }
 
@@ -3992,7 +3995,7 @@ pub fn depth_water_wants(cov: &Coverage, sources: &[terrain::depth::grids::Sourc
 /// tile's `depth_hi_water`, the rivers in both.
 pub fn depth_water_reads(
     cov: &Coverage,
-    sources: &[terrain::depth::grids::Source],
+    sources: &[terrain::depth::grids::DepthSource],
 ) -> Vec<codecs::terrain_water::Reads> {
     depth_water_targets(cov, sources)
         .into_iter()
@@ -4031,7 +4034,7 @@ fn depth_hi_box(t: (u32, u32), z: u8) -> [f64; 4] {
 
 /// The zooms of `HI` z6 tile `t`'s depth composes: those where a grid of that zoom meets the tile
 /// with the blocks' margin there (terrain::depth::compose::composes_at), as `build`'s blocks test.
-fn depth_hi_zooms(sources: &[terrain::depth::grids::Source], t: (u32, u32)) -> Vec<u8> {
+fn depth_hi_zooms(sources: &[terrain::depth::grids::DepthSource], t: (u32, u32)) -> Vec<u8> {
     use terrain::depth::build::HI;
     (HI.0..=HI.1).filter(|&z| terrain::depth::compose::composes_at(sources, depth_hi_box(t, z), z)).collect()
 }
@@ -4041,7 +4044,7 @@ fn depth_hi_zooms(sources: &[terrain::depth::grids::Source], t: (u32, u32)) -> V
 /// composes (`depth_hi_zooms`), its tiles and the ring of one around them, a zoom past the
 /// basemap's z14 read as z14 (z15–16 are drawn from z14's polygons, and a grid of z15–16 alone
 /// composes no z14). A change at a zoom from z9 it never composes isn't among them.
-fn depth_hi_water(sources: &[terrain::depth::grids::Source], t: (u32, u32)) -> Vec<(u8, u32, u32)> {
+fn depth_hi_water(sources: &[terrain::depth::grids::DepthSource], t: (u32, u32)) -> Vec<(u8, u32, u32)> {
     use terrain::depth::build::{coarse_areas, Area, LO, PIECE_Z};
     let (lo0, lo1) = (PIECE_Z, LO.1);
     let fine = depth_hi_zooms(sources, t).into_iter().map(|z| z.min(terrain::depth::build::WATER_Z)).map(|z| {
@@ -4099,7 +4102,7 @@ pub fn depth_targets(x: &KeyCtx) -> Option<DepthTargets> {
 
 /// The lake-depth step's z6 tiles: those near the coverage (`coverage_tiles`, the terrain's, whose
 /// z12 tiles the small lakes' slope reads) while a source it makes is declared.
-pub fn lake_tiles(cov: &Coverage, sources: &[terrain::depth::grids::Source]) -> Vec<(u32, u32)> {
+pub fn lake_tiles(cov: &Coverage, sources: &[terrain::depth::grids::DepthSource]) -> Vec<(u32, u32)> {
     if !sources.iter().any(|s| s.made.is_some()) {
         return Vec::new();
     }
@@ -10967,7 +10970,7 @@ mod tests {
 
     /// A depth source over the sea off Reykjavik (`cov`): a coarse grid over the z3 tile, and a fine
     /// one over a z6 tile near the coverage.
-    fn depth_sources() -> Vec<terrain::depth::grids::Source> {
+    fn depth_sources() -> Vec<terrain::depth::grids::DepthSource> {
         let g = |bbox: [f64; 4], zoom: u8| terrain::depth::grids::Grid {
             bbox,
             zoom,
@@ -10975,7 +10978,7 @@ mod tests {
             low_file: None,
             packed: None,
         };
-        let s = |code: u8, grids| terrain::depth::grids::Source {
+        let s = |code: u8, grids| terrain::depth::grids::DepthSource {
             id: format!("s{code}"),
             code,
             lake: false,
@@ -11172,7 +11175,7 @@ mod tests {
         fine.grids[0].zoom = 9;
         let mut far = fine.clone();
         far.grids[0].bbox = [-10.45, 65.0, -10.0, 65.5];
-        let read = |s: &terrain::depth::grids::Source| {
+        let read = |s: &terrain::depth::grids::DepthSource| {
             depth_hi_box_read((28, 16)).iter().any(|&b| s.meeting(b).next().is_some())
         };
         assert!(read(&fine));

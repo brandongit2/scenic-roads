@@ -32,7 +32,7 @@
 //!
 //!   SCENIC_FETCH_*  mirror folders, recording, no network (`buildstore::fetch`)
 
-use ::trees::trees::{self, mask::Shapes, Inputs, Source};
+use ::trees::trees::{self, mask::Shapes, Inputs, SquaresAt};
 use agentcore::cli::progs::Trees;
 use anyhow::{bail, Context, Result};
 use buildstore::fetch::Fetcher;
@@ -111,8 +111,8 @@ fn run(a: &Trees) -> Result<()> {
     let fetch = Fetcher::from_env();
     let there = a.squares.as_deref().map(trees::task::parse_squares).transpose().context("--squares top,left;…")?;
     let inp = Inputs {
-        chm: Source::parse(need(&a.chm, "chm")?),
-        leaf: Source::parse(need(&a.leaf, "leaf")?),
+        chm: SquaresAt::parse(need(&a.chm, "chm")?),
+        leaf: SquaresAt::parse(need(&a.leaf, "leaf")?),
         fetch: &fetch,
         record: a.record.clone(),
         there,

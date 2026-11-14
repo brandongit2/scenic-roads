@@ -11,7 +11,7 @@
 //!   (another encoder).
 //!
 //! A block runs on its own (`block`, so a worker can be given one: tasks of it are planned): what it
-//! reads comes from a `Source` (a folder, or URLs read through `buildstore::fetch`, whose mirror can hold
+//! reads comes from a `SquaresAt` (a folder, or URLs read through `buildstore::fetch`, whose mirror can hold
 //! just the byte ranges the block reads); it gives its zoom 8–12 tiles and its zoom-8 values, from
 //! which `assemble` makes the z3 tile's archives. `z3` does both, its blocks on rayon's threads, and the
 //! archives are the same bytes at any thread count, and as
@@ -372,37 +372,37 @@ pub fn leaf_name(top: i32, left: i32) -> String {
 /// mirror folder first; a `file://` prefix names a folder's files there, as `--record` keeps them),
 /// or files opened already, by name (a run's canopy files: `begin`), one not among them not there.
 #[derive(Clone)]
-pub enum Source {
+pub enum SquaresAt {
     Dir(PathBuf),
     Url(String),
     Given(Arc<BTreeMap<String, Arc<dyn RangeRead>>>),
 }
 
-impl std::fmt::Debug for Source {
+impl std::fmt::Debug for SquaresAt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Source::Dir(d) => write!(f, "Dir({})", d.display()),
-            Source::Url(u) => write!(f, "Url({u})"),
-            Source::Given(m) => write!(f, "Given({:?})", m.keys().collect::<Vec<_>>()),
+            SquaresAt::Dir(d) => write!(f, "Dir({})", d.display()),
+            SquaresAt::Url(u) => write!(f, "Url({u})"),
+            SquaresAt::Given(m) => write!(f, "Given({:?})", m.keys().collect::<Vec<_>>()),
         }
     }
 }
 
-impl Source {
-    pub fn parse(s: &str) -> Source {
+impl SquaresAt {
+    pub fn parse(s: &str) -> SquaresAt {
         if s.contains("://") {
-            Source::Url(s.trim_end_matches('/').to_string())
+            SquaresAt::Url(s.trim_end_matches('/').to_string())
         } else {
-            Source::Dir(PathBuf::from(s))
+            SquaresAt::Dir(PathBuf::from(s))
         }
     }
 
     /// File `name`'s URL: its own, or a folder's as `file://`.
     fn url(&self, name: &str) -> String {
         match self {
-            Source::Url(u) => format!("{u}/{name}"),
-            Source::Given(_) => format!("given:{name}"),
-            Source::Dir(d) => {
+            SquaresAt::Url(u) => format!("{u}/{name}"),
+            SquaresAt::Given(_) => format!("given:{name}"),
+            SquaresAt::Dir(d) => {
                 format!("file://{}", std::path::absolute(d.join(name)).unwrap_or_else(|_| d.join(name)).display())
             }
         }
@@ -412,8 +412,8 @@ impl Source {
 /// What a block reads: the canopy and leaf-type squares, and where the bytes it reads are kept
 /// (`record`: a mirror folder for `buildstore::fetch`, so a run elsewhere is given just those).
 pub struct Inputs<'a> {
-    pub chm: Source,
-    pub leaf: Source,
+    pub chm: SquaresAt,
+    pub leaf: SquaresAt,
     pub fetch: &'a dyn Fetch,
     pub record: Option<PathBuf>,
     /// The canopy squares found there before the blocks began (a z3 run's), (top, left): one of them
@@ -427,9 +427,9 @@ type Opened = Vec<(String, Option<Arc<Noted>>)>;
 
 impl Inputs<'_> {
     /// File `name` of `src`: None when it isn't there.
-    fn open(&self, src: &Source, name: &str, opened: &mut Opened) -> Result<Option<Arc<dyn RangeRead>>> {
+    fn open(&self, src: &SquaresAt, name: &str, opened: &mut Opened) -> Result<Option<Arc<dyn RangeRead>>> {
         let f: Option<Arc<dyn RangeRead>> = match src {
-            Source::Dir(d) => {
+            SquaresAt::Dir(d) => {
                 let p = d.join(name);
                 match PlainFile::open(&p) {
                     Ok(f) => Some(Arc::new(f)),
@@ -437,8 +437,8 @@ impl Inputs<'_> {
                     Err(e) => return Err(e).with_context(|| p.display().to_string()),
                 }
             }
-            Source::Url(_) => self.fetch.open(&src.url(name))?,
-            Source::Given(m) => m.get(name).cloned(),
+            SquaresAt::Url(_) => self.fetch.open(&src.url(name))?,
+            SquaresAt::Given(m) => m.get(name).cloned(),
         };
         if self.record.is_none() {
             return Ok(f);
@@ -517,7 +517,7 @@ impl<'a> Files<'a> {
     }
 
     /// File `name` of `src`: None when it isn't there.
-    fn file(&mut self, src: &Source, name: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+    fn file(&mut self, src: &SquaresAt, name: &str) -> Result<Option<Arc<dyn RangeRead>>> {
         if let Some(f) = self.raw.get(name) {
             return Ok(f.clone());
         }
@@ -950,8 +950,8 @@ pub struct Run {
 }
 
 /// A run begun (`begin`): the coverage's shapes, the blocks they meet, the canopy squares there and
-/// their files opened (`Source::Given`).
-type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>, Source);
+/// their files opened (`SquaresAt::Given`).
+type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>, SquaresAt);
 
 /// Where a run keeps the canopy rows it read from the NAS that this Mac's cache has no room for
 /// (squares::rows_here), in its `out`; removed as the blocks are made.
@@ -1049,7 +1049,7 @@ fn begin(a: &Run) -> Result<Begun> {
         sqs.len(),
         t0.elapsed().as_secs_f64()
     );
-    Ok((shapes, blocks, sqs, Source::Given(Arc::new(given))))
+    Ok((shapes, blocks, sqs, SquaresAt::Given(Arc::new(given))))
 }
 
 /// Every one of `blocks` (on rayon's threads), its canopy squares `chm` (`sqs` there), its leaf
@@ -1059,11 +1059,11 @@ fn each_block(
     shapes: &mask::Shapes,
     blocks: &[(u32, u32)],
     sqs: Vec<(i32, i32)>,
-    chm: Source,
+    chm: SquaresAt,
     mut sink: impl FnMut((u32, u32), BlockOut) -> Result<()>,
 ) -> Result<()> {
     let fetch = buildstore::fetch::MapFetch::default();
-    let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
+    let inp = Inputs { chm, leaf: SquaresAt::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
     jobrt::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
@@ -1168,7 +1168,7 @@ pub fn z6_with(a: &Run, offload: Option<&offload::Offload>) -> Result<[usize; 3]
     // phase.)
     let p = phase("making zoom-8 blocks (some by other workers)");
     let fetch = buildstore::fetch::MapFetch::default();
-    let inp = Inputs { chm, leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
+    let inp = Inputs { chm, leaf: SquaresAt::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
     let mut mid: MidBlocks = BTreeMap::new();

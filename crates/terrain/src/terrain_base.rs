@@ -20,7 +20,7 @@
 use crate::terrain_pack::{RawSource, RawTiles, Ready, Turns};
 use anyhow::{Context, Result};
 use buildstore::fetch::Fetch;
-use inputs::dem::declared::{Plan, Source};
+use inputs::dem::declared::{Format, Plan};
 use inputs::dem::generic::{tile_resolution, Copies, Opts, Sampler};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -133,7 +133,7 @@ impl Pool {
     /// The pool of plan `plan` over area `area`, its stores in `store` (read in place).
     pub fn of(plan: Plan, store: store::nasfs::NasPath, area: [f64; 4]) -> Pool {
         let terrarium = plan.datasets.iter().rev().find_map(|d| match &d.source {
-            Source::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
+            Format::Tiles { url, encoding, .. } if encoding == "terrarium" => Some(url.clone()),
             _ => None,
         });
         Pool { plan, terrarium, store, area, local: None, pyramids: None }
@@ -144,7 +144,7 @@ impl Pool {
     /// region (crate::terrain_pack::Fill::Relief), one of its tiles a tile, never a GeoTIFF's area.
     pub fn relief(&self) -> Pool {
         let mut plan = self.plan.clone();
-        plan.datasets.retain(|d| matches!(&d.source, Source::Tiles { every_zoom: true, .. }));
+        plan.datasets.retain(|d| matches!(&d.source, Format::Tiles { every_zoom: true, .. }));
         Pool {
             plan,
             terrarium: self.terrarium.clone(),
@@ -167,15 +167,15 @@ impl Pool {
         }
         for d in &mut p.datasets {
             match &mut d.source {
-                Source::Geotiff { read_resolution, .. } => {
+                Format::Geotiff { read_resolution, .. } => {
                     *read_resolution = Some(half);
                     d.resolution = d.resolution.max(half);
                 }
-                Source::Tiles { zoom, every_zoom: true, .. } if *zoom > z as u32 => {
+                Format::Tiles { zoom, every_zoom: true, .. } if *zoom > z as u32 => {
                     *zoom = z as u32;
                     d.resolution = d.resolution.max(tile_resolution(z as u32, lat));
                 }
-                Source::Tiles { .. } => {}
+                Format::Tiles { .. } => {}
             }
         }
         p
@@ -210,7 +210,7 @@ impl Pool {
 /// not declared published at every zoom (`every_zoom`). GSI's z15 layers: 64 requests a z12 tile
 /// each.
 pub(crate) fn by_tile(d: &inputs::dem::declared::Dataset) -> bool {
-    matches!(&d.source, Source::Tiles { every_zoom: false, .. })
+    matches!(&d.source, Format::Tiles { every_zoom: false, .. })
 }
 
 /// The first zoom whose tiles read the pool at their own z6 tile's middle latitude (`row_mid`), not
@@ -604,7 +604,7 @@ mod tests {
                     code: 3,
                     resolution: 78.0,
                     cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]),
-                    source: Source::Geotiff {
+                    source: Format::Geotiff {
                         crs: 4326,
                         read_resolution: None,
                         store: true,
@@ -619,7 +619,7 @@ mod tests {
                     code: 4,
                     resolution: tile_resolution(12, 45.5),
                     cover: None,
-                    source: Source::Tiles {
+                    source: Format::Tiles {
                         url: crate::terrain_pack::TEST_BASE.into(),
                         zoom: 12,
                         encoding: "terrarium".into(),
@@ -697,7 +697,7 @@ mod tests {
                     code: 1,
                     resolution: 7.8,
                     cover: Some(vec![[10.44, 45.44, 10.56, 45.56]]),
-                    source: Source::Geotiff {
+                    source: Format::Geotiff {
                         crs: 4326,
                         read_resolution: None,
                         store: true,
@@ -712,7 +712,7 @@ mod tests {
                     code: 2,
                     resolution: 7.8,
                     cover: None,
-                    source: Source::Geotiff {
+                    source: Format::Geotiff {
                         crs: 4326,
                         read_resolution: None,
                         store: true,
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn a_level_reads_its_detail() {
-        let ds = |id: &str, resolution: f64, source: Source| Dataset {
+        let ds = |id: &str, resolution: f64, source: Format| Dataset {
             id: id.into(),
             code: 1,
             resolution,
@@ -776,17 +776,17 @@ mod tests {
                 ds(
                     "lidar",
                     8.0,
-                    Source::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![], masks: vec![] },
+                    Format::Geotiff { crs: 4326, read_resolution: None, store: false, files: vec![], masks: vec![] },
                 ),
                 ds(
                     "t",
                     38.0,
-                    Source::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into(), every_zoom: true },
+                    Format::Tiles { url: "u".into(), zoom: 12, encoding: "terrarium".into(), every_zoom: true },
                 ),
                 ds(
                     "g",
                     5.0,
-                    Source::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
+                    Format::Tiles { url: "v".into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
                 ),
             ],
         };
@@ -794,18 +794,18 @@ mod tests {
         let p12 = pool.at_zoom(12, 0.0);
         let half = tile_resolution(12, 0.0) / 2.0;
         assert!(
-            matches!(&p12.datasets[0].source, Source::Geotiff { read_resolution: Some(r), .. } if (*r - half).abs() < 1e-9)
+            matches!(&p12.datasets[0].source, Format::Geotiff { read_resolution: Some(r), .. } if (*r - half).abs() < 1e-9)
         );
-        assert!(matches!(&p12.datasets[1].source, Source::Tiles { zoom: 12, .. }));
+        assert!(matches!(&p12.datasets[1].source, Format::Tiles { zoom: 12, .. }));
         let p5 = pool.at_zoom(5, 0.0);
         assert!(
-            matches!(&p5.datasets[1].source, Source::Tiles { zoom: 5, .. }),
+            matches!(&p5.datasets[1].source, Format::Tiles { zoom: 5, .. }),
             "a Terrarium pyramid at the level's zoom"
         );
         assert_eq!(p5.datasets.len(), 2, "another pyramid left out below ROW_Z");
         assert!(p5.datasets[0].resolution > 1000.0);
         let p9 = pool.at_zoom(ROW_Z, 0.0);
-        assert!(matches!(&p9.datasets[2].source, Source::Tiles { zoom: 15, .. }), "from ROW_Z at its own zoom");
+        assert!(matches!(&p9.datasets[2].source, Format::Tiles { zoom: 15, .. }), "from ROW_Z at its own zoom");
     }
 
     /// A drain asked while a level's chunks are sampled (task #705): the chunk under way finishes
@@ -830,7 +830,7 @@ mod tests {
                 code: 3,
                 resolution: 78.0,
                 cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]),
-                source: Source::Geotiff {
+                source: Format::Geotiff {
                     crs: 4326,
                     read_resolution: None,
                     store: true,

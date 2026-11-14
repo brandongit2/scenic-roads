@@ -262,8 +262,8 @@ fn a_block_from_its_squares() {
     let shapes = Shapes::parse(COVERAGE).unwrap();
     let fetch = buildstore::fetch::MapFetch::default();
     let inp = Inputs {
-        chm: Source::Dir(d.path().into()),
-        leaf: Source::Dir(d.path().into()),
+        chm: SquaresAt::Dir(d.path().into()),
+        leaf: SquaresAt::Dir(d.path().into()),
         fetch: &fetch,
         record: None,
         there: None,
@@ -333,8 +333,8 @@ fn the_z3_run_and_its_blocks_alike() {
     assert_eq!(blocks, [(132, 88), (133, 88)]);
     let fetch = buildstore::fetch::MapFetch::default();
     let inp = Inputs {
-        chm: Source::Dir(d.path().into()),
-        leaf: Source::Dir(d.path().into()),
+        chm: SquaresAt::Dir(d.path().into()),
+        leaf: SquaresAt::Dir(d.path().into()),
         fetch: &fetch,
         record: None,
         there: None,
@@ -623,8 +623,8 @@ fn reads_recorded_and_read_back() {
     let m = tempfile::tempdir().unwrap();
     let none = buildstore::fetch::MapFetch::default();
     let inp = Inputs {
-        chm: Source::Dir(d.path().into()),
-        leaf: Source::Dir(d.path().into()),
+        chm: SquaresAt::Dir(d.path().into()),
+        leaf: SquaresAt::Dir(d.path().into()),
         fetch: &none,
         record: Some(m.path().into()),
         there: None,
@@ -633,7 +633,8 @@ fn reads_recorded_and_read_back() {
     assert!(a.kept > 0 && a.kept < 8 << 20, "{} bytes kept", a.kept);
     let fetch = buildstore::fetch::Fetcher::new(Some(m.path().into()), false);
     let url = format!("file://{}", std::path::absolute(d.path()).unwrap().display());
-    let inp = Inputs { chm: Source::parse(&url), leaf: Source::parse(&url), fetch: &fetch, record: None, there: None };
+    let inp =
+        Inputs { chm: SquaresAt::parse(&url), leaf: SquaresAt::parse(&url), fetch: &fetch, record: None, there: None };
     let b = block(&shapes, &inp, 132, 88).unwrap();
     assert_eq!(a.tiles, b.tiles);
     assert_eq!(a.tops, b.tops);

@@ -503,7 +503,7 @@ mod tests {
                     &store::nasfs::NasRoot::local_for_test(&root),
                     &l,
                     "json",
-                    store::naming::Source::Bytes(body.as_bytes()),
+                    store::naming::WriteFrom::Bytes(body.as_bytes()),
                 )
                 .unwrap();
                 m.insert(l, c);

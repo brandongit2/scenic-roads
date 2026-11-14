@@ -16,7 +16,7 @@
 //!
 //! Each source's grids of a z6 tile are one pack (`pack`: a tar of their GeoTIFFs, its index the
 //! first member), `logical(id, tile)` in the manifest, none where it has no lake. The depth reads
-//! them as that source's grids (crate::depth::grids::Source::estimated).
+//! them as that source's grids (crate::depth::grids::DepthSource::estimated).
 
 use anyhow::{bail, ensure, Context, Result};
 use det::Det;
@@ -1034,7 +1034,7 @@ pub struct Tif {
 }
 
 impl Tif {
-    /// Source `id`'s grid `g`.
+    /// Depth source `id`'s grid `g`.
     pub fn of(id: &str, g: &Canvas) -> Result<Tif> {
         let (w, h) = (g.w as u32, g.h as u32);
         Ok(Tif {

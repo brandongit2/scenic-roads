@@ -412,7 +412,7 @@ pub mod testkit {
 mod tests {
     use super::testkit::COV;
     use super::*;
-    use crate::trees::{block_files as one_block, blocks_files, mask::Shapes, testkit::squares_dir, Source};
+    use crate::trees::{block_files as one_block, blocks_files, mask::Shapes, testkit::squares_dir, SquaresAt};
 
     #[test]
     fn a_rows_blocks_are_their_own_blocks_bytes() {
@@ -421,8 +421,8 @@ mod tests {
         let shapes = Shapes::parse(COV).unwrap();
         let fetch = buildstore::fetch::MapFetch::default();
         let inp = Inputs {
-            chm: Source::Dir(d.path().into()),
-            leaf: Source::Dir(d.path().into()),
+            chm: SquaresAt::Dir(d.path().into()),
+            leaf: SquaresAt::Dir(d.path().into()),
             fetch: &fetch,
             record: None,
             there: Some(vec![(50, 0)]),
@@ -448,7 +448,7 @@ mod tests {
             assert!(read_block(&alone, (b.0 + 1, b.1)).is_err(), "another block's");
         }
         // A square the job found that the worker doesn't: the task fails.
-        let gone = Inputs { there: Some(vec![(50, 0), (50, 10)]), chm: Source::Dir(o.path().join("none")), ..inp };
+        let gone = Inputs { there: Some(vec![(50, 0), (50, 10)]), chm: SquaresAt::Dir(o.path().join("none")), ..inp };
         assert!(blocks_files(&shapes, &gone, &row, &o.path().join("x")).is_err());
         // The rows, the coverage cut to one, its squares, the program's arguments read back.
         assert_eq!(

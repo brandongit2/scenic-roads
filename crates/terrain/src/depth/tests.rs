@@ -3,7 +3,7 @@
 
 use super::build::{build_hi, build_lo, hi_logical, lo_logical, square};
 use super::fall::{self, Grid, Kind};
-use super::grids::{tests::grid_file, window_box, Grid as SGrid, Source};
+use super::grids::{tests::grid_file, window_box, DepthSource, Grid as SGrid};
 use super::*;
 use buildstore::out::Out;
 use codecs::terrain_water::{Kind as WKind, Poly, WaterSource};
@@ -54,18 +54,18 @@ fn at(z: u8, u: f64, v: f64) -> (i64, i64) {
     (((f64::from(T.0) + u) * n) as i64, ((f64::from(T.1) + v) * n) as i64)
 }
 
-fn sources(dir: &Path) -> Vec<Source> {
+fn sources(dir: &Path) -> Vec<DepthSource> {
     sources_deep(dir, -50.0)
 }
 
 /// `sources`, the coarse source's depth `deep`.
-fn sources_deep(dir: &Path, deep: f32) -> Vec<Source> {
+fn sources_deep(dir: &Path, deep: f32) -> Vec<DepthSource> {
     let mk = |code: u8, lake: bool, zoom: u8, u0: f64, v0: f64, u1: f64, v1: f64, f: &dyn Fn(i64, i64) -> f32| {
         let (c0, r0) = at(zoom, u0, v0);
         let (c1, r1) = at(zoom, u1, v1);
         let p = dir.join(format!("{code}.tif"));
         grid_file(&p, zoom, c0, r0, (c1 - c0) as u32, (r1 - r0) as u32, f);
-        Source {
+        DepthSource {
             id: format!("s{code}"),
             code,
             lake,
@@ -300,7 +300,7 @@ impl WaterSource for WithMore {
 }
 
 /// The content names of the packs `srcs` make on `water` (the assembly's and the piece's).
-fn packs(srcs: &[Source], water: &dyn WaterSource, root: &store::nasfs::NasRoot) -> (Out, Vec<Option<String>>) {
+fn packs(srcs: &[DepthSource], water: &dyn WaterSource, root: &store::nasfs::NasRoot) -> (Out, Vec<Option<String>>) {
     let mut out = Out::unbound(
         &store::nasfs::NasRoot::local_for_test(root.unchecked_path().join("root")),
         &root.unchecked_path().join("scratch"),
@@ -822,12 +822,12 @@ fn measure_the_waters_reads() {
 /// instead: the same digest is the same output. With `SCENIC_CACHE` (and `SCENIC_ROOM_TARGET_MB`)
 /// set, the basemap and the packs are read from whole local copies there, as a job's are
 /// (buildstore::localread, task #551; the copies' time is the phase "making whole local copies").
-/// A packed index's feature as the build reads it (`Source::from_declared`'s, one grid).
+/// A packed index's feature as the build reads it (`DepthSource::from_declared`'s, one grid).
 fn grid_of(root: &store::nasfs::NasRoot, id: &str, f: &inputs::inputs::sources::Feature) -> grids::Grid {
     let decl = "name = \"N\"\ncredit = \"C\"\nlicence = \"CC0-1.0\"\nterritory = \"world\"\n[data]\nrole = \"depth\"\nkind = \"data\"\nformat = \"depth-grid\"\nindex = \"i.geojson\"\n[data.params]\ncode = 3\nwater = \"sea\"\nlabel = \"L\"\ndatum = \"D\"\n";
     let d = inputs::inputs::sources::parse(decl.as_bytes()).unwrap();
     let s = inputs::inputs::sources::Source { id: id.into(), data: d.data, keyed: "k".into(), index: vec![f.clone()] };
-    grids::Source::from_declared(root, &s).unwrap().grids.remove(0)
+    grids::DepthSource::from_declared(root, &s).unwrap().grids.remove(0)
 }
 
 #[test]

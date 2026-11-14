@@ -2162,7 +2162,7 @@ fn catalogue(
     drop(p);
     let p = phase("reading the units' summaries");
     let mut meta = units_meta(out, &base, now)?;
-    // (The depth's sources as the map says them: grids::Source::catalogue_entry.)
+    // (The depth's sources as the map says them: grids::DepthSource::catalogue_entry.)
     if layers.contains_key(terrain::depth::CLASS_LAYER) {
         let d = terrain::depth::grids::declared(out.root(), &out.manifest)?;
         let list: Vec<serde_json::Value> = d.iter().map(|s| s.catalogue_entry()).collect();
@@ -3844,10 +3844,10 @@ fn layers_source<'a>(
     out: &'a Out,
     pilot: &'a Option<(store::nasfs::NasRoot, store::catalogue::Catalogue)>,
     blobs: Option<&'a store::blobs::Blobs>,
-) -> roads::staging::Source<'a> {
+) -> roads::staging::ReadFrom<'a> {
     match pilot {
-        Some((r, c)) => roads::staging::Source::Catalogue(r, c),
-        None => roads::staging::Source::Manifest(out, blobs),
+        Some((r, c)) => roads::staging::ReadFrom::Catalogue(r, c),
+        None => roads::staging::ReadFrom::Manifest(out, blobs),
     }
 }
 
@@ -3934,7 +3934,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         &local,
         &folder,
         &cov,
-        &roads::staging::Source::Manifest(out, Some(&blobs)),
+        &roads::staging::ReadFrom::Manifest(out, Some(&blobs)),
         &tools,
         &heritage,
         carry.as_ref(),

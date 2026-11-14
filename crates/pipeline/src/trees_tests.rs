@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use trees::trees::task::testkit::{block_files, COV};
 use trees::trees::task::{parse_blocks, parse_squares, KIND};
 use trees::trees::testkit::{sources_file, squares_dir, ROWS_DIR};
-use trees::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, Source, LAYERS, MID, ZBLOCK};
+use trees::trees::{block_dir, blocks_files, chm_name, mask::Shapes, z3, Inputs, Run, SquaresAt, LAYERS, MID, ZBLOCK};
 
 /// Z6 tile 6/33/22's run in `dir/out`, with `offload`.
 fn piece(d: &Path, sq: &Path, out: &str, offload: Option<&Offload>) {
@@ -98,8 +98,8 @@ fn worker(
         let shapes = Shapes::parse(&std::fs::read_to_string(arg("--coverage")).unwrap()).unwrap();
         let fetch = buildstore::fetch::MapFetch::default();
         let inp = Inputs {
-            chm: Source::Dir(arg("--chm").into()),
-            leaf: Source::Dir(arg("--leaf").into()),
+            chm: SquaresAt::Dir(arg("--chm").into()),
+            leaf: SquaresAt::Dir(arg("--leaf").into()),
             fetch: &fetch,
             record: None,
             there: Some(parse_squares(&arg("--squares")).unwrap()),

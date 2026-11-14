@@ -9,7 +9,7 @@
 //! the lo packs have no terrain over it, the values stay as their source has them.
 //!
 //! The world ocean's surface is sea level (0 m), and a lake's or a river's pixels take the sources
-//! drawn in them below their own surface already (`Source::drawn_in`): neither is touched.
+//! drawn in them below their own surface already (`DepthSource::drawn_in`): neither is touched.
 
 use super::compose::{Block, PAD};
 use anyhow::Result;

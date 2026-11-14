@@ -4,11 +4,11 @@
 //! them), over what the z6 tile's own ways' samples see (`Area`).
 //!
 //! Read from the packs with plain reads (never mmapped), each pack's index once: the ones this
-//! build's manifest names now (`Source::Manifest`, what the z6 tile keys hash), through this Mac's
+//! build's manifest names now (`ReadFrom::Manifest`, what the z6 tile keys hash), through this Mac's
 //! local copies of them when it has a `Blobs` cache (each pack copied once, whole: neighbouring
 //! z6 tiles share most of theirs, and a pack read tile by tile over SMB took thousands of small reads;
 //! but a neighbour's terrain hi pack the margin only clips is read where it is, its few tiles in
-//! spans, unless it's here already: `copied_whole`), or a published catalogue's (`Source::Catalogue`,
+//! spans, unless it's here already: `copied_whole`), or a published catalogue's (`ReadFrom::Catalogue`,
 //! another root's for a pilot).
 
 use anyhow::{Context, Result};
@@ -101,7 +101,7 @@ impl Area {
 }
 
 /// Where the global-source layers are read from.
-pub enum Source<'a> {
+pub enum ReadFrom<'a> {
     /// This build's manifest as it is now: the packs the z6 tile keys hash, including what earlier
     /// jobs of the same plan wrote (the catalogue is published only at its end); read through the
     /// local copies when there's a cache.
@@ -110,13 +110,13 @@ pub enum Source<'a> {
     Catalogue(&'a store::nasfs::NasRoot, &'a Catalogue),
 }
 
-impl Source<'_> {
+impl ReadFrom<'_> {
     /// The pack (logical name) holding a tile of `layer`: root z0–2, lo z3–8 by z3 tile, hi z9–14
     /// by z6 tile; the terrain's deep levels, z13–16, by z10 tile (terrain::terrain_deep).
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         match self {
-            Source::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
-            Source::Catalogue(_, cat) => {
+            ReadFrom::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
+            ReadFrom::Catalogue(_, cat) => {
                 let l = cat.layers.get(layer)?;
                 let d = terrain::terrain_deep::PACK_Z;
                 match z {
@@ -136,8 +136,8 @@ impl Source<'_> {
     /// bytes counted in `reading` as they come.
     fn file(&self, logical: &str, reading: &Arc<Reading>) -> Option<Place> {
         match self {
-            Source::Manifest(out, None) => out.get(logical).map(|c| Place::Nas(out.path(c))),
-            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| {
+            ReadFrom::Manifest(out, None) => out.get(logical).map(|c| Place::Nas(out.path(c))),
+            ReadFrom::Manifest(out, Some(blobs)) => out.get(logical).map(|c| {
                 let (r, part) = (reading.clone(), reading.part());
                 match blobs.get_counted(out.root(), c, Arc::new(move |k, len| r.copied(part, k, len))) {
                     Ok(l) => Place::Local(l),
@@ -147,7 +147,7 @@ impl Source<'_> {
                     }
                 }
             }),
-            Source::Catalogue(root, cat) => cat.files.get(logical).map(|f| Place::Nas(root.join(&f.file))),
+            ReadFrom::Catalogue(root, cat) => cat.files.get(logical).map(|f| Place::Nas(root.join(&f.file))),
         }
     }
 
@@ -155,7 +155,7 @@ impl Source<'_> {
     /// one, else the NAS's (`file` copies it first).
     fn file_here(&self, logical: &str, reading: &Arc<Reading>) -> Option<Place> {
         match self {
-            Source::Manifest(out, Some(blobs)) => {
+            ReadFrom::Manifest(out, Some(blobs)) => {
                 out.get(logical).map(|c| blobs.have(c).map_or_else(|| Place::Nas(out.path(c)), Place::Local))
             }
             _ => self.file(logical, reading),
@@ -166,7 +166,7 @@ impl Source<'_> {
     /// copy ahead, while the z6 tile before it builds. A neighbour's terrain hi pack that its box only
     /// clips isn't (`copied_whole`), nor one along its long ways: its strip is read where it is.
     pub fn pack_contents(&self, area: &Area) -> Vec<String> {
-        let Source::Manifest(out, _) = self else { return Vec::new() };
+        let ReadFrom::Manifest(out, _) = self else { return Vec::new() };
         let b = area.b;
         let mut logical: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for z in 0..=12u8 {
@@ -186,32 +186,32 @@ impl Source<'_> {
     /// Whether there's a file of logical name `logical`.
     fn has_file(&self, logical: &str) -> bool {
         match self {
-            Source::Manifest(out, _) => out.get(logical).is_some(),
-            Source::Catalogue(_, cat) => cat.files.contains_key(logical),
+            ReadFrom::Manifest(out, _) => out.get(logical).is_some(),
+            ReadFrom::Catalogue(_, cat) => cat.files.contains_key(logical),
         }
     }
 
     fn has_layer(&self, layer: &str) -> bool {
         match self {
-            Source::Manifest(out, _) => {
+            ReadFrom::Manifest(out, _) => {
                 let p = format!("layers/{layer}/");
                 out.manifest.range(p.clone()..).next().is_some_and(|(l, _)| l.starts_with(&p))
             }
-            Source::Catalogue(_, cat) => cat.layers.contains_key(layer),
+            ReadFrom::Catalogue(_, cat) => cat.layers.contains_key(layer),
         }
     }
 }
 
 /// Tiles of a layer, from its packs.
 struct LayerReader<'a> {
-    src: &'a Source<'a>,
+    src: &'a ReadFrom<'a>,
     layer: String,
     /// Each pack opened: its file, its index, and whether it's read from the NAS (None: no such pack).
     open: HashMap<String, Option<(PlainFile, PackIndex, bool)>>,
 }
 
 impl<'a> LayerReader<'a> {
-    fn new(src: &'a Source<'a>, layer: &str) -> LayerReader<'a> {
+    fn new(src: &'a ReadFrom<'a>, layer: &str) -> LayerReader<'a> {
         LayerReader { src, layer: layer.to_string(), open: HashMap::new() }
     }
 
@@ -229,7 +229,7 @@ impl<'a> LayerReader<'a> {
             .collect()
     }
 
-    /// Pack `logical` opened (copied here first, `Source::file`), its index read: once.
+    /// Pack `logical` opened (copied here first, `ReadFrom::file`), its index read: once.
     fn open(&mut self, logical: &str, reading: &Arc<Reading>) -> Result<()> {
         if self.open.contains_key(logical) {
             return Ok(());
@@ -319,7 +319,7 @@ impl Reading {
         self.begun.load(Relaxed)
     }
 
-    /// `k` bytes of a pack `len` long copied here (`Source::file`) for part `part` (`part`): the
+    /// `k` bytes of a pack `len` long copied here (`ReadFrom::file`) for part `part` (`part`): the
     /// copy is that part's, its bytes from the NAS; a later part's share takes none of them.
     fn copied(&self, part: u64, k: u64, len: u64) {
         if part != self.part() {
@@ -419,7 +419,7 @@ fn copied_whole(z: u8, x: u32, y: u32, b: [f64; 4]) -> bool {
 }
 
 /// The terrain's tiles `want` by the pack there is holding them (logical name).
-fn terrain_packs(src: &Source, want: &[(u8, u32, u32)]) -> BTreeMap<String, Vec<(u8, u32, u32)>> {
+fn terrain_packs(src: &ReadFrom, want: &[(u8, u32, u32)]) -> BTreeMap<String, Vec<(u8, u32, u32)>> {
     let mut by_pack: BTreeMap<String, Vec<(u8, u32, u32)>> = BTreeMap::new();
     for &(z, x, y) in want {
         if let Some(l) = src.pack_of("terrain", z, x, y).filter(|l| src.has_file(l)) {
@@ -434,7 +434,7 @@ fn terrain_packs(src: &Source, want: &[(u8, u32, u32)]) -> BTreeMap<String, Vec<
 /// (`copied_whole`, copied first when missing), or one it has already; else from the NAS's, its
 /// wanted tiles in spans (`read_tiles`).
 fn terrain_tiles(
-    src: &Source,
+    src: &ReadFrom,
     b: [f64; 4],
     by_pack: BTreeMap<String, Vec<(u8, u32, u32)>>,
     reading: &Arc<Reading>,
@@ -526,7 +526,7 @@ fn read_tiles(
 /// to `say` (its share done, `Reading::done`) every few seconds (jobrt::jobs::saying), and logs it
 /// every `LOG_EVERY` and at its end (`Reading::line`).
 pub fn stage(
-    src: &Source,
+    src: &ReadFrom,
     area: &Area,
     deep: &std::collections::BTreeSet<(u8, u32, u32)>,
     dir: &Path,
@@ -548,7 +548,7 @@ pub fn stage(
 
 /// `stage`, counted in `reading` as it goes.
 fn stage_reading(
-    src: &Source,
+    src: &ReadFrom,
     area: &Area,
     deep: &std::collections::BTreeSet<(u8, u32, u32)>,
     dir: &Path,
@@ -747,7 +747,7 @@ mod tests {
         let blobs = store::blobs::Blobs::new(d.path().join("blobs"));
         // (Counted as it reads: its three packs, each a part, and the bytes it read from the NAS.)
         let read = std::cell::RefCell::new(Vec::new());
-        let staged = |src: &Source, to: &str| {
+        let staged = |src: &ReadFrom, to: &str| {
             let dir = d.path().join(to);
             let reading = Arc::new(Reading::default());
             stage_reading(src, &area, &Default::default(), &dir, &reading).unwrap();
@@ -756,8 +756,8 @@ mod tests {
             read.borrow_mut().push(reading.bytes.load(Relaxed));
             ["terrain.tiles", "grid.terrain.i16", "grid.idx"].map(|f| std::fs::read(dir.join(f)).unwrap())
         };
-        let plain = staged(&Source::Manifest(&out, None), "plain");
-        let here = staged(&Source::Manifest(&out, Some(&blobs)), "here");
+        let plain = staged(&ReadFrom::Manifest(&out, None), "plain");
+        let here = staged(&ReadFrom::Manifest(&out, Some(&blobs)), "here");
         assert!(plain == here, "staged the same");
         // Its own pack copied here whole: its bytes counted, its reads after that not.
         let own = blobs.list()[0].1;
@@ -766,7 +766,7 @@ mod tests {
             blobs.list().iter().map(|f| f.0.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(copies.len(), 1, "{copies:?}");
         assert!(copies[0].starts_with(&format!("6-{x6}-{y6}.")), "its own pack alone: {copies:?}");
-        let src = Source::Manifest(&out, Some(&blobs));
+        let src = ReadFrom::Manifest(&out, Some(&blobs));
         let ahead: Vec<&str> = src
             .pack_contents(&area)
             .iter()
@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(ahead, ["own"], "only its own copied ahead");
         // A neighbour's copy here, where there is one, is read instead: the same staged.
         blobs.get(out.root(), out.get(&format!("layers/terrain/hi/6-{}-{y6}", x6 + 1)).unwrap()).unwrap();
-        assert!(staged(&Source::Manifest(&out, Some(&blobs)), "again") == plain);
+        assert!(staged(&ReadFrom::Manifest(&out, Some(&blobs)), "again") == plain);
         assert_eq!(blobs.list().len(), 2);
         // (Two of its packs here now: only the third's strip read from the NAS.)
         let read = read.into_inner();

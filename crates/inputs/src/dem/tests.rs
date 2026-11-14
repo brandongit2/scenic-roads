@@ -306,7 +306,7 @@ impl Fetch for Lenient<'_> {
 /// The fixture's datasets as their declarations give them (today's: docs/inputs.md §6.8), in their
 /// order, each with its coverage and files.
 fn declared_plan() -> declared::Plan {
-    use declared::{Dataset, Source};
+    use declared::{Dataset, Format};
     let geo = |id: &str,
                code: u8,
                resolution: f64,
@@ -320,7 +320,7 @@ fn declared_plan() -> declared::Plan {
         code,
         resolution,
         cover: cover.map(|c| vec![c]),
-        source: Source::Geotiff { crs, read_resolution, store, files, masks: Vec::new() },
+        source: Format::Geotiff { crs, read_resolution, store, files, masks: Vec::new() },
         outline: None,
     };
     let glo =
@@ -331,7 +331,7 @@ fn declared_plan() -> declared::Plan {
         code,
         resolution: generic::tile_resolution(zoom, 35.0),
         cover: Some(vec![[122.0, 20.0, 154.0, 47.0]]),
-        source: Source::Tiles {
+        source: Format::Tiles {
             url: format!("{GSI}/{layer}/{{z}}/{{x}}/{{y}}.png"),
             zoom,
             encoding: "gsi-png".into(),
@@ -375,7 +375,7 @@ fn declared_plan() -> declared::Plan {
                     code: DemSource::Glo30 as u8,
                     resolution: 30.9,
                     cover: None,
-                    source: Source::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
+                    source: Format::Geotiff { crs: 4326, read_resolution: None, store: true, files, masks },
                     outline: None,
                 }
             },

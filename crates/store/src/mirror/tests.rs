@@ -1,6 +1,6 @@
 use super::*;
 use crate::catalogue::{FileRef, Layer};
-use crate::naming::{write_atomic, Source};
+use crate::naming::{write_atomic, WriteFrom};
 use crate::pack::PackWriter;
 use crate::pmtiles::Compression;
 use serde_json::json;
@@ -63,7 +63,7 @@ impl Nas {
 
     /// Puts a file on the "NAS" and lists it in `cat`.
     fn put(&self, cat: &mut Catalogue, logical: &str, ext: &str, body: &[u8]) -> String {
-        let name = write_atomic(self.root(), logical, ext, Source::Bytes(body)).unwrap();
+        let name = write_atomic(self.root(), logical, ext, WriteFrom::Bytes(body)).unwrap();
         cat.files.insert(
             logical.into(),
             FileRef { file: name.clone(), size: body.len() as u64, fmt: 1, extra: Default::default() },

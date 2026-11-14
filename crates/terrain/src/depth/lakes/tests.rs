@@ -199,7 +199,7 @@ fn the_depth_reads_a_pack_as_the_sources_grids() {
     let p = d.path().join("6-9-6.tar");
     std::fs::write(&p, pack(vec![Tif::of("globathy", &g).unwrap()]).unwrap()).unwrap();
     let t6 = ((c0 >> 13) as u32, (r0 >> 13) as u32);
-    let mut s = grids::Source {
+    let mut s = grids::DepthSource {
         id: "globathy".into(),
         code: 14,
         lake: true,

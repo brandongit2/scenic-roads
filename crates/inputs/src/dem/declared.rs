@@ -894,7 +894,7 @@ pub struct Dataset {
     /// Where it has data (None: the world).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cover: Option<Vec<[f64; 4]>>,
-    pub source: Source,
+    pub source: Format,
     /// Its heights' conversion to EGM2008 (crate::dem::geoid), applied before the blend; None: in
     /// EGM2008 already, or no declared geoid source reaches it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -908,7 +908,7 @@ pub struct Dataset {
 /// How a dataset's data is read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "format", rename_all = "lowercase")]
-pub enum Source {
+pub enum Format {
     Geotiff {
         crs: u16,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1260,7 +1260,7 @@ pub fn plan_converted(
         }
         let source = match &d.declaration.data {
             Data::Tiles { url, zoom, encoding, every_zoom } => {
-                Source::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone(), every_zoom: *every_zoom }
+                Format::Tiles { url: url.clone(), zoom: *zoom, encoding: encoding.clone(), every_zoom: *every_zoom }
             }
             Data::Geotiff { urls, index, files, store } => {
                 let crs = d.measured.crs.context("a GeoTIFF dataset without its CRS measured")?;
@@ -1294,7 +1294,7 @@ pub fn plan_converted(
                 if masks.iter().all(Option::is_none) {
                     masks.clear();
                 }
-                Source::Geotiff { crs, read_resolution: None, store: *store, files: list, masks }
+                Format::Geotiff { crs, read_resolution: None, store: *store, files: list, masks }
             }
         };
         let outline = match &d.measured.outline {
@@ -1454,7 +1454,7 @@ mod tests {
             code: 1,
             resolution: 5.0,
             cover: m.cover.clone(),
-            source: Source::Tiles {
+            source: Format::Tiles {
                 url: "https://e.org/{z}/{x}/{y}.png".into(),
                 zoom: 15,
                 encoding: "gsi-png".into(),

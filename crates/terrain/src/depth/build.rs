@@ -28,7 +28,7 @@
 
 use super::compose::{compose, tiles, Block, Water, BLOCK, PAD};
 use super::fall::{self, Grid, Kind, Stored};
-use super::grids::{Reader, Source};
+use super::grids::{DepthSource, Reader};
 use super::surface::Surface;
 
 /// This Mac's whole copies of the depth sources' packs a reader reads (buildstore::localread), if any.
@@ -439,7 +439,7 @@ impl<'a> Tiles<'a> {
 /// blocks can take an hour on the NAS, so the job's progress moves within it).
 fn level(
     t: &mut Tiles,
-    sources: &[Source],
+    sources: &[DepthSource],
     rd: &Reader,
     water: &dyn WaterSource,
     wc: &mut WaterCache,
@@ -554,7 +554,7 @@ pub fn depth_lo_box(q: (u32, u32)) -> [f64; 4] {
 /// (their tiles laid in as it opened) and each other one kept as it ends (crate::depth::resume).
 fn level_blocks(
     t: &mut Tiles,
-    sources: &[Source],
+    sources: &[DepthSource],
     rd: &Reader,
     water: &dyn WaterSource,
     wc: &mut WaterCache,
@@ -596,7 +596,7 @@ fn level_blocks(
 /// Block `b` of `level_blocks`: its tiles made and put into `t`, which those are.
 fn block(
     t: &mut Tiles,
-    sources: &[Source],
+    sources: &[DepthSource],
     rd: &Reader,
     water: &dyn WaterSource,
     wc: &mut WaterCache,
@@ -832,7 +832,7 @@ fn encoded(depth: &[f32], class: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
 /// (`local`: this Mac's whole copies of the sources' packs, buildstore::localread; None, the NAS's read.)
 pub fn build_lo(
     out: &mut Out,
-    sources: &[Source],
+    sources: &[DepthSource],
     water: &dyn WaterSource,
     local: Local,
     q: (u32, u32),
@@ -923,7 +923,7 @@ pub(super) fn shading_lo(out: &Out, made: &Made, q: (u32, u32)) -> Result<BTreeM
 /// run kept taken (`resume_log`).
 pub fn compose_lo(
     out: &Out,
-    sources: &[Source],
+    sources: &[DepthSource],
     water: &dyn WaterSource,
     local: Local,
     q: (u32, u32),
@@ -993,7 +993,7 @@ fn from_hi(out: &Out, q: (u32, u32), made: &mut Made) -> Result<()> {
 fn resume_log(
     keep: bool,
     tl: &mut Tiles,
-    sources: &[Source],
+    sources: &[DepthSource],
     water: &dyn WaterSource,
     surface: &str,
     t: (u8, u32, u32),
@@ -1025,7 +1025,7 @@ fn close(rd: Reader, wc: WaterCache) {
 /// (`local`: as `build_lo`'s.)
 pub fn build_hi(
     out: &mut Out,
-    sources: &[Source],
+    sources: &[DepthSource],
     water: &dyn WaterSource,
     local: Local,
     t: (u32, u32),
@@ -1036,7 +1036,7 @@ pub fn build_hi(
 /// `build_hi`, its blocks kept and taken (crate::depth::resume) with `keep`.
 pub(super) fn build_hi_keeping(
     out: &mut Out,
-    sources: &[Source],
+    sources: &[DepthSource],
     water: &dyn WaterSource,
     local: Local,
     t: (u32, u32),
@@ -1184,7 +1184,7 @@ fn filled(mut v: Vec<f32>) -> Option<Vec<f32>> {
 /// coarse levels' too) kept as made and those an earlier run kept taken (`resume_log`).
 pub fn compose_hi(
     out: &Out,
-    sources: &[Source],
+    sources: &[DepthSource],
     water: &dyn WaterSource,
     local: Local,
     t: (u32, u32),

@@ -487,7 +487,7 @@ mod tests {
             &store::nasfs::NasRoot::local_for_test(nas.path()),
             logical,
             "pmtiles",
-            store::naming::Source::Bytes(&archive),
+            store::naming::WriteFrom::Bytes(&archive),
         )
         .unwrap();
         let mut cat = store::catalogue::Catalogue::new(1);

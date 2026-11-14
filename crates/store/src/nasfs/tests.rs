@@ -282,7 +282,7 @@ fn an_uploads_bytes_count_as_they_go() {
     r.join("x/copied.bin").copy_data_to(&r.join("x/again.bin")).unwrap();
     assert!(d(Count::WroteBytes) >= wrote + 600_000);
     let wrote = d(Count::WroteBytes);
-    let name = crate::naming::write_atomic(&r, "x/named", "bin", crate::naming::Source::File(&src)).unwrap();
+    let name = crate::naming::write_atomic(&r, "x/named", "bin", crate::naming::WriteFrom::File(&src)).unwrap();
     assert!(r.join(&name).exists());
     assert!(d(Count::WroteBytes) >= wrote + 300_000, "a content-named upload's bytes, as it writes them");
 }

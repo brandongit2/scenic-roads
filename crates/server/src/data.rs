@@ -1089,7 +1089,7 @@ mod tests {
                 &store::nasfs::NasRoot::local_for_test(nas.path()),
                 &l,
                 "sect",
-                store::naming::Source::Bytes(&b),
+                store::naming::WriteFrom::Bytes(&b),
             )
             .unwrap();
             old.files
@@ -1104,7 +1104,7 @@ mod tests {
             &store::nasfs::NasRoot::local_for_test(nas.path()),
             "markdata/all",
             "pack",
-            store::naming::Source::Bytes(&b),
+            store::naming::WriteFrom::Bytes(&b),
         )
         .unwrap();
         new.files.insert(

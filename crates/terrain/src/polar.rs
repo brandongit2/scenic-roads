@@ -21,7 +21,7 @@
 //! (`root`). `scenic-polar` runs the same into a folder.
 
 use anyhow::Result;
-use inputs::dem::declared::{Plan, Source};
+use inputs::dem::declared::{Format, Plan};
 use inputs::dem::generic::Sampler;
 use roadcore::polar::{self, Pole, TS};
 use roadcore::shade::Px;
@@ -120,9 +120,9 @@ pub const K: usize = crate::terrain_base::K;
 pub fn plan_at(plan: &Plan, z: u8) -> Plan {
     let half = polar::pixel_m(z) / polar::scale(Pole::South, 90.0) / 2.0;
     let mut p = plan.clone();
-    p.datasets.retain(|d| matches!(d.source, Source::Geotiff { .. }));
+    p.datasets.retain(|d| matches!(d.source, Format::Geotiff { .. }));
     for d in &mut p.datasets {
-        if let Source::Geotiff { read_resolution, .. } = &mut d.source {
+        if let Format::Geotiff { read_resolution, .. } = &mut d.source {
             *read_resolution = Some(half);
             d.resolution = d.resolution.max(half);
         }
@@ -911,7 +911,7 @@ mod tests {
     /// pool's as sampled.
     #[test]
     fn voids_with_nothing_beneath_take_their_own_filled_values() {
-        use inputs::dem::declared::{Dataset, Source};
+        use inputs::dem::declared::{Dataset, Format};
         let d = tempfile::tempdir().unwrap();
         let store = d.path().join("fetched");
         std::fs::create_dir_all(store.join("glo")).unwrap();
@@ -933,7 +933,7 @@ mod tests {
                 code: 3,
                 resolution: 400.0,
                 cover: Some(vec![[10.0, 45.0, 11.0, 46.0]]),
-                source: Source::Geotiff {
+                source: Format::Geotiff {
                     crs: 4326,
                     read_resolution: None,
                     store: true,

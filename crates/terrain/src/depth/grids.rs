@@ -97,7 +97,7 @@ pub const UNREAD_PROPS: [&str; 1] = ["zoom_file"];
 
 /// A depth source, as its declaration and index say.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Source {
+pub struct DepthSource {
     pub id: String,
     /// Its byte in the class tiles (1–15).
     pub code: u8,
@@ -129,7 +129,7 @@ pub struct Source {
     pub made: Option<crate::depth::lakes::Method>,
 }
 
-impl Source {
+impl DepthSource {
     /// The source as the catalogue's `depth.sources` name it to the map (web/src/depth.ts
     /// DepthSource): the code its class tiles carry, its label, datum and water, whether its depths
     /// are estimates (the Depth section's note names those), and the notice its licence asks for.
@@ -147,7 +147,7 @@ impl Source {
 
     /// Declaration `s` (of the depth role), its grids in `sources/fetched/<id>/` under `root` (none
     /// yet for one the lake-depth step makes: `with_estimates`).
-    pub fn from_declared(root: &store::nasfs::NasRoot, s: &inputs::inputs::sources::Source) -> Result<Source> {
+    pub fn from_declared(root: &store::nasfs::NasRoot, s: &inputs::inputs::sources::Source) -> Result<DepthSource> {
         let dir = root.join("sources/fetched").join(&s.id);
         let p = &s.data.params;
         let code = s.param_u64("code")?;
@@ -188,7 +188,7 @@ impl Source {
         }
         // (Coarse first: a finer grid's cells win where grids overlap.)
         grids.sort_by(|a, b| a.zoom.cmp(&b.zoom).then(a.file.cmp(&b.file)));
-        Ok(Source {
+        Ok(DepthSource {
             id: s.id.clone(),
             code: code as u8,
             lake: s.param_str("water")? == "lake",
@@ -249,7 +249,7 @@ pub fn unpacked_digest(s: &inputs::inputs::sources::Source) -> String {
 pub fn declared(
     root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
-) -> Result<Vec<Source>> {
+) -> Result<Vec<DepthSource>> {
     Ok(with_estimates(declared_alone(root, manifest)?, root, manifest))
 }
 
@@ -257,10 +257,13 @@ pub fn declared(
 pub fn declared_alone(
     root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
-) -> Result<Vec<Source>> {
+) -> Result<Vec<DepthSource>> {
     let Some(s) = inputs::inputs::sources::open(root, manifest)? else { return Ok(Vec::new()) };
-    let mut out: Vec<Source> =
-        s.many(inputs::inputs::sources::DEPTH).iter().map(|d| Source::from_declared(root, d)).collect::<Result<_>>()?;
+    let mut out: Vec<DepthSource> = s
+        .many(inputs::inputs::sources::DEPTH)
+        .iter()
+        .map(|d| DepthSource::from_declared(root, d))
+        .collect::<Result<_>>()?;
     out.sort_by_key(|s| s.code);
     Ok(out)
 }
@@ -269,10 +272,10 @@ pub fn declared_alone(
 /// grids of the sources it makes: each pack its z6 tile as one grid of the source's zoom, so what
 /// plans the depth sees where they meet and how fine (a job reads the packs' own grids: `resolved`).
 pub fn with_estimates(
-    mut sources: Vec<Source>,
+    mut sources: Vec<DepthSource>,
     root: &store::nasfs::NasRoot,
     manifest: &std::collections::BTreeMap<String, String>,
-) -> Vec<Source> {
+) -> Vec<DepthSource> {
     for s in &mut sources {
         let Some(m) = &s.made else { continue };
         let zoom = m.zooms().0;
@@ -308,7 +311,7 @@ pub fn estimates_key(manifest: &std::collections::BTreeMap<String, String>) -> S
 /// them (`with_estimates`' grids) read for their own grids (each a GeoTIFF in the pack, by the
 /// range its index gives: crate::depth::lakes::unpack_index), the packs meeting none left out;
 /// every other source as it is.
-pub fn resolved(sources: &[Source], boxes: &[[f64; 4]]) -> Result<Vec<Source>> {
+pub fn resolved(sources: &[DepthSource], boxes: &[[f64; 4]]) -> Result<Vec<DepthSource>> {
     let mut out = Vec::with_capacity(sources.len());
     for s in sources {
         let mut s = s.clone();
@@ -783,9 +786,9 @@ fn read(t: &Tiff, level: usize, x0: i64, y0: i64, x1: i64, y1: i64) -> Result<Op
     Ok(Some((v, a0, b0, (a1 - a0) as usize)))
 }
 
-/// Source `src` on the zoom-z window of global pixels `c0..c0 + w`, `r0..r0 + h` (beyond the
+/// Depth source `src` on the zoom-z window of global pixels `c0..c0 + w`, `r0..r0 + h` (beyond the
 /// world's edge: none); None when it has nothing there.
-pub fn sample(rd: &Reader, src: &Source, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Sample>> {
+pub fn sample(rd: &Reader, src: &DepthSource, z: u8, c0: i64, r0: i64, w: usize, h: usize) -> Result<Option<Sample>> {
     use jobrt::timings::sub;
     let b = window_box(z, c0, r0, w, h);
     let grids: Vec<&Grid> = src.meeting(b).collect();
@@ -1062,7 +1065,7 @@ pub(crate) mod tests {
     fn a_source_is_drawn_in_its_waters() {
         let mut s = source(Vec::new());
         // (river, lake): a river's pixel, a lake's, the sea's.
-        let at = |s: &Source| [s.drawn_in(true, false), s.drawn_in(false, true), s.drawn_in(false, false)];
+        let at = |s: &DepthSource| [s.drawn_in(true, false), s.drawn_in(false, true), s.drawn_in(false, false)];
         assert_eq!(at(&s), [false, false, true], "a sea source");
         s.rivers = true;
         assert_eq!(at(&s), [true, false, true], "declared `rivers` (BlueTopo's mean sea level: not a lake's)");
@@ -1185,8 +1188,8 @@ pub(crate) mod tests {
         std::fs::write(path, b).unwrap();
     }
 
-    fn source(grids: Vec<Grid>) -> Source {
-        Source {
+    fn source(grids: Vec<Grid>) -> DepthSource {
+        DepthSource {
             id: "t".into(),
             code: 1,
             lake: false,
@@ -1557,7 +1560,7 @@ pub(crate) mod tests {
             let d = inputs::inputs::sources::parse(decl.as_bytes()).unwrap();
             let index = inputs::inputs::sources::parse_index(idx(extra).as_bytes()).unwrap();
             let s = inputs::inputs::sources::Source { id: "s".into(), data: d.data, keyed: "k".into(), index };
-            Source::from_declared(&store::nasfs::NasRoot::local_for_test(Path::new("/r")), &s).unwrap()
+            DepthSource::from_declared(&store::nasfs::NasRoot::local_for_test(Path::new("/r")), &s).unwrap()
         };
         let loose = src("");
         let packed = src(r#","pack":"6-1-2.00ff.tar","at":{"file":[512,100],"low_file":[1024,50]}"#);

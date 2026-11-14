@@ -23,7 +23,7 @@
 
 use anyhow::{Context, Result};
 use buildstore::fetch::{Fetch, Within};
-use inputs::dem::declared::{Plan, Source};
+use inputs::dem::declared::{Format, Plan};
 use roadcore::archive::{tile_key, Entry};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,7 +70,7 @@ fn tile_of(t: &str, url: &str) -> Option<(u8, u32, u32)> {
 pub fn of(plan: &Plan) -> Vec<(String, u32, Option<Vec<[f64; 4]>>)> {
     let mut v: Vec<(String, u32, Option<Vec<[f64; 4]>>)> = Vec::new();
     for d in plan.datasets.iter().filter(|d| crate::terrain_base::by_tile(d)) {
-        if let Source::Tiles { url, zoom, .. } = &d.source {
+        if let Format::Tiles { url, zoom, .. } = &d.source {
             if !v.iter().any(|p| p.0 == *url) {
                 v.push((url.clone(), *zoom, d.cover.clone()));
             }
@@ -502,7 +502,7 @@ mod tests {
                 code: 5,
                 resolution: 5.0,
                 cover: None,
-                source: Source::Tiles { url: T.into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
+                source: Format::Tiles { url: T.into(), zoom: 15, encoding: "gsi-png".into(), every_zoom: false },
                 convert: None,
                 outline: None,
             }],
@@ -526,7 +526,7 @@ mod tests {
         let mut coarse = plan();
         let mut aws = coarse.datasets[0].clone();
         (aws.id, aws.resolution) = ("aws".into(), 1000.0);
-        aws.source = Source::Tiles {
+        aws.source = Format::Tiles {
             url: "https://aws.test/{z}/{x}/{y}.png".into(),
             zoom: 12,
             encoding: "terrarium".into(),

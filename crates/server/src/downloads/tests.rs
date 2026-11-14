@@ -2,7 +2,7 @@ use super::*;
 use crate::maplog::MirrorLink;
 use inputs::areafiles::{clip, lat_y, lon_x, ring_area};
 use store::catalogue::{FileRef, Layer};
-use store::naming::{write_atomic, Source};
+use store::naming::{write_atomic, WriteFrom};
 use store::pmtiles::Compression;
 
 /// A box as a closed ring.
@@ -35,7 +35,7 @@ fn put(root: &store::nasfs::NasRoot, cat: &mut Catalogue, logical: &str, size: u
 }
 
 fn put_bytes(root: &store::nasfs::NasRoot, cat: &mut Catalogue, logical: &str, ext: &str, body: &[u8]) -> String {
-    let name = write_atomic(root, logical, ext, Source::Bytes(body)).unwrap();
+    let name = write_atomic(root, logical, ext, WriteFrom::Bytes(body)).unwrap();
     cat.files.insert(
         logical.into(),
         FileRef { file: name.clone(), size: body.len() as u64, fmt: 1, extra: Default::default() },
@@ -1186,7 +1186,7 @@ fn put_roads(root: &std::path::Path, cat: &mut Catalogue) {
             &store::nasfs::NasRoot::local_for_test(root),
             logical,
             "sect",
-            Source::Bytes(&std::fs::read(&p).unwrap()),
+            WriteFrom::Bytes(&std::fs::read(&p).unwrap()),
         )
         .unwrap();
         let size = std::fs::metadata(root.join(&name)).unwrap().len();

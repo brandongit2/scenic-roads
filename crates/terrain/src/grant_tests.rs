@@ -67,7 +67,7 @@ fn on_grants<R: Send>(what: &str, grants: &[usize], run: impl Fn() -> R + Sync) 
 /// A pool of one GeoTIFF over 9–12°E, 44–47°N (a slope east and north), `f` given it and the
 /// Terrarium tiles' folder (none there: the pool alone samples).
 fn with_pool<R>(f: impl FnOnce(&crate::terrain_base::Pool, &RawTiles) -> R) -> R {
-    use inputs::dem::declared::{Dataset, Plan, Source};
+    use inputs::dem::declared::{Dataset, Format, Plan};
     let d = tempfile::tempdir().unwrap();
     let store = d.path().join("fetched");
     std::fs::create_dir_all(store.join("glo")).unwrap();
@@ -86,7 +86,7 @@ fn with_pool<R>(f: impl FnOnce(&crate::terrain_base::Pool, &RawTiles) -> R) -> R
             code: 3,
             resolution: 78.0,
             cover: Some(vec![area]),
-            source: Source::Geotiff {
+            source: Format::Geotiff {
                 crs: 4326,
                 read_resolution: None,
                 store: true,

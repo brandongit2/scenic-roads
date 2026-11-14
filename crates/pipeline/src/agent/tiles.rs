@@ -71,10 +71,10 @@ pub struct TerrainTiles {
     /// The declared depth sources (terrain::depth::grids): the accepted sources' index content name
     /// and the lake-depth packs' digest (`grids::estimates_key`), and them with those packs
     /// (None: they can't be read now; the depth's work waits).
-    depth: Option<(String, Option<std::sync::Arc<Vec<terrain::depth::grids::Source>>>)>,
+    depth: Option<(String, Option<std::sync::Arc<Vec<terrain::depth::grids::DepthSource>>>)>,
     /// The same without the lake-depth packs (`grids::declared_alone`), by the accepted sources'
     /// index content name: read once, not again as the packs change.
-    depth_alone: Option<(String, std::sync::Arc<Vec<terrain::depth::grids::Source>>)>,
+    depth_alone: Option<(String, std::sync::Arc<Vec<terrain::depth::grids::DepthSource>>)>,
     /// The seas closed off from the world ocean the water step wrote (inputs::water::Enclosed), by
     /// content name, which the depth's keys read where an enclosed sea's surface is (None: it can't
     /// be read now; those keys wait).
@@ -489,7 +489,10 @@ impl TerrainTiles {
 
     /// The declared depth sources of the accepted sources `m` names: none declared, an empty list;
     /// None while they can't be read now (the depth's work waits).
-    pub fn depth(&self, m: &BTreeMap<String, String>) -> Option<std::sync::Arc<Vec<terrain::depth::grids::Source>>> {
+    pub fn depth(
+        &self,
+        m: &BTreeMap<String, String>,
+    ) -> Option<std::sync::Arc<Vec<terrain::depth::grids::DepthSource>>> {
         let Some(key) = Self::depth_key(m) else { return Some(Default::default()) };
         match &self.depth {
             Some((c, Some(d))) if *c == key => Some(d.clone()),
@@ -502,14 +505,14 @@ impl TerrainTiles {
     /// Holds `d` as the depth sources of accepted sources index `content`, no lake-depth pack made
     /// (tests).
     #[cfg(test)]
-    pub fn hold_depth(&mut self, content: &str, d: Vec<terrain::depth::grids::Source>) {
+    pub fn hold_depth(&mut self, content: &str, d: Vec<terrain::depth::grids::DepthSource>) {
         let key = format!("{content} {}", terrain::depth::grids::estimates_key(&BTreeMap::new()));
         self.depth = Some((key, Some(std::sync::Arc::new(d))));
     }
 
     /// Holds `d` as the depth sources `m` names, with the lake-depth packs it names (tests).
     #[cfg(test)]
-    pub fn hold_depth_in(&mut self, m: &BTreeMap<String, String>, d: Vec<terrain::depth::grids::Source>) {
+    pub fn hold_depth_in(&mut self, m: &BTreeMap<String, String>, d: Vec<terrain::depth::grids::DepthSource>) {
         let root = store::nasfs::NasRoot::local_for_test("/r");
         let d = terrain::depth::grids::with_estimates(d, &root, m);
         self.depth = Some((Self::depth_key(m).unwrap_or_default(), Some(std::sync::Arc::new(d))));

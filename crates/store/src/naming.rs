@@ -164,7 +164,7 @@ fn is_hash16(s: &str) -> bool {
 
 /// Where `write_atomic` takes a file's bytes from.
 #[derive(Clone, Copy, Debug)]
-pub enum Source<'a> {
+pub enum WriteFrom<'a> {
     Bytes(&'a [u8]),
     /// A local file, streamed (it may be larger than memory).
     File(&'a Path),
@@ -192,7 +192,7 @@ pub enum Source<'a> {
 /// late write lands only in this process's temporary name, which a later upload of the same name
 /// can't write meanwhile, and which GC sweeps once abandoned; a late exclusive rename lands only
 /// the same content-named bytes.
-pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src: Source<'_>) -> Result<String> {
+pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src: WriteFrom<'_>) -> Result<String> {
     write_atomic_as(root, logical, ext, src, None)
 }
 
@@ -209,14 +209,14 @@ pub fn write_atomic_hashed(
     size: u64,
 ) -> Result<String> {
     ensure!(is_hash16(hash), "bad hash {hash:?}");
-    write_atomic_as(root, logical, ext, Source::File(file), Some((hash.to_string(), size)))
+    write_atomic_as(root, logical, ext, WriteFrom::File(file), Some((hash.to_string(), size)))
 }
 
 fn write_atomic_as(
     root: &crate::nasfs::NasRoot,
     logical: &str,
     ext: &str,
-    src: Source<'_>,
+    src: WriteFrom<'_>,
     known: Option<(String, u64)>,
 ) -> Result<String> {
     let _w = crate::waits::nas();
@@ -224,8 +224,8 @@ fn write_atomic_as(
     ensure!(valid_ext(ext), "bad extension {ext:?}");
     let (hash, size) = match (known, src) {
         (Some(k), _) => k,
-        (None, Source::Bytes(b)) => (hash16(b), b.len() as u64),
-        (None, Source::File(p)) => {
+        (None, WriteFrom::Bytes(b)) => (hash16(b), b.len() as u64),
+        (None, WriteFrom::File(p)) => {
             let size = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
             (hash16_file(p)?, size)
         }
@@ -266,7 +266,7 @@ fn write_atomic_as(
         // write, sync or close) or its read-back (task #1140: on the NAS, in a session reconnect
         // of the Mac's SMB client): a file is taken only on a read-back that matches the write
         // just made.
-        if let Source::File(p) = src {
+        if let WriteFrom::File(p) = src {
             // (Bytes are borrowed for the call: they can't change.)
             let now = fs::metadata(p).with_context(|| format!("stat {}", p.display()))?.len();
             let now = (hash16_file(p)?, now);
@@ -328,7 +328,7 @@ enum Failed {
 
 /// Writes `src` to `tmp`, from its open to its close, the close's result checked (crate::sys::close:
 /// where the Mac's SMB client gives a write's last error).
-fn write_tmp(tmp: &Path, src: Source<'_>) -> std::result::Result<(), Failed> {
+fn write_tmp(tmp: &Path, src: WriteFrom<'_>) -> std::result::Result<(), Failed> {
     let t = tmp.to_path_buf();
     let opened = on_nas(tmp, "open", vec![t.clone()], move |_| {
         let out = OpenOptions::new().write(true).create(true).truncate(true).open(&t)?;
@@ -358,12 +358,12 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> std::result::Result<(), Failed> {
         Ok(())
     };
     match src {
-        Source::Bytes(b) => {
+        WriteFrom::Bytes(b) => {
             for c in b.chunks(CHUNK) {
                 put(c)?;
             }
         }
-        Source::File(p) => {
+        WriteFrom::File(p) => {
             // A plain copy: fs::copy would also carry extended attributes over to the share.
             let mut inp = File::open(p).map_err(Failed::Source)?;
             let mut buf = vec![0u8; CHUNK];
@@ -676,7 +676,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let nas = crate::nasfs::NasRoot::local_for_test(dir.path());
         let (root, nr) = (dir.path(), &nas);
-        let name = write_atomic(nr, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap();
+        let name = write_atomic(nr, "layers/roads/root", "pack", WriteFrom::Bytes(b"hello")).unwrap();
         assert_eq!(name, format!("layers/roads/root.{}.pack", hash16(b"hello")));
         assert_eq!(fs::read(root.join(&name)).unwrap(), b"hello");
         assert!(!tmp_path(&root.join(&name)).exists());
@@ -684,27 +684,27 @@ mod tests {
         // Same bytes again: same name, nothing rewritten.
         let mtime = fs::metadata(root.join(&name)).unwrap().modified().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20)); // (absence)
-        assert_eq!(write_atomic(nr, "layers/roads/root", "pack", Source::Bytes(b"hello")).unwrap(), name);
+        assert_eq!(write_atomic(nr, "layers/roads/root", "pack", WriteFrom::Bytes(b"hello")).unwrap(), name);
         assert_eq!(fs::metadata(root.join(&name)).unwrap().modified().unwrap(), mtime);
 
         // From a file, larger than one copy chunk.
         let src = root.join("src.bin");
         let big: Vec<u8> = (0..(CHUNK + 999)).map(|i| (i % 253) as u8).collect();
         fs::write(&src, &big).unwrap();
-        let name2 = write_atomic(nr, "base/6-1-2", "sect", Source::File(&src)).unwrap();
+        let name2 = write_atomic(nr, "base/6-1-2", "sect", WriteFrom::File(&src)).unwrap();
         assert_eq!(fs::read(root.join(&name2)).unwrap(), big);
 
         // A content-named file with the wrong size is never replaced.
         let bogus = root.join(content_name("x", &hash16(b"right"), "bin"));
         fs::write(&bogus, b"wrong size").unwrap();
-        let err = write_atomic(nr, "x", "bin", Source::Bytes(b"right")).unwrap_err();
+        let err = write_atomic(nr, "x", "bin", WriteFrom::Bytes(b"right")).unwrap_err();
         assert!(err.to_string().contains("never rewritten"), "{err:#}");
         assert_eq!(fs::read(&bogus).unwrap(), b"wrong size");
 
         // Bad logical names.
-        assert!(write_atomic(nr, "a.b", "bin", Source::Bytes(b"x")).is_err());
-        assert!(write_atomic(nr, "../a", "bin", Source::Bytes(b"x")).is_err());
-        assert!(write_atomic(nr, "/abs", "bin", Source::Bytes(b"x")).is_err());
+        assert!(write_atomic(nr, "a.b", "bin", WriteFrom::Bytes(b"x")).is_err());
+        assert!(write_atomic(nr, "../a", "bin", WriteFrom::Bytes(b"x")).is_err());
+        assert!(write_atomic(nr, "/abs", "bin", WriteFrom::Bytes(b"x")).is_err());
     }
 
     #[test]
@@ -725,7 +725,7 @@ mod tests {
         assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
         // The right ones: the name write_atomic gives.
         let name = write_atomic_hashed(nr, "h", "bin", &src, &hash16(b"the bytes"), 9).unwrap();
-        assert_eq!(name, write_atomic(nr, "h", "bin", Source::File(&src)).unwrap());
+        assert_eq!(name, write_atomic(nr, "h", "bin", WriteFrom::File(&src)).unwrap());
         assert_eq!(fs::read(root.join(&name)).unwrap(), b"the bytes");
     }
 
@@ -745,21 +745,21 @@ mod tests {
         // A write read back wrong, its source unchanged: written again, and the next lands whole;
         // all but the last of WRITE_TRIES read back wrong, the last lands. From bytes as from a file.
         damage_next(1);
-        let name = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap();
+        let name = write_atomic(nr, "a", "bin", WriteFrom::File(&src)).unwrap();
         assert!(landed(&name));
         fs::remove_file(root.join(&name)).unwrap();
         damage_next(WRITE_TRIES - 1);
-        assert_eq!(write_atomic(nr, "a", "bin", Source::Bytes(&big)).unwrap(), name);
+        assert_eq!(write_atomic(nr, "a", "bin", WriteFrom::Bytes(&big)).unwrap(), name);
         assert!(landed(&name));
         fs::remove_file(root.join(&name)).unwrap();
 
         // Every write read back wrong: it gives up after WRITE_TRIES of them, leaving nothing.
         damage_next(WRITE_TRIES);
-        let e = write_atomic(nr, "a", "bin", Source::File(&src)).unwrap_err();
+        let e = write_atomic(nr, "a", "bin", WriteFrom::File(&src)).unwrap_err();
         assert!(format!("{e:#}").contains(&format!("{WRITE_TRIES} writes lost or read back wrong running")), "{e:#}");
         assert_eq!(left(), 0);
         // (Its faults all taken: the next write lands at once.)
-        assert!(landed(&write_atomic(nr, "a", "bin", Source::File(&src)).unwrap()));
+        assert!(landed(&write_atomic(nr, "a", "bin", WriteFrom::File(&src)).unwrap()));
 
         // A source changed since it was hashed is never written again (the hash given is stale).
         fs::remove_dir_all(&root).unwrap();
@@ -791,12 +791,12 @@ mod tests {
         // One close failed (its file whole: the close's error alone sends it again): written
         // again, and lands. From bytes too, all but the last of WRITE_TRIES failed, EIO.
         let f = fail(&root, libc::ETIMEDOUT, 1);
-        let name = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap();
+        let name = write_atomic(nr, "c", "bin", WriteFrom::File(&src)).unwrap();
         assert_eq!((f.failed(), fs::read(root.join(&name)).unwrap()), (1, big.clone()));
         drop(f);
         fs::remove_file(root.join(&name)).unwrap();
         let f = fail(&root, libc::EIO, WRITE_TRIES - 1);
-        assert_eq!(write_atomic(nr, "c", "bin", Source::Bytes(&big)).unwrap(), name);
+        assert_eq!(write_atomic(nr, "c", "bin", WriteFrom::Bytes(&big)).unwrap(), name);
         assert_eq!((f.failed(), fs::read(root.join(&name)).unwrap()), (WRITE_TRIES - 1, big.clone()));
         drop(f);
         fs::remove_file(root.join(&name)).unwrap();
@@ -805,7 +805,7 @@ mod tests {
 
         // Every close failed: given up after WRITE_TRIES writes, the error said, nothing left.
         let f = fail(&root, libc::ETIMEDOUT, WRITE_TRIES + 5);
-        let e = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap_err();
+        let e = write_atomic(nr, "c", "bin", WriteFrom::File(&src)).unwrap_err();
         assert_eq!(f.failed(), WRITE_TRIES);
         let s = format!("{e:#}");
         assert!(s.contains(&format!("{WRITE_TRIES} writes lost or read back wrong running")), "{s}");
@@ -815,7 +815,7 @@ mod tests {
 
         // A close error that isn't the share's moment (the disk full): failed at once, not again.
         let f = fail(&root, libc::ENOSPC, 3);
-        let e = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap_err();
+        let e = write_atomic(nr, "c", "bin", WriteFrom::File(&src)).unwrap_err();
         assert_eq!(f.failed(), 1, "{e:#}");
         assert_eq!(left(), 0);
         drop(f);
@@ -825,7 +825,7 @@ mod tests {
         let _cap = crate::deadline::cap_for_test(crate::deadline::CAP_DEFAULT);
         let dest = root.join(content_name("c", &hash16(&big), "bin"));
         let hung = crate::deadline::fake::hang(&tmp_path(&dest)).deadline(std::time::Duration::from_millis(50));
-        let e = write_atomic(nr, "c", "bin", Source::File(&src)).unwrap_err();
+        let e = write_atomic(nr, "c", "bin", WriteFrom::File(&src)).unwrap_err();
         let ie = e.chain().find_map(|c| c.downcast_ref::<io::Error>()).expect("an I/O error");
         assert!(crate::deadline::past_deadline(ie), "{e:#}");
         assert_eq!(hung.held(), 1, "made once: {e:#}");

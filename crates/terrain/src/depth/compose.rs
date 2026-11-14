@@ -5,7 +5,7 @@
 //! 1. Each source is sampled onto the block (crate::depth::grids): depth, the zoom of the grid each
 //!    pixel is from, its chart low water. A sea source is drawn on the sea (and in rivers and lakes
 //!    where declared so: its depths there below their own surface), a lake source in lakes
-//!    (`Source::drawn_in`); on an enclosed sea, its values less that sea's surface
+//!    (`DepthSource::drawn_in`); on an enclosed sea, its values less that sea's surface
 //!    (crate::depth::surface: the Caspian's depths below its −28 m).
 //! 2. Surveys are painted coarse to fine, then the estimates, which only fill what no survey has (a
 //!    survey beats an estimate wherever both cover water). A pixel past its source's zoom shows the
@@ -31,7 +31,7 @@
 //! grid of that zoom meets it); every coarser level is the mean of the finer (crate::depth::build).
 
 use super::edt::nearest;
-use super::grids::{px, sample, Reader, Source};
+use super::grids::{px, sample, DepthSource, Reader};
 use super::{C_ESTIMATED, C_FILLED, C_NATIVE, C_NONE, C_SCALED, DRIES, NODATA, NODATA_MIN};
 use anyhow::Result;
 use det::Det;
@@ -123,7 +123,7 @@ pub struct Composed {
 /// some place in it may have its finest data at `z` (a grid's zoom taken within the layer's,
 /// `ZOOMS`: one coarser counts at the coarsest, one finer at the finest). No zoom is special: a
 /// new source's grids of any zoom are composed at theirs, and coarser levels over them are means.
-pub fn composes_at(sources: &[Source], bbox: [f64; 4], z: u8) -> bool {
+pub fn composes_at(sources: &[DepthSource], bbox: [f64; 4], z: u8) -> bool {
     let (lo, hi) = super::ZOOMS;
     sources.iter().any(|s| s.meeting(bbox).any(|g| g.zoom.clamp(lo, hi) == z))
 }
@@ -133,7 +133,7 @@ pub fn composes_at(sources: &[Source], bbox: [f64; 4], z: u8) -> bool {
 /// zoom meets it (`composes_at`) or it has no water.
 pub fn compose(
     b: Block,
-    sources: &[Source],
+    sources: &[DepthSource],
     rd: &Reader,
     water: &Water,
     up: &mut dyn FnMut(u8) -> Result<Vec<f32>>,
@@ -146,7 +146,7 @@ pub fn compose(
     if !composes_at(sources, bbox, b.z) {
         return Ok(None);
     }
-    let here: Vec<(&Source, u8)> = sources.iter().filter_map(|s| s.max_zoom_in(bbox).map(|z| (s, z))).collect();
+    let here: Vec<(&DepthSource, u8)> = sources.iter().filter_map(|s| s.max_zoom_in(bbox).map(|z| (s, z))).collect();
     let inner = |i: usize| {
         let (x, y) = (i % w, i / w);
         (PAD..w - PAD).contains(&x) && (PAD..h - PAD).contains(&y)

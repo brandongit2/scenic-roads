@@ -251,7 +251,7 @@ fn good_declarations_are_measured_from_their_data() {
     let plan = declared::plan(&a, [2.3, 48.8, 2.4, 48.9]).unwrap();
     let ids: Vec<&str> = plan.datasets.iter().map(|d| d.id.as_str()).collect();
     assert_eq!(ids, vec!["single", "tiled", "pyramid"]);
-    let declared::Source::Geotiff { files, store, .. } = &plan.datasets[1].source else { panic!() };
+    let declared::Format::Geotiff { files, store, .. } = &plan.datasets[1].source else { panic!() };
     assert!(*store);
     assert_eq!(files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(), vec!["https://e.org/t/N48E002.tif"]);
     // Far from them, the world's alone.
