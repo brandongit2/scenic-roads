@@ -191,6 +191,129 @@ class Drift(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("nothing to place", out)
 
+    def commit(self, msg):
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", msg)
+        git(self.repo, "push", "-q", "origin", "main")
+        git(self.repo, "fetch", "-q", "origin")
+
+    def test_a_declaration_the_repository_removed_is_drift_and_left_out(self):
+        os.remove(f"{self.repo}/producers/sources/x.toml")
+        os.remove(f"{self.repo}/producers/sources/x-tiles.geojson")
+        self.commit("x removed")
+        code, out, _ = self.run_("drift")
+        self.assertEqual(code, 1, out)
+        self.assertIn("1 removed from the repository", out)
+        self.assertIn("  removed from the repository: inputs/sources/x.toml (producers/sources/x.toml)", out)
+        code, out, err = self.run_("place", "--dry-run")
+        self.assertIn("leave out: inputs/sources/x.toml (the repository removed it", out, out + err)
+        code, out, err = self.run_("place")
+        self.assertEqual(code, 0, out + err)
+        (stamp,) = os.listdir(f"{self.nas}/inputs/.place")
+        self.assertFalse(os.path.exists(f"{self.nas}/inputs/sources/x.toml"))
+        self.assertTrue(os.path.exists(f"{self.nas}/inputs/.place/{stamp}/kept/inputs/sources/x.toml"))
+        # (Its index, no longer staged, is the NAS's own now: carried; the check says it's an orphan.)
+        self.assertTrue(os.path.exists(f"{self.nas}/inputs/sources/x-tiles.geojson"))
+        self.assertEqual(self.run_("drift")[0], 0)
+
+    def test_the_dry_run_shows_each_change_and_writes_nothing(self):
+        n = self.nas
+        write(f"{n}/inputs/sources/x.toml", 'name = "x on the NAS"\n[data]\nindex = "x-tiles.geojson"\n')
+        os.remove(f"{n}/inputs/sources/x-tiles.geojson")
+        write(f"{n}/inputs/extents/terrain/gone.toml", "only here\n")
+        before = sorted(os.path.join(d, f) for d, _, fs in os.walk(n) for f in fs)
+        code, out, err = self.run_("place", "--dry-run")
+        self.assertEqual(code, 0, out + err)
+        for line in [
+            "    replace: inputs/sources/x.toml (producers/sources/x.toml)",
+            '      -name = "x on the NAS"',
+            '      +name = "x"',
+            "    add: inputs/sources/x-tiles.geojson (producers/sources/x-tiles.geojson)",
+            "    leave out: inputs/extents/terrain/gone.toml (only on the NAS;",
+        ]:
+            self.assertTrue(any(l.startswith(line) for l in out.splitlines()), line + "\n" + out)
+        self.assertEqual(sorted(os.path.join(d, f) for d, _, fs in os.walk(n) for f in fs), before)
+        # (Anywhere: from a worktree, saying a placement would be refused.)
+        wt = os.path.join(self.tmp, "wt")
+        git(self.repo, "worktree", "add", "-q", "-b", "side", wt)
+        code, out, _ = self.run_("place", "--dry-run", repo=wt)
+        self.assertEqual(code, 0)
+        self.assertIn("placing from here would be refused", out)
+
+    def test_synology_the_macs_and_links_are_not_carried_drafts_are(self):
+        n = self.nas
+        write(f"{n}/inputs/elevation/e.toml", "changed on the NAS\n")
+        write(f"{n}/inputs/elevation/.DS_Store", "the Mac's\n")
+        write(f"{n}/inputs/elevation/_draft.toml", "the owner's draft\n")
+        os.symlink(f"{n}/inputs/elevation/gsi.toml", f"{n}/inputs/elevation/link.toml")
+        code, out, err = self.run_("drift")
+        self.assertEqual(code, 1, out)
+        self.assertNotIn("link.toml", out)
+        code, out, err = self.run_("place", "inputs/elevation")
+        self.assertEqual(code, 0, out + err)
+        names = sorted(os.listdir(f"{n}/inputs/elevation"))
+        self.assertEqual(names, ["_draft.toml", "e.toml", "e1.toml", "gsi.toml"])  # (no @eaDir, .DS_Store, link)
+        self.assertEqual(read(f"{n}/inputs/elevation/e.toml"), "name = 'e'\n")
+
+    def test_a_path_under_another_is_placed_with_it_one_old_folder_kept(self):
+        n = self.nas
+        write(f"{n}/inputs/sources/x.toml", "old\n")
+        write(f"{n}/inputs/sources/how/README.md", "old notes\n")
+        write(f"{n}/inputs/sources/how/own.md", "the NAS's own notes\n")
+        code, out, err = self.run_("place")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("placing 2: inputs/sources, inputs/sources/how", out)
+        (stamp,) = os.listdir(f"{n}/inputs/.place")
+        kept = f"{n}/inputs/.place/{stamp}/kept/inputs/sources"
+        self.assertEqual(read(f"{kept}/how/README.md"), "old notes\n")
+        self.assertFalse(os.path.exists(f"{kept}/how/how"))
+        self.assertEqual(read(f"{n}/inputs/sources/how/README.md"), "how sources\n")
+        self.assertEqual(read(f"{n}/inputs/sources/how/own.md"), "the NAS's own notes\n")
+        self.assertEqual(self.run_("drift")[0], 0)
+
+    def fake(self, name, body):
+        """A stand-in for a command on the stand-in NAS's PATH (`body`: sh, the real one as $REAL)."""
+        b = os.path.join(self.tmp, "bin")
+        os.makedirs(b, exist_ok=True)
+        real = shutil.which(name)
+        write(f"{b}/{name}", f"#!/bin/sh\nREAL={real}\n{body}\n")
+        os.chmod(f"{b}/{name}", 0o755)
+        return {**os.environ, "PATH": f"{b}:{os.environ['PATH']}"}
+
+    def run_env(self, env, *a):
+        p = subprocess.run([sys.executable, f"{self.repo}/tools/dev/inputsnas.py", *a, "--root", self.nas],
+                           capture_output=True, text=True, env=env)
+        return p.returncode, p.stdout, p.stderr
+
+    def test_a_failed_swap_puts_the_old_folder_back(self):
+        n = self.nas
+        write(f"{n}/inputs/extents/terrain/a.toml", "name = 'old'\n")
+        # (mv refuses to move a staged folder in: the old one must come back.)
+        env = self.fake("mv", 'case "$1" in */.place/*/new/*) echo "mv: refused" >&2; exit 1 ;; esac\nexec $REAL "$@"')
+        code, out, err = self.run_env(env, "place", "inputs/extents/terrain")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("the new folder couldn't be moved in: the old one is back", err)
+        self.assertEqual(read(f"{n}/inputs/extents/terrain/a.toml"), "name = 'old'\n")
+
+    def test_a_staging_not_verified_is_not_swapped(self):
+        n = self.nas
+        write(f"{n}/inputs/extents/terrain/a.toml", "name = 'old'\n")
+        env = self.fake("tar", 'cat > /dev/null; exit 0')  # (tar writes nothing)
+        code, out, err = self.run_env(env, "place", "inputs/extents/terrain")
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("not verified (3 of 3 files differ or are missing", err)
+        self.assertIn("not swapped", err)
+        self.assertEqual(read(f"{n}/inputs/extents/terrain/a.toml"), "name = 'old'\n")
+
+    def test_an_unusual_name_is_refused_before_anything_is_written(self):
+        n = self.nas
+        write(f"{n}/inputs/sources/x.toml", "old\n")
+        write(f"{n}/inputs/sources/a name.toml", "the NAS's own, its name with a space\n")
+        code, out, err = self.run_("place")
+        self.assertNotEqual(code, 0)
+        self.assertIn("refusing an unusual path", out + err)
+        self.assertFalse(os.path.exists(f"{n}/inputs/.place"))
+
 
 if __name__ == "__main__":
     unittest.main()

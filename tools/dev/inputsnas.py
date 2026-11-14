@@ -7,16 +7,21 @@ by the PM after a merge; nothing else compares the two. This does, read-only, an
   inputsnas.py drift [--root DIR]
       every staged file's content hash (here) against its NAS file's (on the NAS, one SSH pass:
       `find` and `sha256sum` there, no per-file round trips). One line when all match; otherwise a
-      line naming what differs, then a line a file: `differs`, `not placed` (staged, not on the NAS)
-      or `only on the NAS` (in a folder the repository holds whole). Exit 0 as staged, 1 drift, 2
-      not read. --root reads a local folder standing in for the NAS project folder (or the mount).
+      line naming what differs, then a line a file: `differs`, `not placed` (staged, not on the NAS),
+      `only on the NAS` (in a folder the repository holds whole) or `removed from the repository`
+      (a declaration git's history deleted from a shared folder's staging, still on the NAS). Exit 0
+      as staged, 1 drift, 2 not read. --root reads a local folder standing in for the NAS project
+      folder (or the mount).
   inputsnas.py place [--root DIR] [--dry-run] [<NAS path>…]
       places what drifted (or the NAS paths named: `inputs/extents/terrain`): each staged afresh
       under inputs/.place/<time>/new/ (the repository's files by tar over SSH; a shared folder's own
-      files copied there on the NAS), every file verified against the repository, then swapped in,
-      the old one kept under inputs/.place/<time>/kept/; then asks for an input check of each unit
-      (`scenic inputs check <unit>`; not with --root) and says what is left to do. Run only from the
-      main checkout at origin/main with producers/ committed; deletes nothing.
+      files copied there on the NAS, but Synology's, the Mac's, links and the declarations the
+      repository removed), every file verified, then swapped in (the old folder put back if the
+      swap fails), the old one kept under inputs/.place/<time>/kept/; then asks for an input check of
+      each unit (`scenic inputs check <unit>`; not with --root) and says what is left to do. Run only
+      from the main checkout at origin/main with producers/ committed; deletes nothing. --dry-run
+      prints each file it would add, replace (with the change, NAS to repository) or leave out, and
+      writes nothing.
 
 What is staged where (MAPS, and the notes' boxes, derived): a folder the repository holds `whole`
 (its NAS folder is only what is staged: a file only there is drift) or `shared` with what the owner
@@ -30,7 +35,12 @@ other files there are producers' own (code, their inputs). Not drift, said in th
 - a mapped folder whose NAS folder doesn't exist: not placed, its unit not made yet.
 Every `.toml` under producers/ (but pyproject.toml) must be in a mapped folder: one that isn't is
 `unmapped`, drift, so a new producer's declarations can't go unseen.
+
+The NAS's own files of a shared folder are those the repository never staged there: a declaration
+git's history deleted from a mapped folder (and no longer staged in it) that is still on the NAS is
+drift, not the NAS's own, so a removal reaches the NAS too (`place` leaves it out; it stays in kept/).
 """
+import difflib
 import argparse
 import datetime
 import hashlib
@@ -81,6 +91,7 @@ class Folder:
         self.staged = {}
         self.held = {}
         self.indexes = {}  # a staged declaration's name -> the index it names
+        self.removed = {}  # a shared folder's declaration the repository deleted: name -> its old path
         self.repo_dirs = []
 
 
@@ -143,7 +154,25 @@ def folders(repo):
                 if not n.startswith("."):
                     name = n if rel == "." else f"{rel}/{n}"
                     add(f, name, f"{HOW}/{box}/{name}")
+    removed_declarations(repo, out)
     return [out[k] for k in sorted(out)]
+
+
+def removed_declarations(repo, out):
+    """Each shared folder's declarations deleted from its staging in git's history and not staged
+    there now (one `git log`, about 0.1 s)."""
+    shared = {d: f for f in out.values() if f.mode == SHARED for d in f.repo_dirs}
+    if not shared:
+        return
+    r = subprocess.run(
+        ["git", "-C", repo, "log", "--diff-filter=D", "--name-only", "--format=", "--", *sorted(shared)],
+        capture_output=True, text=True,
+    )
+    for p in sorted(set(r.stdout.split())):
+        d, n = os.path.split(p)
+        f = shared.get(d[: -len(HELD) - 1] if d.endswith("/" + HELD) else d)
+        if f and n.endswith(".toml") and n not in f.staged and n not in f.held:
+            f.removed.setdefault(n, p)
 
 
 def unmapped(repo, fs):
@@ -227,12 +256,13 @@ def read_nas(fs, root):
 class Report:
     def __init__(self):
         self.differ, self.not_placed, self.only_nas, self.unmapped, self.held_placed = [], [], [], [], []
+        self.removed = []
         self.waiting, self.held, self.absent = [], [], []
         self.matched = self.own = 0
         self.folders = set()  # (the NAS paths with drift: a placement's default)
 
     def drift(self):
-        return bool(self.differ or self.not_placed or self.only_nas or self.unmapped or self.held_placed)
+        return bool(self.differ or self.not_placed or self.only_nas or self.removed or self.unmapped or self.held_placed)
 
     def lines(self, nfolders):
         notes = []
@@ -249,11 +279,13 @@ class Report:
             return [f"inputs on the NAS: as staged ({self.matched} files in {nfolders} folders{tail})"]
         parts = [f"{len(v)} {k}" for k, v in (
             ("differ", self.differ), ("not placed", self.not_placed), ("only on the NAS", self.only_nas),
-            ("held but on the NAS", self.held_placed), ("unmapped", self.unmapped)) if v]
-        out = [f"inputs on the NAS: DRIFT: {', '.join(parts)} ({self.matched} match{tail}; tools/dev/inputsnas.py place)"]
+            ("removed from the repository", self.removed), ("held but on the NAS", self.held_placed),
+            ("unmapped", self.unmapped)) if v]
+        out = [f"inputs on the NAS: DRIFT: {', '.join(parts)} ({self.matched} match{tail}; what placing would change: tools/dev/inputsnas.py place --dry-run)"]
         out += [f"  differs: {nas} ({p})" for nas, p in self.differ]
         out += [f"  not placed: {nas} ({p})" for nas, p in self.not_placed]
         out += [f"  only on the NAS: {nas}" for nas, _ in self.only_nas]
+        out += [f"  removed from the repository: {nas} ({p})" for nas, p in self.removed]
         out += [f"  held but on the NAS: {nas} ({p})" for nas, p in self.held_placed]
         out += [f"  unmapped: {p} (no folder of tools/dev/inputsnas.py's MAPS)" for p in self.unmapped]
         return out
@@ -289,6 +321,9 @@ def compare(repo, fs, there, hashes):
             for p in sorted(x for x in hashes if os.path.dirname(x) == f.nas and x not in mine):
                 if f.mode == WHOLE:
                     r.only_nas.append((p, None))
+                    r.folders.add(f.nas)
+                elif os.path.basename(p) in f.removed:
+                    r.removed.append((p, f.removed[os.path.basename(p)]))
                     r.folders.add(f.nas)
                 else:
                     r.own += 1
@@ -344,12 +379,119 @@ def tar_of(repo, members):
     return buf.getvalue()
 
 
+class Plan:
+    """What placing one NAS path writes: the repository's files (`members`, name in the folder ->
+    repository path), the NAS's own files carried over (`carry`, a shell step on the NAS), the files
+    left out (`drop`), and every file the staged folder must then hold, by hash (`expect`)."""
+
+    def __init__(self, repo, f, base, r, hashes):
+        t = f.nas
+        sha_of = staged_sha(repo)
+        self.f, self.new, self.old = f, f"{base}/new/{t}", f"{base}/kept/{t}"
+        waiting = {w for w, _ in r.waiting}
+        if f.mode == FILE:
+            self.into, self.members = os.path.dirname(self.new), {os.path.basename(t): f.staged[os.path.basename(t)]}
+        else:
+            self.into = self.new
+            self.members = {n: p for n, p in sorted(f.staged.items()) if f"{t}/{n}" not in waiting}
+        at = (lambda n: t) if f.mode == FILE else (lambda n: f"{t}/{n}")
+        self.add = sorted(n for n in self.members if at(n) not in hashes)
+        self.replace = sorted(n for n, p in self.members.items() if at(n) in hashes and hashes[at(n)] != sha_of(p))
+        theirs = sorted(os.path.basename(p) for p in hashes if os.path.dirname(p) == t and os.path.basename(p) not in self.members)
+        # (A whole folder is the repository's alone; a shared one keeps the NAS's own, but the
+        # declarations the repository removed.)
+        self.drop = theirs if f.mode == WHOLE else [n for n in theirs if n in f.removed]
+        self.carried = [n for n in theirs if n not in self.drop] if f.mode == SHARED else []
+        self.expect = {(self.new if f.mode == FILE else f"{self.new}/{n}"): sha_of(p) for n, p in self.members.items()}
+        self.expect.update({f"{self.new}/{n}": hashes[f"{t}/{n}"] for n in self.carried})
+        for p in [t, self.new, self.old, self.into, *self.expect, *(f"{t}/{n}" for n in self.drop)]:
+            q(p)
+        self.carry = ""
+        if f.mode in (SHARED, NOTES):
+            # (Every entry but Synology's (@eaDir, #recycle), the Mac's (.DS_Store), links and those
+            # left out; folders whole, as `how/` beside the declarations.)
+            skip = " ".join(self.drop)
+            self.carry = (
+                f'if [ -d {q(t)} ]; then for x in {q(t)}/*; do n=${{x##*/}}\n'
+                f'  case $n in .*|@*|"#"*) continue ;; esac\n'
+                f'  {{ [ -L "$x" ] || [ ! -e "$x" ]; }} && continue\n'
+                f'  case " {skip} " in *" $n "*) continue ;; esac\n'
+                f'  cp -pR "$x" {q(self.new)}/ || exit 6\n'
+                f'done; fi'
+            )
+
+    def absorb(self, child, t):
+        """Placing `child` (a NAS path under this one: `inputs/sources/how`) with this one: its
+        files staged in this folder's copy, so each old folder is kept once, whole."""
+        rel = child.f.nas[len(t) + 1:]
+        for n, p in child.members.items():
+            self.members[f"{rel}/{n}"] = p
+            self.expect[f"{self.new}/{rel}/{n}"] = child.expect[f"{child.new}/{n}"]
+        self.add += [f"{rel}/{n}" for n in child.add]
+        self.replace += [f"{rel}/{n}" for n in child.replace]
+
+
+def staged_sha(repo):
+    """A repository path's sha256, each file read once."""
+    memo = {}
+    return lambda p: memo[p] if p in memo else memo.setdefault(p, sha(os.path.join(repo, p)))
+
+
+def nas_texts(paths, root):
+    """The NAS's copies of `paths` (one tar pass): path -> bytes."""
+    if not paths:
+        return {}
+    r = run_there(f"tar -cf - {' '.join(q(p) for p in paths)}", root)
+    out = {}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(r.stdout), mode="r:") as t:
+            for m in t:
+                if m.isfile():
+                    out[m.name] = t.extractfile(m).read()
+    except tarfile.TarError:
+        pass
+    return out
+
+
+def show(repo, plan, t, root, limit=60):
+    """A dry run's lines for `plan`: each file added, replaced (its change, NAS to repository) or
+    left out, and how many of the NAS's own are carried."""
+    f = plan.f
+    at = (lambda n: t) if f.mode == FILE else (lambda n: f"{t}/{n}")
+    rest = {SHARED: f"{len(plan.carried)} of the NAS's own carried", NOTES: "the NAS's own notes carried", WHOLE: "nothing else", FILE: "a file"}
+    print(f"  {t} ({f.mode}): {len(plan.members)} from the repository, {rest[f.mode]}")
+    for n in plan.add:
+        print(f"    add: {at(n)} ({plan.members[n]})")
+    texts = nas_texts([at(n) for n in plan.replace], root)
+    for n in plan.replace:
+        p = plan.members[n]
+        print(f"    replace: {at(n)} ({p})")
+        with open(os.path.join(repo, p), "rb") as fh:
+            mine = fh.read()
+        theirs = texts.get(at(n))
+        if theirs is None or b"\0" in mine + theirs or len(mine) + len(theirs) > 1 << 20:
+            print("      (not shown: binary, large or not read)")
+            continue
+        d = list(difflib.unified_diff(
+            theirs.decode("utf-8", "replace").splitlines(), mine.decode("utf-8", "replace").splitlines(),
+            f"NAS {at(n)}", p, n=0, lineterm=""))
+        for line in d[:limit]:
+            print(f"      {line}")
+        if len(d) > limit:
+            print(f"      ({len(d) - limit} lines more)")
+    for n in plan.drop:
+        why = "the repository removed it" if f.mode == SHARED else "only on the NAS"
+        print(f"    leave out: {t}/{n} ({why}; kept in {plan.old})")
+
+
 def place(args):
     repo = this_checkout()
     why = refuse_unless_main(repo)
-    if why:
+    if why and not args.dry_run:
         print(f"inputsnas place: refused: {why}", file=sys.stderr)
         return 2
+    if why:
+        print(f"(a dry run from {repo}; placing from here would be refused: {why})")
     fs = folders(repo)
     try:
         there, hashes = read_nas(fs, args.root)
@@ -369,54 +511,54 @@ def place(args):
         return 0
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     base = f"{PLACE}/{stamp}"
-    waiting = {w for w, _ in r.waiting}
+    # (Every target planned, its paths checked, before anything is written.)
+    # (A path under another placed is staged with it: `inputs/sources/how` in `inputs/sources`.)
+    plans = {t: Plan(repo, by[t], base, r, hashes) for t in targets if not any(t.startswith(o + "/") for o in targets)}
+    for t in targets:
+        if t not in plans:
+            o = next(o for o in plans if t.startswith(o + "/"))
+            plans[o].absorb(Plan(repo, by[t], base, r, hashes), o)
     print(f"placing {len(targets)}: {', '.join(targets)} (staged in {base}/new/, the old kept in {base}/kept/)")
     if args.dry_run:
-        for t in targets:
-            f = by[t]
-            print(f"  {t}: {len(f.staged)} staged files ({f.mode})")
+        for t in plans:
+            show(repo, plans[t], t, args.root)
         print("dry run: nothing written")
         return 0
     if run_there(f"[ ! -e {q(base)} ] || exit 5", args.root).returncode != 0:
         print(f"inputsnas place: {base} is already there", file=sys.stderr)
         return 2
-    kept = []
-    for t in targets:
-        f = by[t]
-        new, old = f"{base}/new/{t}", f"{base}/kept/{t}"
-        if f.mode == FILE:
-            into, members = os.path.dirname(new), [(os.path.basename(t), f.staged[os.path.basename(t)])]
-        else:
-            into = new
-            members = [(n, p) for n, p in sorted(f.staged.items()) if f"{t}/{n}" not in waiting]
-        expect = {(new if f.mode == FILE else f"{new}/{n}"): sha(os.path.join(repo, p)) for n, p in members}
-        carry = ""
-        if f.mode in (SHARED, NOTES):  # (the NAS's own files of the folder, carried over on the NAS)
-            carry = f"if [ -d {q(t)} ]; then cp -pR {q(t)}/. {q(new)}/ || exit 6; fi"
-            if f.mode == SHARED:
-                for p, h in hashes.items():
-                    n = os.path.basename(p)
-                    if os.path.dirname(p) == t and n not in dict(members):
-                        expect[f"{new}/{n}"] = h
-        s = run_there(f"mkdir -p {q(into)} || exit 6\n{carry}\ntar -C {q(into)} -xf - || exit 7", args.root, tar_of(repo, members))
+    for t in plans:
+        pl = plans[t]
+        s = run_there(
+            f"mkdir -p {q(pl.into)} || exit 6\n{pl.carry}\ntar -C {q(pl.into)} -xf - || exit 7",
+            args.root, tar_of(repo, sorted(pl.members.items())),
+        )
         if s.returncode != 0:
-            print(f"inputsnas place: staging {t} failed (exit {s.returncode}: {s.stderr.decode('utf-8', 'replace').strip()[:300]}); left as it is in {new}", file=sys.stderr)
+            print(f"inputsnas place: staging {t} failed (exit {s.returncode}: {s.stderr.decode('utf-8', 'replace').strip()[:300]}); not swapped; left as it is in {pl.new}", file=sys.stderr)
             return 1
-        v = run_there(hash_script([], sorted(expect)), args.root)
+        v = run_there(hash_script([], sorted(pl.expect)), args.root)
         _, got, done = parse_hashes(v.stdout)
-        bad = sorted(p for p, h in expect.items() if got.get(p) != h)
+        bad = sorted(p for p, h in pl.expect.items() if got.get(p) != h)
         if v.returncode != 0 or not done or bad:
-            print(f"inputsnas place: {t} not verified ({len(bad)} of {len(expect)} files differ or are missing: {', '.join(bad[:5])}); not swapped; left in {new}", file=sys.stderr)
+            print(f"inputsnas place: {t} not verified ({len(bad)} of {len(pl.expect)} files differ or are missing: {', '.join(bad[:5])}); not swapped; left in {pl.new}", file=sys.stderr)
             return 1
+        # (Two renames, a moment apart; the old folder put back when the second fails.)
         w = run_there(
-            f"if [ -e {q(t)} ]; then mkdir -p {q(os.path.dirname(old))} && mv {q(t)} {q(old)} || exit 8; fi\nmv {q(new)} {q(t)} || exit 9",
+            f"mkdir -p {q(os.path.dirname(t) or '.')} || exit 8\n"
+            f"moved=\n"
+            f"if [ -e {q(t)} ]; then mkdir -p {q(os.path.dirname(pl.old))} && mv {q(t)} {q(pl.old)} || exit 8; moved=1; fi\n"
+            f"mv {q(pl.new)} {q(t)} && exit 0\n"
+            f"if [ -n \"$moved\" ]; then mv {q(pl.old)} {q(t)} || exit 10; fi\n"
+            f"exit 9",
             args.root,
         )
         if w.returncode != 0:
-            print(f"inputsnas place: swapping {t} in failed (exit {w.returncode}: {w.stderr.decode('utf-8', 'replace').strip()[:300]}): look at {t}, {old} and {new}", file=sys.stderr)
+            said = {8: "the old folder couldn't be moved aside: nothing changed",
+                    9: "the new folder couldn't be moved in: the old one is back",
+                    10: f"the new folder couldn't be moved in, nor the old one back: {t} is missing; move {pl.old} back now"}
+            print(f"inputsnas place: swapping {t} in failed ({said.get(w.returncode, 'exit %d' % w.returncode)}; {w.stderr.decode('utf-8', 'replace').strip()[:300]}); the staged copy is in {pl.new}", file=sys.stderr)
             return 1
-        kept.append(old)
-        print(f"  {t}: {len(expect)} files verified, swapped in; the old one kept as {old}")
+        print(f"  {t}: {len(pl.expect)} files verified, swapped in; the old one kept as {pl.old}")
     units = sorted({t.split("/")[1] for t in targets if by[t].mode in (WHOLE, SHARED)})
     for u in units:
         if args.root:

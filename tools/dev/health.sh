@@ -64,9 +64,10 @@ if [[ -f .claude/nas-links ]]; then
   [[ $(wc -l < .claude/nas-links) -gt 1 ]] || print "  none"
 fi
 # The staged declarations against the NAS (#1402): tools/dev/inputsnas.py drift, a line when all
-# match, else a line a file that differs; one SSH pass, ~1 s. Drift is flagged: place it.
+# match, else a line a file that differs; one SSH pass, ~1 s. Drift is flagged: its dry run shows
+# what placing would change (a NAS edit the repository lacks would be undone), then place it.
 drift=$(python3 tools/dev/inputsnas.py drift 2>&1); st=$?
-(( st == 1 )) && drift="${drift/#inputs on the NAS: DRIFT/inputs on the NAS: DRIFT  <-- PLACE IT}"
+(( st == 1 )) && drift="${drift/#inputs on the NAS: DRIFT/inputs on the NAS: DRIFT  <-- REVIEW, THEN PLACE}"
 print -r -- $drift
 from="6 h ago"; [[ -n $since ]] && from=$(date -r $since '+%F %T')
 print "the build (scenic status --flags, failures since $from):"
