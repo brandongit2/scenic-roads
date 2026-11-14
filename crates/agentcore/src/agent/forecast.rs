@@ -4164,7 +4164,10 @@ mod tests {
         many.extend((0..50).map(|_| (1000 + 3599, "m6".to_string(), "redo".to_string())));
         assert_eq!(
             unforeseen_many(&many, 1000 + 3599),
-            [(("m6".to_string(), "gc".to_string()), "m6: 31 job(s) of gc granted in the last hour, more than 30".to_string())]
+            [(
+                ("m6".to_string(), "gc".to_string()),
+                "m6: 31 job(s) of gc granted in the last hour, more than 30".to_string()
+            )]
         );
     }
 

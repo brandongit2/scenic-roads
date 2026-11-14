@@ -3418,6 +3418,7 @@ fn sample_self(sampler: &Path, home: &Path, now: u64) {
                 let t = std::time::Instant::now();
                 let st = loop {
                     match c.try_wait() {
+                        // (sleep ok: a poll of the sample's process until it ends or SAMPLE_LIMIT passes)
                         Ok(None) if t.elapsed() < SAMPLE_LIMIT => std::thread::sleep(Duration::from_millis(250)),
                         Ok(None) => {
                             c.kill().ok();
