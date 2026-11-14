@@ -3,16 +3,17 @@
 //! The phases' names the build page describes and the renames records are read through stay true of
 //! the code (task #1132): each of the page's descriptions (web/buildpage/sums.js `PHASE_ABOUT`) is
 //! of a phase some step emits now, and each rename (jobrt::phase_names::RENAMED) points at a name a
-//! step emits now, which the page describes. So a phase renamed in the code fails here until its
+//! step emits now, which the page describes (a rename of a phase no step runs now, `ENDED`, at a
+//! name none emits). So a phase renamed in the code fails here until its
 //! description moves to the new name, and a rename's row until its new name is the code's.
 //!
 //! Phases are named by free strings where they open (jobrt::timings::phase and sub, and the
 //! wrappers taking a name: roads' stages, a program's or script's run, the OSM pass's parts), so
 //! what the code emits is read from its source, grepped: a name is emitted when it's a string
-//! literal in a crate's code (its `src/`, outside test modules and test files) or a Python
-//! script's under dem/, or when it fits a name a phase call builds with `format!` (`sampling {}`,
-//! `{ph} (osmium)`). A literal that isn't a phase's passes too: the check is that the name is the
-//! code's, not where it's opened.
+//! literal in a crate's code (its `src/`, outside test modules, test files and comment lines) or a
+//! Python script's under dem/, or when it fits a name a phase call builds with `format!`
+//! (`sampling {}`, `{ph} (osmium)`). A literal that isn't a phase's passes too: the check is that
+//! the name is the code's, not where it's opened.
 
 use std::path::{Path, PathBuf};
 
@@ -36,7 +37,7 @@ fn files(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
 
 /// The crates' code (each `src/`, test modules cut: an inline `#[cfg(test)] mod … {` and what
 /// follows it, the repo's way of keeping them last) and dem/'s Python, but this crate's
-/// phase_names.rs (the old names).
+/// phase_names.rs (the old names); comment lines cut (an old name a comment quotes isn't emitted).
 fn code() -> String {
     let r = root();
     let mut fs = Vec::new();
@@ -54,12 +55,16 @@ fn code() -> String {
             .match_indices("#[cfg(test)]\nmod ")
             .find(|(i, _)| s[*i..].lines().nth(1).is_some_and(|l| l.trim_end().ends_with('{')))
             .map_or(s.len(), |(i, _)| i);
-        all += &s[..cut];
-        all.push('\n');
+        for l in s[..cut].lines().filter(|l| !l.trim_start().starts_with("//")) {
+            all += l;
+            all.push('\n');
+        }
     }
     for f in py {
-        all += &std::fs::read_to_string(f).unwrap();
-        all.push('\n');
+        for l in std::fs::read_to_string(f).unwrap().lines().filter(|l| !l.trim_start().starts_with('#')) {
+            all += l;
+            all.push('\n');
+        }
     }
     all
 }
@@ -132,6 +137,12 @@ fn described_and_renamed_phases_are_the_codes() {
         assert!(
             about.iter().any(|n| n == new),
             "{step}'s renamed phase `{new}` has no line in web/buildpage/sums.js PHASE_ABOUT"
+        );
+    }
+    for (step, old, last) in jobrt::phase_names::ENDED {
+        assert!(
+            !emitted(last),
+            "jobrt::phase_names: {step}'s `{old}` is read as `{last}`, which a step emits again: a row of RENAMED"
         );
     }
 }

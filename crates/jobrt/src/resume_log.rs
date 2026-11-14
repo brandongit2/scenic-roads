@@ -111,7 +111,7 @@ thread_local! {
 /// The calling thread's `STOP_AFTER`, carried to the threads its work keeps blocks on (task #1097:
 /// a terrain level's tiles made, and their blocks kept, on threads beside its sampling), each keep
 /// counting it down as on the caller; `back` hands what's left to the caller.
-pub struct StopCarry(std::sync::Mutex<Option<usize>>);
+pub struct StopCarry(#[cfg(any(test, feature = "testkit"))] std::sync::Mutex<Option<usize>>);
 
 // (The count exists only where `STOP_AFTER` does, tests and the testkit; elsewhere a carry is
 // empty and `on` just runs `f`.)
@@ -119,10 +119,9 @@ impl StopCarry {
     /// The calling thread's.
     pub fn here() -> StopCarry {
         #[cfg(any(test, feature = "testkit"))]
-        let n = STOP_AFTER.get();
+        return StopCarry(std::sync::Mutex::new(STOP_AFTER.get()));
         #[cfg(not(any(test, feature = "testkit")))]
-        let n = None;
-        StopCarry(std::sync::Mutex::new(n))
+        StopCarry()
     }
 
     /// `f` (a block kept) on this thread, under the caller's count.

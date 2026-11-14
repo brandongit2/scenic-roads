@@ -613,8 +613,8 @@ export function phaseSplit(p) {
 // another phase: its name says it. Each is a phase some step emits now, and a renamed phase's
 // current name has one (crates/jobrt/tests/phase_names.rs).
 export const PHASE_ABOUT = {
-  "making the piece's terrain tiles, z12 down to z9": "Samples the terrain pool's datasets for a z9 piece's tiles, levels the lakes, shades and encodes them as WebP.",
-  "making its tiles, its finest zooms sampled, the coarser from them": "Samples the declared elevation datasets for the z10 tile's deep levels, each place at its finest zoom, and makes the coarser zooms from those; each tile is levelled, shaded and encoded as its block is sampled.",
+  "making the piece's terrain tiles, z12 down to z9": "Samples the declared elevation datasets for the z6 tile's levels, z12 down to z9, each place at its finest zoom and the coarser from the finer, and encodes the tiles as WebP.",
+  "making its tiles, its finest zooms sampled, the coarser from them": "Samples the declared elevation datasets for the z10 tile's deep levels, each place at its finest zoom, and makes the coarser zooms from those; each tile is encoded as WebP as its block is sampled.",
   "writing its deep pack and mid": "Writes the z10 tile's deep pack and its mid on this Mac; their uploads land beside the job's next target.",
   "writing the lo pack": "Writes the z3 tile's lo pack on this Mac; its upload lands beside the job's next target.",
   "reading the declared elevation datasets": "Reads the declared elevation datasets from the NAS, once a job: what covers its targets, each place's finest zoom.",
@@ -625,7 +625,7 @@ export const PHASE_ABOUT = {
   "reading the new files' sizes": "Looks at the NAS for the sizes of the files neither the records nor the last map know.",
   "writing its hi pack and mid": "Writes the z6 tile's hi pack and its mid on this Mac; their uploads land beside the job's next target.",
   "writing its deep pack and deep mid": "Writes the z10 tile's slope deep pack and its deep mid on this Mac; their uploads land beside the job's next target.",
-  "writing the catalog": "Writes the map's catalogue and posts it to the lead's agent.",
+  "writing the catalog": "Writes the map and posts it to this Mac's agent, which adds it to the map's log (held for review: written to the NAS instead).",
   "making the z8 tile's slope tiles here": "Makes the z8 tiles' slope tiles on this Mac from the terrain it reads.",
   "drawing the coverage and finding the credits": "Draws the map's coverage and finds the credits its tiles need.",
   "composing": "Composes the depth tiles from the sources' windows: fills the gaps, scales stored levels up, feathers the seams.",

@@ -683,16 +683,27 @@ mod tests {
         Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }
     }
 
-    /// A catalogue's stats from before task #844 (the history archive's, to 29 Oct) read with the
-    /// catalog step's current phase names (jobrt::phase_names).
+    /// A catalogue's stats from before tasks #844 and #883 (the history archive's, to 1 Nov) read
+    /// with the catalog step's current phase names (jobrt::phase_names), a phase no step runs now
+    /// with its last.
     #[test]
     fn old_catalogue_phase_names_read_as_new() {
         let st: CatalogueStats = serde_json::from_str(
-            r#"{"n":3,"files":9,"stated":0,"phases":[["records read",0.4],["the catalog written",3.0],["reading the records' sizes",1.0]]}"#,
+            r#"{"n":3,"files":9,"stated":0,"phases":[["records read",0.4],["the last catalogs listed and the records' sizes read",1.0],["listing the last catalogs and reading the records' sizes",1.0],["every file checked on the NAS",2.0],["the catalog written",3.0],["reading the new files' sizes",1.0]]}"#,
         )
         .unwrap();
         let names: Vec<&str> = st.phases.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(names, ["reading records", "writing the catalog", "reading the records' sizes"]);
+        assert_eq!(
+            names,
+            [
+                "reading records",
+                "reading the records' sizes",
+                "reading the records' sizes",
+                "checking every file on the NAS",
+                "writing the catalog",
+                "reading the new files' sizes"
+            ]
+        );
     }
 
     fn merged(t: u64, key: &str, step: &str, targets: &[&str]) -> Event {
