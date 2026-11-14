@@ -93,11 +93,11 @@ button:disabled { opacity: .5; }
 .wmap-legend .tl.published { border-color: transparent; background: color-mix(in srgb, var(--st-roads) 70%, transparent); }
 .wmap-legend .tl.empty { border: 1px solid color-mix(in srgb, var(--st-roads) 30%, transparent); background: color-mix(in srgb, var(--st-roads) 6%, transparent); }
 .wmap-legend .hint { margin-left: auto; }
-/* The tile areas (#659): each swatch's outline as heavy as the area's on the map (worldmap.js AREA_W). */
-.wmap-areas, .wmap-steps { padding-top: 4px; }
+/* The tile levels (#659): each swatch's outline as heavy as the level's on the map (worldmap.js LEVEL_W). */
+.wmap-levels, .wmap-steps { padding-top: 4px; }
 .wmap-legend .lgh { color: var(--dim); }
-.wmap-legend .ar { background: transparent; border-color: var(--text); }
-.wmap-legend .ar.root { border-width: 3px; } .wmap-legend .ar.lo { border-width: 2px; } .wmap-legend .ar.hi { border-width: 1px; } .wmap-legend .ar.deep { border-width: 1px; border-style: dotted; width: 6px; height: 6px; }
+.wmap-legend .lv { background: transparent; border-color: var(--text); }
+.wmap-legend .lv.root { border-width: 3px; } .wmap-legend .lv.lo { border-width: 2px; } .wmap-legend .lv.hi { border-width: 1px; } .wmap-legend .lv.deep { border-width: 1px; border-style: dotted; width: 6px; height: 6px; }
 /* The steps by stage (#659): a group a stage, its solo first (bold), its steps after; a group never split across lines on a wide screen.
    A solo (#685): the item soloed lit, a held one underlined, the others faint meanwhile. */
 .wmap-legend .lgg { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; align-items: center; padding: 1px 8px 1px 0; border-right: 1px solid var(--row-line); }

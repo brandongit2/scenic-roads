@@ -21,14 +21,14 @@
 // click or a tap the map takes itself, at the point lifted, and hands the stack to `pick` (a
 // tap's click isn't left to the page: Mobile Safari, #615). It draws a tile's minimap for its card
 // (`minimap`).
-import { areaOf, inRings, ringsArea, tileBox, tileOf, topRegion } from "./sums.js";
+import { levelOf, inRings, ringsArea, tileBox, tileOf, topRegion } from "./sums.js";
 
 const FADE_MS = 900;
 const MAX_K = 48; // pixels a world unit, most zoomed in (a z6 tile ≈ 750 px)
 const Z6 = 1000 / 64;
-// A tile area's outline weight (#659: sums.js AREAS), times a state's own: the root's heaviest, a
+// A tile level's outline weight (#659: sums.js LEVELS), times a state's own: the root's heaviest, a
 // deep tile's a hairline; the dashes stay the states' (completed dashed, to come dotted).
-const AREA_W = { root: 2.4, lo: 1.7, hi: 1, deep: 0.6 };
+const LEVEL_W = { root: 2.4, lo: 1.7, hi: 1, deep: 0.6 };
 // The regions' paths, made once, by outline.
 const regionPaths = new WeakMap();
 
@@ -220,7 +220,7 @@ export function createMap({ pick = () => {} } = {}) {
     const faint = (yes) => (yes ? 1 : 0.15);
     const regionKind = (st) => (st === "done" ? "on" : st);
     const regionRel = (r) => !emph || emph.region === regionKind(r.state);
-    const tileRel = (v, key) => !emph || emph.tile === v.state || (emph.area != null && areaOf(key) === emph.area);
+    const tileRel = (v, key) => !emph || emph.tile === v.state || (emph.level != null && levelOf(key) === emph.level);
     // Regions, by state.
     const regionColour = { on: tokens.ok, done: tokens.ok, building: tokens.accent, queued: tokens.dim };
     for (const r of data.regions) {
@@ -280,7 +280,7 @@ export function createMap({ pick = () => {} } = {}) {
       const [bx, by, s] = tileBox(tileOf(key.slice(key.lastIndexOf(" ") + 1)));
       if (bx > x1 || by > y1 || bx + s < x0 || by + s < y0) continue;
       const [i, n] = stripe.get(key) || [0, 1];
-      const col = resolve(data.colour(v.step)), f = faint(tileRel(v, key)), aw = AREA_W[areaOf(key)] || 1;
+      const col = resolve(data.colour(v.step)), f = faint(tileRel(v, key)), aw = LEVEL_W[levelOf(key)] || 1;
       // (A low zoom's tile, one of thousands of square kilometres, is drawn paler: it would hide the rest.)
       const low = s > Z6 * 1.5 ? 0.3 : 1;
       stripes(bx, by, s, i, n);
@@ -615,7 +615,7 @@ export function createMap({ pick = () => {} } = {}) {
   }
 
   // A legend item hovered (#627, #659): {region: "on" | "building" | "queued"}, {tile: state} or
-  // {area: name}, what it isn't drawn faint; null: all as they are. (A step's or stage's solos it:
+  // {level: name}, what it isn't drawn faint; null: all as they are. (A step's or stage's solos it:
   // dash.js.)
   function emphasize(e) {
     if (JSON.stringify(e) === JSON.stringify(emph)) return;

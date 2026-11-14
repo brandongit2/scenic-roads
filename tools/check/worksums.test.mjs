@@ -3,7 +3,7 @@
 // slots and Macs, and the wait while this Mac hasn't read the build's state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { areaOf, areaTargets, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, jobLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/buildpage/sums.js';
+import { levelOf, mapTargets, savedView, busyLanes, finishedTiles, inRings, mapTiles, queuedTiles, regionWork, regionsShown, rowsWindow, stageFill, stageSegments, stepTotals, isSlotOf, laneGroups, macSlot, notRead, packRuns, publishedBefore, pastFrom, pastRuns, jobLinks, runNumbers, SCHED_MIN_SPAN, viewPan, viewRange, viewZoom, READ_RETRY_MS, READ_WAIT_MS, runningTiles, slotName, slotNo, startOf, targetsOf, tileBox, tileCovers, tileOf, topRegion, ringsArea, phaseBreakdown, phaseSplit } from '../../web/buildpage/sums.js';
 
 test('map: tiles from targets, their squares', () => {
   assert.deepEqual(tileOf('6/10/15'), { z: 6, x: 10, y: 15 });
@@ -120,7 +120,7 @@ test('map: the queue from the forecast, the earliest where two Macs name a tile 
   assert.equal(queuedTiles(null).size, 0);
 });
 
-test('map: the view keeps tiles by state, member, tile area and solo (#615, #627, #685)', () => {
+test('map: the view keeps tiles by state, member, tile level and solo (#615, #627, #685)', () => {
   const running = new Map([['unit 6/1/1', { step: 'unit', frac: 0, run: { mac: 'A' } }], ['unit 6/1/2', { step: 'unit', frac: 0.4, current: true, run: { mac: 'A' } }], ['slope 6/1/3', { step: 'slope', frac: 1, run: { mac: 'B #2' } }]]);
   const queued = new Map([['unit 6/3/3', { step: 'unit', at: 5, mac: 'B' }], ['unit 6/2/2', { step: 'unit', at: 9, mac: 'A' }], ['unit 6/1/1', { step: 'unit', at: 1, mac: 'A' }]]);
   const done = new Map([['pack 3/0/0', { t: 100, step: 'pack', worker: 'B' }], ['unit 6/2/2', { t: 300, step: 'unit', worker: 'A' }], ['unit 6/1/2', { t: 50, step: 'unit', worker: 'A' }], ['unit 6/4/4', { t: 150, step: 'unit', worker: 'A' }]]);
@@ -151,11 +151,15 @@ test('map: the view keeps tiles by state, member, tile area and solo (#615, #627
   const solo = mapTiles(running, queued, done, { tiles: { published: false } }, { pubAt: 200, solo: ['unit'] });
   assert.deepEqual(keys(solo), { running: ['unit 6/1/1', 'unit 6/1/2'], queued: ['unit 6/2/2', 'unit 6/3/3'], finished: [], published: ['unit 6/4/4'] });
   assert.deepEqual(keys(mapTiles(running, queued, done, {}, { pubAt: 200, solo: ['pack'] })), { running: [], queued: [], finished: [], published: ['pack 3/0/0'] });
-  // (Tile areas, by the packs' zooms: hi off hides every z6 tile, lo off every z3.)
-  assert.deepEqual(keys(mapTiles(running, queued, done, { offAreas: ['hi'] }, { pubAt: 200 })), { running: [], queued: [], finished: [], published: ['pack 3/0/0'] });
-  assert.deepEqual(['0/0/0', '3/1/1', '6/1/1', '10/1/1', 'terrain-deep 10/5/5', '8/1/1'].map(areaOf), ['root', 'lo', 'hi', 'deep', 'deep', 'z8']);
+  // (Tile levels, by the packs' zooms: hi off hides every z6 tile, lo off every z3.)
+  assert.deepEqual(keys(mapTiles(running, queued, done, { offLevels: ['hi'] }, { pubAt: 200 })), { running: [], queued: [], finished: [], published: ['pack 3/0/0'] });
+  assert.deepEqual(['0/0/0', '3/1/1', '6/1/1', '10/1/1', 'terrain-deep 10/5/5', '8/1/1'].map(levelOf), ['root', 'lo', 'hi', 'deep', 'deep', 'z8']);
   // (A root step's worldwide target is the root tile; others' as they are.)
-  assert.deepEqual([areaTargets('terrain-root', ['terrain-root']), areaTargets('slope-root', []), areaTargets('unit', ['6/1/1'])], [['0/0/0'], ['0/0/0'], ['6/1/1']]);
+  // (A view saved before #858: its levels off read under their new name, which wins once written.)
+  assert.deepEqual(savedView({ offAreas: ['lo'], member: 'm4' }), { offLevels: ['lo'], member: 'm4' });
+  assert.deepEqual(savedView({ offAreas: ['lo'], offLevels: ['hi'] }), { offLevels: ['hi'] });
+  assert.deepEqual(savedView(null), {});
+  assert.deepEqual([mapTargets('terrain-root', ['terrain-root']), mapTargets('slope-root', []), mapTargets('unit', ['6/1/1'])], [['0/0/0'], ['0/0/0'], ['6/1/1']]);
   assert.deepEqual([...finishedTiles([{ kind: 'end', t: 5, step: 'slope-root', targets: ['slope-root'] }], 0).keys()], ['slope-root 0/0/0']);
   assert.equal(tileCovers({ z: 1, x: 1, y: 0 }), '0.0°–85.1° N, 0.0°–180.0° E');
 });

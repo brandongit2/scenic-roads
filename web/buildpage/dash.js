@@ -20,7 +20,7 @@
 // activity.js), and the details.
 
 import { poolSection, termText } from "./pool.js";
-import { AREAS, HIDDEN_STATES, PHASE_ABOUT, TILE_STATES, areaOf, areaTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, segHref, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
+import { LEVELS, HIDDEN_STATES, savedView, PHASE_ABOUT, TILE_STATES, levelOf, mapTargets, busyLanes, finished, finishedTiles, isSlotOf, laneGroups, mapTiles, notRead, packRuns, pastFrom, pastRuns, queuedTiles, jobLinks, jobNumbers, jobRelations, runNumbers, regionWork, regionsShown, rowsWindow, runningTiles, segHref, stageFill, slotName, slotNo, stageSegments, startOf, stepTotals, targetsOf, macSlot, publishedBefore, tileCovers, tileOf, phaseBreakdown, phaseSplit, ALONGSIDE_RULE, WAITS_RULE } from "./sums.js";
 import { fmt } from "./chartmath.js";
 import { h } from "./dom.js";
 import { n, pad, plural } from "./words.js";
@@ -438,17 +438,17 @@ function mapRuns(m) {
     ...m.macs.flatMap((x) => jobsOf(x.status).map((j) => ({ step: stepOf(j.id), id: j.id, started: j.started, live: j.live, frac: j.progress?.total ? j.progress.done / j.progress.total : null, what: j.what, mac: x.name }))),
     ...(m.sw.leases || []).map((l) => ({ step: l.step, job: l.job, what: l.what, live: l.live, mac: l.worker })),
   ];
-  for (const r of runs) r.targets = areaTargets(r.step, targetsOf(r, events));
+  for (const r of runs) r.targets = mapTargets(r.step, targetsOf(r, events));
   return runs;
 }
 // The map's view (#615, #627, #685), this browser's own (ctx.store "mapView"): the tiles and the
 // regions by state (`tiles`, `regions`: those toggled off in the legend, false; published tiles
-// aren't one: drawn only for a solo, #833), one pool member's, the tile areas toggled off in the legend (`offAreas`: sums.js
-// AREAS' names), and the step or stage a click holds soloed (`solo`: {step} or {stage}); the one
-// the pointer is on solos it meanwhile (`hoverSolo`).
-const MAP_F = { tiles: {}, regions: {}, member: "", offAreas: [], solo: null };
+// aren't one: drawn only for a solo, #833), one pool member's, the tile levels toggled off in the legend (`offLevels`: sums.js
+// LEVELS' names), and the step or stage a click holds soloed (`solo`: {step} or {stage}); the one
+// the pointer is on solos it meanwhile (`hoverSolo`). Read through sums.js savedView.
+const MAP_F = { tiles: {}, regions: {}, member: "", offLevels: [], solo: null };
 let mapF = null, hoverSolo = null;
-const mapFilters = () => mapF || (mapF = { ...MAP_F, ...(ctx.store.get("mapView", {}) || {}) });
+const mapFilters = () => mapF || (mapF = { ...MAP_F, ...savedView(ctx.store.get("mapView", {})) });
 function setMapFilter(k, v) { mapFilters()[k] = v; ctx.store.set("mapView", mapF); render(); }
 const soloKey = (x) => (!x ? "" : x.step != null ? `step ${x.step}` : `stage ${x.stage}`);
 const soloOf = (key) => (!key ? null : key.startsWith("step ") ? { step: key.slice(5) } : { stage: key.slice(6) });
@@ -551,13 +551,13 @@ function mapData(m) {
   const ends = endsHeld(), held = heldFrom();
   const done = keepDone(ends, from, [built.steps, built.empty, built.dropped, built.published, held], () => finishedTiles(ends, from, built.steps, held, built.empty, { published: built.published, dropped: built.dropped, readAt: built.at }));
   const runKeys = [...running.keys()].join("\n");
-  // (A step counts its tiles to build or publish; every state and area its own, the tiles with
+  // (A step counts its tiles to build or publish; every state and level its own, the tiles with
   // nothing to publish too, shown or not. The queued and finished tiles' counts kept while those
   // and the running tiles' keys are.)
-  const count = (maps, c = { tile: Object.fromEntries(TILE_STATES.map((st) => [st, 0])), step: {}, area: {} }) => {
+  const count = (maps, c = { tile: Object.fromEntries(TILE_STATES.map((st) => [st, 0])), step: {}, level: {} }) => {
     for (const t of maps) for (const [k, v] of t) {
       c.tile[v.state]++;
-      c.area[areaOf(k)] = (c.area[areaOf(k)] || 0) + 1;
+      c.level[levelOf(k)] = (c.level[levelOf(k)] || 0) + 1;
       if (v.state !== "published" && v.state !== "empty") c.step[v.step] = (c.step[v.step] || 0) + 1;
     }
     return c;
@@ -622,7 +622,7 @@ const keepView = keeper(), keepPaint = keeper(), keepRestCards = keeper();
 function mapView(md) {
   const f = mapFilters(), age = ages.view();
   const solo = soloSteps(hoverSolo || f.solo, md.groups);
-  const fl = { tiles: f.tiles, member: f.member, offAreas: f.offAreas };
+  const fl = { tiles: f.tiles, member: f.member, offLevels: f.offLevels };
   const opts = { pubAt: md.pubAt, macOf: md.macOf, solo };
   const rest = keepView([md.runKeys, md.queued, md.done, md.pubAt, md.hostsKey, JSON.stringify([fl, solo])], () => mapTiles(md.running, md.queued, md.done, fl, opts));
   const running = mapTiles(md.running, NONE, NONE, fl, opts).running;
@@ -731,16 +731,16 @@ function tileCards(t, painted, age, kinds) {
 // A map's click or tap: its stack pinned (nothing there: the pinned card let go).
 const mapPick = (keys, x, y) => (keys.length ? pinCard("mstack", x, y, keys.join("|")) : unpin());
 // The map's legend (#627, #659, #685): what's drawn, counted: the regions and tiles by state, the
-// tile areas (sums.js AREAS: root, lo, hi, deep, each its outline's weight), each a toggle showing
+// tile levels (sums.js LEVELS: root, lo, hi, deep, each its outline's weight), each a toggle showing
 // or hiding its kind (off: struck and dimmed), hovered: the rest of the map faint; and every step
 // that draws tiles, grouped by its stage, each a solo: hovered, that step alone on the map while
 // the pointer's on it (a stage: its steps), with its published tiles by age; a click holds it until
 // clicked again. Then the member filter. Every step and stage by its id.
 const TILE_WORDS = { queued: "queued", progress: "in progress", completed: "completed, not yet on the map", published: "on the map", empty: "built, nothing for the map" };
 // The steps the map draws tiles of, by stage in the build's order: a z3, z6 or z10 tile's, or a
-// root's (sums.js areaTargets); then any other step it has tiles of. [{stage, steps}].
+// root's (sums.js mapTargets); then any other step it has tiles of. [{stage, steps}].
 function mapSteps(stepCount) {
-  const tiled = (r) => !r.of && (["area", "tile", "z10"].includes(r.scope) || areaTargets(r.id, [])[0]);
+  const tiled = (r) => !r.of && (["area", "tile", "z10"].includes(r.scope) || mapTargets(r.id, [])[0]);
   const rows = Object.values(table.steps).filter(tiled);
   for (const id of Object.keys(stepCount)) if (!rows.some((r) => r.id === id)) rows.push({ id, stage: S.stage(id) });
   const order = table.stages.map((g) => g.id);
@@ -751,13 +751,13 @@ function mapLegend(md) {
   const { regs, counts, world, groups } = md;
   const f = mapFilters(), map = worldMap;
   const count = (st) => regs.filter((r) => r.state === st || (st === "on" && r.state === "done")).length;
-  // (`name`: a stage's, step's or area's code name, the item's `data-name`: touch-test.mjs checks each is one.)
+  // (`name`: a stage's, step's or level's code name, the item's `data-name`: touch-test.mjs checks each is one.)
   const toggle = (on, flip, emph, swatch, text, title, cls = "", name = null) => h("button", { type: "button", class: `lg${cls}${on ? "" : " off"}`, "aria-pressed": on ? "true" : "false", title, "data-name": name,
     onclick: () => { map.emphasize(null); flip(); }, onpointerenter: (e) => e.pointerType !== "touch" && map.emphasize(emph), onpointerleave: () => map.emphasize(null) }, swatch, text);
   // (A tile state hidden until toggled on (sums.js HIDDEN_STATES), the tiles with nothing for the map.)
   const isOn = (k, st) => (k === "tiles" && HIDDEN_STATES.includes(st) ? f[k][st] === true : f[k][st] !== false);
   const byState = (k, st, cls, text) => toggle(isOn(k, st), () => setMapFilter(k, { ...f[k], [st]: !isOn(k, st) }), { [k === "tiles" ? "tile" : "region"]: st }, h("i", cls), text, "Show or hide these on the map");
-  const offA = new Set(f.offAreas || []);
+  const offA = new Set(f.offLevels || []);
   const held = soloKey(f.solo);
   // (Hovered: soloed while the pointer's on it, `legendHost`'s handlers; a click holds it or lets it go.)
   const solo = (x, swatch, text, title, cls, name) => h("button", { type: "button", class: `lg ${cls}${soloKey(x) === held ? " held" : ""}`, "aria-pressed": soloKey(x) === held ? "true" : "false", title, "data-name": name, "data-solo": soloKey(x),
@@ -770,14 +770,14 @@ function mapLegend(md) {
       : byState("tiles", st, `tl ${st}`, `${plural(counts.tile[st], "tile")} ${TILE_WORDS[st]}`)),
     world.length ? h("span", null, `whole world: ${world.map((r) => `${r.step} (${r.mac})`).join(", ")}`) : null,
     h("span", "hint", "drag to move · pinch, double-click or +/− to zoom")),
-  h("div", { class: "wmap-legend wmap-areas small dim", role: "group", "aria-label": "Tile areas" }, h("span", "lgh", "tile areas"),
-    AREAS.map(([a, z]) => toggle(!offA.has(a), () => setMapFilter("offAreas", offA.has(a) ? [...offA].filter((x) => x !== a) : [...offA, a]), { area: a },
-      h("i", `ar ${a}`), `${a} z${z} · ${n(counts.area[a] || 0)}`, `Show or hide the ${a} packs' tiles (z${z}) on the map`, " area", a))),
+  h("div", { class: "wmap-legend wmap-levels small dim", role: "group", "aria-label": "Tile levels" }, h("span", "lgh", "tile levels"),
+    LEVELS.map(([a, z]) => toggle(!offA.has(a), () => setMapFilter("offLevels", offA.has(a) ? [...offA].filter((x) => x !== a) : [...offA, a]), { level: a },
+      h("i", `lv ${a}`), `${a} z${z} · ${n(counts.level[a] || 0)}`, `Show or hide the ${a} level's tiles (z${z}) on the map`, " level", a))),
   h("div", { class: "wmap-legend wmap-steps small dim", role: "group", "aria-label": "Steps by stage: hover one to solo it, click to hold it" },
     groups.map(({ stage, steps }) => h("span", { class: "lgg", "data-stage": stage },
       solo({ stage }, sw(stage), h("b", null, stage || "–"), `${stage}'s steps alone on the map, their tiles on the map by when (a click holds it)`, "stage", stage),
       steps.map((id) => solo({ step: id }, sw(stage), `${id} ${n(counts.step[id] || 0)}`, `${id} alone on the map, its tiles on the map by when (a click holds it)`, "step", id))))),
-  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or put on the map) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet on the map: dashed · on the map: drawn only for a step soloed, by when (below); its queued tiles on the map before: the same, fainter, dotted · built, nothing for the map (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile area`)),
+  h("div", "wmap-legend small dim", h("span", null, `counts are tiles (a step's: to build or put on the map) · queued: faint, dotted · running: outlined, filled as far as done · completed, not yet on the map: dashed · on the map: drawn only for a step soloed, by when (below); its queued tiles on the map before: the same, fainter, dotted · built, nothing for the map (no data there): hidden until shown, then barely tinted · steps at one spot: stripes · outline weight: the tile level`)),
   mapFilterBar(md.m)];
 }
 // The member filter under the map: a member's tiles alone (those it ran, the history's ends; runs
@@ -1301,7 +1301,7 @@ function runJobs(l, targets = []) {
 function segTiles(s) {
   const r = s.r;
   const targets = s.kind === "past" ? (r.parts || [r]).flatMap((p) => p.targets || []) : r.targets || [];
-  return areaTargets(s.step, targets).filter((t) => tileOf(t)).map((t) => t.slice(t.lastIndexOf(" ") + 1));
+  return mapTargets(s.step, targets).filter((t) => tileOf(t)).map((t) => t.slice(t.lastIndexOf(" ") + 1));
 }
 // What a key points at in the schedule (timeline.js `relations`): a job's segment, the single jobs
 // it waits on and those waiting on it, and their arrows (sums.js jobRelations: by the forecast's run

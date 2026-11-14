@@ -283,7 +283,7 @@ The Jobs tab's stages are the one exception.
   them to the page: Mobile Safari, #615).
   Under it the legend: the regions by state and the tiles by state, counted (every member's, or
   the member chosen's), each a toggle showing or hiding its kind (off: struck and dimmed; hovered:
-  the rest of the map faint); the tile areas by the packs the steps make (#659, `sums.js` AREAS:
+  the rest of the map faint); the tile levels by the packs the steps make (#659, `sums.js` LEVELS:
   `root` z0, `lo` z3, `hi` z6, `deep` z10, each with its outline's weight), toggles the same; and
   every step that draws tiles, by its id and counted (its tiles to build or put on the map), grouped by
   its stage (the stage's id first). A step's item **solos** it (#685): hovered by a mouse, that

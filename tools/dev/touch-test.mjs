@@ -763,7 +763,7 @@ async function run() {
       await js(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     }
 
-    // Task #659: the map's legend an item per step (a solo since #685), grouped by stage; the tile areas by pack type;
+    // Task #659: the map's legend an item per step (a solo since #685), grouped by stage; the tile levels by pack type;
     // no display names (every stage, step and job label shown is the code's name).
     {
       errors.length = 0;
@@ -782,15 +782,15 @@ async function run() {
       const flip = (sel) => js(`(() => { const b = [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length); if (!b) return null; b.click(); return [...document.querySelectorAll(${JSON.stringify(sel)})].find((e) => e.getClientRects().length)?.getAttribute("aria-pressed"); })()`);
       const s1 = await flip(`.wmap-steps .lg.step[data-name="${flat[0]}"]`), s2 = await flip(`.wmap-steps .lg.step[data-name="${flat[0]}"]`);
       check("legend: a step's item holds its solo, again lets it go", s1 === "true" && s2 === "false", `${s1} then ${s2}`);
-      const areas = await js(`[...([...document.querySelectorAll(".wmap-areas")].find((e) => e.getClientRects().length)?.querySelectorAll(".lg.area") || [])].map((b) => [b.dataset.name, getComputedStyle(b.querySelector("i")).borderTopWidth])`);
-      check("legend: the tile areas by pack type, each its outline", areas.map((a) => a[0]).join() === "root,lo,hi,deep" && new Set(areas.map((a) => a[1])).size >= 2, areas.map((a) => `${a[0]} ${a[1]}`).join(", "));
-      const big = await js(`[...document.querySelectorAll(".wmap-areas .lg.area")].filter((e) => e.getClientRects().length).map((e) => [e.dataset.name, +e.textContent.replace(/.*· /, "").replace(/,/g, "")]).sort((p, q) => q[1] - p[1])[0]`);
+      const areas = await js(`[...([...document.querySelectorAll(".wmap-levels")].find((e) => e.getClientRects().length)?.querySelectorAll(".lg.level") || [])].map((b) => [b.dataset.name, getComputedStyle(b.querySelector("i")).borderTopWidth])`);
+      check("legend: the tile levels by pack type, each its outline", areas.map((a) => a[0]).join() === "root,lo,hi,deep" && new Set(areas.map((a) => a[1])).size >= 2, areas.map((a) => `${a[0]} ${a[1]}`).join(", "));
+      const big = await js(`[...document.querySelectorAll(".wmap-levels .lg.level")].filter((e) => e.getClientRects().length).map((e) => [e.dataset.name, +e.textContent.replace(/.*· /, "").replace(/,/g, "")]).sort((p, q) => q[1] - p[1])[0]`);
       const p0 = await pix();
-      const a1 = await flip(`.wmap-areas .lg.area[data-name="${big[0]}"]`);
+      const a1 = await flip(`.wmap-levels .lg.level[data-name="${big[0]}"]`);
       await still();
       const p1 = await pix();
-      const a2 = await flip(`.wmap-areas .lg.area[data-name="${big[0]}"]`);
-      check("legend: a tile area's item hides its tiles", a1 === "false" && a2 === "true" && (big[1] === 0 || p1 !== p0), `${big[0]} (${big[1]} tiles): ${a1} then ${a2}, map ${p1 !== p0 ? "changed" : "unchanged"}`);
+      const a2 = await flip(`.wmap-levels .lg.level[data-name="${big[0]}"]`);
+      check("legend: a tile level's item hides its tiles", a1 === "false" && a2 === "true" && (big[1] === 0 || p1 !== p0), `${big[0]} (${big[1]} tiles): ${a1} then ${a2}, map ${p1 !== p0 ? "changed" : "unchanged"}`);
       check("map: no \"Show tile areas\" radio left", !(await js(`[...document.querySelectorAll(".wmap-filters")].some((e) => /Show tile areas/.test(e.textContent))`)));
       // (Every label of a stage, step or job: the code's name. The legend's, the strip's stage cards,
       // the Jobs tab's stage and step rows, the schedule's legend, each running job on the Machines tab.)

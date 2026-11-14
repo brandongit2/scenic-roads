@@ -241,14 +241,17 @@ export function tileOf(t) {
 }
 // A tile's square on the map (Web Mercator, the world 0–1000 each way, y down): [x0, y0, side].
 export const tileBox = ({ z, x, y }) => { const s = 1000 / 2 ** z; return [x * s, y * s, s]; };
-// The tile areas (#659), by the packs the steps make at each zoom (docs/steps.md, task #639): the
+// The tile levels (#659), by the packs the steps make at each zoom (docs/steps.md, task #639): the
 // root (z0–2, one tile: 0/0/0), lo (a z3 tile's), hi (a z6 tile's) and deep (a z10 tile's), each
-// [name, zoom]. A tile's area is its zoom's.
-export const AREAS = [["root", 0], ["lo", 3], ["hi", 6], ["deep", 10]];
-export const areaOf = (t) => { const z = tileOf(t)?.z; return AREAS.find(([, k]) => k === z)?.[0] ?? `z${z}`; };
+// [name, zoom]. A tile's level is its zoom's.
+export const LEVELS = [["root", 0], ["lo", 3], ["hi", 6], ["deep", 10]];
+export const levelOf = (t) => { const z = tileOf(t)?.z; return LEVELS.find(([, k]) => k === z)?.[0] ?? `z${z}`; };
 // A job's targets as the map draws them: a root step's (`<layer>-root`, worldwide: its target its
 // own name) is the root tile, 0/0/0; any other's as they are.
-export const areaTargets = (step, targets) => (/-root$/.test(step || "") ? ["0/0/0"] : targets || []);
+export const mapTargets = (step, targets) => (/-root$/.test(step || "") ? ["0/0/0"] : targets || []);
+// The map's view as this browser saved it (dash.js "mapView"): a view saved before task #858 names
+// the levels toggled off `offAreas`, read as `offLevels`; the old name is never written again.
+export const savedView = (v) => { const { offAreas, ...rest } = v || {}; return offAreas && !rest.offLevels ? { ...rest, offLevels: offAreas } : rest; };
 const tileWords = (s) => String(s || "").split(/\s+/).filter((w) => tileOf(w));
 
 // A running job's targets: a lead's or helper's job (`{step, id, started}`) as its "start" event
@@ -328,7 +331,7 @@ export function finishedTiles(ends, from, built = {}, heldFrom = null, empty = {
   }
   for (const e of ends || []) {
     if ((e.kind !== "end" && e.kind !== "done") || e.ok === false) continue;
-    for (const t of areaTargets(e.step, e.targets)) {
+    for (const t of mapTargets(e.step, e.targets)) {
       const k = `${e.step} ${t}`, had = out.get(k);
       if (!had && e.t <= readAt && gone.has(k)) continue;
       if (tileOf(t) && (e.t >= from || had) && !(had?.t > e.t)) {
@@ -386,14 +389,14 @@ export const finishedState = (d, pubAt) => {
 // queuedTiles', finishedTiles') as the map's view keeps them, each given its `state`; a tile in
 // more than one is the running one, else the queued one (built before, to be built again: its
 // finished tile not drawn, the queued one `built: true`: built before, #833). Kept: the states shown (`f.tiles[state] === false`: hidden), the pool member
-// `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile areas not
-// toggled off (`f.offAreas`: AREAS' names), and with `solo` (step ids) those steps' alone. The
+// `f.member` (the Mac that ran, runs or will run it: `macOf(worker)` its host), the tile levels not
+// toggled off (`f.offLevels`: LEVELS' names), and with `solo` (step ids) those steps' alone. The
 // published tiles are apart in `published` (drawn only for a solo, #833), whatever `f.tiles` says;
 // those built with nothing for the map ("empty") are finished ones, shown only when toggled on
 // (HIDDEN_STATES). Returns {running, queued, finished, published}, new Maps.
 export function mapTiles(running, queued, done, f, { pubAt = null, macOf = (w) => w, solo = null } = {}) {
   const shown = (st) => (HIDDEN_STATES.includes(st) ? f.tiles?.[st] === true : f.tiles?.[st] !== false);
-  const keep = (key, step, who) => (!solo || solo.includes(step)) && !f.offAreas?.includes(areaOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
+  const keep = (key, step, who) => (!solo || solo.includes(step)) && !f.offLevels?.includes(levelOf(key)) && (!f.member || (who != null && macOf(who) === f.member));
   const out = { running: new Map(), queued: new Map(), finished: new Map(), published: new Map() };
   for (const [k, r] of running) {
     const state = runningState(r);
