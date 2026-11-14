@@ -13,7 +13,7 @@
 //!   once, on `THREADS` threads of their own (not the shared pool the queries use); a draw the map
 //!   stopped waiting for still finishes and is kept. Stored tiles don't wait for draws.
 
-use crate::cache::{self, etag_match, not_modified, Lru};
+use crate::served::{self, etag_match, not_modified, Lru};
 use crate::S;
 use anyhow::Result;
 use axum::{
@@ -32,10 +32,10 @@ const THREADS: usize = 4;
 /// Shares as bytes, two a pixel (sea, inland): a drawn tile kept.
 type Shares = Arc<Vec<u8>>;
 
-/// Drawn tiles kept, by (z, x, y, what they're made from): one view's (cache::VIEW_TILES), the least
+/// Drawn tiles kept, by (z, x, y, what they're made from): one view's (served::VIEW_TILES), the least
 /// recently used let go.
 static KEPT_TILES: LazyLock<Mutex<Lru<(u8, u32, u32, u64), Shares>>> =
-    LazyLock::new(|| Mutex::new(Lru::new(cache::VIEW_TILES * (wt::SIZE * wt::SIZE * 2) as u64)));
+    LazyLock::new(|| Mutex::new(Lru::new(served::VIEW_TILES * (wt::SIZE * wt::SIZE * 2) as u64)));
 
 fn keep(key: (u8, u32, u32, u64), sh: Shares) {
     let n = sh.len() as u64;
@@ -418,7 +418,7 @@ pub async fn water_tile(
     if z > wt::MAXZ || x >= 1 << z || y >= 1 << z {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let query: std::collections::HashMap<String, String> = q.as_deref().map(|q| url_pairs(q)).unwrap_or_default();
     let colours = match query.get("c") {
         Some(c) => {
@@ -480,22 +480,22 @@ pub async fn water_tile(
                 Err(e) => {
                     eprintln!("water {z}/{x}/{y}: {e:#}");
                     // The coarser zoom's water instead, not kept, without an ETag, not stored, and never
-                    // cached for good (cache::NotForGood): the tile is drawn properly once the basemap can be
+                    // cached for good (served::NotForGood): the tile is drawn properly once the basemap can be
                     // read again.
                     let s2 = s.clone();
                     let fb = tokio::task::spawn_blocking(move || fallback(&s2, z, x, y)).await;
                     let Ok(Ok(Some(b))) = fb else {
                         // (Away from the NAS, outside the downloads: none there, as every layer's.)
                         if !s.data.online() {
-                            return cache::none();
+                            return served::none();
                         }
                         return StatusCode::SERVICE_UNAVAILABLE.into_response();
                     };
                     return match tokio::task::spawn_blocking(move || encode(&b, colours)).await {
                         Ok(Ok(body)) => {
-                            let mut r = cache::respond(body, "image/png", false, None, false);
+                            let mut r = served::respond(body, "image/png", false, None, false);
                             r.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-                            r.extensions_mut().insert(cache::NotForGood);
+                            r.extensions_mut().insert(served::NotForGood);
                             r
                         }
                         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -505,7 +505,7 @@ pub async fn water_tile(
         }
     };
     match tokio::task::spawn_blocking(move || encode(&sh, colours)).await {
-        Ok(Ok(body)) => cache::respond(body, "image/png", false, Some(&etag), v),
+        Ok(Ok(body)) => served::respond(body, "image/png", false, Some(&etag), v),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }

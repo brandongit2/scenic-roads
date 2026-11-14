@@ -13,8 +13,8 @@
 //! share found mounted is read only once it has answered a probe (`find_nas`): a mount left from
 //! home never holds a request.
 
-use crate::cache::Lru;
 use crate::clip::{Cells, Cover};
+use crate::served::Lru;
 use crate::views::{BaseView, Blob, HiView, RoadUnits, SectView, Src};
 use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};

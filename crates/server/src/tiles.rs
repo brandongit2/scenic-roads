@@ -1,12 +1,12 @@
 //! Tiles of every layer, from the catalogue's packs (and the basemap's PMTiles archives), answered
-//! through crate::cache's responder.
+//! through crate::served's responder.
 //!
 //! Caching: a tile's ETag is its content hash (the basemap's: its archives' content names and its
 //! position), plus, for tiles with names (`has_names`), the version of the translations it uses. A
 //! 304 is answered from the pack index (the basemap's from the catalogue) alone, never the NAS. URLs
 //! the app versions (`?v=`, the layer's version from the catalogue) are cached for good.
 
-use crate::cache::{self, blocking, none, not_modified, respond, serve_made, Lru};
+use crate::served::{self, blocking, none, not_modified, respond, serve_made, Lru};
 use crate::S;
 use anyhow::Context;
 use axum::{
@@ -40,14 +40,14 @@ async fn plain(
     headers: HeaderMap,
     content_type: &'static str,
 ) -> Response {
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let h = match hash(&s, &layer, z, x, y).await {
         Ok(Some(h)) => h,
         Ok(None) => return none(),
         Err(r) => return r,
     };
     let etag = format!("\"{h:016x}\"");
-    if cache::etag_match(&headers, &etag) {
+    if served::etag_match(&headers, &etag) {
         return not_modified(&etag, v);
     }
     match blocking(format!("{layer} {z}/{x}/{y}"), move || s.data.tile(&layer, z, x, y)).await {
@@ -142,7 +142,7 @@ pub async fn ferry_block(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let nv = s.names.version_all();
     let h = match hash(&s, "ferries", z, x, y).await {
         Ok(Some(h)) => h,
@@ -154,7 +154,7 @@ pub async fn ferry_block(
     serve_made(&MADE, (2, z, x, y, h, nv), &etag, &headers, v, "application/geo+json", what, move || {
         let Some((b, _)) = s.data.tile("ferries", z, x, y)? else { return Ok(None) };
         let raw = names::mvt::gunzip_if_gzip(b.bytes())?;
-        Ok(Some(names::mvt::gzip(&cache::with_names(&s, &raw))?))
+        Ok(Some(names::mvt::gzip(&served::with_names(&s, &raw))?))
     })
     .await
 }
@@ -181,7 +181,7 @@ pub async fn named_mvt_tile(
     q: Option<String>,
     headers: HeaderMap,
 ) -> Response {
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let h = match hash(&s, &layer, z, x, y).await {
         Ok(Some(h)) => h,
         Ok(None) => return none(),
@@ -222,7 +222,7 @@ pub async fn base_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let archives = s.data.basemap_names();
     if archives.is_empty() {
         return none();
@@ -571,7 +571,7 @@ mod tests {
         r.headers().get(name).map(|v| v.to_str().unwrap())
     }
 
-    /// Every endpoint answers alike (crate::cache): a body with its type, gzip by the pack's own
+    /// Every endpoint answers alike (crate::served): a body with its type, gzip by the pack's own
     /// flag, its ETag and Cache-Control (for good when versioned); a 304 for any ETag of an
     /// `If-None-Match` list; 204 where a layer has no tile (also the depth's and the polar caps',
     /// which said 404).

@@ -2,7 +2,7 @@
 //! rows (ids, points, the filters' values), their lean properties and popup records (zstd blocks,
 //! decompressed on use and kept under a budget), and the tile's named peaks.
 
-use crate::cache::Lru;
+use crate::served::Lru;
 use crate::views::{Blob, Sect, SectView};
 use anyhow::{ensure, Context, Result};
 use codecs::marks::{self, MarkPt, SummitRec, KINDS};
@@ -10,9 +10,9 @@ use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Decompressed blocks of `props` and `info`, by (file, section, block): one block of each section
-/// for every kind in each of a view's z6 tiles (cache::VIEW_TILES; a block is `marks::BLOCK` points).
+/// for every kind in each of a view's z6 tiles (served::VIEW_TILES; a block is `marks::BLOCK` points).
 static BLOCKS: LazyLock<Mutex<Lru<(String, u8, u32), Arc<Vec<u8>>>>> =
-    LazyLock::new(|| Mutex::new(Lru::entries(crate::cache::VIEW_TILES as usize * KINDS.len() * 2)));
+    LazyLock::new(|| Mutex::new(Lru::entries(crate::served::VIEW_TILES as usize * KINDS.len() * 2)));
 
 pub struct MarkView {
     pub tile: (u32, u32),

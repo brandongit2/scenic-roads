@@ -12,8 +12,8 @@
 //! layer lacks (past its finest there, or a deep tile that can't be read now) is made from its
 //! nearest stored ancestor, scaled up, as the terrain's are; outside the layer, a flat one.
 
-use crate::cache::{self, not_modified, Lru};
 use crate::depth::Surface;
+use crate::served::{self, not_modified, Lru};
 use crate::S;
 use axum::{
     extract::{Path, RawQuery, State},
@@ -44,7 +44,7 @@ pub(crate) static MADE: LazyLock<Mutex<Made>> = LazyLock::new(|| Mutex::new(Lru:
 fn image(b: impl Into<bytes::Bytes>, versioned: bool, etag: Option<&str>) -> Response {
     let b = b.into();
     let kind = if b.starts_with(b"RIFF") { "image/webp" } else { "image/png" };
-    cache::respond(b, kind, false, etag, versioned)
+    served::respond(b, kind, false, etag, versioned)
 }
 
 /// A terrain tile made here (from an ancestor, with the floor under the water, flat) as the stored
@@ -118,14 +118,14 @@ pub(crate) enum Got {
 /// The response to what a tile request came to (None: the layer has none there, 204).
 pub(crate) fn respond(got: Option<Got>, v: bool) -> Response {
     match got {
-        None => cache::none(),
+        None => served::none(),
         Some(Got::Stored(b, e)) => image(b, v, Some(&e)),
         Some(Got::Same(e)) => not_modified(&e, v),
         // Made from other tiles (an ancestor, neighbours, possibly in other packs than the one whose
-        // version the URL carries): never cached for good (cache::NotForGood).
+        // version the URL carries): never cached for good (served::NotForGood).
         Some(Got::Made(b)) => {
             let mut r = image(b, false, None);
-            r.extensions_mut().insert(cache::NotForGood);
+            r.extensions_mut().insert(served::NotForGood);
             r
         }
         Some(Got::Failed) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -153,7 +153,7 @@ pub(crate) fn stored(
         }
     };
     let etag = format!("\"{h:016x}{tag}\"");
-    if cache::etag_match(headers, &etag) {
+    if served::etag_match(headers, &etag) {
         return Some(Got::Same(etag));
     }
     match s.data.tile(layer, z, x, y) {
@@ -232,7 +232,7 @@ fn sea_surface(s: &S, z: u8, x: u32, y: u32, headers: &HeaderMap, exact: bool) -
         });
     };
     let etag = format!("\"{h:016x}w{}\"", crate::water::version(s));
-    if cache::etag_match(headers, &etag) {
+    if served::etag_match(headers, &etag) {
         return Some(Got::Same(etag));
     }
     let got = made(SURFACE, gen(s), z, x, y, || {
@@ -262,7 +262,7 @@ pub async fn terrain_tile(
     RawQuery(q): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let has = |k: &str| q.as_deref().is_some_and(|q| q.split('&').any(|kv| kv == k));
     let (floor, surface) = (has("floor=1"), has("surface=1"));
     let s2 = s.clone();
@@ -298,7 +298,7 @@ pub async fn terrain_tile(
     // is the current water's (that one may say sea elsewhere).
     if surface && !floor && !has(&format!("w={}", crate::water::version(&s2))) {
         let mut r = respond(got, false);
-        r.extensions_mut().insert(cache::NotForGood);
+        r.extensions_mut().insert(served::NotForGood);
         return r;
     }
     respond(got, v)
@@ -377,7 +377,7 @@ pub async fn shade_tile(
     q: Option<String>,
     headers: HeaderMap,
 ) -> Response {
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let flat =
         || FLAT_SHADE.get_or_init(|| codecs::shade_codec::encode(&vec![Default::default(); 65536]).unwrap()).clone();
     let got = tokio::task::spawn_blocking(move || {
@@ -428,7 +428,7 @@ async fn polar_tile(
     headers: HeaderMap,
 ) -> Response {
     let Some(pole) = roadcore::polar::Pole::of_letter(pole) else { return StatusCode::NOT_FOUND.into_response() };
-    let v = cache::versioned(q.as_deref());
+    let v = served::versioned(q.as_deref());
     let layer = ::terrain::polar::layer(kind, pole);
     let got = tokio::task::spawn_blocking(move || stored(&s, &layer, z, x, y, &headers, ""))
         .await

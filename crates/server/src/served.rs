@@ -236,20 +236,20 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
 }
 
 /// A layer file prepared for serving.
-pub struct Packed {
+pub struct PreparedFile {
     pub gz: bytes::Bytes,
     pub etag: String,
 }
 
-type Cell = Arc<OnceCell<Arc<Packed>>>;
+type Cell = Arc<OnceCell<Arc<PreparedFile>>>;
 
 /// Prepared layer files by (content name, translations version).
 #[derive(Default)]
-pub struct Packs {
+pub struct Prepared {
     cells: Mutex<HashMap<(String, u64), Cell>>,
 }
 
-impl Packs {
+impl Prepared {
     /// Drops what was prepared for files no longer in the catalogue.
     pub fn retain_contents(&self, keep: &std::collections::HashSet<String>) {
         self.cells.lock().unwrap().retain(|(c, _), _| keep.contains(c));
@@ -352,7 +352,7 @@ pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
 
 /// A layer file read, named and gzipped; None when it couldn't be read (the NAS away), which isn't
 /// kept: the next request tries again.
-fn prepare(s: &AppState, logical: &str, content: &str, names: u64) -> Option<Arc<Packed>> {
+fn prepare(s: &AppState, logical: &str, content: &str, names: u64) -> Option<Arc<PreparedFile>> {
     let raw = match s.data.global(logical) {
         Ok(b) => b?,
         Err(e) => {
@@ -366,14 +366,14 @@ fn prepare(s: &AppState, logical: &str, content: &str, names: u64) -> Option<Arc
     let gz = bytes::Bytes::from(enc.finish().ok()?);
     let h = store::naming::parse_content_name(content).map(|c| c.hash16.to_string()).unwrap_or_default();
     let etag = format!("\"{h}-{names:x}\"");
-    Some(Arc::new(Packed { gz, etag }))
+    Some(Arc::new(PreparedFile { gz, etag }))
 }
 
 /// A layer file prepared (once per content and translations version), with its content name.
-async fn packed(s: &Arc<AppState>, logical: &str) -> Option<(String, Arc<Packed>)> {
+async fn packed(s: &Arc<AppState>, logical: &str) -> Option<(String, Arc<PreparedFile>)> {
     let content = s.data.content(logical)?;
     let names = s.names.version_all();
-    let cell = s.packs.cell(&content, names);
+    let cell = s.prepared.cell(&content, names);
     let (s2, l2, c2) = (s.clone(), logical.to_string(), content.clone());
     let p = cell
         .get_or_try_init(|| async move {

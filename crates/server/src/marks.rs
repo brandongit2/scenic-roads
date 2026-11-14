@@ -197,8 +197,8 @@ mod tests {
 
 // ---- the In view query and the points by view (docs/phase5.md), over markdata --------------------
 
-use crate::cache::Lru;
 use crate::markview::MarkView;
+use crate::served::Lru;
 use crate::S;
 use anyhow::Context;
 use axum::{
@@ -354,14 +354,14 @@ fn spread_range(lo: f64, hi: f64) -> [f64; 2] {
 fn named_props(s: &crate::AppState, raw: &[u8], lon: f64, lat: f64) -> Map<String, Value> {
     let mut props: Map<String, Value> = serde_json::from_slice(raw).unwrap_or_default();
     if let Some(key) =
-        crate::cache::NAME_KEYS.iter().find(|k| props.get(**k).and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty()))
+        crate::served::NAME_KEYS.iter().find(|k| props.get(**k).and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty()))
     {
-        let own = crate::cache::EN_KEYS
+        let own = crate::served::EN_KEYS
             .iter()
             .find_map(|k| props.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty()))
             .map(str::to_owned);
-        crate::cache::put_names(s, &mut props, key, own.as_deref(), [lon, lat], "");
-        crate::cache::put_names(s, &mut props, "cn", None, [lon, lat], "c");
+        crate::served::put_names(s, &mut props, key, own.as_deref(), [lon, lat], "");
+        crate::served::put_names(s, &mut props, "cn", None, [lon, lat], "c");
     }
     props
 }
@@ -691,7 +691,7 @@ fn with_names(s: &S, mut t: MarkTile) -> MarkTile {
     t
 }
 
-/// Serves a made tile (crate::cache::serve_made): `make`'s bytes gzip'd.
+/// Serves a made tile (crate::served::serve_made): `make`'s bytes gzip'd.
 async fn serve_made(
     s: S,
     key: String,
@@ -700,8 +700,8 @@ async fn serve_made(
     q: Option<String>,
     make: impl FnOnce(&S) -> anyhow::Result<Option<Vec<u8>>> + Send + 'static,
 ) -> Response {
-    let v = crate::cache::versioned(q.as_deref());
-    crate::cache::serve_made(&MADE, key, &etag, &headers, v, "application/octet-stream", "marks tile", move || {
+    let v = crate::served::versioned(q.as_deref());
+    crate::served::serve_made(&MADE, key, &etag, &headers, v, "application/octet-stream", "marks tile", move || {
         Ok(make(&s)?.map(|raw| gzip(&raw)))
     })
     .await
@@ -727,10 +727,10 @@ pub async fn tile(
     }
     let layer = format!("marks-{kind}");
     let (s2, l2) = (s.clone(), layer.clone());
-    let h = match crate::cache::blocking(format!("{layer} {z}/{x}/{y}"), move || s2.data.tile_hash(&l2, z, x, y)).await
+    let h = match crate::served::blocking(format!("{layer} {z}/{x}/{y}"), move || s2.data.tile_hash(&l2, z, x, y)).await
     {
         Ok(Some(h)) => h,
-        Ok(None) => return crate::cache::none(),
+        Ok(None) => return crate::served::none(),
         Err(r) => return r,
     };
     let nv = s.names.version_for_tile(z, x, y, 0.0);

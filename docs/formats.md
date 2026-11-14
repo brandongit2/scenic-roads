@@ -1201,12 +1201,12 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   tile: `web/src/api.ts` packVersion; MapLibre's sources through the map's request transform), so a
   map update re-requests only the tiles of the packs it changed. Every pack token and layer version
   meta gives out is current (the polar caps' blocks' too).
-- **Every data endpoint answers alike** (`server/src/cache.rs`): `Content-Encoding: gzip` by the
+- **Every data endpoint answers alike** (`server/src/served.rs`): `Content-Encoding: gzip` by the
   pack's own flag (`PackIndex::gzip`) or for what the server gzips; `If-None-Match` read as a list,
   a match a 304 with the ETag and the same Cache-Control; a tile the layer hasn't, at an address
   that can hold one, 204 (no body; depth and polar caps included); a URL naming no tile (an unknown
   kind or pole, outside the grid or the layer's zooms) 404; a read that failed (the NAS away) 503.
-  What the server keeps in memory is kept in one kind of cache (`cache::Lru`, least recently used
+  What the server keeps in memory is kept in one kind of cache (`served::Lru`, least recently used
   out past a byte or entry budget).
 - **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=free|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`

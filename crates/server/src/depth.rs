@@ -3,7 +3,7 @@
 //! stored, or, where the layer stores none (depth stops at each source's own zoom), made from the
 //! nearest stored ancestor as the build scales a level up (terrain::depth::fall), encoded as the
 //! stored ones are (lossless WebP). Outside the layer's zooms: 404; where it has nothing (no
-//! stored ancestor): 204, as every layer's missing tile (crate::cache).
+//! stored ancestor): 204, as every layer's missing tile (crate::served).
 //!
 //! And the terrain with the floor (`terrain_floor`): the water's surface less the depth on the water
 //! the depth lies on, for the map's 3D floor; and the water's surface itself (`surface_over`),
@@ -16,7 +16,7 @@
 //! less the depth, which is below it (an enclosed sea's below its own: terrain::depth::surface),
 //! so never above it. No second terrain is stored.
 
-use crate::cache::Lru;
+use crate::served::Lru;
 use crate::terrain::{made, respond, Got};
 use crate::S;
 use ::terrain::depth::fall::{self, Grid, Kind, Stored};
@@ -29,12 +29,12 @@ use axum::{
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Decoded stored tiles, by layer, tile and catalogue generation (an ancestor serves many children),
-/// a view's tiles of each of the two layers (cache::VIEW_TILES; an ancestor or none, at most
+/// a view's tiles of each of the two layers (served::VIEW_TILES; an ancestor or none, at most
 /// `fall::TILE`² f32s, ~260 KB, so ~97 MB at most). (Tiles made here are kept with the terrain's,
 /// crate::terrain::MADE.)
 type Decoded = Lru<(&'static str, u8, u32, u32, u64), Stored>;
 static DECODED: LazyLock<Mutex<Decoded>> =
-    LazyLock::new(|| Mutex::new(Lru::entries(2 * crate::cache::VIEW_TILES as usize)));
+    LazyLock::new(|| Mutex::new(Lru::entries(2 * crate::served::VIEW_TILES as usize)));
 
 fn gen(s: &crate::AppState) -> u64 {
     s.data.generation.load(std::sync::atomic::Ordering::Relaxed)
@@ -75,7 +75,7 @@ pub fn served(s: &crate::AppState, layer: &'static str, z: u8, x: u32, y: u32) -
 }
 
 async fn tile(s: S, layer: &'static str, z: u8, x: u32, y: u32, q: Option<String>, headers: HeaderMap) -> Response {
-    let v = crate::cache::versioned(q.as_deref());
+    let v = crate::served::versioned(q.as_deref());
     if !fall::in_layer(z, x, y) {
         return StatusCode::NOT_FOUND.into_response();
     }
