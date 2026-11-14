@@ -444,7 +444,9 @@ async fn a_click_answers_the_pieces_there_best_first() {
 /// South America at z4, each under both settings of the
 /// switch, written to `$SCENIC_RENDER_DIR`; a look by hand at what the app's colour map will show
 /// (the step's whole build, ~1 min); nothing without the variable. It prints what the step made:
-/// its time, its peak resident set, its packs' bytes and its tiles' sets (over 256, the most).
+/// its time, its peak resident set, its packs' bytes and its tiles' sets (over 256, the most), each
+/// zoom's tiles and bytes, and the 15 sources whose pieces' outlines cross the most tiles (with
+/// those no other source's outline crosses: what each costs).
 #[test]
 fn renders_the_real_pieces() {
     let Some(dir) = std::env::var_os("SCENIC_RENDER_DIR").map(std::path::PathBuf::from) else { return };
@@ -473,6 +475,11 @@ fn renders_the_real_pieces() {
     out.save().unwrap();
     let layer = fmt::layer("terrain");
     let (mut bytes, mut tiles, mut over, mut most) = (0, 0, 0, 0);
+    // (Each zoom's tiles and bytes; each source's tiles that one of its pieces' outlines crosses, a
+    // piece in some of the tile's sets and not in others, and those where it is the only such
+    // source: what the source costs.)
+    let mut per_zoom: BTreeMap<u8, (usize, usize)> = BTreeMap::new();
+    let mut per_src: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     for (l, c) in &out.manifest {
         if !l.starts_with(&format!("layers/{layer}/")) {
             continue;
@@ -480,10 +487,27 @@ fn renders_the_real_pieces() {
         let b = out.path(c).read().unwrap();
         bytes += b.len();
         for e in store::pack::PackIndex::parse_bytes(&b).unwrap().entries {
-            let n = Tile::decode(&b[e.offset as usize..][..e.len as usize]).unwrap().sets.len();
+            let blob = &b[e.offset as usize..][..e.len as usize];
+            let t = Tile::decode(blob).unwrap();
+            let n = t.sets.len();
             tiles += 1;
             over += usize::from(n > 256);
             most = most.max(n);
+            let z = per_zoom.entry(e.zxy().0).or_default();
+            z.0 += 1;
+            z.1 += blob.len();
+            let mut crossed = std::collections::BTreeSet::new();
+            for k in 0..t.ids.len() as u32 {
+                let held = t.sets.iter().filter(|s| s.contains(&k)).count();
+                if held > 0 && held < n {
+                    crossed.insert(t.ids[k as usize].split('/').next().unwrap());
+                }
+            }
+            for s in &crossed {
+                let r = per_src.entry(s.to_string()).or_default();
+                r.0 += 1;
+                r.1 += usize::from(crossed.len() == 1);
+            }
         }
     }
     eprintln!(
@@ -491,6 +515,14 @@ fn renders_the_real_pieces() {
          {over} of over 256 sets, {most} the most",
         pieces.len()
     );
+    for (z, (n, b)) in &per_zoom {
+        eprintln!("z{z}: {n} tiles, {b} bytes");
+    }
+    let mut costs: Vec<_> = per_src.into_iter().collect();
+    costs.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    for (s, (n, alone)) in costs.iter().take(15) {
+        eprintln!("{s}: its outlines cross {n} tiles, {alone} of them no other source's");
+    }
     let mut get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Tile>> {
         let Some((scope, key)) = fmt::pack_of(Grid::Mercator, z, x, y) else { return Ok(None) };
         let Some(c) = out.get(&format!("layers/{layer}/{scope}/{}", key.replace('/', "-"))) else { return Ok(None) };
