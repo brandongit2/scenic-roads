@@ -21,6 +21,9 @@
 # made from a Mac over SMB is stored as a 1,067-byte file starting "XSym") anywhere under inputs/,
 # state/ and sources/inputs/, and a top folder's link to itself (`<name>/<name>`). A link found is
 # a "link:" line; a flag, nothing is blocked.
+#
+# The staged declarations (#1402): producers/'s declarations and notes against the NAS's inputs
+# folders (tools/dev/inputsnas.py drift, docs/inputs.md §8): one line when they match.
 set -uo pipefail
 case $#:${1:-} in
   0:) ;;
@@ -60,6 +63,11 @@ if [[ -f .claude/nas-links ]]; then
   tail -n +2 .claude/nas-links | sed 's/^!find \(.*\)/find ended with exit \1: the list may be short/; s/^/  /'
   [[ $(wc -l < .claude/nas-links) -gt 1 ]] || print "  none"
 fi
+# The staged declarations against the NAS (#1402): tools/dev/inputsnas.py drift, a line when all
+# match, else a line a file that differs; one SSH pass, ~1 s. Drift is flagged: place it.
+drift=$(python3 tools/dev/inputsnas.py drift 2>&1); st=$?
+(( st == 1 )) && drift="${drift/#inputs on the NAS: DRIFT/inputs on the NAS: DRIFT  <-- PLACE IT}"
+print -r -- $drift
 from="6 h ago"; [[ -n $since ]] && from=$(date -r $since '+%F %T')
 print "the build (scenic status --flags, failures since $from):"
 if out=$(scenic status --flags ${since:+--since} ${since:+$since} 2>&1); then

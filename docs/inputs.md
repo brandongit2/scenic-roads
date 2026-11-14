@@ -2610,6 +2610,37 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
   outside the guards' scans; the app never runs them. Each runs on its own (`uv run --project
   producers python producers/heritage/registers.py --data <folder> --out <folder>`), writing the
   inputs folder's shape, checked when added. Their environment is their own (`producers/pyproject.toml`).
+- **Staged declarations reach the NAS by the PM's placement** after a merge, and their drift is
+  shown (`tools/dev/inputsnas.py`, task #1402). What is staged where:
+
+  | In the repository | On the NAS | The NAS folder is |
+  |---|---|---|
+  | `producers/extents/terrain/` | `inputs/extents/terrain/` | the repository's whole: a file only on the NAS is drift |
+  | `producers/sources/`, `producers/depth/declarations/`, `producers/geoid/declarations/` | `inputs/sources/` | shared: the NAS's own files (the depth grids' indexes, made there) are counted, not drift |
+  | `producers/elevation/`, `producers/elevation/1m/` | `inputs/elevation/` | shared (HRDEM's, 3DEP's and GSI's declarations are the NAS's own) |
+  | `producers/how/<box>/` (each folder holding a README) | `inputs/<box>/how/` | shared: the notes beside them |
+  | `producers/how/inputs-README.md` | `inputs/README.md` | a file |
+
+  A shared folder's staged files are its `.toml` declarations and the indexes they name
+  (`index = "…"`) beside them; other files there are the producers' own (`hrdem-squares.geojson`, the
+  scripts). Not drift: a declaration whose index is made neither in the repository nor on the NAS
+  (it waits for its index: the check would refuse it, `src-missing`; the SHOM grids today); a file
+  in a staged folder's `held/` (staged, not yet meant for the NAS: moving it out of `held/`, reviewed,
+  releases it; a held file found on the NAS is drift); a folder whose NAS folder doesn't exist. A
+  `.toml` under `producers/` (but `pyproject.toml`) no folder of the table holds is `unmapped`, drift.
+  - `inputsnas.py drift` hashes the staged files here and the NAS's in one SSH pass (`find` and
+    `sha256sum` on the NAS, about a second), read-only: one line when they match, else a line a file
+    that differs, isn't placed or is only on the NAS; exit 0, 1 for drift, 2 when the NAS can't be
+    read. `tools/dev/health.sh` prints it, drift flagged.
+  - `inputsnas.py place [<NAS path>…]` (by default every folder with drift), from the main checkout
+    at `origin/main` with `producers/` committed, and refused elsewhere: each folder staged afresh in
+    `inputs/.place/<time>/new/` (the repository's files by tar over SSH, a shared folder's own files
+    copied there on the NAS; a declaration waiting for its index left out), every file verified
+    against the repository, then swapped in, the old folder kept in `inputs/.place/<time>/kept/`
+    (under `inputs/`, which GC never sweeps; a name starting with `.`, no unit's); then `scenic inputs
+    check <unit>` for each unit, and what is left: accept the warnings expected, and delete the kept
+    folder once the new version is taken in. It deletes nothing. `--dry-run` says what it would place;
+    `--root <dir>` works on a stand-in project folder (its tests: `tools/dev/test/test_inputsnas.py`).
 - **Each inputs folder's `how/`** on the NAS says how its input is made and points to its producers; it
   holds what isn't code: the briefs and models of agent-made inputs (translations: Haiku, the
   earlier work's brief and launch prompt; descriptions: Sonnet, the September rounds' briefs; the
