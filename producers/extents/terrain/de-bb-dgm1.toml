@@ -5,7 +5,7 @@ licence_url = "https://www.govdata.de/dl-de/by-2-0"
 source = "https://data.geobasis-bb.de/geobasis/daten/dgm/"
 theme = "terrain"
 availability = "open"
-notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25833; 31,291 tiles in the download folder's tif/ listing): the LGB's actuality service (an OGC API Features collection, dgm_single, as many tiles) holds each tile with the date of its laser survey (`creationdate`: 2008 to 2011 for 17,433 tiles, 2017 to 2025 for the rest) and of its photogrammetric revision (`revisiondate`, mostly 2019 to 2025, for 21,708 tiles): the pieces are by the laser survey's year. No accuracy is stated in what was read. The ALS point cloud (LAZ, about 5 pts/m², 13,087 tiles) is the grid's source and makes no piece of its own. The image-matched surface model bDOM (\"bildbasiertes Digitales Oberflächenmodell\", from the aerial images of the Land's survey flights, renewed in their three-year cycle) is a piece beside it: 0.2 m (\"Gitterweite 0,2 m\", GeoTIFF, and the same grid as LAZ), 1 km tiles, free under dl-de/by-2-0: the actuality service's bdom_single collection holds its 31,936 tiles (as many as the download folder's bdom/tif/) with the date of each tile's flight (`creationdate`), by its year. No accuracy is stated for it."
+notes = "The state's bare-earth model, 1 m in 1 km tiles (EPSG:25833; 31,291 tiles in the download folder's tif/ listing): the LGB's actuality service (an OGC API Features collection, dgm_single, as many tiles) holds each tile with the date of its laser survey (`creationdate`: 2008 to 2011 for 17,433 tiles, 2017 to 2025 for the rest) and of its photogrammetric revision (`revisiondate`, mostly 2019 to 2025, for 21,708 tiles): the pieces are by the laser survey's year. No accuracy is stated in what was read. The classified ALS point clouds, the grid's source, are pieces beside it. The current one (LAZ, 1 km tiles, free under dl-de/by-2-0 in the download folder's als/laz/): the actuality service's als_single collection holds its 13,087 tiles, each with its survey's date (`creationdate`, 2017 to 2025, the same as the DGM tile's), by its year; the LGB states \"rund fünf Punkten pro m²\" (5 pts/m², 0.4472 m; the Geobroker's record states a resolution of 0.40 m). The older scan (\"Laserscandaten (2008-2012)\", offered as historical data, free, ordered in the LGB's Geobroker shop rather than in the download folder: claimed): the als_2008_2012_single collection's 28,439 tiles, each with its date (2008 to 2012), by its year; no density stated, the Geobroker's record states a resolution of 1.00 m, taken as its spacing. Where a tile was flown again, both editions' pieces lie there.The image-matched surface model bDOM (\"bildbasiertes Digitales Oberflächenmodell\", from the aerial images of the Land's survey flights, renewed in their three-year cycle) is a piece beside it: 0.2 m (\"Gitterweite 0,2 m\", GeoTIFF, and the same grid as LAZ), 1 km tiles, free under dl-de/by-2-0: the actuality service's bdom_single collection holds its 31,936 tiles (as many as the download folder's bdom/tif/) with the date of each tile's flight (`creationdate`), by its year. No accuracy is stated for it."
 
 [[piece]]
 id = "dgm"
@@ -29,4 +29,27 @@ tolerance_m = 100
 [piece.metrics]
 surface = "surface"
 spacing_m = 0.2
+year = { field = "creationdate", date = "iso" }
+
+[[piece]]
+id = "laz"
+label = "Laserscandaten (LAZ)"
+method = "stac"
+url = "https://ogc-api.geobasis-bb.de/datasets/aktualitaeten/collections/als_single"
+page = 10000
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.4472
+year = { field = "creationdate", date = "iso" }
+
+[[piece]]
+id = "laz-2008-2012"
+label = "Laserscandaten (2008-2012)"
+method = "stac"
+availability = "login"
+url = "https://ogc-api.geobasis-bb.de/datasets/aktualitaeten/collections/als_2008_2012_single"
+page = 10000
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1
 year = { field = "creationdate", date = "iso" }

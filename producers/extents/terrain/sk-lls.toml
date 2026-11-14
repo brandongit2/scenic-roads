@@ -5,7 +5,7 @@ licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://www.skgeodesy.sk/geoportal/zbgis/lls/poskytovanie/"
 theme = "terrain"
 availability = "open"
-notes = "The bare-earth and surface models of the national airborne laser scanning (LLS), as the geodesy office provides them, by its collection lots (lokality): the outlines are its lots' overview shapefiles (prehlad_lokalit_lls_1_cyklus.zip, 42 lots; prehlad_lokalit_lls_2_cyklus.zip, 73 lots; S-JTSK [JTSK03], their text cp1250 with no .cpg), each lot its number and name. Cycle 1 (2017 to 2023): DMR 5.0 and DMP 1.0, 1 m grids of the whole country, each downloaded as one country ZIP. Cycle 2 (2022 to 2026): DMR 6.0 and DMP 2.0, 0.5 m grids, downloaded by lot for the 16 lots the download page lists, each with both (04, 06, 07, 08, 09, 10, 11, 12, 13, 16, 17, 20, 27, 29, 31, 32); the other 57 lots aren't published yet and are left out. The DMP surface models are the lidar's, made with the DMR from the same scanning: their blocks (dmp1-, dmp2-) are the DMR's (dmr5-, dmr6-), lot for lot. Each lot's year is the last of its scanning period in the office's lot parameter tables (parametre-lokality-zberu-udajov-lls-1-cyklus.pdf and -2-cyklus.pdf), a block a cycle and year. Lots 40 to 42 of cycle 1 are completed with the national forestry centre's (NLC) 2018 to 2021 scanning. The tables give each cycle-1 lot's height accuracy of the DMR 5.0 (0.02 to 0.10 m; the specification m_H ≤ 0.20 m), not called an RMSE: left out. The classified point clouds are ordered offline on a form (their density not stated on the download page): not pieces."
+notes = "The bare-earth and surface models of the national airborne laser scanning (LLS), as the geodesy office provides them, by its collection lots (lokality): the outlines are its lots' overview shapefiles (prehlad_lokalit_lls_1_cyklus.zip, 42 lots; prehlad_lokalit_lls_2_cyklus.zip, 73 lots; S-JTSK [JTSK03], their text cp1250 with no .cpg), each lot its number and name. Cycle 1 (2017 to 2023): DMR 5.0 and DMP 1.0, 1 m grids of the whole country, each downloaded as one country ZIP. Cycle 2 (2022 to 2026): DMR 6.0 and DMP 2.0, 0.5 m grids, downloaded by lot for the 16 lots the download page lists, each with both (04, 06, 07, 08, 09, 10, 11, 12, 13, 16, 17, 20, 27, 29, 31, 32); the other 57 lots aren't published yet and are left out. The DMP surface models are the lidar's, made with the DMR from the same scanning: their blocks (dmp1-, dmp2-) are the DMR's (dmr5-, dmr6-), lot for lot. Each lot's year is the last of its scanning period in the office's lot parameter tables (parametre-lokality-zberu-udajov-lls-1-cyklus.pdf and -2-cyklus.pdf), a block a cycle and year. Lots 40 to 42 of cycle 1 are completed with the national forestry centre's (NLC) 2018 to 2021 scanning. The tables give each cycle-1 lot's height accuracy of the DMR 5.0 (0.02 to 0.10 m; the specification m_H ≤ 0.20 m), not called an RMSE: left out. The classified point clouds (LAZ) are pieces beside them, lot for lot on the same outlines: too large to download (several TB), they are handed over offline by lot at the office's two customer centres on an order form that names no fee (cut-outs up to 4 km² download in its MAPKA app): claimed, availability login. Each lot's density is the parameter tables' average density of last returns (cycle 1: 15 to 52 points/m², cycle 2: 34 to 80), a block per cycle, year and density (points<cycle>-<year>-<density>). The tables mark cycle 1's lots 25, 29 and 35 as classified into ground only, and every cycle-2 lot published as having its point cloud."
 
 [[piece]]
 id = "dmr5-2018"
@@ -275,4 +275,725 @@ tolerance_m = 100
 [piece.metrics]
 surface = "surface"
 spacing_m = 0.5
+year = 2025
+
+[[piece]]
+id = "points1-2018-17"
+label = "Klasifikované mračno bodov (1. cyklus, 17 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["04"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2425
+year = 2018
+[[piece]]
+id = "points1-2018-21"
+label = "Klasifikované mračno bodov (1. cyklus, 21 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["03"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2182
+year = 2018
+[[piece]]
+id = "points1-2018-23"
+label = "Klasifikované mračno bodov (1. cyklus, 23 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["10"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2085
+year = 2018
+[[piece]]
+id = "points1-2018-25"
+label = "Klasifikované mračno bodov (1. cyklus, 25 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["01", "02"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2
+year = 2018
+[[piece]]
+id = "points1-2018-26"
+label = "Klasifikované mračno bodov (1. cyklus, 26 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["05", "11"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1961
+year = 2018
+[[piece]]
+id = "points1-2018-28"
+label = "Klasifikované mračno bodov (1. cyklus, 28 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["17"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.189
+year = 2018
+[[piece]]
+id = "points1-2018-30"
+label = "Klasifikované mračno bodov (1. cyklus, 30 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["26"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1826
+year = 2018
+[[piece]]
+id = "points1-2018-31"
+label = "Klasifikované mračno bodov (1. cyklus, 31 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["07", "24"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1796
+year = 2018
+[[piece]]
+id = "points1-2018-33"
+label = "Klasifikované mračno bodov (1. cyklus, 33 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["08", "09"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1741
+year = 2018
+[[piece]]
+id = "points1-2018-43"
+label = "Klasifikované mračno bodov (1. cyklus, 43 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["19"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1525
+year = 2018
+[[piece]]
+id = "points1-2019-19"
+label = "Klasifikované mračno bodov (1. cyklus, 19 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["22"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2294
+year = 2019
+[[piece]]
+id = "points1-2019-22"
+label = "Klasifikované mračno bodov (1. cyklus, 22 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["20"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2132
+year = 2019
+[[piece]]
+id = "points1-2019-23"
+label = "Klasifikované mračno bodov (1. cyklus, 23 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["13"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2085
+year = 2019
+[[piece]]
+id = "points1-2019-32"
+label = "Klasifikované mračno bodov (1. cyklus, 32 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["06"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1768
+year = 2019
+[[piece]]
+id = "points1-2019-40"
+label = "Klasifikované mračno bodov (1. cyklus, 40 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["12"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1581
+year = 2019
+[[piece]]
+id = "points1-2019-43"
+label = "Klasifikované mračno bodov (1. cyklus, 43 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["21"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1525
+year = 2019
+[[piece]]
+id = "points1-2020-18"
+label = "Klasifikované mračno bodov (1. cyklus, 18 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["25"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2357
+year = 2020
+[[piece]]
+id = "points1-2020-21"
+label = "Klasifikované mračno bodov (1. cyklus, 21 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["29"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2182
+year = 2020
+[[piece]]
+id = "points1-2020-23"
+label = "Klasifikované mračno bodov (1. cyklus, 23 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["14", "18", "27"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2085
+year = 2020
+[[piece]]
+id = "points1-2020-25"
+label = "Klasifikované mračno bodov (1. cyklus, 25 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["23"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2
+year = 2020
+[[piece]]
+id = "points1-2020-48"
+label = "Klasifikované mračno bodov (1. cyklus, 48 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["15"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1443
+year = 2020
+[[piece]]
+id = "points1-2020-49"
+label = "Klasifikované mračno bodov (1. cyklus, 49 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["16"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1429
+year = 2020
+[[piece]]
+id = "points1-2021-15"
+label = "Klasifikované mračno bodov (1. cyklus, 15 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["35"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2582
+year = 2021
+[[piece]]
+id = "points1-2021-25"
+label = "Klasifikované mračno bodov (1. cyklus, 25 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["28"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.2
+year = 2021
+[[piece]]
+id = "points1-2021-28"
+label = "Klasifikované mračno bodov (1. cyklus, 28 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["30", "36", "39"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.189
+year = 2021
+[[piece]]
+id = "points1-2021-35"
+label = "Klasifikované mračno bodov (1. cyklus, 35 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["32"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.169
+year = 2021
+[[piece]]
+id = "points1-2021-37"
+label = "Klasifikované mračno bodov (1. cyklus, 37 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["31"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1644
+year = 2021
+[[piece]]
+id = "points1-2021-41"
+label = "Klasifikované mračno bodov (1. cyklus, 41 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["33"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1562
+year = 2021
+[[piece]]
+id = "points1-2021-47"
+label = "Klasifikované mračno bodov (1. cyklus, 47 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["34"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1459
+year = 2021
+[[piece]]
+id = "points1-2022-31"
+label = "Klasifikované mračno bodov (1. cyklus, 31 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["38"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1796
+year = 2022
+[[piece]]
+id = "points1-2022-33"
+label = "Klasifikované mračno bodov (1. cyklus, 33 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["37", "40"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1741
+year = 2022
+[[piece]]
+id = "points1-2022-42"
+label = "Klasifikované mračno bodov (1. cyklus, 42 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["42"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1543
+year = 2022
+[[piece]]
+id = "points1-2022-52"
+label = "Klasifikované mračno bodov (1. cyklus, 52 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_1_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["41"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1387
+year = 2022
+[[piece]]
+id = "points2-2022-38"
+label = "Klasifikované mračno bodov (2. cyklus, 38 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["10"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1622
+year = 2022
+[[piece]]
+id = "points2-2022-39"
+label = "Klasifikované mračno bodov (2. cyklus, 39 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["20"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1601
+year = 2022
+[[piece]]
+id = "points2-2022-45"
+label = "Klasifikované mračno bodov (2. cyklus, 45 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["07"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1491
+year = 2022
+[[piece]]
+id = "points2-2023-34"
+label = "Klasifikované mračno bodov (2. cyklus, 34 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["06"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1715
+year = 2023
+[[piece]]
+id = "points2-2023-42"
+label = "Klasifikované mračno bodov (2. cyklus, 42 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["04"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1543
+year = 2023
+[[piece]]
+id = "points2-2024-39"
+label = "Klasifikované mračno bodov (2. cyklus, 39 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["09"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1601
+year = 2024
+[[piece]]
+id = "points2-2024-40"
+label = "Klasifikované mračno bodov (2. cyklus, 40 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["08"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1581
+year = 2024
+[[piece]]
+id = "points2-2024-41"
+label = "Klasifikované mračno bodov (2. cyklus, 41 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["17"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1562
+year = 2024
+[[piece]]
+id = "points2-2024-43"
+label = "Klasifikované mračno bodov (2. cyklus, 43 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["13"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1525
+year = 2024
+[[piece]]
+id = "points2-2024-45"
+label = "Klasifikované mračno bodov (2. cyklus, 45 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["12", "31"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1491
+year = 2024
+[[piece]]
+id = "points2-2024-80"
+label = "Klasifikované mračno bodov (2. cyklus, 80 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["11"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1118
+year = 2024
+[[piece]]
+id = "points2-2025-36"
+label = "Klasifikované mračno bodov (2. cyklus, 36 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["32"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1667
+year = 2025
+[[piece]]
+id = "points2-2025-38"
+label = "Klasifikované mračno bodov (2. cyklus, 38 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["27"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1622
+year = 2025
+[[piece]]
+id = "points2-2025-40"
+label = "Klasifikované mračno bodov (2. cyklus, 40 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["16"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1581
+year = 2025
+[[piece]]
+id = "points2-2025-42"
+label = "Klasifikované mračno bodov (2. cyklus, 42 b/m²)"
+method = "file"
+class = "claimed"
+availability = "login"
+url = "https://www.skgeodesy.sk/files/geoportal/zbgis/lls/prehlad_lokalit_lls_2_cyklus.zip"
+encoding = "cp1250"
+filter = { LOT_cislo = ["29"] }
+by = ["LOT_cislo", "LOT_nazov"]
+name = "LOT_nazov"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.1543
 year = 2025
