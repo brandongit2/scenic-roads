@@ -5,7 +5,7 @@ licence_url = "https://www.pgc.umn.edu/data/rema/"
 source = "https://data.pgc.umn.edu/elev/dem/setsm/REMA/indexes/REMA_Mosaic_Index_latest_shp.zip"
 theme = "terrain"
 availability = "open"
-notes = "The centre's indexes of REMA v2 (EPSG:3031), surface models from stereo satellite imagery, registered to CryoSat-2 and ICESat altimetry: the mosaic's 2 m tiles (50 km squares, 5,800), its 10 m and 32 m tiles (100 km squares, 1,523 each; the same area at a coarser cell), all of imagery from 2009 to 2021; and the 2 m strips, each one pair of images as taken, not registered, from the strip index (by the year of its imagery). The full-domain 100 m, 500 m and 1 km mosaics are the same model resampled: not declared apart. The index's tiles hold no data south of about 89° S (a hole round the pole)."
+notes = "The centre's indexes of REMA v2 (EPSG:3031), surface models from stereo satellite imagery, registered to CryoSat-2 and ICESat altimetry: the mosaic's 2 m tiles (50 km squares, 5,800), its 10 m and 32 m tiles (100 km squares, 1,523 each; the same area at a coarser cell), all of imagery from 2009 to 2021; and the 2 m strips, each one pair of images as taken, not registered, from the strip index (442,597 strips of imagery from 2007 to 2024), as one piece: no year is stated for it, each strip being of its own pair's date (split by year, the strips' 18 yearly unions are overlapping meshes of narrow footprints; the year only breaks ties among the 2 m pieces, where the registered mosaic stands for the strips it was made from). The full-domain 100 m, 500 m and 1 km mosaics are the same model resampled: not declared apart. The index's tiles hold no data south of about 89° S (a hole round the pole)."
 
 [[piece]]
 id = "2m"
@@ -56,4 +56,3 @@ tolerance_m = 2000
 [piece.metrics]
 surface = "surface"
 spacing_m = { field = "gsd" }
-year = { field = "acqdate1", date = "iso" }

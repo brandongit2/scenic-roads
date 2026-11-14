@@ -2049,7 +2049,7 @@ far). Errors:
   `[[piece]]` block, a block without its `id`, two of one id; `by` not a list, `name` not one of
   `by`; `tolerance_m` not positive; `filter` not a table of lists; a metric's reading not of its
   shape (a `field`; `scale` positive, `index` from 0, `date` one of `epoch-ms`, `iso`, `year`,
-  `text`, `pattern` and `text` not empty; no other key). A method's own fields (`url`, `pattern` …) are the producer's to read and
+  `text`; `pattern` and `text` not empty; no other key). A method's own fields (`url`, `pattern` …) are the producer's to read and
   check;
 - a `.geojson` that isn't a FeatureCollection, whose `source` isn't its stem, or whose `read`
   isn't a list of readings each naming its block's `piece` and `method` (`ex-pieces`); pieces
@@ -2242,7 +2242,7 @@ Montana's, Utah's, Hawaii's, the District of Columbia's) and NEON's sites, of th
 declared.
 
 **Oceania, Africa and the polar south** (read 13 Nov 2026, task #1350; REMA's indexes on the Mac
-mini, the rest on the M1): 39 declarations, 1,339 pieces, 1,302 with an extent. Areas are checked in
+mini, the rest on the M1): 39 declarations, 1,322 pieces, 1,285 with an extent. Areas are checked in
 an equal-area projection against the publisher's figure or the tiles' count times their area.
 
 | Declaration | Pieces | Class | Read by |
@@ -2255,7 +2255,7 @@ an equal-area projection against the publisher's figure or the tiles' count time
 | `au-sa-dew` | 15: the lidar DEMs (12; three for the SA Government only: claimed) | `service`; `claimed` | `file`: the department's zipped GeoJSON (GDA2020), the SRTM folder left out |
 | `au-tas-elevation` | 253: the statewide 2 m DEM (70,817 km²); the completed lidar projects' areas (252, 54,798 km² as their union), each its density's nominal spacing and year | `files`; `service` | `raster`: the 95 GB COG's mask at a 256 m overview; `arcgis`: the LIST's lidar index (`filter` on `STATUS`) |
 | `au-wa-landgate`, `au-act-lidar` | 47; 2 | `claimed`; `unknown` | Landgate's LiDAR index (`arcgis`, sold per km²: claimed), its DEMs listed (a PDF map only); the ACT's 2015 and 2020 lidar claimed over the territory |
-| `au-ga-dem5m` | 1: GA's national 5 m lidar DEM (236 surveys of 2001 to 2015) | `files` | `raster`: the service's WCS 1.0.0 at 0.01° over the country, its 0 answers taken as no data (`nodata`); 239,135 km² against the stated "in excess of 245,000" |
+| `au-ga-dem5m` | 1: GA's national 5 m lidar DEM (236 surveys of 2001 to 2015) | `files` | `raster`: the service's WCS 1.0.0 at 0.01° over the country, its 0 answers taken as no data (`nodata`); 239,130 km² against the stated "in excess of 245,000" |
 | `au-ga-srtm1s` | 3: GA's 1 arc-second DEM, DEM-S and DEM-H | `files` | `raster`: Digital Earth Australia's three COGs at a 1 km overview; the DEM and DEM-S fill the sea with 0, taken as no data (`nodata`): 7,849,835 km², DEM-H 7,763,134 |
 | `au-iot-dem`, `nf-csiro-lidar`, `hm-aad-dem` | 2; 2; 1 | `claimed` | Christmas Island's and the Cocos' 1 m DEMs, Norfolk Island's 0.5 m DEM and 1 m DSM, Heard and McDonald's 10 m surface model, over the territories as Natural Earth draws them |
 | `au-ga-surveys` | 2 | `unknown` | `none`: Kakadu's lidar and the urban DEMs (no outlines published) |
@@ -2264,8 +2264,8 @@ an equal-area projection against the publisher's figure or the tiles' count time
 | `rw-nla-dem` | 1: Rwanda's 10 m national DEM | `files` | `raster`: the COG's mask at a 640 m overview (a grain of about 320 m), 26,930 km² |
 | `za-ngi-dem`, `za-capetown-glm`, `za-kruger-ceda` | 6; 1; 2 | `claimed` | South Africa's national grids (the NGI's 25 m on request; DEMSA2's DSM and DTM, SUDEM5, GeoSpace's DSM and DTM, sold) over the country; Cape Town's 5 m DEM (on request) by the City's boundary, 2,455 km²; Kruger's 0.25 m DSM and DTM (open, but no overviews and a loose sheet index) by the park's WDPA outline, 19,175 km² |
 | `ga-afrisar-lvis` | 1: LVIS's 25 m ground elevation of five Gabonese forest sites (2016) | `claimed` | `stac`: NASA's CMR, the five ground-elevation granules' footprints (login), 15,709 km² |
-| `pgc-rema` | 21: REMA's 2 m, 10 m and 32 m mosaic tiles; the 2 m strips by the year of their imagery (2007 to 2024) | `index` | `file`: the Polar Geospatial Center's tile indexes (EPSG:3031; the hole round the South Pole kept, no data south of ~89° S) and its strip index's zipped shapefile (at a 2 km tolerance), 3.6 MB; 95 s and a peak of 2.8 GB on the mini |
-| `dlr-polardem`, `npi-antarctic-dtm` | 1; 2 | `claimed`; `unknown` | DLR's 90 m TanDEM-X model of Antarctica (login) over the continent; Bouvetøya's DTM over the island, Peter I Island's listed |
+| `pgc-rema` | 4: REMA's 2 m, 10 m and 32 m mosaic tiles; the 2 m strips (imagery of 2007 to 2024, no year stated: each strip is its own pair's) | `index` | `file`: the Polar Geospatial Center's tile indexes (EPSG:3031; the hole round the South Pole kept, no data south of ~89° S) and its strip index's zipped shapefile (442,597 strips as one piece, at a 2 km tolerance), 197 KB; 24 s and a peak of 2.9 GB on the mini |
+| `dlr-polardem`, `npi-antarctic-dtm` | 1; 2 | `claimed`; `unknown` | DLR's 90 m TanDEM-X model of Antarctica (login) over the Copernicus DEM's GLO-90 tiles south of 60° S (`listing`, 7,042 tiles); Bouvetøya's DTM over the island, Peter I Island's listed |
 | 12 sources listed only | 30 | `unknown` | `none`, each with its `why`: French Polynesia's MNTs (no overviews), PACCSAP's and other Pacific islands' lidar, Majuro's, Johannesburg's, Mozambique's, Accra's, Senegal's, Fogo's (no overviews), Egypt's, East Africa's local models and the Australian Antarctic stations' |
 
 **Not obtained** (Oceania, Africa and the polar south, 13 Nov): ELVIS's per-survey footprints (its
@@ -2353,7 +2353,7 @@ pieces. Areas geodesic.
 | `nasa-dem` | 4: NASADEM (open), SRTM GL1 and GL3 v3, ASTER GDEM v3 (an Earthdata login: claimed), 30, 90 and 30 m surface models | `index`; `claimed` | NASADEM: `stac`, the Planetary Computer's 14,520 items; the others `listing` (lines) of NASA's CMR granule search, its CSV pages (its STAC answers 500 after the first page), 14,297, 14,297 and 22,912 1° tiles: 159.7, 158.1 and 179.2 million km² |
 | `fabdem` | 1: FABDEM V1-2, 30 m bare earth (non-commercial) | `index` | `listing` (zip, `links`): the 356 zips of 10° blocks the repository's folder links, each's central directory by range request (731 requests, 37 MB, 11 min on the M1): 19,011 1° tiles, 168.0 million km² |
 | `gedtm30` | 1: GEDTM30, 30 m bare earth | `files` | `raster`: OpenGeoHub's 30 m COG at its overview of 1.8 km pixels (1,638 range requests, 107 MB; about 45 min fetched on the M1, 3.8 from the cache), at a 3 km tolerance: 137.3 million km² |
-| `de-dlr-tandemx`, `merit-dem` | 3; 1: TanDEM-X's 90 m DEM and 30 m EDEM (login, scientific use) and Airbus's WorldDEM (12 m, sold); MERIT DEM (90 m, a registration) | `claimed` | `file`: the land as Natural Earth's admin-1 areas draw it at a 5 km tolerance (islands under 25 km² dropped as specks), Antarctica's too for TanDEM-X, not for MERIT (to 60° S): 146.8 and 134.4 million km²; 3.0 MB (the land three times) |
+| `de-dlr-tandemx`, `merit-dem` | 3; 1: TanDEM-X's 90 m DEM and 30 m EDEM (login, scientific use) and Airbus's WorldDEM (12 m, sold); MERIT DEM (90 m, a registration) | `claimed` | `listing` (lines): the land as the Copernicus DEM's GLO-90 list gives it (`cop-dem`'s, the WorldDEM's public edition: 26,475 1° tiles, each holding land), Antarctica's too for TanDEM-X, not for MERIT (its tiles north of 60° S, 19,433): 184.2 and 168.7 million km², the land with a margin of up to a tile; TanDEM-X's three outlines are `cop-dem`'s GLO-90 outline |
 
 **Not obtained** (the worldwide models, 13 Nov): TanDEM-X's and MERIT's tile lists (behind DLR's
 login and MERIT's registration: claimed over the land); the spacing of OpenTopography's datasets

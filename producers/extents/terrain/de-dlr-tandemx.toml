@@ -5,15 +5,18 @@ licence_url = "https://geoservice.dlr.de/web/dataguide/tdm90/"
 source = "https://geoservice.dlr.de/web/dataguide/tdm90/"
 theme = "terrain"
 availability = "login"
-notes = "The TanDEM-X mission's global surface models from its radar pairs of 2010 to 2015, pole to pole: the 90 m DEM (3 arc-seconds, a free account and a scientific-use licence), the 30 m Edited DEM (EDEM: 1 arc-second, gaps filled and water flattened, the same terms), and Airbus's WorldDEM (0.4 arc-second, about 12 m, sold). Their tile lists are behind DLR's login (its download host answers a redirect to it) and Airbus's shop, so each is claimed over the land as Natural Earth's 1:10m admin-1 areas (v5.1.2, public domain) draw it, Antarctica's too, at a 5 km tolerance (islands under 25 km² dropped as specks): claimed, not checked against data. (The Copernicus DEM, `cop-dem`, is the EDEM's public edition.)"
+notes = "The TanDEM-X mission's global surface models from its radar pairs of 2010 to 2015, pole to pole: the 90 m DEM (3 arc-seconds, a free account and a scientific-use licence), the 30 m Edited DEM (EDEM: 1 arc-second, gaps filled and water flattened, the same terms), and Airbus's WorldDEM (0.4 arc-second, about 12 m, sold). Their tile lists are behind DLR's login (its download host answers a redirect to it) and Airbus's shop, so each is claimed over the mission's land tiles as the Copernicus DEM's GLO-90 list gives them (`cop-dem`: the WorldDEM's public edition, 26,475 1° tiles, each holding land, Antarctica's too; the list `cop-dem`'s GLO-90 piece reads, so the three outlines are its outline): claimed, not checked against data. A tile holding land is the land with a margin of up to a tile: for a 12 to 90 m model that is claimed over the land, a coastline traced closer states nothing more."
 
 [[piece]]
 id = "tdm90"
 label = "TanDEM-X 90 m DEM"
-method = "file"
+method = "listing"
 class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-tolerance_m = 5000
+list = "lines"
+url = "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt"
+pattern = '_(?P<ns>[NS])(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM'
+size = 1
+tolerance_m = 10
 [piece.metrics]
 surface = "surface"
 spacing_m = 90
@@ -22,10 +25,13 @@ year = 2015
 [[piece]]
 id = "edem30"
 label = "TanDEM-X 30 m EDEM"
-method = "file"
+method = "listing"
 class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-tolerance_m = 5000
+list = "lines"
+url = "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt"
+pattern = '_(?P<ns>[NS])(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM'
+size = 1
+tolerance_m = 10
 [piece.metrics]
 surface = "surface"
 spacing_m = 30
@@ -35,10 +41,13 @@ year = 2015
 id = "worlddem"
 label = "WorldDEM (12 m)"
 availability = "paid"
-method = "file"
+method = "listing"
 class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-tolerance_m = 5000
+list = "lines"
+url = "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt"
+pattern = '_(?P<ns>[NS])(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM'
+size = 1
+tolerance_m = 10
 [piece.metrics]
 surface = "surface"
 spacing_m = 12

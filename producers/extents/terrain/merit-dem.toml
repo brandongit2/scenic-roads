@@ -5,16 +5,18 @@ licence_url = "https://global-hydrodynamics.github.io/MERIT_DEM/"
 source = "https://global-hydrodynamics.github.io/MERIT_DEM/"
 theme = "terrain"
 availability = "login"
-notes = "A 3 arc-second (90 m) surface model of the land from 90° N to 60° S, the SRTM's, AW3D30's and Viewfinder Panoramas' models with their absolute bias, stripes, speckle and tree heights removed; its 30° packages download with a password given after a registration form, so it is claimed over the land north of 60° S as Natural Earth's 1:10m admin-1 areas (v5.1.2, public domain) draw it, Antarctica left out, at a 5 km tolerance (islands under 25 km² dropped as specks): claimed, not checked against data. Its years are its inputs' (to 2011)."
+notes = "A 3 arc-second (90 m) surface model of the land from 90° N to 60° S, the SRTM's, AW3D30's and Viewfinder Panoramas' models with their absolute bias, stripes, speckle and tree heights removed; its 30° packages download with a password given after a registration form, so it is claimed over the land north of 60° S as the Copernicus DEM's GLO-90 list gives it (`cop-dem`: 1° tiles, each holding land; those whose south-west corner is at 61° S or beyond left out), the land with a margin of up to a tile: claimed, not checked against data. Its years are its inputs' (to 2011)."
 
 [[piece]]
 id = "merit"
 label = "MERIT DEM"
-method = "file"
+method = "listing"
 class = "claimed"
-url = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/v5.1.2/geojson/ne_10m_admin_1_states_provinces.geojson"
-exclude = { adm0_a3 = ["ATA"] }
-tolerance_m = 5000
+list = "lines"
+url = "https://copernicus-dem-90m.s3.amazonaws.com/tileList.txt"
+pattern = '_(?P<ns>N|S(?!6[1-9]|[7-9]\d))(?P<y>\d+)_00_(?P<ew>[EW])(?P<x>\d+)_00_DEM'
+size = 1
+tolerance_m = 10
 [piece.metrics]
 surface = "surface"
 spacing_m = 90

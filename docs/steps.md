@@ -1069,14 +1069,16 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
   South Pole.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
-  On the 5,988 pieces with an extent of 13 Nov (producers/extents/terrain/, North America's and
-  Europe  On the 13,262 pieces with an extent of 13 Nov (producers/extents/terrain/, every region's sources
-  and the worldwide models; `renders_the_real_pieces`, the test profile's build, alone on the M4):
-  257 s, a peak resident set of 5.58 GB, 3,153,702 tiles in packs of 2.46 GB; 1,801 tiles have more
-  than 256 sets (two bytes a pixel), the most 11,997. The worldwide pieces claimed over the land
-  (TanDEM-X's three, MERIT's) and the masks and indexes that follow every coast (GEDTM30's,
-  FABDEM's, the 1° tile lists) make each coastal tile down to the finest zoom one of several sets.
-ing the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
+  On the 13,245 pieces with an extent of 13 Nov (producers/extents/terrain/, every region's 281
+  sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, on the Mac
+  mini): 95 s, a peak resident set of 2.7 GB, 1,090,652 tiles in packs of 794 MB (z12's 654,557,
+  494 MB); 1,223 tiles have more than 256 sets (two bytes a pixel), the most 11,716. A tile is
+  stored only where an outline crosses it, so the cost is the outlines' length at z12, whatever a
+  piece's grain: GEDTM30's mask (a 1.8 km grain) alone makes 169,337 tiles no other outline
+  crosses. Outlines that coincide cost once: TanDEM-X's three pieces, MERIT's and DLR's PolarDEM
+  are claimed over `cop-dem`'s GLO-90 tiles, so they make no tile of their own.
+- **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
+  block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent
   standing only outside the dataset's coverage: Copernicus GLO-30, which the store holds whole
   with its fill masks, drawn where its own pixels are (its fill mask below 3), not where its 1°
@@ -1130,7 +1132,9 @@ the piece's own spacing, no layer of the primary's own, the server's label where
 none), one still holding the retired colour fields served the same, the tiles' values (inside a
 piece and transparent outside it) and the click; and `renders_the_real_pieces`, run by hand: with
 `SCENIC_RENDER_DIR` set it builds every real piece, prints the step's time, peak resident set,
-packs' bytes and tiles' sets (those over 256, the most in one), and writes the score layer as PNGs,
+packs' bytes and tiles' sets (those over 256, the most in one), each zoom's tiles and bytes and the
+15 sources whose outlines cross the most tiles (and those no other source's crosses), and writes
+the score layer as PNGs,
 each value in its spacing's class (the world at z2, Asia at z3, Europe, Oceania and South America
 at z4, France and Japan at z5, Germany at z6, Vancouver at z8, each under both settings of the
 switch).
