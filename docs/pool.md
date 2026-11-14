@@ -1679,7 +1679,7 @@ percentile of their memory), before any of its step's ran by every step's drops 
 step reads the manifest alone), and before any drop at all by its step's model, as a build: one
 job, after which it is measured (no figure is typed in for it). The scheduler marks them as
 offered (`Sched::drops`); the plan puts every step's drops first of the terrain, slope and tree cover work
-(`seam::Planned::drops`), the forecast lists them first as runs of their own (`Lane::drop`, never merged
+(`seam::Planned::drops`), the forecast lists them first as runs of their own (`Stretch::drop`, never merged
 with a build's run), shown "drop to come" on the build page. A drop never runs under a job that
 reads what it drops: what reads its tile waits for it as before (the z3 tiles with a none target
 left are terrain or slope left), it has one key per target so it is never leased beside a build of
@@ -2847,7 +2847,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   each clean stretch, opening then). Each lane's next job is the coordinator's scheduler's grant to
   its Mac (§7.2, One scheduler), the Mac's room shared by its lanes as the scheduler packs it (a Mac
   whose ask isn't recorded: `forecast::MacRoom`); each
-  lane's runs (`forecast::Lane`) are a step's jobs one after another (two minutes apart at most),
+  lane's runs (`forecast::Stretch`) are a step's jobs one after another (two minutes apart at most),
   each job as granted (task #834): a run's `cuts` say where each job after its first starts and how
   many of the run's targets (`/api/tocome`'s `runs`, in time order) come before it, so the page
   draws every job to come, over the whole forecast, as a block of its own with its targets (~10
@@ -2900,7 +2900,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   each tile once a Mac and step at its first start, targets naming no tile left out: the page's
   map's queue; and the schedule's runs (`forecast::Runs`, task #787): `runs`, each run's targets,
   the runs numbered as the forecast's `lanes` hold them (the lanes by name in byte order, each
-  lane's runs in order); `jobs`, how many jobs each run is (its `Lane::cuts` and one), the jobs
+  lane's runs in order); `jobs`, how many jobs each run is (its `Stretch::cuts` and one), the jobs
   numbered in turn in the runs' order; and `deps`, [a, b] when an item of job b waits on one of
   job a (task #879: its declared reads, `steps::read_targets`, a release's; a set it reads whole by
   the job of the set's item ending last), each pair once; and `after` (task #797), for each job (in the jobs' order) the history's event numbers of the finished jobs its items waited on (per step the last such job over the job's items, sorted, a few numbers a job: the `WaitsBasis` lookup the forecast's thread already makes for the history's waits, `Waits::by_job`; none for an item new since the last forecast), with the `epoch` they're numbered in: the coordinator's history's (`coordinator <lead>`, the swarm's), in and out of the pool. In the pool the answer is the lead's pageview's (§10), worked out by the same lookup from its own run's items and the coordinator's history (`Coordinator::history_waits_basis`: its waits kept apart from the history's own, `History::waits_basis_from`; kept on the lead's disk, `<agent home>/pageview-waits.json`, written whole (`store::whole::write`) every 5 minutes at most, each number with its numbering's name, and read back for its first run after a start (task #863), so that run's `after` names the jobs finished since they were kept; none when no file is there, or it was kept over a day before). Measured on the 26 Oct 20:15

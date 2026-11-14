@@ -866,7 +866,7 @@ async function run() {
       // (A drop looked for further: its run may sit behind a lane of many jobs.)
       for (let k = 0; k < Math.min(nNext, 200) && ((!nc && k < 40) || !dc); k++) {
         const c = await card(null, "", await js(`(() => { document.querySelector(".panel:not([hidden]) .sched .lanewrap").scrollIntoView({ block: "center" }); const s = ${next}[${k}]; return s ? [s.x, s.y] : null; })()`), true);
-        // (#837) A drop to come (forecast::Lane::drop: a run of drops, packs dropped, nothing
+        // (#837) A drop to come (forecast::Stretch::drop: a run of drops, packs dropped, nothing
         // built): its own kicker and a "does" row, shot as it shows (chrome-drop-to-come.png).
         if (!dc && c && !c.none && /drop to come/.test(c.kick || "")) {
           dc = { ...c, does: await js(`[...document.querySelectorAll(".card-tip")].find((e) => e.getClientRects().length && !e.hidden)?.textContent.includes("reads and builds nothing") || false`) };

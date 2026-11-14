@@ -141,7 +141,7 @@ pub struct Input<'a> {
     pub regions: Cow<'a, [RegionLeft]>,
     /// The drops (seam::Planned::drops: targets of the "none" keys, their packs dropped),
     /// each at its drop's cost: first of the regions' work, waiting on nothing, shown as drops
-    /// (`Lane::drop`). A region whose terrain they're in waits on them.
+    /// (`Stretch::drop`). A region whose terrain they're in waits on them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub drops: Vec<Job>,
     /// What each region's target takes, by step and target (`cost_table`: every target of
@@ -775,9 +775,9 @@ pub struct Forecast {
     pub publishes: Vec<PublishFc>,
     /// What each machine does next: its first few jobs.
     pub next: BTreeMap<String, Vec<NextFc>>,
-    /// Each machine's work to the end, a step's run together (`Lane`): the schedule.
+    /// Each lane's work to the end, by its name, a step's jobs together (`Stretch`): the schedule.
     #[serde(default)]
-    pub lanes: BTreeMap<String, Vec<Lane>>,
+    pub lanes: BTreeMap<String, Vec<Stretch>>,
     /// The machines (this Mac's slots) whose job waits on a worker holding its z6 tile's tail, and on
     /// what (the agent's `waiting_on`): their room free for a job beside it meanwhile.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -813,7 +813,7 @@ pub struct Forecast {
 }
 
 /// The schedule's runs (`Forecast::lanes`) numbered in turn: the lanes by name, each lane's runs in
-/// order (run k is the k-th of that list), each run's jobs (`Lane::cuts`) numbered in turn after
+/// order (run k is the k-th of that list), each run's jobs (`Stretch::cuts`) numbered in turn after
 /// the runs before it's (job j is the j-th of every run's jobs in that order). Each run's targets
 /// (its items', in order; a job under way that no item is, none) and how many jobs it is, and the
 /// jobs each waits on, from the items' readiness (crate::agent::steps::read_targets): [a, b] when
@@ -927,8 +927,8 @@ impl ToCome {
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
 pub const VERSION: u32 = 7;
 
-/// A run of a machine's work of one step: from and until when (unix seconds), and how many
-/// targets. A run is one or more jobs as the scheduler grants them in the forecast's run, one after
+/// A stretch of a lane's work of one step (a "run" of the schedule: `Runs`, the page's run
+/// numbers): from and until when (unix seconds), and how many targets. A stretch is one or more jobs as the scheduler grants them in the forecast's run, one after
 /// another on the lane (two minutes apart at most; task #834): its targets (`Runs::targets`, in
 /// time order) its jobs' in turn. `cuts`, each job's after the first: [when it starts, s from
 /// `from`; how many of the run's named targets come before it (a job under way that no item is
@@ -937,7 +937,7 @@ pub const VERSION: u32 = 7;
 /// so on the page, its targets named, at ~10 bytes a job past the first of a run (29 Oct's record,
 /// 5,397 jobs over 2.5 days in 571 runs: the lanes 35 KB without the cuts, 91 KB with them).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Lane {
+pub struct Stretch {
     pub step: String,
     pub from: u64,
     pub until: u64,
@@ -1180,7 +1180,7 @@ struct Item {
     from: f64,
     end: f64,
     /// The job it was granted in (`run`'s numbering, from 1; 0: none yet): the lane's runs
-    /// (`Lane`) are its jobs.
+    /// (`Stretch`) are its jobs.
     job: u32,
     /// A drop (`Input::drops`).
     drop: bool,
@@ -2273,7 +2273,7 @@ pub fn forecast_by(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input,
         }
         f.next.insert(mac.name.clone(), next);
         // Its schedule: the job its slot runs now that no item is (its time left), then its runs:
-        // its jobs (`Lane`).
+        // its jobs (`Stretch`).
         // (Each run's items, for `Runs`.)
         let mine: Vec<(usize, &Item)> = expected.items.iter().enumerate().filter(|(_, i)| i.by == Some(m)).collect();
         let under_way = mac.running.as_ref().filter(|_| !mine.iter().any(|(_, i)| i.running));
@@ -2297,7 +2297,7 @@ pub fn forecast_by(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input,
                 item: None,
                 drop: false,
             }));
-        for (k, r) in lane_runs(runs.collect(), now).into_iter().enumerate() {
+        for (k, r) in lane_stretches(runs.collect(), now).into_iter().enumerate() {
             for i in r.1 {
                 run_of[i] = Some((m, k));
             }
@@ -2322,14 +2322,14 @@ struct Placing<'a> {
     drop: bool,
 }
 
-/// A lane's runs (`Lane`) from its placings, `now` the forecast's time (unix s): each its items in
+/// A lane's stretches (`Stretch`) from its placings, `now` the forecast's time (unix s): each its items in
 /// time order. A step's jobs one after another (two minutes apart at most) are one run, each job
 /// after the first a cut.
-fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
+fn lane_stretches(mut placed: Vec<Placing>, now: f64) -> Vec<(Stretch, Vec<usize>)> {
     // (The job under way first.)
     placed.sort_by(|a, b| a.from.total_cmp(&b.from).then(a.item.is_some().cmp(&b.item.is_some())));
     let at = |s: f64| (now + s).round() as u64;
-    let mut out: Vec<(Lane, Vec<usize>, u32)> = Vec::new();
+    let mut out: Vec<(Stretch, Vec<usize>, u32)> = Vec::new();
     for p in placed {
         match out.last_mut() {
             Some((l, items, job)) if l.step == p.step && l.drop == p.drop && p.from <= l.until as f64 - now + 120.0 => {
@@ -2343,7 +2343,7 @@ fn lane_runs(mut placed: Vec<Placing>, now: f64) -> Vec<(Lane, Vec<usize>)> {
                 items.extend(p.item);
             }
             _ => out.push((
-                Lane {
+                Stretch {
                     step: p.step.to_string(),
                     from: at(p.from),
                     until: at(p.until),
@@ -2373,7 +2373,7 @@ fn graph_of(sim: &Sim) -> crate::coord::history::Graph {
 /// The schedule's runs (`Runs`): `run_of` each item's (machine, its run in its lane), the
 /// machines' lanes in `lanes` by their names.
 fn runs_of(
-    lanes: &BTreeMap<String, Vec<Lane>>,
+    lanes: &BTreeMap<String, Vec<Stretch>>,
     machines: &[Machine],
     sim: &Sim,
     run_of: &[Option<(usize, usize)>],
@@ -2390,7 +2390,7 @@ fn runs_of(
         Some(first.get(machines.get(m)?.name.as_str())? + r as u32)
     };
     let ids: Vec<Option<u32>> = (0..sim.items.len()).map(id).collect();
-    // (Each run's targets in time order, as its jobs' cuts count them: `lane_runs`.)
+    // (Each run's targets in time order, as its jobs' cuts count them: `lane_stretches`.)
     let mut by_run: Vec<Vec<usize>> = vec![Vec::new(); total as usize];
     for (k, r) in ids.iter().enumerate() {
         if let Some(r) = r {
@@ -2657,8 +2657,8 @@ mod tests {
         assert_eq!(fc.runs.targets.len(), fc.lanes.values().map(Vec::len).sum::<usize>());
     }
 
-    /// A run's jobs (`Lane::cuts`): each one's start (unix s) and targets.
-    fn jobs_of<'a>(l: &Lane, targets: &'a [String]) -> Vec<(u64, &'a [String])> {
+    /// A run's jobs (`Stretch::cuts`): each one's start (unix s) and targets.
+    fn jobs_of<'a>(l: &Stretch, targets: &'a [String]) -> Vec<(u64, &'a [String])> {
         let mut at: Vec<(u64, usize)> = vec![(l.from, 0)];
         at.extend(l.cuts.iter().map(|c| (l.from + c[0] as u64, c[1] as usize)));
         (0..at.len()).map(|k| (at[k].0, &targets[at[k].1..at.get(k + 1).map_or(targets.len(), |a| a.1)])).collect()
@@ -2673,7 +2673,7 @@ mod tests {
         let inp = two_macs(&regions, &c);
         let f = forecast(crate::agent::seam::for_tests(), &inp);
         assert!(!f.grants.is_empty());
-        let runs: Vec<&Lane> = f.lanes.values().flatten().collect();
+        let runs: Vec<&Stretch> = f.lanes.values().flatten().collect();
         assert_eq!(runs.len(), f.runs.targets.len());
         let jobs: Vec<(&str, u64, &[String])> = runs
             .iter()
@@ -2722,7 +2722,7 @@ mod tests {
             // (The job under way that no item is: names no target.)
             Placing { step: "terrain-deep", from: 0.0, until: 0.0, n: 3, job: 0, item: None, drop: false },
         ];
-        let runs = lane_runs(placed, now);
+        let runs = lane_stretches(placed, now);
         let got: Vec<(u64, usize, Vec<[u32; 2]>, Vec<usize>)> =
             runs.into_iter().map(|(l, i)| (l.from - now as u64, l.n, l.cuts, i)).collect();
         let l = late as u64;
@@ -2737,10 +2737,10 @@ mod tests {
             ]
         );
         // (A run of one job: no `cuts` in the status.)
-        let l = Lane { step: "x".into(), from: 1, until: 2, n: 1, cuts: Vec::new(), drop: false };
+        let l = Stretch { step: "x".into(), from: 1, until: 2, n: 1, cuts: Vec::new(), drop: false };
         assert_eq!(serde_json::to_value(&l).unwrap(), serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1}));
         assert_eq!(
-            serde_json::from_value::<Lane>(serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1})).unwrap(),
+            serde_json::from_value::<Stretch>(serde_json::json!({"step": "x", "from": 1, "until": 2, "n": 1})).unwrap(),
             l
         );
     }
@@ -2795,7 +2795,7 @@ mod tests {
     }
 
     /// The drops (`Input::drops`, seam::Planned::drops) go first at their own cost, a run of their
-    /// own shown as drops (`Lane::drop`), never merged with the step's builds: 29 Oct's 4,275 Alaska
+    /// own shown as drops (`Stretch::drop`), never merged with the step's builds: 29 Oct's 4,275 Alaska
     /// drops were the yukon's, last, at a build's 76 s each.
     #[test]
     fn drops_go_first_as_drops() {
@@ -2810,7 +2810,7 @@ mod tests {
             ("terrain-deep".into(), "10/100/253".into(), drop),
         ];
         let f = forecast(crate::agent::seam::for_tests(), &inp);
-        let lanes: Vec<&Lane> = f.lanes.values().flatten().filter(|l| l.step == "terrain-deep").collect();
+        let lanes: Vec<&Stretch> = f.lanes.values().flatten().filter(|l| l.step == "terrain-deep").collect();
         assert_eq!(lanes.len(), 2, "{lanes:?}");
         assert!(lanes[0].drop && lanes[0].n == 2 && lanes[0].until - lanes[0].from <= 5, "{lanes:?}");
         assert!(!lanes[1].drop && lanes[1].n == 2 && lanes[1].from >= lanes[0].until, "{lanes:?}");

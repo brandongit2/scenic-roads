@@ -1223,7 +1223,7 @@ function runCard(m, r, kind, laneName) {
   // (One job as the forecast's run of the scheduler grants it (`runJobs`), its targets
   // `/api/tocome`'s once asked.)
   const one = targets.length > 0;
-  // (A drop (forecast::Lane::drop): tiles no target any more, their packs dropped, nothing built.)
+  // (A drop (forecast::Stretch::drop): tiles no target any more, their packs dropped, nothing built.)
   const what = r.drop ? "drop" : "job";
   return stack({ kicker: `${r.step} · ${what} to come`, colour, title: one ? S.job(r.step, targets) : r.n ? S.counted(r.step, r.n) : r.step, map,
     stats: [[clock(r.from), "forecast start"], [clock(r.until), "forecast end"]],
@@ -1285,7 +1285,7 @@ function scheduleSection(m) {
   return schedRoot;
 }
 
-// A forecast run's jobs (forecast::Lane): each its from and until (unix s), its count and its
+// A forecast run's jobs (forecast::Stretch): each its from and until (unix s), its count and its
 // targets (`targets`, the run's from `/api/tocome`, in time order; none before it's asked). `cuts`,
 // each job's after the first: [its start, s from the run's; the run's named targets before it]; a
 // job ends where the next starts. The first job's count holds a job under way's unnamed targets.
