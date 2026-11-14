@@ -1,6 +1,6 @@
 //! Tasks brokered by every member (docs/pool.md §8, §9; §12 phase 4's tenth batch): what a
 //! coordinator knows of the pool's brokers, told by its agent from the members' heartbeats
-//! (crate::agent::brokers): which pages may call it from elsewhere (CORS: the members' own
+//! (crate::agent::peers): which pages may call it from elsewhere (CORS: the members' own
 //! addresses, `origins`; a member's page reads another's live charts and settings straight). None
 //! of it while the switch is off (`Shared::brokers` None: the coordinator as it was).
 

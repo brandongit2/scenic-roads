@@ -51,7 +51,6 @@ pub mod asks;
 pub mod backup;
 pub mod beat;
 pub mod brief;
-pub mod brokers;
 pub mod builtview;
 pub mod bus;
 pub mod cataloguesview;
@@ -75,6 +74,7 @@ pub mod memguard;
 pub mod nas;
 pub mod nasread;
 pub mod pageview;
+pub mod peers;
 pub mod placement;
 pub mod plan;
 pub mod pool;
@@ -7989,7 +7989,7 @@ impl Agent {
         Some(view.forecast.as_ref().map(placement::Placement::from_forecast).unwrap_or_default())
     }
 
-    /// Tasks brokered by every member (crate::agent::brokers) act in the pool; out of it, a member
+    /// Tasks brokered by every member (crate::agent::peers) act in the pool; out of it, a member
     /// brokers nothing.
     fn brokers_on(&self) -> bool {
         self.pool.is_some()
@@ -8027,7 +8027,7 @@ impl Agent {
             && self.is_member()
             && !self.o.dry_run
             && self._lock.is_some()
-            && brokers::stale(self.broker_failed, now, brokers::HTTPS_EVERY)
+            && peers::stale(self.broker_failed, now, peers::HTTPS_EVERY)
         {
             self.stop_viewer();
             let tried = match self.pool.as_ref().map(pool::try_lock) {
@@ -8067,7 +8067,7 @@ impl Agent {
                 b.set_pause(self.pause.clone(), now_s());
             }
         }
-        if brokers::stale(self.broker_https.as_ref().map(|h| h.0), now, brokers::HTTPS_EVERY) {
+        if peers::stale(self.broker_https.as_ref().map(|h| h.0), now, peers::HTTPS_EVERY) {
             self.broker_https = Some((now, coordwire::net::served_https(port), coordwire::net::lan_urls(port)));
         }
     }
@@ -8227,7 +8227,7 @@ impl Agent {
         if self.broker.is_none()
             && self.viewer.is_none()
             && self.pool.is_some()
-            && brokers::stale(self.viewer_failed, now, brokers::HTTPS_EVERY)
+            && peers::stale(self.viewer_failed, now, peers::HTTPS_EVERY)
         {
             match make_viewer(self.o.the_plan, self.port, &self.app, &self.host) {
                 Some(v) => {
@@ -16934,7 +16934,7 @@ mod pool_tests {
         stop_jobs(&mut m);
     }
 
-    /// Tasks brokered by every member (crate::agent::brokers), two agents in
+    /// Tasks brokered by every member (crate::agent::peers), two agents in
     /// one process: the member runs a broker and gives its job its address; its heartbeat says
     /// where it is, and it answers a page from the lead's address (CORS); a worker takes the
     /// member's task straight from the member's broker, and the lead's own task from the lead,

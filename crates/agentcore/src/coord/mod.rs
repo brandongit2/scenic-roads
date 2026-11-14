@@ -520,7 +520,7 @@ pub struct Shared {
     pub answers: BTreeMap<String, std::collections::VecDeque<Answer>>,
     /// Each member's newest request taken (held::Sent: its beats' and asks'), by its host.
     pub sent: BTreeMap<String, held::Sent>,
-    /// Tasks brokered by every member (docs/pool.md §8; crate::agent::brokers): the members and
+    /// Tasks brokered by every member (docs/pool.md §8; crate::agent::peers): the members and
     /// their brokers, as the agent last read their heartbeats. None: the switch off, the
     /// coordinator as it was (no page from elsewhere, a take-up's leases in place
     /// of its own).
@@ -3380,7 +3380,7 @@ impl Coordinator {
         self.shared.lock().unwrap().releases = Some(dir);
     }
 
-    /// Tasks brokered by every member (docs/pool.md §8, crate::agent::brokers): the members in
+    /// Tasks brokered by every member (docs/pool.md §8, crate::agent::peers): the members in
     /// touch and their brokers, as its agent read their heartbeats, and so the origins whose pages
     /// may call it (CORS). None: the switch off, the coordinator as it was.
     pub fn set_brokers(&self, b: Option<brokers::Brokers>) {

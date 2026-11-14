@@ -219,7 +219,7 @@ pub struct Heartbeat {
     /// whether it can lead now). Left out by apps before phase 3, and ignored by them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conds: Option<Conds>,
-    /// Its broker (docs/pool.md §8, crate::agent::brokers): where a page reaches it, and how many
+    /// Its broker (docs/pool.md §8, crate::agent::peers): where a page reaches it, and how many
     /// of its jobs' tasks wait, of which kinds, how large. Left out by apps before it (ignored by
     /// them).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,7 +302,7 @@ pub struct Side {
     pub stopped: Option<String>,
     /// Its Mac's conditions as last given, for its heartbeat.
     conds: Option<Conds>,
-    /// Its broker, for its heartbeat (crate::agent::brokers; None: the switch off).
+    /// Its broker, for its heartbeat (crate::agent::peers; None: the switch off).
     pub broker: Option<crate::coord::brokers::Broker>,
     /// Whom it reached and whom it couldn't, for its heartbeat (crate::pool::reachable).
     pub reach: Vec<crate::pool::reachable::Reach>,
@@ -1114,7 +1114,7 @@ pub struct Cx {
     /// When this Mac last had an answer from the lead's coordinator (its clock, unix s): a member's
     /// client's (crate::coord::client::Client::answered).
     pub lead_answered: Option<u64>,
-    /// This Mac's broker (docs/pool.md §8, crate::agent::brokers): the lead's coordinator, or a
+    /// This Mac's broker (docs/pool.md §8, crate::agent::peers): the lead's coordinator, or a
     /// member's broker; None with tasks brokered by every member off. Its address over HTTPS, when
     /// `tailscale serve` proxies it. Its LAN addresses (coordwire::net::lan_urls).
     pub broker: Option<crate::coord::Brokering>,
@@ -1389,10 +1389,10 @@ impl Run {
 
     /// Tasks brokered by every member, in each of its steps (the loop's and the ticks'), before its
     /// heartbeat is written: this Mac's broker (`Cx::broker`) given to the heartbeat as
-    /// crate::agent::brokers::due says, and every half minute the members' heartbeats read for
+    /// crate::agent::peers::due says, and every half minute the members' heartbeats read for
     /// theirs and the broker told. No broker (the switch off): none in the heartbeat.
     pub fn tend_brokers(&mut self) {
-        use crate::agent::brokers;
+        use crate::agent::peers;
         let Some(c) = self.cx.broker.clone() else {
             self.side.broker = None;
             (self.brokers_read, self.broker_told) = (None, None);
@@ -1405,11 +1405,11 @@ impl Run {
             lan: self.cx.broker_lan.clone(),
             pages: super::proxy_pages(),
         };
-        if brokers::due(self.side.broker.as_ref(), &own, self.broker_told.map(|t| now.saturating_duration_since(t))) {
+        if peers::due(self.side.broker.as_ref(), &own, self.broker_told.map(|t| now.saturating_duration_since(t))) {
             self.side.broker = Some(own.clone());
             self.broker_told = Some(now);
         }
-        if brokers::stale(self.brokers_read, now, brokers::EVERY) {
+        if peers::stale(self.brokers_read, now, peers::EVERY) {
             let side = &self.side;
             let me = side.member().clone();
             let lead = side.driver().declared().map(str::to_string);
@@ -1422,7 +1422,7 @@ impl Run {
                 .filter(|id| *id != me.id)
                 .filter_map(|id| side.heartbeat(&id).map(|h| (id, h)))
                 .collect();
-            let peers = brokers::peers(&beats, lead.as_deref(), side.now(), (&me.id, &me.host, &own));
+            let peers = peers::peers(&beats, lead.as_deref(), side.now(), (&me.id, &me.host, &own));
             c.set_brokers(Some(crate::coord::brokers::Brokers::new(peers, &own)));
             self.brokers_read = Some(now);
         }
