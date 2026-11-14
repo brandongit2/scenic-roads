@@ -1411,7 +1411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helpers_archives_go_up_and_are_named_from_its_hand_off() {
+    fn a_members_archives_go_up_and_are_named_from_its_hand_off() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");
@@ -1530,7 +1530,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helpers_first_archives_make_the_index() {
+    fn a_members_first_archives_make_the_index() {
         let d = tempfile::tempdir().unwrap();
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");

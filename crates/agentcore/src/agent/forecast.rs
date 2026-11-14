@@ -4231,7 +4231,7 @@ mod tests {
     }
 
     #[test]
-    fn helpers_speed_from_the_history() {
+    fn members_speed_from_the_history() {
         use crate::coord::history::Event;
         let e = |w: &str, secs: f64, n: usize| Event {
             kind: "done".into(),

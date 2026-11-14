@@ -12616,7 +12616,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_asks_beats_and_hands_back_once() {
+    fn a_member_asks_beats_and_hands_back_once() {
         let (d, c, w) = start();
         let units = vec![
             ("6/1/3".to_string(), "k3".to_string(), 20u64 << 20),

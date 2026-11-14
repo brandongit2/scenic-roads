@@ -533,7 +533,7 @@ the job starts, then that less what the job has written so far (the disk guard's
 lead's own running jobs reserve what their measures say they have still to take (`disk_left`).
 A reservation ends with its lease, at hand-off or give-back. The free disk an ask and its
 capacity say (`disk_mb`; the lead's own asks' likewise) is the free space, on a member with a room
-target with what its caches can free (`agent`'s `freeable`: `room::helper_cheap_bytes`, the canopy
+target with what its caches can free (`agent`'s `freeable`: `room::member_cheap_bytes`, the canopy
 squares, the copies of the records' files and the raw terrain's archives, but the whole copies above
 and the files a job holds now, which room-making leaves; counted at most every ten minutes, and
 again after a job or a freeing), less the owner's room target and

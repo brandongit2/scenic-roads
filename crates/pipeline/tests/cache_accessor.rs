@@ -35,7 +35,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     ("crates/agentcore/src/agent/mod.rs", "try_start_said", "room-making's arguments"),
     ("crates/agentcore/src/agent/mod.rs", "tend_caches", "room-making's arguments"),
     ("crates/agentcore/src/agent/mod.rs", "resources", "counts sizes"),
-    ("crates/agentcore/src/agent/mod.rs", "helper_job", "counts what room-making can free"),
+    ("crates/agentcore/src/agent/mod.rs", "member_job", "counts what room-making can free"),
     ("crates/agentcore/src/agent/mod.rs", "count_caches", "counts sizes"),
     ("crates/agentcore/src/agent/backup.rs", "*", "the NAS's backups' own blobs/, not the agent's cache"),
     ("crates/agentcore/src/agent/gc.rs", "*", "the NAS's base/ folder, not the agent's cache"),

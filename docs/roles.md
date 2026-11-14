@@ -56,7 +56,7 @@ thread spent ~10 % serializing mail (`Side::save_mail`).
 | Service | Runs on members today | Cost measured | Decision |
 | --- | --- | --- | --- |
 | Jobs (`jobs` part, slots, ramp, memory and disk guards, `memory-guard` sampler) | yes | the work itself | **keep** |
-| Grants, beats, hand-offs, outbox (`helper_grants`, `send_outbox`, `tell_owed`) | yes, NAS + HTTP | small | **keep**; by HTTP alone since #878 (docs/coordination.md) |
+| Grants, beats, hand-offs, outbox (`member_grants`, `send_outbox`, `tell_owed`) | yes, NAS + HTTP | small | **keep**; by HTTP alone since #878 (docs/coordination.md) |
 | The member's broker (tasks of its own jobs, `/work/*` for its jobs) | yes, a whole `Coordinator` made `become_broker` | 5 `coordinator` threads | **keep, slimmed**: a broker type of its own (§3.2) |
 | The broker's phase shares (`phase-shares` thread: the timings log read every 60 s) | yes | a thread; 4.5 MB log (the M1's is a stale lead copy) | **drop** on members |
 | The budgets' proxy and relays | yes | 1 + up to ~180 threads, one per job connection (before #908) | **keep** (jobs need it); since #908 its connections share a few threads (§6) |

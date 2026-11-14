@@ -583,15 +583,15 @@ impl Tell {
 /// `disk`); a step's none of its own: their grant's measured disk is reserved for them
 /// (`reservation`), and the owner's room target stays free past it, with no fixed reserve (task
 /// #421).
-fn helper_need(the_plan: &dyn seam::Plan, step: &str) -> u64 {
+fn member_need(the_plan: &dyn seam::Plan, step: &str) -> u64 {
     the_plan.task_disk(step).unwrap_or(0)
 }
 
 /// Of the work a member could ask for (`can`), what starts beside a running job (`try_start_said`):
-/// its need (`helper_need`) free past `held` (the owner's room target and the jobs' reservations),
+/// its need (`member_need`) free past `held` (the owner's room target and the jobs' reservations),
 /// none made for it.
 fn room_beside(the_plan: &dyn seam::Plan, can: Vec<String>, free: u64, held: u64) -> Vec<String> {
-    can.into_iter().filter(|s| free >= held.saturating_add(helper_need(the_plan, s))).collect()
+    can.into_iter().filter(|s| free >= held.saturating_add(member_need(the_plan, s))).collect()
 }
 
 /// A leased task's kind: its job name's step (`JobName`, "<kind> <unit>"); "tail", the most room, for
@@ -618,7 +618,7 @@ fn member_steps(the_plan: &dyn seam::Plan, free: u64, cheap: u64, floor: u64) ->
         .chain(the_plan.task_kinds())
         .filter(|s| {
             free.saturating_add(cheap)
-                >= floor.saturating_add(helper_need(the_plan, s) + room::margin(helper_need(the_plan, s)))
+                >= floor.saturating_add(member_need(the_plan, s) + room::margin(member_need(the_plan, s)))
         })
         .map(str::to_string)
         .collect()
@@ -1740,7 +1740,7 @@ pub struct Agent {
     retired_at: Option<Instant>,
     retire_task: Option<std::thread::JoinHandle<BTreeMap<String, u64>>>,
     /// The lead's: the members' last clear or declined ask noted in the history (its time), by host.
-    helper_caches: BTreeMap<String, u64>,
+    member_caches: BTreeMap<String, u64>,
     /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process
     /// groups, running work while they're still the jobs' (jobs::Group::is_the_jobs), killed again
     /// each round until they're gone (jobs::Group::kill_again).
@@ -2136,7 +2136,7 @@ impl Agent {
             answers_seeded: false,
             retired_at: None,
             retire_task: None,
-            helper_caches: BTreeMap::new(),
+            member_caches: BTreeMap::new(),
             orphans: Vec::new(),
             outlived: Vec::new(),
             last_cond: None,
@@ -2408,15 +2408,15 @@ impl Agent {
     /// A member's next job: work of the plan the lead's coordinator leases it (a job's worth of
     /// a shared step's targets, none needing more memory than it spares), built from the pass it
     /// says, saving into the lease's outbox folder. Asked only when it could start now. (Its jobs
-    /// alone: `helper_grants`.)
+    /// alone: `member_grants`.)
     #[cfg(test)]
-    fn helper_job(&mut self, root: &store::nasfs::NasRoot, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
-        self.helper_grants(root, c, waiting).into_iter().map(|(_, spec, _)| spec).collect()
+    fn member_job(&mut self, root: &store::nasfs::NasRoot, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        self.member_grants(root, c, waiting).into_iter().map(|(_, spec, _)| spec).collect()
     }
 
-    /// A member's next jobs (`helper_job`), each with the slot it goes in: as many as it has slots
+    /// A member's next jobs (`member_job`), each with the slot it goes in: as many as it has slots
     /// free (`want`), each granted put in a slot of its own (`take_grant`).
-    fn helper_grants(
+    fn member_grants(
         &mut self,
         root: &store::nasfs::NasRoot,
         c: &Conditions,
@@ -2503,7 +2503,7 @@ impl Agent {
             }
         }
         if can.is_empty() {
-            let need = helper_need(self.o.the_plan, self.o.the_plan.tree_task_kind());
+            let need = member_need(self.o.the_plan, self.o.the_plan.tree_task_kind());
             let floor = self.floor();
             let past =
                 if floor > 0 { format!(", past the disk room target's {}", room::size(floor)) } else { String::new() };
@@ -2585,7 +2585,7 @@ impl Agent {
         }
     }
 
-    /// A job granted to this member (`helper_job`), put in its slot: the first free, or a new one
+    /// A job granted to this member (`member_job`), put in its slot: the first free, or a new one
     /// (`free_slot`). Its lease in the slot, and its job to start there; None when it can't be
     /// (given back, or failed, as before).
     fn take_grant(
@@ -2866,7 +2866,7 @@ impl Agent {
         got
     }
 
-    /// The jobs granted (`lead_grants`, `helper_grants`), each started in its slot: its conditions,
+    /// The jobs granted (`lead_grants`, `member_grants`), each started in its slot: its conditions,
     /// its room on the disk (`try_start_said`); one beside a job waiting on a worker yields to it
     /// (`yields`).
     fn start_granted(
@@ -4620,7 +4620,7 @@ impl Agent {
                 self.tell_gate(root);
                 // (Not while a clear or a freeing runs here: `caches_busy`.)
                 if !unsent && self.caches_task.is_none() {
-                    granted = self.helper_grants(root, &c, &mut waiting);
+                    granted = self.member_grants(root, &c, &mut waiting);
                 }
             }
             Some(_) => {
@@ -5444,7 +5444,7 @@ impl Agent {
     /// member's its step's; else, beside another job, its measured disk; alone, none of its own.
     fn need_of(&self, k: usize, spec: &JobSpec) -> u64 {
         if self.is_member() {
-            helper_need(
+            member_need(
                 self.o.the_plan,
                 spec.record.as_ref().map_or_else(|| task_kind(self.o.the_plan, spec), |w| w.step.as_str()),
             )
@@ -5643,7 +5643,7 @@ impl Agent {
                 );
                 waiting.push(Waiting { step: None, what: what.clone(), why: why.clone() });
                 // (Held by the owner's target alone: not held against its targets, and no work
-                // asked for meanwhile (`helper_job`), but freed toward (`goal`).)
+                // asked for meanwhile (`member_job`), but freed toward (`goal`).)
                 let by_target = free >= need;
                 if by_target {
                     self.floor_short = Some((floor, room, Instant::now()));
@@ -7011,7 +7011,7 @@ impl Agent {
         }
         for h in members {
             let Some(c) = &h.caches else { continue };
-            let seen = *self.helper_caches.entry(h.host.clone()).or_insert(self.started);
+            let seen = *self.member_caches.entry(h.host.clone()).or_insert(self.started);
             let mut new: Vec<&room::Freed> = [&c.cleared, &c.cleared_deep, &c.declined]
                 .into_iter()
                 .filter_map(|f| f.as_ref().filter(|f| f.at > seen))
@@ -7019,7 +7019,7 @@ impl Agent {
             new.sort_by_key(|f| f.at);
             for f in new {
                 self.note(caches_event(&h.host, f));
-                self.helper_caches.insert(h.host.clone(), f.at);
+                self.member_caches.insert(h.host.clone(), f.at);
             }
         }
     }
@@ -10478,7 +10478,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helper_asks_only_for_what_its_disk_has_room_for() {
+    fn a_member_asks_only_for_what_its_disk_has_room_for() {
         let gb = |n: u64| n << 30;
         let all = |tasks: &[&'static str]| [&steps::SHARED[..], tasks].concat();
         // The shared steps need no room of their own (their grant's measured disk is reserved
@@ -10508,7 +10508,7 @@ mod tests {
     /// free, a 20 GB target and 12 GB reserved by its bldtiles jobs: tails and bldtiles (5 GB) not
     /// asked for, treeblocks and terrainsubs (1 GB) and the shared steps (their own room granted) are.
     #[test]
-    fn a_helper_asks_beside_its_jobs_only_for_what_starts() {
+    fn a_member_asks_beside_its_jobs_only_for_what_starts() {
         let gb = |n: u64| n << 30;
         let all = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         let can = all(&["bldtiles", "tail", "bldtile", "treeblock", "terrainsub"]);
@@ -10541,7 +10541,7 @@ mod tests {
                 assert_eq!(step_of(&s.id).as_deref(), Some(*k), "the Machines tab's step");
                 (
                     task_kind(crate::agent::seam::for_tests(), &s).to_string(),
-                    helper_need(crate::agent::seam::for_tests(), task_kind(crate::agent::seam::for_tests(), &s)) >> 30,
+                    member_need(crate::agent::seam::for_tests(), task_kind(crate::agent::seam::for_tests(), &s)) >> 30,
                 )
             })
             .collect();
@@ -10551,7 +10551,7 @@ mod tests {
         assert_eq!(
             (
                 task_kind(crate::agent::seam::for_tests(), &old),
-                helper_need(crate::agent::seam::for_tests(), task_kind(crate::agent::seam::for_tests(), &old)) >> 30
+                member_need(crate::agent::seam::for_tests(), task_kind(crate::agent::seam::for_tests(), &old)) >> 30
             ),
             ("tail", 5)
         );
@@ -11668,7 +11668,7 @@ mod tests {
         ));
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let mut w = Vec::new();
-        let jobs = a.helper_job(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
+        let jobs = a.member_job(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
         assert_eq!(jobs.len(), 1, "{w:?}");
         let j = &jobs[0];
         // The lead's own command for slope, its saves handed off to its lease's outbox.
@@ -11933,7 +11933,7 @@ mod tests {
         a.mem_floor = memfloor::read(&home);
         assert_eq!(a.build_room(), 6 << 10);
         assert_eq!(a.capacity(&cond).build_mb, 6 << 10);
-        let got = a.helper_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
+        let got = a.member_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w);
         assert_eq!(got.iter().map(|(k, _, _)| *k).collect::<Vec<_>>(), [0, 1, 2], "{w:?}");
         assert_eq!(a.slots.len(), 3);
         // Each started in its slot (a job that sleeps, its scratch argument kept).
@@ -11968,7 +11968,7 @@ mod tests {
             a.sampler.set_test_busy(None);
         }
         // (Its slots full by what the lead grants: asked again, nothing more fits.)
-        assert!(a.helper_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w).is_empty());
+        assert!(a.member_grants(&store::nasfs::NasRoot::local_for_test(&root), &cond, &mut w).is_empty());
         assert_eq!(a.slots.len(), 3, "no slot made for nothing");
         let tend_all = |a: &mut Agent| {
             for k in 0..a.slots.len() {
@@ -14042,7 +14042,7 @@ mod tests {
     }
 
     #[test]
-    fn the_checklist_says_which_steps_helpers_take() {
+    fn the_checklist_says_which_steps_members_take() {
         let steps = build::fold(&build::checklist_to_come(), &BTreeMap::new(), &BTreeMap::new());
         let shared = |id: &str| steps.iter().find(|s| s.id == id).and_then(|s| s.shared.clone());
         assert_eq!(shared("terrain").as_deref(), Some("terrain-hi and terrain-deep"), "the pieces, not the assemblies");

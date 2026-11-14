@@ -1623,7 +1623,7 @@ pub struct Task {
     pub does: &'static str,
     /// The step whose jobs offer it.
     pub step: &'static str,
-    /// The free disk a member's job of it needs (bytes; crate::agent's `helper_need`).
+    /// The free disk a member's job of it needs (bytes; crate::agent's `member_need`).
     pub disk: u64,
 }
 

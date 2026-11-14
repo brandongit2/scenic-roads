@@ -2557,7 +2557,7 @@ mod tests {
     }
 
     #[test]
-    fn a_helpers_trim_empties_the_cheap_caches_but_what_the_nas_lacks() {
+    fn a_members_trim_empties_the_cheap_caches_but_what_the_nas_lacks() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let root = &d.path().join("nas");
@@ -2975,7 +2975,7 @@ mod tests {
     }
 
     /// A member's NAS (the pool begun: the records its lead's): its project folder and `sources/`.
-    fn helpers_nas(d: &Path) -> (PathBuf, PathBuf) {
+    fn members_nas(d: &Path) -> (PathBuf, PathBuf) {
         let root = d.join("nas");
         std::fs::create_dir_all(root.join("state/build")).unwrap();
         std::fs::write(root.join(crate::pool::lead::LEAD), b"{}").unwrap();
@@ -2988,7 +2988,7 @@ mod tests {
         // folder. Its files are the NAS's only copies: neither deleted nor counted.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
-        let (root, nas) = helpers_nas(d.path());
+        let (root, nas) = members_nas(d.path());
         whole(&nas.join("canopy/a.tif"), 60);
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10")).unwrap();
@@ -3013,7 +3013,7 @@ mod tests {
         // (The review's case.) A folder of squares and a square in chm10/, links to the NAS's.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
-        let (_, nas) = helpers_nas(d.path());
+        let (_, nas) = members_nas(d.path());
         whole(&nas.join("canopy/a.tif"), 60);
         let own = whole(&c.join("chm10/b.tif"), 60);
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10/sub")).unwrap();
@@ -3031,7 +3031,7 @@ mod tests {
     fn a_cache_linked_into_the_nas_folder_loses_nothing_there() {
         // (The review's case.) The cache itself a link into the NAS's project folder.
         let d = tempfile::tempdir().unwrap();
-        let (root, nas) = helpers_nas(d.path());
+        let (root, nas) = members_nas(d.path());
         let there = root.join("cache-of-m1");
         whole(&there.join("chm10/a.tif"), 60);
         file(&there.join("blobs/layers/x.0000000000000001.pack"), 100, 60);
