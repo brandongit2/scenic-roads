@@ -72,11 +72,13 @@ pub enum Kind {
 pub enum Scope {
     /// Everything at once: one target, the step's own name (or a pass's date).
     World,
-    /// A z3 tile ("3/x/y"): 8 × 8 z6 tiles. (Stored and sent as "area": `/api/steps`' `scope`.)
-    #[serde(rename = "area")]
+    /// A z3 tile ("3/x/y"): 8 × 8 z6 tiles. Sent as "area" (`/api/steps`' `scope`, its only
+    /// writer), read as "z3" too: the page reads both (task #858), and the sent name becomes "z3"
+    /// once no page reading only "area" can be served.
+    #[serde(rename = "area", alias = "z3")]
     Z3,
-    /// A z6 tile ("6/x/y"). (Stored and sent as "tile".)
-    #[serde(rename = "tile")]
+    /// A z6 tile ("6/x/y"). Sent as "tile", read as "z6" too (as Z3's).
+    #[serde(rename = "tile", alias = "z6")]
     Z6,
     /// A z10 tile ("10/x/y"): a deep pack's (terrain::terrain_deep::PACK_Z).
     Z10,
@@ -2902,6 +2904,16 @@ mod tests {
         // And no row for a step the agent never runs.
         let unused: Vec<&str> = TABLE.iter().map(|s| s.name).filter(|s| !named.contains(*s)).collect();
         assert!(unused.is_empty(), "rows of no step the agent runs: {unused:?}");
+    }
+
+    #[test]
+    fn a_scope_is_sent_as_before_and_read_by_either_name() {
+        // (Task #858: "z3" and "z6" read beside the sent "area" and "tile" for a release.)
+        let sent: Vec<String> = [Z3, Z6].iter().map(|s| serde_json::to_string(s).unwrap()).collect();
+        assert_eq!(sent, ["\"area\"", "\"tile\""]);
+        for (said, s) in [("area", Z3), ("z3", Z3), ("tile", Z6), ("z6", Z6), ("z10", Z10)] {
+            assert_eq!(serde_json::from_value::<Scope>(serde_json::json!(said)).unwrap(), s, "{said}");
+        }
     }
 
     #[test]

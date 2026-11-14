@@ -740,7 +740,7 @@ const TILE_WORDS = { queued: "queued", progress: "in progress", completed: "comp
 // The steps the map draws tiles of, by stage in the build's order: a z3, z6 or z10 tile's, or a
 // root's (sums.js mapTargets); then any other step it has tiles of. [{stage, steps}].
 function mapSteps(stepCount) {
-  const tiled = (r) => !r.of && (["area", "tile", "z10"].includes(r.scope) || mapTargets(r.id, [])[0]);
+  const tiled = (r) => !r.of && (["area", "z3", "tile", "z6", "z10"].includes(r.scope) || mapTargets(r.id, [])[0]);
   const rows = Object.values(table.steps).filter(tiled);
   for (const id of Object.keys(stepCount)) if (!rows.some((r) => r.id === id)) rows.push({ id, stage: S.stage(id) });
   const order = table.stages.map((g) => g.id);

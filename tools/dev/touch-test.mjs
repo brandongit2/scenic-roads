@@ -769,7 +769,7 @@ async function run() {
       errors.length = 0;
       const t = await js(`fetch("/api/steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json())`);
       const steps = new Set((t.steps || []).map((s) => s.id)), stages = (t.stages || []).map((g) => g.id);
-      const tiled = (t.steps || []).filter((s) => !s.of && (["area", "tile", "z10"].includes(s.scope) || /-root$/.test(s.id))).map((s) => s.id);
+      const tiled = (t.steps || []).filter((s) => !s.of && (["area", "z3", "tile", "z6", "z10"].includes(s.scope) || /-root$/.test(s.id))).map((s) => s.id);
       await show("overview");
       const lg = await js(`(() => { const box = document.querySelector("#mappane .wmap-steps"); if (!box) return null; return [...box.querySelectorAll(".lgg")].map((g) => ({ stage: g.dataset.stage, head: g.querySelector(".lg.stage")?.dataset.name, steps: [...g.querySelectorAll(".lg.step")].map((b) => [b.dataset.name, b.textContent]) })); })()`);
       const flat = (lg || []).flatMap((g) => g.steps.map(([id]) => id));
