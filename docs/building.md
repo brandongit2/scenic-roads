@@ -325,7 +325,12 @@ from the first (`edit_held`).
   the coordinator sizes it: docs/pool.md §7.7), else its step's mean, else a first guess; each machine at its measured speed (half the lead's until measured). Run three times for
   a range. It says when each step, region and everything will be done, when each region is all on
   the map, when each cadenced step may next go, and each machine's schedule, or why there's no
-  finish.
+  finish. It doesn't model the lead's duties planned outside the regions' work, one list
+  (`forecast::UNFORESEEN`): the OSM planet's fetch and a new pass (whose work it says it's blind
+  to), the daily backup, the owner's redos and GC (its chunks due as the clients' cursors and the
+  leases move, granted as the NAS budget leaves room then); a job of theirs under way holds its
+  slot's lane until its measured time. The departure check leaves them out (docs/pool.md §7.2,
+  One scheduler), and a test holds every job the plan makes outside the forecast to that list.
 - **The history** (`coord::history`): the last week's events on the lead's disk
   (`coord/history.jsonl`) and in its coordinator's memory: jobs, leases, tasks, map tiles planned,
   map updates, pauses, workers, agents, conditions, cache clears and freeings (a member's noted to

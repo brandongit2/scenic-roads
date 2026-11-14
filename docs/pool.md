@@ -1082,7 +1082,9 @@ The forecast models no target's time by its threads, a grant's included (a targe
 measured runs' time, whatever threads they had), so a re-grant moves only
 the room it packs beside the job, as the next forecast (within the minute) sees it. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
-by more than half, each Mac and step at most once an hour.
+by more than half, each Mac and step at most once an hour, and never of a step the forecast
+doesn't model (`forecast::UNFORESEEN`, docs/building.md, The forecast: the planet's fetch, a new
+pass, the backup, the redos, GC), whose grants depart from no forecast.
 
 **A Mac granted fewer** (task #1163) is said with what the lead answered its asks since the
 forecast: the coordinator keeps each worker's asks answered over the last hour

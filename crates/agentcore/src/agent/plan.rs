@@ -3452,6 +3452,34 @@ const SAMPLE_LIMIT: Duration = Duration::from_secs(300);
 mod tests {
     use super::*;
 
+    /// Task #1188: every job the plan makes is the forecast's (the regions' work, `region_work`,
+    /// whose jobs before the regions' are its `before`, and the plan's work) or of a step the
+    /// forecast declares it doesn't model (forecast::UNFORESEEN), nothing between: each job
+    /// `plan_unchecked` makes itself (a `JobSpec`, the redos') is of a step in that list, and each
+    /// step in it is made there. A new duty there, unlisted, fails here.
+    #[test]
+    fn the_jobs_planned_outside_the_forecast_are_the_ones_it_says_it_doesnt_model() {
+        let src = include_str!("plan.rs");
+        let start = src.find("    pub(super) fn plan_unchecked(").expect("plan_unchecked");
+        let body = &src[start..];
+        let body = &body[..body[1..].find("\n    pub(super) fn ").expect("the next fn") + 1];
+        assert!(body.contains("self.region_work("), "the regions' work: the forecast's");
+        let mut made: BTreeSet<String> = BTreeSet::new();
+        for (i, _) in body.match_indices("JobSpec {") {
+            let id = body[i..].lines().nth(1).unwrap_or("").trim();
+            let step = id
+                .strip_prefix("id: format!(\"")
+                .and_then(|r| r.split_once(' '))
+                .map(|(s, _)| s)
+                .or_else(|| id.strip_prefix("id: \"").and_then(|r| r.split_once('"')).map(|(s, _)| s));
+            made.insert(step.unwrap_or_else(|| panic!("a job of a step not read here: {id}")).to_string());
+        }
+        if body.contains("self.redo_jobs(") {
+            made.insert(redo::STEP.to_string());
+        }
+        assert_eq!(made, forecast::UNFORESEEN.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
+    }
+
     /// The plan is made again when something it depends on changed, it was kicked (a job's end, a
     /// gate ask), a timed wait ended, or its fallback is due; none made yet, at once. (Times passed
     /// in: no clock.)

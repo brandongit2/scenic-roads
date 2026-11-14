@@ -347,6 +347,22 @@ pub fn cap_busy(inp: &mut Input, longest: &BTreeMap<String, f64>) {
 pub const CLOCKED: [&str; 8] =
     [store::catalogue::NAME, "lo", "backup", "gc", "inputs", "names-todo", "timetables-todo", "task"];
 
+/// The lead's duties the forecast doesn't model (docs/building.md, The forecast): the jobs its
+/// plan makes outside the regions' work (crate::agent::plan's `plan_unchecked`, besides
+/// `region_work`), whose times the plan can't foresee: the OSM planet's fetch and a new pass (the
+/// forecast says it's blind to a new pass's work instead), the daily backup, the owner's redos and
+/// GC (its chunks due as the clients' cursors and the leases move, granted by the NAS budget's
+/// room then). Never in the forecast's input (the plan's test
+/// `the_jobs_planned_outside_the_forecast_are_the_ones_it_says_it_doesnt_model` holds every job
+/// made outside the regions' work to this list), and the departure check leaves them out
+/// (`departures`): its zero for them is no forecast at all.
+pub const UNFORESEEN: [&str; 5] = ["planet-fetch", "osm-pass", "backup", super::redo::STEP, "gc"];
+
+/// Whether the forecast models jobs of `step` (`UNFORESEEN`).
+pub fn foreseen(step: &str) -> bool {
+    !UNFORESEEN.contains(&step)
+}
+
 /// The spacing of a forecast's `curve` (s), and how far it reaches (its points).
 pub const CURVE_S: u64 = 600;
 const CURVE_MAX: usize = 288;
@@ -2425,7 +2441,8 @@ fn runs_of(
 /// (`Forecast::grants`, its first hour), by 2 or more and by more than half the forecast's
 /// (`departed`): ((Mac, step), in words). `real`: the grants made, (unix s, Mac, step). A Mac
 /// granted fewer says what the lead answered its asks in that span (`answers`, each Mac's:
-/// crate::coord::Coordinator::answers; `held_back`). What the scheduler can't see moves them
+/// crate::coord::Coordinator::answers; `held_back`). The steps it doesn't model (`UNFORESEEN`)
+/// are left out: their grants depart from no forecast. What the scheduler can't see moves them
 /// (docs/pool.md §7.2, One scheduler): a job ending sooner or later than measured, a Mac's asks
 /// held or refused, the work offered only once a plan lists it, the live state its rules read.
 pub fn departures(
@@ -2439,7 +2456,7 @@ pub fn departures(
     for g in f.grants.iter().filter(|g| (g.at as u64) < until) {
         n.entry((&g.mac, &g.step)).or_default().0 += 1;
     }
-    for (_, mac, step) in real.iter().filter(|r| r.0 >= f.at && r.0 < until) {
+    for (_, mac, step) in real.iter().filter(|r| r.0 >= f.at && r.0 < until && foreseen(&r.2)) {
         n.entry((mac, step)).or_default().1 += 1;
     }
     n.into_iter()
@@ -4086,6 +4103,35 @@ mod tests {
         let none = BTreeMap::new();
         assert!(departures(&f, &real(4), &none, 2000).is_empty(), "one more: not said");
         assert_eq!(departures(&f, &real(0), &none, 2000).len(), 1, "none of three");
+    }
+
+    /// Task #1188: the grants of a step the forecast doesn't model (`UNFORESEEN`: GC, the backup…)
+    /// depart from no forecast and aren't said; a modelled step's are said as before, more granted
+    /// than foreseen (none foreseen among them) word for word.
+    #[test]
+    fn a_step_the_forecast_doesnt_model_never_departs() {
+        let g = |step: &str, at: f64| Grant { mac: "m4".into(), step: step.into(), targets: vec![], at, threads: 1 };
+        let f = Forecast { at: 1000, grants: vec![g("unit", 1000.0), g("unit", 1100.0)], ..Default::default() };
+        let real = |step: &str, n: usize| -> Vec<(u64, String, String)> {
+            (0..n).map(|k| (1000 + k as u64, "m6".to_string(), step.to_string())).collect()
+        };
+        let none = BTreeMap::new();
+        for step in UNFORESEEN {
+            assert!(!foreseen(step), "{step}");
+            let quiet = Forecast { at: 1000, ..Default::default() };
+            assert!(departures(&quiet, &real(step, 446), &none, 2000).is_empty(), "{step}");
+        }
+        let mut all: Vec<(u64, String, String)> = UNFORESEEN.iter().flat_map(|s| real(s, 40)).collect();
+        all.extend(real("inputs", 3));
+        all.extend((0..6).map(|k| (1000 + k, "m4".to_string(), "unit".to_string())));
+        let d = departures(&f, &all, &none, 2000);
+        assert_eq!(
+            d.iter().map(|(k, d)| (k.clone(), d.as_str())).collect::<Vec<_>>(),
+            [
+                (("m4".to_string(), "unit".to_string()), "m4: 6 job(s) of unit granted, the forecast's 2"),
+                (("m6".to_string(), "inputs".to_string()), "m6: 3 job(s) of inputs granted, the forecast's 0"),
+            ]
+        );
     }
 
     /// Task #1163: a Mac granted fewer than the forecast foresaw is said with what the lead answered
