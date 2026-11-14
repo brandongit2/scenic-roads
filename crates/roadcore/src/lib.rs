@@ -19,8 +19,8 @@ pub mod geo;
 pub mod grid;
 pub mod lsum;
 pub mod polar;
-pub mod records;
 pub mod scenic;
+pub mod sections;
 pub mod shade;
 pub mod tile;
 

@@ -209,7 +209,7 @@ fn one_tile(
     Ok((roads.finish(key), rails.finish(key)))
 }
 
-pub use roadcore::records::{here_extra as extra, point_key, End, Here, PSample, Part, RailInfo};
+pub use roadcore::sections::{here_extra as extra, point_key, End, Here, PSample, Part, RailInfo};
 
 /// hidata sections of a z6 tile.
 pub struct HiData {

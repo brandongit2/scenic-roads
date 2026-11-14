@@ -1163,7 +1163,7 @@ struct FixWay {
 /// runs on through London into 32/21; 102 lies in 32/21 alone; 103, owned by 32/21, starts in
 /// 31/21 3.5 km east of London (beyond its 2 km), in East.
 fn put_roads(root: &std::path::Path, cat: &mut Catalogue) {
-    use roadcore::records::{Here, RoadRec};
+    use roadcore::sections::{Here, RoadRec};
     use roadcore::WayRec;
     let ways = [
         FixWay { id: 100, owner: 30, lons: [-5.8, -0.2] },

@@ -5,8 +5,8 @@ use crate::legacy::TileId;
 use anyhow::{bail, ensure, Context, Result};
 use memmap2::Mmap;
 use roadcore::elev::Elevs;
-use roadcore::records::{RoadRec, Sub9};
 use roadcore::scenic::{ch, Sample};
+use roadcore::sections::{RoadRec, Sub9};
 use roadcore::WayRec;
 use std::collections::HashMap;
 use std::path::Path;
@@ -191,7 +191,7 @@ impl BasePack {
     }
     /// A rail way's primary route relation (the `rail` section, sorted by way).
     pub fn rail_rel(&self, way: u32) -> Option<i64> {
-        let r: &[roadcore::records::RailRel] = self.sect.slice("rail").ok()?;
+        let r: &[roadcore::sections::RailRel] = self.sect.slice("rail").ok()?;
         let i = r.partition_point(|x| x.way < way);
         r.get(i).filter(|x| x.way == way).map(|x| x.rel())
     }

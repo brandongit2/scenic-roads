@@ -8,7 +8,7 @@
 
 use super::*;
 use crate::views::{HiView, SectView, Src};
-use roadcore::records::RailInfo;
+use roadcore::sections::RailInfo;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;

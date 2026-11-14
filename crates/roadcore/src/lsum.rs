@@ -8,8 +8,8 @@
 
 use crate::class;
 use crate::flag;
-use crate::records::{here_extra, Here, LBin, LPart, PSample, Part, RailInfo};
 use crate::scenic::{self, ch};
+use crate::sections::{here_extra, Here, LBin, LPart, PSample, Part, RailInfo};
 
 /// The sections' format (hidata meta `lsum`).
 pub const LSUM_V: u32 = 1;

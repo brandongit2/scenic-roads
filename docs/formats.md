@@ -210,7 +210,7 @@ RailInfo { u32 here; u32 colour; i64 rel (primary route relation, 0 none); u32 n
           (railstr indexes); u8 rail (service bits); u8 class; [u8; 6] pad }      // 32 bytes
 ```
 
-The record types are `roadcore::records`.
+The record types are `roadcore::sections`.
 
 ## Landmark points (a member per z6 tile of `markdata/all.<h>.pack`; docs/phase5.md)
 

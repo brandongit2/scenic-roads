@@ -7,8 +7,8 @@
 //! Prints `tile logical-name content-name` per file.
 
 use anyhow::{Context, Result};
-use roadcore::records::{Here, PSample, Part, RailInfo};
 use roadcore::scenic::ch;
+use roadcore::sections::{Here, PSample, Part, RailInfo};
 use std::path::Path;
 use store::range::MmapFile;
 use store::sect::{SectReader, SectWriter};

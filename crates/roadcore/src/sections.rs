@@ -1,5 +1,5 @@
-//! Record types of the per-z6-tile files (docs/formats.md): base packs, road values and hidata,
-//! shared by the pipeline (which writes them) and the server (which reads them).
+//! The record types of the per-z6-tile files' sections (docs/formats.md): base packs, road values
+//! and hidata, shared by the pipeline (which writes them) and the server (which reads them).
 
 use bytemuck::{Pod, Zeroable};
 
