@@ -37,7 +37,7 @@ fn run(root: &Path, pieces: &[Piece]) -> Made {
 /// The stored tile z/x/y of a layer, from the records at `root`.
 fn stored_tile(root: &Path, layer: &str, z: u8, x: u32, y: u32) -> Option<Tile> {
     let o = out(root);
-    let (_, grid) = fmt::of_layer(layer).unwrap();
+    let (_, _, grid) = fmt::of_layer(layer).unwrap();
     let (scope, key) = fmt::pack_of(grid, z, x, y)?;
     let l = format!("layers/{layer}/{scope}/{}", key.replace('/', "-"));
     let c = o.get(&l)?;
@@ -57,7 +57,7 @@ fn at(root: &Path, lon: f64, lat: f64) -> Vec<String> {
 
 fn at_pole(root: &Path, pole: Pole, lon: f64, lat: f64) -> Vec<String> {
     let p = polar_px(pole, lon, lat);
-    let layer = fmt::polar_layer("terrain", pole.letter());
+    let layer = fmt::polar_layer("terrain", fmt::BEST, pole.letter());
     let mut get = |z, x, y| Ok(stored_tile(root, &layer, z, x, y));
     fmt::pieces_at(Grid::Polar(pole.letter()), p[0] as u64, p[1] as u64, &mut get).unwrap()
 }
@@ -236,7 +236,7 @@ fn a_record_lost_or_unreadable_makes_everything_again() {
     let a = source("a", &[("p", vec![vec![square(2.0, 44.0, 3.0, 45.0)]])]);
     let b = source("b", &[("p", vec![vec![square(-70.0, 40.0, -69.0, 41.0)]])]);
     run(d.path(), &[a.clone(), b.clone()].concat());
-    let ml = fmt::mids_logical("terrain");
+    let ml = fmt::mids_logical("terrain", fmt::BEST);
     let mut o = out(d.path());
     o.remove(&ml);
     o.save().unwrap();
@@ -319,12 +319,12 @@ fn real_checks(all: &[Piece]) -> Made {
     };
     let mut ids_of: BTreeMap<u8, BTreeSet<String>> = BTreeMap::new();
     let mut checked = 0;
-    let root = read(&fmt::root_logical(&fmt::layer("terrain")));
+    let root = read(&fmt::root_logical(&fmt::layer("terrain", fmt::BEST)));
     let packs: Vec<String> = o
         .manifest
         .iter()
         .map(|(l, _)| l.clone())
-        .filter(|l| l.starts_with(&format!("layers/{}/hi/", fmt::layer("terrain"))))
+        .filter(|l| l.starts_with(&format!("layers/{}/hi/", fmt::layer("terrain", fmt::BEST))))
         .collect();
     let mut each = |tiles: &BTreeMap<(u8, u32, u32), Tile>| {
         for (&k, t) in tiles {
@@ -347,7 +347,7 @@ fn real_checks(all: &[Piece]) -> Made {
     let anywhere: BTreeSet<String> = ids_of.values().flatten().cloned().collect();
     let polar: BTreeSet<String> = ['n', 's']
         .iter()
-        .filter_map(|&p| stored_tile(d.path(), &fmt::polar_layer("terrain", p), 0, 0, 0))
+        .filter_map(|&p| stored_tile(d.path(), &fmt::polar_layer("terrain", fmt::BEST, p), 0, 0, 0))
         .flat_map(|t| t.ids)
         .collect();
     let missing: Vec<&String> = drawn.iter().filter(|p| !anywhere.contains(*p) && !polar.contains(*p)).collect();

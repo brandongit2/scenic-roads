@@ -226,7 +226,7 @@ pub fn tile_resolution(zoom: u32, lat: f64) -> f64 {
 }
 
 /// Whether a value is data.
-pub(crate) fn valid(v: f32, nodata: Option<f64>) -> bool {
+pub fn valid(v: f32, nodata: Option<f64>) -> bool {
     v.is_finite() && v >= NODATA_BELOW && nodata.is_none_or(|nd| v as f64 != nd)
 }
 

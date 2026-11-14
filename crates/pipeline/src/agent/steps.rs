@@ -845,7 +845,7 @@ use Kind::{Derive, Fetch, Keep, Pack, Publish};
 use Scope::{Input, Polar, World, Z10, Z3, Z6};
 
 /// The table, by stage (the ranks order what's ranked).
-pub const TABLE: [Step; 64] = [
+pub const TABLE: [Step; 65] = [
     // The OSM pass: the planet filtered, its sets, extracts and road values; then its worldwide steps.
     Step {
         alone: true,
@@ -1381,6 +1381,22 @@ pub const TABLE: [Step; 64] = [
             "available",
             "Draws where each declared source has data, as the pieces met at each pixel, for the data-available layers.",
             w_available,
+        )
+    },
+    // The data-available layers of the data built into the map (terrain::available::built;
+    // docs/steps.md §14): a pixel the dataset the terrain took its heights from, from the datasets'
+    // coverage, the input check's measures, the store's fill masks and the pyramids' stores (it
+    // waits for their fill), made again only where a dataset moved. The lead's: it reads the store.
+    Step {
+        versions: &[("available-built", || terrain::available::built::KEY_V.to_string())],
+        reads: &[In { name: "elevation", of: idents::built_datasets }, All { step: "pyramids-fill", grain: Grain::Read(idents::nothing) }],
+        ..step(
+            "finish",
+            Pack,
+            World,
+            "available-built",
+            "Draws which elevation dataset the terrain took its heights from at each place, from the datasets' coverage, masks and stored tiles, for the data-available layers' built-in set.",
+            w_available_built,
         )
     },
     // The region layer (terrain::regionlayer; docs/steps.md §15): the regions' borders as vector
@@ -2280,18 +2296,23 @@ fn w_polar_slope(l: &str, _: bool) -> bool {
     polar_pack(l, "slope", "polar")
 }
 
-/// The data-available layers' packs (the Web Mercator root and z6 packs, a pole's root) and the
-/// step's mids (codecs::available).
+/// The data-available layers' packs of set `set` (the Web Mercator root and z6 packs, a pole's
+/// root) and the step's mids (codecs::available).
+fn available_packs(l: &str, set: &str) -> bool {
+    use codecs::available as av;
+    pack_of(l, &|ly| av::of_layer(ly).is_some_and(|(_, s, g)| s == set && g == av::Grid::Mercator), &["root", "hi"])
+        || pack_of(l, &|ly| av::of_layer(ly).is_some_and(|(_, s, g)| s == set && g != av::Grid::Mercator), &["root"])
+        || matches!(parts(l).as_slice(), ["work", w, "mids"] if av::of_layer(w).is_some_and(|(t, s, g)| s == set && !t.is_empty() && g == av::Grid::Mercator))
+}
+
+/// The best set's layers (`available`).
 fn w_available(l: &str, _: bool) -> bool {
-    pack_of(
-        l,
-        &|ly| codecs::available::of_layer(ly).is_some_and(|(_, g)| g == codecs::available::Grid::Mercator),
-        &["root", "hi"],
-    ) || pack_of(
-        l,
-        &|ly| matches!(codecs::available::of_layer(ly), Some((_, codecs::available::Grid::Polar(_)))),
-        &["root"],
-    ) || matches!(parts(l).as_slice(), ["work", w, "mids"] if w.strip_prefix("available-").is_some_and(|t| !t.is_empty()))
+    available_packs(l, codecs::available::BEST)
+}
+
+/// The built set's layers and its datasets' descriptions (`available-built`).
+fn w_available_built(l: &str, _: bool) -> bool {
+    available_packs(l, codecs::available::BUILT) || l == codecs::available::datasets_logical(terrain::available::built::THEME)
 }
 
 /// The region layer's packs (codecs::regionlayer: the root, lo and hi packs).
@@ -3015,6 +3036,7 @@ mod tests {
                 "ferries",
                 "slope-root",
                 "available",
+                "available-built",
                 "region-tiles",
                 "rail-feeds",
                 "rail",

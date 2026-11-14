@@ -272,8 +272,17 @@ export function rampStops(range: [number, number], equalized: boolean, colourAt:
 /** Ids as a URL's path segments (the server's ids, escaped). */
 const path = (...ids: string[]) => ids.map(encodeURIComponent).join('/');
 
+/** The catalogue's layer of a theme's set (codecs::available::layer): `available-<theme>`, the
+ * built set's `available-built-<theme>`; a pole's with `-<pole>` after it. Meta versions it. */
+export const layerName = (theme: string, set: string, pole?: 'n' | 's') =>
+  `available-${set === 'best' ? '' : `${set}-`}${theme}${pole ? `-${pole}` : ''}`;
+
+/** Whether a set is the data built into the map: every layer draws the dataset the terrain used,
+ * and the availability switch doesn't apply (the data is in hand). */
+export const isBuilt = (set: string) => set === 'built';
+
 /** The Mercator tiles' URL template (`{z}/{x}/{y}`), from `origin` (the data host), at version `v`
- * (meta's `available-<theme>`). */
+ * (meta's `layerName`). */
 export const tileUrl = (origin: string, theme: string, set: string, layer: string, avail: Avail, v: string) =>
   `${origin}/tiles/available/${path(theme, set, layer)}/{z}/{x}/{y}?avail=${avail}${v ? `&v=${encodeURIComponent(v)}` : ''}`;
 

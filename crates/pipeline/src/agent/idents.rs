@@ -76,6 +76,20 @@ pub fn extents_pieces(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }
 }
 
+/// The built set's datasets (`available-built-terrain`): every accepted elevation dataset in the
+/// order, `id keyed` and the digest of what the input check measured of it (its coverage as its
+/// regions cut it, its presence and hollow tiles: a regions change or a check's new measure moves
+/// it), a line each. Required; None while the datasets can't be read.
+pub fn built_datasets(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let e = x.tiles.elevation(x.m).ok()??;
+    e.iter()
+        .map(|(d, _)| {
+            let m = serde_json::to_vec(&d.measured).ok()?;
+            Some(format!("{} {} {}", d.id, d.keyed, store::naming::hash16(&m)))
+        })
+        .collect()
+}
+
 /// The region layer's geometry (`region-tiles`): each accepted region's file path and its stored
 /// geometry's content name, a line each (theplan::key_inputs' "regions:geometry"), disabled
 /// regions' too (the layer draws them); never a name or a flag, which the app reads from the list:

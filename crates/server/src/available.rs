@@ -33,14 +33,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Duration;
 
-/// The sets served, each with its name in the app: the best data any declared source has. (The
-/// data built into the map, `built`, is planned: task #1349.)
-pub const SETS: [(&str, &str); 1] = [("best", "Best available anywhere")];
-
-/// Whether `set` is one served.
-fn set_served(set: &str) -> bool {
-    SETS.iter().any(|(k, _)| *k == set)
-}
+/// The sets, each with its name in the app: the best data any declared source has, and the data
+/// built into the map (a theme's while its built layer is in the catalogue: `Available::sets`).
+pub const SETS: [(&str, &str); 2] = [(fmt::BEST, "Best available"), (fmt::BUILT, "Built into the map")];
 
 /// The score layer's name where `score.toml` gives none.
 const DEFAULT_LABEL: &str = "Best data";
@@ -103,6 +98,10 @@ pub struct Theme {
     pub sources: BTreeMap<String, Map<String, Value>>,
     /// Each source's pieces with no extent (class `unknown`), by name.
     pub unknown: BTreeMap<String, Vec<String>>,
+    /// The built set's: each piece's place in the terrain's order. Every layer then draws the
+    /// first of a pixel's pieces in it (the dataset the terrain took its heights from), and the
+    /// switch lets every piece in (the data is in hand).
+    pub order: Option<HashMap<String, usize>>,
 }
 
 impl Theme {
@@ -112,15 +111,18 @@ impl Theme {
         self.score.as_ref().is_some_and(|s| s.metric_of(layer).is_some())
     }
 
-    /// The pieces `ids` that pass the switch (`all`: every one; else the free ones, `ex::FREE`), by
-    /// id.
+    /// The pieces `ids` that pass the switch (`all`: every one; else the free ones, `ex::FREE`; the
+    /// built set's, every one), by id (the built set's in its order).
     fn passing<'a>(&self, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Vec<(&'a str, &PieceInfo)> {
         let mut ps: Vec<(&str, &PieceInfo)> = ids
             .into_iter()
             .filter_map(|id| Some((id, self.pieces.get(id)?)))
-            .filter(|(_, p)| all || p.free())
+            .filter(|(_, p)| all || self.order.is_some() || p.free())
             .collect();
-        ps.sort_by_key(|(id, _)| *id);
+        match &self.order {
+            Some(o) => ps.sort_by_key(|(id, _)| (o.get(*id).copied().unwrap_or(usize::MAX), *id)),
+            None => ps.sort_by_key(|(id, _)| *id),
+        }
         ps
     }
 
@@ -143,6 +145,9 @@ impl Theme {
     ) -> Option<(&'a str, &PieceInfo)> {
         let s = self.score.as_ref()?;
         let ps = self.passing(ids, all);
+        if self.order.is_some() {
+            return ps.first().copied();
+        }
         if layer == SCORE_LAYER {
             let (at, rs) = self.scored(&ps);
             return s.best(&rs).map(|k| ps[at[k]]);
@@ -191,15 +196,17 @@ impl Theme {
     }
 
     /// The pieces `ids` that pass the switch, best first (`Score::ranked`; a piece with no score
-    /// after them, by id), as the click shows them.
+    /// after them, by id; the built set's in its order), as the click shows them.
     pub fn listed<'a>(&self, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Vec<Value> {
         let ps = self.passing(ids, all);
         let (at, rs) = self.scored(&ps);
         let mut order: Vec<usize> = match &self.score {
+            Some(_) if self.order.is_some() => (0..ps.len()).collect(),
             Some(s) => s.ranked(&rs).into_iter().map(|k| at[k]).collect(),
             None => Vec::new(),
         };
-        order.extend((0..ps.len()).filter(|k| !at.contains(k)));
+        let rest: Vec<usize> = (0..ps.len()).filter(|k| !order.contains(k)).collect();
+        order.extend(rest);
         order
             .into_iter()
             .map(|k| {
@@ -252,7 +259,7 @@ impl Theme {
     /// each with its value) and `range`, the least and greatest value present (in its unit; none
     /// where no piece states it). The score's is the primary's, under the score's `label`; the
     /// primary has no other.
-    pub fn described(&self, theme: &str) -> Value {
+    pub fn described(&self, theme: &str, sets: &[&str]) -> Value {
         let Some(s) = &self.score else { return json!({"theme": theme, "layers": [], "sources": []}) };
         let layer = |id: &str, label: &str, m: &ex::Metric| {
             let (kind, best, words) = match &m.scale {
@@ -312,7 +319,7 @@ impl Theme {
         // (The words the app shows for the sets' ids, the pieces' availability and extent classes.)
         let words =
             |w: &[(&str, &str)]| -> Map<String, Value> { w.iter().map(|(k, v)| (k.to_string(), json!(v))).collect() };
-        json!({"theme": theme, "sets": SETS.map(|(k, _)| k), "primary": s.primary, "within": s.within, "share": s.share,
+        json!({"theme": theme, "sets": sets, "primary": s.primary, "within": s.within, "share": s.share,
             "availability": s.availability, "metrics": metrics, "layers": layers, "sources": sources,
             "labels": {"sets": words(&SETS), "availability": words(&ex::AVAILABILITY), "extent": words(&ex::CLASSES)}})
     }
@@ -374,11 +381,53 @@ pub fn theme_of(files: &BTreeMap<String, Vec<u8>>) -> Theme {
     t
 }
 
+/// The built set of a theme (`best`: its best set, for the score and the layers): its pieces the
+/// datasets the step `available-built` describes (`datasets`: codecs::available::datasets_logical,
+/// in the terrain's order), each its id, its metrics (the score's primary its resolution, the
+/// theme's grid spacing; the others as its declaration states them, `metrics`: its `surface`, the
+/// terrain's word), of extent class `mask` (the build's own data), its description as its source's
+/// and what its extent was read from. None where `datasets` isn't such a list.
+pub fn built_of(best: &Theme, datasets: &[u8]) -> Option<Theme> {
+    let list: Vec<Value> = serde_json::from_slice(datasets).ok()?;
+    let mut t = Theme { score: best.score.clone(), ..Theme::default() };
+    let mut order = HashMap::new();
+    for (k, d) in list.iter().enumerate() {
+        let id = d["id"].as_str()?;
+        let mut props: Map<String, Value> = d["metrics"].as_object().cloned().unwrap_or_default();
+        if let (Some(s), Some(r)) = (&t.score, d["resolution_m"].as_f64()) {
+            props.insert(s.primary.clone(), json!(r));
+        }
+        props.insert("piece".into(), json!(id));
+        props.insert("name".into(), d["label"].clone());
+        props.insert("extent".into(), json!("mask"));
+        let src: Map<String, Value> = ["name", "credit", "licence", "licence_url", "source"]
+            .iter()
+            .filter(|k| !d[**k].is_null())
+            .map(|k| (k.to_string(), d[*k].clone()))
+            .collect();
+        t.sources.insert(id.to_string(), src);
+        t.pieces.insert(
+            id.to_string(),
+            PieceInfo { source: id.to_string(), props, read: d["read"].clone(), score: None, values: BTreeMap::new() },
+        );
+        order.insert(id.to_string(), k);
+    }
+    if let Some(s) = &t.score {
+        for p in t.pieces.values_mut() {
+            (p.score, p.values) = s.of(&p.props);
+        }
+    }
+    t.order = Some(order);
+    Some(t)
+}
+
 /// The extents' accepted version, kept on this Mac.
 pub struct Available {
     local: PathBuf,
     /// Its version (the index's content name; "" before one) and its themes.
     state: RwLock<Arc<(String, BTreeMap<String, Arc<Theme>>)>>,
+    /// The built sets made (`built_of`), by theme, with the version and datasets' content made from.
+    built: Mutex<BTreeMap<String, (String, Arc<Theme>)>>,
 }
 
 impl Available {
@@ -386,12 +435,47 @@ impl Available {
         Arc::new(Available {
             local: crate::accepted::local_dir(home, ex::UNIT),
             state: RwLock::new(Arc::new((String::new(), BTreeMap::new()))),
+            built: Mutex::new(BTreeMap::new()),
         })
     }
 
     /// A theme, as the version kept says it.
     pub fn theme(&self, theme: &str) -> Option<Arc<Theme>> {
         self.state.read().unwrap().1.get(theme).cloned()
+    }
+
+    /// A theme's set `set` as served, and what its tiles' values depend on past the extents'
+    /// version ("" for the best set; the built set's datasets' content, `-<hash>`); None for a set
+    /// it hasn't: the built set while the catalogue has no built layer of it or its datasets can't
+    /// be read.
+    pub fn of_set(&self, data: &crate::data::Data, theme: &str, set: &str) -> Option<(Arc<Theme>, String)> {
+        let best = self.theme(theme)?;
+        match set {
+            fmt::BEST => Some((best, String::new())),
+            fmt::BUILT => {
+                if !data.catalogue().layers.contains_key(&fmt::layer(theme, fmt::BUILT)) {
+                    return None;
+                }
+                let l = fmt::datasets_logical(theme);
+                let past = format!("-{}", store::naming::hash16(data.content(&l)?.as_bytes()));
+                let made = format!("{}{past}", self.state.read().unwrap().0);
+                if let Some((m, t)) = self.built.lock().unwrap().get(theme) {
+                    if *m == made {
+                        return Some((t.clone(), past));
+                    }
+                }
+                let b = data.global(&l).map_err(|e| eprintln!("available: {l}: {e:#}")).ok()??;
+                let t = Arc::new(built_of(&best, &b)?);
+                self.built.lock().unwrap().insert(theme.to_string(), (made, t.clone()));
+                Some((t, past))
+            }
+            _ => None,
+        }
+    }
+
+    /// The sets a theme has now (`of_set`), in `SETS`' order.
+    pub fn sets(&self, data: &crate::data::Data, theme: &str) -> Vec<&'static str> {
+        SETS.iter().map(|(k, _)| *k).filter(|k| self.of_set(data, theme, k).is_some()).collect()
     }
 
     /// The tiles' format and the version kept's hash ("" before one): every tile's values change
@@ -455,10 +539,10 @@ impl Available {
 }
 
 /// The layer a theme's set and grid are stored in.
-fn stored_layer(theme: &str, grid: Grid) -> String {
+fn stored_layer(theme: &str, set: &str, grid: Grid) -> String {
     match grid {
-        Grid::Mercator => fmt::layer(theme),
-        Grid::Polar(p) => fmt::polar_layer(theme, p),
+        Grid::Mercator => fmt::layer(theme, set),
+        Grid::Polar(p) => fmt::polar_layer(theme, set, p),
     }
 }
 
@@ -560,14 +644,14 @@ async fn tile(
     q: Option<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(th) = s.available.theme(&theme) else { return StatusCode::NOT_FOUND.into_response() };
-    if !set_served(&set) || !th.has_layer(&layer) || z > fmt::maxz(grid) || x >> z != 0 || y >> z != 0 {
+    let Some((th, past)) = s.available.of_set(&s.data, &theme, &set) else { return StatusCode::NOT_FOUND.into_response() };
+    if !th.has_layer(&layer) || z > fmt::maxz(grid) || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let stl = stored_layer(&theme, grid);
+    let stl = stored_layer(&theme, &set, grid);
     let all = all_of(q.as_deref());
     let g = s.data.generation.load(std::sync::atomic::Ordering::Relaxed);
-    let uv = s.available.version();
+    let uv = format!("{}{past}", s.available.version());
     let etag = format!("\"av-{}-{uv}-{layer}-{}-{z}-{x}-{y}\"", s.data.layer_version(&stl), view(all));
     let key = (stl.clone(), layer.clone(), all, z, x, y, g, uv);
     let v = reply::versioned(q.as_deref());
@@ -629,15 +713,15 @@ pub struct At {
 
 /// The pieces at a point, best first (`/api/available/<theme>/<set>?lng&lat&avail`).
 pub async fn at(State(s): State<S>, Path((theme, set)): Path<(String, String)>, Query(q): Query<At>) -> Response {
-    let Some(th) = s.available.theme(&theme) else { return StatusCode::NOT_FOUND.into_response() };
-    if !set_served(&set) || !q.lng.is_finite() || !q.lat.is_finite() || q.lat.abs() > 90.0 {
+    let Some((th, _)) = s.available.of_set(&s.data, &theme, &set) else { return StatusCode::NOT_FOUND.into_response() };
+    if !q.lng.is_finite() || !q.lat.is_finite() || q.lat.abs() > 90.0 {
         return StatusCode::NOT_FOUND.into_response();
     }
     let all = q.avail.as_deref() == Some("all");
     let (lng, lat) = (q.lng, q.lat);
     let r = reply::blocking("available: a click", move || {
         let (grid, px, py) = pixel_of(lng, lat);
-        let stl = stored_layer(&theme, grid);
+        let stl = stored_layer(&theme, &set, grid);
         let ids = fmt::pieces_at(grid, px, py, &mut |z, x, y| stored(&s, &stl, z, x, y))?;
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
         Ok(json!({"lng": lng, "lat": lat, "avail": view(all),
@@ -653,7 +737,10 @@ pub async fn at(State(s): State<S>, Path((theme, set)): Path<(String, String)>, 
 /// The theme's score, layers and sources (`/api/available/<theme>`).
 pub async fn about(State(s): State<S>, Path(theme): Path<String>) -> Response {
     match s.available.theme(&theme) {
-        Some(t) => ([(axum::http::header::CACHE_CONTROL, "no-cache")], axum::Json(t.described(&theme))).into_response(),
+        Some(t) => {
+            let sets = s.available.sets(&s.data, &theme);
+            ([(axum::http::header::CACHE_CONTROL, "no-cache")], axum::Json(t.described(&theme, &sets))).into_response()
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

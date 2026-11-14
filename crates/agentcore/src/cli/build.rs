@@ -79,6 +79,7 @@ const STEPS: &[Step] = &[
     s("depth", "<T …>", "z6 tiles T's depth and its shading (hi packs, z9–16) where a depth source is finer than the lo packs", &[], &[], ANY),
     s("depth-lo", "<Q …>", "z3 tiles Q's zoomed-out depth and its shading (lo packs, z3–8): the means of their z6 tiles' depth, composed from the declared depth sources where there's none", &[], &[], ANY),
     s("available", "<available-<theme> …>", "the data-available layers of each theme from the source extents' accepted version: the z6 tiles where a piece moved made again, the root from them, the polar caps", &[], &[], ANY),
+    s("available-built", "[available-built-terrain]", "the data-available layers of the data built into the map from the elevation datasets' accepted version: each place the dataset the terrain took its heights from, the z6 tiles where a dataset moved made again, the root, the polar caps", &[], &[], ANY),
     s("region-tiles", "[region-tiles]", "the region layer's vector tiles from the regions' accepted geometry: each border two regions share simplified once per zoom; the packs whose bytes moved written again", &[], &[], ANY),
     s("depth-root", "", "the depth's z0–2 root packs and their shading, the means of the lo packs' z3 tiles", &[], &[], 0),
     s("bldtile-task", "<8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]", "a z8 tile's task folder as a bldtiles job cuts it", &[], &["--out", "--pass", "--regions"], 1),

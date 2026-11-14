@@ -766,8 +766,10 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         let mut v = s.data.layer_version(l);
         // (The data-available layers are coloured here from the extents' accepted version too: a
         // weight tuned changes their URLs, crate::available.)
-        if codecs::available::of_layer(l).is_some() {
-            v = format!("{v}-{}", s.available.version());
+        // (The built set's from its datasets' descriptions too.)
+        if let Some((theme, set, _)) = codecs::available::of_layer(l) {
+            let past = s.available.of_set(&s.data, theme, set).map(|(_, p)| p).unwrap_or_default();
+            v = format!("{v}-{}{past}", s.available.version());
         }
         versions.insert(l.clone(), serde_json::Value::from(v));
     }

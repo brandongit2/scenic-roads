@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  NONE, atUrl, axisOf, cleanState, fromField, logTicks, parsePieces, parseTheme, pieceRows, polarTileUrl, rampStops, scaleOf, shown, themesOf, tileUrl, toField,
+  NONE, atUrl, axisOf, cleanState, fromField, isBuilt, layerName, logTicks, parsePieces, parseTheme, pieceRows, polarTileUrl, rampStops, scaleOf, shown, themesOf, tileUrl, toField,
   type AvailableState,
 } from '../src/available.ts';
 import type { ScaleFields } from '../src/state.ts';
@@ -52,6 +52,8 @@ test('the catalogue’s themes, with their poles', () => {
   const layers = {
     'available-terrain': { maxzoom: 12 }, 'available-terrain-n': { maxzoom: 3 }, 'available-terrain-s': { maxzoom: 3 },
     'polar-terrain-s': { maxzoom: 8 }, roads: {}, 'available-bathymetry': { maxzoom: 10 },
+    // (The built set's layers aren't a theme of their own.)
+    'available-built-terrain': { maxzoom: 12 }, 'available-built-terrain-s': { maxzoom: 3 },
   };
   assert.deepEqual(themesOf(layers), [{ theme: 'terrain', maxzoom: 12, poles: { n: 3, s: 3 } }, { theme: 'bathymetry', maxzoom: 10, poles: {} }]);
   assert.deepEqual(themesOf(undefined), []);
@@ -162,6 +164,12 @@ test('the URLs: tiles at the meta version, polar tiles, the click', () => {
   assert.equal(atUrl('terrain', 'best', 2.35, 48.85, 'all'), '/api/available/terrain/best?lng=2.350000&lat=48.850000&avail=all');
   // Ids from the server escaped.
   assert.equal(tileUrl('', 'terrain', 'best', 'a/b?c', 'free', 'v&1'), '/tiles/available/terrain/best/a%2Fb%3Fc/{z}/{x}/{y}?avail=free&v=v%261');
+  // The layers meta versions, each set's (codecs::available::layer).
+  assert.equal(layerName('terrain', 'best'), 'available-terrain');
+  assert.equal(layerName('terrain', 'built'), 'available-built-terrain');
+  assert.equal(layerName('terrain', 'built', 's'), 'available-built-terrain-s');
+  assert.equal(layerName('terrain', 'best', 'n'), 'available-terrain-n');
+  assert.ok(isBuilt('built') && !isBuilt('best'));
 });
 
 /** The click at Paris (shortened from the server's answer). */

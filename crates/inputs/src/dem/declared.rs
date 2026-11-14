@@ -1218,7 +1218,7 @@ pub fn cut_note(measured: &Measured, cover: &Cover, b: [f64; 4]) -> Option<Strin
 
 /// A box (w, s, e, n, degrees) in projected CRS `crs`: its edges sampled and projected, grown by
 /// `grow_m`.
-fn native_box(crs: u16, b: [f64; 4], grow_m: f64) -> Result<[f64; 4]> {
+pub fn native_box(crs: u16, b: [f64; 4], grow_m: f64) -> Result<[f64; 4]> {
     let Some(atlas) = super::proj::Projection::of(crs) else { bail!("EPSG:{crs} isn't a projected CRS the app knows") };
     let mut nb = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
     for i in 0..=16 {

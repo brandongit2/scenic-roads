@@ -7,7 +7,7 @@
 import type { LngLat, Map as MLMap } from 'maplibre-gl';
 import { spread } from '../autofit';
 import { version } from '../api';
-import { atUrl, axisOf, parsePieces, parseTheme, pieceRows, polarTileUrl, rampStops, scaleOf, shown, themesOf, tileUrl, type AvTheme, type ThemeLayers } from '../available';
+import { atUrl, axisOf, layerName, parsePieces, parseTheme, pieceRows, polarTileUrl, rampStops, scaleOf, shown, themesOf, tileUrl, type AvTheme, type ThemeLayers } from '../available';
 import { AVAILABLE_LAYER, AvailableMap } from '../availablemap';
 import { hostFor } from '../hosts';
 import { paletteFn } from '../palettes';
@@ -148,11 +148,11 @@ export class Available {
       return `rgba(${rgb.join(',')},${fadeAlpha(u, sc.lowFade, sc.lowSpan).toFixed(3)})`;
     };
     const stops = rampStops(range, !!cdf, colourAt, sc.threshold);
-    this.layer.show({ url: tileUrl(hostFor('layers'), theme, set, layer.id, s.avail, version(`available-${theme}`)), maxzoom: c.t.maxzoom, scale: `${theme}/${layer.id}`, opacity: s.opacity, stops });
+    this.layer.show({ url: tileUrl(hostFor('layers'), theme, set, layer.id, s.avail, version(layerName(theme, set))), maxzoom: c.t.maxzoom, scale: `${theme}/${layer.id}`, opacity: s.opacity, stops });
     this.polar?.setOverlay((pole: Pole) => {
       const maxZoom = c.t.poles[pole];
       if (maxZoom === undefined) return null;
-      const v = version(`available-${theme}-${pole}`);
+      const v = version(layerName(theme, set, pole));
       return {
         key: `${theme}/${set}/${layer.id}/${s.avail}/${v}`,
         maxZoom,
@@ -170,15 +170,15 @@ export class Available {
     if (!c) return false;
     const { layer, set } = shown(s, c.d);
     const all = s.avail === 'all';
-    this.popup.show(at, piecesView('loading', layer, all));
+    this.popup.show(at, piecesView('loading', layer, all, set));
     this.clickAbort?.abort();
     const abort = (this.clickAbort = new AbortController());
     fetch(atUrl(c.t.theme, set, at.lng, at.lat, s.avail), { signal: abort.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((j) => parsePieces(j) ?? Promise.reject(new Error('not an answer')))
       .then(
-        (ps) => !abort.signal.aborted && this.popup.show(at, piecesView(pieceRows(ps, layer.id, c.d), layer, all)),
-        (e) => !abort.signal.aborted && (e as Error).name !== 'AbortError' && this.popup.show(at, piecesView('failed', layer, all)),
+        (ps) => !abort.signal.aborted && this.popup.show(at, piecesView(pieceRows(ps, layer.id, c.d), layer, all, set)),
+        (e) => !abort.signal.aborted && (e as Error).name !== 'AbortError' && this.popup.show(at, piecesView('failed', layer, all, set)),
       );
     return true;
   }

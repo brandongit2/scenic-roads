@@ -2407,6 +2407,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
         work.extend(depth_work_in(x, done, &mut left));
         work.extend(polar_work_in(x, done, &mut left));
         work.extend(available_work(x, done));
+        work.extend(available_built_work(x, done));
         work.extend(region_tiles_work(x, done));
         work.extend(backfill.iter().cloned());
         let why = match heritage_awaits_acceptance(x) {
@@ -2980,6 +2981,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     work.extend(depth);
     work.extend(polar);
     work.extend(available_work(x, done));
+    work.extend(available_built_work(x, done));
     work.extend(region_tiles_work(x, done));
     // Last of all, in idle time: the mids of current z6 tiles that have none (expected the same).
     work.extend(backfill.iter().cloned());
@@ -4294,6 +4296,22 @@ pub fn available_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     (!targets.is_empty()).then(|| Work { step: "available".into(), targets })
 }
 
+/// The data-available layers of the data built into the map (terrain::available::built;
+/// docs/steps.md §14): its one target (`available-built-terrain`, recorded with the worldwide
+/// steps' keys) when its key isn't the one recorded; none before the elevation datasets are
+/// accepted and switched, or while their index can't be read.
+pub fn available_built_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
+    let (t, k) = available_built_target(x)?;
+    (done.lo.get(&t) != Some(&k)).then(|| Work { step: "available-built".into(), targets: vec![(t, k)] })
+}
+
+/// The built set's target with its key.
+fn available_built_target(x: &KeyCtx) -> Option<(String, String)> {
+    let t = codecs::available::layer(terrain::available::built::THEME, codecs::available::BUILT);
+    let k = super::steps::derived_key("available-built", &t, x)?;
+    Some((t, k))
+}
+
 /// The region layer (terrain::regionlayer; docs/steps.md §15): its one target (`region-tiles`,
 /// recorded with the worldwide steps' keys) when its key isn't the one recorded; none before the
 /// regions are accepted, or while their index can't be read.
@@ -4315,7 +4333,7 @@ fn available_targets(x: &KeyCtx) -> Vec<(String, String)> {
         .iter()
         .filter(|th| x.inputs.get(&format!("extents:{th}")).is_some_and(|v| !v.is_empty()))
         .filter_map(|th| {
-            let t = codecs::available::layer(th);
+            let t = codecs::available::layer(th, codecs::available::BEST);
             let k = super::steps::derived_key("available", &t, x)?;
             Some((t, k))
         })
@@ -4417,7 +4435,7 @@ pub fn mark_shared(lines: &mut [Line]) {
 
 /// The steps the checklist counts, in order: the regions' build to the end (the pass's own are the
 /// agent's, before them).
-pub const COUNTED: [&str; 38] = [
+pub const COUNTED: [&str; 39] = [
     "heritage-sites",
     "terrain-hi",
     "terrain-deep",
@@ -4441,6 +4459,7 @@ pub const COUNTED: [&str; 38] = [
     "ferries",
     "slope-root",
     "available",
+    "available-built",
     "region-tiles",
     "rail-feeds",
     "rail",
@@ -4494,6 +4513,7 @@ pub fn chains_left(x: &KeyCtx, done: &Keys) -> [Vec<Work>; 5] {
         remaining(done, |d| polar_next(x, d))
             .into_iter()
             .chain(available_work(x, done))
+            .chain(available_built_work(x, done))
             .chain(region_tiles_work(x, done))
             .collect(),
     ]
@@ -4616,6 +4636,12 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
             .iter()
             .all(|th| x.inputs.get(&format!("extents:{th}")).is_some_and(|v| v != "?"));
         out.push(sized("available", &available_targets(x), &done.lo, known));
+    }
+    // (The built set once the elevation datasets are switched: known once their index is read.)
+    if inputs::inputs::elevation::switched(m) {
+        let t = available_built_target(x);
+        let known = t.is_some();
+        out.push(sized("available-built", &t.into_iter().collect::<Vec<_>>(), &done.lo, known));
     }
     // (The region layer once the regions are accepted: known once their index is read.)
     if m.contains_key(&inputs::inputs::logical(inputs::inputs::regions::UNIT)) {
@@ -6302,6 +6328,7 @@ mod tests {
             "depth-lo" => depth_targets(x).map(|d| d.lo),
             "depth-root" => world(depth_root_key(x)),
             "available" => Some(available_targets(x)),
+            "available-built" => Some(available_built_target(x).into_iter().collect()),
             "region-tiles" => Some(region_tiles_target(x).into_iter().collect()),
             "polar-terrain" => polar_targets(x).map(|p| p.terrain),
             "polar-slope" => polar_targets(x).map(|p| p.slope),

@@ -4,10 +4,16 @@
 //! the pixel's centre; above the finest zoom a pixel's set is the union of the sets under it. No
 //! score is stored: the server scores the sets as it serves them.
 //!
-//! The packs: the Web Mercator layer `available-<theme>` holds z0–5 in its root pack and z6–12 in a
-//! pack per z6 tile (`layers/<layer>/hi/6-x-y`); a polar cap's layer `available-<theme>-<n|s>`
-//! holds z0–3 of the pole's grid (roadcore::polar) in its root. A tile all of one set at the finest
-//! zoom under it isn't stored (z0 aside): its nearest stored ancestor's pixels say it.
+//! Two sets of layers share the format (`SETS`): `best`, the best data any declared source has, its
+//! pieces the extents' (the step `available`); and `built`, the data built into the map, its pieces
+//! the elevation datasets, each where the terrain took its heights from it (the step
+//! `available-built`; its pieces' descriptions beside its tiles, `datasets_logical`).
+//!
+//! The packs: the Web Mercator layer (`available-<theme>`, the built set's `available-built-<theme>`)
+//! holds z0–5 in its root pack and z6–12 in a pack per z6 tile (`layers/<layer>/hi/6-x-y`); a polar
+//! cap's layer (`<layer>-<n|s>`) holds z0–3 of the pole's grid (roadcore::polar) in its root. A tile
+//! all of one set at the finest zoom under it isn't stored (z0 aside), nor one under the finest zoom
+//! a step stores (the built set's `BUILT_MAXZ`): its nearest stored ancestor's pixels say it.
 //!
 //! A tile's bytes (stored gzip'd, the pack's blobs flag):
 //!
@@ -35,6 +41,14 @@ pub const MAXZ: u8 = 12;
 pub const PACK_Z: u8 = 6;
 /// The finest zoom of a polar cap's layer (its root's: a pixel 1,024 m of the grid).
 pub const POLAR_MAXZ: u8 = 3;
+/// The finest zoom the built set's tiles are stored to (a pixel 153 m at the equator): GLO-30's fill
+/// masks are read at the overview no wider (terrain::available::built); z11 and z12 are its pixels'
+/// parts.
+pub const BUILT_MAXZ: u8 = 10;
+/// The sets: the best data any declared source has, and the data built into the map.
+pub const BEST: &str = "best";
+pub const BUILT: &str = "built";
+pub const SETS: [&str; 2] = [BEST, BUILT];
 /// The tiles' encoding, as the catalogue names it.
 pub const ENCODING: &str = "avail-sets";
 const MAGIC: &[u8; 4] = b"RDAV";
@@ -179,22 +193,30 @@ pub enum Grid {
     Polar(char),
 }
 
-/// The Web Mercator layer of `theme`'s best data (docs/steps.md §14: `available-<theme>`).
-pub fn layer(theme: &str) -> String {
-    format!("available-{theme}")
+/// The Web Mercator layer of `theme`'s set `set` (docs/steps.md §14): `available-<theme>`, the
+/// built set's `available-built-<theme>`.
+pub fn layer(theme: &str, set: &str) -> String {
+    match set {
+        BEST => format!("available-{theme}"),
+        _ => format!("available-{set}-{theme}"),
+    }
 }
 
-/// The polar cap's layer of `theme` at pole `p` (`n` or `s`).
-pub fn polar_layer(theme: &str, p: char) -> String {
-    format!("available-{theme}-{p}")
+/// The polar cap's layer of `theme`'s set `set` at pole `p` (`n` or `s`).
+pub fn polar_layer(theme: &str, set: &str, p: char) -> String {
+    format!("{}-{p}", layer(theme, set))
 }
 
-/// What a layer name is: (its theme, its grid), or None for a layer not of these.
-pub fn of_layer(name: &str) -> Option<(&str, Grid)> {
+/// What a layer name is: (its theme, its set, its grid), or None for a layer not of these.
+pub fn of_layer(name: &str) -> Option<(&str, &'static str, Grid)> {
     let rest = name.strip_prefix("available-")?;
+    let (set, rest) = match rest.strip_prefix("built-") {
+        Some(r) => (BUILT, r),
+        None => (BEST, rest),
+    };
     match rest.rsplit_once('-') {
-        Some((theme, p @ ("n" | "s"))) => Some((theme, Grid::Polar(p.chars().next()?))),
-        _ => Some((rest, Grid::Mercator)),
+        Some((theme, p @ ("n" | "s"))) => Some((theme, set, Grid::Polar(p.chars().next()?))),
+        _ => Some((rest, set, Grid::Mercator)),
     }
 }
 
@@ -208,10 +230,16 @@ pub fn pack_logical(layer: &str, x: u32, y: u32) -> String {
     format!("layers/{layer}/hi/{PACK_Z}-{x}-{y}")
 }
 
-/// The step's own record of a theme's build (`work/available-<theme>/mids`): an RDPACK of every z6
-/// tile holding a piece at z6 (the root is made from them), its meta each pack's key.
-pub fn mids_logical(theme: &str) -> String {
-    format!("work/available-{theme}/mids")
+/// A step's own record of a theme's set (`work/<layer>/mids`, its Mercator layer's name): an RDPACK
+/// of every z6 tile holding a piece at z6 (the root is made from them), its meta each pack's key.
+pub fn mids_logical(theme: &str, set: &str) -> String {
+    format!("work/{}/mids", layer(theme, set))
+}
+
+/// The built set's pieces (`layers/available-built-<theme>/datasets`): each dataset in the
+/// terrain's order with its description and how its extent was read (JSON), the server's.
+pub fn datasets_logical(theme: &str) -> String {
+    format!("layers/{}/datasets", layer(theme, BUILT))
 }
 
 /// The pack holding tile z/x/y of a layer of `grid`, as the catalogue keys it: ("root", "0/0/0") or
@@ -319,8 +347,13 @@ mod tests {
 
     #[test]
     fn layers_and_packs() {
-        assert_eq!(of_layer("available-terrain"), Some(("terrain", Grid::Mercator)));
-        assert_eq!(of_layer(&polar_layer("terrain", 'n')), Some(("terrain", Grid::Polar('n'))));
+        assert_eq!(of_layer("available-terrain"), Some(("terrain", BEST, Grid::Mercator)));
+        assert_eq!(of_layer(&polar_layer("terrain", BEST, 'n')), Some(("terrain", BEST, Grid::Polar('n'))));
+        assert_eq!(layer("terrain", BUILT), "available-built-terrain");
+        assert_eq!(of_layer("available-built-terrain"), Some(("terrain", BUILT, Grid::Mercator)));
+        assert_eq!(of_layer(&polar_layer("terrain", BUILT, 's')), Some(("terrain", BUILT, Grid::Polar('s'))));
+        assert_eq!(mids_logical("terrain", BEST), "work/available-terrain/mids");
+        assert_eq!(mids_logical("terrain", BUILT), "work/available-built-terrain/mids");
         assert_eq!(of_layer("terrain"), None);
         assert_eq!(pack_of(Grid::Mercator, 5, 3, 3), Some(("root", "0/0/0".into())));
         assert_eq!(pack_of(Grid::Mercator, 12, 4095, 64), Some(("hi", "6/63/1".into())));

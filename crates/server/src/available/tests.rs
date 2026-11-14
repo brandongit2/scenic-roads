@@ -111,7 +111,7 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     assert!(l[1]["values"]["vertical_rmse_m"].is_null());
     assert_eq!(t.listed(both, false).len(), 1);
     // The theme: its score, layers, sources (a piece with no extent named).
-    let d = t.described("terrain");
+    let d = t.described("terrain", &["best"]);
     assert_eq!(d["primary"], "spacing_m");
     let layers: Vec<&str> = d["layers"].as_array().unwrap().iter().map(|l| l["id"].as_str().unwrap()).collect();
     assert_eq!(layers, ["score", "surface", "vertical_rmse_m", "year"], "the primary's layer is the score's");
@@ -122,7 +122,8 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     assert_eq!(fine["unknown"], json!(["later"]));
     // The words the app shows for the ids: the sets', each availability's and extent class's.
     assert_eq!(d["sets"], json!(["best"]));
-    assert_eq!(d["labels"]["sets"]["best"], "Best available anywhere");
+    assert_eq!(d["labels"]["sets"]["best"], "Best available");
+    assert_eq!(d["labels"]["sets"]["built"], "Built into the map");
     for (k, _) in ex::AVAILABILITY {
         assert!(d["labels"]["availability"][k].as_str().is_some_and(|w| !w.is_empty()), "{k}");
     }
@@ -225,7 +226,7 @@ fn each_layer_carries_its_value() {
     assert_eq!(t.code("vertical_rmse_m", a), None);
     // The layers: the score's first, on the primary's scale and in its unit, under score.toml's
     // label.
-    let d = t.described("terrain");
+    let d = t.described("terrain", &["best"]);
     let l = d["layers"].as_array().unwrap();
     let ids: Vec<&str> = l.iter().map(|l| l["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["score", "surface", "vertical_rmse_m", "year"]);
@@ -250,7 +251,7 @@ fn each_layer_carries_its_value() {
     let unnamed = std::str::from_utf8(SCORE).unwrap().replacen("label = \"Best data\"\n", "", 1);
     assert_ne!(unnamed.as_bytes(), SCORE);
     files.insert("terrain/score.toml".into(), unnamed.into_bytes());
-    assert_eq!(theme_of(&files).described("terrain")["layers"][0]["label"], "Best data");
+    assert_eq!(theme_of(&files).described("terrain", &["best"])["layers"][0]["label"], "Best data");
 }
 
 /// A score.toml as the NAS holds it before the new one is placed (its classes, colours, ramp and
@@ -269,7 +270,7 @@ fn a_score_toml_with_its_retired_colours_is_served() {
     files.insert("terrain/score.toml".into(), old.into_bytes());
     let t = theme_of(&files);
     let new = theme();
-    assert_eq!(t.described("terrain")["layers"], new.described("terrain")["layers"]);
+    assert_eq!(t.described("terrain", &["best"])["layers"], new.described("terrain", &["best"])["layers"]);
     let a = &t.pieces["open-lidar/dtm"];
     assert_eq!(t.code(SCORE_LAYER, a), new.code(SCORE_LAYER, a));
 }
@@ -279,8 +280,19 @@ fn terrarium(px: [u8; 4]) -> f64 {
     f64::from(px[0]) * 256.0 + f64::from(px[1]) + f64::from(px[2]) / 256.0 - 32768.0
 }
 
-/// A NAS root with the step's packs of the fixture's pieces and a catalogue naming them, and a
-/// server whose extents are the fixture's.
+/// The built set's datasets as the step `available-built` describes them, in order.
+fn built_datasets() -> Value {
+    json!([
+        {"id": "glo30", "order": 0, "name": "Copernicus DEM", "label": "Copernicus DEM GLO-30", "credit": "ESA",
+            "resolution_m": 30, "metrics": {"surface": "surface"}, "read": {"method": "fill masks", "grain_m": 124}},
+        {"id": "lidar", "order": 1, "name": "Lidar", "label": "Lidar 1 m", "licence": "CC-BY-4.0",
+            "resolution_m": 1, "metrics": {"surface": "ground"}, "read": {"method": "files", "grain_m": 153}},
+    ])
+}
+
+/// A NAS root with the steps' packs of the fixture's pieces and of the built set's datasets
+/// (`built_datasets`, over the whole world) and a catalogue naming them, and a server whose extents
+/// are the fixture's.
 fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
     let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let root = store::nasfs::NasRoot::local_for_test(nas.path());
@@ -292,14 +304,24 @@ fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
         }
     }
     terrain::available::build(&mut out, "terrain", &pieces, &|_, _| {}).unwrap();
+    // The built set: two datasets over the whole world, the coarser one first in order.
+    let t = Tile { ids: vec!["glo30".into(), "lidar".into()], sets: vec![vec![0, 1]], px: vec![0; PIXELS] };
+    let tile = (0, 0, 0, t.gzipped(), t.encode().len() as u32);
+    let layer = fmt::layer("terrain", fmt::BUILT);
+    let p = terrain::layers::write_pack_local(&out, &layer, fmt::ENCODING, true, "root", (0, 0, 0), &mut std::iter::once(tile));
+    let p = p.unwrap().unwrap();
+    out.put_file(&p.logical, "pack", &p.local).unwrap();
+    out.put_bytes(&fmt::datasets_logical("terrain"), "json", &serde_json::to_vec(&built_datasets()).unwrap()).unwrap();
     out.save().unwrap();
     let mut cat = store::catalogue::Catalogue::new(1);
     for (l, c) in &out.manifest {
+        let size = std::fs::metadata(nas.path().join(c)).unwrap().len();
+        cat.files.insert(l.clone(), store::catalogue::FileRef { file: c.clone(), size, ..Default::default() });
         let parts: Vec<&str> = l.split('/').collect();
         let ["layers", layer, scope, key] = parts[..] else { continue };
         let e = cat.layers.entry(layer.into()).or_insert_with(|| store::catalogue::Layer {
             encoding: fmt::ENCODING.into(),
-            maxzoom: fmt::maxz(fmt::of_layer(layer).unwrap().1),
+            maxzoom: fmt::maxz(fmt::of_layer(layer).unwrap().2),
             ..Default::default()
         });
         match scope {
@@ -308,8 +330,6 @@ fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
                 e.hi.insert(key.replace('-', "/"), l.clone());
             }
         }
-        let size = std::fs::metadata(nas.path().join(c)).unwrap().len();
-        cat.files.insert(l.clone(), store::catalogue::FileRef { file: c.clone(), size, ..Default::default() });
     }
     assert!(cat.layers.contains_key("available-terrain") && cat.layers.contains_key("available-terrain-n"));
     store::testkit::map_root(nas.path(), &cat);
@@ -415,13 +435,13 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
     assert_eq!(get("slope", 0, 0, 0, None, headers(None)).await.status(), StatusCode::NOT_FOUND);
     assert_eq!(get("spacing_m", 0, 0, 0, None, headers(None)).await.status(), StatusCode::NOT_FOUND, "the score's");
     assert_eq!(get("score", 13, 0, 0, None, headers(None)).await.status(), StatusCode::NOT_FOUND);
-    let built = mercator_tile(
+    let other = mercator_tile(
         State(s.clone()),
-        Path(("terrain".into(), "built".into(), "score".into(), 0, 0, 0)),
+        Path(("terrain".into(), "finest".into(), "score".into(), 0, 0, 0)),
         RawQuery(None),
         headers(None),
     );
-    assert_eq!(built.await.status(), StatusCode::NOT_FOUND);
+    assert_eq!(other.await.status(), StatusCode::NOT_FOUND);
     // Past the tiles, the pole's cap.
     let polar = |z, x, y| {
         polar_tile(
@@ -515,6 +535,50 @@ async fn a_click_answers_the_pieces_there_best_first() {
     assert!(meta["packs"].get("available-terrain").is_none());
 }
 
+/// The built set draws and lists its datasets in their order, whatever their scores, and under
+/// either setting of the switch: the one the terrain took its heights from is the first.
+#[tokio::test]
+async fn the_built_set_draws_the_first_dataset_in_order() {
+    let (_nas, _home, s) = served();
+    let r = about(State(s.clone()), Path("terrain".into())).await;
+    let v: Value = serde_json::from_slice(&body(r).await).unwrap();
+    assert_eq!(v["sets"], json!(["best", "built"]));
+    let (th, past) = s.available.of_set(&s.data, "terrain", "built").unwrap();
+    assert!(past.starts_with('-') && past.len() == 17, "{past}");
+    let (g, l) = (&th.pieces["glo30"], &th.pieces["lidar"]);
+    assert!(l.score > g.score, "the lidar is finer");
+    assert_eq!(g.props["spacing_m"], 30.0);
+    assert_eq!(g.props["extent"], "mask");
+    assert_eq!(th.sources["glo30"]["credit"], "ESA");
+    // Its tiles: the first in order's value, at z0 and from the ancestor at z12, either switch.
+    let (x, y) = z12(2.3, 44.2);
+    for (z, x, y) in [(0, 0, 0), (12, x, y)] {
+        for q in [None, Some("avail=all")] {
+            let r = mercator_tile(
+                State(s.clone()),
+                Path(("terrain".into(), "built".into(), "score".into(), z, x, y)),
+                RawQuery(q.map(str::to_string)),
+                headers(None),
+            );
+            let png = body(r.await).await;
+            let px = png_pixel(&png, 128, 128);
+            assert_eq!(px[3], 255);
+            assert!((terrarium(px) - th.code(SCORE_LAYER, g).unwrap()).abs() <= 0.5 / 256.0, "{z} {q:?}");
+        }
+    }
+    // The click: both, in order, the first drawn.
+    let r = at(State(s.clone()), Path(("terrain".into(), "built".into())), Query(At { lng: 2.3, lat: 44.2, avail: None }));
+    let v: Value = serde_json::from_slice(&body(r.await).await).unwrap();
+    let ids: Vec<&str> = v["pieces"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["glo30", "lidar"]);
+    assert_eq!(v["painted"]["score"], "glo30");
+    assert_eq!(v["pieces"][0]["read"]["method"], "fill masks");
+    // The app's version of its layer names its datasets too.
+    let meta = crate::meta_json(&s);
+    let v = meta["versions"]["available-built-terrain"].as_str().unwrap();
+    assert!(v.ends_with(&past), "{v}");
+}
+
 /// The real pieces (producers/extents/terrain/) built and their score layer's values drawn as PNGs
 /// over the map's land colour, each value in its spacing's class (0.5, 1, 2, 5, 10, 30, 90 m and
 /// coarser, a class's edge a factor of 1.25 over its spacing, finer brighter): the world at z2,
@@ -551,7 +615,7 @@ fn renders_the_real_pieces() {
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };
     let peak = if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut r) } == 0 { r.ru_maxrss } else { 0 };
     out.save().unwrap();
-    let layer = fmt::layer("terrain");
+    let layer = fmt::layer("terrain", fmt::BEST);
     let (mut bytes, mut tiles, mut over, mut most) = (0, 0, 0, 0);
     // (Each zoom's tiles and bytes; each source's tiles that one of its pieces' outlines crosses, a
     // piece in some of the tile's sets and not in others, and those where it is the only such

@@ -305,7 +305,7 @@ impl Data {
 
     /// The pole of `layer`, a polar cap's (its blocks the grid its reach is told in).
     fn pole(cat: &Catalogue, layer: &str) -> Option<char> {
-        if let Some((_, codecs::available::Grid::Polar(p))) = codecs::available::of_layer(layer) {
+        if let Some((_, _, codecs::available::Grid::Polar(p))) = codecs::available::of_layer(layer) {
             return Some(p);
         }
         cat.layers.get(layer).filter(|l| !l.polar.is_empty())?;
@@ -569,7 +569,7 @@ impl Data {
         let cat = self.catalogue();
         let l = cat.layers.get(layer)?;
         // (A data-available layer's: its root z0–5 and z6 packs, or a pole's root: codecs::available.)
-        if let Some((_, grid)) = codecs::available::of_layer(layer) {
+        if let Some((_, _, grid)) = codecs::available::of_layer(layer) {
             if !self.reach().is_none_or(|r| r.grid(Self::pole(&cat, layer)).cover(z, x, y) != Cover::None) {
                 return None;
             }

@@ -634,8 +634,8 @@ struct MidsMeta {
 
 /// The mids pack as it was: its meta and its z6 tiles' blobs (gzip'd) by "6/x/y", and whether it
 /// was there to read (none, of another version, or not readable whole: everything made again).
-fn read_mids(out: &Out, theme: &str) -> Result<(MidsMeta, BTreeMap<String, Vec<u8>>, bool)> {
-    let Some(c) = out.get(&fmt::mids_logical(theme)) else { return Ok((Default::default(), BTreeMap::new(), false)) };
+fn read_mids(out: &Out, logical: &str, v: u32) -> Result<(MidsMeta, BTreeMap<String, Vec<u8>>, bool)> {
+    let Some(c) = out.get(logical) else { return Ok((Default::default(), BTreeMap::new(), false)) };
     let b = out.path(c).read().with_context(|| format!("read {c}"))?;
     let parsed = || -> Result<(MidsMeta, BTreeMap<String, Vec<u8>>)> {
         let idx = store::pack::PackIndex::parse_bytes(&b)?;
@@ -652,7 +652,7 @@ fn read_mids(out: &Out, theme: &str) -> Result<(MidsMeta, BTreeMap<String, Vec<u
     };
     match parsed() {
         // (Made by another version: everything made again.)
-        Ok((meta, _)) if meta.v != KEY_V => Ok((Default::default(), BTreeMap::new(), false)),
+        Ok((meta, _)) if meta.v != v => Ok((Default::default(), BTreeMap::new(), false)),
         Ok((meta, blobs)) => Ok((meta, blobs, true)),
         Err(e) => {
             eprintln!("available: the record {c} isn't readable ({e:#}): every tile made again");
@@ -729,22 +729,130 @@ fn stored(cell: &Cell, sets: &Sets, ids: &[String]) -> (Vec<u8>, u32) {
     (fmt::gzip(&t), t.len() as u32)
 }
 
-/// Builds theme `theme`'s layers from `pieces` (every source's of the theme), making again only what
-/// their keys say moved; `report` hears the z6 tiles done of those to make.
+/// Builds theme `theme`'s best set from `pieces` (every source's of the theme), making again only
+/// what their keys say moved; `report` hears the z6 tiles done of those to make.
 pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, u64)) -> Result<Made> {
     let mut seen = BTreeSet::new();
     for p in pieces {
         ensure!(seen.insert(p.id.as_str()), "piece {} twice", p.id);
     }
-    let layer = fmt::layer(theme);
     let ids: Vec<String> = pieces.iter().map(|p| p.id.clone()).collect();
+    let polys: Vec<PlanePoly> = pieces
+        .iter()
+        .enumerate()
+        .flat_map(|(i, p)| p.polygons.iter().map(move |q| (i, q)))
+        .map(|(i, q)| plane_poly(i as u32, q, &merc_px))
+        .collect();
+    let poles = [Pole::North, Pole::South].map(|pole| {
+        let (which, key) = polar_polys(pieces, pole);
+        (pole, key, which)
+    });
+    let record = Record { theme, set: fmt::BEST, v: KEY_V, ids: &ids };
+    drive(
+        out,
+        &record,
+        tile_keys(pieces),
+        poles.iter().map(|(p, k, w)| (*p, k.clone(), w.is_empty())).collect(),
+        &mut |stale, sink| {
+            // (A row of z6 tiles at a time: the row's runs, then each tile's quadtree on a thread of
+            // its own, its sets over the row's.)
+            let mut by_row: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+            for &(x, y) in stale {
+                by_row.entry(y).or_default().push(x);
+            }
+            for (y, xs) in by_row {
+                let mut band = Sets::default();
+                let runs = row_runs(&polys, MERC_W, y * BAND, (y + 1) * BAND, &mut band);
+                let band = std::sync::Arc::new(band);
+                let rows = Rows { runs: &runs, r0: y * BAND, width: MERC_W, zmax: fmt::MAXZ };
+                let made: Vec<Z6> = xs
+                    .par_iter()
+                    .map(|&x| {
+                        let mut sets = Sets::over(band.clone());
+                        let mut tiles = Vec::new();
+                        let cell = rows.build(fmt::PACK_Z, x, y, &mut sets, &mut |z, tx, ty, c, s| {
+                            let (b, raw) = stored(c, s, &ids);
+                            tiles.push((z, tx, ty, b, raw));
+                        });
+                        Z6::of(x, y, &cell, &sets, &ids, tiles)
+                    })
+                    .collect();
+                for z in made {
+                    sink(z)?;
+                }
+            }
+            Ok(())
+        },
+        &mut |pole, sets, emit| {
+            let which = &poles.iter().find(|(p, _, _)| *p == pole).expect("both poles").2;
+            let polys: Vec<PlanePoly> = which
+                .iter()
+                .map(|&(i, k)| plane_poly(i as u32, &pieces[i].polygons[k], &|lon, lat| polar_px(pole, lon, lat)))
+                .collect();
+            let w = polar_w();
+            let runs = row_runs(&polys, w, 0, w, sets);
+            let rows = Rows { runs: &runs, r0: 0, width: w, zmax: fmt::POLAR_MAXZ };
+            Ok(rows.build(0, 0, 0, sets, emit))
+        },
+        report,
+    )
+}
+
+/// A set of a theme's layers as its step records it: the theme, the set, the step's version (its
+/// record's, `KEY_V`: a record of another made again whole) and the pieces' ids, by number.
+pub(crate) struct Record<'a> {
+    pub theme: &'a str,
+    pub set: &'a str,
+    pub v: u32,
+    pub ids: &'a [String],
+}
+
+/// A z6 tile as made: its own cell stored (None: empty), whether it's a raster (a pack of its
+/// own), and its stored tiles under it.
+pub(crate) struct Z6 {
+    pub x: u32,
+    pub y: u32,
+    own: Option<(Vec<u8>, u32)>,
+    raster: bool,
+    tiles: Vec<Stored>,
+}
+
+impl Z6 {
+    pub(crate) fn of(x: u32, y: u32, cell: &Cell, sets: &Sets, ids: &[String], tiles: Vec<Stored>) -> Z6 {
+        let own = (!matches!(cell, Cell::Uniform(0))).then(|| stored(cell, sets, ids));
+        Z6 { x, y, own, raster: matches!(cell, Cell::Raster(_)), tiles }
+    }
+}
+
+/// What a set's maker of a pole's square hands back: its cell, the stored tiles under it handed to
+/// the emitter as they're made.
+pub(crate) type MakePole<'a> = dyn FnMut(Pole, &mut Sets, &mut Emit) -> Result<Cell> + 'a;
+/// What a set's maker of z6 tiles is: the stale tiles to make, each handed to the sink once made.
+pub(crate) type MakeZ6<'a> = dyn FnMut(&[(u32, u32)], &mut dyn FnMut(Z6) -> Result<()>) -> Result<()> + 'a;
+
+/// A set's layers made again where their keys moved (`keys`: each z6 tile's that holds a piece,
+/// "6/x/y"; `poles`: each pole's key and whether nothing reaches it), from the step's record: the
+/// stale z6 tiles made (`make`) and their packs put, those no key names now dropped, the root made
+/// again from every z6 tile's own when one moved, each pole whose key moved made again
+/// (`make_pole`), and the record written with the keys.
+pub(crate) fn drive(
+    out: &mut Out,
+    r: &Record,
+    keys: BTreeMap<String, String>,
+    poles: Vec<(Pole, String, bool)>,
+    make: &mut MakeZ6,
+    make_pole: &mut MakePole,
+    report: &dyn Fn(u64, u64),
+) -> Result<Made> {
+    let ids = r.ids;
+    let layer = fmt::layer(r.theme, r.set);
+    let ml = fmt::mids_logical(r.theme, r.set);
     let by_id: HashMap<&str, u32> = ids.iter().enumerate().map(|(k, s)| (s.as_str(), k as u32)).collect();
-    let (old, mut blobs, trusted) = read_mids(out, theme)?;
-    let keys = tile_keys(pieces);
+    let (old, mut blobs, trusted) = read_mids(out, &ml, r.v)?;
     let mut made = Made::default();
     let mut sets = Sets::default();
 
-    // The z6 tiles whose key moved, or whose pack is missing; those no polygon meets now.
+    // The z6 tiles whose key moved, or whose pack is missing; those no key names now.
     let stale: Vec<(u32, u32)> = keys
         .iter()
         .filter(|(t, k)| {
@@ -775,72 +883,42 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
         made.dropped.push(t);
     }
 
-    // The stale z6 tiles a row of them at a time: the row's runs, then each tile's quadtree.
-    let polys: Vec<PlanePoly> = pieces
-        .iter()
-        .enumerate()
-        .flat_map(|(i, p)| p.polygons.iter().map(move |q| (i, q)))
-        .map(|(i, q)| plane_poly(i as u32, q, &merc_px))
-        .collect();
-    let mut by_row: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    for &(x, y) in &stale {
-        by_row.entry(y).or_default().push(x);
-    }
     let total = stale.len() as u64;
     let mut done = 0;
     report(0, total);
-    for (y, xs) in by_row {
-        let mut band = Sets::default();
-        let runs = row_runs(&polys, MERC_W, y * BAND, (y + 1) * BAND, &mut band);
-        let band = std::sync::Arc::new(band);
-        let rows = Rows { runs: &runs, r0: y * BAND, width: MERC_W, zmax: fmt::MAXZ };
-        // (Each tile's quadtree on a thread of its own, its sets over the row's; their packs put in
-        // the row's order.)
-        let made_row: Vec<(u32, Option<(Vec<u8>, u32)>, bool, Vec<Stored>)> = xs
-            .par_iter()
-            .map(|&x| {
-                let mut sets = Sets::over(band.clone());
-                let mut tiles = Vec::new();
-                let cell = rows.build(fmt::PACK_Z, x, y, &mut sets, &mut |z, tx, ty, c, s| {
-                    let (b, raw) = stored(c, s, &ids);
-                    tiles.push((z, tx, ty, b, raw));
-                });
-                let own = (!matches!(cell, Cell::Uniform(0))).then(|| stored(&cell, &sets, &ids));
-                (x, own, matches!(cell, Cell::Raster(_)), tiles)
-            })
-            .collect();
-        for (x, own, raster, mut tiles) in made_row {
-            let t = format!("{}/{x}/{y}", fmt::PACK_Z);
-            made.remade.push(t.clone());
-            let l = fmt::pack_logical(&layer, x, y);
-            match own {
-                Some((b, raw)) if raster => {
-                    tiles.push((fmt::PACK_Z, x, y, b.clone(), raw));
-                    made.tiles += put_pack(out, &layer, "hi", (fmt::PACK_Z, x, y), tiles)?;
-                    made.packs += 1;
-                    blobs.insert(t, b);
-                }
-                own => {
-                    if out.get(&l).is_some() {
-                        out.remove(&l);
-                    }
-                    match own {
-                        Some((b, _)) => blobs.insert(t, b),
-                        None => blobs.remove(&t),
-                    };
-                }
+    make(&stale, &mut |z: Z6| {
+        let Z6 { x, y, own, raster, mut tiles } = z;
+        let t = format!("{}/{x}/{y}", fmt::PACK_Z);
+        made.remade.push(t.clone());
+        let l = fmt::pack_logical(&layer, x, y);
+        match own {
+            Some((b, raw)) if raster => {
+                tiles.push((fmt::PACK_Z, x, y, b.clone(), raw));
+                made.tiles += put_pack(out, &layer, "hi", (fmt::PACK_Z, x, y), tiles)?;
+                made.packs += 1;
+                blobs.insert(t, b);
             }
-            done += 1;
-            report(done, total);
+            own => {
+                if out.get(&l).is_some() {
+                    out.remove(&l);
+                }
+                match own {
+                    Some((b, _)) => blobs.insert(t, b),
+                    None => blobs.remove(&t),
+                };
+            }
         }
-    }
+        done += 1;
+        report(done, total);
+        Ok(())
+    })?;
 
     // The root, from every z6 tile's own, when one moved, it's missing or the record wasn't read.
     let root_l = fmt::root_logical(&layer);
     if !trusted || !stale.is_empty() || !made.dropped.is_empty() || (out.get(&root_l).is_none() && !blobs.is_empty()) {
         made.root = true;
         let mut tiles = Vec::new();
-        let cell = root_cell(0, 0, 0, &blobs, &by_id, &ids, &mut sets, &mut tiles)?;
+        let cell = root_cell(0, 0, 0, &blobs, &by_id, ids, &mut sets, &mut tiles)?;
         match cell {
             Cell::Uniform(0) => {
                 if out.get(&root_l).is_some() {
@@ -848,7 +926,7 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
                 }
             }
             c => {
-                let (b, raw) = stored(&c, &sets, &ids);
+                let (b, raw) = stored(&c, &sets, ids);
                 tiles.push((0, 0, 0, b, raw));
                 made.tiles += put_pack(out, &layer, "root", (0, 0, 0), tiles)?;
             }
@@ -856,29 +934,21 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
     }
 
     // The polar caps.
-    let mut poles = BTreeMap::new();
-    for pole in [Pole::North, Pole::South] {
-        let (which, key) = polar_polys(pieces, pole);
+    let mut pole_keys = BTreeMap::new();
+    for (pole, key, empty) in poles {
         let p = pole.letter().to_string();
-        let pl = fmt::polar_layer(theme, pole.letter());
+        let pl = fmt::polar_layer(r.theme, r.set, pole.letter());
         let l = fmt::root_logical(&pl);
-        poles.insert(p.clone(), key.clone());
-        if old.poles.get(&p) == Some(&key) && (which.is_empty() || out.get(&l).is_some()) {
+        pole_keys.insert(p.clone(), key.clone());
+        if old.poles.get(&p) == Some(&key) && (empty || out.get(&l).is_some()) {
             continue;
         }
         made.poles.push(pole.letter());
-        let polys: Vec<PlanePoly> = which
-            .iter()
-            .map(|&(i, k)| plane_poly(i as u32, &pieces[i].polygons[k], &|lon, lat| polar_px(pole, lon, lat)))
-            .collect();
-        let w = polar_w();
-        let runs = row_runs(&polys, w, 0, w, &mut sets);
-        let rows = Rows { runs: &runs, r0: 0, width: w, zmax: fmt::POLAR_MAXZ };
         let mut tiles = Vec::new();
-        let cell = rows.build(0, 0, 0, &mut sets, &mut |z, tx, ty, c, s| {
-            let (b, raw) = stored(c, s, &ids);
+        let cell = make_pole(pole, &mut sets, &mut |z, tx, ty, c, s| {
+            let (b, raw) = stored(c, s, ids);
             tiles.push((z, tx, ty, b, raw));
-        });
+        })?;
         match cell {
             Cell::Uniform(0) => {
                 if out.get(&l).is_some() {
@@ -886,16 +956,15 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
                 }
             }
             c => {
-                let (b, raw) = stored(&c, &sets, &ids);
+                let (b, raw) = stored(&c, &sets, ids);
                 tiles.push((0, 0, 0, b, raw));
                 made.tiles += put_pack(out, &pl, "root", (0, 0, 0), tiles)?;
             }
         }
     }
 
-    // The mids, with each tile's key.
-    let meta = MidsMeta { theme: theme.to_string(), v: KEY_V, keys, poles };
-    let ml = fmt::mids_logical(theme);
+    // The record, with each tile's key.
+    let meta = MidsMeta { theme: r.theme.to_string(), v: r.v, keys, poles: pole_keys };
     let local = out.scratch_file(&format!("{ml}.pack"));
     let mut w = store::pack::PackWriter::create(&local, serde_json::to_value(&meta)?, true)?;
     for (t, b) in &blobs {
@@ -907,6 +976,8 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
     out.put_file(&ml, "pack", &local)?;
     Ok(made)
 }
+
+pub mod built;
 
 #[cfg(test)]
 mod tests;

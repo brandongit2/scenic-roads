@@ -870,6 +870,36 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 );
             }
         }
+        "available-built" => {
+            // available-built [available-built-terrain]: the data-available layers of the data
+            // built into the map (terrain::available::built; docs/steps.md §14) from the elevation
+            // datasets' accepted version the records name.
+            use terrain::available::built;
+            let m = out.manifest.clone();
+            let a = ::inputs::inputs::open(out.root(), &m, ::inputs::inputs::elevation::UNIT)?
+                .with_context(|| format!("no accepted version of {}", ::inputs::inputs::elevation::UNIT))?;
+            let want = codecs::available::layer(built::THEME, codecs::available::BUILT);
+            for t in positional(&args) {
+                anyhow::ensure!(t == want, "{t}: not the built set's target ({want})");
+            }
+            let p = phase("reading the datasets");
+            let ds = built::datasets(&a, out.root())?;
+            drop(p);
+            let p = phase("drawing where each dataset was used");
+            let made = built::build(&mut out, &ds, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))?;
+            drop(p);
+            out.save()?;
+            eprintln!(
+                "available-built: {} datasets; {} z6 tiles made again, {} dropped; {} packs, {} tiles; root {}; poles {:?}",
+                ds.len(),
+                made.remade.len(),
+                made.dropped.len(),
+                made.packs,
+                made.tiles,
+                if made.root { "made again" } else { "as it was" },
+                made.poles
+            );
+        }
         "region-tiles" => {
             // region-tiles [region-tiles]: the region layer (terrain::regionlayer; docs/steps.md §15)
             // from the regions' accepted version the records name.
@@ -2004,7 +2034,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         codecs::regionlayer::LAYER => (0, codecs::regionlayer::MAXZ),
         // The data-available layers: z0–5 in the root, z6–12 in the z6 packs; a pole's z0–3 in its
         // root (codecs::available).
-        l => (0, codecs::available::maxz(codecs::available::of_layer(l)?.1)),
+        l => (0, codecs::available::maxz(codecs::available::of_layer(l)?.2)),
     })
 }
 

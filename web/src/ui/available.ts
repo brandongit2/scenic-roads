@@ -2,7 +2,7 @@
 // layers from the server's description (available.ts), one shown at a time, the set, the
 // availability switch, the opacity, and the layer's colour map: the sidebar's own control
 // (ui/scale.ts ScaleControls) over the values in view, on the layer's own axis (available.ts axisOf).
-import { axisOf, scaleOf, shown, word, type AvailableState, type AvLayer, type AvTheme, type PieceRow, OPACITY_RANGE } from '../available';
+import { axisOf, isBuilt, scaleOf, shown, word, type AvailableState, type AvLayer, type AvTheme, type PieceRow, OPACITY_RANGE } from '../available';
 import type { Dist } from '../roads/stats';
 import type { ScaleFields, Store } from '../state';
 import { Slider, pct } from './controls';
@@ -22,6 +22,9 @@ export class AvailableSection {
   private list = h('div', { class: 'av-layers' });
   private setRow: HTMLElement;
   private setSeg = h('div', { class: 'seg small' });
+  /** The availability switch's row: not the built set's (its data is in hand). */
+  private availRow: HTMLElement;
+  private noteEl = h('div', { class: 'faint note' });
   private availBtns: HTMLButtonElement[] = [];
   private op: Slider;
   private scale: ScaleControls;
@@ -73,14 +76,15 @@ export class AvailableSection {
     });
     const row = (label: string, input: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, h('span'));
     this.setRow = row('Data', this.setSeg);
+    this.availRow = row('Show', avail);
     this.scaleBox = h('div', { class: 'tint-scale' }, this.scale.legend, this.scale.palRow, this.scale.fadeRow, this.scale.thrRow);
     this.body = h('div', { class: 'av-body' },
       this.list,
       this.setRow,
-      row('Show', avail),
+      this.availRow,
       this.op.el,
       this.scaleBox,
-      h('div', { class: 'faint note' }, 'Zoomed out, a pixel shows the best data anywhere under it, so small areas of fine data stay in sight. Click the map for every source there. Places nobody has looked into yet show nothing.'),
+      this.noteEl,
     );
     this.nodes = [this.body];
   }
@@ -127,6 +131,11 @@ export class AvailableSection {
     this.setRow.hidden = sets.length < 2;
     const set = desc ? shown(s, desc).set : '';
     this.setSeg.replaceChildren(...sets.map((k) => h('button', { class: k === set ? 'on' : '', onclick: () => A({ set: k }) }, word(desc ? desc.labels.sets : {}, k))));
+    const built = isBuilt(set);
+    this.availRow.hidden = built;
+    this.noteEl.textContent = built
+      ? 'Each place shows the elevation dataset the map’s terrain and roads take their heights from. Zoomed out, a pixel shows the finest one used anywhere under it. Click the map for the dataset there and how its extent was read.'
+      : 'Zoomed out, a pixel shows the best data anywhere under it, so small areas of fine data stay in sight. Click the map for every source there. Places nobody has looked into yet show nothing.';
     this.layer = desc ? shown(s, desc).layer : null;
     this.scaleBox.hidden = !this.layer;
     this.scale.sync();
@@ -137,7 +146,8 @@ export class AvailableSection {
 const note = () => h('div', { class: 'faint av-note' }, 'Roads and areas aren’t picked while Data available is on.');
 
 /** The click's panel: the pieces at the point, best first, the one the layer draws marked. */
-export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLayer, all: boolean): HTMLElement {
+export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLayer, all: boolean, set: string): HTMLElement {
+  const built = isBuilt(set);
   const box = h('div', { class: 'pop av-pop' });
   if (rows === 'loading') {
     box.append(h('div', { class: 'muted' }, h('span', { class: 'spin' }), ' Reading the data here…'));
@@ -147,12 +157,16 @@ export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLay
     box.append(h('div', { class: 'muted' }, 'The data here could not be read: the server is away.'));
     return box;
   }
-  box.append(h('div', { class: 'ttl' }, 'Data available here'));
+  box.append(h('div', { class: 'ttl' }, built ? 'Built into the map here' : 'Data available here'));
   if (!rows.length) {
-    box.append(h('div', { class: 'muted' }, all ? 'No source is known to have data here.' : 'No source known here is free (All data shows the others).'), note());
+    const none = built ? 'The map has no elevation data built in here.' : all ? 'No source is known to have data here.' : 'No source known here is free (All data shows the others).';
+    box.append(h('div', { class: 'muted' }, none), note());
     return box;
   }
-  box.append(h('div', { class: 'faint av-count' }, `${rows.length} source${rows.length > 1 ? 's' : ''}, best first${all ? '' : ', the free ones'}`));
+  const count = built
+    ? 'The dataset the terrain takes its heights from here'
+    : `${rows.length} source${rows.length > 1 ? 's' : ''}, best first${all ? '' : ', the free ones'}`;
+  box.append(h('div', { class: 'faint av-count' }, count));
   for (const r of rows) {
     const kv = (k: string, v: string) => h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, v));
     box.append(h('div', { class: `av-piece${r.painted ? ' painted' : ''}` },
