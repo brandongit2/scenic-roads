@@ -119,7 +119,7 @@ pub fn page(home: Option<&Path>, lead: Option<&str>, since: Option<u64>, now: u6
                     .progress
                     .as_ref()
                     .filter(|p| p.total > 0.0)
-                    .map(|p| format!(" · {:.0} of {:.0} {}", p.done, p.total, esc(&p.nouns)))
+                    .map(|p| format!(" · {:.0} of {:.0} {}", p.done, p.total, esc(&p.counted_in)))
                     .unwrap_or_default();
                 let state =
                     j.paused.as_deref().or(j.pausing.as_deref()).map(|p| format!(" · {}", esc(p))).unwrap_or_default();

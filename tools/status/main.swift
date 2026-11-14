@@ -583,20 +583,20 @@ struct Item: Decodable {
 struct JobProgress: Decodable {
     let done: Double
     let total: Double
-    /// The noun its count is in, plural ("z6 tiles"): sent as "unit", read as "nouns" too (task
-    /// #858: the agent sends "nouns" once no menu bar reading only "unit" can run).
-    let nouns: String
+    /// The noun its count is in, plural ("z6 tiles"): sent as "unit", read as "counted_in" too (task
+    /// #858: the agent sends "counted_in" once no menu bar reading only "unit" can run).
+    let counted_in: String
     let eta_s: Int?
     /// When it last moved on (seconds since the epoch; absent from older heartbeats).
     let moved_at: Int?
 
-    enum CodingKeys: String, CodingKey { case done, total, nouns, unit, eta_s, moved_at }
+    enum CodingKeys: String, CodingKey { case done, total, counted_in, unit, eta_s, moved_at }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         done = try c.decode(Double.self, forKey: .done)
         total = try c.decode(Double.self, forKey: .total)
-        nouns = try c.decodeIfPresent(String.self, forKey: .nouns) ?? c.decode(String.self, forKey: .unit)
+        counted_in = try c.decodeIfPresent(String.self, forKey: .counted_in) ?? c.decode(String.self, forKey: .unit)
         eta_s = try c.decodeIfPresent(Int.self, forKey: .eta_s)
         moved_at = try c.decodeIfPresent(Int.self, forKey: .moved_at)
     }
@@ -802,12 +802,12 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
     let frac = p.total > 0 ? min(1, p.done / p.total) : 0
     var t = "\(Int((frac * 100).rounded(.down)))%"
     if p.total == 1 {
-        t += " · \(p.nouns)"
+        t += " · \(p.counted_in)"
     } else {
         // (Down, not to the nearest: 2.96 of 6 is 2.9, not 3.)
         let whole = p.done.rounded(.down) == p.done || p.total > 100
         let done = whole ? grouped(p.done.rounded(.down)) : String(format: "%.1f", (p.done * 10).rounded(.down) / 10)
-        t += " · \(done) of \(grouped(p.total)) \(p.nouns)"
+        t += " · \(done) of \(grouped(p.total)) \(p.counted_in)"
     }
     if let e = p.eta_s, !paused { t += " · about \(duration(e)) left" }
     if let m = p.moved_at, !paused, now - m >= 15 * 60 { t += " · no further for \(duration(now - m))" }
@@ -888,7 +888,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         // Its parts, done, under way and to come, the bar under the one under way (unless the bar
         // only counts the parts, which the list shows).
         if let parts = j.parts, !parts.isEmpty, let cur = j.part {
-            let partsBar = j.progress.map { $0.nouns.hasPrefix("parts") } ?? false
+            let partsBar = j.progress.map { $0.counted_in.hasPrefix("parts") } ?? false
             for (i, p) in parts.enumerated() {
                 let mark = i < cur ? "✓" : i == cur ? "▸" : "○"
                 out.append(Line(text: "  \(mark) \(p)", style: i < cur ? .stepDone : i == cur ? .stepNow : .stepToDo))
