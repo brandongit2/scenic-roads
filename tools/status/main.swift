@@ -147,7 +147,7 @@ struct Status: Decodable {
     /// not yet recorded built, each with why.
     let publishing: PublishingInfo?
     /// The build to the end (agents from 2026-10-03 on).
-    let checklist: [Step]?
+    let checklist: [StageLine]?
     /// Other Macs helping, building tiles (agents from 2026-10-04 on).
     let helpers: [Helper]?
     /// The build's pause, while it's paused (agents from 2026-10-05 on).
@@ -515,7 +515,7 @@ func loopStuck(age: Int?, limit: Int?, phase: String?, beat: Int, now: Int) -> S
 /// targets done of total (total unknown until an earlier step makes it) in its noun (`unit`), or
 /// how many are left; its steps' lines (`items`, agents from 2026-10-17 on); its jobs left by name
 /// (`next`, the first the one under way), and why it waits or which Mac is on it (`note`).
-struct Step: Decodable {
+struct StageLine: Decodable {
     let what: String
     let steps: [String]
     let done: Int?
