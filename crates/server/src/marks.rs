@@ -262,10 +262,10 @@ fn blocks_zoom() -> u8 {
     pm::KZ_NONE
 }
 
-pub use crate::inview::Region;
+use crate::inview::ViewArea;
 
 /// The z6 tiles a point in the region can be in (a tile's margin around its boxes).
-fn region_tiles(region: &Region) -> Vec<(u32, u32)> {
+fn region_tiles(region: &ViewArea) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     for &[w, s, e, n] in region.boxes() {
         if !(s <= n) || !w.is_finite() || !e.is_finite() {
@@ -367,7 +367,7 @@ fn named_props(s: &crate::AppState, raw: &[u8], lon: f64, lat: f64) -> Map<Strin
 }
 
 /// The markdata tiles a region can need.
-fn views_for(s: &S, region: &Region) -> anyhow::Result<Vec<Arc<MarkView>>> {
+fn views_for(s: &S, region: &ViewArea) -> anyhow::Result<Vec<Arc<MarkView>>> {
     let cat = s.data.catalogue();
     let want: Vec<String> = region_tiles(region)
         .into_iter()
@@ -380,7 +380,7 @@ fn views_for(s: &S, region: &Region) -> anyhow::Result<Vec<Arc<MarkView>>> {
 /// One tile's part of a view.
 fn scan(
     v: &MarkView,
-    region: &Region,
+    region: &ViewArea,
     plans: &[KindPlan],
     hists: &[bool],
     balance: f64,
@@ -427,7 +427,7 @@ fn scan(
 
 /// The worker's query over markdata (see the module doc), as JSON.
 pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
-    let region = Region::new(q.outline.clone(), q.bounds);
+    let region = ViewArea::new(q.outline.clone(), q.bounds);
     let views = views_for(s, &region)?;
     let plans: Vec<(usize, KindPlan)> =
         q.kinds.iter().enumerate().filter_map(|(i, k)| KindPlan::new(k).map(|p| (i, p))).collect();

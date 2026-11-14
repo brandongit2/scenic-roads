@@ -10,9 +10,10 @@
 //!
 //! Scores as before (`web/src/scenic.ts`, `web/src/rail.ts`): `roadcore::scenic`'s components.
 
+use crate::inview::ViewArea;
 use crate::views::{HiView, LTile, QTile};
 use crate::ways::{find_way, len_ok, tiles_in};
-use crate::{AppState, Region, S};
+use crate::{AppState, S};
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -145,7 +146,7 @@ impl FirstErr {
 // ---- tiles ----------------------------------------------------------------------------------
 
 /// The z6 tiles of the view's boxes grown by `margin_km`.
-fn tiles_around(region: &Region, margin_km: f64) -> Vec<(u32, u32)> {
+fn tiles_around(region: &ViewArea, margin_km: f64) -> Vec<(u32, u32)> {
     let mut out = Vec::new();
     for &[w, s, e, n] in region.boxes() {
         let lat = s.abs().max(n.abs()).min(85.0);
@@ -161,7 +162,7 @@ fn tiles_around(region: &Region, margin_km: f64) -> Vec<(u32, u32)> {
 
 /// The hidata of the z6 tiles in view plus a margin; an error when one can't be read (a query
 /// over part of the view would look complete).
-fn tiles_for(s: &AppState, region: &Region, margin_km: f64, cancel: &Cancel) -> anyhow::Result<Vec<QTile>> {
+fn tiles_for(s: &AppState, region: &ViewArea, margin_km: f64, cancel: &Cancel) -> anyhow::Result<Vec<QTile>> {
     let got: Vec<anyhow::Result<Option<QTile>>> = tiles_around(region, margin_km)
         .into_par_iter()
         .map(|(x, y)| {
@@ -182,7 +183,7 @@ fn tiles_for(s: &AppState, region: &Region, margin_km: f64, cancel: &Cancel) -> 
 /// tiles has none (older hidata): the query is answered exactly then, never half and half.
 fn ltiles_for(
     s: &AppState,
-    region: &Region,
+    region: &ViewArea,
     margin_km: f64,
     rail: bool,
     cancel: &Cancel,
@@ -543,7 +544,7 @@ pub struct DriveHit {
 /// The best drives from the tiles' samples: (how many roads have one, the best `limit`).
 fn drives_exact(
     tiles: &[QTile],
-    region: &Region,
+    region: &ViewArea,
     p: &DriveParams,
     cancel: &Cancel,
 ) -> anyhow::Result<(usize, Vec<DriveHit>)> {
@@ -612,7 +613,7 @@ fn drives_exact(
 /// The best drives from the tiles' summaries, as `drives_exact`.
 fn drives_approx(
     tiles: &[LTile],
-    region: &Region,
+    region: &ViewArea,
     p: &DriveParams,
     cancel: &Cancel,
 ) -> anyhow::Result<(usize, Vec<DriveHit>)> {
@@ -680,7 +681,7 @@ pub async fn drives(State(s): State<S>, Query(q): Query<Q>) -> Response {
 }
 
 fn compute_drives(st: &AppState, q: Q, cancel: &Cancel) -> anyhow::Result<Option<Out>> {
-    let Some(region) = Region::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
+    let Some(region) = ViewArea::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
     let wv: Vec<f32> = q.w.split(',').filter_map(|x| x.parse().ok()).collect();
     if wv.len() != NCOMP {
         return Ok(None);
@@ -927,7 +928,7 @@ pub struct RideHit {
 /// Each line's best stretch from the tiles' samples: (how many lines have one, the best `limit`).
 fn rides_exact(
     tiles: &[QTile],
-    region: &Region,
+    region: &ViewArea,
     p: &RideParams,
     r: &dyn Rail,
     cancel: &Cancel,
@@ -1014,7 +1015,7 @@ fn rides_exact(
 /// Each line's best stretch from the tiles' summaries, as `rides_exact`.
 fn rides_approx(
     tiles: &[LTile],
-    region: &Region,
+    region: &ViewArea,
     p: &RideParams,
     r: &dyn Rail,
     cancel: &Cancel,
@@ -1126,7 +1127,7 @@ pub async fn rides(State(s): State<S>, Query(q): Query<RQ>) -> Response {
 }
 
 fn compute_rides(st: &AppState, q: RQ, cancel: &Cancel) -> anyhow::Result<Option<RidesOut>> {
-    let Some(region) = Region::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
+    let Some(region) = ViewArea::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
     let Some(w) = weights(&q) else { return Ok(None) };
     let p = RideParams {
         len: q.len.unwrap_or(5.0).clamp(0.5, 100.0) * 1000.0,
@@ -1182,7 +1183,7 @@ pub struct LineAcc {
 /// The runs' shares of the rail lines in view, from the tiles' samples.
 fn lines_exact(
     tiles: &[QTile],
-    region: &Region,
+    region: &ViewArea,
     w: &[f32; RNCOMP],
     groups: u8,
     r: &dyn Rail,
@@ -1237,7 +1238,7 @@ fn lines_exact(
 /// run's last bin, its own length).
 fn lines_approx(
     tiles: &[LTile],
-    region: &Region,
+    region: &ViewArea,
     w: &[f32; RNCOMP],
     groups: u8,
     r: &dyn Rail,
@@ -1335,7 +1336,7 @@ pub async fn lines(State(s): State<S>, Query(q): Query<RQ>) -> Response {
 }
 
 fn compute_lines(st: &AppState, q: RQ, cancel: &Cancel) -> anyhow::Result<Option<LinesOut>> {
-    let Some(region) = Region::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
+    let Some(region) = ViewArea::parse(&q.bbox, q.poly.as_deref()) else { return Ok(None) };
     let Some(w) = weights(&q) else { return Ok(None) };
     let groups = q.groups.unwrap_or(0xff);
     let rail = Live { st, freqs: st.rail_freqs() };

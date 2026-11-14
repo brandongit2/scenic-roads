@@ -1015,8 +1015,6 @@ async fn catalogue_h(State(s): State<S>) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
-pub use inview::Region;
-
 #[cfg(test)]
 mod tests {
     use super::*;

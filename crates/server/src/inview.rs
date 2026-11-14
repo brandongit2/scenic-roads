@@ -10,7 +10,7 @@ use det::Det;
 use roadcore::E7;
 
 /// The part of the map in view.
-pub struct Region {
+pub struct ViewArea {
     /// The outline on the plane (empty: none, the bounds only).
     pts: Vec<[f64; 2]>,
     /// The plane's centre: longitude (radians), sine and cosine of latitude.
@@ -36,14 +36,14 @@ fn split([w, s, e, n]: [f64; 4]) -> Vec<[f64; 4]> {
     }
 }
 
-impl Region {
+impl ViewArea {
     /// `poly`: the outline (degrees), used with at least 3 points; else `bounds` (west, south,
     /// east, north).
-    pub fn new(poly: Vec<[f64; 2]>, bounds: [f64; 4]) -> Region {
+    pub fn new(poly: Vec<[f64; 2]>, bounds: [f64; 4]) -> ViewArea {
         let by_bounds = || {
             let [w, s, e, n] = bounds;
             let b = if e - w >= 360.0 { [-180.0, s, 180.0, n] } else { [wrap(w), s, wrap(e), n] };
-            Region { pts: Vec::new(), centre: (0.0, 0.0, 1.0), pbox: [0.0; 4], boxes: split(b) }
+            ViewArea { pts: Vec::new(), centre: (0.0, 0.0, 1.0), pbox: [0.0; 4], boxes: split(b) }
         };
         if poly.len() < 3 {
             return by_bounds();
@@ -62,7 +62,7 @@ impl Region {
             return by_bounds();
         }
         let s0 = cz / len;
-        let mut r = Region {
+        let mut r = ViewArea {
             pts: Vec::new(),
             centre: (cy.datan2(cx), s0, (1.0 - s0 * s0).max(0.0).sqrt()),
             pbox: [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY],
@@ -100,7 +100,7 @@ impl Region {
     }
 
     /// `bbox`: west,south,east,north; `poly`: lon,lat,lon,lat,… (degrees), at least 3 points.
-    pub fn parse(bbox: &str, poly: Option<&str>) -> Option<Region> {
+    pub fn parse(bbox: &str, poly: Option<&str>) -> Option<ViewArea> {
         let pts: Vec<[f64; 2]> = poly
             .map(|p| {
                 let v: Vec<f64> = p.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -112,7 +112,7 @@ impl Region {
             return None;
         }
         let bounds = if b.len() == 4 { [b[0], b[1], b[2], b[3]] } else { [-180.0, -90.0, 180.0, 90.0] };
-        Some(Region::new(pts, bounds))
+        Some(ViewArea::new(pts, bounds))
     }
 
     /// A point (degrees) on the plane; None on the far side's centre.
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn an_ordinary_view() {
-        let r = Region::new(vec![[-75.0, 45.0], [-70.0, 45.0], [-70.0, 48.0], [-75.0, 48.0]], [0.0; 4]);
+        let r = ViewArea::new(vec![[-75.0, 45.0], [-70.0, 45.0], [-70.0, 48.0], [-75.0, 48.0]], [0.0; 4]);
         assert!(r.test(-72.0, 46.0));
         assert!(!r.test(-76.0, 46.0) && !r.test(-72.0, 49.0) && !r.test(108.0, -46.0));
         assert!(r.contains(-720_000_000, 460_000_000));
@@ -192,19 +192,19 @@ mod tests {
 
     #[test]
     fn a_view_round_the_south_pole() {
-        let r = Region::new(ring(30.0, -88.0, 5.0, 40), [0.0; 4]);
+        let r = ViewArea::new(ring(30.0, -88.0, 5.0, 40), [0.0; 4]);
         assert!(r.test(0.0, -90.0) && r.test(-150.0, -88.0) && r.test(30.0, -84.0));
         assert!(!r.test(30.0, -82.0) && !r.test(-150.0, -84.0) && !r.test(0.0, 90.0));
         assert_eq!(r.boxes(), &[[-180.0, -90.0, 180.0, r.boxes()[0][3]]]);
         assert!((r.boxes()[0][3] + 83.0).abs() < 0.01);
-        let r = Region::new(ring(0.0, 89.0, 3.0, 40), [0.0; 4]);
+        let r = ViewArea::new(ring(0.0, 89.0, 3.0, 40), [0.0; 4]);
         assert!(r.test(120.0, 89.5) && !r.test(180.0, 85.0) && !r.test(0.0, -90.0));
         assert_eq!(r.boxes()[0][3], 90.0);
     }
 
     #[test]
     fn a_view_across_the_antimeridian() {
-        let r = Region::new(ring(180.0, -40.0, 3.0, 40), [0.0; 4]);
+        let r = ViewArea::new(ring(180.0, -40.0, 3.0, 40), [0.0; 4]);
         assert!(r.test(179.0, -40.0) && r.test(-179.0, -40.0) && r.test(180.0, -41.0));
         assert!(!r.test(0.0, -40.0) && !r.test(170.0, -40.0) && !r.test(-170.0, -40.0));
         let b = r.boxes();
@@ -214,11 +214,11 @@ mod tests {
 
     #[test]
     fn without_an_outline_the_bounds() {
-        let r = Region::new(Vec::new(), [170.0, -10.0, -170.0, 10.0]);
+        let r = ViewArea::new(Vec::new(), [170.0, -10.0, -170.0, 10.0]);
         assert!(r.test(175.0, 0.0) && r.test(-175.0, 0.0) && !r.test(0.0, 0.0));
         assert_eq!(r.boxes().len(), 2);
-        assert!(Region::parse("1,2,3,4", None).is_some_and(|r| r.test(2.0, 3.0)));
-        assert!(Region::parse("x", None).is_none());
+        assert!(ViewArea::parse("1,2,3,4", None).is_some_and(|r| r.test(2.0, 3.0)));
+        assert!(ViewArea::parse("x", None).is_none());
     }
 
     /// web/test/inview-fixtures.json, which web/test/inview.test.ts checks too: the two copies
@@ -233,7 +233,7 @@ mod tests {
             let pair = |v: &serde_json::Value| [num(&v[0]), num(&v[1])];
             let outline = f["outline"].as_array().unwrap().iter().map(pair).collect();
             let b: Vec<f64> = f["bounds"].as_array().unwrap().iter().map(num).collect();
-            let r = Region::new(outline, [b[0], b[1], b[2], b[3]]);
+            let r = ViewArea::new(outline, [b[0], b[1], b[2], b[3]]);
             let b: Vec<f64> = f["box"].as_array().unwrap().iter().map(num).collect();
             let want = split([b[0], b[1], b[2], b[3]]);
             assert_eq!(r.boxes().len(), want.len(), "{name}");

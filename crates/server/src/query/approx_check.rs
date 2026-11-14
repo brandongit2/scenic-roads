@@ -86,12 +86,12 @@ fn load() -> Tiles {
     out
 }
 
-fn pick<T: Clone>(m: &BTreeMap<(u32, u32), T>, region: &Region, margin_km: f64) -> Vec<T> {
+fn pick<T: Clone>(m: &BTreeMap<(u32, u32), T>, region: &ViewArea, margin_km: f64) -> Vec<T> {
     tiles_around(region, margin_km).iter().filter_map(|t| m.get(t).cloned()).collect()
 }
 
-fn region(b: [f64; 4]) -> Region {
-    Region::parse(&format!("{},{},{},{}", b[0], b[1], b[2], b[3]), None).unwrap()
+fn region(b: [f64; 4]) -> ViewArea {
+    ViewArea::parse(&format!("{},{},{},{}", b[0], b[1], b[2], b[3]), None).unwrap()
 }
 
 /// The top `k`'s overlap (the same road, windows meeting), and the largest and mean score
