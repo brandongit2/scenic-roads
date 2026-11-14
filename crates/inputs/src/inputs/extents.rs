@@ -276,20 +276,21 @@ impl Score {
 
     /// Which of `ps` is best (its index; None where `ps` is empty): of the pieces whose primary
     /// ties the finest's (within `within` of it, `tie`), those of the best availability (the
-    /// declared order); of them, the best score; of equals, the first. So a grid finer by more
-    /// than `within` always wins, whatever its availability, and an open piece wins a tie
-    /// (producers/extents/score.py's `best`).
+    /// declared order); of them, the best score; of equal scores, the best-founded extent
+    /// (`class_rank`); of equals, the first. So a grid finer by more than `within` always wins,
+    /// whatever its availability, an open piece wins a tie, and a claimed outline never outranks a
+    /// measured one of the same score (producers/extents/score.py's `best`).
     pub fn best(&self, ps: &[Ranked]) -> Option<usize> {
         let finest = ps.iter().map(|p| p.lead).fold(f64::NEG_INFINITY, f64::max);
         let tie = self.tie() + 1e-12;
-        let mut best: Option<(usize, usize, f64)> = None;
+        let mut best: Option<(usize, usize, f64, usize)> = None;
         for (k, p) in ps.iter().enumerate().filter(|(_, p)| finest - p.lead <= tie) {
-            let r = self.avail_rank(p.availability);
-            if best.is_none_or(|(_, br, bs)| r < br || (r == br && p.score > bs)) {
-                best = Some((k, r, p.score));
+            let (r, c) = (self.avail_rank(p.availability), class_rank(p.extent));
+            if best.is_none_or(|(_, br, bs, bc)| r < br || (r == br && (p.score > bs || (p.score == bs && c < bc)))) {
+                best = Some((k, r, p.score, c));
             }
         }
-        best.map(|(k, _, _)| k)
+        best.map(|(k, _, _, _)| k)
     }
 
     /// `ps` best first (their indices): the best (`best`), then the best of the rest, and so on.
@@ -325,12 +326,21 @@ impl Score {
 /// piece of the best value of it; the primary has none of its own, the score's being it.
 pub const SCORE_LAYER: &str = "score";
 
-/// A piece as `Score::best` ranks it: its primary's 0–1 value, its availability and its score.
+/// A piece as `Score::best` ranks it: its primary's 0–1 value, its availability, its score and its
+/// extent's class.
 #[derive(Clone, Copy, Debug)]
 pub struct Ranked<'a> {
     pub lead: f64,
     pub availability: Option<&'a str>,
     pub score: f64,
+    pub extent: Option<&'a str>,
+}
+
+/// Where extent class `c` ranks among pieces otherwise equal: its place in CLASSES (best founded
+/// first: the map's own mask, the files' headers, the publisher's index, its footprint service,
+/// a claim); one not of them (or none) last.
+pub fn class_rank(c: Option<&str>) -> usize {
+    c.and_then(|c| CLASSES.iter().position(|(k, _)| *k == c)).unwrap_or(CLASSES.len())
 }
 
 fn num(v: &toml::Value) -> Option<f64> {

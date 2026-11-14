@@ -16,8 +16,11 @@
 # A piece not stating its spacing has no score.
 #
 # The best piece at a place: of those whose spacing is within `within` of the finest there, those
-# of the best `availability` below; of them, the best score; of equals, the first by id. So a finer
-# grid beyond the factor always wins, whatever its availability, and an open source wins a tie.
+# of the best `availability` below; of them, the best score; of equal scores, the better-founded
+# extent (its class: mask, files, index, service, claimed, unknown); of equals, the first by id
+# (for determinism only). So a finer grid beyond the factor always wins, whatever its
+# availability, an open source wins a tie, and a claimed outline never outranks a measured one of
+# the same score.
 # The map's default view, free data, draws only the open and login sources; its other view, all.
 #
 # Nothing is built again for a change here: the server reads it at its next sync.

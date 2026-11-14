@@ -2,16 +2,16 @@
 """A theme's score (docs/inputs.md §6.11), as its score.toml declares it: each metric's 0-1 value,
 the primary metric's deciding and the weighted mean of the others the piece states breaking
 near-ties, its guarantee checked, and how pieces rank (`best`: of those whose primary ties the
-finest's, the best availability, then the best score). The producers don't score pieces (the map
+finest's, the best availability, then the best score, then the best-founded extent). The producers don't score pieces (the map
 server does, from the same file); this prints what a score.toml does, for tuning its weights.
 
 usage: score.py <score.toml> --examples
        score.py <score.toml> --json <pieces.json>
-       score.py <score.toml> <metric>=<value> ... [availability=<id>] [-- <metric>=<value> ...]...
+       score.py <score.toml> <metric>=<value> ... [availability=<id>] [extent=<class>] [-- <metric>=<value> ...]...
 
 --json prints, as JSON, the examples' and the given pieces' (`pieces`, each its metrics) scores
 and metric values in full, and the order of the given groups of pieces (`groups`, each piece its
-metrics and `availability`): the map server's scoring and ranking
+metrics, `availability` and `extent`): the map server's scoring and ranking
 (crate::inputs::extents::Score::of, Score::ranked) is tested against it
 (crates/inputs/src/inputs/extents/score_expected.json, made by
 `score.py producers/extents/terrain/score.toml --json crates/inputs/src/inputs/extents/score_pieces.json`).
@@ -94,10 +94,20 @@ def avail_rank(decl, a):
     return order.index(a) if a in order else len(order)
 
 
+# The extent classes, best founded first (extents.py's CLASSES; crate::inputs::extents::CLASSES).
+CLASSES = ("mask", "files", "index", "service", "claimed", "unknown")
+
+
+def class_rank(c):
+    """Where extent class `c` ranks among pieces otherwise equal: its place in CLASSES, else last."""
+    return CLASSES.index(c) if c in CLASSES else len(CLASSES)
+
+
 def best(decl, pieces):
-    """The index of the best of `pieces` (each its metrics and `availability`; those with a score),
-    or None: of those whose primary ties the finest's (within `within`), the best availability; of
-    them, the best score; of equals, the first (the server's Score::best)."""
+    """The index of the best of `pieces` (each its metrics, `availability` and `extent`; those with
+    a score), or None: of those whose primary ties the finest's (within `within`), the best
+    availability; of them, the best score; of equal scores, the best-founded extent (`class_rank`);
+    of equals, the first (the server's Score::best)."""
     scored = [(k, score(decl, p)) for k, p in enumerate(pieces)]
     scored = [(k, s, vals[decl["primary"]]) for k, (s, vals) in scored if s is not None]
     if not scored:
@@ -107,9 +117,9 @@ def best(decl, pieces):
     for k, s, lead in scored:
         if finest - lead > tie(decl) + 1e-12:
             continue
-        r = avail_rank(decl, pieces[k].get("availability"))
-        if out is None or r < out[1] or (r == out[1] and s > out[2]):
-            out = (k, r, s)
+        r, c = avail_rank(decl, pieces[k].get("availability")), class_rank(pieces[k].get("extent"))
+        if out is None or r < out[1] or (r == out[1] and (s > out[2] or (s == out[2] and c < out[3]))):
+            out = (k, r, s, c)
     return out[0]
 
 
@@ -166,7 +176,7 @@ def main(argv):
             piece = {}
             continue
         k, v = a.split("=", 1)
-        piece[k] = v if k == "availability" or "values" in decl["metric"][k] else float(v)
+        piece[k] = v if k in ("availability", "extent") or "values" in decl["metric"][k] else float(v)
     if len(pieces) > 1:
         print("best first: " + ", ".join(str(k + 1) for k in ranked(decl, pieces)))
 

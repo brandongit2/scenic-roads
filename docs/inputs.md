@@ -2027,10 +2027,17 @@ factor.
 click's order, docs/steps.md §14): of the pieces there, those whose primary ties the finest's
 (within the factor `within` of it); of them, those of the best availability in the order `score.toml`'s
 `availability` lists (each of `open`, `login`, `paid`, `closed` once, best first); of those, the
-best score; of equals, the first by id. So a grid finer by more than `within` always wins, whatever
-its availability, and among tied grids an open source wins before the score's tie-break (the
-owner's rule, 13 Nov: in Berlin the BKG's paid 1 m DGM of 2022 scores above Brandenburg and
-Berlin's open 1 m of 2021, which is drawn). The order: the best, then the best of the rest, and so
+best score; of equal scores, the one whose extent is the better founded, in the classes' order
+(`mask`, `files`, `index`, `service`, `claimed`, then `unknown`: `inputs::extents::class_rank`);
+of equals, the first by id (for determinism only: two pieces of one source, the same in all but
+their kind, such as LiDAR HD's `mns` and `mnt` of a year). So a grid finer by more than `within`
+always wins, whatever its availability, among tied grids an open source wins before the score's
+tie-break (the owner's rule, 13 Nov: in Berlin the BKG's paid 1 m DGM of 2022 scores above
+Brandenburg and Berlin's open 1 m of 2021, which is drawn), and an outline only claimed never
+outranks a measured one of the same score. The class breaks only an exact tie: a piece stating no
+year scores its spacing's value for the rest, so it outranks one of the same spacing stating an
+older year than that value stands for (at 0.5 m, 2021 and before: France's MNS Correl, claimed
+nationwide, over LiDAR HD's 2021 tiles). The order: the best, then the best of the rest, and so
 on. A `score.toml` without `availability` ranks by the score alone. The terrain's: `availability =
 ["open", "login", "paid", "closed"]`. Its `label` names the score's layer in the app ("Best data";
 none: the server's, "Best data"): the best piece drawn at its own primary value, the grid spacing,

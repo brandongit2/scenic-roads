@@ -112,6 +112,46 @@
      "year": 2018
     }
    ]
+  },
+  {
+   "order": [
+    3,
+    1,
+    0,
+    2,
+    4
+   ],
+   "pieces": [
+    {
+     "availability": "open",
+     "extent": "claimed",
+     "spacing_m": 0.5,
+     "surface": "surface"
+    },
+    {
+     "availability": "open",
+     "extent": "index",
+     "spacing_m": 0.5,
+     "surface": "ground"
+    },
+    {
+     "availability": "open",
+     "extent": "index",
+     "spacing_m": 0.5,
+     "surface": "ground",
+     "year": 2021
+    },
+    {
+     "availability": "open",
+     "extent": "files",
+     "spacing_m": 0.5
+    },
+    {
+     "availability": "login",
+     "extent": "mask",
+     "spacing_m": 0.5
+    }
+   ]
   }
  ],
  "scored": [

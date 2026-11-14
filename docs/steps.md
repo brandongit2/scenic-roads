@@ -1111,9 +1111,10 @@ declarations' descriptions). For each palette entry, its pieces that pass the av
 `inputs::extents::FREE`; any value but `all` is it, `open` too; `all`: every one): the score
 layer's piece is the best (`Score::best`, docs/inputs.md §6.11: of those whose spacing ties the
 finest's within `within`, the best availability in `score.toml`'s order, then the best score, then
-the first id), a metric layer's the one of the best 0–1 value of that metric (bare earth over
-surface, the newest year, the best stated accuracy; a piece not stating it takes no part; of equal
-values, the best availability, then the first id); none passing, transparent (`Theme::best`). The
+the better-founded extent, `inputs::extents::class_rank`, then the first id), a metric layer's the
+one of the best 0–1 value of that metric (bare earth over surface, the newest year, the best stated
+accuracy; a piece not stating it takes no part; of equal values, the best availability, then the
+better-founded extent, then the first id); none passing, transparent (`Theme::best`). The
 pixel carries that piece's own value of the metric the layer draws (`Score::metric_of`,
 `Theme::code`; docs/formats.md, Data available, the encoding), on that metric's scale (the spacing
 and the accuracy as log10 of metres, the year as it is, bare earth 1 and surface 0, their `values`):
@@ -1129,7 +1130,8 @@ and to the three digits score.py shows, and each group in score.py's order. `/ap
 describes each layer's scale for the app's axis (docs/formats.md). The server's tests
 (crate::available's): each layer's best piece under the switch (free data taking in the login
 pieces, never the paid ones; `avail=open` answered as free data, its tiles' ETag and bytes and its
-click), an open piece winning a tie on every layer that ranks it, in both views, each layer's value and scale from the real `score.toml` (the score's at
+click), an open piece winning a tie on every layer that ranks it, in both views, an exact tie going
+to the better-founded extent (a claimed outline losing it, whatever the ids), each layer's value and scale from the real `score.toml` (the score's at
 the piece's own spacing, no layer of the primary's own, the server's label where score.toml names
 none), one still holding the retired colour fields served the same, the tiles' values (inside a
 piece and transparent outside it) and the click; and `renders_the_real_pieces`, run by hand: with
@@ -1171,7 +1173,7 @@ data"; none, the server's "Best data"), one shown at a time (a layer a save or a
 theme doesn't list shows the first); the set (`best` now; its control appears once a theme lists
 two: `built`, task #1349, is one more id in `sets`, named by the theme's `labels`); the
 availability switch (Free data, the data that costs nothing: open or after a login or a
-request | All data, paid and not to be had too); the opacity (85 % by default); and the layer's colour map: the sidebar's own
+request | All data, every source, also those paid or not to be had); the opacity (85 % by default); and the layer's colour map: the sidebar's own
 control (ui/scale.ts ScaleControls, as the terrain tint's, the depth's and the roads'), over the
 layer's values in view (sampled from the tiles drawn, each sample by the ground it stands for:
 terrainstats.ts), with continuous colours: the histogram and the range's handles, Auto (the

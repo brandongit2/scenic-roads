@@ -211,6 +211,25 @@ class Score(unittest.TestCase):
         plain = {k: v for k, v in d.items() if k != "availability"}
         self.assertEqual(score.best(plain, [paid, opened]), 0)
 
+    def test_of_equal_scores_the_better_founded_extent(self):
+        """An exact tie (the same metrics, the same availability) goes to the extent of the better
+        class, whichever comes first, never to a claimed outline over a measured one; the class
+        breaks no tie of the score."""
+        d = self.DECL
+        self.assertEqual(score.CLASSES, extents.CLASSES)
+        piece = {"spacing_m": 0.5, "availability": "open"}
+        claimed, index = {**piece, "extent": "claimed"}, {**piece, "extent": "index", "surface": "ground"}
+        self.assertEqual(score.score(d, claimed)[0], score.score(d, index)[0])
+        self.assertEqual(score.ranked(d, [claimed, index]), [1, 0])
+        self.assertEqual(score.ranked(d, [index, claimed]), [0, 1])
+        self.assertEqual(score.ranked(d, [{**piece, "extent": "service"}, {**piece, "extent": "files"}]), [1, 0])
+        self.assertEqual(score.ranked(d, [piece, claimed]), [1, 0])
+        # A better score wins whatever its class: France's LiDAR HD of 2021, stating its year, scores
+        # under the claimed MNS Correl, stating none (its rest is its spacing's value).
+        lidar = {**index, "year": 2021}
+        self.assertLess(score.score(d, lidar)[0], score.score(d, claimed)[0])
+        self.assertEqual(score.best(d, [lidar, claimed]), 1)
+
     def test_the_servers_expected_scores_are_this_files(self):
         """The map server's scoring is tested against the scores this file makes, checked in beside
         its test (crate::inputs::extents's score_expected.json): made again from score.toml and the

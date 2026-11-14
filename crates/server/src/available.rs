@@ -82,6 +82,11 @@ impl PieceInfo {
     fn availability(&self) -> Option<&str> {
         self.props.get("availability").and_then(Value::as_str)
     }
+
+    /// Its extent's class (`ex::CLASSES`).
+    fn extent(&self) -> Option<&str> {
+        self.props.get("extent").and_then(Value::as_str)
+    }
 }
 
 /// A theme's score and pieces, from the accepted version.
@@ -118,9 +123,10 @@ impl Theme {
 
     /// The piece `layer` draws among pieces `ids` that pass the switch, None where none does:
     /// - the score's: the best (`Score::best`: of the pieces whose primary ties the finest's,
-    ///   those of the best availability, then the best score; of equals, the first id);
+    ///   those of the best availability, then the best score, then the best-founded extent,
+    ///   `ex::class_rank`; of equals, the first id);
     /// - a metric's: the best 0–1 value of it (a piece not stating it takes no part), then the
-    ///   best availability; of equals, the first id.
+    ///   best availability, then the best-founded extent; of equals, the first id.
     pub fn best<'a>(&self, layer: &str, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Option<&PieceInfo> {
         self.best_id(layer, ids, all).map(|(_, p)| p)
     }
@@ -138,15 +144,15 @@ impl Theme {
             let (at, rs) = self.scored(&ps);
             return s.best(&rs).map(|k| ps[at[k]]);
         }
-        let mut best: Option<(f64, usize, (&str, &PieceInfo))> = None;
+        let mut best: Option<(f64, usize, usize, (&str, &PieceInfo))> = None;
         for &(id, p) in &ps {
             let Some(v) = p.values.get(layer).copied().flatten() else { continue };
-            let r = s.avail_rank(p.availability());
-            if best.is_none_or(|(bv, br, _)| v > bv || (v == bv && r < br)) {
-                best = Some((v, r, (id, p)));
+            let (r, c) = (s.avail_rank(p.availability()), ex::class_rank(p.extent()));
+            if best.is_none_or(|(bv, br, bc, _)| v > bv || (v == bv && (r < br || (r == br && c < bc)))) {
+                best = Some((v, r, c, (id, p)));
             }
         }
-        best.map(|(_, _, b)| b)
+        best.map(|(_, _, _, b)| b)
     }
 
     /// The pieces of `ps` with a score, as `Score::best` ranks them, and where each is in `ps`.
@@ -156,7 +162,7 @@ impl Theme {
             .enumerate()
             .filter_map(|(k, (_, p))| {
                 let lead = p.values.get(primary).copied().flatten()?;
-                Some((k, Ranked { lead, availability: p.availability(), score: p.score? }))
+                Some((k, Ranked { lead, availability: p.availability(), score: p.score?, extent: p.extent() }))
             })
             .unzip()
     }
@@ -229,7 +235,7 @@ impl Theme {
     fn present(&self, layer: &str) -> Option<[f64; 2]> {
         let (_, m) = self.score.as_ref()?.metric_of(layer)?;
         let mut r: Option<[f64; 2]> = None;
-        for p in self.pieces.values().filter(|p| p.props.get("extent").and_then(Value::as_str) != Some("unknown")) {
+        for p in self.pieces.values().filter(|p| p.extent() != Some("unknown")) {
             let Some(c) = self.code(layer, p) else { continue };
             let v = if matches!(m.scale, Scale::Log { .. }) { 10f64.dpowf(c) } else { c };
             r = Some(r.map_or([v, v], |[lo, hi]| [lo.min(v), hi.max(v)]));
@@ -286,7 +292,7 @@ impl Theme {
         }
         let mut counted: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
         for p in self.pieces.values() {
-            let class = p.props.get("extent").and_then(Value::as_str).unwrap_or("").to_string();
+            let class = p.extent().unwrap_or("").to_string();
             *counted.entry(p.source.as_str()).or_default().entry(class).or_default() += 1;
         }
         let sources: Vec<Value> = self

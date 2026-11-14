@@ -176,6 +176,34 @@ fn free_data_takes_in_the_login_pieces() {
     assert_eq!(ids(t.listed(twins, true)), ["open-lidar/dtm", "asked/twin", "paid-twin/dtm"]);
 }
 
+/// An exact tie (the same score, the same availability) goes to the better-founded extent, not to
+/// the first id: a surface model whose outline is claimed (its id first) against bare earth of a
+/// tile index, the same spacing and year (the kind takes no part in the score), on the score's
+/// layer, a metric's and the click's order; their id decides only between two of one class.
+#[test]
+fn a_claimed_outline_loses_an_exact_tie() {
+    let piece = |kind: &str, extent: &str| json!({"spacing_m": 0.5, "surface": kind, "year": 2024, "extent": extent});
+    let b = Some(square(2.0, 44.0, 2.4, 44.3));
+    let claimed = source("a-claimed", "open", &[("mns", piece("surface", "claimed"), b.clone())]);
+    let index = source("b-index", "open", &[("mnt", piece("ground", "index"), b.clone())]);
+    let twin = source("c-index", "open", &[("mnt", piece("ground", "index"), b)]);
+    let mut files = vec![("terrain/score.toml".to_string(), SCORE.to_vec())];
+    for (d, db, p, pb) in [claimed, index, twin] {
+        files.extend([(d, db), (p, pb)]);
+    }
+    let t = theme_of(&files.into_iter().collect());
+    assert_eq!(t.pieces["a-claimed/mns"].score, t.pieces["b-index/mnt"].score);
+    for ids in [["a-claimed/mns", "b-index/mnt"], ["b-index/mnt", "a-claimed/mns"]] {
+        for layer in [SCORE_LAYER, "year"] {
+            assert_eq!(t.best(layer, ids, false).unwrap().source, "b-index", "{layer}");
+        }
+    }
+    let ids = |v: Vec<Value>| v.iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let all = ["c-index/mnt", "a-claimed/mns", "b-index/mnt"];
+    assert_eq!(ids(t.listed(all, true)), ["b-index/mnt", "c-index/mnt", "a-claimed/mns"]);
+    assert_eq!(t.painted(&all, false)[SCORE_LAYER], "b-index/mnt");
+}
+
 /// What a tile carries: each layer's value of the piece drawn, in its scale's code, and the
 /// layers' scales as described.
 #[test]

@@ -264,7 +264,8 @@ fn a_score_with_its_retired_colours_is_read_without_them() {
 }
 
 /// The best piece and the order (`Score::best`, `ranked`): a finer grid beyond the factor wins
-/// whatever its availability; within it, availability first, then the score; equals, the first.
+/// whatever its availability; within it, availability first, then the score, then the extent's
+/// class; equals, the first.
 #[test]
 fn an_open_piece_wins_a_tie() {
     let s = score(REAL[0].1).unwrap();
@@ -274,8 +275,10 @@ fn an_open_piece_wins_a_tie() {
         (vals["spacing_m"].unwrap(), avail, score.unwrap())
     };
     let ranked = |ps: &[(f64, &'static str, f64)]| {
-        let rs: Vec<Ranked> =
-            ps.iter().map(|&(lead, a, score)| Ranked { lead, availability: Some(a), score }).collect();
+        let rs: Vec<Ranked> = ps
+            .iter()
+            .map(|&(lead, a, score)| Ranked { lead, availability: Some(a), score, extent: Some("index") })
+            .collect();
         (s.best(&rs), s.ranked(&rs))
     };
     // Berlin: the BKG's paid 1 m of 2022 against the Länder's open 1 m of 2021: the open one, though
@@ -299,10 +302,21 @@ fn an_open_piece_wins_a_tie() {
     // No order declared: availability ranks no tie (the score alone).
     let plain = score(SCORE_TOML.as_bytes()).unwrap();
     let rs = [
-        Ranked { lead: paid.0, availability: Some("paid"), score: paid.2 },
-        Ranked { lead: open.0, availability: Some("open"), score: open.2 },
+        Ranked { lead: paid.0, availability: Some("paid"), score: paid.2, extent: Some("index") },
+        Ranked { lead: open.0, availability: Some("open"), score: open.2, extent: Some("index") },
     ];
     assert_eq!(plain.best(&rs), Some(0));
+    // Of equal scores, the better-founded extent, whichever comes first: France's LiDAR HD (its
+    // tile index) over an outline claimed over the same ground; a piece of no known class last.
+    let at = |extent: Option<&'static str>| Ranked { lead: open.0, availability: Some("open"), score: open.2, extent };
+    for (a, b) in [(Some("claimed"), Some("index")), (Some("service"), Some("files")), (None, Some("claimed"))] {
+        assert_eq!(s.ranked(&[at(a), at(b)]), vec![1, 0], "{a:?} {b:?}");
+        assert_eq!(s.ranked(&[at(b), at(a)]), vec![0, 1], "{a:?} {b:?}");
+    }
+    // The class breaks only an exact tie: a better score wins whatever its extent.
+    let better = Ranked { score: open.2 + 1e-9, ..at(Some("claimed")) };
+    assert_eq!(s.best(&[at(Some("mask")), better]), Some(1));
+    assert_eq!(CLASSES.map(|(c, _)| class_rank(Some(c))), [0, 1, 2, 3, 4, 5]);
     // The layers: the score's, drawing the primary, then the other metrics; the primary none of
     // its own.
     assert_eq!(s.layers().collect::<Vec<_>>(), [SCORE_LAYER, "surface", "vertical_rmse_m", "year"]);
@@ -1466,19 +1480,24 @@ fn the_score_is_score_py_s() {
     let groups = file["ranked"].as_array().unwrap();
     assert!(groups.len() >= 4);
     for g in groups {
-        let ps: Vec<(Option<f64>, BTreeMap<String, Option<f64>>, Option<&str>)> = g["pieces"]
+        let ps: Vec<(Option<f64>, BTreeMap<String, Option<f64>>, Option<&str>, Option<&str>)> = g["pieces"]
             .as_array()
             .unwrap()
             .iter()
             .map(|p| {
                 let (score, vals) = s.of(p.as_object().unwrap());
-                (score, vals, p["availability"].as_str())
+                (score, vals, p["availability"].as_str(), p["extent"].as_str())
             })
             .collect();
         let at: Vec<usize> = (0..ps.len()).filter(|&k| ps[k].0.is_some()).collect();
         let rs: Vec<Ranked> = at
             .iter()
-            .map(|&k| Ranked { lead: ps[k].1["spacing_m"].unwrap(), availability: ps[k].2, score: ps[k].0.unwrap() })
+            .map(|&k| Ranked {
+                lead: ps[k].1["spacing_m"].unwrap(),
+                availability: ps[k].2,
+                score: ps[k].0.unwrap(),
+                extent: ps[k].3,
+            })
             .collect();
         let got: Vec<usize> = s.ranked(&rs).into_iter().map(|k| at[k]).collect();
         let want: Vec<usize> = g["order"].as_array().unwrap().iter().map(|k| k.as_u64().unwrap() as usize).collect();

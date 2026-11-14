@@ -38,7 +38,7 @@ export class AvailableSection {
     const avail = h('div', { class: 'seg small' });
     for (const [k, label, title] of [
       ['free', 'Free data', 'Only data that costs nothing: it downloads freely, or after a login or a request'],
-      ['all', 'All data', 'Every source, paid and not to be had too'],
+      ['all', 'All data', 'Every source, also those paid or not to be had'],
     ] as const) {
       const b = h('button', { title, onclick: () => A({ avail: k }) }, label);
       this.availBtns.push(b);
