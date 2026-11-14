@@ -9,10 +9,13 @@ def build(check=False):
     f = Fig('s', check)
     top = 16
 
-    # docs/storage.md's tree: sources/ (osm, basemap, items, pageviews, buildings, trees, canopy, aws-terrarium,
-    # pyramids (GSI's tiles), rail, canvec, fetched/glo30); docs/macs.md, "Downloads are kept on the NAS, each made once".
-    src_t = ('the OSM planet; AWS’s terrain tiles, GLO-30 and GSI’s elevation tiles; canopy heights and leaf type; '
-             'Overture’s buildings; Wikidata and Wikipedia’s pageviews; rail feeds; CanVec')
+    # The sources declared in the NAS's inputs/sources/*.toml (docs/inputs.md §6.9; each fetched under sources/ or
+    # sources/fetched/) and docs/storage.md's tree (aws-terrarium, pyramids: GSI's tiles, fetched/glo30, rail, basemap);
+    # docs/macs.md, "Downloads are kept on the NAS, each made once".
+    src_t = ('the OSM planet; elevation (AWS’s terrain tiles, GLO-30, GSI’s tiles) and geoid models; depths (GEBCO, '
+             'EMODnet, BlueTopo, NONNA, NCEI’s models, lakes’); land cover, canopy heights, leaf type; Overture’s '
+             'buildings, GHSL’s heights; Wikidata, Wikipedia, its pageviews; rail feeds; lakes, sea boundaries; '
+             'the basemap’s sources')
     # docs/storage.md's tree, folder by folder; state/: also docs/coordination.md §3.2 (the token, the history's
     # archive), crates/agentcore/src/agent/lead.rs (state/build/lead-member.json), crates/agentcore/src/pool/records.rs
     # (state/build/records.json, written whole), crates/agentcore/src/agent/live.rs (ARCHIVE = state/live-archive).
@@ -45,8 +48,8 @@ def build(check=False):
              'until a records snapshot the lead saved names them (agent/pool/); on a laptop, the offline map on demand: what it downloaded')
     # docs/storage.md, Writers (the owner's inputs folders); docs/inputs.md (the input check).
     hand_t = 'the owner and Claude agents: regions, translations, descriptions, registers, timetables, declarations'
-    # docs/macs.md, Devices (map.brandontsang.net, over the tailnet); docs/coordinator.md §7 (the page at the root).
-    dev_t = ('the map: map.brandontsang.net, over the tailnet; the build page, at the lead’s coordinator’s root; '
+    # docs/macs.md, Devices (the map's address, over the tailnet); docs/coordinator.md §7 (the page at the root).
+    dev_t = ('the map, at its address on the tailnet; the build page, at the lead’s coordinator’s root; '
              'a phone, an iPad, the other Macs')
 
     sx, sw = 16, 180

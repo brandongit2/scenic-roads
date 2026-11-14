@@ -69,7 +69,7 @@ function paint(c) {
   const [g, W, H] = fit(c);
   const k = tokens(c);
   g.clearRect(0, 0, W, H);
-  // (The mockup's frame: the scale's labels in a gutter at the left, every chart's the same width so
+  // (The frame: the scale's labels in a gutter at the left, every chart's the same width so
   // their plots line up; the time under it.)
   const L = o.axis ? AXIS_W : 0, R = o.axis ? AXIS_R : 0;
   const bottom = o.axis && o.times !== false ? 14 : 0;
@@ -86,7 +86,7 @@ function paint(c) {
   g.font = "11px -apple-system, BlinkMacSystemFont, system-ui, sans-serif";
   g.textBaseline = "top";
 
-  // Silent stretches: shaded faintly (the mockup draws none; a gap's missing line says it).
+  // Silent stretches: shaded faintly, besides the line's gap.
   g.fillStyle = k.grid;
   for (const gp of o.gaps || []) {
     const x0 = Math.max(L, X(gp.from)), x1 = Math.min(W - R, X(gp.to));
@@ -143,7 +143,7 @@ function paint(c) {
       if (ru) g.fillText(ru, W - R + 4, top + ph / 2);
     }
     if (o.times !== false) {
-      // (At most four steps, the mockup's: "−1 min, −45 s, −30 s, −15 s, now" at every range.)
+      // (At most four steps: "−1 min, −45 s, −30 s, −15 s, now" at every range.)
       const step = AGO_STEPS.find((x) => span / x <= Math.max(2, Math.min(4, Math.floor(pw / 80)))) ?? AGO_STEPS[AGO_STEPS.length - 1];
       g.textBaseline = "top";
       // (Right to left; a word that would meet the one beside it left out, the owner's: labels never overlap.)
@@ -359,7 +359,7 @@ function tagDrag(c, n) {
   n.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
-// The editor on the chart (the mockup's): the setting's name, a number in its unit, Set, Off,
+// The editor on the chart: the setting's name, a number in its unit, Set, Off,
 // Cancel; Enter sets, Escape cancels; a refused set says why in it.
 function openEditor(c, edit, v) {
   const host = c.parentNode;

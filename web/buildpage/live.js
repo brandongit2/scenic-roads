@@ -127,7 +127,7 @@ export function liveBlock(host, guard) {
   return b.root;
 }
 
-// A row (the mockup's .rate): its name over its words (its tip on hover) on the left, its chart on the right; `col`, a swatch before the name.
+// A row (`.rate`): its name over its words (its tip on hover) on the left, its chart on the right; `col`, a swatch before the name.
 export function row(root, name, tip, col, cls = "vrow") {
   const r = el("div", `rate ${cls}`);
   const lab = el("div", "lab");
@@ -225,7 +225,7 @@ function paint(host) {
   // (Read by the agent's loop, not the sampler: a point a loop, minutes apart when a step's long or
   // the Mac's starved; their lines joined over that.)
   const loop = (k) => latest(s[k], now, LOOP_FRESH_S);
-  // (Every chart says the time under it, as the mockup's.)
+  // (Every chart says the time under it.)
   // (A settable limit (#612): its line dragged, or its ✎'s editor, sets it on this Mac through
   // /api/settings as Settings' rows do; set, the line holds the
   // new value till the agent's loop reads it (LOOP_FRESH_S at most).)

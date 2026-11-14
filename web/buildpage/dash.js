@@ -533,7 +533,7 @@ function mapData(m) {
   const f = mapFilters();
   const from = m.now - MAP_ENDS_S;
   const runs = mapRuns(m);
-  // (Jobs with no tile to show, a worldwide step's: named under the map, as the mockup does.)
+  // (Jobs with no tile to show, a worldwide step's: named under the map.)
   // (A job and its lease are one run: named once.)
   const world = [...new Map(runs.filter((r) => !r.targets.some((t) => tileOf(t))).map((r) => [`${r.step} ${r.mac}`, r])).values()];
   const hosts = m.macs.map((x) => x.name);
@@ -1169,7 +1169,7 @@ const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => {
   return { lane: slotName(x.name, j.slot), step, from: j.started, until: m.now, n: j.live?.targets || (jobTarget(j) ? 1 : 0), targets: st?.targets || targetsOf(run, events), after: st?.after || [], job: j, mac: x.name };
 }));
 
-// The Jobs tab's cards (#659), as the mockup's (look/finalmock: dash.js showTip): a head (the
+// The Jobs tab's cards (#659): a head (the
 // stage's swatch, a kicker "<step> · what it is", the code's name as title), a world map of the
 // tiles it names, stat tiles, a bar, key–value rows, chips, its live part, a foot with its names.
 // Twice the map cards' width (the owner's 22 Oct, BUILD-PAGE-OWNER.md 22); the map small until it's
@@ -1676,7 +1676,7 @@ function stageParts(r) {
   });
 }
 
-// Each region's card (the list's rows and the map's regions), as the mockup draws it: its
+// Each region's card (the list's rows and the map's regions): its
 // folders over its name, its download and tiles left (stat tiles), each stage that builds regions
 // (a bar in parts: `stageParts`),
 // state, when it's built and on the map, its place in the build's order, its work left by step
@@ -1710,7 +1710,7 @@ function regionRow(r, i) {
   const [st, cls] = rowState(r);
   const above = r.crumbs?.slice(0, -1).join(" › ");
   const when = r.count ? `done ≈ ${clock(r.ready_at)}${r.map_at ? ` · on the map ≈ ${clock(r.map_at)}` : ""}` : "";
-  // (As the mockup's: a segment a stage with work left here, named in it; its tiles and the words left on hover.)
+  // (A segment a stage with work left here, named in it; its tiles and the words left on hover.)
   const b = r.built;
   const tiles = b?.total ? (b.built < b.total ? `${plural(b.total - b.built, "tile")} left` : `${n(b.total)} tiles built`) : "";
   const left = r.work.map((w) => S.said(w.step, w.k)).join(" · ");

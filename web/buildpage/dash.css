@@ -24,7 +24,7 @@
 .verdict .say { flex: 1 1 240px; min-width: 0; }
 .verdict .say b { font-weight: 600; }
 .verdict .ctl { display: flex; gap: 6px; margin-left: auto; }
-/* The alerts, full width over the Overview (the mockup's): a sign, the words, where to look. */
+/* The alerts, full width over the Overview: a sign, the words, where to look. */
 .alerts { display: flex; flex-direction: column; gap: 6px; }
 .alert { display: flex; gap: 10px; align-items: center; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); text-decoration: none; }
 .alert > i { flex: none; width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; font: 600 var(--fs-s)/1 -apple-system, system-ui, sans-serif; font-style: normal; color: var(--bg); background: var(--dim); }
@@ -179,7 +179,7 @@ button:disabled { opacity: .5; }
 .mc .rate .v small.memline { display: flex; gap: 5px; align-items: center; white-space: nowrap; }
 .mc .memline i { width: 8px; height: 8px; border-radius: 2px; flex: none; border: 1px solid var(--line); }
 .rate .cw { position: relative; min-width: 0; }
-/* A limit's tag on its line (chart.js placeTags), the mockup's .refbtn; a button when the limit is settable. */
+/* A limit's tag on its line (chart.js placeTags); a button when the limit is settable. */
 .reftag { position: absolute; font: var(--fs-s)/14px -apple-system, system-ui, sans-serif; background: var(--panel); border: 1px dashed; border-radius: 4px; padding: 0 5px; white-space: nowrap; pointer-events: none; max-width: calc(100% - 64px); overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
 /* A settable limit's tag (#612): its words drag the line, its ✎ opens the editor below. */
 .reftag.set { display: flex; align-items: center; pointer-events: auto; cursor: ns-resize; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; padding-right: 0; }
@@ -321,7 +321,7 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .card-tip .cstat { background: var(--bg); border: 1px solid var(--row-line); border-radius: 5px; padding: 3px 7px; }
 .card-tip .cstat .n { font-size: var(--fs-b); font-weight: 600; }
 .card-tip .cstat .l { font-size: var(--fs-s); color: var(--dim); }
-/* The Jobs tab's cards (#659), as the mockup's: twice the map cards' width, a world map under the
+/* The Jobs tab's cards (#659): twice the map cards' width, a world map under the
    head (small, its full width once pinned), a fade where an unpinned card is cut. */
 .card-tip:has(.tc-head.wide) { width: 560px; max-width: calc(100vw - 16px); }
 .card-tip .tc-map { display: block; width: 190px; max-width: 100%; height: auto; aspect-ratio: 1; margin: 0 auto; border-radius: 5px; }
@@ -330,7 +330,7 @@ html.card-modal, html.card-modal body { overflow: hidden; }
 .card-tip .tc-sec > .tc-head:not(.wide) ~ .tc-map { width: 132px; margin: 5px 0 0; border-radius: 4px; border: 1px solid var(--line); }
 .card-tip.pinned:has(.tc-head.wide) { box-shadow: 0 0 0 2px var(--accent), 0 8px 24px var(--shadow); }
 .card-tip:has(.tc-head.wide):not(.pinned)::after { content: ""; position: sticky; bottom: 0; display: block; flex: none; height: 28px; margin-top: -28px; background: linear-gradient(transparent, var(--tip-glass)); pointer-events: none; }
-/* The map's cards, as the mockup's: a head (swatch, kicker, title) over a rule, a body, a foot; a
+/* The map's cards: a head (swatch, kicker, title) over a rule, a body, a foot; a
    stack of them (everything under a point) one under the other, a line between. */
 .card-tip:has(.tc-head) { padding: 0; width: 280px; border-radius: 8px; box-shadow: 0 8px 24px var(--shadow); }
 .card-tip:has(.tc-head) .cb, .card-tip:has(.tc-head):not(.pinned, [hidden]), .tc-sec { display: flex; flex-direction: column; gap: 6px; }

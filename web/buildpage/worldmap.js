@@ -645,7 +645,7 @@ export function createMap({ pick = () => {} } = {}) {
   return { el, update, light, minimap, highlight, emphasize };
 }
 
-// A world map for a Jobs card (#659, as the mockup's): the whole world square, the countries
+// A world map for a Jobs card (#659): the whole world square, the countries
 // (`countries`, rings in the map's 0–1000) faintly, the tiles a job names lit in its colour
 // (`colour`, var() allowed), each at least 5 px; no grid, no regions. Small until its card is
 // pinned (dash.css .tc-map).

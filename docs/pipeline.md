@@ -183,7 +183,7 @@ it back; this browser's own, kept), each scrolling on its own while the page doe
 fixed at the bottom (the charts' range, the Live dot). Under 720 px the panels stack, the map
 first, and the page scrolls; what's in the tabs' panel lays out by the panel's width
 (`@container tabs`), so one dragged narrow beside the map reads as a phone's. A tab per part, in
-the mockup's order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#nas`,
+this order, chosen by the address's `#hash` (`#overview`, `#jobs`, `#machines`, `#nas`,
 `#regions`, `#inputs`, `#activity`, `#details`, `#device`; none or another: Overview), so a
 link or a reload opens the same tab; an alert links to the tab that says more (a held change: Inputs).
 Each answer of the build's (`/api/swarm`, every 10 s) renders the header, the map and the tab
@@ -376,7 +376,7 @@ The Jobs tab's stages are the one exception.
   failed, what it waits on, CPU over wall, the NAS's and the internet's bytes where counted, and a
   line on what it does: web/buildpage/sums.js `PHASE_ABOUT`, else its name and class). A step's card: done and left, what it makes, kind,
   where it runs, memory, its forecast; its time by phase as chips.
-- **Cards:** everything in the Jobs tab has a card, drawn as the final mockup's (#659: a head
+- **Cards:** everything in the Jobs tab has a card (#659: a head
   with the stage's swatch, a kicker ("terrain-hi · step", "terrain-deep · job under way", "stage")
   and the code's name as its title; a world map of a job's tiles, 190 px until pinned, then the
   card's width up to 1000 px; stat tiles; a bar; key–value rows; chips; a foot with its names;
@@ -440,7 +440,7 @@ The Jobs tab's stages are the one exception.
   charts (the jobs' NAS reads and writes, the internet in and out, each its last minute's mean
   said; each with a second line, thin and dashed, on its own scale in a 40 px gutter at the right,
   its 0 and top and its unit once between them, in its colour: `nas_files_s` and `nas_creates_s` as
-  files/s, `net_req_s` on both internet charts as req/s; task #620); then a chart a measure. As in the mockup, each row is its name over its figures in a
+  files/s, `net_req_s` on both internet charts as req/s; task #620); then a chart a measure. Each row is its name over its figures in a
   150 px column, its chart beside (the scale's 0, half and top in a 58 px gutter, a 40 px one at the right in every chart, the time under it
   as time ago, limits dashed in the warning's colour, the newest point a dot): CPU use (the build's and the rest's,
   stacked, against the Mac's cores and the cores the build may use now; P and E said), the load
@@ -455,8 +455,8 @@ The Jobs tab's stages are the one exception.
   loop reads (power, idleness, the limits) is said while under 15 min old. Each chart (chart.js):
   at most five times under it, its scale's numbers with the unit once beside them (words for the
   heat and the owner's use), each limit a boxed tag on its dashed line. A settable limit (the
-  build's cores, the memory floor, the room target) is set on its chart, as
-  the mockup draws: its line or tag dragged up or down (a mouse at once; a touch after a long press
+  build's cores, the memory floor, the room target) is set on its chart:
+  its line or tag dragged up or down (a mouse at once; a touch after a long press
   on the tag) previews the value snapped to whole cores, 1 GB or 5 GB, within what
   agent/settings.rs takes (cores 1 to the Mac's, the memory floor 1 GB to under the Mac's, room 1 GB
   to under its disk), and sets it on release through POST /api/settings, as the Settings
@@ -479,8 +479,7 @@ The Jobs tab's stages are the one exception.
   through the first Mac that reaches the NAS (`/api/settings`, coordinator.md §7); read every 30 s while the
   Machines tab is shown, and after each Set or Off. Every control on the page (Pause, Freeze,
   Resume, the lead's, Accept, Cancel, Try again, the settings) works from any device.
-- **NAS tab:** `nas.js`, every measure a chart over time (the owner's 04:33 ask, task #634), as
-  the owner's final mockup's NAS tab lists them, without a heading of its own (the tab names it):
+- **NAS tab:** `nas.js`, every measure a chart over time (task #634), without a heading of its own (the tab names it):
   the Machines tab's rows (`live.js`'s `row` and `words`: its name, its figure at the base size
   with dim small lines under it, the chart beside; the same widths, `chart.js`, and the footer's
   range), one column, under a line saying the range, its resolution and when the NAS's capacity
@@ -507,8 +506,8 @@ The Jobs tab's stages are the one exception.
   `steps`, docs/pool.md §10, Regions: all less built, task #636; else the forecast's), never a
   share. Above, what's left in all regions by step, summed in the page (sums.js `stepTotals`). Its
   card (also in the map's stacks, as above).
-- **Activity:** the hours, and a sentence per event. Below them, as the owner's mockup lays them
-  out, from every Mac's `/api/live` (`activity.js`, asked every 2 s while the tab shows; docs/pool.md
+- **Activity:** the hours, and a sentence per event. Below them,
+  from every Mac's `/api/live` (`activity.js`, asked every 2 s while the tab shows; docs/pool.md
   §10, Live): the **file stream**, what each Mac is moving now, newest first (the NAS files its
   jobs opened to read or made, with their size and the open's or copy's time, and the internet
   transfers that ended, downloads and breaks), each Mac a chip in its colour on the page, and

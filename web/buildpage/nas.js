@@ -1,6 +1,5 @@
-// The build page's NAS tab (docs/pool.md §10, Live; docs/pipeline.md §5), as the owner's final
-// mockup lays it out (its "pool" tab; the owner's 04:33 ask: every stat a chart over time, as the
-// Machines tab's): a row a measure, its name over its words, its chart beside, the same rows,
+// The build page's NAS tab (docs/pool.md §10, Live; docs/pipeline.md §5), every stat a chart over
+// time, as the Machines tab's: a row a measure, its name over its words, its chart beside, the same rows,
 // widths and range (the footer's) as each Mac's live block (live.js): how long the lead's listing
 // takes, the pool's NAS calls waiting (against their threads) and timed out, the NAS's disks busy
 // (against the owner's target), then the pool's use against the limits the lead's probes give:
@@ -72,7 +71,7 @@ function paint() {
   const gl = commonGaps(["load1", "cores_busy", "mem_free_pct"].map((k) => ({ points: s[k], step: st.step })), now);
   const probe = v?.probes?.length ? Math.max(...v.probes.map((p) => p.at)) : null;
   const nowS = Math.floor(Date.now() / 1000);
-  // (The capacity's age a tip, the mockup's: the owner deleted its line, 04:26.)
+  // (The capacity's age a tip, not a line.)
   parts.said.textContent = footer(st.range, st.step, gl);
   parts.said.title = probe ? `The limits: capacity measured ${spanText(Math.max(60, nowS - probe))} ago, the best of ${v.probes.length} probes over the last day` : "The lead hasn't probed the NAS yet: no limits";
   const base = { from: now - st.range, to: now, step: st.step, gaps: gl, axis: true, times: true };

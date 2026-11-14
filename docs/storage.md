@@ -144,8 +144,11 @@ folder's, so `std::fs::copy` or plain `cp` fail with "Permission denied".
 **Writers.** Every job uploads its files (content-named) and hands its record changes off to the
 lead by HTTP (docs/coordination.md §5.3), which merges them; no step
 writes the records directly once a lead is declared
-(`crate::out::check_writer`). Other writers: the owner's inputs folders, `tools/app/publish.sh`, and the
-NAS's own planet fetch. The map's server writes nothing on the NAS.
+(`crate::out::check_writer`); the planet is fetched so too, by the lead's `planet-fetch` job (docs/steps.md
+§1). Other writers: the lead's agent, under `state/` (the records' snapshot and brief, the forecasts' and their
+inputs' archives), each Mac's agent (its live measures' days, `state/live-archive/`), the lead's coordinator's NAS
+probes (`state/pool/nas-probe/`), the first agent to find no token (`state/coord/token`), and the owner's inputs
+folders. The map's server writes nothing on the NAS.
 
 **GC** (`agent::gc`, the queue `store::map::gc` and `agent::gcqueue`) never looks for garbage: the
 lead queues each file as it stops being held, and the `gc` job removes what's due, a chunk at a
@@ -269,8 +272,8 @@ it stopped. So there is no run to finish: the queue's length is what's left.
   Their files then go as GC's queue frees them. `scenic gc --dry-run` counts them, writing nothing.
 - `scenic gc --dry-run` says what's due by the queue, what each sweep would find and drop, and
   marks, sends and removes nothing; without `--sweeps` every sweep runs whole.
-- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs,
-  state, app and nas. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
+- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/`, inputs and
+  state. The packed tile stores (`sources/aws-terrarium/`, `sources/pyramids/`), whose
   archives no manifest names, are kept by their own indexes (macs.md, Downloads), never by GC.
 
 **Backups.** Daily, the lead's `backup` job (agentcore::agent::backup) copies `inputs/`, the input

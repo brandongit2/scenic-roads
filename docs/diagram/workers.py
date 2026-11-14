@@ -85,21 +85,23 @@ def build(check=False):
     g = 16
     tw = (W - 32 - 2 * g) / 3
     notes = [
-        # docs/macs.md: Server (the Mac mini alone), "The map's log" (GET /map/changes, a 30-s long poll; each update
-        # within a second), Mirror (a file from the Mac when it's there, else the NAS), Devices.
-        ('The map server · the Mac mini alone',
-         'follows the map’s log by HTTP (a 30 s long poll), so it has each map update within a second; reads a file from '
-         'its downloads when it’s there, else from the NAS; serves the devices at map.brandontsang.net'),
+        # crates/server/src/maplog.rs (the lead's GET /map/changes, long-polled: store::map::feed::WAIT_S = 30 s, answered
+        # as a batch comes; the Mac mini's server, and a laptop's on demand); docs/macs.md: Server (resident on the Mac
+        # mini alone), Mirror (a file from the Mac when it's there, else the NAS), Devices.
+        ('The map server · resident on the Mac mini',
+         'follows the map’s log by HTTP (a 30 s long poll, answered as a batch comes), so it has each map update within a '
+         'second; reads a file from its downloads when it’s there, else from the NAS; serves the devices at the map’s '
+         'address on the tailnet. A laptop runs one of its own on demand, for the offline map'),
         # docs/pool.md §6.3, §6.1; docs/formats.md, The map and its log (with the lead down the map isn't updated).
         ('With the lead gone',
          'No Mac takes its place. A member finishes the jobs it holds, keeps their hand-offs on its own disk and starts '
          'none; the map isn’t updated, and each client keeps the map it holds. Back, the lead merges what its members '
          'post it and grants again. The owner moves the lead only by editing the declaration.'),
         # docs/storage.md, GC; crates/agentcore/src/agent/gc.rs (CHUNK_NAMES = 200, ORPHAN_AGE_S = 14 days),
-        # crates/store/src/map/gc.rs (GRACE_S = an hour).
+        # crates/store/src/map/gc.rs (GRACE_S = an hour); agentcore::agent::gc's module doc (run as the NAS budget leaves room).
         ('GC · a job of the lead’s own',
          'never looks for garbage: the lead queues each file as the map and the records stop naming it, and the job '
-         'removes what’s due, 200 names at a time, when the NAS is quiet. A name is due once every client’s cursor is past '
+         'removes what’s due, 200 names at a time, when the NAS budget leaves it room. A name is due once every client’s cursor is past '
          'the update that freed it and an hour has gone by. A sweep every 14 days finds what was never queued.')]
     th = max(f.measure(tw, t) for _, t in notes)
     for i, (title, t) in enumerate(notes):
@@ -112,7 +114,7 @@ def build(check=False):
             'page. The M4 and the M1 are members: each takes the jobs that fit it, beats to the lead every ten seconds and '
             'hands its jobs’ record changes to it; every job reads its inputs on the NAS and uploads its files there. Any '
             'device’s build page shows the build and may pause it, and runs no work. The NAS holds the bulk data, the '
-            'declaration and the records’ snapshot, and nothing of coordination. The map server, on the Mac mini alone, '
-            'follows the map’s log. With the lead gone no Mac takes its place. GC is a job of the lead’s own, removing what '
+            'declaration and the records’ snapshot, and nothing of coordination. The map server, resident on the Mac mini, '
+            'follows the map’s log; a laptop runs its own on demand. With the lead gone no Mac takes its place. GC is a job of the lead’s own, removing what '
             'its queue says is due.')
     return f.svg(y0 + th + 14, aria)
