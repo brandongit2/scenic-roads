@@ -3,7 +3,7 @@
 //! search), and whole sections, for what a query scans or a long road touches throughout. Both drop
 //! the least recently used first. Mirrored files are mapped instead and never come here.
 
-use crate::served::Lru;
+use crate::reply::Lru;
 use crate::views::Blob;
 use rayon::prelude::*;
 use std::sync::{Arc, LazyLock, Mutex};

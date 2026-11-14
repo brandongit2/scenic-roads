@@ -19,7 +19,7 @@
 //!   the range of its values present), and the sources with their pieces counted by class (those
 //!   of class `unknown` named: they're drawn nowhere).
 
-use crate::served::{self, Lru};
+use crate::reply::{self, Lru};
 use crate::S;
 use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -464,7 +464,7 @@ fn stored_layer(theme: &str, grid: Grid) -> String {
 
 /// Decoded stored tiles, by layer, tile and catalogue generation (a view's, and their ancestors').
 type Decoded = Lru<(String, u8, u32, u32, u64), Option<Arc<Tile>>>;
-static DECODED: LazyLock<Mutex<Decoded>> = LazyLock::new(|| Mutex::new(Lru::entries(4 * served::VIEW_TILES as usize)));
+static DECODED: LazyLock<Mutex<Decoded>> = LazyLock::new(|| Mutex::new(Lru::entries(4 * reply::VIEW_TILES as usize)));
 
 /// Stored tile z/x/y of `layer`, decoded; None where it has none.
 fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Tile>> {
@@ -570,9 +570,9 @@ async fn tile(
     let uv = s.available.version();
     let etag = format!("\"av-{}-{uv}-{layer}-{}-{z}-{x}-{y}\"", s.data.layer_version(&stl), view(all));
     let key = (stl.clone(), layer.clone(), all, z, x, y, g, uv);
-    let v = served::versioned(q.as_deref());
+    let v = reply::versioned(q.as_deref());
     let s2 = s.clone();
-    served::serve_made(&MADE, key, &etag, &headers, v, "image/png", format!("{stl} {layer} {z}/{x}/{y}"), move || {
+    reply::serve_made(&MADE, key, &etag, &headers, v, "image/png", format!("{stl} {layer} {z}/{x}/{y}"), move || {
         if !s2.data.catalogue().layers.contains_key(&stl) {
             return Ok(None);
         }
@@ -635,7 +635,7 @@ pub async fn at(State(s): State<S>, Path((theme, set)): Path<(String, String)>, 
     }
     let all = q.avail.as_deref() == Some("all");
     let (lng, lat) = (q.lng, q.lat);
-    let r = served::blocking("available: a click", move || {
+    let r = reply::blocking("available: a click", move || {
         let (grid, px, py) = pixel_of(lng, lat);
         let stl = stored_layer(&theme, grid);
         let ids = fmt::pieces_at(grid, px, py, &mut |z, x, y| stored(&s, &stl, z, x, y))?;

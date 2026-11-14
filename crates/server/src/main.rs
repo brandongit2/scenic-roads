@@ -32,9 +32,9 @@ mod profiles;
 mod query;
 mod regions;
 mod remote;
+mod reply;
 mod reserve;
 mod retire;
-mod served;
 mod terrain;
 mod tiles;
 mod updater;
@@ -62,8 +62,8 @@ pub struct AppState {
     pub updater: Arc<updater::Updater>,
     pub names: Arc<names_live::NamesState>,
     pub basemap: tiles::Basemap,
-    /// Overlay and layer files gzipped once (served.rs), by content name.
-    pub prepared: Arc<served::Prepared>,
+    /// Overlay and layer files gzipped once (reply.rs), by content name.
+    pub prepared: Arc<reply::Prepared>,
     /// Roads' English names from OSM (name:en), by OSM way id, per catalogue.
     road_en: Mutex<Option<(u64, Arc<HashMap<u64, String>>)>>,
     /// Trains a day per rail way (OSM id), sorted, per catalogue.
@@ -236,7 +236,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         data,
         names: names_live::NamesState::new(home),
         basemap: tiles::Basemap::default(),
-        prepared: Arc::new(served::Prepared::default()),
+        prepared: Arc::new(reply::Prepared::default()),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         home: home.to_owned(),
@@ -420,7 +420,7 @@ async fn serve(cli: Cli) -> Result<()> {
         data: d,
         names,
         basemap: tiles::Basemap::default(),
-        prepared: Arc::new(served::Prepared::default()),
+        prepared: Arc::new(reply::Prepared::default()),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         home: home.clone(),
@@ -623,16 +623,16 @@ async fn serve(cli: Cli) -> Result<()> {
 /// Its ETag is its content name's hash (read from the catalogue: a 304 reads nothing).
 async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     const LOGICAL: &str = "global/railfreq";
-    let v = served::versioned(q.as_deref());
-    let Some(content) = s.data.content(LOGICAL) else { return served::none() };
+    let v = reply::versioned(q.as_deref());
+    let Some(content) = s.data.content(LOGICAL) else { return reply::none() };
     let etag = format!("\"{}\"", store::naming::parse_content_name(&content).map_or("", |c| c.hash16));
-    if served::etag_match(&headers, &etag) {
-        return served::not_modified(&etag, v);
+    if reply::etag_match(&headers, &etag) {
+        return reply::not_modified(&etag, v);
     }
     let s2 = s.clone();
-    match served::blocking(LOGICAL, move || s2.data.global(LOGICAL)).await {
-        Ok(Some(b)) => served::respond(b.to_vec(), "application/octet-stream", false, Some(&etag), v),
-        Ok(None) => served::none(),
+    match reply::blocking(LOGICAL, move || s2.data.global(LOGICAL)).await {
+        Ok(Some(b)) => reply::respond(b.to_vec(), "application/octet-stream", false, Some(&etag), v),
+        Ok(None) => reply::none(),
         Err(r) => r,
     }
 }
@@ -641,7 +641,7 @@ async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery, headers: HeaderM
 /// their features.
 async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     let Some(logical) = layer_logical(&s.data.catalogue(), &name) else { return StatusCode::NOT_FOUND.into_response() };
-    match served::respond_layer(&s, &logical, &headers, served::versioned(q.as_deref())).await {
+    match reply::respond_layer(&s, &logical, &headers, reply::versioned(q.as_deref())).await {
         Some(r) => r,
         // In the catalogue but not read (the NAS away): try again later.
         None if s.data.content(&logical).is_some() => StatusCode::SERVICE_UNAVAILABLE.into_response(),
@@ -689,7 +689,7 @@ async fn warm(s: S) {
             s.prepared.retain_contents(&cat.files.values().map(|f| f.file.clone()).collect());
             let layers: Vec<String> = ["summary"].iter().filter_map(|name| layer_logical(&cat, name)).collect();
             for l in &layers {
-                ok &= served::warm(&s, l).await;
+                ok &= reply::warm(&s, l).await;
             }
             if ok {
                 eprintln!("warmed {} layer files in {:.1?}", layers.len(), t0.elapsed());
@@ -735,9 +735,9 @@ async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next
         let away_none = res.status() == StatusCode::NO_CONTENT && !s.data.online();
         if away_none {
             res.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-        } else if res.status().is_success() && res.extensions().get::<served::NotForGood>().is_none() {
+        } else if res.status().is_success() && res.extensions().get::<reply::NotForGood>().is_none() {
             let current = s.current_tokens().contains(&v);
-            res.headers_mut().insert(header::CACHE_CONTROL, served::cache_control(current, "no-cache"));
+            res.headers_mut().insert(header::CACHE_CONTROL, reply::cache_control(current, "no-cache"));
         }
     }
     res
