@@ -234,6 +234,8 @@ coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac whi
 | `docs/regions.md`, `docs/inputs.md` | Coverage and regions; the inputs folders and their checks. |
 | `docs/names.md`, `docs/sizes.md`, `docs/buildings3d.md` | Names and descriptions; sizes; 3D buildings. |
 | `docs/native-port.md` | MapLibre subsumed into the web app as one engine, then the native map app translated from it (planned). |
+| `docs/research/` | The data-source research of November 2026: terrain, bathymetry and 3D buildings, an index and regional reports each (its README says how they were made). |
+| `docs/proposals/inputs-in-the-repo.md` | An idea not adopted: inputs committed to the repository, big outputs pinned by a lock file. |
 | `docs/polar.md` | The polar caps past 85° (planned: built and tested, not yet in the live build). |
 | `web/maplibre/FORK.md` | Our MapLibre changes. |
 

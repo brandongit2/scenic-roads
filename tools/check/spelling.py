@@ -13,7 +13,8 @@ unlisted (raise, otherwise, exercise, promise, precise, supervise, emphasis, ...
 -re spellings are not checked at all. Identifiers are split at camelCase, digits and underscores,
 so `equaliseHistogram` and `EQUALISE_MAX` are found as well as prose.
 
-Not flagged: URLs, vendored or generated code (web/maplibre/, crates/geos-src/, lockfiles), data files (geojson, csv),
+Not flagged: URLs, vendored or generated code (web/maplibre/, crates/geos-src/, lockfiles), the research
+reports (docs/research/: they quote publishers' text verbatim), data files (geojson, csv),
 binary files, untracked files under .claude/. A deliberate use is marked on its own line with
 `spelling: kept` (and why), e.g. a stored name an older file or peer still sends, a quotation, a
 body's proper name ("Organisation").
@@ -62,7 +63,7 @@ PART = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+")
 MARK = "spelling: kept"
 # Every listed word holds one of these (a quick look before the full one: most lines have none).
 HINT = re.compile(r"[iy]s(?:e|ing|ation|er|able)", re.I)
-SKIP_PREFIX = ("web/maplibre/", "crates/geos-src/")
+SKIP_PREFIX = ("web/maplibre/", "crates/geos-src/", "docs/research/")
 SKIP_NAME = re.compile(r"(?:\.lock|-lock\.yaml|-lock\.json|\.min\.js|\.geojson|\.csv|\.tsv|\.ndjson)$")
 SELF = {"tools/check/spelling.py", "tools/check/test_spelling.py"}
 
