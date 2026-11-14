@@ -371,6 +371,15 @@ fn offered_job(the_plan: &dyn seam::Plan, spec: &JobSpec) -> bool {
     spec.record.as_ref().is_some_and(|w| every::offered(the_plan, &w.step))
 }
 
+/// Whether `spec`, ended, is kept from the plans made before its end (`Agent::own_ended`): one of
+/// the lead's own planned jobs of no targets of its own (GC, the backup, the planet's fetch, the
+/// OSM pass), which no done record keeps from being granted again. One with targets is kept by the
+/// coordinator's done work while a plan offers it at the key it was done under, and is granted at
+/// once at another (a map update planned while the last one ran: not held a plan longer).
+fn kept_after_end(the_plan: &dyn seam::Plan, spec: &JobSpec) -> bool {
+    !offered_job(the_plan, spec) && spec.record.as_ref().is_none_or(|w| w.targets.is_empty())
+}
+
 /// The targets the lead's own planned job `spec` is offered with: its record's, or for a job of no
 /// targets of its own (the OSM pass, GC), its id's after its step (`own_cost_key`'s), keyless (its
 /// lease holds none: crate::coord's `pack`).
@@ -1747,8 +1756,8 @@ pub struct Agent {
     /// serialize leave the earlier's, so the entry's time isn't theirs.)
     fc_pending: (Option<(Vec<u8>, u64)>, Option<fcarchive::Entry>),
     plan_n: u64,
-    /// When each of the lead's own planned jobs (GC, the backup…: not an offered step's) last ended
-    /// of itself, as the number of **plan**'s side made by then (`told`): a plan made from that side
+    /// When each of the lead's own planned jobs of no targets (`kept_after_end`: GC, the backup…)
+    /// last ended of itself, as the number of **plan**'s side made by then (`told`): a plan made from that side
     /// or an older one was made from what came before that run, so `lead_grants` asks for none of
     /// its jobs that ended since (one ended, the next plan says whether there is more for it to do).
     /// One counter, the plan's inputs', never a clock: a plan numbered after the end but from inputs
@@ -5076,10 +5085,10 @@ impl Agent {
             let done = self.finished_targets(k, ok);
             let r = self.slots[k].running.as_mut().unwrap();
             // (Whether its report says it did nothing, for the repeat flag; and whether it was one of
-            // the lead's own planned jobs, which no grant runs again from a plan made before this
+            // the lead's own keyless jobs, which no grant runs again from a plan made before this
             // end, `own_ended`.)
             let empty = ok && !paused && did_nothing(&r.spec.id, &r.log);
-            let own = !offered_job(self.o.the_plan, &r.spec);
+            let own = kept_after_end(self.o.the_plan, &r.spec);
             let note = if ok {
                 // (GC's warnings, its job's note in the status: agent::gc::Report::warnings.)
                 if step_of(&r.spec.id).as_deref() == Some("gc") {
@@ -11086,6 +11095,23 @@ mod tests {
         }
         a.stop_jobs("the test");
         a.plan.stop(Duration::ZERO);
+    }
+
+    /// Task #1392: the jobs an end keeps from the plans before it: the lead's own of no targets; not
+    /// one with targets (the coordinator's done work keeps it at its key: a map update planned while
+    /// the last ran goes at once), nor an offered step's.
+    #[test]
+    fn only_the_leads_keyless_jobs_are_kept_after_their_end() {
+        let plan = crate::agent::seam::for_tests();
+        assert!(kept_after_end(plan, &own_job("gc")));
+        assert!(kept_after_end(plan, &own_job("backup")));
+        let with = |step: &str| JobSpec {
+            record: Some(jobs::Work { step: step.into(), targets: vec![(step.into(), "k".into())] }),
+            ..own_job(step)
+        };
+        assert!(!kept_after_end(plan, &with("catalog")), "a map update");
+        let offered = plan.step_names().into_iter().find(|s| every::offered(plan, s)).unwrap();
+        assert!(!kept_after_end(plan, &with(offered)), "{offered}");
     }
 
     /// Task #1392: a GC or backup run's report, as its log ends with it (the shape of the lead's

@@ -1132,7 +1132,8 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   can't, the lead is granted nothing more until its jobs end, then that job before any other
   (`own_cold_waits`), so offered work never starves it. A
   planned job that can't start for a reason of the agent's own (a failure's wait, the proxy not
-  up, the memory guard's hour: `wait_reason`) isn't asked for, nor one that ended (of itself,
+  up, the memory guard's hour: `wait_reason`) isn't asked for, nor one of no targets of its own
+  (GC, the backup, the planet's fetch, the OSM pass: `kept_after_end`) that ended (of itself,
   failed or at a safe point) after the plan's inputs were taken (`Agent::own_ended`, against
   `PlanView::from`, the number of the agent's side the plan was made from: one counter, no clock,
   so a plan begun just after the end from inputs taken before it counts as before it). That plan
@@ -1140,12 +1141,11 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   took, so a job of moments would be granted at every round until the next plan's offers (task
   #1392: GC granted 192 times in the 100 s after a run that removed 1,427 files, each run removing
   none; the backup up to 206 times a day); the next plan says whether there is more for it. A job
-  with targets of its own that ended well was already kept so while its plan offers it at the key
-  it was done under (the coordinator's done work: a map update, a redo), and one that failed by
-  its backoff; so this changes the keyless ones (GC, the backup, the planet's fetch, the OSM pass)
-  and a job stopped at a safe point, granted again from the next plan rather than its own. A job
-  stopped otherwise (the Mac asleep, its lease lapsed, the agent stopping) isn't held. The ends are
-  kept in memory: a restarted lead grants none of its own jobs before its first plan. One that
+  with targets of its own (a map update, a redo, a gate check) isn't held so: the coordinator's
+  done work keeps it while a plan offers it at the key it was done under, and one at another key
+  (a map update planned while the last ran) goes at once. A job stopped otherwise (the Mac asleep,
+  its lease lapsed, the agent stopping) isn't held. The ends are kept in memory: a restarted lead
+  grants none of its own jobs before its first plan. One that
   fails (or the memory guard
   stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
   doubling each time, as a member's failed work is.
