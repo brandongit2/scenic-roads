@@ -5,7 +5,7 @@ licence_url = "https://opendata.swiss/terms-of-use#terms_open"
 source = "https://data.geo.sh.ch/ogd/dom_asc.zip"
 theme = "terrain"
 availability = "open"
-notes = "The canton's lidar surface model: \"Rasterweite ist 0.5m. Absolute Höhengenauigkeit 0.15 m (einfacher mittlerer Fehler). Das DOM basiert auf Laserscanning-Daten aus Befliegung März/April 2013\" (its opendata.swiss record), one zip of 55 ASCII grids (dom_asc.zip, 2.6 GB; and as XYZ), each named for its 1:25,000 sheet and a part of it (dom_1011-23.asc). The grids' extents are in their compressed members' headers, which the producer doesn't read, and no index of the sheets' parts was found: its extent is the canton, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, claimed, not checked against data. The standard error stated, 0.15 m, is taken as the RMSE."
+notes = "The canton's lidar surface model: \"Rasterweite ist 0.5m. Absolute Höhengenauigkeit 0.15 m (einfacher mittlerer Fehler). Das DOM basiert auf Laserscanning-Daten aus Befliegung März/April 2013\" (its opendata.swiss record), one zip of 55 ASCII grids (dom_asc.zip, 2.6 GB; and as XYZ), each named for its 1:25,000 sheet and a part of it (dom_1011-23.asc). The grids' extents are in their compressed members' headers, which the producer doesn't read, and no index of the sheets' parts was found: its extent is the canton, as Natural Earth's 1:10m administrative areas (v5.1.2) draw it, claimed, not checked against data. The accuracy stated, 0.15 m as a simple mean error (a standard deviation), isn't stated as an RMSE: left out, as swisstopo's 1-sigma figures are (`ch-swisssurface3d`)."
 
 [[piece]]
 id = "dom"
@@ -19,4 +19,3 @@ tolerance_m = 200
 surface = "surface"
 spacing_m = 0.5
 year = 2013
-vertical_rmse_m = 0.15

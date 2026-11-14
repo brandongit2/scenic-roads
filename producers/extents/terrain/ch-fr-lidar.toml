@@ -5,7 +5,7 @@ licence_url = "https://opendata.swiss/fr/dataset/lidar-fribourg-2016-mns"
 source = "https://opendata.swiss/fr/dataset/lidar-fribourg-2016-mns"
 theme = "terrain"
 availability = "login"
-notes = "The canton's lidar surface model of its 2016 flights (October to December 2016; the Broye district's data flown in March 2016 by the canton of Vaud), \"Le MNS peut être fourni sous une forme brute (nuage de points [x, y, z] d'une densité minimale de 0.5 point par m²) ainsi que sous la forme de grilles interpolées. Sa précision altimétrique est de +/- 10 cm\" (its opendata.swiss record): supplied on request (`login`), the canton serving only its hillshade (Relief_de_surface_ombre_MNS_2016) and its data description naming one compiled MNS.tif with no cell. So no spacing is stated (no score), and the ±10 cm isn't an RMSE: left out. Its extent is the canton as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (the Broye's part in Vaud left out), claimed, not checked against data. swissSURFACE3D Raster (`ch-swisssurface3d`, 0.5 m) covers the canton since."
+notes = "The canton's lidar surface model of its 2016 flights (October to December 2016; the Broye district's data flown in March 2016 by the canton of Vaud), \"Le MNS peut être fourni sous une forme brute (nuage de points [x, y, z] d'une densité minimale de 0.5 point par m²) ainsi que sous la forme de grilles interpolées. Sa précision altimétrique est de +/- 10 cm\" (its opendata.swiss record): supplied on request (`login`), the canton serving only its hillshade (Relief_de_surface_ombre_MNS_2016) and its data description naming one compiled MNS.tif with no cell. No grid cell is stated, so its spacing is the raw form's stated minimum density's nominal spacing, 1/√0.5, 1.414 m (as Finland's 0.5 p clouds, `fi-nls-km2`); and the ±10 cm isn't an RMSE: left out. Its extent is the canton as Natural Earth's 1:10m administrative areas (v5.1.2) draw it (the Broye's part in Vaud left out), claimed, not checked against data. swissSURFACE3D Raster (`ch-swisssurface3d`, 0.5 m) covers the canton since."
 
 [[piece]]
 id = "mns-2016"
@@ -17,4 +17,5 @@ filter = { adm0_a3 = ["CHE"], name = ["Fribourg"] }
 tolerance_m = 200
 [piece.metrics]
 surface = "surface"
+spacing_m = 1.4142
 year = 2016

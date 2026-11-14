@@ -1078,8 +1078,8 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   crosses. Outlines that coincide cost once: TanDEM-X's three pieces, MERIT's and DLR's PolarDEM
   are claimed over `cop-dem`'s GLO-90 tiles, so they make no tile of their own; a point cloud read
   as its grid is (LiDAR HD's, the Länder's, Slovakia's, most of Scotland's), or a source's surface
-  model read from its ground model's index (MRDEM-30's DSM), has the grid's outline, so task
-  #1379's 528 pieces added 10,503 tiles (16 MB).
+  model read as its ground model is (MRDEM-30's DSM, on its DTM's mask), has the grid's outline and makes no
+  tile of its own.
 - **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent

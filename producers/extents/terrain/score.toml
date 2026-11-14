@@ -44,7 +44,7 @@ share = 0.02
 availability = ["open", "login", "paid", "closed"]
 
 [metric.spacing_m]
-label = "Grid spacing"
+label = "Spacing: a grid's cell, a point cloud's nominal"
 unit = "m"
 scale = "log"
 worst = 1000

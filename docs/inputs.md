@@ -2259,6 +2259,13 @@ clouds of sources whose grids are declared above, each a block of its declaratio
 and ground models #1370 left. A point cloud states no `surface`; its spacing is 1/√ of the density
 its publisher states for the product (a nominal figure: a density per tile, where an index gives
 one, would cut a year's outline into many, each costing the step its tiles, docs/steps.md §14).
+The figure is taken as stated, whatever it counts, and its notes say which: pulses (LiDAR HD's 10
+impulsions/m², Luxembourg's "> 30 pts/m² émis"), last returns, one a pulse (Slovenia's,
+Slovakia's), ground points (Tirol's, the only density it states, fewer than the points delivered)
+or points with no kind given (most: AHN's, swisstopo's, Brussels' average of 67); a minimum where
+the publisher states one, else its average. Figures of different counts aren't converted into
+one another, so two clouds' nominal spacings compare only as closely as their publishers' figures
+do.
 Where its tiles are its grid's, it is read as its grid is (the same reader, address, fields,
 grouping and tolerance), so its outline is the grid's, byte for byte, and costs the step nothing.
 Areas in EPSG:3035.
@@ -2280,7 +2287,7 @@ Areas in EPSG:3035.
 | `us-ut-lidar`, `us-mt-lidar` (own) | Utah's first-return DSMs by project, cell and year; Montana's Lidar Inventory DSMs (1 m and 3 ft, each mosaic's cell from its DSM.tfw; five on request: claimed) | `service`; `claimed` | `arcgis`: UGRC's LiDAR Extents layer (46 projects, 178,274 km²); the inventory's project outlines (141, 360,807 km² against its SquareMiles' 360,949) |
 | `us-il-dsm`, `us-hi-dsm` (own) | Illinois's county DSMs by cell (1, 1.5, 2 ft) and year (2017–2024); Hawaii's statewide 1 m DSM and Maui's 2019 1 ft | `files` | `raster`: each image service's `exportImage` (Illinois's locked to each group's county rasters, 250 m; Hawaii's at 200 and 50 m), `nodata = 0`: 143,848 km² (the state 143,800); 4,751 and 767 km² |
 | `us-neon-aop` (own) | NEON's AOP DTM and DSM, 1 m, and point clouds (no density stated: no score), by flight box (a login since June 2026: claimed) | `claimed` | `file`: NEON's AOP flight boxes, priority 1, of the 59 sites with data (51 boxes, 6,986 km²), one outline for all three |
-| `ch-sh-dom`, `ch-be-bern-dom`, `ch-fr-lidar` (own) | Schaffhausen's 0.5 m DOM of 2013 (RMSE 0.15 m); Bern's 0.25 m DOM of 2023 (map.bern.ch answers 403); Fribourg's MNS of 2016 (on request, no cell stated: no score) | `claimed` | Natural Earth's cantons; Bern's municipality in swissBOUNDARIES3D (the geo.admin API's `find`) |
+| `ch-sh-dom`, `ch-be-bern-dom`, `ch-fr-lidar` (own) | Schaffhausen's 0.5 m DOM of 2013 (its 0.15 m a mean error, not an RMSE); Bern's 0.25 m DOM of 2023 (map.bern.ch answers 403); Fribourg's MNS of 2016 (on request, no cell stated: its raw points' stated minimum, 0.5 points/m², 1.414 m) | `claimed` | Natural Earth's cantons; Bern's municipality in swissBOUNDARIES3D (the geo.admin API's `find`) |
 | `it-fi-lidar` (own) | Florence's 2023 MDS and MDT, 0.5 m | `index` | `listing`: the two zips' 485 500 m tile names: 121.25 km², one outline |
 
 **Not obtained** (point clouds, 14 Nov): Thüringen's point-cloud index (the download host still
