@@ -260,7 +260,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
 
 /// A viewpoint's Wikidata item counts for its fame only when it's a landscape, a lookout or the
 /// like (VIEW_ITEM: a mine or chapel tagged as a viewpoint doesn't). Its `WORDS` are kept in code
-/// (docs/inputs.md §9): words of Wikidata's English descriptions, part of this rule.
+/// (docs/inputs.md §9.1): words of Wikidata's English descriptions, part of this rule.
 pub fn view_item(description_en: &str) -> bool {
     const WORDS: [&str; 30] = [
         "viewpoint",

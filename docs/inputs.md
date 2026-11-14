@@ -2628,18 +2628,30 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
   in a staged folder's `held/` (staged, not yet meant for the NAS: moving it out of `held/`, reviewed,
   releases it; a held file found on the NAS is drift); a folder whose NAS folder doesn't exist. A
   `.toml` under `producers/` (but `pyproject.toml`) no folder of the table holds is `unmapped`, drift.
+  A shared folder's file is the NAS's own unless the repository staged it: a declaration git's
+  history deleted from a mapped folder (and not staged there now) that is still on the NAS is drift,
+  `removed from the repository`, so a removal reaches the NAS as an addition does. Drift says only
+  that the two differ, not which is newer: a declaration edited on the NAS and not in the repository
+  is undone by a placement (a field the build reads among them: without `terrarium.toml`'s
+  `every_zoom = true` every terrain job fails), so the dry run comes first.
   - `inputsnas.py drift` hashes the staged files here and the NAS's in one SSH pass (`find` and
     `sha256sum` on the NAS, about a second), read-only: one line when they match, else a line a file
     that differs, isn't placed or is only on the NAS; exit 0, 1 for drift, 2 when the NAS can't be
-    read. `tools/dev/health.sh` prints it, drift flagged.
+    read. `tools/dev/health.sh` prints it, drift flagged ("review, then place").
   - `inputsnas.py place [<NAS path>…]` (by default every folder with drift), from the main checkout
     at `origin/main` with `producers/` committed, and refused elsewhere: each folder staged afresh in
-    `inputs/.place/<time>/new/` (the repository's files by tar over SSH, a shared folder's own files
-    copied there on the NAS; a declaration waiting for its index left out), every file verified
-    against the repository, then swapped in, the old folder kept in `inputs/.place/<time>/kept/`
-    (under `inputs/`, which GC never sweeps; a name starting with `.`, no unit's); then `scenic inputs
-    check <unit>` for each unit, and what is left: accept the warnings expected, and delete the kept
-    folder once the new version is taken in. It deletes nothing. `--dry-run` says what it would place;
+    `inputs/.place/<time>/new/` (the repository's files by tar over SSH; a shared folder's other
+    entries copied there on the NAS, but Synology's and the Mac's (`@eaDir`, `#recycle`, `.DS_Store`),
+    links, and the declarations the repository removed; a declaration waiting for its index left
+    out; a path under another placed, `inputs/sources/how`, staged with it), every file verified, then
+    swapped in by two renames a moment apart (the old folder put back if the second fails), the old
+    folder kept in `inputs/.place/<time>/kept/`; then `scenic inputs check <unit>` for each unit, and
+    what is left: accept the warnings expected, and delete the kept folder once the new version is
+    taken in. It deletes nothing. `inputs/.place/` is no unit's folder (the gate lists only its
+    units', §7.1), and its name starting with `.` keeps it out of the backup (§4.9) as out of every
+    inputs folder's listing; GC never walks `inputs/`. Every path is checked before anything is
+    written. `--dry-run` prints each file it would add, replace (with its change, NAS to repository)
+    or leave out, and writes nothing (from any checkout, saying when a placement would be refused);
     `--root <dir>` works on a stand-in project folder (its tests: `tools/dev/test/test_inputsnas.py`).
 - **Each inputs folder's `how/`** on the NAS says how its input is made and points to its producers; it
   holds what isn't code: the briefs and models of agent-made inputs (translations: Haiku, the
@@ -2687,8 +2699,10 @@ are §9.1's.
 ### 9.1 Facts about the world in code
 
 Tables in the code that are facts about the world rather than rules of the code (task #1402), each
-judged; what stays has a line at the table saying why. The build page's country and lake outlines
-(`web/buildpage/countries.json`, `lakes.json`, from Natural Earth) are the app's own assets.
+judged; what stays has a line at the table saying why. The test: a table that has to grow when the
+coverage gains a country or a language is a fact about the world (an input, or derived from one); a
+table its rule fixes stays. The build page's country and lake outlines (`web/buildpage/countries.json`,
+`lakes.json`, from Natural Earth) are the app's own assets.
 
 **Kept in code:**
 
@@ -2699,7 +2713,7 @@ judged; what stays has a line at the table saying why. The build page's country 
 | `names::spoken::READ_AS` (`zh` read as `yue`) | `names::spoken::lookup_order` | how OSM's tags are read where Cantonese is spoken and Mandarin isn't: a lookup rule, not territory data (§6.2) |
 | `SAME_LANGUAGE` (`names::own`, `landmarks::labels`: `Hant`, `Hans`, `TW`, …) | the own English's and the labels' readers | how OSM's `name:` keys are read (the BCP 47 subtags that keep the language) |
 | `namestodo::CJK_LANGS` | the to-do lists' candidates | the languages written in CJK scripts: a fact of the scripts, part of the candidates' rule |
-| `codecs::stations::norm`'s `WORDS` ("station", "gare", "駅", …) | the stations' merge | words stripped to compare names: part of the merge's rule, not a list of places |
+| `namestodo::ENGLISH_WORDS` | the to-do lists' English test | English's own articles and the generic words English-language registers give: one language, the rule's |
 | `landmarks::interest::view_item`'s `WORDS` | a viewpoint's fame | words of Wikidata's English descriptions: part of the rule |
 
 Lists of OSM's tags and values (`labels::NOT_LAKE`, `areadetails::PARK_TAGS`, `ferries::ROAD_FERRY`,
@@ -2712,14 +2726,15 @@ one, not moved yet because the move reaches keys and needs its own proof that no
 - `buildstore::outlines::OWN_CODED` (CN, FR, NL, US: the countries whose ISO 3166-2 codes name their
   territories by the territories' own codes): derivable from the outlines (an outline tagged both
   `ISO3166-1=PR` and `ISO3166-2=US-PR`).
-- `namestodo::OTHER_WORDS`, `ENGLISH_WORDS` (the coverage's languages' generic words): an input of
-  the languages, keyed into the to-do lists alone.
+- The coverage's languages' words: `namestodo::OTHER_WORDS` (generic words and articles), `codecs::stations::norm`'s
+  `WORDS` ("gare", "estación", "駅", …), `heritagewd::STOP` (stop words in matching), `ferries::CABLE_WORDS`
+  ("bac à câble", …): each grows with a language of the coverage; one input of the languages' words,
+  by use, each keyed into its readers alone.
 - `INTERCITY_WORDS` (`codecs::stations`' and the extract tool's, `pipeline/src/bin/tools/extract.rs`, two copies that differ: the
   stations' has the Japanese and Taiwanese services): one input of the rail's services.
-- `pageviews::LANGS`, `heritagewd`'s `LANGS`, `OTHER`, `STOP`, `heritagedetails::LOCAL` (the
-  Wikipedias read, "the map's languages"): derivable from the languages input.
-- `ferries::URBAN_NETS`, `CABLE_WORDS` (city transit networks and operators, cable ferries' words):
-  an input of the ferries' classes.
+- `pageviews::LANGS`, `heritagewd`'s `LANGS`, `OTHER`, `heritagedetails::LOCAL` (the Wikipedias
+  read, "the map's languages", in their order): derivable from the languages input.
+- `ferries::URBAN_NETS` (city transit networks and operators): an input of the ferries' classes.
 - `lakefill::run::PROVINCES` (the Canadian regions' relations, which the regions input holds) and
   `lakefill::REACH` (Canada's box, the lake-fill source's territory): derivable from the regions and
   the declaration.

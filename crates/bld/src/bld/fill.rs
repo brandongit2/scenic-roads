@@ -24,7 +24,7 @@ pub const H_MIN_DM: u16 = 20;
 pub const H_MAX_DM: u16 = 7000;
 /// Floors taken (rule 1).
 pub const F_MAX: u8 = 200;
-/// The dataset whose heights are estimates, not measurements. Kept in code (docs/inputs.md §9): it
+/// The dataset whose heights are estimates, not measurements. Kept in code (docs/inputs.md §9.1): it
 /// splits rule 0 from rule 2, and the tables below were fitted on rule 0's set it defines.
 pub const ESTIMATES: &str = "Microsoft ML Buildings";
 /// Rule 4: GHSL where its cell is this tall (dm); a footprint under `GHSL_SMALL_M2` takes at most
@@ -55,7 +55,7 @@ pub mod src {
 
 /// Rule 1: metres a floor and the roof allowance, fitted by least absolute deviations on the
 /// measured buildings with both (B0: countries with 500 of them). Kept in code with `SIZE`
-/// (docs/inputs.md §9): the fill's fitted parameters, valid only with its rules and classes.
+/// (docs/inputs.md §9.1): the fill's fitted parameters, valid only with its rules and classes.
 const STOREY: [(&str, f64, f64); 12] = [
     ("CA", 3.47, 1.59),
     ("ES", 3.0, 0.0),

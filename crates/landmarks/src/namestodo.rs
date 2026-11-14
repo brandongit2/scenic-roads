@@ -98,7 +98,7 @@ struct Lists<'a> {
 }
 
 /// The languages written in CJK scripts (a name's script narrows its candidates). Kept in code
-/// (docs/inputs.md §9): a fact of the scripts, part of the candidates' rule.
+/// (docs/inputs.md §9.1): a fact of the scripts, part of the candidates' rule.
 const CJK_LANGS: [&str; 6] = ["ja", "zh", "yue", "nan", "hak", "ko"];
 
 fn is_cjk(c: char) -> bool {
@@ -131,7 +131,8 @@ const OTHER_WORDS: &[&str] = &[
 
 /// Words that mark a Latin-script name as English where English isn't spoken: its articles and
 /// joining words, and the generic words of the names English-language registers and maps give
-/// ("Temples, Gardens and Archaeological Sites", "a Historic International Settlement").
+/// ("Temples, Gardens and Archaeological Sites", "a Historic International Settlement"). Kept in
+/// code (docs/inputs.md §9.1): one language's, the rule's; `OTHER_WORDS` is planned to move.
 const ENGLISH_WORDS: &[&str] = &[
     "the",
     "of",
