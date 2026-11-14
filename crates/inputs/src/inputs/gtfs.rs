@@ -90,6 +90,17 @@ fn stem_of(path: &str) -> Option<(&str, &str)> {
 /// A zip's files (by their names without folders), read whole: stored or deflated entries, no
 /// Zip64 (a hand-compiled file is small).
 pub fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+    Ok(members(bytes, MAX_TABLE, u64::MAX)?
+        .into_iter()
+        .map(|(n, d)| (n.rsplit('/').next().unwrap_or(&n).to_string(), d))
+        .collect())
+}
+
+/// A zip's files by their names in it (folders and all; none for a folder itself), in the
+/// directory's order, read whole, each at most `max` bytes and all of them together at most `total`
+/// (each refused by its directory's size before it's inflated, and inflated no further than that
+/// size): stored or deflated entries, no Zip64.
+pub fn members(bytes: &[u8], max: u64, total: u64) -> Result<Vec<(String, Vec<u8>)>> {
     let u16_at =
         |i: usize| -> Result<u16> { Ok(u16::from_le_bytes(bytes.get(i..i + 2).context("cut short")?.try_into()?)) };
     let u32_at =
@@ -103,7 +114,8 @@ pub fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
     let n = u16_at(end + 10)? as usize;
     let mut at = u32_at(end + 16)? as usize;
     anyhow::ensure!(at != 0xffff_ffff, "a Zip64 file (not read here)");
-    let mut out = BTreeMap::new();
+    let mut out = Vec::new();
+    let mut sum = 0u64;
     for _ in 0..n {
         anyhow::ensure!(u32_at(at)? == 0x0201_4b50, "a broken zip directory");
         let method = u16_at(at + 10)?;
@@ -118,12 +130,14 @@ pub fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
         anyhow::ensure!(u32_at(local)? == 0x0403_4b50, "{name}: a broken zip entry");
         let data_at = local + 30 + u16_at(local + 26)? as usize + u16_at(local + 28)? as usize;
         let raw = bytes.get(data_at..data_at + csize).with_context(|| format!("{name}: cut short"))?;
-        anyhow::ensure!(usize_ <= MAX_TABLE, "{name}: larger than {} MB", MAX_TABLE >> 20);
+        anyhow::ensure!(usize_ <= max, "{name}: larger than {}", size_text(max));
+        sum += usize_;
+        anyhow::ensure!(sum <= total, "its files together larger than {}", size_text(total));
         let data = match method {
             0 => raw.to_vec(),
             8 => {
                 let mut v = Vec::with_capacity(usize_ as usize);
-                Read::take(flate2::read::DeflateDecoder::new(raw), MAX_TABLE + 1)
+                Read::take(flate2::read::DeflateDecoder::new(raw), usize_ + 1)
                     .read_to_end(&mut v)
                     .with_context(|| format!("{name}: can't be inflated"))?;
                 v
@@ -135,10 +149,18 @@ pub fn unzip(bytes: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
             "{name}: {} bytes, not the {usize_} its directory says",
             data.len()
         );
-        let base = name.rsplit('/').next().unwrap_or(&name).to_string();
-        out.insert(base, data);
+        out.push((name, data));
     }
     Ok(out)
+}
+
+/// A bound in words: "256 MB", "64 KiB", "100 bytes".
+fn size_text(b: u64) -> String {
+    match b {
+        b if b >= 1 << 20 && b % (1 << 20) == 0 => format!("{} MB", b >> 20),
+        b if b >= 1 << 10 && b % (1 << 10) == 0 => format!("{} KiB", b >> 10),
+        b => format!("{b} bytes"),
+    }
 }
 
 /// A CSV table (RFC 4180, a byte-order mark dropped): its header (each name trimmed) and rows.
@@ -653,4 +675,4 @@ impl View {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

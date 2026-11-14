@@ -138,14 +138,17 @@ pub fn listed(a: &Accepted) -> Result<Vec<Listed>> {
 }
 
 /// A folder of the regions' tree (the map's Regions list, §6.1.2): its path (`europe/portugal`),
-/// its name (its `_group.toml`'s, else the folder's own), its order, and its regions' ids directly
-/// in it. Only folders holding a region at some depth are in the tree (an empty one isn't shown).
+/// its name (its `_group.toml`'s, else the folder's own), its order, its symbol (its
+/// `_group.toml`'s), and its regions' ids directly in it. Only folders holding a region at some
+/// depth are in the tree (an empty one isn't shown).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Folder {
     pub path: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<super::symbols::Symbol>,
     pub regions: Vec<String>,
     pub folders: Vec<Folder>,
 }
@@ -158,7 +161,10 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
     let mut regions: Vec<(String, String)> = Vec::new();
     for (p, f) in &index.files {
         let dir = p.rsplit_once('/').map_or("", |(d, _)| d).to_string();
-        if let Some(g) = f.facts.get("group").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+        if let Some(mut g) =
+            f.facts.get("group").and_then(|v| serde_json::from_value::<super::file::Group>(v.clone()).ok())
+        {
+            g.symbol = f.facts.get("symbol").and_then(|v| serde_json::from_value(v.clone()).ok());
             groups.insert(dir, g);
         } else if let Some(id) = f.facts.get("id").and_then(|v| v.as_str()) {
             regions.push((dir, id.to_string()));
@@ -190,6 +196,7 @@ pub fn tree(index: &crate::inputs::Index) -> Folder {
             path: path.to_string(),
             name: g.map_or(own, |g| g.name.clone()),
             order: g.and_then(|g| g.order),
+            symbol: g.and_then(|g| g.symbol.clone()),
             regions: ids,
             folders,
         }
@@ -527,6 +534,7 @@ pub fn check_folder(
         jobrt::sys::peak_rss() / 1_000_000
     );
     findings.extend(out.problems.iter().map(super::problem_finding));
+    findings.extend(super::symbol_findings(&v, &folder)?);
     let mut regions = serde_json::Map::new();
     let (mut total, mut enabled_km2) = (0.0, 0.0);
     if let Some(d) = geometry {

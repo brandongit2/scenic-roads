@@ -1,0 +1,15 @@
+# The licences a region's symbol may be under (docs/inputs.md §6.1.3, "Symbols"): each lets the
+# app ship the image, offline too, with its credit. One a line, matched whole, word by word:
+# {version} is a version such as 4.0, {port} a Creative Commons port's two-letter code ("ar").
+# Read by the regions' check (crate::inputs::regions::symbols) and by producers/flags/fetch.py.
+Public domain
+CC0
+# Creative Commons' BY and BY-SA, any version or port: credited by author, licence and page.
+CC BY {version}
+CC BY {version} {port}
+CC BY-SA {version}
+CC BY-SA {version} {port}
+# The holder lets anyone use it for any purpose.
+Copyrighted free use
+# The Open Government Licence - Oman: any use, with the source acknowledged.
+OGL-om 1.0

@@ -204,6 +204,9 @@ pub struct Region {
     pub lines: BTreeMap<String, Line>,
     /// Its own `[pins]`, overriding `_pins.toml`'s.
     pub pins: BTreeMap<String, String>,
+    /// Its flag, coat of arms or seal (`[symbol]`, crate::inputs::regions::symbols): what the map's
+    /// Regions list shows beside it. No resolution reads it.
+    pub symbol: Option<super::symbols::Symbol>,
 }
 
 impl Region {
@@ -562,6 +565,7 @@ struct RawRegion {
     lines: BTreeMap<String, RawLine>,
     #[serde(default)]
     pins: BTreeMap<String, toml::Value>,
+    symbol: Option<super::symbols::Symbol>,
 }
 
 #[derive(Deserialize)]
@@ -594,13 +598,20 @@ pub struct Group {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<i64>,
+    /// Its symbol (`[symbol]`, as a region's): the index keeps it as the file's `symbol` fact, not
+    /// in `group`'s.
+    #[serde(default, skip_serializing)]
+    pub symbol: Option<super::symbols::Symbol>,
 }
 
-/// `_group.toml`, parsed: a name that isn't empty, an integer order if any.
+/// `_group.toml`, parsed: a name that isn't empty, an integer order if any, a sound symbol if any.
 pub fn parse_group(text: &str) -> Result<Group, Fault> {
     let g: Group = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
     if g.name.trim().is_empty() {
         return Err(fault("group", "_group.toml: name is empty"));
+    }
+    if let Some(m) = g.symbol.as_ref().and_then(|s| super::symbols::faults(s).into_iter().next()) {
+        return Err(fault("symbol", m));
     }
     Ok(g)
 }
@@ -673,6 +684,9 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         }
     }
     let pins = pins_of(raw.pins).map_err(|f| faults.push(f)).unwrap_or_default();
+    if let Some(s) = &raw.symbol {
+        faults.extend(super::symbols::faults(s).into_iter().map(|m| fault("symbol", m)));
+    }
     if !faults.is_empty() {
         return Err(faults);
     }
@@ -695,6 +709,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         disabled: raw.disabled,
         lines,
         pins,
+        symbol: raw.symbol,
     };
     // `rest` only in water; `land:`/`group:` naming the region itself.
     for p in r.outline.iter().chain(&r.minus).chain(&r.intersect) {
@@ -796,5 +811,26 @@ mod tests {
         assert_eq!(parse_distance("500m"), Ok(500.0));
         assert!(parse_distance("-1 km").is_err() && parse_distance("12").is_err() && parse_distance("1 mi").is_err());
         assert_eq!(parse_pins("osm = \"2026-09-29\"\ngadm = \"4.1\"\n").unwrap()["gadm"], "4.1");
+    }
+
+    #[test]
+    fn a_symbol_is_part_of_its_regions_file_and_its_groups() {
+        let head = "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n";
+        let table = "[symbol]\nimage = \"Q1.svg\"\nkind = \"flag\"\nsource = \"https://example.org/File:Q1.svg\"\nlicence = \"CC0\"\n";
+        let r = parse("a.toml", &format!("{head}{table}")).unwrap();
+        assert_eq!(r.symbol.as_ref().map(|s| (s.image.as_str(), s.author.as_str())), Some(("Q1.svg", "")));
+        assert_eq!(parse("a.toml", head).unwrap().symbol, None);
+        let check = |text: String| parse("a.toml", &text).unwrap_err().iter().map(|f| f.check).collect::<Vec<_>>();
+        assert_eq!(check(format!("{head}{}", table.replace("CC0", "CC BY-NC 4.0"))), vec!["symbol"]);
+        assert_eq!(check(format!("{head}{table}colour = \"red\"\n")), vec!["toml"]);
+        assert_eq!(check(format!("{head}[symbol]\nimage = \"Q1.svg\"\n")), vec!["toml"]);
+        let g = parse_group(&format!("name = \"Canada\"\n{table}")).unwrap();
+        assert_eq!(g.symbol.as_ref().map(|s| s.kind.as_str()), Some("flag"));
+        // (Its group fact is as before: the symbol is the file's own fact.)
+        assert_eq!(serde_json::to_value(&g).unwrap(), serde_json::json!({"name": "Canada"}));
+        assert_eq!(
+            parse_group(&format!("name = \"Canada\"\n{}", table.replace("flag", "banner"))).unwrap_err().check,
+            "symbol"
+        );
     }
 }

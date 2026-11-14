@@ -228,6 +228,111 @@ fn a_shape_drawn_across_the_line_is_the_shape_split_at_it() {
     assert!(!cov.contains([1_798_000_000, 12_000_000]) && !cov.contains([-1_798_000_000, 12_000_000]));
 }
 
+/// The gate's decision on `files` (the first check: nothing accepted).
+fn decide_on(checks: &Regions, files: &[(&str, &[u8])]) -> crate::inputs::gate::Decision {
+    let update: BTreeMap<String, Vec<u8>> = files.iter().map(|(p, b)| (p.to_string(), b.to_vec())).collect();
+    let listing = Listing {
+        files: update.keys().map(|p| (p.clone(), (update[p].len() as u64, 1))).collect(),
+        ..Default::default()
+    };
+    let rn = |p: &str| Ok(update[p].clone());
+    let ro = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
+    decide(&Given {
+        checks,
+        prev: None,
+        prev_listed: &BTreeMap::new(),
+        listing: &listing,
+        unsettled: &Default::default(),
+        accepted: &Default::default(),
+        full: false,
+        read_new: &rn,
+        read_old: &ro,
+    })
+    .unwrap()
+}
+
+#[test]
+fn symbols_are_taken_in_with_their_regions_and_change_no_geometry() {
+    let f = fx();
+    let checks = || {
+        Regions::new(Some(Prepared {
+            pass: Some(PASS.into()),
+            outlines: Some(Outlines::open(&f._d.path().join("outlines.sect")).unwrap()),
+            ..Default::default()
+        }))
+    };
+    let table = |image: &str| {
+        format!("[symbol]\nimage = \"{image}\"\nkind = \"flag\"\nsource = \"https://example.org/{image}\"\nlicence = \"CC0\"\n")
+    };
+    let a = region("a", "outline = [\"osm:1\"]\n");
+    let b = region("b", "outline = [\"osm:2\"]\n");
+    let a_sym = format!("{a}{}", table("Q1.svg"));
+    let b_sym = format!("{b}{}", table("Q2.svg"));
+    let group = format!("name = \"Europe\"\n{}", table("Q3.svg"));
+    let zip = crate::inputs::gtfs::tests::zip_bytes(&[
+        ("Q2.svg", &b"<svg><rect/></svg>"[..]),
+        ("Q3.svg", &b"<svg><g/></svg>"[..]),
+    ]);
+    let pins = PINS.1.as_bytes();
+    // Without symbols, and with them: the same geometry, resolved from the same.
+    let plain = decide_on(&checks(), &[("_pins.toml", pins), ("eu/a.toml", a.as_bytes()), ("b.toml", b.as_bytes())]);
+    let d = decide_on(
+        &checks(),
+        &[
+            ("_pins.toml", pins),
+            ("eu/a.toml", a_sym.as_bytes()),
+            ("eu/Q1.svg", &b"<svg/>"[..]),
+            ("eu/_group.toml", group.as_bytes()),
+            ("b.toml", b_sym.as_bytes()),
+            ("symbols.zip", zip.as_slice()),
+        ],
+    );
+    assert!(d.report.is_none(), "{:?}", d.report);
+    for p in ["eu/a.toml", "b.toml"] {
+        assert_eq!(d.index.files[p].facts["geometry"], plain.index.files[p].facts["geometry"], "{p}");
+        assert_eq!(d.index.files[p].keyed, plain.index.files[p].keyed, "{p}");
+    }
+    assert_eq!(d.index.files["eu/a.toml"].facts["symbol"]["image"], "Q1.svg");
+    assert_eq!(d.index.files["eu/Q1.svg"].keyed, "-");
+    assert_eq!(d.index.files["symbols.zip"].facts["images"]["Q2.svg"], store::naming::hash16(b"<svg><rect/></svg>"));
+    // The tree carries the folder's symbol; the server finds every image by name and by content.
+    let t = read::tree(&d.index);
+    assert_eq!(t.folders[0].symbol.as_ref().map(|s| s.image.as_str()), Some("Q3.svg"));
+    let im = symbols::Images::of(&d.index);
+    assert_eq!(im.by_name.keys().collect::<Vec<_>>(), ["Q1.svg", "Q2.svg", "Q3.svg"]);
+    let q1 = &im.by_name["Q1.svg"];
+    assert_eq!(*q1, format!("{}.svg", store::naming::hash16(b"<svg/>")));
+    assert_eq!(im.by_content[q1].0, d.index.files["eu/Q1.svg"].file);
+    assert_eq!(
+        im.by_content[&im.by_name["Q3.svg"]],
+        (d.index.files["symbols.zip"].file.clone(), Some("Q3.svg".into()))
+    );
+    // An image named that the folder hasn't, one in two places, an unsafe one: held, each saying so.
+    // (A region naming a held image would hold every change together, as one naming a held shape
+    // does: the next version lacks its image.)
+    let c = format!("{}{}", region("c", "outline = [\"osm:4\"]\n"), table("Q9.png"));
+    let d = decide_on(
+        &checks(),
+        &[
+            ("_pins.toml", pins),
+            ("eu/a.toml", a.as_bytes()),
+            ("eu/Q1.svg", &b"<svg/>"[..]),
+            ("Q1.svg", &b"<svg/>"[..]),
+            ("c.toml", c.as_bytes()),
+            ("x/Q5.svg", &b"<svg onload='alert(1)'/>"[..]),
+        ],
+    );
+    let r = d.report.unwrap();
+    assert_eq!(r.held, ["Q1.svg", "c.toml", "eu/Q1.svg", "x/Q5.svg"]);
+    let says = |p: &str| {
+        r.findings.iter().filter(|f| f.files.contains(&p.to_string())).map(|f| f.message.clone()).collect::<Vec<_>>()
+    };
+    assert!(says("c.toml")[0].contains("Q9.png is in no file"), "{:?}", says("c.toml"));
+    assert!(says("Q1.svg")[0].contains("in 2 places"), "{:?}", says("Q1.svg"));
+    assert!(says("x/Q5.svg")[0].contains("event attribute"), "{:?}", says("x/Q5.svg"));
+    assert!(r.findings.iter().all(|f| f.check() == "rg-symbol"));
+}
+
 #[test]
 fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
     let f = fx();

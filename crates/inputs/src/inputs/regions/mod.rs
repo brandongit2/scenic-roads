@@ -1,7 +1,8 @@
 //! The regions (docs/inputs.md §6.1): a declare input, `inputs/regions/`, read recursively. One
 //! region per file, `<id>.toml` anywhere under it (crate::inputs::regions::file), shapes as GeoJSON
 //! (`<name>.geojson`, crate::inputs::regions::shapes), `_pins.toml` naming the OSM pass the folder is
-//! written against; anything else ignored.
+//! written against, the symbols' images and bundles (crate::inputs::regions::symbols); anything
+//! else ignored.
 //!
 //! The check (`Regions`, on the gate) resolves every region against the build's current pass (its
 //! outline set, and the regions' extract for any other relation or way: crate::inputs::regions::
@@ -26,6 +27,7 @@ pub mod read;
 pub mod resolve;
 pub mod shapes;
 pub mod stored;
+pub mod symbols;
 pub mod tiles;
 
 use super::{Checks, Derived, FileCheck, Finding, Level, Version};
@@ -199,6 +201,52 @@ fn finding(f: &file::Fault, path: &str) -> Finding {
     Finding::new(&check, Level::Error, &[path], &[&f.message], vec![path.to_string()], format!("{path}: {}", f.message))
 }
 
+/// The symbols over a version (§6.1.8 `rg-symbol`): an image's name in two places (loose files or
+/// bundles' members), a region's or folder's symbol naming an image the version hasn't. (A bundle
+/// that can't be read is its own file's finding.)
+pub fn symbol_findings(v: &Version, folder: &resolve::Folder) -> Result<Vec<Finding>> {
+    let mut places: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for p in &v.paths {
+        let name = resolve::file_name(p);
+        if symbols::is_bundle(name) {
+            if let Ok(m) = symbols::bundle(&(v.read)(p)?) {
+                for n in m.into_keys() {
+                    places.entry(n).or_default().push(p.clone());
+                }
+            }
+        } else if symbols::Kind::of(name).is_some() {
+            places.entry(name.to_string()).or_default().push(p.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for (n, ps) in places.iter().filter(|(_, ps)| ps.len() > 1) {
+        let message = format!(
+            "image {n} is in {} places: {} (an image's name is unique across every folder)",
+            ps.len(),
+            ps.join(", ")
+        );
+        let about: Vec<&str> = ps.iter().map(String::as_str).collect();
+        out.push(Finding::new("rg-symbol", Level::Error, &about, &[n], ps.clone(), message));
+    }
+    let mut declared: Vec<(String, symbols::Symbol)> =
+        folder.regions.values().filter_map(|(p, r)| Some((p.clone(), r.symbol.clone()?))).collect();
+    for p in v.paths.iter().filter(|p| resolve::special(p) == Some(resolve::Special::Group)) {
+        let g = std::str::from_utf8(&(v.read)(p)?).ok().and_then(|t| file::parse_group(t).ok());
+        if let Some(s) = g.and_then(|g| g.symbol) {
+            declared.push((p.clone(), s));
+        }
+    }
+    declared.sort_by(|a, b| a.0.cmp(&b.0));
+    for (p, s) in declared.iter().filter(|(_, s)| !places.contains_key(&s.image)) {
+        let message = format!(
+            "{p}: its symbol's image {} is in no file of the folder (a .svg, .png or .jpg, or a .zip's member)",
+            s.image
+        );
+        out.push(Finding::new("rg-symbol", Level::Error, &[p], &[&s.image], vec![p.clone()], message));
+    }
+    Ok(out)
+}
+
 /// A resolution's problem as a finding.
 pub fn problem_finding(p: &resolve::Problem) -> Finding {
     let about: Vec<&str> = p.about.iter().map(String::as_str).collect();
@@ -245,6 +293,24 @@ impl Checks for Regions {
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
         let name = resolve::file_name(path);
+        // (A symbol's image or bundle: no build reads it; the map's server serves it.)
+        if symbols::Kind::of(name).is_some() || symbols::is_bundle(name) {
+            c.keyed = Some("-".into());
+            let checked = if symbols::is_bundle(name) {
+                symbols::bundle(bytes).map(|m| {
+                    let hashes: serde_json::Map<String, serde_json::Value> =
+                        m.iter().map(|(n, b)| (n.clone(), store::naming::hash16(b).into())).collect();
+                    c.facts.insert("images".into(), hashes.into());
+                })
+            } else {
+                symbols::image(name, bytes).map_err(|e| vec![e])
+            };
+            if let Err(es) = checked {
+                let f = |m: &String| finding(&file::Fault { check: "symbol", message: m.clone() }, path);
+                c.findings.extend(es.iter().map(f));
+            }
+            return c;
+        }
         let Ok(text) = std::str::from_utf8(bytes) else {
             if name.ends_with(".toml") {
                 c.findings.push(finding(&file::Fault { check: "toml", message: "not UTF-8 text".into() }, path));
@@ -269,6 +335,9 @@ impl Checks for Regions {
             match file::parse_group(text) {
                 Ok(g) => {
                     c.facts.insert("group".into(), serde_json::to_value(&g).unwrap_or_default());
+                    if let Some(s) = &g.symbol {
+                        c.facts.insert("symbol".into(), serde_json::to_value(s).unwrap_or_default());
+                    }
                     // (A group's name reruns nothing: no build reads it.)
                     c.keyed = Some("-".into());
                 }
@@ -298,6 +367,9 @@ impl Checks for Regions {
                     if r.disabled {
                         c.facts.insert("disabled".into(), true.into());
                     }
+                    if let Some(s) = &r.symbol {
+                        c.facts.insert("symbol".into(), serde_json::to_value(s).unwrap_or_default());
+                    }
                 }
                 Err(fs) => c.findings.extend(fs.iter().map(|f| finding(f, path))),
             }
@@ -308,9 +380,11 @@ impl Checks for Regions {
     }
 
     fn whole(&self, v: &Version) -> Result<Vec<Finding>> {
-        let (_, out) = self.resolve(v)?;
+        let (folder, out) = self.resolve(v)?;
         *self.needs.lock().unwrap() = out.needs.iter().map(|i| i.to_string()).collect();
-        Ok(out.problems.iter().map(problem_finding).collect())
+        let mut found: Vec<Finding> = out.problems.iter().map(problem_finding).collect();
+        found.extend(symbol_findings(v, &folder)?);
+        Ok(found)
     }
 
     fn needs(&self) -> Vec<String> {

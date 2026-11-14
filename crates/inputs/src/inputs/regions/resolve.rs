@@ -56,11 +56,15 @@ pub fn file_name(path: &str) -> &str {
     path.rsplit_once('/').map_or(path, |(_, n)| n)
 }
 
-/// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`) or a
-/// special file (`is_special`). Anything else is ignored: neither checked nor read (§6.1.2).
+/// Whether the regions take a file: a region file (`<id>.toml`), a shape (`<name>.geojson`), a
+/// special file (`is_special`), or a symbol's image or bundle (`.svg`, `.png`, `.jpg`, `.zip`:
+/// crate::inputs::regions::symbols). Anything else is ignored: neither checked nor read (§6.1.2).
 pub fn takes(path: &str) -> bool {
     let n = file_name(path);
-    n.ends_with(".toml") || n.ends_with(".geojson")
+    n.ends_with(".toml")
+        || n.ends_with(".geojson")
+        || super::symbols::Kind::of(n).is_some()
+        || super::symbols::is_bundle(n)
 }
 
 /// Whether an inputs folder path is a special file, never a region: a `.toml` whose name starts with `_`
@@ -120,7 +124,9 @@ impl Folder {
         let mut f = Folder::default();
         let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let paths: Vec<String> = paths.into_iter().filter(|p| takes(p)).collect();
+        // (A symbol's image or bundle is no resolution's: crate::inputs::regions's `whole` checks them.)
+        let paths: Vec<String> =
+            paths.into_iter().filter(|p| p.ends_with(".toml") || p.ends_with(".geojson")).collect();
         for p in &paths {
             let p = p.clone();
             let kind = special(&p);

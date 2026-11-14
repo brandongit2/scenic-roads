@@ -308,6 +308,7 @@ mod tests {
             path: path.into(),
             name: name.into(),
             order: None,
+            symbol: None,
             regions: regions.iter().map(|s| s.to_string()).collect(),
             folders,
         }

@@ -4,10 +4,15 @@ use super::*;
 
 /// A zip of `files` (stored, as a tool may write them; one entry deflated, as most do).
 fn zip(files: &[(&str, &str)]) -> Vec<u8> {
+    zip_bytes(&files.iter().map(|(n, t)| (*n, t.as_bytes())).collect::<Vec<_>>())
+}
+
+/// A zip of `files`, the first deflated, the rest stored (the regions' bundles' tests too).
+pub(crate) fn zip_bytes(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut dir = Vec::new();
     for (i, (name, text)) in files.iter().enumerate() {
-        let raw = text.as_bytes();
+        let raw: &[u8] = text;
         let (method, data): (u16, Vec<u8>) = if i == 0 {
             let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
             std::io::Write::write_all(&mut e, raw).unwrap();
