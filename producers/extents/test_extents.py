@@ -138,21 +138,37 @@ class Score(unittest.TestCase):
     with open(os.path.join(os.path.dirname(__file__), "terrain", "score.toml"), "rb") as f:
         DECL = tomllib.load(f)
 
-    def test_an_unknown_metric_leaves_both_sums(self):
+    def test_an_unstated_metric_counts_at_the_middle(self):
+        """The owner (13 Nov): a weighted metric a piece doesn't state counts at `unstated` (0.5
+        where score.toml sets none) in both of the rest's sums."""
         d = self.DECL
-        s, vals = score.score(d, {"spacing_m": 1, "year": 2013})
+        self.assertNotIn("unstated", d)
+        self.assertEqual(score.unstated(d), 0.5)
+        s, vals = score.score(d, {"spacing_m": 1, "year": 2020})
         self.assertIsNone(vals["vertical_rmse_m"])
-        lead = vals["spacing_m"]
-        # The rest is the year's value alone (its weight not shrunk by the unknown ones).
-        self.assertAlmostEqual(s, (1 - d["share"]) * lead + d["share"] * 0.5)
-        # Nothing but the spacing stated: the rest is the spacing's own value.
-        self.assertAlmostEqual(score.score(d, {"spacing_m": 1})[0], lead)
+        lead, year = vals["spacing_m"], vals["year"]
+        wy, wa = d["metric"]["year"]["weight"], d["metric"]["vertical_rmse_m"]["weight"]
+        self.assertAlmostEqual(s, (1 - d["share"]) * lead + d["share"] * (wy * year + wa * 0.5) / (wy + wa))
+        # Nothing but the spacing stated: the rest is the middle, whatever the spacing.
+        self.assertAlmostEqual(score.score(d, {"spacing_m": 1})[0], (1 - d["share"]) * lead + d["share"] * 0.5)
+        # The file's own value where it sets one.
+        self.assertAlmostEqual(score.score({**d, "unstated": 0.0}, {"spacing_m": 1})[0], (1 - d["share"]) * lead)
         # The kind (weight 0, a layer only) stated alone is as nothing stated, either way.
         self.assertEqual(d["metric"]["surface"]["weight"], 0)
         for kind in ("ground", "surface"):
             s, vals = score.score(d, {"spacing_m": 1, "surface": kind})
-            self.assertAlmostEqual(s, lead)
+            self.assertAlmostEqual(s, score.score(d, {"spacing_m": 1})[0])
             self.assertIsNotNone(vals["surface"])
+        # An unstated year against stated ones of one spacing: below a recent year, above an old
+        # one, level with the middle's (2013).
+        none = score.score(d, {"spacing_m": 0.5})[0]
+        self.assertGreater(score.score(d, {"spacing_m": 0.5, "year": 2021})[0], none)
+        self.assertLess(score.score(d, {"spacing_m": 0.5, "year": 2008})[0], none)
+        self.assertAlmostEqual(score.score(d, {"spacing_m": 0.5, "year": 2013})[0], none)
+        # No weighted metric at all: the rest is the middle.
+        flat = {**d, "metric": {k: m if k == d["primary"] else {**m, "weight": 0} for k, m in d["metric"].items()}}
+        self.assertAlmostEqual(score.score(flat, {"spacing_m": 1, "year": 2024})[0],
+                               (1 - d["share"]) * lead + d["share"] * 0.5)
         self.assertEqual(score.score(d, {"spacing_m": 1, "surface": "ground", "year": 2013})[0],
                          score.score(d, {"spacing_m": 1, "surface": "surface", "year": 2013})[0])
         # No spacing, no score.
@@ -193,9 +209,15 @@ class Score(unittest.TestCase):
         a = {"spacing_m": 1.0, "surface": "surface", "vertical_rmse_m": 10, "year": 2000}
         b = {"spacing_m": 1.0 * d["within"] * 1.0001, "surface": "ground", "vertical_rmse_m": 0.05, "year": 2026}
         self.assertGreater(score.score(d, a)[0], score.score(d, b)[0])
-        # Within the factor the rest decides: a 1.2 m grid of 2010 below a 1.25 m one of 2024.
+        # Within the factor the rest may decide: a 1.2 m grid of 2010 at 1 m RMSE below a 1.25 m
+        # one of 2024 at 0.1 m. With the accuracy unstated (at the middle) a year's say is a third
+        # of the rest's: it outweighs a spacing 1.5 % finer (1.2 m against 1.22 m), not 4 %.
+        self.assertLess(score.score(d, {"spacing_m": 1.2, "year": 2010, "vertical_rmse_m": 1})[0],
+                        score.score(d, {"spacing_m": 1.25, "year": 2024, "vertical_rmse_m": 0.1})[0])
         self.assertLess(score.score(d, {"spacing_m": 1.2, "year": 2010})[0],
-                        score.score(d, {"spacing_m": 1.25, "year": 2024})[0])
+                        score.score(d, {"spacing_m": 1.22, "year": 2024})[0])
+        self.assertGreater(score.score(d, {"spacing_m": 1.2, "year": 2010})[0],
+                           score.score(d, {"spacing_m": 1.25, "year": 2024})[0])
 
     def test_an_open_piece_wins_a_tie(self):
         """Berlin (13 Nov): the BKG's paid 1 m DGM of 2022 scores above Brandenburg's open 1 m of
@@ -224,11 +246,13 @@ class Score(unittest.TestCase):
         self.assertEqual(score.ranked(d, [index, claimed]), [0, 1])
         self.assertEqual(score.ranked(d, [{**piece, "extent": "service"}, {**piece, "extent": "files"}]), [1, 0])
         self.assertEqual(score.ranked(d, [piece, claimed]), [1, 0])
-        # A better score wins whatever its class: France's LiDAR HD of 2021, stating its year, scores
-        # under the claimed MNS Correl, stating none (its rest is its spacing's value).
+        # A better score wins whatever its class: at Tarn (13 Nov), France's LiDAR HD of 2021,
+        # stating its year, over the claimed MNS Correl, stating none (its year at the middle);
+        # the same tiles of 2008 below it.
         lidar = {**index, "year": 2021}
-        self.assertLess(score.score(d, lidar)[0], score.score(d, claimed)[0])
-        self.assertEqual(score.best(d, [lidar, claimed]), 1)
+        self.assertGreater(score.score(d, lidar)[0], score.score(d, claimed)[0])
+        self.assertEqual(score.best(d, [claimed, lidar]), 1)
+        self.assertEqual(score.best(d, [{**lidar, "year": 2008}, claimed]), 1)
 
     def test_the_servers_expected_scores_are_this_files(self):
         """The map server's scoring is tested against the scores this file makes, checked in beside
@@ -243,6 +267,11 @@ class Score(unittest.TestCase):
         score.check(self.DECL)
         with self.assertRaises(SystemExit):
             score.check({**self.DECL, "share": 0.03})
+        # `unstated` is a value of the rest's range: out of it, the bound wouldn't hold.
+        score.check({**self.DECL, "unstated": 1})
+        for bad in (-0.1, 1.5):
+            with self.assertRaises(SystemExit):
+                score.check({**self.DECL, "unstated": bad})
 
 
 class Geometry(unittest.TestCase):

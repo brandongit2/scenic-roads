@@ -3,11 +3,15 @@
 # near-ties.
 #
 #   score = (1 - share) × value(spacing) + share × rest
-#   rest  = Σ weight × value / Σ weight over the other metrics the piece states
-#           (a metric it doesn't state leaves both sums; none stated, or their weights 0:
-#           rest = value(spacing))
+#   rest  = Σ weight × value / Σ weight over the other metrics, a metric the piece doesn't
+#           state counting at `unstated` (none of them weighted: rest = unstated)
 #
 # A metric of weight 0 is a layer of its own and a line on a click, and no part of the score.
+# `unstated`, from 0 to 1, is 0.5 where the file doesn't set it (the owner, 13 Nov: the middle):
+# a source stating no survey year doesn't outrank one stating a recent year (0.5 is a year of
+# 2013), and an older stated year loses to it. Set it here only once the map server reading
+# it is live (task #1389's release: an older server refuses a file holding it):
+# unstated = 0.5
 #
 # Each metric's value is 0 at `worst` and 1 at `best`, clamped; `log` scales by the logarithm.
 # The guarantee: a piece finer than another by more than a factor of `within` scores higher,

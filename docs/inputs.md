@@ -1979,21 +1979,26 @@ the others only break near-ties (the owner, 13 Nov: for the terrain, a finer gri
 whatever its kind or age):
 
     score = (1 − share) × value(primary) + share × rest
-    rest  = Σ weight × value / Σ weight, over the other metrics the piece states
+    rest  = Σ weight × value / Σ weight, over the other metrics, one the piece doesn't state
+            at `unstated`
 
-A metric a piece doesn't state is unknown: it leaves both of the rest's sums, so its weight goes
-to the piece's other metrics in proportion; it's never a zero. A piece stating none of the others
-has its primary's value for the rest (they move it neither way); a piece not stating the primary
-has no score. Availability is not a term of the score: it ranks tied pieces (below), and the
-layers' switch filters by it (free data, the default view: `open` and `login`,
-`inputs::extents::FREE`; or all). A metric of weight 0 has its layer and its line on a click and
-takes no part in the score (a piece stating no other: the rest is its primary's value).
+A metric a piece doesn't state counts at `unstated`, from 0 to 1, in both of the rest's sums:
+0.5, the middle of its scale, where `score.toml` sets none (`inputs::extents::UNSTATED`; the
+owner, 13 Nov). So a source stating no survey year doesn't outrank one of the same grid stating a
+recent year, and one stating an older year than the middle stands for (2013, with the accuracy
+unstated on both) loses to it. A piece stating none of the others has the middle for its rest, as
+has every piece where no metric but the primary has a weight; a piece not stating the primary has
+no score. Availability is not a term of the score: it ranks tied pieces (below), and the layers'
+switch filters by it (free data, the default view: `open` and `login`, `inputs::extents::FREE`;
+or all). A metric of weight 0 has its layer and its line on a click and takes no part in the
+score, stated or not.
 
 **The guarantee:** a piece whose primary is better than another's by more than the factor
 `within` scores higher, whatever either states of the rest (both between the scale's `best` and
 `worst`; outside it the values clamp). It holds when (1 − share) × k > share, k = ln(within) ÷
-ln(worst ÷ best), the primary's least step that counts: `score.py` refuses a `score.toml` where it
-doesn't, and `test_extents.py` tries it on 20,000 random pairs of pieces and at its edge. The
+ln(worst ÷ best), the primary's least step that counts, against the rest's whole range, 0 to 1
+(each value and `unstated` in it): `score.py` and the server refuse a `score.toml` where it
+doesn't, or whose `unstated` is outside 0 to 1, and `test_extents.py` tries it on 20,000 random pairs of pieces and at its edge. The
 terrain's, as proposed (the owner's to tune):
 
 | | Value |
@@ -2001,6 +2006,7 @@ terrain's, as proposed (the owner's to tune):
 | `primary` | `spacing_m`, log: 1000 m → 0, 0.1 m → 1 (every terrain source's spacing inside it) |
 | `within` | 1.25: spacings closer than a quarter are one grid in different units or products (1 m and 3 ft, 0.9144 m; 0.5 m and 2 ft, 0.6096 m; 10 m and 1/3 arc-second, 10.3 m), where the rest should decide |
 | `share` | 0.02 (the bound for these numbers is 0.0237) |
+| `unstated` | not set: 0.5 (a server before task #1389's refuses a file setting it) |
 | `surface` | weight 0, a layer only (the owner, 13 Nov: a ground model doesn't outrank a surface model of the same grid): `ground` 1, `surface` 0 |
 | `vertical_rmse_m` | weight 0.4, log: 10 m → 0, 0.05 m → 1 |
 | `year` | weight 0.2, linear: 2000 → 0, 2026 → 1 |
@@ -2009,19 +2015,21 @@ What it does (`producers/extents/score.py <score.toml> --examples` prints them):
 
 | Pieces | Scores | Best |
 |---|---|---|
-| a 2 m surface model; a 5 m bare-earth one (both 2020, accuracy not stated) | 0.677; 0.579 | the 2 m surface model: finer |
-| a 1.2 m surface model; a 1.25 m bare-earth one (both 2020) | 0.731; 0.727 | the surface model: within the factor, the kind takes no part, and it's finer |
-| a 3 ft (0.9144 m) surface model of 2010; a 1 m bare-earth one of 2024 | 0.752; 0.753 | the 1 m one: within the factor, newer |
-| 1 m bare earth of 2005; 2 m bare earth of 2024 (accuracy not stated) | 0.739; 0.680 | the old fine one |
+| a 2 m surface model; a 5 m bare-earth one (both 2020, accuracy not stated) | 0.673; 0.576 | the 2 m surface model: finer |
+| a 1.2 m surface model; a 1.25 m bare-earth one (both 2020) | 0.727; 0.723 | the surface model: within the factor, the kind takes no part, and it's finer |
+| a 3 ft (0.9144 m) surface model of 2010; a 1 m bare-earth one of 2024 | 0.754; 0.748 | the 3 ft one: within the factor, but 9 % finer, more than the years weigh with the accuracy unstated |
+| 1 m bare earth of 2005; 2 m bare earth of 2024 (accuracy not stated) | 0.743; 0.674 | the old fine one |
 | the same, 0.30 m and 0.10 m RMSE stated | 0.745; 0.679 | the old fine one |
-| 1 m bare earth of 2005; 5 m bare earth of 2024 | 0.739; 0.582 | the old fine one |
+| 1 m bare earth of 2005; 5 m bare earth of 2024 | 0.743; 0.577 | the old fine one |
 | a 30 m surface model of 2013 at 2 m RMSE; a 10 m bare-earth one, nothing else stated | 0.380; 0.500 | the 10 m one |
-| 1 m bare earth of 2024 stating a 0.5 m RMSE; the same stating none | 0.749; 0.753 | the one stating none, narrowly |
+| 1 m bare earth of 2024 stating a 0.5 m RMSE; the same stating none | 0.749; 0.748 | the one stating it, narrowly (0.565 against the middle) |
+| a 0.5 m bare-earth grid of 2021; a 0.5 m surface model stating no year (France's LiDAR HD and MNS Correl) | 0.821; 0.819 | the one of 2021 |
+| the same grid of 2008; the one stating no year | 0.817; 0.819 | the one stating no year |
 
-The last row is what redistributing an unknown metric's weight does: the rest is scored as if what
-a piece doesn't state were as good as what it does, so stating a middling accuracy can rank a
-piece just below the same piece silent about it; it never crosses a spacing step larger than the
-factor.
+An unstated metric at the middle weighs as much as a stated one: with the accuracy (0.4) unstated,
+the year (0.2) is a third of the rest, so a year's whole range moves a score by a third of
+`share` (0.0067), as much as a spacing about 7 % finer. Within the factor a stated accuracy, or
+spacings closer than that, let the year decide.
 
 **The best piece at a place** (`Score::best`, `score.py`'s `best`; the layers' piece and the
 click's order, docs/steps.md §14): of the pieces there, those whose primary ties the finest's
@@ -2035,9 +2043,9 @@ always wins, whatever its availability, among tied grids an open source wins bef
 tie-break (the owner's rule, 13 Nov: in Berlin the BKG's paid 1 m DGM of 2022 scores above
 Brandenburg and Berlin's open 1 m of 2021, which is drawn), and an outline only claimed never
 outranks a measured one of the same score. The class breaks only an exact tie: a piece stating no
-year scores its spacing's value for the rest, so it outranks one of the same spacing stating an
-older year than that value stands for (at 0.5 m, 2021 and before: France's MNS Correl, claimed
-nationwide, over LiDAR HD's 2021 tiles). The order: the best, then the best of the rest, and so
+year has the middle for it, so it outranks one of the same spacing stating a year before 2013 and
+loses to one stating a later year (France's MNS Correl, claimed nationwide, below LiDAR HD's 2021
+tiles). The order: the best, then the best of the rest, and so
 on. A `score.toml` without `availability` ranks by the score alone. The terrain's: `availability =
 ["open", "login", "paid", "closed"]`. Its `label` names the score's layer in the app ("Best data";
 none: the server's, "Best data"): the best piece drawn at its own primary value, the grid spacing,
@@ -2076,7 +2084,7 @@ far). Errors:
   its availability isn't `open`), availability or constant metrics (`ex-made`);
 - a `score.toml` not of its shape (above: an unknown field, no `primary` among its metrics, the
   primary not on a log scale or with a weight, `within` not above 1, `share` not from 0 to under 1
-  or breaking the guarantee, a metric without its `label`, a scale whose `worst` = `best` or a log
+  or breaking the guarantee, `unstated` not from 0 to 1, a metric without its `label`, a scale whose `worst` = `best` or a log
   scale's not positive, a `values` table not of numbers from 0 to 1, a weight missing or
   negative, a `label` not a name, an `availability` not each of the four ids once: `ex-score`); a
   theme with no `score.toml` (`ex-noscore`);

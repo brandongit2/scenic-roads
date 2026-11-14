@@ -1224,7 +1224,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   metres, as log10). ETag `"av-<packs' version>-<format>-<extents'
   version>-<layer>-<free|all>-z-x-y"`; `?v=` cached for good while it is meta's version of
   `available-<theme>` (or `available-<theme>-<pole>`): the layer's packs' version, `-`, the tiles'
-  format (`values3`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
+  format (`values4`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
   packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
   `{lng, lat, avail: "free"|"all", pieces: [...], painted: {layer: id}}`, the pieces passing `avail` at the z12 pixel holding the point
   (past 85.05°, the pole's z3 pixel), best first (`Score::ranked`; none with no score last), each

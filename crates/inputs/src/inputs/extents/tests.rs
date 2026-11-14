@@ -186,6 +186,58 @@ fn a_score_and_its_guarantee() {
     assert_eq!(checks_of("terrain/score.toml", other.as_bytes()), one(THEME, Level::Error));
     // (No availability order: availability ranks no tie.)
     assert!(s.availability.is_empty() && s.label.is_none() && s.ignored.is_empty());
+    // `unstated`: UNSTATED where the file sets none, else its own, a value of the rest's range
+    // (out of it the guarantee's bound wouldn't hold).
+    assert_eq!(s.unstated, UNSTATED);
+    let set = SCORE_TOML.replacen("share = 0.02\n", "share = 0.02\nunstated = 0.25\n", 1);
+    assert!(checks_of("terrain/score.toml", set.as_bytes()).is_empty());
+    assert_eq!(score(set.as_bytes()).unwrap().unstated, 0.25);
+    for bad in ["-0.1", "1.5", "\"half\""] {
+        let bad = SCORE_TOML.replacen("share = 0.02\n", &format!("share = 0.02\nunstated = {bad}\n"), 1);
+        assert_eq!(checks_of("terrain/score.toml", bad.as_bytes()), one(SCORE_CHECK, Level::Error), "{bad}");
+    }
+}
+
+/// A weighted metric a piece doesn't state counts at `unstated` in both of the rest's sums (the
+/// owner, 13 Nov: the middle), a metric of weight 0 not at all; a piece stating no weighted metric
+/// has the middle for its rest. At Tarn, France's LiDAR HD tiles of 2021 so outrank the claimed MNS
+/// Correl stating no year; tiles of 2008 would not.
+#[test]
+fn an_unstated_metric_counts_at_the_middle() {
+    let s = score(REAL[0].1).unwrap();
+    let of = |m: serde_json::Value| s.of(m.as_object().unwrap()).0.unwrap();
+    let (share, lead) = (s.share, s.value("spacing_m", Some(&serde_json::json!(0.5))).unwrap());
+    let (wy, wa) = (s.metrics["year"].weight.unwrap(), s.metrics["vertical_rmse_m"].weight.unwrap());
+    let year = s.value("year", Some(&serde_json::json!(2021))).unwrap();
+    let rest = (wy * year + wa * UNSTATED) / (wy + wa);
+    let dated = of(serde_json::json!({"spacing_m": 0.5, "year": 2021}));
+    assert!((dated - ((1.0 - share) * lead + share * rest)).abs() < 1e-12);
+    let none = of(serde_json::json!({"spacing_m": 0.5}));
+    assert!((none - ((1.0 - share) * lead + share * UNSTATED)).abs() < 1e-12);
+    assert_eq!(of(serde_json::json!({"spacing_m": 0.5, "surface": "surface"})), none);
+    assert!(dated > none);
+    assert!(of(serde_json::json!({"spacing_m": 0.5, "year": 2008})) < none);
+    // France at Tarn: the claimed image-matched model (first, by id) against the LiDAR HD tiles.
+    let rank = |year: i64| {
+        let ps = [
+            (of(serde_json::json!({"spacing_m": 0.5, "surface": "surface"})), "claimed"),
+            (of(serde_json::json!({"spacing_m": 0.5, "surface": "ground", "year": year})), "index"),
+        ];
+        let rs: Vec<Ranked> = ps
+            .iter()
+            .map(|&(score, extent)| Ranked { lead, availability: Some("open"), score, extent: Some(extent) })
+            .collect();
+        s.best(&rs)
+    };
+    assert_eq!(rank(2021), Some(1));
+    assert_eq!(rank(2008), Some(0));
+    // No weighted metric in the file: the rest is the middle whatever is stated.
+    let mut flat = s.clone();
+    for m in flat.metrics.values_mut().filter(|m| m.weight.is_some()) {
+        m.weight = Some(0.0);
+    }
+    let stated = serde_json::json!({"spacing_m": 0.5, "year": 2024, "vertical_rmse_m": 0.1});
+    assert!((flat.of(stated.as_object().unwrap()).0.unwrap() - none).abs() < 1e-12);
 }
 
 /// The real score.toml: its layer's name and availability order, each mistake in the order refused.
@@ -204,7 +256,7 @@ fn a_scores_availability_order() {
     assert_eq!(FREE.map(|a| s.avail_rank(Some(a))), [0, 1]);
     // The kind is a layer of its own and no part of the score (weight 0, the owner's, 13 Nov): a
     // ground and a surface model of one spacing and year score the same, and one stating its kind
-    // alone scores its spacing's value (Σ weight 0: the rest is the primary's).
+    // alone scores as one stating nothing.
     assert_eq!(s.metrics["surface"].weight, Some(0.0));
     let of = |m: serde_json::Value| s.of(m.as_object().unwrap());
     let lead = of(serde_json::json!({"spacing_m": 1})).0;

@@ -45,12 +45,14 @@ fn set_served(set: &str) -> bool {
 /// The score layer's name where `score.toml` gives none.
 const DEFAULT_LABEL: &str = "Best data";
 
-/// The tiles' format and the switch's views, in the layers' versions (`Available::version`): a
-/// page made for another format reads the theme again at the new version, and one too old to read
-/// it shows nothing until it's loaded again rather than values as colours; and a tile kept for good
-/// under an older one (`?v=`) isn't read again. `values3`: the score layer's pixels are the best
-/// piece's own primary value; the default view's pieces are the free ones (`ex::FREE`).
-const TILE_FORMAT: &str = "values3";
+/// The tiles' format, the switch's views and the server's ranking rule (`Score::of`,
+/// `Score::best`), in the layers' versions (`Available::version`; `score.toml`'s numbers are in
+/// them through the extents' version): a page made for another format reads the theme again at the
+/// new version, and one too old to read it shows nothing until it's loaded again rather than values
+/// as colours; and a tile kept for good under an older one (`?v=`) isn't read again. `values4`: the
+/// score layer's pixels are the best piece's own primary value; the default view's pieces are the
+/// free ones (`ex::FREE`); a weighted metric a piece doesn't state counts at `unstated`.
+const TILE_FORMAT: &str = "values4";
 
 /// What a tile's pixel carries for a value `v` of a layer on `scale` (docs/formats.md, Data
 /// available): log10(v) on a log scale (a grid spacing of 0.1 m to 1,000 m: −1 to 3), `v` on a

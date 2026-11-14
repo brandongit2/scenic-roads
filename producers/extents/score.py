@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A theme's score (docs/inputs.md §6.11), as its score.toml declares it: each metric's 0-1 value,
-the primary metric's deciding and the weighted mean of the others the piece states breaking
-near-ties, its guarantee checked, and how pieces rank (`best`: of those whose primary ties the
+the primary metric's deciding and the weighted mean of the others (one the piece doesn't state at
+`unstated`) breaking near-ties, its guarantee checked, and how pieces rank (`best`: of those whose primary ties the
 finest's, the best availability, then the best score, then the best-founded extent). The producers don't score pieces (the map
 server does, from the same file); this prints what a score.toml does, for tuning its weights.
 
@@ -22,6 +22,10 @@ import math
 import sys
 import tomllib
 
+# What a weighted metric a piece doesn't state counts at where score.toml gives no `unstated`
+# (crate::inputs::extents::UNSTATED).
+UNSTATED = 0.5
+
 
 def value(m, v):
     """A metric's 0-1 value of `v` (None: not stated, or a word its `values` don't hold)."""
@@ -38,25 +42,36 @@ def value(m, v):
 def check(decl):
     """The guarantee a score.toml states holds for its numbers: a piece finer by more than `within`
     scores higher whatever the other metrics say. (1 - share) × the primary's least step, ln(within)
-    over its scale's span, must outweigh `share` × the rest's whole range."""
+    over its scale's span, must outweigh `share` × the rest's whole range, 0 to 1 (each value, and
+    `unstated`, in it)."""
     m = decl["metric"][decl["primary"]]
     k = math.log(float(decl["within"])) / abs(math.log(float(m["worst"]) / float(m["best"])))
     if not 0 <= decl["share"] < k / (1 + k):
         sys.exit(f"share {decl['share']} breaks the guarantee: it must be under {k / (1 + k):.4f} for within = {decl['within']}")
+    if not 0 <= unstated(decl) <= 1:
+        sys.exit(f"unstated {unstated(decl)} isn't from 0 to 1")
     for name, other in decl["metric"].items():
         if name != decl["primary"] and other["weight"] < 0:
             sys.exit(f"{name}: a negative weight")
 
 
+def unstated(decl):
+    """What a weighted metric a piece doesn't state counts at in the rest."""
+    return decl.get("unstated", UNSTATED)
+
+
 def score(decl, piece):
-    """(score or None, {metric: value or None}) of a piece's metrics."""
+    """(score or None, {metric: value or None}) of a piece's metrics: (1 - share) × the primary's
+    value + share × the rest, the weighted mean of the others, one not stated at `unstated`
+    (no weighted metric: `unstated`)."""
     vals = {k: value(m, piece.get(k)) for k, m in decl["metric"].items()}
     lead = vals[decl["primary"]]
     if lead is None:
         return None, vals
-    rest = {k: v for k, v in vals.items() if k != decl["primary"] and v is not None}
-    w = sum(decl["metric"][k]["weight"] for k in rest)
-    r = sum(decl["metric"][k]["weight"] * v for k, v in rest.items()) / w if w else lead
+    others = [k for k in decl["metric"] if k != decl["primary"]]
+    w = sum(decl["metric"][k]["weight"] for k in others)
+    u = unstated(decl)
+    r = sum(decl["metric"][k]["weight"] * (u if vals[k] is None else vals[k]) for k in others) / w if w else u
     return (1 - decl["share"]) * lead + decl["share"] * r, vals
 
 
@@ -78,6 +93,10 @@ EXAMPLES = [
      [{"spacing_m": 30, "surface": "surface", "year": 2013, "vertical_rmse_m": 2}, {"spacing_m": 10, "surface": "ground"}]),
     ("what an unknown metric does: the same 1 m bare earth of 2024, stating a 0.5 m RMSE, and stating none",
      [{"spacing_m": 1, "surface": "ground", "year": 2024, "vertical_rmse_m": 0.5}, {"spacing_m": 1, "surface": "ground", "year": 2024}]),
+    ("a 0.5 m bare-earth grid of 2021 against a 0.5 m surface model stating no year (France's LiDAR HD and MNS Correl)",
+     [{"spacing_m": 0.5, "surface": "ground", "year": 2021}, {"spacing_m": 0.5, "surface": "surface"}]),
+    ("the same grid of 2008 against the one stating no year",
+     [{"spacing_m": 0.5, "surface": "ground", "year": 2008}, {"spacing_m": 0.5, "surface": "surface"}]),
 ]
 
 

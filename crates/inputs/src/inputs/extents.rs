@@ -191,6 +191,11 @@ pub struct Metric {
 const RETIRED: [&str; 2] = ["ramp", "shade"];
 const RETIRED_METRIC: [&str; 2] = ["classes", "colours"];
 
+/// What a weighted metric a piece doesn't state counts at where `score.toml` gives no `unstated`:
+/// the middle of its scale (the owner, 13 Nov: a source stating no survey year doesn't outrank one
+/// stating a recent year; an old one may lose to it).
+pub const UNSTATED: f64 = 0.5;
+
 /// A theme's `score.toml` (docs/inputs.md §6.11).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Score {
@@ -198,6 +203,9 @@ pub struct Score {
     pub primary: String,
     pub within: f64,
     pub share: f64,
+    /// The value a weighted metric a piece doesn't state counts at in the rest (`unstated`, 0 to
+    /// 1; absent: UNSTATED).
+    pub unstated: f64,
     pub metrics: BTreeMap<String, Metric>,
     /// The score layer's name in the app (None: the server's own).
     pub label: Option<String>,
@@ -233,30 +241,30 @@ impl Score {
     }
 
     /// A piece's score and each metric's 0–1 value (score.py's `score`), from its properties
-    /// (`metrics`): (1 − share) × the primary's value + share × the rest, the rest the weighted
-    /// mean of the other metrics it states (none stated, or their weights 0: the primary's value);
-    /// no score where it doesn't state the primary.
+    /// (`metrics`): (1 − share) × the primary's value + share × the rest (`rest`); no score where
+    /// it doesn't state the primary.
     pub fn of(&self, metrics: &serde_json::Map<String, Value>) -> (Option<f64>, BTreeMap<String, Option<f64>>) {
         let vals: BTreeMap<String, Option<f64>> =
             self.metrics.keys().map(|k| (k.clone(), self.value(k, metrics.get(k)))).collect();
         let Some(lead) = vals.get(&self.primary).copied().flatten() else { return (None, vals) };
-        let rest = self.rest(&vals).unwrap_or(lead);
-        (Some((1.0 - self.share) * lead + self.share * rest), vals)
+        (Some((1.0 - self.share) * lead + self.share * self.rest(&vals)), vals)
     }
 
     /// The tie-break of a piece's metric values (`of`'s rest): the weighted mean of the other
-    /// metrics it states; None where it states none of them (or their weights are 0), which `of`
-    /// takes as the primary's value.
-    fn rest(&self, vals: &BTreeMap<String, Option<f64>>) -> Option<f64> {
+    /// metrics, one it doesn't state counting at `unstated`; `unstated` where no metric but the
+    /// primary has a weight. A metric of weight 0 takes no part.
+    fn rest(&self, vals: &BTreeMap<String, Option<f64>>) -> f64 {
         let (mut w, mut sum) = (0.0, 0.0);
-        for (k, v) in vals {
-            if let (false, Some(v), Some(weight)) = (*k == self.primary, v, self.metrics.get(k).and_then(|m| m.weight))
-            {
-                w += weight;
-                sum += weight * v;
-            }
+        for (k, m) in self.metrics.iter().filter(|(k, _)| **k != self.primary) {
+            let weight = m.weight.unwrap_or(0.0);
+            w += weight;
+            sum += weight * vals.get(k).copied().flatten().unwrap_or(self.unstated);
         }
-        (w > 0.0).then(|| sum / w)
+        if w > 0.0 {
+            sum / w
+        } else {
+            self.unstated
+        }
     }
 
     /// How far apart two pieces' primary values (0–1) may be and still tie: a factor of `within`
@@ -465,7 +473,9 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     for k in t.keys() {
         if RETIRED.contains(&k.as_str()) {
             ignored.push(k.clone());
-        } else if !["theme", "primary", "within", "share", "availability", "metric", "label"].contains(&k.as_str()) {
+        } else if !["theme", "primary", "within", "share", "unstated", "availability", "metric", "label"]
+            .contains(&k.as_str())
+        {
             bad.push(format!("`{k}` isn't one of a score's fields"));
         }
     }
@@ -493,6 +503,13 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     if share.is_none() {
         bad.push("`share` is required, a number from 0 to under 1".into());
     }
+    let unstated = match t.get("unstated") {
+        None => UNSTATED,
+        Some(v) => num(v).filter(|u| (0.0..=1.0).contains(u)).unwrap_or_else(|| {
+            bad.push("`unstated` (what a metric not stated counts at) isn't a number from 0 to 1".into());
+            UNSTATED
+        }),
+    };
     let label = match t.get("label") {
         None => None,
         Some(v) => match v.as_str().filter(|s| !s.trim().is_empty()) {
@@ -539,7 +556,7 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     }
     match (bad.is_empty(), within, share) {
         (true, Some(within), Some(share)) => {
-            Ok(Score { theme, primary, within, share, metrics, label, availability, ignored })
+            Ok(Score { theme, primary, within, share, unstated, metrics, label, availability, ignored })
         }
         _ => Err(bad),
     }
