@@ -1,8 +1,9 @@
 // Flags for the Regions list (ui/regions.ts) and the footer (ui/strip.ts): each region's own flag,
 // or the symbol it goes by where it has none (its coat of arms, else its seal), from Wikidata and
-// Wikimedia Commons (producers/flags/fetch.py), stored in flags/ with each file's source, author and
+// Wikimedia Commons (an earlier producers/flags/fetch.py), stored in flags/ with each file's source, author and
 // licence (flags/index.json; credited in the strip's Credits, each file in its title). Bundled as
-// files of their own, each fetched only when a row shows it, in its true aspect ratio.
+// files of their own, each fetched only when a row shows it, in its true aspect ratio. Shown only
+// where the server gives no symbol (regionlist.servedOr): stage B of task #1396 deletes them.
 import index from './flags/index.json';
 
 const urls = import.meta.glob('./flags/*.{svg,png}', { query: '?no-inline', import: 'default', eager: true }) as Record<string, string>;

@@ -1332,7 +1332,8 @@ renaming or disabling a region builds nothing.
 gzip'd, versioned by pack like every layer) and answers `/api/regions/at` from them. The listing
 (`/api/regions`) gives each region's box (`bbox`) and a point inside its largest land polygon (a
 region of water, or of waters with land under a thousandth of it: water) for its name (`label`), worked out once per geometry with its land and water (`region-areas.json`), and
-its flag's area (`area`).
+its flag's area (`area`, for its bundled flag until task #1396's stage B) and its symbol
+(docs/inputs.md §6.1.3), which no step reads.
 
 **The app** (`web/src/regions.ts`, the pure parts `web/src/regionlayer.ts`, tested by
 `web/test/regionlayer.test.ts`): a vector source `regions` added once the map has the layer (a map

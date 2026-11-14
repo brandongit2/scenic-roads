@@ -98,14 +98,16 @@
   Regions change only as files in `inputs/regions/` (docs/inputs.md §6.1); the app writes none.
   - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
     on every load (opened ones stay open for the session, not saved); an open folder's entries indented along a line from its triangle, its
-    heading sticking under the section's header while they scroll. Each entry: a flag, its own only
-    (a country's, territory's, province's or state's: from Wikimedia Commons as Wikidata names it for
-    the region's first osm: relation, else its ISO 3166 code; where it has no flag, the symbol it
-    goes by: its coat of arms, else its seal; none of those, a "?" placeholder, never its folder's or
-    country's; a folder's, that of the country its own regions' land is most in), fitted in a box of
-    fixed width in its own aspect ratio, without border or rounding (the files, each one's author
-    and licence, are bundled: web/src/flags/, made by producers/flags/fetch.py and credited in the
-    Credits, file by file), the name, the input check's state while it's checking, held or disabled, and its land and
+    heading sticking under the section's header while they scroll. Each entry: its symbol, its own
+    only (its flag, coat of arms or seal, declared with the region in its file, a folder's in its
+    _group.toml: docs/inputs.md §6.1.3, "Symbols"), served by this Mac's server from the accepted
+    regions (/api/regions/symbols/…); where it gives none, the region's bundled flag (web/src/flags/:
+    by its first osm: relation, else its ISO 3166 code; a folder's, that of the country its own
+    regions' land is most in; until task #1396's stage B deletes them once the regions input's
+    symbols are accepted); none of those, a "?" placeholder, never its folder's; fitted in a box of
+    fixed width in its own aspect ratio, without border or rounding (each file's author and licence
+    in its tooltip and in the Credits, file by file, read from /api/regions, or the bundled files'),
+    the name, the input check's state while it's checking, held or disabled, and its land and
     water in km² (from its accepted geometry: the server works each out once, `region-areas.json`).
     No build state.
   - **Search** and **Show only downloaded regions**, sticking atop the section: a region shows when

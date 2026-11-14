@@ -1305,8 +1305,17 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   `{error}`.
 - **Regions** (read only): `GET /api/regions`, each region with its land and water, its country,
   its box (`bbox`: w, s, e, n in degrees) and the point its name is drawn at (`label`: inside its
-  largest land polygon by its outer ring; a region of water, or of waters whose land is under a thousandth of it, its largest water polygon), all from its accepted geometry once this Mac's server has read it, and its first
-  osm: part's area in the pass's outlines (`area`: `iso`, `country`, `in`, its flag);
+  largest land polygon by its outer ring; a region of water, or of waters whose land is under a thousandth of it, its largest water polygon), all from its accepted geometry once this Mac's server has read it, its first
+  osm: part's area in the pass's outlines (`area`: `iso`, `country`, `in`, its bundled flag, until
+  task #1396's stage B deletes the bundled flags), and its symbol as accepted
+  (`symbol`: `url`, `kind`, `source`, `author` when given, `licence`; a folder of `tree` its
+  `_group.toml`'s too: docs/inputs.md §6.1.3, "Symbols");
+  `GET /api/regions/symbols/<hash16>.<svg|png|jpg>` → the image of that content name from this Mac's
+  copy of the accepted regions (a loose file's copy, or a bundle's member), `Cache-Control: public,
+  max-age=31536000, immutable`, its own `Content-Type` (an SVG's `image/svg+xml; charset=utf-8`),
+  `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`; 404 for a
+  name that isn't a content name it has;
   `GET /api/regions/at?lng=&lat=` → `{"regions": [id, …]}`, the regions at a point, read from the
   region layer's tiles (`codecs::regionlayer::hit`: the finest stored tile there, the nearest
   border's side; none before the map has the layer), what the footer tells hovered. The borders

@@ -48,7 +48,7 @@ Every inputs folder is a folder under `inputs/` in the NAS project folder (docs/
 
 ```
 inputs/
-  regions/            declare: <id>.toml, <name>.geojson in any subfolders; special files _group.toml, _pins.toml, _rules.toml (§6.1.2)
+  regions/            declare: <id>.toml, <name>.geojson, symbols' images (.svg, .png, .jpg) and bundles (.zip) in any subfolders; special files _group.toml, _pins.toml, _rules.toml (§6.1.2)
   languages/          declare: territories.tsv, about.toml (§6.2)
   translations/       request–fulfil: **/*.jsonl; todo/ (§6.3)
   descriptions/       request–fulfil: **/*.jsonl, about.toml; todo/ (§6.4)
@@ -402,6 +402,7 @@ any water in two regions, or in none, is an error.
   - `_pins.toml` (at the top) names the OSM pass the folder is written against (§6.1.5).
   - `_rules.toml` (optional, at the top) holds the rules for the whole folder: `cover = "earth"` and
     `sliver_km2` (default 50), §6.1.3 "Land and water". Unknown fields are an error (`rg-rules`).
+- **Symbols' images:** `.svg`, `.png` and `.jpg` files and `.zip` bundles of them, anywhere (§6.1.3, "Symbols").
 - Every other file (a `.poly`, `.txt`, `.toml.removed`) is ignored: neither checked, read nor copied.
 
 #### 6.1.3 The region file
@@ -419,6 +420,7 @@ any water in two regions, or in none, is an error.
 | `disabled` | `true`: checked and stored like any region, but never built (below) | optional, default `false` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
 | `[pins]` | as `_pins.toml`, overriding it for this file | optional |
+| `[symbol]` | its flag, coat of arms or seal ("Symbols", below) | optional |
 
 Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`); a region
 with `water` is its land, that cut back to the coastline's land, and its water ("Land and water").
@@ -589,6 +591,62 @@ water = ["rest"]
 ```
 `_pins.toml`: `osm = "2026-09-29"` (the pass, `sources/osm/<date>/`). A file's `[pins]` overrides it
 and may record other datasets a shape came from (`gadm = "4.1"`, checked only as a non-empty string).
+
+**Symbols.** A region's own flag, or the symbol it goes by (its coat of arms, its seal), is declared
+in its file, and a folder's (its country's) in its `_group.toml`, as a `[symbol]` table
+(crate::inputs::regions::symbols); the Regions list and the footer show it beside the name. Without
+one a region is valid, and shows a "?" placeholder (never its folder's symbol).
+
+| Field | Type | |
+|---|---|---|
+| `image` | an image's file name alone (`Q1951.svg`), unique across the folder as a shape's is: a loose `.svg`, `.png` or `.jpg` anywhere under `inputs/regions/`, or a member of any `.zip` there (by its file name; its folders, macOS's `__MACOSX/` and names starting with `.` passed over) | required |
+| `kind` | `flag`, `coat of arms` or `seal` | required |
+| `source` | the page it comes from, an `https://` address (where its author and licence are) | required |
+| `author` | its author as the source names them; left out when the source page is the only credit | optional |
+| `licence` | on the free list, `crates/inputs/src/inputs/regions/free-licences.txt` (public domain, CC0, CC BY and CC BY-SA of any version or port, "Copyrighted free use", OGL-om 1.0): each lets the app ship the image, offline too, with its credit | required |
+
+```toml
+# canada/alberta.toml, its symbol after its other fields
+[symbol]
+image = "Q1951.svg"
+kind = "flag"
+source = "https://commons.wikimedia.org/wiki/File:Flag_of_Alberta.svg"
+author = "Kooma (original)"
+licence = "Public domain"
+```
+
+The producer (§8) puts its images in one bundle, `symbols.zip` at the top (about 700, 2.6 MB: one
+file on the NAS, not hundreds); a symbol added by hand needs no tool: its image saved beside the
+region's file and the table written. An image is taken only if it can be served as it is, the map
+showing files the owner didn't draw (crate::inputs::regions::symbols, `image` and `svg`): at most
+64 KiB (`MAX_BYTES`; a bundle's members too, inflated, and all of them together at most 64 MiB,
+`MAX_BUNDLE`, each refused by its zip directory's size before it's inflated); a PNG or JPEG by its
+bytes (the name's extension matching), at most 512 px a side (`MAX_PX`); an SVG read as an XML
+parser reads it: UTF-8 text (an encoding declared other than UTF-8 only for ASCII text), no control
+character but tab and line ends, its root `<svg>`; no `script`, `foreignObject`, `iframe`, `object`,
+`embed`, `audio`, `video`, `handler`, `listener` or animation element (`animate…`, `set`,
+`discard`), no event attribute (`on…`), no `xml:base`, no XHTML namespace (its elements load and
+navigate); a reference (`href`, `xlink:href`) only to a part of itself (`#…`), so no `data:` URI
+either (an image inside the image, which the check can't read: an SVG in one would escape it); CSS
+(a `<style>`'s text and CDATA read as one, with no element in it; `style`; a `url(…)` in any
+attribute) with no `@import`, no `image-set(`, no backslash escape and `url(…)` only to a part of
+itself; no `<?xml-stylesheet?>`; comments as XML has them (no `--` in one); a DOCTYPE's internal
+subset only comments and internal entities whose values hold no `<`, `&` or `%` (so none nests),
+an entity of its own used only in text outside `<style>` and in a namespace declaration, all its
+uses together at most `MAX_BYTES` expanded, and no reference to an entity it doesn't declare; and
+at most 65,536 elements drawn (`MAX_DRAWN`), each `<use>` or `<feImage>` counting the elements it
+copies (a copy of copies multiplies them), none copying an element holding it. Nothing is
+sanitized: an image that isn't so is refused (`rg-symbol`), its file held (a bundle with one bad
+member is held whole: the producer's run is checked with `scenic-build regions-check` before it's
+placed). The map's server stands behind the check: it serves a symbol only
+by its content name (checked against its bytes), with its own type (an SVG's `image/svg+xml;
+charset=utf-8`; never sniffed: `nosniff`) and `Content-Security-Policy: default-src 'none';
+style-src 'unsafe-inline'; sandbox`, so even opened on its own it loads and runs nothing; the app
+shows it only as an image (`<img>`), where no script runs and nothing is loaded from elsewhere.
+
+No build step reads a symbol (an image's `keyed` is `-`, and a region's is its geometry's content
+name, which its symbol doesn't change): symbols travel with the regions' accepted version to each
+Mac's server (§6.1.9).
 
 #### 6.1.4 Geometry: how it's computed and what's stored
 
@@ -817,7 +875,8 @@ new pass moving a coast a little doesn't hold an accepted one's files again.
 | `rg-pin` | no OSM pin, or one that isn't a date |
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-special` | a `_*.toml` that isn't `_group.toml`, `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |
-| `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`, or an empty name |
+| `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`/`symbol`, or an empty name |
+| `rg-symbol` | a `[symbol]` table with a field missing or wrong (its image not a file name of an image, an unknown kind, a source not `https://`, a licence not on the free list); an image or bundle that can't be served (its size, its type by its bytes, a raster's sides, an SVG's content: "Symbols"); an image's name in two places; a symbol naming an image the folder hasn't |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
 | `rg-data` | a region naming the datasets, or with `water`, while they aren't read (§6.1.7) |
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
@@ -845,7 +904,15 @@ region file takes it out with the next version.
   Mercator tiles' ±85.05° (the polar caps draw no region lines); the lines' width and opacity are
   the boundaries'. A map from before the layer draws the names alone. The footer tells the region
   under the cursor (`/api/regions/at`, from the same tiles; the smallest by its box where regions
-  overlap): its folders and name with their flags, its state, land and water and download.
+  overlap): its folders and name with their symbols, its state, land and water and download.
+- **Symbols** (§6.1.3) come from the accepted version: `GET /api/regions` gives each region's and
+  folder's (`symbol`: `url`, `kind`, `source`, `author`, `licence`) once its image is in the accepted
+  version, and `GET /api/regions/symbols/<hash16>.<ext>` serves it by its content name, cached for
+  good. The server's copy of the accepted version (`accepted/regions/`, which a sync keeps in step
+  with the records, every file of the index, the bundle among them) is where it reads them, so a
+  Mac's own server has them away from the NAS as it has the list. The Credits list them, file by
+  file, from `/api/regions`. A region's symbol shows once the check accepts it: no app release, no
+  build.
 - **The banner and menu bar** (§4.7).
 
 #### 6.1.10 The switch
@@ -2515,7 +2582,7 @@ declarations are made and staged there.
 | timing phases (`scenic-build`'s lake fill, `leaftype`'s NALCMS download and squares) | a phase's name is its key in the timings kept |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS` | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
-| `web/src/flags/index.json`'s pages and authors | each flag's credit is its file's page on Wikimedia Commons (the Credits link it) and its author as Commons gives it; their maker is a producer (`producers/flags/fetch.py`, §8) |
+| `web/src/flags/index.json`'s pages and authors | each bundled flag's credit is its file's page on Wikimedia Commons (the Credits link it) and its author as Commons gives it, made by an earlier `producers/flags/fetch.py`; kept until task #1396's stage B deletes the bundled flags (the regions input's symbols, §6.1.3, take their place) |
 | `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
 | `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
 | `tools/app/install.sh`'s uv link | documentation, in a message |
@@ -2534,7 +2601,11 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
 ## 8. How each input is made
 
 - **Producers live in the repository** under `producers/<input>/` (`heritage/`, `timetables/`,
-  `elevation/`, `languages/`, `sources/`, `depth/`, `extents/`, and `flags/`, which writes the app's bundled flags, `web/src/flags/`): per-source code and staged declarations kept
+  `elevation/`, `languages/`, `sources/`, `depth/`, `extents/`, and `flags/`, the regions' symbols
+  from Wikidata and Commons, `fetch.py --regions <a copy of inputs/regions> --out <folder>`: each
+  declaration without a symbol looked up, written whole with its `[symbol]` table, with
+  `symbols.zip` and the originals' digests to check before placing; its licence list is the check's
+  file): per-source code and staged declarations kept
   out of the app, with their history and review. They're outside what `publish.sh` ships and
   outside the guards' scans; the app never runs them. Each runs on its own (`uv run --project
   producers python producers/heritage/registers.py --data <folder> --out <folder>`), writing the

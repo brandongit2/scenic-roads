@@ -1,54 +1,92 @@
 #!/usr/bin/env python3
-"""The Regions list's flags (web/src/flags.ts, docs/surface.md): each region's own flag, or the
-symbol it goes by where it has none (its coat of arms, else its seal), from Wikidata and Wikimedia
-Commons, stored in web/src/flags/ with each file's source, author and licence (index.json).
+"""The regions' symbols (docs/inputs.md §6.1.3, "Symbols"): each region's own flag, or the symbol it
+goes by where it has none (its coat of arms, else its seal), and each folder's (its country's), from
+Wikidata and Wikimedia Commons, written in the regions input's own shape for the PM to place in
+inputs/regions/: each declaration that gains one, whole, with a [symbol] table after its text, and
+symbols.zip with the images. It never writes the inputs folder itself.
 
-  uv run --project producers python producers/flags/fetch.py [--server http://localhost:7311] [--out web/src/flags]
+  uv run --project producers python producers/flags/fetch.py --regions <a copy of inputs/regions> --out <folder>
 
-The regions come from a map server (/api/regions: each region's first osm: relation and its
-area's ISO 3166 code). A region's item is the Wikidata item naming its
-relation (P402), else its ISO 3166-2 code (P300); a country's (folders') by ISO 3166-1 (P297). Its
-image: its current flag (P41, preferred rank first, none ended by P582), else coat of arms (P94),
-else seal (P158); none of those, no file (the list shows the placeholder). Commons' SVG as is up to
-SVG_MAX bytes, else Commons' own PNG rendering PNG_H px high (big coats of arms, raster sources).
+A declaration that has a [symbol] already keeps it (a hand-made one stays as the owner made it); the
+others are looked up. A region's item is the Wikidata item naming its first osm: relation (P402); a
+folder's (one with a _group.toml) the country (P17) most of its regions' items are in. Its image: its
+current flag (P41, preferred rank first, none ended by P582), else coat of arms (P94), else seal
+(P158); none of those, no symbol (the list shows the placeholder). Commons' SVG as is up to SVG_MAX
+bytes, else Commons' own rendering PNG_H px high (a PNG, or a JPEG for a JPEG's: named by what its
+bytes are).
 
-Only files under a licence in FREE are kept (each lets the app ship it offline, with its credit); a
-file under any other, or in REFUSED (a free-use claim that can't be checked), isn't fetched and its
-region shows the placeholder. An author Commons gives only as a pointer ("see the file history")
-is kept empty: the Credits then send to the file's page, where its history names them.
+Only images under a licence on the regions' check's free list are kept (the list is
+crates/inputs/src/inputs/regions/free-licences.txt, read here: one list for both), and not those in
+REFUSED (a free-use claim that can't be checked). An author Commons gives only as a pointer ("see
+the file history") is left out: the Credits then send to the file's page, where its history names
+them.
+
+Out: symbols.zip (the folder's symbols.zip's members still named, and the new ones; deflated, sorted,
+dated 1980-01-01, so the same images are the same bytes), each declaration that gains a symbol at its
+path, and originals.sha256 (each such declaration's text as it was read: `shasum -a 256 -c` in
+inputs/regions/ before placing, so a file the owner changed since isn't overwritten).
 
 Wikidata's query service and the Commons API are documented APIs, used by their policies (a
 User-Agent naming the app, one request at a time, Retry-After honoured); the files come from
-upload.wikimedia.org as those APIs give them. Runs again whenever regions change; a region it
-doesn't know shows the placeholder until then.
+upload.wikimedia.org as those APIs give them.
 """
 import argparse
+import hashlib
 import html
+import io
 import json
 import os
 import re
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 
 UA = 'scenic-roads/0.1 (personal offline map)'
 SVG_MAX = 60_000
 PNG_H = 48
+# The most bytes the regions' check takes for an image (crate::inputs::regions::symbols::MAX_BYTES;
+# test_fetch.py reads it there).
+MAX_BYTES = 64 << 10
 PROPS = {'flag': 'P41', 'coat of arms': 'P94', 'seal': 'P158'}
 RANK = {'PreferredRank': 0, 'NormalRank': 1}
-FETCHES = "api, data"
-# Licences that allow redistribution offline: public domain and CC0; Creative Commons' BY and BY-SA
-# (any version or port, credited by author, licence and the file's page); "Copyrighted free use"
-# (the holder lets anyone use it for any purpose; see REFUSED); the Open Government Licence - Oman
-# (any use, with the source acknowledged).
-FREE = re.compile(r'Public domain|CC0|CC BY(-SA)? \d\.\d( [a-z]{2})?|Copyrighted free use|OGL-om 1\.0')
+FREE_LIST = os.path.join(os.path.dirname(__file__), '..', '..', 'crates', 'inputs', 'src', 'inputs', 'regions', 'free-licences.txt')
 # Files whose licence tag can't be checked: Cabinda's logo, "free use" by a provincial government's
 # site that no longer answers (its permission is only the site's address).
 REFUSED = {'Cabinda logo.gif'}
 # An author that only points elsewhere, or none.
 NO_AUTHOR = re.compile(r'(?i)^((various, )?see (the )?(file|upload) (history|log)\b.*|see below\.?|(unknown ?(author)?)+|n\.a|own work)$')
+BUNDLE = 'symbols.zip'
+
+
+def free_list(path=FREE_LIST):
+    with open(path, encoding='utf-8') as f:
+        return [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]
+
+
+def free(licence, lines):
+    """Whether `licence` is on the list, word by word ({version}: 4.0; {port}: two lower-case letters),
+    as the check matches it (crate::inputs::regions::symbols::free)."""
+    words = licence.split(' ')
+    for line in lines:
+        pat = line.split(' ')
+        if len(pat) == len(words) and all(
+                re.fullmatch(r'[0-9]\.[0-9]', w) if p == '{version}' else re.fullmatch(r'[a-z]{2}', w) if p == '{port}' else p == w
+                for p, w in zip(pat, words)):
+            return True
+    return False
+
+
+def kind_of(data):
+    """An image's extension by its bytes."""
+    if data[:8] == b'\x89PNG\r\n\x1a\n':
+        return 'png'
+    if data[:3] == b'\xff\xd8\xff':
+        return 'jpg'
+    return 'svg'
 
 
 def get(url, data=None, accept=None):
@@ -66,7 +104,7 @@ def get(url, data=None, accept=None):
     raise SystemExit(f'gave up on {url}')
 
 
-def sparql(head):
+def sparql(head, key='?k'):
     def opt(n, p):
         v = n.replace(' ', '_')
         return (f'OPTIONAL {{ ?item p:{p} ?{v}_s . ?{v}_s ps:{p} ?{v} ; wikibase:rank ?{v}_r . '
@@ -97,72 +135,153 @@ def values(keys):
     return ' '.join(json.dumps(k) for k in keys)
 
 
+# ---- The regions input, read and written ---------------------------------------------------------
+
+def declarations(folder):
+    """Every region file and _group.toml under `folder` (how/, todo/ and the names an inputs folder
+    passes over aside): path -> (its text, what it parses to)."""
+    out = {}
+    for d, dirs, files in os.walk(folder):
+        rel = os.path.relpath(d, folder)
+        dirs[:] = sorted(x for x in dirs if not x.startswith(('.', '@', '#', '_')) and not (rel == '.' and x in ('how', 'todo')))
+        for f in sorted(files):
+            if not f.endswith('.toml') or (f.startswith(('.', '@', '#', '_')) and f != '_group.toml'):
+                continue
+            p = os.path.normpath(os.path.join(rel, f))
+            with open(os.path.join(d, f), encoding='utf-8') as h:
+                text = h.read()
+            try:
+                out[p] = (text, tomllib.loads(text))
+            except tomllib.TOMLDecodeError as e:
+                print(f'{p}: not read ({e})', file=sys.stderr)
+    return out
+
+
+def toml_str(s):
+    return json.dumps(s, ensure_ascii=False)
+
+
+def with_symbol(text, s):
+    """A declaration's text with a [symbol] table after it (its text before kept as it was)."""
+    lines = [f'image = {toml_str(s["image"])}', f'kind = {toml_str(s["kind"])}', f'source = {toml_str(s["source"])}']
+    if s.get('author'):
+        lines.append(f'author = {toml_str(s["author"])}')
+    lines.append(f'licence = {toml_str(s["licence"])}')
+    return (text if text.endswith('\n') or not text else text + '\n') + '\n[symbol]\n' + '\n'.join(lines) + '\n'
+
+
+def write(out, decls, symbols, images):
+    """Writes the shape into `out`: each declaration of `symbols` (path -> table) with its table, the
+    bundle of `images` (name -> bytes), and the originals' digests."""
+    os.makedirs(out, exist_ok=True)
+    sums = []
+    for p, s in sorted(symbols.items()):
+        text = decls[p][0]
+        os.makedirs(os.path.join(out, os.path.dirname(p)), exist_ok=True)
+        with open(os.path.join(out, p), 'w', encoding='utf-8') as h:
+            h.write(with_symbol(text, s))
+        sums.append(f'{hashlib.sha256(text.encode()).hexdigest()}  {p}\n')
+    with open(os.path.join(out, 'originals.sha256'), 'w') as h:
+        h.writelines(sums)
+    with open(os.path.join(out, BUNDLE), 'wb') as h:
+        h.write(bundle(images))
+
+
+def bundle(images):
+    """A zip of `images` (name -> bytes): deflated, sorted, dated 1980-01-01."""
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, 'w') as z:
+        for n in sorted(images):
+            i = zipfile.ZipInfo(n, date_time=(1980, 1, 1, 0, 0, 0))
+            i.compress_type = zipfile.ZIP_DEFLATED
+            i.external_attr = 0o644 << 16
+            z.writestr(i, images[n], compresslevel=9)
+    return b.getvalue()
+
+
+def kept_images(folder, decls):
+    """The members of the folder's own bundle that a declaration names."""
+    p = os.path.join(folder, BUNDLE)
+    if not os.path.exists(p):
+        return {}
+    named = {d.get('symbol', {}).get('image') for _, d in decls.values()}
+    with zipfile.ZipFile(p) as z:
+        return {n: z.read(n) for n in z.namelist() if n in named}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--server', default='http://localhost:7311')
-    ap.add_argument('--out', default=os.path.join(os.path.dirname(__file__), '..', '..', 'web', 'src', 'flags'))
+    ap.add_argument('--regions', required=True, help='a copy of inputs/regions (read only)')
+    ap.add_argument('--out', required=True, help='where the shape is written for placing')
     a = ap.parse_args()
-    regions = json.loads(get(a.server + '/api/regions'))['regions']
-    areas = {r['id']: r.get('area') or {} for r in regions}
-    # (Only the first osm: part names a region's area, as the server's `area` does.)
-    rels = sorted({next((p[4:] for p in r['outline'] if re.fullmatch(r'osm:\d+', p)), None) for r in regions} - {None})
-    isos = sorted({x['iso'] for x in areas.values() if '-' in (x.get('iso') or '')})
-    by_osm, by_iso = {}, {}
+    lines = free_list()
+    decls = declarations(a.regions)
+    images = kept_images(a.regions, decls)
+    want = {p for p, (_, d) in decls.items() if 'symbol' not in d}
+    rel_of = {}
+    for p in want:
+        if not p.endswith('_group.toml'):
+            rel = next((x[4:] for x in decls[p][1].get('outline', []) if isinstance(x, str) and re.fullmatch(r'osm:\d+', x)), None)
+            if rel:
+                rel_of[p] = rel
+    rels = sorted(set(rel_of.values()))
+    by_osm = {}
     for i in range(0, len(rels), 120):
         by_osm.update(sparql(f'VALUES ?k {{ {values(rels[i:i + 120])} }} ?item wdt:P402 ?k .'))
-    for i in range(0, len(isos), 120):
-        by_iso.update(sparql(f'VALUES ?k {{ {values(isos[i:i + 120])} }} ?item wdt:P300 ?k .'))
-    by_iso.update(sparql('?item wdt:P297 ?k . ?item wdt:P31/wdt:P279* wd:Q56061 .'))
-    items = {}
-    for item, kind, f in [*by_osm.values(), *by_iso.values()]:
-        items[item] = (kind, f)
+    # A folder's country: the one most of its regions' items are in.
+    country = {}
+    groups = sorted(p for p in want if p.endswith('_group.toml'))
+    for g in groups:
+        d = os.path.dirname(g)
+        rs = sorted({next((x[4:] for x in v[1].get('outline', []) if isinstance(x, str) and re.fullmatch(r'osm:\d+', x)), None)
+                     for q, v in decls.items() if os.path.dirname(q) == d and not q.endswith('_group.toml')} - {None})
+        if not rs:
+            continue
+        q = f'SELECT ?c (COUNT(?r) AS ?n) WHERE {{ VALUES ?r {{ {values(rs[:400])} }} ?i wdt:P402 ?r ; wdt:P17 ?c . }} GROUP BY ?c ORDER BY DESC(?n) ?c LIMIT 1'
+        b = json.loads(get('https://query.wikidata.org/sparql', urllib.parse.urlencode({'query': q}).encode(), 'application/sparql-results+json'))
+        time.sleep(1)
+        for row in b['results']['bindings']:
+            country[g] = row['c']['value'].rsplit('/', 1)[1]
+    by_item = sparql(f'VALUES ?item {{ {" ".join("wd:" + c for c in sorted(set(country.values())))} }} BIND(?item AS ?k)') if country else {}
+    by_item = {k.rsplit('/', 1)[1]: v for k, v in by_item.items()}
+    chosen = {p: by_osm[r] for p, r in rel_of.items() if r in by_osm}
+    chosen.update({g: by_item[c] for g, c in country.items() if c in by_item})
     # The files' metadata (Commons API), 50 at a time.
     meta = {}
-    names = sorted({f for _, f in items.values()})
+    names = sorted({f for _, _, f in chosen.values()})
     strip = lambda s: re.sub(r'\s+', ' ', html.unescape(re.sub(r'<[^>]+>', '', s or ''))).strip()
     for i in range(0, len(names), 50):
         q = {'action': 'query', 'format': 'json', 'formatversion': 2, 'prop': 'imageinfo', 'iiprop': 'url|size|extmetadata|mime',
              'iiurlheight': PNG_H, 'iiextmetadatafilter': 'LicenseShortName|Artist', 'titles': '|'.join('File:' + n for n in names[i:i + 50])}
         j = json.loads(get('https://commons.wikimedia.org/w/api.php?' + urllib.parse.urlencode(q)))
         norm = {n['to']: n['from'] for n in j['query'].get('normalized', [])}
-        for p in j['query']['pages']:
-            ii = (p.get('imageinfo') or [None])[0]
+        for pg in j['query']['pages']:
+            ii = (pg.get('imageinfo') or [None])[0]
             if ii:
                 m = ii.get('extmetadata', {})
-                meta[norm.get(p['title'], p['title'])[5:]] = {
+                meta[norm.get(pg['title'], pg['title'])[5:]] = {
                     'svg': ii['mime'] == 'image/svg+xml' and ii['size'] <= SVG_MAX, 'url': ii['url'], 'thumb': ii.get('thumburl'), 'page': ii['descriptionurl'],
                     'licence': strip(m.get('LicenseShortName', {}).get('value')),
                     'author': author(strip(m.get('Artist', {}).get('value')))}
         time.sleep(1)
-    os.makedirs(a.out, exist_ok=True)
-    old = {f for f in os.listdir(a.out) if re.fullmatch(r'Q\d+\.(svg|png)', f)}
-    index = {'osm': {}, 'iso': {}, 'items': {}}
-    for item, (kind, f) in sorted(items.items()):
+    symbols, fetched = {}, {}
+    for p, (item, kind, f) in sorted(chosen.items()):
         m = meta.get(f)
-        if not m or not (m['svg'] or m['thumb']) or f in REFUSED or not FREE.fullmatch(m['licence']):
+        if not m or not (m['svg'] or m['thumb']) or f in REFUSED or not free(m['licence'], lines):
             continue
-        file = f'{item}.{"svg" if m["svg"] else "png"}'
-        path = os.path.join(a.out, file)
-        if file not in old:
-            body = get(m['url'] if m['svg'] else m['thumb'])
-            with open(path, 'wb') as o:
-                o.write(body)
+        if item not in fetched:
+            data = get(m['url'] if m['svg'] else m['thumb'])
+            fetched[item] = (f'{item}.{kind_of(data)}', data)
             time.sleep(0.2)
-        old.discard(file)
-        index['items'][item] = {'file': file, 'kind': kind, 'name': f, 'page': m['page'], 'licence': m['licence'], 'author': m['author'], 'rendered': not m['svg']}
-    for k, (item, _, _) in sorted(by_osm.items()):
-        if item in index['items']:
-            index['osm'][k] = item
-    for k, (item, _, _) in sorted(by_iso.items()):
-        if item in index['items']:
-            index['iso'][k] = item
-    for f in old:
-        os.remove(os.path.join(a.out, f))
-    with open(os.path.join(a.out, 'index.json'), 'w') as o:
-        json.dump(index, o, indent=0, ensure_ascii=False, sort_keys=True)
-        o.write('\n')
-    print(f'{len(index["items"])} files ({sum(1 for v in index["items"].values() if v["rendered"])} rendered PNG), '
-          f'{len(index["osm"])} relations, {len(index["iso"])} ISO codes; {len(old)} removed')
+        name, data = fetched[item]
+        # (The check's bound: crate::inputs::regions::symbols::MAX_BYTES.)
+        if len(data) > MAX_BYTES:
+            continue
+        images[name] = data
+        symbols[p] = {'image': name, 'kind': kind, 'source': m['page'], 'author': m['author'], 'licence': m['licence']}
+    write(a.out, decls, symbols, images)
+    print(f'{len(symbols)} symbols added ({len(want) - len(symbols)} declarations without one found); '
+          f'{len(images)} images in {BUNDLE}')
 
 
 if __name__ == '__main__':

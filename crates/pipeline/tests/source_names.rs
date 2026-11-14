@@ -77,7 +77,8 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/jobrt/src/budget/mod.rs", "QUERY_DOMAINS", "\"qlever.dev\"", "the polite-use budget is by host (docs/pool.md §7.7): the query services' own limits, which hold for any request to them"),
     // Links that open a place elsewhere.
     ("web/src/main.ts", "-", "https://www.google.com/maps/", "opens the place in Google Maps"),
-    // The Regions list's flags' credits (task #869; made by producers/flags/fetch.py).
+    // The Regions list's bundled flags' credits (task #869; made by an earlier producers/flags/fetch.py;
+    // deleted with them in task #1396's stage B).
     ("web/src/flags/index.json", "-", "\"page\": \"https://commons.wikimedia.org/wiki/File:", "each flag's credit: its file's page on Commons, where its author and licence are (the Credits link it)"),
     ("web/src/flags/index.json", "-", "\"author\": \"", "each flag's credit: its author as Commons gives it (some name where they uploaded it, or a decree's link)"),
     ("web/src/flags/index.json", "-", "\"name\": \"", "each flag's file as Commons names it, after its place (a region an extents declaration also names, \"Ontario\", \"United States\", \"Bandeira do estado de São Paulo\"), not a source"),
