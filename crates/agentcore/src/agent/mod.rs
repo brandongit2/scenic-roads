@@ -11038,15 +11038,16 @@ mod tests {
         let n = plan_running_long(&mut a, &root, vec![gc]);
         let runs = |a: &Agent| a.mem.recent.iter().filter(|d| d.id == "gc").count();
         // Rounds while the next plan is held: its one run, then none.
-        let t = Instant::now();
-        while runs(&a) == 0 && t.elapsed() < Duration::from_secs(30) {
+        store::testkit::eventually("gc's run ended", || {
             a.round().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert_eq!(runs(&a), 1, "gc never ran");
+            runs(&a) > 0
+        });
+        assert_eq!(runs(&a), 1);
+        // (Without the rule, each of these rounds granted it again: 20 runs, the status's whole
+        // list.)
         for _ in 0..20 {
             a.round().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(50)); // (absence)
         }
         assert_eq!(runs(&a), 1, "gc granted again from plan {n}, made before its end");
         assert!(a.slots.iter().all(|s| s.running.is_none()), "nothing runs");
