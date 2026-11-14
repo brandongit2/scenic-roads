@@ -245,3 +245,115 @@ fn a_pyramids_stored_tiles_with_data_are_its_own() {
     assert!(!n.has(mid(1.0).0, mid(1.0).1), "the server hasn't it");
     assert!(!n.has(mid(2.0).0, mid(2.0).1), "the store lacks it");
 }
+
+/// A stored file of `px` pixels a side, each `deg / px` degrees, in the store
+/// (`sources/fetched/<id>/<name>`), its value `v(column, row)`, its west and north edges `w`, `n`.
+fn stored_file(root: &Path, id: &str, name: &str, [w, n, deg]: [f64; 3], nodata: Option<f64>, v: &dyn Fn(u32, u32) -> f32) {
+    let px = 360u32;
+    let vals: Vec<f32> = (0..px * px).map(|k| v(k % px, k / px)).collect();
+    let gt = [w, deg / f64::from(px), 0.0, n, 0.0, -deg / f64::from(px)];
+    let dir = root.join("sources/fetched").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(name), buildstore::geotiff::write_f32(px, px, &vals, 256, gt, 4326, nodata).unwrap()).unwrap();
+}
+
+/// The built set's rule is the terrain's sampler's (inputs::dem::generic, the one sampler the
+/// terrain's tiles are read through): over stored datasets made by hand (a coverage cut, nodata, a
+/// fill mask's voids, two overlapping files of one dataset, the first's void the second's data),
+/// each point's dataset as the built set reads it is the one the sampler takes its height from.
+#[test]
+fn each_points_dataset_is_the_samplers_first() {
+    use inputs::dem::declared::{Dataset as Planned, Format, Plan};
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path();
+    let url = |n: &str| format!("https://e.org/{n}");
+    // ("cut": a 3° file, nodata west of 10.67°E, its coverage the cell 10–11°E 40–41°N alone.)
+    stored_file(root, "cut", "C.tif", [9.0, 42.0, 3.0], Some(-9999.0), &|c, _| if c < 200 { -9999.0 } else { 50.0 });
+    // ("glo": A, its fill mask's voids in a square; B, from 10.25°E, under the square's east part.)
+    stored_file(root, "glo", "A.tif", [10.0, 41.0, 1.0], None, &|_, _| 100.0);
+    stored_file(root, "glo", "A_FLM.tif", [10.0, 41.0, 1.0], None, &|c, r| {
+        if (50..200).contains(&c) && (100..200).contains(&r) {
+            5.0
+        } else {
+            1.0
+        }
+    });
+    stored_file(root, "glo", "B.tif", [10.25, 41.0, 1.0], None, &|_, _| 200.0);
+    // ("base": 3° of data everywhere.)
+    stored_file(root, "base", "D.tif", [9.0, 42.0, 3.0], None, &|_, _| 10.0);
+    let (a, b, big) = ([10.0, 40.0, 11.0, 41.0], [10.25, 40.0, 11.25, 41.0], [9.0, 39.0, 12.0, 42.0]);
+    let dir = |id: &str| NasRoot::local_for_test(root).join("sources/fetched").join(id);
+    let cut = dataset(
+        "cut",
+        Some([10.0, 40.0, 11.0, 41.0]),
+        Has::Stored { crs: 4326, dir: dir("cut"), files: vec![(url("C.tif"), big, false)] },
+    );
+    let glo = dataset(
+        "glo",
+        None,
+        Has::Stored { crs: 4326, dir: dir("glo"), files: vec![(url("A_FLM.tif"), a, true), (url("B.tif"), b, false)] },
+    );
+    let base = dataset("base", None, Has::Stored { crs: 4326, dir: dir("base"), files: vec![(url("D.tif"), big, false)] });
+    let ds = [cut, glo, base];
+    let geotiff = |files: Vec<(String, Option<[f64; 4]>)>, masks| Format::Geotiff {
+        crs: 4326,
+        read_resolution: None,
+        store: true,
+        files,
+        masks,
+    };
+    let planned = |id: &str, cover: Option<Vec<[f64; 4]>>, source| Planned {
+        id: id.into(),
+        code: 1,
+        resolution: 30.0,
+        cover,
+        source,
+        convert: None,
+        outline: None,
+    };
+    let plan = Plan {
+        fmt: 1,
+        version: "t".into(),
+        tag: "1".into(),
+        datasets: vec![
+            planned("cut", Some(vec![[10.0, 40.0, 11.0, 41.0]]), geotiff(vec![(url("C.tif"), Some(big))], vec![None])),
+            planned(
+                "glo",
+                None,
+                geotiff(vec![(url("A.tif"), Some(a)), (url("B.tif"), Some(b))], vec![Some(url("A_FLM.tif")), None]),
+            ),
+            planned("base", None, geotiff(vec![(url("D.tif"), Some(big))], vec![None])),
+        ],
+    };
+    // (Points over all of it, none on a pixel's edge.)
+    let mut seed = 7u64;
+    let mut rnd = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let (lon, lat): (Vec<f64>, Vec<f64>) = (0..20_000).map(|_| (9.6 + 2.0 * rnd(), 39.6 + 1.8 * rnd())).unzip();
+    let f = buildstore::fetch::MapFetch::default();
+    let o = inputs::dem::generic::Opts {
+        fetch: &f,
+        store: Some(store::nasfs::NasPath::local_for_test(root.join("sources/fetched"))),
+        local: None,
+    };
+    let got = inputs::dem::generic::sample(&plan, &lon, &lat, &o, &|_| {}).unwrap();
+    let area = [9.6, 39.6, 11.6, 41.4];
+    let near: Vec<Near> = ds.iter().map(|d| near(d, area, 1.0, None)).collect::<Result<_>>().unwrap();
+    let here = Here { ds: &ds, near, one: vec![1, 2, 3] };
+    let (skip, whole) = (vec![false; 3], vec![false; 3]);
+    let mut seen = [0usize; 4];
+    for i in 0..lon.len() {
+        let built = here.at(lon[i], lat[i], &skip, &whole);
+        let sampler = if got.first[i] == u16::MAX { 0 } else { u32::from(got.first[i]) + 1 };
+        assert_eq!(built, sampler, "at {}, {}", lon[i], lat[i]);
+        seen[built as usize] += 1;
+    }
+    // (Each case met: every dataset somewhere, the voids' east part B's.)
+    assert!(seen[1..].iter().all(|&n| n > 100), "{seen:?}");
+    let (vx, vy) = (10.0 + 170.5 / 360.0, 41.0 - 150.5 / 360.0);
+    let (vw, vyw) = (10.0 + 60.5 / 360.0, vy);
+    let one = |x: f64, y: f64| here.at(x, y, &skip, &whole);
+    assert_eq!((one(vx, vy), one(vw, vyw)), (2, 3), "a void over B is B's (glo), west of B the next dataset's");
+}

@@ -414,8 +414,9 @@ impl Near<'_> {
             }
             Near::Stored { proj, windows } => {
                 let (x, y) = at(proj);
-                // (The first file whose footprint holds it, as the sampler takes it.)
-                windows.iter().find(|(f, _)| in_fp(f, x, y)).is_some_and(|(_, w)| w.has(x, y))
+                // (Any file whose footprint holds it with data there: the sampler tries the next file
+                // holding a point where the first has none, inputs::dem::generic's GeoSet::sample.)
+                windows.iter().any(|(f, w)| in_fp(f, x, y) && w.has(x, y))
             }
             Near::Tiles { zoom, data } => {
                 if !merc {
