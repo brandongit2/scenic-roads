@@ -61,10 +61,9 @@
 # drop calls within 60 s; the run itself must print its first line within 120 s (its first,
 # "connected", comes at once). Past a bound, the ssh is stopped and the run refused, saying why.
 # The test Mac, known two ways (owner, 31 Oct and 10 Nov): who it is, its LocalHostName, the pool's name
-# for a Mac (SCENIC_TEST_MAC, the M4 by default), checked here before anything connects, so on it the
+# for a Mac (test_mac_name, tools/app/test-mac.zsh: SCENIC_TEST_MAC, the M4 by default), checked here before anything connects, so on it the
 # tests run here at once, with no ssh to itself (no 1Password approval, no 20 s probe); and how to
 # reach it from another Mac (SCENIC_TEST_HOST, an ssh alias, `m4` by default).
-test_mac=${SCENIC_TEST_MAC:-Brandons-MacBook-Pro}
 host=${SCENIC_TEST_HOST:-m4}
 # The fresh-connection probe's bound in seconds (a test's shorter: SCENIC_TEST_PROBE_S).
 probe_s=${SCENIC_TEST_PROBE_S:-20}
@@ -370,11 +369,12 @@ on_test_mac() {  # <args...>: this script's test Mac side, over ssh (the shared 
 
 local_main() {  # <key> <source dir> <command>
   local key=$1 src=${2:A} cmd=$3
+  source ${self:h}/test-mac.zsh
   [[ $key == [A-Za-z0-9._-]## && $key != .* ]] || { print "remote-tests: bad key $key"; return 2; }
   ( cd $src && versions "this Mac ($(scutil --get LocalHostName 2>/dev/null))" )
   local why=
-  if [[ -n ${SCENIC_CHECK_LOCAL:-}${SCENIC_TESTS_LOCAL:-} ]]; then why="SCENIC_CHECK_LOCAL set"
-  elif [[ $(scutil --get LocalHostName 2>/dev/null) == $test_mac ]]; then why="this is the test Mac"
+  if tests_local; then why="SCENIC_CHECK_LOCAL set"
+  elif is_test_mac; then why="this is the test Mac"
   fi
   if [[ -n $why ]]; then
     print "remote-tests: running here ($why; load $(loadavg))"

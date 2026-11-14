@@ -16,8 +16,13 @@ crate=agentcore
 mod=$(cd $wt/crates/$crate/src && for d in */; do [[ -f $d/mod.rs ]] && { print ${d%/}; break }; done)
 [[ -n $mod ]] || { print "no <mod>/mod.rs in $crate"; exit 1 }
 typeset -a cases   # expectation, cwd, command; a case after another
-check() {  # [-C <cwd>] expectation (ok | a text the refusal has), command; cwd: the worktree
-  local cwd=$wt; [[ $1 == -C ]] && { cwd=$2; shift 2 }
+# Which Mac the guard takes this one for (SCENIC_THIS_MAC, tools/app/test-mac.zsh): the test Mac, but in the cases
+# that say -M <name> [<VAR=value>...]: that Mac, with those variables set, as an agent's shell may have them.
+source $here/../../app/test-mac.zsh
+export SCENIC_THIS_MAC=$(test_mac_name); unset SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL
+check() {  # [-C <cwd>] [-M <mac> [VAR=value...]] expectation (ok | a text the refusal has), command; cwd: the worktree
+  local cwd=$wt mac=; [[ $1 == -C ]] && { cwd=$2; shift 2 }
+  [[ $1 == -M ]] && { mac=$2; shift 2; while [[ $1 == *=* ]]; do mac+=,$1; shift; done; cwd+="@mac=$mac" }
   cases+=( "$1" "$cwd" "$2" )
 }
 
@@ -97,6 +102,31 @@ check ok "cargo test -p $crate -- $f --skip '\$(:)'"   # single-quoted: text, no
 check ok "cargo test -p $crate -- $f > /p/log && echo \$(date)"
 check ok "echo \$(date) | cargo test -p $crate -- $f"
 
+# Where the run goes (#1398; agent-rules.md, "Where things run"): a cargo test or nextest run an agent types is
+# refused on any Mac but the test Mac, saying what to run instead; the test Mac, SCENIC_TESTS_LOCAL (in the
+# command, or set in the shell's environment; SCENIC_CHECK_LOCAL as well) and the remote runner let it through.
+W="Tests run on the test Mac"
+for cmd in "cargo test -p $crate -- $f" "cargo nextest run -p $crate $f" "cargo t -p $crate -- $f" "cd $wt && cargo test -p $crate -- $f 2>&1 | tee /p/log" "zsh -c 'cargo test -p $crate -- $f'" "cargo test -p $crate --release -- $f #perf" "cargo test -p $crate #repro"; do
+  check -M another-mac "$W" "$cmd"
+  check -M another-mac "tools/dev/check.sh" "$cmd"
+  check -M another-mac "tools/app/remote-tests.sh <a key" "$cmd"
+  check ok "$cmd"
+  check -M another-mac SCENIC_TESTS_LOCAL=1 ok "$cmd"
+  check -M another-mac SCENIC_CHECK_LOCAL=1 ok "$cmd"
+  check -M another-mac ok "SCENIC_TESTS_LOCAL=1 $cmd"
+  check -M another-mac ok "env SCENIC_CHECK_LOCAL=1 $cmd"
+done
+check -M another-mac "$W" "SCENIC_TESTS_LOCAL= cargo test -p $crate -- $f"   # an empty value asks for nothing
+# A run through the remote runner holds its cargo in one quoted argument (never found), as an ssh to the test Mac does.
+check -M another-mac ok "tools/dev/check.sh"
+check -M another-mac ok "tools/app/remote-tests.sh k $wt 'cargo nextest run -p $crate $f'"
+check -M another-mac ok "tools/app/remote-tests.sh k . 'cargo test -p $crate -- $f' 2>&1 | tail -5"
+check -M another-mac ok "ssh m4 'cd x && cargo test -p $crate -- $f'"
+check -M another-mac ok "cargo clippy -p $crate && cargo build -p $crate && cargo check -p $crate"   # builds and lints aren't test runs
+check -M another-mac ok "cargo fmt --check"
+# (The checks of a run that is let through still apply: here, a filter that isn't a module path.)
+check -M another-mac SCENIC_TESTS_LOCAL=1 "isn't a module path" "cargo test -p $crate -- bare"
+
 python3 - $here/../test-guard.py "${cases[@]}" <<'PY'
 import io, json, os, subprocess, sys, traceback
 from contextlib import redirect_stderr, redirect_stdout
@@ -116,6 +146,14 @@ def once(f):   # a process's answer (or its error), kept for the same call
     return call
 subprocess.run, subprocess.check_output = once(subprocess.run), once(subprocess.check_output)
 def verdict(cwd, cmd):   # what the hook would show: the guard's output, or its traceback
+    cwd, _, spec = cwd.partition("@mac=")   # (a case's Mac and variables: SCENIC_THIS_MAC=<mac>, VAR=value)
+    env = dict(os.environ)
+    for k, kv in enumerate(spec.split(",") if spec else []):
+        if k == 0: os.environ["SCENIC_THIS_MAC"] = kv
+        else: os.environ[kv.split("=")[0]] = kv.split("=", 1)[1]
+    try: return verdict_in(cwd, cmd)
+    finally: os.environ.clear(); os.environ.update(env)
+def verdict_in(cwd, cmd):
     sys.stdin, out = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd, "agent_id": "t"})), io.StringIO()
     try:
         with redirect_stdout(out), redirect_stderr(out): exec(code, {"__name__": "__main__", "__file__": guard})
@@ -139,6 +177,13 @@ hook() { python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool
 out=$(hook "cargo test -p $crate -- bare"); rc=$?
 if (( rc == 2 )) && [[ $out == *"isn't a module path"* ]]; then print "ok (hook refuses): cargo test -p $crate -- bare"
 else print "FAIL (hook refuses, exit $rc): cargo test -p $crate -- bare\n  $out"; fail=1; fi
+# The hook off the test Mac: refused with where tests run; the override lets it through to the checks that follow.
+out=$(SCENIC_THIS_MAC=another-mac hook "cargo test -p $crate -- $f"); rc=$?
+if (( rc == 2 )) && [[ $out == *"Tests run on the test Mac"*"tools/dev/check.sh"* ]]; then print "ok (hook off the test Mac): cargo test -p $crate -- $f"
+else print "FAIL (hook off the test Mac, exit $rc): cargo test -p $crate -- $f\n  $out"; fail=1; fi
+out=$(SCENIC_THIS_MAC=another-mac SCENIC_TESTS_LOCAL=1 hook "cargo test -p $crate -- bare"); rc=$?
+if (( rc == 2 )) && [[ $out == *"isn't a module path"* ]]; then print "ok (hook, override): cargo test -p $crate -- bare"
+else print "FAIL (hook, override, exit $rc): cargo test -p $crate -- bare\n  $out"; fail=1; fi
 out=$(hook "ls"); rc=$?
 if (( rc == 0 )) && [[ -z $out ]]; then print "ok (hook passes): ls"; else print "FAIL (hook passes, exit $rc): ls\n  $out"; fail=1; fi
 # affected-tests.sh failing (here rg off the PATH, as in a plain ssh shell) refuses as that, not as "nothing affected".

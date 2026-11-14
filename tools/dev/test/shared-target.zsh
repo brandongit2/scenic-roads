@@ -15,6 +15,10 @@ w=$s/.claude/worktrees; mkdir -p $w
 export SCENIC_DEVJOB_DIR=$s/devjobs SCENIC_BOARD=http://127.0.0.1:9; unset SCENIC_DEVJOB SCENIC_DEVJOB_PARENT
 # (The toy cargos' waits are this test's, not its caller's: check.sh's terminal doesn't get them.)
 unset SCENIC_CARGO_SAY
+# (These toys run tests as an agent worktree does, so this Mac is the test Mac for them: the shim refuses a
+# worktree's test run elsewhere, which "Tests refused off the test Mac" below checks.)
+source ${0:A:h:h:h}/app/test-mac.zsh
+export SCENIC_THIS_MAC=$(test_mac_name); unset SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL
 dj=$SCENIC_DEVJOB_DIR
 quiet() {  # the sampler gone (it ends once nothing is live and every report is read)
   local i f; for (( i = 0; i < 600; i++ )); do
@@ -424,4 +428,16 @@ print other > $w/d/shared/note.txt
 [[ $(built c) == "dir dlib gen inc plain user" ]] || fail "back in c: not dir, dlib, gen, inc, plain and user again: $(built c)"
 [[ $(cd $w/c && $sh run -q -p gen 2>$s/err) == c-data ]] || fail "c's gen ran with d's data.txt: $(cat $s/err)"
 [[ $(cd $w/c && $sh run -q -p inc 2>$s/err) == same ]] || fail "c's inc ran with d's note.txt: $(cat $s/err)"
+# Tests refused off the test Mac (#1398): a test or nextest run from a worktree on another Mac runs nothing and
+# says where tests run; SCENIC_TESTS_LOCAL (or SCENIC_CHECK_LOCAL) or the test Mac itself lets it through, and
+# what isn't a test run (a build) is never refused.
+for sub in "test -q --lib" "t -q --lib" "nextest run"; do
+  out=$(cd $w/a && SCENIC_THIS_MAC=another-mac $sh ${=sub} 2>&1); rc=$?
+  (( rc == 2 )) && [[ $out == *"tests run on the test Mac"*"tools/dev/check.sh"*"remote-tests.sh"* ]] || fail "$sub off the test Mac: exit $rc: $out"
+done
+for e in SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL; do
+  (cd $w/a && env SCENIC_THIS_MAC=another-mac $e=1 $sh test -q --lib >/dev/null 2>&1) || fail "$e=1: test run refused"
+done
+(cd $w/a && SCENIC_THIS_MAC=another-mac $sh build -q 2>&1) || fail "a build off the test Mac refused"
+
 print "shared-target: ok"

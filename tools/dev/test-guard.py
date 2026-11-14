@@ -80,6 +80,20 @@ def scan(text, depth=0):
                 found.append(sub[1:])
 scan(cmd)
 
+# --- Where the run goes (tools/dev/agent-rules.md, "Where things run": tests run on the test Mac). The runs found
+# are cargo's own, here; a run through the remote runner (tools/dev/check.sh, tools/app/remote-tests.sh '<cargo
+# test …>', an ssh to the test Mac) holds its cargo in a quoted argument, which is not scanned, so it is never
+# found. One definition of the test Mac: tools/app/test-mac.zsh's is_test_mac and tests_local (SCENIC_THIS_MAC and
+# SCENIC_TEST_MAC stand in for another Mac in tests).
+if found:
+    lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "test-mac.zsh")
+    def lib_says(fn): return subprocess.run(["zsh", "-c", "source \"$1\" && " + fn, "zsh", lib], env=dict(os.environ), capture_output=True, text=True).returncode == 0
+    carried = re.search(r"\bSCENIC_(?:TESTS|CHECK)_LOCAL=[^\s'\"]", cmd)   # (set in the command: SCENIC_TESTS_LOCAL=1 cargo test …)
+    if not (carried or lib_says("tests_local") or lib_says("is_test_mac")):
+        block("Tests run on the test Mac (the M4), not on this Mac: run tools/dev/check.sh in your worktree (it sends the affected tests there), "
+              "or tools/app/remote-tests.sh <a key of your own> <your worktree> 'cargo nextest run -p <crate> …' (the cargo command is one quoted argument; it runs there on an exact copy of the tree). "
+              "SCENIC_TESTS_LOCAL=1 before the command runs it here on purpose: only when the PM says the test Mac is away.")
+
 TAKES = {"-p","--package","--test","--bin","--features","-F","-j","--jobs","--target-dir","--manifest-path","--profile",
          "--example","--bench","--exclude","--target","--color","--message-format","-Z","--config","--partition","--retries",
          "--test-threads","--threads","--skip","--format","--logfile","--report-time","--shuffle-seed","-E","--filterset",

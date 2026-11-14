@@ -11,6 +11,21 @@ words hold `$( … )`, `<( … )`, `>( … )` or backticks outside single quotes
 and a comment aren't its words), and `sh -c`, `eval` or a command word built from a substitution whose script mentions cargo test); a run inside such a substitution is found.
 Not seen: a run through a shell function or alias, a script file, or a substitution's output that names cargo without the script saying it (`$(cat cmd.txt)`).
 
+**Where a test run goes (#1398).** A `cargo test` or `cargo nextest run` the guard finds is refused unless this
+Mac is the test Mac (the M4: `tools/app/test-mac.zsh`'s `is_test_mac`, the one definition, which remote-tests.sh and
+the cargo shim use too: `SCENIC_TEST_MAC`, default `Brandons-MacBook-Pro`, against `scutil --get LocalHostName`;
+`SCENIC_THIS_MAC` stands in for this Mac's name in tests). The refusal says to run `tools/dev/check.sh` or
+`tools/app/remote-tests.sh <key> <worktree> 'cargo nextest run -p <crate> …'`. Not refused: those two (and an
+`ssh` to the test Mac), which hold their cargo in a quoted argument the guard doesn't read as a run; builds,
+`clippy`, `check` and `fmt` (check.sh runs those here on purpose); and a run asked for here with
+`SCENIC_TESTS_LOCAL=1` (or `SCENIC_CHECK_LOCAL=1`) in the command (`SCENIC_TESTS_LOCAL=1 cargo test …`) or the
+shell's environment: the PM's fallback while the test Mac is away, never an agent's own choice. The
+`tools/dev/bin/cargo` shim refuses the same runs (`test`, `t`, `nextest run`) from a worktree under
+`.claude/worktrees/` on another Mac, with the same override: it catches what the hook can't read (a script, a
+function, a sub-shell). check.sh's own tests part goes to the test Mac (below), or runs here under
+`SCENIC_CHECK_LOCAL`; publish.sh isn't in a worktree. Tested by `tools/dev/test/test-guard.zsh` (the hook) and
+`tools/dev/test/shared-target.zsh` (the shim).
+
 - Tests build optimized (`[profile.test]` in Cargo.toml, #505: opt-level 1 for the workspace, 3 for
   dependencies; debug assertions and overflow checks stay on), so the first `cargo test` in a fresh
   worktree or after a dependency change compiles the dependencies once (~5 min); after that an edit

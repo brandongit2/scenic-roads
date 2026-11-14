@@ -498,6 +498,18 @@ case $sub in
   nextest) for (( i = si + 1; i <= $#args; i++ )); do [[ $args[i] == [+-]* ]] || break; done
            [[ ${args[i]:-} == (run|r) ]] && ri=$i ;;
 esac
+# A test run from an agent worktree on a Mac that is not the test Mac: refused (#1398; the hook,
+# tools/dev/test-guard.py, refuses the runs it can read, this one those it can't: a script, a function, a
+# sub-shell). The test Mac, and the override, are tools/app/test-mac.zsh's (is_test_mac, tests_local). What runs
+# tests here on purpose passes: check.sh's own parts build and lint, its tests go to the test Mac
+# (remote-tests.sh runs them there, or here with SCENIC_CHECK_LOCAL=1), and publish.sh isn't in a worktree.
+if (( inside )) && [[ $sub == (t|test|nextest) ]] && (( ri )); then
+  source ${self:h:h:h}/app/test-mac.zsh
+  if ! tests_local && ! is_test_mac; then
+    print -u2 -r -- "cargo (tools/dev/bin): tests run on the test Mac ($(test_mac_name)), not on this Mac ($(this_mac)): run tools/dev/check.sh in your worktree, or tools/app/remote-tests.sh <a key of your own> <your worktree> 'cargo nextest run -p <crate> …'. SCENIC_TESTS_LOCAL=1 runs them here on purpose: only when the PM says the test Mac is away. See tools/dev/testing.md."
+    exit 2
+  fi
+fi
 (( ri )) || whole "$@"
 host=$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')
 [[ -n $host ]] || whole "$@"
