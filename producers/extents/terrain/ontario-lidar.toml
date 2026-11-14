@@ -5,7 +5,7 @@ licence_url = "https://www.ontario.ca/page/open-government-licence-ontario"
 source = "https://ws.geoservices.lrc.gov.on.ca/arcgis5/rest/services/Elevation"
 theme = "terrain"
 availability = "open"
-notes = "The catalogues of the province's elevation image services, an item per 1 km tile: the two lidar bare-earth services, their two lidar surface models (the Ontario Digital Surface Model (Lidar-Derived) and FRI_DSM_SPL, from the same surveys), and the two image-matched ones (the Ontario Digital Surface Model (Imagery-Derived), 0.5 m, \"based on a pixel-correlation process using aerial photography\" of the province's photography projects (SCOOP 2018 …), and the older Ontario Digital Elevation Model (Imagery-Derived), 2 m, \"a generalized representation of both surface and ground features\": a surface model too). The Ontario Digital Terrain Model (Lidar-Derived): by project (`Project`), each tile's cell as stated (`Resolution_m`, 0.5 m or 1 m) and its acquisition's last year (`EndYear`); its `VerticalAccuracyClass` (5, 10, 15) is a class the service doesn't define, so it isn't read; the surface model's tiles state the same fields. The Forest Resources Inventory's single-photon lidar DTM (FRI_DTM_SPL, leaf-on, flown 2018 to 2025): its tiles' cell (`LowPS`, 0.5 m); its items state no year (a tile's name holds one, run into other digits); its surface model's alike. The image-matched models: by project, each tile's cell (`Resolution_m`) and its photography's year (`Year`); their `VerticalAccuracy` is empty."
+notes = "The catalogues of the province's elevation image services, an item per 1 km tile: the two lidar bare-earth services, their two lidar surface models (the Ontario Digital Surface Model (Lidar-Derived) and FRI_DSM_SPL, from the same surveys), and the two image-matched ones (the Ontario Digital Surface Model (Imagery-Derived), 0.5 m, \"based on a pixel-correlation process using aerial photography\" of the province's photography projects (SCOOP 2018 …), and the older Ontario Digital Elevation Model (Imagery-Derived), 2 m, \"a generalized representation of both surface and ground features\": a surface model too). The Ontario Digital Terrain Model (Lidar-Derived): by project (`Project`), each tile's cell as stated (`Resolution_m`, 0.5 m or 1 m) and its acquisition's last year (`EndYear`; where it is empty, GTA 2014-18's and Hamilton-Niagara 2021's DTM tiles, some of DEDSFM Kawartha Lakes 2023's and DEDSFM Sault Ste Marie 2023-24's DSM tiles, the project's name's last year: 2014-18 is 2018); its `VerticalAccuracyClass` (5, 10, 15) is a class the service doesn't define, so it isn't read; the surface model's tiles state the same fields. The Forest Resources Inventory's single-photon lidar DTM (FRI_DTM_SPL, leaf-on): its tiles' cell (`LowPS`, 0.5 m) and year, the four digits before the `L` that ends a tile's name (`Name`, 1kmZ176170503902019L_DEM: zone 17, the tile's corner, 2019), 2018 to 2024; the items have no year field, nor has the inventory's tile index (FRI_Leaf_On_Tile_Index_SHP: names and download links), and the year is the flight's: of 52 tiles' point clouds sampled across the years, the last points' GPS times (their COPC headers) fell in the named year in 50 and in the year before in 2 (a 2023 tile flown in September 2022, a 2024 one in September 2023). Its surface model's alike (`_DSM`). The image-matched models: by project, each tile's cell (`Resolution_m`) and its photography's year (`Year`); their `VerticalAccuracy` is empty."
 
 [[piece]]
 id = "dtm"
@@ -19,7 +19,7 @@ name = "Project"
 [piece.metrics]
 surface = "ground"
 spacing_m = { field = "Resolution_m" }
-year = { field = "EndYear", date = "year" }
+year = [{ field = "EndYear", date = "year" }, { field = "Project", date = "text" }]
 
 [[piece]]
 id = "fri-spl"
@@ -32,6 +32,7 @@ page = 1000
 [piece.metrics]
 surface = "ground"
 spacing_m = { field = "LowPS" }
+year = { field = "Name", pattern = '((?:19|20)\d\d)L(?:_DEM)?$', date = "year" }
 
 [[piece]]
 id = "dsm"
@@ -46,7 +47,7 @@ name = "Project"
 [piece.metrics]
 surface = "surface"
 spacing_m = { field = "Resolution_m" }
-year = { field = "EndYear", date = "year" }
+year = [{ field = "EndYear", date = "year" }, { field = "Project", date = "text" }]
 
 [[piece]]
 id = "fri-spl-dsm"
@@ -59,6 +60,7 @@ page = 1000
 [piece.metrics]
 surface = "surface"
 spacing_m = { field = "LowPS" }
+year = { field = "Name", pattern = '((?:19|20)\d\d)L(?:_DSM)?$', date = "year" }
 
 [[piece]]
 id = "dsm-imagery"
