@@ -501,6 +501,7 @@ async fn serve(cli: Cli) -> Result<()> {
         .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list))
         .route("/api/regions/at", get(regions::at))
+        .route("/api/regions/symbols/{name}", get(regions::symbol))
         .route("/api/downloads", get(downloads::get_status))
         .route("/api/downloads/world", axum::routing::put(downloads::put_world))
         .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))

@@ -7,6 +7,9 @@
 //!                                   kept on this Mac (`Listing`), brought up to date every minute
 //!   GET    /api/regions/at          the regions at a point (`lng`, `lat`), from the region layer's
 //!                                   tiles (codecs::regionlayer::hit): what the footer tells hovered
+//!   GET    /api/regions/symbols/<hash16>.<ext>  a region's or folder's symbol (its flag, coat of
+//!                                   arms or seal: docs/inputs.md §6.1.3), by its content name, from
+//!                                   this Mac's copy of the accepted version: cached for good
 //!
 //! Outlines come from the latest OSM pass (the catalogue's `global.outlines`); records and strings are
 //! read once per catalogue, rings when an outline is drawn or tested.
@@ -234,6 +237,11 @@ pub struct Listed {
     /// the pass has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area: Option<Value>,
+    /// Its symbol as accepted (`symbol_json`: its URL here and its credit); none when it has none
+    /// (the list shows the placeholder, or until stage B of task #1396 the bundled flag). Not kept
+    /// in the listing: read from the accepted copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<Value>,
 }
 
 impl Listed {
@@ -252,6 +260,7 @@ impl Listed {
             bbox: None,
             label: None,
             area: None,
+            symbol: None,
         }
     }
 }
@@ -427,7 +436,14 @@ pub async fn list(State(s): State<S>) -> Response {
                 });
             }
         }
-        let t = tree(&s2, &ok);
+        let accepted = inputs::inputs::served::kept(&accepted_dir(&s2));
+        let images = accepted.as_ref().map(|k| Symbols::of(&k.index)).unwrap_or_default();
+        for r in &mut ok {
+            let facts = accepted.as_ref().and_then(|k| k.index.files.get(&r.path)).map(|e| &e.facts);
+            r.symbol = facts.and_then(|f| symbol_json(&images, f.get("symbol")?));
+        }
+        let mut t = serde_json::to_value(tree(&s2, &ok)).unwrap_or_default();
+        folder_symbols(&images, &mut t);
         let mut v = json!({ "regions": ok, "bad": bad, "tree": t });
         if nas(&s2).is_none() {
             v["offline"] = true.into();
@@ -726,6 +742,99 @@ fn label_point(poly: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
     [cy, (s + n) / 2.0].into_iter().filter_map(widest).max_by(|a, b| a.1.total_cmp(&b.1)).map(|w| w.0)
 }
 
+// ---- the symbols ---------------------------------------------------------------------------------
+
+use inputs::inputs::regions::symbols::{self, Images as Symbols};
+
+/// A `[symbol]` fact as the list gives it: its URL here (by its image's content name) and its
+/// credit; None when the accepted version hasn't its image (the placeholder).
+fn symbol_json(images: &Symbols, fact: &Value) -> Option<Value> {
+    let s: symbols::Symbol = serde_json::from_value(fact.clone()).ok()?;
+    let content = images.by_name.get(&s.image)?;
+    Some(json!({
+        "url": format!("/api/regions/symbols/{content}"),
+        "kind": s.kind, "source": s.source, "author": s.author, "licence": s.licence,
+    }))
+}
+
+/// The tree's folders' symbols (their `_group.toml`'s) as the list gives them.
+fn folder_symbols(images: &Symbols, f: &mut Value) {
+    if let Some(o) = f.as_object_mut() {
+        if let Some(s) = o.remove("symbol").and_then(|s| symbol_json(images, &s)) {
+            o.insert("symbol".into(), s);
+        }
+        for g in o.get_mut("folders").and_then(Value::as_array_mut).into_iter().flatten() {
+            folder_symbols(images, g);
+        }
+    }
+}
+
+/// The images of the accepted version kept here, by content name (`Symbols`), and the bundle read
+/// last (its copy's name and its images): read again only when the copy's index changes.
+type SymbolsKept = Option<((std::path::PathBuf, u64, Option<std::time::SystemTime>), Arc<Symbols>)>;
+static SYMBOLS: Mutex<SymbolsKept> = Mutex::new(None);
+static BUNDLE: Mutex<Option<(String, Arc<std::collections::BTreeMap<String, Vec<u8>>>)>> = Mutex::new(None);
+
+/// The bytes of the image named `name` (`<hash16>.<ext>`) in the accepted version kept in `dir`,
+/// checked against its name; None when it has none of that name.
+fn symbol_bytes(dir: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(dir.join("@index.json")).ok()?;
+    let stamp = (dir.to_path_buf(), meta.len(), meta.modified().ok());
+    let images = {
+        let mut g = SYMBOLS.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref().filter(|(k, _)| *k == stamp) {
+            Some((_, i)) => i.clone(),
+            None => {
+                let i = Arc::new(Symbols::of(&inputs::inputs::served::kept(dir)?.index));
+                *g = Some((stamp, i.clone()));
+                i
+            }
+        }
+    };
+    let (file, member) = images.by_content.get(name)?;
+    let bytes = match member {
+        None => std::fs::read(dir.join(file)).ok()?,
+        Some(m) => {
+            let mut g = BUNDLE.lock().unwrap_or_else(|e| e.into_inner());
+            if g.as_ref().is_none_or(|(f, _)| f != file) {
+                let b = symbols::bundle(&std::fs::read(dir.join(file)).ok()?).ok()?;
+                *g = Some((file.clone(), Arc::new(b)));
+            }
+            g.as_ref()?.1.get(m)?.clone()
+        }
+    };
+    (name.split('.').next() == Some(store::naming::hash16(&bytes).as_str())).then_some(bytes)
+}
+
+/// A symbol by its content name: cached for good (its name is its content), served as an image
+/// alone. The check refused any SVG with a script, an event handler or a reference outside itself
+/// (inputs::inputs::regions::symbols::svg); behind it, the headers: its type from its name (never
+/// sniffed), and a policy that loads nothing and runs nothing, so even opened on its own, the
+/// image can't reach anything.
+pub async fn symbol(State(s): State<S>, axum::extract::Path(name): axum::extract::Path<String>) -> Response {
+    // (A content name, `<hash16>.<ext>`, or nothing: never a path.)
+    let hex = name
+        .split_once('.')
+        .is_some_and(|(h, _)| h.len() == 16 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+    let Some(kind) = symbols::Kind::of(&name).filter(|_| hex) else { return StatusCode::NOT_FOUND.into_response() };
+    let dir = accepted_dir(&s);
+    let found = tokio::task::spawn_blocking(move || symbol_bytes(&dir, &name)).await.ok().flatten();
+    let Some(bytes) = found else { return StatusCode::NOT_FOUND.into_response() };
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, kind.mime()),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (axum::http::header::CONTENT_SECURITY_POLICY, SYMBOL_CSP),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// What a symbol may do when opened on its own: load nothing, run nothing; its own styles only.
+pub const SYMBOL_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
 /// What `/api/regions/at` is asked: a point.
 #[derive(Deserialize)]
 pub struct AtQuery {
@@ -967,6 +1076,138 @@ mod tests {
         // A file gone is gone from it.
         std::fs::remove_file(dir.join("c.toml")).unwrap();
         assert_eq!(load_all(&pool, &nas, &first).unwrap().files.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_symbols_are_listed_and_served_from_the_accepted_copy() {
+        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = store::nasfs::NasRoot::local_for_test(nas.path());
+        let table = |image: &str| {
+            format!("[symbol]\nimage = \"{image}\"\nkind = \"flag\"\nsource = \"https://example.org/{image}\"\nlicence = \"CC0\"\n")
+        };
+        let a = format!("{}{}", region("a", "A"), table("Q1.svg"));
+        let b = format!("{}{}", region("b", "B"), table("Q9.svg"));
+        let group = format!("name = \"Europe\"\n{}", table("Q2.png"));
+        std::fs::create_dir_all(nas.path().join("inputs/regions/eu")).unwrap();
+        std::fs::write(nas.path().join("inputs/regions/eu/a.toml"), &a).unwrap();
+        std::fs::write(nas.path().join("inputs/regions/b.toml"), &b).unwrap();
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg'/>";
+        let png = {
+            let mut p = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+            p.extend(2u32.to_be_bytes());
+            p.extend(1u32.to_be_bytes());
+            p
+        };
+        // (A zip of one stored member, as a tool may write it; its CRC isn't read.)
+        let zip = {
+            let n = b"Q2.png";
+            let head = |sig: u32, central: bool| {
+                let mut h = sig.to_le_bytes().to_vec();
+                if central {
+                    h.extend(20u16.to_le_bytes());
+                }
+                h.extend([20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                h.extend((png.len() as u32).to_le_bytes());
+                h.extend((png.len() as u32).to_le_bytes());
+                h.extend((n.len() as u16).to_le_bytes());
+                h.extend(0u16.to_le_bytes());
+                if central {
+                    h.extend([0u8; 14]);
+                }
+                h.extend(n);
+                h
+            };
+            let mut z = head(0x0403_4b50, false);
+            z.extend(&png);
+            let (at, dir) = (z.len() as u32, head(0x0201_4b50, true));
+            z.extend(&dir);
+            z.extend(0x0605_4b50u32.to_le_bytes());
+            z.extend([0, 0, 0, 0, 1, 0, 1, 0]);
+            z.extend((dir.len() as u32).to_le_bytes());
+            z.extend(at.to_le_bytes());
+            z.extend([0, 0]);
+            z
+        };
+        // (The accepted version as the check makes it: each file's facts.)
+        let name = crate::accepted::put(
+            &root,
+            "regions",
+            &[("eu/a.toml", a.as_str()), ("b.toml", b.as_str()), ("eu/Q1.svg", svg)],
+        );
+        let mut index: inputs::inputs::Index = serde_json::from_slice(&root.join(&name).read().unwrap()).unwrap();
+        let fact = |t: &str| serde_json::to_value(toml::from_str::<toml::Value>(t).unwrap()["symbol"].clone()).unwrap();
+        for (p, f, id) in [("eu/a.toml", fact(&a), "a"), ("b.toml", fact(&b), "b")] {
+            let e = index.files.get_mut(p).unwrap();
+            e.facts.insert("symbol".into(), f);
+            e.facts.insert("id".into(), id.into());
+        }
+        let zname = inputs::inputs::copy_name("regions", "symbols.zip", &store::naming::hash16(&zip)).unwrap();
+        root.join(&zname).write(&zip).unwrap();
+        let mut zfacts = serde_json::Map::new();
+        zfacts.insert("images".into(), json!({"Q2.png": store::naming::hash16(&png)}));
+        index.files.insert(
+            "symbols.zip".into(),
+            inputs::inputs::FileEntry { file: zname, size: zip.len() as u64, keyed: "-".into(), facts: zfacts },
+        );
+        let gname =
+            inputs::inputs::copy_name("regions", "eu/_group.toml", &store::naming::hash16(group.as_bytes())).unwrap();
+        root.join(&gname).write(group.as_bytes()).unwrap();
+        let mut gfacts = serde_json::Map::new();
+        gfacts.insert("group".into(), json!({"name": "Europe"}));
+        gfacts.insert("symbol".into(), fact(&group));
+        index.files.insert(
+            "eu/_group.toml".into(),
+            inputs::inputs::FileEntry { file: gname, size: group.len() as u64, keyed: "-".into(), facts: gfacts },
+        );
+        let ib = serde_json::to_vec(&index).unwrap();
+        let iname = format!("sources/inputs/regions/@index.{}.json", store::naming::hash16(&ib));
+        root.join(&iname).write(&ib).unwrap();
+        root.join(inputs::inputs::served::RECORDS)
+            .write(&serde_json::to_vec(&json!({ inputs::inputs::logical("regions"): iname })).unwrap())
+            .unwrap();
+        let s = crate::test_state(home.path(), &root);
+        sync_accepted(&s);
+        let v = json_of(list(State(s.clone())).await).await;
+        let by = |id: &str| v["regions"].as_array().unwrap().iter().find(|r| r["id"] == id).unwrap().clone();
+        let a_sym = &by("a")["symbol"];
+        assert_eq!(a_sym["url"], format!("/api/regions/symbols/{}.svg", store::naming::hash16(svg.as_bytes())));
+        assert_eq!((a_sym["kind"].as_str(), a_sym["licence"].as_str()), (Some("flag"), Some("CC0")));
+        // An image the version hasn't: no symbol (the placeholder).
+        assert!(by("b").get("symbol").is_none());
+        let folder = &v["tree"]["folders"][0];
+        assert_eq!(folder["symbol"]["url"], format!("/api/regions/symbols/{}.png", store::naming::hash16(&png)));
+        // Served: a loose one, a bundle's member; by content name only, as an image alone.
+        for (url, bytes, mime) in [
+            (a_sym["url"].as_str().unwrap(), svg.as_bytes(), "image/svg+xml; charset=utf-8"),
+            (folder["symbol"]["url"].as_str().unwrap(), png.as_slice(), "image/png"),
+        ] {
+            let name = url.rsplit('/').next().unwrap().to_string();
+            let r = symbol(State(s.clone()), axum::extract::Path(name)).await;
+            assert_eq!(r.status(), StatusCode::OK);
+            let h = |k: axum::http::header::HeaderName| r.headers()[k].to_str().unwrap().to_string();
+            assert_eq!(h(axum::http::header::CONTENT_TYPE), mime);
+            assert_eq!(h(axum::http::header::CACHE_CONTROL), "public, max-age=31536000, immutable");
+            assert_eq!(h(axum::http::header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+            assert_eq!(h(axum::http::header::CONTENT_SECURITY_POLICY), SYMBOL_CSP);
+            assert_eq!(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()[..], bytes);
+        }
+        let q1 = a_sym["url"].as_str().unwrap().rsplit('/').next().unwrap().to_string();
+        // (Not a content name it has, or not a content name: an upper-case one, one with more after
+        // it, a path.)
+        let names = [
+            "0000000000000000.svg".into(),
+            "x.txt".into(),
+            "../@index.json".into(),
+            q1.to_uppercase(),
+            format!("{q1}.svg"),
+            format!("../{q1}"),
+        ];
+        for name in names {
+            assert_eq!(
+                symbol(State(s.clone()), axum::extract::Path(name.into())).await.status(),
+                StatusCode::NOT_FOUND
+            );
+        }
     }
 
     #[tokio::test]
