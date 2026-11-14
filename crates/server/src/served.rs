@@ -370,7 +370,7 @@ fn prepare(s: &AppState, logical: &str, content: &str, names: u64) -> Option<Arc
 }
 
 /// A layer file prepared (once per content and translations version), with its content name.
-async fn packed(s: &Arc<AppState>, logical: &str) -> Option<(String, Arc<PreparedFile>)> {
+async fn prepared(s: &Arc<AppState>, logical: &str) -> Option<(String, Arc<PreparedFile>)> {
     let content = s.data.content(logical)?;
     let names = s.names.version_all();
     let cell = s.prepared.cell(&content, names);
@@ -387,12 +387,12 @@ async fn packed(s: &Arc<AppState>, logical: &str) -> Option<(String, Arc<Prepare
 
 /// Prepares a layer file ahead of its first request. Whether it's ready.
 pub async fn warm(s: &Arc<AppState>, logical: &str) -> bool {
-    packed(s, logical).await.is_some()
+    prepared(s, logical).await.is_some()
 }
 
 /// Serves a layer file: 304 when the browser's copy is current, else gzip (every browser takes it).
 pub async fn respond_layer(s: &Arc<AppState>, logical: &str, headers: &HeaderMap, versioned: bool) -> Option<Response> {
-    let (content, p) = packed(s, logical).await?;
+    let (content, p) = prepared(s, logical).await?;
     if etag_match(headers, &p.etag) {
         return Some(not_modified(&p.etag, versioned));
     }
