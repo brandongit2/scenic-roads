@@ -2469,7 +2469,7 @@ offers: programs over a folder of files, giving files back (kinds and protocol: 
 Any member's idle slot takes it (`scenic run-task`). Pages take none (#875: their asks are refused,
 coordinator.md §5).
 
-- **Brokers** (`crate::agent::peers`, `crate::coord::brokers`, in the pool): each
+- **Brokers** (`crate::agent::brokering`, `crate::coord::brokers`, in the pool): each
   member's agent runs a broker for its jobs' tasks (`coord::Broker`, docs/roles.md §3.2, on the
   pool's port; jobs given its address as `SCENIC_COORD`; its answers say epoch 0). Its heartbeat's `broker` gives its addresses. A
   task lives as long as its job, whoever leads.

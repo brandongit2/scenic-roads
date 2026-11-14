@@ -1478,8 +1478,8 @@ planner's plan.rs 83, agent/poolside.rs 81, sched 76, gc 72; `git log --numstat`
 - **agentbase** (33.2k of code, 20.6k of tests): the rest, its module paths kept
   (`agentbase::agent::jobs`, `agentbase::coord::sched`, `agentbase::pool::records` …, so the docs'
   `agent::jobs` and `coord::sched` keep naming the same files): agent's `answered, asks, backup,
-  beat, bus, cataloguesview, cond, dsm, every, fcarchive, fccheck, fcinputs, flags,
-  forecast, gc, gcqueue, heal, histarchive, jobs, live, memfloor, memguard, nasread, peers, placement,
+  beat, brokering, bus, cataloguesview, cond, dsm, every, fcarchive, fccheck, fcinputs, flags,
+  forecast, gc, gcqueue, heal, histarchive, jobs, live, memfloor, memguard, nasread, placement,
   progress, publish, redo, regionsview, resume, room, seam, settings, share, spans, stray`;
   coord's `asks, beats, brief, brokers, client, handoffs, history, inbox, jobspans, kept, lease,
   maproutes, sched, task`; pool whole; needs, paces, uses, pubtimes, answers, menu, cli. On inputs
