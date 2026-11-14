@@ -45,6 +45,8 @@ import urllib.parse
 import urllib.request
 import zipfile
 
+FETCHES = "api, data"
+
 UA = 'scenic-roads/0.1 (personal offline map)'
 SVG_MAX = 60_000
 PNG_H = 48
