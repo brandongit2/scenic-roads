@@ -248,13 +248,21 @@ fn a_pyramids_stored_tiles_with_data_are_its_own() {
 
 /// A stored file of `px` pixels a side, each `deg / px` degrees, in the store
 /// (`sources/fetched/<id>/<name>`), its value `v(column, row)`, its west and north edges `w`, `n`.
-fn stored_file(root: &Path, id: &str, name: &str, [w, n, deg]: [f64; 3], nodata: Option<f64>, v: &dyn Fn(u32, u32) -> f32) {
+fn stored_file(
+    root: &Path,
+    id: &str,
+    name: &str,
+    [w, n, deg]: [f64; 3],
+    nodata: Option<f64>,
+    v: &dyn Fn(u32, u32) -> f32,
+) {
     let px = 360u32;
     let vals: Vec<f32> = (0..px * px).map(|k| v(k % px, k / px)).collect();
     let gt = [w, deg / f64::from(px), 0.0, n, 0.0, -deg / f64::from(px)];
     let dir = root.join("sources/fetched").join(id);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(name), buildstore::geotiff::write_f32(px, px, &vals, 256, gt, 4326, nodata).unwrap()).unwrap();
+    std::fs::write(dir.join(name), buildstore::geotiff::write_f32(px, px, &vals, 256, gt, 4326, nodata).unwrap())
+        .unwrap();
 }
 
 /// The built set's rule is the terrain's sampler's (inputs::dem::generic, the one sampler the
@@ -293,7 +301,8 @@ fn each_points_dataset_is_the_samplers_first() {
         None,
         Has::Stored { crs: 4326, dir: dir("glo"), files: vec![(url("A_FLM.tif"), a, true), (url("B.tif"), b, false)] },
     );
-    let base = dataset("base", None, Has::Stored { crs: 4326, dir: dir("base"), files: vec![(url("D.tif"), big, false)] });
+    let base =
+        dataset("base", None, Has::Stored { crs: 4326, dir: dir("base"), files: vec![(url("D.tif"), big, false)] });
     let ds = [cut, glo, base];
     let geotiff = |files: Vec<(String, Option<[f64; 4]>)>, masks| Format::Geotiff {
         crs: 4326,
