@@ -610,24 +610,33 @@ export function phaseSplit(p) {
 }
 
 // A line on what each phase does (the time breakdown's tooltip), the phases that take a step's time;
-// another phase: its name says it.
+// another phase: its name says it. Each is a phase some step emits now, and a renamed phase's
+// current name has one (crates/jobrt/tests/phase_names.rs).
 export const PHASE_ABOUT = {
   "making the piece's terrain tiles, z12 down to z9": "Samples the terrain pool's datasets for a z9 piece's tiles, levels the lakes, shades and encodes them as WebP.",
-  "sampling the fine elevation data into high-zoom terrain": "Samples the fine datasets (HRDEM, 3DEP and others) for the z10 tile's deep levels, blends their edges and brings them to EGM2008.",
+  "making its tiles, its finest zooms sampled, the coarser from them": "Samples the declared elevation datasets for the z10 tile's deep levels, each place at its finest zoom, and makes the coarser zooms from those; each tile is levelled, shaded and encoded as its block is sampled.",
+  "writing its deep pack and mid": "Writes the z10 tile's deep pack and its mid on this Mac; their uploads land beside the job's next target.",
+  "writing the lo pack": "Writes the z3 tile's lo pack on this Mac; its upload lands beside the job's next target.",
+  "reading the declared elevation datasets": "Reads the declared elevation datasets from the NAS, once a job: what covers its targets, each place's finest zoom.",
+  "reading the declared datasets": "Reads the declared elevation datasets from the NAS, once a job: which of its z10 tiles have deep terrain to slope.",
+  "sorting the manifest's files into the catalog's": "Sorts the build's records into the map's files: the layers, the z6 tiles' and the worldwide files it serves.",
+  "reading the units' summaries": "Reads the z6 tiles' summaries for the map's metadata.",
+  "reading the records' sizes": "Takes the served files' sizes from the records and the last map.",
+  "reading the new files' sizes": "Looks at the NAS for the sizes of the files neither the records nor the last map know.",
+  "writing its hi pack and mid": "Writes the z6 tile's hi pack and its mid on this Mac; their uploads land beside the job's next target.",
+  "writing its deep pack and deep mid": "Writes the z10 tile's slope deep pack and its deep mid on this Mac; their uploads land beside the job's next target.",
+  "writing the catalog": "Writes the map's catalogue and posts it to the lead's agent.",
   "making the z8 tile's slope tiles here": "Makes the z8 tiles' slope tiles on this Mac from the terrain it reads.",
   "drawing the coverage and finding the credits": "Draws the map's coverage and finds the credits its tiles need.",
   "composing": "Composes the depth tiles from the sources' windows: fills the gaps, scales stored levels up, feathers the seams.",
   "waiting for the uploads beside to land": "Waits for the uploads sent beside the job (packs, tiles) to land on the NAS.",
   "working out the slope tiles": "Works out the slope tiles from the terrain, read from its packs as needed.",
-  "loading z12 terrain tiles (from the packs, else AWS)": "Loads the z12 terrain tiles from the packs, else from AWS's Terrarium tiles.",
-  "uploading its deep pack": "Uploads the z10 tile's deep pack to the NAS.",
+  "loading z12 terrain tiles from the packs": "Loads the z6 tile's z12 terrain tiles from the terrain packs.",
   "waiting for the next z6 tile's z12 tiles": "Waits for the next z6 tile's z12 terrain tiles, being copied ahead.",
   "reading the regions and their outlines": "Reads the regions and parses their outlines into the coverage's grid: every step's run pays it.",
   "making the z3 tile's coarser levels, z8 down to z3": "Makes a z3 tile's coarser levels, z8 down to z3, from the finer.",
   "opening the basemap's water": "Opens the basemap's water (on the NAS) for the tiles' lakes and coasts.",
-  "sampling and making the world's z8 tiles": "Samples the world's z8 terrain tiles from the pool and makes them, once a build.",
   "reading and checking the changes": "Reads the inputs' changes and checks them before they're accepted.",
-  "reading the fine datasets' declarations": "Reads the fine datasets' declarations from the NAS: what covers the tile.",
   "getting the z6 tiles' base packs here": "Copies the z6 tiles' base packs from the NAS to this Mac.",
   "staging layers from the packs": "Stages a z6 tile's layers from its packs on the NAS for the scenic programs.",
   "shading the floor": "Shades the sea floor's relief for the depth tiles.",

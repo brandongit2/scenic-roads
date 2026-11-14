@@ -44,15 +44,15 @@ pub struct CatalogueStats {
     /// from when catalogues were files says too whether it wrote a delta: passed over.)
     pub files: u64,
     pub stated: u64,
-    /// Its phases' wall times, in order (a name from before task #844 read as its new one:
-    /// jobrt::phase_names).
+    /// Its phases' wall times, in order (a name the catalog step's phase had before a rename read
+    /// as the current one: jobrt::phase_names).
     #[serde(default, deserialize_with = "current_names")]
     pub phases: Vec<(String, f64)>,
 }
 
 fn current_names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<(String, f64)>, D::Error> {
     let v = Vec::<(String, f64)>::deserialize(d)?;
-    Ok(v.into_iter().map(|(n, s)| (jobrt::phase_names::current(&n).into_owned(), s)).collect())
+    Ok(v.into_iter().map(|(n, s)| (jobrt::phase_names::current("catalog", &n).to_string(), s)).collect())
 }
 
 /// The start of a catalogue's line in its log: stored in the job logs on the NAS, so it keeps its old
@@ -681,6 +681,18 @@ mod tests {
             ],
         };
         Event { n: Some(n), secs: Some(secs), data: serde_json::to_value(&st).ok(), ..ev("catalog", t) }
+    }
+
+    /// A catalogue's stats from before task #844 (the history archive's, to 29 Oct) read with the
+    /// catalog step's current phase names (jobrt::phase_names).
+    #[test]
+    fn old_catalogue_phase_names_read_as_new() {
+        let st: CatalogueStats = serde_json::from_str(
+            r#"{"n":3,"files":9,"stated":0,"phases":[["records read",0.4],["the catalog written",3.0],["reading the records' sizes",1.0]]}"#,
+        )
+        .unwrap();
+        let names: Vec<&str> = st.phases.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["reading records", "writing the catalog", "reading the records' sizes"]);
     }
 
     fn merged(t: u64, key: &str, step: &str, targets: &[&str]) -> Event {

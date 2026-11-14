@@ -254,11 +254,8 @@ impl TileProgress {
             .and_then(|f| std::fs::read(f).ok())
             .and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok())
         {
-            // (A stage kept under its name from before task #844 is read as its new one: jobrt::phase_names.)
-            for (s, t) in kept
-                .into_iter()
-                .map(|(s, t)| (jobrt::phase_names::current(&s).into_owned(), t))
-                .filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0)
+            for (s, t) in
+                kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0)
             {
                 learned.insert(s.clone());
                 secs.insert(s, t);
@@ -1073,18 +1070,6 @@ mod tests {
         assert_eq!(a.here_s(&["keeping DEM samples"]), Some(47.5));
         assert_eq!(a.here_s(&["keeping DEM samples", "scoring the scenery (view)"]), None);
         assert_eq!(TileProgress::new(4, Some(file)).here_s(&["keeping DEM samples"]), Some(47.5));
-    }
-
-    #[test]
-    fn stage_times_kept_under_old_names_are_read_as_the_new() {
-        // (Kept before task #844: its phases' names then, jobrt::phase_names.)
-        let d = tempfile::tempdir().unwrap();
-        let file = d.path().join("unit-stages.json");
-        std::fs::write(&file, r#"{"elevations (elev)": 300, "DEM samples kept": 12, "scenic canopy": 50}"#).unwrap();
-        let a = TileProgress::new(1, Some(file));
-        assert_eq!(a.here_s(&["sampling the elevations (elev)"]), Some(300.0));
-        assert_eq!(a.here_s(&["keeping DEM samples"]), Some(12.0));
-        assert_eq!(a.here_s(&["scoring the scenery (canopy)"]), Some(50.0));
     }
 
     #[test]

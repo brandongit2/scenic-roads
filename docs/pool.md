@@ -2779,11 +2779,13 @@ asks passed on are one-shot: the lead's store keeps them (below).
   reading page-cached files, next to none (within noise of main, 30 Oct). Off outside a timed run;
   NAS and network calls take hundreds of µs and more. Measured on the lead's log of 29 Oct
   (6,251 runs, 49 steps over 4 days): ~32 KB of the status (~290 KB: +11 %).
-  Phases are named as doings ("reading the depth sources' windows"; before task #844 as done, "the
-  depth sources' windows read"); a record read, on any Mac, takes the new name of an old one
-  (`crate::phase_names`), so the history keeps its phases, and so do a Mac's z6 tiles' stage times
-  kept for its unit jobs' progress and tails' patience (`unit-stages.json`, `unit::TileProgress`):
-  nothing is learned again.
+  Phases are named as doings ("reading the depth sources' windows"). A phase renamed while kept
+  data still holds its old name is mapped by step (`jobrt::phase_names`: two steps may say the
+  same words of different work): a record read, on any Mac, takes the current name of the old one
+  its step's phase had, so the step's history keeps its phases; a row goes once no data holds its
+  old name. Each line of the page's phase descriptions (web/buildpage/sums.js `PHASE_ABOUT`) is
+  of a phase some step emits now, and a renamed phase's current name has one
+  (crates/jobrt/tests/phase_names.rs, grepping the code's phase names).
 - **Each Mac's jobs** (the build page's machines, `scenic status`, task #246): a block per Mac,
   the lead's first, marked coordinator (`scenic status` with its ramp, §7.1); its capacity as the coordinator last
   heard it (its memory against its floor: available, the floor, reserved for its jobs' growth and

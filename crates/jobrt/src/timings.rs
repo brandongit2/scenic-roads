@@ -222,8 +222,8 @@ fn add_waits(a: &mut Option<Waits>, b: Option<Waits>) {
 /// A phase as recorded: its totals over its spans.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhaseRec {
-    /// Its name (one from before task #844 read as its new one: crate::phase_names).
-    #[serde(deserialize_with = "current_name")]
+    /// Its name (one its step's phase had before a rename read as the current one: `RunRec`'s
+    /// reading, crate::phase_names).
     pub name: String,
     /// What it was declared to wait on, in a record from before task #870 (measured since: `waits`),
     /// or a page's: "nas-read", "net", "compute" …. (The Python twin, dem/timings.py, measures.)
@@ -266,19 +266,14 @@ pub struct PhaseRec {
     pub sub: Vec<PhaseRec>,
 }
 
-/// A phase's name as recorded, renamed when it's one from before task #844 (crate::phase_names).
-fn current_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    let s = String::deserialize(d)?;
-    let n = crate::phase_names::current(&s);
-    Ok(if n == s.as_str() { s } else { n.into_owned() })
-}
-
 fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// A run's record (a line of timings.jsonl).
+/// A run's record (a line of timings.jsonl). Read, its phases' and gaps' names from before a rename
+/// of its step's are the current ones (`current_names`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct RunRec {
     pub v: u32,
     /// The job's kind (its step: "unit", "peaks", "gc").
@@ -358,9 +353,7 @@ pub fn held(threads: u32, wall_s: f64, cpu_s: f64) {
 /// it fell there.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Gap {
-    #[serde(deserialize_with = "current_name")]
     pub after: String,
-    #[serde(deserialize_with = "current_name")]
     pub before: String,
     pub wall_s: f64,
     pub n: u64,
@@ -376,7 +369,46 @@ const GAPS_KEPT: usize = 8;
 const START: &str = "the start";
 const END: &str = "the end";
 
+// (Serde's own, `remote = "Self"`, the names made current as a record is read.)
+impl Serialize for RunRec {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        RunRec::serialize(self, s)
+    }
+}
+
+impl<'de> Deserialize<'de> for RunRec {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<RunRec, D::Error> {
+        let mut r = RunRec::deserialize(d)?;
+        r.current_names();
+        Ok(r)
+    }
+}
+
 impl RunRec {
+    /// Its phases' names (at every level) and its gaps' that its step's phases had before a rename
+    /// made the current ones (crate::phase_names, by `step_of` its kind).
+    fn current_names(&mut self) {
+        fn current(step: &str, n: &mut String) {
+            let c = crate::phase_names::current(step, n);
+            if c != n.as_str() {
+                let c = c.to_string();
+                *n = c;
+            }
+        }
+        fn phases(step: &str, ps: &mut [PhaseRec]) {
+            for p in ps {
+                current(step, &mut p.name);
+                phases(step, &mut p.sub);
+            }
+        }
+        let step = step_of(&self.kind);
+        phases(step, &mut self.phases);
+        for g in &mut self.gaps {
+            current(step, &mut g.after);
+            current(step, &mut g.before);
+        }
+    }
+
     /// The main thread's top-level phases' wall time.
     pub fn timed_s(&self) -> f64 {
         self.phases.iter().filter(|p| !p.background).map(|p| p.wall_s).sum()
@@ -2340,14 +2372,32 @@ mod tests {
         assert!(tail.times(now + 700_000).steps.is_empty());
     }
 
-    /// Task #844: a record from before the phases' renaming reads with their new names (gaps too).
+    /// A record from before a rename of its step's phases reads with their current names, at every
+    /// level and in its gaps (crate::phase_names); another step's phase of the same words keeps
+    /// them; a leased task's run (`task <step>`) is its step's.
     #[test]
     fn old_phase_names_read_as_new() {
-        let l = r#"{"v":1,"kind":"depth","start":1,"wall_s":2,"ok":true,"untimed_s":0,"phases":[{"name":"depth sources' windows read","class":"nas-read","wall_s":1,"n":1}],"gaps":[{"after":"the start","before":"gaps filled","wall_s":1,"n":1}]}"#;
-        let r: RunRec = serde_json::from_str(l).unwrap();
-        assert_eq!(r.phases[0].name, "reading the depth sources' windows");
-        assert_eq!(r.gaps[0].before, "filling gaps");
-        assert_eq!(r.gaps[0].after, "the start");
+        let rec = |kind: &str| {
+            let l = format!(
+                r#"{{"v":2,"kind":"{kind}","start":1,"wall_s":2,"ok":true,"untimed_s":0,"phases":[{{"name":"uploading the lo pack","wall_s":1,"n":1,"sub":[{{"name":"uploading the lo pack","wall_s":1,"n":1}}]}}],"gaps":[{{"after":"uploading the lo pack","before":"the end","wall_s":1,"n":1}}]}}"#
+            );
+            serde_json::from_str::<RunRec>(&l).unwrap()
+        };
+        for kind in ["terrain-lo", "task terrain-lo"] {
+            let r = rec(kind);
+            assert_eq!(
+                (r.phases[0].name.as_str(), r.phases[0].sub[0].name.as_str()),
+                ("writing the lo pack", "writing the lo pack")
+            );
+            assert_eq!((r.gaps[0].after.as_str(), r.gaps[0].before.as_str()), ("writing the lo pack", "the end"));
+            // (Written as read: the current names.)
+            assert_eq!(serde_json::from_value::<RunRec>(serde_json::to_value(&r).unwrap()).unwrap(), r);
+        }
+        let r = rec("slope-lo");
+        assert_eq!(
+            (r.phases[0].name.as_str(), r.gaps[0].after.as_str()),
+            ("uploading the lo pack", "uploading the lo pack")
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 **A snapshot, as measured on 27 Oct 2026; not kept up to date.** Each step's live split of time and
 bytes by phase is measured by the lead and shown on the build page (docs/pool.md §10, Phase shares,
 Time by phase). The phases are named here as they are now, as doings (task #844 renamed them:
-"the sources' windows read" became "reading the sources' windows"; crate::phase_names).
+"the sources' windows read" became "reading the sources' windows").
 
 Measured from the records the pipeline keeps, not new benchmarks: the lead's `coord/timings.jsonl`
 (every run's phases; here the 1,454 runs since 25 Oct 00:00 UTC, the current rebuild under the
@@ -359,9 +359,9 @@ In a run's phases a level is now the main thread's `sampling the terrain pool in
 itself, `making the tiles, shading and encoding them`, a main thread's sub-phase before, is its
 threads' (beside, a phase a tile: its wall the threads' making summed, not the level's span), so a
 run before and one after differ there by more than their times. terrain-deep's `writing and
-uploading its deep pack and mid` reads as `writing its deep pack and mid` (jobrt::phase_names);
-terrain-lo's `uploading the lo pack` is `writing the lo pack` from now on, not mapped (slope-lo's
-phase keeps the name, its upload still in it).
+uploading its deep pack and mid` reads as `writing its deep pack and mid`, and terrain-lo's
+`uploading the lo pack` as `writing the lo pack` (jobrt::phase_names, by step: slope-lo's phase
+keeps the name, its upload still in it).
 
 Measured with `terrain-same` (release; the NAS read only; `SCENIC_CACHE` a cache of the runs' own,
 its coverage file cloned in, so the regions are read from this Mac; a target's Terrarium tiles and

@@ -452,7 +452,7 @@ test("a step's time breakdown over the footer's range (#844)", () => {
 test("a phase split into its measured waits and computing (#870)", () => {
   // (`w`: [edge, phase, measured wall, NAS, network, disk, other work]; a part of an older run unmeasured.)
   const pt = { at: 0, edges: [60, 300, 600, 1800, 3600, 7200, 21600, 86400, 259200, 604800], steps: {
-    "terrain-deep": { phases: [["sampling the fine elevation data into high-zoom terrain", ""], ["reading records", "nas-read"]],
+    "terrain-deep": { phases: [["making its tiles, its finest zooms sampled, the coarser from them", ""],["reading records", "nas-read"]],
       b: [[0, 2, 0, 200, 300, [[0, 150, 290, 40, 0], [1, 20, 1, 1, 0]]], [6, 1, 0, 100, 10, [[0, 50, 9, 0, 0]]]],
       w: [[0, 0, 100, 41, 2, 7, 0], [6, 0, 50, 10, 0, 0, 5]] },
   } };
