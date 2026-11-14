@@ -1747,11 +1747,15 @@ pub struct Agent {
     /// serialize leave the earlier's, so the entry's time isn't theirs.)
     fc_pending: (Option<(Vec<u8>, u64)>, Option<fcarchive::Entry>),
     plan_n: u64,
-    /// When each of the lead's own planned jobs (GC, the backup, a map update…: not an offered
-    /// step's) last ended, as a plan's number would be then (`plan::next_n`): a plan begun before
-    /// it was made from what came before that run, so `lead_grants` asks for none of its jobs that
-    /// ended since (one ended, the next plan says whether there is more for it to do).
+    /// When each of the lead's own planned jobs (GC, the backup…: not an offered step's) last ended
+    /// of itself, as the number of **plan**'s side made by then (`told`): a plan made from that side
+    /// or an older one was made from what came before that run, so `lead_grants` asks for none of
+    /// its jobs that ended since (one ended, the next plan says whether there is more for it to do).
+    /// One counter, the plan's inputs', never a clock: a plan numbered after the end but from inputs
+    /// taken before it (its look under way) is still older than the end.
     own_ended: BTreeMap<String, u64>,
+    /// How many of **plan**'s sides (`plan::Inputs`) this agent has made (`plan::Inputs::told`).
+    told: u64,
     cancels_at: BTreeMap<String, u64>,
     /// This Mac's tiles to come in the lead's last forecast, as cache hints (room::Hints::of_tocome,
     /// task #843), with that forecast's time: the lead's from its own forecast (`take_forecast`), a
@@ -2035,6 +2039,7 @@ impl Agent {
             cancels_at: BTreeMap::new(),
             plan_n: 0,
             own_ended: BTreeMap::new(),
+            told: 0,
             fc_pending: Default::default(),
             host,
             app,
@@ -2749,15 +2754,16 @@ impl Agent {
     /// (crate::coord::Coordinator::ask_own, docs/pool.md §7.2), each with the slot it goes in: as
     /// many as it has slots free (`want`), packed by the same measures as a member's, the lead's own
     /// planned jobs (`jobs`) among them but those that can't start now for a reason of this agent's
-    /// own (`wait_reason`) and those that ended since plan `plan` began (`own_ended`). It asks with its Mac's room: what its jobs may hold above its memory
-    /// floor (`build_room`), its disk room
-    /// (`disk_room`) and capacity; with no job here, for one job, its disk not bounded (the owner's
+    /// own (`wait_reason`) and those that ended after the side `from` it was made from (`own_ended`).
+    /// It asks with its Mac's room: what its jobs may hold above its memory floor (`build_room`), its
+    /// disk room (`disk_room`) and capacity; with no job here, for one job, its disk not bounded (the owner's
     /// target is waited on as it starts, room made for it then, the disk guard
     /// behind it: a stale disk floor never holds the build).
     fn lead_grants(
         &mut self,
         jobs: &[JobSpec],
         plan: u64,
+        from: u64,
         c: &Conditions,
         root: &store::nasfs::NasRoot,
         waiting: &mut Vec<Waiting>,
@@ -2795,12 +2801,12 @@ impl Agent {
             .filter(|j| !offered_job(self.o.the_plan, j) && self.wait_reason(j, c).is_some())
             .map(|j| j.id.clone())
             .collect();
-        // (One of them that ended since this plan began: the plan was made from what came before
-        // that run, and would grant it again at every loop until the next plan (13 Nov: GC, its work
-        // done in its first run, granted 192 times more in the 90 s its plan was held back, each run
-        // finding nothing). The next plan says whether there is more for it. Ends no plan from now
-        // on can predate are let go.)
-        self.own_ended.retain(|_, ended| *ended >= plan);
+        // (One of them that ended after the side this plan was made from: the plan was made from
+        // what came before that run, and would grant it again at every loop until the next plan
+        // (13 Nov: GC, its work done in its first run, granted 192 times more in the 100 s until the
+        // next plan, each run finding nothing). The next plan says whether there is more for it.
+        // Ends no plan from now on can predate are let go.)
+        self.own_ended.retain(|_, ended| *ended >= from);
         skip.extend(self.own_ended.keys().cloned());
         // (A catalogue while the pool's records don't reflect what's handed off (`Gates::publish`): not asked
         // for, said waiting here. Granted, it would only wait in `try_start_said`, and be granted,
@@ -4663,7 +4669,7 @@ impl Agent {
         // store::cachefile.)
         if let (Some(r), false) = (root.clone(), self.is_member()) {
             if !newer && self.pause.is_none() && pool_holds.is_none() {
-                granted = self.lead_grants(&view.jobs, view.n, &c, &r, &mut waiting);
+                granted = self.lead_grants(&view.jobs, view.n, view.from, &c, &r, &mut waiting);
             }
         }
         // The jobs granted, each in its slot (`start_granted`).
@@ -4857,6 +4863,7 @@ impl Agent {
     /// runs meanwhile.
     fn tell_plan(&mut self, root: Option<&NasRoot>, c: &Conditions, ended: bool) -> std::sync::Arc<plan::PlanView> {
         if self.plan.plans() {
+            self.told += 1;
             let inputs = self.plan_inputs(root, c, ended);
             self.plan.send(plan::Msg::Inputs(Box::new(inputs)));
             self.plan.look_inline();
@@ -4886,6 +4893,7 @@ impl Agent {
         let root = self.o.root.clone();
         let (ac, battery) = self.mac.power();
         let c = Conditions { ac, battery, nas: root.is_some(), home: true, idle_s: 0 };
+        self.told += 1;
         let inputs = self.plan_inputs(root.as_ref(), &c, false);
         let (o, locked) = (self.o.clone(), self._lock.is_some());
         let p = self.plan.inline().expect("a planner in line");
@@ -4947,6 +4955,7 @@ impl Agent {
             coord: self.coord.clone(),
             ended,
             map: self.maplog.started(),
+            told: self.told,
         }
     }
 
@@ -5187,7 +5196,7 @@ impl Agent {
             self.end_lease(k, outcome, &handed, &note);
             self.finished(&id, self.slots[k].job, &what, ok || paused, empty, secs, note);
             if own {
-                self.own_ended.insert(id.clone(), plan::next_n(0, std::time::SystemTime::now()));
+                self.own_ended.insert(id.clone(), self.told);
             }
             self.slots[k].drain_since = None;
             self.slots[k].mem_drain = None;
@@ -7368,9 +7377,12 @@ impl Agent {
         if secs > 0 {
             self.worked(id);
         }
+        // (Its end and its last good end the same second: flags::REPEATS measures from one by the
+        // other.)
+        let now = now_s();
         if ok {
             self.mem.retry.remove(id);
-            self.mem.last_ok.insert(id.to_string(), now_s());
+            self.mem.last_ok.insert(id.to_string(), now);
             // (A gate check or forget asked for, done: the plan's to forget.)
             if id.starts_with("inputs ") {
                 self.plan.send(plan::Msg::Done(id.to_string()));
@@ -7388,7 +7400,7 @@ impl Agent {
         }
         self.mem.recent.insert(
             0,
-            Done { id: id.into(), job, what: what.into(), ok, ended: now_s(), secs, note, cancelled: false, empty },
+            Done { id: id.into(), job, what: what.into(), ok, ended: now, secs, note, cancelled: false, empty },
         );
         self.mem.recent.truncate(20);
         self.save();
@@ -9280,8 +9292,8 @@ fn room_past(target: u64, goal: u64) -> String {
 /// (`gc::Report::did_nothing`) and the backup's (`backup::Report::did_nothing`). Any other job, or a
 /// report that doesn't read, no.
 fn did_nothing(id: &str, log: &Path) -> bool {
-    // (The report and the timings' lines after it: some 40 lines.)
-    let report = || report_of(&jobs::tail(log, 80));
+    // (Its last run's lines alone, `jobs::tail`: never a run's before it; however many warnings.)
+    let report = || report_of(&jobs::tail(log, usize::MAX));
     match step_of(id).as_deref() {
         Some("gc") => {
             report().and_then(|v| serde_json::from_value::<gc::Report>(v).ok()).is_some_and(|r| r.did_nothing())
@@ -10986,11 +10998,11 @@ mod tests {
         let view = a.plan.view.get();
         let mut w = Vec::new();
         let t = Instant::now();
-        let first = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
+        let first = a.lead_grants(&view.jobs, view.n, view.from, &c, &r, &mut w);
         store::testkit::ended_before(t, PLAN_LONG, "a grant while a 3-min plan runs");
         assert_eq!(first.iter().map(|g| g.2).collect::<Vec<_>>(), [n], "{w:?}");
         let t = Instant::now();
-        let second = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
+        let second = a.lead_grants(&view.jobs, view.n, view.from, &c, &r, &mut w);
         store::testkit::ended_before(t, PLAN_LONG, "a second grant while a 3-min plan runs");
         // (The other job waits beside the first's cold start; the first's lease is never granted again.)
         assert!(second.iter().all(|g| g.1.id != first[0].1.id), "a lease granted twice: {second:?}");
@@ -11028,7 +11040,10 @@ mod tests {
     /// Task #1392, replaying the lead of 13 Nov: its plan held back (the last took 104 s), GC planned
     /// by it ran once in moments, and was granted again at every round until the next plan, 192
     /// runs that found nothing. A job of the lead's own that ended isn't granted again from a plan
-    /// begun before its end, however many rounds come; a plan begun after it grants it again.
+    /// made from **plan**'s side as it was before its end, however many rounds come, nor from one
+    /// numbered after its end but made from that side (a look under way as it ended: the backup of
+    /// 13 Nov ended 0.9 s before plan 1794599439927 began); a plan made from a side after it grants
+    /// it again.
     #[test]
     fn an_own_job_ended_isnt_granted_again_by_the_plan_before_its_end() {
         let d = tempfile::tempdir().unwrap();
@@ -11052,14 +11067,18 @@ mod tests {
         assert_eq!(runs(&a), 1, "gc granted again from plan {n}, made before its end");
         assert!(a.slots.iter().all(|s| s.running.is_none()), "nothing runs");
         assert_eq!(a.plan.view.get().n, n, "the plan before its end is still the last");
-        // A plan begun after its end, still offering it: granted again.
+        // A plan numbered after its end, made from the side before it: not granted.
         let later = plan::next_n(n, std::time::SystemTime::now());
         a.coord.as_ref().unwrap().set_plan(later);
         let view = a.plan.view.get();
         let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
         let r = store::nasfs::NasRoot::local_for_test(&root);
         let mut w = Vec::new();
-        let got = a.lead_grants(&view.jobs, later, &c, &r, &mut w);
+        assert!(a.lead_grants(&view.jobs, later, view.from, &c, &r, &mut w).is_empty(), "{w:?}");
+        // One made from a side after its end (the rounds since made several), still offering it:
+        // granted again.
+        assert!(a.told > view.from + 1);
+        let got = a.lead_grants(&view.jobs, later, a.told, &c, &r, &mut w);
         assert_eq!(got.iter().map(|g| g.1.id.as_str()).collect::<Vec<_>>(), ["gc"], "{w:?}");
         assert!(a.own_ended.is_empty(), "an end no plan from now on predates, let go");
         for (k, _, _) in got {
@@ -11111,6 +11130,11 @@ mod tests {
         assert!(!did_nothing("unit 6/1/1", &log("unit", &gc_run(0, &[], false))));
         std::fs::write(d.path().join("cut"), "{\n  \"chunks\": 0,\n").unwrap();
         assert!(!did_nothing("gc", &d.path().join("cut")));
+        // (A run that printed no report after one that did nothing: not said empty by that one's.)
+        let before = std::fs::read_to_string(log("gc", &gc_run(0, &[], false))).unwrap();
+        std::fs::write(d.path().join("two"), format!("{before}=== run of gc (1, job 2) ===\nprogress: 0/2 steps\n"))
+            .unwrap();
+        assert!(!did_nothing("gc", &d.path().join("two")));
         assert!(!did_nothing("gc", &d.path().join("none")));
     }
 
@@ -11132,7 +11156,7 @@ mod tests {
         let view = a.plan.view.get();
         let (t, held) = (Instant::now(), store::deadline::fake::held_here());
         let mut w = Vec::new();
-        let got = a.lead_grants(&view.jobs, view.n, &c, &r, &mut w);
+        let got = a.lead_grants(&view.jobs, view.n, view.from, &c, &r, &mut w);
         store::testkit::ended_before(t, nasread::DEADLINE, "a grant on a hung NAS");
         assert_eq!(store::deadline::fake::held_here(), held, "the grant waited on no NAS call");
         assert_eq!(got.iter().map(|g| g.2).collect::<Vec<_>>(), [n], "{w:?}");
@@ -11151,7 +11175,7 @@ mod tests {
         // asked nor by the rounds going on.
         let held_at = Instant::now();
         let mut w = Vec::new();
-        assert!(a.lead_grants(&view.jobs, view.n, &c, &r, &mut w).is_empty(), "{w:?}");
+        assert!(a.lead_grants(&view.jobs, view.n, view.from, &c, &r, &mut w).is_empty(), "{w:?}");
         assert!(!a.try_start_said(0, own_job("a-test one"), &c, None, &mut w));
         for _ in 0..3 {
             a.round().ok();
@@ -13280,7 +13304,7 @@ mod tests {
         w: &mut Vec<Waiting>,
     ) -> Vec<usize> {
         a.planner().offer_plan(jobs);
-        let granted = a.lead_grants(jobs, 0, cond, root, w);
+        let granted = a.lead_grants(jobs, 0, a.told, cond, root, w);
         let slots: Vec<usize> = granted.iter().map(|g| g.0).collect();
         a.start_granted(granted, cond, Some(root), w);
         for k in 0..a.slots.len() {
@@ -18204,7 +18228,7 @@ mod pool_tests {
         for _ in 0..2 {
             let mut w = Vec::new();
             assert!(
-                a.lead_grants(jobs, 0, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty(),
+                a.lead_grants(jobs, 0, a.told, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).is_empty(),
                 "held: not granted"
             );
             assert!(w.iter().any(|w| w.why == UNPUBLISHED), "{w:?}");
@@ -18213,7 +18237,7 @@ mod pool_tests {
         a.seen_pool();
         let mut w = Vec::new();
         assert_eq!(
-            a.lead_grants(jobs, 0, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).len(),
+            a.lead_grants(jobs, 0, a.told, &cond, &store::nasfs::NasRoot::local_for_test(&root), &mut w).len(),
             1,
             "caught up: granted {w:?}"
         );

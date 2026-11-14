@@ -71,6 +71,9 @@ pub(super) struct Inputs {
     pub ended: bool,
     /// The lead's map, its log's (crate::agent::publish::Here): None until its thread starts.
     pub map: Option<std::sync::Arc<publish::Here>>,
+    /// Their number, counted by **jobs** as it makes them (`Agent::told`): a plan made from them
+    /// says so (`PlanView::from`).
+    pub told: u64,
 }
 
 /// A slot as the plan reads it (`Inputs::slots`): its job, its lane's time left, what it waits on.
@@ -93,6 +96,9 @@ pub(super) struct RunSeen {
 pub(super) struct PlanView {
     /// The plan's number: each grant made from it carries it (0: none made yet).
     pub n: u64,
+    /// The number of **jobs**' side it was made from (`Inputs::told`): a job of the lead's own that
+    /// ended after those were made isn't granted from it (`Agent::own_ended`).
+    pub from: u64,
     /// The jobs it planned, in its order: the lead's own granted from it (`Agent::lead_grants`).
     pub jobs: Vec<JobSpec>,
     /// Why its work waits, as it found it.
@@ -371,6 +377,8 @@ pub(super) struct Planner {
     /// The last plan's number (`next_n`), when it was made, its digest, its timed waits' end and
     /// why its work waits.
     pub(super) n: u64,
+    /// The number of **jobs**' side the last plan was made from (`PlanView::from`).
+    pub(super) from: u64,
     /// The number of the plan running now, or the last (**jobs**' cancel reads it:
     /// `Handle::newest_n`).
     pub(super) running_n: std::sync::Arc<AtomicU64>,
@@ -505,6 +513,7 @@ impl Planner {
             phase: bus::Snap::new(""),
             kicked: None,
             n: 0,
+            from: 0,
             running_n: std::sync::Arc::new(AtomicU64::new(0)),
             last: None,
             jobs: Vec::new(),
@@ -650,7 +659,7 @@ impl Planner {
             let plan = self.plan(&root, &c, &mut waiting);
             // (Its last phase ended with it, however it returned.)
             nasread::PLAN.enter("");
-            self.n = n;
+            (self.n, self.from) = (n, self.inp.told);
             self.offer_plan(&plan);
             self.regions = load_regions(&root);
             let replan_at = self.replan_at(&plan, now_s());
@@ -683,7 +692,7 @@ impl Planner {
             let plan = self.plan(&root, &c, &mut waiting);
             self.refilter.set(false);
             nasread::PLAN.enter("");
-            self.n = n;
+            (self.n, self.from) = (n, self.inp.told);
             self.offer_plan(&plan);
             self.refiltered = Some((Instant::now(), t.elapsed()));
             eprintln!(
@@ -726,6 +735,7 @@ impl Planner {
         let published = Some(self.published());
         let view = PlanView {
             n: self.n,
+            from: self.from,
             jobs: self.jobs.clone(),
             waiting: self.waiting.clone(),
             regions: self.regions.0.clone(),

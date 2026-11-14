@@ -61,9 +61,9 @@
 //!   never started: the lead's slots full, its plan held). A catalogue merely old, nothing new to
 //!   list, isn't stale.
 //! - **Repeat** (`repeat`): a run of the lead's GC or backup that ended well having done nothing
-//!   (its report: `Done::empty`) and began within `REPEATS`' time of that duty's run before it, while
+//!   (its report: `Done::empty`) within `REPEATS`' time of that duty's run before it ending, while
 //!   it is that recent: the duty planned again with nothing for it to do (13 Nov: GC granted 192
-//!   times in 90 s after a run that removed 1,427 files, each run removing none).
+//!   times in 100 s after a run that removed 1,427 files, each run removing none).
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -186,13 +186,14 @@ pub fn of(
 }
 
 /// The lead's duties whose runs say whether they did anything (`Done::empty`), each with how soon
-/// after its run before one that did nothing is a repeat: GC's queue frees a name its grace after
-/// nothing holds it, so a run within that of the last one finds what that one left; the backup is
-/// planned a day after its last run.
+/// after its run before ended one that did nothing and ended is a repeat: GC's queue frees a name
+/// its grace after nothing holds it, so a run within that of the last one finds what that one left;
+/// the backup is planned a day after its last run that ended well (`Memory::last_ok`, the same
+/// second as its `Done::ended`), so the next day's ends a day or more after it.
 pub const REPEATS: [(&str, u64); 2] = [("gc", super::gcqueue::GRACE_S), ("backup", super::backup::EVERY_S)];
 
 /// The repeat flags (the module's doc): one per duty of `REPEATS` whose newest run did nothing and
-/// began within its time of the run before, while that newest run is within it of `now`.
+/// ended within its time of the run before's end, while that newest run is within it of `now`.
 pub fn repeat(st: &Status, now: u64) -> Vec<Flag> {
     let mut out = Vec::new();
     for (step, within) in REPEATS {
@@ -200,9 +201,9 @@ pub fn repeat(st: &Status, now: u64) -> Vec<Flag> {
         let runs: Vec<&super::Done> =
             st.recent.iter().filter(|d| !d.cancelled && super::step_of(&d.id).as_deref() == Some(step)).collect();
         let (Some(last), Some(before)) = (runs.first(), runs.get(1)) else { continue };
-        let gap = last.ended.saturating_sub(last.secs).saturating_sub(before.ended);
+        let gap = last.ended.saturating_sub(before.ended);
         let ago = now.saturating_sub(last.ended);
-        if !last.empty || gap > within || ago > within {
+        if !last.empty || gap >= within || ago >= within {
             continue;
         }
         let empty = runs.iter().filter(|d| d.empty).count();
@@ -210,7 +211,7 @@ pub fn repeat(st: &Status, now: u64) -> Vec<Flag> {
             kind: "repeat".into(),
             mac: st.host.clone(),
             said: format!(
-                "{step} ran again {} after its run before and did nothing, the last {} ago ({empty} of its last {} runs did nothing): planned again with nothing for it to do",
+                "{step} ran again and did nothing, ending {} after its run before, the last {} ago ({empty} of its last {} runs did nothing): planned again with nothing for it to do",
                 if gap < 60 { format!("{gap} s") } else { span(gap) },
                 span(ago),
                 runs.len()
@@ -789,7 +790,7 @@ mod tests {
         assert_eq!(f.len(), 1, "{f:?}");
         assert_eq!(
             f[0].line(),
-            "repeat: gc ran again 1 s after its run before and did nothing, the last 1 min ago (19 of its last 20 runs did nothing): planned again with nothing for it to do"
+            "repeat: gc ran again and did nothing, ending 1 s after its run before, the last 1 min ago (19 of its last 20 runs did nothing): planned again with nothing for it to do"
         );
         // (In the lead's flags with the others.)
         let plan = crate::agent::seam::for_tests();
@@ -808,9 +809,9 @@ mod tests {
         st.recent =
             vec![run("backup", now, 0, true), run("backup", now - 10, 8, false), run("unit 6/1/1", now, 60, false)];
         assert!(repeat(&st, now).iter().any(|f| f.said.starts_with("backup ran again")));
-        // A day after the last, the next day's backup with nothing new: none.
-        st.recent =
-            vec![run("backup", now, 7, true), run("backup", now - 7 - super::super::backup::EVERY_S - 60, 61, false)];
+        // The next day's backup with nothing new, planned a day after the last ended (`last_ok`, the
+        // second its `ended` says) and so ending a day after it at the soonest: none.
+        st.recent = vec![run("backup", now, 7, true), run("backup", now - super::super::backup::EVERY_S, 61, false)];
         assert!(repeat(&st, now).is_empty());
     }
 

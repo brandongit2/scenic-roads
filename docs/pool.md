@@ -1132,12 +1132,21 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md ย
   can't, the lead is granted nothing more until its jobs end, then that job before any other
   (`own_cold_waits`), so offered work never starves it. A
   planned job that can't start for a reason of the agent's own (a failure's wait, the proxy not
-  up, the memory guard's hour: `wait_reason`) isn't asked for, nor one that ended since its plan
-  began (`Agent::own_ended`): that plan was made from what came before the run, and a plan comes
-  no sooner after the last than that one took, so a job of moments would be granted at every round
-  until then (task #1392: GC granted 192 times in the 90 s after a run that removed 1,427 files,
-  each run removing none; the backup up to 206 times an evening); the next plan says whether there
-  is more for it. One that fails (or the memory guard
+  up, the memory guard's hour: `wait_reason`) isn't asked for, nor one that ended (of itself,
+  failed or at a safe point) after the plan's inputs were taken (`Agent::own_ended`, against
+  `PlanView::from`, the number of the agent's side the plan was made from: one counter, no clock,
+  so a plan begun just after the end from inputs taken before it counts as before it). That plan
+  was made from what came before the run, and a plan comes no sooner after the last than that one
+  took, so a job of moments would be granted at every round until the next plan's offers (task
+  #1392: GC granted 192 times in the 100 s after a run that removed 1,427 files, each run removing
+  none; the backup up to 206 times a day); the next plan says whether there is more for it. A job
+  with targets of its own that ended well was already kept so while its plan offers it at the key
+  it was done under (the coordinator's done work: a map update, a redo), and one that failed by
+  its backoff; so this changes the keyless ones (GC, the backup, the planet's fetch, the OSM pass)
+  and a job stopped at a safe point, granted again from the next plan rather than its own. A job
+  stopped otherwise (the Mac asleep, its lease lapsed, the agent stopping) isn't held. The ends are
+  kept in memory: a restarted lead grants none of its own jobs before its first plan. One that
+  fails (or the memory guard
   stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
   doubling each time, as a member's failed work is.
 - **Packing** (`coord`'s `pack`): a Mac may hold several leases. An ask says how many jobs it would
@@ -2644,10 +2653,13 @@ asks passed on are one-shot: the lead's store keeps them (below).
     map merely old, nothing new to list, isn't stale.
   - *repeat*: the lead's newest run of GC or of the backup ended well having done nothing (its
     report, the job's last lines: GC no chunk of its queue taken and no sweep run, the backup no
-    day written or pruned; `Done::empty`) and began within that duty's time of its run before
-    (`flags::REPEATS`: GC's queue's grace, an hour, as a name is due that long after nothing holds
-    it; the backup's day), flagged while that run is as recent (task #1392). A duty planned again
-    with nothing for it to do; the next day's backup finding nothing new isn't one.
+    day written or pruned; `Done::empty`) and ended less than that duty's time after its run before
+    ended (`flags::REPEATS`: GC's queue's grace, an hour, as a name is due that long after nothing
+    holds it; the backup's day), flagged while that run is as recent (task #1392). A duty planned
+    again with nothing for it to do; the next day's backup finding nothing new isn't one (planned a
+    day after the last ended well, it ends a day after it at the soonest). The lead's log says the
+    same churn by its grants (ยง7.2's "many grants of a step the forecast doesn't model", any of
+    those steps, whatever its runs did); this flag says which runs found nothing.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).
