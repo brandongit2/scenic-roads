@@ -627,7 +627,7 @@ The choices, against the alternatives:
   and the client is small. Not the wire types (`Ask`, `Grant`, `Granted`, `Done`, `Fail`, the
   work beat, held's `Beat`/`Answer`), as planned first: they reach the agent's runtime (`Ask`'s
   `Capacity` names `forecast::MacRoom`, `Done` and `Fail` `memguard::Floor`, the beat
-  `jobs::Live`, whose methods are in two agent modules, held's `agent::poolside::Heartbeat`), and
+  `jobs::Live`, whose methods are in two agent modules, held's `agent::membership::Heartbeat`), and
   below pipeline only the families' coordinator tests name them. So the lease calls that carry
   them (`ask`, `beat`, `beat_paused`, `beat_told`, `pool_beat`, `cancel`, `set_pause`, `done`,
   `fail`, `fail_with`, `give_back`, `give_back_with`, `end_with`) stay in coord, bodies
@@ -1043,7 +1043,7 @@ commit; re-exports at the old paths as before.
           nothing of the reaches, as before.
         - **Held and passed:** `Options::the_plan` (the agent, the planner), `Sched::the_plan`
           (`Coordinator::start`, `start_on`, `viewer`, `Broker::start`), `needs::Book`,
-          `history::History`, `poolside::Run`, `BuiltView`, `PageView` and the map log's `Writer`; passed to
+          `history::History`, `membership::Run`, `BuiltView`, `PageView` and the map log's `Writer`; passed to
           the forecast (`forecast`, `forecast_by`, `Record::forecast`, `Noted::note`, `speeds`,
           `step_sums`), fccheck's `replay` and `backtest`, `flags::of`, progress's sayings,
           `room::Hints`, `redo::said`, `every`'s functions, `uses::Run`, `Paces::with_starts`,
@@ -1461,7 +1461,7 @@ The other modules name the hubs little, and for vocabulary: their 105 mentions i
 through (agent::jobs's `now_s`, named as `agent::now_s`), or a part's wire half (held's `Beat`);
 none is the loop or the server. The hubs are also where the edits are: of the 780 commits since 22
 Oct touching the runtime, 356 touched agent/mod.rs and 252 coord/mod.rs (then forecast 101, the
-planner's plan.rs 83, agent/poolside.rs 81, sched 76, gc 72; `git log --numstat`).
+planner's plan.rs 83, agent/membership.rs 81, sched 76, gc 72; `git log --numstat`).
 
 ### 8.3 The cut
 
@@ -1472,7 +1472,7 @@ planner's plan.rs 83, agent/poolside.rs 81, sched 76, gc 72; `git log --numstat`
   loop's or the coordinator's live state, `agent::{pool, lead, plan, brief, builtview, pageview, nas,
   slots}`; coord's root and `coord::{broker, budgets, releases, held, memberpage}`. Each names
   `coord::Coordinator` (plan, lead, brief, builtview, pageview hold one), the coordinator's `Shared`
-  (broker, budgets, held), agent::poolside's shared state (`Shared`, `try_lock`: nas, slots), coord's
+  (broker, budgets, held), agent::membership's shared state (`Shared`, `try_lock`: nas, slots), coord's
   `http` (releases), or the agent's `Status` and coord's `API` (memberpage, which #1107 is
   editing).
 - **agentbase** (33.2k of code, 20.6k of tests): the rest, its module paths kept
@@ -1502,7 +1502,7 @@ What crosses (`modgraph.py agentcore --depth 2 [--code] --cut <agentbase's modul
     agent::memguard's);
   - the top's parts (28): held's beat wire (`Beat`, `Answer`, `Reach`, `LeadLine`, `Sent` and
     `sent`, `SPEAKS`, `OMIT_GRACE`) → `coord::types`, held keeping what works on `Shared`;
-    agent::poolside's `Heartbeat` and `FORGET_AFTER` → coord::beats, its `PUBLISHES` → agent::publish,
+    agent::membership's `Heartbeat` and `FORGET_AFTER` → coord::beats, its `PUBLISHES` → agent::publish,
     its `check` (the merge's check of a hand-off: it reads the plan and the entry, nothing of the
     pool; the plan's tests call it) → pool::records; plan's `STALL_SAMPLE` → agent::room; slots'
     `JobRef` → agent::asks;
@@ -1516,9 +1516,9 @@ What crosses (`modgraph.py agentcore --depth 2 [--code] --cut <agentbase's modul
   re-export at an old path.
 - **The plan in the tests.** The plan's files name the runtime's journal, records, seam, gc,
   forecast, every, redo, publish, progress, nasread, jobs, sched, needs and answers, and the
-  agent's `Waiting`, `Coverages` and agent::poolside's `check`: after the moves above, agentbase's
+  agent's `Waiting`, `Coverages` and agent::membership's `check`: after the moves above, agentbase's
   alone. Both crates' unit tests run on the real plan (`seam::for_tests`: agentbase's forecast 77
-  uses, needs 45, gc 41 …; agentcore's agent 150, coord 54, agent::poolside 32 …), so both compile its
+  uses, needs 45, gc 41 …; agentcore's agent 150, coord 54, agent::membership 32 …), so both compile its
   files in by `#[path]`, as agentcore does now (§6.3, 6f4), each with its own `TEST_START`. A test
   build of all three then compiles the plan three times (pipeline's, agentbase's and agentcore's
   tests), and a plan file's edit runs both crates' unit tests.
@@ -1623,7 +1623,7 @@ after each step that moves a crate boundary.
 - **8d, agentcore smaller** (a design of its own, after 8c): plan, lead, brief, builtview,
   pageview, broker and budgets take what they call on the coordinator as a narrower trait (or the
   calls' results) instead of a `Coordinator`, and go down into R; agentcore is then the two hubs
-  and agent::poolside (~16k).
+  and agent::membership (~16k).
 
 Not in these steps: the programs' 1.3 s, every edit's floor (scenic-build links every crate below
 it), and pipeline's lib after agentcore (no wall time, §7.1).

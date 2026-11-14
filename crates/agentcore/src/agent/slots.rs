@@ -72,7 +72,7 @@ impl JobRef {
 /// Mac's app, the NAS's root as **nas** has it, and this Mac's hold.
 #[derive(Clone)]
 pub struct Members {
-    pub pool: Option<super::poolside::Shared>,
+    pub pool: Option<super::membership::Shared>,
     pub app: String,
     pub nas: Arc<Snap<super::nas::NasView>>,
     pub hold: Arc<Snap<HoldState>>,
@@ -246,7 +246,7 @@ impl Drop for Handle {
 /// next try while the pool's step holds its lock.
 pub fn take_member_hold(home: &std::path::Path, m: &Members, set: &mut dyn FnMut(HoldState) -> bool) {
     // (Never waiting on the pool's lock: its step may hang on the NAS.)
-    let pooled = m.pool.as_ref().map(super::poolside::try_lock);
+    let pooled = m.pool.as_ref().map(super::membership::try_lock);
     if matches!(pooled, Some(None)) {
         return;
     }

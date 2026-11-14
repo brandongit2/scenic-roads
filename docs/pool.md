@@ -6,7 +6,7 @@ fixed: the Mac mini, the member `state/build/lead-member.json` declares (§6.1, 
 Mac ever leads: there is no election, handover or takeover. With the mini gone, the members finish
 the jobs they hold, keep their hand-offs, and wait for it. The Macs' agents are the only
 workers (§8, coordinator.md): the build page shows the build and takes the owner's asks. The pool's code is `crate::pool` (the declaration, records, hand-offs, the
-driver) and `crate::agent::poolside` (the agent's side of it). It is always on.
+driver) and `crate::agent::membership` (the agent's side of it). It is always on.
 
 The records' readers read the one path's snapshot, `state/build/records.json`, which the lead alone
 writes (§6.2). The lead leads the epoch of its coordinator's store, which numbers its records'
@@ -338,7 +338,7 @@ There is no ask about who leads. `scenic lead` only shows the pool (§11).
 
 ### 6.5 Grants and the lead's view
 
-A lead's coordinator grants only while its agent's last step said it may (`agent::poolside::moving`:
+A lead's coordinator grants only while its agent's last step said it may (`agent::membership::moving`:
 the records taken up, its member's lock known held, still leading) and told it so within
 `UNTOLD_S` (5 min: `Coordinator::set_moving_as_of` stamps the step's time, not the tell's, so a
 hang after the step (a history write on the share) or before the next one, or a Mac woken before
@@ -359,7 +359,7 @@ Declared again, it takes up its records on its disk.
 
 - No NAS clock: out of touch compares a heartbeat's `beat` with the reader's clock; a beat over
   60 s ahead shows "clock wrong". Everything persisted is wall-clock time.
-- **The pool is stepped whatever the agent is doing** (`crate::agent::poolside`'s `Ticker`): the agent's
+- **The pool is stepped whatever the agent is doing** (`crate::agent::membership`'s `Ticker`): the agent's
   loop steps it about every 20 s, and the pool's own thread steps it when that loop has been quiet
   for `QUIET_S` (25 s). Jobs and the coordinator's start/stop stay with the loop. A tick held past
   `UNTOLD_S` (5 min) is taken as hung on the share: the lead grants nothing, its coordinator's
@@ -1432,7 +1432,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   too). A job's folder is removed only once the saved state holding its hand-off is durable, its
   rename flushed (the hand-off's only other copy). A lead says `handoff` in every beat's answer,
   so a member on an older app never falls back to that journal.
-- **The lead validates at merge** (`agent::poolside::check`, `records::Check`): every change within the
+- **The lead validates at merge** (`agent::membership::check`, `records::Check`): every change within the
   step's write-set, content names matching logical names, the lease's targets. Write-sets are one
   function per step (`agent::steps::writes`) that both the job's `Out` (`Out::open` for its step)
   and the merge use; `Out` refuses a name outside before it lands. An entry outside its write-set
@@ -1454,7 +1454,7 @@ Mac's next ask once it has used a core-minute, and the Mac is granted nothing mo
   shows.
 - **A redo is a hand-off too:** `scenic redo` (§11) clears targets' keys through a job of the
   lead's whose entry carries only a done record, merged only by the lead whose member it is
-  (`agent::poolside::by_its_lead`).
+  (`agent::membership::by_its_lead`).
 - **Sizes ride along:** `Out` records each file it writes with its size, and the hand-off carries
   them (`Handoff::sizes`); the merge keeps those of the files the entry names, so the `catalog` step
   never looks at them on the NAS. Entries from before carry none.
@@ -1492,7 +1492,7 @@ step (`SCENIC_UNMERGED`), which `Out::open` lays over the snapshot.
   lapse, a measure, the pause) in the store's log, `fsync`ed by its writer thread before the
   request that made it is answered (a grant is never answered before it's durable); a restart, an
   update's or a crash's, opens the store, its leases back unconfirmed (test
-  `agent::poolside::tests::the_leads_restart_keeps_its_leases`). Renewals aren't saved (a loaded lease
+  `agent::membership::tests::the_leads_restart_keeps_its_leases`). Renewals aren't saved (a loaded lease
   gets a fresh deadline). A lapsed lease stays in the table (a member's word may hold it again)
   until its target is granted again, which ends it (`Leases::grant_at`; task #1038: kept, a restart
   gave it a fresh deadline beside the new lease).
@@ -2511,7 +2511,7 @@ A member that can't reach the lead keeps its jobs running and starts nothing new
 
 ### 9.1 Members' mail
 
-**What goes by mail** (`crate::pool::driver::Msg`, `crate::agent::poolside`): to the lead, the build
+**What goes by mail** (`crate::pool::driver::Msg`, `crate::agent::membership`): to the lead, the build
 page's `Cancel` and `Retry` a member passes on (rare); from the lead, none. Hand-offs go by their
 own posts (§7.3). A message an app doesn't know (an older app's) is read past. Each sender
 numbers its messages and keeps its last 64 to each member (`KEPT`, its `mail.json`); a
@@ -3195,7 +3195,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
   step for it, the lead's own (`every::LEAD_ONLY`). That job changes no file (its write-set is
   empty) and hands off a done record of `<step> <target>` with no key; the merge checks it as any
   entry (§7.3), and takes it only when its member is the merging lead itself
-  (`agent::poolside::by_its_lead`: another member's, or a lead's before the owner moved the lead,
+  (`agent::membership::by_its_lead`: another member's, or a lead's before the owner moved the lead,
   refused, its redo asked again), and `Keys::record` forgets those targets' keys and nothing else, the lease order
   kept by `<step>, <target>` as a prune's is (a build of the target leased before the redo,
   merged after, is passed over). The job succeeded, the ask leaves `redo.json`. The plan then
@@ -3350,14 +3350,14 @@ z6 tile's job.
   disk, map tiles and low zooms beside each other. No start over-commits the disk, and z6 tiles
   still run three or more at once. Not
   modelled: other step dependencies, failures; a job's time doesn't depend on its threads.
-- **The agent's tests** (`crate::agent::poolside`, `crate::agent::lead`, the agent's `poolside_tests`): two
+- **The agent's tests** (`crate::agent::membership`, `crate::agent::lead`, the agent's `membership_tests`): two
   agents in one process, a lead and a member: a member never claims the lead, and with the lead
   gone keeps its jobs' hand-offs and waits (`pool::driver::tests::a_member_never_leads`,
   `with_the_lead_gone_a_member_keeps_its_jobs_hand_offs_and_waits`,
   `agent::lead::tests::runs::a_member_never_claims_the_lead_and_waits_for_it`); the lead's restart
-  keeps its leases (`agent::poolside::tests::the_leads_restart_keeps_its_leases`); the owner's hand
+  keeps its leases (`agent::membership::tests::the_leads_restart_keeps_its_leases`); the owner's hand
   move of the lead, its folders copied to another member's
-  (`agent::poolside::tests::a_lead_moved_by_hand_leads_from_its_copied_folders`); hand-offs by HTTP. Each piece of the protocol has its own tests (docs/coordination.md §8).
+  (`agent::membership::tests::a_lead_moved_by_hand_leads_from_its_copied_folders`); hand-offs by HTTP. Each piece of the protocol has its own tests (docs/coordination.md §8).
 - **Two Macs on the real NAS** (`tools/check/pool-two-macs.sh`): the real agents on a scratch
   folder of the NAS, jobs played by a script. Planned: load.
 - **The share itself** (`tools/check/nas-probe.py <peer> <scratch folder>`, run on one Mac, which

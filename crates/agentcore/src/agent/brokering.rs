@@ -9,15 +9,15 @@
 //!   their new roles (docs/roles.md §1), their jobs handed over to the next process; a job taken
 //!   over offers its tasks through the new process's coordinator or broker on the same port (the
 //!   jobs' token kept: docs/building.md, Restarts).
-//! - **Its heartbeat says where it is** (crate::agent::poolside::Heartbeat's `broker`): its addresses,
+//! - **Its heartbeat says where it is** (crate::agent::membership::Heartbeat's `broker`): its addresses,
 //!   given to its heartbeat when they change, at most every half minute (`due`): a heartbeat is a
 //!   whole write on the NAS.
 //! - **Where the members are**: each coordinator is told the members in touch and their brokers
 //!   (`peers`, read from their heartbeats every half minute, in the pool's run's steps, the loop's
-//!   or a tick's, under the run's lock: crate::agent::poolside::Run::tend_brokers), and allows the
+//!   or a tick's, under the run's lock: crate::agent::membership::Run::tend_brokers), and allows the
 //!   members' own pages to call it (CORS: crate::coord::brokers).
 
-use crate::agent::poolside::Heartbeat;
+use crate::agent::membership::Heartbeat;
 use crate::coord::brokers::{Broker, Peer};
 use std::time::{Duration, Instant};
 

@@ -2,7 +2,7 @@
 //! unverified uploads and the job keys); each saves its changes to a folder of its own instead
 //! (crate::out::Out, with `SCENIC_HANDOFF`: its lease's folder), named in the order written (each
 //! after the last), and its agent hands them to the pool's journal as the job ends
-//! (agentcore::agent::poolside), whose lead merges them into its records. The folders of hand-offs from
+//! (agentcore::agent::membership), whose lead merges them into its records. The folders of hand-offs from
 //! before the pool (a lead's coordinator's journal on its disk) are drained into the journal the
 //! same way, a folder's in order, its last drained marked (`<folder>.merged`, so one that couldn't
 //! be removed isn't drained again); one that can't be parsed (it was written whole, so it's damaged)

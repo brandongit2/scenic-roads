@@ -1,12 +1,12 @@
 //! The members' beats as this Mac hears them by HTTP (docs/coordination.md §8, step 3 of task
 //! #878): one `POST /pool/beat` a member every 10 s carries its pool heartbeat
-//! (crate::agent::poolside::Heartbeat) and its agent's status besides the leases it holds
+//! (crate::agent::membership::Heartbeat) and its agent's status besides the leases it holds
 //! (crate::coord::held).
 //!
 //! - **On the lead** its coordinator keeps each member's last (`heard`), in memory, and answers
 //!   with the others' heartbeats (`members`), its own among them: the members learn each other's
 //!   brokers and the lead's from the lead, not the NAS. The lead's readers of a member's heartbeat
-//!   (crate::agent::poolside::Side::read_heartbeat) and of the members' statuses (the status's
+//!   (crate::agent::membership::Side::read_heartbeat) and of the members' statuses (the status's
 //!   `members`) read these first.
 //! - **On a member** the lead's answer fills the same registry (`answered`); its leases released
 //!   wait for the agent's loop (`take_released`).
@@ -17,7 +17,7 @@
 //!
 //! Nothing here touches the NAS: the coordinator's handlers reach it (§2.3).
 
-use crate::agent::poolside::Heartbeat;
+use crate::agent::membership::Heartbeat;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
@@ -71,8 +71,8 @@ pub const NOTES: &str = "notes";
 /// three of its beats (crate::agent::beat::EVERY, 10 s) missed.
 pub const PAGE_AWAY_S: u64 = 35;
 
-/// A member not heard from this long is forgotten (s, crate::agent::poolside::FORGET_AFTER).
-pub const FORGET_S: u64 = crate::agent::poolside::FORGET_AFTER.as_secs();
+/// A member not heard from this long is forgotten (s, crate::agent::membership::FORGET_AFTER).
+pub const FORGET_S: u64 = crate::agent::membership::FORGET_AFTER.as_secs();
 
 /// Where a member keeps its lead's last answer's line, in its agent's folder (`LeadView`, written
 /// at each answer): what `scenic menu` shows of the build (docs/roles.md §3.4), no NAS read.

@@ -1,5 +1,5 @@
 //! Whether the members reach each other's coordinators (docs/pool.md §6.8): each member tries the
-//! lead's coordinator and the other members' brokers (crate::agent::poolside's `Run::tend_reach`: a
+//! lead's coordinator and the other members' brokers (crate::agent::membership's `Run::tend_reach`: a
 //! cheap request with a short timeout every `PROBE_S`, and the outcome of its client's own requests
 //! to the lead) and says in its heartbeat (`Beat::reach`) whom it reached lately, and whom it has
 //! failed to reach for `REPORT_S` or more, and why. Read back from the heartbeats, the views say who

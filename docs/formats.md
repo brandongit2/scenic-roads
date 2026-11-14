@@ -872,7 +872,7 @@ member                  this Mac's pool member id `m-<16 hex>`, then its hardwar
 pack-idx/<hash16>.idx   indexes of the terrain packs the manifest names (agent::tiles); never
                         trimmed; one unnamed and untouched for a fortnight goes; the lead's
                         alone (removed as a member starts)
-pool/                   crate::agent::poolside: saved.json (crate::pool::driver::Saved: {member, mine:
+pool/                   crate::agent::membership: saved.json (crate::pool::driver::Saved: {member, mine:
                         {entries, unwritten}, records?: [epoch, seq]}; an older app's keys read
                         past; saved.bad one that can't be read, set aside), records.json (the lead's own copy
                         of the records it saves, written before the NAS's: docs/pool.md §6.2),

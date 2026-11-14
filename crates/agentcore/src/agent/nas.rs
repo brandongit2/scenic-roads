@@ -77,7 +77,7 @@ pub enum Req {
     Lan,
     /// The self-heal drained: the share unmounted under the pool's lock (`pool`, when this Mac is
     /// in it: no tick mid-write) and mounted again at once.
-    Remount(Option<super::poolside::Shared>),
+    Remount(Option<super::membership::Shared>),
     Stop,
 }
 
@@ -164,10 +164,10 @@ impl Nas {
     }
 
     /// The self-heal's remount: the share unmounted under the pool's lock, then mounted again.
-    fn remount(&mut self, pool: Option<super::poolside::Shared>) {
+    fn remount(&mut self, pool: Option<super::membership::Shared>) {
         let t = Instant::now();
         let guard = loop {
-            match pool.as_ref().map(super::poolside::try_lock) {
+            match pool.as_ref().map(super::membership::try_lock) {
                 Some(None) if t.elapsed() < LOCK_WAIT => std::thread::sleep(Duration::from_secs(1)),
                 Some(None) => {
                     eprintln!("agent: the pool's step held its lock for {LOCK_WAIT:?}: the remount is left for the next drain");

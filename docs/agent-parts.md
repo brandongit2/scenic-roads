@@ -30,7 +30,7 @@ cause, and with it the kept beat.
 
 Already off the loop *today*: the forecast (`forecast`), the phase sums, region sync, the members'
 upcoming hints, the memory sampler (`memguard`), the live measures (`live`), the pool driver's
-ticks (`poolside::Ticker`), the caches' clears (`caches_task`), and
+ticks (`membership::Ticker`), the caches' clears (`caches_task`), and
 this Mac's own hold asks (`asks`, #846). Each is a thread with its own ad-hoc sharing (an `Arc`
 of `Mutex`es, an atomic, a `JoinHandle` polled). The design gives them one shape.
 
@@ -47,7 +47,7 @@ they talk only by the named channels and snapshots of §3.
 | **dsm** | this Mac's stale SMB sessions on the NAS, dropped through DSM's web API (`agent::dsm`, docs/macs.md) | DSM, 10 s a request | the loop's asks: the start, leaving home, the share on the LAN name again after Tailscale, the heal's remount; one that didn't reach DSM again each minute for 30 min |
 | **jobs** | the slots, their child processes, leases held, the memory and disk guards | children's exits, control's orders, grants | each child event, and every 2 s |
 | **plan** (lead only) | the plan, the offers, the grants, the gate, the checklist and counts | the records snapshot, the CPU | triggered by changes (§4.4); a 5-min fallback |
-| **pool** | the pool driver: the declaration, the lead's records and merges, the pool heartbeat | the lead's answers (by **beat**); on the lead, the NAS through **nas** | the round's step about every 20 s, its own thread's (`poolside::Ticker`) after 25 s without one |
+| **pool** | the pool driver: the declaration, the lead's records and merges, the pool heartbeat | the lead's answers (by **beat**); on the lead, the NAS through **nas** | the round's step about every 20 s, its own thread's (`membership::Ticker`) after 25 s without one |
 
 The existing side threads (forecast, phase sums, region sync, hints, sampler, live, caches) become
 workers of **plan** or **jobs** with the same in/out shape: a request in, a snapshot out.
@@ -220,7 +220,7 @@ time in ms (`plan::next_n`), so a lead started again, or moved to another Mac by
 plan before it and an old cancel drops none of its grants. A plan past `beat::LOOP_STUCK` is logged with its phase and sampled once
 (`plan::Handle::stalled`), and the status says so. The forecast's files for the NAS come back on a
 channel (`plan::Out`) for the lead's pool step. Not done: a plan's errors stay waiting lines (`plan`
-returns jobs, not a result); the pool's own run is still locked by the pool's ops (`poolside::try_lock`:
+returns jobs, not a result); the pool's own run is still locked by the pool's ops (`membership::try_lock`:
 `lost_lead`, the broker made on the run, the page's acts, the members' clock).
 
 ### 4.5 jobs
@@ -282,9 +282,9 @@ ramp, `save_hands`, grants by channel).
 
 ### 4.6 pool
 
-**Owns** the pool's driver (crate::pool::driver, run by crate::agent::poolside's `Run` under one lock):
+**Owns** the pool's driver (crate::pool::driver, run by crate::agent::membership's `Run` under one lock):
 the member's saved state and its hand-offs, the lead's records, take-up and merges. It is stepped
-by the round about every 20 s and by its own thread (`poolside::Ticker`) whenever the round hasn't
+by the round about every 20 s and by its own thread (`membership::Ticker`) whenever the round hasn't
 stepped it for `QUIET_S` (25 s), so a long plan or a slow share never stops it.
 
 - **On a member** a step takes its lead from the last answer to its beat (`Answer::leading`,
@@ -293,7 +293,7 @@ stepped it for `QUIET_S` (25 s), so a long plan or a slow share never stops it.
 - **On the lead** a step reads the declaration, takes the records up when it must, merges what its
   coordinator took and its own jobs' hand-offs, saves the records (its disk, then the NAS's one
   path, under `nasread`'s deadlines), and tells its coordinator what it may grant
-  (`agent::poolside::moving`, docs/pool.md §6.5).
+  (`agent::membership::moving`, docs/pool.md §6.5).
 - **Its HTTP is beat's:** **beat**'s poster carries the heartbeat, the leases the round listed,
   the hand-offs' keys and this Mac's notes (crate::coord::notes: the history only it sees) to the
   lead, posts the hand-offs and asks the lead lacks or hasn't taken, and puts the answer in the

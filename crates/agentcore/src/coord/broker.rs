@@ -144,7 +144,7 @@ impl Broker {
     }
 }
 
-/// What brokers this Mac's tasks, for the run's steps (`poolside::Cx::broker`): the lead's coordinator
+/// What brokers this Mac's tasks, for the run's steps (`membership::Cx::broker`): the lead's coordinator
 /// or a member's broker.
 #[derive(Clone)]
 pub enum Brokering {

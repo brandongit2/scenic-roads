@@ -81,7 +81,7 @@ its store, the NAS budget's probes and the history are its own, §3.1, task #111
   coordinator's `history.jsonl` (`--history`, `agent::histarchive`). A lead whose disk is lost
   loses the history since the last run (today's, at most a day and a half's); a lead moved by hand
   takes it with its `coord/` (pool.md §6.1).
-- **The token** `state/coord/token`: read at every agent's start (`agent::poolside::seed`), and made
+- **The token** `state/coord/token`: read at every agent's start (`agent::membership::seed`), and made
   there, create-new, only by an agent finding none (the first one's stays).
 - **Read-only inputs** (`inputs/`, `inputs/keys.env`).
 

@@ -313,7 +313,7 @@ pub type Check<'a> = &'a dyn Fn(&Entry, &Records) -> std::result::Result<(), Str
 
 /// What a check's why begins with when it holds an entry rather than refuse it (`Check`): an
 /// entry from a member on a newer app than the lead's, which may write what this app's
-/// write-sets don't know of (crate::agent::poolside::check_from).
+/// write-sets don't know of (crate::agent::membership::check_from).
 pub const HOLD: &str = "held: ";
 
 /// The build's records.
@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn a_redo_forgets_its_targets_keys_alone() {
         let mut r = Records { epoch: 3, ..Default::default() };
-        let check = |e: &Entry, r: &Records| crate::agent::poolside::check(crate::agent::seam::for_tests(), e, r);
+        let check = |e: &Entry, r: &Records| crate::agent::membership::check(crate::agent::seam::for_tests(), e, r);
         assert_eq!(merge(&mut r, &[built(3, 1, "6-1-1", "k1"), built(3, 2, "6-1-2", "k2")], &any).applied.len(), 2);
         let redo = |n: u64| {
             let h = Handoff {

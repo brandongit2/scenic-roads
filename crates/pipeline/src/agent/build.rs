@@ -7068,7 +7068,7 @@ mod tests {
     }
 
     /// A "none" z6 tile's or assembly's hand-off removes files and writes none: the lead's merge
-    /// check (agent::poolside::check) and the steps table's write-sets take it.
+    /// check (agent::membership::check) and the steps table's write-sets take it.
     #[test]
     fn a_removal_only_hand_off_is_taken() {
         use agentcore::pool::journal::Entry;
@@ -7092,7 +7092,7 @@ mod tests {
                 at: 1_791_500_000,
             };
             assert_eq!(
-                agentcore::agent::poolside::check(
+                agentcore::agent::membership::check(
                     crate::agent::theplan::the_plan(),
                     &e,
                     &agentcore::pool::records::Records::default()

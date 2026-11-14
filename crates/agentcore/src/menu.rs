@@ -58,7 +58,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let beats = Arc::new(Beats::default());
         beats.keep_lead_view(&home.join(LEAD_VIEW));
-        beats.set_own(crate::agent::poolside::Heartbeat {
+        beats.set_own(crate::agent::membership::Heartbeat {
             pool: crate::pool::Beat { member: X.into(), host: "m1".into(), ..Default::default() },
             beat_http: true,
             ..Default::default()

@@ -17,7 +17,7 @@
 //! Two processes of one member would lead at once, each saving the records over the other's.
 //!
 //! The agent steps it about every 20 s, one step at a time: its loop's step, and while that loop is
-//! busy (a long plan, a job stopped) its pool's own thread's (crate::agent::poolside's `Ticker`), each
+//! busy (a long plan, a job stopped) its pool's own thread's (crate::agent::membership's `Ticker`), each
 //! under the run's lock. A step:
 //!
 //! - **does its NAS operations through `Io`** (crate::pool::nas::Nas, two clocks, its own disk's

@@ -46,7 +46,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/inputs/src/inputs/served.rs", "RECORDS", "\"state/build/manifest.json\"", "today's manifest file: a test's records before the pool (the map server reads the records' one path, `manifest`)"),
     ("crates/buildstore/src/records/mod.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, the records read before the pool and term 1's first snapshot made from them"),
     ("crates/agentcore/src/pool/journal.rs", "DIR", "\"state/journal\"", "the old journal's folder, read for an older app's saved keys alone (Mine::read_back)"),
-    ("crates/agentcore/src/agent/poolside.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the pool"),
+    ("crates/agentcore/src/agent/membership.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the pool"),
     ("crates/agentcore/src/agent/resume.rs", "unmerged", "-> Handoff {", "its signature: the member's unacknowledged entries laid together for its job's Out to read (never handed off)"),
     ("crates/agentcore/src/agent/resume.rs", "unmerged", "Handoff::default()", "a resumable job's member's unacknowledged entries laid together, for its Out to read over the snapshot (never handed off: its own saves are)"),
     ("crates/inputs/src/inputs/elevation_tests.rs", "the_check_job_records_the_switch_once_with_the_first_accepted_index", "\"state/build/manifest.json\"), b\"{}\"", "a test's scratch NAS root: its empty records"),

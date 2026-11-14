@@ -24,7 +24,7 @@ const LEFT: &[(&str, usize)] = &[
     ("live.rs", 6),
     ("memguard.rs", 1),
     ("pageview.rs", 3),
-    ("poolside.rs", 1),
+    ("membership.rs", 1),
     ("tiles.rs", 1),
 ];
 

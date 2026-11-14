@@ -1607,7 +1607,7 @@ impl Planner {
         // the headers of packs new since read once, timed. (A pack whose header can't be read is
         // left out and looked at again next plan, the rest kept; the file not written costs only
         // spills not yet seen: the jobs read what it lacks.)
-        if self.inp.pool_seen.as_ref().is_none_or(|p| p.role == poolside::Role::Lead) {
+        if self.inp.pool_seen.as_ref().is_none_or(|p| p.role == membership::Role::Lead) {
             let t = std::time::Instant::now();
             match codecs::extents::keep(root, &manifest) {
                 Ok(0) => {}
