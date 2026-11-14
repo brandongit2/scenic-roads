@@ -695,7 +695,7 @@ async function run() {
         check("nas: every measure a chart, no gauges", n[1] === 9 && !n[2], `${n[1]} rows, ${n[2]} gauges; ${n[3].slice(0, 80)}`);
         check("nas: its charts as wide as the Machines tab's (±2 px: the cards' borders)", !n[0].length ? /asking|no live/.test(n[3]) : machineW != null && n[0].every((w) => Math.abs(w - machineW) <= 2), `${n[0].join(", ") || "none shown"} against ${machineW}`);
       }
-      // (Activity: the websites' table ends in the mockup's robots.txt column, each row's cell a
+      // (Activity: the websites' table ends in the robots.txt column, each row's cell a
       // state: n/a for an API's or data's host, else not checked yet, allowed or disallowed.)
       if (tab === "activity") {
         const r = await js(`(() => { const t = document.querySelector(".panel:not([hidden]) table.xhosts"); if (!t) return null; const rows = [...t.tBodies[0].rows]; return [[...t.tHead.rows[0].cells].at(-1).textContent, rows.length, rows.filter((tr) => !/^(n\\/a: API or data|not checked yet|(allowed|disallowed) \\(checked \\d\\d:\\d\\d\\))$/.test(tr.cells[tr.cells.length - 1].textContent)).length]; })()`);
@@ -776,8 +776,7 @@ async function run() {
     }
 
     // Task #659: the map's legend an item per step (a solo since #685), grouped by stage; the tile areas by pack type;
-    // no display names (every stage, step and job label shown is the code's name); the Jobs tab's
-    // cards as the mockup's.
+    // no display names (every stage, step and job label shown is the code's name).
     {
       errors.length = 0;
       const t = await js(`fetch("/api/steps", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).then((r) => r.json())`);
@@ -840,7 +839,7 @@ async function run() {
       };
       const wide = Math.min(560, WIDTH - 16);
       const sc = await card(".stages > .st .title");
-      check("jobs card: a step's as the mockup's (head, stat tiles, rows, foot; twice as wide)", sc && sc.wide && !sc.parts.length && steps.has(sc.title) && Math.abs(sc.w - wide) <= 2, sc ? `${sc.kick} / ${sc.title}, ${sc.w} px; missing ${sc.parts.join(" ") || "none"}` : "no step row");
+      check("jobs card: a step's (head, stat tiles, rows, foot; twice as wide)", sc && sc.wide && !sc.parts.length && steps.has(sc.title) && Math.abs(sc.w - wide) <= 2, sc ? `${sc.kick} / ${sc.title}, ${sc.w} px; missing ${sc.parts.join(" ") || "none"}` : "no step row");
       if (sc && !PHONE) check("jobs card: off the pointer's line, ≤ 50svh (#627)", (sc.top >= sc.y || sc.bottom <= sc.y) && sc.h <= sc.max + 1, `${Math.round(sc.top)}–${Math.round(sc.bottom)}, pointer ${Math.round(sc.y)}`);
       // (A job of a step whose targets are tiles, in the schedule (running, else ran): its map
       // drawn. The past jobs come with the history read further back: waited for, up to 20 s. None

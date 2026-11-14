@@ -972,8 +972,7 @@ function withCard(el, key, build) {
   return el;
 }
 // A card's rows: its title, then [key, value] pairs (a value null: no row), then any lines. A
-// title given as an object ({title, …}: the map's cards, as docs/mockups/build-live.html draws
-// them) may have a head (`kicker` over it, a `colour` swatch), stat tiles (`stats`: [number,
+// title given as an object ({title, …}: the map's cards) may have a head (`kicker` over it, a `colour` swatch), stat tiles (`stats`: [number,
 // label] pairs, none null), a bar (`bar`: {frac, label, colour}), a bar in parts (`segs`: {parts
 // [{w, colour, cls, f, title}], label: a part with `f` filled that far, the rest faint, or striped when
 // it's `run`), chips (`chips` under `chipsLabel`) and a foot (`foot`); the Jobs tab's are `wide`,

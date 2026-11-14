@@ -29,7 +29,7 @@ __pycache__/
 /.claude/health-stamp
 /.claude/nas-links
 /.claude/sweep-keep
-/docs/diagram/pipeline.html
+/docs/diagram/out.html
 /tools/devtools/*.db
 /tools/devtools/*.db-wal
 /tools/devtools/*.db-shm

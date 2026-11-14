@@ -63,7 +63,7 @@ button:disabled { opacity: .5; }
 
 /* The world map (worldmap.js), the left panel: its canvas (as tall as the panel leaves it beside the
    tabs; under 720 px, as wide as the page), its zoom buttons over it, the legend, filters and age
-   controls under it (docs/mockups/build-live.html's map: a bordered canvas, a crosshair over it). */
+   controls under it (a bordered canvas, a crosshair over it). */
 .d-map { display: flex; flex-direction: column; min-height: 100%; }
 .wmap-wrap { position: relative; }
 .d-map > .wmap-wrap { flex: 1 0 auto; min-height: max(280px, 52vh); }
@@ -161,7 +161,7 @@ button:disabled { opacity: .5; }
 .inside .k { color: var(--dim); }
 .inside b { font-weight: 500; }
 .inside .pbar { grid-column: 2; margin: 0 0 2px; }
-/* Live on a Mac (live.js), as docs/mockups/build-live.html draws it: a heading, the transfers, the
+/* Live on a Mac (live.js): a heading, the transfers, the
    cores now (efficiency then performance, each group named), then a row a measure: its name over its
    words in a 150 px column, its chart beside. */
 .mc .live { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; display: flex; flex-direction: column; gap: 12px; }

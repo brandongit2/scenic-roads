@@ -269,7 +269,7 @@ The Jobs tab's stages are the one exception.
   under way). Steps at one spot
   (slope and roads on 6/57/16) are entries of their own, drawn across the whole square as
   diagonal stripes in each step's colour in turn, and each its own card in the stack.
-  Its cards (the Jobs tab's, drawn as docs/mockups/build-live.html's) show the whole stack under
+  Its cards (drawn as the Jobs tab's) show the whole stack under
   the point, one after another under a line: every tile there at every zoom (the deepest first),
   then the one region there: the innermost (an island, not the waters round it; an enclave, not the
   country round it: the smallest of those under the point, #831). A tile's card: its stage and state, its share done and phase, step, job, Mac,
@@ -435,7 +435,7 @@ The Jobs tab's stages are the one exception.
   job by its slot, about that job alone (name, progress in words, running since, memory; frozen or stuck; Cancel);
   then **Live** (`live.js`): the Mac's own `/api/live`, asked every 1.5 s while the tab is shown
   (the footer's range, then the points since), drawn by `chart.js` (its sums in `chartmath.js`,
-  tested by web/test/chartmath.test.mjs), as docs/mockups/build-live.html's vitals: each core's
+  tested by web/test/chartmath.test.mjs): each core's
   share busy now (bars, the efficiency and performance groups named: `cores_now`); four transfer
   charts (the jobs' NAS reads and writes, the internet in and out, each its last minute's mean
   said; each with a second line, thin and dashed, on its own scale in a 40 px gutter at the right,

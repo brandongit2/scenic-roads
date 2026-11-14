@@ -3,7 +3,7 @@
 // Machines tab is on screen: the window the footer's range picks at first, then the points since
 // the newest it has (the same ring, so one resolution). This page's own Mac through its own calls;
 // the others at their addresses in /api/swarm's `macs` (by the scheme the page came over).
-// Drawn per Mac as docs/mockups/build-live.html draws it (a row a measure: its name over its words, its chart beside): each core's share busy now, its transfers
+// Drawn per Mac (a row a measure: its name over its words, its chart beside): each core's share busy now, its transfers
 // (the jobs' NAS reads and writes, the internet in and out, each with a second line on its own scale:
 // files opened, files made, the proxy's requests a second), then a chart a measure: CPU use (the
 // build's and the rest's, stacked, against its cores and the build's limit), the load, memory (the

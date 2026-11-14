@@ -1,101 +1,102 @@
-"""Where the data lives (docs/storage.md): the NAS holds everything; the lead alone merges the journal into the build's
-records, and every member's jobs put their files there (workers.py); what was made by hand goes into inputs/ and sources/
-(the curated inputs: curated.py); the app Macs run the published app and copy what you download."""
-from html import escape as E
-
-from diag import W, Diagram, rpath, wrap
-
-LINE = 18.5
+"""Where the data lives: the NAS holds the bulk data, the lead (the Mac mini) keeps the pool's state, the records and
+the map on its own disk, each Mac's agent keeps its own work until the lead has it, and devices only read.
+Each label's source is cited where it is written; paths under "its own disk" are under the app's folder
+(~/Library/Application Support/scenic/)."""
+from diag import W, Fig
 
 
 def build(check=False):
-    d = Diagram('s', check)
-    tx = d.tx
-    el, ar, lb = [], [], []
-
-    def lines_of(items, w):
-        """Each item wrapped to the box's width (a string is one paragraph)."""
-        items = [items] if isinstance(items, str) else items
-        return [ln for it in items for ln in wrap('st-l', it, w - 28)]
-
-    def need(n):
-        """A box's height for n lines under its title."""
-        return 49 + LINE * (n - 1) + 14
-
-    def box(x, y, w, h, title, lines=(), nas=False):
-        el.append(f'<rect class="st-box{" nas" if nas else ""}" x="{x}" y="{y}" width="{w}" height="{h}" rx="9"/>')
-        el.append(tx('st-t', x + 14, y + 25, title, w - 28))
-        for i, s in enumerate(lines):
-            el.append(tx('st-l', x + 14, y + 49 + LINE * i, s, w - 28))
-
-    def arrow(*pts, label=None, at=None, anchor='start', dashed=False):
-        ar.append(f'<path class="st-a{" dashed" if dashed else ""}" d="{rpath(pts)}" marker-end="url(#sm-a)"/>')
-        if label:
-            lb.append(tx('st-lbl', at[0], at[1], label, anchor=anchor))
-
-    rows = [            ('inputs/', 'the inputs folders: regions (enabled and disabled), translations, descriptions, registers, timetables, sources, keys'),
-            ('sources/', 'the planet (the NAS fetches it), its z6 tile extracts and sets; every download, once; the depth grids, packed per z6 tile'),
-            ('base/ · hidata/', 'per z6 tile: its ways with elevations and scenic values; query parts'),
-            ('markdata/ · ovdata/', 'landmark points per z6 tile, in one bundle; area and park details per z3 tile'),
-            ('global/', 'worldwide results: whole roads, road → z6 tiles, trains a day, languages'),
-            ('layers/', 'what the map draws, in packs (detail near the coverage) or one bundle a small layer; basemap, water'),
-            ('work/ · cache/', 'build intermediates; what each z6 tile keeps for its next run, on either Mac'),
-            ('app/ · catalog/', 'the app your Macs run; catalogues: every file the map reads'),
-            ('state/', 'who leads (terms); the journal; the records: what each file is made from')]
-    # GC: unreferenced files after 14 days, daily, when the NAS is quiet or after waiting a day (storage.md, pool.md §7.2)
+    f = Fig('s', check)
     top = 16
-    sx, sw = 16, 196
-    nx, nw, fw = 270, 590, 172
-    ax, aw = 928, 330
-    bx = 1328
-    src_l = lines_of(['OSM planet, twice a year', 'AWS terrain · GLO-30', 'DEMs · canopy · land cover', 'depth grids', 'Overture · GHSL buildings',
-                      'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'], sw)
-    rows_l = [(f, wrap('st-l', t, nw - fw - 14)) for f, t in rows]
-    mac_l = lines_of(['the map is always on (a launcher)', 'copy what you download: the World, zoomed out; regions',
-                      'read the rest from the NAS (timeouts, an offline banner)', 'Regions panel: the regions, read only',
-                      'menu bar: the build, who leads', 'each helps build (below)'], aw)
-    brw_l = lines_of(['the map: MapLibre and WebGL', 'the build page, on any device (below)'], W - 16 - bx)
-    hh = max(need(len(src_l)), need(len(mac_l)), need(sum(len(t) for _, t in rows_l)), need(len(brw_l)))
-    box(sx, top, sw, hh, 'Online sources', src_l)
-    box(nx, top, nw, hh, 'NAS · the source of truth', nas=True)
-    y = top + 49
-    for f, ts in rows_l:
-        el.append(tx('st-f', nx + 14, y, f, fw - 10))
-        for i, t in enumerate(ts):
-            el.append(tx('st-l', nx + fw, y + LINE * i, t, nw - fw - 14))
-        y += LINE * len(ts)
-    box(ax, top, aw, hh, 'Your Macs', mac_l)
-    box(bx, top, W - 16 - bx, hh, 'Browser', brw_l)
-    lw = 460
-    lead_l = lines_of('jobs packed by their measured memory, disk and cores, staged on its SSD; at any charge; away from home over Tailscale, slowly; a sleeping Mac loses only the target under way', lw)
-    hand_l = lines_of('you, Claude agents (translators, writers, research), downloads a script can’t make', aw)
-    by, bh = top + hh + 56, need(max(len(lead_l), len(hand_l)))
-    box(nx, by, lw, bh, 'The lead (the M4 today) · and every member', lead_l)
-    hx = ax
-    box(hx, by, aw, bh, 'Made by hand (the curated inputs, below)', hand_l)
 
-    mid = top + hh / 2
-    arrow((sx + sw, top + 49), (nx, top + 49), label='the planet', at=((sx + sw + nx) / 2, top + 41), anchor='middle')
-    arrow((sx + sw / 2, top + hh), (sx + sw / 2, by + bh / 2), (nx, by + bh / 2), label='downloads (kept on the NAS)', at=(sx + sw / 2 + 8, by + bh / 2 - 8))
-    gx = (nx + nw + ax) / 2
-    arrow((nx + nw, top + 49), (ax, top + 49), label='copies', at=(gx, top + 41), anchor='middle')
-    arrow((nx + nw, top + 104), (ax, top + 104), label='on demand', at=(gx, top + 96), anchor='middle', dashed=True)
-    arrow((ax + aw, mid), (bx, mid), label='tiles · JSON', at=((ax + aw + bx) / 2, mid - 8), anchor='middle')
-    arrow((nx + 200, top + hh), (nx + 200, by), label='inputs', at=(nx + 192, top + hh + 33), anchor='end')
-    arrow((nx + 360, by), (nx + 360, top + hh), label='outputs', at=(nx + 368, top + hh + 33))
-    xh = nx + nw - 50
-    arrow((hx, by + bh / 2), (xh, by + bh / 2), (xh, top + hh), label='by hand', at=(xh + 8, top + hh + 33))
+    # docs/storage.md's tree: sources/ (osm, basemap, items, pageviews, buildings, trees, canopy, aws-terrarium,
+    # pyramids (GSI's tiles), rail, canvec, fetched/glo30); docs/macs.md, "Downloads are kept on the NAS, each made once".
+    src_t = ('the OSM planet; AWS’s terrain tiles, GLO-30 and GSI’s elevation tiles; canopy heights and leaf type; '
+             'Overture’s buildings; Wikidata and Wikipedia’s pageviews; rail feeds; CanVec')
+    # docs/storage.md's tree, folder by folder; state/: also docs/coordination.md §3.2 (the token, the history's
+    # archive), crates/agentcore/src/agent/lead.rs (state/build/lead-member.json), crates/agentcore/src/pool/records.rs
+    # (state/build/records.json, written whole), crates/agentcore/src/agent/live.rs (ARCHIVE = state/live-archive).
+    nas_rows = [
+        ('inputs/', 'the inputs folders: regions, languages, translations, descriptions, heritage, timetables, elevation, sources; the keys'),
+        ('sources/', 'the OSM planet and its pass; every download, made once; the input check’s checked copies'),
+        ('base/ · hidata/', 'per z6 tile: the base packs; query parts, rail lines, zoomed-out summaries'),
+        ('markdata/ · ovdata/', 'landmark points per z6 tile, in one bundle; area and park details per z3 tile'),
+        ('global/', 'worldwide files: road values, rail frequencies, landmark totals, heritage, the languages spoken'),
+        ('layers/', 'what the map draws: root, lo and hi packs, or one bundle a small layer; the basemap'),
+        ('work/ · cache/', 'build intermediates, not served; what z6 tiles keep for their later runs'),
+        ('state/', 'the lead’s declaration; the records’ snapshot and its brief; the pool’s token; the archives '
+                   '(history, forecasts, live measures); backups')]
+    # agent/pool/records.json: crates/agentcore/src/agent/pool.rs (RECORDS), docs/pool.md §6.2, docs/storage.md
+    # (the build manifest, job keys, unverified uploads, sizes). agent/coord/store/: docs/coordination.md §4.1.
+    # agent/maplog/: crates/agentcore/src/agent/publish.rs (MAPLOG), docs/formats.md "The lead's store" (gc.jsonl there).
+    # agent/coord/history.jsonl: docs/pool.md §7.5, crates/agentcore/src/coord/history.rs (a week).
+    # app/releases/: crates/jobrt/src/appupdate.rs (RELEASES), docs/coordinator.md §10.
+    # mirror/ · idx/: docs/macs.md, "Mirror, the Mac mini's" (only what's downloaded; pack indexes cached).
+    lead_rows = [
+        ('agent/pool/records.json', 'the records, the truth: the build manifest, the job keys, the unverified uploads, the files’ sizes'),
+        ('agent/coord/store/', 'the pool’s state, a snapshot and a log: leases, the members’ beats, hand-offs taken, holds, settings'),
+        ('agent/maplog/', 'the map (every file the map server reads) and the log of its updates; GC’s queue'),
+        ('agent/coord/history.jsonl', 'the week’s history'),
+        ('app/releases/', 'the live app release and the one before'),
+        ('mirror/ · idx/', 'the map server’s downloads (the World, regions) and its pack indexes')]
+    # docs/macs.md: Caches (agent/cache: filled from the NAS), "The offline map, on demand"; docs/coordination.md §5.3
+    # (agent/pool/: held leases, hand-offs until a saved records snapshot names them); docs/roles.md §8.1 (scratch).
+    mac_t = ('its jobs’ scratch; caches filled from the NAS (agent/cache/); its held leases and its hand-offs, kept '
+             'until a records snapshot the lead saved names them (agent/pool/); on a laptop, the offline map on demand: what it downloaded')
+    # docs/storage.md, Writers (the owner's inputs folders); docs/inputs.md (the input check).
+    hand_t = 'the owner and Claude agents: regions, translations, descriptions, registers, timetables, declarations'
+    # docs/macs.md, Devices (map.brandontsang.net, over the tailnet); docs/coordinator.md §7 (the page at the root).
+    dev_t = ('the map: map.brandontsang.net, over the tailnet; the build page, at the lead’s coordinator’s root; '
+             'a phone, an iPad, the other Macs')
 
-    h = by + bh + 14
-    aria = ('Where the data lives. The NAS is the source of truth: the inputs folders in inputs, with your regions, translations, '
-            'descriptions, registers, timetables and source declarations; sources (the planet the NAS fetches itself, and every '
-            'download, kept once, the depth grids among them); base data and query data per z6 tile, landmark points in one bundle, '
-            'worldwide results, the layers in packs or bundles, build intermediates and what each z6 tile keeps for its next run, the '
-            'published app, the catalogues (at most one a minute), and the build’s terms, journal and records. The lead and every member '
-            'run jobs packed by their measured memory, disk and cores, staging on their SSDs, at any charge. What was made by hand, by '
-            'you, by Claude agents or by downloads a script can’t make, goes into the NAS directly. Your Macs run the map under a '
-            'launcher, copy only what you download in the Regions panel, read the rest from the NAS, and list the regions read only.')
-    marker = ('<marker id="sm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'
-              '<path class="st-mk" d="M0,0.8 L10,5 L0,9.2 z"/></marker>')
-    return (f'<svg viewBox="0 0 {W} {h:.0f}" role="img" aria-label="{E(aria)}" xmlns="http://www.w3.org/2000/svg">'
-            f'<defs>{marker}</defs>' + ''.join(ar + el + lb) + '</svg>')
+    sx, sw = 16, 180
+    nx, nw = 286, 500
+    lx, lw = 934, 300
+    dx = 1300
+    dw = W - 16 - dx
+    hh = max(f.measure(nw, rows=nas_rows), f.measure(lw, rows=lead_rows))
+    src = f.box(sx, top, sw, 'Online sources', src_t)
+    nas = f.box(nx, top, nw, 'NAS · the bulk data', rows=nas_rows, cls='nas', h=hh)
+    lead = f.box(lx, top, lw, 'The lead · the Mac mini’s own disk', rows=lead_rows, h=hh)
+    dev = f.box(dx, top, dw, 'Devices', dev_t)
+
+    by = top + hh + 58
+    mx = nx + 96
+    bh = max(f.measure(sw, hand_t), f.measure(nas.r - mx, mac_t))
+    hand = f.box(sx, by, sw, 'Made by hand', hand_t, h=bh)
+    mac = f.box(mx, by, nas.r - mx, 'Every Mac’s agent · its own disk', mac_t, h=bh)
+
+    def gap_arrow(a, b, y, label, back=False):
+        """An arrow across the gap between two boxes of the top row, its label above it."""
+        p, q = ((b.x, y), (a.r, y)) if back else ((a.r, y), (b.x, y))
+        f.arrow(p, q, label=label, at=((a.r + b.x) / 2, y - 8), anchor='middle')
+
+    # docs/macs.md: each download made once, by a job (docs/steps.md §1: the planet by the lead's planet-fetch).
+    gap_arrow(src, nas, top + 60, 'downloads')
+    # docs/macs.md, Mirror: the map reads a file from the Mac when it's there, else from the NAS.
+    gap_arrow(nas, lead, top + 60, 'the map’s files')
+    # crates/agentcore/src/pool/records.rs: written whole to state/build/records.json each save (brief.json beside it).
+    gap_arrow(nas, lead, top + 112, 'the records’ snapshot', back=True)
+    # docs/storage.md, GC: the lead's gc job removes what its queue says is due.
+    gap_arrow(nas, lead, top + 164, 'GC’s removals', back=True)
+    gap_arrow(lead, dev, top + 60, 'tiles')
+    # docs/storage.md, Writers: every job uploads its files, content-named; docs/coordinator.md §2: jobs read the NAS.
+    ym = top + hh + 33
+    f.arrow((mx + 110, nas.b), (mx + 110, by), label='inputs', at=(mx + 102, ym), anchor='end')
+    f.arrow((mx + 230, by), (mx + 230, nas.b), label='built files, content-named', at=(mx + 238, ym))
+    # docs/coordination.md §3.1: POST /pool/handoff, by HTTP to the lead alone.
+    hx = lx + lw / 2
+    f.arrow((mac.r, by + bh / 2), (hx, by + bh / 2), (hx, lead.b), label='hand-offs, by HTTP', at=(hx + 8, ym))
+    # docs/storage.md, Writers: the owner's inputs folders.
+    ix = nx + 48
+    f.arrow((hand.r, by + bh / 2), (ix, by + bh / 2), (ix, nas.b), label='by hand', at=(ix - 8, ym), anchor='end')
+
+    aria = ('Where the data lives. The NAS holds the bulk data: the inputs folders, the sources (each download made once), '
+            'the built files per z6 and z3 tile and worldwide, the layers’ packs, build intermediates, and under state the '
+            'lead’s declaration, the records’ snapshot, the pool’s token, archives and backups. The lead, the Mac mini, keeps '
+            'on its own disk the records, the pool’s state in one store, the map with the log of its updates and GC’s queue, '
+            'the week’s history, the app’s releases and the map server’s downloads. Every Mac’s agent keeps its jobs’ scratch, '
+            'caches, held leases and hand-offs on its own disk; its jobs read inputs from the NAS, upload content-named files '
+            'there and hand their record changes to the lead by HTTP. Inputs made by hand go into the NAS’s inputs folders. '
+            'Devices read the map and the build page from the Mac mini.')
+    return f.svg(by + bh + 14, aria)

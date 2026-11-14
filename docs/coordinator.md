@@ -207,7 +207,7 @@ Common rules:
   `/api/history` incrementally (and further back, a chunk at a time, for the schedule's past jobs: the week's, from the coordinator's memory; older ones are in the NAS's archive, which the page doesn't read); `/api/regions` (each region's folders, download size and
   outline: docs/pool.md §10, Regions) when the map changes, else every ten minutes (an answer
   the same as the last, its map and version, isn't shown again);
-  each Mac's measures over time (its vitals as docs/mockups/build-live.html draws them, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/api/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
+  each Mac's measures over time (its vitals, each core's share now among them; on the lead also the NAS's disks and the pool's NAS traffic), and its internet's counts by host and last transfers, from its own port's `/api/live` (docs/pool.md §10, Live; the Machines and NAS tabs ask each Mac's every 1.5 s while shown);
   each running job's phase, target and NAS and internet bytes in the status (`jobs[].live`, and a
   member's on its lease, from its beat: the same section). The
   world map draws the regions' outlines, the countries' and the large lakes' (`countries.json`, `lakes.json`, the page's

@@ -1,5 +1,4 @@
-// The Activity tab's transfers (docs/pool.md §10, Live; docs/pipeline.md §5), as the owner's mockup
-// lays them out (docs/mockups/build-live.html, "File stream" and "Internet by website"): what each
+// The Activity tab's transfers (docs/pool.md §10, Live; docs/pipeline.md §5): what each
 // Mac's jobs are moving now (the NAS files they opened or made and the internet transfers that
 // ended, newest first) and the internet by website (each host's requests and MB a second over the
 // last `RATE_S`, the connections open now, retries and 429 holds since each Mac's agent started,
