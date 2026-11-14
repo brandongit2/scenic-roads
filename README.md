@@ -235,7 +235,6 @@ coordinator (`docs/coordinator.md`, `docs/pool.md`). The build runs on a Mac whi
 | `docs/names.md`, `docs/sizes.md`, `docs/buildings3d.md` | Names and descriptions; sizes; 3D buildings. |
 | `docs/native-port.md` | MapLibre subsumed into the web app as one engine, then the native map app translated from it (planned). |
 | `docs/polar.md` | The polar caps past 85° (planned: built and tested, not yet in the live build). |
-| `docs/diagram/` | Two figures, where the data lives and who builds it (`python3 page.py out.html`, then republish out.html to https://claude.ai/artifact/2LamxyqCeK6YLbkSpPPbrj). |
 | `web/maplibre/FORK.md` | Our MapLibre changes. |
 
 Phases, known gaps, risks and decisions are on the task board.
