@@ -2,7 +2,7 @@
 //! role read from the declaration (docs/roles.md §1: a change restarts it into the new one), its
 //! coordinator while it leads (crate::coord, in process: offered the plan's work, its own jobs
 //! granted by `ask_own`, told what its driver's step came to as `agent::lead::after` and
-//! `agent::pool`'s step tell it), its member's beat to the lead
+//! `agent::poolside`'s step tell it), its member's beat to the lead
 //! (crate::agent::beat::ToLead::post_on over the network) and its asks (`LeaseCalls::ask`), its
 //! jobs (a few minutes each, a hand-off each as it ends; stopped when the lead says their lease
 //! isn't its), and its restarts (an update, a crash).
@@ -74,7 +74,7 @@ pub(super) struct Mac {
     handoffs: Arc<Handoffs>,
     running: Vec<Job>,
     /// Its jobs' hand-offs handed to a step whose state isn't saved yet: in their jobs' folders
-    /// still (crate::agent::pool::job_dir), handed again after a crash.
+    /// still (crate::agent::poolside::job_dir), handed again after a crash.
     unsaved: Vec<Entry>,
     /// Leading: it took the records up once in this process (`Run::led`).
     took: bool,
@@ -288,7 +288,7 @@ impl Mac {
             self.sim.alive(|w| w.told_merged(k, &merged))?;
             heard.lead_says = self.beats.lead_says(now);
         }
-        // (The merge's checks: the simulator's, then GC's refusal, as crate::agent::pool's step
+        // (The merge's checks: the simulator's, then GC's refusal, as crate::agent::poolside's step
         // checks: last, since one it lets merge holds its names from GC's chunks.)
         let gc = self.gc.clone().filter(|_| leading);
         let checks = |e: &Entry, r: &Records| {
@@ -351,7 +351,7 @@ impl Mac {
         Ok(())
     }
 
-    /// The lead's agent after its step (crate::agent::pool's step, `took_up`, `lead::after`): its
+    /// The lead's agent after its step (crate::agent::poolside's step, `took_up`, `lead::after`): its
     /// coordinator told what the step came to, the plan's work offered, its own slot's job asked
     /// for, its contact published.
     fn lead_after(&mut self, out: &Out, faulting: bool, checked: u64) -> Result<()> {
@@ -362,7 +362,7 @@ impl Mac {
         let own: Vec<u64> = self.running.iter().map(|j| j.n).collect();
         let records = self.driver.records().cloned();
         let saved_records = self.driver.saved_records();
-        let gates = crate::agent::pool::Gates {
+        let gates = crate::agent::poolside::Gates {
             leads: out.leads,
             duties: out.duties,
             caught_up: out.caught_up,
@@ -418,7 +418,7 @@ impl Mac {
             if poll {
                 w.map_poll(k, k);
             }
-            c.set_moving_as_of(crate::agent::pool::moving(&gates, false), checked);
+            c.set_moving_as_of(crate::agent::poolside::moving(&gates, false), checked);
             c.keep_own(own.iter().map(|&n| (n, 0)).collect());
             c.set_plan(1);
             let key = |t: &str| (t.to_string(), "k".to_string(), 0);
@@ -455,7 +455,7 @@ impl Mac {
             self.sim.op(|w, me| w.map_poll(me, to))?;
         }
         let now = Io::now(&self.sim);
-        self.beats.set_own(crate::agent::pool::Heartbeat { pool: out.beat.clone(), ..Default::default() });
+        self.beats.set_own(crate::agent::poolside::Heartbeat { pool: out.beat.clone(), ..Default::default() });
         self.beats.set_handoffs(self.driver.mine().entries().cloned().collect());
         let body = held::Beat {
             member: host(k),
@@ -646,7 +646,7 @@ impl Mac {
                 self.sim.alive(|w| {
                     *w.counts.entry("hand-offs passed over for a later lease's").or_default() += n;
                     w.applied(k, e, applied);
-                    // (Their work not taken, granted again: as crate::agent::pool's step.)
+                    // (Their work not taken, granted again: as crate::agent::poolside's step.)
                     if let Some(c) = w.macs[k].coord.clone().filter(|_| !again.is_empty()) {
                         w.tick(k);
                         c.again(again);

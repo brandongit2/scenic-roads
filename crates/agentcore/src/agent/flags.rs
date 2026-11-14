@@ -227,7 +227,9 @@ pub fn stale(st: &Status, runs: &[Run], factor: f64, now: u64) -> Option<Flag> {
     let since = st.catalogue.as_ref().map_or(due, |c| c.at.max(due));
     let most = super::publish::CATALOGUE_CAP_S + super::publish::CATALOGUE_EVERY_S;
     let ran = now.saturating_sub(since);
-    if (ran as f64) <= most as f64 * factor || runs.iter().any(|r| super::pool::PUBLISHES.contains(&r.step.as_str())) {
+    if (ran as f64) <= most as f64 * factor
+        || runs.iter().any(|r| super::poolside::PUBLISHES.contains(&r.step.as_str()))
+    {
         return None;
     }
     let last =

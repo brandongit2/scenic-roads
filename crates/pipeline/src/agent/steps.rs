@@ -39,7 +39,7 @@
 //! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
 //! step (buildstore::out::Out::for_step), puts and removes only names it gives, a name outside failing
 //! the job; and the pool's lead refuses every journal entry with a change outside it (`outside`,
-//! in agentcore::agent::pool's check). A shared step's files for its targets (`saves`, which
+//! in agentcore::agent::poolside's check). A shared step's files for its targets (`saves`, which
 //! agentcore::coord's check of a member's hand-off and the merge's check use) are checked beside it.
 
 use agentcore::agent::every::{self, Place};

@@ -46,7 +46,7 @@ pub enum Fresh {
 }
 
 /// A member's last brief from its lead, held between asks: one a Mac, its jobs' and its pool's
-/// view's (`pool::Cx::briefs`), published whole (agent::bus).
+/// view's (`poolside::Cx::briefs`), published whole (agent::bus).
 pub struct Briefs {
     held: Arc<Snap<Option<Held>>>,
 }

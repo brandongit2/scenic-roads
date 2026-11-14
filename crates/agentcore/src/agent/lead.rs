@@ -12,7 +12,7 @@
 //!   one, appends them to its own file on the NAS and keeps them for its next process's coordinator
 //!   (`NOTES`).
 
-use super::pool::{Heartbeat, Run};
+use super::poolside::{Heartbeat, Run};
 use crate::coord::history;
 use crate::pool::driver::{Event, Out};
 use crate::pool::{lead, reachable};
@@ -91,7 +91,7 @@ pub struct Member {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub away: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conds: Option<super::pool::Conds>,
+    pub conds: Option<super::poolside::Conds>,
     /// Another member in touch reports it can't reach its coordinator (docs/pool.md §6.8), in
     /// words: "unreachable from m4: connection timed out (…)".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -523,12 +523,12 @@ pub fn replay(dir: &Path, coord: &crate::coord::Coordinator) {
 /// This Mac's own agent's status (its folder `home`): the lead's `status.json` or a member's
 /// `helper.json`, the fresher.
 ///
-/// Its pool part as the pool's own thread last wrote it (crate::agent::pool's `VIEW`), when that's
+/// Its pool part as the pool's own thread last wrote it (crate::agent::poolside's `VIEW`), when that's
 /// fresher: the status is written at the end of the agent's loop, which a long step holds up, while
 /// the pool is stepped every 20 s or so whatever the loop does.
 pub fn own_status(home: &Path) -> Option<super::Status> {
     let mut st = own_status_plain(home)?;
-    if let Some(v) = super::pool::read_view(home).filter(|v| v.beat > st.beat) {
+    if let Some(v) = super::poolside::read_view(home).filter(|v| v.beat > st.beat) {
         st.pool = Some(v.pool);
     }
     Some(st)
@@ -601,7 +601,7 @@ pub fn said(v: &View, now: u64) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::pool::Conds;
+    use crate::agent::poolside::Conds;
     use crate::pool::beat::Beat;
 
     fn hb(host: &str, beat: u64, conds: Option<Conds>) -> Heartbeat {
@@ -723,7 +723,7 @@ mod tests {
     /// each with its folder, stepped as the agent steps them (`go`).
     mod runs {
         use super::super::*;
-        use crate::agent::pool::{Conds, Gates, Role, Run, SharedNas, Side};
+        use crate::agent::poolside::{Conds, Gates, Role, Run, SharedNas, Side};
         use std::sync::Arc;
 
         const HOME: Conds = Conds { home: true, ac: true, battery: None, held: false };
@@ -799,7 +799,7 @@ mod tests {
             /// test's.
             pub fn pass(&mut self, mut s: u64) {
                 while s > 0 {
-                    let k = s.min(crate::agent::pool::TICK_S);
+                    let k = s.min(crate::agent::poolside::TICK_S);
                     self.run.side.ahead += k;
                     s -= k;
                     if s > 0 {

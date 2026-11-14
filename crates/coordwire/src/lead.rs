@@ -23,7 +23,7 @@ pub const PORT: u16 = 8090;
 /// The lead's contact as a Mac's agent keeps it, in its folder.
 pub const SAVED: &str = "lead.json";
 
-/// The pool's token as an agent keeps it, under its folder (agentcore::agent::pool's `seed`).
+/// The pool's token as an agent keeps it, under its folder (agentcore::agent::poolside's `seed`).
 pub const TOKEN_KEPT: &str = "coord/workers-token";
 /// The pool's token on the NAS (read once at each agent's start, and here by a process with no
 /// agent's copy).

@@ -22,7 +22,7 @@
 //! cursors' TTL (`CURSOR_TTL_S`, 6 h) as they are.
 //!
 //! **Modelled** (`mac`): the agent's loop around them (its slots and jobs, when it asks and beats,
-//! its role read from the declaration and its restart into a new one, `agent::pool::took_up`'s
+//! its role read from the declaration and its restart into a new one, `agent::poolside::took_up`'s
 //! few lines, `lead::after`'s calls), the jobs (a few minutes each, their hand-offs
 //! drawn: now and then taking their targets' files as their brief names them, `Handoff::reused`),
 //! the map's publishing (a batch of the map's log after each save of the records, `World::publish`)
@@ -1796,7 +1796,7 @@ impl Io for Sim {
         self.alive(|w| w.macs[me].local = Some(records.to_vec()))
     }
 
-    /// The store's epoch (as crate::agent::pool's, its coordinator's `store_epoch`, in this Mac's
+    /// The store's epoch (as crate::agent::poolside's, its coordinator's `store_epoch`, in this Mac's
     /// turn).
     fn epoch(&self) -> Result<u64> {
         let me = self.me;

@@ -106,7 +106,7 @@ pub fn write(p: &NasPath, f: impl FnOnce() -> anyhow::Result<()> + Send + 'stati
 }
 
 /// A NAS whose every call is a deadline call (`DEADLINE`); its writes and creates hold their path
-/// while held. The pool's driver and its member's opening go through it (crate::agent::pool).
+/// while held. The pool's driver and its member's opening go through it (crate::agent::poolside).
 pub struct Deadlined {
     inner: Arc<dyn Nas + Send + Sync>,
     deadline: Duration,

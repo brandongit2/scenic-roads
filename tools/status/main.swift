@@ -1105,7 +1105,7 @@ func pendingAsk() -> Bool? {
 }
 
 /// The pool as this Mac's agent's pool last stepped it (`agent/pool/view.json`: crates/pipeline/
-/// src/agent/pool.rs PoolFile), written each of its steps, every 20 s or so whatever the agent's
+/// src/agent/poolside.rs PoolFile), written each of its steps, every 20 s or so whatever the agent's
 /// loop is doing (agents from #197 on).
 struct PoolFile: Decodable {
     let beat: Int

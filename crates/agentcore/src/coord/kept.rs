@@ -40,7 +40,7 @@ pub struct Heard {
 /// Not its agent's status (most of a beat: the next beat brings it).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Beat {
-    pub beat: crate::agent::pool::Heartbeat,
+    pub beat: crate::agent::poolside::Heartbeat,
     pub at: u64,
 }
 
@@ -243,7 +243,7 @@ impl Kept {
     }
 
     /// `member`'s beat heard at `at`: saved when it's new or `HEARD_SAVE_S` passed.
-    pub fn beat(&self, member: &str, beat: &crate::agent::pool::Heartbeat, at: u64) {
+    pub fn beat(&self, member: &str, beat: &crate::agent::poolside::Heartbeat, at: u64) {
         if self.store.get().is_none() {
             return;
         }

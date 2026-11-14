@@ -375,7 +375,7 @@ from the first (`edit_held`).
   and mirrors, the tiles each z6 tile restaled, which of ferries, stations, roadunits, marks and
   names-todo ran, and the medians (the map updates' phases among them).
 
-**The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::pool`; other workers: `docs/coordinator.md`),
+**The pool** (`docs/pool.md`; `crate::pool`, `crate::agent::poolside`; other workers: `docs/coordinator.md`),
 always on. Every Mac's agent is a member; the declared one leads. A process not in the pool (no NAS at
 start, or its member lock held) starts nothing new. `scenic pool [status]` shows it, and `scenic
 status` labels the Mac by its part: "lead, coordinator", "member", or "not in the pool: waiting to

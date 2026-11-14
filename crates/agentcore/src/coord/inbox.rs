@@ -1,7 +1,7 @@
 //! The members' messages to the lead over HTTP (docs/pool.md §9; docs/coordination.md step 5):
 //! `POST /pool/mail` on its coordinator, taken into its store (crate::pool::store: `inbox/<member>`)
 //! and on its disk before the answer, so a message answered survives the lead's crash. The lead's
-//! agent takes them with its mail (crate::agent::pool's `take_mail`), each by its sender's number,
+//! agent takes them with its mail (crate::agent::poolside's `take_mail`), each by its sender's number,
 //! so one sent twice is taken once. (An agent before the store kept them in `inbox.json`: taken into
 //! the store once, `attach`.) The lead sends its members none (its `Ack`s went with the NAS's
 //! journal, task #1125).

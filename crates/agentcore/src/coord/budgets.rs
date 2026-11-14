@@ -405,7 +405,7 @@ mod tests {
         let beat = |m: &str, speaks: &[&str], progress: Option<Progress>| held::Beat {
             member: format!("{m}-host"),
             speaks: speaks.iter().map(|w| w.to_string()).collect(),
-            heartbeat: Some(crate::agent::pool::Heartbeat {
+            heartbeat: Some(crate::agent::poolside::Heartbeat {
                 pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
                 beat_http: true,
                 ..Default::default()

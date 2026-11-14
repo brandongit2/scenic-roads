@@ -1,6 +1,6 @@
 //! The fields of a member's heartbeat the pool's protocol reads and writes (docs/pool.md §10): who
 //! it is, when it beat, the epoch it leads, and where to reach it. A struct of their own, every field
-//! defaulted, to embed in the agent's heartbeat (crate::agent::pool::Heartbeat), which rides in its
+//! defaulted, to embed in the agent's heartbeat (crate::agent::poolside::Heartbeat), which rides in its
 //! beat to the lead (crate::coord::beats).
 
 use super::Member;

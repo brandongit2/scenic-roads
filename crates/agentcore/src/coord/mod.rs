@@ -3046,7 +3046,7 @@ impl Coordinator {
     }
 
     /// The epoch the leases it grants now are in (docs/pool.md §7.5, docs/coordination.md §4.3; 0:
-    /// the pool off): its agent's driver's take-up's (crate::agent::pool::took_up).
+    /// the pool off): its agent's driver's take-up's (crate::agent::poolside::took_up).
     pub fn set_epoch(&self, epoch: u64) {
         self.shared.lock().unwrap().leases.epoch = epoch;
     }
@@ -6936,7 +6936,7 @@ mod tests {
 
     /// A member's beat speaking `speaks`, with its heartbeat.
     fn heard_beat(m: &str, speaks: &[&str]) -> held::Beat {
-        let heartbeat = crate::agent::pool::Heartbeat {
+        let heartbeat = crate::agent::poolside::Heartbeat {
             pool: crate::pool::Beat { member: m.into(), host: format!("{m}-host"), beat: 1, ..Default::default() },
             beat_http: true,
             ..Default::default()

@@ -48,7 +48,7 @@ pub struct Beat {
     pub held_age_s: u64,
     /// Its pool heartbeat (crate::coord::beats).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heartbeat: Option<crate::agent::pool::Heartbeat>,
+    pub heartbeat: Option<crate::agent::poolside::Heartbeat>,
     /// Its agent's status (crate::agent::Status), its plan's parts left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
@@ -128,7 +128,7 @@ pub struct Answer {
     pub speaks: Vec<String>,
     /// The other members' heartbeats as the lead hears them, its own among them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub members: Vec<crate::agent::pool::Heartbeat>,
+    pub members: Vec<crate::agent::poolside::Heartbeat>,
     /// This member's pause as the lead keeps it (`/pool/hold`: another Mac's, or its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<jobrt::control::HoldState>,

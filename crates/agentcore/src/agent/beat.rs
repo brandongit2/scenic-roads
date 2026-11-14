@@ -489,7 +489,7 @@ mod tests {
     /// each member hears the other from the lead's answers. (No beat touches the NAS, task #1119.)
     #[test]
     fn beats_reach_the_lead_and_each_member_hears_the_other() {
-        use crate::agent::pool::Heartbeat;
+        use crate::agent::poolside::Heartbeat;
         let d = tempfile::tempdir().unwrap();
         let (c, port) = crate::coord::start_for_test(&d.path().join("lead"), "lead", "");
         let at_lead = Arc::new(Beats::default());
@@ -627,7 +627,7 @@ mod tests {
         let home = d.join(id);
         std::fs::create_dir_all(&home).unwrap();
         let beats = Arc::new(Beats::default());
-        beats.set_own(crate::agent::pool::Heartbeat {
+        beats.set_own(crate::agent::poolside::Heartbeat {
             pool: crate::pool::Beat { member: id.into(), host: id.into(), ..Default::default() },
             beat_http: true,
             ..Default::default()

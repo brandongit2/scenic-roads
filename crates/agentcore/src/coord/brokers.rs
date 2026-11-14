@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-/// A member's broker, as its heartbeat says it (crate::agent::pool::Heartbeat's `broker`): where a
+/// A member's broker, as its heartbeat says it (crate::agent::poolside::Heartbeat's `broker`): where a
 /// page reaches it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

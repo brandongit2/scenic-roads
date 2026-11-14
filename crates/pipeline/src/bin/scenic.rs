@@ -1490,7 +1490,7 @@ fn cli_main() -> Result<()> {
             }
             let r = root(&pool.root, false)?;
             match pool.cmd {
-                Some(PoolCmd::Status) | None => println!("{}", agent::pool::status(&r)),
+                Some(PoolCmd::Status) | None => println!("{}", agent::poolside::status(&r)),
                 // (Taken above, before the NAS is looked for: it needs none.)
                 Some(PoolCmd::Set { .. }) => {}
                 Some(PoolCmd::Release { member, job: Some(job) }) => {
