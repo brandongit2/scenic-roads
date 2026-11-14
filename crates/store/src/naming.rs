@@ -15,6 +15,12 @@ pub const HASH_LEN: usize = 16;
 /// Chunk size for streaming file copies and hashes.
 pub const CHUNK: usize = 4 << 20;
 
+/// The most memory a `write_atomic` of a local file holds at once (bytes): its copy's read buffer
+/// and, beside it, the piece handed to the share's write call (`write_tmp`: each piece its own, the
+/// call run on a watched thread of its own); its hash's read and its read-back hold one `CHUNK`
+/// each, in turn.
+pub const HELD: usize = 2 * CHUNK;
+
 use crate::whole::WRITE_TRIES;
 
 /// The bytes the streamed hashes and copies here have read and written, all told: a long upload
@@ -191,8 +197,9 @@ pub fn write_atomic(root: &crate::nasfs::NasRoot, logical: &str, ext: &str, src:
 }
 
 /// `write_atomic` of a local file whose `hash16` and length the caller has just worked out (an
-/// upload hashing it for its name: buildstore's `Out::put_file`), so it isn't read for them again. The read-back is checked against them as against its own: a wrong
-/// hash, or a file changed since, fails (the source changed since it was hashed), and leaves nothing.
+/// upload hashing it for its name: buildstore's `Out::put_file`), so it isn't read for them again.
+/// The read-back is checked against them as against its own: a wrong hash, or a file changed since,
+/// fails (the source changed since it was hashed), and leaves nothing.
 pub fn write_atomic_hashed(
     root: &crate::nasfs::NasRoot,
     logical: &str,
@@ -343,6 +350,7 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> std::result::Result<(), Failed> {
     // (Each piece a call of its own, the piece's bytes its own: never the whole upload copied.
     // Each write's bytes counted the NAS's as it goes, so a long upload's job is seen moving by
     // its beats, task #990; the file made is its caller's to count, as it lands.)
+    // (A file's piece copied beside its read buffer: `HELD`.)
     let mut put = |c: &[u8]| -> std::result::Result<(), Failed> {
         let owned = c.to_vec();
         on_file("write", Box::new(move |mut f| f.write_all(&owned)))?;

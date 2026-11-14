@@ -233,9 +233,10 @@ pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &NasPath) -> Res
 }
 
 /// The most memory an upload holds as it goes (bytes; a step's memory bound counts one put off in
-/// flight beside its next target's work): one buffer of store::naming's at a time (`CHUNK`): its
-/// hash's read (`hash16_file`), its copy's and its read-back's, each freed before the next begins.
-pub const UPLOAD_HELD: u64 = store::naming::CHUNK as u64;
+/// flight beside its next target's work): its copy's (store::naming::HELD: its read buffer and the
+/// piece in the share's write call), the largest; its hash's read (`hash16_file`) and its read-back
+/// hold one `CHUNK`, each freed before the next begins.
+pub const UPLOAD_HELD: u64 = store::naming::HELD as u64;
 
 /// The records as a resumed run's identity reads them (jobrt::resume_log::names).
 impl jobrt::resume_log::Manifest for Out {
@@ -1432,8 +1433,8 @@ mod tests {
 
     /// Task #1002: an upload reads its file for its name's hash alone (`hash16_file`: no other
     /// hash beside it), and its check pending is handed off by its name, an empty string where
-    /// apps before it wrote its SHA-256 (crate::pending). A file the records name already, there
-    /// at its size, is read once, for that hash, and nothing else (across chunks: a file larger
+    /// apps before it wrote its SHA-256 (crate::pending). The same file put again under its name
+    /// by the same run is read once, for that hash, and nothing else (across chunks: a file larger
     /// than one, its last one short).
     #[test]
     fn an_upload_reads_its_file_for_its_name_alone_and_hands_off_no_checksum() {

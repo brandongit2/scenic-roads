@@ -9753,7 +9753,7 @@ mod tests {
             terrain::terrain_pack::DEEP_MIDS_MB,
             buildstore::out::UPLOAD_HELD >> 20,
         );
-        assert_eq!(upload, 4, "an upload's 4 MB buffer (store::naming::CHUNK)");
+        assert_eq!(upload, 8, "an upload's copy: its read buffer and its piece written (store::naming::HELD)");
         assert_eq!(crate::agent::seam::for_tests().terrain_peak(1), levels + mids + upload);
         assert_eq!(crate::agent::seam::for_tests().terrain_peak(3), levels + 2 * 20 + 3 * mids + upload);
     }
