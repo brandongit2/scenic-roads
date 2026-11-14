@@ -11537,31 +11537,38 @@ mod tests {
         assert_eq!(c.refusals()["m1"], sched::EMPTY);
     }
 
-    /// Task #1378: the same target held done, its hand-off then refused by the lead's merge
-    /// (`again`): no longer said done, nor kept out of the forecast's work to come, and granted at
-    /// the next ask; work the merge passed over under another key than the one held is let go
-    /// alone, never one done under the key it holds.
+    /// Task #1378: a member's job's target held done at its hand-off (the pooled route: the
+    /// member journals the entry itself), its hand-off then refused by the lead's merge (`again`):
+    /// no longer said done, nor kept out of the forecast's work to come, and granted at the next
+    /// ask; work the merge passed over under another key than the one held is let go alone, never
+    /// one done under the key it holds.
     #[test]
     fn a_refused_hand_offs_target_is_no_longer_said_done() {
         let (_d, c, w, _clock) = every((0, 0));
+        c.set_epoch(1);
         let a = every_ask("m1", "available", 24_000, 50_000);
         let o = Offer { step: "available".into(), targets: vec![("terrain".into(), "k".into(), 0)], job: None };
         c.offer("p", vec![o]);
-        c.shared.lock().unwrap().done.insert(("available".into(), "terrain".into()), "k".into());
+        let g = w.ask(&a).unwrap().expect("granted");
+        let done = Some(("available".to_string(), vec![("terrain".to_string(), "k".to_string())]));
+        let h = Handoff { done, ..Default::default() };
+        w.done(&Done { lease: g.lease, handoff: Some(h), journaled: true, ..Default::default() }).unwrap();
         let work = crate::agent::jobs::Work { step: "available".into(), targets: vec![("terrain".into(), "k".into())] };
         assert_eq!(crate::agent::forecast::unread(&c.done_unread(), [&work]).len(), 1);
         assert!(w.ask(&a).unwrap().is_none());
         assert_eq!(c.refusals()["m1"], "nothing offered is free to take: 1 done (its record not read yet)");
         let again = |k: &str, refused: Option<&str>| crate::pool::records::Again {
-            key: "2026-11-13/1-7".into(),
             member: "m-000000000000000b".into(),
-            job: jobrt::jobid::JobId { epoch: 1, n: 7 },
+            job: jobrt::jobid::JobId { epoch: 1, n: g.lease },
             step: "available".into(),
             targets: vec![("terrain".into(), k.into())],
             refused: refused.map(str::to_string),
         };
         c.again(&[again("k-older", None)]);
         assert_eq!(c.done_unread().len(), 1, "passed over under another key: the one held kept");
+        let other = crate::pool::records::Again { step: "pack".into(), ..again("k", None) };
+        c.again(&[other]);
+        assert_eq!(c.done_unread().len(), 1, "another step's: the one held kept");
         c.again(&[again("k", Some("writes outside its step's names"))]);
         assert!(c.done_unread().is_empty() && crate::agent::forecast::unread(&c.done_unread(), [&work]).is_empty());
         assert!(w.ask(&a).unwrap().is_some(), "granted again");

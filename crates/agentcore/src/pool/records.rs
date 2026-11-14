@@ -27,6 +27,40 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use buildstore::records::{ONE, ONE_BRIEF};
 
+/// The keys of per-target step `$step` (by its current name) in Keys `$k`, borrowed `mut` or not:
+/// one table for `Keys::per_target` and `Keys::of`, so what `record` keeps and what `holds` finds
+/// are the same maps.
+macro_rules! per_target {
+    ($k:ident, $step:expr $(, $m:tt)?) => {
+        Some(match current($step) {
+            "terrain-hi" => &$($m)? $k.terrain_hi,
+            "slope-hi" => &$($m)? $k.slope_hi,
+            "terrain-deep" => &$($m)? $k.terrain_deep,
+            "slope-deep" => &$($m)? $k.slope_deep,
+            "terrain-lo" => &$($m)? $k.terrain_lo,
+            "slope-lo" => &$($m)? $k.slope_lo,
+            "unit" => &$($m)? $k.unit,
+            "pois" => &$($m)? $k.pois,
+            "peaks" => &$($m)? $k.peaks,
+            "pack" => &$($m)? $k.pack,
+            "trees" => &$($m)? $k.trees,
+            "trees-lo" => &$($m)? $k.trees_lo,
+            "bldprep" => &$($m)? $k.bldprep,
+            "bldtiles" => &$($m)? $k.bldtiles,
+            "bldfield-lo" => &$($m)? $k.bldfield_lo,
+            "depth" => &$($m)? $k.depth,
+            "depth-lo" => &$($m)? $k.depth_lo,
+            "lake-depth" => &$($m)? $k.lake_depth,
+            "pyramids-fill" => &$($m)? $k.pyramids_fill,
+            "polar-terrain" => &$($m)? $k.polar_terrain,
+            "polar-slope" => &$($m)? $k.polar_slope,
+            "polar-root" => &$($m)? $k.polar_root,
+            "polar-points" => &$($m)? $k.polar_points,
+            _ => return None,
+        })
+    };
+}
+
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Keys {
@@ -165,32 +199,7 @@ impl Keys {
     /// The keys of per-target step `step` (by its current name), by target; None for a step that
     /// keeps none per target.
     pub fn per_target(&mut self, step: &str) -> Option<&mut BTreeMap<String, String>> {
-        Some(match current(step) {
-            "terrain-hi" => &mut self.terrain_hi,
-            "slope-hi" => &mut self.slope_hi,
-            "terrain-deep" => &mut self.terrain_deep,
-            "slope-deep" => &mut self.slope_deep,
-            "terrain-lo" => &mut self.terrain_lo,
-            "slope-lo" => &mut self.slope_lo,
-            "unit" => &mut self.unit,
-            "pois" => &mut self.pois,
-            "peaks" => &mut self.peaks,
-            "pack" => &mut self.pack,
-            "trees" => &mut self.trees,
-            "trees-lo" => &mut self.trees_lo,
-            "bldprep" => &mut self.bldprep,
-            "bldtiles" => &mut self.bldtiles,
-            "bldfield-lo" => &mut self.bldfield_lo,
-            "depth" => &mut self.depth,
-            "depth-lo" => &mut self.depth_lo,
-            "lake-depth" => &mut self.lake_depth,
-            "pyramids-fill" => &mut self.pyramids_fill,
-            "polar-terrain" => &mut self.polar_terrain,
-            "polar-slope" => &mut self.polar_slope,
-            "polar-root" => &mut self.polar_root,
-            "polar-points" => &mut self.polar_points,
-            _ => return None,
-        })
+        per_target!(self, step, mut)
     }
 
     /// The key recorded for `target` of a per-target step.
@@ -214,33 +223,10 @@ impl Keys {
     /// The keys of per-target step `step` (by its current name; the lo keys for "lo"); None for a
     /// step that keeps none per target.
     fn of(&self, step: &str) -> Option<&BTreeMap<String, String>> {
-        Some(match current(step) {
-            "terrain-hi" => &self.terrain_hi,
-            "slope-hi" => &self.slope_hi,
-            "terrain-deep" => &self.terrain_deep,
-            "slope-deep" => &self.slope_deep,
-            "terrain-lo" => &self.terrain_lo,
-            "slope-lo" => &self.slope_lo,
-            "unit" => &self.unit,
-            "pois" => &self.pois,
-            "peaks" => &self.peaks,
-            "pack" => &self.pack,
-            "lo" => &self.lo,
-            "trees" => &self.trees,
-            "trees-lo" => &self.trees_lo,
-            "bldprep" => &self.bldprep,
-            "bldtiles" => &self.bldtiles,
-            "bldfield-lo" => &self.bldfield_lo,
-            "depth" => &self.depth,
-            "depth-lo" => &self.depth_lo,
-            "lake-depth" => &self.lake_depth,
-            "pyramids-fill" => &self.pyramids_fill,
-            "polar-terrain" => &self.polar_terrain,
-            "polar-slope" => &self.polar_slope,
-            "polar-root" => &self.polar_root,
-            "polar-points" => &self.polar_points,
-            _ => return None,
-        })
+        match step {
+            "lo" => Some(&self.lo),
+            _ => per_target!(self, step),
+        }
     }
 
     /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead
@@ -559,8 +545,7 @@ pub struct Merged {
 /// A hand-off's work the merge didn't take (`Merged::again`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Again {
-    /// The hand-off's key, its member, its job and its done record's step.
-    pub key: String,
+    /// The hand-off's member, its job and its done record's step.
     pub member: String,
     pub job: JobId,
     pub step: String,
@@ -581,7 +566,7 @@ pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, 
     let mut out = Merged::default();
     let todo: BTreeMap<(JobId, String), &Entry> =
         entries.into_iter().filter_map(|e| Some(((e.job, e.key()?), e))).filter(|((_, k), _)| !r.handles(k)).collect();
-    let mut untaken: Vec<(&Entry, String, Option<String>)> = Vec::new();
+    let mut untaken: Vec<(&Entry, Option<String>)> = Vec::new();
     for ((_, k), e) in todo {
         match check(e, r) {
             Ok(()) => {
@@ -596,7 +581,7 @@ pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, 
                     }
                     out.applied.push(k);
                 } else {
-                    untaken.push((e, k.clone(), None));
+                    untaken.push((e, None));
                     out.overtaken.push(k);
                 }
             }
@@ -604,7 +589,7 @@ pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, 
                 Some(held) => out.held.push((k, held.to_string())),
                 None => {
                     r.refuse(&k, &why);
-                    untaken.push((e, k.clone(), Some(why.clone())));
+                    untaken.push((e, Some(why.clone())));
                     out.refused.push((k, why));
                 }
             },
@@ -614,11 +599,11 @@ pub fn merge<'a>(r: &mut Records, entries: impl IntoIterator<Item = &'a Entry>, 
     // the same targets under the same keys.)
     // (By its lease's step, as the coordinator took its done targets: one whose done record is of
     // another step is refused.)
-    for (e, key, refused) in untaken {
+    for (e, refused) in untaken {
         let Some((_, ts)) = &e.handoff.done else { continue };
         let targets: Vec<(String, String)> = ts.iter().filter(|(t, k)| !r.keys.holds(&e.step, t, k)).cloned().collect();
         if !targets.is_empty() {
-            out.again.push(Again { key, member: e.member.clone(), job: e.job, step: e.step.clone(), targets, refused });
+            out.again.push(Again { member: e.member.clone(), job: e.job, step: e.step.clone(), targets, refused });
         }
     }
     out
@@ -786,7 +771,6 @@ mod tests {
         let bad = built(3, 5, "6-1-1", "k5");
         let m = merge(&mut r, [&bad], &odd);
         let again = Again {
-            key: bad.key().unwrap(),
             member: bad.member.clone(),
             job: bad.job,
             step: "unit".into(),
@@ -813,20 +797,61 @@ mod tests {
         assert!(m.held.len() == 1 && m.again.is_empty());
     }
 
-    /// `Keys::holds` finds a done record where `record` kept it: a per-target step's, one kept with
-    /// the lo keys, a catalogue's; a prune's or a redo's never.
+    /// `Keys::holds` finds a done record where `record` kept it, for every kind of step: each
+    /// per-target step's (by its old name too), one kept with the lo keys (the lo's, a worldwide
+    /// step's, a root's), a catalogue's; a prune's or a redo's never (they forget keys). Under
+    /// another key, another target or another step, not.
     #[test]
     fn the_keys_hold_a_done_record_where_it_was_kept() {
+        let per_target = [
+            "terrain-hi",
+            "slope-hi",
+            "terrain-deep",
+            "slope-deep",
+            "terrain-lo",
+            "slope-lo",
+            "unit",
+            "pois",
+            "peaks",
+            "pack",
+            "trees",
+            "trees-lo",
+            "bldprep",
+            "bldtiles",
+            "bldfield-lo",
+            "depth",
+            "depth-lo",
+            "lake-depth",
+            "pyramids-fill",
+            "polar-terrain",
+            "polar-slope",
+            "polar-root",
+            "polar-points",
+        ];
+        let kept_with_lo = ["lo", "terrain-root", "outlines", "rail"];
+        let catalogues = [store::catalogue::NAME, store::catalogue::HELD_NAME];
+        let steps = per_target.iter().chain(&kept_with_lo).chain(&catalogues).chain(&["terrain", "slope"]);
+        for (i, step) in steps.enumerate() {
+            let mut k = Keys::default();
+            let (t, key) = (format!("6/1/{i}"), format!("k{i}"));
+            k.record(step, &[(t.clone(), key.clone())]);
+            assert!(k.holds(step, &t, &key), "{step}");
+            assert!(!k.holds(step, &t, "other"), "{step}: another key");
+            if !catalogues.contains(step) {
+                assert!(!k.holds(step, "6/9/9", &key), "{step}: another target");
+            }
+            assert_eq!(k.per_target(step).is_some(), per_target.contains(&current(step)), "{step}");
+        }
         let mut k = Keys::default();
-        k.record("unit", &[("6/1/1".into(), "a".into())]);
-        k.record("terrain-root", &[("terrain-root".into(), "b".into())]);
-        k.record(store::catalogue::NAME, &[("catalog".into(), "c".into())]);
         k.record("terrain", &[("6/1/2".into(), "d".into())]);
-        assert!(k.holds("unit", "6/1/1", "a") && !k.holds("unit", "6/1/1", "x") && !k.holds("unit", "6/1/9", "a"));
-        assert!(k.holds("terrain-root", "terrain-root", "b") && k.holds(store::catalogue::NAME, "catalog", "c"));
-        assert!(k.holds("terrain-hi", "6/1/2", "d") && k.holds("terrain", "6/1/2", "d"), "a renamed step's");
-        assert!(!k.holds("pois", "6/1/1", "a"), "another step's");
-        assert!(!k.holds("prune", "unit 6/1/1", "") && !k.holds(crate::agent::redo::STEP, "unit 6/1/1", ""));
+        assert!(k.holds("terrain-hi", "6/1/2", "d"), "a renamed step's under its new name");
+        k.record("unit", &[("6/1/1".into(), "a".into())]);
+        assert!(!k.holds("pois", "6/1/1", "a") && !k.holds("terrain-root", "6/1/1", "a"), "another step's");
+        for (step, t) in [("prune", "unit 6/1/1"), (crate::agent::redo::STEP, "unit 6/1/1")] {
+            k.record(step, &[(t.into(), String::new())]);
+            assert!(!k.holds(step, t, ""), "{step}");
+        }
+        assert_eq!(k.recorded("unit", "6/1/1"), None, "the prune and redo forgot it");
     }
 
     /// Merges hand-off `e` alone: its key, and what the merge did.
