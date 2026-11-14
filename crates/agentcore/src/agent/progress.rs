@@ -108,7 +108,7 @@ impl Item {
 
 /// One stage's line of the build's checklist (the status, the menu bar, the build page): its steps'
 /// items, summed. `done` and `total` count the targets of the items sharing the line's noun
-/// (`unit`: the first sized item's; the other nouns' items are said apart, `counts`), `left` every
+/// (`nouns`: the first sized item's; the other nouns' items are said apart, `counts`), `left` every
 /// item's targets left; `total` and `left` None while an item of it isn't sized yet.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub struct Line {
@@ -125,9 +125,11 @@ pub struct Line {
     pub total: Option<usize>,
     #[serde(default)]
     pub left: Option<usize>,
-    /// The noun its targets are counted in, plural ("tiles").
-    #[serde(default)]
-    pub unit: String,
+    /// The noun its targets are counted in, plural ("tiles"; an item's `noun` is singular). Sent as
+    /// "unit", read as "nouns" too (task #858: the readers take both for a release, then it's sent
+    /// as "nouns").
+    #[serde(default, rename = "unit", alias = "nouns")]
+    pub nouns: String,
     /// Its steps' lines.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<Item>,
@@ -173,7 +175,7 @@ impl Line {
     /// the checklist being up to five minutes old (it's made at a job's end or every five minutes,
     /// before the job started). One target counted left, the line's sums with it.
     pub fn under_way(&mut self, step: &str) {
-        let noun = self.unit.trim_end_matches('s').to_string();
+        let noun = self.nouns.trim_end_matches('s').to_string();
         let Some(i) = self.items.iter_mut().find(|i| i.step == step && i.finished()) else { return };
         i.left = Some(1);
         if let Some(t) = i.total.filter(|&t| t > 0 && i.done >= t) {
@@ -233,6 +235,24 @@ pub type Checklist = (Vec<Item>, BTreeMap<&'static str, Vec<String>>);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line's nouns sent as "unit" this release and read under either name (task #858), a job's
+    /// progress alike.
+    #[test]
+    fn a_lines_nouns_are_sent_as_unit_and_read_as_either() {
+        let l = Line { nouns: "z6 tiles".into(), ..Default::default() };
+        let v = serde_json::to_value(&l).unwrap();
+        assert_eq!((v["unit"].as_str(), v.get("nouns")), (Some("z6 tiles"), None));
+        for k in ["unit", "nouns"] {
+            let read: Line =
+                serde_json::from_value(serde_json::json!({ "what": "roads", "steps": [], k: "runs" })).unwrap();
+            assert_eq!(read.nouns, "runs", "{k}");
+            let p: crate::agent::JobProgress =
+                serde_json::from_value(serde_json::json!({ "done": 1.0, "total": 2.0, k: "parts", "eta_s": null }))
+                    .unwrap();
+            assert_eq!(p.nouns, "parts", "{k}");
+        }
+    }
 
     /// The done that made nothing to publish (#839) and those with no data, not run (#842), said
     /// apart; neither, nothing more.

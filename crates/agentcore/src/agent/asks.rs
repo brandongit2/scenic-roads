@@ -485,7 +485,7 @@ pub(crate) mod tests {
             done: 1234,
             total: Some(2000),
             left: Some(766),
-            unit: "z6 tiles".into(),
+            nouns: "z6 tiles".into(),
             items: vec![
                 Item {
                     step: "unit".into(),

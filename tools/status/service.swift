@@ -806,6 +806,10 @@ func selfTest(_ dir: String) -> Never {
     let oldPrinted = lines(old, oldLine).map(\.text)
     check("an older agent's loop never said stuck", !oldPrinted.contains { $0.contains("loop stuck") })
     check("an older lead's counts from its older fields", oldPrinted.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles") } && oldPrinted.contains { $0.contains("outlines: done") } && oldPrinted.contains { $0.contains("unit: 1,234 of 2,000 z6 tiles") })
+    // A job's progress noun, sent as "unit" until task #858's follow-up and as "nouns" after.
+    let byUnit = try? JSONDecoder().decode(JobProgress.self, from: Data(#"{"done": 1, "total": 2, "unit": "z6 tiles"}"#.utf8))
+    let byNoun = try? JSONDecoder().decode(JobProgress.self, from: Data(#"{"done": 1, "total": 2, "nouns": "parts", "eta_s": 60}"#.utf8))
+    check("a job's progress read by its noun under either name", byUnit?.nouns == "z6 tiles" && byNoun?.nouns == "parts" && byNoun?.eta_s == 60)
     // A member's answer (docs/roles.md §3.4: crates/agentcore/src/menu.rs, its `lead` pinned by
     // lead-view-said.json, which menu.rs's test writes): its own status, and the build as its lead
     // last said it, heard 5 s before; the lead heard an hour ago, or not yet; this Mac's agent

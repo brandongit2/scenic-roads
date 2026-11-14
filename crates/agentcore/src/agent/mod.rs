@@ -1284,7 +1284,10 @@ pub struct Verdict {
 pub struct JobProgress {
     pub done: f64,
     pub total: f64,
-    pub unit: String,
+    /// The noun its count is in, plural ("z6 tiles", "parts (the merge)"): sent as "unit", read as
+    /// "nouns" too (as progress::Line's, task #858).
+    #[serde(rename = "unit", alias = "nouns")]
+    pub nouns: String,
     pub eta_s: Option<u64>,
     /// When it last moved on (seconds since the epoch): long ago, the job may be stuck.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -6502,10 +6505,10 @@ impl Agent {
             jobs::Said::Unknown => r.said = r.said.take().filter(|s| s.3 == part),
         }
         // (The target under way, as it says: its fraction and its time left at its pace.)
-        let target = r.said.clone().map(|(done, total, unit, _)| {
+        let target = r.said.clone().map(|(done, total, nouns, _)| {
             let frac = done / total;
             // (Its pace measured again from a new z6 tile, a new part, or a step back.)
-            let key = jobs::unit_key(&unit).to_string();
+            let key = jobs::unit_key(&nouns).to_string();
             let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
             if fresh {
                 r.progress_base =
@@ -6514,7 +6517,7 @@ impl Agent {
             let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
             let eta_s = (frac > *f0 && r.paused.is_none())
                 .then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
-            (JobProgress { done, total, unit, eta_s, moved_at: None }, fresh)
+            (JobProgress { done, total, nouns, eta_s, moved_at: None }, fresh)
         });
         slot.target_eta = target.as_ref().and_then(|t| t.0.eta_s);
         // A job of several targets (its batch, task #953): how far the batch is, its targets ended
@@ -6531,7 +6534,7 @@ impl Agent {
             let eta_s = eta_s.filter(|_| r.paused.is_none());
             let step =
                 r.spec.record.as_ref().map_or_else(|| step_of(&r.spec.id).unwrap_or_default(), |w| w.step.clone());
-            JobProgress { done, total: n, unit: format!("{}s", self.o.the_plan.noun(&step)), eta_s, moved_at: None }
+            JobProgress { done, total: n, nouns: format!("{}s", self.o.the_plan.noun(&step)), eta_s, moved_at: None }
         });
         let fresh = batch.is_none() && target.as_ref().is_some_and(|t| t.1);
         let mut progress = batch.or(target.map(|t| t.0));
@@ -15850,7 +15853,7 @@ mod tests {
             done: 4,
             total: Some(4),
             left: Some(0),
-            unit: "z6 tiles".into(),
+            nouns: "z6 tiles".into(),
             items: vec![item("peaks", 4, Some(4), 0), item("heritage", 0, None, 0), item("marks", 0, None, 0)],
             ..Default::default()
         }];

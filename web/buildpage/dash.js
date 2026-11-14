@@ -94,7 +94,7 @@ const waitName = (w) => w.step || w.what;
 // and Line::counts do.)
 function countOf(x) {
   if (x.count) return x.count;
-  const noun = x.noun || S.noun(x.step) || (x.unit || "target").replace(/s$/, "");
+  const noun = x.noun || S.noun(x.step) || (x.nouns || x.unit || "target").replace(/s$/, "");
   if (x.total > 0) return `${n(x.done)} of ${n(x.total)} ${noun}s`;
   if (x.left === 0) return "done";
   if (x.left != null) return `${n(x.left)} ${noun}${x.left === 1 ? "" : "s"} left`;
@@ -819,9 +819,11 @@ function mapSection(md) {
 // A job's progress in words: "40% · 2.4 of 6 tiles · about 12 min left" (one item alone, its share).
 function progressText(p, j, now) {
   const pct = Math.floor((p.done / p.total) * 100);
-  // (One item whose share is said: "the planet filtered"; else "0.4 of 1 tile", its noun singular.)
-  const unit = p.total === 1 ? p.unit.replace(/^((?:z\d+ )?\w+?)s\b/, "$1") : p.unit;
-  const amount = p.total === 1 && /^the /.test(p.unit) ? p.unit : `${Number.isInteger(p.done) || p.total > 100 ? n(Math.floor(p.done)) : (Math.floor(p.done * 10) / 10).toFixed(1)} of ${n(p.total)} ${unit}`;
+  // (One item whose share is said: "the planet filtered"; else "0.4 of 1 tile", its noun singular.
+  // Its nouns sent as `unit` until task #858's follow-up, `nouns` after: both read.)
+  const nouns = p.nouns ?? p.unit;
+  const said = p.total === 1 ? nouns.replace(/^((?:z\d+ )?\w+?)s\b/, "$1") : nouns;
+  const amount = p.total === 1 && /^the /.test(nouns) ? nouns : `${Number.isInteger(p.done) || p.total > 100 ? n(Math.floor(p.done)) : (Math.floor(p.done * 10) / 10).toFixed(1)} of ${n(p.total)} ${said}`;
   const eta = p.eta_s != null && !j.paused ? ` · about ${dur(p.eta_s)} left (≈ ${clock(now + p.eta_s)})` : "";
   return `${pct}% · ${amount}${eta}`;
 }

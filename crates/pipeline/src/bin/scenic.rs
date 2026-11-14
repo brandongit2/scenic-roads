@@ -529,7 +529,7 @@ fn ramp_words(r: &agent::RampView) -> String {
 fn check_line(j: &agent::JobView) -> String {
     let mut v = vec![format!("check: running since {}", ago(j.started))];
     if let Some(p) = j.progress.as_ref().filter(|p| p.total > 0.0) {
-        let stage = p.unit.split_once(" (").map_or(p.unit.as_str(), |(_, w)| w.trim_end_matches(')'));
+        let stage = p.nouns.split_once(" (").map_or(p.nouns.as_str(), |(_, w)| w.trim_end_matches(')'));
         v.push(format!(
             "stage {} of {}: {stage} ({}%)",
             (p.done.floor() + 1.0).min(p.total) as u64,

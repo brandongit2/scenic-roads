@@ -4374,7 +4374,7 @@ pub fn fold(items: &[Item], next: &BTreeMap<&str, Vec<String>>, notes: &BTreeMap
             done: sized.iter().map(|i| i.done).sum(),
             total: (known && !sized.is_empty()).then(|| sized.iter().map(|i| i.total.unwrap_or(0)).sum()),
             left: known.then(|| its.iter().map(|i| i.left.unwrap_or(0)).sum()),
-            unit: if its.iter().all(|i| steps::row(&i.step).is_some_and(|r| r.scope == Scope::World)) {
+            nouns: if its.iter().all(|i| steps::row(&i.step).is_some_and(|r| r.scope == Scope::World)) {
                 "runs".into()
             } else {
                 format!("{noun}s")
@@ -9062,7 +9062,7 @@ mod tests {
             "a noun at a time"
         );
         assert_eq!(
-            (line(&l, "roads").done, line(&l, "roads").total, line(&l, "roads").unit.as_str()),
+            (line(&l, "roads").done, line(&l, "roads").total, line(&l, "roads").nouns.as_str()),
             (0, Some(1), "z6 tiles")
         );
         assert_eq!(line(&l, "tiles").total, None, "no tiles built: the map tiles aren't known yet");
@@ -9154,7 +9154,7 @@ mod tests {
         let roads = line(&l, "finish");
         assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
         assert!(roads.next.iter().all(|n| !n.is_empty() && n != "catalog"), "{:?}", roads.next);
-        assert_eq!(roads.unit, "runs");
+        assert_eq!(roads.nouns, "runs");
         assert!(
             roads.counts(crate::agent::theplan::the_plan())[0].starts_with(&format!("{} run", roads.left.unwrap())),
             "{:?}",
@@ -12135,7 +12135,7 @@ mod tests {
             &crate::agent::tiles::TerrainTiles::default(),
         ));
         assert_eq!(
-            (b.done, b.total, b.unit.as_str()),
+            (b.done, b.total, b.nouns.as_str()),
             (0, Some(tt.prep.len() + tt.tiles.len()), "z6 tiles"),
             "its tiles the line's, its z3 tiles and the fetch's run apart"
         );
