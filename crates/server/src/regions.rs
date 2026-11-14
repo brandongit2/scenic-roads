@@ -28,7 +28,7 @@ use axum::{
     Json,
 };
 use buildstore::coverage::DrawnRegion;
-use buildstore::outlines::{flag, OutlineRec, Ring};
+use buildstore::outlines::{OutlineRec, Ring};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -36,7 +36,6 @@ use store::iopool::{IoError, IoPool};
 
 /// The outlines of the current catalogue: records and strings in memory, rings read on demand.
 pub struct OutlineIndex {
-    content: String,
     sect: Arc<crate::views::SectView>,
     pub recs: Vec<OutlineRec>,
     strings: Vec<String>,
@@ -47,11 +46,10 @@ impl OutlineIndex {
         let cat = data.catalogue();
         let Some(logical) = cat.global.get("outlines") else { return Ok(None) };
         let Some(sect) = data.sect(logical)? else { return Ok(None) };
-        let content = data.content(logical).unwrap_or_default();
         let recs: Vec<OutlineRec> = bytemuck::pod_collect_to_vec(sect.get("recs")?.bytes());
         let strings: Vec<String> =
             String::from_utf8_lossy(sect.get("strings")?.bytes()).split('\n').map(str::to_string).collect();
-        Ok(Some(OutlineIndex { content, sect, recs, strings }))
+        Ok(Some(OutlineIndex { sect, recs, strings }))
     }
 
     pub fn string(&self, i: u32) -> &str {
@@ -74,71 +72,6 @@ impl OutlineIndex {
             .map(|r| (r.kind, pts[(r.start - start) as usize..(r.start - start) as usize + r.count as usize].to_vec()))
             .collect())
     }
-
-    /// An outline's rings (`simple`: the simplified ones).
-    pub fn rings(&self, o: &OutlineRec, simple: bool) -> Result<Vec<Vec<[i32; 2]>>> {
-        Ok(self.rings_kinds(o, simple)?.into_iter().map(|(_, r)| r).collect())
-    }
-
-    /// The simplified rings as GeoJSON polygons: an outer ring, then its holes. (Outlines from passes
-    /// before ring kinds were recorded have every ring outer: each its own polygon.)
-    pub fn polygons(&self, o: &OutlineRec) -> Result<Vec<Vec<Vec<[f64; 2]>>>> {
-        let mut out: Vec<Vec<Vec<[f64; 2]>>> = Vec::new();
-        for (kind, r) in self.rings_kinds(o, true)? {
-            let ring: Vec<[f64; 2]> = r.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect();
-            match out.last_mut() {
-                Some(p) if kind == 1 => p.push(ring),
-                _ => out.push(vec![ring]),
-            }
-        }
-        Ok(out)
-    }
-
-    /// The country or territory an outline lies in, as its summary's `in` and `in_name`.
-    fn lies_in(&self, o: &OutlineRec) -> (String, String) {
-        lies_in(&self.recs, |i| self.string(i), o)
-    }
-
-    pub fn by_id(&self, id: u64) -> Option<&OutlineRec> {
-        self.recs.binary_search_by_key(&id, |r| r.id).ok().map(|k| &self.recs[k])
-    }
-
-    fn summary(&self, o: &OutlineRec) -> Value {
-        let (in_code, in_name) = self.lies_in(o);
-        json!({
-            "id": o.id,
-            "name": self.string(o.name),
-            "en": self.string(o.name_en),
-            "level": o.level,
-            "iso": self.string(o.iso),
-            "country": o.flags & flag::ISO1 != 0,
-            // The country it lies in (its ISO 3166-1 code, and the country's English or own name):
-            // none for a country or territory itself.
-            "in": in_code,
-            "in_name": in_name,
-            "km2": o.area_km2.round(),
-            "bbox": o.bbox.map(|v| v as f64 * 1e-7),
-        })
-    }
-}
-
-/// The country or territory `o` lies in: its ISO 3166-1 code and its English (else own) name,
-/// the name that of the outline whose own code it is (`buildstore::outlines::own_code_of`: GP's
-/// outline is coded FR-971 but is Guadeloupe's), the lowest level first. Both "" for a country or
-/// territory itself, and for an outline in none.
-fn lies_in<'a>(recs: &[OutlineRec], string: impl Fn(u32) -> &'a str, o: &OutlineRec) -> (String, String) {
-    use buildstore::outlines::{country_of_string, own_code_of};
-    if o.flags & flag::ISO1 != 0 {
-        return (String::new(), String::new());
-    }
-    let Some(code) = country_of_string(string(o.country)) else { return (String::new(), String::new()) };
-    let name = recs
-        .iter()
-        .filter(|r| own_code_of(r.flags, string(r.iso), string(r.country)) == Some(code))
-        .min_by_key(|r| (r.level, r.id))
-        .map(|r| if string(r.name_en).is_empty() { string(r.name) } else { string(r.name_en) })
-        .unwrap_or("");
-    (code.to_string(), name.to_string())
 }
 
 /// The languages spoken where (`names::spoken`), from the catalogue's outlines (their simplified
@@ -157,37 +90,6 @@ pub fn spoken_from_outlines(data: &crate::data::Data, table: &names::Table) -> R
     };
     let areas = buildstore::outlines::spoken_areas(table, &ix.recs, |i| ix.string(i).to_owned(), polygons)?;
     Ok(Some(names::Spoken::build(table, areas)))
-}
-
-/// The outline index of the current catalogue, opened once per catalogue.
-#[derive(Default)]
-pub struct Areas {
-    cur: Mutex<Option<Arc<OutlineIndex>>>,
-}
-
-impl Areas {
-    pub fn get(&self, s: &crate::AppState) -> Result<Option<Arc<OutlineIndex>>> {
-        let cat = s.data.catalogue();
-        let want = cat.global.get("outlines").and_then(|l| s.data.content(l));
-        let mut g = self.cur.lock().unwrap();
-        if let Some(cur) = g.as_ref() {
-            if Some(&cur.content) == want.as_ref() {
-                return Ok(Some(cur.clone()));
-            }
-        }
-        let opened = OutlineIndex::open(&s.data)?.map(Arc::new);
-        *g = opened.clone();
-        Ok(opened)
-    }
-
-    /// Lets go of the outlines when the mirror has just evicted their file (`names`): its map would
-    /// hold the disk's room. Opened again, from the NAS, when next asked for.
-    pub fn forget(&self, names: &[String]) {
-        let mut g = self.cur.lock().unwrap();
-        if g.as_ref().is_some_and(|cur| names.contains(&cur.content)) {
-            *g = None;
-        }
-    }
 }
 
 fn err(code: StatusCode, msg: impl std::fmt::Display) -> Response {
@@ -220,26 +122,19 @@ pub struct Listed {
     /// shows it greyed, with no Download button).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
-    /// Its land and water (km²) and its country, from its accepted geometry (`Sized`); none until
-    /// this Mac has worked them out, or for a region the accepted version doesn't have.
+    /// Its land and water (km²), from its accepted geometry (`Sized`); none until this Mac has
+    /// worked them out, or for a region the accepted version doesn't have.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub land_km2: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub water_km2: Option<f64>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub country: String,
     /// Its box and the point its name is drawn at (`Sized`), with its sizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bbox: Option<[f64; 4]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<[f64; 2]>,
-    /// Its first osm: part's area in the pass's outlines (its flag: `iso`, `country`, `in`), when
-    /// the pass has it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub area: Option<Value>,
     /// Its symbol as accepted (`symbol_json`: its URL here and its credit); none when it has none
-    /// (the list shows the placeholder, or until stage B of task #1396 the bundled flag). Not kept
-    /// in the listing: read from the accepted copy.
+    /// (the list shows the placeholder). Not kept in the listing: read from the accepted copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symbol: Option<Value>,
 }
@@ -256,10 +151,8 @@ impl Listed {
             disabled: r.disabled,
             land_km2: None,
             water_km2: None,
-            country: String::new(),
             bbox: None,
             label: None,
-            area: None,
             symbol: None,
         }
     }
@@ -428,14 +321,6 @@ pub async fn list(State(s): State<S>) -> Response {
         }
         let (mut ok, bad) = kept.unwrap_or_default().split();
         sizes_into(&s2, &mut ok);
-        if let Ok(Some(ix)) = s2.areas.get(&s2) {
-            for r in &mut ok {
-                r.area = first_osm(&r.outline).and_then(|i| ix.by_id(i)).map(|o| {
-                    let a = ix.summary(o);
-                    json!({ "iso": a["iso"], "country": a["country"], "in": a["in"] })
-                });
-            }
-        }
         let accepted = inputs::inputs::served::kept(&accepted_dir(&s2));
         let images = accepted.as_ref().map(|k| Symbols::of(&k.index)).unwrap_or_default();
         for r in &mut ok {
@@ -456,8 +341,7 @@ pub async fn list(State(s): State<S>) -> Response {
 
 // ---- each region's land and water ---------------------------------------------------------------
 
-/// A region's land and water (km², on the authalic sphere: `geom::area_km2`), its country (its
-/// first land shape's ISO 3166-1 code, else its first shape's; "" when none is known), its box
+/// A region's land and water (km², on the authalic sphere: `geom::area_km2`), its box
 /// (w, s, e, n in degrees: the panel frames the view on it) and a point inside its largest land
 /// polygon (a region of water alone: water) for its name on the map (`label_point`), from its
 /// stored geometry (inputs::inputs::regions::stored: water shapes are those marked `water`, the rest
@@ -466,8 +350,6 @@ pub async fn list(State(s): State<S>) -> Response {
 pub struct Sized {
     pub land: f64,
     pub water: f64,
-    #[serde(default)]
-    pub country: String,
     /// (None in what an older app kept: sized again.)
     #[serde(default)]
     pub bbox: Option<[f64; 4]>,
@@ -503,19 +385,11 @@ pub fn sized(g: &inputs::inputs::regions::stored::Geometry) -> Sized {
     let on_land = land >= (land + water) / 1000.0;
     let largest =
         polys.into_iter().map(|(l, a, p)| ((l == on_land, a), p)).reduce(|best, x| if x.0 > best.0 { x } else { best });
-    let country = g
-        .shapes
-        .iter()
-        .filter(|s| !s.water)
-        .chain(g.shapes.iter())
-        .map(|s| s.country.clone())
-        .find(|c| !c.is_empty())
-        .unwrap_or_default();
     let b = g.bbox();
     let deg = |v: i32| f64::from(v) * 1e-7;
     let bbox = (b != [0; 4]).then(|| [deg(b[0]), deg(b[1]), deg(b[2]), deg(b[3])]);
     let label = largest.and_then(|(_, p)| label_point(&p));
-    Sized { land: land.round(), water: water.round(), country, bbox, label }
+    Sized { land: land.round(), water: water.round(), bbox, label }
 }
 
 /// Where this Mac keeps the regions' sizes, by geometry content name (a name is its content: a
@@ -545,7 +419,6 @@ fn sizes_into(s: &crate::AppState, list: &mut [Listed]) {
         if let Some(z) = names.get(&r.path).and_then(|g| sizes.get(g)) {
             r.land_km2 = Some(z.land);
             r.water_km2 = Some(z.water);
-            r.country = z.country.clone();
             r.bbox = z.bbox;
             r.label = z.label;
         }
@@ -688,11 +561,6 @@ pub fn is_disabled(s: &crate::AppState, id: &str) -> bool {
         });
     }
     read_listing(s).is_some_and(|l| l.files.values().any(|f| f.read.as_ref().is_ok_and(|l| l.id == id && l.disabled)))
-}
-
-/// A region's first osm: entry's relation.
-fn first_osm(outline: &[String]) -> Option<u64> {
-    outline.iter().find_map(|e| e.strip_prefix("osm:").and_then(|i| i.parse().ok()))
 }
 
 /// A ring's area in square degrees (shoelace; its sign the ring's turn).
@@ -1294,7 +1162,6 @@ mod tests {
         let z = sized(&g);
         assert!((z.land - 12_364.0 * 0.75).abs() < 60.0, "{z:?}");
         assert!((z.water - 12_364.0).abs() < 60.0, "{z:?}");
-        assert_eq!(z.country, "PT");
         // Its name on its land: not in its waters round it, whose outer ring holds the land.
         let land = sq(0, 0, e);
         let waters = vec![sq(-e, -e, 3 * e), sq(0, 0, e)];
@@ -1308,34 +1175,6 @@ mod tests {
             let l = sized(&Geometry { shapes, ..g.clone() }).label.unwrap();
             assert!(!(l[0] > 0.0 && l[0] < 1.0 && l[1] > 0.0 && l[1] < 1.0) && l[0] > -1.0 && l[0] < 2.0, "{l:?}");
         }
-    }
-
-    #[test]
-    fn what_an_outline_lies_in() {
-        // France holding Guadeloupe (GP, coded FR-971) holding a town; a district of France.
-        let sq = |id: u64, lvl: u8, tags: &str, x0: f64, x1: f64| {
-            format!(
-                r#"{{"type":"Feature","geometry":{{"type":"Polygon","coordinates":[[[{x0},{x0}],[{x1},{x0}],[{x1},{x1}],[{x0},{x1}],[{x0},{x0}]]]}},"properties":{{"@type":"relation","@id":{id},"boundary":"administrative","admin_level":"{lvl}",{tags}}}}}"#
-            )
-        };
-        let d = tempfile::tempdir().unwrap();
-        let geo = d.path().join("o.geojsonseq");
-        let lines = [
-            sq(1, 2, r#""ISO3166-1":"FR","name":"France""#, 0.0, 10.0),
-            sq(2, 3, r#""ISO3166-1":"GP","ISO3166-2":"FR-971","name":"Guadeloupe""#, 1.0, 2.0),
-            sq(3, 8, r#""name":"Town""#, 1.2, 1.4),
-            sq(4, 6, r#""name":"District""#, 5.0, 6.0),
-        ];
-        std::fs::write(&geo, lines.iter().map(|l| format!("\u{1e}{l}\n")).collect::<String>()).unwrap();
-        let out = d.path().join("o.sect");
-        buildstore::outlines::assemble_geojsonseq(&geo, &out).unwrap();
-        let o = buildstore::outlines::Outlines::open(&out).unwrap();
-        let at = |id| lies_in(&o.recs, |i| o.string(i), o.by_id(id).unwrap());
-        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
-        assert_eq!(at(1), s("", ""), "a country lies in none");
-        assert_eq!(at(2), s("", ""), "nor a territory");
-        assert_eq!(at(3), s("GP", "Guadeloupe"));
-        assert_eq!(at(4), s("FR", "France"));
     }
 
     #[test]

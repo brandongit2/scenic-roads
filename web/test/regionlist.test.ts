@@ -1,7 +1,7 @@
 // node web/test/regionlist.test.ts (tools/dev/check.sh's web part): src/regionlist.ts, the Regions
-// list's sorting, filters, folders' countries, the served symbols before the bundled flags, and areas.
+// list's sorting, filters and areas.
 import assert from 'node:assert/strict';
-import { areaText, countryCode, entries, filter, folderCountry, km2, norm, servedOr } from '../src/regionlist.ts';
+import { areaText, entries, filter, km2, norm } from '../src/regionlist.ts';
 
 const reg = (id: string, name: string) => ({ id, name, outline: [] });
 const regions = [reg('azores', 'Azores'), reg('madeira', 'Madeira'), reg('alabama', 'Alabama'), reg('alaska', 'Alaska'), reg('nuble', 'Ñuble'), reg('bermuda', 'Bermuda'), reg('baker-island', 'Baker Island')];
@@ -43,30 +43,6 @@ assert.deepEqual([...s.folders].sort(), ['', 'united-states']);
 assert.equal(s.open.size, 0, 'the downloaded filter alone opens nothing');
 assert.equal(filter(root, byId, 'zzz', all).folders.size, 0);
 
-// A region's country (its folder's flag): a country's or territory's own code; else the country
-// its area lies in; else its geometry's; none.
-assert.equal(countryCode({ iso: 'PT', country: true }), 'PT');
-assert.equal(countryCode({ iso: 'GB-SCT', in: 'GB' }), 'GB');
-assert.equal(countryCode({ iso: 'US-AL', in: 'us' }), 'US');
-assert.equal(countryCode({ geo: 'GL' }), 'GL');
-assert.equal(countryCode({}), null);
-// A folder's country: its own regions' by land; all its regions' without any of its own; none.
-const realm = f('dk', 'Danish Realm', ['denmark', 'faroe'], [f('dk/gl', 'Greenland', ['kujalleq'])]);
-const cc: Record<string, string> = { denmark: 'DK', faroe: 'FO', kujalleq: 'GL', 'gl-waters': 'GL' };
-const land: Record<string, number> = { denmark: 43_000, faroe: 1_400, kujalleq: 2e6 };
-assert.equal(folderCountry(realm, (id) => cc[id] ?? null, (id) => land[id] ?? 0), 'DK');
-assert.equal(folderCountry(realm.folders[0], (id) => cc[id] ?? null, () => 0), 'GL');
-assert.equal(folderCountry(f('x', 'X', ['q']), () => null, () => 1), null);
-// (A region's own flag, and the placeholder for one with none of its own, are flags.ts's: nothing
-// is passed down a folder.)
-// The symbol the server gives first; the bundled flag only without one (stage A of task #1396:
-// stage B deletes the bundled flags, this and its test); none of either, the placeholder.
-let asked = 0;
-const bundled = (f: string | null) => () => (asked++, f);
-assert.equal(servedOr('served', bundled('bundled')), 'served');
-assert.equal(asked, 0, 'the bundled flag isn’t looked up when the server gives one');
-assert.equal(servedOr(null, bundled('bundled')), 'bundled');
-assert.equal(servedOr(null, bundled(null)), null);
 
 // Areas in words, compact (metric).
 assert.equal(km2(0.4), '<1 km²');

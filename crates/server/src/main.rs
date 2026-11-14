@@ -70,8 +70,6 @@ pub struct AppState {
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
     /// This Mac's app folder (`~/Library/Application Support/scenic`): its own agent's status.
     home: PathBuf,
-    /// The outlines of the latest OSM pass (the Regions panel).
-    pub areas: regions::Areas,
     /// The user's descriptions, laid over popup details.
     pub descriptions: Arc<descriptions::Descriptions>,
     /// The source extents' accepted version, which the data-available layers are scored from.
@@ -198,7 +196,6 @@ impl AppState {
     fn forget_removed(&self, names: &[String]) {
         self.data.forget_removed(names);
         self.basemap.forget(names);
-        self.areas.forget(names);
     }
 
     /// Whether the rail frequencies and roads' English names of this catalogue are loaded.
@@ -240,7 +237,6 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         home: home.to_owned(),
-        areas: regions::Areas::default(),
         descriptions: descriptions::Descriptions::new(home),
         available: available::Available::new(home),
         places: Default::default(),
@@ -424,7 +420,6 @@ async fn serve(cli: Cli) -> Result<()> {
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         home: home.clone(),
-        areas: regions::Areas::default(),
         descriptions: descs,
         available: avail,
         places: Default::default(),

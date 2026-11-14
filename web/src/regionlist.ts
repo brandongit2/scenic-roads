@@ -1,6 +1,6 @@
 // The Regions list's logic (ui/regions.ts draws it; web/test/regionlist.test.ts): folders sorted
-// among the regions, the search and the "downloaded only" filter, each folder's country (its flag), and its land
-// and water in words. No DOM here.
+// among the regions, the search and the "downloaded only" filter, and their land and water in words.
+// No DOM here.
 import type { Folder, Region } from './regions';
 
 /** Text for matching: lower case, accents off ("Ñuble" matches "nuble"). */
@@ -60,44 +60,6 @@ export function filter(root: Folder, byId: Map<string, Region>, q: string, keep:
   };
   visit(root, false);
   return out;
-}
-
-/** What a region's country is told from: its first osm: part's area (its ISO code, whether it's a
- * country, the country it lies in) and its country from its geometry (the server's). */
-export interface CountryFrom {
-  iso?: string;
-  country?: boolean;
-  in?: string;
-  geo?: string;
-}
-
-/** A region's country (ISO 3166-1, "PT"), for its folder's flag: its own code when its area is a
- * country or territory, else the country its area lies in, else its geometry's; null for none. */
-export function countryCode(a: CountryFrom): string | null {
-  const c = (a.country ? a.iso : '') || a.in || a.geo || '';
-  return c ? c.toUpperCase() : null;
-}
-
-/** A folder's country (its flag): the one its own regions' land weighs most for (all its regions'
- * when it has none of its own); none when they have none. Flags aren't passed down: a region shows
- * only its own (flags.ts), never its folder's. */
-export function folderCountry(f: Folder, countryOf: (id: string) => string | null, land: (id: string) => number): string | null {
-  const ids = f.regions.length ? f.regions : allIds(f);
-  const w = new Map<string, number>();
-  for (const id of ids) {
-    const c = countryOf(id);
-    if (c) w.set(c, (w.get(c) ?? 0) + Math.max(land(id), 1e-3));
-  }
-  let best: string | null = null;
-  for (const [c, v] of w) if (best === null || v > w.get(best)!) best = c;
-  return best;
-}
-
-/** A region's or folder's flag to show: the symbol the server gives (declared in the regions input),
- * else its bundled one (flags.ts). (Stage A of task #1396 alone: stage B deletes the bundled flags
- * and this, once the regions input's symbols are accepted.) */
-export function servedOr<F>(served: F | null, bundled: () => F | null): F | null {
-  return served ?? bundled();
 }
 
 /** Every region id in a folder, at any depth. */

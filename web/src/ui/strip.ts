@@ -19,8 +19,7 @@ import { RAIL_COMPONENTS, railComponents, railScore, type RailSample } from '../
 import type { HoverInfo } from '../roads/layer';
 import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
-import { flagCredits, flagLicences, type Flag } from '../flags';
-import { listRegions, symbolCredits } from '../regions';
+import { listRegions, symbolCredits, type Flag } from '../regions';
 import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, h } from './dom';
@@ -418,10 +417,8 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
       ...(labels.length ? [h('p', { class: 'depth' }, h('b', {}, 'Depth: '), labels.join(' · '), '. Not for navigation.')] : []),
       ...[...new Set(n)].map((x) => h('p', { class: 'notice' }, x)));
   // (The regions' symbols' credits, from the regions' list as the server gives it: read as the
-  // dialog opens, kept once read. Until the server gives any, the bundled flags': stage B of task
-  // #1396 deletes them.)
+  // dialog opens, kept once read.)
   let symbols: ReturnType<typeof symbolCredits> = [];
-  const bundled = flagCredits();
   let shown: Credit[] = [];
   const set = (data: Credit[]) => {
     shown = data;
@@ -431,27 +428,22 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
         source: `${[...new Set(symbols.map((c) => hostOf(c.page)))].join(', ')} (each file’s author in the list below and in its tooltip)`,
         terms: [...symbols.reduce((n, c) => n.set(c.licence, (n.get(c.licence) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1]).map(([l, n]) => `${l} (${n})`).join('; '),
       }]
-      : [{
-        what: 'Flags and coats of arms (the Regions list)',
-        source: 'Wikimedia Commons, chosen by Wikidata (each file’s author in the list below and in its tooltip)',
-        terms: flagLicences().map(([l, n]) => `${l} (${n})`).join('; '),
-      }];
+      : [];
     body.replaceChildren(...[...data, ...APP_CREDITS, ...flags].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
   };
   set([]);
   // Each symbol's file: its author and licence, linked to its page (listed when first opened).
-  const flagList = h('details', { class: 'flags' }, h('summary', {}, 'Flags and coats of arms, file by file'));
+  const flagList = h('details', { class: 'flags', hidden: true }, h('summary', {}, 'Flags and coats of arms, file by file'));
   flagList.addEventListener('toggle', () => {
     if (flagList.open && !flagList.querySelector('ul')) {
-      flagList.append(h('ul', {}, ...(symbols.length ? symbols : bundled).map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'} · ${c.licence}`))));
+      flagList.append(h('ul', {}, ...symbols.map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'} · ${c.licence}`))));
     }
   });
   const readSymbols = () => {
     if (symbols.length) return;
     listRegions().then((l) => {
       symbols = symbolCredits(l.regions, l.tree);
-      // (A list opened before shows the bundled files: listed again when next opened.)
-      if (symbols.length) flagList.querySelector('ul')?.remove();
+      flagList.hidden = !symbols.length;
       set(shown);
     }, () => undefined);
   };

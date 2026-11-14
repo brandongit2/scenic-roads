@@ -817,8 +817,8 @@ names/spoken-<content>.bin   languages spoken where, for a map without `global/s
                         (names::spoken::Spoken::to_bytes: "SPOKEN01", u32 head length, head (rules'
                         version, then per region its ISO code, a tab, its languages), u32 run
                         count, 23,041 u32 row starts, runs of (u32 first column, u16 region))
-region-areas.json       each accepted region's land and water (km²), country, box and name's point,
-                        by its geometry's content name: {"<name>": {land, water, country, bbox: [w,
+region-areas.json       each accepted region's land and water (km²), box and name's point,
+                        by its geometry's content name: {"<name>": {land, water, bbox: [w,
                         s, e, n], label: [lng, lat]}} (crates/server/src/regions.rs, `sized`; worked
                         out once per geometry, again for one kept without a box; unused names dropped)
 reserve.json            the mirror's reserve {gb} (crates/server/src/reserve.rs); default 30 GB
@@ -1303,11 +1303,9 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   downloaded or isn't behind). `PUT /api/downloads/reserve {gb}` (whole GB, 5 to under the disk
   size) → `{ok, reserve}`. A download or update that wouldn't fit is refused; refusals are 400
   `{error}`.
-- **Regions** (read only): `GET /api/regions`, each region with its land and water, its country,
+- **Regions** (read only): `GET /api/regions`, each region with its land and water,
   its box (`bbox`: w, s, e, n in degrees) and the point its name is drawn at (`label`: inside its
-  largest land polygon by its outer ring; a region of water, or of waters whose land is under a thousandth of it, its largest water polygon), all from its accepted geometry once this Mac's server has read it, its first
-  osm: part's area in the pass's outlines (`area`: `iso`, `country`, `in`, its bundled flag, until
-  task #1396's stage B deletes the bundled flags), and its symbol as accepted
+  largest land polygon by its outer ring; a region of water, or of waters whose land is under a thousandth of it, its largest water polygon), all from its accepted geometry once this Mac's server has read it, and its symbol as accepted
   (`symbol`: `url`, `kind`, `source`, `author` when given, `licence`; a folder of `tree` its
   `_group.toml`'s too: docs/inputs.md §6.1.3, "Symbols");
   `GET /api/regions/symbols/<hash16>.<svg|png|jpg>` → the image of that content name from this Mac's

@@ -10,10 +10,9 @@
 // downloaded region's terrain detail, each with its size, its state and a Download, Cancel or
 // Remove button; this Mac's room (downloads.ts).
 import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setReserve, size, sizeOf, stateClass, stateText, type Dl, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
-import { countryFlag, regionFlag, type Flag } from '../flags';
 import * as prefs from '../prefs';
-import { allIds, areaText, countryCode, entries, filter, folderCountry, servedOr, type Shown } from '../regionlist';
-import { RegionLayers, RegionsError, flagOf, listRegions, type Folder, type Region } from '../regions';
+import { allIds, areaText, entries, filter, type Shown } from '../regionlist';
+import { RegionLayers, RegionsError, flagOf, listRegions, type Flag, type Folder, type Region } from '../regions';
 import { h } from './dom';
 import { fmt } from '../fmt';
 
@@ -356,26 +355,15 @@ export class RegionsPanel {
     return null;
   }
 
-  /** A region's own symbol, declared with it (docs/inputs.md §6.1.3), else its bundled flag
-   * (flags.ts: by its first osm: relation, else its area's ISO code; stage B of task #1396 deletes
-   * it); null when it has none of its own: never its folder's or its country's. */
+  /** A region's own symbol, declared with it (docs/inputs.md §6.1.3); null when it has none of its
+   * own: never its folder's. */
   private flagOf(r: Region): Flag | null {
-    const rel = r.outline.find((p) => /^osm:\d+$/.test(p))?.slice(4);
-    return servedOr(flagOf(r.symbol, r.name), () => regionFlag(rel, r.area?.iso || undefined));
+    return flagOf(r.symbol, r.name);
   }
 
-  /** A region's country (ISO 3166-1), for its folder's flag. */
-  private countryOf(id: string): string | null {
-    const r = this.byId.get(id);
-    if (!r) return null;
-    const a = r.area;
-    return countryCode({ iso: a?.iso, country: a?.country, in: a?.in, geo: r.country });
-  }
-
-  /** A folder's symbol (its _group.toml's), else its country's bundled flag (regionlist.folderCountry;
-   * stage B of task #1396 deletes it). */
+  /** A folder's symbol (its _group.toml's). */
   private folderFlag(f: Folder): Flag | null {
-    return servedOr(flagOf(f.symbol, f.name), () => countryFlag(folderCountry(f, (id) => this.countryOf(id), (id) => this.byId.get(id)?.land_km2 ?? 0)));
+    return flagOf(f.symbol, f.name);
   }
 
   /** A row whose hover outlines `ids` on the map (a folder's: their outline as one). */

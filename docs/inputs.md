@@ -2582,7 +2582,6 @@ declarations are made and staged there.
 | timing phases (`scenic-build`'s lake fill, `leaftype`'s NALCMS download and squares) | a phase's name is its key in the timings kept |
 | `budget::QUERY_HOSTS`, `QUERY_DOMAINS` | the polite-use budget is by host (docs/pool.md §7.7): the query services' limits hold for any request to them |
 | `web/src/main.ts`'s Google Maps link | opens the place elsewhere |
-| `web/src/flags/index.json`'s pages and authors | each bundled flag's credit is its file's page on Wikimedia Commons (the Credits link it) and its author as Commons gives it, made by an earlier `producers/flags/fetch.py`; kept until task #1396's stage B deletes the bundled flags (the regions input's symbols, §6.1.3, take their place) |
 | `tools/check/pool-two-macs.sh`'s budget test | a request the budgets' proxy must meter, not a read |
 | `scripts/fonts.sh` | the app's own assets (§6.9, also kept) |
 | `tools/app/install.sh`'s uv link | documentation, in a message |
