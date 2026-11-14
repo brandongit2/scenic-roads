@@ -18,7 +18,8 @@ unset SCENIC_CARGO_SAY
 # (These toys run tests as an agent worktree does, so this Mac is the test Mac for them: the shim refuses a
 # worktree's test run elsewhere, which "Tests refused off the test Mac" below checks.)
 source ${0:A:h:h:h}/app/test-mac.zsh
-export SCENIC_THIS_MAC=$(test_mac_name); unset SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL
+# (No PM's marker but this test's own, whatever this Mac's .claude/tests-local says.)
+export SCENIC_THIS_MAC=$(test_mac_name) SCENIC_TESTS_LOCAL_FILE=$s/tests-local; unset SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL
 dj=$SCENIC_DEVJOB_DIR
 quiet() {  # the sampler gone (it ends once nothing is live and every report is read)
   local i f; for (( i = 0; i < 600; i++ )); do
@@ -429,8 +430,8 @@ print other > $w/d/shared/note.txt
 [[ $(cd $w/c && $sh run -q -p gen 2>$s/err) == c-data ]] || fail "c's gen ran with d's data.txt: $(cat $s/err)"
 [[ $(cd $w/c && $sh run -q -p inc 2>$s/err) == same ]] || fail "c's inc ran with d's note.txt: $(cat $s/err)"
 # Tests refused off the test Mac (#1398): a test or nextest run from a worktree on another Mac runs nothing and
-# says where tests run; SCENIC_TESTS_LOCAL (or SCENIC_CHECK_LOCAL) or the test Mac itself lets it through, and
-# what isn't a test run (a build) is never refused.
+# says where tests run; SCENIC_TESTS_LOCAL (or SCENIC_CHECK_LOCAL), the PM's marker or the test Mac itself lets it
+# through, and what isn't a test run (a build, a test's --no-run) is never refused.
 for sub in "test -q --lib" "t -q --lib" "nextest run"; do
   out=$(cd $w/a && SCENIC_THIS_MAC=another-mac $sh ${=sub} 2>&1); rc=$?
   (( rc == 2 )) && [[ $out == *"tests run on the test Mac"*"tools/dev/check.sh"*"remote-tests.sh"* ]] || fail "$sub off the test Mac: exit $rc: $out"
@@ -438,6 +439,10 @@ done
 for e in SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL; do
   (cd $w/a && env SCENIC_THIS_MAC=another-mac $e=1 $sh test -q --lib >/dev/null 2>&1) || fail "$e=1: test run refused"
 done
+: > $SCENIC_TESTS_LOCAL_FILE
+(cd $w/a && SCENIC_THIS_MAC=another-mac $sh test -q --lib >/dev/null 2>&1) || fail "the PM's marker: test run refused"
+rm $SCENIC_TESTS_LOCAL_FILE
 (cd $w/a && SCENIC_THIS_MAC=another-mac $sh build -q 2>&1) || fail "a build off the test Mac refused"
+(cd $w/a && SCENIC_THIS_MAC=another-mac $sh test -q --lib --no-run 2>&1) || fail "a test's --no-run off the test Mac refused"
 
 print "shared-target: ok"

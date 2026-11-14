@@ -11,20 +11,36 @@ words hold `$( … )`, `<( … )`, `>( … )` or backticks outside single quotes
 and a comment aren't its words), and `sh -c`, `eval` or a command word built from a substitution whose script mentions cargo test); a run inside such a substitution is found.
 Not seen: a run through a shell function or alias, a script file, or a substitution's output that names cargo without the script saying it (`$(cat cmd.txt)`).
 
-**Where a test run goes (#1398).** A `cargo test` or `cargo nextest run` the guard finds is refused unless this
-Mac is the test Mac (the M4: `tools/app/test-mac.zsh`'s `is_test_mac`, the one definition, which remote-tests.sh and
-the cargo shim use too: `SCENIC_TEST_MAC`, default `Brandons-MacBook-Pro`, against `scutil --get LocalHostName`;
-`SCENIC_THIS_MAC` stands in for this Mac's name in tests). The refusal says to run `tools/dev/check.sh` or
-`tools/app/remote-tests.sh <key> <worktree> 'cargo nextest run -p <crate> …'`. Not refused: those two (and an
-`ssh` to the test Mac), which hold their cargo in a quoted argument the guard doesn't read as a run; builds,
-`clippy`, `check` and `fmt` (check.sh runs those here on purpose); and a run asked for here with
-`SCENIC_TESTS_LOCAL=1` (or `SCENIC_CHECK_LOCAL=1`) in the command (`SCENIC_TESTS_LOCAL=1 cargo test …`) or the
-shell's environment: the PM's fallback while the test Mac is away, never an agent's own choice. The
-`tools/dev/bin/cargo` shim refuses the same runs (`test`, `t`, `nextest run`) from a worktree under
-`.claude/worktrees/` on another Mac, with the same override: it catches what the hook can't read (a script, a
-function, a sub-shell). check.sh's own tests part goes to the test Mac (below), or runs here under
-`SCENIC_CHECK_LOCAL`; publish.sh isn't in a worktree. Tested by `tools/dev/test/test-guard.zsh` (the hook) and
-`tools/dev/test/shared-target.zsh` (the shim).
+**Where a test run goes (#1398).** A `cargo test`, `cargo t` or `cargo nextest run` the guard finds (by any path to
+cargo, after prefixes, cargo's own flags, inside `sh -c` and `eval`) is refused unless this Mac is the test Mac (the
+M4: `tools/app/test-mac.zsh`'s `is_test_mac`, the one definition, which remote-tests.sh and the cargo shim use too:
+`SCENIC_TEST_MAC`, default `Brandons-MacBook-Pro`, against `scutil --get LocalHostName`). The refusal says to run
+`tools/dev/check.sh` or `tools/app/remote-tests.sh <key> <worktree> 'cargo nextest run -p <crate> <filter>'`, which
+hold their cargo in a quoted argument the guard doesn't read as a run, as an `ssh` to the test Mac does. Not refused:
+those, a `--no-run` (a build), builds, `clippy`, `check` and `fmt` (check.sh runs those here on purpose), and text
+that only mentions a run (a grep, an echo, a commit message, a heredoc).
+
+*The override is the PM's.* The hook tells a subagent's call from the PM's by the `agent_id` Claude Code gives a
+subagent's tool calls; the PM's own commands aren't checked. Tests run here instead when `tests_local` holds in the
+hook's own environment, Claude Code's, which no agent's command reaches: `SCENIC_TESTS_LOCAL` or
+`SCENIC_CHECK_LOCAL` set there (the session started with it), or the PM's marker, the main checkout's
+`.claude/tests-local` (a line saying why), which lets every agent on this Mac run its tests here, through
+check.sh and remote-tests.sh too, while the test Mac is away; `tools/dev/health.sh` shows it while it is there, and
+the PM deletes it when the test Mac is back. An agent's command that sets one of `SCENIC_TESTS_LOCAL`,
+`SCENIC_CHECK_LOCAL`, `SCENIC_TESTS_LOCAL_FILE`, `SCENIC_THIS_MAC` or `SCENIC_TEST_MAC` (`VAR=…`, `env`,
+`export`, `typeset`, `launchctl setenv`), or writes or removes the marker (a redirection, `touch`, `cp`, `rm`, …),
+is refused, saying only the PM sets them. The PM's own fallback: `SCENIC_TESTS_LOCAL=1 tools/dev/check.sh` (or
+`SCENIC_CHECK_LOCAL=1`) in its own command, or the marker for its agents.
+
+*The shim is a backstop, advisory.* The `tools/dev/bin/cargo` shim refuses the same runs (`test`, `t`, `nextest run`,
+not `--no-run`) from a worktree under `.claude/worktrees/` on another Mac, with the same `tests_local`, read from its
+own environment: it catches what the hook can't read (a script file, a function, a heredoc fed to a shell), but any
+command can set that environment, and the real cargo by its path (`~/.cargo/bin/cargo` in a script) skips the shim.
+Outside a worktree (the main checkout, publish.sh's tree, the test Mac's copies) it refuses nothing. Not caught
+either: a test binary run straight from the build folder. The hook is the gate for the ordinary mistake; a
+determined agent can still get round both. Tested by `tools/dev/test/test-guard.zsh` (the hook) and
+`tools/dev/test/shared-target.zsh` (the shim), both with `SCENIC_THIS_MAC` (a stand-in for this Mac's name) and
+`SCENIC_TESTS_LOCAL_FILE` (for the marker) of their own, so either Mac gives the same answers.
 
 - Tests build optimized (`[profile.test]` in Cargo.toml, #505: opt-level 1 for the workspace, 3 for
   dependencies; debug assertions and overflow checks stay on), so the first `cargo test` in a fresh
@@ -511,8 +527,8 @@ check.sh's `tests` part and publish.sh's nextest suite run on the test Mac throu
   for an approval for ever. The probe (a fresh connection) has 20 s (`SCENIC_TEST_PROBE_S`, a test's shorter), the lock calls 60 s, and the run
   must print its first line (`remote-tests: connected to the test Mac`, at once) within 120 s; past a bound it is refused, saying why.
 - Runs here instead only on the test Mac itself (the M4 since 31 Oct; publish runs on the mini, so
-  its suite goes to the M4) and with `SCENIC_CHECK_LOCAL=1` (also `SCENIC_TESTS_LOCAL=1`), the run
-  here asked for.
+  its suite goes to the M4) and when the PM asks for the run here: `SCENIC_CHECK_LOCAL=1` (also
+  `SCENIC_TESTS_LOCAL=1`), or its `.claude/tests-local` ("Where a test run goes", above).
 - **Refused** otherwise, whatever keeps the run from the test Mac (the owner's rule: tests run on
   the M4; task #668's review found a run here in its place passing check.sh with nothing in its
   summary): no connection within the bounds, the key's lock or a slot not had within 30 min, the

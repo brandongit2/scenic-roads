@@ -25,6 +25,15 @@ CARGO_TAKES = {"-C", "--config", "-Z", "--color", "--manifest-path", "--target-d
 SUBST = "A test run whose arguments hold $( … ), <( … ), >( … ) or backticks can't be checked (the guard can't see what they expand to): write the arguments out plainly."
 TEST = re.compile(r"\b(t|test|nextest)\b")
 found = []   # argument lists of cargo test / nextest runs
+# (Where tests run is the PM's to change, never an agent's (#1398): an agent's command setting one of these, or
+# writing the PM's marker, is refused; the hook reads them from its own environment, Claude Code's, which no
+# agent command reaches. tools/app/test-mac.zsh.)
+WHERE = {"SCENIC_TESTS_LOCAL", "SCENIC_CHECK_LOCAL", "SCENIC_TESTS_LOCAL_FILE", "SCENIC_THIS_MAC", "SCENIC_TEST_MAC"}
+PM_ONLY = ("Only the PM lets tests run off the test Mac (SCENIC_TESTS_LOCAL, SCENIC_CHECK_LOCAL, SCENIC_THIS_MAC, SCENIC_TEST_MAC, "
+           "its .claude/tests-local): run tools/dev/check.sh, or tools/app/remote-tests.sh <a key of your own> <your worktree> "
+           "'cargo nextest run -p <crate> <filter>', which send the tests to the test Mac. If it is away, say so in your report.")
+WRITERS = {"touch", "rm", "mv", "cp", "ln", "tee", "install", "ditto", "rsync", "truncate", "unlink", "mkdir"}
+INTO_MARKER = re.compile(r">[>|!]?\s*\S*tests-local")   # (a redirection into it, outside quotes)
 def scan(text, depth=0):
     if depth > 4: block("Commands nested this deep can't be checked: write the cargo test command out plainly.")
     text, bodies = substitutions(strip_heredocs(text))   # a $( … ), <( … ), >( … ) or backtick stays one word; its script is scanned on its own
@@ -32,7 +41,13 @@ def scan(text, depth=0):
     n = 0   # (the substitutions before seg: they stand in text in bodies' order)
     for seg in segments(text):
         a, n = n, n + seg.count("${SUBSTITUTION}")
-        _, toks = command(tokens(seg))
+        env, toks = command(tokens(seg))
+        if (toks and os.path.basename(toks[0]) in WRITERS and any("tests-local" in t for t in toks[1:])) or \
+                INTO_MARKER.search(re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", "", seg)): block(PM_ONLY)
+        sets = set(env)
+        if toks[:1] and toks[0] in ("export", "typeset", "declare", "local", "readonly", "integer"): sets |= {t.split("=")[0] for t in toks[1:]}
+        if toks[:2] == ["launchctl", "setenv"] and len(toks) > 2: sets.add(toks[2])
+        if sets & WHERE: block(PM_ONLY)
         if not toks: continue
         c0, rest = os.path.basename(toks[0]), toks[1:]
         # (sh -c "$(…)", eval "$(…)" and $(…) -p … run what the substitution writes: a cargo test there can't be read)
@@ -80,19 +95,19 @@ def scan(text, depth=0):
                 found.append(sub[1:])
 scan(cmd)
 
-# --- Where the run goes (tools/dev/agent-rules.md, "Where things run": tests run on the test Mac). The runs found
-# are cargo's own, here; a run through the remote runner (tools/dev/check.sh, tools/app/remote-tests.sh '<cargo
+# --- Where the run goes (tools/dev/agent-rules.md, "Where things run": tests run on the test Mac, #1398). The runs
+# found are cargo's own, here; a run through the remote runner (tools/dev/check.sh, tools/app/remote-tests.sh '<cargo
 # test …>', an ssh to the test Mac) holds its cargo in a quoted argument, which is not scanned, so it is never
-# found. One definition of the test Mac: tools/app/test-mac.zsh's is_test_mac and tests_local (SCENIC_THIS_MAC and
-# SCENIC_TEST_MAC stand in for another Mac in tests).
+# found; a --no-run builds only, and no check here is about builds. The test Mac and the PM's override: tools/app/test-mac.zsh's is_test_mac and
+# tests_local, asked with this hook's environment (Claude Code's: the PM's session, never an agent's command).
+found = [a for a in found if "--no-run" not in a]
 if found:
     lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "test-mac.zsh")
     def lib_says(fn): return subprocess.run(["zsh", "-c", "source \"$1\" && " + fn, "zsh", lib], env=dict(os.environ), capture_output=True, text=True).returncode == 0
-    carried = re.search(r"\bSCENIC_(?:TESTS|CHECK)_LOCAL=[^\s'\"]", cmd)   # (set in the command: SCENIC_TESTS_LOCAL=1 cargo test …)
-    if not (carried or lib_says("tests_local") or lib_says("is_test_mac")):
+    if not (lib_says("is_test_mac") or lib_says("tests_local")):
         block("Tests run on the test Mac (the M4), not on this Mac: run tools/dev/check.sh in your worktree (it sends the affected tests there), "
-              "or tools/app/remote-tests.sh <a key of your own> <your worktree> 'cargo nextest run -p <crate> …' (the cargo command is one quoted argument; it runs there on an exact copy of the tree). "
-              "SCENIC_TESTS_LOCAL=1 before the command runs it here on purpose: only when the PM says the test Mac is away.")
+              "or tools/app/remote-tests.sh <a key of your own> <your worktree> 'cargo nextest run -p <crate> <filter>' (the cargo command one quoted argument; "
+              "it runs there on an exact copy of the tree). Only the PM lets tests run here, while the test Mac is away; if it is, say so in your report.")
 
 TAKES = {"-p","--package","--test","--bin","--features","-F","-j","--jobs","--target-dir","--manifest-path","--profile",
          "--example","--bench","--exclude","--target","--color","--message-format","-Z","--config","--partition","--retries",

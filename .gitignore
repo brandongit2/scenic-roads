@@ -27,6 +27,7 @@ __pycache__/
 *.log
 /.claude/worktrees/
 /.claude/health-stamp
+/.claude/tests-local
 /.claude/nas-links
 /.claude/sweep-keep
 /tools/devtools/*.db

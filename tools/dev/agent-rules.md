@@ -12,9 +12,11 @@ rely on the agent.
 - **Tests, builds and check.sh run on the M4**, in your own worktree. Follow
   `tools/dev/testing.md` for test runs. *Enforced for test runs*: on any other Mac a `cargo test` or
   `cargo nextest run` is refused (the hook `tools/dev/test-guard.py` for the commands it reads, the
-  `tools/dev/bin/cargo` shim for the rest, from a worktree); run `tools/dev/check.sh`, or
-  `tools/app/remote-tests.sh <key> <worktree> '<cargo command>'`, which send them to the M4. Builds, clippy
-  and fmt are not refused on another Mac: check.sh itself runs them where it is.
+  `tools/dev/bin/cargo` shim, advisory, for the rest, from a worktree); run `tools/dev/check.sh`, or
+  `tools/app/remote-tests.sh <key> <worktree> '<cargo command>'`, which send them to the M4. Only the PM lets
+  tests run elsewhere (testing.md, "Where a test run goes"): a command of yours setting `SCENIC_TESTS_LOCAL`
+  or the like is refused; if the M4 is away, say so in your report. Builds, clippy and fmt are not refused on
+  another Mac: check.sh itself runs them where it is.
 - **NAS-heavy runs go to the Mac mini** (`ssh m6`), where the NAS is local: anything that reads or
   writes a lot of NAS data, such as a bit-identity run (`scenic-build … --root
   /Volumes/personal/projects/scenic-roads`), measuring what a NAS-reading step reads, scanning large

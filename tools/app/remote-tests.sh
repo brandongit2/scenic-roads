@@ -1,7 +1,8 @@
 #!/bin/zsh
 # Runs a test command on the test Mac (`ssh $SCENIC_TEST_HOST`, default `m4`: the M4) against an exact
 # copy of a source tree, streaming its output back; on the test Mac itself, or with
-# SCENIC_CHECK_LOCAL=1 (or SCENIC_TESTS_LOCAL=1), it runs here instead. Its exit status is the
+# SCENIC_CHECK_LOCAL=1 (or SCENIC_TESTS_LOCAL=1) or the PM's .claude/tests-local (tools/app/test-mac.zsh's
+# tests_local), it runs here instead. Its exit status is the
 # command's. Anything else keeping it from the test Mac (no connection, no lock or slot within
 # 30 min, a failed copy, a run that ended without a result, a tree it can't copy) runs nothing:
 # a line "remote-tests: NOT RUN: <why> …" and exit 3 (`refuse`; the owner's rule, 31 Oct: tests run
@@ -353,7 +354,7 @@ send_tree() {  # <source dir> <file list (NUL-separated)> <destination>: the cop
 }
 
 refuse() {  # <why>: the run kept from the test Mac runs nothing (exit 3)
-  print -r -- "remote-tests: NOT RUN: $1. Tests run on the test Mac ($host), never on this Mac in its place: fix that and run again, or set SCENIC_TESTS_LOCAL=1 to run them here on purpose."
+  print -r -- "remote-tests: NOT RUN: $1. Tests run on the test Mac ($host), never on this Mac in its place: fix that and run again. Only the PM runs them here instead (SCENIC_TESTS_LOCAL=1 in its own command, or its .claude/tests-local for every agent: tools/dev/testing.md)."
   return 3
 }
 
@@ -373,7 +374,7 @@ local_main() {  # <key> <source dir> <command>
   [[ $key == [A-Za-z0-9._-]## && $key != .* ]] || { print "remote-tests: bad key $key"; return 2; }
   ( cd $src && versions "this Mac ($(scutil --get LocalHostName 2>/dev/null))" )
   local why=
-  if tests_local; then why="SCENIC_CHECK_LOCAL set"
+  if tests_local; then why=$REPLY
   elif is_test_mac; then why="this is the test Mac"
   fi
   if [[ -n $why ]]; then

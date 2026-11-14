@@ -17,9 +17,12 @@ mod=$(cd $wt/crates/$crate/src && for d in */; do [[ -f $d/mod.rs ]] && { print 
 [[ -n $mod ]] || { print "no <mod>/mod.rs in $crate"; exit 1 }
 typeset -a cases   # expectation, cwd, command; a case after another
 # Which Mac the guard takes this one for (SCENIC_THIS_MAC, tools/app/test-mac.zsh): the test Mac, but in the cases
-# that say -M <name> [<VAR=value>...]: that Mac, with those variables set, as an agent's shell may have them.
+# that say -M <name> [<VAR=value>...]: that Mac, with those variables in the hook's own environment (Claude
+# Code's, as the PM's session has them; an agent's command can't set them). No PM's marker but the cases' own
+# (SCENIC_TESTS_LOCAL_FILE: a file that isn't there, or $marker), whatever this Mac's .claude/tests-local says.
 source $here/../../app/test-mac.zsh
-export SCENIC_THIS_MAC=$(test_mac_name); unset SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL
+marker=$(mktemp); trap 'rm -f $marker' EXIT
+export SCENIC_THIS_MAC=$(test_mac_name) SCENIC_TESTS_LOCAL_FILE=$marker.none; unset SCENIC_TESTS_LOCAL SCENIC_CHECK_LOCAL
 check() {  # [-C <cwd>] [-M <mac> [VAR=value...]] expectation (ok | a text the refusal has), command; cwd: the worktree
   local cwd=$wt mac=; [[ $1 == -C ]] && { cwd=$2; shift 2 }
   [[ $1 == -M ]] && { mac=$2; shift 2; while [[ $1 == *=* ]]; do mac+=,$1; shift; done; cwd+="@mac=$mac" }
@@ -103,20 +106,40 @@ check ok "cargo test -p $crate -- $f > /p/log && echo \$(date)"
 check ok "echo \$(date) | cargo test -p $crate -- $f"
 
 # Where the run goes (#1398; agent-rules.md, "Where things run"): a cargo test or nextest run an agent types is
-# refused on any Mac but the test Mac, saying what to run instead; the test Mac, SCENIC_TESTS_LOCAL (in the
-# command, or set in the shell's environment; SCENIC_CHECK_LOCAL as well) and the remote runner let it through.
+# refused on any Mac but the test Mac, saying what to run instead; the test Mac, the hook's own environment's
+# SCENIC_TESTS_LOCAL or SCENIC_CHECK_LOCAL and the PM's marker let it through, and so does the remote runner.
 W="Tests run on the test Mac"
-for cmd in "cargo test -p $crate -- $f" "cargo nextest run -p $crate $f" "cargo t -p $crate -- $f" "cd $wt && cargo test -p $crate -- $f 2>&1 | tee /p/log" "zsh -c 'cargo test -p $crate -- $f'" "cargo test -p $crate --release -- $f #perf" "cargo test -p $crate #repro"; do
+for cmd in "cargo test -p $crate -- $f" "cargo nextest run -p $crate $f" "cargo t -p $crate -- $f" "cd $wt && cargo test -p $crate -- $f 2>&1 | tee /p/log" "zsh -c 'cargo test -p $crate -- $f'" "cargo test -p $crate --release -- $f #perf" "cargo test -p $crate #repro" \
+    "cargo  test -p $crate -- $f" "command cargo test -p $crate -- $f" "\\cargo test -p $crate -- $f" "~/.cargo/bin/cargo test -p $crate -- $f" "/opt/x/bin/cargo test -p $crate -- $f" \
+    "cargo +nightly test -p $crate -- $f" "cargo --locked test -p $crate -- $f" "env FOO=1 cargo test -p $crate -- $f" "time nice -n 5 cargo test -p $crate -- $f" \
+    "echo x | xargs cargo test -p $crate -- $f" "(cd /tmp && cargo test -p $crate -- $f)" "cargo-nextest nextest run -p $crate $f" "cargo nextest r -p $crate $f"; do
   check -M another-mac "$W" "$cmd"
   check -M another-mac "tools/dev/check.sh" "$cmd"
   check -M another-mac "tools/app/remote-tests.sh <a key" "$cmd"
   check ok "$cmd"
   check -M another-mac SCENIC_TESTS_LOCAL=1 ok "$cmd"
   check -M another-mac SCENIC_CHECK_LOCAL=1 ok "$cmd"
-  check -M another-mac ok "SCENIC_TESTS_LOCAL=1 $cmd"
-  check -M another-mac ok "env SCENIC_CHECK_LOCAL=1 $cmd"
+  check -M another-mac SCENIC_TESTS_LOCAL_FILE=$marker ok "$cmd"
 done
-check -M another-mac "$W" "SCENIC_TESTS_LOCAL= cargo test -p $crate -- $f"   # an empty value asks for nothing
+check -M another-mac SCENIC_TESTS_LOCAL= "$W" "cargo test -p $crate -- $f"   # an empty value asks for nothing
+check -M another-mac ok "cargo test -p $crate --no-run"   # a build
+# The override is the PM's: an agent's command that sets it (or names another Mac as this one, or the test Mac)
+# or writes the PM's marker is refused, on the test Mac too, saying only the PM sets it.
+P="Only the PM lets tests run off the test Mac"
+for cmd in "SCENIC_TESTS_LOCAL=1 cargo test -p $crate -- $f" "env SCENIC_CHECK_LOCAL=1 cargo test -p $crate -- $f" "SCENIC_CHECK_LOCAL=1 tools/dev/check.sh" \
+    "export SCENIC_TESTS_LOCAL=1; cargo test -p $crate -- $f" "SCENIC_TESTS_LOCAL=1" "typeset -x SCENIC_CHECK_LOCAL=y" "SCENIC_THIS_MAC=Brandons-MacBook-Pro cargo test -p $crate -- $f" \
+    "SCENIC_TEST_MAC=x tools/app/remote-tests.sh k . 'cargo test'" "SCENIC_TESTS_LOCAL_FILE=/tmp/m zsh tools/dev/check.sh" "zsh -c 'SCENIC_TESTS_LOCAL=1 tools/dev/check.sh'" \
+    "eval SCENIC_TESTS_LOCAL=1 tools/dev/check.sh" "launchctl setenv SCENIC_TESTS_LOCAL 1" "touch $main/.claude/tests-local" "print away > .claude/tests-local" "cd ~/x && echo y >> ../../.claude/tests-local" \
+    "cp /tmp/a $main/.claude/tests-local"; do
+  check "$P" "$cmd"
+  check -M another-mac "$P" "$cmd"
+done
+# Text that only mentions a run, the override or the marker is no run and sets nothing.
+for cmd in 'grep -rn "cargo test" tools/dev' "echo 'cargo test -p x'" 'git commit -m "cargo test now refused off the M4; SCENIC_TESTS_LOCAL=1 is the PM'"'"'s"' \
+    'git log --grep "cargo test"' "rg 'cargo nextest run' docs" $'cat > /tmp/x.md <<EOF\nrun cargo test -p x, or SCENIC_TESTS_LOCAL=1 cargo test\nEOF' \
+    'grep -n SCENIC_TESTS_LOCAL tools/app/test-mac.zsh' 'ls -la .claude/tests-local' 'cat .claude/tests-local' 'git commit -m "touch .claude/tests-local > tests-local"'; do
+  check -M another-mac ok "$cmd"
+done
 # A run through the remote runner holds its cargo in one quoted argument (never found), as an ssh to the test Mac does.
 check -M another-mac ok "tools/dev/check.sh"
 check -M another-mac ok "tools/app/remote-tests.sh k $wt 'cargo nextest run -p $crate $f'"

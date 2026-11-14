@@ -75,6 +75,8 @@ done
 tools/dev/sweep-targets.sh
 tail -3 .claude/sweep-targets.log 2>/dev/null | sed 's/^/sweep: /'
 print "== also: check every running subagent and background task, update the board (status, history, now line), email the owner if anything notable"
+# (The PM's marker, #1398: while it is there, every agent's tests on this Mac run here, not on the test Mac.)
+[[ -e .claude/tests-local ]] && print -r -- "tests-local: agents' tests run on this Mac, not the test Mac, since $(stat -f %Sm .claude/tests-local) ($(head -1 .claude/tests-local)): delete .claude/tests-local once the test Mac is back"
 print "gates (.claude/gates.txt):"
 grep -v "^# " .claude/gates.txt | grep -v '^$' | while IFS='|' read -r task what test; do
   if zsh -c "$test" >/dev/null 2>&1; then s="READY  <-- ACT NOW"; else s="waiting"; fi
