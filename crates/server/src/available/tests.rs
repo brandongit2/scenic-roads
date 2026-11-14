@@ -30,9 +30,10 @@ fn source(id: &str, availability: &str, ps: &[(&str, Value, Option<Value>)]) -> 
     (format!("terrain/{id}.toml"), decl.into_bytes(), format!("terrain/{id}.geojson"), serde_json::to_vec(&fc).unwrap())
 }
 
-/// Open 1 m bare earth of 2021 over a box in France; 0.25 m to be had after a login over part of
-/// it; one with no extent; a piece holding the north pole past the tiles; a paid 1 m of 2024 over
-/// the box's west end (a tie with the open piece, of a better score).
+/// Open 1 m bare earth of 2021 over a box in France; a paid 0.25 m over part of it; one with no
+/// extent; a piece holding the north pole past the tiles; a paid 1 m of 2024 over the box's west
+/// end (a tie with the open piece, of a better score); free after a login, 0.5 m over a box of its
+/// own and a 1 m of 2024 over the west end (a tie with the open piece too).
 fn fixture() -> Vec<(String, Vec<u8>)> {
     let a = source(
         "open-lidar",
@@ -48,7 +49,7 @@ fn fixture() -> Vec<(String, Vec<u8>)> {
     );
     let b = source(
         "fine",
-        "login",
+        "paid",
         &[
             ("dtm", json!({"spacing_m": 0.25, "surface": "ground"}), Some(square(2.2, 44.1, 2.6, 44.4))),
             ("later", json!({"spacing_m": 0.25}), None),
@@ -59,8 +60,16 @@ fn fixture() -> Vec<(String, Vec<u8>)> {
         "paid",
         &[("dtm", json!({"spacing_m": 1, "surface": "ground", "year": 2024}), Some(square(2.0, 44.0, 2.15, 44.05)))],
     );
+    let d = source(
+        "asked",
+        "login",
+        &[
+            ("dtm", json!({"spacing_m": 0.5, "surface": "surface"}), Some(square(3.0, 45.0, 3.2, 45.2))),
+            ("twin", json!({"spacing_m": 1, "surface": "ground", "year": 2024}), Some(square(2.0, 44.0, 2.15, 44.05))),
+        ],
+    );
     let mut files = vec![("terrain/score.toml".to_string(), SCORE.to_vec())];
-    for (d, db, p, pb) in [a, b, c] {
+    for (d, db, p, pb) in [a, b, c, d] {
         files.push((d, db));
         files.push((p, pb));
     }
@@ -82,7 +91,8 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     let best = |layer: &str, ids: &[&str], all: bool| {
         t.best(layer, ids.iter().copied(), all).map(|p| p.props["piece"].clone())
     };
-    // Only what downloads freely: the open piece; every one: the finer piece, of the better score.
+    // Free data: the open piece (the finer one is paid); every one: the finer piece, of the better
+    // score.
     assert_eq!(t.best(SCORE_LAYER, both, false).unwrap().source, "open-lidar");
     assert_eq!(t.best(SCORE_LAYER, both, true).unwrap().source, "fine");
     assert!(b.score > a.score);
@@ -95,7 +105,7 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
     assert_eq!(l.iter().map(|p| p["id"].as_str().unwrap()).collect::<Vec<_>>(), ["fine/dtm", "open-lidar/dtm"]);
     assert_eq!(l[0]["source_name"], "Source fine");
     assert_eq!(l[0]["link"], "https://fine.test/");
-    assert_eq!(l[0]["availability"], "login");
+    assert_eq!(l[0]["availability"], "paid");
     assert_eq!(l[1]["metrics"]["year"], 2021);
     assert_eq!(l[1]["read"]["method"], "file");
     assert!(l[1]["values"]["vertical_rmse_m"].is_null());
@@ -120,7 +130,7 @@ fn the_layers_values_are_the_best_of_the_pieces_that_pass_the_switch() {
         assert!(d["labels"]["extent"][k].as_str().is_some_and(|w| !w.is_empty()), "{k}");
     }
     // The piece each layer paints, as the tiles do: of every one, the score's the finer, the
-    // year's the one stating it; of open data alone, the open one; none where nothing passes.
+    // year's the one stating it; of free data, the open one; none where nothing passes.
     let p = t.painted(&both, true);
     assert_eq!(p[SCORE_LAYER], "fine/dtm");
     assert!(p.get("spacing_m").is_none(), "no layer of the primary's own");
@@ -147,6 +157,23 @@ fn an_open_piece_wins_a_tie() {
     assert_eq!(t.best(SCORE_LAYER, all, true).unwrap().source, "fine");
     let ids = |v: Vec<Value>| v.iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
     assert_eq!(ids(t.listed(all, true)), ["fine/dtm", "open-lidar/dtm", "paid-twin/dtm"]);
+}
+
+/// Free data takes in the pieces free after a login, never the paid ones; of a tie among them, the
+/// open piece still (score.toml's availability order), in both views.
+#[test]
+fn free_data_takes_in_the_login_pieces() {
+    let t = theme();
+    assert_eq!(t.best(SCORE_LAYER, ["asked/dtm"], false).unwrap().source, "asked");
+    assert!(t.best(SCORE_LAYER, ["paid-twin/dtm"], false).is_none());
+    let twins = ["asked/twin", "open-lidar/dtm", "paid-twin/dtm"];
+    assert!(t.pieces["asked/twin"].score > t.pieces["open-lidar/dtm"].score);
+    for all in [false, true] {
+        assert_eq!(t.best(SCORE_LAYER, twins, all).unwrap().source, "open-lidar", "{all}");
+    }
+    let ids = |v: Vec<Value>| v.iter().map(|p| p["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(ids(t.listed(twins, false)), ["open-lidar/dtm", "asked/twin"]);
+    assert_eq!(ids(t.listed(twins, true)), ["open-lidar/dtm", "asked/twin", "paid-twin/dtm"]);
 }
 
 /// What a tile carries: each layer's value of the piece drawn, in its scale's code, and the
@@ -303,7 +330,7 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
             h,
         )
     };
-    // Inside both boxes: open alone, the open piece's score; all, the finer one's.
+    // Inside both boxes: free data, the open piece's score; all, the finer paid one's.
     let (x, y) = z12(2.3, 44.2);
     let r = get("score", 12, x, y, None, headers(None)).await;
     assert_eq!(r.status(), StatusCode::OK);
@@ -336,10 +363,24 @@ async fn tiles_are_coloured_by_the_layer_and_the_switch() {
     assert_eq!(get("score", 12, x, y, None, headers(Some(&etag))).await.status(), StatusCode::NOT_MODIFIED);
     let r = get("score", 12, x, y, Some("v=1"), headers(None)).await;
     assert_eq!(r.headers()[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
-    // Where only the login piece is, open: none there.
+    // The switch's other view has an ETag of its own.
+    let r = get("score", 12, x, y, Some("avail=all"), headers(Some(&etag))).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_ne!(r.headers()[header::ETAG].to_str().unwrap(), etag);
+    // Free data by its name, and by the name a page from before it sends: the default view.
+    for q in ["avail=free", "avail=open", "avail=free&v=1", "avail=open&v=1"] {
+        let r = get("score", 12, x, y, Some(q), headers(None)).await;
+        assert_eq!(r.headers()[header::ETAG].to_str().unwrap(), etag, "{q}");
+        assert_eq!(body(r).await, open, "{q}");
+    }
+    // Where only the paid piece is, free data: none there.
     let (x, y) = z12(2.55, 44.35);
     assert_eq!(get("score", 12, x, y, None, headers(None)).await.status(), StatusCode::NO_CONTENT);
     assert_eq!(get("score", 12, x, y, Some("avail=all"), headers(None)).await.status(), StatusCode::OK);
+    // Where a piece free after a login is: free data draws it.
+    let (x, y) = z12(3.1, 45.1);
+    let r = body(get("score", 12, x, y, None, headers(None)).await).await;
+    near(png_pixel(&r, 128, 128), 0.5f64.dlog10());
     // No piece: 204; a layer, set or zoom that isn't: 404.
     assert_eq!(get("score", 12, 0, 0, None, headers(None)).await.status(), StatusCode::NO_CONTENT);
     assert_eq!(get("year", 0, 0, 0, None, headers(None)).await.status(), StatusCode::OK);
@@ -419,8 +460,17 @@ async fn a_click_answers_the_pieces_there_best_first() {
     assert_eq!(v["painted"]["score"], "fine/dtm");
     assert!(v["painted"].get("spacing_m").is_none());
     assert!(v["pieces"][0]["score"].as_f64().unwrap() > v["pieces"][1]["score"].as_f64().unwrap());
+    assert_eq!(v["avail"], "all");
     let v: Value = serde_json::from_slice(&body(click(2.3, 44.2, None).await).await).unwrap();
     assert_eq!(ids(&v), ["open-lidar/dtm"]);
+    assert_eq!(v["avail"], "free");
+    // Free data by its name, and by the name a page from before it sends.
+    for q in ["free", "open"] {
+        let w: Value = serde_json::from_slice(&body(click(2.3, 44.2, Some(q)).await).await).unwrap();
+        assert_eq!(w, v, "{q}");
+    }
+    let v: Value = serde_json::from_slice(&body(click(3.1, 45.1, None).await).await).unwrap();
+    assert_eq!(ids(&v), ["asked/dtm"], "free after a login");
     let v: Value = serde_json::from_slice(&body(click(10.0, 10.0, None).await).await).unwrap();
     assert!(ids(&v).is_empty());
     let v: Value = serde_json::from_slice(&body(click(30.0, 89.0, None).await).await).unwrap();
@@ -428,7 +478,7 @@ async fn a_click_answers_the_pieces_there_best_first() {
     // The theme.
     let r = about(State(s.clone()), Path("terrain".into())).await;
     let v: Value = serde_json::from_slice(&body(r).await).unwrap();
-    assert_eq!(v["sources"].as_array().unwrap().len(), 3);
+    assert_eq!(v["sources"].as_array().unwrap().len(), 4);
     assert_eq!(about(State(s.clone()), Path("bathymetry".into())).await.status(), StatusCode::NOT_FOUND);
     // The app's version of the layer names the extents' too.
     let meta = crate::meta_json(&s);
@@ -583,7 +633,7 @@ fn renders_the_real_pieces() {
                     }
                 }
             }
-            let name = format!("{place}-score-{}.png", if all { "all" } else { "open" });
+            let name = format!("{place}-score-{}.png", view(all));
             let f = std::fs::File::create(dir.join(name)).unwrap();
             let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, w as u32);
             e.set_color(png::ColorType::Rgb);

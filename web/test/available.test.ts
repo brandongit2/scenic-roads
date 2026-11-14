@@ -46,7 +46,7 @@ const COLOURS: ScaleFields = {
   palette: 'viridis', auto: true, range: [0, 1], fit: [1, 99], equalize: false, lowFade: 0, lowSpan: 0.5,
   threshold: { on: false, dir: 'above', value: 0 },
 };
-const BASE: AvailableState = { on: false, theme: 'terrain', layer: 'score', set: 'best', avail: 'open', opacity: 0.85, colours: COLOURS, scales: {} };
+const BASE: AvailableState = { on: false, theme: 'terrain', layer: 'score', set: 'best', avail: 'free', opacity: 0.85, colours: COLOURS, scales: {} };
 
 test('the catalogue’s themes, with their poles', () => {
   const layers = {
@@ -156,12 +156,12 @@ test('the ramp’s stops: none clear, the range’s colours clamped past it, the
 });
 
 test('the URLs: tiles at the meta version, polar tiles, the click', () => {
-  assert.equal(tileUrl('https://h', 'terrain', 'best', 'score', 'open', 'abc-123'), 'https://h/tiles/available/terrain/best/score/{z}/{x}/{y}?avail=open&v=abc-123');
+  assert.equal(tileUrl('https://h', 'terrain', 'best', 'score', 'free', 'abc-123'), 'https://h/tiles/available/terrain/best/score/{z}/{x}/{y}?avail=free&v=abc-123');
   assert.equal(tileUrl('', 'terrain', 'best', 'year', 'all', ''), '/tiles/available/terrain/best/year/{z}/{x}/{y}?avail=all');
-  assert.equal(polarTileUrl('', 's', 'terrain', 'best', 'score', 'open', 'v1', 2, 1, 3), '/tiles/polar-available/s/terrain/best/score/2/1/3?avail=open&v=v1');
+  assert.equal(polarTileUrl('', 's', 'terrain', 'best', 'score', 'free', 'v1', 2, 1, 3), '/tiles/polar-available/s/terrain/best/score/2/1/3?avail=free&v=v1');
   assert.equal(atUrl('terrain', 'best', 2.35, 48.85, 'all'), '/api/available/terrain/best?lng=2.350000&lat=48.850000&avail=all');
   // Ids from the server escaped.
-  assert.equal(tileUrl('', 'terrain', 'best', 'a/b?c', 'open', 'v&1'), '/tiles/available/terrain/best/a%2Fb%3Fc/{z}/{x}/{y}?avail=open&v=v%261');
+  assert.equal(tileUrl('', 'terrain', 'best', 'a/b?c', 'free', 'v&1'), '/tiles/available/terrain/best/a%2Fb%3Fc/{z}/{x}/{y}?avail=free&v=v%261');
 });
 
 /** The click at Paris (shortened from the server's answer). */
@@ -233,7 +233,13 @@ test('the settings in a link, and from a save', () => {
   // (The link leaves the colour maps as they are.)
   const mine = { ...BASE, scales: { year: { ...COLOURS, palette: 'turbo' } } };
   assert.equal(fromField(toField(s), mine).scales, mine.scales);
-  assert.deepEqual(cleanState({ ...s, avail: 'x' as 'open', opacity: 0, layer: 3 as unknown as string }, BASE), { ...s, avail: 'open', opacity: 0.1, layer: 'score' });
+  assert.deepEqual(cleanState({ ...s, avail: 'x' as 'free', opacity: 0, layer: 3 as unknown as string }, BASE), { ...s, avail: 'free', opacity: 0.1, layer: 'score' });
+  // A save or a link from before free data took in the login pieces says `open`: free data, whatever
+  // the base's view.
+  const all = { ...BASE, avail: 'all' as const };
+  assert.equal(cleanState({ ...s, avail: 'open' as 'free' }, all).avail, 'free');
+  assert.equal(fromField('1,terrain,year,best,open,0.6', all).avail, 'free');
+  assert.equal(fromField('1,terrain,year,best,free,0.6', all).avail, 'free');
   // Colour maps from a save: each field valid, else the base's (a layer's, the save's first one's).
   const odd = cleanState({ ...s, colours: { ...COLOURS, lowFade: 3, fit: [50, 10] } as ScaleFields,
     scales: { year: { palette: 'turbo', range: [5, 2], threshold: { on: true, dir: 'sideways', value: 'x' } }, 'Bad!': COLOURS } as unknown as AvailableState['scales'] }, BASE);

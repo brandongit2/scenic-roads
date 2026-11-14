@@ -63,7 +63,7 @@ def score(decl, piece):
 EXAMPLES = [
     ("a 2 m surface model against a 5 m bare-earth one, both of 2020, accuracy not stated",
      [{"spacing_m": 2, "surface": "surface", "year": 2020}, {"spacing_m": 5, "surface": "ground", "year": 2020}]),
-    ("a 1.2 m surface model against a 1.25 m bare-earth one: within the factor, the kind decides",
+    ("a 1.2 m surface model against a 1.25 m bare-earth one, both of 2020: within the factor, the kind takes no part",
      [{"spacing_m": 1.2, "surface": "surface", "year": 2020}, {"spacing_m": 1.25, "surface": "ground", "year": 2020}]),
     ("a 3 ft (0.9144 m) surface model of 2010 against a 1 m bare-earth one of 2024",
      [{"spacing_m": 0.9144, "surface": "surface", "year": 2010}, {"spacing_m": 1, "surface": "ground", "year": 2024}]),

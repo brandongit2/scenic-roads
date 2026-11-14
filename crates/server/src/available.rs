@@ -5,10 +5,11 @@
 //! Mac as the translations are (crate::accepted). So a weight tuned is drawn within a minute of the
 //! input check, with nothing built again. The colours are the app's: a tile carries values.
 //!
-//! - `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all` and, past 85.05°,
+//! - `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=free|all` and, past 85.05°,
 //!   `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y`: the tile as a PNG, each pixel the
-//!   layer's value of the best piece there that passes the switch (`avail=open`, the default:
-//!   those that download freely; `all`: every one; `Theme::best`), Terrarium-coded (`code`),
+//!   layer's value of the best piece there that passes the switch (`avail=free`, the default and
+//!   any value but `all`: the free pieces, `ex::FREE`; `all`: every one; `Theme::best`),
+//!   Terrarium-coded (`code`),
 //!   transparent where none does; 204 where no piece is. `layer`: `score` (the best piece, at its
 //!   primary's own value: its grid spacing), or another metric of the theme's score. `set`: `best`
 //!   (the best data any declared source has).
@@ -44,12 +45,12 @@ fn set_served(set: &str) -> bool {
 /// The score layer's name where `score.toml` gives none.
 const DEFAULT_LABEL: &str = "Best data";
 
-/// The tiles' format, in the layers' versions (`Available::version`): a page made for another
-/// format (the painted tiles before it) reads the theme again at the new version, and an old one
-/// can't, so it shows nothing until it's loaded again rather than values as colours; and a tile
-/// kept for good under an older one (`?v=`) isn't read again. `values2`: the score layer's pixels
-/// are the best piece's own primary value, no longer the value its score equals.
-const TILE_FORMAT: &str = "values2";
+/// The tiles' format and the switch's views, in the layers' versions (`Available::version`): a
+/// page made for another format reads the theme again at the new version, and one too old to read
+/// it shows nothing until it's loaded again rather than values as colours; and a tile kept for good
+/// under an older one (`?v=`) isn't read again. `values3`: the score layer's pixels are the best
+/// piece's own primary value; the default view's pieces are the free ones (`ex::FREE`).
+const TILE_FORMAT: &str = "values3";
 
 /// What a tile's pixel carries for a value `v` of a layer on `scale` (docs/formats.md, Data
 /// available): log10(v) on a log scale (a grid spacing of 0.1 m to 1,000 m: −1 to 3), `v` on a
@@ -74,8 +75,8 @@ pub struct PieceInfo {
 }
 
 impl PieceInfo {
-    fn open(&self) -> bool {
-        self.availability() == Some("open")
+    fn free(&self) -> bool {
+        self.availability().is_some_and(|a| ex::FREE.contains(&a))
     }
 
     fn availability(&self) -> Option<&str> {
@@ -103,13 +104,13 @@ impl Theme {
         self.score.as_ref().is_some_and(|s| s.metric_of(layer).is_some())
     }
 
-    /// The pieces `ids` that pass the switch (`all`: every one; else those whose availability is
-    /// `open`), by id.
+    /// The pieces `ids` that pass the switch (`all`: every one; else the free ones, `ex::FREE`), by
+    /// id.
     fn passing<'a>(&self, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Vec<(&'a str, &PieceInfo)> {
         let mut ps: Vec<(&str, &PieceInfo)> = ids
             .into_iter()
             .filter_map(|id| Some((id, self.pieces.get(id)?)))
-            .filter(|(_, p)| all || p.open())
+            .filter(|(_, p)| all || p.free())
             .collect();
         ps.sort_by_key(|(id, _)| *id);
         ps
@@ -471,9 +472,19 @@ fn stored(s: &crate::AppState, layer: &str, z: u8, x: u32, y: u32) -> anyhow::Re
     Ok(t.map(|t| (*t).clone()))
 }
 
-/// Whether the switch lets every piece in (`avail=all`; else only those downloading freely).
+/// Whether the switch lets every piece in (`avail=all`); any other value, or none, is the default
+/// view, the free pieces (`avail=free`; a page from before it sends `avail=open`).
 fn all_of(q: Option<&str>) -> bool {
     q.is_some_and(|q| q.split('&').any(|kv| kv == "avail=all"))
+}
+
+/// The switch's view as the wire names it.
+fn view(all: bool) -> &'static str {
+    if all {
+        "all"
+    } else {
+        "free"
+    }
 }
 
 /// A tile of values: each pixel the layer's value of its set's best piece (`Theme::best`,
@@ -548,8 +559,7 @@ async fn tile(
     let all = all_of(q.as_deref());
     let g = s.data.generation.load(std::sync::atomic::Ordering::Relaxed);
     let uv = s.available.version();
-    let etag =
-        format!("\"av-{}-{uv}-{layer}-{}-{z}-{x}-{y}\"", s.data.layer_version(&stl), if all { "all" } else { "open" });
+    let etag = format!("\"av-{}-{uv}-{layer}-{}-{z}-{x}-{y}\"", s.data.layer_version(&stl), view(all));
     let key = (stl.clone(), layer.clone(), all, z, x, y, g, uv);
     let v = cache::versioned(q.as_deref());
     let s2 = s.clone();
@@ -621,7 +631,7 @@ pub async fn at(State(s): State<S>, Path((theme, set)): Path<(String, String)>, 
         let stl = stored_layer(&theme, grid);
         let ids = fmt::pieces_at(grid, px, py, &mut |z, x, y| stored(&s, &stl, z, x, y))?;
         let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
-        Ok(json!({"lng": lng, "lat": lat, "avail": if all { "all" } else { "open" },
+        Ok(json!({"lng": lng, "lat": lat, "avail": view(all),
             "pieces": th.listed(ids.iter().copied(), all), "painted": th.painted(&ids, all)}))
     })
     .await;

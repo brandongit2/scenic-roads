@@ -200,6 +200,22 @@ fn a_scores_availability_order() {
     assert_eq!(s.avail_rank(Some("open")), 0);
     assert_eq!(s.avail_rank(Some("closed")), 3);
     assert_eq!(s.avail_rank(None), 4);
+    // Free data, the layers' default view: those of the order that cost nothing.
+    assert_eq!(FREE.map(|a| s.avail_rank(Some(a))), [0, 1]);
+    // The kind is a layer of its own and no part of the score (weight 0, the owner's, 13 Nov): a
+    // ground and a surface model of one spacing and year score the same, and one stating its kind
+    // alone scores its spacing's value (Σ weight 0: the rest is the primary's).
+    assert_eq!(s.metrics["surface"].weight, Some(0.0));
+    let of = |m: serde_json::Value| s.of(m.as_object().unwrap());
+    let lead = of(serde_json::json!({"spacing_m": 1})).0;
+    for kind in ["ground", "surface"] {
+        assert_eq!(of(serde_json::json!({"spacing_m": 1, "surface": kind})).0, lead, "{kind}");
+        assert_eq!(
+            of(serde_json::json!({"spacing_m": 1, "surface": kind, "year": 2013})).0,
+            of(serde_json::json!({"spacing_m": 1, "year": 2013})).0,
+            "{kind}"
+        );
+    }
     for (from, to) in [
         ("\"closed\"]", "]"),
         ("\"closed\"]", "\"closed\", \"open\"]"),

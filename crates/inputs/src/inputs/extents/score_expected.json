@@ -121,7 +121,7 @@
     "surface": "surface",
     "year": 2020
    },
-   "score": 0.6663758561905296,
+   "score": 0.67663226644694,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 0.0,
@@ -135,7 +135,7 @@
     "surface": "ground",
     "year": 2020
    },
-   "score": 0.5822138873992139,
+   "score": 0.5791369643222908,
    "values": {
     "spacing_m": 0.5752574989159953,
     "surface": 1.0,
@@ -149,7 +149,7 @@
     "surface": "surface",
     "year": 2020
    },
-   "score": 0.720728799846537,
+   "score": 0.7309852101029473,
    "values": {
     "spacing_m": 0.7302046884880938,
     "surface": 0.0,
@@ -163,7 +163,7 @@
     "surface": "ground",
     "year": 2020
    },
-   "score": 0.7297185852745647,
+   "score": 0.7266416621976417,
    "values": {
     "spacing_m": 0.7257724967479859,
     "surface": 1.0,
@@ -177,7 +177,7 @@
     "surface": "surface",
     "year": 2010
    },
-   "score": 0.7470857293042323,
+   "score": 0.7522139344324374,
    "values": {
     "spacing_m": 0.7597159456531937,
     "surface": 0.0,
@@ -191,7 +191,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.7544871794871795,
+   "score": 0.7534615384615384,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -205,7 +205,7 @@
     "surface": "ground",
     "year": 2005
    },
-   "score": 0.7496153846153846,
+   "score": 0.7388461538461538,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -219,7 +219,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.680734830549504,
+   "score": 0.6797091895238629,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 1.0,
@@ -234,7 +234,7 @@
     "vertical_rmse_m": 0.3,
     "year": 2005
    },
-   "score": 0.7490638292686854,
+   "score": 0.7451063821144757,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -249,7 +249,7 @@
     "vertical_rmse_m": 0.1,
     "year": 2024
    },
-   "score": 0.6798933665894498,
+   "score": 0.6789905102741999,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 1.0,
@@ -263,7 +263,7 @@
     "surface": "ground",
     "year": 2005
    },
-   "score": 0.7496153846153846,
+   "score": 0.7388461538461538,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -277,7 +277,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.5832395284248549,
+   "score": 0.5822138873992139,
    "values": {
     "spacing_m": 0.5752574989159953,
     "surface": 1.0,
@@ -292,7 +292,7 @@
     "vertical_rmse_m": 2,
     "year": 2013
    },
-   "score": 0.37753540434590893,
+   "score": 0.38048881218072644,
    "values": {
     "spacing_m": 0.3807196863200844,
     "surface": 0.0,
@@ -305,7 +305,7 @@
     "spacing_m": 10,
     "surface": "ground"
    },
-   "score": 0.51,
+   "score": 0.5,
    "values": {
     "spacing_m": 0.5,
     "surface": 1.0,
@@ -320,7 +320,7 @@
     "vertical_rmse_m": 0.5,
     "year": 2024
    },
-   "score": 0.7512156037748989,
+   "score": 0.7486926729581649,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -334,7 +334,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.7544871794871795,
+   "score": 0.7534615384615384,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -348,7 +348,7 @@
     "surface": "ground",
     "year": 2021
    },
-   "score": 0.8274702976556242,
+   "score": 0.8249061950915216,
    "values": {
     "spacing_m": 0.8252574989159953,
     "surface": 1.0,
@@ -363,7 +363,7 @@
     "vertical_rmse_m": 0.1,
     "year": 2024
    },
-   "score": 0.8273980644648007,
+   "score": 0.8264952081495508,
    "values": {
     "spacing_m": 0.8252574989159953,
     "surface": 1.0,
@@ -376,7 +376,7 @@
     "spacing_m": 1.0,
     "surface": "ground"
    },
-   "score": 0.755,
+   "score": 0.75,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -390,7 +390,7 @@
     "surface": "surface",
     "year": 2022
    },
-   "score": 0.6668886767033502,
+   "score": 0.6781707279854015,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 0.0,
@@ -405,7 +405,7 @@
     "vertical_rmse_m": 1.68,
     "year": 2015
    },
-   "score": 0.3781063551563789,
+   "score": 0.38144039686484305,
    "values": {
     "spacing_m": 0.3807196863200844,
     "surface": 0.0,
@@ -419,7 +419,7 @@
     "surface": "surface",
     "year": 2015
    },
-   "score": 0.2600567390335193,
+   "score": 0.267749046725827,
    "values": {
     "spacing_m": 0.2614393726401688,
     "surface": 0.0,

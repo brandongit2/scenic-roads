@@ -1107,7 +1107,8 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
 as it keeps the translations' (crate::accepted, synced every minute while the map is in use), and
 reads each theme's `score.toml` and pieces from it (the `.geojson`s' properties and `read`, the
 declarations' descriptions). For each palette entry, its pieces that pass the availability switch
-(`avail=open`, the default: those whose availability is `open`; `all`: every one): the score
+(`avail=free`, the default: free data, those whose availability is `open` or `login`,
+`inputs::extents::FREE`; any value but `all` is it, `open` too; `all`: every one): the score
 layer's piece is the best (`Score::best`, docs/inputs.md §6.11: of those whose spacing ties the
 finest's within `within`, the best availability in `score.toml`'s order, then the best score, then
 the first id), a metric layer's the one of the best 0–1 value of that metric (bare earth over
@@ -1126,8 +1127,9 @@ against what score.py makes of them (`score_expected.json`, made by `score.py <s
 <pieces.json>`; producers/extents/test_extents.py makes it again and checks the file), to 10⁻¹²
 and to the three digits score.py shows, and each group in score.py's order. `/api/available/<theme>`
 describes each layer's scale for the app's axis (docs/formats.md). The server's tests
-(crate::available's): each layer's best piece under the switch, an open piece winning a tie on
-every layer that ranks it, each layer's value and scale from the real `score.toml` (the score's at
+(crate::available's): each layer's best piece under the switch (free data taking in the login
+pieces, never the paid ones; `avail=open` answered as free data, its tiles' ETag and bytes and its
+click), an open piece winning a tie on every layer that ranks it, in both views, each layer's value and scale from the real `score.toml` (the score's at
 the piece's own spacing, no layer of the primary's own, the server's label where score.toml names
 none), one still holding the retired colour fields served the same, the tiles' values (inside a
 piece and transparent outside it) and the click; and `renders_the_real_pieces`, run by hand: with
@@ -1139,7 +1141,7 @@ each value in its spacing's class (the world at z2, Asia at z3, Europe, Oceania 
 at z4, France and Japan at z5, Germany at z6, Vancouver at z8, each under both settings of the
 switch).
 
-**Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=open|all`: the tile of values as
+**Served.** `/tiles/available/<theme>/<set>/<layer>/z/x/y?avail=free|all`: the tile of values as
 above (PNG; 204 where no piece is, or none passes the switch); a tile not stored is its ancestor's
 part over it (codecs::available::tile_at). Past 85.05°,
 `/tiles/polar-available/<pole>/<theme>/<set>/<layer>/z/x/y` (z0–3 of the pole's grid). `<set>`:
@@ -1168,8 +1170,8 @@ catalogue lists a theme (`available-<theme>`), its switch the group's: each them
 data"; none, the server's "Best data"), one shown at a time (a layer a save or a link names that the
 theme doesn't list shows the first); the set (`best` now; its control appears once a theme lists
 two: `built`, task #1349, is one more id in `sets`, named by the theme's `labels`); the
-availability switch (Open
-data | All data); the opacity (85 % by default); and the layer's colour map: the sidebar's own
+availability switch (Free data, the data that costs nothing: open or after a login or a
+request | All data, paid and not to be had too); the opacity (85 % by default); and the layer's colour map: the sidebar's own
 control (ui/scale.ts ScaleControls, as the terrain tint's, the depth's and the roads'), over the
 layer's values in view (sampled from the tiles drawn, each sample by the ground it stands for:
 terrainstats.ts), with continuous colours: the histogram and the range's handles, Auto (the
@@ -1191,7 +1193,8 @@ no app change. The description is read again at each new version of the theme (m
 `available-<theme>`), and the tiles' URLs carry that version. The settings (`available`: on, theme,
 layer, set, avail, opacity, `colours`, `scales`) are a profile's, as every layer's: their values
 when a profile lacks them come from `web/default-profile.json` alone (task #1199; the group off,
-open data only), and a link carries the first six as `av=`, the profile's first colour map as
+free data only; a save or a link saying `open`, as those made before free data took in the
+login pieces do, is free data), and a link carries the first six as `av=`, the profile's first colour map as
 `ac=` and each layer's own as `am=` (`<layer>~<map>`, joined by `*`), as `te=` and `ds=` carry the
 tint's and the depth's (a reload reads the link). The layer is a raster-dem source of the
 tiles (Terrarium) and a colour-relief layer (`available`) over the hill-shading and under the map's

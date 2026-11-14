@@ -4,7 +4,10 @@
 #
 #   score = (1 - share) × value(spacing) + share × rest
 #   rest  = Σ weight × value / Σ weight over the other metrics the piece states
-#           (a metric it doesn't state leaves both sums; none stated: rest = value(spacing))
+#           (a metric it doesn't state leaves both sums; none stated, or their weights 0:
+#           rest = value(spacing))
+#
+# A metric of weight 0 is a layer of its own and a line on a click, and no part of the score.
 #
 # Each metric's value is 0 at `worst` and 1 at `best`, clamped; `log` scales by the logarithm.
 # The guarantee: a piece finer than another by more than a factor of `within` scores higher,
@@ -13,8 +16,9 @@
 # A piece not stating its spacing has no score.
 #
 # The best piece at a place: of those whose spacing is within `within` of the finest there, those
-# of the best `availability` below; of them, the best score. So a finer grid beyond the factor
-# always wins, whatever its availability, and an open source wins a tie.
+# of the best `availability` below; of them, the best score; of equals, the first by id. So a finer
+# grid beyond the factor always wins, whatever its availability, and an open source wins a tie.
+# The map's default view, free data, draws only the open and login sources; its other view, all.
 #
 # Nothing is built again for a change here: the server reads it at its next sync.
 theme = "terrain"
@@ -22,7 +26,7 @@ label = "Best data"
 primary = "spacing_m"
 # 1.25: spacings closer than a quarter are the same grid in different units or products (1 m
 # against 3 ft, 0.9144 m; 0.5 m against 2 ft, 0.6096 m; 10 m against 1/3 arc-second, 10.3 m),
-# where the availability, the kind, the accuracy and the year should decide.
+# where the availability, the accuracy and the year should decide.
 within = 1.25
 # The other metrics' share: under the bound, k / (1 + k) = 0.0237 for these numbers.
 share = 0.02
@@ -37,9 +41,11 @@ scale = "log"
 worst = 1000
 best = 0.1
 
+# Bare earth or a surface model: a layer only (the owner, 13 Nov: a ground model doesn't outrank a
+# surface model of the same grid).
 [metric.surface]
 label = "Bare earth or surface"
-weight = 0.4
+weight = 0
 values = { ground = 1.0, surface = 0.0 }
 
 [metric.vertical_rmse_m]

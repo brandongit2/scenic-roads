@@ -1985,8 +1985,9 @@ A metric a piece doesn't state is unknown: it leaves both of the rest's sums, so
 to the piece's other metrics in proportion; it's never a zero. A piece stating none of the others
 has its primary's value for the rest (they move it neither way); a piece not stating the primary
 has no score. Availability is not a term of the score: it ranks tied pieces (below), and the
-layers' switch filters by it. A metric of weight 0 has its layer and its line on a click and takes
-no part in the score.
+layers' switch filters by it (free data, the default view: `open` and `login`,
+`inputs::extents::FREE`; or all). A metric of weight 0 has its layer and its line on a click and
+takes no part in the score (a piece stating no other: the rest is its primary's value).
 
 **The guarantee:** a piece whose primary is better than another's by more than the factor
 `within` scores higher, whatever either states of the rest (both between the scale's `best` and
@@ -2000,7 +2001,7 @@ terrain's, as proposed (the owner's to tune):
 | `primary` | `spacing_m`, log: 1000 m → 0, 0.1 m → 1 (every terrain source's spacing inside it) |
 | `within` | 1.25: spacings closer than a quarter are one grid in different units or products (1 m and 3 ft, 0.9144 m; 0.5 m and 2 ft, 0.6096 m; 10 m and 1/3 arc-second, 10.3 m), where the rest should decide |
 | `share` | 0.02 (the bound for these numbers is 0.0237) |
-| `surface` | weight 0.4: `ground` 1, `surface` 0 |
+| `surface` | weight 0, a layer only (the owner, 13 Nov: a ground model doesn't outrank a surface model of the same grid): `ground` 1, `surface` 0 |
 | `vertical_rmse_m` | weight 0.4, log: 10 m → 0, 0.05 m → 1 |
 | `year` | weight 0.2, linear: 2000 → 0, 2026 → 1 |
 
@@ -2008,14 +2009,14 @@ What it does (`producers/extents/score.py <score.toml> --examples` prints them):
 
 | Pieces | Scores | Best |
 |---|---|---|
-| a 2 m surface model; a 5 m bare-earth one (both 2020, accuracy not stated) | 0.666; 0.582 | the 2 m surface model: finer |
-| a 1.2 m surface model; a 1.25 m bare-earth one (both 2020) | 0.721; 0.730 | the bare-earth one: within the factor, the kind decides |
-| a 3 ft (0.9144 m) surface model of 2010; a 1 m bare-earth one of 2024 | 0.747; 0.754 | the 1 m bare earth: within the factor |
-| 1 m bare earth of 2005; 2 m bare earth of 2024 (accuracy not stated) | 0.750; 0.681 | the old fine one |
-| the same, 0.30 m and 0.10 m RMSE stated | 0.749; 0.680 | the old fine one |
-| 1 m bare earth of 2005; 5 m bare earth of 2024 | 0.750; 0.583 | the old fine one |
-| a 30 m surface model of 2013 at 2 m RMSE; a 10 m bare-earth one, nothing else stated | 0.378; 0.510 | the 10 m one |
-| 1 m bare earth of 2024 stating a 0.5 m RMSE; the same stating none | 0.751; 0.754 | the one stating none, narrowly |
+| a 2 m surface model; a 5 m bare-earth one (both 2020, accuracy not stated) | 0.677; 0.579 | the 2 m surface model: finer |
+| a 1.2 m surface model; a 1.25 m bare-earth one (both 2020) | 0.731; 0.727 | the surface model: within the factor, the kind takes no part, and it's finer |
+| a 3 ft (0.9144 m) surface model of 2010; a 1 m bare-earth one of 2024 | 0.752; 0.753 | the 1 m one: within the factor, newer |
+| 1 m bare earth of 2005; 2 m bare earth of 2024 (accuracy not stated) | 0.739; 0.680 | the old fine one |
+| the same, 0.30 m and 0.10 m RMSE stated | 0.745; 0.679 | the old fine one |
+| 1 m bare earth of 2005; 5 m bare earth of 2024 | 0.739; 0.582 | the old fine one |
+| a 30 m surface model of 2013 at 2 m RMSE; a 10 m bare-earth one, nothing else stated | 0.380; 0.500 | the 10 m one |
+| 1 m bare earth of 2024 stating a 0.5 m RMSE; the same stating none | 0.749; 0.753 | the one stating none, narrowly |
 
 The last row is what redistributing an unknown metric's weight does: the rest is scored as if what
 a piece doesn't state were as good as what it does, so stating a middling accuracy can rank a

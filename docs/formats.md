@@ -1208,24 +1208,25 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
   kind or pole, outside the grid or the layer's zooms) 404; a read that failed (the NAS away) 503.
   What the server keeps in memory is kept in one kind of cache (`cache::Lru`, least recently used
   out past a byte or entry budget).
-- **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=open|all`
+- **Data available** (crate::available; docs/steps.md §14): `/tiles/available/{theme}/{set}/{layer}/{z}/{x}/{y}?avail=free|all`
   (z0–12) and `/tiles/polar-available/{pole}/{theme}/{set}/{layer}/{z}/{x}/{y}` (z0–3), `{set}`
   `best`, `{layer}` `score` or a metric of the theme's `score.toml` other than the primary: a PNG of
   values (sent as it is, no Content-Encoding: a body made here is labelled gzip only when it is
   gzip), each pixel the
-  layer's value of its set's best piece among those passing `avail` (default `open`: availability
-  `open`; `all`: every piece; the best: docs/inputs.md §6.11, `Score::best`), Terrarium-coded in
+  layer's value of its set's best piece among those passing `avail` (`free`, the default and any
+  value but `all` (`open` too): availability `open` or `login`, `inputs::extents::FREE`; `all`:
+  every piece; the best: docs/inputs.md §6.11, `Score::best`), Terrarium-coded in
   RGB (value + 32,768 = R × 256 + G + B ÷ 256, to 1/256), alpha 255; transparent (all 0, which
   reads −32,768) where none passes; 204 where no pixel has a value. The value is on the layer's
   scale: on a `log` one log10 of the value in its unit (a spacing of 0.1 m to 1,000 m: −1 to 3, to
   a factor of 1.009), on a `linear` one the value (a year), on a `values` one the word's value (0
   to 1); the score's the best piece's own value of the primary, on its scale (its grid spacing in
   metres, as log10). ETag `"av-<packs' version>-<format>-<extents'
-  version>-<layer>-<avail>-z-x-y"`; `?v=` cached for good while it is meta's version of
+  version>-<layer>-<free|all>-z-x-y"`; `?v=` cached for good while it is meta's version of
   `available-<theme>` (or `available-<theme>-<pole>`): the layer's packs' version, `-`, the tiles'
-  format (`values2`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
+  format (`values3`), `-` and the extents' accepted version's hash, 16 hex digits (the layer's
   packs are left out of `packs`). `GET /api/available/{theme}/{set}?lng=&lat=&avail=` →
-  `{lng, lat, avail, pieces: [...], painted: {layer: id}}`, the pieces passing `avail` at the z12 pixel holding the point
+  `{lng, lat, avail: "free"|"all", pieces: [...], painted: {layer: id}}`, the pieces passing `avail` at the z12 pixel holding the point
   (past 85.05°, the pole's z3 pixel), best first (`Score::ranked`; none with no score last), each
   `{id, source, piece, name, source_name, credit, licence, licence_url, link, availability,
   extent, read, metrics, stated, values, score}` (`metrics` as the piece states them, a number in

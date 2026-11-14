@@ -10,8 +10,13 @@
 // (`/api/available/<theme>`), so a new metric changes no code here.
 import type { ScaleFields, ThresholdDir } from './state';
 
-/** The availability switch: only data that downloads freely (`open`), or every piece. */
-export type Avail = 'open' | 'all';
+/** The availability switch: only the data that costs nothing (`free`: it downloads freely, or
+ * after a login or a request), or every piece. */
+export type Avail = 'free' | 'all';
+
+/** A switch's value from a save or a link: `free` or `all`, else `d`; `open`, as saves and links
+ * made before free data took in the login pieces say, is `free`. */
+const availOf = (v: unknown, d: Avail): Avail => (v === 'all' ? 'all' : v === 'free' || v === 'open' ? 'free' : d);
 
 /** The group's settings (a profile's, as every layer's: web/default-profile.json has them). */
 export interface AvailableState {
@@ -307,7 +312,6 @@ export interface PieceRow {
    * publisher's class where that's what was published). */
   metrics: [string, string][];
   availability: string;
-  open: boolean;
   extent: string;
   /** What the extent was read from, how fine and when ("wfs · to 50 m · 2026-11-13"). */
   read: string;
@@ -335,7 +339,6 @@ export function pieceRows(pieces: AvPiece[], layer: string, t: AvTheme): PieceRo
       score: p.score === null ? '' : p.score.toFixed(2),
       metrics,
       availability: p.availability ? word(t.labels.availability, p.availability) : '',
-      open: p.availability === 'open',
       extent: p.extent ? word(t.labels.extent, p.extent) : '',
       read,
       licence: p.licence ? { text: p.licence, url: p.licence_url } : null,
@@ -387,7 +390,7 @@ export function fromField(v: string | null | undefined, base: AvailableState): A
     theme: id(f[1], base.theme),
     layer: id(f[2], base.layer),
     set: id(f[3], base.set),
-    avail: f[4] === 'all' || f[4] === 'open' ? f[4] : base.avail,
+    avail: availOf(f[4], base.avail),
     opacity: f[5] !== '' && Number.isFinite(op) ? clampOpacity(op) : base.opacity,
   };
 }
@@ -433,7 +436,7 @@ export function cleanState(s: AvailableState, base: AvailableState): AvailableSt
     theme: id(s.theme, base.theme),
     layer: id(s.layer, base.layer),
     set: id(s.set, base.set),
-    avail: s.avail === 'open' || s.avail === 'all' ? s.avail : base.avail,
+    avail: availOf(s.avail, base.avail),
     opacity: Number.isFinite(s.opacity) ? clampOpacity(s.opacity) : base.opacity,
     colours,
     scales,

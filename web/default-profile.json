@@ -407,7 +407,7 @@
     "theme": "terrain",
     "layer": "score",
     "set": "best",
-    "avail": "open",
+    "avail": "free",
     "opacity": 0.85,
     "colours": {
       "palette": "viridis",

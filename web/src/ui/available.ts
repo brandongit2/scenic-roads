@@ -37,8 +37,8 @@ export class AvailableSection {
     this.on.addEventListener('change', () => A({ on: this.on.checked }));
     const avail = h('div', { class: 'seg small' });
     for (const [k, label, title] of [
-      ['open', 'Open data', 'Only data that downloads freely, with no login, request or payment'],
-      ['all', 'All data', 'Every source, also those behind a login or a request, paid or not to be had'],
+      ['free', 'Free data', 'Only data that costs nothing: it downloads freely, or after a login or a request'],
+      ['all', 'All data', 'Every source, paid and not to be had too'],
     ] as const) {
       const b = h('button', { title, onclick: () => A({ avail: k }) }, label);
       this.availBtns.push(b);
@@ -100,7 +100,7 @@ export class AvailableSection {
     const s = this.store.s.available;
     this.on.checked = s.on;
     this.body.classList.toggle('off', !s.on);
-    this.availBtns.forEach((b, i) => b.classList.toggle('on', ['open', 'all'][i] === s.avail));
+    this.availBtns.forEach((b, i) => b.classList.toggle('on', ['free', 'all'][i] === s.avail));
     this.op.sync();
     const A = (patch: Partial<AvailableState>) => this.store.set({ available: { ...this.store.s.available, ...patch } });
     // The layers, a theme's under its name when there are several; the one shown ticked.
@@ -149,10 +149,10 @@ export function piecesView(rows: PieceRow[] | 'loading' | 'failed', layer: AvLay
   }
   box.append(h('div', { class: 'ttl' }, 'Data available here'));
   if (!rows.length) {
-    box.append(h('div', { class: 'muted' }, all ? 'No source is known to have data here.' : 'No source known here downloads freely (All data shows the others).'), note());
+    box.append(h('div', { class: 'muted' }, all ? 'No source is known to have data here.' : 'No source known here is free (All data shows the others).'), note());
     return box;
   }
-  box.append(h('div', { class: 'faint av-count' }, `${rows.length} source${rows.length > 1 ? 's' : ''}, best first${all ? '' : ', those that download freely'}`));
+  box.append(h('div', { class: 'faint av-count' }, `${rows.length} source${rows.length > 1 ? 's' : ''}, best first${all ? '' : ', the free ones'}`));
   for (const r of rows) {
     const kv = (k: string, v: string) => h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, v));
     box.append(h('div', { class: `av-piece${r.painted ? ' painted' : ''}` },

@@ -63,6 +63,10 @@ pub const AVAILABILITY: [(&str, &str); 4] = [
     ("closed", "exists, not to be had"),
 ];
 
+/// The availabilities that cost nothing (of AVAILABILITY's): the data-available layers' default
+/// view, free data (crates/server/src/available.rs).
+pub const FREE: [&str; 2] = ["open", "login"];
+
 /// The producer's readers and the class each one's extents are (None: the block says, `index`,
 /// `service` or `claimed`).
 pub const METHODS: [(&str, Option<&str>); 8] = [

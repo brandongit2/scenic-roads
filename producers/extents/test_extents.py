@@ -140,13 +140,21 @@ class Score(unittest.TestCase):
 
     def test_an_unknown_metric_leaves_both_sums(self):
         d = self.DECL
-        s, vals = score.score(d, {"spacing_m": 1, "surface": "ground"})
-        self.assertIsNone(vals["year"])
+        s, vals = score.score(d, {"spacing_m": 1, "year": 2013})
+        self.assertIsNone(vals["vertical_rmse_m"])
         lead = vals["spacing_m"]
-        # The rest is the surface's value alone (its weight not shrunk by the unknown ones).
-        self.assertAlmostEqual(s, (1 - d["share"]) * lead + d["share"] * 1.0)
+        # The rest is the year's value alone (its weight not shrunk by the unknown ones).
+        self.assertAlmostEqual(s, (1 - d["share"]) * lead + d["share"] * 0.5)
         # Nothing but the spacing stated: the rest is the spacing's own value.
         self.assertAlmostEqual(score.score(d, {"spacing_m": 1})[0], lead)
+        # The kind (weight 0, a layer only) stated alone is as nothing stated, either way.
+        self.assertEqual(d["metric"]["surface"]["weight"], 0)
+        for kind in ("ground", "surface"):
+            s, vals = score.score(d, {"spacing_m": 1, "surface": kind})
+            self.assertAlmostEqual(s, lead)
+            self.assertIsNotNone(vals["surface"])
+        self.assertEqual(score.score(d, {"spacing_m": 1, "surface": "ground", "year": 2013})[0],
+                         score.score(d, {"spacing_m": 1, "surface": "surface", "year": 2013})[0])
         # No spacing, no score.
         self.assertIsNone(score.score(d, {"surface": "ground", "year": 2020})[0])
 
@@ -185,9 +193,9 @@ class Score(unittest.TestCase):
         a = {"spacing_m": 1.0, "surface": "surface", "vertical_rmse_m": 10, "year": 2000}
         b = {"spacing_m": 1.0 * d["within"] * 1.0001, "surface": "ground", "vertical_rmse_m": 0.05, "year": 2026}
         self.assertGreater(score.score(d, a)[0], score.score(d, b)[0])
-        # Within the factor the rest decides: a 1.2 m surface model below a 1.25 m bare-earth one.
-        self.assertLess(score.score(d, {"spacing_m": 1.2, "surface": "surface"})[0],
-                        score.score(d, {"spacing_m": 1.25, "surface": "ground"})[0])
+        # Within the factor the rest decides: a 1.2 m grid of 2010 below a 1.25 m one of 2024.
+        self.assertLess(score.score(d, {"spacing_m": 1.2, "year": 2010})[0],
+                        score.score(d, {"spacing_m": 1.25, "year": 2024})[0])
 
     def test_an_open_piece_wins_a_tie(self):
         """Berlin (13 Nov): the BKG's paid 1 m DGM of 2022 scores above Brandenburg's open 1 m of
