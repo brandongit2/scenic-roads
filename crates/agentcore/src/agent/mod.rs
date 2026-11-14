@@ -1353,6 +1353,9 @@ pub struct Done {
     /// Cancelled by the owner (jobrt::control::Cancel): not done, not failed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cancelled: bool,
+    /// Ended well having done nothing, as its report said (`did_nothing`: GC's, the backup's).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub empty: bool,
 }
 
 /// What the agent remembers between runs (its local folder's `state.json`).
@@ -1744,6 +1747,11 @@ pub struct Agent {
     /// serialize leave the earlier's, so the entry's time isn't theirs.)
     fc_pending: (Option<(Vec<u8>, u64)>, Option<fcarchive::Entry>),
     plan_n: u64,
+    /// When each of the lead's own planned jobs (GC, the backup, a map update…: not an offered
+    /// step's) last ended, as a plan's number would be then (`plan::next_n`): a plan begun before
+    /// it was made from what came before that run, so `lead_grants` asks for none of its jobs that
+    /// ended since (one ended, the next plan says whether there is more for it to do).
+    own_ended: BTreeMap<String, u64>,
     cancels_at: BTreeMap<String, u64>,
     /// This Mac's tiles to come in the lead's last forecast, as cache hints (room::Hints::of_tocome,
     /// task #843), with that forecast's time: the lead's from its own forecast (`take_forecast`), a
@@ -2026,6 +2034,7 @@ impl Agent {
             plan,
             cancels_at: BTreeMap::new(),
             plan_n: 0,
+            own_ended: BTreeMap::new(),
             fc_pending: Default::default(),
             host,
             app,
@@ -2740,7 +2749,7 @@ impl Agent {
     /// (crate::coord::Coordinator::ask_own, docs/pool.md §7.2), each with the slot it goes in: as
     /// many as it has slots free (`want`), packed by the same measures as a member's, the lead's own
     /// planned jobs (`jobs`) among them but those that can't start now for a reason of this agent's
-    /// own (`wait_reason`). It asks with its Mac's room: what its jobs may hold above its memory
+    /// own (`wait_reason`) and those that ended since plan `plan` began (`own_ended`). It asks with its Mac's room: what its jobs may hold above its memory
     /// floor (`build_room`), its disk room
     /// (`disk_room`) and capacity; with no job here, for one job, its disk not bounded (the owner's
     /// target is waited on as it starts, room made for it then, the disk guard
@@ -2786,6 +2795,13 @@ impl Agent {
             .filter(|j| !offered_job(self.o.the_plan, j) && self.wait_reason(j, c).is_some())
             .map(|j| j.id.clone())
             .collect();
+        // (One of them that ended since this plan began: the plan was made from what came before
+        // that run, and would grant it again at every loop until the next plan (13 Nov: GC, its work
+        // done in its first run, granted 192 times more in the 90 s its plan was held back, each run
+        // finding nothing). The next plan says whether there is more for it. Ends no plan from now
+        // on can predate are let go.)
+        self.own_ended.retain(|_, ended| *ended >= plan);
+        skip.extend(self.own_ended.keys().cloned());
         // (A catalogue while the pool's records don't reflect what's handed off (`Gates::publish`): not asked
         // for, said waiting here. Granted, it would only wait in `try_start_said`, and be granted,
         // logged and leased again every loop: 41 times in the 40 minutes of task #630. The gates as
@@ -5050,6 +5066,11 @@ impl Agent {
             // again: handed off with the job's lease (its hand-off has their saves).
             let done = self.finished_targets(k, ok);
             let r = self.slots[k].running.as_mut().unwrap();
+            // (Whether its report says it did nothing, for the repeat flag; and whether it was one of
+            // the lead's own planned jobs, which no grant runs again from a plan made before this
+            // end, `own_ended`.)
+            let empty = ok && !paused && did_nothing(&r.spec.id, &r.log);
+            let own = !offered_job(self.o.the_plan, &r.spec);
             let note = if ok {
                 // (GC's warnings, its job's note in the status: agent::gc::Report::warnings.)
                 if step_of(&r.spec.id).as_deref() == Some("gc") {
@@ -5164,7 +5185,10 @@ impl Agent {
             }
             self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
-            self.finished(&id, self.slots[k].job, &what, ok || paused, secs, note);
+            self.finished(&id, self.slots[k].job, &what, ok || paused, empty, secs, note);
+            if own {
+                self.own_ended.insert(id.clone(), plan::next_n(0, std::time::SystemTime::now()));
+            }
             self.slots[k].drain_since = None;
             self.slots[k].mem_drain = None;
             self.slots[k].mem_drain_alone = false;
@@ -5662,7 +5686,7 @@ impl Agent {
             eprintln!("agent: can't start {id}: {e:#}");
             self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
             let job = self.slots[k].job.take();
-            self.finished(&id, job, &what, false, 0, format!("couldn't start: {e:#}"));
+            self.finished(&id, job, &what, false, false, 0, format!("couldn't start: {e:#}"));
             return false;
         }
         true
@@ -7329,7 +7353,17 @@ impl Agent {
         }
     }
 
-    fn finished(&mut self, id: &str, job: Option<jobrt::jobid::JobId>, what: &str, ok: bool, secs: u64, note: String) {
+    #[allow(clippy::too_many_arguments)]
+    fn finished(
+        &mut self,
+        id: &str,
+        job: Option<jobrt::jobid::JobId>,
+        what: &str,
+        ok: bool,
+        empty: bool,
+        secs: u64,
+        note: String,
+    ) {
         // (One that ran: not one that couldn't start.)
         if secs > 0 {
             self.worked(id);
@@ -7354,7 +7388,7 @@ impl Agent {
         }
         self.mem.recent.insert(
             0,
-            Done { id: id.into(), job, what: what.into(), ok, ended: now_s(), secs, note, cancelled: false },
+            Done { id: id.into(), job, what: what.into(), ok, ended: now_s(), secs, note, cancelled: false, empty },
         );
         self.mem.recent.truncate(20);
         self.save();
@@ -7816,7 +7850,9 @@ impl Agent {
         }
         self.mem.retry.remove(&id);
         let job = self.slots[k].job;
-        self.mem.recent.insert(0, Done { id, job, what, ok: false, ended: now_s(), secs, note, cancelled: true });
+        self.mem
+            .recent
+            .insert(0, Done { id, job, what, ok: false, ended: now_s(), secs, note, cancelled: true, empty: false });
         self.mem.recent.truncate(20);
         self.save();
         let s = &mut self.slots[k];
@@ -9240,6 +9276,32 @@ fn room_past(target: u64, goal: u64) -> String {
     }
 }
 
+/// Whether job `id`'s run did nothing, as the report its log ends with says: GC's
+/// (`gc::Report::did_nothing`) and the backup's (`backup::Report::did_nothing`). Any other job, or a
+/// report that doesn't read, no.
+fn did_nothing(id: &str, log: &Path) -> bool {
+    // (The report and the timings' lines after it: some 40 lines.)
+    let report = || report_of(&jobs::tail(log, 80));
+    match step_of(id).as_deref() {
+        Some("gc") => {
+            report().and_then(|v| serde_json::from_value::<gc::Report>(v).ok()).is_some_and(|r| r.did_nothing())
+        }
+        Some("backup") => {
+            report().and_then(|v| serde_json::from_value::<backup::Report>(v).ok()).is_some_and(|r| r.did_nothing())
+        }
+        _ => false,
+    }
+}
+
+/// The last JSON object of a job's log, as `serde_json::to_string_pretty` prints one (`scenic gc`,
+/// `scenic backup`): from its last line "{" to the first "}" after it.
+fn report_of(log: &str) -> Option<serde_json::Value> {
+    let lines: Vec<&str> = log.lines().collect();
+    let start = lines.iter().rposition(|l| *l == "{")?;
+    let end = start + lines[start..].iter().position(|l| *l == "}")?;
+    serde_json::from_str(&lines[start..=end].join("\n")).ok()
+}
+
 /// A job's step: its id's first word ("unit 6/31/20": "unit", a leased task's its kind: "tail
 /// 6/1/1": "tail"; `JobName`).
 pub fn step_of(id: &str) -> Option<String> {
@@ -10294,9 +10356,9 @@ mod tests {
             j.cmd.ends_with(&["terrain-hi".to_string(), "6/18/22".into(), "6/18/23".into()])
                 && !j.cmd.contains(&"--run".to_string())
         );
-        a.finished(&j.id, None, &j.what, false, 5, String::new());
+        a.finished(&j.id, None, &j.what, false, false, 5, String::new());
         assert_eq!(redo::pending(&home).unwrap().len(), 1, "a failure keeps the ask");
-        a.finished(&j.id, None, &j.what, true, 5, String::new());
+        a.finished(&j.id, None, &j.what, true, false, 5, String::new());
         assert!(redo::pending(&home).unwrap().is_empty() && !home.join(redo::ASKS).exists());
         assert!(a.planner().redo_jobs(&root).is_empty());
     }
@@ -10961,6 +11023,94 @@ mod tests {
         assert_eq!(a.plan.view.get().n, n);
         a.stop_jobs("the test");
         a.plan.stop(Duration::ZERO);
+    }
+
+    /// Task #1392, replaying the lead of 13 Nov: its plan held back (the last took 104 s), GC planned
+    /// by it ran once in moments, and was granted again at every round until the next plan, 192
+    /// runs that found nothing. A job of the lead's own that ended isn't granted again from a plan
+    /// begun before its end, however many rounds come; a plan begun after it grants it again.
+    #[test]
+    fn an_own_job_ended_isnt_granted_again_by_the_plan_before_its_end() {
+        let d = tempfile::tempdir().unwrap();
+        let (mut a, root) = parts_agent(d.path());
+        a.round().unwrap();
+        let gc = JobSpec { cmd: vec!["/bin/sh".into(), "-c".into(), "exit 0".into()], ..own_job("gc") };
+        let n = plan_running_long(&mut a, &root, vec![gc]);
+        let runs = |a: &Agent| a.mem.recent.iter().filter(|d| d.id == "gc").count();
+        // Rounds while the next plan is held: its one run, then none.
+        let t = Instant::now();
+        while runs(&a) == 0 && t.elapsed() < Duration::from_secs(30) {
+            a.round().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(runs(&a), 1, "gc never ran");
+        for _ in 0..20 {
+            a.round().unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(runs(&a), 1, "gc granted again from plan {n}, made before its end");
+        assert!(a.slots.iter().all(|s| s.running.is_none()), "nothing runs");
+        assert_eq!(a.plan.view.get().n, n, "the plan before its end is still the last");
+        // A plan begun after its end, still offering it: granted again.
+        let later = plan::next_n(n, std::time::SystemTime::now());
+        a.coord.as_ref().unwrap().set_plan(later);
+        let view = a.plan.view.get();
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let r = store::nasfs::NasRoot::local_for_test(&root);
+        let mut w = Vec::new();
+        let got = a.lead_grants(&view.jobs, later, &c, &r, &mut w);
+        assert_eq!(got.iter().map(|g| g.1.id.as_str()).collect::<Vec<_>>(), ["gc"], "{w:?}");
+        assert!(a.own_ended.is_empty(), "an end no plan from now on predates, let go");
+        for (k, _, _) in got {
+            a.end_lease(k, Outcome::Interrupted, &[], "the test");
+        }
+        a.stop_jobs("the test");
+        a.plan.stop(Duration::ZERO);
+    }
+
+    /// Task #1392: a GC or backup run's report, as its log ends with it (the shape of the lead's
+    /// gc.log and backup.log of 13 Nov: the report, then the timings), says whether it did nothing.
+    #[test]
+    fn a_duty_run_did_nothing_by_its_report() {
+        let d = tempfile::tempdir().unwrap();
+        let log = |name: &str, report: &serde_json::Value| {
+            let p = d.path().join(name);
+            let text = format!(
+                "=== run of {name} ===\nprogress: 0/2 steps\n{}\ntimings: {name} done in 221 ms, ok\ntimings: (unaccounted) 213 ms\n",
+                serde_json::to_string_pretty(report).unwrap()
+            );
+            std::fs::write(&p, text).unwrap();
+            p
+        };
+        let gc_run = |chunks: usize, swept: &[&str], paused: bool| {
+            let r = gc::Report {
+                chunks,
+                removed: chunks * 200,
+                swept: swept.iter().map(|s| s.to_string()).collect(),
+                paused,
+                ..Default::default()
+            };
+            serde_json::to_value(r).unwrap()
+        };
+        assert!(did_nothing("gc", &log("gc", &gc_run(0, &[], false))));
+        assert!(!did_nothing("gc", &log("gc", &gc_run(8, &[], false))), "it removed 1,600");
+        assert!(!did_nothing("gc", &log("gc", &gc_run(0, &["duties"], false))), "it swept");
+        assert!(!did_nothing("gc", &log("gc", &gc_run(0, &[], true))), "it stopped at a safe point");
+        let backup = |written: Option<&str>| {
+            serde_json::to_value(backup::Report {
+                files: 1919,
+                written: written.map(str::to_string),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        assert!(did_nothing("backup", &log("backup", &backup(None))));
+        assert!(!did_nothing("backup", &log("backup", &backup(Some("2026-11-13")))));
+        // (Another job's report, a log with none, or one cut short: not said empty.)
+        assert!(!did_nothing("unit 6/1/1", &log("unit", &gc_run(0, &[], false))));
+        std::fs::write(d.path().join("cut"), "{\n  \"chunks\": 0,\n").unwrap();
+        assert!(!did_nothing("gc", &d.path().join("cut")));
+        assert!(!did_nothing("gc", &d.path().join("none")));
     }
 
     /// Task #871 step 6: a hung NAS (every call) holds only NAS work: the plan's thread in it, a

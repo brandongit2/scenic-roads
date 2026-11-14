@@ -129,7 +129,9 @@ impl Lead for TheLead {
     }
 }
 
-#[derive(Debug, Default, Serialize)]
+/// What a run did, printed as its job's last lines (read back by the agent: `did_nothing`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Report {
     pub dry_run: bool,
     /// It yielded at a safe point (the build pausing, or a job held back for the NAS): what it did
@@ -178,6 +180,14 @@ pub struct Report {
     /// What it passed over and why (the agent's status says them as the job's note).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+}
+
+impl Report {
+    /// Whether the run did nothing: no chunk of the queue taken, no sweep run, not stopped at a
+    /// safe point.
+    pub fn did_nothing(&self) -> bool {
+        !self.dry_run && !self.paused && self.chunks == 0 && self.swept.is_empty()
+    }
 }
 
 /// Top folders no chunk or walk takes a file of, whatever the map names (`sources/` but its

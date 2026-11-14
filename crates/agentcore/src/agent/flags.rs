@@ -60,6 +60,10 @@
 //!   stuck by its own stillness): a catalogue that should have gone out and didn't (its job
 //!   never started: the lead's slots full, its plan held). A catalogue merely old, nothing new to
 //!   list, isn't stale.
+//! - **Repeat** (`repeat`): a run of the lead's GC or backup that ended well having done nothing
+//!   (its report: `Done::empty`) and began within `REPEATS`' time of that duty's run before it, while
+//!   it is that recent: the duty planned again with nothing for it to do (13 Nov: GC granted 192
+//!   times in 90 s after a run that removed 1,427 files, each run removing none).
 //!
 //! `factor` (stuck's, slow's and stale's) is the pool's setting (`overdue-factor`, `scenic pool
 //! set` or the build page; crate::coord::asks::OVERDUE_DEFAULT while unset). A step none of whose jobs that ended well
@@ -72,7 +76,7 @@
 use super::{Status, Waiting};
 use serde::{Deserialize, Serialize};
 
-/// A flag: its kind ("idle", "stuck", "slow", "stale"), the Mac it's about and what it says.
+/// A flag: its kind ("idle", "stuck", "slow", "stale", "repeat"), the Mac it's about and what it says.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Flag {
     pub kind: String,
@@ -81,7 +85,8 @@ pub struct Flag {
 }
 
 impl Flag {
-    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "slow: …", "stale: …".
+    /// Its line, as `scenic status` and the health check print it: "idle: …", "stuck: …", "slow: …",
+    /// "stale: …", "repeat: …".
     pub fn line(&self) -> String {
         format!("{}: {}", self.kind, self.said)
     }
@@ -176,7 +181,43 @@ pub fn of(
         runs.iter().filter(|r| stuck(st, std::slice::from_ref(r), factor).is_empty()).cloned().collect();
     v.extend(slow(st, &moving, factor));
     v.extend(stale(st, runs, factor, now));
+    v.extend(repeat(st, now));
     v
+}
+
+/// The lead's duties whose runs say whether they did anything (`Done::empty`), each with how soon
+/// after its run before one that did nothing is a repeat: GC's queue frees a name its grace after
+/// nothing holds it, so a run within that of the last one finds what that one left; the backup is
+/// planned a day after its last run.
+pub const REPEATS: [(&str, u64); 2] = [("gc", super::gcqueue::GRACE_S), ("backup", super::backup::EVERY_S)];
+
+/// The repeat flags (the module's doc): one per duty of `REPEATS` whose newest run did nothing and
+/// began within its time of the run before, while that newest run is within it of `now`.
+pub fn repeat(st: &Status, now: u64) -> Vec<Flag> {
+    let mut out = Vec::new();
+    for (step, within) in REPEATS {
+        // (Its runs as the status keeps them, newest first.)
+        let runs: Vec<&super::Done> =
+            st.recent.iter().filter(|d| !d.cancelled && super::step_of(&d.id).as_deref() == Some(step)).collect();
+        let (Some(last), Some(before)) = (runs.first(), runs.get(1)) else { continue };
+        let gap = last.ended.saturating_sub(last.secs).saturating_sub(before.ended);
+        let ago = now.saturating_sub(last.ended);
+        if !last.empty || gap > within || ago > within {
+            continue;
+        }
+        let empty = runs.iter().filter(|d| d.empty).count();
+        out.push(Flag {
+            kind: "repeat".into(),
+            mac: st.host.clone(),
+            said: format!(
+                "{step} ran again {} after its run before and did nothing, the last {} ago ({empty} of its last {} runs did nothing): planned again with nothing for it to do",
+                if gap < 60 { format!("{gap} s") } else { span(gap) },
+                span(ago),
+                runs.len()
+            ),
+        });
+    }
+    out
 }
 
 /// The stale flag (the module's doc): at most one, the lead's.
@@ -722,6 +763,57 @@ mod tests {
         assert!(stale(&st, &[], 3.0, now).is_some());
     }
 
+    /// Task #1392, the lead's runs of 13 Nov as its status keeps them (newest first): GC's run that
+    /// removed 1,427 files at 21:37:45 (10 s), then runs of 0.1-0.3 s a second apart, each doing
+    /// nothing. Flagged as a repeat while recent; a run that did something, one an hour after the
+    /// last, or one of long ago, isn't.
+    #[test]
+    fn an_empty_duty_run_soon_after_the_last_is_a_repeat() {
+        let now = 1_794_623_970;
+        let run = |id: &str, ended: u64, secs: u64, empty: bool| super::super::Done {
+            job: None,
+            id: id.into(),
+            what: id.into(),
+            ok: true,
+            ended,
+            secs,
+            note: String::new(),
+            cancelled: false,
+            empty,
+        };
+        let mut st = Status { host: "mini".into(), ..Default::default() };
+        // (The first run, then 19 empty ones, a second apart: the status keeps 20.)
+        st.recent = (0..19).map(|i| run("gc", now - 2 - i, 0, true)).collect();
+        st.recent.push(run("gc", now - 21 - 10, 10, false));
+        let f = repeat(&st, now);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(
+            f[0].line(),
+            "repeat: gc ran again 1 s after its run before and did nothing, the last 1 min ago (19 of its last 20 runs did nothing): planned again with nothing for it to do"
+        );
+        // (In the lead's flags with the others.)
+        let plan = crate::agent::seam::for_tests();
+        assert!(of(plan, &st, &[], &[], 3.0, now).iter().any(|f| f.kind == "repeat"));
+        // The first run alone, which removed what it found: no flag.
+        st.recent = vec![run("gc", now - 31, 10, false)];
+        assert!(repeat(&st, now).is_empty());
+        // An empty run past GC's grace after the one before: no repeat.
+        st.recent = vec![run("gc", now, 0, true), run("gc", now - crate::agent::gcqueue::GRACE_S - 10, 10, false)];
+        assert!(repeat(&st, now).is_empty());
+        // One within it, flagged while it is recent; not once it is older than that.
+        st.recent = vec![run("gc", now - 100, 0, true), run("gc", now - 200, 10, false)];
+        assert_eq!(repeat(&st, now).len(), 1);
+        assert!(repeat(&st, now + crate::agent::gcqueue::GRACE_S).is_empty());
+        // The backup run again the same day, doing nothing (10 Nov: 206 runs in 2 min): a repeat.
+        st.recent =
+            vec![run("backup", now, 0, true), run("backup", now - 10, 8, false), run("unit 6/1/1", now, 60, false)];
+        assert!(repeat(&st, now).iter().any(|f| f.said.starts_with("backup ran again")));
+        // A day after the last, the next day's backup with nothing new: none.
+        st.recent =
+            vec![run("backup", now, 7, true), run("backup", now - 7 - super::super::backup::EVERY_S - 60, 61, false)];
+        assert!(repeat(&st, now).is_empty());
+    }
+
     /// The health check's lines: the flags, the pool's warnings, the failures since the stamp alone.
     #[test]
     fn look_says_flags_warnings_and_failures_since() {
@@ -735,6 +827,7 @@ mod tests {
             secs: 60,
             note: "reading\nError: the NAS went away\n".into(),
             cancelled: false,
+            empty: false,
         };
         let mut st = Status { host: "mini".into(), beat: now - 5, out_of_touch_s: 300, ..Default::default() };
         st.flags.push(Flag { kind: "idle".into(), mac: "m4".into(), said: "m4 has a slot free".into() });

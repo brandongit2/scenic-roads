@@ -43,7 +43,13 @@ pub struct Entry {
 /// A day's list: path (relative to the NAS root) → entry.
 pub type Manifest = BTreeMap<String, Entry>;
 
-#[derive(Debug, Default, Serialize)]
+/// How often the lead's plan has the backup run (crate::agent::plan): a day after its last run that
+/// ended well.
+pub const EVERY_S: u64 = 86400;
+
+/// What a run did, printed as its job's last lines (read back by the agent: `did_nothing`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Report {
     pub files: usize,
     pub new_blobs: usize,
@@ -52,6 +58,13 @@ pub struct Report {
     pub written: Option<String>,
     pub days_removed: usize,
     pub blobs_removed: usize,
+}
+
+impl Report {
+    /// Whether the run changed nothing: no day written, none pruned.
+    pub fn did_nothing(&self) -> bool {
+        self.written.is_none() && self.days_removed == 0 && self.blobs_removed == 0
+    }
 }
 
 fn mtime_s(md: &std::fs::Metadata) -> u64 {

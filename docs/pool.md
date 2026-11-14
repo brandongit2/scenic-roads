@@ -1132,7 +1132,12 @@ target per z6 tile, the lead's, planned before every other job (docs/inputs.md Â
   can't, the lead is granted nothing more until its jobs end, then that job before any other
   (`own_cold_waits`), so offered work never starves it. A
   planned job that can't start for a reason of the agent's own (a failure's wait, the proxy not
-  up, the memory guard's hour: `wait_reason`) isn't asked for. One that fails (or the memory guard
+  up, the memory guard's hour: `wait_reason`) isn't asked for, nor one that ended since its plan
+  began (`Agent::own_ended`): that plan was made from what came before the run, and a plan comes
+  no sooner after the last than that one took, so a job of moments would be granted at every round
+  until then (task #1392: GC granted 192 times in the 90 s after a run that removed 1,427 files,
+  each run removing none; the backup up to 206 times an evening); the next plan says whether there
+  is more for it. One that fails (or the memory guard
   stops) ends its lease failed (`finish_failed`): its targets are kept from the lead an hour,
   doubling each time, as a member's failed work is.
 - **Packing** (`coord`'s `pack`): a Mac may hold several leases. An ask says how many jobs it would
@@ -2637,6 +2642,12 @@ asks passed on are one-shot: the lead's store keeps them (below).
     (`CATALOGUE_CAP_S` and `CATALOGUE_EVERY_S`, 11 min), counted from the last map update's going out
     where later, with no `catalog` job leased (that one is stuck by its own stillness). A
     map merely old, nothing new to list, isn't stale.
+  - *repeat*: the lead's newest run of GC or of the backup ended well having done nothing (its
+    report, the job's last lines: GC no chunk of its queue taken and no sweep run, the backup no
+    day written or pruned; `Done::empty`) and began within that duty's time of its run before
+    (`flags::REPEATS`: GC's queue's grace, an hour, as a name is due that long after nothing holds
+    it; the backup's day), flagged while that run is as recent (task #1392). A duty planned again
+    with nothing for it to do; the next day's backup finding nothing new isn't one.
   - The factor (stuck's, slow's and stale's) is the pool's setting `overdue-factor` (kept by the lead; `scenic pool set
     overdue-factor <times>|off`, or the build page's Settings, the pool's box), 1.1 to 100; not
     set, 3 (`OVERDUE_DEFAULT`, the owner's call of 4 Nov).

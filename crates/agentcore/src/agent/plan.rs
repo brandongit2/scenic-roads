@@ -1286,7 +1286,7 @@ impl Planner {
         out.extend(rest);
         // Daily: the user's folders backed up, and the map server's profiles in the app's folder
         // (the agent's home is inside it), replaced files removed.
-        if self.due("backup", Duration::from_secs(86400)) {
+        if self.due("backup", Duration::from_secs(super::backup::EVERY_S)) {
             let mut cmd = vec![
                 s(&me),
                 "backup".into(),
