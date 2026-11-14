@@ -1837,7 +1837,8 @@ and `bathymetry` and `buildings` (planned, when their research is done).
 **Status.** Built: the producer, its tests, the declarations and the pieces of the sources in the
 tables at this section's end (`producers/extents/`), and the unit `extents` that checks them
 (crate::inputs::extents, the checks below; task #1346); every region's sources: North America's and
-Europe's (task #1350), the surface models of both (task #1370), Asia's, Latin America's and the
+Europe's (task #1350), the surface models of both (task #1370), the point clouds and the sources
+#1370 left (task #1379), Asia's, Latin America's and the
 Caribbean's, Oceania's, Africa's, the polar south's and the worldwide models not declared before
 (task #1350's third run); the step `available` that draws the pieces' tiles, and the server's
 score, layers and click (docs/steps.md §14; task #1347); the app's layers (task #1348). Planned:
@@ -1934,7 +1935,7 @@ a new source of a kind it knows is a new declaration, no code):
 | `wfs` | a WFS feature type (GetFeature, paged by `startIndex`, every feature counted, those without geometry too; as GeoJSON, or GML where the server answers only that, the `format` asked for; `version` 2.0.0 or a 1.x's; `latfirst = true` where the answers put latitude first, which servers naming one CRS do differently) | `index` or `service` |
 | `file` | a published index file fetched whole, its size checked first: GeoJSON (a collection, or a lone Feature: LINZ's capture areas) or GML (read as `wfs`'s answers are; a position's z and m dropped), KML (its Placemarks' polygons), a GeoPackage (its features table, `layer` naming one of several; its CRS from the package's own table), or a zip holding a shapefile (its text in `encoding`, else its .cpg's, else UTF-8) or one of those (a KMZ; `member`, a part of its name, picking one of several); `urls`, several such files read in turn; or a catalogue's JSON answer that isn't GeoJSON (`records`, the dotted path of its list of records; `footprint`, the dotted path in each to its GeoJSON outline, a geometry, Feature or FeatureCollection, its polygons one feature; its properties the record's other values by their dotted paths, `Dataset.identifier.value`: OpenTopography's otCatalog) | `index` or `service` |
 | `listing` | a bucket's listing, a page's links (`href` in any case), a text file of names (gzipped too, or the file a download page's meta refresh sends on to, that page not cached: its signed link expires), a zip's member names (its central directory by range request, none of its members read; with `prefix`, each zip's in a bucket's folder; with `links`, each zip's a page links, FABDEM's folder) or a spreadsheet's rows (xlsx, cells joined by `;`, a date-formatted cell as its ISO date; `sheet`) (`list`), of `url` or of each of `urls` in turn, each name georeferenced by a declared `pattern`: its groups `x`, `y`, and `ew`, `ns` (`unit`, `size`, `corner`, `crs`); or `ref`, a national grid's lettered reference (`grid`: `osgb`, `irish`; NS16NE, NG2004: its square and side read from it; `jp-kihonzu`, Japan's national base map sheets in the plane rectangular zone of `crs` (JGD2011 or JGD2000): 09LD35 a 1:5,000 sheet, 4 by 3 km, from the zone, the 1:50,000 sheet's row and column letters, then its quarter (1–4), its 1:5,000 row and column, the 1:2,500 quarter, the 1:1,000 row and column letter, or the 1:500 row and column; `jp-kihonzu-1250`, the same with four digits read as map level 1250, a 1:2,500 sheet's quarter's quarter, 1,000 by 750 m; a sheet of another zone than the block's refused); or a nested sheet nomenclature's digits (`digits`, each a group's steps in x and y from `origin`, `cols` for a quadrant's digit). A tile listed twice is one; one tile's files of different readings (a survey and its successor) are two | `index` |
-| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS) | `files` |
+| `raster` | each file's header and an overview by range request (`urls`, a listing's names as `listing` reads them that `pattern` matches, or a STAC collection's items' `asset`): its bounds, its cell (the reading `res_m`) and where it has data, at the coarsest overview or, with `mask_m`, the coarsest whose pixels are no wider (the finest it has where none is that fine, never the full resolution: a file with no overviews stops the run, its mask a whole download, for `pattern` to leave out, unless its own cells are no finer than `mask_m`); the overview's pixel is the piece's `grain_m`. A coverage service's answer at a coarse scale (a WCS GetCoverage with a small `SCALEFACTOR` or a coarse grid, or an ArcGIS image service's `exportImage`, its spacing then declared as a constant) is such a file, read whole where the server ignores ranges; `nodata`, a value that is no data too, where a service answers its no data as one (0 in GA's 5 m DEM's WCS, the Basque Government's WCS, and Hawaii's and Illinois's image services' exports) | `files` |
 | `none` | nothing: a piece with no extent, and `why` | `unknown` |
 
 Each reads through one fetcher: the app's User-Agent, one request at a time with a pause, TLS
@@ -2239,23 +2240,56 @@ EPSG:3035, against the tiles' count times their area or the publisher's figure.
 
 **Not obtained** (surface models, 13 Nov): Saxony's DOM2 (its DOM1, coarser), Baden-Württemberg's
 nDOM (heights above ground), Bavaria's DOM mesh (not a grid), Brandenburg's TDOM (no download);
-Schleswig-Holstein's DOM1 (no feed found); Hessen publishes no bDOM; Trento's, Emilia-Romagna's (its
-WCS answers 401), Tailte Éireann's, Madeira's, Andorra's, Strasbourg's (nDSMs only) and the Litto3D
-surveys' (none published); La Rioja's (403s) and Aberdeen's 2025 (listed, not in the bucket); the
-Basque Country's MDS (listed: its WCS answers 0 outside the Community with no nodata stated, which
-`raster` can't take as no data); Bern's, Schaffhausen's, Fribourg's and Florence's city DSMs (not
-read); the other point clouds, not yet declared, though the rule above declares them (a later run's:
-LiDAR HD's, Scotland's, Portugal's, AHN's, Luxembourg's and Brussels' LAZ, and those the Länder's,
-Tirol's and Slovakia's notes name as their grids' source); Czechia's DMP 1G (a TIN, no spacing
-stated, withdrawn from 2027); Finland's (no DSM published), Croatia's, Hungary's, Moldova's and
-Lithuania's (none or no grid stated); Vorarlberg's 2024 re-flight (no outline); Kärnten's (its host
-unreachable); the older editions of a model whose newer one covers its area (the ICGC's 2018–23
-correlation models, Geneva's 2023 MNS). In North America: Quebec publishes no DSM (its lidar
-products are the DTM, a canopy height model and the point clouds, declared); the US inventory's
-IfSAR surveys are 3DEP's Alaska IfSAR (its DSM declared); the states' own DSMs (Illinois's,
-Montana's, Utah's, Hawaii's, the District of Columbia's) and NEON's sites, of the same surveys as
-3DEP's 1 m DEM, are for a later run; NRCan's CDEM and MRDEM-30 (ground models, 20 and 30 m) aren't
-declared.
+Schleswig-Holstein's DOM1 (none published: the download portal's product pages hold the bDOM and the
+DGM1 only, its mass-download GeoJSON for a DOM1 answers empty, the open-data portal lists the bDOM and
+DGM1, the GDI-SH ATOM folder answers 404; the BKG's DOM1, claimed, covers the Land); Hessen publishes
+no bDOM; Trento's, Emilia-Romagna's (its WCS answers 401), Tailte Éireann's, Madeira's, Andorra's,
+Strasbourg's (nDSMs only) and the Litto3D surveys' (none published); La Rioja's (403s) and
+Aberdeen's 2025 (listed, not in the bucket); Czechia's DMP 1G (a TIN, no spacing stated, withdrawn
+from 2027); Finland's (no DSM published), Croatia's, Hungary's, Moldova's and Lithuania's (none or
+no grid stated); Vorarlberg's 2024 re-flight (no outline); Kärnten's (its host unreachable); the
+older editions of a model whose newer one covers its area (the ICGC's 2018–23 correlation models,
+Geneva's 2023 MNS, the Basque MDS's 2008 and 2012 editions, Florence's 2007 and 2017 models). In
+North America: Quebec publishes no DSM (its lidar products are the DTM, a canopy height model and
+the point clouds, declared); the US inventory's IfSAR surveys are 3DEP's Alaska IfSAR (its DSM
+declared).
+
+**Point clouds, and the sources #1370 left** (read 14 Nov 2026, task #1379, on the M1): the point
+clouds of sources whose grids are declared above, each a block of its declaration, and the surface
+and ground models #1370 left. A point cloud states no `surface`; its spacing is 1/√ of the density
+its publisher states for the product (a nominal figure: a density per tile, where an index gives
+one, would cut a year's outline into many, each costing the step its tiles, docs/steps.md §14).
+Where its tiles are its grid's, it is read as its grid is (the same reader, address, fields,
+grouping and tolerance), so its outline is the grid's, byte for byte, and costs the step nothing.
+Areas in EPSG:3035.
+
+| Declaration: blocks | Product, spacing | Class | Read by; area |
+|---|---|---|---|
+| `ign-lidar-hd`: `nuage` | LiDAR HD's classified point cloud (LAZ/COPC), 10 pulses/m² by the programme's specification: 0.3162 m, by the year its flights ended | `index` | the MNT's WFS index read alike (every tile links its cloud, `url_npl`): its six outlines the MNT's; 524,956 km² |
+| `nl-ahn`: `ahn4-points`, `ahn5-points`, `ahn6-points` | AHN's puntenwolken, at least 10 points/m²: 0.3162 m | `index` | AHN4's on the DTM feed's 1,373 sheets (its own files the same sheets); AHN5's and AHN6's by their `Puntenwolk` links' years: AHN4's and AHN5's outlines the DTM's, AHN6's its own (its sheets over water have a cloud and no DTM: 27,033 km² against the DTM's 26,241) |
+| `gb-sct-lidar`: 11 `-points` | each survey's LAZ, 1 point/m² (Phases I and II), 4 (Phases III to VI, the Outer Hebrides), 16 (the Outer Hebrides' settlements, Orkney), 10 (the national programme, the coastal survey) | `index` | the bucket's `laz/` names: nine outlines their DTMs' (the phases' and the Outer Hebrides' DTM extents are their clouds' tiles already); the national programme's 7,182 tiles (its DTM's 5,933) and Orkney's 1,643 their own |
+| `pt-dgt-lidar`: `laz`; `pt-ac-lidar`: `laz` | mainland Portugal's LAZ, 10 points/m² on average (login: claimed), 0.3162 m; the Azores' LAZ, 15 points/m², 0.2582 m (login: claimed) | `claimed` | the DGT's STAC collections LAZ (91,193 items, 90,225 km²: each item's footprint its file's own, tighter than the MDT's tiles' 90,638; 549 requests, 2.0 GB, 17 min on the Mac mini) and ACORES-LAZ (1,820 items, 2,490 km²: the items' footprints, tighter than the MDE's 2,913) |
+| `luxembourg-lidar`: `points` | the 2024 classified point cloud (COPC), "> 30 pts/m² émis": 0.1826 m | `index` | `file`: its tile index (lidar2024-ta.gpkg, 10,905 500 m tiles): 2,726 km² (the MNT's mask 2,633) |
+| `be-bru-urbis`: `dsm`, `points` | UrbIS's 0.5 m DSM and its LAS point cloud (67 points/m² on average: 0.1222 m), 2021 | `index` | each one's ATOM feed: the DTM's 216 tiles, its outline |
+| `dc-lidar`: `dsm`, `points` | the District's 2024 1 m DSM and its QL1 point cloud (8 points/m²: 0.3536 m) | `claimed` | the District, as its DTM is |
+| `de-bb-dgm1`: `laz`, `laz-2008-2012` | Brandenburg's ALS LAZ (about 5 points/m²: 0.4472 m), 2017–2025; its 2008–2012 scan (ordered: claimed; "Räumliche Auflösung 1.00 m" stated, no density) | `index`; `claimed` | the actuality service's `als_single` (13,087 tiles, 13,094 km²; by year, eight outlines the DGM's) and `als_2008_2012_single` (28,439 tiles, 28,452 km²) |
+| `de-sn-dgm1`: `lsc`; `de-sl-dgm1`: `laz`; `de-th-dgm1`: `laz`; `de-ni-dgm1`: `punktwolke` | Sachsen's Laserscandaten (at least 4 points/m², the GeoSN's tender: 0.5 m; sold: claimed); Saarland's 2025 LAZ (no density stated: no score); Thüringen's (4 points/m²; claimed, its index unreachable); Niedersachsen's (at least 4 points/m², the LGLN's: 0.5 m; sold: claimed) | `claimed`; `index` | the LSC layer's 4,981 tiles by `Stand` (19,932 km², the DOM1's outlines); the share's LIDAR zips' members (2,775 tiles, the DGM1's); the Land; the DGM1's STAC items by lot (70,418 km²): each its grid's outlines |
+| `at-tirol-dgm`: `punktwolke`; `sk-lls`: 48 `points*` | Tirol's second scan (at least 8 ground points/m²: 0.3536 m; on request for a fee: claimed); Slovakia's classified clouds by lot, each lot's stated last-return density (15–80 points/m²; handed over offline: claimed) | `claimed` | the flight-year areas (13,252 km²); the lot shapefiles (58 lots): their grids' outlines |
+| `es-pv-mdt`: `mds-1m` | the Basque Government's 1 m MDS (no year stated) | `files` | `raster`: its WCS 1.0.0 GetCoverage at 100 m cells, `nodata = 0`: 7,831 km² (the Community's claim 7,062: the Treviño enclave and the border strips are in the data) |
+| `nrcan-mrdem` (own): `dtm`, `dsm` | NRCan's MRDEM-30, 30 m DTM and DSM | `files` | `raster`: the STAC item's DTM COG's mask at about 2 km, both blocks' (the DSM's mask 0.005 % larger, read apart, would cost an outline of its own): 14.2 million km², Hudson Bay's sea in it |
+| `us-ut-lidar`, `us-mt-lidar` (own) | Utah's first-return DSMs by project, cell and year; Montana's Lidar Inventory DSMs (1 m and 3 ft, each mosaic's cell from its DSM.tfw; five on request: claimed) | `service`; `claimed` | `arcgis`: UGRC's LiDAR Extents layer (46 projects, 178,274 km²); the inventory's project outlines (141, 360,807 km² against its SquareMiles' 360,949) |
+| `us-il-dsm`, `us-hi-dsm` (own) | Illinois's county DSMs by cell (1, 1.5, 2 ft) and year (2017–2024); Hawaii's statewide 1 m DSM and Maui's 2019 1 ft | `files` | `raster`: each image service's `exportImage` (Illinois's locked to each group's county rasters, 250 m; Hawaii's at 200 and 50 m), `nodata = 0`: 143,848 km² (the state 143,800); 4,751 and 767 km² |
+| `us-neon-aop` (own) | NEON's AOP DTM and DSM, 1 m, and point clouds (no density stated: no score), by flight box (a login since June 2026: claimed) | `claimed` | `file`: NEON's AOP flight boxes, priority 1, of the 59 sites with data (51 boxes, 6,986 km²), one outline for all three |
+| `ch-sh-dom`, `ch-be-bern-dom`, `ch-fr-lidar` (own) | Schaffhausen's 0.5 m DOM of 2013 (RMSE 0.15 m); Bern's 0.25 m DOM of 2023 (map.bern.ch answers 403); Fribourg's MNS of 2016 (on request, no cell stated: no score) | `claimed` | Natural Earth's cantons; Bern's municipality in swissBOUNDARIES3D (the geo.admin API's `find`) |
+| `it-fi-lidar` (own) | Florence's 2023 MDS and MDT, 0.5 m | `index` | `listing`: the two zips' 485 500 m tile names: 121.25 km², one outline |
+
+**Not obtained** (point clouds, 14 Nov): Thüringen's point-cloud index (the download host still
+answers its outage page; claimed); Saxony's metadata records (GeoMIS's CSW sends to a login,
+gdk.gdi-de.org's rejects the request) and any open download of its point cloud (its layer's links
+are empty); Saarland's density (none stated); Tirol's first scan (2006–10, its second covers the
+Land); NRCan's CDEM (MRDEM-30 replaces it); Utah's and Montana's point clouds (Utah's extents layer
+lists them, Montana's are on request), the Basque Country's 2017 LAZ (folders per 1:50,000 sheet)
+and Solothurn's, Aargau's, Lausanne's and the canton of Bern's DSMs, not yet read.
 
 **Oceania, Africa and the polar south** (read 13 Nov 2026, task #1350; REMA's indexes on the Mac
 mini, the rest on the M1): 39 declarations, 1,322 pieces, 1,285 with an extent. Areas are checked in

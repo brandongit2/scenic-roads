@@ -1069,14 +1069,17 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
   South Pole.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
-  On the 13,245 pieces with an extent of 13 Nov (producers/extents/terrain/, every region's 281
+  On the 13,773 pieces with an extent of 14 Nov (producers/extents/terrain/, every region's 291
   sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, on the Mac
-  mini): 95 s, a peak resident set of 2.7 GB, 1,090,652 tiles in packs of 794 MB (z12's 654,557,
-  494 MB); 1,223 tiles have more than 256 sets (two bytes a pixel), the most 11,716. A tile is
+  mini): 95 s, a peak resident set of 2.75 GB, 1,101,155 tiles in packs of 810 MB (z12's 661,427,
+  503 MB); 1,254 tiles have more than 256 sets (two bytes a pixel), the most 11,716. A tile is
   stored only where an outline crosses it, so the cost is the outlines' length at z12, whatever a
-  piece's grain: GEDTM30's mask (a 1.8 km grain) alone makes 169,337 tiles no other outline
+  piece's grain: GEDTM30's mask (a 1.8 km grain) alone makes 169,116 tiles no other outline
   crosses. Outlines that coincide cost once: TanDEM-X's three pieces, MERIT's and DLR's PolarDEM
-  are claimed over `cop-dem`'s GLO-90 tiles, so they make no tile of their own.
+  are claimed over `cop-dem`'s GLO-90 tiles, so they make no tile of their own; a point cloud read
+  as its grid is (LiDAR HD's, the Länder's, Slovakia's, most of Scotland's), or a source's surface
+  model read from its ground model's index (MRDEM-30's DSM), has the grid's outline, so task
+  #1379's 528 pieces added 10,503 tiles (16 MB).
 - **Extents from the build's own data (the owner's rule A.1; planned, task #1349).** A piece
   block naming the elevation dataset that holds its files (`dataset`, §6.11) will have its extent
   taken from that dataset's mask wherever the dataset is accepted (class `mask`), its listed extent
