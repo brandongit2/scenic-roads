@@ -190,7 +190,7 @@
     "surface": "surface",
     "year": 2020
    },
-   "score": 0.6730425228571963,
+   "score": 0.67663226644694,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 0.0,
@@ -204,7 +204,7 @@
     "surface": "ground",
     "year": 2020
    },
-   "score": 0.5755472207325473,
+   "score": 0.5791369643222908,
    "values": {
     "spacing_m": 0.5752574989159953,
     "surface": 1.0,
@@ -218,7 +218,7 @@
     "surface": "surface",
     "year": 2020
    },
-   "score": 0.7273954665132037,
+   "score": 0.7309852101029473,
    "values": {
     "spacing_m": 0.7302046884880938,
     "surface": 0.0,
@@ -232,7 +232,7 @@
     "surface": "ground",
     "year": 2020
    },
-   "score": 0.7230519186078981,
+   "score": 0.7266416621976417,
    "values": {
     "spacing_m": 0.7257724967479859,
     "surface": 1.0,
@@ -246,7 +246,7 @@
     "surface": "surface",
     "year": 2010
    },
-   "score": 0.753752395970899,
+   "score": 0.7522139344324374,
    "values": {
     "spacing_m": 0.7597159456531937,
     "surface": 0.0,
@@ -260,7 +260,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.7478205128205128,
+   "score": 0.7534615384615384,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -274,7 +274,7 @@
     "surface": "ground",
     "year": 2005
    },
-   "score": 0.742948717948718,
+   "score": 0.7388461538461538,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -288,7 +288,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.6740681638828373,
+   "score": 0.6797091895238629,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 1.0,
@@ -332,7 +332,7 @@
     "surface": "ground",
     "year": 2005
    },
-   "score": 0.742948717948718,
+   "score": 0.7388461538461538,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -346,7 +346,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.5765728617581882,
+   "score": 0.5822138873992139,
    "values": {
     "spacing_m": 0.5752574989159953,
     "surface": 1.0,
@@ -403,7 +403,7 @@
     "surface": "ground",
     "year": 2024
    },
-   "score": 0.7478205128205128,
+   "score": 0.7534615384615384,
    "values": {
     "spacing_m": 0.75,
     "surface": 1.0,
@@ -417,7 +417,7 @@
     "surface": "ground",
     "year": 2021
    },
-   "score": 0.8208036309889575,
+   "score": 0.8249061950915216,
    "values": {
     "spacing_m": 0.8252574989159953,
     "surface": 1.0,
@@ -444,7 +444,7 @@
     "surface": "ground",
     "year": 2008
    },
-   "score": 0.8174702976556242,
+   "score": 0.8149061950915216,
    "values": {
     "spacing_m": 0.8252574989159953,
     "surface": 1.0,
@@ -471,7 +471,7 @@
     "surface": "ground",
     "year": 2021
    },
-   "score": 0.8208036309889575,
+   "score": 0.8249061950915216,
    "values": {
     "spacing_m": 0.8252574989159953,
     "surface": 1.0,
@@ -513,7 +513,7 @@
     "surface": "surface",
     "year": 2022
    },
-   "score": 0.6735553433700169,
+   "score": 0.6781707279854015,
    "values": {
     "spacing_m": 0.6747425010840047,
     "surface": 0.0,
@@ -542,7 +542,7 @@
     "surface": "surface",
     "year": 2015
    },
-   "score": 0.26672340570018593,
+   "score": 0.267749046725827,
    "values": {
     "spacing_m": 0.2614393726401688,
     "surface": 0.0,
@@ -585,7 +585,7 @@
     "spacing_m": 3,
     "year": 2010
    },
-   "score": 0.6273360618244519,
+   "score": 0.6257976002859903,
    "values": {
     "spacing_m": 0.6307196863200843,
     "surface": null,

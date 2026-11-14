@@ -191,9 +191,10 @@ pub struct Metric {
 const RETIRED: [&str; 2] = ["ramp", "shade"];
 const RETIRED_METRIC: [&str; 2] = ["classes", "colours"];
 
-/// What a weighted metric a piece doesn't state counts at where `score.toml` gives no `unstated`:
-/// the middle of its scale (the owner, 13 Nov: a source stating no survey year doesn't outrank one
-/// stating a recent year; an old one may lose to it).
+/// The rest of a piece stating no weighted metric but the primary, where `score.toml` gives no
+/// `unstated`: the middle of the scale (the owner, 13 Nov: a source stating neither year nor
+/// accuracy doesn't outrank one of its grid stating a recent year; one stating only an old year may
+/// lose to it).
 pub const UNSTATED: f64 = 0.5;
 
 /// A theme's `score.toml` (docs/inputs.md §6.11).
@@ -203,8 +204,8 @@ pub struct Score {
     pub primary: String,
     pub within: f64,
     pub share: f64,
-    /// The value a weighted metric a piece doesn't state counts at in the rest (`unstated`, 0 to
-    /// 1; absent: UNSTATED).
+    /// The rest of a piece stating no weighted metric but the primary (`unstated`, 0 to 1;
+    /// absent: UNSTATED).
     pub unstated: f64,
     pub metrics: BTreeMap<String, Metric>,
     /// The score layer's name in the app (None: the server's own).
@@ -251,14 +252,15 @@ impl Score {
     }
 
     /// The tie-break of a piece's metric values (`of`'s rest): the weighted mean of the other
-    /// metrics, one it doesn't state counting at `unstated`; `unstated` where no metric but the
-    /// primary has a weight. A metric of weight 0 takes no part.
+    /// metrics it states; `unstated` where it states none of weight above 0. A metric it doesn't
+    /// state leaves both sums (its weight goes to those it states, in proportion).
     fn rest(&self, vals: &BTreeMap<String, Option<f64>>) -> f64 {
         let (mut w, mut sum) = (0.0, 0.0);
         for (k, m) in self.metrics.iter().filter(|(k, _)| **k != self.primary) {
-            let weight = m.weight.unwrap_or(0.0);
-            w += weight;
-            sum += weight * vals.get(k).copied().flatten().unwrap_or(self.unstated);
+            if let (Some(weight), Some(v)) = (m.weight, vals.get(k).copied().flatten()) {
+                w += weight;
+                sum += weight * v;
+            }
         }
         if w > 0.0 {
             sum / w
@@ -506,7 +508,7 @@ pub fn score(bytes: &[u8]) -> std::result::Result<Score, Vec<String>> {
     let unstated = match t.get("unstated") {
         None => UNSTATED,
         Some(v) => num(v).filter(|u| (0.0..=1.0).contains(u)).unwrap_or_else(|| {
-            bad.push("`unstated` (what a metric not stated counts at) isn't a number from 0 to 1".into());
+            bad.push("`unstated` (the rest of a piece stating no weighted metric) isn't a number from 0 to 1".into());
             UNSTATED
         }),
     };

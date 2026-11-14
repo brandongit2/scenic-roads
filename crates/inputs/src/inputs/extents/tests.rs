@@ -191,32 +191,47 @@ fn a_score_and_its_guarantee() {
     assert_eq!(s.unstated, UNSTATED);
     let set = SCORE_TOML.replacen("share = 0.02\n", "share = 0.02\nunstated = 0.25\n", 1);
     assert!(checks_of("terrain/score.toml", set.as_bytes()).is_empty());
-    assert_eq!(score(set.as_bytes()).unwrap().unstated, 0.25);
+    let set = score(set.as_bytes()).unwrap();
+    assert_eq!(set.unstated, 0.25);
+    let bare = serde_json::json!({"spacing_m": 1});
+    let lead = set.value("spacing_m", Some(&bare["spacing_m"])).unwrap();
+    assert!(
+        (set.of(bare.as_object().unwrap()).0.unwrap() - ((1.0 - set.share) * lead + set.share * 0.25)).abs() < 1e-12
+    );
     for bad in ["-0.1", "1.5", "\"half\""] {
         let bad = SCORE_TOML.replacen("share = 0.02\n", &format!("share = 0.02\nunstated = {bad}\n"), 1);
         assert_eq!(checks_of("terrain/score.toml", bad.as_bytes()), one(SCORE_CHECK, Level::Error), "{bad}");
     }
 }
 
-/// A weighted metric a piece doesn't state counts at `unstated` in both of the rest's sums (the
-/// owner, 13 Nov: the middle), a metric of weight 0 not at all; a piece stating no weighted metric
-/// has the middle for its rest. At Tarn, France's LiDAR HD tiles of 2021 so outrank the claimed MNS
-/// Correl stating no year; tiles of 2008 would not.
+/// A metric a piece doesn't state leaves both of the rest's sums, a metric of weight 0 takes no
+/// part, and a piece stating no weighted metric has `unstated` (the owner, 13 Nov: the middle) for
+/// its rest. At Tarn, France's LiDAR HD tiles of 2021 so outrank the claimed MNS Correl stating no
+/// year; tiles of 2008 would not.
 #[test]
-fn an_unstated_metric_counts_at_the_middle() {
+fn a_piece_stating_no_weighted_metric_has_the_middle() {
     let s = score(REAL[0].1).unwrap();
     let of = |m: serde_json::Value| s.of(m.as_object().unwrap()).0.unwrap();
     let (share, lead) = (s.share, s.value("spacing_m", Some(&serde_json::json!(0.5))).unwrap());
     let (wy, wa) = (s.metrics["year"].weight.unwrap(), s.metrics["vertical_rmse_m"].weight.unwrap());
     let year = s.value("year", Some(&serde_json::json!(2021))).unwrap();
-    let rest = (wy * year + wa * UNSTATED) / (wy + wa);
+    // The year stated alone: the rest is its value, the accuracy's weight not diluting it.
     let dated = of(serde_json::json!({"spacing_m": 0.5, "year": 2021}));
-    assert!((dated - ((1.0 - share) * lead + share * rest)).abs() < 1e-12);
+    assert!((dated - ((1.0 - share) * lead + share * year)).abs() < 1e-12);
+    let rmse = s.value("vertical_rmse_m", Some(&serde_json::json!(0.15))).unwrap();
+    let both = of(serde_json::json!({"spacing_m": 0.5, "year": 2021, "vertical_rmse_m": 0.15}));
+    assert!((both - ((1.0 - share) * lead + share * (wy * year + wa * rmse) / (wy + wa))).abs() < 1e-12);
     let none = of(serde_json::json!({"spacing_m": 0.5}));
     assert!((none - ((1.0 - share) * lead + share * UNSTATED)).abs() < 1e-12);
     assert_eq!(of(serde_json::json!({"spacing_m": 0.5, "surface": "surface"})), none);
     assert!(dated > none);
     assert!(of(serde_json::json!({"spacing_m": 0.5, "year": 2008})) < none);
+    // Within the factor the year decides between two near grids, stated alone on both: a 1.2 m
+    // grid of 2010 below a 1.25 m one of 2024.
+    assert!(
+        of(serde_json::json!({"spacing_m": 1.2, "year": 2010}))
+            < of(serde_json::json!({"spacing_m": 1.25, "year": 2024}))
+    );
     // France at Tarn: the claimed image-matched model (first, by id) against the LiDAR HD tiles.
     let rank = |year: i64| {
         let ps = [
@@ -231,7 +246,7 @@ fn an_unstated_metric_counts_at_the_middle() {
     };
     assert_eq!(rank(2021), Some(1));
     assert_eq!(rank(2008), Some(0));
-    // No weighted metric in the file: the rest is the middle whatever is stated.
+    // No weighted metric in the file: the rest is `unstated` whatever is stated.
     let mut flat = s.clone();
     for m in flat.metrics.values_mut().filter(|m| m.weight.is_some()) {
         m.weight = Some(0.0);

@@ -51,7 +51,8 @@ const DEFAULT_LABEL: &str = "Best data";
 /// new version, and one too old to read it shows nothing until it's loaded again rather than values
 /// as colours; and a tile kept for good under an older one (`?v=`) isn't read again. `values4`: the
 /// score layer's pixels are the best piece's own primary value; the default view's pieces are the
-/// free ones (`ex::FREE`); a weighted metric a piece doesn't state counts at `unstated`.
+/// free ones (`ex::FREE`); a piece stating no weighted metric but the primary has `unstated` for
+/// the rest.
 const TILE_FORMAT: &str = "values4";
 
 /// What a tile's pixel carries for a value `v` of a layer on `scale` (docs/formats.md, Data
