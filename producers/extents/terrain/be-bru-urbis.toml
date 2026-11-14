@@ -1,11 +1,11 @@
-name = "UrbIS Digital Terrain Model 2021"
+name = "UrbIS elevation 2021"
 credit = "Paradigm, UrbIS"
-licence = "CC0-1.0"
-licence_url = "https://creativecommons.org/publicdomain/zero/1.0/legalcode"
+licence = "CC-BY-4.0"
+licence_url = "https://creativecommons.org/licenses/by/4.0/"
 source = "https://geobru-geonetwork.irisnet.be/geonetwork/srv/api/records/1d7bd49d-fe83-4388-af85-6f5dc8ec7909/formatters/xml"
 theme = "terrain"
 availability = "open"
-notes = "The Brussels-Capital Region's 0.5 m bare-earth model from the lidar flown on 9 October 2021 (67 points per m² on average): the 216 1 km tiles of its INSPIRE ATOM feed, each file's own bbox (written south west north east, latitude first; its one file of the whole region has none). Its point cloud is CC BY 4.0; the DTM CC0."
+notes = "The Brussels-Capital Region's lidar flown on 9 October 2021 (67 points per m² on average): its 0.5 m bare-earth model (Digital terrain model), its 0.5 m surface model (UrbIS - Digital surface model, record 8c2d921e-6a53-11ed-bfb5-010101010000) and its point cloud (Airborne LiDAR pointcloud - 2021, record ff1124e1-424e-11ee-b156-00090ffe0001, LAS; a nominal spacing of 1/√67, 0.1222 m; a point cloud holds ground and surface both, so states no `surface`), a block each: the 216 1 km tiles of each one's INSPIRE ATOM feed, each file's own bbox (written south west north east, latitude first; the models' one file of the whole region has none), the same tiles in all three. The point cloud is CC BY 4.0, the DTM CC0: the declaration states the more restrictive."
 
 [[piece]]
 id = "dtm"
@@ -16,4 +16,25 @@ latfirst = true
 [piece.metrics]
 surface = "ground"
 spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "dsm"
+label = "UrbIS DSM 2021 0.5 m"
+method = "atom"
+url = "https://urbisdownload.datastore.brussels/atomfeed/8c2d921e-6a53-11ed-bfb5-010101010000-en.xml"
+latfirst = true
+[piece.metrics]
+surface = "surface"
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "points"
+label = "UrbIS LiDAR point cloud 2021"
+method = "atom"
+url = "https://urbisdownload.datastore.brussels/atomfeed/ff1124e1-424e-11ee-b156-00090ffe0001-en.xml"
+latfirst = true
+[piece.metrics]
+spacing_m = 0.1222
 year = 2021

@@ -5,7 +5,7 @@ licence_url = "https://www.nationalarchives.gov.uk/doc/open-government-licence/v
 source = "https://remotesensingdata.gov.scot/data#/list"
 theme = "terrain"
 availability = "open"
-notes = "The portal's lidar bare-earth and surface models (each survey's DTM and DSM, a block each, `-dsm` the surface model's) under the Open Government Licence, from the file names in its public bucket (srsp-open-data), each a British National Grid square: the Scottish National LiDAR Programme's 50 cm DTM (1 km tiles; flown May to December 2025, at least 10 points/m²; the programme flies to 2027); Phases I and II (1 m; 2011-12 over 10 areas, 11,845 km², and 2012-14 over 66 sites, 3,516 km²; about 2 points/m²); Phases III to VI (50 cm; Scottish Power Energy Networks' surveys of 2015-16, its two 2019 pilot flights over the Whiteadder not told apart, 11,772 km²; 2017-19, 17,945 km²; 2020-21; 2021-22); the Outer Hebrides 2019 (50 cm over about 1,705 km², 25 cm over the 200 km² of its settlements); Orkney Islands Council's 2023 survey (50 cm, 1,655 km²); and the coastal survey of February and March 2026 (50 cm). The phases' and the Outer Hebrides' 50 cm DTMs come in 10 km sheets (Phases I and II) or 5 km quadrants holding their surveys' corridors and patches, so each one's extent is its survey's point-cloud tiles (1 km; Phase II's 5 km quadrants): Phase I's 382 DTM sheets span 38,215 km² for its 11,845. Each survey's DSM comes in the same sheets as its DTM (the national programme's in 5,994 tiles to its DTM's 5,933, so read from its own files), and takes the same kind of extent. Each grid's cell is its files' names'; each year its collection's capture as the portal's records state it. The national programme's \"absolute vertical accuracy of 15cm\" isn't stated as an RMSE, so is left out. Historic Environment Scotland's sets are gb-sct-hes-lidar's."
+notes = "The portal's lidar bare-earth and surface models (each survey's DTM and DSM, a block each, `-dsm` the surface model's) under the Open Government Licence, from the file names in its public bucket (srsp-open-data), each a British National Grid square: the Scottish National LiDAR Programme's 50 cm DTM (1 km tiles; flown May to December 2025, at least 10 points/m²; the programme flies to 2027); Phases I and II (1 m; 2011-12 over 10 areas, 11,845 km², and 2012-14 over 66 sites, 3,516 km²; about 2 points/m²); Phases III to VI (50 cm; Scottish Power Energy Networks' surveys of 2015-16, its two 2019 pilot flights over the Whiteadder not told apart, 11,772 km²; 2017-19, 17,945 km²; 2020-21; 2021-22); the Outer Hebrides 2019 (50 cm over about 1,705 km², 25 cm over the 200 km² of its settlements); Orkney Islands Council's 2023 survey (50 cm, 1,655 km²); and the coastal survey of February and March 2026 (50 cm). The phases' and the Outer Hebrides' 50 cm DTMs come in 10 km sheets (Phases I and II) or 5 km quadrants holding their surveys' corridors and patches, so each one's extent is its survey's point-cloud tiles (1 km; Phase II's 5 km quadrants): Phase I's 382 DTM sheets span 38,215 km² for its 11,845. Each survey's DSM comes in the same sheets as its DTM (the national programme's in 5,994 tiles to its DTM's 5,933, so read from its own files), and takes the same kind of extent. Each grid's cell is its files' names'; each year its collection's capture as the portal's records state it. Each survey's point cloud (LAZ, the `laz/` folders: the Outer Hebrides' at 4 and at 16 points/m², a folder each) is a block of its own (`-points`), from its own files' names (the phases' and the Outer Hebrides' 4 ppm ones the very names their DTMs' extents are read from), its nominal spacing 1/√ of the density its collection's record states as the minimum or as captured: Phases I and II 1 point/m² (\"approximately 2\"), Phases III to VI and the Outer Hebrides' 4, the Outer Hebrides' settlements and Orkney 16, the national programme and the coastal survey 10; a point cloud holds ground and surface both, so states no `surface`. The national programme's \"absolute vertical accuracy of 15cm\" isn't stated as an RMSE, so is left out. Historic Environment Scotland's sets are gb-sct-hes-lidar's."
 
 [[piece]]
 id = "nlp"
@@ -357,4 +357,169 @@ tolerance_m = 100
 [piece.metrics]
 surface = "surface"
 spacing_m = 0.5
+year = 2026
+
+[[piece]]
+id = "nlp-points"
+label = "Scottish National LiDAR Programme point cloud (10 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/national-lidar-programme/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.3162
+year = 2025
+
+[[piece]]
+id = "phase-1-points"
+label = "LiDAR for Scotland Phase I point cloud (1 pt/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-1/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1
+year = 2012
+
+[[piece]]
+id = "phase-2-points"
+label = "LiDAR for Scotland Phase II point cloud (1 pt/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-2/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 1
+year = 2014
+
+[[piece]]
+id = "phase-3-points"
+label = "LiDAR for Scotland Phase III point cloud (4 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-3/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.5
+year = 2016
+
+[[piece]]
+id = "phase-4-points"
+label = "LiDAR for Scotland Phase IV point cloud (4 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-4/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "phase-5-points"
+label = "LiDAR for Scotland Phase V point cloud (4 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-5/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.5
+year = 2021
+
+[[piece]]
+id = "phase-6-points"
+label = "LiDAR for Scotland Phase VI point cloud (4 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/phase-6/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.5
+year = 2022
+
+[[piece]]
+id = "outer-hebrides-4ppm-points"
+label = "LiDAR for Outer Hebrides 2019, 4 pts/m² point cloud"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/outer-hebrides/2019/laz/4ppm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.5
+year = 2019
+
+[[piece]]
+id = "outer-hebrides-16ppm-points"
+label = "LiDAR for Outer Hebrides 2019, 16 pts/m² point cloud"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/outer-hebrides/2019/laz/16ppm/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.25
+year = 2019
+
+[[piece]]
+id = "orkney-2023-points"
+label = "LiDAR for Orkney Islands Council 2023 point cloud (16 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/orkney-islands-council-23/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.25
+year = 2023
+
+[[piece]]
+id = "coastal-2026-points"
+label = "Scottish Coastal LiDAR Survey 2025-26 point cloud (10 pts/m²)"
+method = "listing"
+url = "https://srsp-open-data.s3.eu-west-2.amazonaws.com"
+list = "s3"
+prefix = "lidar/coastal/coastal-2025-2026/laz/"
+pattern = '/(?P<ref>[A-Z]{2}\d+(?:[NS][EW])?)_[^/]*\.(?:tif|laz)$'
+grid = "osgb"
+crs = "EPSG:27700"
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.3162
 year = 2026

@@ -5,7 +5,7 @@ licence_url = "https://sma.idea.azores.gov.pt/geonetwork/srv/api/records/291673d
 source = "https://dgt-be.a.incd.pt:8081/collections/ACORES-MDE-1"
 theme = "terrain"
 availability = "login"
-notes = "The Azores government's lidar of all nine islands (15 points/m², Riegl VQ-780II, flown from May 2024), its 1 m bare-earth model (ACORES-MDE-1, the region's MDE) in the DGT's Centro de Dados Geográficos STAC: the items' footprints (1,820 tiles of 1.6 × 1.0 km), each item's year from its id (2024_SMG_…). Its files download only after the centre's login (a free account), so the pieces are claimed, drawn from the index. LICENCE CONFLICT: the region's and the DGT's records say CC BY 4.0, Mapterhorn's EXCLUDED.md says the Azores lidar is non-commercial; the more restrictive, non-commercial, is kept. The stated RMSEz of 9.3 cm is São Miguel's alone and is left out. Its 1 m surface model (ACORES-MDS-1, the region's MDS) is a block of its own, read the same way. The 5 m and 10 m models cover the same tiles, coarser, and are left out."
+notes = "The Azores government's lidar of all nine islands (15 points/m², Riegl VQ-780II, flown from May 2024), its 1 m bare-earth model (ACORES-MDE-1, the region's MDE) in the DGT's Centro de Dados Geográficos STAC: the items' footprints (1,820 tiles of 1.6 × 1.0 km), each item's year from its id (2024_SMG_…). Its files download only after the centre's login (a free account), so the pieces are claimed, drawn from the index. LICENCE CONFLICT: the region's and the DGT's records say CC BY 4.0, Mapterhorn's EXCLUDED.md says the Azores lidar is non-commercial; the more restrictive, non-commercial, is kept. The stated RMSEz of 9.3 cm is São Miguel's alone and is left out. Its 1 m surface model (ACORES-MDS-1, the region's MDS) is a block of its own, read the same way, and so is its classified point cloud (ACORES-LAZ, its items named alike: 2024_SMG_PDL_31-2-3-4_CCL_RGBI; 15 points/m², a nominal spacing of 0.2582 m; a point cloud holds ground and surface both, so states no `surface`). The 5 m and 10 m models cover the same tiles, coarser, and are left out."
 
 [[piece]]
 id = "mde-1m"
@@ -29,4 +29,15 @@ tolerance_m = 50
 [piece.metrics]
 surface = "surface"
 spacing_m = 1
+year = { field = "id", date = "text" }
+
+[[piece]]
+id = "laz"
+label = "Nuvem de pontos LAZ (15 pontos/m²)"
+method = "stac"
+url = "https://dgt-be.a.incd.pt:8081/collections/ACORES-LAZ"
+page = 500
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.2582
 year = { field = "id", date = "text" }

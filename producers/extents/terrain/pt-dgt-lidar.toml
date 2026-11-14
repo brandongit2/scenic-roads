@@ -5,7 +5,7 @@ licence_url = "https://snig.dgterritorio.gov.pt/rndg/srv/api/records/077a8c94-8b
 source = "https://cdd.dgterritorio.gov.pt/dgt-be/v1/collections"
 theme = "terrain"
 availability = "login"
-notes = "The DGT's first national airborne lidar of mainland Portugal (an average of 10 points/m², flown April 2024 to July 2025), its 0.5 m bare-earth model (MDT-50cm, Float32 GeoTIFF on 1 km tiles, EPSG:3763) in the Centro de Dados Geográficos' STAC collection: the items' footprints (91,202 tiles), each item's year from its id, which ends in a month and year (…-07-2025; 2024 and 2025). The STAC is open, but every file's link redirects to the centre's login (a free account), so the pieces are claimed, drawn from the index. Its 0.5 m surface model (MDS-50cm, the same tiles, its items named alike: MDS-50cm-156467-07-2025) is a block of its own, read the same way. The 2 m models (MDT-2m, MDS-2m) are of the same tiles, coarser, and left out; the stated altimetric accuracy (10 cm) isn't said to be an RMSE and is left out."
+notes = "The DGT's first national airborne lidar of mainland Portugal (an average of 10 points/m², flown April 2024 to July 2025), its 0.5 m bare-earth model (MDT-50cm, Float32 GeoTIFF on 1 km tiles, EPSG:3763) in the Centro de Dados Geográficos' STAC collection: the items' footprints (91,202 tiles), each item's year from its id, which ends in a month and year (…-07-2025; 2024 and 2025). The STAC is open, but every file's link redirects to the centre's login (a free account), so the pieces are claimed, drawn from the index. Its 0.5 m surface model (MDS-50cm, the same tiles, its items named alike: MDS-50cm-156467-07-2025) is a block of its own, read the same way, and so is its classified point cloud (LAZ, \"densidade média de 10 pontos/m2\", a nominal spacing of 0.3162 m; its items named LO-214498-07-2025; a point cloud holds ground and surface both, so states no `surface`; the COPC collection beside it holds no items, on 14 Nov 2026). The 2 m models (MDT-2m, MDS-2m) are of the same tiles, coarser, and left out; the stated altimetric accuracy (10 cm) isn't said to be an RMSE and is left out."
 
 [[piece]]
 id = "mdt-50cm"
@@ -29,4 +29,15 @@ tolerance_m = 100
 [piece.metrics]
 surface = "surface"
 spacing_m = 0.5
+year = { field = "id", date = "text" }
+
+[[piece]]
+id = "laz"
+label = "Nuvem de pontos LAZ (10 pontos/m²)"
+method = "stac"
+url = "https://dgt-be.a.incd.pt:8081/collections/LAZ"
+page = 500
+tolerance_m = 100
+[piece.metrics]
+spacing_m = 0.3162
 year = { field = "id", date = "text" }

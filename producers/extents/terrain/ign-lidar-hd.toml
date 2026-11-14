@@ -5,7 +5,7 @@ licence_url = "https://www.etalab.gouv.fr/licence-ouverte-open-licence/"
 source = "https://www.data.gouv.fr/api/1/datasets/675871bd6e60265b46ab356e/"
 theme = "terrain"
 availability = "open"
-notes = "The programme's WFS tile index (IGNF_LIDAR-HD_METADONNEE:metadata: a 1 km tile each, metropolitan France and the overseas tiles published so far), by the year its flights ended (`date_fin_acquisition`). Each tile's bare-earth model (MNT) and surface model (MNS) are 0.5 m, as their files' names say (…_MNT_O_0M50_…, …_MNS_O_0M50_…), a block each; every tile of the index links both (`url_mnt`, `url_mns`: none is empty, on 13 Nov 2026); flown 2021 to 2026. The answers name urn:ogc:def:crs:EPSG::4326 and are longitude first."
+notes = "The programme's WFS tile index (IGNF_LIDAR-HD_METADONNEE:metadata: a 1 km tile each, metropolitan France and the overseas tiles published so far), by the year its flights ended (`date_fin_acquisition`). Each tile's bare-earth model (MNT) and surface model (MNS) are 0.5 m, as their files' names say (…_MNT_O_0M50_…, …_MNS_O_0M50_…), a block each; every tile of the index links both (`url_mnt`, `url_mns`: none is empty, on 13 Nov 2026); flown 2021 to 2026. Each tile's classified point cloud (LAZ/COPC, `url_npl`: none empty either, on 14 Nov 2026) is a third block, read alike: the programme's specification is 10 pulses/m² (a nominal spacing of 1/√10, 0.3162 m), the figure taken; the index states each tile's count of points (`nombre_points`: 22 million on a full inland tile, a few thousand on a coastal edge's), so a density per tile would split each year's outline into many and isn't read. A point cloud holds ground and surface both, so states no `surface`. The answers name urn:ogc:def:crs:EPSG::4326 and are longitude first."
 
 [[piece]]
 id = "mnt"
@@ -33,4 +33,17 @@ page = 5000
 [piece.metrics]
 surface = "surface"
 spacing_m = 0.5
+year = { field = "date_fin_acquisition", date = "iso" }
+
+[[piece]]
+id = "nuage"
+label = "LiDAR HD nuage de points classé (10 impulsions/m²)"
+method = "wfs"
+class = "index"
+url = "https://data.geopf.fr/wfs/ows"
+type = "IGNF_LIDAR-HD_METADONNEE:metadata"
+fields = ["date_fin_acquisition", "geom"]
+page = 5000
+[piece.metrics]
+spacing_m = 0.3162
 year = { field = "date_fin_acquisition", date = "iso" }

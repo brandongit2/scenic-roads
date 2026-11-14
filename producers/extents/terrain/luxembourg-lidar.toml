@@ -5,7 +5,7 @@ licence_url = "https://creativecommons.org/publicdomain/zero/1.0/"
 source = "https://data.public.lu/api/1/datasets/lidar-2024-releve-3d-du-territoire-luxembourgeois/"
 theme = "terrain"
 availability = "open"
-notes = "The country's bare-earth model (MNT) and surface model (MNS), each one cloud-optimized GeoTIFF of 0.5 m (40.1 and 42.8 GB): each file's own header and an overview say where it has data and at what cell. Flown February to April 2024."
+notes = "The country's bare-earth model (MNT) and surface model (MNS), each one cloud-optimized GeoTIFF of 0.5 m (40.1 and 42.8 GB): each file's own header and an overview say where it has data and at what cell. Flown February to April 2024. Its classified point cloud (COPC LAZ, \"> 30 pts/m² émis\": a nominal spacing of 1/√30, 0.1826 m; a point cloud holds ground and surface both, so states no `surface`) is a block of its own, its extent its tile index (lidar2024-ta.gpkg, the 10,905 500 m tiles its zips hold, LUREF)."
 
 [[piece]]
 id = "mnt"
@@ -27,4 +27,15 @@ mask_m = 100
 [piece.metrics]
 surface = "surface"
 spacing_m = { field = "res_m" }
+year = 2024
+
+[[piece]]
+id = "points"
+label = "Nuage de points Lidar 2024 (> 30 pts/m²)"
+method = "file"
+class = "index"
+url = "https://download.data.public.lu/resources/lidar-2024-releve-3d-du-territoire-luxembourgeois/20250117-095958/lidar2024-ta.gpkg"
+tolerance_m = 50
+[piece.metrics]
+spacing_m = 0.1826
 year = 2024
