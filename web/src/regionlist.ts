@@ -93,6 +93,13 @@ export function folderCountry(f: Folder, countryOf: (id: string) => string | nul
   return best;
 }
 
+/** A region's or folder's flag to show: the symbol the server gives (declared in the regions input),
+ * else its bundled one (flags.ts). (Stage A of task #1396 alone: stage B deletes the bundled flags
+ * and this, once the regions input's symbols are accepted.) */
+export function servedOr<F>(served: F | null, bundled: () => F | null): F | null {
+  return served ?? bundled();
+}
+
 /** Every region id in a folder, at any depth. */
 export function allIds(f: Folder): string[] {
   return [...f.regions, ...f.folders.flatMap(allIds)];

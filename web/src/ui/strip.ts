@@ -20,6 +20,7 @@ import type { HoverInfo } from '../roads/layer';
 import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
 import { flagCredits, flagLicences, type Flag } from '../flags';
+import { listRegions, symbolCredits } from '../regions';
 import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, h } from './dom';
@@ -94,7 +95,7 @@ export class Strip {
   private scale: HTMLSpanElement;
   private loading: HTMLSpanElement;
   private build: HTMLSpanElement;
-  private credits: { d: HTMLDialogElement; set: (data: Credit[]) => void; depth: (labels: string[], n: string[]) => void };
+  private credits: ReturnType<typeof creditsDialog>;
   /** The data's credits shown, as a key (they come again with every catalogue poll). */
   private creditsKey = '';
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
@@ -134,7 +135,7 @@ export class Strip {
     this.loading = h('span', { class: 'status' });
     this.build = h('span');
     this.credits = creditsDialog();
-    const credits = h('button', { title: 'Data sources, credits and licences', onclick: () => this.credits.d.showModal() }, '© Credits');
+    const credits = h('button', { title: 'Data sources, credits and licences', onclick: () => this.credits.open() }, '© Credits');
     root.append(
       this.r1,
       h('div', { class: 'r2' },
@@ -396,31 +397,64 @@ const APP_CREDITS: Credit[] = [
     terms: 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0',
   },
   { what: 'Stops & sights icons', source: 'Maki (Mapbox)', terms: 'CC0 1.0' },
-  {
-    what: 'Flags and coats of arms (the Regions list)',
-    source: 'Wikimedia Commons, chosen by Wikidata (each file’s author in the list below and in its tooltip)',
-    terms: flagLicences().map(([l, n]) => `${l} (${n})`).join('; '),
-  },
 ];
 
-/** Data sources and licences in a modal dialog: the catalogue's credits (`set`), then the app's. */
-function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void; depth: (labels: string[], n: string[]) => void } {
+/** A page's host, for the credits ('' for an address that isn't one). */
+function hostOf(u: string): string {
+  try {
+    return new URL(u).host;
+  } catch {
+    return '';
+  }
+}
+
+/** Data sources and licences in a modal dialog: the catalogue's credits (`set`), then the app's,
+ * then the regions' symbols' (read from /api/regions as it first opens: `open`). */
+function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void; depth: (labels: string[], n: string[]) => void; open: () => void } {
   const body = h('tbody');
   const noticeBox = h('div', { class: 'notices' });
   const depth = (labels: string[], n: string[]) =>
     noticeBox.replaceChildren(
       ...(labels.length ? [h('p', { class: 'depth' }, h('b', {}, 'Depth: '), labels.join(' · '), '. Not for navigation.')] : []),
       ...[...new Set(n)].map((x) => h('p', { class: 'notice' }, x)));
-  const set = (data: Credit[]) =>
-    body.replaceChildren(...[...data, ...APP_CREDITS].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
+  // (The regions' symbols' credits, from the regions' list as the server gives it: read as the
+  // dialog opens, kept once read. Until the server gives any, the bundled flags': stage B of task
+  // #1396 deletes them.)
+  let symbols: ReturnType<typeof symbolCredits> = [];
+  const bundled = flagCredits();
+  let shown: Credit[] = [];
+  const set = (data: Credit[]) => {
+    shown = data;
+    const flags: Credit[] = symbols.length
+      ? [{
+        what: 'Flags and coats of arms (the Regions list)',
+        source: `${[...new Set(symbols.map((c) => hostOf(c.page)))].join(', ')} (each file’s author in the list below and in its tooltip)`,
+        terms: [...symbols.reduce((n, c) => n.set(c.licence, (n.get(c.licence) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1]).map(([l, n]) => `${l} (${n})`).join('; '),
+      }]
+      : [{
+        what: 'Flags and coats of arms (the Regions list)',
+        source: 'Wikimedia Commons, chosen by Wikidata (each file’s author in the list below and in its tooltip)',
+        terms: flagLicences().map(([l, n]) => `${l} (${n})`).join('; '),
+      }];
+    body.replaceChildren(...[...data, ...APP_CREDITS, ...flags].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
+  };
   set([]);
-  // Each flag's file: its author and licence, linked to its page (listed when first opened).
+  // Each symbol's file: its author and licence, linked to its page (listed when first opened).
   const flagList = h('details', { class: 'flags' }, h('summary', {}, 'Flags and coats of arms, file by file'));
   flagList.addEventListener('toggle', () => {
     if (flagList.open && !flagList.querySelector('ul')) {
-      flagList.append(h('ul', {}, ...flagCredits().map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'} · ${c.licence}`))));
+      flagList.append(h('ul', {}, ...(symbols.length ? symbols : bundled).map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'} · ${c.licence}`))));
     }
   });
+  const readSymbols = () => {
+    if (symbols.length) return;
+    listRegions().then((l) => {
+      symbols = symbolCredits(l.regions, l.tree);
+      // (A list opened before shows the bundled files: listed again when next opened.)
+      if (symbols.length) flagList.querySelector('ul')?.remove();
+      set(shown);
+    }, () => undefined);
+  };
   const d = h('dialog', { class: 'credits' },
     h('div', { class: 'hd' }, h('b', {}, 'Data sources & licences'), h('button', { class: 'x', title: 'Close', onclick: () => d.close() }, '×')),
     h('table', {},
@@ -435,5 +469,10 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
   d.addEventListener('click', (e) => {
     if (e.target === d) d.close();
   });
-  return { d, set, depth };
+  // (Opened: the symbols' credits read, if not yet.)
+  const open = () => {
+    readSymbols();
+    d.showModal();
+  };
+  return { d, set, depth, open };
 }

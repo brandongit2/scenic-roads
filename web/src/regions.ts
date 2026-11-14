@@ -4,10 +4,47 @@
 // ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { onVersions, packChanged, version } from './api';
+import type { Flag } from './flags';
 import { hostFor } from './hosts';
 import { GREEN, GREY, LAYER, MAXZ, SOURCE_LAYER, borderOf, colourOf, labelPoints, pick } from './regionlayer';
 
-/** An administrative or ISO 3166 area's fields a region's flag comes from (its first osm: part's). */
+/** A region's or folder's symbol as the server gives it (docs/inputs.md §6.1.3, "Symbols"): its flag,
+ * coat of arms or seal, declared with it in the regions' inputs folder; its image's address on this
+ * Mac's server (named by its content), and its credit. */
+export interface RegionSymbol {
+  url: string;
+  kind: 'flag' | 'coat of arms' | 'seal';
+  /** The page it comes from, where its author and licence are. */
+  source: string;
+  author?: string;
+  licence: string;
+}
+
+/** The symbol of a region or folder called `name`, to show; null for none. */
+export function flagOf(s: RegionSymbol | undefined, name: string): Flag | null {
+  if (!s) return null;
+  const what = s.kind === 'flag' ? 'Flag' : s.kind === 'seal' ? 'Seal' : 'Coat of arms';
+  return { url: s.url, kind: s.kind, title: `${what} of ${name} (${s.author ? `${s.author}; ` : ''}${s.licence})` };
+}
+
+/** Every symbol's credit, once each (one may be two places'): what it is and whose, its author,
+ * licence and page, by name. */
+export function symbolCredits(regions: Region[], tree: Folder | undefined): { name: string; author: string; licence: string; page: string }[] {
+  const out = new Map<string, { name: string; author: string; licence: string; page: string }>();
+  const add = (s: RegionSymbol | undefined, name: string) => {
+    if (s && !out.has(s.url)) out.set(s.url, { name: `${s.kind === 'flag' ? 'Flag' : s.kind === 'seal' ? 'Seal' : 'Coat of arms'} of ${name}`, author: s.author ?? '', licence: s.licence, page: s.source });
+  };
+  const walk = (f: Folder) => {
+    add(f.symbol, f.name);
+    f.folders.forEach(walk);
+  };
+  if (tree) walk(tree);
+  for (const r of regions) add(r.symbol, r.name);
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** An administrative or ISO 3166 area's fields a region's bundled flag comes from (its first osm:
+ * part's). (Stage B of task #1396 deletes it with the bundled flags.) */
 export interface Area {
   iso: string;
   /** An ISO 3166-1 country (Hong Kong is one, at admin_level 3). */
@@ -44,6 +81,8 @@ export interface Region {
   label?: [number, number];
   /** Its first osm: part's area in the pass's outlines (its flag), when the pass has it. */
   area?: Area;
+  /** Its symbol as accepted; absent when it has none (the placeholder, or its bundled flag). */
+  symbol?: RegionSymbol;
 }
 
 const NAS_AWAY = 'The NAS isn’t reachable: try again at home';
@@ -85,6 +124,8 @@ export interface Folder {
   path: string;
   name: string;
   order?: number;
+  /** Its symbol (its _group.toml's), as a region's. */
+  symbol?: RegionSymbol;
   regions: string[];
   folders: Folder[];
 }
