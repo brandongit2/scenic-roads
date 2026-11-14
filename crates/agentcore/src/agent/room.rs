@@ -156,7 +156,7 @@ const CHEAP: [(&str, &str); 4] =
 pub const MONTHS: &str = "items/months";
 
 /// Bytes the cheap caches hold (what `make_room` can free on the lead: a member's,
-/// `helper_cheap_bytes`): of the pageview months, the indexes the NAS's `sources` has at their size
+/// `member_cheap_bytes`): of the pageview months, the indexes the NAS's `sources` has at their size
 /// (`months_bytes`), none without it.
 pub fn cheap_bytes(cache: &Path, sources: Option<&NasPath>) -> u64 {
     let mut files = Vec::new();
@@ -181,12 +181,12 @@ fn months_bytes(cache: &Path, sources: &NasPath) -> u64 {
     files.iter().filter(|f| !index(&f.2) || there(&f.2, f.1)).map(|f| f.1).sum()
 }
 
-/// What `make_room` can free on a helper, and on any Mac without asking the NAS (what an ask counts,
+/// What `make_room` can free on a member, and on any Mac without asking the NAS (what an ask counts,
 /// crate::agent's `freeable`): the cheap caches but the loose raw tiles (`aws-terrarium/<z>/…`),
-/// which a helper keeps until a job of its own packs them onto the NAS (it can't: only a job
+/// which a member keeps until a job of its own packs them onto the NAS (it can't: only a job
 /// handing off packs; the NAS lacks them), and the pageview months (the NAS is asked which it has).
 /// The copies of the NAS's archives (`aws-terrarium/packs/`) count. Not the files `keep` names.
-pub fn helper_cheap_bytes(cache: &Path, keep: &dyn Fn(&Path) -> bool) -> u64 {
+pub fn member_cheap_bytes(cache: &Path, keep: &dyn Fn(&Path) -> bool) -> u64 {
     let mut files = Vec::new();
     for d in ["chm10", "blobs", "aws-terrarium/packs"] {
         walk_cheap(cache, d, None, &mut files);
@@ -473,7 +473,7 @@ pub struct Freed {
     /// The bytes freed, by cache (`kind`).
     #[serde(default)]
     pub freed: BTreeMap<String, u64>,
-    /// What stays of what it went through: files the NAS hasn't (a helper's loose raw tiles, which
+    /// What stays of what it went through: files the NAS hasn't (a member's loose raw tiles, which
     /// only its own jobs pack; a canopy square it couldn't take now; a pageview month's index, which
     /// landmarks::pageviews puts there when it next reads it).
     #[serde(default)]
@@ -1188,14 +1188,14 @@ impl Sizes {
 }
 
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
-/// helper's, `helper_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
+/// member's, `member_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
 /// when `root` is given), and what a deep clear would, by cache (those, and the others; the `deep`
 /// ones, as far as the NAS can be asked: the heritage clip while it can be made again, the answers
 /// the NAS has all of, only when `root` is given). Nothing through a link, nor in the NAS's project
 /// folder `root` (`ours`).
-pub fn sizes(cache: &Path, helper: bool, root: Option<&store::nasfs::NasRoot>) -> Sizes {
+pub fn sizes(cache: &Path, member: bool, root: Option<&store::nasfs::NasRoot>) -> Sizes {
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
-    let tiles = if helper { "aws-terrarium/packs" } else { "aws-terrarium" };
+    let tiles = if member { "aws-terrarium/packs" } else { "aws-terrarium" };
     for (d, k) in [("chm10", "canopy"), (tiles, "terrain"), ("blobs", "blobs")] {
         let mut files = Vec::new();
         walk_cheap(cache, d, root, &mut files);

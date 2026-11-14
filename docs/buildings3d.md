@@ -3,7 +3,7 @@
 Every building in the coverage, extruded to its height on the 3D terrain, from the pinned Overture
 release the roadside buildings also read. Missing heights are estimated from floors and neighbours,
 then from GHSL's 100 m heights in high-rise cores, then from the footprint's size and kind. Built per
-z6 tile in a chain of its own (shared with helper Macs and pages), drawn near by MapLibre's
+z6 tile in a chain of its own (shared with member Macs and pages), drawn near by MapLibre's
 fill-extrusion (meshes, z14 tiles) and far by a ray-marched density field (§4.8).
 
 Code: `bld::bld` (fetch, overture, ghsl, prep, fill, tiles, field, job, task),
@@ -221,7 +221,7 @@ docs/formats.md has the bytes. In brief:
 
 ### 3.6 Sharing the work
 
-- **Helper Macs** (docs/pool.md): `bldprep` and `bldtiles` are shared steps
+- **Member Macs** (docs/pool.md): `bldprep` and `bldtiles` are shared steps
   (`agent::steps::SHARED`); a hand-off saves only its tiles' files (`coord::saves`). `bldprep` needs
   the NAS (up to ~3 GB of parquet a tile). Memory is learned per target (`SCENIC_COSTS`, "bldprep
   6/x/y", "bldtiles 6/x/y"); a target is offered by the rows its tile's sources hold

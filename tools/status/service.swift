@@ -776,22 +776,24 @@ func selfTest(_ dir: String) -> Never {
     check("every job shown, slot by slot", (1...3).allSatisfy { k in printed.contains { $0.hasPrefix("Slot \(k): ") } })
     check("an ask the lead refused, said until it's seen (task #922)", printed.contains { $0.hasPrefix("The lead refused this Mac's ask to set the pool's batch-minutes to 20") && $0.contains("not a setting the lead takes") })
     check("a stuck loop said, by its agent's threshold, its age counted on from its beat (400 s said, 30 s ago)", printed.contains("m1: loop stuck 7\u{00A0}min, in the pool's round"))
-    // Each helper's too (task #899): one stuck, one under the threshold, one out of touch (said
-    // elsewhere): the fixture's status with those helpers in it.
-    let withHelpers = (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }.flatMap { d -> Reply? in
+    // Each member's too (task #899): one stuck, one under the threshold, one out of touch (said
+    // elsewhere): the fixture's status with those members in it, sent under either name (#858).
+    let withMembers = { (key: String) -> Reply? in (try? Data(contentsOf: URL(fileURLWithPath: dir).appendingPathComponent("status-said.json"))).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }.flatMap { d -> Reply? in
         var d = d, st = d["status"] as? [String: Any] ?? [:]
         let now = d["now"] as? Int ?? 0
-        st["helpers"] = [
+        st[key] = [
             ["host": "m4", "beat": now - 20, "loop_age_s": 290, "loop_stuck_s": 300, "loop_phase": "planning"],
             ["host": "m6", "beat": now - 5, "loop_age_s": 100, "loop_stuck_s": 300, "loop_phase": "planning"],
             ["host": "m7", "beat": now - 3600, "loop_age_s": 900, "loop_stuck_s": 300],
         ]
         d["status"] = st
         return (try? JSONSerialization.data(withJSONObject: d)).flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+    } }
+    for key in ["helpers", "members"] {
+        let memberPrinted = lines(withMembers(key), line, own: ownSaid).map(\.text)
+        check("a member's stuck loop said, its age counted on from its beat (\(key))", memberPrinted.contains { $0.hasPrefix("m4: loop stuck ") && $0.hasSuffix(", in planning") })
+        check("a member under the threshold, or out of touch, never said stuck (\(key))", !memberPrinted.contains { $0.hasPrefix("m6: loop") || $0.hasPrefix("m7: loop") })
     }
-    let helperPrinted = lines(withHelpers, line, own: ownSaid).map(\.text)
-    check("a helper's stuck loop said, its age counted on from its beat", helperPrinted.contains { $0.hasPrefix("m4: loop stuck ") && $0.hasSuffix(", in planning") })
-    check("a helper under the threshold, or out of touch, never said stuck", !helperPrinted.contains { $0.hasPrefix("m6: loop") || $0.hasPrefix("m7: loop") })
     check("a stage's counts as said", printed.contains { $0.contains("roads: 1,234 of 2,000 z6 tiles (12 with nothing for the map)") } && printed.contains { $0.contains("outlines: done") })
     // The same status from an agent before #846 (a rollout: the lead updated last): its verdict,
     // stage and counts worked out from the older fields, never "older app".

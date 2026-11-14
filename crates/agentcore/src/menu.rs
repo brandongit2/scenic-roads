@@ -166,7 +166,7 @@ mod tests {
     fn the_menu_bars_lead_line_is_scenics() {
         let f = std::path::absolute("../../tools/status/test/lead-view-said.json").unwrap();
         let mut lead = Status { host: "mini".into(), beat: 1_700_000_020, ..Default::default() };
-        lead.helpers = vec![crate::agent::asks::tests::said_status()];
+        lead.members = vec![crate::agent::asks::tests::said_status()];
         lead.say(None, &HoldState::default(), false);
         let said = lead.build_said(1_700_000_025);
         let pause =
@@ -200,7 +200,7 @@ mod tests {
         let mut lead = Status { host: "mini".into(), beat: 1_000, ..Default::default() };
         let mut m = crate::agent::asks::tests::said_status();
         m.beat = 1_000;
-        lead.helpers = vec![m];
+        lead.members = vec![m];
         lead.say(None, &HoldState::default(), false);
         assert_eq!(lead.build_said(1_000).state, "building");
         assert_eq!(
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(lead.build_said(1_000).state, "paused");
     }
 
-    /// The lead's own menu: its status, the fresher of its two files (a helper's left from a
+    /// The lead's own menu: its status, the fresher of its two files (a member's left from a
     /// member's part before), no lead's line; with no status, none.
     #[test]
     fn the_leads_menu_shows_its_own_status() {
@@ -228,7 +228,7 @@ mod tests {
         let m = status(home.path(), now);
         assert_eq!(m["status"]["beat"], now - 5);
         assert!(m.get("lead").is_none() && m["log"].is_null(), "{m}");
-        // (A member again: its helper's file, the fresher, and the lead's line, none heard yet.)
+        // (A member again: its helper.json, the fresher, and the lead's line, none heard yet.)
         put("helper.json", "mini", now - 1);
         let m = status(home.path(), now);
         assert_eq!((m["status"]["beat"].as_u64(), m["lead"]["at"].as_u64()), (Some(now - 1), Some(0)), "{m}");

@@ -3782,7 +3782,7 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
 /// of the files its step saves for one of the lease's targets (`saves`), each a content name of
 /// that file, every upload it says it checked is one of its own, and each raw tiles' archive it put
 /// on the NAS is named as packing names one for its shard. (Of any shard: a job packs every loose
-/// tile in the helper's cache, an earlier job's left there too, a job stopped before it packed:
+/// tile in the member's cache, an earlier job's left there too, a job stopped before it packed:
 /// tiles of the NAS's own, whatever job fetched them.)
 fn check_handoff(
     the_plan: &dyn crate::agent::seam::Plan,
@@ -4666,7 +4666,7 @@ fn route(
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let mut pause: Option<jobrt::control::Pause> = serde_json::from_value(b["pause"].clone())?;
             // (When it was asked: an agent says, by its Mac's clock, no later than AHEAD_S from now by
-            // this one's; a page or an older helper doesn't, and it's now, by this Mac's: a browser's
+            // this one's; a page or an older member doesn't, and it's now, by this Mac's: a browser's
             // clock isn't to be trusted with the order. A page's pause is by the build page.)
             let unix = unix_now();
             let at = match b["at"].as_u64().filter(|_| !caller.page) {
@@ -5323,7 +5323,7 @@ fn route(
             }
             // The whole build at a glance, for the build page: the lead's heartbeat (its
             // agent's status, written each loop beside this folder: its job, the checklist to the
-            // end, the forecast, the regions, its helpers), the leases, the workers, the tasks and
+            // end, the forecast, the regions, its members), the leases, the workers, the tasks and
             // the history's hours.
             let mut a = {
                 let s = shared.lock().unwrap();
@@ -7552,7 +7552,7 @@ mod tests {
             phases: vec![PhaseRec { name: "reading records".into(), wall_s: 1.0, n: 1, ..Default::default() }],
             ..Default::default()
         };
-        // A helper's, with its hand-off (its host as its lease says, whatever it said); this Mac's own.
+        // A member's, with its hand-off (its host as its lease says, whatever it said); this Mac's own.
         assert_eq!(
             w.done(&Done {
                 lease: g.lease,
@@ -7820,7 +7820,7 @@ mod tests {
         measure_units(&c, 3);
         c.offer_units("2026-09-28", units.clone());
         let g = w.ask(&ask(4096)).unwrap().unwrap();
-        // Paused (from a helper's menu, passed on by its agent): no work; an agent's told why and the
+        // Paused (from a member's menu, passed on by its agent): no work; an agent's told why and the
         // pause; a worker's beat hears it; no lease lapses meanwhile.
         let p = Pause::new(Mode::Drain, "the menu bar on m1");
         w.set_pause(Some(&p), p.at).unwrap();
@@ -7884,7 +7884,7 @@ mod tests {
         let (c, port) = start_for_test(&d.path().join("coord"), "m4", "20261005-1508-84142d3");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
-        // One from before agents said (an older helper's ask), or on another: refused, why given.
+        // One from before agents said (an older member's ask), or on another: refused, why given.
         let e = w.ask(&ask(4096)).unwrap_err();
         assert!(
             e.downcast_ref::<client::Refused>().is_some_and(|r| r.why.contains("an older one")
@@ -12490,7 +12490,7 @@ mod tests {
         )
         .is_ok());
         // A tree cover z6 tile: its own hi packs and its mid, never its z3 tile's lo pack or another
-        // z6 tile's; an assembly isn't a helper's.
+        // z6 tile's; an assembly isn't a member's.
         assert!(check_handoff(
             crate::agent::seam::for_tests(),
             &h(
@@ -12904,7 +12904,7 @@ mod tests {
         let job = client::Client::at(vec![format!("http://127.0.0.1:{port}")], job_token, "job");
         assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
         let w2 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], token, "m1");
-        assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
+        assert!(w2.beat(g.lease, None).unwrap(), "the member's lease lives on");
         assert!(!c2.renew(own, None), "this Mac's own ended with its agent");
         assert_eq!(
             w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() })

@@ -824,7 +824,7 @@ fn load_saved(p: &Path) -> (Saved, Vec<u8>) {
 /// step's outputs (crate::agent::steps::outside: the function its job's `Out` wrote by, so an entry
 /// it refuses is one an older app's job, or a damaged one, made); each raw tiles' archive it names
 /// is one of its shard. A shared
-/// step's (what a helper's coordinator checked of its hand-off: crate::coord, `check_handoff`):
+/// step's (what a member's coordinator checked of its hand-off: crate::coord, `check_handoff`):
 /// every change is to a file its step saves for one of the targets it did, every upload it says
 /// is pending one of its saves, every one it says it checked one of those. (Not that its targets
 /// are its lease's: a lead after the one that granted it may not know the lease.)
@@ -1924,13 +1924,13 @@ pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
 }
 
 /// The agents' statuses: the lead's (asked of its coordinator, coordwire::lead::status), then the
-/// members' as the lead has them (its `helpers`: their beats, crate::coord::beats), each with where
+/// members' as the lead has them (its `members`: their beats, crate::coord::beats), each with where
 /// it's from.
 fn statuses(root: &store::nasfs::NasRoot) -> Vec<(String, super::Status)> {
     let home = coordwire::lead::this_macs_agent();
     let Some(v) = coordwire::lead::status(home.as_deref(), Some(root)) else { return Vec::new() };
     let Ok(mut lead) = serde_json::from_value::<super::Status>(v) else { return Vec::new() };
-    let members = std::mem::take(&mut lead.helpers);
+    let members = std::mem::take(&mut lead.members);
     std::iter::once(("the lead's coordinator".to_string(), lead))
         .chain(members.into_iter().map(|h| ("the lead's view".to_string(), h)))
         .collect()

@@ -5,7 +5,7 @@
 //! hand-off (`handoff::write(`, a `Handoff { … }` or `Handoff::default()` made), or names the
 //! manifest's file or the old journal's folder by path, is `Out`
 //! itself, or is listed in `EXEMPT` by file, item and what the line says, with why (a reader's
-//! too, so each new line naming them is looked at): the merge's own paths (the coordinator journaling a helper's
+//! too, so each new line naming them is looked at): the merge's own paths (the coordinator journaling a member's
 //! hand-off, the lead writing today's files from its records),
 //! and the writers of what lies outside the records (the raw tiles' archives a hand-off names). A
 //! new writer fails here until it goes through `Out` or is listed; an exemption that no longer
@@ -39,7 +39,7 @@ fn writes_records(l: &str, c: &str) -> bool {
 /// says (an anchor), with why.
 const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/agentcore/src/coord/mod.rs", "raw_again", "^if let Err(e) = buildstore::handoff::write(&journal.join(buildstore::handoff::RAW_AGAIN),&Handoff { raw,", "a hand-off not taken: its raw tiles' archives alone, kept for the next merge to name (outside the manifest)"),
-    ("crates/agentcore/src/coord/mod.rs", "route", "buildstore::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a helper's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
+    ("crates/agentcore/src/coord/mod.rs", "route", "buildstore::handoff::write(&journal.join(folder(&d.worker)), &h)", "the coordinator journaling a member's hand-off (its job's Out wrote it) while its pool is off: the merge's path"),
     ("crates/buildstore/src/rawpack.rs", "finish_with", "^crate::handoff::write(&dir,&crate::handoff::Handoff { raw:", "a job's raw tiles' archives, named by their area (crate::rawpack::named_for, which the merge checks), outside the manifest"),
     ("crates/agentcore/src/agent/plan.rs", "plan_seen", "\"state/build/manifest.json\"", "reads only the manifest's and the jobs' records' size and time (an idle agent's plan digest, task #154)"),
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),

@@ -123,7 +123,7 @@ pub fn find(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Result
     })
 }
 
-/// The lead's agent's status (agentcore::agent's `Status`, its members' among its `helpers`), asked
+/// The lead's agent's status (agentcore::agent's `Status`, its members' among its `members`), asked
 /// of its coordinator (`/pool/view`'s `status`): None when there's no lead to ask, or it doesn't
 /// answer one.
 pub fn status(home: Option<&Path>, root: Option<&store::nasfs::NasRoot>) -> Option<serde_json::Value> {

@@ -5,7 +5,7 @@
 //! disk) and tells its workers, in its answers to their asks and beats. Each
 //! Mac's agent asks for a pause, or for the build to go on, as that Mac's menu, `scenic pause` or the
 //! map says (`Request`: a file in the agent's folder, taken up within seconds), and passes it on to
-//! the coordinator; a helper that can't reach it pauses itself meanwhile, and one that last heard
+//! the coordinator; a member that can't reach it pauses itself meanwhile, and one that last heard
 //! the build was paused stays paused until it hears otherwise.
 //!
 //! A pause stops the work at its next safe point (`Mode::Drain`): the running job finishes the

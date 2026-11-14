@@ -649,7 +649,7 @@ pub use ::offload::Run;
 
 /// The files a `unit` job saves for a z6 tile (its tile's dash name: `6-31-20`): its base pack, road
 /// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a
-/// helper's hand-off may change (agentcore::coord).
+/// member's hand-off may change (agentcore::coord).
 pub fn saved_files(dash: &str) -> [String; 7] {
     [
         "base",

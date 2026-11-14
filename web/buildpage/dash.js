@@ -1,7 +1,7 @@
 // The whole build at a glance (docs/coordinator.md, The page): the page at the coordinator's root, for anyone it answers.
 // From the coordinator: /api/steps once (the steps table: every step's id, noun, stage and
 // place, docs/pipeline.md), /api/swarm every 10 s (the lead's heartbeat with its checklist,
-// forecast and resources, its helpers', every worker and lease, the hours' work), and
+// forecast and resources, its members', every worker and lease, the hours' work), and
 // /api/history after the last event this page has (what happened; further back for the
 // schedule's past jobs).
 //
@@ -163,22 +163,23 @@ function model(sw) {
   const fresh = (beat) => beat && now - beat < touch;
   const fc = a.forecast && { ...a.forecast, publishes: a.forecast.publishes ?? [] };
   const regionName = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
-  // (Not the lead's own helper file, from while it was a member: it leads now.)
-  const helpers = (a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
+  // (Not the lead's own helper.json, from while it was a member: it leads now. Its members sent as
+  // `helpers` until task #858's follow-up, `members` after: both read.)
+  const members = (a.members || a.helpers || []).filter((x) => x.beat && now - x.beat < touch && x.host !== a.host);
   const leasesOf = (name) => (sw.leases || []).filter((l) => l.worker === name);
-  // Every machine: the lead, then its helpers.
-  const colours = macColours([a.host, ...helpers.map((x) => x.host), ...(sw.workers || []).filter((w) => w.kind === "native").map((w) => w.name)].filter(Boolean));
+  // Every machine: the lead, then its members.
+  const colours = macColours([a.host, ...members.map((x) => x.host), ...(sw.workers || []).filter((w) => w.kind === "native").map((w) => w.name)].filter(Boolean));
   const macs = [];
   if (a.host) macs.push({ name: a.host, role: "lead", status: a, fresh: fresh(a.beat), colour: colours.get(a.host) });
-  helpers.forEach((x) => macs.push({ name: x.host, role: "helper", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: colours.get(x.host) }));
+  members.forEach((x) => macs.push({ name: x.host, role: "member", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: colours.get(x.host) }));
   const colourOf = (name) => macs.find((m) => m.name === name)?.colour || "var(--mac-none)";
   const tasks = typeof sw.tasks === "object" && sw.tasks ? sw.tasks : { all: sw.tasks || 0 };
-  // (A helper Mac that's stopped reporting (its status ten minutes old): the coordinator's word of
+  // (A member Mac that's stopped reporting (its status ten minutes old): the coordinator's word of
   // it, when it last asked.)
-  const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
-  // The steps under way, on any machine: the lead's jobs, its helpers', the leases.
+  const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !members.some((x) => x.host === w.name));
+  // The steps under way, on any machine: the lead's jobs, its members', the leases.
   const running = new Set([...macs.flatMap((x) => jobsOf(x.status)).map((j) => stepOf(j.id)), ...(sw.leases || []).map((l) => l.step)]);
-  return { sw, a, now, touch, fresh, fc, regionName, helpers, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
+  return { sw, a, now, touch, fresh, fc, regionName, members, macs, gone, leasesOf, colourOf, tasks, running, lines: a.checklist || [] };
 }
 
 const stepOf = (id) => String(id || "").split(" ")[0];
@@ -430,7 +431,7 @@ function regionState(r) {
   const left = Object.values(r.left || {}).some((k) => k);
   return !left ? (r.on_map === true ? "on" : "done") : r.rank === 0 ? "building" : "queued";
 }
-// Every running job, the lead's and its helpers' (their status's `jobs`) and the leased (the
+// Every running job, the lead's and its members' (their status's `jobs`) and the leased (the
 // coordinator's leases), with its targets (the history's word: sums.js targetsOf), where it runs,
 // its live data and, for where that's missing, its share done (a status job's progress).
 function mapRuns(m) {
@@ -938,7 +939,7 @@ function machineCard(m, x) {
   // the floor, what's reserved for its jobs' growth, why no job starts; what the guard last did is
   // said on the live block's pressure row.)
   if (st.memory?.said) card.append(h("div", { class: `sub ${st.memory.brake ? "bad" : st.memory.held_back ? "warn" : ""}`, title: "The memory floor: the memory this Mac keeps available (scenic memory, the Settings tab)" }, st.memory.said));
-  card.append(...[x.role === "helper" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
+  card.append(...[x.role === "member" ? fitText(x.worker, x.name) : null, liveBlock(x.name, st.memory?.last)].filter(Boolean));
   return card;
 }
 
@@ -946,7 +947,7 @@ function goneCard(w) {
   // (Still asking the coordinator, its own status not written lately: the NAS, likely.)
   const asking = w.seen_s < 360;
   return h("div", { class: "mc off", style: { borderLeft: "3px solid #7b8590" } },
-    h("div", "top", h("span", "name", w.name), h("span", "role", "helper"), asking ? chip("no status lately", "warn") : chip("out of touch", "bad"), h("span", "right", `last heard ${dur(w.seen_s)} ago`)),
+    h("div", "top", h("span", "name", w.name), h("span", "role", "member"), asking ? chip("no status lately", "warn") : chip("out of touch", "bad"), h("span", "right", `last heard ${dur(w.seen_s)} ago`)),
     h("div", "sub", `Its last word: ${w.what || "–"}`),
     h("div", "sub", asking ? "It asks the lead for work, but its status on the NAS hasn't been written for ten minutes (can it reach the NAS?)." : "Asleep, off, or its agent stopped; its work goes back to the others once its lease lapses."));
 }
@@ -1162,7 +1163,7 @@ async function loadPast(sw) {
 // What a job running now is, as a schedule's run: on its slot's lane, from its start to now, its
 // targets and what it waited on (`after`) as the history names them (sums.js targetsOf, startOf).
 const runningRuns = (m) => m.macs.flatMap((x) => jobsOf(x.status).map((j) => {
-  // (A helper's job is its lease, the one it holds of the step if one alone; its starts aren't the
+  // (A member's job is its lease, the one it holds of the step if one alone; its starts aren't the
   // history's, so none is matched by time.)
   const step = stepOf(j.id), lead = x.name === m.a.host;
   const held = lead ? [] : (m.sw.leases || []).filter((l) => l.worker === x.name && l.step === step);

@@ -49,7 +49,7 @@ pub type PlanRunning = Arc<dyn Fn() -> Option<(u64, &'static str)> + Send + Sync
 #[derive(Clone)]
 pub struct LoopView {
     pub status: Status,
-    /// This Mac's copy (status.json, a helper's helper.json).
+    /// This Mac's copy (status.json, a member's helper.json).
     pub local: PathBuf,
     /// A member's beat to the lead (None leading, or the lead's contact not known yet).
     pub lead: Option<ToLead>,

@@ -148,8 +148,11 @@ struct Status: Decodable {
     let publishing: PublishingInfo?
     /// The build to the end (agents from 2026-10-03 on).
     let checklist: [StageLine]?
-    /// Other Macs helping, building tiles (agents from 2026-10-04 on).
-    let helpers: [Helper]?
+    /// The pool's members building (agents from 2026-10-04 on): sent as `helpers`, read as `members`
+    /// too (task #858: the agent sends `members` once no menu bar reading only `helpers` can run).
+    let helpers: [Member]?
+    let members: [Member]?
+    var memberList: [Member] { members ?? helpers ?? [] }
     /// The build's pause, while it's paused (agents from 2026-10-05 on).
     let pause: PauseInfo?
     /// The regions (their names), and when the build will be done and the map next updated (the
@@ -290,7 +293,7 @@ struct Replay: Decodable {
 }
 
 /// This Mac's own agent's status, as it writes it in its folder (the lead's `status.json`, a
-/// helper's `helper.json`), for its build caches.
+/// member's `helper.json`), for its build caches.
 struct Own: Decodable {
     let host: String
     /// The app its agent runs (the status's `app`).
@@ -484,8 +487,8 @@ struct PauseInfo: Decodable {
     let at: Int
 }
 
-/// A member, as the lead's agent last heard its status (the lead's status's `helpers`).
-struct Helper: Decodable {
+/// A member, as the lead's agent last heard its status (the lead's status's members).
+struct Member: Decodable {
     let host: String
     let beat: Int
     /// Its running jobs (a newer agent's), else its first slot's (`job`).
@@ -524,7 +527,7 @@ struct StageLine: Decodable {
     let items: [Item]?
     let next: [String]?
     let note: String?
-    /// Which of its jobs a helper may do: "all", or the parts by name.
+    /// Which of its jobs a member may do: "all", or the parts by name.
     let shared: String?
 
     /// Its counts in words and whether it's done, as the agent says them (build.rs Line::said, task
@@ -713,9 +716,9 @@ func lowerFirst(_ s: String) -> String {
     return f.lowercased() + s.dropFirst()
 }
 
-/// The helpers heard from lately (one not heard from for `outOfTouch` is left out).
-func freshHelpers(_ r: Reply) -> [Helper] {
-    (r.status?.helpers ?? []).filter { r.now - $0.beat <= outOfTouch(r) }
+/// The members heard from lately (one not heard from for `outOfTouch` is left out).
+func freshMembers(_ r: Reply) -> [Member] {
+    (r.status?.memberList ?? []).filter { r.now - $0.beat <= outOfTouch(r) }
 }
 
 /// The icon's kind for a state as an agent words it (task #846).
@@ -905,7 +908,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         }
     }
     // The other Macs helping, each with every job.
-    for h in freshHelpers(r) {
+    for h in freshMembers(r) {
         if h.allJobs.isEmpty {
             out.append(Line(text: "\(h.host) is helping; nothing for it to build now", style: .small))
             continue
@@ -918,10 +921,10 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
             if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
         }
     }
-    // A Mac's loop stuck (task #899), this Mac's and (on the lead) each helper's.
+    // A Mac's loop stuck (task #899), this Mac's and (on the lead) each member's.
     // (This Mac's only while it's heard from: an out-of-touch agent's said once, above.)
     let here = r.now - s.beat <= outOfTouch(r) ? [(s.host, loopStuck(age: s.loop_age_s, limit: s.loop_stuck_s, phase: s.loop_phase, beat: s.beat, now: r.now))] : []
-    for (host, stuck) in here + freshHelpers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
+    for (host, stuck) in here + freshMembers(r).map({ ($0.host, loopStuck(age: $0.loop_age_s, limit: $0.loop_stuck_s, phase: $0.loop_phase, beat: $0.beat, now: r.now)) }) {
         if let t = stuck { out.append(Line(text: "\(host): \(t)", style: .plain)) }
     }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
@@ -1124,7 +1127,7 @@ struct PoolFile: Decodable {
     let pool: OwnPool
 }
 
-/// This Mac's own agent's status (`Own`): the lead's or a helper's file, the fresher; its pool
+/// This Mac's own agent's status (`Own`): the lead's or a member's file, the fresher; its pool
 /// part from the pool's own view when that's fresher (the status waits for the agent's loop).
 func ownStatus() -> Own? {
     let dir = home.appendingPathComponent("agent")

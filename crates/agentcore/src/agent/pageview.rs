@@ -82,8 +82,8 @@ impl std::fmt::Debug for LeadAt {
     }
 }
 
-/// A member's status older than this (s) isn't shown (as the lead's own `helpers` takes them).
-const HELPER_FRESH_S: u64 = 600;
+/// A member's status older than this (s) isn't shown (as the lead's own `members` takes them).
+const MEMBER_FRESH_S: u64 = 600;
 
 /// What the agent tells it, each loop, from what it holds: this Mac's app, its own lanes now (only
 /// while a page asks: `PageView::wanted`), and where the lead's view is asked (none: not in the
@@ -119,7 +119,7 @@ struct Snap {
     status_at: Option<u64>,
     view: Value,
     pause: Value,
-    helpers: Vec<Value>,
+    members: Vec<Value>,
     /// Each member's addresses, from its heartbeat's broker: where a page reads its `/api/live`.
     macs: Vec<Value>,
     /// When the lead made it (unix s).
@@ -317,14 +317,14 @@ impl PageView {
             Some(s) => s.clone(),
             None => old.map_or(Value::Null, |o| o.status),
         };
-        let helpers = helpers_of(&status, now);
+        let members = members_of(&status, now);
         let macs = v["macs"].as_array().cloned().unwrap_or_default();
         st.snap = Some(Snap {
             status,
             status_at: v["status_at"].as_u64(),
             view: v["view"].clone(),
             pause: v["pause"].clone(),
-            helpers,
+            members,
             macs,
             at: v["at"].as_u64(),
         });
@@ -376,15 +376,18 @@ impl PageView {
     }
 }
 
-/// The members' statuses fresh (`HELPER_FRESH_S`) from the lead's status's `helpers`, trimmed of
-/// what the page doesn't show.
-fn helpers_of(status: &Value, now: u64) -> Vec<Value> {
-    status["helpers"]
+/// The members' statuses fresh (`MEMBER_FRESH_S`) from the lead's status's `members` (sent as
+/// "helpers", read as "members" too: crate::agent::Status::members), trimmed of what the page
+/// doesn't show.
+fn members_of(status: &Value, now: u64) -> Vec<Value> {
+    status
+        .get("members")
+        .unwrap_or(&status["helpers"])
         .as_array()
         .cloned()
         .unwrap_or_default()
         .into_iter()
-        .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < HELPER_FRESH_S)
+        .filter(|h| now.saturating_sub(h["beat"].as_u64().unwrap_or(0)) < MEMBER_FRESH_S)
         .map(|mut h| {
             if let Some(o) = h.as_object_mut() {
                 for k in ["regions", "checklist", "built", "recent"] {
@@ -408,7 +411,7 @@ fn answer(s: &Snap, forecast: Option<&Forecast>, app: &str, now: u64) -> Value {
         if let Some(f) = forecast {
             agent["forecast"] = serde_json::to_value(f).unwrap_or(Value::Null);
         }
-        agent["helpers"] = Value::Array(s.helpers.clone());
+        agent["helpers"] = Value::Array(s.members.clone());
     }
     // (A lead on an app before view.json: no leases, workers nor tasks; its status's own forecast
     // when it writes no input either.)
@@ -812,6 +815,30 @@ pub(crate) mod tests {
         pv.touch_at(now);
         assert!(pv.tick_lead(now));
         assert_eq!(asked(), 2);
+    }
+
+    /// The lead's members read from its status under either name (task #858: sent as "helpers"
+    /// this release), the stale left out; the agent's own Status alike.
+    #[test]
+    fn the_members_are_read_as_helpers_or_members() {
+        let now = 10_000;
+        let m = |host: &str, beat| crate::agent::Status { host: host.into(), beat, ..Default::default() };
+        let lead = crate::agent::Status {
+            host: "m4".into(),
+            beat: now,
+            members: vec![m("m1", now), m("m6", 1)],
+            ..Default::default()
+        };
+        let mut sent = serde_json::to_value(&lead).unwrap();
+        let members = sent.as_object_mut().unwrap().remove("helpers").expect("sent as before");
+        for key in ["helpers", "members"] {
+            let mut status = sent.clone();
+            status[key] = members.clone();
+            let hosts: Vec<Value> = members_of(&status, now).iter().map(|m| m["host"].clone()).collect();
+            assert_eq!(hosts, [serde_json::json!("m1")], "{key}");
+            let st: crate::agent::Status = serde_json::from_value(status).unwrap();
+            assert_eq!(st.members.len(), 2, "{key}");
+        }
     }
 
     /// A lead's coordinator (`crate::coord::start_for_test` in `d/coord`), its agent's status beside

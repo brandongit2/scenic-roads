@@ -1509,7 +1509,7 @@ the id with the clicked point. A reader takes version 8 only.
     strings, the records' `pending` required). Planned: written as a list once the rollback floor
     is task #1002's commit or later.
   - A member's status rides in its beat (docs/coordination.md §3.1); the lead's
-    status (its agent's `status.json`) lists the members' as `helpers` and their heartbeats as `beats`.
+    status (its agent's `status.json`) lists the members' as `helpers` (read as `members` too, task #858) and their heartbeats as `beats`.
 - **The pool** (docs/pool.md):
   - `state/build/records.json` (`{term, seq, manifest,
     keys, pending, sizes, raw, reflected, rejected, last: {step: {target: lease}}}`; `term` the

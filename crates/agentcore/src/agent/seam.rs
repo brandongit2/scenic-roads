@@ -260,7 +260,7 @@ pub trait Plan: Send + Sync {
     fn step_names(&self) -> Vec<&'static str>;
     /// Whether the table has a step of this name.
     fn is_step(&self, step: &str) -> bool;
-    /// The steps a worker takes a shared part of (their jobs given to helpers).
+    /// The steps a worker takes a shared part of (their jobs given to members).
     fn shared(&self) -> &'static [&'static str];
     /// Whether `step` keeps the pass's answers.
     fn answered(&self, step: &str) -> bool;

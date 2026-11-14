@@ -142,7 +142,7 @@ pub struct Line {
     /// kept as the previous pass's outlines, done or not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// Which of its steps a helper may do (crate::agent::steps::SHARED, `mark_shared`): "all", or
+    /// Which of its steps a member may do (crate::agent::steps::SHARED, `mark_shared`): "all", or
     /// the parts by their targets' noun ("candidates and peaks"); none, the lead's alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shared: Option<String>,

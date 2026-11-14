@@ -2476,7 +2476,7 @@ fn run_drop(step: &str, target: &str, drop: impl FnOnce() -> Result<usize>) -> R
 
 /// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
 /// processes held together meanwhile (sampled: a pool's workers summed, an earlier target's peak
-/// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
+/// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a member only
 /// work that fits its memory (agentcore::coord::job_peak); with its inputs' measures (buildstore::costin).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
     write_cost_line(step, target, &done_line(step, target, t0));
@@ -4581,7 +4581,7 @@ fn settle_tails(
 /// A z6 tile's last part, its folder ready: the grids its packs lacked, its scenic results kept for
 /// its next run, its base pack, road values, road ids and roads' English saved, its folders
 /// removed, and what it cost noted. `how`: where its tail's last steps ran. (What it saves is
-/// `roads::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
+/// `roads::unit::saved_files`, all a member's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let Built { u, dir, bdir, rep, carry, piece, t, peak, group, disk, mut sizes, pieces, .. } = b;
     use roads::unit::{owns, stage as unit_stage};

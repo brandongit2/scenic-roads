@@ -1816,7 +1816,7 @@ impl Planner {
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("a region's recipe or outline changed {} min ago: their work starts in {left} min, after any more edits", age.as_secs() / 60) });
             plan.clear();
         }
-        // A catalogue waits while a helper's hand-offs of its map tiles or road index wait to be
+        // A catalogue waits while a member's hand-offs of its map tiles or road index wait to be
         // merged (counted as done, their files not yet in the manifest).
         // (Held so since the gate first held past publish::CATALOGUE_CAP_S: it goes, the regions those
         // hand-offs touch left out of `--ready`, build::plan's.)
@@ -1833,9 +1833,9 @@ impl Planner {
             waiting.push(Waiting {
                 step: Some("catalog".into()),
                 what: "publish".into(),
-                why: "waits for a helper's work to be merged".into(),
+                why: "waits for a member's work to be merged".into(),
             });
-            planned.publishing.why = "the map update waits for a helper's work to be merged".into();
+            planned.publishing.why = "the map update waits for a member's work to be merged".into();
             plan.retain(|w| w.step != "catalog");
         }
         // (When a catalogue was first held back, kept in the lead's record; none held, none to make
@@ -2164,7 +2164,7 @@ impl Planner {
     /// work can't all be listed now. None of it done whose record the plan didn't read (the
     /// coordinator's done set at that key: a plan made as its job ended, task #1375). Each target's time (at
     /// the lead's pace: a time measured on a member over its speed) and memory as last measured,
-    /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
+    /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the members at
     /// their measured speed; each machine free once its job under way is done. As data
     /// (forecast::Record), run off the loop (`start_forecast`).
     #[allow(clippy::too_many_arguments)]
@@ -2253,8 +2253,8 @@ impl Planner {
         // Each worker's speed against the lead's, from the history (half until it's measured):
         // every one that measured a cost or did shared work, asleep or not (its costs are put at the
         // lead's pace by it); the members heard from lately are the machines.
-        let helpers: Vec<Status> = helpers(&self.host, self.inp.beats.as_deref());
-        let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
+        let members: Vec<Status> = members(&self.host, self.inp.beats.as_deref());
+        let mut names: BTreeSet<String> = members.iter().map(|h| h.host.clone()).collect();
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
         names.extend(
             events.iter().filter(|e| matches!(e.kind.as_str(), "done" | "lease")).filter_map(|e| e.worker.clone()),
@@ -2442,7 +2442,7 @@ impl Planner {
         // may run that fits, as the coordinator packs its asks (task #383).
         let caps: BTreeMap<String, crate::coord::Capacity> =
             self.coord.as_ref().map(|c| c.capacities().into_iter().collect()).unwrap_or_default();
-        for h in &helpers {
+        for h in &members {
             // (A member paused alone (jobrt::control::Hold) has no lanes: its jobs are given back at
             // their next safe point, and it takes nothing new until it's resumed.)
             if h.held.is_some() {

@@ -7,7 +7,7 @@
 //!   with the others' heartbeats (`members`), its own among them: the members learn each other's
 //!   brokers and the lead's from the lead, not the NAS. The lead's readers of a member's heartbeat
 //!   (crate::agent::poolside::Side::read_heartbeat) and of the members' statuses (the status's
-//!   `helpers`) read these first.
+//!   `members`) read these first.
 //! - **On a member** the lead's answer fills the same registry (`answered`); its leases released
 //!   wait for the agent's loop (`take_released`).
 //! - **The words** a beat and an answer say (`SPEAKS`, `VIEW`, `ASKS`, `HANDOFF`, `BUDGETS`,

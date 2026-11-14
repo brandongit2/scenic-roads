@@ -254,7 +254,7 @@ export const mapTargets = (step, targets) => (/-root$/.test(step || "") ? ["0/0/
 export const savedView = (v) => { const { offAreas, ...rest } = v || {}; return offAreas && !rest.offLevels ? { ...rest, offLevels: offAreas } : rest; };
 const tileWords = (s) => String(s || "").split(/\s+/).filter((w) => tileOf(w));
 
-// A running job's targets: a lead's or helper's job (`{step, id, started}`) as its "start" event
+// A running job's targets: a lead's or member's job (`{step, id, started}`) as its "start" event
 // names them (its step's, within 10 s of its start: its id names the first alone), a leased one
 // (`{job, what}`: a coordinator's lease, its run's job id) as its "lease" event does; else the tiles
 // its id or words name.

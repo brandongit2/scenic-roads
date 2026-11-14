@@ -574,7 +574,7 @@ fn job_line(j: &agent::JobView) -> String {
 
 /// Each Mac's lines (`scenic status`): this Mac's first, marked with its part in the pool
 /// (`Status::role`: "lead, coordinator", "member", or out of the pool and why), with its ramp; then
-/// each member building (`Status::helpers`); then any other the coordinator holds a capacity of.
+/// each member building (`Status::members`); then any other the coordinator holds a capacity of.
 /// Under each: its capacity (coord::Capacity) and NAS share, a line per running job, and why
 /// nothing more runs (the packing's refusal, `Status::packing`).
 fn macs_lines(st: &agent::Status) -> Vec<String> {
@@ -584,7 +584,7 @@ fn macs_lines(st: &agent::Status) -> Vec<String> {
         format!("{} · {} · {} running{ramp}", st.host, st.role(), plural(jobs_of(st).len(), "job")),
         Some(st),
     )];
-    for h in &st.helpers {
+    for h in &st.members {
         // (A member out of the pool says so, and why.)
         let part = if h.out_of_pool.is_some() { h.role() } else { "member".into() };
         let head = format!("{} · {part} · {} running · seen {}", h.host, plural(jobs_of(h).len(), "job"), ago(h.beat));
@@ -900,7 +900,7 @@ fn status(places: &cli::Places, flags_since: Option<u64>) -> Result<()> {
         }
     }
     // Each Mac's build caches (agent::room): what a clear would free, the last clear.
-    for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.helpers.iter().map(|h| (&h.host, &h.caches))) {
+    for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.members.iter().map(|h| (&h.host, &h.caches))) {
         if let Some(c) = c {
             println!("Caches on {host}: {}", caches_line(c));
         }
@@ -1897,7 +1897,7 @@ mod tests {
         for n in 0..=4 {
             let mut st = with("m4", n, true);
             assert!(st.job.is_none() && st.beside.is_none() && st.more.is_empty(), "the old fields not written");
-            st.helpers = vec![with("m1", 4 - n, false)];
+            st.members = vec![with("m1", 4 - n, false)];
             st.capacity = vec![("m4".into(), agentcore::coord::Capacity { limit_mb: 20 << 10, ..Default::default() })];
             st.packing = [("m1".to_string(), "cores: 0 of 8 left".to_string())].into();
             st.nas_share = [("m4".to_string(), 250), ("m1 #2".to_string(), 100)].into();
@@ -1955,7 +1955,7 @@ mod tests {
             macs_lines(&st)
         );
         let mut lead = agent::Status { host: "m4".into(), pool: Some(pooled("lead")), ..Default::default() };
-        lead.helpers = vec![st];
+        lead.members = vec![st];
         let l = macs_lines(&lead).join("\n");
         assert!(l.contains("m1 · not in the pool: waiting to join (its member's lock is held) · 0 jobs"), "{l}");
     }

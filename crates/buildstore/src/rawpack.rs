@@ -20,7 +20,7 @@
 //! there leaves nothing behind (its temporary file is swept a day later too). An archive the index
 //! names that's gone from the NAS is passed over and taken out of it. The lead alone changes
 //! the index (it alone writes the build's records: crate::out::check_writer), under its build lock.
-//! A helper's jobs pack too, every loose tile in its cache (`SCENIC_HANDOFF`): they put their
+//! A member's jobs pack too, every loose tile in its cache (`SCENIC_HANDOFF`): they put their
 //! archives on the NAS unlisted and hand them off; the lead names them as it merges the
 //! hand-off (`name_handed`). One a day old that's still neither named nor listed (its hand-off
 //! never came) is listed to go then, so it's deleted a day after that.
@@ -76,7 +76,7 @@ pub struct Pack {
 /// the NAS's `packs/index.json` keeps it); and the archives on the NAS it doesn't name, with when they
 /// were listed (unix seconds): deleted GRACE later. Of those, the ones merged away (`merged`): a
 /// hand-off naming one again (a lead's records still holding it) leaves it to go, where one only not
-/// yet named (a helper's, its hand-off late) is named.
+/// yet named (a member's, its hand-off late) is named.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     #[serde(rename = "areas")]
@@ -102,7 +102,7 @@ impl Index {
     /// name none of them, and the sweep would then delete them all. Nothing is changed until it's
     /// back.
     /// (`naming`: the archives about to be named, `name_handed`'s: a store whose only archives are
-    /// those never had an index, as when a helper put the first ones.)
+    /// those never had an index, as when a member put the first ones.)
     fn load_to_change(store: &store::nasfs::NasPath, naming: &[&str]) -> Result<Index> {
         if let Err(e) = store.join(INDEX).metadata() {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -575,7 +575,7 @@ impl Packer {
         if group.is_empty() {
             return Ok(());
         }
-        // A helper's: on the NAS whole, then handed off (`finish`); the index isn't its to change.
+        // A member's: on the NAS whole, then handed off (`finish`); the index isn't its to change.
         if self.handoff.is_some() {
             for (shard, p) in group {
                 self.put(&p)?;
@@ -734,7 +734,7 @@ impl Packer {
             }
             drop_copy(&self.dir.join("packs").join(&name));
         }
-        // An archive on the NAS the index neither names nor lists to go, a day old: a helper's whose
+        // An archive on the NAS the index neither names nor lists to go, a day old: a member's whose
         // hand-off never came. Listed to go (GRACE later), as a replaced one. (Never from an index
         // that was missing: `load_to_change` refuses one while there are archives; nor while the
         // index names nothing, besides.)
@@ -760,7 +760,7 @@ impl Packer {
     }
 }
 
-/// The archives a helper's jobs put on the NAS (crate::handoff::Handoff::raw), named in `store`'s
+/// The archives a member's jobs put on the NAS (crate::handoff::Handoff::raw), named in `store`'s
 /// index, each that's there whole (one that isn't goes as an unnamed one does; one the NAS can't
 /// answer for now is in `Named::again`, kept on the lead's records); how many were new
 /// to it. One its shard names already, or that the index lists as merged away, is passed over
@@ -1008,7 +1008,7 @@ fn pack_local_to(
         return Ok(0);
     }
     let mut p = Packer::open(dir, store, root, handoff)?;
-    // (A helper keeps none: a member's disk is small, and the NAS has them.)
+    // (A member keeps none: a member's disk is small, and the NAS has them.)
     p.keep = keep && p.handoff.is_none();
     let mut packed = Vec::new();
     let (n, mut said) = (loose.len() as u64, std::time::Instant::now());
@@ -1416,7 +1416,7 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");
         std::fs::create_dir_all(&outbox).unwrap();
-        // The NAS's store names one shard's archive already; a helper fetched more of it, and another.
+        // The NAS's store names one shard's archive already; a member fetched more of it, and another.
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local(
             &dir,
@@ -1535,7 +1535,7 @@ mod tests {
         let (store, dir, root) = nas(d.path());
         let outbox = d.path().join("outbox");
         std::fs::create_dir_all(&outbox).unwrap();
-        // A store with no index yet: a helper's archives are its first.
+        // A store with no index yet: a member's archives are its first.
         put(&dir, "12/2048/1365.png", &png(), 120);
         pack_local_to(
             &dir,
@@ -1648,7 +1648,7 @@ mod tests {
             true,
         )
         .unwrap();
-        // A helper's archive whose hand-off never came: a day old, and a fresh one.
+        // A member's archive whose hand-off never came: a day old, and a fresh one.
         let (stale, fresh) =
             (store.join("packs/6-1-1.0123456789abcdef.tiles"), store.join("packs/6-1-2.0123456789abcdef.tiles"));
         std::fs::write(&stale, b"x").unwrap();
@@ -1776,7 +1776,7 @@ mod tests {
             true,
         )
         .unwrap();
-        // A helper's archive of the shard, handed off and named.
+        // A member's archive of the shard, handed off and named.
         put(&dir, "12/2049/1344.png", &png(), 120);
         pack_local_to(
             &dir,
@@ -1792,7 +1792,7 @@ mod tests {
         let lock = crate::out::BuildLock::take(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert_eq!(name_handed(&store::nasfs::NasPath::local_for_test(&store), &raw, &lock).unwrap().new, 1);
         drop(lock);
-        // More of the shard: its archives merged into one, the helper's among them (on the NAS a day).
+        // More of the shard: its archives merged into one, the member's among them (on the NAS a day).
         for y in 0..4 {
             put(&dir, &format!("12/2050/{}.png", 1344 + y), &png(), 120);
         }

@@ -2213,7 +2213,7 @@ fn world_key(step: &str, x: &KeyCtx) -> Option<String> {
 /// and what was done (`done`). `inputs`: digests of what jobs read from `inputs/` (not in the
 /// manifest), by name: "keys" (the key names inputs/keys.env holds), "regions" (the regions' accepted version). `tiles`: the
 /// terrain packs' indexes, which the z6 tiles' keys read (`unit_terrain`). The agent runs
-/// the first work not waiting out a failure; a helper takes a step's from the far end (the agent
+/// the first work not waiting out a failure; a member takes a step's from the far end (the agent
 /// offers each step's targets together, in this order). The order (docs/building.md §2, Order):
 /// - the heritage sites the z6 tiles read;
 /// - publishing, as soon as the records change (`publish_chain`): what the coverage no longer
@@ -2382,7 +2382,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
     // The trains' and the landmarks' chains: from the start, each step once what it reads is built
     // (`landmarks_work`: none waits for the z6 tiles but the overlays), listed after the regions'
     // work. A slot beside the regions' work takes them (crate::agent: every job by grant, packed by
-    // its measures), a helper the candidates and peaks.
+    // its measures), a member the candidates and peaks.
     let chains = |last: bool, left: &mut Left| -> (Vec<Work>, Vec<(String, String)>) {
         let (lw, held) = landmarks_work(x, done, left, last, updates.way);
         (rail_chain(x, done).into_iter().chain(lw).collect(), held)
@@ -4401,7 +4401,7 @@ fn next_of(works: &[Work]) -> Vec<String> {
     runs.into_iter().map(|(s, n)| super::steps::said(s, n)).collect()
 }
 
-/// Marks each line whose steps a helper may do: all of them, or which (by their targets' noun, a
+/// Marks each line whose steps a member may do: all of them, or which (by their targets' noun, a
 /// step's title where the noun says nothing).
 pub fn mark_shared(lines: &mut [Line]) {
     for l in lines {
@@ -7586,7 +7586,7 @@ mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         unit_inputs(&mut m, "2026-09-28");
         let mut done = Keys::default();
-        // The heritage sites first (one job: a helper's z6 tiles then wait only for the terrain).
+        // The heritage sites first (one job: a member's z6 tiles then wait only for the terrain).
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(
             w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(),
@@ -8338,7 +8338,7 @@ mod tests {
                 "trees 6/22/16,6/22/17,6/28/16,6/28/17"
             ]
         );
-        // g's terrain z6 tiles made: their z3 tile's assembly, ahead of a's terrain (a helper takes a's
+        // g's terrain z6 tiles made: their z3 tile's assembly, ahead of a's terrain (a member takes a's
         // from the far end); then g's z6 tile.
         terrain_did(&mut m, &mut done, &w[0]);
         let w = plan(&m, &done);

@@ -1360,7 +1360,7 @@ pub fn job<T>(kind: &str, f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Resu
     r
 }
 
-/// A record as another worker sent it (a page's, a helper's): None where it doesn't read, so a
+/// A record as another worker sent it (a page's, a member's): None where it doesn't read, so a
 /// done is never refused for its timings.
 pub fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<RunRec>, D::Error> {
     let v: Option<serde_json::Value> = Option::deserialize(d)?;

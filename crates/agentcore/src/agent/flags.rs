@@ -248,7 +248,7 @@ pub fn stale(st: &Status, runs: &[Run], factor: f64, now: u64) -> Option<Flag> {
 
 /// Whether Mac `mac` is paused alone, as its own status says (the lead's, or a member's).
 fn held(st: &Status, mac: &str) -> bool {
-    std::iter::once(st).chain(st.helpers.iter()).any(|s| s.host == mac && s.held.is_some())
+    std::iter::once(st).chain(st.members.iter()).any(|s| s.host == mac && s.held.is_some())
 }
 
 /// The idle flags (the module's doc): one per Mac refused a job.
@@ -475,7 +475,7 @@ pub fn look(st: &Status, alert: Option<&str>, since: u64, now: u64) -> Vec<Strin
             out.push(format!("warning: the lead's loop stuck for {}{phase}", span(age)));
         }
     }
-    for h in &st.helpers {
+    for h in &st.members {
         if now.saturating_sub(h.beat) > touch {
             out.push(format!("warning: {} out of touch for {}", h.host, span(now.saturating_sub(h.beat))));
         }
@@ -484,12 +484,12 @@ pub fn look(st: &Status, alert: Option<&str>, since: u64, now: u64) -> Vec<Strin
         .capacity
         .iter()
         .map(|(n, _)| crate::paces::mac_of(n))
-        .filter(|m| *m != st.host && !st.helpers.iter().any(|h| h.host == *m))
+        .filter(|m| *m != st.host && !st.members.iter().any(|h| h.host == *m))
         .collect();
     for m in unheard {
         out.push(format!("warning: {m}: its status not heard lately (asleep, away, or its agent down)"));
     }
-    for s in std::iter::once(st).chain(st.helpers.iter()) {
+    for s in std::iter::once(st).chain(st.members.iter()) {
         for d in s.recent.iter().filter(|d| !d.ok && !d.cancelled && d.ended >= since) {
             let why = d.note.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
             out.push(format!("failed: {}: {} ({}), {}", s.host, d.what, d.id, why));
@@ -610,9 +610,9 @@ mod tests {
         assert!(idle(crate::agent::seam::for_tests(), &st, &[]).is_empty());
         // A Mac paused alone isn't flagged; nor is any while the build is paused.
         st.waiting = vec![wait("slope-hi", "wait for terrain-root")];
-        st.helpers.push(Status { host: "m1".into(), held: Some(jobrt::control::Hold::new("t")), ..Default::default() });
+        st.members.push(Status { host: "m1".into(), held: Some(jobrt::control::Hold::new("t")), ..Default::default() });
         assert!(idle(crate::agent::seam::for_tests(), &st, &[]).is_empty());
-        st.helpers.clear();
+        st.members.clear();
         st.pause = Some(jobrt::control::Pause::new(jobrt::control::Mode::Drain, "t"));
         assert!(of(crate::agent::seam::for_tests(), &st, &[], &[], 3.0, 0).is_empty());
     }
@@ -706,7 +706,7 @@ mod tests {
         );
         // A Mac paused alone isn't flagged.
         let mut st = lead();
-        st.helpers.push(Status { host: "m1".into(), held: Some(jobrt::control::Hold::new("t")), ..Default::default() });
+        st.members.push(Status { host: "m1".into(), held: Some(jobrt::control::Hold::new("t")), ..Default::default() });
         assert!(stuck(&st, &[run("terrain-hi", 20 * 60, Some(240))], 3.0).is_empty());
     }
 
@@ -835,7 +835,7 @@ mod tests {
         let mut st = Status { host: "mini".into(), beat: now - 5, out_of_touch_s: 300, ..Default::default() };
         st.flags.push(Flag { kind: "idle".into(), mac: "m4".into(), said: "m4 has a slot free".into() });
         st.recent = vec![done("slope-deep 10/1/1", false, now - 10), done("pack 6/1/1", false, now - 9_000)];
-        st.helpers.push(Status {
+        st.members.push(Status {
             host: "m4".into(),
             beat: now - 1_000,
             recent: vec![done("unit 6/2/2", true, now)],

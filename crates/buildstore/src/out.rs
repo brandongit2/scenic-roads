@@ -11,7 +11,7 @@
 //!
 //! Several steps may run at once on the lead (the agent's job and a manual one): each records
 //! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
-//! when it saves. A helper's job on the other Mac (docs/building.md §2, The pool; `SCENIC_HANDOFF`)
+//! when it saves. A member's job on the other Mac (docs/building.md §2, The pool; `SCENIC_HANDOFF`)
 //! saves its changes as hand-offs instead (crate::handoff), which the lead's agent merges: the
 //! lead alone writes the manifest.
 //!
@@ -74,7 +74,7 @@ pub struct Out {
     manifest_path: NasPath,
     /// Local scratch space for files before upload.
     pub scratch: PathBuf,
-    /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
+    /// A member's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
     handoff: Option<PathBuf>,
     /// The step whose job this is, and its write set (`open`): it puts and removes only the names
     /// its outputs function gives, and a name outside them fails the job. None: no step (the agent
@@ -305,7 +305,7 @@ impl Out {
                 serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display()))?;
             lay_over(&mut manifest, &h);
         }
-        // (A helper's job hands off only its own uploads.)
+        // (A member's job hands off only its own uploads.)
         let pending = if handoff.is_some() { Default::default() } else { records.pending };
         Ok(Out {
             root: root.clone(),
@@ -714,7 +714,7 @@ impl Out {
     }
 
     /// Writes this run's changes into the manifest on disk (re-read under a lock, so another step's
-    /// changes saved meanwhile are kept), and the unverified uploads likewise. A helper's job hands
+    /// changes saved meanwhile are kept), and the unverified uploads likewise. A member's job hands
     /// them off instead (crate::handoff): in the pool, every job's (`check_writer`).
     pub fn save(&mut self) -> Result<()> {
         self.save_upto(self.mark())
@@ -1349,7 +1349,7 @@ mod tests {
         assert!(read_record::<BTreeMap<String, u64>>(&store::nasfs::NasPath::local_for_test(&root.join(SIZES)))
             .unwrap()
             .is_empty());
-        // A helper's job hands them off.
+        // A member's job hands them off.
         let hd = d.path().join("handoff");
         let mut out = Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("scratch"))
             .unwrap()
@@ -1513,7 +1513,7 @@ mod tests {
         out.reused.clear();
         assert_eq!(out.store_bytes("sources/inputs/_gate-test/a", "jsonl", b"the same lines").unwrap(), copy);
         assert!(cdest.exists() && out.pending.contains(&copy) && !out.reused.contains(&copy));
-        // A helper's save hands the reused names off with its changes.
+        // A member's save hands the reused names off with its changes.
         let hd = d.path().join("handoffs");
         out.handoff = Some(hd.clone());
         out.reused.insert(name.clone());

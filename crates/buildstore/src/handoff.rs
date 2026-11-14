@@ -105,7 +105,7 @@ fn stamp(name: &str) -> Option<u128> {
     name.split('-').next()?.parse().ok()
 }
 
-/// The hand-offs a job wrote into `dir` (a helper's outbox folder: named by time, as `write` names
+/// The hand-offs a job wrote into `dir` (a member's outbox folder: named by time, as `write` names
 /// them), in the order written; None when one is damaged (its saves can't all go back: its z6 tiles are
 /// built again).
 pub fn written_in(dir: &Path) -> Result<Option<Vec<Handoff>>> {

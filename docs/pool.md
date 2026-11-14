@@ -1898,7 +1898,7 @@ the plan's thread does the same with its own phases ("the plan's phase \"build::
 part's kept apart (`nasread::LOOP`, `nasread::PLAN`), so a plan's phase never ends or stretches the
 round's. These lines carry the time of day (UTC).
 
-The heartbeat (the agent's `status.json`, or a helper's `helper.json`, in its folder) is not
+The heartbeat (the agent's `status.json`, or a member's `helper.json`, in its folder) is not
 the round's to write: the agent's beat writes it (crate::agent::beat, docs/agent-parts.md §4.2,
 task #871) every 10 s on a timer of its own and at once on a change, from the view the round last
 published, so a long round or a hung share leaves it beating (and the plan and the checklist,

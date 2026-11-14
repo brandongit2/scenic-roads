@@ -2607,7 +2607,7 @@ pub fn speeds(
     the_plan: &dyn crate::agent::seam::Plan,
     events: &[crate::coord::history::Event],
     lead: &str,
-    helpers: &[String],
+    members: &[String],
     default: f64,
 ) -> BTreeMap<String, (f64, bool)> {
     // (worker, step) → seconds a target.
@@ -2620,7 +2620,7 @@ pub fn speeds(
         }
     }
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
-    helpers
+    members
         .iter()
         .map(|h| {
             let mut ratios: Vec<f64> = the_plan
