@@ -199,6 +199,49 @@ fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
         out(r).manifest.into_iter().filter(|(l, _)| l.contains("/available-built-")).collect()
     };
     assert_eq!(files(d.path()), files(fresh.path()));
+    // (Paused again and again, at safe points all through, over a fine dataset's packs: the same
+    // files in the end, no z6 tile lost or made twice.)
+    let (tx, ty) = z10(2.25, 44.25);
+    let b = roadcore::geo::tile_box(BUILT_MAXZ, tx, ty);
+    let fine = || {
+        dataset(
+            "fine",
+            None,
+            Has::Present {
+                crs: 4326,
+                footprints: vec![[b[0] - 0.5, b[1] - 0.5, (b[0] + b[2]) / 2.0, b[3] + 0.5]],
+                tiles: Some([(tx, ty)].into_iter().collect()),
+            },
+        )
+    };
+    let ds = [fine(), everywhere("world")];
+    let paused = tempfile::tempdir().unwrap();
+    let n = std::cell::Cell::new(0u32);
+    let pausing = || {
+        n.set(n.get() + 1);
+        n.get() % 701 == 0
+    };
+    let (mut pauses, mut made) = (0, 0);
+    loop {
+        let mut o = out(paused.path());
+        match build_with(&mut o, &ds, &|_, _| {}, &pausing) {
+            Ok(m) => {
+                o.save().unwrap();
+                made += m.remade.len();
+                break;
+            }
+            Err(e) => {
+                assert!(jobrt::control::is_paused(&e), "{e:#}");
+                pauses += 1;
+                made += 701;
+            }
+        }
+    }
+    assert!(pauses >= 5, "{pauses}");
+    assert_eq!(made, 4096, "each z6 tile made once");
+    let whole = tempfile::tempdir().unwrap();
+    run(whole.path(), &ds);
+    assert_eq!(files(paused.path()), files(whole.path()));
 }
 
 /// Past 85.05° the pole's square: a stored dataset holding the pole there; the Web Mercator

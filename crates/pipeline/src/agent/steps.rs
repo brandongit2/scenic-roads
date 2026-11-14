@@ -1386,7 +1386,8 @@ pub const TABLE: [Step; 65] = [
     // The data-available layers of the data built into the map (terrain::available::built;
     // docs/steps.md §14): a pixel the dataset the terrain took its heights from, from the datasets'
     // coverage, the input check's measures, the store's fill masks and the pyramids' stores (it
-    // waits for their fill), made again only where a dataset moved. The lead's: it reads the store.
+    // waits for their fill), made again only where a dataset moved. Any member's, as `available`'s: it
+    // reads the store's masks over the NAS.
     Step {
         versions: &[("available-built", || terrain::available::built::KEY_V.to_string())],
         reads: &[In { name: "elevation", of: idents::built_datasets }, All { step: "pyramids-fill", grain: Grain::Read(idents::nothing) }],

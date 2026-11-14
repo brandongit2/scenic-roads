@@ -1010,8 +1010,11 @@ place holding the dataset the terrain took its heights from. **Built** (task #13
 #1348, below); the built set (task #1349): the step `available-built` (below) and the same server
 and app parts in its order. **Planned:** `piece.dataset`, a source's piece taking its extent from
 the dataset the build holds (task #1403, below). The map's regions play no part in the best set;
-in the built set they enter only as the build's own cut of where a dataset is used (its
-`regions`, §6.8), which is what the map has built in.
+in the built set they enter as the build's own cut of where a dataset is used (its `regions`,
+§6.8). Not drawn yet (planned): the terrain past `NEAR_COVERAGE_KM` of every region is the relief
+(Terrain, the rule: `Fill::Relief`, the datasets published at every zoom), whatever the datasets
+there; the built set draws the order's first with data there, so open sea in a coastal GLO-30 tile
+more than ~20 km from the regions shows GLO-30 where the terrain read Terrarium.
 
 **The step** `available` (terrain::available; stage `finish`, a target per theme,
 `available-<theme>` for a theme whose accepted extents have pieces, recorded with the worldwide steps' keys; `extents` is taken in the build: the
@@ -1126,17 +1129,20 @@ never its heights:
   pixel's set is the union of the four under it, as the best set's; the server draws the first in
   order of a union (below).
 - **Its key** is its version (`built::KEY_V`), the elevation unit's datasets each by its keyed
-  digest (`idents::built_datasets`: `id keyed`, the declaration and its measures), and the
-  pyramids' fill (`pyramids-fill`, waited for: its stores' indexes are read). A z6 tile's (and a
-  pole's square's) key names the datasets meeting it: each one's line, where its regions cut it
-  there (`declared::cut_note`), its presence tiles there, and a pyramid's store's archives in the
-  z6 tile's shard; so a dataset fetched again, a region's outline or a pyramid's fill makes again
-  only the z6 tiles it moved. The record (`work/available-built-terrain/mids`), the z6 tiles made
+  digest (`idents::built_datasets`: `id keyed`, the declaration and its measures); it waits for
+  every `pyramids-fill` (its stores' indexes are read), whose fills its key doesn't name (they
+  write no record): a fill alone doesn't run it again (planned). A z6 tile's (and a pole's
+  square's) key names the datasets meeting it: each one's line, where its regions cut it there
+  (`declared::cut_note`), its presence tiles there, and a pyramid's store's archives in the z6
+  tile's shard; so a run after a dataset fetched again, a region's outline moved or a pyramid's
+  fill makes again only the z6 tiles they moved. The record (`work/available-built-terrain/mids`), the z6 tiles made
   again or dropped, the root and the polar caps (`available-built-terrain-<n|s>`, the pole's grid
   at 1,024 m) are the best set's (`super::drive`, one code for both).
 - **Its datasets' descriptions** beside the tiles (`layers/available-built-terrain/datasets`, a
   JSON list in the order, docs/formats.md): what the server shows of each.
-- **Read on the lead or the Mac mini**, where the NAS is near: the step reads the store's masks.
+- **Any member may run it**, as `available` (no placement of its own): it reads the store's masks
+  over the NAS (one open and one window a GLO-30 mask file: 26,450 of them), so a Mac near the NAS
+  runs it fastest.
   Measured on the Mac mini over the NAS (14 Nov, 14 datasets, a run from nothing): 16 min 17 s,
   77 % of it waiting on the NAS, a peak resident set of 1.25 GB; 4,096 z6 tiles made, 2,524 packs
   holding 349,608 tiles (228 MB), the record 4.2 MB, the polar caps 108 kB. Its target is one
@@ -1145,8 +1151,12 @@ never its heights:
   the record is written with the keys of the tiles made so far and the records saved, and the job
   ends as paused (Err(`Paused`), `stop_if_paused`); its next run makes the rest, then the root and
   the caps.
-- **Tests** (terrain::available::built's): a pause keeping the z6 tiles made, the next run making
-  the rest and ending with a whole run's files; the first dataset with data used (a fine dataset in its
+- **Tests** (terrain::available::built's): each point's dataset the terrain's sampler's
+  (`each_points_dataset_is_the_samplers_first`: inputs::dem::generic run over stored datasets made
+  by hand, a coverage cut, nodata, a fill mask's voids and two overlapping files of one dataset,
+  against the built set's reading at 20,000 points); a pause keeping the z6 tiles made, the next
+  run making the rest and ending with a whole run's files, and paused again and again all through,
+  each z6 tile made once and the same files; the first dataset with data used (a fine dataset in its
   presence tile and footprint, the next one past its footprint and outside its presence), nothing
   stored past z10; a fill mask's voids and a coverage cut the next dataset's; a dataset moved
   making only its z6 tiles again; the polar caps; a pyramid's stored tiles with data its own. The

@@ -134,7 +134,7 @@ export class AvailableSection {
     const built = isBuilt(set);
     this.availRow.hidden = built;
     this.noteEl.textContent = built
-      ? 'Each place shows the elevation dataset the map’s terrain and roads take their heights from. Zoomed out, a pixel shows the finest one used anywhere under it. Click the map for the dataset there and how its extent was read.'
+      ? 'Each place shows the elevation dataset the map’s terrain and roads take their heights from. Zoomed out, a pixel shows the first in the terrain’s order of those used under it. Click the map for the dataset there and how its extent was read.'
       : 'Zoomed out, a pixel shows the best data anywhere under it, so small areas of fine data stay in sight. Click the map for every source there. Places nobody has looked into yet show nothing.';
     this.layer = desc ? shown(s, desc).layer : null;
     this.scaleBox.hidden = !this.layer;
