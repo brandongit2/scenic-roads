@@ -144,7 +144,14 @@ pub fn datasets(a: &inputs::inputs::Accepted, root: &store::nasfs::NasRoot) -> R
             "metrics": {"surface": d.declaration.surface},
             "read": {"method": method, "grain_m": grain_m},
         });
-        out.push(Dataset { id: d.id.clone(), line: format!("{} {}", d.id, d.keyed), measured: d.measured, cover, has, info });
+        out.push(Dataset {
+            id: d.id.clone(),
+            line: format!("{} {}", d.id, d.keyed),
+            measured: d.measured,
+            cover,
+            has,
+            info,
+        });
     }
     Ok(out)
 }
@@ -173,7 +180,12 @@ fn meets(a: &[f64; 4], b: &[f64; 4]) -> bool {
 /// projected.
 fn native(crs: u16, b: [f64; 4]) -> [f64; 4] {
     if inputs::dem::proj::projected(crs) {
-        declared::native_box(crs, b, 1000.0).unwrap_or([f64::NEG_INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY])
+        declared::native_box(crs, b, 1000.0).unwrap_or([
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::INFINITY,
+        ])
     } else {
         b
     }
@@ -317,7 +329,13 @@ fn near<'a>(d: &'a Dataset, b: [f64; 4], px_m: f64, shard: Option<(u32, u32)>) -
             for (url, fp, mask) in files.iter().filter(|f| meets(&f.1, &nb)) {
                 let Some(s) = inputs::dem::generic::stored(&d.id, dir, url, None)? else { continue };
                 let t = buildstore::geotiff::Tiff::open(s.read)?;
-                let lat = if fp[1] > 0.0 { fp[1] } else if fp[3] < 0.0 { fp[3] } else { 0.0 };
+                let lat = if fp[1] > 0.0 {
+                    fp[1]
+                } else if fp[3] < 0.0 {
+                    fp[3]
+                } else {
+                    0.0
+                };
                 let level = level_for(&t, geographic, if geographic { lat } else { 0.0 }, px_m)?;
                 let gt = t.transform(level)?;
                 let img = t.level(level)?.clone();
@@ -345,7 +363,14 @@ fn near<'a>(d: &'a Dataset, b: [f64; 4], px_m: f64, shard: Option<(u32, u32)>) -
                     .collect();
                 windows.push((
                     *fp,
-                    Window { gt, c0: i64::from(c0), r0: i64::from(r0), w: i64::from(c1 - c0), h: i64::from(r1 - r0), data },
+                    Window {
+                        gt,
+                        c0: i64::from(c0),
+                        r0: i64::from(r0),
+                        w: i64::from(c1 - c0),
+                        h: i64::from(r1 - r0),
+                        data,
+                    },
                 ));
             }
             Near::Stored { proj: Projection::of(*crs), windows }
@@ -460,7 +485,8 @@ fn z10_cell(here: &Here, x: u32, y: u32) -> Cell {
         return Cell::Uniform(0);
     }
     let w = f64::from(SIDE as u32) * f64::from(1u32 << BUILT_MAXZ);
-    let lons: Vec<f64> = (0..SIDE).map(|i| roadcore::geo::merc_lon((f64::from(x) * SIDE as f64 + i as f64 + 0.5) / w)).collect();
+    let lons: Vec<f64> =
+        (0..SIDE).map(|i| roadcore::geo::merc_lon((f64::from(x) * SIDE as f64 + i as f64 + 0.5) / w)).collect();
     let mut px = vec![0u32; PIXELS];
     for j in 0..SIDE {
         let lat = roadcore::geo::merc_lat((f64::from(y) * SIDE as f64 + j as f64 + 0.5) / w);
@@ -501,8 +527,14 @@ fn pixel_m(lat: f64) -> f64 {
 
 /// Builds the built set's layers from `ds` (the accepted datasets in their order, `datasets`), making
 /// again only what their keys say moved, and the datasets' descriptions beside them; `report` hears
-/// the z6 tiles done of those to make.
+/// the z6 tiles done of those to make. Err(`Paused`) when the build pauses between z6 tiles
+/// (super::drive), the tiles made kept.
 pub fn build(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64)) -> Result<Made> {
+    build_with(out, ds, report, &jobrt::control::draining_lately)
+}
+
+/// `build`, `pausing` saying whether the build is pausing.
+fn build_with(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64), pausing: &dyn Fn() -> bool) -> Result<Made> {
     let ids: Vec<String> = ds.iter().map(|d| d.id.clone()).collect();
     let arch = archives(ds)?;
     let n6 = 1u32 << fmt::PACK_Z;
@@ -521,7 +553,7 @@ pub fn build(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64)) -> Result
             None => (p, format!("pole {} none", p.letter()), true),
         })
         .collect();
-    let record = Record { theme: THEME, set: fmt::BUILT, v: KEY_V, ids: &ids };
+    let record = Record { pausing, theme: THEME, set: fmt::BUILT, v: KEY_V, ids: &ids };
     let made = drive(
         out,
         &record,

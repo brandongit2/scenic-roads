@@ -71,7 +71,8 @@ fn mask_file(root: &Path, id: &str, name: &str, w: f64, n: f64, v: &dyn Fn(u32, 
     let gt = [w, 1.0 / 360.0, 0.0, n, 0.0, -1.0 / 360.0];
     let dir = root.join("sources/fetched").join(id);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join(name), buildstore::geotiff::write_f32(360, 360, &px, 256, gt, 4326, None).unwrap()).unwrap();
+    std::fs::write(dir.join(name), buildstore::geotiff::write_f32(360, 360, &px, 256, gt, 4326, None).unwrap())
+        .unwrap();
 }
 
 /// The order decides, where each dataset's data is: a fine dataset in its presence tile alone, in
@@ -100,14 +101,16 @@ fn the_first_dataset_with_data_is_the_one_used() {
     // (No tile past z10 is stored: z11 and z12 are its pixels' parts.)
     let o = out(d.path());
     let layer = fmt::layer(THEME, fmt::BUILT);
-    let packs = o.manifest.iter().filter(|(l, _)| l.starts_with(&format!("layers/{layer}/")) && l.split('/').count() == 4);
+    let packs =
+        o.manifest.iter().filter(|(l, _)| l.starts_with(&format!("layers/{layer}/")) && l.split('/').count() == 4);
     for (l, c) in packs {
         let b = o.path(c).read().unwrap();
         let idx = store::pack::PackIndex::parse_bytes(&b).unwrap();
         assert!(idx.entries.iter().all(|e| e.zxy().0 <= BUILT_MAXZ), "{l}");
     }
     // (The datasets described beside the tiles, in the order.)
-    let ds: Vec<Value> = serde_json::from_slice(&o.path(o.get(&fmt::datasets_logical(THEME)).unwrap()).read().unwrap()).unwrap();
+    let ds: Vec<Value> =
+        serde_json::from_slice(&o.path(o.get(&fmt::datasets_logical(THEME)).unwrap()).read().unwrap()).unwrap();
     assert_eq!(ds.iter().map(|d| d["id"].as_str().unwrap()).collect::<Vec<_>>(), ["fine", "world"]);
 }
 
@@ -116,7 +119,13 @@ fn the_first_dataset_with_data_is_the_one_used() {
 #[test]
 fn a_fill_masks_voids_and_a_coverage_cut_are_the_next_datasets() {
     let d = tempfile::tempdir().unwrap();
-    mask_file(d.path(), "glo", "T_FLM.tif", 10.0, 41.0, &|c, r| if (100..200).contains(&c) && (100..200).contains(&r) { 5.0 } else { 1.0 });
+    mask_file(d.path(), "glo", "T_FLM.tif", 10.0, 41.0, &|c, r| {
+        if (100..200).contains(&c) && (100..200).contains(&r) {
+            5.0
+        } else {
+            1.0
+        }
+    });
     let glo = dataset(
         "glo",
         None,
@@ -149,7 +158,11 @@ fn only_the_z6_tiles_a_dataset_moved_in_are_made_again() {
         let mut f = dataset(
             "fine",
             None,
-            Has::Present { crs: 4326, footprints: vec![[1.0, 43.0, 4.0, 46.0]], tiles: Some(tiles.iter().copied().collect()) },
+            Has::Present {
+                crs: 4326,
+                footprints: vec![[1.0, 43.0, 4.0, 46.0]],
+                tiles: Some(tiles.iter().copied().collect()),
+            },
         );
         f.measured.presence = Some(tiles.iter().map(|t| [t.0, t.1]).collect());
         f
@@ -169,6 +182,25 @@ fn only_the_z6_tiles_a_dataset_moved_in_are_made_again() {
     assert_eq!(packs(d.path()), packs(fresh.path()));
 }
 
+/// A pause between z6 tiles keeps those made (the records saved, the job told it's paused): the
+/// next run makes the rest, then the root and the caps, ending with the files of a run not paused.
+#[test]
+fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
+    let d = tempfile::tempdir().unwrap();
+    let ds = [everywhere("world")];
+    let e = build_with(&mut out(d.path()), &ds, &|_, _| {}, &|| true).unwrap_err();
+    assert!(jobrt::control::is_paused(&e), "{e:#}");
+    let m = run(d.path(), &ds);
+    assert_eq!(m.remade.len(), 4095, "the first kept");
+    assert!(m.root && m.poles.len() == 2, "{:?}", m.poles);
+    let fresh = tempfile::tempdir().unwrap();
+    run(fresh.path(), &ds);
+    let files = |r: &Path| -> BTreeMap<String, String> {
+        out(r).manifest.into_iter().filter(|(l, _)| l.contains("/available-built-")).collect()
+    };
+    assert_eq!(files(d.path()), files(fresh.path()));
+}
+
 /// Past 85.05° the pole's square: a stored dataset holding the pole there; the Web Mercator
 /// plane's datasets up to its edge.
 #[test]
@@ -178,7 +210,11 @@ fn the_polar_caps_take_the_datasets_there() {
     std::fs::create_dir_all(&dir).unwrap();
     let px = vec![1.0f32; 360 * 40];
     let gt = [-180.0, 1.0, 0.0, -86.0, 0.0, -0.1];
-    std::fs::write(dir.join("S.tif"), buildstore::geotiff::write_f32(360, 40, &px, 256, gt, 4326, Some(-9999.0)).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("S.tif"),
+        buildstore::geotiff::write_f32(360, 40, &px, 256, gt, 4326, Some(-9999.0)).unwrap(),
+    )
+    .unwrap();
     let ice = dataset(
         "ice",
         None,

@@ -4305,8 +4305,12 @@ pub fn available_built_work(x: &KeyCtx, done: &Keys) -> Option<Work> {
     (done.lo.get(&t) != Some(&k)).then(|| Work { step: "available-built".into(), targets: vec![(t, k)] })
 }
 
-/// The built set's target with its key.
+/// The built set's target with its key: none while no elevation dataset is accepted (nothing built
+/// in, no layer) or while the datasets can't be read.
 fn available_built_target(x: &KeyCtx) -> Option<(String, String)> {
+    if x.tiles.elevation(x.m).ok()??.is_empty() {
+        return None;
+    }
     let t = codecs::available::layer(terrain::available::built::THEME, codecs::available::BUILT);
     let k = super::steps::derived_key("available-built", &t, x)?;
     Some((t, k))
@@ -4629,24 +4633,30 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
             out.push(sized("polar-root", &pt.root, &done.polar_root, pk));
         }
     }
+    // (The finishing's worldwide layers, a run a target left, as the roads' chain's are: the
+    // stage's counts are its runs.)
+    let runs = |step: &str, all: &[(String, String)], known: bool| {
+        Item::left(step, known.then(|| all.len() - count(all, &done.lo)))
+    };
     // (The data-available layers once the source extents are accepted: known once their index is
     // read, a theme with no pieces having none.)
     if m.contains_key(&inputs::inputs::logical(inputs::inputs::extents::UNIT)) {
         let known = inputs::inputs::extents::THEMES
             .iter()
             .all(|th| x.inputs.get(&format!("extents:{th}")).is_some_and(|v| v != "?"));
-        out.push(sized("available", &available_targets(x), &done.lo, known));
+        out.push(runs("available", &available_targets(x), known));
     }
-    // (The built set once the elevation datasets are switched: known once their index is read.)
+    // (The built set once the elevation datasets are switched: known once its key is, or once their
+    // index is read and lists none.)
     if inputs::inputs::elevation::switched(m) {
         let t = available_built_target(x);
-        let known = t.is_some();
-        out.push(sized("available-built", &t.into_iter().collect::<Vec<_>>(), &done.lo, known));
+        let known = t.is_some() || x.tiles.elevation(m).is_ok_and(|e| e.is_some_and(|e| e.is_empty()));
+        out.push(runs("available-built", &t.into_iter().collect::<Vec<_>>(), known));
     }
     // (The region layer once the regions are accepted: known once their index is read.)
     if m.contains_key(&inputs::inputs::logical(inputs::inputs::regions::UNIT)) {
         let known = x.inputs.get("regions:geometry").is_some_and(|v| v != "?");
-        out.push(sized("region-tiles", &region_tiles_target(x).into_iter().collect::<Vec<_>>(), &done.lo, known));
+        out.push(runs("region-tiles", &region_tiles_target(x).into_iter().collect::<Vec<_>>(), known));
     }
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(x);
@@ -4668,7 +4678,9 @@ pub fn checklist(x: &KeyCtx, done: &Keys, held: bool, ready: &[String]) -> Check
         .filter(|w| !matches!(w.step.as_str(), "pack" | "lo"))
         .collect();
     out.extend(chain_items(&roads, &["prune", "roadunits", "stations", "ferries", "slope-root"], built));
-    next.insert("finish", next_of(&roads));
+    // (The stage's worldwide layers after the roads' chain, as their items above count them.)
+    let world = [available_work(x, done), available_built_work(x, done), region_tiles_work(x, done)];
+    next.insert("finish", next_of(&roads.iter().cloned().chain(world.into_iter().flatten()).collect::<Vec<_>>()));
     // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown while the
     // chain can't go on: before the rail sources are seeded, while inputs/keys.env can't be read,
     // without the feeds' list or the pass's rail set.)
@@ -4985,6 +4997,11 @@ mod tests {
     fn past_publishing(c: &Coverage, date: &str, m: &mut BTreeMap<String, String>, done: &mut Keys) -> Vec<Work> {
         loop {
             let w = plan(c, date, m, done, &BTreeMap::new());
+            // (The built set, worldwide, taken as done: `built_did`.)
+            if w.iter().any(|x| x.step == "available-built") {
+                built_did(done, &w);
+                continue;
+            }
             match w.first() {
                 Some(x) if CHAIN.contains(&x.step.as_str()) || x.step == "catalog" => did(m, done, x),
                 _ => return w,
@@ -7613,6 +7630,8 @@ mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         unit_inputs(&mut m, "2026-09-28");
         let mut done = Keys::default();
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        built_did(&mut done, &w);
         // The heritage sites first (one job: a member's z6 tiles then wait only for the terrain).
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(
@@ -7743,6 +7762,7 @@ mod tests {
                 },
             )
             .work;
+            built_did(&mut done, &w);
             match w[0].step.as_str() {
                 "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
                 "terrain-hi" | "terrain-lo" => terrain_did(&mut m, &mut done, &w[0]),
@@ -7752,6 +7772,14 @@ mod tests {
         }
         heritage_chain_done(&c, &m, &mut done, "d");
         (c, reach, m, done)
+    }
+
+    /// The built set's run in `w` taken as done: a worldwide step beside the regions' work, which
+    /// the tests calling it follow.
+    fn built_did(done: &mut Keys, w: &[Work]) {
+        for x in w.iter().filter(|x| x.step == "available-built") {
+            done.record("available-built", &x.targets);
+        }
     }
 
     /// `pplan` with a catalogue held back `held_for` seconds (`Publish::held_for`), nothing on the map.
@@ -8348,6 +8376,7 @@ mod tests {
         };
         let mut done = Keys::default();
         let w = plan(&m, &done);
+        built_did(&mut done, &w);
         heritage_done(&mut m, &mut done, "d", &w[0]);
         heritage_chain_done(&c, &m, &mut done, "d");
         // Each region's terrain z3 tile, g's first; neither's z6 tile until its terrain is built.
@@ -10601,6 +10630,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let mut done = Keys::default();
+        let w = plan(&m, &done);
+        built_did(&mut done, &w);
         // Before the heritage sites (the z6 tiles wait for them): the candidates already, after the
         // terrain and tree cover.
         let w = plan(&m, &done);
@@ -12144,8 +12175,10 @@ mod tests {
         let date = "2026-09-28";
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         unit_inputs(&mut m, date);
-        let done = Keys::default();
+        let mut done = Keys::default();
         let inputs = bld_inputs(&c, "a");
+        let w = plan(&c, date, &m, &done, &inputs);
+        built_did(&mut done, &w);
         let w = plan(&c, date, &m, &done, &inputs);
         let s: Vec<&str> = w.iter().map(|x| x.step.as_str()).collect();
         assert_eq!(&s[s.len() - 2..], ["bld-fetch", "bldprep"], "{s:?}");

@@ -132,6 +132,9 @@ impl Theme {
     ///   `ex::class_rank`; of equals, the first id);
     /// - a metric's: the best 0–1 value of it (a piece not stating it takes no part), then the
     ///   best availability, then the best-founded extent; of equals, the first id.
+    ///
+    /// A set in order (the built set's, `order`): the first in it, whatever the switch; on a
+    /// metric's layer, none where the first doesn't state it.
     pub fn best<'a>(&self, layer: &str, ids: impl IntoIterator<Item = &'a str>, all: bool) -> Option<&PieceInfo> {
         self.best_id(layer, ids, all).map(|(_, p)| p)
     }
@@ -145,8 +148,10 @@ impl Theme {
     ) -> Option<(&'a str, &PieceInfo)> {
         let s = self.score.as_ref()?;
         let ps = self.passing(ids, all);
+        // (In order: the first, on a metric's layer only where it states the metric.)
         if self.order.is_some() {
-            return ps.first().copied();
+            let first = ps.first().copied()?;
+            return (layer == SCORE_LAYER || first.1.values.get(layer).copied().flatten().is_some()).then_some(first);
         }
         if layer == SCORE_LAYER {
             let (at, rs) = self.scored(&ps);
@@ -644,7 +649,9 @@ async fn tile(
     q: Option<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some((th, past)) = s.available.of_set(&s.data, &theme, &set) else { return StatusCode::NOT_FOUND.into_response() };
+    let Some((th, past)) = s.available.of_set(&s.data, &theme, &set) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     if !th.has_layer(&layer) || z > fmt::maxz(grid) || x >> z != 0 || y >> z != 0 {
         return StatusCode::NOT_FOUND.into_response();
     }

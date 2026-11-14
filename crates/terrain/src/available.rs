@@ -747,7 +747,7 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
         let (which, key) = polar_polys(pieces, pole);
         (pole, key, which)
     });
-    let record = Record { theme, set: fmt::BEST, v: KEY_V, ids: &ids };
+    let record = Record { pausing: &jobrt::control::draining_lately, theme, set: fmt::BEST, v: KEY_V, ids: &ids };
     drive(
         out,
         &record,
@@ -801,6 +801,8 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
 /// A set of a theme's layers as its step records it: the theme, the set, the step's version (its
 /// record's, `KEY_V`: a record of another made again whole) and the pieces' ids, by number.
 pub(crate) struct Record<'a> {
+    /// Whether the build is pausing (jobrt::control::draining_lately; a test's own).
+    pub pausing: &'a dyn Fn() -> bool,
     pub theme: &'a str,
     pub set: &'a str,
     pub v: u32,
@@ -834,7 +836,11 @@ pub(crate) type MakeZ6<'a> = dyn FnMut(&[(u32, u32)], &mut dyn FnMut(Z6) -> Resu
 /// "6/x/y"; `poles`: each pole's key and whether nothing reaches it), from the step's record: the
 /// stale z6 tiles made (`make`) and their packs put, those no key names now dropped, the root made
 /// again from every z6 tile's own when one moved, each pole whose key moved made again
-/// (`make_pole`), and the record written with the keys.
+/// (`make_pole`), and the record written with the keys. Each z6 tile made but the last is a safe
+/// point (jobrt::control): the build pausing (`Record::pausing`), the record is written with the
+/// keys of the tiles made so far (the others' as they were), the records saved and Err(`Paused`)
+/// returned, which the step's job ends on as paused (`stop_if_paused`); its next run makes the
+/// rest, then the root and the caps.
 pub(crate) fn drive(
     out: &mut Out,
     r: &Record,
@@ -910,7 +916,19 @@ pub(crate) fn drive(
         }
         done += 1;
         report(done, total);
-        Ok(())
+        // (Paused before the last: the tiles made kept, under their new keys; the root waits for
+        // the rest, which a stale tile left makes again.)
+        jobrt::control::reached();
+        let pausing = done < total && (r.pausing)();
+        if pausing {
+            let mut kept: BTreeMap<String, String> =
+                old.keys.iter().filter(|(t, _)| keys.contains_key(*t)).map(|(t, k)| (t.clone(), k.clone())).collect();
+            kept.extend(made.remade.iter().map(|t| (t.clone(), keys[t].clone())));
+            let meta = MidsMeta { theme: r.theme.to_string(), v: r.v, keys: kept, poles: old.poles.clone() };
+            put_record(out, &ml, &meta, &blobs)?;
+            out.save()?;
+        }
+        jobrt::control::pause_point(&|| pausing)
     })?;
 
     // The root, from every z6 tile's own, when one moved, it's missing or the record wasn't read.
@@ -965,16 +983,22 @@ pub(crate) fn drive(
 
     // The record, with each tile's key.
     let meta = MidsMeta { theme: r.theme.to_string(), v: r.v, keys, poles: pole_keys };
+    put_record(out, &ml, &meta, &blobs)?;
+    Ok(made)
+}
+
+/// Writes the step's record `ml`: `meta` and the z6 tiles' own blobs (gzip'd, by "6/x/y").
+fn put_record(out: &mut Out, ml: &str, meta: &MidsMeta, blobs: &BTreeMap<String, Vec<u8>>) -> Result<()> {
     let local = out.scratch_file(&format!("{ml}.pack"));
-    let mut w = store::pack::PackWriter::create(&local, serde_json::to_value(&meta)?, true)?;
-    for (t, b) in &blobs {
+    let mut w = store::pack::PackWriter::create(&local, serde_json::to_value(meta)?, true)?;
+    for (t, b) in blobs {
         let (x, y) = xy(t);
         let raw = Tile::decode(b)?.encode().len() as u32;
         w.add(fmt::PACK_Z, x, y, b, raw)?;
     }
     w.finish()?;
-    out.put_file(&ml, "pack", &local)?;
-    Ok(made)
+    out.put_file(ml, "pack", &local)?;
+    Ok(())
 }
 
 pub mod built;

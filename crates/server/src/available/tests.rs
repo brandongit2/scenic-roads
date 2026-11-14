@@ -308,7 +308,15 @@ fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
     let t = Tile { ids: vec!["glo30".into(), "lidar".into()], sets: vec![vec![0, 1]], px: vec![0; PIXELS] };
     let tile = (0, 0, 0, t.gzipped(), t.encode().len() as u32);
     let layer = fmt::layer("terrain", fmt::BUILT);
-    let p = terrain::layers::write_pack_local(&out, &layer, fmt::ENCODING, true, "root", (0, 0, 0), &mut std::iter::once(tile));
+    let p = terrain::layers::write_pack_local(
+        &out,
+        &layer,
+        fmt::ENCODING,
+        true,
+        "root",
+        (0, 0, 0),
+        &mut std::iter::once(tile),
+    );
     let p = p.unwrap().unwrap();
     out.put_file(&p.logical, "pack", &p.local).unwrap();
     out.put_bytes(&fmt::datasets_logical("terrain"), "json", &serde_json::to_vec(&built_datasets()).unwrap()).unwrap();
@@ -567,11 +575,14 @@ async fn the_built_set_draws_the_first_dataset_in_order() {
         }
     }
     // The click: both, in order, the first drawn.
-    let r = at(State(s.clone()), Path(("terrain".into(), "built".into())), Query(At { lng: 2.3, lat: 44.2, avail: None }));
+    let r =
+        at(State(s.clone()), Path(("terrain".into(), "built".into())), Query(At { lng: 2.3, lat: 44.2, avail: None }));
     let v: Value = serde_json::from_slice(&body(r.await).await).unwrap();
     let ids: Vec<&str> = v["pieces"].as_array().unwrap().iter().map(|p| p["id"].as_str().unwrap()).collect();
     assert_eq!(ids, ["glo30", "lidar"]);
     assert_eq!(v["painted"]["score"], "glo30");
+    assert_eq!(v["painted"]["surface"], "glo30");
+    assert!(v["painted"].get("year").is_none(), "no year stated: none drawn");
     assert_eq!(v["pieces"][0]["read"]["method"], "fill masks");
     // The app's version of its layer names its datasets too.
     let meta = crate::meta_json(&s);

@@ -2312,7 +2312,8 @@ fn w_available(l: &str, _: bool) -> bool {
 
 /// The built set's layers and its datasets' descriptions (`available-built`).
 fn w_available_built(l: &str, _: bool) -> bool {
-    available_packs(l, codecs::available::BUILT) || l == codecs::available::datasets_logical(terrain::available::built::THEME)
+    available_packs(l, codecs::available::BUILT)
+        || l == codecs::available::datasets_logical(terrain::available::built::THEME)
 }
 
 /// The region layer's packs (codecs::regionlayer: the root, lo and hi packs).

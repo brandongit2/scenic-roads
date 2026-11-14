@@ -855,7 +855,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                 drop(p);
                 let p = phase("drawing the pieces' tiles");
                 let made =
-                    terrain::available::build(&mut out, theme, &pieces, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))?;
+                    terrain::available::build(&mut out, theme, &pieces, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))
+                        .map_err(|e| jobrt::control::stop_if_paused("available", e))?;
                 drop(p);
                 out.save()?;
                 eprintln!(
@@ -886,7 +887,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let ds = built::datasets(&a, out.root())?;
             drop(p);
             let p = phase("drawing where each dataset was used");
-            let made = built::build(&mut out, &ds, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))?;
+            let made = built::build(&mut out, &ds, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))
+                .map_err(|e| jobrt::control::stop_if_paused("available-built", e))?;
             drop(p);
             out.save()?;
             eprintln!(
