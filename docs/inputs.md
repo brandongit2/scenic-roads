@@ -2714,7 +2714,7 @@ one, not moved yet because the move reaches keys and needs its own proof that no
   `ISO3166-1=PR` and `ISO3166-2=US-PR`).
 - `namestodo::OTHER_WORDS`, `ENGLISH_WORDS` (the coverage's languages' generic words): an input of
   the languages, keyed into the to-do lists alone.
-- `INTERCITY_WORDS` (`codecs::stations`' and `scenic-build extract`'s, two copies that differ: the
+- `INTERCITY_WORDS` (`codecs::stations`' and the extract tool's, `pipeline/src/bin/tools/extract.rs`, two copies that differ: the
   stations' has the Japanese and Taiwanese services): one input of the rail's services.
 - `pageviews::LANGS`, `heritagewd`'s `LANGS`, `OTHER`, `STOP`, `heritagedetails::LOCAL` (the
   Wikipedias read, "the map's languages"): derivable from the languages input.
