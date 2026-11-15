@@ -825,7 +825,11 @@ mod tests {
         assert_eq!(r.symbol.as_ref().map(|s| (s.image.as_str(), s.author.as_str())), Some(("Q1.svg", "")));
         assert_eq!(parse("a.toml", head).unwrap().symbol, None);
         let check = |text: String| parse("a.toml", &text).unwrap_err().iter().map(|f| f.check).collect::<Vec<_>>();
-        assert_eq!(check(format!("{head}{}", table.replace("CC0", "CC BY-NC 4.0"))), vec!["symbol"]);
+        // (Its licence a note: any, or none.)
+        let nc = parse("a.toml", &format!("{head}{}", table.replace("CC0", "CC BY-NC 4.0"))).unwrap();
+        assert_eq!(nc.symbol.map(|s| s.licence), Some("CC BY-NC 4.0".into()));
+        let none = parse("a.toml", &format!("{head}{}", table.replace("licence = \"CC0\"\n", ""))).unwrap();
+        assert_eq!(none.symbol.map(|s| s.licence), Some(String::new()));
         assert_eq!(check(format!("{head}{table}colour = \"red\"\n")), vec!["toml"]);
         assert_eq!(check(format!("{head}[symbol]\nimage = \"Q1.svg\"\n")), vec!["toml"]);
         let g = parse_group(&format!("name = \"Canada\"\n{table}")).unwrap();

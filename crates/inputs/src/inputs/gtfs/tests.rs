@@ -160,7 +160,7 @@ fn errors_name_what_is_wrong() {
     assert_eq!(checks_of(&Gtfs.file("lake.csv", b"")), vec![("tg-shape".to_string(), Level::Error)]);
     assert_eq!(
         checks_of(&Gtfs.file("lake.toml", b"name = \"x\"\n")).iter().filter(|(_, l)| *l == Level::Error).count(),
-        2
+        1
     );
 }
 

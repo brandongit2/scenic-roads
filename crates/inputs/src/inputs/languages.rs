@@ -330,7 +330,7 @@ mod tests {
         );
         assert_eq!(ids(&l.file("notes.txt", b"x").findings), [("la-shape", Level::Error)]);
         assert_eq!(ids(&l.file(TABLE, b"\xff").findings), [("la-shape", Level::Error)]);
-        assert_eq!(ids(&l.file(ABOUT, b"credit = \"CLDR\"\n").findings), [("description", Level::Error)]);
+        assert_eq!(ids(&l.file(ABOUT, b"licence = \"Unicode-3.0\"\n").findings), [("description", Level::Error)]);
         let about = l.file(ABOUT, b"credit = \"Unicode CLDR\"\nlicence = \"Unicode-3.0\"\nterritory = \"world\"\n");
         assert!(about.findings.is_empty() && about.facts["extent"] == "world");
     }
