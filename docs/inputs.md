@@ -420,7 +420,7 @@ any water in two regions, or in none, is an error.
 | `disabled` | `true`: checked and stored like any region, but never built (below) | optional, default `false` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
 | `[pins]` | as `_pins.toml`, overriding it for this file | optional |
-| `[symbol]` | its flag, coat of arms or seal ("Symbols", below) | optional |
+| `[symbol]` | its flag, or the symbol it goes by ("Symbols", below) | optional |
 
 Unknown fields are an error. The region is ((∪ `outline`) ∩ (∪ `intersect`)) − (∪ `minus`); a region
 with `water` is its land, that cut back to the coastline's land, and its water ("Land and water").
@@ -592,7 +592,7 @@ water = ["rest"]
 `_pins.toml`: `osm = "2026-09-29"` (the pass, `sources/osm/<date>/`). A file's `[pins]` overrides it
 and may record other datasets a shape came from (`gadm = "4.1"`, checked only as a non-empty string).
 
-**Symbols.** A region's own flag, or the symbol it goes by (its coat of arms, its seal), is declared
+**Symbols.** A region's own flag, or the symbol it goes by (its coat of arms, seal, logo…), is declared
 in its file, and a folder's (its country's) in its `_group.toml`, as a `[symbol]` table
 (crate::inputs::regions::symbols); the Regions list and the footer show it beside the name. Without
 one a region is valid, and shows a "?" placeholder (never its folder's symbol).
@@ -600,7 +600,7 @@ one a region is valid, and shows a "?" placeholder (never its folder's symbol).
 | Field | Type | |
 |---|---|---|
 | `image` | an image's file name alone (`Q1951.svg`), unique across the folder as a shape's is: a loose `.svg`, `.png` or `.jpg` anywhere under `inputs/regions/`, or a member of any `.zip` there (by its file name; its folders, macOS's `__MACOSX/` and names starting with `.` passed over) | required |
-| `kind` | `flag`, `coat of arms` or `seal` | required |
+| `kind` | what the image is, a short phrase on one line, not empty (`flag`, `coat of arms`, `seal`, `logo`, `emblem`…): the tooltip and the Credits say it with its first letter capitalized, then "of" and the name ("Logo of Adana") | required |
 | `source` | the page it comes from, an `https://` address (where its author and licence are) | required |
 | `author` | its author as the source names them; left out when the source page is the only credit | optional |
 | `licence` | on the free list, `crates/inputs/src/inputs/regions/free-licences.txt` (public domain, CC0, CC BY and CC BY-SA of any version or port, "Copyrighted free use", OGL-om 1.0): each lets the app ship the image, offline too, with its credit | required |
@@ -876,7 +876,7 @@ new pass moving a coast a little doesn't hold an accepted one's files again.
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-special` | a `_*.toml` that isn't `_group.toml`, `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`/`symbol`, or an empty name |
-| `rg-symbol` | a `[symbol]` table with a field missing or wrong (its image not a file name of an image, an unknown kind, a source not `https://`, a licence not on the free list); an image or bundle that can't be served (its size, its type by its bytes, a raster's sides, an SVG's content: "Symbols"); an image's name in two places; a symbol naming an image the folder hasn't |
+| `rg-symbol` | a `[symbol]` table with a field missing or wrong (its image not a file name of an image, a kind empty or of more than one line, a source not `https://`, a licence not on the free list); an image or bundle that can't be served (its size, its type by its bytes, a raster's sides, an SVG's content: "Symbols"); an image's name in two places; a symbol naming an image the folder hasn't |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
 | `rg-data` | a region naming the datasets, or with `water`, while they aren't read (§6.1.7) |
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |

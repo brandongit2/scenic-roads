@@ -11,8 +11,8 @@
 // Remove button; this Mac's room (downloads.ts).
 import { behindText, dlDetail, dlRegion, dlStatus, dlUpdate, dlWorld, pct, setReserve, size, sizeOf, stateClass, stateText, type Dl, type DlStatus, type DetailDl, type RegionDl } from '../downloads';
 import * as prefs from '../prefs';
-import { allIds, areaText, entries, filter, type Shown } from '../regionlist';
-import { RegionLayers, RegionsError, flagOf, listRegions, type Flag, type Folder, type Region } from '../regions';
+import { allIds, areaText, entries, filter, flagOf, type Flag, type Shown } from '../regionlist';
+import { RegionLayers, RegionsError, listRegions, type Folder, type Region } from '../regions';
 import { h } from './dom';
 import { fmt } from '../fmt';
 

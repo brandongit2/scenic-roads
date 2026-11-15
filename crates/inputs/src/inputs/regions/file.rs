@@ -204,7 +204,7 @@ pub struct Region {
     pub lines: BTreeMap<String, Line>,
     /// Its own `[pins]`, overriding `_pins.toml`'s.
     pub pins: BTreeMap<String, String>,
-    /// Its flag, coat of arms or seal (`[symbol]`, crate::inputs::regions::symbols): what the map's
+    /// Its flag, or the symbol it goes by (`[symbol]`, crate::inputs::regions::symbols): what the map's
     /// Regions list shows beside it. No resolution reads it.
     pub symbol: Option<super::symbols::Symbol>,
 }

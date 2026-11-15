@@ -1,5 +1,5 @@
-//! The regions' symbols (docs/inputs.md §6.1.3, "Symbols"): a region's or a folder's flag, coat of
-//! arms or seal, declared in its region file's or `_group.toml`'s `[symbol]` table, its image a
+//! The regions' symbols (docs/inputs.md §6.1.3, "Symbols"): a region's or a folder's flag, or
+//! whatever symbol it goes by (a coat of arms, a seal, a logo…), declared in its region file's or `_group.toml`'s `[symbol]` table, its image a
 //! file of the inputs folder named by file name alone: a loose `.svg`, `.png` or `.jpg` anywhere,
 //! or a member of a `.zip` anywhere (a bundle). The check reads the table (`faults`), each image's
 //! bytes (`image`), each bundle's members (`bundle`), and, over a version, that every image named
@@ -18,8 +18,6 @@ pub const MAX_BUNDLE: u64 = 64 << 20;
 pub const MAX_PX: u32 = 512;
 /// The most elements an SVG may draw, each `<use>` counting the elements it copies (`svg`).
 pub const MAX_DRAWN: u64 = 1 << 16;
-/// What a symbol may be.
-pub const KINDS: &[&str] = &["flag", "coat of arms", "seal"];
 /// The licences a symbol may be under, a line each (`free`); the producer reads the same file.
 const FREE: &str = include_str!("free-licences.txt");
 
@@ -29,6 +27,8 @@ const FREE: &str = include_str!("free-licences.txt");
 pub struct Symbol {
     /// A file of the folder by name (`Q1000.svg`): loose anywhere, or a bundle's member.
     pub image: String,
+    /// What the image is, any short phrase on one line (`flag`, `coat of arms`, `logo`): the app's
+    /// tooltip and credit say "<Kind> of <name>".
     pub kind: String,
     /// The page it comes from (an `https://` URL), where its author and licence are.
     pub source: String,
@@ -103,8 +103,8 @@ pub fn faults(s: &Symbol) -> Vec<String> {
     if s.image.contains('/') || Kind::of(&s.image).is_none() || s.image.starts_with(['.', '_']) {
         out.push(format!("symbol image {:?}: a file's name alone, ending .svg, .png or .jpg", s.image));
     }
-    if !KINDS.contains(&s.kind.as_str()) {
-        out.push(format!("symbol kind {:?}: one of {}", s.kind, KINDS.join(", ")));
+    if s.kind.trim().is_empty() || s.kind.contains(['\n', '\r']) {
+        out.push(format!("symbol kind {:?}: what the image is, a short phrase on one line (flag, logo…)", s.kind));
     }
     if !s.source.starts_with("https://") || s.source.len() <= "https://".len() {
         out.push(format!("symbol source {:?}: the page it comes from, an https:// address", s.source));
@@ -719,12 +719,19 @@ mod tests {
         assert!(faults(&ok).is_empty());
         let bad = Symbol {
             image: "a/b.gif".into(),
-            kind: "banner".into(),
+            kind: "".into(),
             source: "http://example.org/".into(),
             author: "x".into(),
             licence: "All rights reserved".into(),
         };
         assert_eq!(faults(&bad).len(), 4);
+        // A kind is any phrase on one line saying what the image is.
+        for kind in ["flag", "coat of arms", "seal", "logo", "emblem"] {
+            assert!(faults(&Symbol { kind: kind.into(), ..ok.clone() }).is_empty(), "{kind}");
+        }
+        for kind in ["", "  ", "logo\nof Adana", "logo\r"] {
+            assert_eq!(faults(&Symbol { kind: kind.into(), ..ok.clone() }).len(), 1, "{kind:?}");
+        }
     }
 
     #[test]

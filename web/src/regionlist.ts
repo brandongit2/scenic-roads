@@ -1,7 +1,39 @@
 // The Regions list's logic (ui/regions.ts draws it; web/test/regionlist.test.ts): folders sorted
-// among the regions, the search and the "downloaded only" filter, and their land and water in words.
-// No DOM here.
-import type { Folder, Region } from './regions';
+// among the regions, the search and the "downloaded only" filter, their land and water in words, and
+// their symbols' titles and credits. No DOM here.
+import type { Folder, Region, RegionSymbol } from './regions';
+
+/** What a symbol is, of whom: its kind as declared, first letter capitalized, then "of" and the
+ * name ("Flag of Alberta", "Logo of Adana"). */
+const symbolName = (s: RegionSymbol, name: string) => `${s.kind.trim().replace(/^./u, (c) => c.toUpperCase())} of ${name}`;
+
+/** A symbol to show: its image's address and its credit line (its title). */
+export interface Flag {
+  url: string;
+  title: string;
+}
+
+/** The symbol of a region or folder called `name`, to show; null for none (the placeholder). */
+export function flagOf(s: RegionSymbol | undefined, name: string): Flag | null {
+  if (!s) return null;
+  return { url: s.url, title: `${symbolName(s, name)} (${s.author ? `${s.author}; ` : ''}${s.licence})` };
+}
+
+/** Every symbol's credit, once each (one may be two places'): what it is and whose, its author,
+ * licence and page, by name. */
+export function symbolCredits(regions: Region[], tree: Folder | undefined): { name: string; author: string; licence: string; page: string }[] {
+  const out = new Map<string, { name: string; author: string; licence: string; page: string }>();
+  const add = (s: RegionSymbol | undefined, name: string) => {
+    if (s && !out.has(s.url)) out.set(s.url, { name: symbolName(s, name), author: s.author ?? '', licence: s.licence, page: s.source });
+  };
+  const walk = (f: Folder) => {
+    add(f.symbol, f.name);
+    f.folders.forEach(walk);
+  };
+  if (tree) walk(tree);
+  for (const r of regions) add(r.symbol, r.name);
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
 
 /** Text for matching: lower case, accents off ("Ñuble" matches "nuble"). */
 export const norm = (s: string): string => s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();

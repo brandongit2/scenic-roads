@@ -7,8 +7,8 @@
 //!                                   kept on this Mac (`Listing`), brought up to date every minute
 //!   GET    /api/regions/at          the regions at a point (`lng`, `lat`), from the region layer's
 //!                                   tiles (codecs::regionlayer::hit): what the footer tells hovered
-//!   GET    /api/regions/symbols/<hash16>.<ext>  a region's or folder's symbol (its flag, coat of
-//!                                   arms or seal: docs/inputs.md §6.1.3), by its content name, from
+//!   GET    /api/regions/symbols/<hash16>.<ext>  a region's or folder's symbol (its flag, or what
+//!                                   it goes by: docs/inputs.md §6.1.3), by its content name, from
 //!                                   this Mac's copy of the accepted version: cached for good
 //!
 //! Outlines come from the latest OSM pass (the catalogue's `global.outlines`); records and strings are

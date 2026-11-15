@@ -1,7 +1,7 @@
 // node web/test/regionlist.test.ts (tools/dev/check.sh's web part): src/regionlist.ts, the Regions
-// list's sorting, filters and areas.
+// list's sorting, filters, areas and symbols' titles and credits.
 import assert from 'node:assert/strict';
-import { areaText, entries, filter, km2, norm } from '../src/regionlist.ts';
+import { areaText, entries, filter, flagOf, km2, norm, symbolCredits } from '../src/regionlist.ts';
 
 const reg = (id: string, name: string) => ({ id, name, outline: [] });
 const regions = [reg('azores', 'Azores'), reg('madeira', 'Madeira'), reg('alabama', 'Alabama'), reg('alaska', 'Alaska'), reg('nuble', 'Ñuble'), reg('bermuda', 'Bermuda'), reg('baker-island', 'Baker Island')];
@@ -58,4 +58,18 @@ assert.equal(areaText(667_676, 10_130_000), '668k km² land · 10.1M km² water'
 assert.equal(areaText(5, 0), '5 km² land');
 assert.equal(areaText(0, 12), '12 km² water');
 assert.equal(areaText(undefined, undefined), '');
+
+// A symbol's title and credit: its kind as declared, first letter capitalized, "of" the name.
+const sym = (kind: string, url: string, author?: string) => ({ url, kind, source: `https://example.org/${url}`, licence: 'CC0', ...(author ? { author } : {}) });
+assert.equal(flagOf(undefined, 'Adana'), null);
+assert.deepEqual(flagOf(sym('logo', 'a.svg'), 'Adana'), { url: 'a.svg', title: 'Logo of Adana (CC0)' });
+assert.equal(flagOf(sym('coat of arms', 'b.svg', 'Ann'), 'Bern')?.title, 'Coat of arms of Bern (Ann; CC0)');
+assert.equal(flagOf(sym('état emblem', 'c.svg'), 'X')?.title, 'État emblem of X (CC0)');
+const withSym = { ...reg('adana', 'Adana'), symbol: sym('emblem', 'e.svg') };
+const shared = { ...reg('bern', 'Bern'), symbol: sym('flag', 'f.svg') };
+assert.deepEqual(symbolCredits([withSym, shared, { ...reg('x', 'X'), symbol: sym('flag', 'f.svg') }], { ...f('tr', 'Türkiye', []), symbol: sym('seal', 's.png') }), [
+  { name: 'Emblem of Adana', author: '', licence: 'CC0', page: 'https://example.org/e.svg' },
+  { name: 'Flag of Bern', author: '', licence: 'CC0', page: 'https://example.org/f.svg' },
+  { name: 'Seal of Türkiye', author: '', licence: 'CC0', page: 'https://example.org/s.png' },
+]);
 console.log('regionlist: ok');

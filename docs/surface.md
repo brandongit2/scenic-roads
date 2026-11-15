@@ -103,7 +103,7 @@
   - **The list**: folders (named by their `_group.toml`) sorted by name among the regions, collapsed
     on every load (opened ones stay open for the session, not saved); an open folder's entries indented along a line from its triangle, its
     heading sticking under the section's header while they scroll. Each entry: its symbol, its own
-    only (its flag, coat of arms or seal, declared with the region in its file, a folder's in its
+    only (its flag, or the symbol it goes by: a coat of arms, a seal, a logo…, declared with the region in its file, a folder's in its
     _group.toml: docs/inputs.md §6.1.3, "Symbols"; none, a "?" placeholder, never its folder's),
     served by this Mac's server from the accepted regions (/api/regions/symbols/…) and fitted in a
     box of fixed width in its own aspect ratio, without border or rounding (each file's author and

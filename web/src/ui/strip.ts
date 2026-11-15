@@ -19,7 +19,8 @@ import { RAIL_COMPONENTS, railComponents, railScore, type RailSample } from '../
 import type { HoverInfo } from '../roads/layer';
 import type { WaterDepth } from '../depth';
 import type { WayInfo } from '../api';
-import { listRegions, symbolCredits, type Flag } from '../regions';
+import { listRegions } from '../regions';
+import { symbolCredits, type Flag } from '../regionlist';
 import type { RegionInfo } from './regions';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, h } from './dom';
