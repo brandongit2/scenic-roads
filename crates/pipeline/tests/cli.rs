@@ -402,7 +402,9 @@ fn remote_tests_refuses_when_ssh_hangs() {
         // (A test's run isn't one of the dev job dashboard's: tools/dev/devjob.zsh.)
         .env("SCENIC_DEVJOB", "0")
         .env_remove("SCENIC_CHECK_LOCAL")
-        .env_remove("SCENIC_TESTS_LOCAL");
+        .env_remove("SCENIC_TESTS_LOCAL")
+        // (Nor the PM's marker, when the main checkout has one: tools/app/test-mac.zsh.)
+        .env("SCENIC_TESTS_LOCAL_FILE", dir.path().join("no-tests-local"));
     // Its return at all is the proof (the fake ssh sleeps 10 min); no bound on how long a loaded
     // Mac took (task #921).
     let o = store::spawn::output(&mut cmd).unwrap();
