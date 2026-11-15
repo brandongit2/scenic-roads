@@ -87,7 +87,8 @@ pub struct Listed {
     pub path: String,
     pub recipe: Recipe,
     /// Its stored geometry and drawn files; None for a region that resolved to nothing (empty by
-    /// design, as `hand_out_all`'s "land outside its regions" once its country is handed out): the
+    /// design, as `hand_out_all`'s "land outside its regions" once its country is handed out, or a
+    /// divided place's waters region handed nothing): the
     /// check stores no files for it, and it has no area to cover or draw.
     pub stored: Option<Stored>,
     pub disabled: bool,
@@ -223,7 +224,7 @@ pub fn enabled(a: &Accepted) -> Result<Vec<Listed>> {
 }
 
 /// The warning for the enabled regions of `listed` that resolved to nothing (the check holds one
-/// unless it's a `hand_out_all` leftover, `rg-empty`; an enabled leftover is still nothing to
+/// unless it's a `hand_out_all` leftover or a hand-out's empty waters region, `rg-empty`; an enabled leftover is still nothing to
 /// build): None when there are none, or `version`'s were already named in this process.
 pub fn skipped_empty(version: &str, listed: &[Listed]) -> Option<String> {
     static SAID: std::sync::Mutex<Option<std::collections::BTreeSet<String>>> = std::sync::Mutex::new(None);

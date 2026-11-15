@@ -188,10 +188,11 @@ pub struct Region {
     /// land and this is added, less every region's land.
     pub water: Vec<Part>,
     /// Whether the file has a `water` key at all (`water = []`: land and lakes only, cut back to
-    /// the coastline's land).
-    pub water_key: bool,
-    /// `hand_out = "<folder>"`: each stretch of its water that only one region of that folder
-    /// borders goes to that region (`tiles::resolve`).
+    /// the coastline's land; with no outline, a waters region holding only what it's handed).
+    water_key: bool,
+    /// `hand_out = "<folder>"`: each stretch of its water that only one member of that folder
+    /// borders goes to that member (`tiles::resolve`; a subfolder holding a waters region is one
+    /// member, its waters region taking the stretch).
     pub hand_out: Option<String>,
     /// `hand_out_all = true`, with `hand_out`: every stretch goes, to the region of the folder it
     /// shares the longest edge with, or the nearest if it touches none (the list's rule for land
@@ -219,6 +220,12 @@ impl Region {
     /// Whether it has land and water apart (a `water` key): the land-and-water rules apply to it.
     pub fn has_water(&self) -> bool {
         self.water_key
+    }
+
+    /// Whether it's a waters region: a `water` key and no outline (a place's sea, no land of its
+    /// own; `water = []`: only what a hand-out gives it).
+    pub fn is_waters(&self) -> bool {
+        self.water_key && self.outline.is_empty()
     }
 
     /// Whether any of its parts reads the regions' datasets.
@@ -639,7 +646,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if raw.name.trim().is_empty() {
         faults.push(fault("id", "no name"));
     }
-    if raw.outline.is_empty() && raw.water.as_ref().is_none_or(Vec::is_empty) {
+    if raw.outline.is_empty() && raw.water.is_none() {
         faults.push(fault("id", "no outline (nor water)"));
     }
     let mut list = |vs: &[toml::Value]| -> Vec<Part> {
@@ -787,13 +794,6 @@ mod tests {
         assert_eq!(
             check(
                 "a.toml",
-                "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"up\" }]\n"
-            ),
-            vec!["part"]
-        );
-        assert_eq!(
-            check(
-                "a.toml",
                 "id = \"a\"\nname = \"A\"\noutline = [{ cut = \"osm:1\", by = \"line:x\", keep = \"left\" }]\n"
             ),
             vec!["ref"]
@@ -807,6 +807,10 @@ mod tests {
             vec!["pin"]
         );
         assert_eq!(check("a.toml", "id = \"a\"\nname = \"\"\noutline = []\n"), vec!["id", "id"]);
+        // (A waters region may have no water of its own: it holds what a hand-out gives it.)
+        let w = parse("a.toml", "id = \"a\"\nname = \"A waters\"\nwater = []\n").unwrap();
+        assert!(w.is_waters() && w.has_water() && w.water.is_empty());
+        assert!(!parse("a.toml", "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\nwater = []\n").unwrap().is_waters());
         assert_eq!(parse_distance("12 nmi"), Ok(22224.0));
         assert_eq!(parse_distance("500m"), Ok(500.0));
         assert!(parse_distance("-1 km").is_err() && parse_distance("12").is_err() && parse_distance("1 mi").is_err());

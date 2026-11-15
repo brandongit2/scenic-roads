@@ -19,8 +19,10 @@
 //!   parts, joined across the cells' edges, goes, where all of a stretch is within
 //!   `COAST_REACH_M` of regions, to the nearest of them (split at the median line), if it has water.
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
-//!   water that one region of the folder alone borders goes to it; one under `sliver_km2`, to the
-//!   one sharing its longest edge. Only regions with water take one.
+//!   water that one member of the folder alone borders goes to it; one under `sliver_km2`, to the
+//!   one sharing its longest edge. A member is a region, or a subfolder holding a waters region (its
+//!   regions together, the stretch going to its waters region; `hand_out_all` excepted). Only
+//!   regions with water take one.
 //! - With `cover = "earth"` in `_rules.toml`: per cell, land in two regions is taken from those of
 //!   them with water; then what no region covers, joined across the cells' edges: each piece within
 //!   100 m of land, up to `sliver_km2`, joins the region with water sharing the longest edge with
@@ -967,15 +969,19 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     let countries: BTreeMap<String, String> = made.iter().map(|(id, m)| (id.clone(), m.country.clone())).collect();
     drop(made);
     trace("hand-outs");
-    // 4. Hand-outs.
-    progress.begin(Step::HandOuts, ids.len());
-    for id in &ids {
+    // 4. Hand-outs, those to outer folders first (a folder's waters region with a hand_out of its own
+    // hands on what it was handed; the order is otherwise the ids').
+    let mut handing = ids.clone();
+    handing.sort_by_key(|id| folder.regions[id].1.hand_out.as_ref().map_or(0, |g| g.split('/').count()));
+    progress.begin(Step::HandOuts, handing.len());
+    for id in &handing {
         let _one = progress.one_on_drop();
         let Some(g) = folder.regions[id].1.hand_out.clone() else { continue };
         if !areas.contains_key(id) {
             continue;
         }
-        // (Only regions with water take a hand-out: those without resolve as they always have.)
+        // (Only regions with water take a hand-out: those without resolve as they always have. The
+        // regions with water are all in `areas`, but those held.)
         let (members, old): (Vec<String>, Vec<String>) = folder
             .members(&g, id)
             .into_iter()
@@ -987,11 +993,22 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         }
         let every = folder.regions[id].1.hand_out_all;
         let mine = areas[id].clone();
-        let theirs: Vec<(&String, &TArea)> = members
+        // (`hand_out_all` hands out land, member by member: a waters region takes none.)
+        let units = if every {
+            members.iter().map(|m| (m.clone(), vec![m.clone()])).collect()
+        } else {
+            standing(folder, &g, id, &members, &mut out.problems)
+        };
+        let unions: BTreeMap<&String, TArea> = units
             .iter()
+            .filter(|(_, ms)| ms.len() > 1)
+            .map(|(to, ms)| (to, union_of(&ms.iter().map(|m| &areas[m]).collect::<Vec<_>>())))
+            .collect();
+        let theirs: Vec<(&String, &TArea)> = units
+            .keys()
             // (`hand_out_all` hands out land: only to regions with land.)
             .filter(|m| !every || !land_empty.get(*m).copied().unwrap_or(false))
-            .map(|m| (m, areas.get(m).unwrap_or_else(|| &others[m])))
+            .map(|m| (m, unions.get(m).unwrap_or(&areas[m])))
             .collect();
         // Each stretch's edge with each member (the stretch's ring of 100 m made once a cell), and
         // where it goes.
@@ -1036,12 +1053,11 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             a.set(c, left);
         }
         for (m, cells) in given {
-            let mut b = areas.remove(&m).unwrap_or_else(|| others[&m].clone());
+            let b = areas.get_mut(&m).unwrap();
             for (c, mut ps) in cells {
                 ps.push(b.get(c));
                 b.set(c, geom::union_all(&ps));
             }
-            areas.insert(m, b);
         }
     }
     trace("with cover");
@@ -1137,7 +1153,14 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             continue;
         }
         if t.is_empty() {
-            out.problems.push(problem("rg-empty", r, p, format!("{id}: the region has neither land nor water")));
+            // (A waters region in a folder some other region hands out to, handed nothing: listed,
+            // not built, as a `hand_out_all` region emptied.)
+            let handed = |(o, (_, x)): (&String, &(String, Region))| {
+                o != id && x.hand_out.as_ref().is_some_and(|g| p.starts_with(&format!("{g}/")))
+            };
+            if !(r.is_waters() && folder.regions.iter().any(handed)) {
+                out.problems.push(problem("rg-empty", r, p, format!("{id}: the region has neither land nor water")));
+            }
             out.resolved.remove(id);
             continue;
         }
@@ -2662,6 +2685,56 @@ fn cells_pass(
         }
     }
     rest_t
+}
+
+/// The members a hand-out from `id` to folder `g` gives to, each with the regions it stands for:
+/// each of `members` (the regions of `g` with water) for itself, but that the outermost folder
+/// under `g` holding a waters region (`Region::is_waters`, in the folder itself, not deeper), and
+/// not holding `id`, is one member, its waters region taking what the folder's regions border
+/// alone. Two waters regions in such a folder are a finding (`rg-ref`), the first by id taking.
+fn standing(
+    folder: &Folder,
+    g: &str,
+    id: &str,
+    members: &[String],
+    problems: &mut Vec<Problem>,
+) -> BTreeMap<String, Vec<String>> {
+    let own = &folder.regions[id].0;
+    let mut waters: BTreeMap<&str, Vec<&String>> = BTreeMap::new();
+    for m in members {
+        let (p, r) = &folder.regions[m];
+        let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
+        if r.is_waters() && dir.len() > g.len() && !own.starts_with(&format!("{dir}/")) {
+            waters.entry(dir).or_default().push(m);
+        }
+    }
+    for (dir, ws) in &waters {
+        if let [first, second, ..] = ws[..] {
+            let (p, r) = &folder.regions[second];
+            problems.push(problem("rg-ref", r, p, format!("{second}: {dir} holds two waters regions, {first} and {second}: a hand-out gives the folder's sea to one")));
+        }
+    }
+    let mut units: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for m in members {
+        let p = &folder.regions[m].0;
+        // (Its folders under `g`, outermost first.)
+        let to = p.match_indices('/').map(|(i, _)| &p[..i]).filter(|d| d.len() > g.len()).find_map(|d| waters.get(d));
+        units.entry(to.map_or(m, |ws| ws[0]).clone()).or_default().push(m.clone());
+    }
+    units
+}
+
+/// Tiled areas' union, cell by cell.
+fn union_of(ts: &[&TArea]) -> TArea {
+    let cells: BTreeSet<Cell> = ts.iter().flat_map(|t| t.cells.keys().copied()).collect();
+    let v: Vec<(Cell, Area)> = pace::par_map(cells.into_iter().collect(), |c| {
+        (c, geom::union_all(&ts.iter().filter_map(|t| t.cells.get(&c).cloned()).collect::<Vec<_>>()))
+    });
+    let mut u = TArea::default();
+    for (c, a) in v {
+        u.set(c, a);
+    }
+    u
 }
 
 /// The member nearest a stretch touching none (`hand_out_all`): the least distance between the

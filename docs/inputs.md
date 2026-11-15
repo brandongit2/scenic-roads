@@ -411,11 +411,11 @@ any water in two regions, or in none, is an error.
 |---|---|---|
 | `id` | `[a-z0-9-]`, 1–64 characters, the file's name without `.toml` | required |
 | `name` | string, non-empty | required |
-| `outline` | list of parts, their union | required, non-empty, unless there's `water` |
+| `outline` | list of parts, their union | required, non-empty, unless there's a `water` key (a waters region: "Land and water") |
 | `minus` | list of parts, their union taken away | optional |
 | `intersect` | list of parts, the region kept only inside their union | optional |
-| `water` | list of parts, the region's water: their union (`water = []`: none but its lakes) | optional; makes it a region of land and water |
-| `hand_out` | a folder's path: each stretch of this region's water only one region of that folder borders goes to that region | optional, with `water` |
+| `water` | list of parts, the region's water: their union (`water = []`: none but its lakes; with no outline, none but what a hand-out gives it) | optional; makes it a region of land and water |
+| `hand_out` | a folder's path: each stretch of this region's water only one member of that folder borders goes to that member: a region, or a subfolder holding a waters region, whose waters region takes it ("Land and water") | optional, with `water` |
 | `hand_out_all` | `true`: with `hand_out`, every stretch goes — to the region of the folder sharing its longest edge, or the nearest region with land if it touches none (the list's rule for land inside a split place's border but outside all its regions); the region then ends empty and is not stored; anything no region of the folder can take is an error (`rg-hand-out`) | optional, with `hand_out` |
 | `disabled` | `true`: checked and stored like any region, but never built (below) | optional, default `false` |
 | `[lines.<name>]` | a line, from `coords` or `ways` | optional |
@@ -502,8 +502,22 @@ region if that has `water` (a region without `water` keeps its outline: its part
 out). So a region's land and water meet on the coastline's coast (a `land:` part names the land
 before this); a stretch reaching past 1 km (an island no outline has, a long inlet the zones stop
 short of) stays out, for the cover check. A region's
-`hand_out` folder then takes each stretch (a connected piece) of its water that one of its regions
-alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge. With
+`hand_out` folder then takes each stretch (a connected piece) of its water that one of its members
+alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge (hand-outs
+to outer folders first, then by id). A member is a region of the folder with water, but for a
+subfolder holding a **waters region** (a region with `water` and no `outline`, in the subfolder
+itself; `water = []` when it has no sea of its own): the outermost such subfolder not holding the
+handing region is one member, its regions together, and what it alone borders goes whole to its
+waters region, unioned with that region's own water (a divided province's sea, kept whole: a
+stretch along British Columbia's coast that several of its regional districts border is British
+Columbia waters', not Canadian waters'; a stretch of Hudson Bay both Manitoba's and Ontario's
+regions border stays Canadian waters'). Two waters regions in one such subfolder are `rg-ref`. The waters
+region hands nothing on but by a `hand_out` of its own; a waters region deeper in the subfolder is
+the subfolder's own business; a folder without one is handed to region by region; a lake is never
+a waters region's (it has no outline to hold one). `hand_out_all` hands to region by region always:
+it hands out land, which a waters region doesn't hold. A waters region in a folder another region
+hands out to that ends with nothing is listed and not built, as an emptied `hand_out_all` region
+(below); elsewhere it is `rg-empty`. With
 `cover = "earth"` in `_rules.toml`, then: a region's piece of water under `sliver_km2` touching
 none of its land joins the region with water it shares the longest edge with; and, cell by cell
 (2°), land in two regions is taken from those of them with water (a pair's over `LAND_OVERLAP_KM2`,
@@ -736,7 +750,8 @@ and a region of water alone is the depth's alone (docs/regions.md). Files from b
 `"water_only": true` in the head instead (every shape water): read, never written. The index names
 each region's files in `facts.geometry` and `facts.drawn`, and its `keyed` digest is the geometry
 file's content name, so an edit that doesn't change the result reruns nothing. A region that
-resolved to nothing (a `hand_out_all` region, every stretch handed out) is stored with no files: its
+resolved to nothing (a `hand_out_all` region, every stretch handed out; a divided place's waters
+region handed nothing) is stored with no files: its
 facts name neither, and the readers list it (the Regions list shows it) but leave it out of the
 regions built, the coverage and the drawing (no area to cover).
 
@@ -861,7 +876,7 @@ new pass moving a coast a little doesn't hold an accepted one's files again.
 | Check | Raised when |
 |---|---|
 | `rg-toml` | the TOML doesn't parse; a field unknown or mistyped |
-| `rg-id` | `id` invalid or not the file's name; `name` or `outline` empty |
+| `rg-id` | `id` invalid or not the file's name; `name` empty; `outline` empty with no `water` key |
 | `rg-part` | an unknown kind of part, a malformed `osm:` id, a bad distance, a bad `keep` |
 | `rg-dup-id` | two files with one id, or two GeoJSON files with one name |
 | `rg-osm-missing` | a relation or way the pinned pass doesn't have |
@@ -869,9 +884,9 @@ new pass moving a coast a little doesn't hold an accepted one's files again.
 | `rg-shape` | a GeoJSON missing, not a (Multi)Polygon, or invalid |
 | `rg-line` | a line under two points, ways that don't join, a cut line crossing itself |
 | `rg-cut` | a cut line ending inside a piece |
-| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too) |
+| `rg-ref` | a `region:`, `land:` or `line:` naming nothing (in `water` too); two waters regions in a folder a hand-out gives to as one member |
 | `rg-loop` | a loop of `region:` references |
-| `rg-empty` | a result with no area |
+| `rg-empty` | a result with no area (but a waters region in a folder another region hands out to) |
 | `rg-pin` | no OSM pin, or one that isn't a date |
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-special` | a `_*.toml` that isn't `_group.toml`, `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |

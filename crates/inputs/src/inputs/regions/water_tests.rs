@@ -642,6 +642,119 @@ fn a_stretch_one_region_alone_borders_is_its_own() {
     assert!(at("p1", 0.5, 0.5) && !at("p1", 2.5, 0.5));
 }
 
+/// Task #1409: a divided place's own sea, kept whole as its waters region. P's zone in five
+/// stretches: round Q (divided: q1, and q2 in a folder of its own under it), round p3 alone, round
+/// q3 and p4, round r1 and r2, round r3 alone (R divided, with no waters region).
+fn divided_world() -> World {
+    let d = tempfile::tempdir().unwrap();
+    let lands = [
+        (51, (0.0, 1.0)),
+        (52, (1.0, 2.0)),
+        (53, (10.0, 11.0)),
+        (54, (20.0, 21.0)),
+        (55, (21.0, 22.0)),
+        (56, (30.0, 31.0)),
+        (57, (31.0, 32.0)),
+        (58, (40.0, 41.0)),
+    ];
+    let p = outlines(
+        d.path(),
+        &lands.iter().map(|(rel, (w, e))| (*rel, "PP", deg_sq(*w, 0.0, *e, 1.0))).collect::<Vec<_>>(),
+    );
+    let land = lands.iter().flat_map(|(_, (w, e))| bx(*w, 0.0, *e, 1.0)).map(|r| vec![r]).collect();
+    let zone = [(-1.0, 3.0), (9.0, 12.0), (19.0, 23.0), (29.0, 33.0), (39.0, 42.0)]
+        .iter()
+        .flat_map(|(w, e)| bx(*w, -1.0, *e, 2.0))
+        .collect();
+    let data = Datasets::from_parts(
+        HashMap::from([(9, zone)]),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        land,
+        "fixture",
+    );
+    World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d }
+}
+
+/// The folder for `divided_world`, Q's waters regions left out unless `waters`.
+fn divided_files(waters: bool) -> Vec<(String, String)> {
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let mut v: Vec<(String, String)> = vec![
+        ("_pins.toml".into(), "osm = \"2026-09-28\"\n".into()),
+        (
+            "p/p-waters.toml".into(),
+            "id = \"p-waters\"\nname = \"P waters\"\nwater = [{ minus = [\"eez:9\", \"group:p\"] }]\nhand_out = \"p\"\n"
+                .into(),
+        ),
+        ("p/q/q1.toml".into(), m("q1", 51)),
+        ("p/q/n/q2.toml".into(), m("q2", 52)),
+        ("p/p3.toml".into(), m("p3", 53)),
+        ("p/q/q3.toml".into(), m("q3", 54)),
+        ("p/p4.toml".into(), m("p4", 55)),
+        ("p/r/r1.toml".into(), m("r1", 56)),
+        ("p/r/r2.toml".into(), m("r2", 57)),
+        ("p/r/r3.toml".into(), m("r3", 58)),
+    ];
+    if waters {
+        // (Q's waters region with a little water of its own; one in Q's subfolder too, Q's business.)
+        v.push((
+            "p/q/q-waters.toml".into(),
+            "id = \"q-waters\"\nname = \"Q waters\"\nwater = [\"box:-0.9,-0.9,-0.8,-0.8\"]\n".into(),
+        ));
+        v.push(("p/q/n/n-waters.toml".into(), "id = \"n-waters\"\nname = \"N waters\"\nwater = []\n".into()));
+    }
+    v
+}
+
+fn run_owned(w: &World, files: &[(String, String)]) -> resolve::Outcome {
+    run(w, &files.iter().map(|(p, t)| (p.as_str(), t.as_str())).collect::<Vec<_>>())
+}
+
+/// A hand-out to a country with a divided province: the stretch only the province's regions border
+/// goes whole to its waters region (with its own water); one shared with another province stays the
+/// country's; the undivided province takes its own; a folder without a waters region is handed to
+/// region by region, as without Q's; Q's subfolder's waters region, handed nothing, ends empty
+/// unreported.
+#[test]
+fn a_divided_places_sea_goes_whole_to_its_waters_region() {
+    let w = divided_world();
+    let out = run_owned(&w, &divided_files(true));
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    // Q's stretch, both its regions bordering it and across the cells' edges at 0° and 2°: whole.
+    for (x, y) in [(-0.5, 0.5), (2.5, 0.5), (1.5, 1.5), (0.5, -0.5), (-0.85, -0.85)] {
+        assert!(at("q-waters", x, y) && !at("p-waters", x, y), "{x}, {y}");
+    }
+    assert!(!at("q1", -0.5, 0.5) && !at("q2", 2.5, 0.5) && at("q1", 0.5, 0.5) && at("q2", 1.5, 0.5));
+    // Q's shared with p4: P's.
+    assert!(at("p-waters", 19.5, 0.5) && at("p-waters", 22.5, 0.5) && !at("q-waters", 19.5, 0.5));
+    assert!(at("p3", 9.5, 0.5) && at("p3", 11.5, 0.5) && !at("p-waters", 9.5, 0.5));
+    assert!(at("p-waters", 29.5, 0.5) && at("r3", 39.5, 0.5));
+    assert!(!out.resolved.contains_key("n-waters"));
+    // Without Q's waters regions: Q's stretch is P's (q1 and q2 both border it), and every region
+    // but Q's waters as with them.
+    let before = run_owned(&w, &divided_files(false));
+    assert!(before.problems.is_empty(), "{:?}", before.problems);
+    assert!(area_of(&before.resolved["p-waters"].geometry).contains([e7(-0.5), e7(0.5)]));
+    for id in ["q1", "q2", "q3", "p3", "p4", "r1", "r2", "r3"] {
+        assert_eq!(before.resolved[id], out.resolved[id], "{id}");
+    }
+}
+
+/// A waters region with `water = []` in a folder no hand-out gives to has no area: `rg-empty`.
+#[test]
+fn a_waters_region_no_hand_out_reaches_is_empty() {
+    let w = world();
+    let lone = "id = \"lone\"\nname = \"Lone waters\"\nwater = []\n";
+    let out = run(&w, &[PINS, ("lone.toml", lone)]);
+    assert!(
+        out.problems.iter().any(|p| p.check == "rg-empty" && p.about.contains(&"lone".to_string())),
+        "{:?}",
+        out.problems
+    );
+}
+
 /// Rings cut into cells by clipping: the cells' pieces make the same area as the rings, none
 /// outside its cell; a ring round a whole cell gives the cell; a polygon with a hole keeps it.
 #[test]
