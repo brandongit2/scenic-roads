@@ -829,7 +829,7 @@ mod tests {
         // (Its group fact is as before: the symbol is the file's own fact.)
         assert_eq!(serde_json::to_value(&g).unwrap(), serde_json::json!({"name": "Canada"}));
         assert_eq!(
-            parse_group(&format!("name = \"Canada\"\n{}", table.replace("flag", "banner"))).unwrap_err().check,
+            parse_group(&format!("name = \"Canada\"\n{}", table.replace("\"flag\"", "\"\""))).unwrap_err().check,
             "symbol"
         );
     }
