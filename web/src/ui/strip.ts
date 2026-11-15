@@ -427,17 +427,19 @@ function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void;
       ? [{
         what: 'Flags and coats of arms (the Regions list)',
         source: `${[...new Set(symbols.map((c) => hostOf(c.page)))].join(', ')} (each file’s author in the list below and in its tooltip)`,
-        terms: [...symbols.reduce((n, c) => n.set(c.licence, (n.get(c.licence) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1]).map(([l, n]) => `${l} (${n})`).join('; '),
+        // (The licences the files give, each with how many; a file without one counts in none.)
+        terms: [...symbols.reduce((n, c) => (c.licence ? n.set(c.licence, (n.get(c.licence) ?? 0) + 1) : n), new Map<string, number>())].sort((a, b) => b[1] - a[1]).map(([l, n]) => `${l} (${n})`).join('; '),
       }]
       : [];
     body.replaceChildren(...[...data, ...APP_CREDITS, ...flags].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
   };
   set([]);
-  // Each symbol's file: its author and licence, linked to its page (listed when first opened).
+  // Each symbol's file: its author and licence (when given), linked to its page (listed when first
+  // opened).
   const flagList = h('details', { class: 'flags', hidden: true }, h('summary', {}, 'Flags and coats of arms, file by file'));
   flagList.addEventListener('toggle', () => {
     if (flagList.open && !flagList.querySelector('ul')) {
-      flagList.append(h('ul', {}, ...symbols.map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'} · ${c.licence}`))));
+      flagList.append(h('ul', {}, ...symbols.map((c) => h('li', {}, h('a', { href: c.page, target: '_blank', rel: 'noopener' }, c.name), ` · ${c.author || 'author on its page'}${c.licence ? ` · ${c.licence}` : ''}`))));
     }
   });
   const readSymbols = () => {

@@ -18,10 +18,9 @@ pub const MAX_BUNDLE: u64 = 64 << 20;
 pub const MAX_PX: u32 = 512;
 /// The most elements an SVG may draw, each `<use>` counting the elements it copies (`svg`).
 pub const MAX_DRAWN: u64 = 1 << 16;
-/// The licences a symbol may be under, a line each (`free`); the producer reads the same file.
-const FREE: &str = include_str!("free-licences.txt");
 
-/// A `[symbol]` table: the image's name, what it is, where it comes from and its credit.
+/// A `[symbol]` table: the image's name, what it is, where it comes from and its credit (its author
+/// and licence, notes shown with it when given; never checked).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Symbol {
@@ -35,6 +34,8 @@ pub struct Symbol {
     /// Its author as the source names them; empty when the source page is the only credit.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub author: String,
+    /// Its licence as the source names it; empty when not given.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub licence: String,
 }
 
@@ -79,24 +80,6 @@ pub fn is_bundle(path: &str) -> bool {
     path.ends_with(".zip")
 }
 
-/// Whether `licence` is on the free list (word by word: `{version}` a version such as 4.0,
-/// `{port}` two lower-case letters).
-pub fn free(licence: &str) -> bool {
-    let words: Vec<&str> = licence.split(' ').collect();
-    FREE.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).any(|line| {
-        let pat: Vec<&str> = line.split(' ').collect();
-        pat.len() == words.len()
-            && pat.iter().zip(&words).all(|(p, w)| match *p {
-                "{version}" => {
-                    let b = w.as_bytes();
-                    b.len() == 3 && b[0].is_ascii_digit() && b[1] == b'.' && b[2].is_ascii_digit()
-                }
-                "{port}" => w.len() == 2 && w.bytes().all(|c| c.is_ascii_lowercase()),
-                p => p == *w,
-            })
-    })
-}
-
 /// What's wrong with a table (§6.1.8 `rg-symbol`), each a message; none when it's sound.
 pub fn faults(s: &Symbol) -> Vec<String> {
     let mut out = Vec::new();
@@ -108,12 +91,6 @@ pub fn faults(s: &Symbol) -> Vec<String> {
     }
     if !s.source.starts_with("https://") || s.source.len() <= "https://".len() {
         out.push(format!("symbol source {:?}: the page it comes from, an https:// address", s.source));
-    }
-    if !free(&s.licence) {
-        out.push(format!(
-            "symbol licence {:?} isn't on the free list (crates/inputs/src/inputs/regions/free-licences.txt)",
-            s.licence
-        ));
     }
     out
 }
@@ -694,20 +671,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_free_list_is_matched_word_by_word() {
-        for l in
-            ["Public domain", "CC0", "CC BY 4.0", "CC BY-SA 3.0", "CC BY 2.5 ar", "Copyrighted free use", "OGL-om 1.0"]
-        {
-            assert!(free(l), "{l}");
-        }
-        for l in
-            ["CC BY-NC 4.0", "CC0 1.0", "CC BY 4", "CC BY 2.5 AR", "public domain", "GFDL", "", "CC BY-SA 4.0 ar x"]
-        {
-            assert!(!free(l), "{l}");
-        }
-    }
-
-    #[test]
     fn a_table_is_checked_field_by_field() {
         let ok = Symbol {
             image: "Q1.svg".into(),
@@ -724,7 +687,7 @@ mod tests {
             author: "x".into(),
             licence: "All rights reserved".into(),
         };
-        assert_eq!(faults(&bad).len(), 4);
+        assert_eq!(faults(&bad).len(), 3);
         // A kind is any phrase on one line saying what the image is.
         for kind in ["flag", "coat of arms", "seal", "logo", "emblem"] {
             assert!(faults(&Symbol { kind: kind.into(), ..ok.clone() }).is_empty(), "{kind}");
@@ -732,6 +695,8 @@ mod tests {
         for kind in ["", "  ", "logo\nof Adana", "logo\r"] {
             assert_eq!(faults(&Symbol { kind: kind.into(), ..ok.clone() }).len(), 1, "{kind:?}");
         }
+        // (The author and licence are notes: any, or none.)
+        assert!(faults(&Symbol { licence: String::new(), ..ok.clone() }).is_empty());
     }
 
     #[test]

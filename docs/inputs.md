@@ -4,7 +4,7 @@ Every input the map is built from has one written shape and one folder on the NA
 checks each change before taking it in, keeps the last good version while a change is held, and
 reads only checked, content-named copies, so builds stay deterministic. Per-source conversion
 happens outside the app (`producers/`, §8); what the app must know about a source (where to fetch
-it, its licence, its credit) is written in a declaration file in an inputs folder.
+it, its credit, its licence as a note) is written in a declaration file in an inputs folder.
 
 **The input check** (§4) checks every change to an inputs folder: first its shape, then the
 input's own rules. A change that passes is copied into `sources/inputs/` and becomes the version the
@@ -37,7 +37,7 @@ terrain's), the remaining sources (§6.9); the guards (§7). Companions: `docs/s
 |---|---|---|---|
 | **Declare** | the data itself, in the input's shape | reads it as given; the files are the whole input; never writes there | the map has none of it |
 | **Request–fulfil** | answers to the app's requests | writes a to-do list and a brief into the inputs folder's `todo/` after building; reads the answers like a declare input | the map falls back, the request stays listed |
-| **Source declaration** | a small file naming a standard format, where to get the data, its licence and credit (data may lie beside it) | fetches the data itself into `sources/`, content-named and pinned in the records | the source isn't used |
+| **Source declaration** | a small file naming a standard format, where to get the data, its credit and licence (data may lie beside it) | fetches the data itself into `sources/`, content-named and pinned in the records | the source isn't used |
 
 Not inputs: `inputs/keys.env` (secrets; their names enter keys, never their values), `todo/`
 lists, and `how/` notes (§8).
@@ -320,15 +320,17 @@ dataset (registers, static GTFS), or the declaration itself (feeds, elevation).
 | `name` | string | no | the dataset's own name |
 | `what` | string | no | what the map shows from it, the credit's first part |
 | `credit` | string | no | the source as its terms ask it be named (required) |
-| `licence` | string | no | an SPDX id where there is one, else the terms' name (required) |
+| `licence` | string | no | an SPDX id where there is one, else the terms' name: a note shown with the credit (the map's Credits' "Licence / terms"), when given; never required or checked |
 | `licence_url`, `source` | URL | no | the terms; the page it comes from |
 | `retrieved` | date | no | the owner's record |
 | `territory` | ISO 3166 codes, or `"world"` | yes | where it applies, checked against the data where possible |
 | `redistribute` | bool, default true | yes | false: never in the World download |
 | `notes` | string | no | free text |
 
-Parsed by `inputs::credits::parse_description`. Keyed fields enter the file's `keyed` digest
-(§4.6); the others change what the map says, not its data.
+Parsed by `inputs::credits::parse_description`; a description without its `credit` is an error (the
+map's Credits name each source by it), a field of the wrong type too. A licence is never a reason to
+hold an input: none, `unverified` or any terms at all, the input is read like any other. Keyed
+fields enter the file's `keyed` digest (§4.6); the others change what the map says, not its data.
 
 ### 5.2 Source declarations
 
@@ -617,7 +619,7 @@ one a region is valid, and shows a "?" placeholder (never its folder's symbol).
 | `kind` | what the image is, a short phrase on one line, not empty (`flag`, `coat of arms`, `seal`, `logo`, `emblem`…): the tooltip and the Credits say it with its first letter capitalized, then "of" and the name ("Logo of Adana") | required |
 | `source` | the page it comes from, an `https://` address (where its author and licence are) | required |
 | `author` | its author as the source names them; left out when the source page is the only credit | optional |
-| `licence` | on the free list, `crates/inputs/src/inputs/regions/free-licences.txt` (public domain, CC0, CC BY and CC BY-SA of any version or port, "Copyrighted free use", OGL-om 1.0): each lets the app ship the image, offline too, with its credit | required |
+| `licence` | its licence as the source names it: a note shown with its credit (its tooltip, the Credits), never checked | optional |
 
 ```toml
 # canada/alberta.toml, its symbol after its other fields
@@ -891,7 +893,7 @@ new pass moving a coast a little doesn't hold an accepted one's files again.
 | `rg-pin-mismatch` | a pin naming another pass than the current one (§6.1.5) |
 | `rg-special` | a `_*.toml` that isn't `_group.toml`, `_pins.toml` or `_rules.toml` (the last two at the top), or the old `pins.toml` or `rules.toml` |
 | `rg-group` | a `_group.toml` that doesn't parse, has a field other than `name`/`order`/`symbol`, or an empty name |
-| `rg-symbol` | a `[symbol]` table with a field missing or wrong (its image not a file name of an image, a kind empty or of more than one line, a source not `https://`, a licence not on the free list); an image or bundle that can't be served (its size, its type by its bytes, a raster's sides, an SVG's content: "Symbols"); an image's name in two places; a symbol naming an image the folder hasn't |
+| `rg-symbol` | a `[symbol]` table with a field missing or wrong (its image not a file name of an image, a kind empty or of more than one line, a source not `https://`); an image or bundle that can't be served (its size, its type by its bytes, a raster's sides, an SVG's content: "Symbols"); an image's name in two places; a symbol naming an image the folder hasn't |
 | `rg-extract` | ids the extract lacks: held while it's made (§6.1.6) |
 | `rg-data` | a region naming the datasets, or with `water`, while they aren't read (§6.1.7) |
 | `rg-data-missing` | an `eez:`, `ts12:` or `ne-lake:` id the dataset hasn't |
@@ -921,7 +923,7 @@ region file takes it out with the next version.
   under the cursor (`/api/regions/at`, from the same tiles; the smallest by its box where regions
   overlap): its folders and name with their symbols, its state, land and water and download.
 - **Symbols** (§6.1.3) come from the accepted version: `GET /api/regions` gives each region's and
-  folder's (`symbol`: `url`, `kind`, `source`, `author`, `licence`) once its image is in the accepted
+  folder's (`symbol`: `url`, `kind`, `source`, and `author` and `licence` when given) once its image is in the accepted
   version, and `GET /api/regions/symbols/<hash16>.<ext>` serves it by its content name, cached for
   good. The server's copy of the accepted version (`accepted/regions/`, which a sync keeps in step
   with the records, every file of the index, the bundle among them) is where it reads them, so a
@@ -1079,8 +1081,7 @@ osm_ref_tags = ["ref:mhs"]
 
 **Checks.** Errors: an unexpected file; invalid GeoJSON or geometry; a coordinate out of range; an
 `id` missing or twice; a property mistyped (a `level` outside 1–5, an unknown `tier` or `kind`, a bad
-`wikidata`); what the class needs missing; a description missing, without credit or licence, or with
-the licence `unverified` (`he-licence`: never read until someone checks it); a bad `class`,
+`wikidata`); what the class needs missing; a description missing or without its credit; a bad `class`,
 `wikidata_property`, `osm_ref_tags` or `territory`; a `.geojson` without its `.toml` or the reverse.
 Warnings: entries over 20 km outside the territory's outlines (one per register); a register losing
 over 10 % of its entries, or removed; over half its entries `approx`; entries without a name.
@@ -1248,7 +1249,7 @@ under another country), `replaces` (id → ids), `own_code` (ISO 3166-2 → alph
 FI-01 is AX, Kosovo's RS-KM XK, Ceuta none). Its feeds are chosen by the countries the coverage is
 in (`rail::countries`) and the feeds' boxes.
 
-**Checks** (`inputs::feeds::Feeds`). Errors: a file not `<id>.toml`; no credit or licence; no
+**Checks** (`inputs::feeds::Feeds`). Errors: a file not `<id>.toml`; no credit; no
 `[data]`, an unknown format or method, a non-http(s) `url`; a keyed method without `header`, a bad
 `key` name, `get-key-json-link` without `link`; a bad `refresh`, `modes` or `order`; malformed ids in
 `replaces`, `exclude`, `country`; a `country` or `own_code` value not ISO syntax; two catalogues.
@@ -1309,8 +1310,8 @@ read (`trips.txt` and `stop_times.txt` may be headers only when every route is i
   counted over the reference year (a break of a month or more makes a line seasonal); a pinned route
   counts for that line alone.
 
-**Checks** (`inputs::gtfs::Gtfs`). Errors: an unexpected file; a description without credit or
-licence; an unreadable zip (stored and deflated entries only, no Zip64); a required file or read
+**Checks** (`inputs::gtfs::Gtfs`). Errors: an unexpected file; a description without its
+credit; an unreadable zip (stored and deflated entries only, no Zip64); a required file or read
 column missing; broken references (trip → route, service; stop time → trip, stop; frequency → trip;
 count row → route and, for rail, its stops); a bad time, calendar date or `route_type`; a non-positive
 `headway_secs` or numeric `headway`; a count that isn't a number or `null`; `overnight` or
@@ -2618,8 +2619,8 @@ rules have a test (`the_scanner_finds_sources_by_their_declarations`).
   `elevation/`, `languages/`, `sources/`, `depth/`, `extents/`, and `flags/`, the regions' symbols
   from Wikidata and Commons, `fetch.py --regions <a copy of inputs/regions> --out <folder>`: each
   declaration without a symbol looked up, written whole with its `[symbol]` table, with
-  `symbols.zip` and the originals' digests to check before placing; its licence list is the check's
-  file): per-source code and staged declarations kept
+  `symbols.zip` and the originals' digests to check before placing; each symbol's licence the short
+  name Commons gives it, a note): per-source code and staged declarations kept
   out of the app, with their history and review. They're outside what `publish.sh` ships and
   outside the guards' scans; the app never runs them. Each runs on its own (`uv run --project
   producers python producers/heritage/registers.py --data <folder> --out <folder>`), writing the

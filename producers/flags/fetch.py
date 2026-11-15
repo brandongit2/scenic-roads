@@ -15,11 +15,10 @@ current flag (P41, preferred rank first, none ended by P582), else coat of arms 
 bytes, else Commons' own rendering PNG_H px high (a PNG, or a JPEG for a JPEG's: named by what its
 bytes are).
 
-Only images under a licence on the regions' check's free list are kept (the list is
-crates/inputs/src/inputs/regions/free-licences.txt, read here: one list for both), and not those in
-REFUSED (a free-use claim that can't be checked). An author Commons gives only as a pointer ("see
-the file history") is left out: the Credits then send to the file's page, where its history names
-them.
+Each symbol's licence is the short name Commons gives it, a note shown with its credit (left out
+when Commons gives none); no image is left out for its licence. An author Commons gives only as a
+pointer ("see the file history") is left out: the Credits then send to the file's page, where its
+history names them.
 
 Out: symbols.zip (the folder's symbols.zip's members still named, and the new ones; deflated, sorted,
 dated 1980-01-01, so the same images are the same bytes), each declaration that gains a symbol at its
@@ -55,31 +54,9 @@ PNG_H = 48
 MAX_BYTES = 64 << 10
 PROPS = {'flag': 'P41', 'coat of arms': 'P94', 'seal': 'P158'}
 RANK = {'PreferredRank': 0, 'NormalRank': 1}
-FREE_LIST = os.path.join(os.path.dirname(__file__), '..', '..', 'crates', 'inputs', 'src', 'inputs', 'regions', 'free-licences.txt')
-# Files whose licence tag can't be checked: Cabinda's logo, "free use" by a provincial government's
-# site that no longer answers (its permission is only the site's address).
-REFUSED = {'Cabinda logo.gif'}
 # An author that only points elsewhere, or none.
 NO_AUTHOR = re.compile(r'(?i)^((various, )?see (the )?(file|upload) (history|log)\b.*|see below\.?|(unknown ?(author)?)+|n\.a|own work)$')
 BUNDLE = 'symbols.zip'
-
-
-def free_list(path=FREE_LIST):
-    with open(path, encoding='utf-8') as f:
-        return [l.strip() for l in f if l.strip() and not l.strip().startswith('#')]
-
-
-def free(licence, lines):
-    """Whether `licence` is on the list, word by word ({version}: 4.0; {port}: two lower-case letters),
-    as the check matches it (crate::inputs::regions::symbols::free)."""
-    words = licence.split(' ')
-    for line in lines:
-        pat = line.split(' ')
-        if len(pat) == len(words) and all(
-                re.fullmatch(r'[0-9]\.[0-9]', w) if p == '{version}' else re.fullmatch(r'[a-z]{2}', w) if p == '{port}' else p == w
-                for p, w in zip(pat, words)):
-            return True
-    return False
 
 
 def kind_of(data):
@@ -168,7 +145,8 @@ def with_symbol(text, s):
     lines = [f'image = {toml_str(s["image"])}', f'kind = {toml_str(s["kind"])}', f'source = {toml_str(s["source"])}']
     if s.get('author'):
         lines.append(f'author = {toml_str(s["author"])}')
-    lines.append(f'licence = {toml_str(s["licence"])}')
+    if s.get('licence'):
+        lines.append(f'licence = {toml_str(s["licence"])}')
     return (text if text.endswith('\n') or not text else text + '\n') + '\n[symbol]\n' + '\n'.join(lines) + '\n'
 
 
@@ -216,7 +194,6 @@ def main():
     ap.add_argument('--regions', required=True, help='a copy of inputs/regions (read only)')
     ap.add_argument('--out', required=True, help='where the shape is written for placing')
     a = ap.parse_args()
-    lines = free_list()
     decls = declarations(a.regions)
     images = kept_images(a.regions, decls)
     want = {p for p, (_, d) in decls.items() if 'symbol' not in d}
@@ -269,7 +246,7 @@ def main():
     symbols, fetched = {}, {}
     for p, (item, kind, f) in sorted(chosen.items()):
         m = meta.get(f)
-        if not m or not (m['svg'] or m['thumb']) or f in REFUSED or not free(m['licence'], lines):
+        if not m or not (m['svg'] or m['thumb']):
             continue
         if item not in fetched:
             data = get(m['url'] if m['svg'] else m['thumb'])

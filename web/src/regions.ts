@@ -9,7 +9,8 @@ import { GREEN, GREY, LAYER, MAXZ, SOURCE_LAYER, borderOf, colourOf, labelPoints
 
 /** A region's or folder's symbol as the server gives it (docs/inputs.md §6.1.3, "Symbols"): its flag,
  * or the symbol it goes by, declared with it in the regions' inputs folder; its image's address on
- * this Mac's server (named by its content), and its credit. Its title and credit: regionlist.ts. */
+ * this Mac's server (named by its content), and its credit (its author and licence, notes the server
+ * gives when the declaration does). Its title and credit: regionlist.ts. */
 export interface RegionSymbol {
   url: string;
   /** What the image is, a short phrase as declared (`flag`, `coat of arms`, `logo`…). */
@@ -17,7 +18,7 @@ export interface RegionSymbol {
   /** The page it comes from, where its author and licence are. */
   source: string;
   author?: string;
-  licence: string;
+  licence?: string;
 }
 
 type Bbox = [number, number, number, number];

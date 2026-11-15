@@ -1,6 +1,7 @@
 //! Credits and licences from the inputs' own descriptions (docs/inputs.md §4.8, §5.1). Every input
 //! whose data reaches the map has a description (`about.toml`, `<name>.toml` beside each dataset, or
-//! the declaration itself) with its `credit` and `licence`; its unit's checks parse it
+//! the declaration itself) with its `credit`, and its `licence` when given (a note shown with the
+//! credit, never required or checked); its unit's checks parse it
 //! (`parse_description`) and keep it in the index with the file's facts (`description`), with the
 //! extent read from the data (`extent`: a box, or `"world"`), never typed.
 //!
@@ -24,7 +25,9 @@ pub struct Description {
     pub what: String,
     /// The source as its terms ask it be named.
     pub credit: String,
-    /// An SPDX id where there is one, else the terms' name.
+    /// An SPDX id where there is one, else the terms' name: a note shown with the credit; empty when
+    /// not given.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub licence: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub licence_url: String,
@@ -61,8 +64,8 @@ pub enum Extent {
     Boxes(Vec<[f64; 4]>),
 }
 
-/// A description file parsed (TOML): it, and the findings its shape raises (an error for each
-/// required field missing or of the wrong type). `keyed`: the digest of the fields that enter keys
+/// A description file parsed (TOML): it, and the findings its shape raises (an error for its credit
+/// missing, or a field of the wrong type). `keyed`: the digest of the fields that enter keys
 /// (`territory`, `redistribute`).
 pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<Finding>, String) {
     let err = |what: &str, msg: String| {
@@ -77,13 +80,8 @@ pub fn parse_description(path: &str, bytes: &[u8]) -> (Option<Description>, Vec<
         Err(e) => return (None, vec![err("toml", format!("{path} isn't TOML: {}", e.message()))], String::new()),
     };
     let mut fs = Vec::new();
-    for req in ["credit", "licence"] {
-        if !v.get(req).and_then(|x| x.as_str()).is_some_and(|s| !s.trim().is_empty()) {
-            fs.push(err(
-                req,
-                format!("{path}: `{req}` is required (a source without its credit would break its terms)"),
-            ));
-        }
+    if !v.get("credit").and_then(|x| x.as_str()).is_some_and(|s| !s.trim().is_empty()) {
+        fs.push(err("credit", format!("{path}: `credit` is required (the map's Credits name each source by it)")));
     }
     for (k, x) in &v {
         let ok = match k.as_str() {

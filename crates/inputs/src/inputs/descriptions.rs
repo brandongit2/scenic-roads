@@ -10,7 +10,7 @@
 //!   aren't a description (not a JSON object; neither `qid` nor `id`, or both; a `qid` not
 //!   `Q<digits>`, an `id` not `n`, `w` or `r` and digits; `long` missing or empty without `drop`, or
 //!   not a string; `src` not a string or a list; `drop` not a boolean), one finding per file listing
-//!   them; an `about.toml` without its credit and licence (`credits::parse_description`).
+//!   them; an `about.toml` without its credit (`credits::parse_description`).
 //! - **Warnings,** one finding per file and check listing the lines: a `long` over the writers'
 //!   brief's 55 words; a description without `src`.
 

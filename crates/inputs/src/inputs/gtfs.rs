@@ -11,7 +11,7 @@
 //!
 //! The checks:
 //! - **Errors:** a file that isn't `<name>.zip` or `<name>.toml` (a name of letters, digits, `-` and
-//!   `_`); a description without its credit and licence; a zip that can't be read; a required file
+//!   `_`); a description without its credit; a zip that can't be read; a required file
 //!   missing (`agency.txt`, `stops.txt`, `routes.txt`, `trips.txt`, `stop_times.txt`,
 //!   `calendar.txt`, `feed_info.txt`) or a table without the columns it needs; references broken (a
 //!   trip's route or service, a stop time's trip or stop, a frequency's trip, a count row's route or

@@ -1409,7 +1409,7 @@ def produce(net, path, out, today):
     with open(path, "rb") as f:
         decl = tomllib.load(f)
     decl["id"] = os.path.basename(path)[:-len(".toml")]
-    for k in ("name", "credit", "licence", "theme"):
+    for k in ("name", "credit", "theme"):
         if not decl.get(k):
             sys.exit(f"{path}: no {k}")
     feats, reads = [], []

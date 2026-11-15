@@ -107,7 +107,7 @@
     _group.toml: docs/inputs.md §6.1.3, "Symbols"; none, a "?" placeholder, never its folder's),
     served by this Mac's server from the accepted regions (/api/regions/symbols/…) and fitted in a
     box of fixed width in its own aspect ratio, without border or rounding (each file's author and
-    licence in its tooltip and in the Credits, file by file, read from /api/regions), the name, the input check's state while it's checking, held or disabled, and its land and
+    licence, when given, in its tooltip and in the Credits, file by file, read from /api/regions), the name, the input check's state while it's checking, held or disabled, and its land and
     water in km² (from its accepted geometry: the server works each out once, `region-areas.json`).
     No build state.
   - **Search** and **Show only downloaded regions**, sticking atop the section: a region shows when

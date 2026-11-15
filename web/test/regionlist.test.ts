@@ -65,6 +65,11 @@ assert.equal(flagOf(undefined, 'Adana'), null);
 assert.deepEqual(flagOf(sym('logo', 'a.svg'), 'Adana'), { url: 'a.svg', title: 'Logo of Adana (CC0)' });
 assert.equal(flagOf(sym('coat of arms', 'b.svg', 'Ann'), 'Bern')?.title, 'Coat of arms of Bern (Ann; CC0)');
 assert.equal(flagOf(sym('état emblem', 'c.svg'), 'X')?.title, 'État emblem of X (CC0)');
+// (The author and licence are notes: shown when given, the title without them when neither is.)
+const { licence: _, ...bare } = sym('flag', 'd.svg');
+assert.equal(flagOf(bare, 'Y')?.title, 'Flag of Y');
+assert.equal(flagOf({ ...bare, author: 'Ann' }, 'Y')?.title, 'Flag of Y (Ann)');
+assert.deepEqual(symbolCredits([{ ...reg('y', 'Y'), symbol: bare }], undefined), [{ name: 'Flag of Y', author: '', licence: undefined, page: 'https://example.org/d.svg' }]);
 const withSym = { ...reg('adana', 'Adana'), symbol: sym('emblem', 'e.svg') };
 const shared = { ...reg('bern', 'Bern'), symbol: sym('flag', 'f.svg') };
 assert.deepEqual(symbolCredits([withSym, shared, { ...reg('x', 'X'), symbol: sym('flag', 'f.svg') }], { ...f('tr', 'Türkiye', []), symbol: sym('seal', 's.png') }), [

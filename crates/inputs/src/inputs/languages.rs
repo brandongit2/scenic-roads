@@ -9,7 +9,7 @@
 //!   that aren't two tab-separated fields, whose code isn't ISO 3166 syntax (`FR`, `CA-QC`), whose
 //!   list is empty or holds a language that isn't a BCP 47 primary subtag (two or three letters:
 //!   `fr`, `yue`), or whose code a line above already has, one finding per file and check listing them;
-//!   an `about.toml` without its credit and licence; a version without `territories.tsv` or
+//!   an `about.toml` without its credit; a version without `territories.tsv` or
 //!   without `about.toml` (and so the table's removal).
 //! - **Warnings,** one finding per check listing the lines: a code the newest pass's outlines don't
 //!   have (its line would have no effect: `outlines::spoken_codes`); a subdivision whose country

@@ -13,16 +13,18 @@ export interface Flag {
   title: string;
 }
 
-/** The symbol of a region or folder called `name`, to show; null for none (the placeholder). */
+/** The symbol of a region or folder called `name`, to show; null for none (the placeholder). Its
+ * title names its author and licence when given. */
 export function flagOf(s: RegionSymbol | undefined, name: string): Flag | null {
   if (!s) return null;
-  return { url: s.url, title: `${symbolName(s, name)} (${s.author ? `${s.author}; ` : ''}${s.licence})` };
+  const credit = [s.author, s.licence].filter(Boolean).join('; ');
+  return { url: s.url, title: `${symbolName(s, name)}${credit ? ` (${credit})` : ''}` };
 }
 
 /** Every symbol's credit, once each (one may be two places'): what it is and whose, its author,
- * licence and page, by name. */
-export function symbolCredits(regions: Region[], tree: Folder | undefined): { name: string; author: string; licence: string; page: string }[] {
-  const out = new Map<string, { name: string; author: string; licence: string; page: string }>();
+ * licence (when given) and page, by name. */
+export function symbolCredits(regions: Region[], tree: Folder | undefined): { name: string; author: string; licence?: string; page: string }[] {
+  const out = new Map<string, { name: string; author: string; licence?: string; page: string }>();
   const add = (s: RegionSymbol | undefined, name: string) => {
     if (s && !out.has(s.url)) out.set(s.url, { name: symbolName(s, name), author: s.author ?? '', licence: s.licence, page: s.source });
   };

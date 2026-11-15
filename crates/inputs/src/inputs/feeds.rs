@@ -7,7 +7,7 @@
 //!
 //! The checks:
 //! - **Errors:** a file that isn't a `<id>.toml` (an id of letters, digits, `-` and `_`); a
-//!   description without its credit and licence (`credits::parse_description`); a `[data]` without
+//!   description without its credit (`credits::parse_description`); a `[data]` without
 //!   a known `format` (`gtfs`, `mdb-catalogue`) or a `url`; an unknown fetch `method`, or a keyed
 //!   method without its `header` and a valid `key` name (or `link`, for `get-key-json-link`); a
 //!   `refresh` not `days:<n>`; `modes` other than `rail` and `ferry`; an `order` not a whole number;

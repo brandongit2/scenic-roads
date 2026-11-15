@@ -1321,7 +1321,7 @@ are: a damaged frame skipped to the next frame's magic number), each frame lines
 - **Regions** (read only): `GET /api/regions`, each region with its land and water,
   its box (`bbox`: w, s, e, n in degrees) and the point its name is drawn at (`label`: inside its
   largest land polygon by its outer ring; a region of water, or of waters whose land is under a thousandth of it, its largest water polygon), all from its accepted geometry once this Mac's server has read it, and its symbol as accepted
-  (`symbol`: `url`, `kind`, `source`, `author` when given, `licence`; a folder of `tree` its
+  (`symbol`: `url`, `kind`, `source`, and `author` and `licence` when given; a folder of `tree` its
   `_group.toml`'s too: docs/inputs.md §6.1.3, "Symbols");
   `GET /api/regions/symbols/<hash16>.<svg|png|jpg>` → the image of that content name from this Mac's
   copy of the accepted regions (a loose file's copy, or a bundle's member), `Cache-Control: public,

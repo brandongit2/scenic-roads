@@ -597,9 +597,14 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     let toml = "name = \"Repertoire\"\nwhat = \"Québec heritage\"\ncredit = \"Ministere de la Culture du Quebec\"\nlicence = \"CC-BY-4.0\"\nterritory = [\"CA-QC\"]\n".as_bytes();
     let (d, f, keyed) = parse_description_ok(toml);
     assert!(f.is_empty() && d.credit.starts_with("Ministere") && d.redistribute && keyed.len() == 16);
-    // The credit and licence are required, the territory checked.
+    // The credit is required, the territory checked.
     let (none, f, _) = credits::parse_description("x.toml", b"what = \"x\"\nterritory = [\"france\"]\n");
-    assert!(none.is_none() && f.len() == 3 && f.iter().all(|x| x.level == Level::Error), "{f:?}");
+    assert!(none.is_none() && f.len() == 2 && f.iter().all(|x| x.level == Level::Error), "{f:?}");
+    // The licence is a note: any, or none, never a finding.
+    for licence in ["", "licence = \"unverified\"\n", "licence = \"All rights reserved\"\n"] {
+        let (d, f, _) = credits::parse_description("x.toml", format!("credit = \"c\"\n{licence}").as_bytes());
+        assert!(f.is_empty() && d.is_some(), "{licence}: {f:?}");
+    }
     // A credit edit changes the key's digest; the territory changes `keyed`, the credit doesn't.
     let (_, _, k2) =
         credits::parse_description("x.toml", b"credit = \"other\"\nlicence = \"CC-BY-4.0\"\nterritory = [\"CA-QC\"]\n");

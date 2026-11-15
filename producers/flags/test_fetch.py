@@ -1,4 +1,4 @@
-"""The symbols' producer (fetch.py): the free list read as the check reads it, the shape it writes."""
+"""The symbols' producer (fetch.py): the check's size bound, the shape it writes."""
 import os
 import re
 import tempfile
@@ -11,14 +11,7 @@ import fetch
 SYMBOLS_RS = os.path.join(os.path.dirname(__file__), '..', '..', 'crates', 'inputs', 'src', 'inputs', 'regions', 'symbols.rs')
 
 
-class FreeList(unittest.TestCase):
-    def test_matched_word_by_word_as_the_check_does(self):
-        lines = fetch.free_list()
-        for l in ['Public domain', 'CC0', 'CC BY 4.0', 'CC BY-SA 3.0', 'CC BY 2.5 ar', 'Copyrighted free use', 'OGL-om 1.0']:
-            self.assertTrue(fetch.free(l, lines), l)
-        for l in ['CC BY-NC 4.0', 'CC0 1.0', 'CC BY 4', 'CC BY 2.5 AR', 'public domain', 'GFDL', '', 'CC BY-SA 4.0 ar x']:
-            self.assertFalse(fetch.free(l, lines), l)
-
+class Bound(unittest.TestCase):
     def test_the_size_bound_is_the_checks(self):
         with open(SYMBOLS_RS, encoding='utf-8') as f:
             m = re.search(r'pub const MAX_BYTES: u64 = (\d+) << (\d+);', f.read())
@@ -43,14 +36,15 @@ class Shape(unittest.TestCase):
             decls = fetch.declarations(src)
             self.assertEqual(sorted(decls), ['canada/_group.toml', 'canada/alberta.toml'])
             s = {'image': 'Q1.svg', 'kind': 'flag', 'source': 'https://example.org/File:"A".svg', 'author': '', 'licence': 'CC0'}
-            g = dict(s, image='Q16.png', kind='coat of arms', author='Ann "B" Ç')
+            # (A licence Commons gives none for: left out, the symbol kept.)
+            g = dict(s, image='Q16.png', kind='coat of arms', author='Ann "B" Ç', licence='')
             fetch.write(out, decls, {'canada/alberta.toml': s, 'canada/_group.toml': g}, {'Q1.svg': b'<svg/>', 'Q16.png': b'\x89PNG'})
             with open(os.path.join(out, 'canada/alberta.toml'), encoding='utf-8') as f:
                 text = f.read()
             self.assertTrue(text.startswith(files['canada/alberta.toml']))
             self.assertEqual(tomllib.loads(text)['symbol'], {k: v for k, v in s.items() if v})
             with open(os.path.join(out, 'canada/_group.toml'), encoding='utf-8') as f:
-                self.assertEqual(tomllib.loads(f.read())['symbol']['author'], 'Ann "B" Ç')
+                self.assertEqual(tomllib.loads(f.read())['symbol'], {k: v for k, v in g.items() if v})
             with zipfile.ZipFile(os.path.join(out, 'symbols.zip')) as z:
                 self.assertEqual(z.namelist(), ['Q1.svg', 'Q16.png'])
             first = open(os.path.join(out, 'symbols.zip'), 'rb').read()

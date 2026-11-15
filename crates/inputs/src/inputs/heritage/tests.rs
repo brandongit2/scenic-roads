@@ -55,16 +55,6 @@ fn a_description_and_its_own_fields() {
         ids(&h.file("a.toml", b"licence = \"y\"\nclass = \"special\"\nterritory = \"world\"\n").findings),
         [("description", Level::Error)]
     );
-    // A licence nobody checked: held until the owner sets the real one.
-    assert_eq!(
-        ids(&h
-            .file(
-                "a.toml",
-                b"credit = \"x\"\nlicence = \"unverified\"\nclass = \"heritage\"\nterritory = [\"ES-AN\"]\n"
-            )
-            .findings),
-        [("he-licence", Level::Error)]
-    );
 }
 
 #[test]

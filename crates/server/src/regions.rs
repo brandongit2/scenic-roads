@@ -615,14 +615,21 @@ fn label_point(poly: &[Vec<[f64; 2]>]) -> Option<[f64; 2]> {
 use inputs::inputs::regions::symbols::{self, Images as Symbols};
 
 /// A `[symbol]` fact as the list gives it: its URL here (by its image's content name) and its
-/// credit; None when the accepted version hasn't its image (the placeholder).
+/// credit (its author and licence when given); None when the accepted version hasn't its image (the
+/// placeholder).
 fn symbol_json(images: &Symbols, fact: &Value) -> Option<Value> {
     let s: symbols::Symbol = serde_json::from_value(fact.clone()).ok()?;
     let content = images.by_name.get(&s.image)?;
-    Some(json!({
+    let mut v = json!({
         "url": format!("/api/regions/symbols/{content}"),
-        "kind": s.kind, "source": s.source, "author": s.author, "licence": s.licence,
-    }))
+        "kind": s.kind, "source": s.source,
+    });
+    for (k, x) in [("author", s.author), ("licence", s.licence)] {
+        if !x.is_empty() {
+            v[k] = x.into();
+        }
+    }
+    Some(v)
 }
 
 /// The tree's folders' symbols (their `_group.toml`'s) as the list gives them.
@@ -955,7 +962,8 @@ mod tests {
         };
         let a = format!("{}{}", region("a", "A"), table("Q1.svg"));
         let b = format!("{}{}", region("b", "B"), table("Q9.svg"));
-        let group = format!("name = \"Europe\"\n{}", table("Q2.png"));
+        // (The folder's without a licence, a note it may leave out.)
+        let group = format!("name = \"Europe\"\n{}", table("Q2.png").replace("licence = \"CC0\"\n", ""));
         std::fs::create_dir_all(nas.path().join("inputs/regions/eu")).unwrap();
         std::fs::write(nas.path().join("inputs/regions/eu/a.toml"), &a).unwrap();
         std::fs::write(nas.path().join("inputs/regions/b.toml"), &b).unwrap();
@@ -1044,6 +1052,7 @@ mod tests {
         assert!(by("b").get("symbol").is_none());
         let folder = &v["tree"]["folders"][0];
         assert_eq!(folder["symbol"]["url"], format!("/api/regions/symbols/{}.png", store::naming::hash16(&png)));
+        assert!(folder["symbol"].get("licence").is_none() && folder["symbol"].get("author").is_none());
         // Served: a loose one, a bundle's member; by content name only, as an image alone.
         for (url, bytes, mime) in [
             (a_sym["url"].as_str().unwrap(), svg.as_bytes(), "image/svg+xml; charset=utf-8"),
