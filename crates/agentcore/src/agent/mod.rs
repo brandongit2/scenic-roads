@@ -14495,17 +14495,27 @@ mod tests {
         assert!(checks(&mut a).is_empty());
         // The daily full check: due a day after the last, whatever key was recorded; then done.
         let full = format!("inputs {unit} full");
-        let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
-        let mut state = inputs::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
-        state.full_at = Some(now_s() - 86_401);
-        let name = out
-            .store_bytes(&inputs::inputs::listed_logical(unit), "json", &serde_json::to_vec_pretty(&state).unwrap())
-            .unwrap();
-        out.set(&inputs::inputs::listed_logical(unit), Some(name));
-        out.save().unwrap();
+        // (The last full check's time moved a day and a second back, as a day passing does.)
+        let a_day_on = || {
+            let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+            let mut state = inputs::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
+            state.full_at = Some(now_s() - 86_401);
+            let name = out
+                .store_bytes(&inputs::inputs::listed_logical(unit), "json", &serde_json::to_vec_pretty(&state).unwrap())
+                .unwrap();
+            out.set(&inputs::inputs::listed_logical(unit), Some(name));
+            out.save().unwrap();
+        };
+        a_day_on();
         let daily = checks(&mut a);
         assert_eq!(daily.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [full.as_str()]);
         run(&daily[0]);
+        assert!(checks(&mut a).is_empty());
+        // And a day after that one, its full key the one recorded and nothing changed: due again.
+        a_day_on();
+        let next = checks(&mut a);
+        assert_eq!(next.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [full.as_str()], "the next day's");
+        run(&next[0]);
         assert!(checks(&mut a).is_empty());
         // A full check asked right after one: planned all the same.
         a.o.dry_run = false;
@@ -14538,6 +14548,108 @@ mod tests {
         inputs::inputs::accept(&nas, unit, &w, "m-0123456789abcdef", "a test").unwrap();
         listed(&mut a, Some(b.len()), 1);
         assert_eq!(checks(&mut a).len(), 1, "an acceptance");
+    }
+
+    /// Task #1421: what a check's key reads that can't be read now (the regions' accepted sources), or
+    /// its own state (`@listed`, for its last full check's time): the unit waits, saying why, and
+    /// nothing is planned for it, neither under another key nor as a full check; read again, the
+    /// next plan plans its check.
+    #[test]
+    fn a_check_whose_key_cant_be_read_waits() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        for f in [NAS_CHECK, "state/build", "state/inputs", "inputs/regions"] {
+            std::fs::create_dir_all(root.join(f)).unwrap();
+        }
+        std::fs::write(root.join(inputs::inputs::TEST_FLAG), b"").unwrap();
+        let unit = inputs::inputs::TEST_UNIT;
+        let regions = inputs::inputs::regions::UNIT;
+        let put = |path: &str, text: &str| {
+            let p = root.join("inputs").join(path);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, text).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
+        };
+        put(&format!("{unit}/a.jsonl"), "{\"k\": \"x\", \"v\": 1}\n");
+        let mut a = agent(&nas, &home);
+        a.round().unwrap();
+        let c = read_status(Some(&nas), &home).unwrap().conditions;
+        // (Listed again until unit `u` lists `n` files.)
+        let listed = |a: &mut Agent, u: &str, n: usize| {
+            a.planner().inputs.watch.as_ref().unwrap().1.ask();
+            let t = Instant::now();
+            while a.planner().inputs.watch.as_ref().unwrap().1.get(u).is_none_or(|l| l.listing.files.len() != n) {
+                assert!(t.elapsed() < store::testkit::WATCHDOG, "listed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        // (The plan's checks of unit `u`, and what it says `u` waits for.)
+        let plan = |a: &mut Agent, u: &str| -> (Vec<String>, Vec<String>) {
+            let mut w = Vec::new();
+            let jobs = a.planner().plan(&nas, &c, &mut w);
+            (
+                jobs.into_iter().map(|j| j.id).filter(|id| id.starts_with(&format!("inputs {u}"))).collect(),
+                w.into_iter().filter(|w| w.what == format!("Checking {u}")).map(|w| w.why).collect(),
+            )
+        };
+        let records = root.join("state/build/manifest.json");
+        let edit = |f: &dyn Fn(&mut BTreeMap<String, String>)| {
+            let mut m: BTreeMap<String, String> =
+                buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&records)).unwrap_or_default();
+            f(&mut m);
+            std::fs::write(&records, serde_json::to_vec_pretty(&m).unwrap()).unwrap();
+        };
+        // The test unit checked once (in full) and recorded; then a file added, so a check is due.
+        listed(&mut a, unit, 1);
+        let mut w = Vec::new();
+        let first = a.planner().plan(&nas, &c, &mut w).into_iter().find(|j| j.id.starts_with("inputs ")).unwrap();
+        let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+        inputs::inputs::gate::run(&mut out, unit, true, None).unwrap();
+        let mut keys = crate::pool::records::Keys::load_strict(&nas).unwrap();
+        keys.record("inputs", &first.record.unwrap().targets);
+        keys.save(&nas).unwrap();
+        put(&format!("{unit}/b.jsonl"), "{\"k\": \"y\", \"v\": 2}\n");
+        listed(&mut a, unit, 2);
+        // Its state unreadable now: it waits, saying why, nothing planned (not a full check either).
+        let listed_logical = inputs::inputs::listed_logical(unit);
+        let state = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(&records))
+            .map(|m: BTreeMap<String, String>| m[&listed_logical].clone())
+            .unwrap();
+        edit(&|m| {
+            m.insert(listed_logical.clone(), format!("sources/inputs/{unit}/@listed.ffffffffffffffff.json"));
+        });
+        let (jobs, why) = plan(&mut a, unit);
+        assert!(jobs.is_empty(), "{jobs:?}");
+        assert!(why.len() == 1 && why[0].contains("its last check's state can't be read now"), "{why:?}");
+        // Read again: its check planned, a normal one (its last full check's time read).
+        edit(&|m| {
+            m.insert(listed_logical.clone(), state.clone());
+        });
+        assert_eq!(plan(&mut a, unit), (vec![format!("inputs {unit}")], vec![]));
+        // The regions, a file in their folder, their key reading accepted sources that can't be read
+        // now: they wait, saying why, nothing planned.
+        put(&format!("{regions}/a.toml"), "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\n");
+        listed(&mut a, regions, 1);
+        let sources = inputs::inputs::logical(inputs::inputs::sources::UNIT);
+        edit(&|m| {
+            m.insert(sources.clone(), "sources/inputs/sources/@index.ffffffffffffffff.json".into());
+        });
+        let (jobs, why) = plan(&mut a, regions);
+        assert!(jobs.is_empty(), "{jobs:?}");
+        assert!(why.len() == 1 && why[0].contains("the accepted sources can't be read now"), "{why:?}");
+        // Read again: their check planned (their first, a full one).
+        let mut m = BTreeMap::new();
+        inputs::inputs::sources::accept_files(&nas, &mut m, &[]);
+        edit(&|r| {
+            r.insert(sources.clone(), m[&sources].clone());
+        });
+        assert_eq!(plan(&mut a, regions), (vec![format!("inputs {regions} full")], vec![]));
     }
 
     /// Task #932: what a Mac's jobs may hold for one to start is what's available above its memory
