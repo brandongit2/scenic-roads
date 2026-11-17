@@ -267,7 +267,7 @@ fn matches_lines_and_contradictions() {
         "sources/inputs/heritage/@index.7777777777777777.json".to_string(),
     )]);
     assert_eq!(
-        m.context(&store::nasfs::NasRoot::local_for_test(std::path::Path::new("/nonexistent")), &manifest),
+        m.context(&store::nasfs::NasRoot::local_for_test(std::path::Path::new("/nonexistent")), &manifest).unwrap(),
         ["heritage sources/inputs/heritage/@index.7777777777777777.json"]
     );
 }

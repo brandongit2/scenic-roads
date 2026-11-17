@@ -14493,6 +14493,40 @@ mod tests {
         assert_eq!(third.len(), 1);
         run(&third[0]);
         assert!(checks(&mut a).is_empty());
+        // The daily full check: due a day after the last, whatever key was recorded; then done.
+        let full = format!("inputs {unit} full");
+        let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+        let mut state = inputs::inputs::read_listed(&nas, &out.manifest, unit).unwrap();
+        state.full_at = Some(now_s() - 86_401);
+        let name = out
+            .store_bytes(&inputs::inputs::listed_logical(unit), "json", &serde_json::to_vec_pretty(&state).unwrap())
+            .unwrap();
+        out.set(&inputs::inputs::listed_logical(unit), Some(name));
+        out.save().unwrap();
+        let daily = checks(&mut a);
+        assert_eq!(daily.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [full.as_str()]);
+        run(&daily[0]);
+        assert!(checks(&mut a).is_empty());
+        // A full check asked right after one: planned all the same.
+        a.o.dry_run = false;
+        inputs::inputs::ask(
+            &home,
+            &inputs::inputs::Ask {
+                unit: unit.into(),
+                check: true,
+                full: true,
+                by: "a test".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        a.planner().tend_gate(&nas);
+        a.o.dry_run = true;
+        let asked = checks(&mut a);
+        assert_eq!(asked.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [full.as_str()]);
+        run(&asked[0]);
+        a.planner().take(crate::agent::plan::Msg::Done(asked[0].id.clone()));
+        assert!(checks(&mut a).is_empty(), "the ask done");
         let w = inputs::inputs::Finding::new(
             "gt-neg",
             inputs::inputs::Level::Warning,

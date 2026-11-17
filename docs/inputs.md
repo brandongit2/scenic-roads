@@ -102,7 +102,13 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
 - The listing is only a trigger; change is decided by content. Only files whose size or time differ
   from the last check's listing (`sources/inputs/<unit>/@listed`) are hashed. A rewrite with the
   same size and time is missed until the daily full check (`inputs <unit> full`, or `scenic inputs
-  check --full <unit>`), timed from the records' `full_at` so a new lead doesn't repeat it.
+  check --full <unit>`): it runs a day after the last (the records' `full_at`, so a new lead doesn't
+  repeat one), and when asked, whatever was checked since. A full check that can't run yet
+  (`Checks::not_ready`: the regions before a pass's outline set) keeps its time all the same, so it
+  isn't planned again every round.
+- What a check's key reads that can't be read now (the accepted sources, for the regions), or the
+  check's own state (`@listed`, for `full_at`): the unit waits, saying why, its last key kept; it
+  isn't checked under another key meanwhile.
 
 ### 4.3 Checking: a job like any other
 
@@ -114,9 +120,12 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   land, and the declarations of their datasets' roles, §6.1.7). It names only what the check reads
   and doesn't write itself: not the unit's own records (its accepted index, held report and
   `@listed`), so a check that takes in a version is done once its key is recorded, and isn't
-  planned again for its own outcome. Done is the key recorded, or, no full check due, the key of a
-  full check (`inputs <unit> full`, recorded under the key with "full"), which checks all a normal
-  one would. A forget (§4.10) records the key `forget`, so a unit put back on the gate is checked.
+  planned again for its own outcome. With no full check due, a check is done when its key is
+  recorded, or the key of a full check of it (`inputs <unit> full`, recorded under the key with
+  "full"), which checks all a normal one would; a full check due (§4.2) runs whatever was recorded.
+  The lead's forget job (`inputs <unit> forget`, §4.10) records the key `forget`, so a unit put
+  back on the gate is checked; a forget by hand (`scenic-build inputs <unit> --forget`) records no
+  key, so a unit put back with its folder as it was waits for a change or its daily full check.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
   (`bldprep`) or another check. It holds no region and no map.
 - **What it does:**
@@ -842,10 +851,14 @@ lakes 5.0.0, a shapefile zip, by `ne_id`), each a file in `sources/fetched/<id>/
 20 m as they're read (`data::SIMPLIFY_M`); the zones' (sea, internal waters, territorial seas) keep
 every point two of their rings share, so a border two zones share stays the same on both sides. The
 check reads the sources whole, and only once a region in the folder names them (or has `water`),
-when the accepted sources declare `regions-sea`; until then such a region is held (`rg-data`).
-The accepted declarations of these four roles (each one's id and `keyed` digest, `data::ROLES`;
-"?" while the accepted sources can't be read) are in the check's context (`regions data`), so a
-dataset declared or changed checks the regions again, and a change to any other source doesn't.
+when the accepted sources declare `regions-sea` and each declared dataset's file is in
+`sources/fetched/` (`data::absent`); until then such a region is held (`rg-data`). Sources that
+can't be read now, or a dataset there that can't be read (the NAS, a file that doesn't parse, the
+pass's land), fail the check instead: the pool runs it again, and nothing is recorded or held for it.
+The accepted declarations of these four roles (each one's id and `keyed` digest, `data::ROLES`) are
+in the check's context (`regions data`), so a dataset declared or changed checks the regions again,
+and a change to any other source doesn't. A dataset's file arriving in `sources/fetched/` isn't in
+the key: a region held for it is taken at the next check, at the latest the daily full one.
 Features of one id are unioned as they're read. Their declarations are staged in `producers/sources/`
 (`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,
 `ne-lakes.toml`); Marine Regions' three are CC BY 4.0 and credited as their declarations say.

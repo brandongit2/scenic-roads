@@ -205,12 +205,12 @@ impl Checks for Matches {
             .collect())
     }
 
-    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
         // (The registers' accepted version: a register's update checks the matches again.)
-        vec![format!(
+        Ok(vec![format!(
             "heritage {}",
             manifest.get(&super::logical(super::heritage::UNIT)).map(String::as_str).unwrap_or("-")
-        )]
+        )])
     }
 
     fn prepared(

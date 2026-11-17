@@ -1278,18 +1278,18 @@ impl Checks for Elevation {
         }
     }
 
-    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
         // (The newest pass's outlines: a tile pyramid's coverage is its territory's. The accepted
         // regions: a dataset's `regions` cut its coverage. The accepted sources: their geoid grids
         // convert its heights.)
         let regions = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT));
         let sources = manifest.get(&crate::inputs::logical(crate::inputs::sources::UNIT));
-        outlines_of(manifest)
+        Ok(outlines_of(manifest)
             .map(|o| format!("outlines {o}"))
             .into_iter()
             .chain(regions.map(|r| format!("regions {r}")))
             .chain(sources.map(|s| format!("sources {s}")))
-            .collect()
+            .collect())
     }
 
     fn prepared(

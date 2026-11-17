@@ -3105,9 +3105,8 @@ impl Planner {
 
     /// The gate's checks to run (docs/inputs.md §4.3): each unit on the gate whose check's key
     /// (its listing, acceptances and what else its checks read: `inputs::check_key`) isn't the one
-    /// last recorded, a full check daily or when asked (whose recorded key, the key with "full",
-    /// counts as done for the normal check after it); and the status's entries, from the records it
-    /// plans with.
+    /// last recorded (a full check's, the key with "full", counting too), and a full check daily or
+    /// when asked, whatever was recorded; and the status's entries, from the records it plans with.
     pub(super) fn gate_work(
         &self,
         root: &store::nasfs::NasRoot,
@@ -3163,21 +3162,46 @@ impl Planner {
                     continue;
                 }
                 // (Daily by the records' last full check, whichever Mac made it: a new lead doesn't
-                // repeat one made less than a day ago.)
-                let full_at = manifest.get(&inputs::inputs::listed_logical(unit)).and_then(|n| {
-                    let mut seen = self.inputs.full_at.borrow_mut();
-                    *seen
-                        .entry(n.clone())
-                        .or_insert_with(|| inputs::inputs::read_listed_file(root, n).ok().and_then(|l| l.full_at))
-                });
+                // repeat one made less than a day ago. Its state unreadable now: it waits, rather than
+                // take the full check as due.)
+                let wait = |waiting: &mut Vec<Waiting>, why: String| {
+                    waiting.push(Waiting { step: Some("inputs".into()), what: format!("Checking {unit}"), why })
+                };
+                let full_at = match manifest.get(&inputs::inputs::listed_logical(unit)) {
+                    None => None,
+                    Some(n) => {
+                        let seen = self.inputs.full_at.borrow().get(n).copied();
+                        match seen
+                            .map(Ok)
+                            .unwrap_or_else(|| inputs::inputs::read_listed_file(root, n).map(|l| l.full_at))
+                        {
+                            Ok(t) => {
+                                self.inputs.full_at.borrow_mut().insert(n.clone(), t);
+                                t
+                            }
+                            Err(e) => {
+                                wait(waiting, format!("its last check's state can't be read now: {e:#}"));
+                                continue;
+                            }
+                        }
+                    }
+                };
                 let full = self.inputs.full.borrow().contains(*unit)
                     || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
-                let plain = inputs::inputs::check_key(checks, root, &l.listing, &l.accepted, manifest);
+                // (What else its checks read unreadable now: it waits, its last key kept.)
+                let plain = match inputs::inputs::check_key(checks, root, &l.listing, &l.accepted, manifest) {
+                    Ok(k) => k,
+                    Err(e) => {
+                        wait(waiting, format!("{e:#}"));
+                        continue;
+                    }
+                };
                 let full_key = jobrt::jobs::h(&[&plain, "full"]);
                 let target = format!("inputs/{unit}");
-                // (Done: a full check of this key recorded, or, no full check due, a normal one: a
-                // full check checks all a normal one would.)
-                if keys.lo.get(&target).is_some_and(|k| *k == full_key || (!full && *k == plain)) {
+                // (Done, no full check due: a normal check of this key recorded, or a full one, which
+                // checks all a normal one would. A full check due runs, daily or asked, whatever was
+                // recorded.)
+                if !full && keys.lo.get(&target).is_some_and(|k| *k == plain || *k == full_key) {
                     continue;
                 }
                 let key = if full { full_key } else { plain };

@@ -683,9 +683,9 @@ impl Checks for Heritage {
         Ok(d)
     }
 
-    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
         // (The newest pass's outlines: a new pass checks the registers' territories again.)
-        outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
+        Ok(outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect())
     }
 
     fn prepared(

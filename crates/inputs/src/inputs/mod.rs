@@ -391,9 +391,10 @@ pub trait Checks: Sync {
     }
     /// What else its checks read, beyond the unit's own files, acceptances and state (the content
     /// names of the records' entries it reads, the pass's outlines; the declarations it reads of the
-    /// accepted sources under `root`): in the check's key.
-    fn context(&self, _root: &store::nasfs::NasRoot, _manifest: &BTreeMap<String, String>) -> Vec<String> {
-        Vec::new()
+    /// accepted sources under `root`): in the check's key. An error when what it reads can't be
+    /// read now: the check isn't planned, and waits.
+    fn context(&self, _root: &store::nasfs::NasRoot, _manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
+        Ok(Vec::new())
     }
     /// The checks the check job runs, given what they read from the records `manifest` names (the
     /// languages' the pass's outlines' codes); None: these as they are.
@@ -834,22 +835,23 @@ pub fn member_of(agent_home: &Path) -> String {
 /// trigger: names, sizes, times), the acceptances and whatever else its checks read
 /// (`Checks::context`). When it changes, the unit is checked again. It names only what the check
 /// reads and doesn't write itself: not the unit's accepted index, its held report nor its state
-/// (`@listed`), so a check that takes in a version is done once its key is recorded.
+/// (`@listed`), so a check that takes in a version is done once its key is recorded. An error when
+/// what else its checks read can't be read now.
 pub fn check_key(
     checks: &dyn Checks,
     root: &store::nasfs::NasRoot,
     listing: &Listing,
     accepted: &BTreeSet<String>,
     manifest: &BTreeMap<String, String>,
-) -> String {
+) -> Result<String> {
     let mut parts = vec![format!("inputs {INPUTS_V}"), format!("{} {}", checks.unit(), checks.version())];
     parts.extend(listing.files.iter().map(|(p, (s, t))| format!("{p} {s} {t}")));
     parts.extend(listing.strays.iter().map(|p| format!("stray {p}")));
     parts.extend(listing.misplaced.iter().map(|p| format!("misplaced {p}")));
     parts.push(format!("accepted {}", accepted.iter().cloned().collect::<Vec<_>>().join(",")));
-    parts.extend(checks.context(root, manifest));
+    parts.extend(checks.context(root, manifest)?);
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
-    jobrt::jobs::h(&refs)
+    Ok(jobrt::jobs::h(&refs))
 }
 
 /// The asks of the gate the agent takes up (`inputs-request.json` in its folder): from the menu bar,

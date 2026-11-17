@@ -36,7 +36,8 @@ mod gate {
         assert!(settle(&raw, t + 2).files.is_empty() && settle(&raw, t + 5).files.is_empty());
         let planned = Planned { listing: settle(&raw, t + 5), accepted: BTreeSet::new() };
         let m: BTreeMap<String, String> = BTreeMap::new();
-        let key = check_key(GT, &store::nasfs::NasRoot::local_for_test(&root), &planned.listing, &planned.accepted, &m);
+        let key = check_key(GT, &store::nasfs::NasRoot::local_for_test(&root), &planned.listing, &planned.accepted, &m)
+            .unwrap();
         // The check at T+6, given what the key was made from: it isn't taken, nor taken as removed.
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
@@ -49,7 +50,10 @@ mod gate {
         // Once it has held still, the listing (and so the key) is another: it's checked, and taken.
         let later = settle(&raw, t + 11);
         assert_eq!(later.files.len(), 1);
-        assert_ne!(check_key(GT, &store::nasfs::NasRoot::local_for_test(&root), &later, &BTreeSet::new(), &m), key);
+        assert_ne!(
+            check_key(GT, &store::nasfs::NasRoot::local_for_test(&root), &later, &BTreeSet::new(), &m).unwrap(),
+            key
+        );
         let mut out =
             crate::out::open(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s"), "inputs").unwrap();
         gate::run(&mut out, TEST_UNIT, false, Some(Planned { listing: later, accepted: BTreeSet::new() })).unwrap();

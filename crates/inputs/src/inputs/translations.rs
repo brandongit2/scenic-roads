@@ -179,12 +179,12 @@ impl Checks for Translations {
         &self,
         _root: &store::nasfs::NasRoot,
         _manifest: &std::collections::BTreeMap<String, String>,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>> {
         // (The checker and the Python it runs in: a change to either checks the unit again, so a
         // held or changed file is read again under it; files already taken in stay as they are.)
-        vec![
+        Ok(vec![
             format!("check.py {}", store::naming::hash16(super::lint::CHECK.as_bytes())),
             format!("python {}", super::lint::PYTHON_VERSION.trim()),
-        ]
+        ])
     }
 }

@@ -399,11 +399,11 @@ impl Checks for Feeds {
         Ok(out)
     }
 
-    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
         let mut v: Vec<String> =
             super::languages::outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect();
         v.extend(manifest.get(crate::rail::CATALOGUE).map(|c| format!("catalogue {c}")));
-        v
+        Ok(v)
     }
 
     fn prepared(

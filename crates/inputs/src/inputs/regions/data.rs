@@ -29,6 +29,20 @@ pub const LAKES: &str = "regions-lakes";
 /// Every role they're read from (`Datasets::read`): their declarations are in the check's key.
 pub const ROLES: [&str; 4] = [SEA, INTERNAL, TERRITORIAL, LAKES];
 
+/// Why the datasets the accepted sources `s` declare aren't there to read yet under `root`: the
+/// first declared one whose file (its `params.path`) isn't in `sources/fetched/` (None: each is
+/// there). An error when that can't be told now.
+pub fn absent(root: &store::nasfs::NasRoot, s: &crate::inputs::sources::Sources) -> Result<Option<String>> {
+    for r in ROLES {
+        let Ok(src) = s.role(r) else { continue };
+        let path = src.param_str("path")?;
+        if !root.join(path).try_exists().with_context(|| format!("look for {path}"))? {
+            return Ok(Some(format!("the {r} source, {}, has no {path} yet", src.id)));
+        }
+    }
+    Ok(None)
+}
+
 /// A lake is water, not land, from this size (km², as Natural Earth draws it).
 pub const BIG_LAKE_KM2: f64 = 100.0;
 

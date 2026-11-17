@@ -490,8 +490,17 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
     let p = phase("listing the accepted version and the inputs folder");
     let prepared = checks.prepared(&root, &out.manifest)?;
     let checks: &dyn Checks = prepared.as_deref().unwrap_or(checks);
-    // (Not ready: nothing read, nothing held or taken, nothing asked for; its key changes when it is.)
+    // (Not ready: nothing read, nothing held or taken, nothing asked for; its key changes when it is.
+    // A full check's time is kept all the same, so the lead doesn't plan it again every round while
+    // it can't run: the next is a day after.)
     if let Some(why) = checks.not_ready() {
+        if full {
+            let mut l = super::read_listed(&root, &out.manifest, unit)?;
+            l.full_at = Some(jobrt::jobs::now_s());
+            let name = out.store_bytes(&super::listed_logical(unit), "json", &serde_json::to_vec_pretty(&l)?)?;
+            out.set(&super::listed_logical(unit), Some(name));
+            out.save()?;
+        }
         drop(p);
         return Ok(format!("{unit}: not checked now: {why}"));
     }

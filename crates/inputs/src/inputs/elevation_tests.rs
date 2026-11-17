@@ -131,8 +131,9 @@ fn the_checks_key_names_the_accepted_regions_and_sources() {
     let mut m = BTreeMap::new();
     m.insert(crate::inputs::logical(crate::inputs::regions::UNIT), "regions-index".to_string());
     m.insert(crate::inputs::logical(crate::inputs::sources::UNIT), "sources-index".to_string());
-    let c =
-        Elevation::default().context(&store::nasfs::NasRoot::local_for_test(std::path::Path::new("/nonexistent")), &m);
+    let c = Elevation::default()
+        .context(&store::nasfs::NasRoot::local_for_test(std::path::Path::new("/nonexistent")), &m)
+        .unwrap();
     assert!(c.contains(&"regions regions-index".to_string()) && c.contains(&"sources sources-index".to_string()));
 }
 

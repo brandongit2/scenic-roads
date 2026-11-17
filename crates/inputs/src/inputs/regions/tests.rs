@@ -1099,7 +1099,7 @@ fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds_or_a_newer_app_wro
 
 /// Task #1421: the regions' check's key names what the check reads and doesn't write itself: the
 /// pass, its outline set, extract and land, the declarations of the datasets' roles (as the accepted
-/// sources name them, "?" while they can't be read) and the acceptances; not another source's
+/// sources name them; no key while they can't be read) and the acceptances; not another source's
 /// declaration, nor the regions' own records, which only the check writes.
 #[test]
 fn the_check_key_names_what_the_check_reads_and_not_what_it_writes() {
@@ -1112,7 +1112,7 @@ fn the_check_key_names_what_the_check_reads_and_not_what_it_writes() {
     let decl = |n: &str| STAGED.iter().copied().find(|(p, _)| *p == n).unwrap();
     let (eez, iw, planet) =
         (decl("marineregions-eez.toml"), decl("marineregions-internal-waters.toml"), decl("osm-planet.toml"));
-    let key = |m: &BTreeMap<String, String>| crate::inputs::check_key(&r, &root, &l, &none, m);
+    let key = |m: &BTreeMap<String, String>| crate::inputs::check_key(&r, &root, &l, &none, m).unwrap();
     let date = "2026-09-28";
     let mut m = BTreeMap::from([
         (format!("sources/osm/{date}/pass"), "p".to_string()),
@@ -1143,13 +1143,20 @@ fn the_check_key_names_what_the_check_reads_and_not_what_it_writes() {
     let mut gone = m.clone();
     gone.remove(&crate::inputs::logical(crate::inputs::sources::UNIT));
     assert_ne!(key(&gone), k, "no sources accepted");
+    // A declared dataset's declaration changed (its version): a new key.
+    let eez2 = String::from_utf8(eez.1.to_vec()).unwrap().replace("version = \"12\"", "version = \"13\"");
+    assert_ne!(eez2.as_bytes(), eez.1);
+    let mut changed = m.clone();
+    accept_files(&root, &mut changed, &[(eez.0, eez2.as_bytes())]);
+    assert_ne!(key(&changed), k, "a dataset's declaration changed");
+    // The accepted sources unreadable now: no key (the plan waits, its last key kept), not another.
     let mut unreadable = m.clone();
     unreadable.insert(
         crate::inputs::logical(crate::inputs::sources::UNIT),
         "sources/inputs/sources/@index.ffffffffffffffff.json".into(),
     );
-    assert_ne!(key(&unreadable), k, "the sources unreadable");
-    assert_ne!(key(&unreadable), key(&gone));
+    let e = crate::inputs::check_key(&r, &root, &l, &none, &unreadable).unwrap_err();
+    assert!(format!("{e:#}").contains("the accepted sources can't be read now"), "{e:#}");
     for (l, c) in [
         (format!("sources/osm/{date}/outlines"), "o2"),
         (extract::logical(date), "e"),
@@ -1160,5 +1167,82 @@ fn the_check_key_names_what_the_check_reads_and_not_what_it_writes() {
         x.insert(l.clone(), c.to_string());
         assert_ne!(key(&x), k, "{l}");
     }
-    assert_ne!(crate::inputs::check_key(&r, &root, &l, &["rg-ref.0123456789abcdef".to_string()].into(), &m), k);
+    assert_ne!(
+        crate::inputs::check_key(&r, &root, &l, &["rg-ref.0123456789abcdef".to_string()].into(), &m).unwrap(),
+        k
+    );
+}
+
+/// Task #1421: datasets declared but not in `sources/fetched/` yet hold the regions naming them (a
+/// state of the inputs: `rg-data`, the job done); declared, there and unreadable, or the accepted
+/// sources unreadable, the check fails (a fault: the pool runs it again, nothing recorded).
+#[test]
+fn datasets_not_there_yet_hold_and_unreadable_ones_fail_the_check() {
+    use crate::inputs::sources::{accept_files, STAGED};
+    let d = tempfile::tempdir().unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(d.path());
+    let eez = STAGED.iter().copied().find(|(p, _)| *p == "marineregions-eez.toml").unwrap();
+    let mut m = BTreeMap::new();
+    accept_files(&root, &mut m, &[eez]);
+    let files: BTreeMap<String, Vec<u8>> = [
+        ("_pins.toml", "osm = \"2026-09-28\"\n"),
+        (
+            "w/a.toml",
+            "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\nwater = [{ minus = [{ nearest = \"eez:1\", to = [\"land:a\"], than = [\"land:b\"] }] }]\n",
+        ),
+    ]
+    .iter()
+    .map(|(p, t)| (p.to_string(), t.as_bytes().to_vec()))
+    .collect();
+    let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
+    assert!(folder.regions["a"].1.needs_data());
+    let regions = || Regions::new(Some(prepare(&root, &m, None).unwrap()));
+    // Declared, not fetched yet: none, the regions naming them held.
+    assert!(regions().data(&folder).unwrap().is_none());
+    // There and unreadable: the check fails.
+    let p = d.path().join("sources/fetched/marineregions-eez-v12/eez_v12.geojson");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, b"{half").unwrap();
+    let e = regions().data(&folder).map(|_| ()).unwrap_err();
+    assert!(format!("{e:#}").contains("the regions' datasets can't be read"), "{e:#}");
+    // The accepted sources unreadable: the check fails before it reads anything.
+    let mut gone = m.clone();
+    gone.insert(
+        crate::inputs::logical(crate::inputs::sources::UNIT),
+        "sources/inputs/sources/@index.ffffffffffffffff.json".into(),
+    );
+    let e = prepare(&root, &gone, None).map(|_| ()).unwrap_err();
+    assert!(format!("{e:#}").contains("the accepted sources can't be read now"), "{e:#}");
+}
+
+/// Task #1421: a full check of the regions before any pass (not ready) reads nothing and holds
+/// nothing, but keeps its time: the lead's next full check is a day after, not every round. A
+/// normal one changes nothing.
+#[test]
+fn a_full_check_not_ready_keeps_its_time() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("state/build")).unwrap();
+    std::fs::create_dir_all(d.path().join("inputs/regions")).unwrap();
+    let nas = store::nasfs::NasRoot::local_for_test(d.path());
+    let manifest = || -> BTreeMap<String, String> {
+        buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+            &d.path().join("state/build/manifest.json"),
+        ))
+        .unwrap_or_default()
+    };
+    let run = |full: bool| {
+        let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+        let planned = crate::inputs::Planned { listing: Listing::default(), accepted: Default::default() };
+        crate::inputs::gate::run(&mut out, UNIT, full, Some(planned)).unwrap()
+    };
+    let said = run(false);
+    assert!(said.contains("not checked now"), "{said}");
+    assert!(manifest().is_empty(), "a normal check not ready writes nothing");
+    let said = run(true);
+    assert!(said.contains("not checked now"), "{said}");
+    let m = manifest();
+    assert_eq!(m.keys().cloned().collect::<Vec<_>>(), [crate::inputs::listed_logical(UNIT)]);
+    let l = crate::inputs::read_listed(&nas, &m, UNIT).unwrap();
+    assert!(l.full_at.is_some_and(|t| jobrt::jobs::now_s().saturating_sub(t) < 60), "{l:?}");
+    assert!(l.listed.is_empty());
 }

@@ -94,7 +94,9 @@ pub struct Prepared {
     /// Else where the accepted sources say they are: read only once a region in the folder names
     /// them (`Region::needs_data`), so declaring them costs a check that needs none nothing.
     pub data_from: Option<(store::nasfs::NasRoot, crate::inputs::sources::Sources)>,
-    pub data_read: std::sync::OnceLock<Option<data::Datasets>>,
+    /// Read once: None while they aren't there to read (`Regions::data`), an error's message when
+    /// they can't be read.
+    pub data_read: std::sync::OnceLock<std::result::Result<Option<data::Datasets>, String>>,
     /// The pass's land's content name (crate::inputs::regions::land), once made.
     pub land: Option<String>,
     /// The outline set's, the extract's and the land's content names.
@@ -119,7 +121,7 @@ impl Regions {
         let folder = resolve::Folder::read(v.paths.iter().cloned(), &|p| Ok((v.read)(p)?.to_vec()))?;
         let empty = BTreeMap::new();
         let c = self.ctx.as_ref();
-        let data = self.data(&folder);
+        let data = self.data(&folder)?;
         let ctx = resolve::Context {
             pass: c.and_then(|c| c.pass.as_deref()),
             outlines: c.and_then(|c| c.outlines.as_ref()),
@@ -153,22 +155,33 @@ impl Prepared {
 
 impl Regions {
     /// The datasets: given, or read (once) where the accepted sources say, if a region of `folder`
-    /// names them.
-    fn data(&self, folder: &resolve::Folder) -> Option<&data::Datasets> {
-        let c = self.ctx.as_ref()?;
+    /// names them. None while they aren't there to read, a state of the inputs, which holds the
+    /// regions naming them (`rg-data`) until a check finds them: no `regions-sea` declared, or a
+    /// declared dataset's file not in `sources/fetched/` yet (`data::absent`). An error when they're
+    /// there and can't be read now (the NAS, a file that doesn't parse, the pass's land): a fault, not
+    /// a state, so the check fails and the pool runs it again, rather than its key being recorded
+    /// with the regions held for it.
+    fn data(&self, folder: &resolve::Folder) -> Result<Option<&data::Datasets>> {
+        let Some(c) = self.ctx.as_ref() else { return Ok(None) };
+        if let Some(d) = &c.data {
+            return Ok(Some(d));
+        }
         let wanted = folder.regions.values().any(|(_, r)| r.needs_data());
-        c.data.as_ref().or_else(|| {
-            let (root, s) = c.data_from.as_ref().filter(|_| wanted)?;
-            c.data_read
-                .get_or_init(|| match c.land_open(root).and_then(|l| data::Datasets::read(root, s, l)) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        eprintln!("regions: the datasets can't be read: {e:#}");
-                        None
-                    }
-                })
-                .as_ref()
-        })
+        let Some((root, s)) = c.data_from.as_ref().filter(|_| wanted) else { return Ok(None) };
+        let read = c.data_read.get_or_init(|| {
+            let read = || -> Result<Option<data::Datasets>> {
+                if let Some(why) = data::absent(root, s)? {
+                    eprintln!("regions: the datasets aren't there to read: {why}");
+                    return Ok(None);
+                }
+                data::Datasets::read(root, s, c.land_open(root)?)
+            };
+            read().map_err(|e| format!("{e:#}"))
+        });
+        match read {
+            Ok(d) => Ok(d.as_ref()),
+            Err(e) => anyhow::bail!("the regions' datasets can't be read: {e}"),
+        }
     }
 }
 
@@ -450,20 +463,17 @@ impl Checks for Regions {
             .collect();
     }
 
-    fn context(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Result<Vec<String>> {
         let (date, o, e) = current(manifest);
         // (The datasets' declarations, as `prepare` reads them from the accepted sources: those of
-        // their roles alone, so a change to another source doesn't check the regions again; "?"
-        // while they can't be read, as the check then reads none.)
-        let data = match crate::inputs::sources::open(root, manifest) {
-            Ok(s) => data::ROLES
-                .iter()
-                .map(|r| s.as_ref().and_then(|s| s.role(r).ok()).map_or_else(|| format!("{r} -"), |s| s.named()))
-                .collect::<Vec<_>>()
-                .join(", "),
-            Err(_) => "?".into(),
-        };
-        vec![
+        // their roles alone, so a change to another source doesn't check the regions again.)
+        let s = crate::inputs::sources::open(root, manifest).context("the accepted sources can't be read now")?;
+        let data = data::ROLES
+            .iter()
+            .map(|r| s.as_ref().and_then(|s| s.role(r).ok()).map_or_else(|| format!("{r} -"), |s| s.named()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(vec![
             format!("regions pass {}", date.as_deref().unwrap_or("-")),
             format!("regions outlines {}", o.map(String::as_str).unwrap_or("-")),
             format!("regions extract {}", e.map(String::as_str).unwrap_or("-")),
@@ -472,7 +482,7 @@ impl Checks for Regions {
                 date.as_ref().and_then(|d| manifest.get(&land::logical(d))).map(String::as_str).unwrap_or("-")
             ),
             format!("regions data {data}"),
-        ]
+        ])
     }
 
     fn prepared(
@@ -523,7 +533,14 @@ pub fn prepare(
         // one that can't be read holds the regions naming it, `rg-data`, saying so.)
         let (data, data_from) = match data {
             Some(d) => (d, None),
-            None => (None, crate::inputs::sources::open(root, manifest).ok().flatten().map(|s| (root.clone(), s))),
+            // (The accepted sources unreadable now: the check fails, and runs again, rather than
+            // hold the regions that name the datasets.)
+            None => (
+                None,
+                crate::inputs::sources::open(root, manifest)
+                    .context("the accepted sources can't be read now")?
+                    .map(|s| (root.clone(), s)),
+            ),
         };
         let names = match &data {
             Some(d) => format!("{names} {}", d.names),
