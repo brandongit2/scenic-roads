@@ -466,10 +466,10 @@ R['bonaire']['outline'].append('box:-68.5,11.95,-68.15,12.35')  # "incl. Klein B
 # note, joins the one it shares the longest border with, or the nearest one if it touches none."
 R['nuqat-al-khams']['outline'].append({'intersect': [rest_of(192758, 'Libya'), 'box:11.4,31.6,12.6,33.3']})  # its note
 R['puno']['outline'].append({'intersect': [rest_of(288247, 'Peru'), 'box:-70.3,-16.7,-68.6,-15.1']})  # "incl. the Peruvian islands in Lake Titicaca"
-# Elsewhere no note places it: a region holding the place's land outside all its regions hands each
-# stretch to the region it shares the longest border with, or the nearest if it touches none
-# (`hand_out_all`), and ends empty. It leaves out the neighbours, whose borders OSM may draw over the
-# place's.
+# Elsewhere no note places it: the place's folder gives its border (`border` in its `_group.toml`),
+# and the land inside it outside all its regions goes, stretch by stretch, to the region it shares
+# the longest border with, or the nearest if it touches none. The border leaves out the neighbours,
+# whose borders OSM may draw over the place's.
 REST = {'Bolivia': (252645, ['group:peru', 'region:chile', 'group:argentina', 'region:paraguay', 'group:brazil']),
         'India': (304716, ['region:pakistan', 'region:nepal', 'region:bhutan', 'region:bangladesh', 'region:myanmar',
                            'region:sri-lanka', 'group:china']),
@@ -478,16 +478,14 @@ REST = {'Bolivia': (252645, ['group:peru', 'region:chile', 'group:argentina', 'r
                            'region:kyrgyzstan', 'region:tajikistan', 'region:afghanistan', 'region:taiwan']),
         'Indonesia': (304751, ['region:malaysia', 'region:timor-leste', 'region:papua-new-guinea', 'region:brunei',
                                'region:singapore', 'region:philippines'])}
+BORDERS = {}
 for g, (rel, nb) in REST.items():
-    rid = f'{folder_of(g)}-outside-its-regions'
-    new(rid, f'{g}: land outside its regions', g,
-        f"the land inside {g}'s OpenStreetMap border (relation {rel}) outside all its regions; each stretch goes to the region it shares the longest border with, or the nearest if it touches none, and this region ends empty")
     # (A neighbour that is a place split into regions is named by its listed regions, not its folder,
-    # so two such regions never name each other.)
+    # so two borders never name each other.)
     nb = [x for n in nb for x in ([f'region:{m}' for m in members(gname[next(k for k in gname if folder_of(gname[k]) == n[6:])])]
                                   if n.startswith('group:') else [n])]
-    R[rid].update(outline=[rest_of(rel, g)], minus=nb, hand_out=folder_of(g), hand_out_all=True)
-    notes['added'].append({'id': rid, 'name': R[rid]['name'], 'why': "the list's rule for land inside a split place's border but outside all its regions"})
+    BORDERS[folder_of(g)] = (g, {'minus': [f'osm:{rel}'] + nb})
+    notes.setdefault('borders', []).append({'folder': folder_of(g), 'why': "the list's rule for land inside a split place's border but outside all its regions"})
 approx('kenya', 'the Ilemi land in none of the four OSM borders added (33.9–36.2°E, 4–5.2°N)')
 approx('crozet-islands', 'the land in a box round the islands added (49.5–52.6°E, 45.8–46.7°S): its OSM outline leaves them out')
 approx('bonaire', 'the land in a box round Bonaire and Klein Bonaire added: its OSM outline leaves them out')
@@ -599,14 +597,22 @@ for id, r in R.items():
         out.append('water = []')
     if r['hand_out']:
         out.append(f'hand_out = {tomlv(r["hand_out"])}')
-    if r.get('hand_out_all'):
-        out.append('hand_out_all = true')
     for ln, l in r['lines'].items():
         out.append(f'[lines.{ln}]')
         out += [f'{k} = {tomlv(v)}' for k, v in l.items()]
     p = os.path.join(OUT, r['path'])
     os.makedirs(os.path.dirname(p), exist_ok=True)
     open(p, 'w').write('\n'.join(out) + '\n')
+# The borders, in their folders' `_group.toml` (made with the place's name if there's none): before
+# its first table, after its keys.
+for f, (g, border) in BORDERS.items():
+    p = os.path.join(OUT, f, '_group.toml')
+    lines = open(p).read().splitlines() if os.path.exists(p) else [f'name = {tomlv(g)}']
+    at = next((i for i, l in enumerate(lines) if l.lstrip().startswith('[')), len(lines))
+    while at > 0 and not lines[at - 1].strip():
+        at -= 1
+    lines.insert(at, f'border = [{tomlv(border)}]')
+    open(p, 'w').write('\n'.join(lines) + '\n')
 if not os.path.exists(os.path.join(OUT, '_pins.toml')):
     open(os.path.join(OUT, '_pins.toml'), 'w').write('osm = "2026-09-28"\n')
 json.dump(notes, open(os.path.join(args.out, 'gen-notes.json'), 'w'), indent=1, ensure_ascii=False, default=str)

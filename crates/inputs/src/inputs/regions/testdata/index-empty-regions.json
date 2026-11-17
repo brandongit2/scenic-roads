@@ -31,31 +31,27 @@
    "keyed": "sources/inputs/regions/@geometry/beni.e14a1e38158adcf8.rgeo",
    "size": 120
   },
-  "bolivia/bolivia-outside-its-regions.toml": {
+  "bolivia/bolivian-waters.toml": {
    "facts": {
     "disabled": true,
-    "id": "bolivia-outside-its-regions",
-    "name": "Bolivia: land outside its regions",
-    "outline": [
-     "{minus [osm:252645, osm:405935, osm:396197, osm:393562, osm:400473, osm:395910, osm:3358584, osm:4509552, osm:3360565, osm:396198]}"
-    ]
+    "id": "bolivian-waters",
+    "name": "Bolivian waters",
+    "outline": []
    },
-   "file": "sources/inputs/regions/bolivia/bolivia-outside-its-regions.e5f5e364b4f2642d.toml",
-   "keyed": "e5f5e364b4f2642d",
-   "size": 2110
+   "file": "sources/inputs/regions/bolivia/bolivian-waters.3c1f0e5a7d92b468.toml",
+   "keyed": "3c1f0e5a7d92b468",
+   "size": 62
   },
-  "china/china-outside-its-regions.toml": {
+  "china/chinese-waters.toml": {
    "facts": {
     "disabled": true,
-    "id": "china-outside-its-regions",
-    "name": "China: land outside its regions",
-    "outline": [
-     "{minus [osm:270056, osm:913011, osm:912940, osm:913069, osm:553303, osm:153314, osm:911844, osm:286342, osm:286937, osm:2128285, osm:912998, osm:199073, osm:407492, osm:913110, osm:913106, osm:913073, osm:161349, osm:913012, osm:913109, osm:198590, osm:912942, osm:1867188, osm:913101, osm:153269, osm:913100, osm:913006, osm:913067, osm:913105, osm:913068, osm:912999, osm:153310, osm:153292, osm:913094, osm:553302]}"
-    ]
+    "id": "chinese-waters",
+    "name": "Chinese waters",
+    "outline": []
    },
-   "file": "sources/inputs/regions/china/china-outside-its-regions.28df2228519d1434.toml",
-   "keyed": "28df2228519d1434",
-   "size": 4843
+   "file": "sources/inputs/regions/china/chinese-waters.8e4b27d05a6c13f9.toml",
+   "keyed": "8e4b27d05a6c13f9",
+   "size": 60
   },
   "china/hong-kong.toml": {
    "facts": {

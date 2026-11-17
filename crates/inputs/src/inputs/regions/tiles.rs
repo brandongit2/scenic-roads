@@ -21,8 +21,12 @@
 //! - `hand_out`: a stretch (cells' pieces joined across the cells' edges they share) of a region's
 //!   water that one member of the folder alone borders goes to it; one under `sliver_km2`, to the
 //!   one sharing its longest edge. A member is a region, or a subfolder holding a waters region (its
-//!   regions together, the stretch going to its waters region; `hand_out_all` excepted). Only
-//!   regions with water take one.
+//!   regions together, the stretch going to its waters region). Only regions with water take one.
+//! - A folder's border (`_group.toml`'s `border`): resolved as a region of the folder with water
+//!   (`Region::of_border`), its land the border's less every region under the folder, it hands out
+//!   every stretch, region by region, to the one sharing its longest edge, or the nearest region
+//!   with land if it touches none; before the regions' hand-outs to its folder's depth. It ends
+//!   empty and is never stored (anything left of it, `rg-hand-out`).
 //! - With `cover = "earth"` in `_rules.toml`: per cell, land in two regions is taken from those of
 //!   them with water; then what no region covers, joined across the cells' edges: each piece within
 //!   100 m of land, up to `sliver_km2`, joins the region with water sharing the longest edge with
@@ -996,11 +1000,12 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .partition(|m| folder.regions[m].1.has_water());
         if let Some(o) = old.first() {
             let (p, r) = &folder.regions[id];
-            out.problems.push(problem("rg-ref", r, p, format!("{id}: hand_out \"{g}\" has region {o} without water (and {} more): a hand-out gives only to regions with water", old.len() - 1)));
+            out.problems.push(problem("rg-ref", r, p, format!("{id}: the hand-out to \"{g}\" has region {o} without water (and {} more): a hand-out gives only to regions with water", old.len() - 1)));
         }
-        let every = folder.regions[id].1.hand_out_all;
+        // (A border hands out every stretch.)
+        let every = folder.regions[id].1.border;
         let mine = areas[id].clone();
-        // (`hand_out_all` hands out land, member by member: a waters region takes none.)
+        // (A border hands out land, member by member: a waters region takes none.)
         let units = if every {
             members.iter().map(|m| (m.clone(), vec![m.clone()])).collect()
         } else {
@@ -1013,7 +1018,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             .collect();
         let theirs: Vec<(&String, &TArea)> = units
             .keys()
-            // (`hand_out_all` hands out land: only to regions with land.)
+            // (A border hands out land: only to regions with land.)
             .filter(|m| !every || !land_empty.get(*m).copied().unwrap_or(false))
             .map(|m| (m, unions.get(m).unwrap_or(&areas[m])))
             .collect();
@@ -1139,8 +1144,8 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         if !r.has_water() {
             continue;
         }
-        if r.hand_out_all {
-            // (The holding region ends empty; anything left had no member to go to.)
+        if r.border {
+            // (A border is never stored; anything left of it had no region to go to.)
             if !t.is_empty() {
                 let v = t.cells.values().flat_map(|a| a.polys.iter()).next().map(|p| p[0][0]).unwrap_or_default();
                 out.problems.push(problem(
@@ -1148,7 +1153,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
                     r,
                     p,
                     format!(
-                        "{id}: {:.1} km² by {:.4}°, {:.4}° found no region of \"{}\" with land to go to (hand_out_all)",
+                        "{id}: {:.1} km² of its border by {:.4}°, {:.4}° found no region of \"{}\" with land to go to",
                         t.km2(),
                         v[0] as f64 / 1e7,
                         v[1] as f64 / 1e7,
@@ -1161,7 +1166,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
         }
         if t.is_empty() {
             // (A waters region in a folder some other region hands out to, handed nothing: listed,
-            // not built, as a `hand_out_all` region emptied.)
+            // not built. A border gives a waters region nothing.)
             let handed = |(o, (_, x)): (&String, &(String, Region))| {
                 o != id && !x.border && x.hand_out.as_ref().is_some_and(|g| p.starts_with(&format!("{g}/")))
             };
@@ -2746,7 +2751,7 @@ fn union_of(ts: &[&TArea]) -> TArea {
     u
 }
 
-/// The member nearest a stretch touching none (`hand_out_all`): the least distance between the
+/// The member nearest a stretch of a border touching none: the least distance between the
 /// stretch's points and a member's in the cells within two of the stretch's, ties to the lesser id.
 fn nearest_member(comp: &BTreeMap<Cell, Area>, theirs: &[(&String, &TArea)]) -> Option<String> {
     let pts: Vec<geom::Pt> = comp.values().flat_map(|a| a.polys.iter().flatten().flatten().copied()).collect();

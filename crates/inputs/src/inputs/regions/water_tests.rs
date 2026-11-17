@@ -742,6 +742,28 @@ fn a_divided_places_sea_goes_whole_to_its_waters_region() {
     }
 }
 
+/// Task #1422: a `_group.toml` without a border changes no resolution, nor any key; one with a border
+/// changes the regions with water's key (what they're kept and derived by).
+#[test]
+fn a_group_file_without_a_border_changes_nothing() {
+    let w = divided_world();
+    let bare = divided_files(true);
+    let mut named = bare.clone();
+    named.push(("p/_group.toml".into(), "name = \"P\"\norder = 2\n".into()));
+    named.push(("p/q/_group.toml".into(), "name = \"Q\"\n".into()));
+    let (a, b) = (run_owned(&w, &bare), run_owned(&w, &named));
+    assert!(a.problems.is_empty(), "{:?}", a.problems);
+    assert_eq!((&a.resolved, &a.keys, &a.problems), (&b.resolved, &b.keys, &b.problems));
+    named[bare.len()].1 += "border = [\"box:0,0,1,1\"]\n";
+    let c = run_owned(&w, &named);
+    assert!(
+        !c.keys.is_empty() && c.keys.iter().all(|(id, k)| a.keys.get(id) != Some(k)),
+        "{:?} against {:?}",
+        c.keys,
+        a.keys
+    );
+}
+
 /// A waters region with `water = []` in a folder no hand-out gives to has no area: `rg-empty`.
 #[test]
 fn a_waters_region_no_hand_out_reaches_is_empty() {
@@ -968,10 +990,10 @@ fn km2_by_cell_is_the_whole_area() {
     }
 }
 
-/// `hand_out_all`: land inside a place but outside its regions goes to the region sharing the longest
-/// border with it, or the nearest when it touches none; the holding region ends empty, unreported.
+/// A folder's border: land inside it but outside its regions goes to the region sharing the longest
+/// edge with it, or the nearest when it touches none; nothing is stored for the border, unreported.
 #[test]
-fn hand_out_all_gives_every_stretch() {
+fn a_border_gives_every_stretch() {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
         d.path(),
@@ -993,19 +1015,19 @@ fn hand_out_all_gives_every_stretch() {
     let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let (p1, p2, p3) = (m("p1", 21), m("p2", 22), m("p3", 23));
-    let rest = "id = \"p-rest\"\nname = \"P rest\"\noutline = [{ minus = [\"box:0,0,11,4\", \"osm:21\", \"osm:22\", \"osm:23\"] }]\nwater = []\nhand_out = \"p\"\nhand_out_all = true\n";
-    let out = run(&w, &[PINS, ("p/p1.toml", &p1), ("p/p2.toml", &p2), ("p/p3.toml", &p3), ("p/p-rest.toml", rest)]);
+    let group = "name = \"P\"\nborder = [\"box:0,0,11,4\"]\n";
+    let out = run(&w, &[PINS, ("p/p1.toml", &p1), ("p/p2.toml", &p2), ("p/p3.toml", &p3), ("p/_group.toml", group)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
     assert!(at("p1", 1.15, 0.3) && !at("p2", 1.15, 0.3), "the longest border wins");
     assert!(at("p3", 10.1, 3.1), "an island touching none goes to the nearest");
-    assert!(!out.resolved.contains_key("p-rest"));
+    assert_eq!(out.resolved.keys().collect::<Vec<_>>(), ["p1", "p2", "p3"]);
 }
 
-/// `hand_out_all` across ±180°: an island just east of the antimeridian goes to the member just west
-/// of it, not to a farther one on its own side.
+/// A border across ±180°: an island just east of the antimeridian goes to the region just west of
+/// it, not to a farther one on its own side.
 #[test]
-fn hand_out_all_looks_across_the_antimeridian() {
+fn a_border_looks_across_the_antimeridian() {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
         d.path(),
@@ -1016,33 +1038,31 @@ fn hand_out_all_looks_across_the_antimeridian() {
     let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let (west, east) = (m("west", 31), m("east", 32));
-    let rest = "id = \"p-rest\"\nname = \"P rest\"\noutline = [\"box:-180,0,-179,1\"]\nwater = []\nhand_out = \"p\"\nhand_out_all = true\n";
-    let out = run(&w, &[PINS, ("p/west.toml", &west), ("p/east.toml", &east), ("p/p-rest.toml", rest)]);
+    let group = "name = \"P\"\nborder = [\"box:-180,0,-179,1\"]\n";
+    let out = run(&w, &[PINS, ("p/west.toml", &west), ("p/east.toml", &east), ("p/_group.toml", group)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
     assert!(at("west", -179.8, 0.3), "the nearer member, across ±180°");
     assert!(!at("east", -179.8, 0.3));
-    assert!(!out.resolved.contains_key("p-rest"));
+    assert_eq!(out.resolved.keys().collect::<Vec<_>>(), ["east", "west"]);
 }
 
-/// `hand_out_all` with no member able to take a stretch (none has land): the leftover is a
-/// finding, never stored quietly as a region.
+/// A border with land no region of its folder can take (none has land): the leftover is a finding
+/// on the `_group.toml`, never stored quietly as a region.
 #[test]
-fn a_hand_out_all_leftover_is_a_finding() {
+fn a_borders_leftover_no_region_takes_is_a_finding() {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(d.path(), &[(41, "PP", deg_sq(5.0, 5.0, 6.0, 6.0))]);
     let land = vec![bx(0.0, 0.0, 0.5, 0.5)];
     let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), HashMap::new(), land, "fixture");
     let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
     let sea = "id = \"q1\"\nname = \"Q1\"\noutline = [\"osm:41\"]\nwater = [\"box:5,5,6,6\"]\n";
-    let rest = "id = \"q-rest\"\nname = \"Q rest\"\noutline = [\"box:0,0,1,1\"]\nwater = []\nhand_out = \"q\"\nhand_out_all = true\n";
-    let out = run(&w, &[PINS, ("q/q1.toml", sea), ("q/q-rest.toml", rest)]);
-    assert!(
-        out.problems.iter().any(|p| p.check == "rg-hand-out" && p.message.contains("q-rest")),
-        "{:?}",
-        out.problems
-    );
-    assert!(!out.resolved.contains_key("q-rest"));
+    let group = "name = \"Q\"\nborder = [\"box:0,0,1,1\"]\n";
+    let out = run(&w, &[PINS, ("q/q1.toml", sea), ("q/_group.toml", group)]);
+    let p = out.problems.iter().find(|p| p.check == "rg-hand-out").unwrap_or_else(|| panic!("{:?}", out.problems));
+    assert_eq!((&p.about[..], &p.files[..]), (&["q/_group.toml".to_string()][..], &["q/_group.toml".to_string()][..]));
+    assert!(p.message.contains("found no region of \"q\""), "{}", p.message);
+    assert_eq!(out.resolved.keys().collect::<Vec<_>>(), ["q1"]);
 }
 
 /// Task #1422: a divided place P (folder p: p1, p2, its sea's waters region, and Q, divided in turn:
@@ -1069,9 +1089,9 @@ fn bordered_world() -> World {
     World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d }
 }
 
-/// The folder for `bordered_world`: P's and Q's leftovers handed out by `_group.toml` borders, or
-/// (`helpers`) by regions holding them (`hand_out_all`), the outlines less the regions' parts.
-fn bordered_files(helpers: bool) -> Vec<(String, String)> {
+/// The folder for `bordered_world`: P's and Q's leftovers handed out by their `_group.toml`'s
+/// borders, unless `borders` is false (the group files with a name alone).
+fn bordered_files(borders: bool) -> Vec<(String, String)> {
     let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
     let mut v: Vec<(String, String)> = vec![
         ("_pins.toml".into(), "osm = \"2026-09-28\"\n".into()),
@@ -1087,40 +1107,22 @@ fn bordered_files(helpers: bool) -> Vec<(String, String)> {
         ("p/q/q1.toml".into(), m("q1", 71)),
         ("p/q/q2.toml".into(), m("q2", 72)),
     ];
-    let helper = |id: &str, parts: &str, g: &str| {
-        format!("id = \"{id}\"\nname = \"{id}\"\noutline = [{{ minus = [{parts}] }}]\nwater = []\nhand_out = \"{g}\"\nhand_out_all = true\n")
-    };
-    if helpers {
-        v.push(("p/_group.toml".into(), "name = \"P\"\n".into()));
-        v.push(("p/q/_group.toml".into(), "name = \"Q\"\n".into()));
-        let pp = "\"osm:60\", \"osm:61\", \"osm:62\", \"osm:70\"";
-        v.push(("p/p-outside-its-regions.toml".into(), helper("p-outside-its-regions", pp, "p")));
-        let qq = "\"osm:70\", \"osm:71\", \"osm:72\"";
-        v.push(("p/q/q-outside-its-regions.toml".into(), helper("q-outside-its-regions", qq, "p/q")));
-    } else {
-        v.push(("p/_group.toml".into(), "name = \"P\"\nborder = [\"osm:60\"]\n".into()));
-        v.push(("p/q/_group.toml".into(), "name = \"Q\"\nborder = [\"osm:70\"]\n".into()));
-    }
+    let (pb, qb) = if borders { ("\nborder = [\"osm:60\"]", "\nborder = [\"osm:70\"]") } else { ("", "") };
+    v.push(("p/_group.toml".into(), format!("name = \"P\"{pb}\n")));
+    v.push(("p/q/_group.toml".into(), format!("name = \"Q\"{qb}\n")));
     v
 }
 
-/// Task #1422: a folder's border hands out its leftover land as a region holding it did
-/// (`hand_out_all` to its own folder, its outline the border less the regions' parts): every
-/// region resolves the same, its land, water and lakes, and its drawing; nothing is stored for
-/// either the border or the holding region.
+/// Task #1422: a divided place's border, with one of a place divided in turn in a subfolder: each
+/// hands out its leftover land, its lakes and the coast beside it, the outer first (the inner
+/// border one of the outer's takers), to the regions under its folder; the regions' own lakes stay
+/// theirs; nothing is stored or listed for a border, and the Earth is covered once.
 #[test]
-fn a_border_hands_out_as_a_region_holding_the_leftover_did() {
+fn a_border_hands_out_its_folders_leftover_nested_ones_too() {
     let w = bordered_world();
-    let old = run_owned(&w, &bordered_files(true));
-    let new = run_owned(&w, &bordered_files(false));
-    assert!(old.problems.is_empty(), "{:#?}", old.problems);
+    let new = run_owned(&w, &bordered_files(true));
     assert!(new.problems.is_empty(), "{:#?}", new.problems);
-    let ids: Vec<&String> = new.resolved.keys().collect();
-    assert_eq!(ids, ["high-seas", "p-waters", "p1", "p2", "q1", "q2"]);
-    assert_eq!(old.resolved.keys().collect::<Vec<_>>(), ids, "the holding regions stored nothing");
-    for id in ids {
-        assert_eq!(old.resolved[id], new.resolved[id], "{id}");
-    }
+    assert_eq!(new.resolved.keys().collect::<Vec<_>>(), ["high-seas", "p-waters", "p1", "p2", "q1", "q2"]);
     // (What the leftovers were, and where they went.)
     let at = |id: &str, x: f64, y: f64| area_of(&new.resolved[id].geometry).contains([e7(x), e7(y)]);
     let only = |id: &str, x: f64, y: f64| at(id, x, y) && new.resolved.keys().filter(|o| at(o, x, y)).count() == 1;

@@ -194,11 +194,9 @@ pub struct Region {
     /// borders goes to that member (`tiles::resolve`; a subfolder holding a waters region is one
     /// member, its waters region taking the stretch).
     pub hand_out: Option<String>,
-    /// `hand_out_all = true`, with `hand_out`: every stretch goes, to the region of the folder it
-    /// shares the longest edge with, or the nearest if it touches none (the list's rule for land
-    /// inside a split place's border but outside all its regions); the region itself ends empty.
-    pub hand_out_all: bool,
-    /// A folder's border (`Region::of_border`), not a file's region: never stored, listed nor named.
+    /// A folder's border (`Region::of_border`), not a file's region: it hands out every stretch,
+    /// to the region of its folder sharing the longest edge, or the nearest if it touches none, and
+    /// ends empty; never stored, listed nor named.
     pub border: bool,
     /// `disabled = true`: checked and resolved like any other region (others may name it, the cover
     /// check counts it), but never built: left out of the coverage and every list the build plans
@@ -227,7 +225,6 @@ impl Region {
             water: Vec::new(),
             water_key: true,
             hand_out: Some(folder.to_string()),
-            hand_out_all: true,
             border: true,
             disabled: false,
             lines: BTreeMap::new(),
@@ -586,8 +583,6 @@ struct RawRegion {
     #[serde(default)]
     hand_out: Option<String>,
     #[serde(default)]
-    hand_out_all: bool,
-    #[serde(default)]
     disabled: bool,
     #[serde(default)]
     minus: Vec<toml::Value>,
@@ -754,14 +749,11 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
     if let Some(s) = &raw.symbol {
         faults.extend(super::symbols::faults(s).into_iter().map(|m| fault("symbol", m)));
     }
-    if !faults.is_empty() {
-        return Err(faults);
-    }
     if raw.hand_out.is_some() && !water_key {
         faults.push(fault("part", "hand_out is for a region with water"));
     }
-    if raw.hand_out_all && raw.hand_out.is_none() {
-        faults.push(fault("part", "hand_out_all is for a region with hand_out"));
+    if !faults.is_empty() {
+        return Err(faults);
     }
     let r = Region {
         id: raw.id,
@@ -772,7 +764,6 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         water,
         water_key,
         hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
-        hand_out_all: raw.hand_out_all,
         border: false,
         disabled: raw.disabled,
         lines,
@@ -876,6 +867,24 @@ mod tests {
         assert_eq!(parse_distance("500m"), Ok(500.0));
         assert!(parse_distance("-1 km").is_err() && parse_distance("12").is_err() && parse_distance("1 mi").is_err());
         assert_eq!(parse_pins("osm = \"2026-09-29\"\ngadm = \"4.1\"\n").unwrap()["gadm"], "4.1");
+    }
+
+    /// Task #1422: a group file's border, its parts as an outline's; its fact as before.
+    #[test]
+    fn a_group_file_may_give_its_places_border() {
+        let g =
+            parse_group("name = \"Morocco\"\nborder = [{ minus = [\"osm:3630439\", \"region:western-sahara\"] }]\n")
+                .unwrap();
+        assert_eq!(g.border, vec![Part::Minus(vec![Part::Osm(3630439), Part::Region("western-sahara".into())])]);
+        assert_eq!(serde_json::to_value(&g).unwrap(), serde_json::json!({"name": "Morocco"}));
+        assert!(parse_group("name = \"M\"\n").unwrap().border.is_empty());
+        let check = |t: &str| parse_group(&format!("name = \"M\"\n{t}")).unwrap_err().check;
+        assert_eq!(check("border = []\n"), "group");
+        assert_eq!(check("border = [\"poly:x.poly\"]\n"), "part");
+        assert_eq!(check("border = [{ minus = [\"osm:1\", \"rest\"] }]\n"), "part");
+        assert_eq!(check("border = [{ buffer = \"line:coast\", by = \"1 km\" }]\n"), "ref");
+        assert_eq!(check("border = \"osm:1\"\n"), "group");
+        assert_eq!(check("borders = [\"osm:1\"]\n"), "group");
     }
 
     #[test]

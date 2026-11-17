@@ -643,6 +643,27 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     assert_eq!(d.index.files["eu/pt/b.toml"].facts["geometry"], d2.index.files["b.toml"].facts["geometry"]);
     // A bad group file: an error on it.
     assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\ncolour = 1\n").findings[0].check(), "rg-group");
+    // A border (task #1422): a subfolder's, its fact the group's as without; the folder reads it, a
+    // bad one is unread; at the top, an error.
+    let border = b"name = \"Europe / EU\"\nborder = [\"osm:1\"]\n";
+    let f = checks.file("eu/_group.toml", border);
+    assert!(f.findings.is_empty(), "{:?}", f.findings);
+    assert_eq!(f.facts["group"], serde_json::json!({"name": "Europe / EU"}));
+    assert_eq!(checks.file("_group.toml", border).findings[0].check(), "rg-group");
+    assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\nborder = [\"osm:x\"]\n").findings[0].check(), "rg-part");
+    let files: BTreeMap<String, Vec<u8>> = [
+        ("eu/_group.toml", &border[..]),
+        ("am/_group.toml", &b"name = \"am\"\nborder = []\n"[..]),
+        ("_group.toml", &border[..]),
+        ("eu/pt/_group.toml", &b"name = \"pt\"\n"[..]),
+    ]
+    .iter()
+    .map(|(p, t)| (p.to_string(), t.to_vec()))
+    .collect();
+    let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
+    assert_eq!(folder.borders.keys().collect::<Vec<_>>(), ["eu/_group.toml"]);
+    assert_eq!(folder.borders["eu/_group.toml"], vec![file::Part::Osm(1)]);
+    assert!(folder.unread.contains("am/_group.toml") && folder.hashes.is_empty());
     assert!(checks.takes_ignored("_group.toml") && checks.takes_ignored("_draft.toml"));
     assert!(!checks.takes_ignored("_x.geojson") && !checks.takes_ignored(".DS_Store"));
 }
@@ -807,8 +828,8 @@ fn the_rules_file_is_not_a_region() {
 }
 
 /// The live index's shape (task #504): a cut of `@index.be2033d2b403ccb0.json` (regions 1,028, rules
-/// `cover = "earth"`), whose `*-outside-its-regions` (hand_out_all, every place handed out) resolved
-/// to nothing and so have no geometry or drawing in their facts. It reads; they're listed and in the
+/// `cover = "earth"`), with two waters regions that resolved to nothing (`water = []`, handed
+/// nothing) and so have no geometry or drawing in their facts. It reads; they're listed and in the
 /// tree, never built.
 #[test]
 fn the_live_index_with_empty_regions_reads() {
@@ -821,7 +842,7 @@ fn the_live_index_with_empty_regions_reads() {
     };
     let l = read::listed(&a).unwrap();
     let by = |id: &str| l.iter().find(|x| x.recipe.id == id).unwrap();
-    for id in ["bolivia-outside-its-regions", "china-outside-its-regions"] {
+    for id in ["bolivian-waters", "chinese-waters"] {
         assert!(by(id).stored.is_none() && by(id).disabled, "{id}");
     }
     assert!(by("andorra").stored.is_some() && !by("andorra").disabled);
@@ -830,14 +851,10 @@ fn the_live_index_with_empty_regions_reads() {
     assert_eq!(read::recipes(&a).unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["andorra", "hong-kong"]);
     let t = read::tree(&a.index);
     let bolivia = t.folders.iter().find(|f| f.path == "bolivia").unwrap();
-    assert_eq!(bolivia.regions, ["beni", "bolivia-outside-its-regions"]);
-    assert!(read::drawn(
-        &store::nasfs::NasRoot::local_for_test(d.path()),
-        &a,
-        &[by("bolivia-outside-its-regions").recipe.clone()]
-    )
-    .unwrap()
-    .is_empty());
+    assert_eq!(bolivia.regions, ["beni", "bolivian-waters"]);
+    assert!(read::drawn(&store::nasfs::NasRoot::local_for_test(d.path()), &a, &[by("bolivian-waters").recipe.clone()])
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
