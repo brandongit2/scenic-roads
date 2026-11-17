@@ -14433,19 +14433,16 @@ mod tests {
         let mut a = agent(&nas, &home);
         a.round().unwrap();
         let c = read_status(Some(&nas), &home).unwrap().conditions;
-        let listed = |a: &mut Agent, n: usize, accepted: usize| {
+        // (Listed again until a.jsonl is there, b.jsonl of size `b` (None: not there) and the
+        // acceptances `accepted` in number.)
+        let listed = |a: &mut Agent, b: Option<usize>, accepted: usize| {
             a.planner().inputs.watch.as_ref().unwrap().1.ask();
             let t = Instant::now();
-            while a
-                .planner()
-                .inputs
-                .watch
-                .as_ref()
-                .unwrap()
-                .1
-                .get(unit)
-                .is_none_or(|l| l.listing.files.len() != n || l.accepted.len() != accepted)
-            {
+            while a.planner().inputs.watch.as_ref().unwrap().1.get(unit).is_none_or(|l| {
+                !l.listing.files.contains_key("a.jsonl")
+                    || l.listing.files.get("b.jsonl").map(|f| f.0 as usize) != b
+                    || l.accepted.len() != accepted
+            }) {
                 assert!(t.elapsed() < store::testkit::WATCHDOG, "listed");
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -14472,7 +14469,7 @@ mod tests {
             keys.save(&nas).unwrap();
             said
         };
-        listed(&mut a, 1, 0);
+        listed(&mut a, None, 0);
         // The first check, a full one: it takes the clean file in; recorded, nothing is planned next.
         let first = checks(&mut a);
         assert_eq!(first.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [format!("inputs {unit} full")]);
@@ -14480,16 +14477,18 @@ mod tests {
         let taken = index().expect("a version taken in");
         assert!(checks(&mut a).is_empty(), "the full check's record counts for the normal check");
         // A file added: a normal check takes it in, a new version; recorded, nothing is planned next.
-        put("b.jsonl", "{\"k\": \"y\", \"v\": 2}\n");
-        listed(&mut a, 2, 0);
+        let b = "{\"k\": \"y\", \"v\": 2}\n";
+        put("b.jsonl", b);
+        listed(&mut a, Some(b.len()), 0);
         let second = checks(&mut a);
         assert_eq!(second.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [format!("inputs {unit}")]);
         assert!(run(&second[0]).contains("taken in"));
         assert_ne!(index().unwrap(), taken);
         assert!(checks(&mut a).is_empty(), "nothing planned again for the version it took in");
         // A file touched (the listing a trigger), an acceptance: each makes it due again.
-        put("b.jsonl", "{\"k\": \"y\", \"v\": 3}\n");
-        listed(&mut a, 2, 0);
+        let b = "{\"k\": \"y\", \"v\": 30}\n";
+        put("b.jsonl", b);
+        listed(&mut a, Some(b.len()), 0);
         let third = checks(&mut a);
         assert_eq!(third.len(), 1);
         run(&third[0]);
@@ -14503,7 +14502,7 @@ mod tests {
             "b.jsonl: a line".into(),
         );
         inputs::inputs::accept(&nas, unit, &w, "m-0123456789abcdef", "a test").unwrap();
-        listed(&mut a, 2, 1);
+        listed(&mut a, Some(b.len()), 1);
         assert_eq!(checks(&mut a).len(), 1, "an acceptance");
     }
 
