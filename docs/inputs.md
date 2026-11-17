@@ -108,9 +108,15 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
 
 The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtfs`):
 - **Key** (`inputs::check_key`): the checker versions (`INPUTS_V` and each input's), the listing,
-  the unit's acceptances, the current accepted index's content name, and the content names of
-  whatever else its checks read (`Checks::context`: the pass's outlines, the accepted registers for
-  the matches, check.py for translations, the regions' extract).
+  the unit's acceptances, and whatever else its checks read (`Checks::context`: the content names of
+  the pass's outlines, the accepted registers for the matches, the accepted regions and sources for
+  the elevation datasets; check.py for translations; the regions' pass, outline set, extract and
+  land, and the declarations of their datasets' roles, §6.1.7). It names only what the check reads
+  and doesn't write itself: not the unit's own records (its accepted index, held report and
+  `@listed`), so a check that takes in a version is done once its key is recorded, and isn't
+  planned again for its own outcome. Done is the key recorded, or, no full check due, the key of a
+  full check (`inputs <unit> full`, recorded under the key with "full"), which checks all a normal
+  one would. A forget (§4.10) records the key `forget`, so a unit put back on the gate is checked.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
   (`bldprep`) or another check. It holds no region and no map.
 - **What it does:**
@@ -837,6 +843,9 @@ lakes 5.0.0, a shapefile zip, by `ne_id`), each a file in `sources/fetched/<id>/
 every point two of their rings share, so a border two zones share stays the same on both sides. The
 check reads the sources whole, and only once a region in the folder names them (or has `water`),
 when the accepted sources declare `regions-sea`; until then such a region is held (`rg-data`).
+The accepted declarations of these four roles (each one's id and `keyed` digest, `data::ROLES`;
+"?" while the accepted sources can't be read) are in the check's context (`regions data`), so a
+dataset declared or changed checks the regions again, and a change to any other source doesn't.
 Features of one id are unioned as they're read. Their declarations are staged in `producers/sources/`
 (`marineregions-eez.toml`, `marineregions-internal-waters.toml`, `marineregions-territorial-seas.toml`,
 `ne-lakes.toml`); Marine Regions' three are CC BY 4.0 and credited as their declarations say.
@@ -1674,7 +1683,7 @@ their indexes.
 
 | Field | Meaning |
 |---|---|
-| `role` | the slot the app reads it in, one source a role: `osm-planet` (the pass's planet: its `version` the planet's date, `params.md5` its MD5's URL), `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes`, `regions-land` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
+| `role` | the slot the app reads it in, one source a role: `osm-planet` (the pass's planet: its `version` the planet's date, `params.md5` its MD5's URL), `land-cover`, `canopy`, `leaf-type-europe`, `leaf-type-north-america`, `wikidata`, `wikipedia`, `pageviews`, `lake-fill`, `buildings`, `building-heights`, `regions-sea`, `regions-internal-waters`, `regions-territorial-seas`, `regions-lakes` (§6.1.7); and `depth` (§6.10) and `geoid` (§6.8, step 3), which any number of sources take |
 | `format` | one of its role's: `osm-pbf`, `geotiff`, `geojson`, `image-service`, `zip-geotiff`, `zip-shapefile`, `sparql`, `mediawiki-api`, `pageviews-dump`, `geoparquet`, `depth-grid`, `geoid-grid`, `helmert` |
 | `kind` | required: what fetching it is (`fetch::Kind`): `api` (a documented API: a query service, a WFS or WCS, MediaWiki's API, an ArcGIS REST service), `data` (a published download: a dump, an extract, a dataset's files; or a page or record read as a person would) or `crawl` (links followed, or a host's pages fetched in bulk), refused: no step's fetcher crawls, so a crawl is a producer script's (`FETCHES = "crawl"`). Kept out of keys and the accepted index |
 | `url` / `urls` / `index` | exactly one; a template's placeholders only its role's (`{tile}` for land cover, `{y}` `{m}` for the pageviews); an index is a GeoJSON beside it, a feature per file with its `url` and footprint |

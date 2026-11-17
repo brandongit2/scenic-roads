@@ -3104,8 +3104,10 @@ impl Planner {
     }
 
     /// The gate's checks to run (docs/inputs.md §4.3): each unit on the gate whose check's key
-    /// (its listing, acceptances, accepted index) isn't the one last recorded, a full check daily
-    /// or when asked; and the status's entries, from the records it plans with.
+    /// (its listing, acceptances and what else its checks read: `inputs::check_key`) isn't the one
+    /// last recorded, a full check daily or when asked (whose recorded key, the key with "full",
+    /// counts as done for the normal check after it); and the status's entries, from the records it
+    /// plans with.
     pub(super) fn gate_work(
         &self,
         root: &store::nasfs::NasRoot,
@@ -3170,14 +3172,15 @@ impl Planner {
                 });
                 let full = self.inputs.full.borrow().contains(*unit)
                     || full_at.is_none_or(|t| now_s().saturating_sub(t) >= 86400);
-                let mut key = inputs::inputs::check_key(checks, &l.listing, &l.accepted, manifest);
-                if full {
-                    key = jobrt::jobs::h(&[&key, "full"]);
-                }
+                let plain = inputs::inputs::check_key(checks, root, &l.listing, &l.accepted, manifest);
+                let full_key = jobrt::jobs::h(&[&plain, "full"]);
                 let target = format!("inputs/{unit}");
-                if keys.lo.get(&target) == Some(&key) {
+                // (Done: a full check of this key recorded, or, no full check due, a normal one: a
+                // full check checks all a normal one would.)
+                if keys.lo.get(&target).is_some_and(|k| *k == full_key || (!full && *k == plain)) {
                     continue;
                 }
+                let key = if full { full_key } else { plain };
                 checking.insert(unit.to_string());
                 // (The listing and acceptances the key is made from, for the job to check exactly
                 // them: inputs::Planned. Written once: its name is its key's. It stays while a job

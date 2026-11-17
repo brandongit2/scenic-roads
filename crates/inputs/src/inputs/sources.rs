@@ -609,7 +609,7 @@ impl Checks for SourcesCheck {
         Ok(d)
     }
 
-    fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
         super::elevation::outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
     }
 

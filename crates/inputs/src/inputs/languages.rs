@@ -245,7 +245,7 @@ impl Checks for Languages {
         all.contains(other).then(|| other.to_string()).into_iter().collect()
     }
 
-    fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The newest pass's outlines: a new pass checks the table again.)
         outlines_of(manifest).map(|o| format!("outlines {o}")).into_iter().collect()
     }
@@ -369,8 +369,10 @@ mod tests {
             ("sources/osm/2026-09-28/pass".to_string(), "p2".to_string()),
             ("sources/osm/2026-09-28/outlines".to_string(), "o2".to_string()),
         ]);
-        assert_eq!(l.context(&m), ["outlines o2"]);
-        assert!(l.context(&BTreeMap::new()).is_empty());
+        assert_eq!(l.context(&store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent")), &m), ["outlines o2"]);
+        assert!(l
+            .context(&store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent")), &BTreeMap::new())
+            .is_empty());
         assert!(l
             .prepared(&store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent")), &BTreeMap::new())
             .unwrap()

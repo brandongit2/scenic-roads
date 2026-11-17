@@ -205,7 +205,7 @@ impl Checks for Matches {
             .collect())
     }
 
-    fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The registers' accepted version: a register's update checks the matches again.)
         vec![format!(
             "heritage {}",

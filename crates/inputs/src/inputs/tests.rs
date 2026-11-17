@@ -503,19 +503,47 @@ fn listing_passes_over_links() {
 }
 
 #[test]
-fn the_key_follows_the_listing_the_acceptances_and_the_index() {
+fn the_key_follows_the_listing_and_the_acceptances_not_what_the_check_writes() {
+    let root = store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent"));
     let l = Listing { files: [("a.jsonl".to_string(), (10, 100))].into(), strays: vec![], ..Default::default() };
     let m: BTreeMap<String, String> = BTreeMap::new();
     let none = BTreeSet::new();
-    let k = check_key(GT, &l, &none, &m);
-    assert_eq!(k, check_key(GT, &l.clone(), &none, &m));
+    let k = check_key(GT, &root, &l, &none, &m);
+    assert_eq!(k, check_key(GT, &root, &l.clone(), &none, &m));
     let mut l2 = l.clone();
     l2.files.insert("a.jsonl".into(), (10, 101));
-    assert_ne!(check_key(GT, &l2, &none, &m), k, "a touch is a trigger");
-    assert_ne!(check_key(GT, &l, &["gt-neg.0123456789abcdef".to_string()].into(), &m), k);
-    let m2: BTreeMap<String, String> =
-        [(logical(TEST_UNIT), "sources/inputs/_gate-test/@index.0123456789abcdef.json".to_string())].into();
-    assert_ne!(check_key(GT, &l, &none, &m2), k);
+    assert_ne!(check_key(GT, &root, &l2, &none, &m), k, "a touch is a trigger");
+    assert_ne!(check_key(GT, &root, &l, &["gt-neg.0123456789abcdef".to_string()].into(), &m), k);
+    // (The unit's own records, which only its check writes: a version taken in leaves the key as it
+    // was, so the check isn't planned again for its own outcome.)
+    let s = "sources/inputs/_gate-test";
+    let m2: BTreeMap<String, String> = [
+        (logical(TEST_UNIT), format!("{s}/@index.0123456789abcdef.json")),
+        (held_logical(TEST_UNIT), format!("{s}/@held.0123456789abcdef.json")),
+        (listed_logical(TEST_UNIT), format!("{s}/@listed.0123456789abcdef.json")),
+    ]
+    .into();
+    assert_eq!(check_key(GT, &root, &l, &none, &m2), k);
+    // The checks' version and what else they read (`Checks::context`): each a new key.
+    struct Reads(u32);
+    impl Checks for Reads {
+        fn unit(&self) -> &'static str {
+            TEST_UNIT
+        }
+        fn version(&self) -> u32 {
+            self.0
+        }
+        fn file(&self, _path: &str, _bytes: &[u8]) -> FileCheck {
+            FileCheck::default()
+        }
+        fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
+            vec![format!("read {:?}", manifest.get("sources/osm/2026-09-28/outlines"))]
+        }
+    }
+    let k = check_key(&Reads(1), &root, &l, &none, &m);
+    assert_ne!(check_key(&Reads(2), &root, &l, &none, &m), k, "a version");
+    let m3: BTreeMap<String, String> = [("sources/osm/2026-09-28/outlines".to_string(), "o".to_string())].into();
+    assert_ne!(check_key(&Reads(1), &root, &l, &none, &m3), k, "what it reads");
 }
 
 #[test]
@@ -966,9 +994,13 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
     assert_eq!(l.misplaced, ["descriptions/heritage/late.jsonl"]);
     assert_eq!(l.files.keys().collect::<Vec<_>>(), ["a.jsonl"]);
     // In the key (an update there is checked at once) and in the report, holding nothing else.
+    let root = store::nasfs::NasRoot::local_for_test(d.path());
     let none = BTreeSet::new();
     let m = BTreeMap::new();
-    assert_ne!(check_key(DE, &l, &none, &m), check_key(DE, &Listing { misplaced: vec![], ..l.clone() }, &none, &m));
+    assert_ne!(
+        check_key(DE, &root, &l, &none, &m),
+        check_key(DE, &root, &Listing { misplaced: vec![], ..l.clone() }, &none, &m)
+    );
     let read_new = |p: &str| Ok(std::fs::read(d.path().join("inputs/descriptions").join(p))?);
     let read_old = |_: &FileEntry| -> Result<Vec<u8>> { unreachable!() };
     let dec = decide(&Given {

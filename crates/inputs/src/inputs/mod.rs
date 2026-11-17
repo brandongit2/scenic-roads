@@ -389,9 +389,10 @@ pub trait Checks: Sync {
     fn switch(&self, _root: &store::nasfs::NasRoot, _index: &str) -> Result<Option<Vec<u8>>> {
         Ok(None)
     }
-    /// The content names of what else its checks read from the records (the pass's outlines): in
-    /// the check's key.
-    fn context(&self, _manifest: &BTreeMap<String, String>) -> Vec<String> {
+    /// What else its checks read, beyond the unit's own files, acceptances and state (the content
+    /// names of the records' entries it reads, the pass's outlines; the declarations it reads of the
+    /// accepted sources under `root`): in the check's key.
+    fn context(&self, _root: &store::nasfs::NasRoot, _manifest: &BTreeMap<String, String>) -> Vec<String> {
         Vec::new()
     }
     /// The checks the check job runs, given what they read from the records `manifest` names (the
@@ -830,10 +831,13 @@ pub fn member_of(agent_home: &Path) -> String {
 // ---- The check's key ---------------------------------------------------------------------------
 
 /// The key of unit `unit`'s check (§4.3): the step's and the checks' versions, the listing (a
-/// trigger: names, sizes, times), the acceptances, the accepted index named now and whatever else
-/// its checks read. When it changes, the unit is checked again.
+/// trigger: names, sizes, times), the acceptances and whatever else its checks read
+/// (`Checks::context`). When it changes, the unit is checked again. It names only what the check
+/// reads and doesn't write itself: not the unit's accepted index, its held report nor its state
+/// (`@listed`), so a check that takes in a version is done once its key is recorded.
 pub fn check_key(
     checks: &dyn Checks,
+    root: &store::nasfs::NasRoot,
     listing: &Listing,
     accepted: &BTreeSet<String>,
     manifest: &BTreeMap<String, String>,
@@ -843,8 +847,7 @@ pub fn check_key(
     parts.extend(listing.strays.iter().map(|p| format!("stray {p}")));
     parts.extend(listing.misplaced.iter().map(|p| format!("misplaced {p}")));
     parts.push(format!("accepted {}", accepted.iter().cloned().collect::<Vec<_>>().join(",")));
-    parts.push(format!("index {}", manifest.get(&logical(checks.unit())).map(String::as_str).unwrap_or("-")));
-    parts.extend(checks.context(manifest));
+    parts.extend(checks.context(root, manifest));
     let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
     jobrt::jobs::h(&refs)
 }

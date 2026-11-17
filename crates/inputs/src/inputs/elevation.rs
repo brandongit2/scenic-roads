@@ -1278,7 +1278,7 @@ impl Checks for Elevation {
         }
     }
 
-    fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, _root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
         // (The newest pass's outlines: a tile pyramid's coverage is its territory's. The accepted
         // regions: a dataset's `regions` cut its coverage. The accepted sources: their geoid grids
         // convert its heights.)

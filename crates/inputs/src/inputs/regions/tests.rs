@@ -1096,3 +1096,69 @@ fn the_kept_coverage_s_folder_keeps_only_what_a_process_holds_or_a_newer_app_wro
     want.sort();
     assert_eq!(names(), want);
 }
+
+/// Task #1421: the regions' check's key names what the check reads and doesn't write itself: the
+/// pass, its outline set, extract and land, the declarations of the datasets' roles (as the accepted
+/// sources name them, "?" while they can't be read) and the acceptances; not another source's
+/// declaration, nor the regions' own records, which only the check writes.
+#[test]
+fn the_check_key_names_what_the_check_reads_and_not_what_it_writes() {
+    use crate::inputs::sources::{accept_files, STAGED};
+    let d = tempfile::tempdir().unwrap();
+    let root = store::nasfs::NasRoot::local_for_test(d.path());
+    let r = Regions::default();
+    let l = Listing { files: [("a.toml".to_string(), (10, 100))].into(), ..Default::default() };
+    let none = std::collections::BTreeSet::new();
+    let decl = |n: &str| STAGED.iter().copied().find(|(p, _)| *p == n).unwrap();
+    let (eez, iw, planet) =
+        (decl("marineregions-eez.toml"), decl("marineregions-internal-waters.toml"), decl("osm-planet.toml"));
+    let key = |m: &BTreeMap<String, String>| crate::inputs::check_key(&r, &root, &l, &none, m);
+    let date = "2026-09-28";
+    let mut m = BTreeMap::from([
+        (format!("sources/osm/{date}/pass"), "p".to_string()),
+        (format!("sources/osm/{date}/outlines"), "o".to_string()),
+    ]);
+    accept_files(&root, &mut m, &[eez]);
+    let k = key(&m);
+    assert_eq!(key(&m.clone()), k);
+    // Its own records: a version taken in, a report held, its state.
+    let mut own = m.clone();
+    for (l, c) in [
+        (crate::inputs::logical(UNIT), "sources/inputs/regions/@index.0123456789abcdef.json"),
+        (crate::inputs::held_logical(UNIT), "sources/inputs/regions/@held.0123456789abcdef.json"),
+        (crate::inputs::listed_logical(UNIT), "sources/inputs/regions/@listed.0123456789abcdef.json"),
+    ] {
+        own.insert(l, c.to_string());
+    }
+    assert_eq!(key(&own), k, "its own records");
+    // Another source declared: the check reads none of it.
+    let mut other = m.clone();
+    accept_files(&root, &mut other, &[eez, planet]);
+    assert_ne!(other, m);
+    assert_eq!(key(&other), k, "another source");
+    // What it reads: each a new key.
+    let mut more = m.clone();
+    accept_files(&root, &mut more, &[eez, iw]);
+    assert_ne!(key(&more), k, "a dataset declared");
+    let mut gone = m.clone();
+    gone.remove(&crate::inputs::logical(crate::inputs::sources::UNIT));
+    assert_ne!(key(&gone), k, "no sources accepted");
+    let mut unreadable = m.clone();
+    unreadable.insert(
+        crate::inputs::logical(crate::inputs::sources::UNIT),
+        "sources/inputs/sources/@index.ffffffffffffffff.json".into(),
+    );
+    assert_ne!(key(&unreadable), k, "the sources unreadable");
+    assert_ne!(key(&unreadable), key(&gone));
+    for (l, c) in [
+        (format!("sources/osm/{date}/outlines"), "o2"),
+        (extract::logical(date), "e"),
+        (land::logical(date), "l"),
+        ("sources/osm/2026-10-26/pass".to_string(), "p2"),
+    ] {
+        let mut x = m.clone();
+        x.insert(l.clone(), c.to_string());
+        assert_ne!(key(&x), k, "{l}");
+    }
+    assert_ne!(crate::inputs::check_key(&r, &root, &l, &["rg-ref.0123456789abcdef".to_string()].into(), &m), k);
+}

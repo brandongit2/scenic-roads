@@ -175,7 +175,11 @@ impl Checks for Translations {
         )])
     }
 
-    fn context(&self, _manifest: &std::collections::BTreeMap<String, String>) -> Vec<String> {
+    fn context(
+        &self,
+        _root: &store::nasfs::NasRoot,
+        _manifest: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<String> {
         // (The checker and the Python it runs in: a change to either checks the unit again, so a
         // held or changed file is read again under it; files already taken in stay as they are.)
         vec![

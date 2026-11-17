@@ -450,8 +450,19 @@ impl Checks for Regions {
             .collect();
     }
 
-    fn context(&self, manifest: &BTreeMap<String, String>) -> Vec<String> {
+    fn context(&self, root: &store::nasfs::NasRoot, manifest: &BTreeMap<String, String>) -> Vec<String> {
         let (date, o, e) = current(manifest);
+        // (The datasets' declarations, as `prepare` reads them from the accepted sources: those of
+        // their roles alone, so a change to another source doesn't check the regions again; "?"
+        // while they can't be read, as the check then reads none.)
+        let data = match crate::inputs::sources::open(root, manifest) {
+            Ok(s) => data::ROLES
+                .iter()
+                .map(|r| s.as_ref().and_then(|s| s.role(r).ok()).map_or_else(|| format!("{r} -"), |s| s.named()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            Err(_) => "?".into(),
+        };
         vec![
             format!("regions pass {}", date.as_deref().unwrap_or("-")),
             format!("regions outlines {}", o.map(String::as_str).unwrap_or("-")),
@@ -460,6 +471,7 @@ impl Checks for Regions {
                 "regions land {}",
                 date.as_ref().and_then(|d| manifest.get(&land::logical(d))).map(String::as_str).unwrap_or("-")
             ),
+            format!("regions data {data}"),
         ]
     }
 

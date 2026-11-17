@@ -14309,8 +14309,8 @@ mod tests {
         assert_eq!(given.listing.files.keys().cloned().collect::<Vec<_>>(), ["a.jsonl"]);
         let work = plan[0].record.clone().unwrap();
         assert_eq!(work.targets[0].0, format!("inputs/{unit}"));
-        // Run (as its job would) and recorded: a normal check planned next (its key without the full
-        // one's), then nothing while nothing changes.
+        // Run (as its job would) and recorded: nothing planned next while nothing changes (the full
+        // check's key counts for the normal one's, task #1421).
         let mut out =
             buildstore::out::Out::unbound(&store::nasfs::NasRoot::local_for_test(&root), &d.path().join("s")).unwrap();
         inputs::inputs::gate::run(&mut out, unit, true, None).unwrap();
@@ -14319,12 +14319,6 @@ mod tests {
         keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         // (The full check's time is the records', not this agent's: no daily full check due now,
         // for this agent or a new lead's, `b`.)
-        let plan = a.planner().plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w);
-        assert_eq!(plan[0].id, format!("inputs {unit}"));
-        let work = plan[0].record.clone().unwrap();
-        let mut keys = crate::pool::records::Keys::load_strict(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
-        keys.record("inputs", &work.targets);
-        keys.save(&store::nasfs::NasRoot::local_for_test(&root)).unwrap();
         assert!(!a
             .planner()
             .plan(&store::nasfs::NasRoot::local_for_test(&root), &c, &mut w)
@@ -14407,6 +14401,110 @@ mod tests {
                 .any(|j| j.id.starts_with("inputs ")),
             "nothing left to forget"
         );
+    }
+
+    /// Task #1421: a check that takes in a version is done once its key is recorded: its key names
+    /// what it reads, not the accepted index it writes, so the next plan checks nothing (the regions'
+    /// 11.5 h resolve had run twice). A full check's record counts for the normal check after it; a
+    /// file changed, an acceptance or what else the check reads make it due again.
+    #[test]
+    fn a_check_that_takes_in_a_version_is_not_planned_again_for_it() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        let nas = store::nasfs::NasRoot::local_for_test(&root);
+        for f in [NAS_CHECK, "state/build", "state/inputs"] {
+            std::fs::create_dir_all(root.join(f)).unwrap();
+        }
+        std::fs::write(root.join(inputs::inputs::TEST_FLAG), b"").unwrap();
+        let unit = inputs::inputs::TEST_UNIT;
+        let inputs_dir = root.join("inputs").join(unit);
+        std::fs::create_dir_all(&inputs_dir).unwrap();
+        let put = |name: &str, text: &str| {
+            let p = inputs_dir.join(name);
+            std::fs::write(&p, text).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&p)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+                .unwrap();
+        };
+        put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n");
+        let mut a = agent(&nas, &home);
+        a.round().unwrap();
+        let c = read_status(Some(&nas), &home).unwrap().conditions;
+        let listed = |a: &mut Agent, n: usize, accepted: usize| {
+            a.planner().inputs.watch.as_ref().unwrap().1.ask();
+            let t = Instant::now();
+            while a
+                .planner()
+                .inputs
+                .watch
+                .as_ref()
+                .unwrap()
+                .1
+                .get(unit)
+                .is_none_or(|l| l.listing.files.len() != n || l.accepted.len() != accepted)
+            {
+                assert!(t.elapsed() < store::testkit::WATCHDOG, "listed");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        let checks = |a: &mut Agent| -> Vec<JobSpec> {
+            a.planner().plan(&nas, &c, &mut Vec::new()).into_iter().filter(|j| j.id.starts_with("inputs ")).collect()
+        };
+        let index = || {
+            let m: BTreeMap<String, String> = buildstore::out::read_record(&store::nasfs::NasPath::local_for_test(
+                &root.join("state/build/manifest.json"),
+            ))
+            .unwrap();
+            m.get(&inputs::inputs::logical(unit)).cloned()
+        };
+        // (The planned check run as its job would, on the listing it was keyed by, and recorded.)
+        let run = |j: &JobSpec| -> String {
+            let at = j.cmd.iter().position(|a| a == "--listing").unwrap();
+            let given: inputs::inputs::Planned =
+                serde_json::from_slice(&std::fs::read(&j.cmd[at + 1]).unwrap()).unwrap();
+            let mut out = buildstore::out::Out::unbound(&nas, &d.path().join("s")).unwrap();
+            let said = inputs::inputs::gate::run(&mut out, unit, j.id.ends_with(" full"), Some(given)).unwrap();
+            let mut keys = crate::pool::records::Keys::load_strict(&nas).unwrap();
+            keys.record("inputs", &j.record.clone().unwrap().targets);
+            keys.save(&nas).unwrap();
+            said
+        };
+        listed(&mut a, 1, 0);
+        // The first check, a full one: it takes the clean file in; recorded, nothing is planned next.
+        let first = checks(&mut a);
+        assert_eq!(first.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [format!("inputs {unit} full")]);
+        assert!(run(&first[0]).contains("taken in"));
+        let taken = index().expect("a version taken in");
+        assert!(checks(&mut a).is_empty(), "the full check's record counts for the normal check");
+        // A file added: a normal check takes it in, a new version; recorded, nothing is planned next.
+        put("b.jsonl", "{\"k\": \"y\", \"v\": 2}\n");
+        listed(&mut a, 2, 0);
+        let second = checks(&mut a);
+        assert_eq!(second.iter().map(|j| j.id.as_str()).collect::<Vec<_>>(), [format!("inputs {unit}")]);
+        assert!(run(&second[0]).contains("taken in"));
+        assert_ne!(index().unwrap(), taken);
+        assert!(checks(&mut a).is_empty(), "nothing planned again for the version it took in");
+        // A file touched (the listing a trigger), an acceptance: each makes it due again.
+        put("b.jsonl", "{\"k\": \"y\", \"v\": 3}\n");
+        listed(&mut a, 2, 0);
+        let third = checks(&mut a);
+        assert_eq!(third.len(), 1);
+        run(&third[0]);
+        assert!(checks(&mut a).is_empty());
+        let w = inputs::inputs::Finding::new(
+            "gt-neg",
+            inputs::inputs::Level::Warning,
+            &["b.jsonl"],
+            &["x"],
+            vec!["b.jsonl".into()],
+            "b.jsonl: a line".into(),
+        );
+        inputs::inputs::accept(&nas, unit, &w, "m-0123456789abcdef", "a test").unwrap();
+        listed(&mut a, 2, 1);
+        assert_eq!(checks(&mut a).len(), 1, "an acceptance");
     }
 
     /// Task #932: what a Mac's jobs may hold for one to start is what's available above its memory

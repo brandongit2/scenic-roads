@@ -26,6 +26,8 @@ pub const SEA: &str = "regions-sea";
 pub const INTERNAL: &str = "regions-internal-waters";
 pub const TERRITORIAL: &str = "regions-territorial-seas";
 pub const LAKES: &str = "regions-lakes";
+/// Every role they're read from (`Datasets::read`): their declarations are in the check's key.
+pub const ROLES: [&str; 4] = [SEA, INTERNAL, TERRITORIAL, LAKES];
 
 /// A lake is water, not land, from this size (km², as Natural Earth draws it).
 pub const BIG_LAKE_KM2: f64 = 100.0;
@@ -46,7 +48,8 @@ pub struct Datasets {
     pub land: Option<super::land::Land>,
     /// A bucket grid (1°) of the big lakes.
     lake_grid: HashMap<(i64, i64), Vec<u64>>,
-    /// What they were read from (for the check's key): each source's id and version.
+    /// What they were read from (for the resolutions' keys, `resolve::Outcome::keys`): each source's id
+    /// and version.
     pub names: String,
 }
 
