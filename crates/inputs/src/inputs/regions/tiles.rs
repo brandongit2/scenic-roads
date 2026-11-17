@@ -684,6 +684,9 @@ fn get_made(g: &mut jobrt::resume_log::Get) -> anyhow::Result<Made> {
 
 /// Every region with water resolved (those without, `resolve`'s, as they were): into `out`.
 pub fn resolve(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome) {
+    // (The folders' borders resolved as regions with water of their folders: `Region::of_border`.)
+    let with = folder.with_borders();
+    let folder = with.as_ref().unwrap_or(folder);
     // (On threads whose operations snap: `geom::snap_here`.)
     let threads = crate::inputs::pace::width();
     match rayon::ThreadPoolBuilder::new().num_threads(threads).start_handler(|_| geom::snap_here()).build() {
@@ -970,9 +973,13 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
     drop(made);
     trace("hand-outs");
     // 4. Hand-outs, those to outer folders first (a folder's waters region with a hand_out of its own
-    // hands on what it was handed; the order is otherwise the ids').
+    // hands on what it was handed); to one depth, the borders' first (their land their regions' before
+    // any water is handed out beside it); the order is otherwise the ids'.
     let mut handing = ids.clone();
-    handing.sort_by_key(|id| folder.regions[id].1.hand_out.as_ref().map_or(0, |g| g.split('/').count()));
+    handing.sort_by_key(|id| {
+        let r = &folder.regions[id].1;
+        (r.hand_out.as_ref().map_or(0, |g| g.split('/').count()), !r.border)
+    });
     progress.begin(Step::HandOuts, handing.len());
     for id in &handing {
         let _one = progress.one_on_drop();
@@ -1156,7 +1163,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, out: &mut Outcome)
             // (A waters region in a folder some other region hands out to, handed nothing: listed,
             // not built, as a `hand_out_all` region emptied.)
             let handed = |(o, (_, x)): (&String, &(String, Region))| {
-                o != id && x.hand_out.as_ref().is_some_and(|g| p.starts_with(&format!("{g}/")))
+                o != id && !x.border && x.hand_out.as_ref().is_some_and(|g| p.starts_with(&format!("{g}/")))
             };
             if !(r.is_waters() && folder.regions.iter().any(handed)) {
                 out.problems.push(problem("rg-empty", r, p, format!("{id}: the region has neither land nor water")));
@@ -1346,7 +1353,9 @@ fn env_for<'a>(
         } else if let Some(d) = k.strip_prefix("land:") {
             Src::Refs(vec![d.to_string()], false)
         } else {
-            Src::Refs(folder.members(&k["group:".len()..], id), water)
+            // (A border's own folder, all of each region's: their lakes are theirs, not the border's.)
+            let g = &k["group:".len()..];
+            Src::Refs(folder.members(g, id), water || (r.border && r.hand_out.as_deref() == Some(g)))
         };
         env.leaves.insert(k.clone(), src);
     }

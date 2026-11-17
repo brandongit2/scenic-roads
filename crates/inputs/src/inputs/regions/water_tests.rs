@@ -1045,6 +1045,92 @@ fn a_hand_out_all_leftover_is_a_finding() {
     assert!(!out.resolved.contains_key("q-rest"));
 }
 
+/// Task #1422: a divided place P (folder p: p1, p2, its sea's waters region, and Q, divided in turn:
+/// folder p/q, q1 and q2). P's land in neither region: a strip by p1 and p2, another by p2 and Q
+/// holding a lake, an island touching none; Q's own: a strip by q1 and q2. A lake inside p1, a coast
+/// past p1's outline; the Earth covered once.
+fn bordered_world() -> World {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(
+        d.path(),
+        &[
+            (60, "PP", deg_sq(0.0, 0.0, 6.0, 4.0)),
+            (61, "PP", deg_sq(0.0, 0.0, 2.0, 2.5)),
+            (62, "PP", deg_sq(2.2, 0.0, 3.5, 3.0)),
+            (70, "PP", deg_sq(4.0, 0.0, 6.0, 3.0)),
+            (71, "PP", deg_sq(4.0, 0.0, 5.0, 2.8)),
+            (72, "PP", deg_sq(5.0, 0.0, 6.0, 2.0)),
+        ],
+    );
+    let land = vec![bx(-0.005, 0.0, 6.0, 3.0), bx(0.5, 3.4, 0.7, 3.6)];
+    let lakes = HashMap::from([(81, bx(0.5, 0.5, 0.7, 0.7)), (82, bx(3.6, 1.0, 3.9, 1.3))]);
+    let eez = HashMap::from([(9, bx(-1.0, -1.0, 7.0, 5.0))]);
+    let data = Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, "fixture");
+    World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d }
+}
+
+/// The folder for `bordered_world`: P's and Q's leftovers handed out by `_group.toml` borders, or
+/// (`helpers`) by regions holding them (`hand_out_all`), the outlines less the regions' parts.
+fn bordered_files(helpers: bool) -> Vec<(String, String)> {
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let mut v: Vec<(String, String)> = vec![
+        ("_pins.toml".into(), "osm = \"2026-09-28\"\n".into()),
+        ("_rules.toml".into(), "cover = \"earth\"\n".into()),
+        ("high-seas.toml".into(), HIGH.into()),
+        (
+            "p/p-waters.toml".into(),
+            "id = \"p-waters\"\nname = \"P waters\"\nwater = [{ minus = [\"eez:9\", \"group:p\"] }]\nhand_out = \"p\"\n"
+                .into(),
+        ),
+        ("p/p1.toml".into(), m("p1", 61)),
+        ("p/p2.toml".into(), m("p2", 62)),
+        ("p/q/q1.toml".into(), m("q1", 71)),
+        ("p/q/q2.toml".into(), m("q2", 72)),
+    ];
+    let helper = |id: &str, parts: &str, g: &str| {
+        format!("id = \"{id}\"\nname = \"{id}\"\noutline = [{{ minus = [{parts}] }}]\nwater = []\nhand_out = \"{g}\"\nhand_out_all = true\n")
+    };
+    if helpers {
+        v.push(("p/_group.toml".into(), "name = \"P\"\n".into()));
+        v.push(("p/q/_group.toml".into(), "name = \"Q\"\n".into()));
+        let pp = "\"osm:60\", \"osm:61\", \"osm:62\", \"osm:70\"";
+        v.push(("p/p-outside-its-regions.toml".into(), helper("p-outside-its-regions", pp, "p")));
+        let qq = "\"osm:70\", \"osm:71\", \"osm:72\"";
+        v.push(("p/q/q-outside-its-regions.toml".into(), helper("q-outside-its-regions", qq, "p/q")));
+    } else {
+        v.push(("p/_group.toml".into(), "name = \"P\"\nborder = [\"osm:60\"]\n".into()));
+        v.push(("p/q/_group.toml".into(), "name = \"Q\"\nborder = [\"osm:70\"]\n".into()));
+    }
+    v
+}
+
+/// Task #1422: a folder's border hands out its leftover land as a region holding it did
+/// (`hand_out_all` to its own folder, its outline the border less the regions' parts): every
+/// region resolves the same, its land, water and lakes, and its drawing; nothing is stored for
+/// either the border or the holding region.
+#[test]
+fn a_border_hands_out_as_a_region_holding_the_leftover_did() {
+    let w = bordered_world();
+    let old = run_owned(&w, &bordered_files(true));
+    let new = run_owned(&w, &bordered_files(false));
+    assert!(old.problems.is_empty(), "{:#?}", old.problems);
+    assert!(new.problems.is_empty(), "{:#?}", new.problems);
+    let ids: Vec<&String> = new.resolved.keys().collect();
+    assert_eq!(ids, ["high-seas", "p-waters", "p1", "p2", "q1", "q2"]);
+    assert_eq!(old.resolved.keys().collect::<Vec<_>>(), ids, "the holding regions stored nothing");
+    for id in ids {
+        assert_eq!(old.resolved[id], new.resolved[id], "{id}");
+    }
+    // (What the leftovers were, and where they went.)
+    let at = |id: &str, x: f64, y: f64| area_of(&new.resolved[id].geometry).contains([e7(x), e7(y)]);
+    let only = |id: &str, x: f64, y: f64| at(id, x, y) && new.resolved.keys().filter(|o| at(o, x, y)).count() == 1;
+    assert!(only("p1", 2.1, 1.0) && only("p1", 1.0, 2.8), "the strip by p1 and p2: p1 borders it longest");
+    assert!(only("p2", 3.7, 0.5) && only("p2", 3.75, 1.15), "the strip by p2 and Q, and its lake");
+    assert!(only("p1", 0.6, 3.5), "the island touching none: the nearest");
+    assert!(only("q1", 5.5, 2.5), "Q's own, Q's regions'");
+    assert!(only("p1", 0.6, 0.6) && only("p1", -0.002, 1.0), "p1's lake, p1's coast");
+}
+
 /// A region with water whose outline names a relation the pass's outline set and extract lack
 /// (spain/perejil-island.toml, #487): held by rg-extract, and the relation named in the needs, as
 /// for a region without water, so the held report lists it and the lead plans the extract.

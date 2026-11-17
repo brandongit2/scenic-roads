@@ -198,6 +198,8 @@ pub struct Region {
     /// shares the longest edge with, or the nearest if it touches none (the list's rule for land
     /// inside a split place's border but outside all its regions); the region itself ends empty.
     pub hand_out_all: bool,
+    /// A folder's border (`Region::of_border`), not a file's region: never stored, listed nor named.
+    pub border: bool,
     /// `disabled = true`: checked and resolved like any other region (others may name it, the cover
     /// check counts it), but never built: left out of the coverage and every list the build plans
     /// or sizes from (crate::inputs::regions::read).
@@ -211,6 +213,29 @@ pub struct Region {
 }
 
 impl Region {
+    /// A folder's border (`border` in its `_group.toml`, at `path`) as the regions with water are
+    /// resolved with it (`resolve::Folder::with_borders`), by the group file's path: a region with
+    /// water whose land is the border's less every region under `folder` (their land and lakes: its
+    /// `minus`, the folder's group), every stretch of which it hands out to them (`tiles::resolve`).
+    pub fn of_border(path: &str, folder: &str, border: Vec<Part>) -> Region {
+        Region {
+            id: path.to_string(),
+            name: format!("the border of {folder}"),
+            outline: border,
+            minus: vec![Part::Group(folder.to_string())],
+            intersect: Vec::new(),
+            water: Vec::new(),
+            water_key: true,
+            hand_out: Some(folder.to_string()),
+            hand_out_all: true,
+            border: true,
+            disabled: false,
+            lines: BTreeMap::new(),
+            pins: BTreeMap::new(),
+            symbol: None,
+        }
+    }
+
     /// Whether it's stored as its parts unchanged (§6.1.4): only `osm:` and `shape:` parts in
     /// `outline`, no `minus` nor `intersect`.
     pub fn is_plain(&self) -> bool {
@@ -597,8 +622,9 @@ fn pins_of(raw: BTreeMap<String, toml::Value>) -> Result<BTreeMap<String, String
     Ok(out)
 }
 
-/// A folder's group (`_group.toml`): the name the map's Regions list shows it by, and its place
-/// among its sibling folders (lower first; without one, after those with one, by name).
+/// A folder's group (`_group.toml`): the name the map's Regions list shows it by, its place among
+/// its sibling folders (lower first; without one, after those with one, by name), and the border of
+/// the place its regions divide, if they do. The index's `group` fact is its name and order.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Group {
@@ -609,18 +635,52 @@ pub struct Group {
     /// in `group`'s.
     #[serde(default, skip_serializing)]
     pub symbol: Option<super::symbols::Symbol>,
+    /// `border = [<parts>]`, their union: the place the folder's regions divide. The land inside it
+    /// that no region under the folder covers is handed out to them (`Region::of_border`). In no
+    /// fact: the regions with water's key holds it (`resolve::whole_key`).
+    #[serde(skip)]
+    pub border: Vec<Part>,
 }
 
-/// `_group.toml`, parsed: a name that isn't empty, an integer order if any, a sound symbol if any.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGroup {
+    name: String,
+    #[serde(default)]
+    order: Option<i64>,
+    symbol: Option<super::symbols::Symbol>,
+    border: Option<Vec<toml::Value>>,
+}
+
+/// `_group.toml`, parsed: a name that isn't empty, an integer order if any, a sound symbol if any, a
+/// border of sound parts if any (no `rest`, no line: a group file has none).
 pub fn parse_group(text: &str) -> Result<Group, Fault> {
-    let g: Group = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
+    let g: RawGroup = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
     if g.name.trim().is_empty() {
         return Err(fault("group", "_group.toml: name is empty"));
     }
     if let Some(m) = g.symbol.as_ref().and_then(|s| super::symbols::faults(s).into_iter().next()) {
         return Err(fault("symbol", m));
     }
-    Ok(g)
+    let border = match g.border {
+        None => Vec::new(),
+        Some(vs) if vs.is_empty() => {
+            return Err(fault("group", "_group.toml: border = [] names no place (give the place's border, or none)"))
+        }
+        Some(vs) => vs.iter().map(parse_part).collect::<Result<Vec<_>, _>>()?,
+    };
+    let (mut all, mut lines) = (Vec::new(), Vec::new());
+    for p in &border {
+        p.walk(&mut all);
+        p.lines(&mut lines);
+    }
+    if all.iter().any(|p| matches!(p, Part::Rest)) {
+        return Err(fault("part", "_group.toml: rest is only in a region's water, never in a border"));
+    }
+    if let Some(l) = lines.first() {
+        return Err(fault("ref", format!("_group.toml: its border names line:{l}, and a group file has no lines")));
+    }
+    Ok(Group { name: g.name, order: g.order, symbol: g.symbol, border })
 }
 
 /// `_pins.toml`, parsed.
@@ -713,6 +773,7 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         water_key,
         hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
         hand_out_all: raw.hand_out_all,
+        border: false,
         disabled: raw.disabled,
         lines,
         pins,
