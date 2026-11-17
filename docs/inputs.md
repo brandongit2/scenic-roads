@@ -153,7 +153,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      (task #832): each region's `facts.resolved_from` is `inputs::regions::RESOLUTION` (their
      checks' version) and the digest of everything its resolution reads (its file, the pins, the
      shapes and regions it names, the pass, the datasets; a region with water: every file of the
-     folder but the group files, and their borders, `resolve::Outcome::keys`). A change that touches none of it (a
+     folder but the group files, plus their borders, `resolve::Outcome::keys`). A change that touches none of it (a
      `_group.toml`'s name, another region's file) derives it from nothing: its geometry, and the
      terrain keyed by it, stay. So `RESOLUTION` is bumped in the same commit as any change to the
      resolution's code that changes what an unchanged region resolves to; that, and only that,
@@ -521,7 +521,7 @@ before this); a stretch reaching past 1 km (an island no outline has, a long inl
 short of) stays out, for the cover check. A region's
 `hand_out` folder then takes each stretch (a connected piece) of its water that one of its members
 alone borders, and a stretch under `sliver_km2` goes to the one sharing its longest edge (hand-outs
-to outer folders first; to one depth, the borders' first, below; then by id). A member is a region of the folder with water, but for a
+after every border's, below; to outer folders first, then by id). A member is a region of the folder with water, but for a
 subfolder holding a **waters region** (a region with `water` and no `outline`, in the subfolder
 itself; `water = []` when it has no sea of its own): the outermost such subfolder not holding the
 handing region is one member, its regions together, and what it alone borders goes whole to its
@@ -545,11 +545,12 @@ of the folder sharing its longest edge, or, touching none, the nearest region wi
 distance between their points, across ±180° too); a deeper folder's border is one of those regions,
 and hands on what it's given in its turn. The regions are taken as resolved, their land and lakes,
 so the border names none of them. It is resolved with the regions with water, as one of its
-folder's: after every region under the folder (one held holds it, `rg-ref`), the coast beside its
-land its own (within `COAST_REACH_M`, handed out with it). It gives only to regions with water (a
-region without is `rg-ref`), region by region (a waters region, having no land, takes none of it),
-and before any other hand-out to its folder's depth, so its land is its regions' before water is
-handed out beside it. It ends empty: no region, nothing stored or listed; what no region of the
+folder's: after every region under the folder and every region it names (one held, with water or
+without, holds it, `rg-ref`), the coast beside its land its own (within `COAST_REACH_M`, handed out
+with it). It gives only to regions with water (a region without is `rg-ref`), region by region (a
+waters region, having no land, takes none of it). Every border hands out before any region does,
+outer before inner, so all leftover land is its regions' before any water is handed out beside it:
+a stretch of sea a leftover and one region border is that region's alone. It ends empty: no region, nothing stored or listed; what no region of the
 folder can take is `rg-hand-out`, on the `_group.toml`. The top folder's `_group.toml` has no
 border (`rg-group`). The regions with water's key holds every border: a border's change resolves
 them again, a group file's name, order or symbol nothing. With

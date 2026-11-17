@@ -608,6 +608,8 @@ for id, r in R.items():
 for f, (g, border) in BORDERS.items():
     p = os.path.join(OUT, f, '_group.toml')
     lines = open(p).read().splitlines() if os.path.exists(p) else [f'name = {tomlv(g)}']
+    if 'border' in tomllib.loads('\n'.join(lines)):
+        raise SystemExit(f'{p} has a border already: one border per folder')
     at = next((i for i, l in enumerate(lines) if l.lstrip().startswith('[')), len(lines))
     while at > 0 and not lines[at - 1].strip():
         at -= 1

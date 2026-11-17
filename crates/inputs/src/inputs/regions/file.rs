@@ -644,11 +644,11 @@ struct RawGroup {
     #[serde(default)]
     order: Option<i64>,
     symbol: Option<super::symbols::Symbol>,
-    border: Option<Vec<toml::Value>>,
+    border: Option<toml::Value>,
 }
 
 /// `_group.toml`, parsed: a name that isn't empty, an integer order if any, a sound symbol if any, a
-/// border of sound parts if any (no `rest`, no line: a group file has none).
+/// border of sound parts if any (`border_of`).
 pub fn parse_group(text: &str) -> Result<Group, Fault> {
     let g: RawGroup = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
     if g.name.trim().is_empty() {
@@ -657,12 +657,27 @@ pub fn parse_group(text: &str) -> Result<Group, Fault> {
     if let Some(m) = g.symbol.as_ref().and_then(|s| super::symbols::faults(s).into_iter().next()) {
         return Err(fault("symbol", m));
     }
-    let border = match g.border {
-        None => Vec::new(),
-        Some(vs) if vs.is_empty() => {
+    let border = border_of(g.border.as_ref())?;
+    Ok(Group { name: g.name, order: g.order, symbol: g.symbol, border })
+}
+
+/// A `_group.toml`'s border alone, as the resolution reads it (none when it has none): a fault of the
+/// file's other fields (its name, its symbol, a field unknown) is the file check's (`parse_group`),
+/// never a border left out.
+pub fn group_border(text: &str) -> Result<Vec<Part>, Fault> {
+    let t: toml::Table = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
+    border_of(t.get("border"))
+}
+
+/// A group file's `border`: a non-empty list of parts, no `rest`, no line (a group file has none).
+fn border_of(v: Option<&toml::Value>) -> Result<Vec<Part>, Fault> {
+    let border = match v {
+        None => return Ok(Vec::new()),
+        Some(toml::Value::Array(vs)) if vs.is_empty() => {
             return Err(fault("group", "_group.toml: border = [] names no place (give the place's border, or none)"))
         }
-        Some(vs) => vs.iter().map(parse_part).collect::<Result<Vec<_>, _>>()?,
+        Some(toml::Value::Array(vs)) => vs.iter().map(parse_part).collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err(fault("group", "_group.toml: border is a list of parts, as an outline")),
     };
     let (mut all, mut lines) = (Vec::new(), Vec::new());
     for p in &border {
@@ -675,7 +690,7 @@ pub fn parse_group(text: &str) -> Result<Group, Fault> {
     if let Some(l) = lines.first() {
         return Err(fault("ref", format!("_group.toml: its border names line:{l}, and a group file has no lines")));
     }
-    Ok(Group { name: g.name, order: g.order, symbol: g.symbol, border })
+    Ok(border)
 }
 
 /// `_pins.toml`, parsed.
@@ -885,6 +900,21 @@ mod tests {
         assert_eq!(check("border = [{ buffer = \"line:coast\", by = \"1 km\" }]\n"), "ref");
         assert_eq!(check("border = \"osm:1\"\n"), "group");
         assert_eq!(check("borders = [\"osm:1\"]\n"), "group");
+        // (The resolution reads the border alone: an empty name, a bad symbol or an unknown field
+        // are the file check's.)
+        let bad = "name = \"\"\ncolour = 1\nborder = [\"osm:1\"]\n[symbol]\nimage = 1\n";
+        assert_eq!(parse_group(bad).unwrap_err().check, "group");
+        assert_eq!(group_border(bad), Ok(vec![Part::Osm(1)]));
+        assert_eq!(group_border("name = \"M\"\n"), Ok(vec![]));
+        assert_eq!(group_border("border = [\"rest\"]\n").unwrap_err().check, "part");
+    }
+
+    /// `hand_out` is for a region with water.
+    #[test]
+    fn a_hand_out_without_water_is_a_fault() {
+        let r = "id = \"a\"\nname = \"A\"\noutline = [\"osm:1\"]\nhand_out = \"a\"\n";
+        assert_eq!(parse("a.toml", r).unwrap_err().iter().map(|f| f.check).collect::<Vec<_>>(), ["part"]);
+        assert_eq!(parse("a.toml", &format!("{r}water = []\n")).unwrap().hand_out.as_deref(), Some("a"));
     }
 
     #[test]

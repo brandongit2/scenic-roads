@@ -37,8 +37,9 @@ pub struct Problem {
 pub struct Folder {
     /// By id: (the file's path, the region).
     pub regions: BTreeMap<String, (String, Region)>,
-    /// By name: (the file's path, its polygons, or why it can't be read).
-    pub shapes: BTreeMap<String, (String, Result<Polys, String>)>,
+    /// By name: (the file's path, its polygons, or why it can't be read). Shared, never copied: a
+    /// folder's copy with its borders (`with_borders`) reads the same.
+    pub shapes: std::sync::Arc<BTreeMap<String, (String, Result<Polys, String>)>>,
     /// `_pins.toml`, when there and read.
     pub pins: BTreeMap<String, String>,
     /// `_rules.toml`, when there and read.
@@ -46,8 +47,6 @@ pub struct Folder {
     /// Each folder's border (`border` in its `_group.toml`, a subfolder's), by the group file's
     /// path: read only by the regions with water (`with_borders`).
     pub borders: BTreeMap<String, Vec<Part>>,
-    /// The files that didn't parse (their own findings are the file checks').
-    pub unread: BTreeSet<String>,
     /// Two region files with one id, or two shapes with one name.
     pub problems: Vec<Problem>,
     /// Each file's bytes' hash, by path (what a region's resolution is kept by: `Memo`).
@@ -127,24 +126,23 @@ impl Folder {
         let mut f = Folder::default();
         let mut by_id: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut by_name: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut shapes = BTreeMap::new();
         // (A symbol's image or bundle is no resolution's: crate::inputs::regions's `whole` checks them.)
         let paths: Vec<String> =
             paths.into_iter().filter(|p| p.ends_with(".toml") || p.ends_with(".geojson")).collect();
+        // (A file that doesn't parse is left out: its own finding is the file check's.)
         for p in &paths {
             let p = p.clone();
             let kind = special(&p);
             // (A group file's name, order and symbol are the index's; its border, if a subfolder's,
-            // the regions with water's. Not hashed: the border is in their key, `whole_key`, and
-            // nothing else of it in any resolution's.)
+            // the regions with water's, read on its own: a fault elsewhere in the file is the file
+            // check's, never a border left out. Not hashed: the border is in their key, `whole_key`,
+            // and nothing else of it in any resolution's.)
             if kind == Some(Special::Group) {
                 if p.contains('/') {
-                    match std::str::from_utf8(&read(&p)?).ok().map(super::file::parse_group) {
-                        Some(Ok(g)) if !g.border.is_empty() => {
-                            f.borders.insert(p, g.border);
-                        }
-                        Some(Ok(_)) => {}
-                        _ => {
-                            f.unread.insert(p);
+                    if let Some(Ok(b)) = std::str::from_utf8(&read(&p)?).ok().map(super::file::group_border) {
+                        if !b.is_empty() {
+                            f.borders.insert(p, b);
                         }
                     }
                 }
@@ -153,36 +151,25 @@ impl Folder {
             let bytes = read(&p)?;
             f.hashes.insert(p.clone(), store::naming::hash16(&bytes));
             let name = file_name(&p).to_string();
+            let text = std::str::from_utf8(&bytes).ok();
             if is_special(&p) && kind.is_none() {
-                // (An unknown special file: its own finding is the file check's.)
-                f.unread.insert(p);
+                // (An unknown special file.)
             } else if kind == Some(Special::Rules) {
-                match std::str::from_utf8(&bytes).ok().map(super::tiles::parse_rules) {
-                    Some(Ok(r)) => f.rules = Some(r),
-                    _ => {
-                        f.unread.insert(p);
-                    }
+                if let Some(Ok(r)) = text.map(super::tiles::parse_rules) {
+                    f.rules = Some(r);
                 }
             } else if kind == Some(Special::Pins) {
-                match std::str::from_utf8(&bytes).ok().map(super::file::parse_pins) {
-                    Some(Ok(pins)) => f.pins = pins,
-                    _ => {
-                        f.unread.insert(p);
-                    }
+                if let Some(Ok(pins)) = text.map(super::file::parse_pins) {
+                    f.pins = pins;
                 }
             } else if name.ends_with(".toml") {
-                match std::str::from_utf8(&bytes).ok().map(|t| super::file::parse(&name, t)) {
-                    Some(Ok(r)) => {
-                        by_id.entry(r.id.clone()).or_default().push(p.clone());
-                        f.regions.insert(r.id.clone(), (p, r));
-                    }
-                    _ => {
-                        f.unread.insert(p);
-                    }
+                if let Some(Ok(r)) = text.map(|t| super::file::parse(&name, t)) {
+                    by_id.entry(r.id.clone()).or_default().push(p.clone());
+                    f.regions.insert(r.id.clone(), (p, r));
                 }
             } else {
                 by_name.entry(name.clone()).or_default().push(p.clone());
-                f.shapes.insert(name, (p, super::shapes::read(&bytes).map_err(|e| format!("{e:#}"))));
+                shapes.insert(name, (p, super::shapes::read(&bytes).map_err(|e| format!("{e:#}"))));
             }
         }
         for (id, ps) in by_id.into_iter().filter(|(_, ps)| ps.len() > 1) {
@@ -213,13 +200,15 @@ impl Folder {
                     ps.join(", ")
                 ),
             });
-            f.shapes.remove(&n);
+            shapes.remove(&n);
         }
+        f.shapes = std::sync::Arc::new(shapes);
         Ok(f)
     }
 
     /// The folder with each border (`borders`) a region of its folder (`Region::of_border`, its id
     /// and path the group file's), as the regions with water are resolved: None when it has none.
+    /// (The shapes shared, not copied: the regions' files, a few MB, are.)
     pub fn with_borders(&self) -> Option<Folder> {
         if self.borders.is_empty() {
             return None;
@@ -305,7 +294,7 @@ pub struct Outcome {
     /// By id, a digest of everything its resolution reads: its file, the pins, the
     /// shapes and regions it names (their own keys), the context. A region with water is resolved
     /// with every other (the coast shared between them, the rest), so its key is the whole
-    /// folder's (every file but the group files, and their borders: `whole_key`).
+    /// folder's (every file but the group files, plus their borders: `whole_key`).
     pub keys: BTreeMap<String, String>,
     /// How the regions with water fit, with `cover = "earth"` (the cover check's measures).
     pub fit: super::tiles::Fit,
@@ -446,7 +435,7 @@ fn resolve_all(folder: &Folder, ctx: &Context) -> Outcome {
         }
         pending = rest;
     }
-    super::tiles::resolve(folder, ctx, &mut out);
+    super::tiles::resolve(folder, ctx, &held, &mut out);
     let whole = whole_key(folder, ctx);
     for (id, (_, r)) in &folder.regions {
         if r.has_water() {

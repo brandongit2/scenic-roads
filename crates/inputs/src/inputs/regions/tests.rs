@@ -644,16 +644,20 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     // A bad group file: an error on it.
     assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\ncolour = 1\n").findings[0].check(), "rg-group");
     // A border (task #1422): a subfolder's, its fact the group's as without; the folder reads it, a
-    // bad one is unread; at the top, an error.
+    // bad one not; at the top, an error. A fault elsewhere in the file (an empty name, a bad symbol)
+    // is the file check's: the folder reads its border all the same.
     let border = b"name = \"Europe / EU\"\nborder = [\"osm:1\"]\n";
     let f = checks.file("eu/_group.toml", border);
     assert!(f.findings.is_empty(), "{:?}", f.findings);
     assert_eq!(f.facts["group"], serde_json::json!({"name": "Europe / EU"}));
     assert_eq!(checks.file("_group.toml", border).findings[0].check(), "rg-group");
     assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\nborder = [\"osm:x\"]\n").findings[0].check(), "rg-part");
+    let faulty = b"name = \"\"\nborder = [\"osm:2\"]\n[symbol]\nimage = \"Q1.svg\"\nkind = \"\"\nsource = \"x\"\n";
+    assert!(!checks.file("af/_group.toml", faulty).findings.is_empty());
     let files: BTreeMap<String, Vec<u8>> = [
         ("eu/_group.toml", &border[..]),
         ("am/_group.toml", &b"name = \"am\"\nborder = []\n"[..]),
+        ("af/_group.toml", &faulty[..]),
         ("_group.toml", &border[..]),
         ("eu/pt/_group.toml", &b"name = \"pt\"\n"[..]),
     ]
@@ -661,9 +665,10 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     .map(|(p, t)| (p.to_string(), t.to_vec()))
     .collect();
     let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
-    assert_eq!(folder.borders.keys().collect::<Vec<_>>(), ["eu/_group.toml"]);
+    assert_eq!(folder.borders.keys().collect::<Vec<_>>(), ["af/_group.toml", "eu/_group.toml"]);
     assert_eq!(folder.borders["eu/_group.toml"], vec![file::Part::Osm(1)]);
-    assert!(folder.unread.contains("am/_group.toml") && folder.hashes.is_empty());
+    assert_eq!(folder.borders["af/_group.toml"], vec![file::Part::Osm(2)]);
+    assert!(folder.hashes.is_empty());
     assert!(checks.takes_ignored("_group.toml") && checks.takes_ignored("_draft.toml"));
     assert!(!checks.takes_ignored("_x.geojson") && !checks.takes_ignored(".DS_Store"));
 }
@@ -712,7 +717,7 @@ fn a_name_starting_with_an_underscore_is_special() {
     let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
     assert_eq!(folder.pins.get("osm").map(String::as_str), Some("2026-09-28"));
     assert_eq!(folder.rules.unwrap().cover.as_deref(), Some("earth"));
-    assert!(folder.regions.is_empty() && folder.unread.contains("_draft.toml"));
+    assert!(folder.regions.is_empty());
 }
 
 /// A NAS root for the check job: the records naming pass `PASS` (and its outline set, when
@@ -827,10 +832,10 @@ fn the_rules_file_is_not_a_region() {
     assert_eq!(read::listed(&a).unwrap().len(), n);
 }
 
-/// The live index's shape (task #504): a cut of `@index.be2033d2b403ccb0.json` (regions 1,028, rules
-/// `cover = "earth"`), with two waters regions that resolved to nothing (`water = []`, handed
-/// nothing) and so have no geometry or drawing in their facts. It reads; they're listed and in the
-/// tree, never built.
+/// An index in the live one's shape (task #504): three regions and the pins as the live index held
+/// them (Andorra, Beni disabled, Hong Kong with water), and two made-up waters regions,
+/// disabled, that resolved to nothing (`water = []`, handed nothing), so with no geometry or drawing
+/// in their facts. It reads; they're listed and in the tree, never built.
 #[test]
 fn the_live_index_with_empty_regions_reads() {
     let index: Index = serde_json::from_str(include_str!("testdata/index-empty-regions.json")).unwrap();

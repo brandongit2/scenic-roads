@@ -1068,7 +1068,8 @@ fn a_borders_leftover_no_region_takes_is_a_finding() {
 /// Task #1422: a divided place P (folder p: p1, p2, its sea's waters region, and Q, divided in turn:
 /// folder p/q, q1 and q2). P's land in neither region: a strip by p1 and p2, another by p2 and Q
 /// holding a lake, an island touching none; Q's own: a strip by q1 and q2. A lake inside p1, a coast
-/// past p1's outline; the Earth covered once.
+/// past p1's outline; two inlets of P's sea (holes in the land), one by p1 and P's leftover, one by
+/// q1 and Q's; the Earth covered once.
 fn bordered_world() -> World {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(
@@ -1082,7 +1083,8 @@ fn bordered_world() -> World {
             (72, "PP", deg_sq(5.0, 0.0, 6.0, 2.0)),
         ],
     );
-    let land = vec![bx(-0.005, 0.0, 6.0, 3.0), bx(0.5, 3.4, 0.7, 3.6)];
+    let inlets = [bx(1.0, 2.4, 1.2, 2.6), bx(4.4, 2.6, 4.6, 2.9)].concat();
+    let land = vec![[bx(-0.005, 0.0, 6.0, 3.0), inlets].concat(), bx(0.5, 3.4, 0.7, 3.6)];
     let lakes = HashMap::from([(81, bx(0.5, 0.5, 0.7, 0.7)), (82, bx(3.6, 1.0, 3.9, 1.3))]);
     let eez = HashMap::from([(9, bx(-1.0, -1.0, 7.0, 5.0))]);
     let data = Datasets::from_parts(eez, HashMap::new(), HashMap::new(), lakes, land, "fixture");
@@ -1116,7 +1118,9 @@ fn bordered_files(borders: bool) -> Vec<(String, String)> {
 /// Task #1422: a divided place's border, with one of a place divided in turn in a subfolder: each
 /// hands out its leftover land, its lakes and the coast beside it, the outer first (the inner
 /// border one of the outer's takers), to the regions under its folder; the regions' own lakes stay
-/// theirs; nothing is stored or listed for a border, and the Earth is covered once.
+/// theirs; nothing is stored or listed for a border, and the Earth is covered once. Every border
+/// hands out before P's waters region does, the inner one too: so an inlet of P's sea (over
+/// `sliver_km2`) a leftover and one region border is that region's, which alone borders it then.
 #[test]
 fn a_border_hands_out_its_folders_leftover_nested_ones_too() {
     let w = bordered_world();
@@ -1131,6 +1135,67 @@ fn a_border_hands_out_its_folders_leftover_nested_ones_too() {
     assert!(only("p1", 0.6, 3.5), "the island touching none: the nearest");
     assert!(only("q1", 5.5, 2.5), "Q's own, Q's regions'");
     assert!(only("p1", 0.6, 0.6) && only("p1", -0.002, 1.0), "p1's lake, p1's coast");
+    assert!(only("p1", 1.1, 2.5), "the inlet by p1 and P's leftover: p1's");
+    assert!(only("q1", 4.5, 2.75), "the inlet by q1 and Q's leftover: q1's, Q's border handing out first");
+}
+
+/// Task #1422: a region without water under a bordered folder, held (a relation the pass hasn't),
+/// holds the border too, saying so (`rg-ref`), never a loop.
+#[test]
+fn a_held_region_holds_its_folders_border() {
+    let w = bordered_world();
+    let mut files = bordered_files(true);
+    files.push(("p/far.toml".into(), "id = \"far\"\nname = \"Far\"\noutline = [\"osm:999999\"]\n".into()));
+    let out = run_owned(&w, &files);
+    assert!(out.problems.iter().all(|p| p.check != "rg-loop"), "{:#?}", out.problems);
+    let p = out
+        .problems
+        .iter()
+        .find(|p| p.check == "rg-ref" && p.about == ["p/_group.toml"])
+        .unwrap_or_else(|| panic!("{:#?}", out.problems));
+    assert_eq!(p.files, ["p/_group.toml"]);
+    assert!(p.message.contains("the border of p is held, as region far, under it, is held"), "{}", p.message);
+    assert!(out.problems.iter().any(|p| p.check == "rg-extract" && p.about[0] == "far"), "{:#?}", out.problems);
+}
+
+/// Task #1422: a border naming another bordered folder's group (Bolivia's naming
+/// `group:brazil/states/amazonas`) takes away that folder's regions and its leftover both: each
+/// leftover goes to its own folder's regions alone.
+#[test]
+fn a_border_naming_a_bordered_folder_takes_its_leftover_away_too() {
+    let d = tempfile::tempdir().unwrap();
+    let p = outlines(d.path(), &[(91, "AA", deg_sq(0.0, 0.0, 1.0, 1.0)), (92, "BB", deg_sq(2.0, 0.0, 3.0, 1.0))]);
+    let data = Datasets::from_parts(
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        HashMap::new(),
+        vec![bx(0.0, 0.0, 3.0, 1.0)],
+        "fixture",
+    );
+    let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
+    let m = |id: &str, rel: u64| format!("id = \"{id}\"\nname = \"{id}\"\noutline = [\"osm:{rel}\"]\nwater = []\n");
+    let (a1, b1) = (m("a1", 91), m("b1", 92));
+    let ag = "name = \"A\"\nborder = [{ minus = [\"box:0,0,2.5,1\", \"group:b\"] }]\n";
+    let bg = "name = \"B\"\nborder = [\"box:1.5,0,3,1\"]\n";
+    let out = run(&w, &[PINS, ("a/a1.toml", &a1), ("b/b1.toml", &b1), ("a/_group.toml", ag), ("b/_group.toml", bg)]);
+    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    assert_eq!(out.resolved.keys().collect::<Vec<_>>(), ["a1", "b1"]);
+    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
+    assert!(at("a1", 1.25, 0.5) && !at("b1", 1.25, 0.5), "A's leftover");
+    assert!(at("b1", 1.75, 0.5) && !at("a1", 1.75, 0.5), "B's leftover, not A's");
+}
+
+/// Task #1422: a waters region (`water = []`) in a folder only a border hands out to is handed
+/// nothing, ever (a border gives a waters region nothing): `rg-empty`, as with no hand-out.
+#[test]
+fn a_waters_region_only_a_border_reaches_is_empty() {
+    let w = world();
+    let p1 = "id = \"p1\"\nname = \"P1\"\noutline = [\"osm:1\"]\nwater = []\n";
+    let waters = "id = \"p-waters\"\nname = \"P waters\"\nwater = []\n";
+    let group = "name = \"P\"\nborder = [\"box:0,0,1.5,1\"]\n";
+    let out = run(&w, &[PINS, ("p/p1.toml", p1), ("p/p-waters.toml", waters), ("p/_group.toml", group)]);
+    assert!(out.problems.iter().any(|p| p.check == "rg-empty" && p.about == ["p-waters"]), "{:?}", out.problems);
 }
 
 /// A region with water whose outline names a relation the pass's outline set and extract lack
