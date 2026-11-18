@@ -673,8 +673,8 @@ fn judge(runs: &[Run], size: &str) -> Option<Fit> {
     })
 }
 
-/// A run's NAS rate (`bytes` less what of them it read from this Mac's own disk, `local` (its whole
-/// local copies', task #551), plus `wrote` and `read_back`, and `creates`, over its time; its metadata work,
+/// A run's NAS rate (`bytes` less what of them it read from this Mac's own disk or its page cache,
+/// `local` (its whole local copies', task #551, and any NAS read the cache answered, task #1450), plus `wrote` and `read_back`, and `creates`, over its time; its metadata work,
 /// `listed`, `stats` and `deletes`, likewise), when it was measured the
 /// way its step runs now and says its `bytes`. A `HALO_STEPS` step's reads are its job's, not its
 /// own: `nas_read` over `nas_secs` (the job's reads and the time they took, the same on each of its

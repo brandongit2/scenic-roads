@@ -942,8 +942,8 @@ done: {end, targets, of, resumed, made}
 - `v`: 3 since task #1450 (`nas.read_b` what the NAS served, every read told by its time, below);
   2 since task #1116 (a phase's `cpu_s` its own work's; its `nas.read_b`, from task #1419, every byte
   read through the share but a whole copy's cached part); 1 before (a phase's `cpu_s` the process's
-  while it was open, so an `overlapped` phase's counts other threads' work too). A reader of
-  `nas.read_b` takes v 3's alone.
+  while it was open, so an `overlapped` phase's counts other threads' work too). The build page's
+  job view (web/buildpage/jobview.js, `recordFigures`) shows `served` from v 3's `nas.read_b` alone.
 - `cpu_s`: user + system, the process's and its finished children's. `untimed_cpu_s` (v 2): of
   it, the CPU in no phase; the top-level phases' `cpu_s` (the `background` ones' too) and it add up
   to `cpu_s`. `threads`:
@@ -1005,15 +1005,28 @@ read as absent):
   or the other by its own time (store::nasio::Reads, task #1450): quicker than 0.25 ms plus its
   bytes at 2 GB/s, this Mac's cache's (its 1 MB reads measured at 0.36 ms at most, the NAS's at 9 ms
   or more; a 4 KB read 5 µs against the NAS's 0.8 ms), and a quick read following one the NAS
-  answered, within the kernel's read-ahead reach, the NAS's (what the kernel read ahead for it).
-  Against the SMB session's own received bytes (18 Nov, the M4): within 0.1 % on files read cold,
-  warm, warm then cold, and at random; two errors, both counting more: a file cold at its start
-  and warm after, read through, is counted the NAS's from its first slow read on (at most the
-  read-ahead's reach, `kern.speculative_prefetch_max`, 192 MB on the M4), and a read held up past
-  the bound by a loaded Mac counts the NAS's. Not counted: the whole pages the NAS sends for a small
-  read (a 4 KB read moves about 20 KB, a 64 KB one about 80 KB). What chunk 4's pacing (#1417) can
-  take from it: `read_b` over the run is at least what the NAS sent for the job's reads but their
-  pages' rounding, never a cache's answer counted as the NAS's beyond those two.
+  answered the NAS's (what the kernel read ahead for it) while within the kernel's read-ahead reach
+  and what this Mac's links could have carried since the run began (their rate since its first
+  slow read, or the bytes they received since its first quick read, whichever is more). Against the
+  SMB session's own received bytes (18 Nov, the M4 under load 22-120): cold files read through
+  within 0.02 %; 75 warm reads of a 105 MB file (7.9 GB) counted 2 MB the NAS's against 87 KB sent
+  (a cached read held up past the bound counts its own bytes, not a run after it); warm then cold,
+  exact; cold for 55 MB then warm for 38 MB, 85 MB counted against 58 MB sent (its warm part while
+  the links' rate and other traffic left room). Not counted: the whole pages the NAS sends for a
+  small read (a 4 KB read moves about 20 KB, a 64 KB one about 80 KB). What chunk 4's pacing
+  (#1417) can take from it: `read_b` is what the NAS sent for the job's counted reads but their
+  pages' rounding, over by a held-up read's bytes and a cold-then-warm run's warm part within what
+  the links could carry.
+
+  Not counted at all (no store::nasio count; tests/nas_access.rs lists them): readers that open a
+  NAS path in-process themselves, codecs::basepart's base-pack ranges (task #1464), lakefill's
+  basemap, outlines and zips, railfeeds' catalogue, checked list and keys, pageviews' month
+  indexes, the names tables' translation files, GDAL and the shapefile reader in
+  inputs::regions::data, lake_folder's GLOBathy and HydroLAKES zips, the GTFS counters' zips; and
+  the programs given a NAS path to read where it lies: osmium (the OSM pass, ferries, heritage,
+  the areas and heritage sites over the cover), the extract and convert programs (pois, the OSM
+  pass, the declared DEM conversions), the trees program (its CHM store, leaf folders and mids),
+  heritage.py, the scenic program's linked building tiles, and the counting program's rail zips.
 - `done`: `end` (its agent's: `done`, `paused`, `failed`, `interrupted`, `cancelled`; only `done` did its whole
   job, the others' figures are a part's), `targets` it finished of the `of` it was given (its
   agent's, as the history's end says them), `resumed` the blocks or pieces it found kept by an
@@ -1568,7 +1581,7 @@ the id with the clicked point. A reader takes version 8 only.
     member's hand-offs); `tasks/<id>/`; `pause.json` (`{pause: {mode: "drain" | "freeze", by, at} | null,
     at}`, `jobrt::control::Pause`); `costs.jsonl` (`SCENIC_COSTS`: `{unit, started}` (`unit`: the target, stored so) as a target
     begins, `{unit, peak_mb, secs, v, disk_mb, sizes}` as it ends; `sizes`, `buildstore::costin`, a
-    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `threads_least` (the fewest it was allowed under way, where its agent cut a paced job's threads below those: docs/pool.md §7.1, Threads controlled live), `local` (of `bytes`, those read from this Mac's own disk: a mapped or local file's, its whole local copies', task #551, and the part of a NAS file copied whole that this Mac's page cache held as the copy began, task #939) where any were, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read, `paused_ms` (the time its process was stopped over the target (SIGSTOP), its tail's too) where it was, `nas_net_ms` (the wall time over the target in which its process waited on the NAS or the network, store::waits::nas_net by its wall clock, its tail's too: the waits its agent's live thread control counts, docs/pool.md §7.1) where its run was timed (task #1435; a line before it says `waited_ms`, any wait, the local disk's and other work's among them, which nothing reads)
+    map of the target's input measures, absent from lines before it: `bytes` and `threads` (the threads it was given) always, `threads_least` (the fewest it was allowed under way, where its agent cut a paced job's threads below those: docs/pool.md §7.1, Threads controlled live), `local` (of `bytes`, those read from this Mac's own disk: a mapped or local file's, its whole local copies', task #551, and any NAS read this Mac's page cache answered, each told by its time, store::nasio::Reads, task #1450) where any were, `cpu_ms` (its process's CPU time over the target, its programs' as each is waited for; a z6 tile's with its tail's steps run here after its other measures were taken) where it can be read, `paused_ms` (the time its process was stopped over the target (SIGSTOP), its tail's too) where it was, `nas_net_ms` (the wall time over the target in which its process waited on the NAS or the network, store::waits::nas_net by its wall clock, its tail's too: the waits its agent's live thread control counts, docs/pool.md §7.1) where its run was timed (task #1435; a line before it says `waited_ms`, any wait, the local disk's and other work's among them, which nothing reads)
     (bytes: what the store's readers read for the target, plus a step's own inputs: a z6 tile's extract,
     pack's and lo's base packs, pois' extract); `km2` (the tile's size in km²) and `tiffs` (GeoTIFFs opened)
     for every tile target; a pyramids-fill z6 tile's `fetched` (the tiles it asked of GSI: what

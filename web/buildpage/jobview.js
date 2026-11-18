@@ -85,7 +85,9 @@ export function recordFigures(rec) {
     peak: rec.peak_mb ?? (peaks.length && Math.max(...peaks) > 0 ? Math.max(...peaks) : null), threads: rec.threads ?? null, nas: wait("nas_s"), net: wait("net_s"),
     insn: w?.insn ?? null, ipc: w?.cycles > 0 ? w.insn / w.cycles : null, ghz: w?.cpu_s > 0 ? w.cycles / w.cpu_s / 1e9 : null,
     pShare: w?.cpu_s > 0 ? w.p_cpu_s / w.cpu_s : null, counted: w?.cpu_s ?? null,
-    asked: nas ? nas.read_b + (nas.held_b || 0) : null, served: nas ? nas.read_b : null,
+    // (What the NAS served is told only from record version 3, task #1450: before, every read through
+    // the share but a whole copy's cached part.)
+    asked: nas ? nas.read_b + (nas.held_b || 0) : null, served: nas && rec.v >= 3 ? nas.read_b : null,
     done: rec.done ?? null, implausible: rec.implausible || [], unchecked: rec.unchecked || [],
   };
 }

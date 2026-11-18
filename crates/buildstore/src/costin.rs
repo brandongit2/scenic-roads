@@ -6,8 +6,8 @@
 //! target, store::nasio's `ReadBytes` but its `ReadBack` and `Local`, its programs' added as each
 //! ends, plus the inputs a step opens itself and notes with `add`),
 //! `local` (of `bytes`, those read from this Mac's own disk, store::nasio's `Local`: a whole
-//! local copy's reads, task #551, and the part of a NAS file copied whole that this Mac's page
-//! cache held, task #939; not the NAS's, so not in its NAS weight),
+//! local copy's reads, task #551, and any NAS read this Mac's page cache answered, each told by
+//! its time, store::nasio::Reads, task #1450; not the NAS's, so not in its NAS weight),
 //! `threads` (always), `cpu_ms` (the CPU time its process took over it, where it can be read),
 //! `paused_ms` (the time its process was stopped over it, where it was: `stopped_ms`), `nas_net_ms`
 //! (the wall time over it in which the process waited on the NAS or the network, store::waits by

@@ -53,13 +53,19 @@
 //! 53 MB file read 1 MB at a time: 44 of its 51 reads under 0.5 ms). So a quick read following one
 //! the NAS answered (where it ended, within a page: as the kernel's own read-ahead tells a
 //! sequential read) is the NAS's too, while within the kernel's read-ahead reach of the last slow
-//! one (`kern.speculative_prefetch_max`). Against the truth: a cold or a warm file read through,
-//! one warm at its start and cold after, random reads of a file part warm: within 0.1 % of the
-//! bytes asked (the wire carries whole pages, so a 4 KB read moves about 20 KB and a 64 KB one
-//! about 80 KB: not counted); a file cold at its start and warm after, read through in one run, is
-//! counted the NAS's from its first slow read to the read-ahead's reach (a 46 MB file half warm:
-//! all of it counted, the NAS sending half), never less. No call of its own: two clock reads and a
-//! lock a read.
+//! one (`kern.speculative_prefetch_max`) and what this Mac's links could have carried since the
+//! run began: at their rate (`ifi_baudrate`, summed) since its first slow read began, or the bytes
+//! they received (summed) since its first quick read, whichever is more (a Wi-Fi's stated rate was
+//! below what it carried: 45-58 MB/s stated against 61-71 MB/s streamed). So a cached read held up
+//! past the bound on a loaded Mac (1.4 ms for a MB against 0.77) counts its own bytes and not a
+//! run after it. Against the truth (the M4 under load 22-120, 18 Nov): cold files of 98-129 MB read
+//! through counted within 0.02 %; 75 warm reads of a 105 MB file, 7.9 GB, counted 2 MB the NAS's
+//! (two reads held up, a MB each) against 87 KB sent; a file warm at its start and cold after,
+//! exact; one cold for 55 MB and warm for 38 MB after, 85 MB counted against 58 MB sent (its warm
+//! part counted while the links' rate and other traffic left room; 114 MB before the bound). Not
+//! counted: the whole pages the wire carries for a small read (a 4 KB read moves about 20 KB, a 64
+//! KB one about 80 KB). No call of its own: two clock reads and a lock a read; a run's first quick
+//! read asks the links (a sysctl, about 0.1 ms), and again only when its bound falls short.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -365,26 +371,49 @@ pub fn cached(n: u64, took: std::time::Duration) -> bool {
 /// One NAS file's reads, in the order they're made (one per open file, copy or whole read; its
 /// readers' threads may share it): each told the NAS's (`ReadBytes`) or this Mac's cache's (`held`
 /// and `Local`) by its time, a quick read following one the NAS answered the NAS's too while within
-/// the kernel's read-ahead reach (the module's doc, Which answered).
+/// the kernel's read-ahead reach and what the links could have carried since (`Link`; the module's
+/// doc, Which answered). Up to `RUNS` sequential runs of it are followed at once (readers
+/// interleaving their runs on one file, as a shared PlainFile's threads do).
 #[derive(Debug, Default)]
-pub struct Reads(std::sync::Mutex<Run>);
+pub struct Reads(std::sync::Mutex<[Option<Run>; RUNS]>);
 
-/// Where a file's last read ended, and, while its run is the NAS's, the bytes read since its last
-/// read the NAS answered.
-#[derive(Debug, Default)]
+/// The NAS's runs a file's `Reads` follows at once (the one read longest ago gives way).
+pub const RUNS: usize = 4;
+
+/// A sequential run of reads the NAS answered: where its last read ended; when its first slow read
+/// began; the links as its first quick read came (`Link`, asked then: a run of slow reads alone,
+/// random reads', never asks) and the bytes counted the NAS's before it; the bytes counted the
+/// NAS's since it began and since its last slow read; the bytes the links had received since its
+/// links were asked, as last asked; and when it was read last (which gives way).
+#[derive(Debug, Clone, Copy)]
 struct Run {
-    end: Option<u64>,
-    nas_since: Option<u64>,
+    end: u64,
+    began: std::time::Instant,
+    link: Option<Link>,
+    before_link: u64,
+    since_began: u64,
+    since_slow: u64,
+    received: u64,
+    used: std::time::Instant,
+}
+
+/// This Mac's links: their rate (bytes a second: their up interfaces' own,
+/// `ifi_baudrate`, summed; the Wi-Fi's is its current rate, which a stream's received bytes were
+/// measured past) and the bytes they had received (64-bit counters, summed); None where not told.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Link {
+    pub rate: Option<u64>,
+    pub received: Option<u64>,
 }
 
 impl Reads {
     /// A read of `n` bytes at `off` that took `took` (its call's own time: not a wait for a turn or
-    /// a thread), counted.
+    /// a thread), ending now, counted.
     pub fn read(&self, off: u64, n: u64, took: std::time::Duration) {
         if n == 0 {
             return;
         }
-        if self.nas(off, n, took) {
+        if self.nas(off, n, took, std::time::Instant::now(), &link) {
             read(n);
         } else {
             add(Count::Local, n);
@@ -392,18 +421,122 @@ impl Reads {
         }
     }
 
-    /// Whether that read was the NAS's.
-    fn nas(&self, off: u64, n: u64, took: std::time::Duration) -> bool {
-        let mut r = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let follows = r.end.is_some_and(|e| off.abs_diff(e) <= page());
-        r.end = Some(off + n);
-        r.nas_since = match r.nas_since {
-            _ if !cached(n, took) => Some(0),
-            Some(s) if follows && s + n <= read_ahead() => Some(s + n),
-            _ => None,
+    /// Whether that read, ended at `now`, was the NAS's; `link` this Mac's links now, asked at a
+    /// run's first quick read and when what they could have carried falls short.
+    fn nas(
+        &self,
+        off: u64,
+        n: u64,
+        took: std::time::Duration,
+        now: std::time::Instant,
+        link: &dyn Fn() -> Link,
+    ) -> bool {
+        let mut runs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let at = runs.iter().position(|r| r.is_some_and(|r| off.abs_diff(r.end) <= page()));
+        if !cached(n, took) {
+            match at.and_then(|k| runs[k].as_mut()) {
+                Some(r) => (r.end, r.since_began, r.since_slow, r.used) = (off + n, r.since_began + n, 0, now),
+                None => {
+                    // (A new run, in an empty slot or the one read longest ago.)
+                    let k = runs
+                        .iter()
+                        .position(Option::is_none)
+                        .unwrap_or_else(|| (0..RUNS).min_by_key(|&k| runs[k].map(|r| r.used)).unwrap_or(0));
+                    let began = now.checked_sub(took).unwrap_or(now);
+                    runs[k] = Some(Run {
+                        end: off + n,
+                        began,
+                        link: None,
+                        before_link: 0,
+                        since_began: n,
+                        since_slow: 0,
+                        received: 0,
+                        used: now,
+                    });
+                }
+            }
+            return true;
+        }
+        let Some(k) = at else { return false };
+        let Some(mut r) = runs[k] else { return false };
+        let l = *r.link.get_or_insert_with(|| {
+            r.before_link = r.since_began;
+            link()
+        });
+        let (total, after) = (r.since_began + n, r.since_began - r.before_link + n);
+        // (What the links could have carried: at their rate since the run began, or as they
+        // received since they were asked, whichever is more; with neither told, no bound.)
+        let by_rate = l.rate.map(|b| (now.duration_since(r.began).as_secs_f64() * b as f64) as u64);
+        let mut fits = match (by_rate, l.received) {
+            (None, None) => true,
+            (Some(c), _) if total <= c => true,
+            _ => after <= r.received,
         };
-        r.nas_since.is_some()
+        if !fits {
+            if let (Some(at), Some(was)) = (link().received, l.received) {
+                r.received = at.saturating_sub(was);
+                fits = after <= r.received;
+            }
+        }
+        if fits && r.since_slow + n <= read_ahead() {
+            (r.end, r.since_began, r.since_slow, r.used) = (off + n, total, r.since_slow + n, now);
+            runs[k] = Some(r);
+            true
+        } else {
+            runs[k] = None;
+            false
+        }
     }
+}
+
+/// This Mac's links now (`Link`: its up, running interfaces' but loopback, from the routing
+/// table's list, NET_RT_IFLIST2; no call off this Mac).
+fn link() -> Link {
+    #[cfg(target_os = "macos")]
+    {
+        let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
+        let mut len = 0usize;
+        // SAFETY: sysctl asking the list's length (no buffer, no new value).
+        if unsafe { libc::sysctl(mib.as_mut_ptr(), 6, std::ptr::null_mut(), &mut len, std::ptr::null_mut(), 0) } != 0 {
+            return Link::default();
+        }
+        // (Room for interfaces come meanwhile; 8-byte aligned for the messages' 64-bit counters.)
+        let mut buf = vec![0u64; (len + len / 4).div_ceil(8)];
+        len = buf.len() * 8;
+        // SAFETY: sysctl writing at most `len` bytes into `buf`, which holds that many.
+        if unsafe { libc::sysctl(mib.as_mut_ptr(), 6, buf.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) } != 0
+        {
+            return Link::default();
+        }
+        let b = &buf_bytes(&buf)[..len.min(buf.len() * 8)];
+        let (mut bits, mut received, mut at) = (0u64, 0u64, 0usize);
+        let want = libc::IFF_UP | libc::IFF_RUNNING;
+        while at + std::mem::size_of::<libc::if_msghdr2>() <= b.len() {
+            // SAFETY: a message header within `b` (read unaligned: messages are packed one after another).
+            let m: libc::if_msghdr2 = unsafe { std::ptr::read_unaligned(b[at..].as_ptr().cast()) };
+            if m.ifm_msglen == 0 {
+                break;
+            }
+            if i32::from(m.ifm_type) == libc::RTM_IFINFO2
+                && m.ifm_flags & want == want
+                && m.ifm_flags & libc::IFF_LOOPBACK == 0
+            {
+                bits += m.ifm_data.ifi_baudrate;
+                received += m.ifm_data.ifi_ibytes;
+            }
+            at += usize::from(m.ifm_msglen);
+        }
+        Link { rate: (bits > 0).then_some(bits / 8), received: Some(received) }
+    }
+    #[cfg(not(target_os = "macos"))]
+    Link::default()
+}
+
+/// `w`'s bytes.
+#[cfg(target_os = "macos")]
+fn buf_bytes(w: &[u64]) -> &[u8] {
+    // SAFETY: u64s viewed as their bytes, the same memory and length.
+    unsafe { std::slice::from_raw_parts(w.as_ptr().cast(), std::mem::size_of_val(w)) }
 }
 
 /// This Mac's page size (the kernel's read-ahead tells a sequential read within one).
@@ -852,44 +985,107 @@ mod tests {
     }
 
     /// A read is the cache's when quicker than a NAS answer could be, the bound growing with its
-    /// bytes; a quick read following one the NAS answered is the NAS's (the kernel's read-ahead),
-    /// one elsewhere or after the cache's is the cache's, and past the read-ahead's reach the run
-    /// ends; what each is told is counted so.
+    /// bytes; a quick read following one the NAS answered is the NAS's (the kernel's read-ahead)
+    /// while the link could have carried it since the run's first slow read began and within the
+    /// read-ahead's reach; one elsewhere, or after the cache's, is the cache's; what each is told
+    /// is counted so.
     #[test]
     fn reads_are_told_the_nas_or_the_caches_by_their_time_and_run() {
-        let (us, ms) = (std::time::Duration::from_micros, std::time::Duration::from_millis);
+        use std::time::{Duration, Instant};
+        let (us, ms) = (Duration::from_micros, Duration::from_millis);
         assert!(cached(4096, us(5)) && !cached(4096, us(600)), "a 4 KB read: µs the cache's, a round trip the NAS's");
         assert!(cached(1 << 20, us(360)) && !cached(1 << 20, ms(9)), "a MB");
         assert!(cached(4 << 20, us(940)) && !cached(4 << 20, ms(5)), "4 MB");
         let mb = 1u64 << 20;
-        // (Warm: every read quick, none the NAS's.)
-        let warm = Reads::default();
-        assert!((0..8).all(|k| !warm.nas(k * mb, mb, us(200))));
-        // (Cold: the first slow, the read-ahead's quick ones after it the NAS's too.)
-        let cold = Reads::default();
-        assert!(cold.nas(0, mb, ms(200)));
-        assert!((1..8).all(|k| cold.nas(k * mb, mb, us(200))));
-        // (Warm at its start, cold after: the NAS's from its first slow read; a quick read
-        // elsewhere, after it, the cache's, and the reads following that one too.)
-        let part = Reads::default();
-        assert!(!part.nas(0, mb, us(200)) && !part.nas(mb, mb, us(200)));
-        assert!(part.nas(2 * mb, mb, ms(30)) && part.nas(3 * mb, mb, us(200)));
-        assert!(!part.nas(40 * mb, mb, us(200)) && !part.nas(41 * mb, mb, us(200)));
-        // (Within a page of where the last ended still follows it.)
-        assert!(part.nas(60 * mb, 4096, ms(5)) && part.nas(60 * mb + 4096 + page(), 4096, us(5)));
-        // (Past the read-ahead's reach the run is the cache's again.)
-        if read_ahead() < u64::MAX / 4 {
-            let far = Reads::default();
-            assert!(far.nas(0, mb, ms(30)) && far.nas(mb, read_ahead() - mb, us(10)));
-            assert!(!far.nas(read_ahead(), 2 * mb, us(200)));
+        // (A file's reads on a clock of their own, over links of `rate` that receive `each` bytes a
+        // read: each read ends `gap` after the last, taking `took` of it.)
+        struct File {
+            r: Reads,
+            t: Instant,
+            rate: Option<u64>,
+            each: Option<u64>,
+            received: std::cell::Cell<u64>,
         }
+        impl File {
+            fn new(rate: Option<u64>) -> File {
+                File { r: Reads::default(), t: Instant::now(), rate, each: None, received: Default::default() }
+            }
+            fn read(&mut self, off: u64, n: u64, took: Duration, gap: Duration) -> bool {
+                self.t += gap.max(took);
+                if let Some(e) = self.each {
+                    self.received.set(self.received.get() + e);
+                }
+                let at = Link { rate: self.rate, received: self.each.map(|_| self.received.get()) };
+                self.r.nas(off, n, took, self.t, &|| at)
+            }
+        }
+        let gbe = Some(125_000_000);
+        // (Warm: every read quick, none the NAS's.)
+        let mut warm = File::new(gbe);
+        assert!((0..8).all(|k| !warm.read(k * mb, mb, us(200), us(200))));
+        // (Cold: the first slow, the read-ahead's quick ones after it the NAS's too, the link
+        // having carried them while the first was answered.)
+        let mut cold = File::new(gbe);
+        assert!(cold.read(0, mb, ms(200), ms(200)));
+        assert!((1..20).all(|k| cold.read(k * mb, mb, us(200), us(200))));
+        // (Warm, one read held up past the bound on a loaded Mac: that read the NAS's, and the
+        // quick ones after it the cache's, the link not carrying a MB in a fraction of a ms.)
+        let mut busy = File::new(gbe);
+        assert!(!busy.read(0, mb, us(200), us(200)) && busy.read(mb, mb, us(1400), us(1400)));
+        assert!((2..100).all(|k| !busy.read(k * mb, mb, us(200), us(200))));
+        // (Cold at its start, read as fast as the link carries it, warm after: the warm part the
+        // cache's within a read of where the cold one ends.)
+        let mut half = File::new(gbe);
+        let link_mb = Duration::from_nanos(1_000_000_000 * mb / 125_000_000);
+        assert!((0..10).all(|k| half.read(k * mb, mb, link_mb, link_mb)));
+        let tail = (10..30).filter(|&k| half.read(k * mb, mb, us(200), us(200))).count();
+        assert!(tail <= 1, "{tail} MB of the warm tail counted the NAS's");
+        // (A link whose rate says less than it carries (a Wi-Fi's, measured so): the quick reads the
+        // NAS's while its received bytes keep up; a warm run past a false slow read on a link
+        // receiving nothing else, the cache's.)
+        let mut wifi = File::new(Some(5_000_000));
+        wifi.each = Some(2 * mb);
+        assert!(wifi.read(0, mb, ms(20), ms(20)));
+        assert!((1..30).all(|k| wifi.read(k * mb, mb, us(200), ms(10))), "kept up with by its received bytes");
+        let mut quiet = File::new(Some(5_000_000));
+        quiet.each = Some(4096);
+        assert!(quiet.read(0, mb, us(1400), us(1400)));
+        assert!((1..100).all(|k| !quiet.read(k * mb, mb, us(200), us(200))));
+        // (Warm at its start, cold after: the NAS's from its first slow read.)
+        let mut part = File::new(gbe);
+        assert!(!part.read(0, mb, us(200), us(200)) && !part.read(mb, mb, us(200), us(200)));
+        assert!(part.read(2 * mb, mb, ms(30), ms(30)) && part.read(3 * mb, mb, us(200), us(200)));
+        // (A quick read elsewhere is the cache's; within a page of where a run ended still follows it.)
+        assert!(!part.read(40 * mb, mb, us(200), us(200)));
+        assert!(part.read(4 * mb + page(), 4096, us(5), us(5)));
+        // (Two readers' runs on one file, interleaved: each followed, both the NAS's; a fifth run
+        // takes the slot of the one read longest ago.)
+        let mut two = File::new(gbe);
+        assert!(two.read(0, mb, ms(50), ms(50)) && two.read(500 * mb, mb, ms(50), ms(50)));
+        assert!(
+            (1..10).all(|k| two.read(k * mb, mb, us(200), us(200)) && two.read((500 + k) * mb, mb, us(200), us(200)))
+        );
+        for k in 1..=RUNS as u64 {
+            assert!(two.read(k * 1000 * mb, mb, ms(50), ms(50)));
+        }
+        assert!(!two.read(10 * mb, mb, us(200), us(200)), "the first run gave way");
+        assert!(two.read((4000 + 1) * mb, mb, us(200), us(200)), "the newest kept");
+        // (No rate known: no bound but the read-ahead's reach.)
+        let mut unknown = File::new(None);
+        assert!(unknown.read(0, mb, us(1400), us(1400)) && unknown.read(mb, mb, us(200), us(200)));
+        if read_ahead() < u64::MAX / 4 {
+            let mut far = File::new(None);
+            assert!(far.read(0, mb, ms(30), ms(30)) && far.read(mb, read_ahead() - mb, us(10), us(10)));
+            assert!(!far.read(read_ahead(), 2 * mb, us(200), us(200)), "past the read-ahead's reach");
+        }
+        let here = link();
+        assert!(here.rate.is_none_or(|b| b > 0) && here.received.is_some_and(|r| r > 0), "{here:?}");
         let (r, h, l) = (get(Count::ReadBytes), own_held(), get(Count::Local));
         let f = Reads::default();
         f.read(0, 3000, ms(10));
-        f.read(3000, 5000, us(3));
         f.read(9 << 20, 700, us(3));
         f.read(0, 0, ms(10));
-        assert!(get(Count::ReadBytes) >= r + 8000 && own_held() >= h + 700 && get(Count::Local) >= l + 700);
+        assert!(get(Count::ReadBytes) >= r + 3000 && own_held() >= h + 700 && get(Count::Local) >= l + 700);
     }
 
     /// A process given the pid of one that ended makes a file of its own: the ended one's counts

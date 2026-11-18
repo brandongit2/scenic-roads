@@ -50,8 +50,11 @@ test("a record's figures, and its step's medians without it", () => {
   const none = { insn: null, ipc: null, ghz: null, pShare: null, counted: null, asked: null, served: null, done: null, implausible: [], unchecked: [] };
   assert.deepEqual(recordFigures(rec("x", 100, 250, 800, 12)), { wall: 100, cpu: 250, cores: 2.5, peak: 800, threads: 4, nas: 12, net: 0, ...none });
   // (Task #1419: the run's own peak, what it retired, its NAS asked and served, its work and checks.)
-  const f = recordFigures({ ...rec("y", 100, 250, 800), peak_mb: 900, work: { insn: 6e11, cycles: 5e11, p_cpu_s: 200, cpu_s: 250 }, nas: { read_b: 300, held_b: 700 }, done: { end: "paused", targets: 1, of: 3 }, implausible: ["CPU past"] });
+  const f = recordFigures({ ...rec("y", 100, 250, 800), v: 3, peak_mb: 900, work: { insn: 6e11, cycles: 5e11, p_cpu_s: 200, cpu_s: 250 }, nas: { read_b: 300, held_b: 700 }, done: { end: "paused", targets: 1, of: 3 }, implausible: ["CPU past"] });
   assert.deepEqual([f.peak, f.insn, f.ipc, f.ghz, f.pShare, f.asked, f.served, f.done.end, f.implausible], [900, 6e11, 1.2, 2, 0.8, 1000, 300, "paused", ["CPU past"]]);
+  // (Task #1450: what the NAS served told from record version 3 alone; asked from any.)
+  const old = recordFigures({ ...rec("z", 100, 250, 800), v: 2, nas: { read_b: 300, held_b: 700 } });
+  assert.deepEqual([old.asked, old.served], [1000, null]);
   assert.equal(recordFigures(null), null);
   assert.equal(median([3, null, 1, 2]), 2);
   assert.equal(median([4, 1, 2, 3]), 2.5);
