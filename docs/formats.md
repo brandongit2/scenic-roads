@@ -1508,9 +1508,9 @@ the id with the clicked point. A reader takes version 8 only.
   - **Pausing** (`jobrt::control`), in each agent's folder: `pause-request.json` (`{pause, at}`,
     from the menu or `scenic pause`), `pause.json`, `control` (`run` or `drain`, a
     line, the file replaced whole; one an app before task #957 wrote unended is read the same;
-    `SCENIC_CONTROL`, `control::Say`), `threads` (the threads the job is granted now, a number,
-    the file replaced whole by `control::grant` at the job's start and each re-grant;
-    `SCENIC_THREADS_FILE`, docs/pool.md §7.1, Threads re-granted), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
+    `SCENIC_CONTROL`, `control::Say`), `threads` (the threads the job may run on now, a number,
+    the file replaced whole by `control::grant` at the job's start and each change its agent makes;
+    `SCENIC_THREADS_FILE`, docs/pool.md §7.1, Threads controlled live), `done.txt` (`<step> <target>` lines, `SCENIC_DONE`). A job stopped at a safe
     point exits 75. Coordinator answers carry the pause (409 `{error, pause}`, beats `{ok, pause}`);
     `POST /api/pause {pause, at}`; `/work/fail {…, interrupted}` returns a lease unheld.
   - **Input check asks** (`inputs::inputs::Ask`, docs/inputs.md §4.5): `inputs-asks/<at, 20

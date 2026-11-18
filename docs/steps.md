@@ -307,7 +307,7 @@ makes the same bytes on every Mac.
     the owner's target, else into its scratch (`trees::squares::rows_here`).
     A z6 tile makes its blocks a row at a time (each strip decoded once for the row), each block's
     band under a permit: a trees job is paced like an input check (docs/inputs.md §4.3, Threads),
-    its threads as its lead re-grants them (docs/pool.md §7.1, Threads re-granted). The trees program's NAS reads count in the
+    its threads as its agent controls them (docs/pool.md §7.1, Threads controlled live). The trees program's NAS reads count in the
     target's NAS weight (`bytes`; `coord::cost_version` 3).
   - Lossless WebP by `codecs::webp`.
   - `trees --block`, `--blocks` and `--assemble` run blocks alone; a row of a z6 tile's blocks is a

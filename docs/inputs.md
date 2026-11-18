@@ -183,19 +183,18 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
      touched so GC keeps it, §4.9), `@listed` (with what the check keeps for the next, the regions'
      outcomes), and `@held` (the held report, or none). `@` starts
      no inputs-folder path component or unit name, so these never clash with copies or nested units.
-- **Threads and progress.** A check lasts hours, one target, so it takes its job's grant as the grant
-  changes rather than as a target begins: its agent keeps a file (`SCENIC_THREADS_FILE`,
+- **Threads and progress.** A check lasts hours, one target, so it takes its job's threads as they
+  change rather than as a target begins: its agent keeps a file (`SCENIC_THREADS_FILE`,
   crate::control::THREADS_ENV, replaced whole by crate::control::grant, so a read never meets it
-  emptied) with the threads its job may use now, which its lead re-decides on
-  what the job uses and the cores and memory its Mac has (docs/pool.md §7.1, Threads re-granted:
-  more as cores free up while the Mac's memory covers each extra thread at the step's measured
-  peak over the threads it was measured at, the whole peak where those aren't recorded; fewer when
-  the owner comes back or other work wants the cores), at most 8
-  (`pace::MOST`; the regions' work ran four at once before). The file is read again within a
-  second (a regions check once took 39 GB and panicked a 16 GB Mac: its memory guard stops one
-  that overruns all the same). Tree cover jobs (`trees`) are paced the same way (their blocks'
+  emptied) with the threads its job may use now, which the agent decides each minute on what the
+  job keeps busy while it computes (docs/pool.md §7.1, Threads controlled live: doubled while every
+  thread is busy, as the Mac's free cores allow and its memory covers each extra thread at the
+  step's measured peak over the threads it was measured at, the whole peak where those aren't
+  recorded; cut while threads sit idle; held while it's stalled on the NAS). The file is read again
+  within a second (a regions check once took 39 GB and panicked a 16 GB Mac: its memory guard stops
+  one that overruns all the same). Tree cover jobs (`trees`) are paced the same way (their blocks'
   bands under permits, docs/steps.md §2).
-  The check's pools are as wide as the cores (8 at most). The outermost parallel operation of a
+  The check's pools are as wide as the cores. The outermost parallel operation of a
   task takes a `pace::par_map` permit per task, waiting while as many run as the file says; an
   operation inside a task runs its items one after another on that task's thread, inside its
   permit's budget, so a permit's holder never waits for another permit (no deadlock) and nothing
@@ -737,7 +736,7 @@ Mac's server (§6.1.9).
   over 1 km² left out of reach; `SCENIC_REGIONS_GAPS` (cells' south-west corners in degrees,
   `-130,54;-64,44`) prints each such cell's land in no region (pieces, median, largest, total)
   before the coast step and at the end; `SCENIC_REGIONS_THREADS`
-  sets how wide the pools are (the cores, 8 at most). A buffer of a cell reads its neighbours' pieces each buffered
+  sets how wide the pools are (the cores). A buffer of a cell reads its neighbours' pieces each buffered
   once, within 16 columns each way (25 in the north, enough for 200 nmi at 86°N) and not from the cells south of 80°S (Antarctica's inland ice) or
   north of 86°N (where no land is); a buffer of
   50 km or more is drawn as discs at the pieces' points a thirty-second of the distance apart

@@ -574,76 +574,10 @@ or disk guard, or paused for its conditions; `costin::stopped_ms`, a thread that
 and counts the time since its last wake, less a second, when a SIGCONT came meanwhile, `store::sys::continued`,
 tasks #697 and #1155), and the wall time its process waited on the NAS, the network, the
 disk or other work meanwhile (`waited_ms`, store::waits by the wall clock, task #870; where the
-run is timed). **A job is granted the threads its step keeps busy on its Mac** (task #947,
-`crate::uses`): a job holds its threads from its start to its end, so what it uses of them is its
-CPU time over its wall time, whatever it waited on or however its work came in bursts. On 4 Nov
-slope-deep kept 12–22 % of its threads busy on batches of nearly empty tiles and about 55 % on full
-ones, terrain-deep 51–67 %; one M4 slope-deep job held 3 threads for five hours and kept 0.8 of a
-core busy. The build's timings (the lead's `coord/timings.jsonl`: every job's `cpu_s`, `wall_s`
-and `threads`, read as the coordinator starts and taken as each job's come in, `Sched::add_use`)
-are grouped by step, Mac (a slot's worker is its Mac's, `paces::mac_of`) and threads, over the runs
-ended well in the window the paces read (`paces::PACE_S`, 5 days, picked by their held-out test;
-the log is cut to its newer half past 16 MB, about 3 days of the lead's on 4 Nov at 5 KB a line, so
-a coordinator started after a cut reads what was kept, and keeps the window's runs from then on),
-and only those of the way their step runs now: the lead stamps each record it keeps with its step's
-cost version (`RunRec::cost_v`, `coord::cost_version`), and a run below the step's (or unstamped,
-read as 0) isn't read, as the cost book's rule reads its costs (task #929 review: slope-deep's runs
-before #952 kept their threads busy on z10–12 work it no longer does, terrain-deep's on a base it no
-longer makes); each group's busy cores are its CPU time summed over its wall time summed, so a long job weighs as
-long as it held its threads. The grant (`uses::Uses::cores`) is the most cores any group kept busy,
-rounded up to whole threads, plus one where that group needed every thread it had (its busy cores
-past one fewer, and half its threads at least) and no run there had more: a step its threads hold
-climbs a thread a run, measured at each; one held by its serial parts settles at what it keeps
-busy, and every core it would have held idle goes to other jobs (several slope-deep batches side
-by side, a terrain job beside one). **A cut is a trial** (task #947 review): a step whose threads
-each wait keeps fewer cores busy at fewer threads (slope-deep about 0.3 of a core a thread on the
-M4, at 3 threads and at 14), so by its use alone it was cut run by run and never needed every
-thread to climb back (14, 5, 2, 1 at 0.32 a thread; at 0.85 a thread, 14 down to 6 in a dozen
-rounds). So where a run at the grant or fewer threads kept within a core of the busiest group the
-cut stands; where it kept more than a core less, those threads paid, and the step holds the fewest
-threads that kept within a core of the busiest. A run at more threads than the cut doesn't count
-as its trial (a group's use is its batches' as much as its threads'). It counts for those busy
-cores (a climb's thread besides; held, the held group's). A step's use on a Mac
-stands whether the job is a cold start or not (the threads it takes are measured even where its
-memory isn't). What it is per batch isn't known as a batch is granted (no record says which of its
-targets will have output before they run), so a step's mix of batches is taken as its runs had
-it; a running job's grant may be decided again at its safe points (task #948, by the same rule,
-`Sched::lease_cores`). Where a step has no run on the Mac in the window, the cost book's rule
-below decides. The rule is `Sched::pack_need` and `need_cores` (a job's step, targets and worker,
-and its Mac's cores for jobs; `Sched::lease_cores` the two for one job): the live scheduler's
-packing and the forecast's (it runs that packing on the scheduler as recorded, `sched::State`,
-which carries the uses; its grants say their threads) go through it; `State::cores_left` counts a
-held job's busy cores as the lead counted them (`Leased::busy_tenths`, below), else from the same
-uses, else the cost book. The whole-run use hides a step's
-phases: pack keeps 0.1–0.9 of a core busy over its run, so 1 thread, but draws its road and rail
-tiles on 4–5.5 cores, which at 1 thread makes its long runs at least 1.3–1.6 times as long (2
-threads: 1.2 at most, 3: 1.07); trees' program ran at 1.2 cores (at least 1.16 times at 1).
-So a step is granted at least its **phases' floor** (task #948, `uses::Uses::floors`): the
-fewest threads at which its runs, together, are predicted to take no more than 5 % longer
-than they did (`uses::WALL_SLACK`, a choice). Its runs on every Mac count: the threads a phase keeps
-are the step's (its readers, its batches), and a Mac whose runs were all cut low can't show them (the
-M4's one terrain-lo run in the lead's window was at 1 thread). Each top-level phase of a run's main thread keeps
-the job's CPU while it was open (every thread's: its `job_cpu_s`, a record's before task #1116 its
-`cpu_s`) over its wall busy, and one overlapped by phases on other threads also as many threads as
-those phases' wall summed over the overlapped phases' (terrain-lo's sampling keeps 3-5 threads
-waiting on GLO-30 at once: 1556 s of reads in a 533 s run); at fewer threads than a phase keeps it
-takes that many over them as long, and a long run weighs as long as it took, so a rare short burst
-holds nothing. From terrain-lo's 6-thread run it predicts 2151 s at 1 thread; a 1-thread run took
-2063. On the lead's timings (the mini's `coord/timings.jsonl`, to 4 Nov; trees ran none in the
-window), the grant by use alone, then with the floor:
-
-| step | M4 | mini | M1 |
-|---|---|---|---|
-| pack | 1 → 3 | 1 → 3 | 1 → 3 |
-| slope-hi | 4 → 5 | 2 → 5 | 4 → 5 |
-| slope-deep | 11 | 9 | 7 |
-| terrain-lo | 1 → 2 | 2 | – |
-| terrain-hi | 5 | 5 | 3 |
-| terrain-deep | 3 | 4 | 5 |
-
-(The floors by each Mac's runs alone would have left pack and terrain-lo on the M4 at 1.) A run whose targets ran on their job's grant as each began
-(Threads re-granted, below) says what each thread count held (`timings::RunRec::held`): it's read
-at each (`uses::Run::of`). Without a run on the Mac, a job's
+run is timed). **A job starts on the threads its measure gives it, and its agent controls them
+from there** (Threads controlled live, below): what it starts on, and the cores it counts for in
+packing, come from its targets' cost records; what it runs on once it runs, from what it keeps busy
+now. A job's
 measured cores (`needs::Book::cores`, its own run's, else the most of its
 step's) are two (task #896: no hand-set ratio or factor): its **grant**, the cores it kept busy
 while it computed (its CPU time over the time it ran and didn't wait; no waits said, over the time
@@ -704,20 +638,14 @@ lease's first beat and over its last minute or so of beats (`Lease::cores_mean`,
 `Lease::cores_lately`, the NAS weight's two windows, §7.7: a job busy late counts for its busy
 stretch, one quiet a moment between busy stretches for its mean), in place of its measure; before
 that, or where its beats say no CPU time (an older agent's), its measure, so a job still reading
-its first target isn't counted as using nothing. The packing, a re-grant's count of its Mac's
-other jobs and placement's `swamped` count it so, and the forecast too (task #1094): the
+its first target isn't counted as using nothing. The packing and placement's `swamped` count it so, and the forecast too (task #1094): the
 scheduler's state as recorded carries no beats, so each lease in it says the cores its job keeps
 busy as the lead counts it (`sched::Leased::busy_tenths`, tenths; left out until its run says
 it), which the forecast's scheduler counts it for (`Lease::busy_said`, while no beat of its own
 says) and `State::cores_left` takes off its Mac's cores; a record without it (an older app's)
 counts the job for its measure, and an older app reading a newer record passes it over. So a Mac
 whose jobs keep less busy than their measure is granted what the forecast foresaw (where the grants
-depart from it, the lead logs "the grants departed from the forecast"). A step's measure is its busiest thread count's
-over the window's runs: on 10 Nov it counted the M4's three terrain-deep jobs at 3.8 cores each
-(266 runs at 5 threads on 8–9 Nov kept 3.75 busy; the 4-thread runs since, beside each other on a
-busier NAS, 2.4–2.8), 11.4 of the 12 it had while in use, and a fourth was refused ("cores: 0.6 of
-12 left, a job of terrain-deep takes 3.8") while they kept about 2.5 each busy over their runs.
-A job's threads stay within the cores left plus those it leaves idle
+depart from it, the lead logs "the grants departed from the forecast"). A job's threads stay within the cores left plus those it leaves idle
 (its grant less its busy cores). **Past the cores its jobs' threads leave, a Mac climbs one job
 at a time** (task #688 review, `coord::SETTLE`): an ask is granted at most one job that fits only
 by busy cores, and none until a minute has passed since its last grant (the span of the cores
@@ -729,91 +657,111 @@ memory, disk and the NAS budget hold, and stops climbing as soon as jobs keep mo
 runs said (a run's busy cores read low where it waited on a busy NAS). Cores busy past the jobs' by more than a core (the minute's rounding up) come off
 the cores left as outside load does (`outside_cores`, at most half the Mac's), which stops further
 grants but stops no running job. A cold
-start that honours its threads gets one thread (task #896): its run measures it, and it climbs a
-thread a run from there while its threads hold it. The agent, the lead's as a member's,
+start that honours its threads gets one thread (task #896): its agent grows it from there while it
+keeps its threads busy (below). The agent, the lead's as a member's,
 starts a granted job with those threads, within its Mac's cores less those the in-use share keeps
 while the owner uses it (one at least; not less those its other jobs were given: its lead packed
 them by their busy cores), and logs a
 line per job: `agent: starting <job> (<n> threads: granted <g> of <c> cores, <k> kept for the
 owner)`. The coordinator logs the threads with each grant.
 
-**Threads re-granted** (task #948). A running job's grant is decided again while it runs, and it
-takes the new one as its next target begins. Its agent keeps the threads it may use now in a file
+**Threads controlled live** (task #1420, `crate::agent::threads`). A running job's threads follow
+what it keeps busy now, not what its step's past runs did: each Mac's agent decides them for its own
+jobs, about once a minute; the lead keeps placement and memory admission, and counts each job at
+what its agent says it runs on. Its agent keeps the threads a job may use now in a file
 of its slot's (`threads`, `threads-<k>`; `SCENIC_THREADS_FILE`, `jobrt::control::THREADS_ENV`), written as it
-starts and at each re-grant, always replaced whole (`control::grant`), so a read never meets it
-emptied. A step that takes it (slope-hi, slope-deep, terrain-hi, terrain-deep:
+starts and at each change, always replaced whole (`control::grant`), so a read never meets it
+emptied. A step that takes it (slope-hi, slope-deep, terrain-hi, terrain-deep, lake-depth:
 `control::on_grant`)
 reads the file once as each target begins and runs that target on a rayon pool that wide, the
 timings' main thread carried onto the pool's thread (`timings::Main`); a change written while a
 target runs waits for the next, so no target changes threads under way, and the thread count
 changes no output (`slope_pack`'s test: a z6 tile's packs the same bytes on 2 threads and on 8). The
 elevation pool's sampling (`terrain_base`'s `prefetch_each`, in terrain-hi and
-terrain-deep) runs its chunks as tasks of a second pool as wide as the target's grant, one a thread
+terrain-deep) runs its chunks as tasks of a second pool as wide as the target's threads, one a thread
 (`control::on_outside_pool`), their passes (`dem::generic`) there too, while the target's thread
 waits, working on nothing. Beside them a level's tiles
 are made by as many threads again (task #1097, docs/steps.md §2, A level is a pipeline), each tile
 on a turn the sampling's threads lend while they wait (store::waits::Turns): the job computes on
-its grant's cores, no more (but for a thread back from a wait, until the tile on its turn is made). Not threads of their own
+its threads' cores, no more (but for a thread back from a wait, until the tile on its turn is made). Not threads of their own
 whose passes go on a pool: on the target's own one, whose threads were waiting for them, that work
 never ran on a 1-thread grant, and every terrain-hi job stalled at 0 tiles (5 Nov, task #961); on
-another beside them the job would run on twice its grant. A thread the target starts of its own is
+another beside them the job would run on twice its threads. A thread the target starts of its own is
 in no pool, and rayon would send its parallel work to the process's global pool, as wide as the
 job's starting grant: such work goes on that second pool too (`control::on_target_pool`). Test: `terrain::grant_tests` (terrain-hi and terrain-deep targets on
-1 and 2 threads, within a bound, the same bytes) and slope-deep's re-granted batch. Its started line in its costs file says the threads (`memguard::Targets::threads`):
-what the job runs on now. A paced job (an input check, tree cover: `inputs::pace`, one long target)
-reads the same file every second. Other steps keep their starting grant (they say no threads, so
-nothing is re-decided for them).
-- **What the lead hears.** Each capacity (a member's in every beat, `held::Beat::cap`, every 10 s;
-  the lead's own each loop) lists the jobs that say their threads (`Capacity::threads`): the
-  threads each runs on now and the CPU time its process group took on them (the memory guard's
-  sampler, `memguard::Sampler::cpu_ns`) over the time since it began on them (`Agent::tend_grant`;
-  a frozen or stopping job measures nothing).
-- **The decision** (`Sched::regrant`): on a minute of use on its threads now (`SETTLE`), at most
-  once a minute, by the grant rule (task #947): its own run so far as a run of its step on its Mac,
-  among its step's runs there (`uses::Uses::cores`: a cut a trial those at fewer threads decide,
-  never under their phases' floor, above), and where that climbs, the more of it and what a job of
-  its step is granted there now (`Sched::lease_cores`); fitted into its Mac's cores for jobs (less
-  the in-use share's while its owner uses it) less the cores its other jobs count for and the load
-  outside the pool, as a grant is (`fit_threads`), and the most it can run on (`JobThreads::most`:
-  its Mac's cores less the in-use share's, a paced job's 8 at most). It **grows** past what its
-  agent has told it only where its Mac's memory admits work (no brake, floor or give-back
-  cool-down: `Capacity::mem_held_back`, §7.1's memory floor) and each extra thread fits the
-  capacity's `mem_mb`, less what its jobs' earlier grows hold, at its step's measured peak over the
-  threads that peak was measured at (`Sched::per_thread_mb`; the whole peak a thread where they
-  aren't recorded, as a regions check once needed). Its agent counts a job at its measure alone, so
-  the lead adds what a grow took past the threads its grant was admitted with (`Lease::start_threads`)
-  and its measure's (`Sched::grown_mb`), there and in packing. It **shrinks** to fewer only where its Mac's jobs' threads pass its cores for jobs
-  (the owner back) or its Mac's last ask, within two minutes, was refused for cores: other work
-  could use them. So a slope-deep batch keeping 1 of 8 threads busy keeps them while nothing waits
-  for its Mac's cores, and gives them up when something does; and a job granted 3 of the M4's 14
-  while its owner used it (4 Nov) climbs to its step's grant a minute after the owner leaves.
-- **What the lead counts** (`Lease::threads`, `Leases::regranted`): the most of the threads the job
-  runs on, those its agent has told it (its file: `JobThreads::granted`) and those still to tell: a
-  grow at once (its next target may take them), a shrink once a target runs on them. A lead that
-  takes over knows no re-grant its predecessor decided, but counts what the job's file says, which
-  its next target takes. Packing counts a held job at no more than that (`Need::held`); it had
-  counted each at its measured grant, so a job granted 3 of 14 counted as 13 and kept its Mac
-  looking full. A job's threads may pass its Mac's cores while its threads wait (its busy cores fit,
-  as a grant's do); a long target takes a re-grant only when it ends, counted meanwhile at the more.
-  Two things run past the count for a while: a paced job's tasks under way when its file shrinks
-  keep their threads until each ends, and a job's work outside its targets (its start, its last
-  uploads' landing) runs on its process's pool, as wide as its starting grant.
-- **Telling it.** A member's beat answer carries the re-grants its agent hasn't told the job yet
-  (`Answer::threads`, said again each beat until its capacity says the file has them); the lead's own
-  agent asks its coordinator each loop (`Coordinator::regrant_own`). The agent writes each, within
-  `JobThreads::most`, to the job's file and logs `agent: <job> re-granted <n> threads (was <m>)`; the
-  lead logs each decision.
+1 and 2 threads, within a bound, the same bytes) and slope-deep's batch whose file changes as it goes. Its started line in its costs file says the threads (`memguard::Targets::threads`):
+what the job runs on now. A paced job (an input check, tree cover: `inputs::pace`, one long target
+of hours) reads the same file every second: its pools are as wide as the Mac's cores, each task
+takes a permit as it starts, and no more run at once than the file says, so an operation under way
+follows the file up and down (`Pace::par_map`'s test). Other steps keep their starting grant (they
+say no threads, so nothing is decided for them).
+- **What the agent measures** (`Agent::watch_threads`): each job that says its threads is watched
+  on the threads it runs on, from when those last changed or it was last decided on: its CPU time
+  (its process group's, the memory guard's sampler, `memguard::Sampler::cpu_ns`) and the wall time
+  it waited on the NAS, the network and the local disk (its processes add it to their counts files
+  once a second, `store::nasio::add_waited`, from jobrt::timings' sampler: store::waits by the wall
+  clock, an instant waiting when any of its threads is in such a call; waits on other work, a join
+  or a condition, are not counted, as the threads waited for may be computing), read from its
+  slot's counts folder (`store::nasio::waited_in`). A frozen or stopping job measures nothing.
+- **The decision** (`Agent::tend_threads`, `threads::decide`), once a job has been watched a
+  minute (`threads::EVERY`) on the threads its file says (one taking them as a target begins waits
+  for its next target to run on them): on what it kept busy while it computed, its CPU time over
+  its wall time less its waits.
+  - **Stalled** (it waited half its minute or more, `threads::STALLED`): neither grown nor cut.
+    Waiting threads say nothing of what it could keep busy: an inputs regions check stalled on the
+    NAS on 11 Nov (up to 2,748 s of waits) kept 1.35 cores busy of 3, and the rule this replaces
+    read that as "a third thread doesn't help" and held the check at 2 for over four hours, where
+    scratch runs of it kept about 6.6 of the mini's 12 cores busy.
+  - **Every thread busy** (0.9 of its threads or more, `threads::BUSY`): doubled, within the most
+    a job may run on here (its Mac's cores less the in-use share's while the owner uses it,
+    `Agent::threads_room`), the cores its Mac has free (its capacity's `cores_free`, the last
+    minute's CPU, less the in-use share's, less what jobs grown before it this round took) and its
+    memory: each thread past those its grant's memory covers adds `Grant::thread_mb` (the lead's
+    `Sched::per_thread_mb`: its measured peak over the threads its runs had, the whole peak a thread
+    where those aren't recorded; the threads covered, `Grant::thread_covers`, the more of its
+    starting threads and those), within its capacity's `mem_mb` less what its jobs' grows hold
+    already (`Agent::grown_mb`), and none while its Mac's memory admits no work (the brake, the
+    floor, a give-back's cool-down: `Capacity::mem_held_back`). So a grow never takes a Mac past
+    its memory floor by the same count the lead admits work by, and the memory guard stands behind
+    it. A grant of an older lead (no `thread_mb`) takes the job's whole memory a thread past the
+    threads it was granted.
+  - **Threads left idle** (under half of them busy, `threads::IDLE`): cut to the threads that keep
+    it busy at 0.9, and one more to overlap its waits.
+  - Past the most it may run on (the owner back): cut to that, whatever it keeps busy.
+  The gap between 0.9 and 0.5 is the hysteresis: a job cut keeps a thread past what it uses, so it
+  isn't grown again at once, and a grow that didn't pay is cut back the next minute to what the job
+  kept busy (4 busy of 4, doubled to 8, still 4 busy: back to 6, where it holds). These four are
+  the rule's choices, not measures of a step, and bound no job's threads: its Mac's cores and memory
+  do. The agent writes each change to the job's file and logs `agent: <job> on <n> threads (was <m>):
+  <why>`; each job decided on is watched afresh. A cold start begins on its grant (a step honouring
+  its threads: one thread, so `1, 2, 4, 8` over its first minutes while it keeps them busy; another
+  the whole Mac, cut once it leaves them idle).
+- **What the lead counts** (`Lease::threads`, `Leases::running_on`): each capacity (a member's in
+  every beat, `held::Beat::cap`, every 10 s; the lead's own each loop, `Coordinator::set_capacity`)
+  lists the jobs that say their threads (`Capacity::threads`: the threads each runs on now, those
+  its file says, and what it used on them since it was last decided on), and the lead counts each
+  at the more of the two: a grow at once (its next target may take them), a cut once a target runs
+  on them. Its packing counts a held job at no more than that (`Need::held`) and adds what a grow
+  took past the threads its grant was admitted with (`Lease::start_threads`) and those its measure
+  covers (`Sched::grown_mb`), at the same memory a thread its grant said. A job's threads may pass
+  its Mac's cores while its threads wait (its busy cores fit, as a grant's do); a long target takes
+  a change only when it ends, counted meanwhile at the more. Two things run past the count for a
+  while: a paced job's tasks under way when its file shrinks keep their threads until each ends,
+  and a job's work outside its targets (its start, its last uploads' landing) runs on its process's
+  pool, as wide as its starting grant.
 - **Mixed versions.** An older member's beat carries no capacity, and an older agent's capacity no
-  job threads: nothing is re-decided, its jobs keep their grant. An older lead reads past the beat's
-  capacity and answers no re-grants (`Beats::lead_threads` empty; a lead answering 404 clears
-  them): the jobs keep their grant. An older job (adopted from an older app) says no threads.
-- **Why not shorter batches.** Capping a job's length by its predicted time, so grants are decided
-  more often, pays a job's start on every batch: on the coordinator's timings (2,683 runs to
-  25 Oct) a job's records and regions read took a median 9.4 s of slope's 22 s runs, 12.4 s of
-  terrain-deep's 15 s, 5.7 s of terrain's 237 s, 18.6 s of pois' 27 s, besides each hand-off's merge
-  and ask. A re-grant at a target's start costs a pool's making (milliseconds), only when the grant
-  changes, and catches a single long target's job too (a paced check). Batches stay at the batch
-  length (§7.7, Batch length).
+  job threads: its jobs are counted at their grant. A lead before live control decides re-grants
+  of its own and answers them in its beats' answers, which a member on this app reads past (it
+  decides its jobs' threads itself); a capacity says every field of its jobs' threads, as such a
+  lead reads them all. An older job (adopted from an older app) says no waits: it reads as never
+  waiting.
+- **Why not shorter batches.** Capping a job's length by its predicted time, so its threads are
+  decided as each starts, pays a job's start on every batch: on the coordinator's timings (2,683
+  runs to 25 Oct) a job's records and regions read took a median 9.4 s of slope's 22 s runs, 12.4 s
+  of terrain-deep's 15 s, 5.7 s of terrain's 237 s, 18.6 s of pois' 27 s, besides each hand-off's
+  merge and ask. A change at a target's start costs a pool's making (milliseconds), only when the
+  threads change, and a paced job's long single target takes it within the second. Batches stay at
+  the batch length (§7.7, Batch length).
 
 **The in-use share** (`crate::agent::share`): the cores a Mac's agent keeps free of its jobs for
 its owner (by default 2) while the owner uses the Mac (used within the last five minutes).
@@ -1077,9 +1025,9 @@ since in 1 h, not 3 h"). It is said, not applied.
 A Mac without a sustained best is packed into its cores less those its last ask showed busy
 outside the pool, as the coordinator counts them (`coord::outside_cores`, task #684), for the
 whole run. A running job counts at its lease's
-threads as re-granted now (§7.1, Threads re-granted); its later re-grants aren't foreseen either.
-The forecast models no target's time by its threads, a grant's included (a target takes its
-measured runs' time, whatever threads they had), so a re-grant moves only
+threads as its agent says it runs on now (§7.1, Threads controlled live); its later changes aren't
+foreseen either. The forecast models no target's time by its threads, a grant's included (a target
+takes its measured runs' time, whatever threads they had), so a change of threads moves only
 the room it packs beside the job, as the next forecast (within the minute) sees it. The
 lead logs a departure only when a Mac's jobs of a step differ from the forecast's by 2 or more and
 by more than half, each Mac and step at most once an hour, and never of a step the forecast
@@ -1103,9 +1051,7 @@ the forecast can't know say so (`Rule::live`): the memory guard (macOS's memory 
 busy outside the pool, where the run takes each Mac at its sustained best, and the NAS budget,
 whose gate on the NAS's own load is a reading of now the run holds only while the jobs out run; a
 refusal before packing is the lead's or the agent's state now. Each ask granted all it wanted
-says its slots freed later than the run's lanes. The threads' re-grant (§7.1) reads the rule
-too: an ask held back by cores, cores busy outside the pool or the load's minute was short of
-cores (`Rule::short_of_cores`). For example: `agent: the
+says its slots freed later than the run's lanes. For example: `agent: the
 grants departed from the forecast: m4: 0 job(s) of unit granted, the forecast's 3; its 3 ask(s)
 since wanted 5 job(s) and got 0, 2 offered unit; held back by memory ×2 (live: macOS's memory
 now; the forecast takes each Mac at its sustained best), cores ×1; the last: cores: 0.5 of 8
@@ -1787,7 +1733,7 @@ terrain-deep targets at 0-8 s from runs of cost version 0, foresees 5 terrain-de
 2 on the mini and 2 on the M1 in the 293 s to the next plan (the lead granted 2, 5 and 2), where
 it had foreseen 18, 5 and 17. After
 task #929's merge raised slope-deep's, terrain-deep's and the terrain steps' versions, every one
-of their targets' last runs counts for nothing, as in the threads granted (§7.1, `crate::uses`).
+of their targets' last runs counts for nothing.
 The one place an older way enters is the step's mean while the way it runs now has fewer than
 `needs::PRIOR_RUNS` runs: its latest earlier way's mean where larger (the first runs to end are the
 quick ones, above), so it can only shorten a batch, never lengthen one.
@@ -1830,8 +1776,8 @@ none of those runs counts now; the replay above was run on the code before that 
 raised; their 90th percentile, or the target's own run of it, the larger: `needs::Book::older_mem`,
 task #979; floors of that way stay out) or it was offered with (unit's and pois' extract-size guess,
 terrain-hi's bound), times 3/2 (`coord::sched::provisional_mb`), its disk its step's measures'
-(else none); with neither, it has no figure and runs alone (`Sched::no_figure`); its cores its step's
-use on the Mac where its timings have any (§7.1, task #947), else one thread (task #896)
+(else none); with neither, it has no figure and runs alone (`Sched::no_figure`); its cores one
+thread (task #896; its agent grows it from there, §7.1, Threads controlled live)
 when its step is known to honour the threads it's granted (`coord::THREADS_HONOURED`: `slope-hi`,
 `slope-deep` and `terrain-deep`, on the rayon pool the agent sizes, terrain-deep's
 reads waiting on the network; `bld-fetch`, its downloads bounded by `--jobs`; `pyramids-fill`, its fetches a host's requests in
