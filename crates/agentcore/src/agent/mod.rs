@@ -1857,6 +1857,8 @@ impl Agent {
         }
         if lock.is_none() {
             o.dry_run = true;
+        } else {
+            crate::coord::held::begin(&o.home);
         }
         let mut mem: Memory = std::fs::read(o.home.join("state.json"))
             .ok()
@@ -3280,6 +3282,7 @@ impl Agent {
             member: self.host.clone(),
             held: self.held_of_lead(),
             listed: Instant::now(),
+            sent: crate::coord::held::sent(),
             cap: self.last_cond.map(|cond| self.capacity(&cond)),
             beats,
             home: self.o.home.clone(),

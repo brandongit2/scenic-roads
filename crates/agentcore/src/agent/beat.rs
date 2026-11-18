@@ -66,9 +66,12 @@ pub struct ToLead {
     pub token: String,
     /// This Mac's worker name (the leases' holder).
     pub member: String,
-    /// The lead's leases it holds, as its loop listed them at `listed`.
+    /// The lead's leases it holds, as its loop listed them at `listed`, `sent` among its requests
+    /// (crate::coord::held::Sent): every post of the list carries it, so the lead releases no
+    /// lease asked for after the list, however late a post of it arrives.
     pub held: BTreeSet<u64>,
     pub listed: Instant,
+    pub sent: crate::coord::held::Sent,
     /// Its Mac's capacity as its loop last measured it: the lead counts its running jobs at the
     /// threads it says (`held::Beat::cap`).
     pub cap: Option<crate::coord::Capacity>,
@@ -212,7 +215,7 @@ impl ToLead {
         let b = crate::coord::held::Beat {
             held_age_s: age.as_secs_f64().ceil() as u64,
             handoffs: self.beats.handoff_keys(),
-            sent: Some(crate::coord::held::sent()),
+            sent: Some(self.sent),
             spans: ship.as_ref().map(|s| s.chunks(s.beat_bound())).unwrap_or_default(),
             notes: self.beats.notes_out(now),
             ..b.clone()
@@ -521,6 +524,7 @@ mod tests {
                         member: id.clone(),
                         held: Default::default(),
                         listed: Instant::now(),
+                        sent: crate::coord::held::sent(),
                         cap: None,
                         beats: beats.clone(),
                         home: d.path().join(&*id),
@@ -638,6 +642,7 @@ mod tests {
             member: id.into(),
             held: Default::default(),
             listed: Instant::now(),
+            sent: crate::coord::held::sent(),
             cap: None,
             beats,
             home,

@@ -22,6 +22,7 @@
 //! cursors' TTL (`CURSOR_TTL_S`, 6 h) as they are.
 //!
 //! **Modelled** (`mac`): the agent's loop around them (its slots and jobs, when it asks and beats,
+//! its list of the leases it holds now and then posted again after a grant, made before the ask,
 //! its role read from the declaration and its restart into a new one, `agent::membership::took_up`'s
 //! few lines, `lead::after`'s calls), the jobs (a few minutes each, their hand-offs
 //! drawn: now and then taking their targets' files as their brief names them, `Handoff::reused`),
@@ -1974,7 +1975,7 @@ fn var(name: &str, or: u64) -> u64 {
 
 /// Each kind of take-up and fault, and what the knobs bring, that the default runs must see at
 /// least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 26] = [
+const KINDS: [&str; 27] = [
     "hand-offs outside their step's outputs, refused by every lead",
     "take-ups from its own records",
     "sleeps",
@@ -2001,6 +2002,7 @@ const KINDS: [&str; 26] = [
     "jobs not started: the lead away",
     "hand-offs reusing files on the NAS",
     "members' notes taken by a lead",
+    "beats posting a list made before a grant",
 ];
 
 #[test]
@@ -2045,6 +2047,16 @@ fn the_pool_keeps_its_invariants_through_a_long_run() {
         faults / 60,
         started.elapsed().as_secs_f64()
     );
+}
+
+#[test]
+fn a_beat_made_before_an_ask_releases_nothing() {
+    // Task #1437's seeds: 662 of every fault (the lead killed after a grant, a beat sent before the
+    // ask taken by its next process); 389 mixed (a list made before a grant posted again after it,
+    // arriving late at the same lead), which went wrong while a beat's `Sent` was its post's.
+    // (Seeds as the schedules are now: the whole runs above cover the mechanism.)
+    check_all(662..663, Cfg::all);
+    check_all(389..390, Cfg::mixed);
 }
 
 #[test]

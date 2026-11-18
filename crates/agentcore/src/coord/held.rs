@@ -66,8 +66,8 @@ pub struct Beat {
     /// disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::agent::resume::Progress>,
-    /// When its agent sent it, among its requests (`Sent`): it releases no lease whose ask was
-    /// sent after it. Left out by apps before it.
+    /// Where its list stands among its agent's requests (`Sent`, taken as the list was made): it
+    /// releases no lease whose ask was sent after it. Left out by apps before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent: Option<Sent>,
     /// Its jobs' spans and logs the lead lacks (crate::coord::jobspans), to a lead saying it takes
@@ -80,8 +80,11 @@ pub struct Beat {
     pub notes: Option<super::notes::Notes>,
 }
 
-/// Where a member's beat or ask stands among its agent's requests: its process (its start, unix
-/// ms) and its number there, so a later process's and a later request's are greater. A beat
+/// Where a member's beat or ask stands among its agent's requests: its process (`process`:
+/// greater than the last process's on its Mac) and its number there, so a later process's and a
+/// later request's are greater. A beat's is its list's, taken as its agent's loop made the list
+/// (crate::agent's `to_lead`), and every post of that list carries it: an ask the loop sends after
+/// it is greater, whenever the list is posted. A beat
 /// delayed past its client's time and taken after the member's next ask (task #1038, the pool's
 /// simulator's seed 37: a beat made before an ask, held 70 s on its way and taken 45 s after the
 /// grant, past `OMIT_GRACE`) lists the leases it held before that grant: the lease would end, its
@@ -103,7 +106,37 @@ thread_local! {
     pub(crate) static SIM_SENT: std::cell::Cell<Option<Sent>> = const { std::cell::Cell::new(None) };
 }
 
-/// This process's next `Sent` (an agent's beats and asks, crate::agent::beat and
+/// The agent's process's `Sent::process`, kept in its local folder (`PROCESS_FILE`, by `begin`).
+static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+/// The file in the agent's folder (its Mac's own disk) keeping its last process's number.
+pub const PROCESS_FILE: &str = "requests-process";
+
+/// The agent's process begins in its folder `home`: its number (`Sent::process`) is the wall
+/// clock's ms, or past the last process's there if the clock is behind it (set back across the
+/// restart: else every beat of this process would sort before the last one's asks, and the leases
+/// this one no longer holds never end by its word). Written once, as the process begins, never a
+/// request. A process that never begins (a test, a dry run, a job) numbers by the wall clock.
+pub fn begin(home: &std::path::Path) {
+    let p = next_process(home, wall_ms());
+    if PROCESS.set(p).is_ok() {
+        if let Err(e) = store::whole::write(&home.join(PROCESS_FILE), p.to_string().as_bytes()) {
+            eprintln!("agent: keeping its requests' process number: {e:#}");
+        }
+    }
+}
+
+/// The number of a process beginning in `home` at `wall` (unix ms): the more of it and one past
+/// the last process's there.
+fn next_process(home: &std::path::Path, wall: u64) -> u64 {
+    let last = std::fs::read_to_string(home.join(PROCESS_FILE)).ok().and_then(|s| s.trim().parse::<u64>().ok());
+    last.map_or(wall, |l| wall.max(l + 1))
+}
+
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// This process's next `Sent` (an agent's lists and asks, crate::agent's `to_lead` and
 /// crate::coord::client::LeaseCalls::ask).
 pub fn sent() -> Sent {
     #[cfg(test)]
@@ -112,11 +145,8 @@ pub fn sent() -> Sent {
         SIM_SENT.set(Some(s));
         return s;
     }
-    static PROCESS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let process = *PROCESS.get_or_init(|| {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-    });
+    let process = *PROCESS.get_or_init(wall_ms);
     Sent { process, n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
 }
 
@@ -397,4 +427,22 @@ pub fn away(s: &Shared) -> Vec<(String, usize, u64)> {
             (n > 0).then_some((m, n, h.at))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task #1437: a process's number is past the last one's on its Mac, its clock set back or
+    /// not, and the wall clock's when that is ahead (or none was kept).
+    #[test]
+    fn a_process_s_number_is_past_the_last_one_s_whatever_the_clock() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(next_process(d.path(), 5_000), 5_000, "none kept: the wall clock's");
+        std::fs::write(d.path().join(PROCESS_FILE), "9000").unwrap();
+        assert_eq!(next_process(d.path(), 5_000), 9_001, "the clock set back: past the last");
+        assert_eq!(next_process(d.path(), 12_000), 12_000, "the clock ahead: its own");
+        std::fs::write(d.path().join(PROCESS_FILE), "torn").unwrap();
+        assert_eq!(next_process(d.path(), 5_000), 5_000);
+    }
 }

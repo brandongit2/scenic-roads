@@ -72,6 +72,7 @@ mod tests {
             member: X.into(),
             held: Default::default(),
             listed: Instant::now(),
+            sent: crate::coord::held::sent(),
             cap: None,
             beats,
             home: d.join("member"),

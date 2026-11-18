@@ -24,6 +24,10 @@ use std::time::Duration;
 /// Per loop while the faults last: that a free slot asks for work (a member's over the network,
 /// the lead's own in process); that one of its jobs reads the current records.
 const P_ASK: f64 = 0.5;
+/// Per beat while the faults last, after a grant since its last list: that it posts that list
+/// again, made before the ask (crate::agent::beat's poster sends the loop's last view every 10 s
+/// and as it changes, whenever the loop made it).
+const P_OLD_LIST: f64 = 0.2;
 /// A member notes something to its lead (crate::coord::notes) every this many of its beats (by a
 /// count, not the seed's draws: the schedules stay as they were).
 const NOTE_EVERY: u64 = 4;
@@ -91,6 +95,10 @@ pub(super) struct Mac {
     briefs: Briefs,
     /// Its beats as a member, for its notes (`NOTE_EVERY`).
     beats_sent: u64,
+    /// Its loop's last list of the leases it holds (crate::agent's `to_lead`): the leases, where it
+    /// stands among its requests, when it was made (its clock); and whether a grant came since.
+    list: Option<(BTreeSet<u64>, held::Sent, u64)>,
+    granted_since: bool,
 }
 
 impl Mac {
@@ -119,6 +127,8 @@ impl Mac {
             published: None,
             briefs: Briefs::default(),
             beats_sent: 0,
+            list: None,
+            granted_since: false,
         }
     }
 
@@ -232,6 +242,7 @@ impl Mac {
         let mine: BTreeSet<String> = self.saved.mine.keys().cloned().collect();
         self.sim.quiet(|w| w.macs[k].mine = mine)?;
         (self.beats, self.handoffs) = (Arc::new(Beats::default()), Arc::new(Handoffs::default()));
+        (self.list, self.granted_since) = (None, false);
         self.running.clear();
         (self.took, self.failing) = (false, false);
         (self.gc, self.published, self.briefs) = (None, None, Briefs::default());
@@ -459,10 +470,24 @@ impl Mac {
         let now = Io::now(&self.sim);
         self.beats.set_own(crate::agent::membership::Heartbeat { pool: out.beat.clone(), ..Default::default() });
         self.beats.set_handoffs(self.driver.mine().entries().cloned().collect());
+        // (Its list: made now, or now and then the last one again, made before a grant since:
+        // posted as it was made, `Sent` and all, and its age said.)
+        let old = faulting && self.granted_since && self.list.is_some() && self.rng.chance(P_OLD_LIST);
+        let (list, sent, made) = match self.list.clone().filter(|_| old) {
+            Some(l) => {
+                self.sim.count("beats posting a list made before a grant");
+                l
+            }
+            None => {
+                let l = (self.running.iter().map(|j| j.n).collect(), held::sent(), now);
+                (self.list, self.granted_since) = (Some(l.clone()), false);
+                l
+            }
+        };
         let body = held::Beat {
             member: host(k),
             speaks: crate::agent::beat::speaks(),
-            held: self.running.iter().map(|j| j.n).collect(),
+            held: list,
             heartbeat: self.beats.own(),
             ..Default::default()
         };
@@ -472,6 +497,7 @@ impl Mac {
             member: host(k),
             held: BTreeSet::new(),
             listed: std::time::Instant::now(),
+            sent,
             cap: None,
             beats: self.beats.clone(),
             home: self.sim.quiet(|w| w.macs[k].dir.clone())?,
@@ -496,7 +522,7 @@ impl Mac {
         }
         let c = self.client(to);
         c.new_round();
-        self.failing = to_lead.post_on(&c, &body, self.failing, Duration::ZERO, now);
+        self.failing = to_lead.post_on(&c, &body, self.failing, Duration::from_secs(now.saturating_sub(made)), now);
         let released = self.beats.take_released();
         if !released.is_empty() {
             let stopped: Vec<Job> = {
@@ -517,7 +543,10 @@ impl Mac {
         if faulting && self.running.is_empty() && !napping && self.rng.chance(P_ASK) {
             let a = Self::ask_of(&self.me.app, self.capacity(now), 0);
             match c.ask(&a) {
-                Ok(Some(g)) => self.start_job(g, to)?,
+                Ok(Some(g)) => {
+                    self.granted_since = true;
+                    self.start_job(g, to)?
+                }
                 Ok(None) => self.sim.count("asks given nothing"),
                 Err(_) => self.sim.count("asks refused or unanswered"),
             }
