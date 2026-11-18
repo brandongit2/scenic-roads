@@ -204,7 +204,7 @@ fn run_trees(args: &[std::ffi::OsString]) -> Result<()> {
     Ok(())
 }
 
-/// A run's arguments for the trees program: tile `t` (`--z3` or `--z6`), its coverage in `dir`, the
+/// A run's arguments for the trees program: tile `t` (`--tile`, a z3 or z6 tile), its coverage in `dir`, the
 /// declared sources as it reads them (`sources.json`, written into `dir` from the accepted
 /// declarations: crate::trees::RunSources), the squares (`chm`: this Mac's cache; the NAS's store and
 /// leaf types), its archives into `dir`.
@@ -215,8 +215,8 @@ fn run_args(out: &Out, t: TileId, dir: &Path, chm: &Path, workers: usize) -> Res
         serde_json::to_vec(&crate::trees::RunSources::of(&inputs::inputs::sources::read(out.root(), &out.manifest)?)?)?,
     )?;
     let mut a: Vec<std::ffi::OsString> = vec![
-        format!("--z{}", t.z).into(),
-        format!("{},{}", t.x, t.y).into(),
+        "--tile".into(),
+        t.slash().into(),
         "--coverage".into(),
         dir.join("coverage.json").into(),
         "--sources".into(),
@@ -399,8 +399,8 @@ fn check_same(out: &Out, made: &[(String, Option<String>)], what: &str) -> Resul
     Ok(())
 }
 
-/// Uploads z6 tile `t`'s files from its run in `dir` (the trees program's `--z6`): each layer's hi
-/// pack (its zoom 9–12 tiles; the manifest's dropped when it has none) and its mid. `expect_same`:
+/// Uploads z6 tile `t`'s files from its run in `dir` (the trees program's `--tile 6/x/y`): each
+/// layer's hi pack (its zoom 9–12 tiles; the manifest's dropped when it has none) and its mid. `expect_same`:
 /// each must come out with the content name the manifest has (its mid, when it has one), else an
 /// error and nothing uploaded.
 pub fn put_piece(out: &mut Out, t: TileId, dir: &Path, expect_same: bool) -> Result<()> {

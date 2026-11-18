@@ -136,14 +136,12 @@ pub struct Railfreq {
 /// network (buildstore::fetch)
 #[derive(Parser, Debug)]
 #[command(name = "trees")]
-#[command(group = clap::ArgGroup::new("mode").required(true).args(["z3", "z6", "block", "blocks", "assemble", "assemble_lo"]))]
+#[command(group = clap::ArgGroup::new("mode").required(true).args(["tile", "block", "blocks", "assemble", "assemble_lo"]))]
 pub struct Trees {
-    /// A z3 tile's run: its zoom 4–12 tiles in out/trees-{cover,height,leaf}.tiles
-    #[arg(long, value_name = "X,Y")]
-    pub z3: Option<String>,
-    /// A z6 tile's run: its zoom 9–12 tiles, and out/trees-mid.sect its mid
-    #[arg(long, value_name = "X,Y")]
-    pub z6: Option<String>,
+    /// A z3 or z6 tile's run: a z3 tile's zoom 4–12 tiles in out/trees-{cover,height,leaf}.tiles;
+    /// a z6 tile's zoom 9–12 tiles, and out/trees-mid.sect its mid
+    #[arg(long, value_name = "Z/X/Y")]
+    pub tile: Option<String>,
     /// One zoom-8 block: its zoom 8–12 tiles and out/trees-tops.bin its zoom-8 values
     #[arg(long, value_name = "8/X/Y")]
     pub block: Option<String>,
@@ -244,8 +242,8 @@ pub struct Polar {
     /// The output folder (and its scratch/)
     #[arg(long, value_name = "DIR")]
     pub out: PathBuf,
-    /// Only these blocks (x/y at z4, repeated), and no root: a sample
-    #[arg(long, value_name = "X/Y")]
+    /// Only these blocks (z4 tiles of the pole's grid, repeated), and no root: a sample
+    #[arg(long, value_name = "4/X/Y")]
     pub only: Vec<String>,
     /// Threads (default: rayon's)
     #[arg(long, value_name = "N")]

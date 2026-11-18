@@ -288,10 +288,10 @@ makes the same bytes on every Mac.
   (made from fixed datasets, the same whether read or made).
 - **Trees** (cover, height, leaf type), zoom 4–12, clipped to the coverage (`trees::treepacks`,
   running the `trees` program, `trees::trees`):
-  - **trees**, a run per z6 tile the coverage meets (`trees --z6`): its zoom 9–12 hi packs and its
+  - **trees**, a run per z6 tile the coverage meets (`trees --tile 6/x/y`): its zoom 9–12 hi packs and its
     mid (`work/trees-mid/6-x-y`: zoom-8 tiles and values).
   - **trees-lo**, an assembly per z3 tile (`trees --assemble-lo`): zoom 8–4 from its z6 tiles' mids.
-  - Together the same bytes as a z3 tile's whole run (`trees --z3`, `scenic-build trees 3/x/y`), from
+  - Together the same bytes as a z3 tile's whole run (`trees --tile 3/x/y`, `scenic-build trees 3/x/y`), from
     Meta's canopy squares (`sources/canopy/`, each downloaded once under a `<file>.lock`) and the
     leaf-type squares (`sources/trees/leaf/`, made by `trees::leaftype`: the EEA's chunks, or
     NALCMS resampled as GDAL's warper did).

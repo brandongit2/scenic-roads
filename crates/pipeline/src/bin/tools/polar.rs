@@ -49,8 +49,8 @@ pub fn main(args: Vec<String>) -> Result<()> {
         .only
         .iter()
         .map(|t| {
-            let (x, y) = t.split_once('/').context("--only x/y")?;
-            Ok((x.parse()?, y.parse()?))
+            let u = codecs::tile::TileId::parse(t).filter(|u| u.z == BLOCK_Z);
+            u.map(|u| (u.x, u.y)).with_context(|| format!("--only {BLOCK_Z}/x/y, not {t}"))
         })
         .collect::<Result<_>>()?;
     let blocks: Vec<(u32, u32)> =

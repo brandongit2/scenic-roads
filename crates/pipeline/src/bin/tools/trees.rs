@@ -1,17 +1,17 @@
-//! The tree cover layers' tiles (`trees::trees`): the `--z3` run, its command line,
+//! The tree cover layers' tiles (`trees::trees`): a z3 tile's run, its command line,
 //! outputs and progress lines; a z6 tile's run and a z3 tile's assembly from them, as the build makes
 //! the layers; and the same work a block at a time, for workers. Its command line:
 //! agentcore::cli::progs::Trees, one mode a run:
 //!
-//!   trees --z3 x,y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir --out dir
-//!         [--workers n]
+//!   trees --tile 3/x/y --coverage cov.json --sources sources.json --chm dir --chm-store dir --leaf dir
+//!         --out dir [--workers n]
 //!       z3 tile x,y: its canopy squares read from this Mac's whole copies in `chm`, else the
 //!       rows it needs of the NAS's `chm-store` (trees::trees::squares::rows_here), its
 //!       leaf-type squares in `leaf` (made where missing: trees::leaftype),
 //!       out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles;
 //!       `sources.json`: where the declared canopy and leaf-type sources are
 //!       (trees::trees::RunSources, written by the trees job)
-//!   trees --z6 x,y (the same options) [--keep dir]
+//!   trees --tile 6/x/y (the same options) [--keep dir]
 //!       z6 tile x,y alone: out/trees-*.tiles holding its zoom 9–12 tiles, and out/trees-mid.sect
 //!       its mid (its blocks' zoom-8 tiles and values); `--keep`: each row of blocks kept in a
 //!       resume log there as it's made, a run stopped resumed from it (jobrt::resume_log::Pieces)
@@ -91,11 +91,13 @@ fn run(a: &Trees) -> Result<()> {
     if let Some(p) = a.inputs.first() {
         bail!("unexpected {} (folders are --assemble's and --assemble-lo's)", p.display());
     }
-    for (z, k, t) in [(3u8, "z3", &a.z3), (6, "z6", &a.z6)] {
-        let Some(t) = t else { continue };
-        let (x, y) = t.split_once(',').with_context(|| format!("--{k} x,y, not {t}"))?;
+    if let Some(t) = &a.tile {
+        let u = codecs::tile::TileId::parse(t)
+            .filter(|u| u.z == 3 || u.z == 6)
+            .with_context(|| format!("--tile 3/x/y or 6/x/y, not {t}"))?;
+        let z = u.z;
         let r = trees::Run {
-            tile: (z, x.parse().with_context(|| format!("--{k}"))?, y.parse().with_context(|| format!("--{k}"))?),
+            tile: (z, u.x, u.y),
             coverage: need(&a.coverage, "coverage")?.clone(),
             chm: PathBuf::from(need(&a.chm, "chm")?),
             chm_store: need(&a.chm_store, "chm-store")?.clone(),

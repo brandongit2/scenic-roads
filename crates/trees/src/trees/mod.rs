@@ -1,5 +1,5 @@
 //! The tree cover layers' tiles (docs/steps.md §2, Trees): tree cover, canopy height and leaf type,
-//! zoom 4–12, of a z3 tile the coverage meets, clipped to it, the `trees` program's `--z3` run:
+//! zoom 4–12, of a z3 tile the coverage meets, clipped to it, the `trees` program's `--tile 3/x/y` run:
 //! - **Sampling:** each zoom-8 block is sampled at zoom 12, at its pixels' centres (the source pixel
 //!   they fall in), from Meta's canopy squares (`cover5m`, ‰ of the ground under trees over 5 m, and
 //!   `p95`, canopy height in cm; 0.00025°, 10° squares) and the leaf-type squares (crate::leaftype;
@@ -926,8 +926,8 @@ pub fn z3_blocks(shapes: &mask::Shapes, qx: u32, qy: u32) -> Vec<(u32, u32)> {
     blocks_of(shapes, 3, qx, qy)
 }
 
-/// A run's arguments: `--z3` (a z3 tile: its zoom 4–12 tiles, `z3`), or the same for a z6
-/// tile (`--z6`: its zoom 9–12 tiles and its mid, `z6`).
+/// A run's arguments: `--tile 3/x/y` (a z3 tile: its zoom 4–12 tiles, `z3`), or the same for a z6
+/// tile (`--tile 6/x/y`: its zoom 9–12 tiles and its mid, `z6`).
 pub struct Run {
     /// The tile: zoom (3 or 6), column, row.
     pub tile: (u8, u32, u32),
@@ -1087,7 +1087,7 @@ fn end(a: &Run, n: [usize; 3], t0: std::time::Instant) -> [usize; 3] {
     n
 }
 
-/// The `--z3` run: z3 tile `a.tile`'s blocks the coverage meets, their canopy squares
+/// The `--tile 3/x/y` run: z3 tile `a.tile`'s blocks the coverage meets, their canopy squares
 /// fetched where missing and their leaf-type squares made, then every block (on rayon's threads)
 /// and zoom 7 to 4, into `out`'s three archives; the same progress lines.
 pub fn z3(a: &Run) -> Result<[usize; 3]> {
