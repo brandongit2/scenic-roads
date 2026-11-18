@@ -74,6 +74,9 @@ pub struct Elevation {
     /// The accepted regions' stored geometry (content names) by region id: what a dataset's
     /// outlines are read from (`Measured::outline`).
     pub region_geometry: BTreeMap<String, String>,
+    /// The accepted regions' files (their paths in the regions input) by region id: what a
+    /// `group:<folder>` in a dataset's `regions` is resolved against (`resolve_regions`).
+    pub region_paths: BTreeMap<String, String>,
 }
 
 impl Elevation {
@@ -661,12 +664,40 @@ impl Elevation {
         m
     }
 
+    /// The region ids a declaration's `regions` entries name, sorted, once each: an id as it is,
+    /// `group:<folder>` the accepted regions under that folder (`region_paths`, at any depth); and
+    /// the entries naming none (a folder with no accepted region under it). The cut, and so every
+    /// key, depends on the regions resolved, never on how they were named.
+    fn resolve_regions(&self, entries: &[String]) -> (Vec<String>, Vec<String>) {
+        let (mut ids, mut none) = (BTreeSet::new(), Vec::new());
+        for e in entries {
+            let Some(g) = e.strip_prefix("group:") else {
+                ids.insert(e.clone());
+                continue;
+            };
+            let under: Vec<&String> = self
+                .region_paths
+                .iter()
+                .filter(|(_, p)| crate::inputs::regions::file::in_group(g.trim_end_matches('/'), p))
+                .map(|(id, _)| id)
+                .collect();
+            if under.is_empty() {
+                none.push(e.clone());
+            }
+            ids.extend(under.into_iter().cloned());
+        }
+        (ids.into_iter().collect(), none)
+    }
+
     /// What's measured `m` of declaration `d`, its coverage cut to its `regions`, then its
     /// `exclude` cells left out (docs/inputs.md §6.8): where the roads and the terrain use it at all.
     fn scoped(&self, d: &Declaration, mut m: Measured) -> std::result::Result<Measured, String> {
         if let Some(regions) = &d.regions {
             let cov = self.regions.as_ref().ok_or("it names regions, and no regions version is accepted")?;
-            let (cover, missing) = declared::scope_cover(m.cover.as_deref(), regions, cov);
+            let (regions, mut missing) = self.resolve_regions(regions);
+            let regions = &regions;
+            let (cover, unknown) = declared::scope_cover(m.cover.as_deref(), regions, cov);
+            missing.extend(unknown);
             if !missing.is_empty() {
                 return Err(format!("it names regions no accepted region is: {}", missing.join(", ")));
             }
@@ -1310,28 +1341,31 @@ impl Checks for Elevation {
         };
         // (The accepted regions: a dataset's `regions` cut its coverage.)
         // (Its index named only when read: what the cut is derived from.)
-        let (regions, region_geometry, regions_index) =
+        let (regions, region_geometry, region_paths, regions_index) =
             match crate::inputs::open(root, manifest, crate::inputs::regions::UNIT) {
                 Ok(Some(a)) => {
                     let index = manifest.get(&crate::inputs::logical(crate::inputs::regions::UNIT)).cloned();
                     let cache = std::env::var_os(buildstore::coverage::CACHE_ENV).map(std::path::PathBuf::from);
                     let read =
                         crate::inputs::regions::read::accepted_coverage(root, &a, cache.as_deref()).and_then(|c| {
-                            let named = crate::inputs::regions::read::enabled(&a)?
-                                .into_iter()
-                                .filter_map(|l| Some((l.recipe.id, l.stored?.geometry)))
-                                .collect();
-                            Ok((c, named))
+                            let (mut named, mut paths) = (BTreeMap::new(), BTreeMap::new());
+                            for l in crate::inputs::regions::read::enabled(&a)? {
+                                if let Some(st) = l.stored {
+                                    named.insert(l.recipe.id.clone(), st.geometry);
+                                    paths.insert(l.recipe.id, l.path);
+                                }
+                            }
+                            Ok((c, named, paths))
                         });
                     match read {
-                        Ok((c, named)) => (Some(c), named, index),
+                        Ok((c, named, paths)) => (Some(c), named, paths, index),
                         Err(e) => {
                             eprintln!("inputs: {UNIT}: the accepted regions can't be read ({e:#})");
-                            (None, BTreeMap::new(), None)
+                            (None, BTreeMap::new(), BTreeMap::new(), None)
                         }
                     }
                 }
-                _ => (None, BTreeMap::new(), None),
+                _ => (None, BTreeMap::new(), BTreeMap::new(), None),
             };
         let geoid = crate::inputs::sources::geoid(root, manifest)?;
         #[cfg(test)]
@@ -1344,6 +1378,7 @@ impl Checks for Elevation {
                 outlines_name,
                 geoid: Some(geoid),
                 region_geometry,
+                region_paths,
                 ..Elevation::new(fetch, outlines)
             })));
         }
@@ -1354,6 +1389,7 @@ impl Checks for Elevation {
             outlines_name,
             geoid: Some(geoid),
             region_geometry,
+            region_paths,
             ..Elevation::new(Arc::new(buildstore::fetch::Fetcher::from_env()), outlines)
         })))
     }

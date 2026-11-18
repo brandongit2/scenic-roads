@@ -225,7 +225,7 @@ impl Folder {
     pub fn members(&self, g: &str, but: &str) -> Vec<String> {
         self.regions
             .iter()
-            .filter(|(id, (p, _))| id.as_str() != but && p.starts_with(&format!("{g}/")))
+            .filter(|(id, (p, _))| id.as_str() != but && super::file::in_group(g, p))
             .map(|(id, _)| id.clone())
             .collect()
     }

@@ -34,6 +34,15 @@ pub fn known_crs(crs: u16) -> bool {
 /// FLM: 3 ASTER, 4 SRTM90, … up to 10): a void, which the next dataset fills.
 pub const MASK_FILLED: f32 = 3.0;
 
+/// Whether `e` is an entry of a declaration's `regions`: a region's id, or `group:` and a folder's
+/// path (the regions' own spelling: `regions::file::group_path`).
+pub fn valid_region_entry(e: &str) -> bool {
+    match e.strip_prefix("group:") {
+        Some(g) => crate::inputs::regions::file::group_path(g).is_some(),
+        None => valid_id(e),
+    }
+}
+
 /// A dataset's id: its declaration's file stem, lower-case letters, digits and `-`.
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -52,8 +61,8 @@ pub struct Declaration {
     /// The source byte its heights carry in the units' outputs (`src.u8`, which the map's server
     /// names by its description's `label`, through the catalogue's `dem_labels`), 1–9 (roadcore::NDEM − 1).
     pub code: u8,
-    /// The map regions it's used in at all (by id, crate::inputs::regions), by the roads and the
-    /// terrain alike; None: wherever it has data. Its coverage is cut to them as it's read
+    /// The map regions it's used in at all (by id, crate::inputs::regions, or every region under a
+    /// folder of the regions input: `group:<folder path>`), by the roads and the terrain alike; None: wherever it has data. Its coverage is cut to them as it's read
     /// (`scope`); not in its `keyed` digest (`keyed_part`), so the z6 tiles in its regions keep
     /// their keys and only those whose datasets change are built again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,9 +147,9 @@ pub fn parse(bytes: &[u8]) -> std::result::Result<Declaration, Vec<String>> {
         None => None,
         Some(x) => {
             match x.as_array().map(|a| a.iter().map(|e| e.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()) {
-                Some(Some(r)) if !r.is_empty() && r.iter().all(|r| valid_id(r)) => Some(r),
+                Some(Some(r)) if !r.is_empty() && r.iter().all(|r| valid_region_entry(r)) => Some(r),
                 _ => {
-                    why.push("`regions` isn't a list of region ids".into());
+                    why.push("`regions` isn't a list of region ids and `group:<folder>`s".into());
                     None
                 }
             }
@@ -1390,6 +1399,13 @@ mod tests {
         assert_eq!(scoped.regions, Some(vec!["ontario".to_string(), "new-york".to_string()]));
         assert_eq!(scoped.keyed_part(), d("").unwrap());
         assert!(d("regions = [\"New York\"]").is_err() && d("regions = []").is_err());
+        // (A folder of the regions input as the regions' own parts spell it; digest as above.)
+        let grouped = d("regions = [\"group:canada/provinces/ontario\", \"new-york\"]").unwrap();
+        assert_eq!(grouped.keyed_part(), d("").unwrap());
+        for bad in ["group:", "group:/a", "group:a//b", "group:a/../b", "group:a/", "Group:a"] {
+            let r = format!("regions = [\"{bad}\"]");
+            assert_eq!(d(&r).is_ok(), false, "{bad}");
+        }
         // (Excluded cells as whole-degree boxes; not in the digest either.)
         let cut = d("exclude = [[153, 24, 155, 25]]").unwrap();
         assert_eq!(cut.exclude, vec![[153.0, 24.0, 155.0, 25.0]]);

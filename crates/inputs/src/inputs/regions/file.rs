@@ -451,6 +451,17 @@ pub fn parse_box(s: &str) -> Result<[i64; 4], String> {
     Ok([0, 1, 2, 3].map(|i| (v[i] * 1e7).round() as i64))
 }
 
+/// The folder path a `group:` names (`rest`, what follows the colon): its components non-empty,
+/// none `.` or `..`. Shared by the regions' parts and the elevation declarations' `regions`.
+pub fn group_path(rest: &str) -> Option<&str> {
+    (!rest.is_empty() && rest.split('/').all(|c| !c.is_empty() && c != "." && c != "..")).then(|| rest.trim_end_matches('/'))
+}
+
+/// Whether the region file at `path` is under folder `group` (a `group_path`), at any depth.
+pub fn in_group(group: &str, path: &str) -> bool {
+    path.strip_prefix(group).is_some_and(|r| r.starts_with('/'))
+}
+
 fn parse_part(v: &toml::Value) -> Result<Part, Fault> {
     match v {
         toml::Value::String(s) if s == "earth" => Ok(Part::Earth),
@@ -482,8 +493,7 @@ fn parse_part(v: &toml::Value) -> Result<Part, Fault> {
                 "box" => parse_box(rest).map(|b| Part::Box(b, rest.to_string())).map_err(|e| fault("part", format!("{s:?}: {e}"))),
                 "land" if valid_id(rest) => Ok(Part::Land(rest.into())),
                 "land" => Err(fault("part", format!("{s:?}: not a region's id"))),
-                "group" if !rest.is_empty() && rest.split('/').all(|c| !c.is_empty() && c != "." && c != "..") => Ok(Part::Group(rest.trim_end_matches('/').into())),
-                "group" => Err(fault("part", format!("{s:?}: a group is a folder's path, as group:europe/portugal"))),
+                "group" => group_path(rest).map(|g| Part::Group(g.into())).ok_or_else(|| fault("part", format!("{s:?}: a group is a folder's path, as group:europe/portugal"))),
                 "geofabrik" | "poly" | "place" => Err(fault("part", format!("{s:?}: {kind}: is no longer a kind of part (convert the shape to GeoJSON and name it shape:<name>.geojson: docs/inputs.md §6.1.3)"))),
                 _ => Err(fault("part", format!("{s:?}: unknown kind {kind:?} (osm:, osm-way:, shape:, region:, land:, group:, eez:, ts12:, ne-lake:, box:)"))),
             }

@@ -10,7 +10,7 @@ surface = "ground"
 heights = "CGVD2013"
 rank = -1
 code = 1
-regions = ["ontario", "quebec", "new-brunswick", "nova-scotia", "prince-edward-island", "newfoundland-and-labrador", "maine", "new-hampshire", "vermont", "new-york"]
+regions = ["group:canada/provinces/ontario", "group:canada/provinces/quebec", "new-brunswick", "nova-scotia", "prince-edward-island", "newfoundland-and-labrador", "maine", "new-hampshire", "vermont", "new-york"]
 notes = "The same lidar as HRDEM 2 m (so its code); the roads and the terrain read it at 1 m. Ranked before HRDEM 2 m. The index lists the mosaic's 500 km squares NRCan has at 1 m (producers/elevation/indexes.py hrdem --res 1)."
 
 [data]

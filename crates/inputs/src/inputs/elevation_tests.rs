@@ -1164,3 +1164,79 @@ fn a_pixel_meets_an_outline_by_a_corner_or_a_point_of_it() {
     // (Beside it, outside: not.)
     assert!(!pixel_meets(&ring, &g(ex + 2.0, ey - 0.5), 0, 0));
 }
+
+/// Regions under two folders (`canada/provinces/ontario`, `.../quebec`) and one beside them, as an
+/// elevation check reads them: their coverage, stored geometry and files' paths.
+fn divided_places(extra: &[(&str, &str, &str)]) -> Elevation {
+    let dir = tempfile::tempdir().unwrap();
+    let mut regions = vec![
+        ("on-a", "canada/provinces/ontario/on-a.toml", "place:10.5,45.5,20"),
+        ("on-b", "canada/provinces/ontario/north/on-b.toml", "place:13.5,45.5,20"),
+        ("qc-a", "canada/provinces/quebec/qc-a.toml", "place:16.5,45.5,20"),
+        ("ny", "united-states/ny.toml", "place:19.5,45.5,20"),
+    ];
+    regions.extend_from_slice(extra);
+    let recipes: Vec<_> = regions
+        .iter()
+        .map(|(id, _, o)| buildstore::recipes::Recipe { id: id.to_string(), name: id.to_string(), outline: vec![o.to_string()] })
+        .collect();
+    Elevation {
+        regions: Some(buildstore::coverage::Coverage::fixture(&recipes, None, dir.path()).unwrap()),
+        region_geometry: regions.iter().map(|(id, _, _)| (id.to_string(), format!("{id}.rgeo"))).collect(),
+        region_paths: regions.iter().map(|(id, p, _)| (id.to_string(), p.to_string())).collect(),
+        ..Elevation::default()
+    }
+}
+
+fn scoped_to(e: &Elevation, regions: &[&str]) -> std::result::Result<Measured, String> {
+    let d = Declaration {
+        regions: Some(regions.iter().map(|r| r.to_string()).collect()),
+        ..declared::parse(&decl("", "format = \"geotiff\"\nurl = \"https://e.org/a.tif\"")).unwrap()
+    };
+    e.scoped(&d, Measured { resolution: 30.0, cover: Some(vec![[0.0, 40.0, 30.0, 50.0]]), ..Default::default() })
+}
+
+/// A `group:` names every accepted region under a folder, at any depth; the cut, so every key
+/// made from it, is the same as naming those ids, in any order.
+#[test]
+fn a_group_in_regions_is_its_folders_regions() {
+    let e = divided_places(&[]);
+    let ids = scoped_to(&e, &["qc-a", "on-b", "on-a"]).unwrap();
+    let groups = scoped_to(&e, &["group:canada/provinces/ontario", "group:canada/provinces/quebec"]).unwrap();
+    assert_eq!(ids, groups);
+    assert_eq!(serde_json::to_value(&ids).unwrap(), serde_json::to_value(&groups).unwrap());
+    // (A nested folder alone, and a group beside an id of the same folder.)
+    assert_eq!(
+        scoped_to(&e, &["group:canada/provinces/ontario/north"]).unwrap(),
+        scoped_to(&e, &["on-b"]).unwrap()
+    );
+    assert_eq!(scoped_to(&e, &["group:canada/provinces/ontario", "on-a"]).unwrap(), scoped_to(&e, &["on-a", "on-b"]).unwrap());
+    // (Not the regions of a folder sharing a name's start, nor the other places.)
+    assert_eq!(groups, scoped_to(&e, &["group:canada"]).unwrap());
+    assert_ne!(scoped_to(&e, &["group:canada/provinces/ontario"]).unwrap(), groups);
+    assert_eq!(e.resolve_regions(&["group:canada/prov".into()]).1, ["group:canada/prov"]);
+}
+
+/// A region added under the folder moves the cut as naming its id would; one added elsewhere
+/// doesn't.
+#[test]
+fn a_region_added_under_a_group_moves_its_cut() {
+    let before = scoped_to(&divided_places(&[]), &["group:canada/provinces/ontario"]).unwrap();
+    let added = divided_places(&[("on-c", "canada/provinces/ontario/on-c.toml", "place:25.5,45.5,20")]);
+    let after = scoped_to(&added, &["group:canada/provinces/ontario"]).unwrap();
+    assert_ne!(before, after);
+    assert_eq!(after, scoped_to(&added, &["on-a", "on-b", "on-c"]).unwrap());
+    let elsewhere = divided_places(&[("bc-a", "canada/provinces/bc/bc-a.toml", "place:25.5,45.5,20")]);
+    assert_eq!(before, scoped_to(&elsewhere, &["group:canada/provinces/ontario"]).unwrap());
+}
+
+/// A group naming no folder, or one with no accepted region, is an error naming it, as an unknown id.
+#[test]
+fn a_group_naming_no_regions_is_an_error() {
+    let e = divided_places(&[]);
+    for bad in ["group:canada/provinces/manitoba", "group:canada/provinces/ontario/on-a.toml", "group:nowhere"] {
+        let err = scoped_to(&e, &["on-a", bad]).unwrap_err();
+        assert!(err.contains("no accepted region") && err.contains(bad), "{bad}: {err}");
+    }
+    assert!(scoped_to(&e, &["nowhere"]).unwrap_err().contains("nowhere"));
+}
