@@ -602,7 +602,12 @@ mod tests {
         assert_eq!(counted(ms(300), LOOK, true), ms(300));
     }
 
-    /// A FIFO at `name` in `d`, whose open waits in the kernel until its other end is opened.
+    /// A FIFO at `name` in `d`, whose open waits in the kernel until its other end is opened. A call
+    /// held on one is let go by a byte (`one_byte`, `release`), never by an end of file: Darwin loses
+    /// a FIFO's end of file now and then (a writer opening and closing at once while a reader waits
+    /// in its open: on the M4, 2 reads in 19 200 never saw it; a reader opening while a writer
+    /// waits, then reading to the end: 1 in 4800), and a read waiting for it stays in the kernel
+    /// for good. A byte always came (task #1302).
     fn fifo(d: &Path, name: &str) -> std::path::PathBuf {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
@@ -611,6 +616,18 @@ mod tests {
         // SAFETY: mkfifo on a NUL-terminated path the test owns.
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "{}", io::Error::last_os_error());
         p
+    }
+
+    /// One byte read from the FIFO `p`: what a call held on its open does once let go.
+    fn one_byte(p: &Path) -> io::Result<u8> {
+        let mut b = [0];
+        std::io::Read::read_exact(&mut std::fs::File::open(p)?, &mut b)?;
+        Ok(b[0])
+    }
+
+    /// Lets go the read held on the FIFO `p`'s open (`one_byte`): its other end, and a byte.
+    fn release(p: &Path) {
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().write(true).open(p).unwrap(), b"x").unwrap();
     }
 
     /// Task #1155: a call held in the kernel (a FIFO's open) by a caller at utility priority, as a
@@ -649,7 +666,7 @@ mod tests {
             let _cap = cap_for_test(CAP_DEFAULT);
             let on = rr.display().to_string();
             let t = Instant::now();
-            let e = call(&on, &"read", deadline, move || std::fs::read(&rr)).unwrap_err();
+            let e = call(&on, &"read", deadline, move || one_byte(&rr)).unwrap_err();
             (e, t.elapsed())
         })
         .join()
@@ -658,7 +675,7 @@ mod tests {
         load.into_iter().for_each(|h| h.join().unwrap());
         assert!(past_deadline(&e), "{e}");
         assert!(took >= deadline && took < deadline + Duration::from_secs(1), "given up after {took:?}");
-        drop(std::fs::OpenOptions::new().write(true).open(&r).unwrap());
+        release(&r);
     }
 
     /// Task #1155: a real stop (SIGSTOP, then SIGCONT, as the guards freeze a job) isn't counted
@@ -710,7 +727,7 @@ mod tests {
             drop(w);
             // SAFETY: a plain signal to this process, alone in it (above).
             unsafe { libc::kill(std::process::id() as libc::pid_t, libc::SIGSTOP) };
-            std::fs::read(&rr)
+            one_byte(&rr)
         })
         .unwrap_err();
         let took = t.elapsed();
@@ -719,7 +736,7 @@ mod tests {
         assert!(crate::sys::continued() > conts, "the stop came during the call");
         let stopped = Duration::from_secs(3);
         assert!(took + LOOK >= deadline + stopped, "given up after {took:?}: the stop counted");
-        drop(std::fs::OpenOptions::new().write(true).open(&r).unwrap());
+        release(&r);
     }
 
     /// A thread's calls run on one helper, kept; the call past its deadline took it, and the next
@@ -826,14 +843,15 @@ mod tests {
 
     /// A call really held in the kernel (no fake): an open of a FIFO whose other end no one has
     /// opened. A read's and a write's caller each get `TimedOut` at the deadline, the calls held;
-    /// the write holds its path; once the other ends open, both calls end and nothing is held.
+    /// the write holds its path; once the other ends open and a byte goes each way, both calls end
+    /// and nothing is held.
     #[test]
     fn a_call_held_in_the_kernel_is_left_there() {
         let d = tempfile::tempdir().unwrap();
         let (r, w) = (fifo(d.path(), "r"), fifo(d.path(), "w"));
         let cap = cap_for_test(CAP_DEFAULT);
         let rr = r.clone();
-        let e = call(&r.display(), &"read", ms(300), move || std::fs::read(&rr)).unwrap_err();
+        let e = call(&r.display(), &"read", ms(300), move || one_byte(&rr)).unwrap_err();
         assert!(past_deadline(&e), "{e}");
         let ww = w.clone();
         let e =
@@ -842,12 +860,10 @@ mod tests {
         assert_eq!(cap.held(), 2, "both in the kernel");
         let e = writing(&w.display(), &"write", LONG, vec![w.clone()], || Ok(())).unwrap_err();
         assert!(refused(&e), "{e}");
-        // (The other ends: the reader's writer closes at once (its read sees the end), the
-        // writer's reader takes its byte.)
-        drop(std::fs::OpenOptions::new().write(true).open(&r).unwrap());
-        let mut got = Vec::new();
-        std::io::Read::read_to_end(&mut std::fs::File::open(&w).unwrap(), &mut got).unwrap();
-        assert_eq!(got, b"x");
+        // (The other ends, a byte each way, no end of file waited for (`fifo`): the reader's
+        // writer gives it its byte, the writer's reader takes its.)
+        release(&r);
+        assert_eq!(one_byte(&w).unwrap(), b'x');
         crate::testkit::eventually("the held calls end", || cap.held() == 0);
         writing(&w.display(), &"write", LONG, vec![w.clone()], || Ok(())).unwrap();
     }
