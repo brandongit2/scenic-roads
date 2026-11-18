@@ -41,8 +41,8 @@ use std::sync::{Arc, Mutex};
 /// The unit's name.
 pub const UNIT: &str = "extents";
 
-/// The themes the app knows (`bathymetry` and `buildings` join when their research is done).
-pub const THEMES: [&str; 1] = ["terrain"];
+/// The themes the app knows (`buildings` is planned).
+pub const THEMES: [&str; 2] = ["terrain", "bathymetry"];
 
 /// The extent classes, best first, each with what it says in plain words (the app's click shows
 /// them: crates/server/src/available.rs `described`).

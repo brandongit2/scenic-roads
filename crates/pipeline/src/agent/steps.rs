@@ -1376,7 +1376,11 @@ pub const TABLE: [Step; 65] = [
     Step {
         cost_v: 1,
         versions: &[("available", || terrain::available::KEY_V.to_string())],
-        reads: &[In { name: "extents", of: idents::extents_pieces }, In { name: "land", of: idents::pass_land }],
+        reads: &[
+            In { name: "extents", of: idents::extents_pieces },
+            In { name: "land", of: idents::pass_land },
+            In { name: "inland", of: idents::inland_water },
+        ],
         ..step(
             "finish",
             Pack,

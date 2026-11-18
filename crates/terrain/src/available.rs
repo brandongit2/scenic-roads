@@ -575,8 +575,8 @@ fn key_of(lines: &[String]) -> String {
 }
 
 /// Each z6 tile a polygon's box meets ("6/x/y"), and its key: the lines of those polygons and the
-/// cut's there (`Cut::lines`).
-fn tile_keys(pieces: &[Piece], cut: &Cut) -> BTreeMap<String, String> {
+/// cut's there (`Cut::tile_lines`: the land's, and the inland water's on the water's side).
+fn tile_keys(pieces: &[Piece], cut: &Cut) -> Result<BTreeMap<String, String>> {
     let mut lines: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
     for p in pieces {
         for q in &p.polygons {
@@ -588,12 +588,13 @@ fn tile_keys(pieces: &[Piece], cut: &Cut) -> BTreeMap<String, String> {
             }
         }
     }
+    // (In parallel: the inland water's lines read the water layer's packs' indexes.)
     lines
-        .into_iter()
+        .into_par_iter()
         .map(|((x, y), mut l)| {
             l.sort();
-            l.extend(cut.lines(roadcore::geo::tile_box(fmt::PACK_Z, x, y)));
-            (format!("{}/{x}/{y}", fmt::PACK_Z), key_of(&l))
+            l.extend(cut.tile_lines(x, y)?);
+            Ok((format!("{}/{x}/{y}", fmt::PACK_Z), key_of(&l)))
         })
         .collect()
 }
@@ -759,7 +760,7 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &d
     drive(
         out,
         &record,
-        tile_keys(pieces, cut),
+        tile_keys(pieces, cut)?,
         poles.iter().map(|(p, k, w)| (*p, k.clone(), w.is_empty())).collect(),
         &mut |stale, sink| {
             // (A row of z6 tiles at a time: the row's runs cut to the side kept, then each tile's
@@ -775,7 +776,7 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &d
                 // (The mask and the uncut runs let go once the cut runs are made, before the
                 // quadtrees: the row's peak.)
                 let runs: Vec<Runs> = {
-                    let mask = cut.mask(&boxes, &merc_px, MERC_W, r0, r1)?;
+                    let mask = cut.with_inland(cut.mask(&boxes, &merc_px, MERC_W, r0, r1)?, y, &xs, r0)?;
                     row_runs(&polys, MERC_W, r0, r1, &mut band)
                         .iter()
                         .zip(&mask)
@@ -1026,6 +1027,7 @@ fn put_record(out: &mut Out, ml: &str, meta: &MidsMeta, blobs: &BTreeMap<String,
 
 pub mod built;
 pub mod cut;
+pub mod inland;
 
 pub use cut::Cut;
 

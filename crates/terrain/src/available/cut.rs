@@ -1,22 +1,26 @@
 //! The cut to one side of the coastline (docs/steps.md §14): a theme's layers hold a piece only on
 //! its side, whatever its outline (an index's coastal tiles, a 1° tile, a block drawn over the sea).
-//! The side is the theme's (`SIDES`): the terrain's the land, bathymetry's (planned) the water.
-//! **Planned (task #1351):** `Side::Sea` is the land's mask inverted, and the land here is the
-//! coastline's, which holds every lake: a bathymetry layer cut by it would lose every lake's depth
-//! (GLOBathy's and the like). Its side needs the water layer's lakes added to the sea first.
+//! The side is the theme's (`SIDES`): the terrain's the land, bathymetry's the water: the sea, and
+//! the lakes, reservoirs and rivers inland (`Cut::sea`, super::inland).
 //!
 //! - **The land** is the coastline's, the pass's own (inputs::inputs::regions::land, the
 //!   `regions-land` step's, by 2° cell): OSM's coastline, so a lake is land (the coastline goes round
 //!   it: a terrain model's heights there are its water's surface, which the map's terrain uses) and
 //!   the Caspian is sea (OSM maps it with coastline).
+//! - **The water's side** is the land's mask inverted with the water layer's inland water added
+//!   (super::inland: its z9 pixels, 153 m at the equator, whose inland share is half or more), so a
+//!   lake's depth (GLOBathy's, a lake's survey) is kept. Past 85.05°, where the water layer has no
+//!   tiles, the polar caps keep the sea alone.
 //! - **The mask** is drawn as the pieces are (super::row_runs: a pixel on the land when its centre
 //!   is), each cell's rings a polygon of one piece, so cells side by side add up and their shared
 //!   edges make no seam; a row's runs kept where the mask says, the empty set elsewhere (`apply`).
-//! - **Keys:** each land cell by the digest of its bytes (`lines`), so a coastline that moved makes
-//!   again only the z6 tiles whose cells it moved.
+//! - **Keys:** each land cell by the digest of its bytes (`lines`), and on the water's side each z9
+//!   tile of the water layer under a z6 tile by its own (`tile_lines`), so a coastline or a water
+//!   layer that moved makes again only the z6 tiles whose cells or tiles it moved.
 
+use super::inland::{self, Inland};
 use super::{plane_poly, row_runs, PlanePoly, Polygon, Runs, Sets};
-use anyhow::{Context, Result};
+use anyhow::{ensure, Context, Result};
 use inputs::inputs::regions::land::Land;
 use inputs::inputs::regions::tiles::{Cell, CELL};
 use std::collections::BTreeMap;
@@ -25,36 +29,105 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Land,
+    /// The sea and the inland water.
     Sea,
 }
 
 /// Each theme's side (every theme of inputs::inputs::extents::THEMES has one: `side_of`).
-pub const SIDES: [(&str, Side); 1] = [("terrain", Side::Land)];
+pub const SIDES: [(&str, Side); 2] = [("terrain", Side::Land), ("bathymetry", Side::Sea)];
 
 /// Theme `theme`'s side.
 pub fn side_of(theme: &str) -> Result<Side> {
     SIDES.iter().find(|(t, _)| *t == theme).map(|(_, s)| *s).with_context(|| format!("{theme}: no side of the coast"))
 }
 
-/// The land and the side kept, each land cell's digest read once.
+/// The land and the side kept, each land cell's digest read once; on the water's side, the inland
+/// water.
 pub struct Cut<'a> {
     land: &'a Land,
     side: Side,
     digests: BTreeMap<Cell, String>,
+    inland: Option<Inland<'a>>,
 }
 
 /// Degrees in E7.
 const E7: f64 = 1e7;
 
 impl<'a> Cut<'a> {
+    /// The land's side.
     pub fn new(land: &'a Land, side: Side) -> Result<Cut<'a>> {
+        ensure!(side == Side::Land, "the water's side holds the inland water too: Cut::sea");
+        Cut::of(land, side, None)
+    }
+
+    /// The water's side: the sea, and `inland`'s water.
+    pub fn sea(land: &'a Land, inland: Inland<'a>) -> Result<Cut<'a>> {
+        Cut::of(land, Side::Sea, Some(inland))
+    }
+
+    fn of(land: &'a Land, side: Side, inland: Option<Inland<'a>>) -> Result<Cut<'a>> {
         let mut digests = BTreeMap::new();
         for c in land.cells() {
             if let Some(b) = land.bytes(c).with_context(|| format!("the land's cell {c:?}"))? {
                 digests.insert(c, store::naming::hash16(&b));
             }
         }
-        Ok(Cut { land, side, digests })
+        Ok(Cut { land, side, digests, inland })
+    }
+
+    /// Theme `theme`'s cut: its side (`side_of`), the water's with the inland water `inland` opens
+    /// (super::inland::Open: the water layer's packs).
+    pub fn of_theme(land: &'a Land, theme: &str, inland: Box<inland::Open<'a>>) -> Result<Cut<'a>> {
+        match side_of(theme)? {
+            Side::Land => Cut::new(land, Side::Land),
+            Side::Sea => Cut::sea(land, Inland::new(inland)),
+        }
+    }
+
+    /// What a key names of the cut in z6 tile x/y: `lines` of its box, and on the water's side its
+    /// inland water (super::inland::Inland::lines).
+    pub fn tile_lines(&self, x: u32, y: u32) -> Result<Vec<String>> {
+        let mut v = self.lines(roadcore::geo::tile_box(codecs::available::PACK_Z, x, y));
+        if let Some(i) = &self.inland {
+            v.extend(i.lines(x, y)?);
+        }
+        Ok(v)
+    }
+
+    /// `mask`, rows `r0..` of Web Mercator's plane at z12 over the z6 tiles `xs` of row `y`, with the
+    /// inland water kept too on the water's side (each of its pixels four of the plane's a side).
+    pub fn with_inland(&self, mut mask: Vec<Runs>, y: u32, xs: &[u32], r0: u32) -> Result<Vec<Runs>> {
+        let Some(inl) = &self.inland else { return Ok(mask) };
+        let band = super::BAND;
+        let k = band / inland::SIDE6;
+        let mut xs = xs.to_vec();
+        xs.sort_unstable();
+        let tiles: Vec<(u32, Vec<Runs>)> = xs.iter().map(|&x| Ok((x, inl.rows(x, y)?))).collect::<Result<_>>()?;
+        for (j, m) in mask.iter_mut().enumerate() {
+            let r = (r0 + j as u32 - y * band) / k;
+            let mut row: Runs = vec![(0, 0)];
+            for (x, rows) in &tiles {
+                for &(px, v) in &rows[r as usize] {
+                    row.push((x * band + px * k, v));
+                }
+                if (x + 1) * band < super::MERC_W {
+                    row.push(((x + 1) * band, 0));
+                }
+            }
+            // (Runs starting where the one before did: the later stands; side by side of one value:
+            // one.)
+            row.dedup_by(|b, a| {
+                if a.0 == b.0 {
+                    a.1 = b.1;
+                    true
+                } else {
+                    false
+                }
+            });
+            row.dedup_by(|b, a| a.1 == b.1);
+            *m = inland::or(m, &row);
+        }
+        Ok(mask)
     }
 
     /// The land's cells meeting box `b` (west, south, east, north, degrees; its edges included).

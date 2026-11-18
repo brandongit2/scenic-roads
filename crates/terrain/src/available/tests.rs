@@ -222,15 +222,18 @@ fn a_changed_piece_makes_only_its_tiles_again() {
     // B moved: only B's z6 tiles (as it was, and as it is) are made again; A's packs are as they were.
     let m = run(d.path(), &[a.clone(), b(-68.0)].concat());
     let all = everything();
-    let b_tiles: BTreeSet<String> =
-        tile_keys(&b(-69.0), &all).into_keys().chain(tile_keys(&b(-68.0), &all).into_keys()).collect();
+    let b_tiles: BTreeSet<String> = tile_keys(&b(-69.0), &all)
+        .unwrap()
+        .into_keys()
+        .chain(tile_keys(&b(-68.0), &all).unwrap().into_keys())
+        .collect();
     assert!(!m.remade.is_empty());
     for t in &m.remade {
         assert!(b_tiles.contains(t), "{t} isn't B's");
     }
     assert!(m.root, "the root is made again from the mids");
     let after = packs(d.path());
-    for t in tile_keys(&a, &all).into_keys() {
+    for t in tile_keys(&a, &all).unwrap().into_keys() {
         let (x, y) = xy(&t);
         let l = fmt::pack_logical("available-terrain", x, y);
         assert_eq!(before.get(&l), after.get(&l), "{l}");
@@ -338,12 +341,85 @@ fn the_pieces_are_cut_to_the_land() {
     assert_eq!(at(d.path(), 2.55, 44.2), ["a/tile"], "the coast moved east");
     // The other side: the sea kept, the land cut.
     let d = tempfile::tempdir().unwrap();
-    run_cut(d.path(), &p, &Cut::new(&land, Side::Sea).unwrap());
+    run_cut(d.path(), &p, &Cut::sea(&land, no_water()).unwrap());
     for (lon, lat) in [(2.8, 44.8), (1.6, 43.6), (2.25, 44.25)] {
         assert_eq!(at(d.path(), lon, lat), ["a/tile"], "the sea at {lon}, {lat}");
     }
     assert!(at(d.path(), 2.0, 44.1).is_empty());
     assert!(at(d.path(), 20.25, 44.25).is_empty());
+}
+
+/// A water layer holding no water: its packs none.
+fn no_water() -> super::inland::Inland<'static> {
+    super::inland::Inland::new(Box::new(|_| Ok(None)))
+}
+
+/// The z9 tile (the water layer's finest stored zoom) holding a point.
+fn z9_at(lon: f64, lat: f64) -> (u32, u32) {
+    let (x, y) = roadcore::geo::merc(lon, lat);
+    ((x * 512.0) as u32, (y * 512.0) as u32)
+}
+
+/// A water layer whose z9 tiles `lakes` are all inland water (`inland` of 255) and whose other
+/// tiles are stored nowhere (no water), as its hi packs: by logical name, a pack's bytes.
+fn water(lakes: &[((u32, u32), u8)]) -> super::inland::Inland<'static> {
+    let mut by_pack: BTreeMap<(u32, u32), Vec<((u32, u32), u8)>> = BTreeMap::new();
+    for &((x, y), i) in lakes {
+        by_pack.entry((x >> 3, y >> 3)).or_default().push(((x, y), i));
+    }
+    let d = tempfile::tempdir().unwrap();
+    let mut packs: HashMap<String, Vec<u8>> = HashMap::new();
+    for ((px, py), ts) in by_pack {
+        let p = d.path().join("p.pack");
+        let mut w = store::pack::PackWriter::create(&p, serde_json::json!({}), false).unwrap();
+        let mut ts = ts;
+        ts.sort_by_key(|((x, y), _)| roadcore::archive::tile_key(9, *x, *y));
+        for ((x, y), i) in ts {
+            let png = inputs::water::Cov::uniform(0, i).png();
+            w.add(9, x, y, &png, png.len() as u32).unwrap();
+        }
+        w.finish().unwrap();
+        packs.insert(crate::layers::hi_logical("water", px, py), std::fs::read(&p).unwrap());
+    }
+    super::inland::Inland::new(Box::new(move |l: &str| {
+        Ok(packs.get(l).map(|b| {
+            (
+                format!("{l}.{}", store::naming::hash16(b)),
+                std::sync::Arc::new(b.clone()) as std::sync::Arc<dyn store::range::RangeRead>,
+            )
+        }))
+    }))
+}
+
+/// Bathymetry's side keeps the inland water too: a lake inside the coastline's land (the water
+/// layer's z9 tile of inland water) is kept with the sea, the land beside it cut; a tile of inland
+/// water under half isn't; a water layer whose lake moved makes again only the z6 tile it's in.
+#[test]
+fn the_waters_side_keeps_the_lakes() {
+    let land = coast(2.5);
+    let p = [
+        source("a", &[("tile", vec![vec![square(1.5, 43.5, 3.0, 45.0)]])]),
+        source("b", &[("far", vec![vec![square(19.5, 43.5, 21.0, 45.0)]])]),
+    ]
+    .concat();
+    let lake = z9_at(2.0, 44.1);
+    let d = tempfile::tempdir().unwrap();
+    run_cut(d.path(), &p, &Cut::sea(&land, water(&[(lake, 255), (z9_at(20.25, 44.25), 100)])).unwrap());
+    assert_eq!(at(d.path(), 2.0, 44.1), ["a/tile"], "the lake");
+    assert_eq!(at(d.path(), 2.25, 44.25), ["a/tile"], "the bay: sea");
+    assert!(at(d.path(), 2.4, 44.35).is_empty(), "the land past the lake's tile");
+    assert!(at(d.path(), 20.25, 44.25).is_empty(), "the island's water, under half");
+    // The same water: nothing made. The island's tile all inland water: only its z6 tile made.
+    let again = run_cut(d.path(), &p, &Cut::sea(&land, water(&[(lake, 255), (z9_at(20.25, 44.25), 100)])).unwrap());
+    assert!(again.remade.is_empty() && !again.root, "{again:?}");
+    let m = run_cut(d.path(), &p, &Cut::sea(&land, water(&[(lake, 255), (z9_at(20.25, 44.25), 255)])).unwrap());
+    let (x6, y6) =
+        ((roadcore::geo::merc(20.25, 0.0).0 * 64.0) as u32, (roadcore::geo::merc(0.0, 44.25).1 * 64.0) as u32);
+    assert_eq!(m.remade, [format!("6/{x6}/{y6}")], "{m:?}");
+    assert_eq!(at(d.path(), 20.25, 44.25), ["b/far"], "the island's lake");
+    assert_eq!(at(d.path(), 2.0, 44.1), ["a/tile"]);
+    // The land's side takes no water.
+    assert!(Cut::new(&land, Side::Sea).is_err());
 }
 
 #[test]
@@ -352,6 +428,15 @@ fn every_theme_has_a_side_of_the_coast() {
         cut::side_of(t).unwrap();
     }
     assert_eq!(cut::side_of("terrain").unwrap(), Side::Land);
+    assert_eq!(cut::side_of("bathymetry").unwrap(), Side::Sea);
+}
+
+#[test]
+fn inland_runs_or_the_seas() {
+    use super::inland::or;
+    assert_eq!(or(&vec![(0, 1), (5, 0)], &vec![(0, 0), (3, 1), (8, 0)]), [(0, 1), (8, 0)]);
+    assert_eq!(or(&vec![(0, 0)], &vec![(0, 0)]), [(0, 0)]);
+    assert_eq!(or(&vec![(0, 0), (4, 1)], &vec![(0, 0), (2, 1), (3, 0)]), [(0, 0), (2, 1), (3, 0), (4, 1)]);
 }
 
 #[test]

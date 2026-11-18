@@ -876,7 +876,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                         }
                     }
                 }
-                let cut = terrain::available::Cut::new(&land, terrain::available::cut::side_of(theme)?)?;
+                // (The water's side with the water layer's inland water: terrain::available::inland.)
+                let water = terrain::available::inland::from_records(out.root(), &out.manifest);
+                let cut = terrain::available::Cut::of_theme(&land, theme, water)?;
                 drop(p);
                 let p = phase("drawing the pieces' tiles");
                 let made = terrain::available::build(&mut out, theme, &pieces, &cut, &|d, n| {

@@ -83,6 +83,25 @@ pub fn pass_land(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     required(x, [inputs::inputs::regions::land::logical(x.date)])
 }
 
+/// The water layer's packs by content, for a data-available target whose theme keeps the water's
+/// side (`available-bathymetry`: the sea and the water layer's inland water,
+/// terrain::available::inland); nothing for the land's. Required there: it waits for the water
+/// layer's root.
+pub fn inland_water(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    let theme = t.strip_prefix("available-")?;
+    if terrain::available::cut::side_of(theme).ok()? == terrain::available::cut::Side::Land {
+        return Some(Vec::new());
+    }
+    let prefix = format!("layers/{}/", inputs::water::LAYER);
+    x.m.get(&format!("{prefix}root/0-0-0"))?;
+    Some(
+        x.m.range(prefix.clone()..)
+            .take_while(|(l, _)| l.starts_with(&prefix))
+            .map(|(l, c)| format!("{l}={c}"))
+            .collect(),
+    )
+}
+
 /// The built set's datasets (`available-built-terrain`): every accepted elevation dataset in the
 /// order, `id keyed` and the digest of what the input check measured of it (its coverage as its
 /// regions cut it, its presence and hollow tiles: a regions change or a check's new measure moves
