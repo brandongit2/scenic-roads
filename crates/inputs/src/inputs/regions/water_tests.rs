@@ -1025,23 +1025,25 @@ fn water_touching_none_of_its_land_is_an_error() {
     assert!(at("s", 1.99, 0.02) && at("s", 2.01, 0.02) && !at("t", 1.99, 0.02), "nothing moved");
 }
 
-/// With `cover = "earth"`: a big lake in a region's outline is its, wherever its shores are: one
-/// whose shore is all another region's land is no stray water (task #1427).
+/// With `cover = "earth"`: a big lake in a region's outline or named by its water is its, wherever
+/// its shores are: one whose shore is all another region's land is no stray water (task #1427).
 #[test]
-fn a_lake_in_its_outline_is_no_stray() {
+fn a_lake_whose_shores_are_anothers_is_no_stray() {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(d.path(), &[(4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0))]);
-    let lakes = HashMap::from([(77, bx(10.4, 10.4, 10.6, 10.6))]);
+    let lakes = HashMap::from([(77, bx(10.4, 10.4, 10.6, 10.6)), (78, bx(10.7, 10.4, 10.9, 10.6))]);
     let land = vec![bx(10.0, 10.0, 11.0, 11.0), bx(12.0, 12.0, 12.1, 12.1)];
     let data = Datasets::from_parts(HashMap::new(), HashMap::new(), HashMap::new(), lakes, land, "fixture");
     let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
-    // u: the lake and a square of land far away; v: the land round the lake, and its sea.
-    let u = "id = \"u\"\nname = \"U\"\noutline = [\"box:10.4,10.4,10.6,10.6\", \"box:11.95,11.95,12.15,12.15\"]\nwater = [{ buffer = \"land:u\", by = \"10 km\" }]\n";
-    let v = "id = \"v\"\nname = \"V\"\noutline = [{ minus = [\"box:9.95,9.95,11.05,11.05\", \"box:10.4,10.4,10.6,10.6\"] }]\nwater = [{ minus = [{ buffer = \"land:v\", by = \"10 km\" }, \"box:10.4,10.4,10.6,10.6\"] }]\n";
+    // u: one lake in its outline, the other in its water, and a square of land far away; v: the
+    // land round the lakes, and its sea.
+    let u = "id = \"u\"\nname = \"U\"\noutline = [\"box:10.4,10.4,10.6,10.6\", \"box:11.95,11.95,12.15,12.15\"]\nwater = [{ buffer = \"land:u\", by = \"10 km\" }, \"box:10.7,10.4,10.9,10.6\"]\n";
+    let v = "id = \"v\"\nname = \"V\"\noutline = [{ minus = [\"box:9.95,9.95,11.05,11.05\", \"box:10.4,10.4,10.6,10.6\", \"box:10.7,10.4,10.9,10.6\"] }]\nwater = [{ minus = [{ buffer = \"land:v\", by = \"10 km\" }, \"box:10.4,10.4,10.6,10.6\", \"box:10.7,10.4,10.9,10.6\"] }]\n";
     let out = run(&w, &[PINS, RULES, ("u.toml", u), ("v.toml", v), ("high-seas.toml", HIGH)]);
     assert!(out.problems.is_empty(), "{:?}", out.problems);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    assert!(at("u", 10.5, 10.5) && !at("v", 10.5, 10.5), "the lake is u's");
+    assert!(at("u", 10.5, 10.5) && !at("v", 10.5, 10.5), "the outline's lake is u's");
+    assert!(at("u", 10.8, 10.5) && !at("v", 10.8, 10.5), "the water's lake is u's");
 }
 
 /// Two coasts with the same fingerprint (box, point count, point sums) but different rings: a split

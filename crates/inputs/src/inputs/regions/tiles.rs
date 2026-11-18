@@ -25,8 +25,8 @@
 //! - With `cover = "earth"` in `_rules.toml`, the cover check, which moves nothing (`Fit`): each
 //!   pair's area both have past `HAIR_KM2` is `rg-cover` (`overlap`); what no region covers, joined
 //!   across the cells' edges, past it is too (`gap`), but the open sea, which the `rest` region
-//!   takes (its part inside a 200-nmi zone an error, `rest-in-zone`); and a region's water (but
-//!   its lakes) touching none of its land (`stray`). Each at a point inside, naming the regions round it.
+//!   takes (its part inside a 200-nmi zone an error, `rest-in-zone`); and a region's sea (its
+//!   water but the big lakes) touching none of its land (`stray`). Each at a point inside, naming the regions round it.
 //!   Regions without water are never changed.
 
 use super::extract::Id;
@@ -937,13 +937,10 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     }) {
         areas.get_mut(id).unwrap().set(c, a);
     }
-    // (The lands and lakes kept only for the cover check's stray water.)
+    // (The lands kept only for the cover check's stray water.)
     let cover = rules.cover.as_deref() == Some("earth");
-    let lands: BTreeMap<String, (TArea, TArea)> = if cover {
-        made.iter().map(|(id, m)| (id.clone(), (m.land.clone(), m.lakes.clone()))).collect()
-    } else {
-        BTreeMap::new()
-    };
+    let lands: BTreeMap<String, TArea> =
+        if cover { made.iter().map(|(id, m)| (id.clone(), m.land.clone())).collect() } else { BTreeMap::new() };
     let countries: BTreeMap<String, String> = made.iter().map(|(id, m)| (id.clone(), m.country.clone())).collect();
     drop(made);
     trace("hand-outs");
@@ -1086,7 +1083,7 @@ fn resolve_in(folder: &Folder, ctx: &super::resolve::Context, plain_held: &BTree
     let mut all: BTreeMap<String, TArea> = others;
     all.extend(areas);
     if cover {
-        strays(&ids, folder, &lands, &all, &mut out.problems, &mut out.fit, progress);
+        strays(&ids, folder, data, &lands, &all, &mut out.problems, &mut out.fit, progress);
     }
     drop(lands);
     let rest_id = rests.first().map(|s| (*s).clone());
@@ -2012,15 +2009,17 @@ fn largest(a: &Area) -> Option<(f64, Pt)> {
         .map(|(k, p)| (k, interior(p)))
 }
 
-/// With `cover`: each region with land, its stretches of water (its area less its land and its
+/// With `cover`: each region with land, its stretches of sea (its area less its land and the big
 /// lakes, joined across the cells' edges) that touch none of its land past `HAIR_KM2`, an error
-/// (`stray`) at a point inside, naming the regions round it. Its lakes are its outline's, wherever
-/// their shores are. A region of water alone (a waters region, the rest) has no land for its water
-/// to touch: its stretches are its by its definition.
+/// (`stray`) at a point inside, naming the regions round it. A lake is its outline's or its water's
+/// wherever its shores are (a lake whose shores are another's: a border on the far shore). A region
+/// of water alone (a waters region, the rest) has no land for its water to touch: its stretches are
+/// its by its definition.
 fn strays(
     ids: &[String],
     folder: &Folder,
-    lands: &BTreeMap<String, (TArea, TArea)>,
+    data: &super::data::Datasets,
+    lands: &BTreeMap<String, TArea>,
     all: &BTreeMap<String, TArea>,
     problems: &mut Vec<Problem>,
     fit: &mut Fit,
@@ -2030,10 +2029,19 @@ fn strays(
     let index = by_cell(all);
     for id in ids {
         let _one = progress.one_on_drop();
-        let Some((land, lakes)) = lands.get(id).filter(|(l, _)| !l.is_empty()) else { continue };
+        let Some(land) = lands.get(id).filter(|l| !l.is_empty()) else { continue };
         let Some(area) = all.get(id) else { continue };
-        let less = |a: &Area, b: &Area| if b.is_empty() { a.clone() } else { a.minus(b) };
-        let water = area.zip(land, less).zip(lakes, less);
+        // (Its sea: its area less its land and the big lakes, whoever's they are.)
+        let cs: Vec<Cell> = area.cells.keys().copied().collect();
+        let mut water = TArea::default();
+        for (c, s) in pace::par_map(cs, |c| {
+            let b = cell_box(c);
+            let lakes = data.big_lakes_in(b).intersect(&geom::box_area(b));
+            let s = area.get(c).minus(&land.get(c));
+            (c, if lakes.is_empty() { s } else { s.minus(&lakes) })
+        }) {
+            water.set(c, s);
+        }
         let comps = components(&water);
         progress.item(comps.len());
         // (The land's segments in a cell and round it, shifted as they lie from it: a stretch's
