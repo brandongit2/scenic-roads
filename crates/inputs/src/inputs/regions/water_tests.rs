@@ -1343,36 +1343,112 @@ fn a_countrys_inlet_half_in_its_zone_is_split_at_the_zone() {
 }
 
 /// Task #1426: an area cut down round a box (`tiles::near_part`) meets anything inside the box as
-/// the whole does, exactly: a wiggly coast (many points, a hole, a far island) against a stretch's
-/// ring of 100 m; a long segment crossing both the box and the cut is refused (None); nothing near,
-/// empty.
+/// the whole does, on a thread that snaps as the hand-outs do (`geom::snapping`): a wiggly coast
+/// with a hole and a far island, and a comb whose teeth cross the cut's edge again and again,
+/// against a stretch's ring of 100 m; a long segment crossing both the box and the cut is refused
+/// (None); nothing near, empty.
 #[test]
 fn an_area_cut_down_round_a_box_meets_what_is_inside_it_the_same() {
     use super::tiles::near_part;
     use det::Det;
-    let coast: geom::Ring = (0..=2000)
-        .map(|i| {
-            let t = i as f64 / 2000.0;
-            [e7(t * 2.0), e7(1.0 + 0.003 * (t * 400.0).dsin() + 0.001 * (t * 1300.0).dcos())]
-        })
-        .chain([[e7(2.0), e7(0.0)], [e7(0.0), e7(0.0)]])
-        .collect();
-    let hole = bx(1.0, 0.5, 1.2, 0.7).remove(0);
-    let island = bx(1.9, 1.8, 1.95, 1.85);
-    let q = Area::from_rings(&[vec![coast, hole], island].concat());
-    for (w, s) in [(0.3, 0.99), (1.05, 0.55), (1.0, 0.45), (1.7, 0.98), (1.915, 1.815)] {
-        let inner = Area::from_rings(&bx(w, s, w + 0.02, s + 0.02));
-        let ring = geom::buffer_area_coarse(&inner, 100.0).minus(&inner);
-        let rb = ring.bbox().unwrap();
-        let cut = near_part(&q, rb).unwrap_or_else(|| panic!("{w}, {s}: no long segment near"));
-        assert!(geom::points(&cut) < geom::points(&q), "{w}, {s}: cut down");
-        assert_eq!(ring.intersect(&cut), ring.intersect(&q), "{w}, {s}");
-    }
-    // A box with nothing near: empty.
-    assert!(near_part(&q, [e7(5.0), e7(5.0), e7(5.1), e7(5.1)]).is_some_and(|a| a.is_empty()));
-    // The coast's long closing edge along 0°E, and a triangle's long edge, crossing the box and
-    // running on past the cut: read whole.
-    assert!(near_part(&q, [e7(-0.001), e7(0.9), e7(0.02), e7(0.92)]).is_none());
-    let tri = Area::from_rings(&[vec![[e7(0.0), e7(0.0)], [e7(2.0), e7(2.0)], [e7(0.0), e7(2.0)]]]);
-    assert!(near_part(&tri, [e7(0.99), e7(0.99), e7(1.01), e7(1.01)]).is_none());
+    geom::snapping(|| {
+        let coast: geom::Ring = (0..=2000)
+            .map(|i| {
+                let t = i as f64 / 2000.0;
+                [e7(t * 2.0), e7(1.0 + 0.003 * (t * 400.0).dsin() + 0.001 * (t * 1300.0).dcos())]
+            })
+            .chain([[e7(2.0), e7(0.0)], [e7(0.0), e7(0.0)]])
+            .collect();
+        let hole = bx(1.0, 0.5, 1.2, 0.7).remove(0);
+        let island = bx(1.9, 1.8, 1.95, 1.85);
+        let q = Area::from_rings(&[vec![coast, hole], island].concat());
+        // A comb from 3°E: teeth 0.004° wide and 0.03° tall every 0.008°, drawn with a point every
+        // 0.001° (zigzagging by 1 m, so none is dropped as collinear), so each crosses the cut (about
+        // 0.01° out) on short segments.
+        let mut comb: geom::Ring = vec![[e7(3.0), e7(0.0)], [e7(3.2), e7(0.0)]];
+        for k in (0..25).rev() {
+            let x = 3.0 + 0.008 * k as f64;
+            for j in 0..=30 {
+                comb.push([e7(x + 0.004 + 0.00001 * (j % 2) as f64), e7(1.0 + 0.001 * j as f64)]);
+            }
+            for j in (0..=30).rev() {
+                comb.push([e7(x + 0.00001 * (j % 2) as f64), e7(1.0 + 0.001 * j as f64)]);
+            }
+        }
+        let comb = Area::from_rings(&[comb]);
+        for (a, w, s) in [
+            (&q, 0.3, 0.99),
+            (&q, 1.1, 0.4),
+            (&q, 1.0, 0.45),
+            (&q, 1.7, 0.98),
+            (&q, 1.915, 1.815),
+            (&comb, 3.09, 1.012),
+            (&comb, 3.1, 0.997),
+        ] {
+            let inner = Area::from_rings(&bx(w, s, w + 0.004, s + 0.004));
+            let ring = geom::buffer_area_coarse(&inner, 100.0).minus(&inner);
+            let rb = ring.bbox().unwrap();
+            let cut = near_part(a, rb).unwrap_or_else(|| panic!("{w}, {s}: no long segment near"));
+            assert!(geom::points(&cut) < geom::points(a), "{w}, {s}: cut down");
+            assert!(!ring.intersect(a).is_empty(), "{w}, {s}: the ring meets it");
+            assert_eq!(ring.intersect(&cut), ring.intersect(a), "{w}, {s}");
+        }
+        // A box with nothing near: empty.
+        assert!(near_part(&q, [e7(5.0), e7(5.0), e7(5.1), e7(5.1)]).is_some_and(|a| a.is_empty()));
+        // The coast's long closing edge along 0°E, and a triangle's long edge, crossing the box and
+        // running on past the cut: read whole.
+        assert!(near_part(&q, [e7(-0.001), e7(0.9), e7(0.02), e7(0.92)]).is_none());
+        let tri = Area::from_rings(&[vec![[e7(0.0), e7(0.0)], [e7(2.0), e7(2.0)], [e7(0.0), e7(2.0)]]]);
+        assert!(near_part(&tri, [e7(0.99), e7(0.99), e7(1.01), e7(1.01)]).is_none());
+    });
+}
+
+/// Task #1426: a stretch's edge with a member (`tiles::edge_in`, reading the member's part round it)
+/// is the edge read against the member's whole cells, to the bit, snapping: across ±180° (the
+/// member's cell wrapped and shifted) and near 80°N.
+#[test]
+fn a_stretchs_edge_is_the_same_read_against_the_members_part() {
+    use super::tiles::{boxes_of, cell_box, edge_in, TArea, CELL};
+    use det::Det;
+    // The edge as it was read: the ring against each neighbouring cell's whole piece.
+    let whole = |p: &Area, c: (i64, i64), t: &TArea| -> f64 {
+        let ring = geom::buffer_area_coarse(p, 100.0).minus(p);
+        let mut sum = 0.0;
+        for x in c.0 - 1..=c.0 + 1 {
+            let w = (x + 90).rem_euclid(180) - 90;
+            let shift = (x - w) * CELL;
+            for y in c.1 - 1..=c.1 + 1 {
+                if let Some(q) = t.cells.get(&(w, y)) {
+                    sum += geom::area_km2(&ring.intersect(&q.shifted(shift))) / 0.1;
+                }
+            }
+        }
+        sum
+    };
+    // A member whose east side wiggles at `e`° with a point every 0.001°, from `s`° to `n`°.
+    let member = |w: f64, s: f64, n: f64, e: f64| -> TArea {
+        let k = ((n - s) / 0.001).round() as usize;
+        let mut r: geom::Ring = vec![[e7(w), e7(n)], [e7(w), e7(s)]];
+        r.extend((0..=k).map(|i| {
+            let y = s + 0.001 * i as f64;
+            [e7(e - 0.002 + 0.002 * (y * 900.0).dsin()), e7(y)]
+        }));
+        TArea::from_rings(&[r])
+    };
+    geom::snapping(|| {
+        for (t, p) in [
+            // West of ±180° (cell 89), a stretch just east of it (cell −90).
+            (member(179.0, 10.2, 11.0, 180.0), bx(-180.0, 10.5, -179.9, 10.6)),
+            // Near 80°N: the member in one column, the stretch in the next.
+            (member(11.0, 80.3, 81.2, 12.0), bx(12.0, 80.6, 12.3, 80.7)),
+        ] {
+            let p = Area::from_rings(&p);
+            let pb = p.bbox().unwrap();
+            let c = (pb[0].div_euclid(CELL), pb[1].div_euclid(CELL));
+            let p = p.intersect(&geom::box_area(cell_box(c)));
+            let got = edge_in(&p, c, &t, &boxes_of(&t), &mut None);
+            assert!(got > 0.0, "{c:?}: the stretch touches the member");
+            assert_eq!(got.to_bits(), whole(&p, c, &t).to_bits(), "{c:?}");
+        }
+    });
 }

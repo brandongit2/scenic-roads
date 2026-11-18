@@ -727,8 +727,9 @@ Mac's server (§6.1.9).
   outcome itself) and the datasets, read only once a region in the folder names them (the
   coastline's land by cell where asked, §6.1.7).
   A zone's internal waters are unioned with it. The datasets' rings are simplified within 20 m as
-  read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve one at a time, their cells several at once (regions without
-  water: as many at once as the check is allowed threads, §4.3). A region's parts naming other regions (`region:`, `land:`,
+  read, the points two rings of the zones share kept (neighbours' borders the same on both sides). The regions with water resolve their land and water one at a time, their cells several at once (regions without
+  water: as many at once as the check is allowed threads, §4.3); their hand-outs go a run at a time, the run's
+  stretches several at once (§6.1.3 "Land and water"). A region's parts naming other regions (`region:`, `land:`,
   `group:`) are read cell by cell where those are kept, never copied. With
   `SCENIC_REGIONS_TRACE` set, the check prints each step's and each region's water's footprint
   and its buffers' and nearest-coast splits' count, time and footprint, and the coast's stretches

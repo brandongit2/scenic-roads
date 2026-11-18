@@ -309,6 +309,11 @@ pub fn points(a: &Area) -> usize {
 
 /// The union of `areas` (canonical).
 pub fn union_all(areas: &[Area]) -> Area {
+    union_all_of(&areas.iter().collect::<Vec<_>>())
+}
+
+/// The union of the areas `areas` points to (canonical): `union_all`'s, read in place.
+pub fn union_all_of(areas: &[&Area]) -> Area {
     let n = areas.iter().flat_map(|a| a.polys.iter().flatten()).map(Vec::len).sum();
     let _op = Op::start(n);
     let mut o = Overlay::<i64>::new_custom(n, Default::default(), solver());
