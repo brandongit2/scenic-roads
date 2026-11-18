@@ -1383,11 +1383,12 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
     /// What each of its job's threads past `thread_covers` adds to its memory (MB:
-    /// `sched::Sched::per_thread_mb` of its measure), and the threads the memory it was packed at
-    /// covers (its threads and those its measure was taken at, the more): its agent reserves that a
-    /// thread for each one it grows the job past them (crate::agent::threads), as the lead counts
-    /// it (`sched::Sched::grown_mb`). 0: not said (an older lead's): its agent takes the job's whole
-    /// memory a thread.
+    /// `sched::Sched::per_thread_mb` of its measure; 0: no figure, a cold start's, so its job grows
+    /// past none of them), and the threads the memory it was packed at covers (its threads and
+    /// those its measure was taken at, the more): its agent reserves that a thread for each one it
+    /// grows the job past them (crate::agent::threads), as the lead counts it
+    /// (`sched::Sched::grown_mb`). No threads covered: an older lead's, whose job its agent takes
+    /// at its whole memory a thread.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub thread_mb: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -10692,30 +10693,74 @@ mod tests {
         assert_eq!(s.sched.grown_mb(&lease, "slope-hi", ts.iter().map(String::as_str), peak), peak);
     }
 
+    /// slope-hi measured on 1 thread, a tenth of a core busy, 2 GB, its six targets offered.
+    fn thin(c: &Coordinator) {
+        packable(c, "slope-hi", 6, Some(1));
+        for i in 1..=6 {
+            let sizes = [("threads".to_string(), 1), ("cpu_ms".to_string(), 60_000), ("waited_ms".to_string(), 0)];
+            let cost = Cost {
+                peak_mb: 2000,
+                secs: 600,
+                worker: None,
+                v: cost_version("slope-hi"),
+                sizes: sizes.into(),
+                ..Default::default()
+            };
+            c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
+        }
+    }
+
+    /// Task #1420: a job held counts for the threads its lease counts, its agent's, not its
+    /// measure's grant: slope-hi's measure grants 1 thread; held on 6 (grown), it counts on 6; on 0
+    /// (not said), its grant's.
+    #[test]
+    fn a_held_job_counts_on_its_threads_grown_past_its_measure() {
+        let (_d, c, _w, _clock) = every((0, 0));
+        thin(&c);
+        let s = c.shared.lock().unwrap();
+        let ts = vec!["6/1/1".to_string()];
+        let (measured, _) = s.sched.held_cores("slope-hi", &ts, 0, 14);
+        assert!(measured < 6, "{measured}");
+        assert_eq!(s.sched.held_cores("slope-hi", &ts, 6, 14).0, 6);
+        assert_eq!(s.sched.held_cores("slope-hi", &ts, 6, 14).1, 1, "its busy tenth all the same");
+    }
+
     /// Task #1420: a grow its agent decided is counted by the next ask's packing, before any beat:
     /// a member's ask and the lead's own (`ask_own`) say their jobs' threads, noted before they're
     /// packed (`Shared::note_threads`), so a grant beside a grown job never takes the memory its
-    /// grow holds (`Sched::grown_mb`).
+    /// grow holds (`Sched::grown_mb`). slope-hi measured on 1 thread (2 GB, a tenth of a core
+    /// busy), so its grant covers its own threads alone and each thread grown past them is 2 GB: a
+    /// job's second ask beside it is granted one more while it's on its grant, and refused for
+    /// memory once it says it grew by 16 (32 GB of the Mac's 30).
     #[test]
     fn a_grow_is_counted_by_the_next_ask_before_any_beat() {
-        let (_d, c, w, _clock) = every((0, 0));
-        controllable(&c);
-        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
-        let g = w.ask(&a).unwrap().unwrap();
-        assert_eq!(counted(&c, g.lease), g.threads);
-        let _ = w.ask(&Ask { cap: Some(m1_cap(14, true, Some((g.lease, g.threads + 4, g.threads + 4)))), ..a.clone() });
-        assert_eq!(counted(&c, g.lease), g.threads + 4, "a member's ask");
-        let (_d, c, _w, _clock) = every((0, 0));
-        controllable(&c);
-        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m4", "slope-hi", 30_000, 100_000) };
-        let g = c.ask_own(&a, &BTreeSet::new(), 0).unwrap();
-        assert_eq!(counted(&c, g.lease), g.threads);
-        let _ = c.ask_own(
-            &Ask { cap: Some(m1_cap(14, true, Some((g.lease, g.threads + 4, g.threads + 4)))), ..a },
-            &BTreeSet::new(),
-            0,
-        );
-        assert_eq!(counted(&c, g.lease), g.threads + 4, "the lead's own ask");
+        // (The second ask after a grow by `by` threads, by m1 or by the lead itself: granted, or
+        // the refusal's words.)
+        let second = |by: u32, lead: bool| -> Result<Grant, String> {
+            let (_d, c, w, _clock) = every((0, 0));
+            thin(&c);
+            let me = if lead { c.me.clone() } else { "m1".to_string() };
+            let ask = |cap: Capacity| Ask {
+                cores: 14,
+                want: 1,
+                cap: Some(cap),
+                ..every_ask(&me, "slope-hi", 30_000, 100_000)
+            };
+            let asked = |a: &Ask| if lead { c.ask_own(a, &BTreeSet::new(), 0) } else { w.ask(a).unwrap() };
+            let g = asked(&ask(m1_cap(14, false, None))).expect("the first job");
+            assert!(g.more.is_empty());
+            assert_eq!((g.thread_covers, g.thread_mb), (g.threads, 2000), "covering its own threads alone");
+            let on = g.threads + by;
+            let next = asked(&ask(m1_cap(14, false, Some((g.lease, on, on)))));
+            assert_eq!(counted(&c, g.lease), on);
+            let s = c.shared.lock().unwrap();
+            next.ok_or_else(|| s.refused.get(&me).map(|r| r.1.words.clone()).unwrap_or_default())
+        };
+        for lead in [false, true] {
+            assert!(second(0, lead).is_ok(), "on its grant: one more beside it (lead {lead})");
+            let why = second(16, lead).expect_err("grown by 16: none");
+            assert!(why.contains("memory"), "lead {lead}: {why}");
+        }
     }
 
     /// Task #1420, mixed versions: a member before live control beats without a capacity, or its

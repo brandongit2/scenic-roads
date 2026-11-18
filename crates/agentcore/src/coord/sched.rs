@@ -361,8 +361,8 @@ pub(crate) struct Need {
     /// §7.2, A job leaving the cores idle).
     idle: bool,
     /// A job held: the threads its lease counts it for (`Lease::threads`, as granted and as its
-    /// agent says it runs on since; 0: not said), which its threads and busy cores never pass
-    /// (`need_cores`).
+    /// agent says it runs on since; 0: not said), which it's counted on and its busy cores never
+    /// pass (`need_cores`).
     held: u32,
     /// A job held: the cores it keeps busy now, in tenths, once its run says it (`busy_now`), which
     /// it counts for in place of its measure's.
@@ -1404,6 +1404,13 @@ impl Sched {
         let threads = if n.held > 0 && !self.the_plan.records_only(step) { n.held } else { threads };
         let busy = n.busy_now.unwrap_or(busy);
         (threads, if n.waits || n.idle { 0 } else { busy.min(threads * 10) })
+    }
+
+    /// `need_cores` of a job of `step` over `targets` held on `held` threads (0: not held), for a
+    /// test.
+    #[cfg(test)]
+    pub(super) fn held_cores(&self, step: &str, targets: &[String], held: u32, total: u32) -> (u32, u32) {
+        self.need_cores(step, &Need { held, ..self.pack_need(step, targets) }, total)
     }
 
     /// Whether no run of `step` has left a measure of any kind, whatever the way it ran (task #499

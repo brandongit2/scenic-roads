@@ -11934,6 +11934,45 @@ mod tests {
         }
     }
 
+    /// Task #1420: a grant's memory a thread is kept with its slot as its lead said it, 0 MB (no
+    /// figure, a cold start's) among them, so its job grows past none of the threads its grant
+    /// covers (crate::agent::threads::decide); an older lead's, saying no threads covered, takes the
+    /// job's whole memory a thread past its granted threads.
+    #[test]
+    fn a_grants_memory_a_thread_is_kept_with_its_slot_none_among_them() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("nas")).unwrap();
+        let mut a = test_agent(Options {
+            the_plan: crate::agent::seam::for_tests(),
+            root: Some(store::nasfs::NasRoot::local_for_test(d.path().join("nas"))),
+            home: d.path().join("home"),
+            bin: PathBuf::from("/app"),
+            dry_run: false,
+            once: true,
+            member: true,
+        })
+        .unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let grant = |lease: u64, more: serde_json::Value| -> crate::coord::Grant {
+            let mut g = serde_json::json!({ "lease": lease, "ttl_s": 600, "kind": "job", "step": "unit", "targets": [["6/1/2", "k"]], "pass": "p", "threads": 2, "peak_mb": 4000 });
+            g.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+            serde_json::from_value(g).unwrap()
+        };
+        let mut waiting = Vec::new();
+        let (k, _) =
+            a.take_grant(grant(1, serde_json::json!({ "thread_covers": 2 })), &root, &mut waiting).expect("taken");
+        assert_eq!(a.slots[k].thread_mb, Some((0, 2)), "no figure: none a thread, its 2 covered");
+        assert_eq!(a.thread_mb(k), (0, 2));
+        let (k, _) = a
+            .take_grant(grant(2, serde_json::json!({ "thread_mb": 1500, "thread_covers": 3 })), &root, &mut waiting)
+            .expect("taken");
+        assert_eq!(a.thread_mb(k), (1500, 3));
+        let (k, _) = a.take_grant(grant(3, serde_json::json!({})), &root, &mut waiting).expect("taken");
+        assert_eq!(a.slots[k].thread_mb, None, "an older lead's");
+        assert_eq!(a.thread_mb(k), (4000, 2), "its whole memory a thread past its 2");
+        assert!(waiting.is_empty(), "{waiting:?}");
+    }
+
     /// Task #1420: a running job's threads follow what it keeps busy, its agent deciding each
     /// minute (crate::agent::threads): a paced check on 2, both busy, is doubled to 4 (its file and
     /// its count), watched afresh on them; 1 core busy of 4 for a minute, cut to 3; a minute waiting
