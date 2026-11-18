@@ -33,32 +33,16 @@ let info = Bundle.main.infoDictionary ?? [:]
 let buildLabel = info["ScenicBuildService"] as? String ?? "local.scenic.build"
 let updateFrom = info["ScenicUpdateFrom"] as? String ?? "Scenic.app"
 let openAtLogin = info["ScenicOpenAtLogin"] as? Bool ?? true
-/// The agent's login item from before Scenic was an app: while it's there, the Mac hasn't switched
-/// over (tools/app/install.sh), and the app's own build service is left alone.
-let legacyAgent = info["ScenicLegacyAgent"] as? String ?? "local.scenic.agent"
-
-/// Whether this copy of the app runs from inside an installed version (app/<version>/Scenic.app):
-/// the menu bar item as the old login item (local.scenic.status) runs it, before the switch-over.
-/// Such a copy manages nothing (no services registered, started or stopped, no window), and quits
-/// when a newer version is installed, for that login item to start the new one.
+/// Whether this copy of the app runs from inside an installed version (app/<version>/Scenic.app),
+/// not the one installed in /Applications. Such a copy manages nothing (no services registered,
+/// started or stopped, no window), and quits once `current` points at another version.
 func insideInstalledVersion() -> Bool {
     let apps = home.appendingPathComponent("app").resolvingSymlinksInPath().path
     return Bundle.main.bundleURL.resolvingSymlinksInPath().path.hasPrefix(apps + "/")
 }
 
-/// Why this app doesn't manage the build service now (nil: it does): run from inside an installed
-/// version, or the Mac not switched over yet (the old agent's login item loaded or its plist there).
-func notManaging() -> String? {
-    if insideInstalledVersion() { return "run from inside an installed version: it manages nothing" }
-    let plist = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(legacyAgent).plist")
-    if jobState(legacyAgent) != .unloaded || FileManager.default.fileExists(atPath: plist.path) {
-        return "Switch over with tools/app/install.sh: this Mac's agent still runs as \(legacyAgent)"
-    }
-    return nil
-}
-
-/// The copy run from inside an installed version (`insideInstalledVersion`), as the old login item
-/// runs it: the version it started from, and its quit once `current` points elsewhere.
+/// The copy run from inside an installed version (`insideInstalledVersion`): the version it
+/// started from, and its quit once `current` points elsewhere.
 let launchedFrom = Bundle.main.bundleURL.resolvingSymlinksInPath().deletingLastPathComponent().path
 func quitIfReplaced() {
     let current = home.appendingPathComponent("app/current").resolvingSymlinksInPath().path
@@ -152,14 +136,11 @@ final class BuildService {
     var quitting: String?
     var state: JobState = .unloaded
     var lastKick = Date.distantPast
-    /// Why it's left alone (`notManaging`), if it is: nothing registered, started, tended or asked.
-    var blocked: String?
 
     var agentDir: URL { home.appendingPathComponent("agent") }
 
     /// In words, for the window and the menu.
     var said: String {
-        if let b = blocked { return "Build service: \(b)" }
         if let b = broken { return "Build service: launchd can't start it: \(b)" }
         switch service.status {
         case .requiresApproval: return "Build service: off in Login Items (System Settings → General → Login Items)"
@@ -176,8 +157,6 @@ final class BuildService {
     /// The app opened: a quit asked earlier (one a logout left) cancelled, the run file written,
     /// the job registered (launchd starts it) or started.
     func start() {
-        blocked = notManaging()
-        if blocked != nil { return }
         quitting = nil
         try? FileManager.default.removeItem(at: agentDir.appendingPathComponent("quit-request.json"))
         writeRunFile()
@@ -222,7 +201,7 @@ final class BuildService {
 
     /// launchd refuses to start it (`broken`): registered again and started. At launch and each poll.
     func repair() {
-        guard blocked == nil, quitting == nil, let why = broken else { return }
+        guard quitting == nil, let why = broken else { return }
         reregister("launchd can't start the build service: \(why)")
     }
 
@@ -313,7 +292,7 @@ final class BuildService {
     /// from them.
     func followApp() {
         defer { removeOldCopies() }
-        guard blocked == nil, quitting == nil else { return }
+        guard quitting == nil else { return }
         let ended = asked.map { processStart($0.0) != $0.1 } ?? false
         switch followStep(elsewhere: launcherElsewhere() != nil, asked: asked != nil, ended: ended,
                           sinceAsk: Date().timeIntervalSince(lastFollow)) {
@@ -373,15 +352,6 @@ final class BuildService {
     var refused = false
     static let refusedLine = "This Mac's build service can't reach the NAS: allow Scenic in System Settings → Privacy & Security → Files and Folders"
 
-    /// Left alone, asked again (each poll, and as the menu opens): once the switch-over is done
-    /// (the old login items removed after the app opened), started as at launch. True when it was
-    /// started now.
-    func recheck() -> Bool {
-        guard blocked != nil, notManaging() == nil else { return false }
-        start()
-        return blocked == nil
-    }
-
     /// Started now (loaded by the registration: kickstart runs it).
     func kick() {
         lastKick = Date()
@@ -393,7 +363,6 @@ final class BuildService {
     /// before the app cleared it): started again, at most once a minute.
     func tend() {
         refresh()
-        if blocked != nil { return }
         repair()
         if quitting == nil, service.status == .enabled, !state.running, Date().timeIntervalSince(lastKick) > 60 {
             kick()
@@ -405,7 +374,6 @@ final class BuildService {
 
     /// Asks the agent to quit (control.rs Quit): `finish` lets its jobs end first.
     func askQuit(finish: Bool, why: String = "") {
-        if blocked != nil { return }
         let name = ProcessInfo.processInfo.hostName.components(separatedBy: ".").first ?? "this Mac"
         let by = "Scenic on \(name)\(why)"
         let body: [String: Any] = ["mode": finish ? "finish" : "now", "by": by, "at": Int(Date().timeIntervalSince1970)]

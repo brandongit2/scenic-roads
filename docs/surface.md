@@ -70,18 +70,10 @@
   never starting the app. When the agent's log shows
   "Operation not permitted" on the NAS since it started, the menu and window say the build service
   can't reach the NAS (allow Scenic in Files and Folders).
-- **Switching a Mac over** from the login items Scenic replaces (`local.scenic.agent`,
-  `local.scenic.status`): until then the menu bar item runs from `app/current` as before, and a
-  copy of Scenic run from inside an installed version, or while `local.scenic.agent` is loaded or
-  its plist is in `~/Library/LaunchAgents`, manages nothing (it says "Switch over with
-  tools/app/install.sh"); it asks again at each poll and as its menu opens, and once the old
-  agent's job and plist are gone it registers and starts its build service as a fresh launch
-  would. On each Mac once the version is installed, the lead's Mac (the mini) last: run `tools/app/install.sh` (it removes
-  the two login items, the old agent's job given back, copies Scenic.app to /Applications and
-  opens it), allow Scenic in Login Items if macOS asks, and check its window says "Build service:
-  running". The way back, until both Macs have switched: `tools/app/install.sh --legacy` (Scenic
-  unregistered and removed, the two login items as before), then `tools/app/publish.sh --rollback`
-  if the version itself is to go.
+- **Setting a Mac up:** `tools/app/install.sh` (it copies Scenic.app to /Applications and opens
+  it); allow Scenic in Login Items if macOS asks, and check its window says "Build service:
+  running". A copy of Scenic run from inside an installed version (`app/<version>/Scenic.app`)
+  manages nothing.
 - `scenic status` and the menu bar item (Scenic's) show the build's state, and this Mac's memory against its
   floor in a line (what's available and what compressing frees among it, the floor, what's reserved
   for its jobs, why no job starts: the brake, the floor, a give-back's cool-down; the memory brake

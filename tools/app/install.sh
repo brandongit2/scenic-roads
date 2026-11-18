@@ -9,22 +9,16 @@
 # old one is removed), and copy Scenic.app to /Applications.
 # Opening Scenic then starts this Mac's build service (its agent, a member of the pool:
 # docs/pool.md), which it registers as its own login item; Scenic replaces itself on each update.
-# The menu bar item's and the agent's login items from before Scenic was an app
-# (local.scenic.status, local.scenic.agent) are removed: the switch-over (docs/building.md §2, Scenic).
 #
-#   tools/app/install.sh            the app (the switch-over, on a Mac that ran the login items)
-#   tools/app/install.sh --legacy   the login items as before Scenic was an app, Scenic.app
-#                                   unregistered and removed: the way back, until both Macs have
-#                                   switched over
+#   tools/app/install.sh            the app
 #   … --archive <version>.tgz       that release, not the lead's (its name says its version: a
 #                                   release's archive as every Mac keeps it, in
 #                                   ~/Library/Application Support/scenic/app/releases/)
 set -euo pipefail
-legacy=0 archive=
-usage="usage: tools/app/install.sh [--legacy] [--archive <version>.tgz]"
+archive=
+usage="usage: tools/app/install.sh [--archive <version>.tgz]"
 while (( $# )); do
   case $1 in
-    --legacy) legacy=1 ;;
     --archive) (( $# > 1 )) || { print -ru2 -- "install.sh: --archive names a file"$'\n'"$usage"; exit 2; }
       archive=${2:A}; shift ;;
     -h|--help) print -r -- $usage; exit 0 ;;
@@ -37,10 +31,9 @@ NAS=/Volumes/personal/projects/scenic-roads
 HOME_S="$HOME/Library/Application Support/scenic"
 uid=$(id -u)
 # A LaunchAgent's plist, written when missing (never changed once there): the launcher running
-# <name>, started at load and kept alive. $2 is its ProcessType (Interactive: else launchd throttles
-# it); $3 = aqua limits it to a logged-in session.
+# <name>, started at load and kept alive, Interactive (else launchd throttles it).
 make_plist() {
-  local name=$1 type=$2 aqua=${3:-} plist="$HOME/Library/LaunchAgents/local.scenic.$1.plist"
+  local name=$1 plist="$HOME/Library/LaunchAgents/local.scenic.$1.plist"
   [[ -f $plist ]] && return 0
   plutil -create xml1 "$plist"
   plutil -insert Label -string local.scenic.$name "$plist"
@@ -49,8 +42,7 @@ make_plist() {
   plutil -insert ProgramArguments.1 -string $name "$plist"
   plutil -insert RunAtLoad -bool true "$plist"
   plutil -insert KeepAlive -bool true "$plist"
-  plutil -insert ProcessType -string $type "$plist"
-  [[ $aqua == aqua ]] && plutil -insert LimitLoadToSessionType -string Aqua "$plist"
+  plutil -insert ProcessType -string Interactive "$plist"
   plutil -insert StandardOutPath -string "$HOME/Library/Logs/scenic/$name.log" "$plist"
   plutil -insert StandardErrorPath -string "$HOME/Library/Logs/scenic/$name.log" "$plist"
 }
@@ -145,7 +137,7 @@ if grep -Eqv '^[[:space:]]*(#|$)' "$HOME/.config/scenic/names" 2>/dev/null || [[
   if launchctl print gui/$uid/local.scenic.server >/dev/null 2>&1; then
     launchctl kickstart -k gui/$uid/local.scenic.server
   else
-    make_plist server Interactive
+    make_plist server
     launchctl bootstrap gui/$uid "$server_plist"
   fi
   map_said="the map is at http://localhost:7311"
@@ -157,34 +149,6 @@ fi
 # A running Scenic ended before it's replaced or removed (SIGTERM, by its PID: it quits without
 # asking, its build service left as it is).
 stop_program /Applications/Scenic.app/Contents/MacOS/scenic-status
-if (( legacy )); then
-  # The way back: Scenic's build service and login item unregistered, the app removed, and the two
-  # login items as they were (the launcher running the agent, and the menu bar item from `current`).
-  if [[ -x /Applications/Scenic.app/Contents/MacOS/scenic-status ]]; then
-    /Applications/Scenic.app/Contents/MacOS/scenic-status --unregister || true
-    rm -rf /Applications/Scenic.app
-  fi
-  rm -f "$HOME_S/agent/quit-request.json"
-  printf '%s\n' /usr/bin/env "PATH=${uv:h}:/opt/homebrew/opt/openjdk@21/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    "$HOME_S/app/current/scenic" agent > "$HOME_S/run/agent"
-  printf '%s\n' "$HOME_S/app/current/Scenic.app/Contents/MacOS/scenic-status" > "$HOME_S/run/status"
-  for name in agent status; do
-    plist="$HOME/Library/LaunchAgents/local.scenic.$name.plist"
-    if [[ $name == agent ]]; then make_plist agent Standard; else make_plist status Interactive aqua; fi
-    launchctl bootout gui/$uid/local.scenic.$name 2>/dev/null || true
-    launchctl bootstrap gui/$uid "$plist"
-  done
-  echo "installed $version the old way: the agent and the menu bar item as login items"
-  exit 0
-fi
-# The login items Scenic replaces: stopped and removed (a job the old agent runs given back).
-for old in local.scenic.status local.scenic.agent; do
-  if [[ -f "$HOME/Library/LaunchAgents/$old.plist" ]] || launchctl print gui/$uid/$old >/dev/null 2>&1; then
-    launchctl bootout gui/$uid/$old 2>/dev/null || true
-    rm -f "$HOME/Library/LaunchAgents/$old.plist"
-    echo "removed the old $old login item"
-  fi
-done
 # The app.
 rm -rf /Applications/Scenic.app
 ditto "$HOME_S/app/current/Scenic.app" /Applications/Scenic.app

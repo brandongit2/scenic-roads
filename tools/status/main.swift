@@ -1229,8 +1229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The app opened: its menu, its build service started, the window (unless opened at login),
     /// and the app among the login items.
     func openApp() {
-        // (Run from inside an installed version, as the old menu bar login item runs it before the
-        // switch-over: the menu bar item alone, managing nothing, quitting for a newer version.)
+        // (Run from inside an installed version: the menu bar item alone, managing nothing,
+        // quitting for a newer version.)
         if insideInstalledVersion() {
             every(60) { quitIfReplaced() }
             return
@@ -1262,18 +1262,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The app made a login item (when it manages the build service and opens at login).
     func addLoginItem() {
-        if build.blocked == nil, openAtLogin, SMAppService.mainApp.status != .enabled {
+        if openAtLogin, SMAppService.mainApp.status != .enabled {
             do { try SMAppService.mainApp.register() } catch { NSLog("scenic: adding the app to the login items: \(error)") }
         }
-    }
-
-    /// Left alone at launch (the old login items still there), asked again each poll and as the
-    /// menu opens: once they're gone, the build service registered and started and the app made a
-    /// login item, as a fresh launch would.
-    func recheckSwitchOver() {
-        guard managing, build.recheck() else { return }
-        addLoginItem()
-        updateWindow()
     }
 
     /// Each poll: the build service kept running (or, quitting after its job, the app quits once
@@ -1281,7 +1272,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func tendServices() {
         // (Not in --menu-proof's runs: the services left alone.)
         guard managing else { return }
-        recheckSwitchOver()
         build.tend()
         if build.quitting == "finish" && !build.state.running {
             mayQuit = true
@@ -1324,7 +1314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// app quits once the service has stopped) or "Stop now". A logout, restart or shutdown: "Stop
     /// now" without asking. On the lead the build waits for it (the lead is fixed, docs/pool.md §6).
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if mayQuit || !managing || build.blocked != nil { return .terminateNow }
+        if mayQuit || !managing { return .terminateNow }
         build.refresh()
         if !build.state.running { return .terminateNow }
         if quitForLogout() {
@@ -1434,7 +1424,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }()
 
     func menuNeedsUpdate(_ m: NSMenu) {
-        recheckSwitchOver()
         let (kind, line) = shownState()
         fill(m, kind, line)
     }
@@ -1567,11 +1556,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The window, and quitting.
         if managing {
             m.addItem(.separator())
-            if build.blocked != nil {
-                let it = NSMenuItem(title: build.said, action: nil, keyEquivalent: "")
-                it.isEnabled = false
-                m.addItem(it)
-            }
             let win = NSMenuItem(title: "Show the Scenic window", action: #selector(showWindow), keyEquivalent: "")
             win.target = self
             m.addItem(win)
@@ -1914,9 +1898,8 @@ if let i = args.firstIndex(of: "--reopen") {
         }
     }
 } else if args.contains("--plan") {
-    // What opening this copy would manage: nothing from inside an installed version or before the
-    // switch-over (a check of the transition guard).
-    print(notManaging().map { "manages nothing: \($0)" } ?? "manages the build service (\(buildLabel)) and the login items")
+    // What opening this copy would manage: nothing from inside an installed version.
+    print(insideInstalledVersion() ? "manages nothing: run from inside an installed version" : "manages the build service (\(buildLabel)) and the login items")
 } else if args.contains("--services") {
     // The build service's state, as the app sees it.
     let b = BuildService()
