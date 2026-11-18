@@ -238,8 +238,10 @@ it stopped. So there is no run to finish: the queue's length is what's left.
     uploads' check (above), last.
   - **The orphan sweep**, a pass every 14 days (`ORPHAN_AGE_S`): it lists,
     a folder at a time, the top folders of what the map and the records name, the removed steps'
-    folders, the passes' up to the newest complete one (`sources/osm/<date>/`,
-    `sources/items/<date>/`, their subfolders too; a newer pass, in progress, never) and the rail
+    folders, the passes' up to the newest complete one, as the lead's merged records name it in
+    its answer to the chunk (`sources/osm/<date>/`, `sources/items/<date>/`, their subfolders too;
+    a newer pass, in progress, never; no pass folder at all when the lead names none: no records
+    served yet, or a lead too old to say) and the rail
     lists' (`sources/rail/`'s own files, not its zips), and sends the lead each content-named file at least 14 days old (no job
     runs that long between its upload and its hand-off), which queues those nothing holds, freed
     as it finds them (so a lease older than that holds them, and they wait their grace). A pass
