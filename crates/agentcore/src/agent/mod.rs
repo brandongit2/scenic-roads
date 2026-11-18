@@ -18424,6 +18424,35 @@ mod membership_tests {
         assert_eq!((drop.secs, drop.known), (2.0, true), "its step's drops' of the way it runs now");
     }
 
+    /// Task #1393: a held catalogue is the forecast's `catalog-held`, as its job is granted, never
+    /// `catalog`; the jobs before the regions' (the timetables' to-do) are in its input.
+    #[test]
+    fn the_forecast_models_a_held_catalogue_as_it_is_granted() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        let spec = |id: &str, step: &str| JobSpec {
+            id: id.into(),
+            what: String::new(),
+            cmd: vec!["scenic-build".into(), step.into()],
+            needs: Needs { nas: true },
+            restart_after_sleep: true,
+            record: Some(jobs::Work { step: step.into(), targets: vec![(step.into(), "k".into())] }),
+        };
+        let lead = [spec("summits 2026", "summits"), spec("timetables-todo", "timetables-todo")];
+        let landmarks = vec![jobs::Work { step: "pois".into(), targets: vec![("6/1/1".into(), "k".into())] }];
+        for held in [false, true] {
+            a.switches.held = held;
+            let chains = [Vec::new(), landmarks.clone(), Vec::new(), Vec::new(), Vec::new()];
+            let rec =
+                a.planner().forecast_record(&lead, &[], &[], &[], chains, &[], None, &Default::default(), &|_, _| 0);
+            let ids: Vec<&str> = rec.input.before.iter().map(|j| j.1.as_str()).collect();
+            assert_eq!(ids, ["summits 2026", "timetables-todo"], "every lead job granted before the regions'");
+            let after: Vec<&str> = rec.input.after.iter().map(|j| j.0.as_str()).collect();
+            assert_eq!(after, [if held { "catalog-held" } else { "catalog" }]);
+        }
+    }
+
     /// Task #1375: the lead's state of 13 Nov 2026, 15:35: a plan made from records read before a
     /// job's hand-off was merged (under way as the job ended) offers its targets still, at the key
     /// they were done under; the coordinator holds them done (granting none again), and the

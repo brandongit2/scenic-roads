@@ -344,8 +344,17 @@ pub fn cap_busy(inp: &mut Input, longest: &BTreeMap<String, f64>) {
 /// The lead's steps on its own clock, not the plan's dependencies: the catalogues and low zooms
 /// published, the backups, the sweeps, the inputs' refreshes, the names' and timetables' todo
 /// lists, the tasks. Left out of `Forecast::curve` and of the work `pace` counts done.
-pub const CLOCKED: [&str; 8] =
-    [store::catalogue::NAME, "lo", "backup", "gc", "inputs", "names-todo", "timetables-todo", "task"];
+pub const CLOCKED: [&str; 9] = [
+    store::catalogue::NAME,
+    store::catalogue::HELD_NAME,
+    "lo",
+    "backup",
+    "gc",
+    "inputs",
+    "names-todo",
+    "timetables-todo",
+    "task",
+];
 
 /// The lead's duties the forecast doesn't model (docs/building.md, The forecast): the jobs its
 /// plan makes outside the regions' work (crate::agent::plan's `plan_unchecked`, besides

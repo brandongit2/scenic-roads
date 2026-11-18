@@ -1756,12 +1756,11 @@ impl Planner {
         // The timetables' to-do list and report, after each rail and ferries run (lead-only: it
         // writes into the static timetables' inputs folder's todo/, never read as an input).
         if let Some(w) = self.held_plan.timetables_todo(&round) {
-            jobs.push(job(
-                "timetables-todo".into(),
-                "timetables-todo",
-                vec!["--pass".to_string(), date.to_string()],
-                Some(w),
-            ));
+            push_before(
+                &mut jobs,
+                &mut before,
+                job("timetables-todo".into(), "timetables-todo", vec!["--pass".to_string(), date.to_string()], Some(w)),
+            );
         }
         let summits = pw.summits.take();
         // (Held, they're the landmarks chain's first step in the forecast, after the terrain.)
@@ -1779,8 +1778,7 @@ impl Planner {
                 vec!["--pass".into(), date.to_string(), "--cache".into(), s(&self.o.home.join("cache"))],
                 Some(w),
             );
-            jobs.insert(before.len(), j.clone());
-            before.push(j);
+            push_before(&mut jobs, &mut before, j);
         }
         // Z6 tiles whose terrain can't be worked out now (a pack's index unread): they wait for it.
         // Or the declared elevation datasets: before their switch (docs/inputs.md §6.8), or while
@@ -2397,7 +2395,9 @@ impl Planner {
         }
         if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() || !depth.is_empty() || !polar.is_empty()
         {
-            after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
+            // (The step its grant is named: a held catalogue's is `catalog-held`.)
+            let catalog = if self.inp.switches.held { store::catalogue::HELD_NAME } else { store::catalogue::NAME };
+            after.push((catalog.into(), "after the chains".into(), mine(catalog, 1)));
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
         // they took last time, less what it spent on the one under way, if longer.
@@ -3529,6 +3529,16 @@ fn sample_self(sampler: &Path, home: &Path, now: u64) {
     }
 }
 
+/// A lead job of the pass that isn't the plan's work (the summits, the timetables' to-do): placed
+/// before the regions' jobs in `jobs` and put in `before`, the forecast's input of the lead's jobs
+/// before the regions', so the forecast models it. The only way `region_jobs` adds one after its
+/// copy of `before` (its test `every_job_the_regions_make_is_in_the_forecasts_input` holds it to
+/// that).
+fn push_before(jobs: &mut Vec<JobSpec>, before: &mut Vec<JobSpec>, j: JobSpec) {
+    jobs.insert(before.len(), j.clone());
+    before.push(j);
+}
+
 /// A sampler still running this long after it started (it samples for `SAMPLE_SECS`, then
 /// symbolicates: on the lead's idle agent that took 0.3 s past the 3 s sampled; a stalled, loaded
 /// one needed more than the 60 s it was once given) is killed.
@@ -3578,6 +3588,38 @@ mod tests {
         }
         assert_eq!(regions, 1, "the regions' work: the forecast's");
         assert_eq!(made, forecast::UNFORESEEN.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>());
+    }
+
+    /// Task #1393: every job `region_jobs` makes after it copies `before` (the forecast's input of
+    /// the lead's jobs before the regions') goes in by `push_before`, or is the plan's work (the
+    /// regions' and chains' work the forecast lists from the plan itself): a job put in `jobs` any
+    /// other way fails here, so the forecast can't miss it (the timetables' to-do once was). Read
+    /// from the source, as the test above.
+    #[test]
+    fn every_job_the_regions_make_is_in_the_forecasts_input() {
+        let src = include_str!("plan.rs");
+        let start = src.find("    pub(super) fn region_jobs(").expect("region_jobs");
+        let body = &src[start..];
+        let body = &body[..body[1..].find("\n    pub(super) fn ").expect("the next fn") + 1];
+        let copy = body.find("let mut before = jobs.clone();").expect("the copy of before");
+        let (mut by_push, mut plans) = (0, 0);
+        for line in body[copy..].lines().map(str::trim) {
+            if line.starts_with("push_before(") {
+                by_push += 1;
+            } else if line.starts_with("jobs.push(j);") {
+                // (The plan's work, in the loop over `plan`: its held catalogue, and each other job.)
+                plans += 1;
+            } else {
+                assert!(
+                    !["jobs.push(", "jobs.insert(", "jobs.extend(", "jobs.splice(", "jobs.append("]
+                        .iter()
+                        .any(|p| line.contains(p)),
+                    "a job put in the plan's list not by `push_before`: {line}"
+                );
+            }
+        }
+        assert_eq!(by_push, 2, "the summits' and the timetables' to-do: both in the forecast's input");
+        assert_eq!(plans, 2, "the plan's work's jobs: the held catalogue and the rest");
     }
 
     /// The plan is made again when something it depends on changed, it was kicked (a job's end, a

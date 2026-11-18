@@ -62,7 +62,7 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/agentcore/src/agent/mod.rs", "tell_gate", "post_api(\"inputs\"", "the lead's `/api/inputs` ask (the gate's accepts), a route's name, not an inputs folder"),
     ("crates/pipeline/src/bin/scenic.rs", "inputs", "\"inputs dropped in \"", "an older lead's job line, \"Checking the inputs dropped in <unit>\" (task #502), read for its unit, not an inputs folder"),
     ("crates/agentcore/src/agent/every.rs", "LEAD_ONLY", "\"inputs\"", "the `inputs` step's name, kept to the lead, not an inputs folder"),
-    ("crates/agentcore/src/agent/forecast.rs", "CLOCKED", "\"gc\", \"inputs\"", "the `inputs` step's name among the lead's clocked steps, not an inputs folder"),
+    ("crates/agentcore/src/agent/forecast.rs", "CLOCKED", "\"inputs\",", "the `inputs` step's name among the lead's clocked steps, not an inputs folder"),
     ("crates/trees/src/trees/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not an inputs folder"),
     ("crates/bld/src/bld/task.rs", "spec", "\"inputs\": list", "a task's input files (its spec's \"inputs\"), not an inputs folder"),
     ("crates/terrain/src/terrain_task.rs", "spec", "\"inputs\": [[", "a task's input files (its spec's \"inputs\"), not an inputs folder"),
