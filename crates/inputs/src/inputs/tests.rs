@@ -714,6 +714,32 @@ fn credits_come_from_the_descriptions_beside_the_tables() {
     .any(|c| c["what"] == "Unknown"));
 }
 
+/// The table's OSM row and the planet's declaration (§6.9, task #1169): accepted, the declaration's
+/// credit is served in the row's place, the row's own words nowhere; with none accepted (nothing
+/// requires one, and the last pass's roads stay), the row stands in for the ODbL notice.
+#[test]
+fn the_planets_declaration_takes_the_osm_rows_place() {
+    let staged = include_str!("../../../../producers/sources/osm-planet.toml");
+    let (d, f, _) = credits::parse_description("osm-planet.toml", staged.as_bytes());
+    assert!(f.is_empty(), "{f:?}");
+    let planet = credits::Described {
+        unit: super::sources::UNIT.into(),
+        path: "osm-planet.toml".into(),
+        description: d.unwrap(),
+        extent: Some(credits::Extent::World("world".into())),
+        code: None,
+    };
+    let row = &crate::rules::CREDITS[0];
+    assert_eq!(planet.description.what, row.what);
+    let with = credits::catalogue_credits(&[], &[], std::slice::from_ref(&planet));
+    let without = credits::catalogue_credits(&[], &[], &[]);
+    assert_eq!(with.len(), without.len());
+    assert_eq!(with[0], planet.credit());
+    assert_eq!(without[0], serde_json::to_value(row).unwrap());
+    assert!(!with.iter().any(|c| c["source"] == row.source));
+    assert_eq!(with[1..], without[1..]);
+}
+
 /// The elevation datasets' labels (the catalogue's `dem_labels`, §6.8): each code's label, else its
 /// name, the first of a code's; a label edit changes the catalogue's key.
 #[test]
