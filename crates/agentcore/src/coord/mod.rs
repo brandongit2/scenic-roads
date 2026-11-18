@@ -4520,16 +4520,18 @@ fn route(
                     });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
                     let n = s.pack_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
-                    let threads = ask_cores(&a);
+                    // (Its memory a thread and the threads that covers, as a packed job's: its
+                    // threads the lease's, set above.)
+                    let started = s.leases.of(lease).map_or(1, |l| l.threads);
                     let (thread_mb, covered) = s.per_thread_mb(&o.step, pick.iter().map(|t| t.0.as_str()), n.m.mem_mb);
                     let g = Grant {
                         lease,
                         epoch: s.leases.epoch,
                         ttl_s: TTL.as_secs(),
-                        threads,
+                        threads: ask_cores(&a),
                         peak_mb: n.m.mem_mb,
                         thread_mb,
-                        thread_covers: threads.max(covered),
+                        thread_covers: started.max(covered),
                         disk_mb: if n.cold { 0 } else { n.m.disk_mb },
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),

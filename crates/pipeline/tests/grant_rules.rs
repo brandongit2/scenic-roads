@@ -44,7 +44,7 @@ const EXEMPT: &[(&str, &str, &str)] = &[
     (
         "agentcore/src/coord/mod.rs",
         "threads: ask_cores(&a),",
-        "a task's grant (not a job): its threads, the Mac's cores",
+        "a resumed job's grant (its progress on that Mac alone, not packed): its threads, the Mac's cores",
     ),
     (
         "agentcore/src/pool/sim/place.rs",
