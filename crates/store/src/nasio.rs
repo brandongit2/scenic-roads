@@ -58,11 +58,14 @@
 //! they received (summed) since its first quick read, whichever is more (a Wi-Fi's stated rate was
 //! below what it carried: 45-58 MB/s stated against 61-71 MB/s streamed). So a cached read held up
 //! past the bound on a loaded Mac (1.4 ms for a MB against 0.77) counts its own bytes and not a
-//! run after it. Against the truth (the M4 under load 22-120, 18 Nov): cold files of 98-129 MB read
-//! through counted within 0.02 %; 75 warm reads of a 105 MB file, 7.9 GB, counted 2 MB the NAS's
-//! (two reads held up, a MB each) against 87 KB sent; a file warm at its start and cold after,
-//! exact; one cold for 55 MB and warm for 38 MB after, 85 MB counted against 58 MB sent (its warm
-//! part counted while the links' rate and other traffic left room; 114 MB before the bound). Not
+//! run after it. A run's first quick read the stated rate doesn't cover is the cache's, the run
+//! kept for one more (its received bytes are counted from that read on); a second ends it.
+//! Against the truth (the M4 under load 12-120, 18 Nov): cold files of 98-129 MB read through
+//! counted within 0.02 %; 75 warm reads of a 105 MB file, 7.9 GB, counted 1-2 MB the NAS's (a held-up
+//! read, a MB, at most one a run) against 87 KB sent; a file warm at its start and cold after,
+//! exact, or a MB short (that first quick read); one cold for 55 MB and warm for 38 MB after,
+//! 64-85 MB counted against 58 MB sent (its warm part while the links' rate and other traffic left
+//! room; 114 MB before the bound). Not
 //! counted: the whole pages the wire carries for a small read (a 4 KB read moves about 20 KB, a 64
 //! KB one about 80 KB). No call of its own: two clock reads and a lock a read; a run's first quick
 //! read asks the links (a sysctl, about 0.1 ms), and again only when its bound falls short.
@@ -384,7 +387,8 @@ pub const RUNS: usize = 4;
 /// began; the links as its first quick read came (`Link`, asked then: a run of slow reads alone,
 /// random reads', never asks) and the bytes counted the NAS's before it; the bytes counted the
 /// NAS's since it began and since its last slow read; the bytes the links had received since its
-/// links were asked, as last asked; and when it was read last (which gives way).
+/// links were asked, as last asked; when it was read last (which gives way); and whether a quick
+/// read of it has fallen short of the links' bound (the next to fall short ends it).
 #[derive(Debug, Clone, Copy)]
 struct Run {
     end: u64,
@@ -395,6 +399,7 @@ struct Run {
     since_slow: u64,
     received: u64,
     used: std::time::Instant,
+    short: bool,
 }
 
 /// This Mac's links: their rate (bytes a second: their up interfaces' own,
@@ -452,6 +457,7 @@ impl Reads {
                         since_slow: 0,
                         received: 0,
                         used: now,
+                        short: false,
                     });
                 }
             }
@@ -482,6 +488,12 @@ impl Reads {
             (r.end, r.since_began, r.since_slow, r.used) = (off + n, total, r.since_slow + n, now);
             runs[k] = Some(r);
             true
+        } else if r.since_slow + n <= read_ahead() && !r.short {
+            // (The cache's, the run kept for one more: the links' received bytes are counted from
+            // its first quick read, so that read's own arrived before they were asked.)
+            (r.end, r.since_slow, r.used, r.short) = (off + n, r.since_slow + n, now, true);
+            runs[k] = Some(r);
+            false
         } else {
             runs[k] = None;
             false
@@ -1046,7 +1058,8 @@ mod tests {
         let mut wifi = File::new(Some(5_000_000));
         wifi.each = Some(2 * mb);
         assert!(wifi.read(0, mb, ms(20), ms(20)));
-        assert!((1..30).all(|k| wifi.read(k * mb, mb, us(200), ms(10))), "kept up with by its received bytes");
+        assert!(!wifi.read(mb, mb, us(200), ms(10)), "its received bytes counted from here");
+        assert!((2..30).all(|k| wifi.read(k * mb, mb, us(200), ms(10))), "kept up with by its received bytes");
         let mut quiet = File::new(Some(5_000_000));
         quiet.each = Some(4096);
         assert!(quiet.read(0, mb, us(1400), us(1400)));
@@ -1062,9 +1075,7 @@ mod tests {
         // takes the slot of the one read longest ago.)
         let mut two = File::new(gbe);
         assert!(two.read(0, mb, ms(50), ms(50)) && two.read(500 * mb, mb, ms(50), ms(50)));
-        assert!(
-            (1..10).all(|k| two.read(k * mb, mb, us(200), us(200)) && two.read((500 + k) * mb, mb, us(200), us(200)))
-        );
+        assert!((1..10).all(|k| two.read(k * mb, mb, us(200), ms(5)) && two.read((500 + k) * mb, mb, us(200), ms(5))));
         for k in 1..=RUNS as u64 {
             assert!(two.read(k * 1000 * mb, mb, ms(50), ms(50)));
         }

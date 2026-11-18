@@ -1008,15 +1008,16 @@ read as absent):
   answered the NAS's (what the kernel read ahead for it) while within the kernel's read-ahead reach
   and what this Mac's links could have carried since the run began (their rate since its first
   slow read, or the bytes they received since its first quick read, whichever is more). Against the
-  SMB session's own received bytes (18 Nov, the M4 under load 22-120): cold files read through
-  within 0.02 %; 75 warm reads of a 105 MB file (7.9 GB) counted 2 MB the NAS's against 87 KB sent
-  (a cached read held up past the bound counts its own bytes, not a run after it); warm then cold,
-  exact; cold for 55 MB then warm for 38 MB, 85 MB counted against 58 MB sent (its warm part while
-  the links' rate and other traffic left room). Not counted: the whole pages the NAS sends for a
+  SMB session's own received bytes (18 Nov, the M4 under load 12-120): cold files read through
+  within 0.02 %; 75 warm reads of a 105 MB file (7.9 GB) counted 1-2 MB the NAS's against 87 KB
+  sent (a cached read held up past the bound counts its own bytes, not a run after it); warm then
+  cold, exact or a MB short (a run's first quick read its links' stated rate doesn't cover counts
+  as the cache's); cold for 55 MB then warm for 38 MB, 64-85 MB counted against 58 MB sent (its
+  warm part while the links' rate and other traffic left room). Not counted: the whole pages the NAS sends for a
   small read (a 4 KB read moves about 20 KB, a 64 KB one about 80 KB). What chunk 4's pacing
   (#1417) can take from it: `read_b` is what the NAS sent for the job's counted reads but their
   pages' rounding, over by a held-up read's bytes and a cold-then-warm run's warm part within what
-  the links could carry.
+  the links could carry, under by at most a read a run where a Wi-Fi's stated rate falls short.
 
   Not counted at all (no store::nasio count; tests/nas_access.rs lists them): readers that open a
   NAS path in-process themselves, codecs::basepart's base-pack ranges (task #1464), lakefill's
