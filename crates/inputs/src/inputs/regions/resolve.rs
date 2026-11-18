@@ -37,16 +37,12 @@ pub struct Problem {
 pub struct Folder {
     /// By id: (the file's path, the region).
     pub regions: BTreeMap<String, (String, Region)>,
-    /// By name: (the file's path, its polygons, or why it can't be read). Shared, never copied: a
-    /// folder's copy with its borders (`with_borders`) reads the same.
+    /// By name: (the file's path, its polygons, or why it can't be read). Shared, never copied.
     pub shapes: std::sync::Arc<BTreeMap<String, (String, Result<Polys, String>)>>,
     /// `_pins.toml`, when there and read.
     pub pins: BTreeMap<String, String>,
     /// `_rules.toml`, when there and read.
     pub rules: Option<super::tiles::Rules>,
-    /// Each folder's border (`border` in its `_group.toml`, a subfolder's), by the group file's
-    /// path: read only by the regions with water (`with_borders`).
-    pub borders: BTreeMap<String, Vec<Part>>,
     /// Two region files with one id, or two shapes with one name.
     pub problems: Vec<Problem>,
     /// Each file's bytes' hash, by path (what a region's resolution is kept by: `Memo`).
@@ -134,18 +130,9 @@ impl Folder {
         for p in &paths {
             let p = p.clone();
             let kind = special(&p);
-            // (A group file's name, order and symbol are the index's; its border, if a subfolder's,
-            // the regions with water's, read on its own: a fault elsewhere in the file is the file
-            // check's, never a border left out. Not hashed: the border is in their key, `whole_key`,
-            // and nothing else of it in any resolution's.)
+            // (A group file's name, order and symbol are the index's: no resolution reads it, nor
+            // any key.)
             if kind == Some(Special::Group) {
-                if p.contains('/') {
-                    if let Some(Ok(b)) = std::str::from_utf8(&read(&p)?).ok().map(super::file::group_border) {
-                        if !b.is_empty() {
-                            f.borders.insert(p, b);
-                        }
-                    }
-                }
                 continue;
             }
             let bytes = read(&p)?;
@@ -204,21 +191,6 @@ impl Folder {
         }
         f.shapes = std::sync::Arc::new(shapes);
         Ok(f)
-    }
-
-    /// The folder with each border (`borders`) a region of its folder (`Region::of_border`, its id
-    /// and path the group file's), as the regions with water are resolved: None when it has none.
-    /// (The shapes shared, not copied: the regions' files, a few MB, are.)
-    pub fn with_borders(&self) -> Option<Folder> {
-        if self.borders.is_empty() {
-            return None;
-        }
-        let mut f = self.clone();
-        for (p, b) in &self.borders {
-            let dir = p.rsplit_once('/').map_or("", |(d, _)| d);
-            f.regions.insert(p.clone(), (p.clone(), Region::of_border(p, dir, b.clone())));
-        }
-        Some(f)
     }
 
     /// The regions under folder `g` (its path), `but` left out.
@@ -298,7 +270,7 @@ pub struct Outcome {
     /// By id, a digest of everything its resolution reads: its file, the pins, the
     /// shapes and regions it names (their own keys), the context. A region with water is resolved
     /// with every other (the coast shared between them, the rest), so its key is the whole
-    /// folder's (every file but the group files, plus their borders: `whole_key`).
+    /// folder's (every file but the group files: `whole_key`).
     pub keys: BTreeMap<String, String>,
     /// How the regions with water fit, with `cover = "earth"` (the cover check's measures).
     pub fit: super::tiles::Fit,
@@ -487,15 +459,13 @@ impl<'a> Against<'a> {
     }
 }
 
-/// The key of a region with water: every file but the group files, of which only the borders are
-/// read, and what it's resolved against, as a region with water is resolved with every other (the
+/// The key of a region with water: every file but the group files, and what it's resolved against, as a region with water is resolved with every other (the
 /// coast shared, the hand-outs, the cover check). So it's the key of the folder's whole resolution
 /// too, but the other passes' outline sets (`outcome_key`).
 pub fn whole_key_of(folder: &Folder, a: &Against) -> String {
     let mut parts =
         vec![a.names.to_string(), a.pass.unwrap_or("-").to_string(), format!("{:?}", folder.pins), a.data.to_string()];
     parts.extend(folder.hashes.iter().map(|(p, h)| format!("{p} {h}")));
-    parts.extend(folder.borders.iter().map(|(p, b)| format!("{p} border {b:?}")));
     store::naming::hash16(parts.join("\n").as_bytes())
 }
 

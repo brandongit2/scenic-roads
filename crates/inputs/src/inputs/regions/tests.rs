@@ -651,31 +651,18 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
     assert_eq!(d.index.files["eu/pt/b.toml"].facts["geometry"], d2.index.files["b.toml"].facts["geometry"]);
     // A bad group file: an error on it.
     assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\ncolour = 1\n").findings[0].check(), "rg-group");
-    // A border (task #1422): a subfolder's, its fact the group's as without; the folder reads it, a
-    // bad one not; at the top, an error. A fault elsewhere in the file (an empty name, a bad symbol)
-    // is the file check's: the folder reads its border all the same.
+    // A border (owner, 18 Nov: a divided place is its regions' union): a field a group file
+    // doesn't take, at any depth. The folder reads no group file, nor hashes one.
     let border = b"name = \"Europe / EU\"\nborder = [\"osm:1\"]\n";
-    let f = checks.file("eu/_group.toml", border);
-    assert!(f.findings.is_empty(), "{:?}", f.findings);
-    assert_eq!(f.facts["group"], serde_json::json!({"name": "Europe / EU"}));
+    assert_eq!(checks.file("eu/_group.toml", border).findings[0].check(), "rg-group");
     assert_eq!(checks.file("_group.toml", border).findings[0].check(), "rg-group");
-    assert_eq!(checks.file("eu/_group.toml", b"name = \"x\"\nborder = [\"osm:x\"]\n").findings[0].check(), "rg-part");
-    let faulty = b"name = \"\"\nborder = [\"osm:2\"]\n[symbol]\nimage = \"Q1.svg\"\nkind = \"\"\nsource = \"x\"\n";
-    assert!(!checks.file("af/_group.toml", faulty).findings.is_empty());
-    let files: BTreeMap<String, Vec<u8>> = [
-        ("eu/_group.toml", &border[..]),
-        ("am/_group.toml", &b"name = \"am\"\nborder = []\n"[..]),
-        ("af/_group.toml", &faulty[..]),
-        ("_group.toml", &border[..]),
-        ("eu/pt/_group.toml", &b"name = \"pt\"\n"[..]),
-    ]
-    .iter()
-    .map(|(p, t)| (p.to_string(), t.to_vec()))
-    .collect();
+    let files: BTreeMap<String, Vec<u8>> =
+        [("eu/_group.toml", &border[..]), ("eu/pt/_group.toml", &b"name = \"pt\"\n"[..])]
+            .iter()
+            .map(|(p, t)| (p.to_string(), t.to_vec()))
+            .collect();
     let folder = resolve::Folder::read(files.keys().cloned(), &|p| Ok(files[p].clone())).unwrap();
-    assert_eq!(folder.borders.keys().collect::<Vec<_>>(), ["af/_group.toml", "eu/_group.toml"]);
-    assert_eq!(folder.borders["eu/_group.toml"], vec![file::Part::Osm(1)]);
-    assert_eq!(folder.borders["af/_group.toml"], vec![file::Part::Osm(2)]);
+    assert!(folder.regions.is_empty());
     assert!(folder.hashes.is_empty());
     assert!(checks.takes_ignored("_group.toml") && checks.takes_ignored("_draft.toml"));
     assert!(!checks.takes_ignored("_x.geojson") && !checks.takes_ignored(".DS_Store"));

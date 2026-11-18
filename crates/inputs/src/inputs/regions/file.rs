@@ -194,10 +194,6 @@ pub struct Region {
     /// borders goes to that member (`tiles::resolve`; a subfolder holding a waters region is one
     /// member, its waters region taking the stretch).
     pub hand_out: Option<String>,
-    /// A folder's border (`Region::of_border`), not a file's region: it hands out every stretch,
-    /// to the region of its folder sharing the longest edge, or the nearest if it touches none, and
-    /// ends empty; never stored, listed nor named.
-    pub border: bool,
     /// `disabled = true`: checked and resolved like any other region (others may name it, the cover
     /// check counts it), but never built: left out of the coverage and every list the build plans
     /// or sizes from (crate::inputs::regions::read).
@@ -211,28 +207,6 @@ pub struct Region {
 }
 
 impl Region {
-    /// A folder's border (`border` in its `_group.toml`, at `path`) as the regions with water are
-    /// resolved with it (`resolve::Folder::with_borders`), by the group file's path: a region with
-    /// water whose land is the border's less every region under `folder` (their land and lakes: its
-    /// `minus`, the folder's group), every stretch of which it hands out to them (`tiles::resolve`).
-    pub fn of_border(path: &str, folder: &str, border: Vec<Part>) -> Region {
-        Region {
-            id: path.to_string(),
-            name: format!("the border of {folder}"),
-            outline: border,
-            minus: vec![Part::Group(folder.to_string())],
-            intersect: Vec::new(),
-            water: Vec::new(),
-            water_key: true,
-            hand_out: Some(folder.to_string()),
-            border: true,
-            disabled: false,
-            lines: BTreeMap::new(),
-            pins: BTreeMap::new(),
-            symbol: None,
-        }
-    }
-
     /// Whether it's stored as its parts unchanged (§6.1.4): only `osm:` and `shape:` parts in
     /// `outline`, no `minus` nor `intersect`.
     pub fn is_plain(&self) -> bool {
@@ -629,8 +603,8 @@ fn pins_of(raw: BTreeMap<String, toml::Value>) -> Result<BTreeMap<String, String
 }
 
 /// A folder's group (`_group.toml`): the name the map's Regions list shows it by, its place among
-/// its sibling folders (lower first; without one, after those with one, by name), and the border of
-/// the place its regions divide, if they do. The index's `group` fact is its name and order.
+/// its sibling folders (lower first; without one, after those with one, by name). The index's
+/// `group` fact is its name and order.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Group {
@@ -641,11 +615,6 @@ pub struct Group {
     /// in `group`'s.
     #[serde(default, skip_serializing)]
     pub symbol: Option<super::symbols::Symbol>,
-    /// `border = [<parts>]`, their union: the place the folder's regions divide. The land inside it
-    /// that no region under the folder covers is handed out to them (`Region::of_border`). In no
-    /// fact: the regions with water's key holds it (`resolve::whole_key`).
-    #[serde(skip)]
-    pub border: Vec<Part>,
 }
 
 #[derive(Deserialize)]
@@ -655,11 +624,9 @@ struct RawGroup {
     #[serde(default)]
     order: Option<i64>,
     symbol: Option<super::symbols::Symbol>,
-    border: Option<toml::Value>,
 }
 
-/// `_group.toml`, parsed: a name that isn't empty, an integer order if any, a sound symbol if any, a
-/// border of sound parts if any (`border_of`).
+/// `_group.toml`, parsed: a name that isn't empty, an integer order if any, a sound symbol if any.
 pub fn parse_group(text: &str) -> Result<Group, Fault> {
     let g: RawGroup = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
     if g.name.trim().is_empty() {
@@ -668,40 +635,7 @@ pub fn parse_group(text: &str) -> Result<Group, Fault> {
     if let Some(m) = g.symbol.as_ref().and_then(|s| super::symbols::faults(s).into_iter().next()) {
         return Err(fault("symbol", m));
     }
-    let border = border_of(g.border.as_ref())?;
-    Ok(Group { name: g.name, order: g.order, symbol: g.symbol, border })
-}
-
-/// A `_group.toml`'s border alone, as the resolution reads it (none when it has none): a fault of the
-/// file's other fields (its name, its symbol, a field unknown) is the file check's (`parse_group`),
-/// never a border left out.
-pub fn group_border(text: &str) -> Result<Vec<Part>, Fault> {
-    let t: toml::Table = toml::from_str(text).map_err(|e| fault("group", format!("_group.toml: {}", e.message())))?;
-    border_of(t.get("border"))
-}
-
-/// A group file's `border`: a non-empty list of parts, no `rest`, no line (a group file has none).
-fn border_of(v: Option<&toml::Value>) -> Result<Vec<Part>, Fault> {
-    let border = match v {
-        None => return Ok(Vec::new()),
-        Some(toml::Value::Array(vs)) if vs.is_empty() => {
-            return Err(fault("group", "_group.toml: border = [] names no place (give the place's border, or none)"))
-        }
-        Some(toml::Value::Array(vs)) => vs.iter().map(parse_part).collect::<Result<Vec<_>, _>>()?,
-        Some(_) => return Err(fault("group", "_group.toml: border is a list of parts, as an outline")),
-    };
-    let (mut all, mut lines) = (Vec::new(), Vec::new());
-    for p in &border {
-        p.walk(&mut all);
-        p.lines(&mut lines);
-    }
-    if all.iter().any(|p| matches!(p, Part::Rest)) {
-        return Err(fault("part", "_group.toml: rest is only in a region's water, never in a border"));
-    }
-    if let Some(l) = lines.first() {
-        return Err(fault("ref", format!("_group.toml: its border names line:{l}, and a group file has no lines")));
-    }
-    Ok(border)
+    Ok(Group { name: g.name, order: g.order, symbol: g.symbol })
 }
 
 /// `_pins.toml`, parsed.
@@ -790,7 +724,6 @@ pub fn parse(file_name: &str, text: &str) -> Result<Region, Vec<Fault>> {
         water,
         water_key,
         hand_out: raw.hand_out.map(|h| h.trim_end_matches('/').to_string()),
-        border: false,
         disabled: raw.disabled,
         lines,
         pins,
@@ -895,29 +828,13 @@ mod tests {
         assert_eq!(parse_pins("osm = \"2026-09-29\"\ngadm = \"4.1\"\n").unwrap()["gadm"], "4.1");
     }
 
-    /// Task #1422: a group file's border, its parts as an outline's; its fact as before.
+    /// A group file has no border (owner, 18 Nov: a divided place is its regions' union): `border`
+    /// is a field it doesn't take.
     #[test]
-    fn a_group_file_may_give_its_places_border() {
-        let g =
-            parse_group("name = \"Morocco\"\nborder = [{ minus = [\"osm:3630439\", \"region:western-sahara\"] }]\n")
-                .unwrap();
-        assert_eq!(g.border, vec![Part::Minus(vec![Part::Osm(3630439), Part::Region("western-sahara".into())])]);
-        assert_eq!(serde_json::to_value(&g).unwrap(), serde_json::json!({"name": "Morocco"}));
-        assert!(parse_group("name = \"M\"\n").unwrap().border.is_empty());
-        let check = |t: &str| parse_group(&format!("name = \"M\"\n{t}")).unwrap_err().check;
-        assert_eq!(check("border = []\n"), "group");
-        assert_eq!(check("border = [\"poly:x.poly\"]\n"), "part");
-        assert_eq!(check("border = [{ minus = [\"osm:1\", \"rest\"] }]\n"), "part");
-        assert_eq!(check("border = [{ buffer = \"line:coast\", by = \"1 km\" }]\n"), "ref");
-        assert_eq!(check("border = \"osm:1\"\n"), "group");
-        assert_eq!(check("borders = [\"osm:1\"]\n"), "group");
-        // (The resolution reads the border alone: an empty name, a bad symbol or an unknown field
-        // are the file check's.)
-        let bad = "name = \"\"\ncolour = 1\nborder = [\"osm:1\"]\n[symbol]\nimage = 1\n";
-        assert_eq!(parse_group(bad).unwrap_err().check, "group");
-        assert_eq!(group_border(bad), Ok(vec![Part::Osm(1)]));
-        assert_eq!(group_border("name = \"M\"\n"), Ok(vec![]));
-        assert_eq!(group_border("border = [\"rest\"]\n").unwrap_err().check, "part");
+    fn a_group_file_gives_no_border() {
+        let g = parse_group("name = \"Morocco\"\norder = 2\n").unwrap();
+        assert_eq!(serde_json::to_value(&g).unwrap(), serde_json::json!({"name": "Morocco", "order": 2}));
+        assert_eq!(parse_group("name = \"M\"\nborder = [\"osm:1\"]\n").unwrap_err().check, "group");
     }
 
     /// `hand_out` is for a region with water.

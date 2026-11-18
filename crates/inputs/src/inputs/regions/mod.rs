@@ -583,18 +583,12 @@ impl Checks for Regions {
             c.findings.push(finding(&file::Fault { check: "special", message }, path));
         } else if known == Some(resolve::Special::Group) {
             match file::parse_group(text) {
-                Ok(g) if !g.border.is_empty() && !path.contains('/') => {
-                    let message =
-                        "the top's _group.toml has no border: a border is a subfolder's, the place its regions divide";
-                    c.findings.push(finding(&file::Fault { check: "group", message: message.into() }, path));
-                }
                 Ok(g) => {
                     c.facts.insert("group".into(), serde_json::to_value(&g).unwrap_or_default());
                     if let Some(s) = &g.symbol {
                         c.facts.insert("symbol".into(), serde_json::to_value(s).unwrap_or_default());
                     }
-                    // (A group file reruns nothing itself: no build reads its name, and its border
-                    // reaches the build through the regions with water, whose key holds it.)
+                    // (A group file reruns nothing: no build reads it.)
                     c.keyed = Some("-".into());
                 }
                 Err(f) => c.findings.push(finding(&f, path)),
