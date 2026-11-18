@@ -305,6 +305,9 @@ pub fn view(home: &Path, root: Option<&store::nasfs::NasRoot>) -> serde_json::Va
             "mb": memfloor::floor_mb(mem.as_ref(), total_mb),
             "default_mb": memfloor::default_mb(total_mb),
             "total_mb": total_mb,
+            // (The kernel's file-cache line unread: none of the cache counts as available,
+            // jobrt::sys::file_cache_line; the page says so.)
+            "cache_line": jobrt::sys::file_cache_line().is_some(),
             "set": mem.is_some(),
             "by": mem.as_ref().map(|m| m.by.clone()),
             "at": mem.as_ref().map(|m| m.at),

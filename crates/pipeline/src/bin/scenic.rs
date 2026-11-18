@@ -1181,6 +1181,11 @@ fn memory(what: Option<&str>, home: &Option<PathBuf>) -> Result<()> {
         None => memfloor::read(&home),
     };
     println!("{}", memory_line(set.as_ref(), total_mb, |t| ago(t)));
+    if jobrt::sys::file_cache_line().is_none() {
+        println!(
+            "macOS's file-cache line (vm.vm_page_filecache_min) can't be read on this Mac: none of its file cache counts as available"
+        );
+    }
     if let Some(m) = agent::memguard::live(&home).filter(|m| now_s().saturating_sub(m.at) < 60) {
         println!("{} ({})", m.words(set.is_some()), ago(m.at));
     }

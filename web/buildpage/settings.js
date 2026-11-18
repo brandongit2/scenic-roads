@@ -170,7 +170,7 @@ export function macRows(s) {
     })),
     guarded("memory", "Memory floor", () => ({
       now: gb(s.memory.mb * 2 ** 20),
-      note: `kept available on ${s.mac || "this Mac"} whatever runs on it, of ${gb(s.memory.total_mb * 2 ** 20)}: jobs start only above it and are given back below it${s.memory.set ? by(s.memory) : " (the default, an eighth)"}`,
+      note: `kept available on ${s.mac || "this Mac"} whatever runs on it, of ${gb(s.memory.total_mb * 2 ** 20)}: jobs start only above it and are given back below it${s.memory.set ? by(s.memory) : " (the default, an eighth)"}${s.memory.cache_line === false ? `; macOS's file-cache line (vm.vm_page_filecache_min) can't be read on ${s.mac || "this Mac"}, so none of its file cache counts as available` : ""}`,
       input: { min: 1, max: s.memory.total_mb ? Math.ceil(s.memory.total_mb / 1024) - 1 : null, step: 0.5, placeholder: "GB", offTitle: `Back to the default (${gb(s.memory.default_mb * 2 ** 20)})` },
     })),
     guarded("room", "Disk room target", () => ({

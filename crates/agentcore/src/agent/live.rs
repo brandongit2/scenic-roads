@@ -808,7 +808,8 @@ impl Rates {
         let used: Vec<_> = jobs.iter().map(|(k, pgid, _)| (*k, *pgid, jobrt::sys::usage_of_group(*pgid))).collect();
         let b = self.jobs(&used, t);
         // (The jobs' own memory is no idle memory to compress: as the guard reads it.)
-        let avail = jobrt::sys::memory_available(b.mem.unwrap_or(0));
+        let anon: u64 = jobs.iter().filter_map(|(_, pgid, _)| jobrt::sys::anon_of_group(*pgid)).sum();
+        let avail = jobrt::sys::memory_available(anon);
         put(MEM_AVAIL, avail.map(|a| a.total() as f64 / GB));
         put(MEM_COMPRESSIBLE, avail.map(|a| a.compressible as f64 / GB));
         let avail = avail.map(|a| a.total());

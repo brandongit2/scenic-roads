@@ -852,10 +852,10 @@ impl Sampler {
     }
 
     /// The Mac's memory now against its floor, the jobs holding `held_mb` together (`Reading`): the
-    /// memory available (what compressing frees among it), the swap's samples kept over
-    /// `SWAP_WINDOW` for the swap grown. None (and nothing kept) while its memory or the available
-    /// can't be read.
-    fn read_memory(g: &mut Inner, held_mb: u64) -> Option<Reading> {
+    /// memory available (what compressing frees among it; the jobs holding `anon_mb` of it resident
+    /// and not compressed, jobrt::sys::anon_of_group), the swap's samples kept over `SWAP_WINDOW`
+    /// for the swap grown. None (and nothing kept) while its memory or the available can't be read.
+    fn read_memory(g: &mut Inner, held_mb: u64, anon_mb: u64) -> Option<Reading> {
         if g.total_mb == 0 {
             return None;
         }
@@ -866,7 +866,7 @@ impl Sampler {
         let (avail_mb, compress_mb, swap) = match set {
             Some(mb) => (mb, 0, g.swap_set),
             None => {
-                let a = jobrt::sys::memory_available(held_mb << 20)?;
+                let a = jobrt::sys::memory_available(anon_mb << 20)?;
                 (a.total() >> 20, a.compressible >> 20, g.swap_set.or_else(|| jobrt::sys::swap_used().map(|b| b >> 20)))
             }
         };
@@ -914,6 +914,8 @@ impl Sampler {
         let set = self.inner.lock().ok().and_then(|g| g.held_set.clone());
         // (Read outside the lock: the footprints and the files take time.)
         let mut got: Vec<(usize, i32, Option<u64>, Option<String>)> = Vec::new();
+        // (Each job's memory resident and not compressed: a test's, what it holds.)
+        let mut anon: Vec<(usize, i32, u64)> = Vec::new();
         let mut cpu: Vec<(usize, i32, Option<u64>)> = Vec::new();
         for (k, pgid) in watches {
             let held = match &set {
@@ -922,6 +924,11 @@ impl Sampler {
             };
             let key =
                 self.inner.lock().ok().and_then(|g| g.watches.get(k).and_then(|w| w.clone())).and_then(|w| w.current());
+            let a = match &set {
+                Some(_) => held,
+                None => jobrt::sys::anon_of_group(pgid).map(|b| b >> 20),
+            };
+            anon.push((k, pgid, a.unwrap_or(0)));
             got.push((k, pgid, held, key));
             cpu.push((k, pgid, jobrt::sys::cpu_of_group(pgid)));
         }
@@ -953,7 +960,12 @@ impl Sampler {
                 }
             }
             let held_mb: u64 = g.watches.iter().flatten().filter_map(|w| w.held).sum();
-            let reading = Self::read_memory(&mut g, held_mb);
+            let anon_mb: u64 = anon
+                .iter()
+                .filter(|(k, pgid, _)| g.watches.get(*k).and_then(Option::as_ref).is_some_and(|w| w.pgid == *pgid))
+                .map(|(_, _, mb)| mb)
+                .sum();
+            let reading = Self::read_memory(&mut g, held_mb, anon_mb);
             g.reading = reading;
             // (Written once the lock is let go: the agent's loop doesn't wait on the write.)
             live = g.file.clone().map(|f| {
@@ -1345,18 +1357,23 @@ mod tests {
     /// 00:10:05 and the pressure warning at 00:10:30; at 01:10 five held 37 GB, the compressor 23.1
     /// GB of 39.8, the swap growing 3.6 GB in 90 s. The pages between those figures are a model
     /// (Docker's VM 8.2 GB and 4 GB of the owner's apps in use, 6 GB of them idle, a 5.4 GB file
-    /// cache all of it what macOS keeps, the compressor's ratio the M4's 1.79 read on 4 Nov), 7.5 GB
-    /// a terrain-deep job's peak, the owner's 4 GB floor.
+    /// cache, the compressor's ratio the M4's 1.79 read on 4 Nov; the kernel's file-cache line as
+    /// it stood on the three Macs on 18 Nov, 10/27 of the memory neither wired nor compressed, and
+    /// all the anonymous memory resident), 7.5 GB a terrain-deep job's peak, the owner's 4 GB floor.
+    /// The cache is under the line the kernel would reach at the guard's compressor limit (9.0 GB),
+    /// so none of it counts; not that macOS keeps all of it (on 12 Nov it gave the M4's down to 5.4
+    /// GB, on 18 Nov to 4.4, with nothing compressed).
     #[test]
     fn the_fourth_of_november_replayed() {
         let page = |gb: f64| (gb * (1u64 << 30) as f64 / 16384.0).round() as u64;
-        // (Memory, in GB: free, file cache (all of it kept), active and idle anonymous, the
-        // compressor and the GB it holds; the jobs' MB.)
+        // (Memory, in GB: free, file cache, active and idle anonymous, the compressor and the GB it
+        // holds; the jobs' MB, resident.)
         let mac = |free: f64, file: f64, active: f64, idle: f64, comp: f64, stored: f64, held_mb: u64| -> Reading {
             let p = jobrt::sys::Pages {
                 free: page(free),
                 file: page(file),
-                kept: page(file),
+                line: Some(page((free + active + idle + file) * 10.0 / 27.0)),
+                anon: page(active + idle),
                 active: page(active),
                 inactive: page(idle + file),
                 compressor: page(comp),
@@ -1379,22 +1396,23 @@ mod tests {
         let admits = |r: &Reading, running: u64| {
             (0..8u64).take_while(|&n| r.admit_mb().saturating_sub((running + n) * peak) >= peak).count()
         };
-        // 00:07:30: 9.2 GB free, the 5.4 of cache kept, and the 6 GB idle less the job's own 3.2
-        // compressed for 1.2 more: 10.4 GB available. The job's growth (4.3), a second job's peak
-        // and the floor don't fit: none starts (counted as before, the cache and the job's own
-        // memory among the idle, one did, and the four that did took the Mac to swap).
+        // 00:07:30: 9.2 GB free, none of the cache, and the 6 GB idle less the job's share (its 3.2
+        // GB as the idle's share of the anonymous memory, 0.9) compressed for 2.3 more: 11.5 GB
+        // available. The job's growth (4.3), a second job's peak and the floor don't fit: none
+        // starts (counted as before, the cache and the job's own memory among the idle, one did, and
+        // the four that did took the Mac to swap).
         let r = mac(9.2, 5.4, 3.2 + 8.2 + 4.0, 6.0, 4.4, 4.4 * 1.79, 3277);
-        assert_eq!((r.avail_mb / 100, r.compress_mb / 100), (106, 12), "{r:?}");
+        assert_eq!((r.avail_mb / 100, r.compress_mb / 100), (117, 23), "{r:?}");
         assert_eq!(admits(&r, 1), 0);
         // Had a second started, both at their peaks (15 GB): the idle 6 GB compressed (the
-        // compressor 7.7 GB, 19 % of the unwired: the pressure normal), the cache kept: nothing
-        // available, under the floor, and the newest drains before macOS compresses the jobs'.
+        // compressor 7.7 GB, 19 % of the unwired: the pressure normal), the cache under the line:
+        // nothing available, under the floor, and the newest drains before macOS compresses the jobs'.
         let r = mac(0.0, 5.4, 15.0 + 8.2 + 4.0, 0.1, 7.7, 13.8, 2 * peak);
         assert!(r.avail_mb < 100 && r.below() && !r.acts() && admits(&r, 2) == 0, "{r:?}");
         let two = [Some(peak), Some(peak)];
         assert_eq!(decide_by(&two, r.room_mb(), &[false; 2], &[false; 2], &[1, 2]), Act::Drain(1));
         // 01:10 as it was, five jobs at 37 GB: the compressor 23.1 GB of 39.8, past two fifths, so
-        // compression counts nothing (0.2 GB free, the 5.4 of cache kept); the pressure at warning: no job
+        // compression counts nothing (0.2 GB free, the cache under the line); the pressure at warning: no job
         // starts; the swap grown 3.6 GB leaves none usable, under the floor: the brake acts, the
         // newest frozen at once and given back if the Mac isn't back within the minute.
         let r = Reading {

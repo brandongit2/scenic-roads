@@ -27,8 +27,8 @@ pub const OLD_FILE: &str = "build-memory.json";
 /// The floor of a Mac of `total_mb` when none is set (MB): an eighth of its memory (6 GB of the
 /// M4's 48, 4 of the Mac mini's 32, 2 of the M1's 16), kept available for the owner's apps and the
 /// agent to grow into. The available (jobrt::sys::memory_available) counts neither the file cache
-/// macOS keeps nor the jobs' own memory, so its nothing is where macOS starts to compress memory in
-/// use, and the floor is a margin above that (docs/pool.md §7.1). 0 for a Mac whose memory isn't
+/// the kernel prefers to keep nor the jobs' own memory as idle, so its nothing is about where macOS
+/// starts to compress memory in use, and the floor is a margin above that (docs/pool.md §7.1). 0 for a Mac whose memory isn't
 /// known.
 pub fn default_mb(total_mb: u64) -> u64 {
     total_mb / 8

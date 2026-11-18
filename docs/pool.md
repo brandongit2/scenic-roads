@@ -771,27 +771,39 @@ the agent's folder (`memory-floor.json`); `scenic memory off` clears it; `scenic
 stands and the memory as the guard last sampled it. The agent reads it each loop. Not set, the
 Mac's default, an eighth of its memory (6 GB of the M4's 48, 4 of the Mac mini's 32, 2 of the M1's
 16), shown as the setting's value: a margin for the owner's apps and the agent to grow into. The
-available counts neither the file cache macOS keeps nor the jobs' own memory (below), so it reaches
-nothing where macOS starts to compress memory in use, and any floor is a margin above that point.
+available counts neither the file cache the kernel prefers to keep nor the jobs' own memory as idle
+(below), so it reaches nothing about where macOS starts to compress memory in use, and any floor is a
+margin above that point.
 The floor is taken as set: no cap, reserve or footprint stands behind it (the agent counts as any
 other process).
 
 - **Available** (`sys::memory_available`, `sys::Pages::available`; tasks #945, #1244): what macOS
   hands out at no cost, and what it frees by compressing other processes' idle memory with its
-  pressure left normal, the pool's jobs holding what they hold (their footprints together, as the
-  guard samples them; the live series' reading, §10, takes the same).
-  - *At no cost:* the free pages, the file-backed pages (the file cache) above what macOS keeps of
-    them, the purgeable ones (`host_statistics64`), and the reusable ones (`vm.page_reusable_count`,
-    task #1215) as far as the other processes' inactive anonymous pages hold them.
-    - *The cache macOS keeps* is the kernel's own line, `vm.vm_page_filecache_min`, read with the
-      pages each time: while the pageable file-backed pages are under it, the pageout scan takes
-      anonymous pages (compresses them) rather than file-backed ones (xnu's
-      `vps_choose_victim_page`); the kernel recomputes it as it scans, a share of the memory
-      neither wired nor compressed (`AVAILABLE_NON_COMPRESSED_MEMORY` × 10 over its divisor), and
-      drops it to nothing only when the compressor runs out of space or the free pages fall under
-      a quarter of its reserve. Read at 16:29 on 18 Nov: the M4 10.2 GB (of a 9.1 GB cache), the
-      Mac mini 7.6 (of 7.6), the M1 3.1 (of 2.8): each Mac's cache sat at or under it, so none of
-      it counted. Where the line can't be read, all the cache is taken as kept.
+  pressure left normal, the pool's jobs holding what they hold resident (each job's processes'
+  footprints less what of them is compressed or swapped, `sys::anon_of_group`: `TASK_VM_INFO` by
+  each process's task name port; the guard's reading and the live series', §10, alike).
+  - *At no cost:* the free pages, the file-backed pages (the file cache) down to the kernel's
+    file-cache line as it will stand once compression is spent (below), the purgeable ones
+    (`host_statistics64`), and the reusable ones (`vm.page_reusable_count`, task #1215) as far as
+    the other processes' inactive anonymous pages hold them.
+    - *The file-cache line* is the kernel's, `vm.vm_page_filecache_min`, read with the pages each
+      time. It is a soft preference, not a keep: while the pageable file-backed pages are under it,
+      xnu's pageout scan (`vps_choose_victim_page`, xnu-12377) takes anonymous pages, compressing
+      them, before file-backed ones, with exceptions: it still takes a file page in a hundred, it
+      takes the background queue first, and the line is set to nothing once the free pages fall
+      under a quarter of their reserve (or the compressor runs out of space). So macOS does give
+      cache under it: the Mac mini's fell 1.9 GB under its 7.8 GB line on 18 Nov with its
+      compressor flat, and the M4's to 4.4 GB under a 13.3 GB line with nothing compressed (below,
+      *Measured*). The kernel recomputes it as it scans, in proportion to the memory neither wired
+      nor compressed (active, inactive, free and speculative: `AVAILABLE_NON_COMPRESSED_MEMORY`),
+      so it sinks as the compressor grows. The cache counts down to the line as it will stand when
+      the compressor holds `COMPRESSOR_NORMAL`, two fifths, of the memory not wired, where the
+      guard's counting of compression stops: the line now times three fifths of the unwired over
+      that memory now (no more than the line now), all read live (`Pages::kept`). Read at 17:13 on
+      18 Nov: the M4's line 13.3 GB, 9.3 at the limit (a 23.3 GB cache); the Mac mini's 7.0–7.5,
+      5.0–5.1 (an 8.2–9.6 GB cache); the M1's 3.0–3.3, 2.4–2.6 (a 3.5–4.7 GB cache).
+    - *Unread* (no such sysctl), all the cache is taken as kept: none of it counts. `scenic memory`
+      and the build page's memory floor row say so.
     - A read-ahead's speculative pages are in both the
       kernel's free count and its file-backed count (file-backed + anonymous = active + inactive +
       speculative, to the page), so they come off the free, as `vm_stat` prints it. Never raw free
@@ -828,23 +840,28 @@ other process).
       pages and 0.2 from compressing; on the M4 on 12 Nov (four runs, a process beside it holding
       memory it had just marked reusable) of 5.6 GB of reusable pages 1.4 GB were handed out and
       4.0 GB left when macOS compressed 17 GB of the taker's memory in one burst at 25.1 GB
-      taken. On the M4 on 18 Nov (its pool paused, 512 MB steps; task #1244), the quiet run:
-      counted at the start 14.3 GB (11.6 free, 1.6 reusable, 0.8 by compressing; the 10.9 GB
-      cache under the kernel's 12.8 GB line, none of it), the 10.2 GB above the owner's 4 GB
-      floor taken with the pressure normal, nothing compressed and no swap; 13.3 GB taken so
-      (the free pages, then 1.7 GB of the cache once the free pages ran out), then the
-      compressor grew by 1.3 GB as the reusable pages came out (at 14.8 GB taken), then a 2 GB
-      burst at 15.4. The measure as it stood before counted 25.3 GB at the start. A run beside
-      other agents' tests: counted 10.9 GB (21.8 before), 11.0 GB taken cleanly, then the cache
-      and the compressor moved together.
+      taken. On the M4 on 18 Nov (its pool paused, 512 MB steps; task #1244), counted at the start
+      against what was handed out (the measure before #1244 in brackets):
+      - 16:25, other agents' tests running: 12.6 GB (21.3); 11.0 GB taken with nothing
+        compressed, then the cache fell to 8.7 GB (8.7 at the line's limit) while 0.8 GB was
+        compressed, 4.8 GB by 14.5 GB taken, the pressure normal throughout.
+      - 16:28, quiet: 15.8 GB (24.7); 13.0 GB taken with nothing compressed (the free pages,
+        then the cache down to 8.7 GB, 8.8 at the limit), 14.5 GB with the pressure normal as
+        the compressor grew 1.3 GB, then a 2 GB burst at 15.0.
+      - 17:12, quiet, a 23.3 GB cache: 16.3 GB (25.6); the 12.3 GB above the owner's 4 GB floor
+        taken with the pressure normal, nothing compressed and no swap; 21.0 GB taken so, the
+        cache down to 4.4 GB (9.3 at the limit), then the compressor grew.
+      So the line at the limit is where the cache stopped in the first two (within 0.1 GB) and
+      well above it in the third: what the measure counts was handed out, give or take a GB near the
+      bottom (the reusable pages and the compressing part come out together with some of the
+      memory in use).
     - *The Mac mini's* (19:01 on 12 Nov, no job running): 0.1 GB free, 7.6 GB of file cache,
       0.3 GB purgeable, 1.8 GB of idle anonymous memory and 5.5 GB of reusable pages, most of
       them its agent's (resident 5.6–6.2 GB, 1.5 GB of it mapped files; footprint 1.6 GB, at most
       2.8 GB in its first half hour): of the reusable pages the idle 1.8 GB count at no cost,
-      not all 5.5. At 16:29 on 18 Nov (its jobs holding 1.8 GB): 0.9 GB free, 7.6 GB of cache at
-      the kernel's 7.6 GB line (none counted), 5.9 GB of reusable pages of which 0.6 GB count:
-      1.6 GB available, where the cache counted whole and the jobs' memory read as idle it read
-      11.2.
+      not all 5.5. Sampled every 5 s at 17:13 on 18 Nov (its jobs holding 1.6–3.7 GB, 1.2–3.2 of
+      it resident): 4.7–6.5 GB available, where the cache counted whole and the jobs' memory read
+      as idle it read 9.8–11.6.
     - *The agent's* are left by its first plans after a start (above, *What leaves them*) and
       then stay: 36 min after one (13 Nov, app 20261113-0149) it was 6.9 GB resident, 3.96 GB of
       it malloc's reclaimable pages (`footprint <pid>`: Malloc Small), and a plan moved neither
@@ -873,9 +890,10 @@ other process).
     (its pages stored over its pages, the ratio), freeing ratio − 1. What it compresses is the
     inactive anonymous memory: the inactive queue less every file-backed page not speculative
     and the purgeable (the least it can be: the kernel doesn't split the queue), less the pool's
-    jobs' footprints (the kernel keeps its inactive queue about as long as its active one whatever
+    jobs' share of it (the kernel keeps its inactive queue about as long as its active one whatever
     is in use, 20.8 GB each on the M4 on 12 Nov with one program writing to 25 GB, so a job's own
-    memory sits on it too) and the reusable counted at no cost, which frees 1 − 1/ratio of
+    memory sits on it too: of the jobs' resident memory, the inactive anonymous pages' share of
+    the anonymous pages) and the reusable counted at no cost, which frees 1 − 1/ratio of
     itself. Counted: the less of the two; none while the compressor holds nothing (no ratio
     measured) or past two fifths. Read at 14:39 on 4 Nov, the pressure
     normal on each (no job's memory left out, the cache counted whole):
@@ -884,8 +902,8 @@ other process).
     touched on the M4 then (in 512 MB steps, its jobs running) left the pressure normal and the
     compressor's share at 29 %. Shown as said: "10.3 GB available (3.5 GB by compressing)".
   - *Past two fifths*, compression spent, the available is what's left at no cost: the free pages
-    and the cache above the kernel's line, next to nothing on a Mac compressing that hard (the line
-    sinks as the compressor grows, the cache with it). So any floor is reached there and the guard
+    and the cache above the kernel's line, next to nothing on a Mac compressing that hard (past the
+    limit the line as it stands counts, and macOS has given most of what it gives of the cache). So any floor is reached there and the guard
     gives back by it, and the brake (the pressure at warning holding new work, swap grown past the
     floor's room freezing and giving back) stands behind it.
 - **Reading** (`memguard::Reading`, every 5 s on the sampler's thread, with the jobs' footprints):
