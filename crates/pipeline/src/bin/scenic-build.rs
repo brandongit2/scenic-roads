@@ -175,6 +175,26 @@ fn flag(args: &[String], name: &str) -> bool {
     agentcore::cli::build::flag(args, name)
 }
 
+/// The coastline's land of the pass `--pass` names (inputs::inputs::regions::land), copied into
+/// `scratch` and open: what the data-available layers are cut to (terrain::available::cut).
+fn pass_land(
+    out: &buildstore::out::Out,
+    args: &[String],
+    scratch: &Path,
+) -> Result<::inputs::inputs::regions::land::Land> {
+    use ::inputs::inputs::regions::land;
+    let date = opt(args, "--pass").context("--pass <date>: the pass whose coastline cuts the layers")?;
+    let l = land::logical(&date);
+    let c = out.get(&l).with_context(|| format!("no {l} (the pass's regions-land step makes it)"))?;
+    std::fs::create_dir_all(scratch)?;
+    let local = scratch.join("regions-land.bin");
+    out.path(c).copy_data_to_local(&local).with_context(|| format!("copy {c}"))?;
+    let f = std::fs::File::open(&local).with_context(|| format!("open {}", local.display()))?;
+    // (Unlinked while open: it goes when the step does.)
+    std::fs::remove_file(&local).ok();
+    land::Land::open(f).with_context(|| format!("read {c}"))
+}
+
 /// A flag's value (`--pass`), as clap read the line.
 fn opt(args: &[String], name: &str) -> Option<String> {
     agentcore::cli::build::values(args, name).into_iter().next()
@@ -837,6 +857,9 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             let m = out.manifest.clone();
             let a = ::inputs::inputs::open(out.root(), &m, extents::UNIT)?
                 .with_context(|| format!("no accepted version of {}", extents::UNIT))?;
+            let p = phase("reading the pass's land");
+            let land = pass_land(&out, &args, &scratch)?;
+            drop(p);
             let targets = positional(&args);
             for (k, t) in targets.iter().enumerate() {
                 let theme = t
@@ -853,11 +876,13 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
                         }
                     }
                 }
+                let cut = terrain::available::Cut::new(&land, terrain::available::cut::side_of(theme)?)?;
                 drop(p);
                 let p = phase("drawing the pieces' tiles");
-                let made =
-                    terrain::available::build(&mut out, theme, &pieces, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))
-                        .map_err(|e| jobrt::control::stop_if_paused("available", e))?;
+                let made = terrain::available::build(&mut out, theme, &pieces, &cut, &|d, n| {
+                    jobrt::jobs::report(d, n, "z6 tiles")
+                })
+                .map_err(|e| jobrt::control::stop_if_paused("available", e))?;
                 drop(p);
                 out.save()?;
                 eprintln!(
@@ -884,11 +909,13 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
             for t in positional(&args) {
                 anyhow::ensure!(t == want, "{t}: not the built set's target ({want})");
             }
-            let p = phase("reading the datasets");
+            let p = phase("reading the datasets and the pass's land");
             let ds = built::datasets(&a, out.root())?;
+            let land = pass_land(&out, &args, &scratch)?;
+            let cut = terrain::available::Cut::new(&land, terrain::available::cut::side_of(built::THEME)?)?;
             drop(p);
             let p = phase("drawing where each dataset was used");
-            let made = built::build(&mut out, &ds, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))
+            let made = built::build(&mut out, &ds, &cut, &|d, n| jobrt::jobs::report(d, n, "z6 tiles"))
                 .map_err(|e| jobrt::control::stop_if_paused("available-built", e))?;
             drop(p);
             out.save()?;

@@ -14,13 +14,14 @@
 //!   store's index of the tiles' entries, no tile read;
 //! - a pyramid published at every zoom (the Terrarium tiles): everywhere in the Web Mercator plane.
 //!
-//! A pixel holds its centre's dataset; stored to `BUILT_MAXZ` (z10: GLO-30's voids, a fifth of a
+//! A pixel holds its centre's dataset, on the theme's side of the coastline only (super::cut: the
+//! land), the empty set elsewhere; stored to `BUILT_MAXZ` (z10: GLO-30's voids, a fifth of a
 //! mountain tile in places, make nearly every land tile mixed at z12), above it each pixel the union
 //! of the four under it. Its pieces' ids are the datasets', described beside the tiles
 //! (`codecs::available::datasets_logical`) for the server. The z6 tiles, the root, the polar caps
 //! and the record as the best set's (super::drive), keyed by the datasets meeting each z6 tile.
 
-use super::{combine, drive, Cell, Emit, Made, Record, Sets, Stored, Z6};
+use super::{combine, drive, Cell, Cut, Emit, Made, Record, Rows, Sets, Stored, Z6};
 use anyhow::{Context, Result};
 use buildstore::out::Out;
 use codecs::available::{self as fmt, BUILT_MAXZ, PIXELS, SIDE};
@@ -36,7 +37,7 @@ use store::nasfs::NasPath;
 /// What the datasets' extents make of a tile: bumped with any change to the tiles' bytes for the
 /// same datasets (the rules above, the levels read, the zoom stored to). Each tile's key and the
 /// step's own version.
-pub const KEY_V: u32 = 1;
+pub const KEY_V: u32 = 2;
 
 /// The theme the elevation datasets are of.
 pub const THEME: &str = "terrain";
@@ -203,8 +204,14 @@ fn z10_in(b: [f64; 4]) -> Vec<(u32, u32)> {
 /// The key of a z6 tile ("6/x/y") or a pole's square from the datasets meeting box `b`: each one's
 /// line, where its regions cut it there (declared::cut_note), and what it's told present by there
 /// (its presence tiles less its hollow ones in the box; a pyramid's store's archives in the z6
-/// tile's shard: `shard`).
-fn key_of(ds: &[Dataset], b: [f64; 4], shard: Option<&str>, archives: &HashMap<String, Vec<String>>) -> Option<String> {
+/// tile's shard: `shard`), and the cut's there (`Cut::lines`).
+fn key_of(
+    ds: &[Dataset],
+    b: [f64; 4],
+    shard: Option<&str>,
+    archives: &HashMap<String, Vec<String>>,
+    cut: &Cut,
+) -> Option<String> {
     let mut lines = Vec::new();
     for d in ds.iter().filter(|d| d.cover.meets(b) && reaches(d, b)) {
         let mut l = d.line.clone();
@@ -229,6 +236,7 @@ fn key_of(ds: &[Dataset], b: [f64; 4], shard: Option<&str>, archives: &HashMap<S
     if lines.is_empty() {
         return None;
     }
+    lines.extend(cut.lines(b));
     let mut h = blake3::Hasher::new();
     h.update(format!("available-built {KEY_V}\n").as_bytes());
     for l in &lines {
@@ -456,9 +464,15 @@ impl Here<'_> {
     }
 }
 
-/// The z10 tile (x, y)'s cell: each pixel's centre's set (`Here::at`), each dataset's coverage
-/// asked of the tile's box first.
-fn z10_cell(here: &Here, x: u32, y: u32) -> Cell {
+/// The z10 tile (x, y)'s cell: each pixel's centre's set (`Here::at`) where the cut keeps it
+/// (`keep`: its z6 tile's rows of 1 and 0 at z10, Cut::mask), each dataset's coverage asked of the
+/// tile's box first.
+fn z10_cell(here: &Here, keep: &Rows, x: u32, y: u32) -> Cell {
+    let side = SIDE as u32;
+    let kept = keep.uniform(x * side, (x + 1) * side, y * side, (y + 1) * side);
+    if kept == Some(0) {
+        return Cell::Uniform(0);
+    }
     let b = roadcore::geo::tile_box(BUILT_MAXZ, x, y);
     let n = here.ds.len();
     let mut skip = vec![false; n];
@@ -477,22 +491,30 @@ fn z10_cell(here: &Here, x: u32, y: u32) -> Cell {
             _ => false,
         };
     }
-    // (The first dataset not skipped there everywhere in the tile: uniform.)
+    // (The first dataset not skipped there everywhere in the tile: uniform where it's kept.)
+    let mut all = None;
     if let Some(i) = (0..n).find(|&i| !skip[i]) {
         if whole[i] && matches!(here.near[i], Near::Everywhere) {
-            return Cell::Uniform(here.one[i]);
+            all = Some(here.one[i]);
         }
     } else {
         return Cell::Uniform(0);
     }
-    let w = f64::from(SIDE as u32) * f64::from(1u32 << BUILT_MAXZ);
+    if let (Some(s), Some(_)) = (all, kept) {
+        return Cell::Uniform(s);
+    }
+    let mask = keep.raster(x * side, y * side);
+    let w = f64::from(side) * f64::from(1u32 << BUILT_MAXZ);
     let lons: Vec<f64> =
         (0..SIDE).map(|i| roadcore::geo::merc_lon((f64::from(x) * SIDE as f64 + i as f64 + 0.5) / w)).collect();
     let mut px = vec![0u32; PIXELS];
     for j in 0..SIDE {
         let lat = roadcore::geo::merc_lat((f64::from(y) * SIDE as f64 + j as f64 + 0.5) / w);
         for (i, &lon) in lons.iter().enumerate() {
-            px[j * SIDE + i] = here.at(lon, lat, &skip, &whole);
+            let k = j * SIDE + i;
+            if mask[k] != 0 {
+                px[k] = all.unwrap_or_else(|| here.at(lon, lat, &skip, &whole));
+            }
         }
     }
     uniform_or(px)
@@ -506,13 +528,14 @@ fn uniform_or(px: Vec<u32>) -> Cell {
     }
 }
 
-/// Tile z/x/y (z from 6 to `BUILT_MAXZ`) from its z10 cells, its stored tiles under it emitted.
-fn quad(here: &Here, z: u8, x: u32, y: u32, sets: &mut Sets, emit: &mut Emit) -> Cell {
+/// Tile z/x/y (z from 6 to `BUILT_MAXZ`) from its z10 cells (`keep`: the cut, as `z10_cell`'s), its
+/// stored tiles under it emitted.
+fn quad(here: &Here, keep: &Rows, z: u8, x: u32, y: u32, sets: &mut Sets, emit: &mut Emit) -> Cell {
     if z == BUILT_MAXZ {
-        return z10_cell(here, x, y);
+        return z10_cell(here, keep, x, y);
     }
     let kids: [Cell; 4] = [(0, 0), (1, 0), (0, 1), (1, 1)].map(|(dx, dy)| {
-        let c = quad(here, z + 1, 2 * x + dx, 2 * y + dy, sets, emit);
+        let c = quad(here, keep, z + 1, 2 * x + dx, 2 * y + dy, sets, emit);
         if matches!(c, Cell::Raster(_)) {
             emit(z + 1, 2 * x + dx, 2 * y + dy, &c, sets);
         }
@@ -526,16 +549,25 @@ fn pixel_m(lat: f64) -> f64 {
     roadcore::geo::merc_m(lat) / (SIDE as f64 * f64::from(1u32 << BUILT_MAXZ))
 }
 
-/// Builds the built set's layers from `ds` (the accepted datasets in their order, `datasets`), making
-/// again only what their keys say moved, and the datasets' descriptions beside them; `report` hears
-/// the z6 tiles done of those to make. Err(`Paused`) when the build pauses between z6 tiles
-/// (super::drive), the tiles made kept.
-pub fn build(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64)) -> Result<Made> {
-    build_with(out, ds, report, &jobrt::control::draining_lately)
+/// Builds the built set's layers from `ds` (the accepted datasets in their order, `datasets`), cut
+/// to the theme's side of the coast (`cut`), making again only what their keys say moved, and the
+/// datasets' descriptions beside them; `report` hears the z6 tiles done of those to make.
+/// Err(`Paused`) when the build pauses between z6 tiles (super::drive), the tiles made kept.
+pub fn build(out: &mut Out, ds: &[Dataset], cut: &Cut, report: &dyn Fn(u64, u64)) -> Result<Made> {
+    build_with(out, ds, cut, report, &jobrt::control::draining_lately)
 }
 
+/// The z10 plane's width in pixels.
+const Z10_W: u32 = (SIDE as u32) << BUILT_MAXZ;
+
 /// `build`, `pausing` saying whether the build is pausing.
-fn build_with(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64), pausing: &dyn Fn() -> bool) -> Result<Made> {
+fn build_with(
+    out: &mut Out,
+    ds: &[Dataset],
+    cut: &Cut,
+    report: &dyn Fn(u64, u64),
+    pausing: &dyn Fn() -> bool,
+) -> Result<Made> {
     let ids: Vec<String> = ds.iter().map(|d| d.id.clone()).collect();
     let arch = archives(ds)?;
     let n6 = 1u32 << fmt::PACK_Z;
@@ -543,13 +575,13 @@ fn build_with(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64), pausing:
         .flat_map(|y| (0..n6).map(move |x| (x, y)))
         .filter_map(|(x, y)| {
             let shard = format!("{}-{x}-{y}", fmt::PACK_Z);
-            let k = key_of(ds, roadcore::geo::tile_box(fmt::PACK_Z, x, y), Some(&shard), &arch)?;
+            let k = key_of(ds, roadcore::geo::tile_box(fmt::PACK_Z, x, y), Some(&shard), &arch, cut)?;
             Some((format!("{}/{x}/{y}", fmt::PACK_Z), k))
         })
         .collect();
     let poles: Vec<(Pole, String, bool)> = [Pole::North, Pole::South]
         .into_iter()
-        .map(|p| match key_of(ds, roadcore::polar::lat_box(p, 0, 0, 0), None, &arch) {
+        .map(|p| match key_of(ds, roadcore::polar::lat_box(p, 0, 0, 0), None, &arch, cut) {
             Some(k) => (p, k, false),
             None => (p, format!("pole {} none", p.letter()), true),
         })
@@ -567,13 +599,24 @@ fn build_with(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64), pausing:
                     .par_iter()
                     .map(|&(x, y)| {
                         let b = roadcore::geo::tile_box(fmt::PACK_Z, x, y);
-                        let mid = (b[1] + b[3]) / 2.0;
+                        // (The cut at z10 first: a z6 tile it cuts whole reads nothing.)
+                        let band = (SIDE as u32) << (BUILT_MAXZ - fmt::PACK_Z);
+                        let z10 = |lon, lat| {
+                            let (mx, my) = roadcore::geo::merc(lon, lat);
+                            [mx * f64::from(Z10_W), my * f64::from(Z10_W)]
+                        };
+                        let mask = cut.mask(&[b], &z10, Z10_W, y * band, (y + 1) * band)?;
+                        let keep = Rows { runs: &mask, r0: y * band, width: Z10_W, zmax: BUILT_MAXZ };
                         let mut sets = Sets::default();
+                        if keep.uniform(x * band, (x + 1) * band, y * band, (y + 1) * band) == Some(0) {
+                            return Ok(Z6::of(x, y, &Cell::Uniform(0), &sets, &ids, Vec::new()));
+                        }
+                        let mid = (b[1] + b[3]) / 2.0;
                         let near = ds.iter().map(|d| near(d, b, pixel_m(mid), Some((x, y)))).collect::<Result<_>>()?;
                         let one = (0..ds.len()).map(|i| sets.id(vec![i as u32])).collect();
                         let here = Here { ds, near, one };
                         let mut tiles: Vec<Stored> = Vec::new();
-                        let cell = quad(&here, fmt::PACK_Z, x, y, &mut sets, &mut |z, tx, ty, c, s| {
+                        let cell = quad(&here, &keep, fmt::PACK_Z, x, y, &mut sets, &mut |z, tx, ty, c, s| {
                             let (b, raw) = super::stored(c, s, &ids);
                             tiles.push((z, tx, ty, b, raw));
                         });
@@ -594,11 +637,17 @@ fn build_with(out: &mut Out, ds: &[Dataset], report: &dyn Fn(u64, u64), pausing:
             let one = (0..ds.len()).map(|i| sets.id(vec![i as u32])).collect();
             let here = Here { ds, near, one };
             let side = SIDE << fmt::POLAR_MAXZ;
+            let w = side as u32;
+            let mask = cut.mask(&[b], &|lon, lat| super::polar_px(pole, lon, lat), w, 0, w)?;
+            let keep = Rows { runs: &mask, r0: 0, width: w, zmax: fmt::POLAR_MAXZ };
             let (skip, whole) = (vec![false; ds.len()], vec![false; ds.len()]);
             let grid: Vec<u32> = (0..side * side)
                 .into_par_iter()
                 .map(|k| {
                     let (i, j) = (k % side, k / side);
+                    if keep.run_at(j as u32, i as u32).0 == 0 {
+                        return 0;
+                    }
                     let gx = -roadcore::polar::HALF + (i as f64 + 0.5) * pm;
                     let gy = roadcore::polar::HALF - (j as f64 + 0.5) * pm;
                     let (lon, lat) = roadcore::polar::inverse(pole, gx, gy);

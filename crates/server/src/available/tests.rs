@@ -3,6 +3,14 @@ use axum::http::{header, HeaderValue};
 
 const SCORE: &[u8] = include_bytes!("../../../../producers/extents/terrain/score.toml");
 
+/// The whole Earth as the coastline's land, each 2° cell its box: the step's cut keeping everything.
+fn earth() -> inputs::inputs::regions::land::Land {
+    use inputs::inputs::regions::{geom, tiles};
+    inputs::inputs::regions::land::Land::Memory(
+        (-90..90).flat_map(|x| (-45..45).map(move |y| ((x, y), geom::box_area(tiles::cell_box((x, y)))))).collect(),
+    )
+}
+
 /// A box's ring, counter-clockwise.
 fn square(w: f64, s: f64, e: f64, n: f64) -> Value {
     json!([[[w, s], [e, s], [e, n], [w, n], [w, s]]])
@@ -303,7 +311,9 @@ fn served() -> (tempfile::TempDir, tempfile::TempDir, S) {
             pieces.extend(terrain::available::pieces(id, &b).unwrap());
         }
     }
-    terrain::available::build(&mut out, "terrain", &pieces, &|_, _| {}).unwrap();
+    let land = earth();
+    let cut = terrain::available::Cut::new(&land, terrain::available::cut::Side::Land).unwrap();
+    terrain::available::build(&mut out, "terrain", &pieces, &cut, &|_, _| {}).unwrap();
     // The built set: two datasets over the whole world, the coarser one first in order.
     let t = Tile { ids: vec!["glo30".into(), "lidar".into()], sets: vec![vec![0, 1]], px: vec![0; PIXELS] };
     let tile = (0, 0, 0, t.gzipped(), t.encode().len() as u32);
@@ -595,7 +605,8 @@ async fn the_built_set_draws_the_first_dataset_in_order() {
 /// coarser, a class's edge a factor of 1.25 over its spacing, finer brighter): the world at z2,
 /// Europe at z4, France at z5, Germany at z6, Vancouver at z8, Asia at z3, Japan at z5, Oceania and
 /// South America at z4, each under both settings of the
-/// switch, written to `$SCENIC_RENDER_DIR`; a look by hand at what the app's colour map will show
+/// switch, written to `$SCENIC_RENDER_DIR`, cut to the land of the regions-land file
+/// `$SCENIC_RENDER_LAND` names; a look by hand at what the app's colour map will show
 /// (the step's whole build, ~1 min); nothing without the variable. It prints what the step made:
 /// its time, its peak resident set, its packs' bytes and its tiles' sets (over 256, the most), each
 /// zoom's tiles and bytes, and the 15 sources whose pieces' outlines cross the most tiles (with
@@ -619,8 +630,12 @@ fn renders_the_real_pieces() {
     let nas = tempfile::tempdir().unwrap();
     let root = store::nasfs::NasRoot::local_for_test(nas.path());
     let mut out = buildstore::out::Out::unbound(&root, &nas.path().join("scratch")).unwrap();
+    // (The pass's land, a regions-land file: `$SCENIC_RENDER_LAND`.)
+    let land_file = std::env::var_os("SCENIC_RENDER_LAND").expect("SCENIC_RENDER_LAND: the pass's regions-land file");
     let t = std::time::Instant::now();
-    terrain::available::build(&mut out, "terrain", &pieces, &|_, _| {}).unwrap();
+    let land = inputs::inputs::regions::land::Land::open(std::fs::File::open(land_file).unwrap()).unwrap();
+    let cut = terrain::available::Cut::new(&land, terrain::available::cut::Side::Land).unwrap();
+    terrain::available::build(&mut out, "terrain", &pieces, &cut, &|_, _| {}).unwrap();
     let took = t.elapsed();
     // SAFETY: getrusage fills the struct it's given (ru_maxrss: bytes on macOS).
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };

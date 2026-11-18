@@ -1,7 +1,24 @@
+use super::cut::Side;
 use super::*;
 use codecs::available::Grid;
+use inputs::inputs::regions::{geom, land::Land, tiles};
 use std::path::Path;
 use store::nasfs::NasRoot;
+
+/// The whole Earth as land, each 2° cell its box: a cut that keeps everything.
+pub(super) fn earth() -> &'static Land {
+    static EARTH: std::sync::OnceLock<Land> = std::sync::OnceLock::new();
+    EARTH.get_or_init(|| {
+        Land::Memory(
+            (-90..90).flat_map(|x| (-45..45).map(move |y| ((x, y), geom::box_area(tiles::cell_box((x, y)))))).collect(),
+        )
+    })
+}
+
+/// The cut keeping the whole Earth.
+pub(super) fn everything() -> Cut<'static> {
+    Cut::new(earth(), Side::Land).unwrap()
+}
 
 type Rings = Vec<Vec<[f64; 2]>>;
 
@@ -28,8 +45,12 @@ fn out(root: &Path) -> Out {
 }
 
 fn run(root: &Path, pieces: &[Piece]) -> Made {
+    run_cut(root, pieces, &everything())
+}
+
+fn run_cut(root: &Path, pieces: &[Piece], cut: &Cut) -> Made {
     let mut o = out(root);
-    let m = build(&mut o, "terrain", pieces, &|_, _| {}).unwrap();
+    let m = build(&mut o, "terrain", pieces, cut, &|_, _| {}).unwrap();
     o.save().unwrap();
     m
 }
@@ -204,14 +225,16 @@ fn a_changed_piece_makes_only_its_tiles_again() {
     let before = packs(d.path());
     // B moved: only B's z6 tiles (as it was, and as it is) are made again; A's packs are as they were.
     let m = run(d.path(), &[a.clone(), b(-68.0)].concat());
-    let b_tiles: BTreeSet<String> = tile_keys(&b(-69.0)).into_keys().chain(tile_keys(&b(-68.0)).into_keys()).collect();
+    let all = everything();
+    let b_tiles: BTreeSet<String> =
+        tile_keys(&b(-69.0), &all).into_keys().chain(tile_keys(&b(-68.0), &all).into_keys()).collect();
     assert!(!m.remade.is_empty());
     for t in &m.remade {
         assert!(b_tiles.contains(t), "{t} isn't B's");
     }
     assert!(m.root, "the root is made again from the mids");
     let after = packs(d.path());
-    for t in tile_keys(&a).into_keys() {
+    for t in tile_keys(&a, &all).into_keys() {
         let (x, y) = xy(&t);
         let l = fmt::pack_logical("available-terrain", x, y);
         assert_eq!(before.get(&l), after.get(&l), "{l}");
@@ -258,6 +281,82 @@ fn a_record_lost_or_unreadable_makes_everything_again() {
     let m = run(d.path(), &a);
     assert!(m.root && !m.remade.is_empty(), "{m:?}");
     assert_eq!(packs(d.path()), packs(fresh.path()));
+}
+
+/// A ring in degrees as the land's (E7, unclosed).
+fn e7(r: &[[f64; 2]]) -> Vec<[i64; 2]> {
+    r[..r.len() - 1].iter().map(|p| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64]).collect()
+}
+
+/// A small coast as the coastline's land: a shore from 1.8° to `east`° E and 43.9° to 44.5° N over
+/// four 2° cells, a bay closed off inside it (an enclosed sea, drawn with coastline: a hole), and
+/// an island far east (20° to 20.5° E).
+pub(super) fn coast(east: f64) -> Land {
+    let mut bay = square(2.2, 44.2, 2.3, 44.3);
+    bay.reverse();
+    Land::of_rings(&[e7(&square(1.8, 43.9, east, 44.5)), e7(&bay), e7(&square(20.0, 44.0, 20.5, 44.5))])
+}
+
+/// Every source's pieces are cut to the land: an outline over the sea holds nothing there, the
+/// land under it kept; the cells' shared edges make no seam; a lake (inside the land: the coastline
+/// doesn't go round it) is land; inverted (bathymetry's side), the sea is kept and the land cut.
+#[test]
+fn the_pieces_are_cut_to_the_land() {
+    let land = coast(2.5);
+    let p = [
+        source("a", &[("tile", vec![vec![square(1.5, 43.5, 3.0, 45.0)]])]),
+        source("b", &[("far", vec![vec![square(19.5, 43.5, 21.0, 45.0)]])]),
+    ]
+    .concat();
+    let d = tempfile::tempdir().unwrap();
+    run_cut(d.path(), &p, &Cut::new(&land, Side::Land).unwrap());
+    for (lon, lat) in [(2.0, 44.1), (1.9, 43.95), (2.45, 44.45), (2.4, 44.35)] {
+        assert_eq!(at(d.path(), lon, lat), ["a/tile"], "the land at {lon}, {lat}");
+    }
+    for (lon, lat) in [(2.8, 44.8), (1.6, 43.6), (2.55, 44.2), (2.25, 44.25)] {
+        assert!(at(d.path(), lon, lat).is_empty(), "the sea at {lon}, {lat}");
+    }
+    assert_eq!(at(d.path(), 20.25, 44.25), ["b/far"]);
+    assert!(at(d.path(), 19.8, 44.25).is_empty());
+    // A z12 tile on the land across the cells' corner (2° E, 44° N) is one set: not stored.
+    let z12 = |lon, lat| {
+        let (x, y) = roadcore::geo::merc(lon, lat);
+        ((x * 4096.0) as u32, (y * 4096.0) as u32)
+    };
+    let (tx, ty) = z12(2.0, 44.0);
+    assert!(stored_tile(d.path(), "available-terrain", 12, tx, ty).is_none(), "a seam at the cells' edges");
+    let (tx, ty) = z12(2.5, 44.2);
+    assert!(stored_tile(d.path(), "available-terrain", 12, tx, ty).is_some(), "the shore's tile");
+    // Nothing moved: nothing made. The coast moved in two cells: only the z6 tiles meeting them
+    // made again, the island's pack as it was.
+    let again = run_cut(d.path(), &p, &Cut::new(&land, Side::Land).unwrap());
+    assert!(again.remade.is_empty() && !again.root, "{again:?}");
+    let before = packs(d.path());
+    let moved = coast(2.6);
+    let m = run_cut(d.path(), &p, &Cut::new(&moved, Side::Land).unwrap());
+    let (x6, y6) = (32, (roadcore::geo::merc(0.0, 44.0).1 * 64.0) as u32);
+    assert_eq!(m.remade, [format!("6/{x6}/{y6}")], "{m:?}");
+    let island = fmt::pack_logical("available-terrain", (roadcore::geo::merc(20.25, 0.0).0 * 64.0) as u32, y6);
+    assert!(before.contains_key(&island));
+    assert_eq!(before.get(&island), packs(d.path()).get(&island));
+    assert_eq!(at(d.path(), 2.55, 44.2), ["a/tile"], "the coast moved east");
+    // The other side: the sea kept, the land cut.
+    let d = tempfile::tempdir().unwrap();
+    run_cut(d.path(), &p, &Cut::new(&land, Side::Sea).unwrap());
+    for (lon, lat) in [(2.8, 44.8), (1.6, 43.6), (2.25, 44.25)] {
+        assert_eq!(at(d.path(), lon, lat), ["a/tile"], "the sea at {lon}, {lat}");
+    }
+    assert!(at(d.path(), 2.0, 44.1).is_empty());
+    assert!(at(d.path(), 20.25, 44.25).is_empty());
+}
+
+#[test]
+fn a_rows_runs_are_kept_where_the_mask_is() {
+    let runs: Runs = vec![(0, 5), (10, 6)];
+    assert_eq!(cut::apply(&runs, &vec![(0, 1), (5, 0), (12, 1)]), [(0, 5), (5, 0), (12, 6)]);
+    assert_eq!(cut::apply(&runs, &vec![(0, 0)]), [(0, 0)]);
+    assert_eq!(cut::apply(&runs, &vec![(0, 1)]), runs);
+    assert_eq!(cut::apply(&runs, &vec![(0, 0), (10, 1)]), [(0, 0), (10, 6)]);
 }
 
 /// The real pieces (producers/extents/terrain/, as the unit takes them), each kept to the polygons

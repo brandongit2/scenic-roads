@@ -368,17 +368,7 @@ pub fn encode(pass: &str, stats: &Stats, land: &TArea) -> Vec<u8> {
     let mut cells = Vec::new();
     for (c, a) in &land.cells {
         let at = body.len() as u64;
-        let rings = a.rings();
-        varint(&mut body, rings.len() as u64);
-        for r in rings {
-            varint(&mut body, r.len() as u64);
-            let mut prev = [0i64; 2];
-            for p in r {
-                varint(&mut body, zigzag(p[0] - prev[0]));
-                varint(&mut body, zigzag(p[1] - prev[1]));
-                prev = p;
-            }
-        }
+        encode_cell(a, &mut body);
         cells.push((c.0, c.1, at, body.len() as u64 - at));
     }
     let head = serde_json::to_vec(&Head { fmt: 1, pass: pass.into(), stats: stats.clone(), cells }).expect("a head");
@@ -389,7 +379,27 @@ pub fn encode(pass: &str, stats: &Stats, land: &TArea) -> Vec<u8> {
     out
 }
 
+/// A cell's rings as the file holds them, appended to `body`.
+fn encode_cell(a: &Area, body: &mut Vec<u8>) {
+    let rings = a.rings();
+    varint(body, rings.len() as u64);
+    for r in rings {
+        varint(body, r.len() as u64);
+        let mut prev = [0i64; 2];
+        for p in r {
+            varint(body, zigzag(p[0] - prev[0]));
+            varint(body, zigzag(p[1] - prev[1]));
+            prev = p;
+        }
+    }
+}
+
 fn decode_cell(b: &[u8]) -> Result<Area> {
+    Ok(Area::from_rings(&decode_rings(b)?))
+}
+
+/// A cell's rings from its bytes, as stored (even–odd, E7).
+fn decode_rings(b: &[u8]) -> Result<Vec<Ring>> {
     let mut at = 0usize;
     let mut read = || -> Result<u64> {
         let mut v = 0u64;
@@ -416,7 +426,7 @@ fn decode_cell(b: &[u8]) -> Result<Area> {
         }
         rings.push(r);
     }
-    Ok(Area::from_rings(&rings))
+    Ok(rings)
 }
 
 /// The land, by cell: in memory (tests, fixtures) or in a file read where asked.
@@ -476,6 +486,45 @@ impl Land {
         }
     }
 
+    /// Its cells holding any land.
+    pub fn cells(&self) -> Vec<Cell> {
+        let mut v: Vec<Cell> = match self {
+            Land::Memory(m) => m.iter().filter(|(_, a)| !a.is_empty()).map(|(c, _)| *c).collect(),
+            Land::File { index, .. } => index.keys().copied().collect(),
+        };
+        v.sort_unstable();
+        v
+    }
+
+    /// A cell's bytes as the file holds them (its rings, `encode`'s); None where it has no land.
+    pub fn bytes(&self, c: Cell) -> Result<Option<Vec<u8>>> {
+        match self {
+            Land::Memory(m) => Ok(m.get(&c).filter(|a| !a.is_empty()).map(|a| {
+                let mut b = Vec::new();
+                encode_cell(a, &mut b);
+                b
+            })),
+            Land::File { f, index, .. } => {
+                let Some(&(off, len)) = index.get(&c) else { return Ok(None) };
+                let mut b = vec![0u8; len as usize];
+                use store::sys::PosIo;
+                f.lock().unwrap().read_exact_at(&mut b, off)?;
+                Ok(Some(b))
+            }
+        }
+    }
+
+    /// A cell's rings as stored (even–odd, E7), not made an area as `cell` makes them; none where
+    /// it has no land.
+    pub fn rings(&self, c: Cell) -> Result<Vec<Ring>> {
+        match self.bytes(c)? {
+            Some(b) => {
+                decode_rings(&b).with_context(|| format!("the regions' land, the cell from {}°, {}°", c.0 * 2, c.1 * 2))
+            }
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// An error if a cell couldn't be read: what was made from the land since is wrong (that
     /// cell read as no land), so the check that read it must fail, not report it.
     pub fn failed(&self) -> Result<()> {
@@ -492,18 +541,14 @@ impl Land {
     pub fn cell(&self, c: Cell) -> Arc<Area> {
         match self {
             Land::Memory(m) => Arc::new(m.get(&c).cloned().unwrap_or_default()),
-            Land::File { f, index, cache, failed, .. } => {
-                let Some(&(off, len)) = index.get(&c) else { return Arc::new(Area::default()) };
+            Land::File { index, cache, failed, .. } => {
+                if !index.contains_key(&c) {
+                    return Arc::new(Area::default());
+                }
                 if let Some(a) = cache.lock().unwrap().0.get(&c) {
                     return a.clone();
                 }
-                let mut b = vec![0u8; len as usize];
-                let read = {
-                    use store::sys::PosIo;
-                    let f = f.lock().unwrap();
-                    f.read_exact_at(&mut b, off)
-                };
-                let a = match read.map_err(anyhow::Error::from).and_then(|_| decode_cell(&b)) {
+                let a = match self.bytes(c).and_then(|b| decode_cell(&b.unwrap_or_default())) {
                     Ok(a) => Arc::new(a),
                     Err(e) => {
                         failed.lock().unwrap().get_or_insert_with(|| {

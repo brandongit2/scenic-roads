@@ -31,7 +31,7 @@ fn z10(lon: f64, lat: f64) -> (u32, u32) {
 
 fn run(root: &Path, ds: &[Dataset]) -> Made {
     let mut o = out(root);
-    let m = build(&mut o, ds, &|_, _| {}).unwrap();
+    let m = build(&mut o, ds, &crate::available::tests::everything(), &|_, _| {}).unwrap();
     o.save().unwrap();
     m
 }
@@ -114,6 +114,36 @@ fn the_first_dataset_with_data_is_the_one_used() {
     assert_eq!(ds.iter().map(|d| d["id"].as_str().unwrap()).collect::<Vec<_>>(), ["fine", "world"]);
 }
 
+/// The built set is cut to the land as the best set is (the same coast: a pixel by its centre at
+/// z10): a dataset with data everywhere, sea and land, drawn on the land alone; a z6 tile all sea
+/// holds nothing, and the polar caps with no land in them none.
+#[test]
+fn the_datasets_are_cut_to_the_land() {
+    let d = tempfile::tempdir().unwrap();
+    let land = crate::available::tests::coast(2.5);
+    let mut o = out(d.path());
+    let m = build(&mut o, &[everywhere("world")], &Cut::new(&land, super::super::cut::Side::Land).unwrap(), &|_, _| {})
+        .unwrap();
+    o.save().unwrap();
+    assert_eq!(m.remade.len(), 4096, "every z6 tile's key moved");
+    for (lon, lat) in [(2.0, 44.1), (1.9, 43.95), (2.45, 44.45), (20.25, 44.25)] {
+        assert_eq!(at(d.path(), lon, lat), ["world"], "the land at {lon}, {lat}");
+    }
+    for (lon, lat) in [(2.8, 44.8), (2.55, 44.2), (2.25, 44.25), (-100.0, 40.0)] {
+        assert!(at(d.path(), lon, lat).is_empty(), "the sea at {lon}, {lat}");
+    }
+    let packs: Vec<String> = out(d.path())
+        .manifest
+        .keys()
+        .filter(|l| l.starts_with("layers/available-built-terrain/hi/"))
+        .cloned()
+        .collect();
+    assert_eq!(packs.len(), 2, "the coast's z6 tile and the island's: {packs:?}");
+    assert!(
+        at_pole(d.path(), Pole::North, 0.0, 89.0).is_empty() && at_pole(d.path(), Pole::South, 0.0, -89.0).is_empty()
+    );
+}
+
 /// A stored dataset's fill mask: a void (3 and up) is the next dataset's, as the sampler takes it;
 /// its coverage cut: outside it, the next one's.
 #[test]
@@ -188,7 +218,8 @@ fn only_the_z6_tiles_a_dataset_moved_in_are_made_again() {
 fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
     let d = tempfile::tempdir().unwrap();
     let ds = [everywhere("world")];
-    let e = build_with(&mut out(d.path()), &ds, &|_, _| {}, &|| true).unwrap_err();
+    let all = crate::available::tests::everything();
+    let e = build_with(&mut out(d.path()), &ds, &all, &|_, _| {}, &|| true).unwrap_err();
     assert!(jobrt::control::is_paused(&e), "{e:#}");
     let m = run(d.path(), &ds);
     assert_eq!(m.remade.len(), 4095, "the first kept");
@@ -224,7 +255,7 @@ fn a_pause_keeps_the_z6_tiles_made_and_the_next_run_makes_the_rest() {
     let (mut pauses, mut made) = (0, 0);
     loop {
         let mut o = out(paused.path());
-        match build_with(&mut o, &ds, &|_, _| {}, &pausing) {
+        match build_with(&mut o, &ds, &all, &|_, _| {}, &pausing) {
             Ok(m) => {
                 o.save().unwrap();
                 made += m.remade.len();

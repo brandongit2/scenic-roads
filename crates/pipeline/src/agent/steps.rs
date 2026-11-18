@@ -1370,10 +1370,11 @@ pub const TABLE: [Step; 65] = [
         )
     },
     // The data-available layers (terrain::available; docs/steps.md §14): a target per theme, its
-    // pieces as tiles of the sets met at each pixel, made again only where a piece moved.
+    // pieces as tiles of the sets met at each pixel, cut to the theme's side of the pass's
+    // coastline, made again only where a piece or the land moved.
     Step {
         versions: &[("available", || terrain::available::KEY_V.to_string())],
-        reads: &[In { name: "extents", of: idents::extents_pieces }],
+        reads: &[In { name: "extents", of: idents::extents_pieces }, In { name: "land", of: idents::pass_land }],
         ..step(
             "finish",
             Pack,
@@ -1386,11 +1387,15 @@ pub const TABLE: [Step; 65] = [
     // The data-available layers of the data built into the map (terrain::available::built;
     // docs/steps.md §14): a pixel the dataset the terrain took its heights from, from the datasets'
     // coverage, the input check's measures, the store's fill masks and the pyramids' stores (it
-    // waits for their fill), made again only where a dataset moved. Any member's, as `available`'s: it
-    // reads the store's masks over the NAS.
+    // waits for their fill), cut to the pass's coastline's land, made again only where a dataset or
+    // the land moved. Any member's, as `available`'s: it reads the store's masks over the NAS.
     Step {
         versions: &[("available-built", || terrain::available::built::KEY_V.to_string())],
-        reads: &[In { name: "elevation", of: idents::built_datasets }, All { step: "pyramids-fill", grain: Grain::Read(idents::nothing) }],
+        reads: &[
+            In { name: "elevation", of: idents::built_datasets },
+            In { name: "land", of: idents::pass_land },
+            All { step: "pyramids-fill", grain: Grain::Read(idents::nothing) },
+        ],
         ..step(
             "finish",
             Pack,

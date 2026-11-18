@@ -9,12 +9,16 @@
 //!   polygons (overlapping polygons of one piece add up, never cancel). Each row becomes runs of
 //!   one set of pieces. The antimeridian needs nothing (pieces arrive cut there; the plane runs from
 //!   −180° to 180°), nor the poles: a ring closed along 90° lies past the Mercator plane's edge.
+//! - **The cut.** Each row's runs are kept only on the theme's side of the coastline, the empty
+//!   set elsewhere (crate::available::cut: the terrain's the land, by the pass's coastline), so an
+//!   outline drawn over the sea holds nothing there.
 //! - **The tiles.** From a z6 tile down to z12 a quadtree: a tile all of one set at z12 (every
 //!   row's run across it the same) isn't stored, nor anything under it; otherwise its children are
 //!   made and it is their union, a pixel's set the union of the four under it. A z6 tile's pack holds
 //!   its stored tiles of z6–12; the root pack z0–5, made from every z6 tile's own (`mids`).
-//! - **Keys.** A z6 tile's content depends only on the polygons whose boxes meet it: its key is
-//!   their pieces' ids and the polygons' digests (`KEY_V` first). The step records each z6 tile's
+//! - **Keys.** A z6 tile's content depends only on the polygons whose boxes meet it and the land
+//!   there: its key is their pieces' ids and the polygons' digests, and the land's cells meeting it
+//!   by theirs (`KEY_V` first). The step records each z6 tile's
 //!   key in its mids pack's meta and makes again only the tiles whose key moved (a new source, or
 //!   one fetched again, makes only the tiles it meets), keeping the others' packs as they are; the
 //!   root is made again from the mids whenever a z6 tile moved.
@@ -32,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What a piece's polygons make of a tile: bumped with any change to the tiles' bytes for the same
 /// pieces (the rasterizing, the quadtree, the format). Each tile's key and the step's own version.
-pub const KEY_V: u32 = 1;
+pub const KEY_V: u32 = 2;
 
 /// How far a densified edge may stray from the projection of the line it stands for (pixels of
 /// the finest zoom).
@@ -570,8 +574,9 @@ fn key_of(lines: &[String]) -> String {
     h.finalize().to_hex()[..16].to_string()
 }
 
-/// Each z6 tile a polygon's box meets ("6/x/y"), and its key: the lines of those polygons.
-pub fn tile_keys(pieces: &[Piece]) -> BTreeMap<String, String> {
+/// Each z6 tile a polygon's box meets ("6/x/y"), and its key: the lines of those polygons and the
+/// cut's there (`Cut::lines`).
+fn tile_keys(pieces: &[Piece], cut: &Cut) -> BTreeMap<String, String> {
     let mut lines: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
     for p in pieces {
         for q in &p.polygons {
@@ -587,13 +592,15 @@ pub fn tile_keys(pieces: &[Piece]) -> BTreeMap<String, String> {
         .into_iter()
         .map(|((x, y), mut l)| {
             l.sort();
+            l.extend(cut.lines(roadcore::geo::tile_box(fmt::PACK_Z, x, y)));
             (format!("{}/{x}/{y}", fmt::PACK_Z), key_of(&l))
         })
         .collect()
 }
 
-/// The polygons reaching pole `pole`'s square, by (piece, polygon), and its key.
-fn polar_polys(pieces: &[Piece], pole: Pole) -> (Vec<(usize, usize)>, String) {
+/// The polygons reaching pole `pole`'s square, by (piece, polygon), and its key (with the cut's in
+/// the square).
+fn polar_polys(pieces: &[Piece], pole: Pole, cut: &Cut) -> (Vec<(usize, usize)>, String) {
     let b = roadcore::polar::lat_box(pole, 0, 0, 0);
     let mut v = Vec::new();
     let mut lines = vec![format!("pole {}", pole.letter())];
@@ -606,6 +613,7 @@ fn polar_polys(pieces: &[Piece], pole: Pole) -> (Vec<(usize, usize)>, String) {
         }
     }
     lines[1..].sort();
+    lines.extend(cut.lines(b));
     (v, key_of(&lines))
 }
 
@@ -728,9 +736,10 @@ fn stored(cell: &Cell, sets: &Sets, ids: &[String]) -> (Vec<u8>, u32) {
     (fmt::gzip(&t), t.len() as u32)
 }
 
-/// Builds theme `theme`'s best set from `pieces` (every source's of the theme), making again only
-/// what their keys say moved; `report` hears the z6 tiles done of those to make.
-pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, u64)) -> Result<Made> {
+/// Builds theme `theme`'s best set from `pieces` (every source's of the theme), cut to the theme's
+/// side of the coast (`cut`), making again only what their keys say moved; `report` hears the z6
+/// tiles done of those to make.
+pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], cut: &Cut, report: &dyn Fn(u64, u64)) -> Result<Made> {
     let mut seen = BTreeSet::new();
     for p in pieces {
         ensure!(seen.insert(p.id.as_str()), "piece {} twice", p.id);
@@ -743,27 +752,34 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
         .map(|(i, q)| plane_poly(i as u32, q, &merc_px))
         .collect();
     let poles = [Pole::North, Pole::South].map(|pole| {
-        let (which, key) = polar_polys(pieces, pole);
+        let (which, key) = polar_polys(pieces, pole, cut);
         (pole, key, which)
     });
     let record = Record { pausing: &jobrt::control::draining_lately, theme, set: fmt::BEST, v: KEY_V, ids: &ids };
     drive(
         out,
         &record,
-        tile_keys(pieces),
+        tile_keys(pieces, cut),
         poles.iter().map(|(p, k, w)| (*p, k.clone(), w.is_empty())).collect(),
         &mut |stale, sink| {
-            // (A row of z6 tiles at a time: the row's runs, then each tile's quadtree on a thread of
-            // its own, its sets over the row's.)
+            // (A row of z6 tiles at a time: the row's runs cut to the side kept, then each tile's
+            // quadtree on a thread of its own, its sets over the row's.)
             let mut by_row: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
             for &(x, y) in stale {
                 by_row.entry(y).or_default().push(x);
             }
             for (y, xs) in by_row {
                 let mut band = Sets::default();
-                let runs = row_runs(&polys, MERC_W, y * BAND, (y + 1) * BAND, &mut band);
+                let (r0, r1) = (y * BAND, (y + 1) * BAND);
+                let boxes: Vec<[f64; 4]> = xs.iter().map(|&x| roadcore::geo::tile_box(fmt::PACK_Z, x, y)).collect();
+                let mask = cut.mask(&boxes, &merc_px, MERC_W, r0, r1)?;
+                let runs: Vec<Runs> = row_runs(&polys, MERC_W, r0, r1, &mut band)
+                    .iter()
+                    .zip(&mask)
+                    .map(|(r, m)| cut::apply(r, m))
+                    .collect();
                 let band = std::sync::Arc::new(band);
-                let rows = Rows { runs: &runs, r0: y * BAND, width: MERC_W, zmax: fmt::MAXZ };
+                let rows = Rows { runs: &runs, r0, width: MERC_W, zmax: fmt::MAXZ };
                 let made: Vec<Z6> = xs
                     .par_iter()
                     .map(|&x| {
@@ -789,7 +805,10 @@ pub fn build(out: &mut Out, theme: &str, pieces: &[Piece], report: &dyn Fn(u64, 
                 .map(|&(i, k)| plane_poly(i as u32, &pieces[i].polygons[k], &|lon, lat| polar_px(pole, lon, lat)))
                 .collect();
             let w = polar_w();
-            let runs = row_runs(&polys, w, 0, w, sets);
+            let f = |lon, lat| polar_px(pole, lon, lat);
+            let mask = cut.mask(&[roadcore::polar::lat_box(pole, 0, 0, 0)], &f, w, 0, w)?;
+            let runs: Vec<Runs> =
+                row_runs(&polys, w, 0, w, sets).iter().zip(&mask).map(|(r, m)| cut::apply(r, m)).collect();
             let rows = Rows { runs: &runs, r0: 0, width: w, zmax: fmt::POLAR_MAXZ };
             Ok(rows.build(0, 0, 0, sets, emit))
         },
@@ -1001,6 +1020,9 @@ fn put_record(out: &mut Out, ml: &str, meta: &MidsMeta, blobs: &BTreeMap<String,
 }
 
 pub mod built;
+pub mod cut;
+
+pub use cut::Cut;
 
 #[cfg(test)]
 mod tests;

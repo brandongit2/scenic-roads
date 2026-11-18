@@ -76,6 +76,13 @@ pub fn extents_pieces(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }
 }
 
+/// The pass's coastline's land (inputs::inputs::regions::land, the `regions-land` step's), by
+/// content: what the data-available layers are cut to (terrain::available::cut). Required: they
+/// wait for it.
+pub fn pass_land(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
+    required(x, [inputs::inputs::regions::land::logical(x.date)])
+}
+
 /// The built set's datasets (`available-built-terrain`): every accepted elevation dataset in the
 /// order, `id keyed` and the digest of what the input check measured of it (its coverage as its
 /// regions cut it, its presence and hollow tiles: a regions change or a check's new measure moves

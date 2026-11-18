@@ -9096,6 +9096,8 @@ fn step_args(o: &Options, step: &str, date: &str) -> Vec<String> {
         // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
         "bld-fetch" | "bldtiles" => vec!["--pass".into(), date.to_string()],
         "terrain-water" | "polar-root" => vec!["--pass".into(), date.to_string()],
+        // (The data-available layers' cut: the pass's coastline's land.)
+        "available" | "available-built" => vec!["--pass".into(), date.to_string()],
         "items" => vec!["--pass".into(), date.to_string(), "--cache".into(), s(&cache)],
         "heritage-sites" | "heritage" => {
             vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)]
