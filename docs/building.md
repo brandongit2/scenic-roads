@@ -329,8 +329,9 @@ from the first (`edit_held`).
   leases move, granted as the NAS budget leaves room then); a job of theirs under way holds its
   slot's lane until its measured time. The departure check leaves them out (docs/pool.md §7.2,
   One scheduler), and a test holds every job the plan makes outside the forecast to that list.
-  Every job of the regions' pass the lead makes beside the plan's work (the summits, the timetables' to-do) is in
-  the forecast's input (`before`), and a held catalogue is its `catalog-held`, as it is granted; a test holds both.
+  The forecast's input before the regions' is every job the plan makes ahead of the regions' work (the pass's
+  worldwide jobs, the timetables' to-do, the summits unless held: held, they are the landmarks chain's first step), and a
+  held catalogue is its `catalog-held`, as it is granted.
 - **The history** (`coord::history`): the last week's events on the lead's disk
   (`coord/history.jsonl`) and in its coordinator's memory: jobs, leases, tasks, map tiles planned,
   map updates, pauses, workers, agents, conditions, cache clears and freeings (a member's noted to

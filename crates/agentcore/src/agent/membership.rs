@@ -984,7 +984,7 @@ impl Gates {
 /// The steps that are sweeps (GC: the lead's, once caught up).
 pub const SWEEPS: [&str; 1] = ["gc"];
 /// The steps that publish (a catalogue: the lead's, once caught up).
-pub const PUBLISHES: [&str; 2] = ["catalog", "catalog-held"];
+pub const PUBLISHES: [&str; 2] = [store::catalogue::NAME, store::catalogue::HELD_NAME];
 /// Lease numbers at and above this are hand-offs a lead's coordinator journaled on its disk, drained
 /// into its member's hand-offs (`Run::drain`; epoch 0: no lead's). Below it, a job
 /// run out of the pool keeps the lease the lead's coordinator gave it (`Run::drain_outbox`).
