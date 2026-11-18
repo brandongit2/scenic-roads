@@ -5253,6 +5253,9 @@ mod tests {
             format!("{}.6767676767676767.json", bld::buildtiles::index_logical(bld::buildtiles::TEST_RELEASE)),
         );
         elevation_inputs(m);
+        // (The pass's coastline's land, which the data-available layers are cut to.)
+        let land = inputs::inputs::regions::land::logical(date);
+        m.insert(land.clone(), format!("{land}.1313131313131313.bin"));
     }
 
     /// The heritage-sites job done: its key recorded, its outputs in the manifest.
@@ -6480,6 +6483,7 @@ mod tests {
             "global/roads/6-28-16".to_string(),
             inputs::osmpass::set_name("d", "rail"),
             "sources/osm/d/filtered".to_string(),
+            inputs::inputs::regions::land::logical("d"),
         ];
         for l in made {
             m.entry(l.clone()).or_insert_with(|| format!("{l}.7b7b7b7b7b7b7b7b.bin"));
