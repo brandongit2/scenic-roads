@@ -973,9 +973,14 @@ class IndexFiles(unittest.TestCase):
         self.assertEqual(net.requests, 2)
         # (The check builds no geometry: the pages' thunks are left to what keeps them.)
         self.assertEqual(built, [])
-        gml = lambda stamp: f'<wfs:FeatureCollection timeStamp="{stamp}" numberMatched="9"><m><a>1</a></m></wfs:FeatureCollection>'.encode()
-        self.assertEqual(extents.page_digest(gml("2026-11-18T10:00:00Z")), extents.page_digest(gml("2026-11-18T10:00:09Z")))
-        self.assertNotEqual(extents.page_digest(gml("x")), extents.page_digest(gml("x").replace(b">1<", b">2<")))
+        # (GeoServer's GML: the collection's tag says its own page, its next and previous and
+        # counts and timeStamp; its members alone are the page.)
+        first = (b'<wfs:FeatureCollection timeStamp="2026-11-18T10:00:00Z" numberMatched="9" numberReturned="2" '
+                 b'next="https://h/wfs?STARTINDEX=2"><wfs:member><m><a>1</a></m></wfs:member></wfs:FeatureCollection>')
+        again = (b'<wfs:FeatureCollection timeStamp="2026-11-18T10:00:09Z" numberMatched="9" numberReturned="3" '
+                 b"next='https://h/wfs?STARTINDEX=4' previous=\"https://h/wfs?STARTINDEX=0\"><wfs:member><m><a>1</a></m></wfs:member></wfs:FeatureCollection>")
+        self.assertEqual(extents.page_digest(first), extents.page_digest(again))
+        self.assertNotEqual(extents.page_digest(first), extents.page_digest(first.replace(b">1<", b">2<")))
         # (An empty page while the server says 9 match: stopped, saying so.)
         net = FakeNet({url(0): page([0, 1], 9), url(2): page([], 9)})
         with self.assertRaises(SystemExit) as e:

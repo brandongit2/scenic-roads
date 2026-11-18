@@ -579,10 +579,11 @@ def read_wfs(net, b, _tol):
 
 def page_digest(body):
     """A WFS page's features as one digest, from the answer as written (its geometry never built):
-    GeoJSON's features (properties and geometry, keys sorted), or GML's bytes with the answer's
-    own `timeStamp` left out."""
+    GeoJSON's features (properties and geometry, keys sorted), or GML's members, after the
+    collection's own tag (whose `next`, `previous`, counts and `timeStamp` differ every page)."""
     if body.lstrip()[:1] == b"<":
-        return hashlib.sha256(re.sub(rb'\btimeStamp="[^"]*"', b"", body)).digest()
+        m = re.search(rb'<(?:[\w.-]+:)?FeatureCollection\b(?:"[^"]*"|\'[^\']*\'|[^>"\'])*>', body)
+        return hashlib.sha256(body[m.end():] if m else body).digest()
     return hashlib.sha256(json.dumps(json.loads(body).get("features"), sort_keys=True).encode()).digest()
 
 
