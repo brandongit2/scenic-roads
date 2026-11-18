@@ -207,6 +207,8 @@ impl Log {
             Ok(l) => {
                 if !l.done.is_empty() {
                     eprintln!("resume: {kind} {}/{}/{}: {} blocks kept by an earlier run", t.0, t.1, t.2, l.done.len());
+                    // (The work this run skips, in its timings' record: crate::timings::Done.)
+                    crate::timings::resumed(l.done.len() as u64);
                 }
                 Some(l)
             }
@@ -225,9 +227,12 @@ impl Log {
     /// lost.
     pub fn keep(&mut self, b: BlockId, payload: &[u8]) -> Result<()> {
         if let Some(f) = self.file.as_mut() {
-            if let Err(e) = f.write_all(&record(b, payload)) {
-                eprintln!("resume: {} not kept further: {e}", self.path.display());
-                self.file = None;
+            match f.write_all(&record(b, payload)) {
+                Ok(()) => crate::timings::made(),
+                Err(e) => {
+                    eprintln!("resume: {} not kept further: {e}", self.path.display());
+                    self.file = None;
+                }
             }
         }
         self.done.insert(b);
@@ -727,6 +732,11 @@ mod tests {
             made.set(made.get() + 1);
             Ok(vec![v; 3])
         };
+        // (The run's timings count the blocks it made and those it took from an earlier run, task
+        // #1419: other tests' runs may add to them meanwhile, never take away.)
+        use std::sync::atomic::Ordering::Relaxed;
+        let counted = || (crate::timings::RESUMED.load(Relaxed), crate::timings::MADE.load(Relaxed));
+        let at = counted();
         let mut p = Pieces::open(d.path(), t, "k", "a", true);
         assert_eq!(p.piece((9, 0, 0), || make(1)).unwrap(), [1; 3]);
         assert_eq!(p.floats((9, 0, 1), || Ok(vec![vec![1.5, -0.0], vec![]])).unwrap(), [vec![1.5, -0.0], vec![]]);
@@ -736,6 +746,8 @@ mod tests {
         assert_eq!(p.floats((9, 0, 1), || anyhow::bail!("made again")).unwrap(), [vec![1.5, -0.0], vec![]]);
         assert_eq!(p.piece((9, 1, 0), || make(3)).unwrap(), [3; 3]);
         assert_eq!(made.get(), 2);
+        let now = counted();
+        assert!(now.0 >= at.0 + 2 && now.1 >= at.1 + 3, "{at:?} then {now:?}");
         p.finish();
         assert!(!path(d.path(), t).exists(), "gone once finished");
         let mut p = Pieces::open(d.path(), t, "k", "b", true);

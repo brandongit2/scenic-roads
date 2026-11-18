@@ -3420,8 +3420,11 @@ impl Agent {
 
     /// Slot `k`'s ended job's timings (jobrt::timings): kept in this Mac's log (`timings.jsonl`),
     /// and in the build's, its coordinator's (`coord/timings.jsonl`), here; a member's go with its
-    /// hand-off (`send_outbox`, `end_lease`), from its folder.
-    fn take_timings(&mut self, k: usize) {
+    /// hand-off (`send_outbox`, `end_lease`), from its folder, written back there. Stamped first
+    /// with what this agent knows of the run (task #1419): how it ended (`outcome`), the targets it
+    /// finished of the `of` it was given, its processes' NAS traffic (its counts folder), and the
+    /// plausibility checks it fails at this Mac's clock (jobrt::timings::implausible).
+    fn take_timings(&mut self, k: usize, outcome: &Outcome, finished: usize, of: usize) {
         // (By where the job writes them, whoever leads now: a member's leased job in its folder,
         // this Mac's own in the agent's.)
         let handed = match &self.slots[k].lease {
@@ -3438,7 +3441,22 @@ impl Agent {
             None => jobrt::timings::take_record(&self.timings_path(k), &self.worker_of(k)),
         };
         // (Its run's id, as the job said it, else its slot's: a job of an older app says none.)
-        let Some(rec) = rec.map(|r| jobrt::timings::RunRec { job: r.job.or(self.slots[k].job), ..r }) else { return };
+        let Some(mut rec) = rec.map(|r| jobrt::timings::RunRec { job: r.job.or(self.slots[k].job), ..r }) else {
+            return;
+        };
+        let end = match outcome {
+            Outcome::Done => "done",
+            Outcome::Paused => "paused",
+            Outcome::Interrupted => "interrupted",
+            Outcome::Failed => "failed",
+        };
+        rec.stamp(end, finished, of, &self.nas_counts_path(k), jobrt::sys::top_clock());
+        if let Some(p) = &handed {
+            // (Its hand-off reads it from the folder: this Mac's disk, one write.)
+            if let Err(e) = serde_json::to_vec(&rec).map_err(std::io::Error::other).and_then(|b| std::fs::write(p, b)) {
+                eprintln!("agent: stamping a job's timings: {e}");
+            }
+        }
         if let Err(e) = jobrt::timings::append(&self.o.home.join("timings.jsonl"), &rec) {
             eprintln!("agent: keeping a job's timings: {e}");
         }
@@ -5191,7 +5209,7 @@ impl Agent {
             if self.slots[k].mem_drain.is_some() {
                 self.cool_down(k);
             }
-            self.take_timings(k);
+            self.take_timings(k, &outcome, done.len(), of);
             self.end_lease(k, outcome, &handed, &note);
             self.finished(&id, self.slots[k].job, &what, ok || paused, empty, secs, note);
             if own {

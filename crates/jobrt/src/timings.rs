@@ -34,6 +34,15 @@
 //!   memory guard measures a job), and each phase keeps the most it saw while open (`peak_mb`): a
 //!   phase that runs a program (a unit's steps, the heritage chain's scripts, osmium) is that
 //!   program's peak, with the job's own memory beside it. A child's own phases carry its samples.
+//!   The run keeps the most over all of it too (`RunRec::peak_mb`), with the threads its work ran on
+//!   then and the most it ran on (crate::control::threads_now).
+//! - Work (task #1419): what the job's processes retired (`Work`, crate::sys::rusage): its own
+//!   process's instructions, cycles and CPU, the performance cores' apart, from its start to its end;
+//!   and, in a job's own record (`SCENIC_TIMINGS`), its group's other processes started since (its
+//!   programs and theirs) as the same sampler last saw each (`Seen`). A resumed run's blocks taken
+//!   from an earlier run's log and those it made (crate::resume_log) are counted (`Done`); its agent
+//!   adds how it ended, its targets, its NAS traffic and the plausibility checks it fails
+//!   (`RunRec::stamp`, `implausible`) as it takes the record.
 //! - Waits (task #870): as a span opens and closes it takes store::waits' totals, the job's wall
 //!   time blocked in NAS calls, network requests, local disk calls and waits on other work so far,
 //!   and the NAS's and the network's bytes (store::nasio, crate::fetch); the differences are its
@@ -210,6 +219,21 @@ pub fn fetched_bytes() -> u64 {
     FETCHED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The blocks or pieces this process's runs took from an earlier run's resume log, and those they
+/// made and kept (crate::resume_log; a child program's taken in as it ends): its record's `done`.
+pub(crate) static RESUMED: AtomicU64 = AtomicU64::new(0);
+pub(crate) static MADE: AtomicU64 = AtomicU64::new(0);
+
+/// `n` blocks taken from an earlier run's resume log (crate::resume_log::Log::open).
+pub fn resumed(n: u64) {
+    RESUMED.fetch_add(n, Ordering::Relaxed);
+}
+
+/// A block made and kept in a resume log (crate::resume_log::Log::keep).
+pub fn made() {
+    MADE.fetch_add(1, Ordering::Relaxed);
+}
+
 /// store::waits' totals and the NAS's and network's bytes now (a span's ends).
 fn waits_now() -> (store::waits::Totals, u64, u64) {
     use store::nasio::{get, Count};
@@ -322,6 +346,195 @@ pub struct RunRec {
     pub safe_points: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_gap_s: Option<f64>,
+    /// What its processes retired (task #1419): None in a record from before, or where it can't be
+    /// read (elsewhere than macOS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<Work>,
+    /// The most memory its process group held over the run (MB; sampled as the phases' `peak_mb`,
+    /// over its whole run, in a phase or not), and the threads its work ran on when it was sampled
+    /// (crate::control::threads_now, else `threads`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak_threads: Option<u32>,
+    /// The most threads its work ran on (its targets' grants, a paced job's allowance, its
+    /// RAYON_NUM_THREADS), as the memory sampler saw them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads_most: Option<u32>,
+    /// Its processes' NAS traffic (its agent's, from the job's counts folder as it ended; task #1419).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas: Option<Nas>,
+    /// The work it did: how it ended and the targets it finished (its agent's), and the blocks a
+    /// resumed run took from an earlier one's log apart from those it made (the job's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<Done>,
+    /// The plausibility checks it failed (`implausible`), as its agent took it: kept, never
+    /// learned from. Empty: it passed them (or it's from before them, task #1419).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implausible: Vec<String>,
+}
+
+/// What a job's processes retired (macOS's counts, crate::sys::Rusage): its own process's exactly,
+/// from its run's start to its end, and each other process of its group started after it (its
+/// programs, their helpers: a Python producer's ImageMagick) as the memory sampler last saw it,
+/// four times a second; a process that ended between two samples counts to the last one, and one
+/// that lived less than a sample is never seen. `cpu_s` says the CPU these counts are of, so the
+/// part of the run's `cpu_s` they miss is known (`implausible`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Work {
+    /// Instructions and cycles retired.
+    pub insn: u64,
+    pub cycles: u64,
+    /// Of them, on the performance cores, and the CPU there (s).
+    #[serde(default)]
+    pub p_insn: u64,
+    #[serde(default)]
+    pub p_cycles: u64,
+    #[serde(default)]
+    pub p_cpu_s: f64,
+    /// The CPU (user and system, s) these counts are of.
+    pub cpu_s: f64,
+    /// Its other processes seen.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub procs: u64,
+}
+
+impl Work {
+    fn add(&mut self, r: &crate::sys::Rusage) {
+        self.insn += r.insn;
+        self.cycles += r.cycles;
+        self.p_insn += r.p_insn;
+        self.p_cycles += r.p_cycles;
+        self.p_cpu_s += r.p_cpu_ns as f64 / 1e9;
+        self.cpu_s += r.cpu_ns as f64 / 1e9;
+    }
+}
+
+/// A job's NAS traffic, all its processes' (store::nasio's counts, its counts folder summed):
+/// `read_b` the bytes read through the NAS share (`ReadBytes`, its uploads' read-backs among them:
+/// `read_back_b`), `held_b` the bytes of NAS files it read that this Mac's page cache held, so the
+/// NAS served none of them (`held`: a whole copy's resident part). What it asked of the NAS is
+/// `read_b + held_b`, whichever answered (a warm cache isn't a small need); what the NAS served,
+/// `read_b`, where a streaming read the share's own cache answered counts as served (not measured).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Nas {
+    #[serde(default)]
+    pub read_b: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub held_b: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub read_back_b: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wrote_b: u64,
+    /// Files opened for reading, made, listed (folder entries), statted and deleted.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub files: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub creates: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub listed: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub stats: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub deletes: u64,
+}
+
+impl Nas {
+    /// A job's, from its counts folder `dir` (store::nasio::ENV); None when there's none.
+    pub fn of_dir(dir: &Path) -> Option<Nas> {
+        use store::nasio::Count;
+        let c = store::nasio::sum_dir(dir)?;
+        let n = |k: Count| c[k as usize];
+        Some(Nas {
+            read_b: n(Count::ReadBytes),
+            held_b: store::nasio::held_in(dir).unwrap_or(0),
+            read_back_b: n(Count::ReadBack),
+            wrote_b: n(Count::WroteBytes),
+            files: n(Count::Files),
+            creates: n(Count::Creates),
+            listed: n(Count::Listed),
+            stats: n(Count::Stats),
+            deletes: n(Count::Deletes),
+        })
+    }
+}
+
+/// The work a run did.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Done {
+    /// How it ended, its agent says: `done`, `paused` (at a safe point, the build pausing), `failed`
+    /// or `interrupted` (killed while no agent tended it); empty before its agent took it. Only a
+    /// `done` run did its whole job: the others' figures are a part's.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub end: String,
+    /// The targets it finished, of those it was given.
+    #[serde(default)]
+    pub targets: u64,
+    #[serde(default)]
+    pub of: u64,
+    /// The blocks or pieces it took from an earlier run's resume log (crate::resume_log: work it
+    /// skipped), and those it made and kept (the logs' alone: a step keeping none says none).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub resumed: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub made: u64,
+}
+
+/// A plausibility check's slack: the readings' grain, a share of the figure and seconds beside it.
+pub const CHECK_SHARE: f64 = 0.05;
+pub const CHECK_S: f64 = 1.0;
+/// How far past this Mac's measured top clock (crate::sys::top_clock) a run's cycles over its CPU
+/// may read: the clock was measured once, with other work maybe on the cores (macOS lowers a
+/// cluster's clock as more of its cores run).
+pub const CLOCK_SLACK: f64 = 1.3;
+
+/// The plausibility checks `r` fails (task #1419), each said: a record failing one is kept but the
+/// needs model doesn't learn from it, and the build page says why. `top_clock`: the clock of the
+/// Mac that ran it (crate::sys::top_clock, Hz), None where unknown (that check skipped).
+/// - Its CPU within its threads: `cpu_s` ≤ the most threads it ran on × `wall_s`.
+/// - Its instructions consistent with its CPU at its Mac's speed: counted over its whole CPU (the
+///   processes the counts saw took the CPU it took), some counted where it took CPU, and its cycles
+///   over that CPU (the cores' clock) never past `top_clock`, the performance cores' alone too.
+/// - Its phases summing to its run: the main thread's phases' wall time within its own, and its
+///   phases' CPU and its CPU in no phase adding up to its CPU.
+///
+/// Each within `CHECK_SHARE` of the figure and `CHECK_S` beside it (the readings' grain).
+pub fn implausible(r: &RunRec, top_clock: Option<f64>) -> Vec<String> {
+    let mut out = Vec::new();
+    let slack = |x: f64| x * (1.0 + CHECK_SHARE) + CHECK_S;
+    let wall = r.wall_s;
+    if let (Some(cpu), Some(t)) = (r.cpu_s, r.threads_most.or(r.threads)) {
+        if cpu > slack(f64::from(t) * wall) {
+            out.push(format!("CPU {} past its {t} threads over {}", secs(cpu), secs(wall)));
+        }
+    }
+    if let (Some(w), Some(cpu)) = (r.work, r.cpu_s) {
+        if w.cpu_s < cpu * (1.0 - CHECK_SHARE) - CHECK_S {
+            out.push(format!("instructions counted over {} of its {} CPU", secs(w.cpu_s), secs(cpu)));
+        }
+        if w.cpu_s >= CHECK_S && (w.insn == 0 || w.cycles == 0) {
+            out.push(format!("no instructions or cycles counted over {} CPU", secs(w.cpu_s)));
+        }
+        if let Some(top) = top_clock {
+            let ghz = |c: u64, s: f64| c as f64 / s / 1e9;
+            for (what, c, s) in [("its cores", w.cycles, w.cpu_s), ("its performance cores", w.p_cycles, w.p_cpu_s)] {
+                if s >= CHECK_S && ghz(c, s) > top / 1e9 * CLOCK_SLACK {
+                    out.push(format!("{what} at {:.2} GHz, past this Mac's {:.2}", ghz(c, s), top / 1e9));
+                }
+            }
+        }
+    }
+    let timed = r.timed_s();
+    if timed > slack(wall) {
+        out.push(format!("its phases took {} of its {}", secs(timed), secs(wall)));
+    }
+    let phases_cpu: Option<f64> = r.phases.iter().map(|p| p.cpu_s).sum();
+    if let (Some(p), Some(u), Some(cpu)) = (phases_cpu, r.untimed_cpu_s, r.cpu_s) {
+        if (p + u - cpu).abs() > cpu * CHECK_SHARE + CHECK_S {
+            out.push(format!("its phases' CPU and its CPU in none add up to {}, not its {}", secs(p + u), secs(cpu)));
+        }
+    }
+    out
 }
 
 /// Untimed time between two of a run's top-level phases on its main thread, summed over the times
@@ -382,6 +595,17 @@ impl RunRec {
             current(step, &mut g.after);
             current(step, &mut g.before);
         }
+    }
+
+    /// Stamped by the agent that ran it, as it ended (task #1419): how it ended (`end`: `Done`'s),
+    /// the targets it finished of the `of` it was given, its processes' NAS traffic from its counts
+    /// folder `counts` (`Nas::of_dir`), then the plausibility checks it fails at its Mac's clock
+    /// `top_clock` (`implausible`).
+    pub fn stamp(&mut self, end: &str, finished: usize, of: usize, counts: &Path, top_clock: Option<f64>) {
+        let done = self.done.get_or_insert_with(Done::default);
+        (done.end, done.targets, done.of) = (end.to_string(), finished as u64, of as u64);
+        self.nas = Nas::of_dir(counts);
+        self.implausible = implausible(self, top_clock);
     }
 
     /// The main thread's top-level phases' wall time.
@@ -542,6 +766,55 @@ struct Run {
     gaps: Vec<(String, String, u64, u64)>,
     /// Its spans, where `SCENIC_SPANS` asks for them (crate::spans).
     spans: Option<crate::spans::Rec>,
+    /// Its process's counts as it started (crate::sys::rusage), and its group's other processes
+    /// started since (`Seen`), where it keeps a job's record (`SCENIC_TIMINGS`).
+    rus0: Option<crate::sys::Rusage>,
+    seen: Option<Seen>,
+    /// Its RAYON_NUM_THREADS; the most memory its group held (bytes), the threads then, and the
+    /// most threads seen.
+    threads0: Option<u32>,
+    peak: u64,
+    peak_threads: Option<u32>,
+    threads_most: Option<u32>,
+}
+
+/// A job's other processes' counts as the memory sampler sees them: each running one's last, by
+/// its pid and start (a pid is used again), and those of the ones gone summed.
+#[derive(Default)]
+struct Seen {
+    live: std::collections::HashMap<(i32, u64), crate::sys::Rusage>,
+    gone: Work,
+    n: u64,
+}
+
+impl Seen {
+    /// The group's processes now (`all`, crate::sys::group_rusage): those started since the run's
+    /// own process (`since`, its start; never the process itself, nor the shell at its group's head
+    /// or another older one) kept as last seen, those no longer there summed as gone.
+    fn saw(&mut self, all: &[(i32, crate::sys::Rusage)], me: i32, since: u64) {
+        let mut now = std::collections::HashMap::with_capacity(all.len());
+        for &(pid, r) in all {
+            if pid != me && r.start >= since {
+                self.n += u64::from(!self.live.contains_key(&(pid, r.start)));
+                now.insert((pid, r.start), r);
+            }
+        }
+        for (k, r) in self.live.drain() {
+            if !now.contains_key(&k) {
+                self.gone.add(&r);
+            }
+        }
+        self.live = now;
+    }
+
+    /// Their counts together, `procs` how many were seen.
+    fn total(&self) -> Work {
+        let mut w = self.gone;
+        for r in self.live.values() {
+            w.add(r);
+        }
+        Work { procs: self.n, ..w }
+    }
 }
 
 /// Adds a gap of `ns` between `after` and `before` (none under `GAP_MIN_NS`).
@@ -559,6 +832,20 @@ fn add_gap(gaps: &mut Vec<(String, String, u64, u64)>, after: &str, before: &str
 }
 
 impl Run {
+    /// A sample of its group: its memory `mem` (bytes), each process's counts `all`; its peak, the
+    /// threads then and the most threads, and its other processes' counts (`Seen`), kept.
+    fn saw(&mut self, mem: u64, all: &[(i32, crate::sys::Rusage)]) {
+        let threads = crate::control::threads_now().map(|n| n as u32).or(self.threads0);
+        self.threads_most = self.threads_most.max(threads);
+        if mem > self.peak {
+            self.peak = mem;
+            self.peak_threads = threads;
+        }
+        if let (Some(seen), Some(me)) = (self.seen.as_mut(), self.rus0) {
+            seen.saw(all, std::process::id() as i32, me.start);
+        }
+    }
+
     /// Charges thread `i` its CPU since it was last charged, to its innermost span.
     fn settle_thread(&mut self, i: usize) {
         let t = &mut self.threads[i];
@@ -732,6 +1019,14 @@ pub fn start(kind: &str) {
             mark: (Instant::now(), START.to_string()),
             gaps: Vec::new(),
             spans: None,
+            rus0: crate::sys::rusage(std::process::id() as i32),
+            // (A job's own record's alone: a child program's run, or one by hand, in a group not its
+            // job's, counts its own process.)
+            seen: std::env::var_os(TIMINGS_ENV).map(|_| Seen::default()),
+            threads0: rayon_threads(),
+            peak: 0,
+            peak_threads: None,
+            threads_most: rayon_threads(),
         });
         if let Some(r) = g.as_mut() {
             r.spans = crate::spans::Rec::from_env(kind, r.t0);
@@ -739,6 +1034,11 @@ pub fn start(kind: &str) {
         drop(g);
         sample_memory();
     }
+}
+
+/// Its RAYON_NUM_THREADS, where set: the threads its job started on.
+fn rayon_threads() -> Option<u32> {
+    std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok())
 }
 
 /// The job's memory as last sampled (bytes; 0: not sampled).
@@ -751,8 +1051,11 @@ const MEM_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 /// it can't be read (elsewhere than macOS).
 fn sample_memory() {
     static ON: std::sync::Once = std::sync::Once::new();
-    let Some(now) = crate::sys::group_footprint() else { return };
+    let Some((now, all)) = group_now() else { return };
     LAST_MEM.store(now, Ordering::Relaxed);
+    if let Some(r) = run().lock().unwrap().as_mut() {
+        r.saw(now, &all);
+    }
     ON.call_once(|| {
         std::thread::Builder::new()
             .name("timings-memory".into())
@@ -771,20 +1074,28 @@ fn sample_memory() {
                         spans_tick(false);
                         say_waited();
                     }
-                    let Some(v) = crate::sys::group_footprint() else { continue };
+                    let t = Instant::now();
+                    let Some((v, all)) = group_now() else { continue };
                     LAST_MEM.store(v, Ordering::Relaxed);
                     let Ok(mut g) = run().lock() else { return };
                     let Some(r) = g.as_mut().filter(|r| !r.finished) else { continue };
                     for o in &r.open {
                         o.peak.fetch_max(v, Ordering::Relaxed);
                     }
-                    let t = Instant::now();
+                    r.saw(v, &all);
                     r.settle();
                     r.overhead_ns += t.elapsed().as_nanos() as u64;
                 }
             })
             .ok();
     });
+}
+
+/// The job's process group's memory now (its processes' physical footprints summed, bytes) and
+/// each process's counts (crate::sys::group_rusage: one call each); None where it can't be read.
+fn group_now() -> Option<(u64, Vec<(i32, crate::sys::Rusage)>)> {
+    let all = crate::sys::group_rusage(crate::sys::this_group());
+    (!all.is_empty()).then(|| (all.iter().map(|(_, r)| r.footprint).sum(), all))
 }
 
 /// The memory sampler's ticks between two writes of the spans (a second).
@@ -1174,6 +1485,11 @@ fn take_child(p: &Path) -> Vec<PhaseRec> {
     };
     std::fs::remove_file(p).ok();
     let r: Option<RunRec> = serde_json::from_slice(&b).ok();
+    // (Its resumed and made blocks are the job's.)
+    if let Some(d) = r.as_ref().and_then(|r| r.done.as_ref()) {
+        resumed(d.resumed);
+        MADE.fetch_add(d.made, Ordering::Relaxed);
+    }
     r.map(|r| r.phases.into_iter().map(|p| PhaseRec { sub: Vec::new(), ..p }).collect()).unwrap_or_default()
 }
 
@@ -1188,6 +1504,10 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
     // (Every thread's CPU charged to now; then spans still open, a phase held past the run's end or
     // a thread's still going, counted to now.)
     let job = if r.finished { None } else { r.settle() };
+    // (Its group as it is now: its other processes' last counts, its memory.)
+    if let Some((v, all)) = group_now().filter(|_| !r.finished) {
+        r.saw(v, &all);
+    }
     let mut accs = r.accs.clone();
     for o in &r.open {
         let a = &mut accs[o.idx];
@@ -1254,7 +1574,7 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
         wall_s,
         cpu_s,
         untimed_cpu_s: s_of(r.untimed_cpu),
-        threads: std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()),
+        threads: r.threads0,
         ok,
         untimed_s: 0.0,
         overhead_s: r.overhead_ns as f64 / 1e9,
@@ -1262,6 +1582,16 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
         gaps: Vec::new(),
         safe_points: 0,
         safe_gap_s: None,
+        work: work_of(r),
+        peak_mb: (r.peak > 0).then_some(r.peak >> 20),
+        peak_threads: r.peak_threads,
+        threads_most: r.threads_most,
+        nas: None,
+        done: {
+            let (resumed, made) = (RESUMED.load(Ordering::Relaxed), MADE.load(Ordering::Relaxed));
+            (resumed + made > 0).then(|| Done { resumed, made, ..Default::default() })
+        },
+        implausible: Vec::new(),
     };
     let sg = crate::control::safe_gaps();
     rec.safe_points = sg.points;
@@ -1277,6 +1607,25 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
     rec.gaps =
         gaps.into_iter().map(|(after, before, ns, n)| Gap { after, before, wall_s: ns as f64 / 1e9, n }).collect();
     rec
+}
+
+/// What run `r`'s processes retired so far (`Work`): its own process's since it started, and its
+/// other processes' as seen; None where its own can't be read.
+fn work_of(r: &Run) -> Option<Work> {
+    let (a, b) = (r.rus0?, crate::sys::rusage(std::process::id() as i32)?);
+    let d = |x: u64, y: u64| y.saturating_sub(x);
+    let own = crate::sys::Rusage {
+        cpu_ns: d(a.cpu_ns, b.cpu_ns),
+        p_cpu_ns: d(a.p_cpu_ns, b.p_cpu_ns),
+        insn: d(a.insn, b.insn),
+        cycles: d(a.cycles, b.cycles),
+        p_insn: d(a.p_insn, b.p_insn),
+        p_cycles: d(a.p_cycles, b.p_cycles),
+        ..b
+    };
+    let mut w = r.seen.as_ref().map(Seen::total).unwrap_or_default();
+    w.add(&own);
+    Some(w)
 }
 
 /// "between A and B" (or "before B", "after A" at the run's ends).
@@ -1400,6 +1749,9 @@ pub fn table(r: &RunRec) -> String {
         r.cpu_s.map(secs).unwrap_or_else(|| "?".into()),
         if r.ok { "ok" } else { "failed" }
     );
+    if let Some(w) = r.work {
+        s.push_str(&format!("timings: {}\n", work_text(&w, r.peak_mb, r.peak_threads)));
+    }
     let line = |s: &mut String, indent: &str, p: &PhaseRec| {
         let share = if r.wall_s > 0.0 { p.wall_s / r.wall_s * 100.0 } else { 0.0 };
         let mut extra = Vec::new();
@@ -1457,6 +1809,32 @@ pub fn table(r: &RunRec) -> String {
             "timings: ! {share:.0}% of the run in no phase (over {:.0}%): the gaps above want phases\n",
             UNACCOUNTED_MAX * 100.0
         ));
+    }
+    s
+}
+
+/// A run's work, readably: "retired 41.2 G instructions in 30.1 G cycles over 12.0 s CPU (2.51
+/// GHz, 1.37 a cycle; 92% of the CPU on performance cores), 3 other processes; peak 1.2 GB at 4
+/// threads".
+fn work_text(w: &Work, peak_mb: Option<u64>, peak_threads: Option<u32>) -> String {
+    let g = |n: u64| format!("{:.1} G", n as f64 / 1e9);
+    let mut s = format!("retired {} instructions in {} cycles over {} CPU", g(w.insn), g(w.cycles), secs(w.cpu_s));
+    if w.cpu_s > 0.0 && w.cycles > 0 {
+        s.push_str(&format!(
+            " ({:.2} GHz, {:.2} a cycle; {:.0}% of the CPU on performance cores)",
+            w.cycles as f64 / w.cpu_s / 1e9,
+            w.insn as f64 / w.cycles as f64,
+            w.p_cpu_s / w.cpu_s * 100.0
+        ));
+    }
+    if w.procs > 0 {
+        s.push_str(&format!(", {} other process{}", w.procs, if w.procs == 1 { "" } else { "es" }));
+    }
+    if let Some(m) = peak_mb {
+        s.push_str(&format!("; peak {}", bytes(m << 20)));
+        if let Some(t) = peak_threads {
+            s.push_str(&format!(" at {t} thread{}", if t == 1 { "" } else { "s" }));
+        }
     }
     s
 }
@@ -1706,7 +2084,7 @@ pub fn summary(runs: &[RunRec], kind: Option<&str>, last: usize, host: Option<&s
 pub const SHARES_RUNS: usize = 10;
 
 /// A step's phases as shares of its runs, the mean over its last `SHARES_RUNS` runs that ended
-/// well (docs/pool.md §10, the steps): the lead's, published in its status, so every page shows the
+/// well and passed the plausibility checks (`implausible`; docs/pool.md §10, the steps): the lead's, published in its status, so every page shows the
 /// same measured split.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PhaseShares {
@@ -1739,6 +2117,12 @@ pub struct PhaseShare {
     pub bytes: f64,
 }
 
+/// Whether a run's record is learned from (its phase shares): it ended well, took time, and passed
+/// the plausibility checks its agent made (`implausible`).
+pub fn learnable(r: &RunRec) -> bool {
+    r.ok && r.wall_s > 0.0 && r.implausible.is_empty()
+}
+
 /// The step a run of `kind` is a job of (pipeline::agent::steps' id): a leased task's runs are timed
 /// as "task <its step>" (`scenic task`), every other job under its step's id.
 pub fn step_of(kind: &str) -> &str {
@@ -1746,10 +2130,10 @@ pub fn step_of(kind: &str) -> &str {
 }
 
 /// The phase shares of each step's runs in `runs` (oldest first; by `step_of`): its last
-/// `SHARES_RUNS` that ended well.
+/// `SHARES_RUNS` that ended well and passed the plausibility checks (`learnable`).
 pub fn phase_shares<'a>(runs: impl IntoIterator<Item = &'a RunRec>) -> std::collections::BTreeMap<String, PhaseShares> {
     let mut by: std::collections::BTreeMap<&str, Vec<&RunRec>> = Default::default();
-    for r in runs.into_iter().filter(|r| r.ok && r.wall_s > 0.0) {
+    for r in runs.into_iter().filter(|r| learnable(r)) {
         by.entry(step_of(&r.kind)).or_default().push(r);
     }
     by.into_iter()
@@ -1841,7 +2225,7 @@ impl LogTail {
                 continue;
             }
             self.recent.push_back(RunSum::of(&r));
-            if !r.ok {
+            if !learnable(&r) {
                 continue;
             }
             let q = self.runs.entry(step_of(&r.kind).to_string()).or_default();
@@ -2920,5 +3304,219 @@ mod tests {
         let n = std::fs::metadata(&log).unwrap().len();
         assert!(n <= LOG_MAX && n > LOG_MAX / 4, "{n}");
         assert!(read_log(&log).iter().all(|r| r.id.len() == 1 << 20));
+    }
+
+    /// A record a clean run leaves: its CPU within its threads, its counts over all its CPU at a
+    /// clock a Mac has, its phases summing to it.
+    fn clean() -> RunRec {
+        RunRec {
+            v: VERSION,
+            kind: "unit".into(),
+            ok: true,
+            wall_s: 100.0,
+            cpu_s: Some(300.0),
+            untimed_cpu_s: Some(10.0),
+            threads: Some(2),
+            threads_most: Some(4),
+            phases: vec![
+                PhaseRec { name: "read".into(), wall_s: 30.0, cpu_s: Some(40.0), n: 1, ..Default::default() },
+                PhaseRec { name: "build".into(), wall_s: 65.0, cpu_s: Some(250.0), n: 1, ..Default::default() },
+            ],
+            work: Some(Work {
+                insn: 900_000_000_000,
+                cycles: 750_000_000_000,
+                p_insn: 800_000_000_000,
+                p_cycles: 600_000_000_000,
+                p_cpu_s: 200.0,
+                cpu_s: 299.5,
+                procs: 3,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Task #1419: a record is checked before it's learned from: its CPU within the threads it ran
+    /// on, its instructions counted over its CPU and its cycles at a clock its Mac has, its phases
+    /// summing to its run. Each failure is said; a record failing one is kept but its phase shares
+    /// aren't learned from it. A record from before the checks' figures skips what it can't say.
+    #[test]
+    fn a_record_is_checked_before_it_is_learned_from() {
+        let top = Some(3.2e9);
+        assert_eq!(implausible(&clean(), top), Vec::<String>::new());
+        let fails = |f: &dyn Fn(&mut RunRec)| {
+            let mut r = clean();
+            f(&mut r);
+            implausible(&r, top)
+        };
+        let one = |f: &dyn Fn(&mut RunRec), says: &str| {
+            let v = fails(f);
+            assert!(v.len() == 1 && v[0].contains(says), "{v:?} (want {says:?})");
+        };
+        // (Its CPU past 4 threads over 100 s, with the work's cover and the phases' sum kept.)
+        one(
+            &|r| {
+                r.cpu_s = Some(430.0);
+                r.untimed_cpu_s = Some(140.0);
+                r.work.as_mut().unwrap().cpu_s = 430.0;
+            },
+            "past its 4 threads",
+        );
+        // (No most said: the threads it started on.)
+        one(&|r| r.threads_most = None, "past its 2 threads");
+        // (Its counts saw 200 s of its 300 s: a program went unseen.)
+        one(&|r| r.work.as_mut().unwrap().cpu_s = 200.0, "instructions counted over");
+        one(
+            &|r| {
+                let w = r.work.as_mut().unwrap();
+                (w.insn, w.cycles, w.p_cycles) = (0, 0, 0);
+            },
+            "no instructions",
+        );
+        // (5 GHz on a Mac whose cores top out at 3.2: past the slack.)
+        one(&|r| r.work.as_mut().unwrap().cycles = 1_500_000_000_000, "its cores at 5.01 GHz");
+        one(&|r| r.work.as_mut().unwrap().p_cycles = 1_000_000_000_000, "its performance cores at 5.00 GHz");
+        let mut fast = clean();
+        fast.work.as_mut().unwrap().cycles = 1_500_000_000_000;
+        assert!(implausible(&fast, None).is_empty(), "no clock known, no clock checked");
+        // (Its phases' wall past its own, and their CPU short of its.)
+        one(&|r| r.phases[1].wall_s = 80.0, "its phases took");
+        one(&|r| r.phases[1].cpu_s = Some(200.0), "add up to");
+        // (Within the readings' grain: none.)
+        assert!(fails(&|r| r.cpu_s = Some(301.0)).is_empty());
+        // A record from before: no work, no threads most, no CPU in no phase.
+        let old: RunRec = serde_json::from_str(
+            r#"{"v":2,"kind":"unit","id":"unit 6/32/24","start":5,"wall_s":10.0,"cpu_s":12.0,"threads":2,"ok":true,"untimed_s":0.5,"phases":[{"name":"read","wall_s":9.5,"n":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!((old.work, old.nas, old.done.clone(), old.peak_mb), (None, None, None, None));
+        assert!(implausible(&old, top).is_empty() && learnable(&old));
+        // Kept but not learned from.
+        let mut bad = clean();
+        bad.implausible = implausible(&RunRec { cpu_s: Some(900.0), ..clean() }, top);
+        assert!(!bad.implausible.is_empty() && !learnable(&bad));
+        let back: RunRec = serde_json::from_slice(&serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert_eq!(back, bad, "the checks it failed kept in the record");
+        let mut runs = vec![clean(); 3];
+        runs.push(RunRec {
+            phases: vec![PhaseRec { name: "odd".into(), wall_s: 90.0, n: 1, ..Default::default() }],
+            ..bad
+        });
+        let s = &phase_shares(&runs)["unit"];
+        assert_eq!(s.runs, 3);
+        assert!(s.phases.iter().all(|p| p.name != "odd"));
+    }
+
+    /// Task #1419: the agent stamps a record as the job ends: how it ended and the targets it
+    /// finished (a resumed run's blocks, the job's own, kept beside them), the job's processes' NAS
+    /// traffic from its counts folder (what the page cache held apart from what the NAS served), and
+    /// the checks it fails.
+    #[test]
+    fn a_record_is_stamped_with_its_end_its_nas_and_its_checks() {
+        use store::nasio::{Count, BASE, SLOTS};
+        let d = tempfile::tempdir().unwrap();
+        // (A counts folder's base: its counts, then the time waited and the bytes held here.)
+        let mut c = [0u64; SLOTS];
+        (c[Count::ReadBytes as usize], c[Count::ReadBack as usize], c[Count::Files as usize]) = (5000, 200, 3);
+        (c[Count::WroteBytes as usize], c[Count::Creates as usize], c[Count::Listed as usize]) = (700, 2, 9);
+        let mut b: Vec<u8> = c.iter().flat_map(|v| v.to_le_bytes()).collect();
+        b.extend(7u64.to_le_bytes());
+        b.extend(1200u64.to_le_bytes());
+        std::fs::write(d.path().join(BASE), b).unwrap();
+        let mut r = RunRec { done: Some(Done { resumed: 4, made: 6, ..Default::default() }), ..clean() };
+        r.stamp("paused", 2, 5, d.path(), Some(3.2e9));
+        assert_eq!(r.done, Some(Done { end: "paused".into(), targets: 2, of: 5, resumed: 4, made: 6 }));
+        let n = r.nas.unwrap();
+        assert_eq!((n.read_b, n.held_b, n.read_back_b, n.wrote_b), (5000, 1200, 200, 700));
+        assert_eq!((n.files, n.creates, n.listed, n.stats, n.deletes), (3, 2, 9, 0, 0));
+        assert!(r.implausible.is_empty());
+        // (No counts folder: no NAS said; a failing record says so.)
+        let mut r = RunRec { cpu_s: Some(900.0), ..clean() };
+        r.stamp("done", 1, 1, &d.path().join("none"), None);
+        assert_eq!((r.nas, r.done.as_ref().map(|d| d.end.as_str())), (None, Some("done")));
+        assert_eq!(r.implausible.len(), 3, "{:?}", r.implausible);
+    }
+
+    /// A job's other processes are counted as last seen while they run, and summed once gone; the
+    /// process itself, an older one (the shell at its group's head) and a pid taken again by a
+    /// newer process kept apart.
+    #[test]
+    fn a_jobs_other_processes_are_counted_as_seen() {
+        let ru = |start: u64, insn: u64| crate::sys::Rusage {
+            start,
+            insn,
+            cycles: insn,
+            cpu_ns: insn,
+            ..Default::default()
+        };
+        let mut s = Seen::default();
+        // (Pid 1 is the run's own; 2 the shell at its head, started before it, at 50.)
+        s.saw(&[(1, ru(100, 999)), (2, ru(50, 999)), (3, ru(110, 10))], 1, 100);
+        s.saw(&[(1, ru(100, 999)), (3, ru(110, 30)), (4, ru(120, 5))], 1, 100);
+        // (3 gone; its pid taken by a newer process.)
+        s.saw(&[(3, ru(130, 7)), (4, ru(120, 6))], 1, 100);
+        let w = s.total();
+        assert_eq!((w.insn, w.procs), (30 + 7 + 6, 3));
+        assert!((w.cpu_s - 43e-9).abs() < 1e-15);
+    }
+
+    /// Task #1419: a timed job's record says what its processes retired: its own process's
+    /// instructions and cycles over its CPU, and a program it ran counted in (seen by the memory
+    /// sampler), so the counts cover the run's CPU; its peak memory, with the threads then and the
+    /// most it ran on; and it passes the checks at this Mac's clock.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_runs_work_counts_its_processes() {
+        // (Its own process, in a group of its own: the runner's other tests' programs aren't its.)
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let mut c = store::spawn::command(std::env::current_exe().unwrap());
+            c.args(["--exact", "timings::tests::a_runs_work_counts_its_processes"]).env(ALONE, "1");
+            crate::sys::own_group(&mut c);
+            let out = store::spawn::output(&mut c).unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(
+                out.status.success() && said.contains(" 1 passed"),
+                "{said}{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let _t = store::testkit::EnvVar::set(TIMINGS_ENV, d.path().join("run.json"));
+        let _r = store::testkit::EnvVar::set("RAYON_NUM_THREADS", "2");
+        // (A paced job's allowance, as its first sample sees it.)
+        crate::control::allowed(5);
+        reset();
+        start("test");
+        let spin = |s: f64| {
+            let t = Instant::now();
+            let mut x = 0u64;
+            while t.elapsed().as_secs_f64() < s {
+                x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
+            }
+        };
+        {
+            let _p = phase("spin");
+            spin(0.5);
+        }
+        {
+            let _p = phase("program");
+            let mut c = store::spawn::command("/usr/bin/python3");
+            c.args(["-c", "import time\nt = time.time()\nwhile time.time() - t < 1.5: pass"]);
+            assert!(store::spawn::status(&mut c).unwrap().success());
+        }
+        let r = snapshot(true).unwrap();
+        let w = r.work.unwrap();
+        let cpu = r.cpu_s.unwrap();
+        assert!(w.procs >= 1, "{w:?}");
+        assert!(w.insn > 1_000_000_000 && w.cycles > 1_000_000_000, "{w:?}");
+        assert!(cpu > 1.8 && w.cpu_s > 1.6 && w.cpu_s <= cpu + 0.1, "{w:?} of {cpu}");
+        assert!(w.p_cpu_s <= w.cpu_s + 1e-6 && w.p_insn <= w.insn, "{w:?}");
+        assert!(r.peak_mb.is_some_and(|m| m > 0), "{:?}", r.peak_mb);
+        assert_eq!((r.threads, r.threads_most, r.peak_threads), (Some(2), Some(5), Some(5)));
+        let top = crate::sys::top_clock();
+        assert!(top.is_some_and(|t| t > 5e8 && t < 1e10), "{top:?}");
+        assert_eq!(implausible(&r, top), Vec::<String>::new(), "{r:?}");
+        assert!(table(&r).contains("retired"), "{}", table(&r));
     }
 }
