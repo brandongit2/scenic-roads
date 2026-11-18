@@ -15920,39 +15920,58 @@ mod tests {
             .iter()
             .any(|j| j.id.starts_with("osm-pass")));
         // A newer planet declared (task #1169): its fetch only when the NAS has room for it, by
-        // the last planet's size (5 kB here) less its part, past the owner's NAS reserve; else the
-        // plan says why it waits.
+        // the last planet's size (90 GB here, the files sparse) less its part, past the owner's NAS
+        // reserve; else the plan says why it waits.
         let nas = store::nasfs::NasRoot::local_for_test(&root);
-        std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), vec![0u8; 5000]).unwrap();
+        let sized = |p: PathBuf, gb: u64| std::fs::File::create(p).unwrap().set_len(gb << 30).unwrap();
+        sized(root.join("sources/osm/2026-09-28/planet.osm.pbf"), 90);
         let mut m = BTreeMap::new();
         inputs::planet::accept_for_test(&nas, &mut m, "2026-10-05");
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
-        let fetch_or_wait = |a: &mut Agent| {
+        let fetch_or_wait = |a: &mut Agent, running: Option<&JobSpec>| {
             let mut w = Vec::new();
-            let fetch = plan_now(a, &mut w).iter().any(|j| j.id == "planet-fetch 2026-10-05");
+            let p = a.planner();
+            if let Some(spec) = running {
+                p.inp.slots =
+                    vec![plan::SlotSeen { running: Some(plan::RunSeen { spec: spec.clone() }), ..Default::default() }];
+            }
+            let c = Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() };
+            let plan = p.plan(&nas, &c, &mut w);
+            let fetch = plan.into_iter().find(|j| j.id == "planet-fetch 2026-10-05");
             let why = w.into_iter().find(|x| x.step.as_deref() == Some("planet-fetch")).map(|x| x.why);
             (fetch, why)
         };
-        room::TEST_FREE.with(|c| c.set(Some(4000)));
-        let (fetch, why) = fetch_or_wait(&mut a);
-        let why = why.expect("the fetch waits");
-        assert!(
-            !fetch && why.starts_with("needs 0 MB free on the NAS (the planet of 2026-09-28 is 0 MB; 0 MB free)"),
-            "{why}"
+        room::TEST_FREE.with(|c| c.set(Some(80 << 30)));
+        let (fetch, why) = fetch_or_wait(&mut a, None);
+        assert!(fetch.is_none());
+        assert_eq!(
+            why.as_deref(),
+            Some("needs 90.0 GB free on the NAS (90.0 GB as the planet of 2026-09-28 is; 80.0 GB free): it starts once the NAS has room")
         );
-        assert!(!why.contains("nas-room"), "no reserve: {why}");
         // Its part holds some: the rest fits.
         std::fs::create_dir_all(root.join("sources/osm/2026-10-05")).unwrap();
-        std::fs::write(root.join("sources/osm/2026-10-05").join(inputs::planet::PART), vec![0u8; 1000]).unwrap();
-        assert_eq!(fetch_or_wait(&mut a), (true, None));
+        sized(root.join("sources/osm/2026-10-05").join(inputs::planet::PART), 15);
+        let (fetch, why) = fetch_or_wait(&mut a, None);
+        let fetch = fetch.expect("the fetch planned");
+        assert_eq!(why, None);
         // The owner's reserve kept past it.
-        room::set_nas_reserve(&nas, Some(1), "a test").unwrap();
-        let (fetch, why) = fetch_or_wait(&mut a);
-        let why = why.expect("the fetch waits for the reserve");
-        assert!(!fetch && why.contains("past the NAS reserve's") && why.contains("`scenic nas-room`"), "{why}");
+        room::set_nas_reserve(&nas, Some(10 << 30), "a test").unwrap();
+        let (none, why) = fetch_or_wait(&mut a, None);
+        assert!(none.is_none());
+        assert_eq!(
+            why.as_deref(),
+            Some(
+                "needs 75.0 GB free on the NAS (90.0 GB as the planet of 2026-09-28 is, less the 15.0 GB fetched; \
+                 70.0 GB free past the NAS reserve's 10.0 GB): it starts once the NAS has room, or the reserve is \
+                 lowered or off (`scenic nas-room`)"
+            )
+        );
+        // A fetch running already goes on (its own check stops it short), never said to wait.
+        let (again, why) = fetch_or_wait(&mut a, Some(&fetch));
+        assert_eq!((again.map(|j| j.id), why), (Some(fetch.id.clone()), None));
         room::set_nas_reserve(&nas, None, "a test").unwrap();
         room::TEST_FREE.with(|c| c.set(None));
-        assert_eq!(fetch_or_wait(&mut a), (true, None));
+        assert_eq!(fetch_or_wait(&mut a, None).1, None);
     }
 
     /// A "none" terrain or slope z6 tile (the coverage gone from its z6 tile) is never expected the

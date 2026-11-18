@@ -21,7 +21,7 @@ makes the same bytes on every Mac.
    downloads cap) brings it once from its URLs in turn (the mirrors, then the main site) by the
    build's fetcher (its User-Agent; 429 and 5xx answers waited out). It's planned only when the
    NAS has room for it past the owner's NAS reserve (`scenic nas-room`), by the last planet's size
-   less its part (`planet::room`; with no planet on the NAS to measure by, planned), and waits
+   less its part (`planet::room`; with no planet on the NAS to measure by, or the job running, planned), and waits
    otherwise, saying why in the status (`waiting`); the job checks again by the length the server
    gives before writing, and stops short of it. It fetches resumably into
    `sources/osm/<date>/planet.osm.pbf.part`, checks it against its published MD5 (read back from

@@ -1773,10 +1773,12 @@ fetches the declared planet when it's newer than the last complete pass and the 
 budget weighs), and has room for it: the last planet's size (the newest complete pass's, a newer
 planet about its size: `planet::room`), less what its part holds, within the NAS's free space past
 the owner's NAS reserve (`scenic nas-room`, docs/building.md). Short of it, the fetch waits, its
-`waiting` saying the room it needs, the NAS's free space and the reserve (`agent::plan::planet_room_short`);
-with no planet on the NAS to measure by (a first fetch) it's planned. The fetch itself checks the
-room before each answer is written, by the length the server gives, and stops short of it, nothing
-written (`buildstore::fetch::resume`'s `room`). It then plans the pass of it (docs/steps.md §1); a declared planet older than the last
+`waiting` saying the room it needs, the NAS's free space and the reserve
+(`agent::plan::planet_room_short`); with no planet on the NAS to measure by (a first fetch), or the
+fetch running already, it's planned. The fetch itself checks the room before each answer is
+written, by the length the server gives (an answer without one is never written), and stops short
+of it, nothing written, its part kept (`buildstore::fetch::resume`'s `room`). It then plans the pass
+of it (docs/steps.md §1); a declared planet older than the last
 pass is said waiting (passes only go forward), and with none declared no new pass is planned. Rust steps through `inputs::sources::open`/`read` (one read per
 accepted version); a unit's programs from `sources.json` in its folder (`unit::UnitSources`: the
 land cover, the canopy files' URLs); a tree cover run from `sources.json` beside its coverage
@@ -1846,11 +1848,9 @@ grids on the NAS (`sources/ncei-crm/`, `sources/ncei-greatlakes/`) among them.
    the keys it had.
 4. `sources/canvec/50k/` is deleted only after both Macs run the new app (an older app still reads
    it).
-5. The planet (#1120): once both Macs run the app that reads its declaration, `osm-planet.toml` is
-   added to `inputs/sources/` (until it's accepted no new pass is planned, and the plan says so;
-   accepted, its planet is on the NAS and its pass complete: no fetch, no pass, a map update for
-   its credit), and DSM's daily task that ran the NAS's own fetch is deleted, with what it left on the NAS
-   (`nas/`, `state/logs/fetch-planet.log`).
+5. The planet: `osm-planet.toml` is accepted in `inputs/sources/` (the planet of 2026-09-28, on the
+   NAS, its pass complete). The NAS runs no planet fetch of its own (none in DSM's Task Scheduler);
+   a newer planet is the owner's edit of the declaration, which plans its fetch and then its pass.
 
 ### 6.10 Depth
 

@@ -368,7 +368,7 @@ fn planet_room_short(root: &NasRoot, date: &str, have: Option<&str>) -> Option<S
         Ok(f) => f,
         Err(e) => return Some(format!("the NAS's free space can't be read now: {e}")),
     };
-    let fetched = if r.held > 0 { format!(", {} of it fetched", room::size(r.held)) } else { String::new() };
+    let fetched = if r.held > 0 { format!(", less the {} fetched", room::size(r.held)) } else { String::new() };
     let (past, lower) = match room::nas_reserve(root).map_or(0, |t| t.bytes) {
         0 => (String::new(), String::new()),
         b => (
@@ -377,10 +377,10 @@ fn planet_room_short(root: &NasRoot, date: &str, have: Option<&str>) -> Option<S
         ),
     };
     Some(format!(
-        "needs {} free on the NAS (the planet of {} is {}{fetched}; {} free{past}): it starts once the NAS has room{lower}",
+        "needs {} free on the NAS ({} as the planet of {} is{fetched}; {} free{past}): it starts once the NAS has room{lower}",
         room::size(r.left()),
-        r.by,
         room::size(r.size),
+        r.by,
         room::size(free),
     ))
 }
@@ -1248,12 +1248,15 @@ impl Planner {
         let newer = match self.planet_next(root, have.as_deref(), waiting) {
             Some((date, inputs::planet::Next::Pass(planet))) => Some((planet, date)),
             Some((date, inputs::planet::Next::Fetch)) => {
-                let what = format!("Fetching the OpenStreetMap planet of {date}");
-                if let Some(why) = planet_room_short(root, &date, have.as_deref()) {
+                let (id, what) =
+                    (format!("planet-fetch {date}"), format!("Fetching the OpenStreetMap planet of {date}"));
+                // (One running already goes on: its own check, before each answer, stops it short.)
+                let running = self.inp.slots.iter().any(|s| s.running.as_ref().is_some_and(|r| r.spec.id == id));
+                if let Some(why) = (!running).then(|| planet_room_short(root, &date, have.as_deref())).flatten() {
                     waiting.push(Waiting { step: Some("planet-fetch".into()), what, why });
                 } else {
                     out.push(JobSpec {
-                        id: format!("planet-fetch {date}"),
+                        id,
                         what,
                         cmd: vec![
                             s(&self.o.bin.join("scenic-build")),
