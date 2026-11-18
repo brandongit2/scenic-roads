@@ -358,9 +358,9 @@ fn ends_in(now: u64, left: Duration) -> u64 {
 
 /// Why the fetch of the planet of `date` waits for room on the NAS (docs/inputs.md §6.9): the
 /// planet's size as the last one's (inputs::planet::room, the newest complete pass `have`'s), less
-/// its part, past the NAS's free space less the owner's reserve (`scenic nas-room`, the room
-/// bld-fetch and the pyramids' fill keep too). None when it fits, or there's no planet to measure
-/// by: the fetch checks then, by the length the server gives.
+/// its part, is more than the NAS's free space past the owner's reserve (`scenic nas-room`, the
+/// room bld-fetch and the pyramids' fill keep too). None when it fits, or there's no planet to
+/// measure by: the fetch checks then, by the length the server gives.
 fn planet_room_short(root: &NasRoot, date: &str, have: Option<&str>) -> Option<String> {
     let r = inputs::planet::room(root, date, have)?;
     let free = match room::nas_room(root) {
@@ -1249,9 +1249,10 @@ impl Planner {
             Some((date, inputs::planet::Next::Pass(planet))) => Some((planet, date)),
             Some((date, inputs::planet::Next::Fetch)) => {
                 let what = format!("Fetching the OpenStreetMap planet of {date}");
-                match planet_room_short(root, &date, have.as_deref()) {
-                    Some(why) => waiting.push(Waiting { step: Some("planet-fetch".into()), what, why }),
-                    None => out.push(JobSpec {
+                if let Some(why) = planet_room_short(root, &date, have.as_deref()) {
+                    waiting.push(Waiting { step: Some("planet-fetch".into()), what, why });
+                } else {
+                    out.push(JobSpec {
                         id: format!("planet-fetch {date}"),
                         what,
                         cmd: vec![
@@ -1265,7 +1266,7 @@ impl Planner {
                         needs: Needs { nas: true },
                         restart_after_sleep: true,
                         record: None,
-                    }),
+                    });
                 }
                 None
             }
