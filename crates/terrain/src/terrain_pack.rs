@@ -1763,8 +1763,9 @@ pub fn piece_levels(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, 
 }
 
 /// Whether z6 tile `t` makes any hi tile (`piece_levels` not all empty): one near the coverage at
-/// z6 can still have none of its z9 tiles near it (6/21/18), or none whose place reaches z9. Its z9
-/// tiles near the coverage once per coverage version and z6 tile (`Coverage::kept`).
+/// z6 can still have none of its z9 tiles near it (6/21/18), or no tile z9–12 whose place reaches
+/// its zoom. Its z9 tiles near the coverage once per coverage version and z6 tile
+/// (`Coverage::kept`).
 pub fn makes_hi(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> bool {
     let part = std::cell::OnceCell::new();
     let part = || part.get_or_init(|| buildstore::coverage::near_part(cov, 6, t.0, t.1));
@@ -1777,10 +1778,16 @@ pub fn makes_hi(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)
             v
         })
     };
-    near && (t.0 * 8..t.0 * 8 + 8).any(|x| {
-        (t.1 * 8..t.1 * 8 + 8)
-            .any(|y| crate::terrain_zoom::finest(sets, 9, x, y) >= 9 && near_coverage(part(), 9, x, y))
-    })
+    // (Tile z/x/y or one under it to z12 is a level's: near the coverage, no finer than its place's
+    // finest zoom, which can be past its parent's: crate::terrain_zoom::finest_under.)
+    fn reaches(sets: &[crate::terrain_zoom::Set], cov: &Coverage, z: u8, x: u32, y: u32) -> bool {
+        let made = z <= crate::terrain_zoom::finest(sets, z, x, y);
+        let deeper = || z < 12 && crate::terrain_zoom::finest_under(sets, z, x, y) > z;
+        (made || deeper())
+            && near_coverage(cov, z, x, y)
+            && (made || (0..4u32).any(|k| reaches(sets, cov, z + 1, 2 * x + (k & 1), 2 * y + (k >> 1))))
+    }
+    near && (t.0 * 8..t.0 * 8 + 8).any(|x| (t.1 * 8..t.1 * 8 + 8).any(|y| reaches(sets, part(), 9, x, y)))
 }
 
 /// Drops z6 tile `t`'s terrain hi pack and mid from the manifest (a z6 tile the coverage has left:

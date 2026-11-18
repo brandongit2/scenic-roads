@@ -50,8 +50,8 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
   lift heights by about a quarter quantum a level), then to Terrarium's 1/256 m. Only what a job
   reads of another's packs (the root of the lo packs' z3) is rounded before its means. The map names the deep packs
   under the layer's `deep`, each one's z10 tile's native zoom under `native_zoom`
-  (`terrain_deep::native_zoom`: its places' finest, terrain::terrain_zoom; elsewhere their finest is
-  z12 or coarser), and the terrain's
+  (`terrain_deep::native_zoom`: the finest any of its tiles' places can have,
+  terrain::terrain_zoom::finest_under; elsewhere their finest is z12 or coarser), and the terrain's
   `maxzoom` is the finest of those. The app's meta passes `native_zoom` on as `terrainAreas`
   (`{"zoom": 10, "tiles": {"x/y": z}}`), and the map takes its terrain and shading tiles to that
   zoom there (our MapLibre's `scenic:zoom-by-area`), z12 elsewhere. The shading goes up to two

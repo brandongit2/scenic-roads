@@ -6,7 +6,7 @@
 //! are the declared datasets meeting it in their order (rank, then resolution), up to the first that
 //! holds it whole: past that one no later dataset is read there but to fill voids
 //! (inputs::dem::generic). A tile's finest zoom is the finest of its sources' at its poleward edge,
-//! at most `DEEPEST`.
+//! at most `DEEPEST`; a tile under it can have a finer one (`finest_under`).
 //!
 //! The same rule sets the polar caps' finest zoom (crate::polar), on their grid's pixel.
 
@@ -177,6 +177,48 @@ pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
     sources(sets, z, x, y).iter().map(|s| s.detail.zoom_at(lat)).max().unwrap_or(0).min(DEEPEST)
 }
 
+/// The poleward edges of the rows of tiles at `DEEPEST` under a zoom-`z` tile of row `y`, north to
+/// south: every tile under it (itself too) has its poleward edge at one of them.
+pub fn deepest_rows(z: u8, y: u32) -> Vec<f64> {
+    let k = DEEPEST - z;
+    (0..1u32 << k).map(|r| poleward(roadcore::geo::tile_box(DEEPEST, 0, (y << k) + r))).collect()
+}
+
+/// The finest zoom any tile under tile `z/x/y` (itself too) can have: its sources' finest at any
+/// of its `DEEPEST` rows' poleward edges (`deepest_rows`), at most `DEEPEST`. Never under any such
+/// tile's `finest`: a tile's sources are among its parent's (each meets the parent, and the first
+/// holding the parent whole holds it), and its poleward edge is one of those rows'. A place's
+/// finest zoom rises equatorward (a cell's pixels are coarser there) and past a band's edge, so a
+/// tile's can be past its parent's by several zooms.
+pub fn finest_under(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
+    finest_over(sets, z, x, y, &deepest_rows(z, y))
+}
+
+/// `finest_under`, given the tile's own rows' poleward edges (`deepest_rows`, or its part of a
+/// coarser tile's).
+pub fn finest_over(sets: &[Set], z: u8, x: u32, y: u32, rows: &[f64]) -> u8 {
+    sources(sets, z, x, y).iter().map(|s| zoom_over(&s.detail, rows)).max().unwrap_or(0).min(DEEPEST)
+}
+
+/// Of `d`, its finest zoom at any of latitudes `lats`: for each cell it has among them, its zoom at
+/// the most equatorward of those with it (a cell's zoom is never coarser equatorward).
+fn zoom_over(d: &Detail, lats: &[f64]) -> u8 {
+    if let Detail::Pyramid(z) = d {
+        return *z;
+    }
+    // (By cell, the latitude nearest the equator.)
+    let mut by: Vec<(f64, f64)> = Vec::new();
+    for &lat in lats {
+        let c = d.cell_at(lat).unwrap_or(f64::INFINITY);
+        match by.iter_mut().find(|e| e.0 == c) {
+            Some(e) if lat.abs() < e.1.abs() => e.1 = lat,
+            Some(_) => {}
+            None => by.push((c, lat)),
+        }
+    }
+    by.iter().map(|&(c, lat)| zoom_for(c, lat)).max().unwrap_or(0)
+}
+
 /// Whether the deep packs' tile `x`, `y` (crate::terrain_deep::PACK_Z) has no data past z12: each
 /// of its sources reaching z13 or finer anywhere in it has none in it, a finer read of its files
 /// having found nothing there (`Presence::hollow`) or its regions' outlines cutting it away there
@@ -184,19 +226,15 @@ pub fn finest(sets: &[Set], z: u8, x: u32, y: u32) -> u8 {
 /// tile of the band (crate::terrain_pack::Fills::keep keeps only a source reaching a tile's zoom,
 /// at that tile's poleward edge), so the plan runs none there (task #842); not one with no such
 /// source at all, which is no target. A source reaches the band in it where its zoom at some band
-/// tile's poleward edge is z13 or finer: every such edge is one of its deepest rows' (`MAX_Z`), so
-/// each row's is asked, a zoom finer equatorward (and a band's cell its own) than at the tile's
-/// poleward edge. A place's sources stay as they are: no key moves by it.
+/// tile's poleward edge is z13 or finer: every such edge is one of its deepest rows'
+/// (`deepest_rows`), so each row's is asked, a zoom finer equatorward (and a band's cell its own)
+/// than at the tile's poleward edge. A place's sources stay as they are: no key moves by it.
 pub fn hollow(sets: &[Set], x: u32, y: u32) -> bool {
-    use crate::terrain_deep::{FIRST_Z, MAX_Z, PACK_Z};
+    use crate::terrain_deep::{FIRST_Z, PACK_Z};
     let b = roadcore::geo::tile_box(PACK_Z, x, y);
-    let k = MAX_Z - PACK_Z;
-    let rows: Vec<f64> =
-        (0..1u32 << k).map(|r| poleward(roadcore::geo::tile_box(MAX_Z, x << k, (y << k) + r))).collect();
-    let mut fine = sources(sets, PACK_Z, x, y)
-        .into_iter()
-        .filter(|s| rows.iter().any(|&lat| s.detail.zoom_at(lat) >= FIRST_Z))
-        .peekable();
+    let rows = deepest_rows(PACK_Z, y);
+    let mut fine =
+        sources(sets, PACK_Z, x, y).into_iter().filter(|s| zoom_over(&s.detail, &rows) >= FIRST_Z).peekable();
     fine.peek().is_some() && fine.all(|s| s.presence.as_ref().is_some_and(|p| p.hollow(x, y)) || s.cover.holds_none(b))
 }
 
