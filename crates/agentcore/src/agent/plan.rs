@@ -1248,15 +1248,16 @@ impl Planner {
         let newer = match self.planet_next(root, have.as_deref(), waiting) {
             Some((date, inputs::planet::Next::Pass(planet))) => Some((planet, date)),
             Some((date, inputs::planet::Next::Fetch)) => {
-                let (id, what) =
-                    (format!("planet-fetch {date}"), format!("Fetching the OpenStreetMap planet of {date}"));
+                let what = format!("Fetching the OpenStreetMap planet of {date}");
                 // (One running already goes on: its own check, before each answer, stops it short.)
-                let running = self.inp.slots.iter().any(|s| s.running.as_ref().is_some_and(|r| r.spec.id == id));
+                let running = self.inp.slots.iter().any(|s| {
+                    s.running.as_ref().is_some_and(|r| r.spec.id.strip_prefix("planet-fetch ") == Some(date.as_str()))
+                });
                 if let Some(why) = (!running).then(|| planet_room_short(root, &date, have.as_deref())).flatten() {
                     waiting.push(Waiting { step: Some("planet-fetch".into()), what, why });
                 } else {
                     out.push(JobSpec {
-                        id,
+                        id: format!("planet-fetch {date}"),
                         what,
                         cmd: vec![
                             s(&self.o.bin.join("scenic-build")),
