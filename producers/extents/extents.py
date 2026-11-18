@@ -1341,6 +1341,9 @@ def tidy(geom, tol_deg):
     g = polygons(shapely.make_valid(geom))
     g = g.buffer(tol_deg / 4, join_style="mitre").buffer(-tol_deg / 4, join_style="mitre")
     g = polygons(shapely.make_valid(g.simplify(tol_deg, preserve_topology=True)))
+    # (Kept in the plane: an outline along the antimeridian, closed through by the buffer or
+    # moved by the simplification, can stand past it, as GMRT's swaths there did.)
+    g = polygons(g.intersection(sg.box(-180, -90, 180, 90)))
     least = tol_deg * tol_deg
     kept = []
     for p in getattr(g, "geoms", [g]):

@@ -318,6 +318,10 @@ class Geometry(unittest.TestCase):
         self.assertEqual(g.bounds[3], 90.0)
         self.assertTrue(g.contains(sg.Point(100.0, 89.0)))
 
+    def test_an_outline_stays_in_the_plane(self):
+        g = extents.tidy(sg.box(179.0, -76.0, 180.02, -75.0), 0.01)
+        self.assertEqual(g.bounds[2], 180.0)
+
     def test_a_polygons_many_holes_are_taken_out(self):
         # (A mask's polygon with a hole for every cell of no data among its cells.)
         holes = [sg.box(x * 4000 + 1000, y * 4000 + 1000, x * 4000 + 2000, y * 4000 + 2000).exterior for x in range(20) for y in range(20)]
