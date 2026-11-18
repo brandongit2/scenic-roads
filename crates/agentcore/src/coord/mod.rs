@@ -275,9 +275,7 @@ impl<'a> CostKey<'a> {
     pub fn parse(key: &'a str) -> Self {
         match key.split_once(' ') {
             Some((step, target)) => CostKey { step, target },
-            None if codecs::legacy::TileId::parse(key).is_some_and(|u| u.z == 6) => {
-                CostKey { step: "unit", target: key }
-            }
+            None if codecs::tile::TileId::parse(key).is_some_and(|u| u.z == 6) => CostKey { step: "unit", target: key },
             None => CostKey { step: key, target: "" },
         }
     }

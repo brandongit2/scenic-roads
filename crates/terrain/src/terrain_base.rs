@@ -270,13 +270,7 @@ impl<'a> RawFetch<'a> {
 
     /// Tile z/x/y of the Terrarium template, when `url` is one of its tiles.
     fn tile(&self, url: &str) -> Option<(u8, u32, u32)> {
-        let t = self.url?;
-        let (pre, rest) = t.split_once("{z}")?;
-        let suf = rest.strip_prefix("/{x}/{y}")?;
-        let mid = url.strip_prefix(pre)?.strip_suffix(suf)?;
-        let mut it = mid.split('/').map(|v| v.parse::<u32>().ok());
-        let (z, x, y) = (it.next()??, it.next()??, it.next()??);
-        (it.next().is_none() && z <= 30).then_some((z as u8, x, y))
+        crate::pyramids::tile_of(self.url?, url)
     }
 }
 

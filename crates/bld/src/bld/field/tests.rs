@@ -276,7 +276,7 @@ fn heritage_slices_against_markdata() {
         .flat_map(|(_, c)| codecs::marks::markdata_files(&root.join(c)).unwrap())
         .collect();
     for t in ["6-33-22", "6-18-24", "6-56-25", "6-17-23", "6-31-18", "6-32-22"] {
-        let u = codecs::legacy::TileId::parse(t).unwrap();
+        let u = codecs::tile::TileId::parse(t).unwrap();
         let md = markdata.get(&(u.x, u.y)).map(|r| sites_of_markdata(r).unwrap()).unwrap_or_default();
         let all = markdata
             .get(&(u.x, u.y))

@@ -1058,10 +1058,7 @@ impl Hints {
     /// tiles' base packs.
     pub fn add_at(&mut self, the_plan: &dyn crate::agent::seam::Plan, step: &str, targets: &[String], at: u64) {
         let step = crate::pool::records::current(step);
-        let tile = |t: &str| -> Option<(u8, u32, u32)> {
-            let mut v = t.split(['/', '-']).map(|s| s.parse::<u32>().ok());
-            Some((u8::try_from(v.next()??).ok()?, v.next()??, v.next()??))
-        };
+        let tiles = || targets.iter().filter_map(|t| codecs::tile::TileId::parse(t));
         let mut squares = |b: [f64; 4]| {
             for f in the_plan.canopy_files(b) {
                 sooner_in(&mut self.squares, f, at);
@@ -1069,14 +1066,14 @@ impl Hints {
         };
         match step {
             "unit" => {
-                for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(roadcore::geo::tile_box_grown(z, x, y, the_plan.unit_margin_km()));
-                    sooner_in(&mut self.units, format!("{z}-{x}-{y}"), at);
+                for u in tiles() {
+                    squares(roadcore::geo::tile_box_grown(u.z, u.x, u.y, the_plan.unit_margin_km()));
+                    sooner_in(&mut self.units, u.dash(), at);
                 }
             }
             "trees" => {
-                for (z, x, y) in targets.iter().filter_map(|t| tile(t)) {
-                    squares(roadcore::geo::tile_box(z, x, y));
+                for u in tiles() {
+                    squares(roadcore::geo::tile_box(u.z, u.x, u.y));
                 }
             }
             s @ ("terrain-hi" | "terrain-deep" | "terrain-lo") => {

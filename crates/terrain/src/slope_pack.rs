@@ -394,7 +394,7 @@ pub fn deep_logical(x: u32, y: u32) -> String {
 
 /// A deep pack's z10 tile, from its logical name.
 pub fn deep_tile(l: &str) -> Option<(u32, u32)> {
-    let u = codecs::legacy::TileId::parse(l.strip_prefix(DEEP_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::tile::TileId::parse(l.strip_prefix(DEEP_PREFIX)?).filter(|u| u.z == PACK_Z)?;
     (deep_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -471,12 +471,12 @@ pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<((u32, u32
     );
     let t = m["tile"]
         .as_str()
-        .and_then(codecs::legacy::TileId::parse)
+        .and_then(codecs::tile::TileId::parse)
         .filter(|u| u.z == 6)
         .with_context(|| format!("{}: no z6 tile", what()))?;
     let mut out = Vec::new();
     for s in r.sections() {
-        let u = codecs::legacy::TileId::parse(&s.name.replace('-', "/"))
+        let u = codecs::tile::TileId::parse(&s.name)
             .filter(|u| (6..=8).contains(&u.z) && (u.x >> (u.z - 6), u.y >> (u.z - 6)) == (t.x, t.y))
             .with_context(|| format!("{}: a section {:?}", what(), s.name))?;
         out.push((u.z, u.x, u.y, r.read(&s.name).with_context(what)?));
@@ -1166,7 +1166,7 @@ pub const DEEP_MID_PREFIX: &str = "work/slope-deep-mid/";
 
 /// The z10 tile of a deep mid, from its logical name.
 pub fn deep_mid_tile(l: &str) -> Option<(u32, u32)> {
-    let u = codecs::legacy::TileId::parse(l.strip_prefix(DEEP_MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::tile::TileId::parse(l.strip_prefix(DEEP_MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
     (deep_mid_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -1242,13 +1242,13 @@ fn deep_mid_from(bytes: Vec<u8>, shown: &str) -> Result<((u32, u32), DeepMid)> {
     );
     let t = m["tile"]
         .as_str()
-        .and_then(codecs::legacy::TileId::parse)
+        .and_then(codecs::tile::TileId::parse)
         .filter(|u| u.z == PACK_Z)
         .with_context(|| format!("{}: no z10 tile", what()))?;
     let k = FIRST_Z - PACK_Z;
     let mut mid = DeepMid::default();
     for s in r.sections() {
-        let u = codecs::legacy::TileId::parse(&s.name.replace('-', "/"))
+        let u = codecs::tile::TileId::parse(&s.name)
             .filter(|u| u.z == FIRST_Z && (u.x >> k, u.y >> k) == (t.x, t.y))
             .with_context(|| format!("{}: a section {:?}", what(), s.name))?;
         let b = r.read(&s.name).with_context(what)?;

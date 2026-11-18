@@ -1303,7 +1303,7 @@ pub fn read_mid_of<'a>(path: impl Into<store::nasfs::Loc<'a>>, tz: u8) -> anyhow
     );
     let t = m["tile"]
         .as_str()
-        .and_then(codecs::legacy::TileId::parse)
+        .and_then(codecs::tile::TileId::parse)
         .filter(|u| u.z == tz)
         .with_context(|| format!("{}: no z{tz} tile", what()))?;
     let prefix = format!("quad-{}-", tz + 3);

@@ -25,7 +25,7 @@ use super::job::{self, AddTile, Summary};
 use super::work::{self, WorkFile};
 use anyhow::{ensure, Context, Result};
 use buildstore::coverage::{Coverage, Shape};
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use roadcore::archive::{Archive, ArchiveWriter};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

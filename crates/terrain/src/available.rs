@@ -676,8 +676,7 @@ fn put_pack(out: &mut Out, layer: &str, scope: &str, root: (u8, u32, u32), mut t
 
 /// The z6 tile a key names ("6/x/y").
 fn xy(t: &str) -> (u32, u32) {
-    let mut p = t.split('/').skip(1).map(|v| v.parse().unwrap_or(0));
-    (p.next().unwrap_or(0), p.next().unwrap_or(0))
+    codecs::tile::TileId::parse(t).map_or((0, 0), |u| (u.x, u.y))
 }
 
 /// The root's tile z/x/y (z under `PACK_Z`) from the z6 tiles' own (`mids`: gzip'd, by "6/x/y";

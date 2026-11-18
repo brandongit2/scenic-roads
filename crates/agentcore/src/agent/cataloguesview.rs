@@ -80,13 +80,10 @@ type Tile = (u8, u32);
 /// The tiles a tile key ("z/x/y") belongs to: z3 and z6 as they are; a deeper key its z6 tile's,
 /// a z10 key its own too; none for another zoom.
 fn tiles_of(key: &str) -> Vec<Tile> {
-    let mut it = key.split('/').map(|s| s.parse::<u32>().ok());
-    let (Some(Some(z)), Some(Some(x)), Some(Some(y)), None) = (it.next(), it.next(), it.next(), it.next()) else {
-        return vec![];
-    };
+    let Some(codecs::tile::TileId { z, x, y }) = codecs::tile::TileId::parse(key) else { return vec![] };
     match z {
-        3 | 6 if x < 1 << z && y < 1 << z => vec![(z as u8, (y << z) + x)],
-        7..=24 if x < 1 << z && y < 1 << z => {
+        3 | 6 => vec![(z, (y << z) + x)],
+        7..=24 => {
             let six = (6, ((y >> (z - 6)) << 6) + (x >> (z - 6)));
             if z == 10 {
                 vec![six, (10, (y << 10) + x)]

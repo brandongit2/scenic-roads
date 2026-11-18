@@ -7,7 +7,7 @@ use agentcore::coord::client::LeaseCalls;
 use bld::bld::job;
 use bld::bld::task::testkit::{collect, coverage, files, here_s, out, records, Tiles};
 use bld::bld::task::{run, take_z8, Offers, KIND, OUTPUTS};
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use std::path::Path;
 
 /// A worker in this process: asks, fetches the task's files, runs the program's code over them,

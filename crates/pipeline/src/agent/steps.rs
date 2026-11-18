@@ -47,7 +47,7 @@ use agentcore::agent::every::{self, Place};
 use agentcore::agent::forecast::ReadTarget;
 use agentcore::agent::seam::{Along, Left};
 pub use agentcore::pool::records::current;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use serde::{Deserialize, Serialize};
 
 /// Where a step's output goes.
@@ -2525,7 +2525,7 @@ mod tests {
         along_add(&mut left.along, "unit", t, &reach);
         // Along it, past its box: the hi pack of 6/31/21 (52.5° N on) and the deep packs at its far end.
         let (hi, deep) = (left.along.get("unit", t, "terrain-hi"), left.along.get("unit", t, "terrain-deep"));
-        let far = codecs::legacy::TileId::of_point(terrain::terrain_deep::PACK_Z, e7(-1.0, 52.4)).slash();
+        let far = codecs::tile::TileId::of_point(terrain::terrain_deep::PACK_Z, e7(-1.0, 52.4)).slash();
         assert_eq!(hi, ["6/31/21"]);
         assert!(deep.contains(&far), "{deep:?}");
         assert!(left.along.get("unit", t, "terrain-lo").is_empty(), "its box's z3 tile holds the rest");

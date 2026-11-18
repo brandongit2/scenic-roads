@@ -4,7 +4,7 @@
 //! differently. None while it can't be worked out now: the target's key is unknown and it waits.
 
 use super::build::KeyCtx;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 
 /// The spacing the extract reads (inputs::dem::spacing::key_line); None while it isn't known.
 pub fn spacing(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {

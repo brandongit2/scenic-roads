@@ -1170,7 +1170,7 @@ fn area_part(cat: &Catalogue, rings: &[Vec<[f64; 2]>], units: &BTreeSet<u64>) ->
     let tiles = tiles_meeting(rings, NEAR_KM);
     let mut files: BTreeMap<String, u64> = files_of(cat, rings).names.into_iter().collect();
     for &u in units {
-        let unit = crate::ways::unit_str(u);
+        let unit = codecs::tile::TileId::of_key(u).slash();
         for l in [cat.base.get(&unit), cat.roads.get(&unit)].into_iter().flatten() {
             if let Some(f) = cat.files.get(l) {
                 files.insert(f.file.clone(), f.size);

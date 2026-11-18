@@ -4,7 +4,7 @@
 //! never anything per region.
 
 use crate::basepack::BasePack;
-use crate::legacy::TileId;
+use crate::tile::TileId;
 use crate::tiling::{self, Encoded, WayIn};
 use anyhow::Result;
 use rayon::prelude::*;

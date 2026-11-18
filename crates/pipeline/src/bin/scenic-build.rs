@@ -146,7 +146,8 @@ use anyhow::{bail, Context, Result};
 use buildstore::out::Out;
 use codecs::basepack::BasePack;
 use codecs::hipack::{self, b, meets, tile_bounds};
-use codecs::legacy::{self, Legacy, TileId};
+use codecs::legacy::{self, Legacy};
+use codecs::tile::TileId;
 use jobrt::timings::phase;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -6767,7 +6768,7 @@ mod tests {
             every_zoom: false,
             presence: Some(std::sync::Arc::new(Presence::of(&[[x, y], [x + 1, y]]).with_hollow(hollow))),
         };
-        let (a, b) = (codecs::legacy::TileId { z: 10, x, y }, codecs::legacy::TileId { z: 10, x: x + 1, y });
+        let (a, b) = (codecs::tile::TileId { z: 10, x, y }, codecs::tile::TileId { z: 10, x: x + 1, y });
         let sets = vec![set(&[])];
         assert!(super::deep_made(&sets, &cov, &a) && super::deep_made(&sets, &cov, &b));
         let sets = vec![set(&[[x, y]])];
@@ -7053,7 +7054,7 @@ mod tests {
     /// NAS (their way indexes kept in the cache); another z6 tile's file is neither read nor opened.
     #[test]
     fn a_pack_job_opens_only_its_tiles_owners() {
-        use codecs::legacy::TileId;
+        use codecs::tile::TileId;
         let d = tempfile::tempdir().unwrap();
         let (root, mirror, cache) = (d.path().join("nas"), d.path().join("mirror"), d.path().join("cache"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
@@ -7518,7 +7519,8 @@ mod tests {
     /// from every list.
     #[test]
     fn the_road_index_reads_only_the_lists_changed() {
-        use codecs::legacy::{RoadRec, TileId};
+        use codecs::legacy::RoadRec;
+        use codecs::tile::TileId;
         let rec = |road: u64| RoadRec { road, len: 1.0, offset: 0.0, dir: 0, _pad: [0; 7] };
         let (a, b, c) =
             (TileId::parse("6/1/1").unwrap(), TileId::parse("6/1/2").unwrap(), TileId::parse("6/1/3").unwrap());

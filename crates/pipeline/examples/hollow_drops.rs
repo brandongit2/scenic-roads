@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
                 };
                 let td = now.terrain_deep.iter().find(|p| p.0 == *t).map(|p| &p.1);
                 let sd = now.slope_deep.iter().find(|p| p.0 == *t).and_then(|p| p.1.as_ref());
-                let u = codecs::legacy::TileId::parse(t).expect("a z10 tile");
+                let u = codecs::tile::TileId::parse(t).expect("a z10 tile");
                 let k = terrain::terrain_deep::PACK_Z - 6;
                 let z6 = format!("6/{}/{}", u.x >> k, u.y >> k);
                 serde_json::json!({
@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
         .deep_hollow_named
         .iter()
         .map(|t| {
-            let u = codecs::legacy::TileId::parse(t).expect("a z10 tile");
+            let u = codecs::tile::TileId::parse(t).expect("a z10 tile");
             let outputs: Vec<&String> = [
                 terrain::terrain_deep::mid_logical(u.x, u.y),
                 terrain::slope_pack::deep_logical(u.x, u.y),

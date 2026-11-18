@@ -17,7 +17,7 @@
 use anyhow::{Context, Result};
 use buildstore::coverage::Coverage;
 use buildstore::out::Out;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

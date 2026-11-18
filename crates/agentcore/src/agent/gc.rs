@@ -283,7 +283,7 @@ impl DepthKeep {
     /// for a tile the coverage left since it was planned keeps its tile's packs this run.
     pub fn with_leased(mut self, leased: &[(String, String)]) -> DepthKeep {
         for (step, t) in leased {
-            if let Some(u) = codecs::legacy::TileId::parse(t) {
+            if let Some(u) = codecs::tile::TileId::parse(t) {
                 match (step.as_str(), u.z) {
                     ("depth", 6) => self.hi.insert((u.x, u.y)),
                     ("depth-lo", 3) => self.lo.insert((u.x, u.y)),

@@ -1,6 +1,6 @@
 use super::*;
 use crate::hipack::{self, tile_bounds};
-use crate::legacy::TileId;
+use crate::tile::TileId;
 use roadcore::scenic::ch;
 use roadcore::sections::{RailRel, RoadRec, Sub9};
 

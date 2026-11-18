@@ -25,7 +25,7 @@ use super::world7;
 use anyhow::{ensure, Context, Result};
 use buildstore::coverage::Coverage;
 use buildstore::out::Out;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use det::Det;
 use rayon::prelude::*;
 use roadcore::archive::tile_zxy;

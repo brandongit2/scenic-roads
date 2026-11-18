@@ -1,46 +1,14 @@
 //! A z6 tile folder's arrays (ways.bin, verts.bin and the per-vertex and per-sample arrays the z6 tile's
-//! steps write) as its base pack (docs/formats.md "Base pack"); and a tile's id (`TileId`).
+//! steps write) as its base pack (docs/formats.md "Base pack").
 
+use crate::tile::TileId;
 use anyhow::{ensure, Result};
 use rayon::prelude::*;
 use roadcore::elev::{self, Elevs};
 use roadcore::scenic::{ch, Sample};
-use roadcore::{class, geo::merc, Array, WayRec, Ways};
+use roadcore::{class, Array, WayRec, Ways};
 use std::collections::BTreeMap;
 use std::path::Path;
-
-/// A tile of any zoom: z/x/y (the grid's z3, z6 and z8 tiles, or a map tile).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TileId {
-    pub z: u8,
-    pub x: u32,
-    pub y: u32,
-}
-
-impl TileId {
-    pub fn key(&self) -> u64 {
-        roadcore::archive::tile_key(self.z, self.x, self.y)
-    }
-    /// "6/32/21".
-    pub fn slash(&self) -> String {
-        format!("{}/{}/{}", self.z, self.x, self.y)
-    }
-    /// "6-32-21", for file names.
-    pub fn dash(&self) -> String {
-        format!("{}-{}-{}", self.z, self.x, self.y)
-    }
-    pub fn of_point(z: u8, p: [i32; 2]) -> TileId {
-        let (x, y) = merc(p[0] as f64 * roadcore::E7, p[1] as f64 * roadcore::E7);
-        let n = (1u64 << z) as f64;
-        let c = |v: f64| ((v * n).floor().max(0.0) as u32).min((1u32 << z) - 1);
-        TileId { z, x: c(x), y: c(y) }
-    }
-    pub fn parse(s: &str) -> Option<TileId> {
-        let mut it = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
-        let (z, x, y) = (it.next()??, it.next()??, it.next()??);
-        Some(TileId { z: z as u8, x, y })
-    }
-}
 
 /// A z6 tile folder's arrays, memory-mapped.
 pub struct Legacy {

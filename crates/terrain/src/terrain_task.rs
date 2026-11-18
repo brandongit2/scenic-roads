@@ -14,6 +14,7 @@
 
 use crate::terrain_pack::{Made, Mid, RawSource, Sources};
 use anyhow::{ensure, Context, Result};
+use codecs::tile::TileId;
 use offload::{Offered, Offload, Patience, Settled};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -55,7 +56,7 @@ pub fn sub_of(z: u8, x: u32, y: u32) -> (u32, u32) {
 pub fn parse_subtrees(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
         .map(|b| {
-            codecs::legacy::TileId::parse(b.trim())
+            TileId::parse(b.trim())
                 .filter(|u| u.z == 8)
                 .map(|u| (u.x, u.y))
                 .with_context(|| format!("not a z8 subtree: {b}"))
@@ -205,9 +206,7 @@ impl Inputs {
 
     /// The z6 tile and the group's subtrees.
     pub fn piece(&self) -> Result<(u32, u32)> {
-        let u = codecs::legacy::TileId::parse(&self.meta.piece)
-            .filter(|u| u.z == 6)
-            .context("a task's piece isn't a z6 tile")?;
+        let u = TileId::parse(&self.meta.piece).filter(|u| u.z == 6).context("a task's piece isn't a z6 tile")?;
         Ok((u.x, u.y))
     }
 
@@ -267,13 +266,8 @@ pub fn read_hi(path: &Path, piece: &str, subtrees: &str, raw: &BTreeSet<(u8, u32
     );
     let mut out = Vec::new();
     for s in r.sections() {
-        let k: Vec<u32> = s
-            .name
-            .strip_prefix("t-")
-            .map(|n| n.split('-').filter_map(|v| v.parse().ok()).collect())
-            .unwrap_or_default();
-        ensure!(k.len() == 3 && k[0] <= 12, "{}: a section {:?}", what(), s.name);
-        let t = (k[0] as u8, k[1], k[2]);
+        let t = s.name.strip_prefix("t-").and_then(TileId::parse).filter(|u| u.z <= 12);
+        let t = t.map(|u| (u.z, u.x, u.y)).with_context(|| format!("{}: a section {:?}", what(), s.name))?;
         ensure!(raw.contains(&t), "{}: {}/{}/{} isn't a tile of the task's", what(), t.0, t.1, t.2);
         out.push((t.0, t.1, t.2, r.read(&s.name).with_context(what)?));
     }

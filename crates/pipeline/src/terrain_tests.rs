@@ -220,7 +220,7 @@ fn live_pieces_with_a_worker() {
     eprintln!("worker: {who}");
     let pieces: Vec<(u32, u32)> = env("TT_PIECES")
         .split(',')
-        .map(|p| codecs::legacy::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
+        .map(|p| codecs::tile::TileId::parse(p).filter(|u| u.z == 6).map(|u| (u.x, u.y)).unwrap())
         .collect();
     for &t in &pieces {
         let (hi_l, mid_l) = (terrain::layers::hi_logical("terrain", t.0, t.1), mid_logical(t.0, t.1));

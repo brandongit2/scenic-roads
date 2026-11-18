@@ -1333,7 +1333,7 @@ pub fn read_mid<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Mid> {
     );
     let tile = m["tile"]
         .as_str()
-        .and_then(codecs::legacy::TileId::parse)
+        .and_then(codecs::tile::TileId::parse)
         .filter(|u| u.z == 6)
         .with_context(|| format!("{}: no z6 tile", what()))?;
     let mut out = Mid { tile: (tile.x, tile.y), z8: Vec::new(), tops: BTreeMap::new() };

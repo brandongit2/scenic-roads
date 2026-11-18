@@ -132,7 +132,7 @@ mod tests {
     use super::*;
     use ::offload::owner;
     use agentcore::coord::client::LeaseCalls;
-    use codecs::legacy::TileId;
+    use codecs::tile::TileId;
     use std::sync::{Arc, Mutex};
 
     #[test]

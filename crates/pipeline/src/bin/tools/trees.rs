@@ -132,7 +132,7 @@ fn run(a: &Trees) -> Result<()> {
         });
     }
     let b = need(&a.block, "block")?;
-    let u = codecs::legacy::TileId::parse(b)
+    let u = codecs::tile::TileId::parse(b)
         .filter(|u| u.z == trees::ZBLOCK)
         .with_context(|| format!("--block 8/x/y, not {b}"))?;
     within(&|| {

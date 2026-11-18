@@ -35,11 +35,7 @@ pub struct MarkView {
 
 impl MarkView {
     pub fn new(s: SectView, content: String) -> Result<MarkView> {
-        let tile = s.meta()["tile"].as_str().and_then(|t| {
-            let mut p = t.split('/').skip(1).map(|v| v.parse::<u32>().ok());
-            Some((p.next()??, p.next()??))
-        });
-        let tile = tile.context("markdata without its tile")?;
+        let tile = codecs::marks::meta_tile(s.meta()).context("markdata without its tile")?;
         let kinds: Vec<[u32; 2]> = s.sect::<[u32; 2]>("kinds")?.all()?.cast::<[u32; 2]>().to_vec();
         ensure!(kinds.len() == KINDS.len(), "markdata kinds: {}", kinds.len());
         let fields: Vec<Vec<&'static str>> = KINDS.iter().map(|k| marks::fields(k)).collect();

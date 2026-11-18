@@ -23,7 +23,7 @@
 //! its first step (`task_kind`) stay pipeline's offload, which re-exports these at their old paths.
 
 use anyhow::{Context, Result};
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use coordwire::client::Client;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

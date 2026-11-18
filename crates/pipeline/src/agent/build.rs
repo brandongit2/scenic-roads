@@ -21,7 +21,7 @@ use agentcore::agent::seam::{Left, NamesTodo, PassJob, PassWork, Planned, Publis
 use agentcore::pool::records::Keys;
 use buildstore::coverage::coverage_tiles;
 use buildstore::coverage::Coverage;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use inputs::dem::spacing::Fine;
 use jobrt::jobs::h;
 use roadcore::geo::grown_e7;
@@ -2487,7 +2487,7 @@ fn plan_in(x: &KeyCtx, done: &Keys, updates: Publish) -> Planned {
             let tree_z3s: BTreeSet<String> = z3s
                 .iter()
                 .filter(|a| {
-                    codecs::legacy::TileId::parse(a)
+                    codecs::tile::TileId::parse(a)
                         .is_some_and(|q| rc.meets_rect(codecs::hipack::tile_bounds(3, q.x, q.y)))
                 })
                 .cloned()
@@ -3156,7 +3156,7 @@ pub fn restaled_by(
     served: &BTreeMap<String, String>,
     tiles: &[String],
 ) -> BTreeMap<String, Vec<String>> {
-    use codecs::legacy::TileId;
+    use codecs::tile::TileId;
     let changed: Vec<(TileId, [i32; 4])> = m
         .keys()
         .filter_map(|l| l.strip_prefix("base/").and_then(TileId::parse))
@@ -3169,9 +3169,8 @@ pub fn restaled_by(
         .collect();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for t in tiles {
-        let p: Vec<u32> = t.split('/').filter_map(|s| s.parse().ok()).collect();
-        let [z, x, y] = p[..] else { continue };
-        let b = codecs::hipack::tile_bounds(z as u8, x, y);
+        let Some(u) = TileId::parse(t) else { continue };
+        let b = codecs::hipack::tile_bounds(u.z, u.x, u.y);
         for (u, _) in changed.iter().filter(|(_, e)| owns(*e, b)) {
             out.entry(u.slash()).or_default().push(t.clone());
         }
@@ -4146,7 +4145,7 @@ fn depth_work_in(x: &KeyCtx, done: &Keys, left: &mut Left) -> Vec<Work> {
         done.handed
             .iter()
             .filter_map(|l| pres.iter().find_map(|p| l.strip_prefix(p.as_str())))
-            .filter_map(|r| TileId::parse(&format!("{z}/{}", r.replace('-', "/"))))
+            .filter_map(|r| TileId::parse(&format!("{z}-{r}")))
             .map(|u| u.slash())
             .collect()
     };
@@ -9620,7 +9619,7 @@ mod tests {
             "6/28/16".into(),
             Reach { cells: vec![], owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] },
         );
-        let far = codecs::legacy::TileId::of_point(6, [50_000_000, 600_000_000]).slash();
+        let far = codecs::tile::TileId::of_point(6, [50_000_000, 600_000_000]).slash();
         assert!(!pack_lo_targets(&m, Some(&r)).0.iter().any(|(t, _)| *t == far));
         r.extents
             .insert("base/6-28-16.1111111111111111.sect".into(), [-219_000_000, 600_000_000, 50_000_000, 641_000_000]);
@@ -9653,7 +9652,7 @@ mod tests {
             },
         );
         let (packs, _) = pack_lo_targets(&m, Some(&r));
-        let norway = codecs::legacy::TileId::of_point(6, [50_000_000, 600_000_000]).slash();
+        let norway = codecs::tile::TileId::of_point(6, [50_000_000, 600_000_000]).slash();
         assert!(packs.iter().any(|(t, _)| *t == norway), "the ferry's far end is drawn");
         // Without the ferry, that tile isn't a target.
         r.units.insert(

@@ -246,7 +246,7 @@ pub const RETIRED: &str = "layers/terrain/fine/";
 /// A deep pack's z10 tile, from its logical name (or a retired pack's, `RETIRED`).
 pub fn pack_tile(l: &str) -> Option<(u32, u32)> {
     let p = [PREFIX, RETIRED].into_iter().find(|p| l.starts_with(p))?;
-    let u = codecs::legacy::TileId::parse(&l[p.len()..]).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::tile::TileId::parse(&l[p.len()..]).filter(|u| u.z == PACK_Z)?;
     (format!("{p}{PACK_Z}-{}-{}", u.x, u.y) == l).then_some((u.x, u.y))
 }
 
@@ -271,7 +271,7 @@ pub fn mid_logical(x: u32, y: u32) -> String {
 
 /// A deep mid's z10 tile, from its logical name.
 pub fn mid_tile(l: &str) -> Option<(u32, u32)> {
-    let u = codecs::legacy::TileId::parse(l.strip_prefix(MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
+    let u = codecs::tile::TileId::parse(l.strip_prefix(MID_PREFIX)?).filter(|u| u.z == PACK_Z)?;
     (mid_logical(u.x, u.y) == l).then_some((u.x, u.y))
 }
 

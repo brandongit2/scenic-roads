@@ -55,7 +55,7 @@ impl Area {
     const RUN_DEG: f64 = FAR_KM / roadcore::geo::KM_PER_DEG;
 
     /// Z6 tile `u`'s, its long ways from its reach (none: its tile grown by `MARGIN_KM` alone).
-    pub fn of(u: codecs::legacy::TileId, reach: Option<&crate::reach::Reach>) -> Area {
+    pub fn of(u: codecs::tile::TileId, reach: Option<&crate::reach::Reach>) -> Area {
         let b = roadcore::geo::tile_box_grown(u.z, u.x, u.y, MARGIN_KM);
         let mut along = Vec::new();
         for w in reach.into_iter().flat_map(|r| &r.long).filter(|w| w.owned && !w.ferry) {
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn the_area_holds_every_owned_samples_far_field() {
         use crate::reach::{LongWay, Reach};
-        use codecs::legacy::TileId;
+        use codecs::tile::TileId;
         let inside = |a: [f64; 4], b: [f64; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
         for (x, y) in [(31, 19), (20, 22), (10, 5), (60, 58), (33, 31)] {
             let u = TileId { z: 6, x, y };
@@ -714,7 +714,7 @@ mod tests {
             Out::unbound(&store::nasfs::NasRoot::local_for_test(&d.path().join("root")), &d.path().join("scratch"))
                 .unwrap();
         let (x6, y6) = (31u32, 19u32);
-        let area = Area::of(codecs::legacy::TileId { z: 6, x: x6, y: y6 }, None);
+        let area = Area::of(codecs::tile::TileId { z: 6, x: x6, y: y6 }, None);
         let b = area.b;
         assert!(
             copied_whole(12, x6 << 6, y6 << 6, b) && copied_whole(9, x6 << 3, y6 << 3, b) && copied_whole(8, 0, 0, b)

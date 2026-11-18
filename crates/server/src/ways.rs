@@ -14,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use codecs::tile::TileId;
 use roadcore::sections::Here;
 use roadcore::{class, dist_m, flag, WayRec, E7, NDEM};
 use serde::{Deserialize, Serialize};
@@ -52,18 +53,6 @@ impl Found {
     }
 }
 
-/// The tile key of a unit string ("6/32/21").
-fn unit_key(u: &str) -> Option<u64> {
-    let mut it = u.split('/').map(|t| t.parse::<u32>().ok());
-    let (z, x, y) = (it.next()??, it.next()??, it.next()??);
-    Some(roadcore::archive::tile_key(z as u8, x, y))
-}
-
-/// "6/32/21" of a unit tile key.
-pub fn unit_str(key: u64) -> String {
-    format!("{}/{}/{}", key >> 58, (key >> 29) & ((1 << 29) - 1), key & ((1 << 29) - 1))
-}
-
 /// The `here` entry of way `id` in the tile of `at` or one next to it; an error when it wasn't
 /// found and a tile couldn't be read (the NAS away), so that isn't taken for "no such way".
 pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(Arc<HiView>, Here)>> {
@@ -99,13 +88,13 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(
 /// owner's base pack (a mismatch would mean packs of different catalogues).
 pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Found>> {
     let Some((_, h)) = find_here(s, id, at)? else { return Ok(None) };
-    let Some(base) = s.data.base(&unit_str(h.owner))? else { return Ok(None) };
+    let Some(base) = s.data.base(&TileId::of_key(h.owner).slash())? else { return Ok(None) };
     if h.index as usize >= base.ways.len() {
         return Ok(None);
     }
     let w = base.way(h.index)?;
     if w.id as u64 != id {
-        eprintln!("way {id}: the ways-here index points at way {} in {}", w.id, unit_str(h.owner));
+        eprintln!("way {id}: the ways-here index points at way {} in {}", w.id, TileId::of_key(h.owner).slash());
         return Ok(None);
     }
     Ok(Some(Found { base, index: h.index, rec: w }))
@@ -253,12 +242,12 @@ pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<Ro
     let (lo, hi) = (rv.offset - window, rv.offset + window);
     let units: Vec<u64> = match s.data.roadunits()? {
         Some(ru) => ru.units(rv.road)?,
-        None => vec![unit_key(&f.base.unit).unwrap_or(0)],
+        None => vec![TileId::parse(&f.base.unit).map_or(0, |u| u.key())],
     };
     let mut out: Vec<RoadWay> = Vec::new();
     let (mut truncated, mut away) = (false, false);
     for u in units {
-        let unit = unit_str(u);
+        let unit = TileId::of_key(u).slash();
         let bp = match s.data.base(&unit) {
             Ok(Some(bp)) => bp,
             // (Away from the NAS, a unit the map has that isn't downloaded is none: crate::data.)

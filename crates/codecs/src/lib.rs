@@ -20,6 +20,7 @@ pub mod summary;
 pub mod tar;
 pub mod terrain_codec;
 pub mod terrain_water;
+pub mod tile;
 pub mod tiling;
 pub mod trailends;
 pub mod vtgen;

@@ -606,7 +606,7 @@ fn roads(
     let by_key: HashMap<u64, (&String, &String)> = cat
         .base
         .iter()
-        .filter_map(|(unit, logical)| Some((codecs::legacy::TileId::parse(unit)?.key(), (unit, logical))))
+        .filter_map(|(unit, logical)| Some((codecs::tile::TileId::parse(unit)?.key(), (unit, logical))))
         .collect();
     let unit = |key: u64| -> Result<Option<UnitWays>> {
         let Some((unit, logical)) = by_key.get(&key) else { return Ok(None) };
@@ -797,7 +797,7 @@ fn landmarks(
     }
     for (i, (tile, logical)) in cat.markdata.iter().enumerate() {
         progress("landmark tiles read", i as u64, n);
-        let Some(t) = codecs::legacy::TileId::parse(tile).map(|u| (u.x, u.y)) else { continue };
+        let Some(t) = codecs::tile::TileId::parse(tile).map(|u| (u.x, u.y)) else { continue };
         let Some(s) = files.get(logical.as_str()).and_then(|f| f.get(&t)) else { continue };
         let pts: Vec<codecs::marks::MarkPt> = s.read_pod("pts")?;
         let blocks = |name: &str, idx: &str| -> Result<Vec<Vec<u8>>> {

@@ -10,7 +10,7 @@ use clap::Parser;
 pub fn main(args: Vec<String>) -> Result<()> {
     let Bldtile { dir, tile, workers } = Bldtile::parse_from(args);
     let a =
-        codecs::legacy::TileId::parse(&tile).filter(|u| u.z == 8).with_context(|| format!("not a z8 tile: {tile}"))?;
+        codecs::tile::TileId::parse(&tile).filter(|u| u.z == 8).with_context(|| format!("not a z8 tile: {tile}"))?;
     // (Threads as many as said, else rayon's.)
     let mut pool = rayon::ThreadPoolBuilder::new();
     if let Some(w) = workers {

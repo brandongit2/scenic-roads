@@ -68,7 +68,7 @@ pub fn logical(id: &str, t: (u32, u32)) -> String {
 /// A pack's source id and z6 tile, from its logical name.
 pub fn tile_of(l: &str) -> Option<(&str, (u32, u32))> {
     let (id, t) = l.strip_prefix(PREFIX)?.split_once('/')?;
-    let u = codecs::legacy::TileId::parse(t).filter(|u| u.z == 6)?;
+    let u = codecs::tile::TileId::parse(t).filter(|u| u.z == 6)?;
     // (As `logical` writes it, and no other spelling of the tile.)
     store::naming::prints_as(t, format_args!("6-{}-{}", u.x, u.y)).then_some((id, (u.x, u.y)))
 }
@@ -580,7 +580,7 @@ impl HiPacks {
             .range(p.to_string()..)
             .take_while(|(l, _)| l.starts_with(p))
             .filter_map(|(l, c)| {
-                let u = codecs::legacy::TileId::parse(&l["layers/terrain/hi/".len()..].replace('-', "/"))?;
+                let u = codecs::tile::TileId::parse(&l["layers/terrain/hi/".len()..])?;
                 Some(((u.x, u.y), c.clone()))
             })
             .collect();

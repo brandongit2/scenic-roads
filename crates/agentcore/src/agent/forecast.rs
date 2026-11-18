@@ -856,13 +856,9 @@ pub struct ToCome {
     pub runs: Runs,
 }
 
-/// Whether `t` names a tile ("z/x/y", z under 32, x and y in its grid), as the page's `tileOf`.
+/// Whether `t` names a tile ("z/x/y", codecs::tile::TileId::parse), as the page's `tileOf`.
 fn is_tile(t: &str) -> bool {
-    let mut it = t.split('/').map(|p| p.parse::<u64>().ok());
-    match (it.next(), it.next(), it.next(), it.next()) {
-        (Some(Some(z)), Some(Some(x)), Some(Some(y)), None) => z < 32 && x < 1 << z && y < 1 << z,
-        _ => false,
-    }
+    codecs::tile::TileId::parse(t).is_some()
 }
 
 impl ToCome {

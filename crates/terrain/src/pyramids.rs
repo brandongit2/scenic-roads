@@ -57,13 +57,11 @@ pub fn folder(template: &str) -> String {
 }
 
 /// Tile z/x/y of template `t`, when `url` is one of its tiles.
-fn tile_of(t: &str, url: &str) -> Option<(u8, u32, u32)> {
+pub(crate) fn tile_of(t: &str, url: &str) -> Option<(u8, u32, u32)> {
     let (pre, rest) = t.split_once("{z}")?;
     let suf = rest.strip_prefix("/{x}/{y}")?;
     let mid = url.strip_prefix(pre)?.strip_suffix(suf)?;
-    let mut it = mid.split('/').map(|v| v.parse::<u32>().ok());
-    let (z, x, y) = (it.next()??, it.next()??, it.next()??);
-    (it.next().is_none() && z <= 30).then_some((z as u8, x, y))
+    codecs::tile::TileId::parse(mid).filter(|_| mid.contains('/')).map(|u| (u.z, u.x, u.y))
 }
 
 /// The templates of plan `plan`'s pyramids read tile by tile, with their zoom and cover.

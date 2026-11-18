@@ -1,7 +1,7 @@
 //! Reading base packs (docs/formats.md "Base pack") and road values from local files (this
 //! Mac's cache), memory-mapped, as typed slices.
 
-use crate::legacy::TileId;
+use crate::tile::TileId;
 use anyhow::{bail, ensure, Context, Result};
 use memmap2::Mmap;
 use roadcore::elev::Elevs;

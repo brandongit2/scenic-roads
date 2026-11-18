@@ -10,7 +10,7 @@
 
 use anyhow::{bail, Context, Result};
 use buildstore::coverage::Coverage;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use roadcore::WayRec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -187,8 +187,7 @@ pub fn detail_of(cat: &Catalogue, rings: &[Vec<[f64; 2]>]) -> (Files, f64) {
         .collect();
     let (mut out, mut covered) = (BTreeMap::new(), 0.0);
     for (key, logical) in &l.deep {
-        let mut it = key.split('/').skip(1).map(str::parse::<u32>);
-        let (Some(Ok(x)), Some(Ok(y))) = (it.next(), it.next()) else { continue };
+        let Some(codecs::tile::TileId { x, y, .. }) = codecs::tile::TileId::parse(key) else { continue };
         let (x0, y0, x1, y1) = (f64::from(x) / k, f64::from(y) / k, f64::from(x + 1) / k, f64::from(y + 1) / k);
         let g = geo::grow([x_lon(x0), y_lat(y1), x_lon(x1), y_lat(y0)], NEAR_KM);
         let mut meets = false;

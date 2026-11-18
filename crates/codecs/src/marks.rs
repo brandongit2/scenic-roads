@@ -35,12 +35,14 @@ pub fn markdata_files<'a>(path: impl Into<store::nasfs::Loc<'a>>) -> Result<Vec<
             .collect()
     } else {
         let s = read(0, f.len()?)?;
-        let t = s.meta()["tile"].as_str().and_then(|t| {
-            let mut p = t.split('/').skip(1).map(|v| v.parse::<u32>().ok());
-            Some((p.next()??, p.next()??))
-        });
+        let t = meta_tile(s.meta());
         Ok(vec![(t.with_context(|| format!("{}: markdata without its tile", path.display()))?, s)])
     }
+}
+
+/// The z6 tile a markdata file's meta names (its `tile`, "6/x/y"): x, y.
+pub fn meta_tile(meta: &serde_json::Value) -> Option<(u32, u32)> {
+    meta["tile"].as_str().and_then(crate::tile::TileId::parse).filter(|t| t.z == 6).map(|t| (t.x, t.y))
 }
 
 /// The point kinds, in the order markdata's `kinds` section lists them.

@@ -323,11 +323,7 @@ impl Data {
     /// `reaches` for a tile key ("6/32/21"; the landmark points' and area details' files, one
     /// bundle of every tile's for the landmarks: what's read of them keeps to the downloads).
     fn reaches_key(&self, key: &str) -> bool {
-        let mut p = key.split('/').map(str::parse::<u32>);
-        match (p.next(), p.next(), p.next()) {
-            (Some(Ok(z)), Some(Ok(x)), Some(Ok(y))) => self.reaches(z as u8, x, y),
-            _ => true,
-        }
+        codecs::tile::TileId::parse(key).is_none_or(|t| self.reaches(t.z, t.x, t.y))
     }
 
     /// Sets where the downloads reach (crate::downloads); a change moves the generation on.
@@ -492,9 +488,8 @@ impl Data {
             return Ok(Some(v));
         }
         let s = if is_bundle(&content) {
-            let mut p = tile.split('/').skip(1).map(|v| v.parse::<u32>().ok());
-            let (Some(Some(x)), Some(Some(y))) = (p.next(), p.next()) else { return Ok(None) };
-            let Some(e) = self.index(&content)?.find(6, x, y) else { return Ok(None) };
+            let Some(t) = codecs::tile::TileId::parse(tile).filter(|t| t.z == 6) else { return Ok(None) };
+            let Some(e) = self.index(&content)?.find(6, t.x, t.y) else { return Ok(None) };
             SectView::open_at(self.src(&content)?, e.offset, u64::from(e.len))
         } else {
             SectView::open(self.src(&content)?)

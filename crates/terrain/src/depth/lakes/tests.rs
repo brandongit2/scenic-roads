@@ -301,7 +301,7 @@ fn the_packs_digest_is_their_lines_hash_for_any_manifest() {
             .iter()
             .filter_map(|(l, c)| {
                 let (id, t) = l.strip_prefix("work/lake-depth/")?.split_once('/')?;
-                let u = codecs::legacy::TileId::parse(t).filter(|u| u.z == 6)?;
+                let u = codecs::tile::TileId::parse(t).filter(|u| u.z == 6)?;
                 (logical(id, (u.x, u.y)) == *l).then(|| (id.to_string(), (u.x, u.y), c.clone()))
             })
             .collect();

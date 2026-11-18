@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use buildstore::out::Out;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use roads::reach::Reach;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

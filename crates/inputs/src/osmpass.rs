@@ -10,7 +10,7 @@ use buildstore::nasssh::{proxy_addr, ssh_stalled, watched, SSH_START};
 use buildstore::out::Out;
 use codecs::chain::{self, Interner, Link, RoadVal};
 use codecs::hipack::{grow, tile_bounds};
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use rayon::prelude::*;
 use roadcore::{class, flag, Ways};
 use std::collections::BTreeMap;

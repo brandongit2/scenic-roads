@@ -31,7 +31,7 @@ pub const MOST: usize = 3;
 pub fn parse_blocks(s: &str) -> Result<Vec<(u32, u32)>> {
     s.split(',')
         .map(|b| {
-            codecs::legacy::TileId::parse(b.trim())
+            codecs::tile::TileId::parse(b.trim())
                 .filter(|u| u.z == ZBLOCK)
                 .map(|u| (u.x, u.y))
                 .with_context(|| format!("not a zoom-8 block: {b}"))

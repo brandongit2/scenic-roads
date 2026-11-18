@@ -19,7 +19,7 @@
 
 use anyhow::{Context, Result};
 use buildstore::coverage::Coverage;
-use codecs::legacy::TileId;
+use codecs::tile::TileId;
 use inputs::dem::spacing::Spacing;
 use osmpbf::{Element, ElementReader};
 use serde::{Deserialize, Serialize};

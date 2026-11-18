@@ -670,8 +670,7 @@ pub(crate) fn archive_shard(p: &Path) -> Option<(u32, u32, u32)> {
 }
 
 fn tile_of(s: &str) -> Option<(u32, u32, u32)> {
-    let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
-    Some((v.next()??, v.next()??, v.next()??))
+    codecs::tile::TileId::parse(s).map(|t| (u32::from(t.z), t.x, t.y))
 }
 
 /// The archive shards (`archive_shard`) a terrain job's target reads (`terrain_reads`'s rule);
@@ -10211,14 +10210,14 @@ mod tests {
     /// command lines (crate::cli): every one of them a program of this crate's.
     #[test]
     fn the_tasks_programs_pass_their_command_lines() {
-        let u = codecs::legacy::TileId::parse("6/1/1").unwrap();
+        let u = codecs::tile::TileId::parse("6/1/1").unwrap();
         let mut runs: Vec<serde_json::Value> =
             roads::unit::tail(u, true, true).iter().map(|r| serde_json::to_value(r).unwrap()).collect();
         let none = BTreeMap::new();
         for spec in [
             // (A square south of the equator first: its negative top a value, not a flag.)
             trees::trees::task::spec(&[(1, 1), (2, 1)], &[(-10, -80), (40, 10)], "v", &none),
-            bld::bld::task::spec(codecs::legacy::TileId::parse("8/1/1").unwrap(), "v", &none),
+            bld::bld::task::spec(codecs::tile::TileId::parse("8/1/1").unwrap(), "v", &none),
             terrain::terrain_task::spec(&[(1, 1), (1, 2)], "v", 1),
         ] {
             runs.extend(spec["runs"].as_array().unwrap().iter().cloned());
