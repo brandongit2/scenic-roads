@@ -1902,7 +1902,7 @@ mod tests {
     }
 
     /// Task #929 review: a slope-deep batch re-granted as it goes (its job's threads file rewritten
-    /// mid-target, as the agent's tend_grant does: 2, then 5, then 1) runs each target on the grant
+    /// mid-target, as the agent's live control does: 2, then 5, then 1) runs each target on the grant
     /// as that target began (jobrt::control::on_grant, scenic-build's slope_deep_batch), while the
     /// copying ahead of the next target's pack and the target before's uploads (put off, landed by
     /// the next target's save as `Landing` does) go on across the change of pool; every target lands,

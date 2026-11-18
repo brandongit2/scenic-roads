@@ -1199,8 +1199,8 @@ struct Sim {
 
 /// A job the scheduler granted in the forecast's run (`Forecast::grants`): to which Mac, its step
 /// and targets, when (s from the forecast's start; unix seconds in a `Forecast`), and the threads
-/// it runs (the scheduler's grant rule, crate::coord::sched::Sched::lease_cores; 0: a forecast
-/// before task #947).
+/// it starts on (the scheduler's grant rule, crate::coord::sched::Sched::lease_cores; 0: an older
+/// forecast's).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Grant {
     pub mac: String,
@@ -3763,8 +3763,7 @@ mod tests {
     /// (`Coordinator::sched_state`, as written with the lead's forecast), makes the same first grants
     /// the coordinator then makes: the lead's and a member's, by memory, cores and the NAS budget
     /// (each z6 tile weighing 400 of its 1000: two at once, whatever their room says), each with the
-    /// threads the coordinator grants it (task #947: by its step's use on its Mac, crate::uses: 3 on
-    /// the member, which kept 3 of 4 busy; 1 on the lead, 0.5 of 2).
+    /// threads the coordinator grants it to start on (its targets' runs', 1).
     #[test]
     fn fed_a_recorded_state_the_forecast_grants_what_the_coordinator_grants() {
         use crate::coord::{self, client, cost_version};
@@ -3801,19 +3800,6 @@ mod tests {
         };
         c.offer("p", offered());
         c.set_capacity(ask(16_000, 14, 4).cap);
-        let run = |host: &str, threads: u32, cpu_s: f64| jobrt::timings::RunRec {
-            v: 1,
-            kind: "unit".into(),
-            host: host.into(),
-            start: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 200,
-            wall_s: 100.0,
-            cpu_s: Some(cpu_s),
-            threads: Some(threads),
-            ok: true,
-            ..Default::default()
-        };
-        c.add_timings(&run("m1 #2", 4, 300.0));
-        c.add_timings(&run("m4", 2, 50.0));
         // The state as data.
         let st: State = serde_json::from_str(&serde_json::to_string(&c.sched_state()).unwrap()).unwrap();
         let mut real: Vec<(String, Vec<String>, u32)> = Vec::new();
@@ -3830,7 +3816,7 @@ mod tests {
         take(c.ask_own(&ask(16_000, 14, 4), &Default::default(), 0), "m4");
         take(m1.ask(&ask(8000, 8, 4)).unwrap(), "m1");
         assert!(!real.is_empty() && real.len() < 8, "the budget holds some back: {real:?}");
-        assert!(real.iter().all(|(who, _, t)| *t == if who == "m1" { 3 } else { 1 }), "{real:?}");
+        assert!(real.iter().all(|(_, _, t)| *t == 1), "{real:?}");
         // The forecast: the same z6 tiles, the lead's four slots and the member's, the state fed.
         let regions = [region("a", &[], &units.iter().map(String::as_str).collect::<Vec<_>>(), &[])];
         let slot = |host: &str, k: usize, lead: bool| Machine {

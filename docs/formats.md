@@ -917,7 +917,7 @@ deleted only under an exclusive flock taken without waiting.
 A job's run, a JSON object, `jobrt::timings::RunRec`:
 
 ```
-{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, held, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s, cost_v}
+{v: 2, kind, id, job, host, start, wall_s, cpu_s, untimed_cpu_s, threads, ok, untimed_s, overhead_s, phases: [phase, …], gaps: [gap, …], safe_points, safe_gap_s}
 phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_s, other_s, both_s, nas_b, net_b} (task #870: measured, by wall clock; both_s, task #891: 10 seconds at once by store::waits::PAIRS, absent when all 0), cpu_s, uncertain_cpu_s, job_cpu_s, n, bytes, files, overlapped, background, peak_mb, sub: [phase, …]}
 ```
 
@@ -934,10 +934,8 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
   to `cpu_s`. `threads`:
   RAYON_NUM_THREADS. `ok`: ended without error (a pause isn't). `untimed_s`: `wall_s` less the
   top-level non-`background` phases. `overhead_s`: the timing's own cost.
-- `held` (`[{threads, wall_s, cpu_s}]`): what its targets run on their job's grant held, by
-  threads (task #948). `safe_points`, `safe_gap_s`: the safe points it reached and the longest it
-  went without one. `cost_v`: its step's cost version (`coord::cost_version`), stamped by the lead's
-  coordinator as it keeps the record; absent before that (task #929 review), read as 0 by the uses.
+- `safe_points`, `safe_gap_s`: the safe points it reached and the longest it went without one.
+  (Older records may hold `held` and `cost_v`, read past.)
 - `gaps` (`{after, before, wall_s, n}`): where `untimed_s` lies, the main thread's spans between
   two top-level phases summed by the phases either side ("the start" and "the end" at the run's
   ends), its eight largest, each 1 ms or more; left out when none (a Python child's record has
@@ -949,7 +947,7 @@ phase: {name, class (only before task #870), wall_s, waits: {nas_s, net_s, disk_
   that, the job's CPU in no phase taken in while another thread's phase was open too, which may
   have been that one's work; absent when none (`timings::uncertain_cpu` reads a v 1 record's
   overlapped phase's whole CPU so). `job_cpu_s`: a main thread's top-level phase's, the job's CPU
-  (every thread's) while it was open, which the uses' floor reads. `overlapped`: another thread's
+  (every thread's) while it was open: the cores it kept busy. `overlapped`: another thread's
   phase ran during it. `background`: off the main thread.
   `peak_mb`: the most memory the job's process group held while it was open (physical
   footprints summed, sampled every 250 ms, as the memory guard measures a job; the most over its

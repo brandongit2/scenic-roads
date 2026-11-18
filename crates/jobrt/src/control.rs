@@ -964,14 +964,15 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// The file a running job's agent keeps its grant in (docs/pool.md §7.1, Threads re-granted): the
-/// threads it may use now, a number, rewritten when its lead re-decides them. A job reads it as each
-/// target begins (`on_grant`); a paced one (inputs::inputs::pace) every second.
+/// The file a running job's agent keeps its threads in (docs/pool.md §7.1, Threads controlled live):
+/// the threads it may use now, a number, rewritten as its agent grows or cuts them
+/// (agentcore::agent::threads). A job reads it as each target begins (`on_grant`); a paced one
+/// (inputs::inputs::pace) every second.
 pub const THREADS_ENV: &str = "SCENIC_THREADS_FILE";
 
 /// Tells a job its grant: `THREADS_ENV`'s file `f` replaced whole (store::whole::write), so a read
 /// (`granted`, a paced job's every second) never meets it emptied and falls back to every core. The
-/// only way the file is written (the agent's start of a job and its re-grants).
+/// only way the file is written (the agent's start of a job and its live control's changes).
 pub fn grant(f: &Path, threads: usize) -> anyhow::Result<()> {
     store::whole::write(f, threads.to_string().as_bytes())
 }
@@ -999,7 +1000,7 @@ static POOL: std::sync::Mutex<Option<(usize, std::sync::Arc<rayon::ThreadPool>)>
 /// A target's work, `f`, on as many threads as its job is granted as it begins (`granted`): a rayon
 /// pool that wide (the last one kept while the grant stands), the timings' main thread carried onto
 /// the thread running `f` (crate::timings::Main) so its phases are the job's main thread's as before.
-/// The grant is read once, here: a re-grant takes effect at the next target, never inside one, and
+/// The grant is read once, here: a change takes effect at the next target, never inside one, and
 /// a call inside another's `f` runs on that one's pool. A thread `f` starts of its own is in no
 /// pool: its parallel work goes on one as wide as the target's, never the target's own, through
 /// `on_target_pool`. Without the file (a hand run, or a step whose job isn't told), `f` on the
@@ -1028,11 +1029,7 @@ pub fn on_grant<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     };
     IN_FORCE.store(n, Ordering::Relaxed);
     let main = crate::timings::Main::here();
-    let (t0, cpu0) = (std::time::Instant::now(), crate::timings::cpu_us());
     let r = pool.install(move || main.run(f));
-    // (What it held, for the run's record: its threads' use is read by them, agentcore::uses.)
-    let cpu = cpu0.zip(crate::timings::cpu_us()).map_or(0.0, |(a, b)| b.saturating_sub(a) as f64 / 1e6);
-    crate::timings::held(n as u32, t0.elapsed().as_secs_f64(), cpu);
     IN_FORCE.store(0, Ordering::Relaxed);
     r
 }
@@ -1095,7 +1092,7 @@ pub fn on_outside_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 mod tests {
     use super::*;
 
-    /// Task #948: a target runs on its job's grant as it began (a re-grant written meanwhile, fewer
+    /// Task #948: a target runs on its job's grant as it began (a change written meanwhile, fewer
     /// or more, changes nothing under way: a call inside runs on the same pool), and the next target
     /// takes it (a shrink at the safe point between them, then a grow); the thread count changes no
     /// result; the timings' main thread goes with the target's work and comes back. Without the
@@ -1191,9 +1188,6 @@ mod tests {
             std::thread::scope(|s| s.spawn(|| on_target_pool(rayon::current_num_threads)).join().unwrap()),
             global
         );
-        // (What each held, for its step's use by threads: agentcore::uses.)
-        assert_eq!(r.held.iter().map(|h| h.threads).collect::<Vec<_>>(), [1, 3, 5]);
-        assert!(r.held.iter().all(|h| h.wall_s > 0.0 && h.wall_s <= r.wall_s), "{:?}", r.held);
         // Without the file: the job's own pool.
         std::env::remove_var(THREADS_ENV);
         assert_eq!(on_grant(rayon::current_num_threads), rayon::current_num_threads());

@@ -23,7 +23,7 @@
 //!   on the pool), not the main thread's: that part is said (`PhaseRec::uncertain_cpu_s`), and the
 //!   readers show it. A pool thread that waits inside its own phase's parallel work may take up
 //!   another phase's tasks meanwhile: counted to its own. A phase while another thread's is open is
-//!   marked `overlapped` (wall: the uses' floor reads it); a main thread's top-level phase also
+//!   marked `overlapped`; a main thread's top-level phase also
 //!   keeps the job's CPU while it was open (`job_cpu_s`: every thread's, the cores it kept busy). A
 //!   phase on a thread but the job's main one is marked `background`, and its wall isn't counted
 //!   toward the run's timed part (it ran beside the main thread's phases). Elsewhere than macOS no
@@ -305,11 +305,6 @@ pub struct RunRec {
     /// Its worker threads (RAYON_NUM_THREADS), where set: those it started on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threads: Option<u32>,
-    /// What its targets run on their job's grant held (crate::control::on_grant, task #948): by the
-    /// threads each ran on, their wall and CPU time summed (`held`). The rest of the run held
-    /// `threads`. None said (no target so run): all of it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub held: Vec<Held>,
     pub ok: bool,
     /// The run's time in no phase of its main thread.
     pub untimed_s: f64,
@@ -327,29 +322,6 @@ pub struct RunRec {
     pub safe_points: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_gap_s: Option<f64>,
-    /// The cost version of its step it ran as (agentcore::coord::cost_version), stamped by the lead
-    /// as the record comes in: a step's use counts only its runs of the way it runs now
-    /// (agentcore::uses). None: a record from before the stamp, of no known way.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost_v: Option<u32>,
-}
-
-/// A run's targets on one thread count (`RunRec::held`): their wall and CPU time summed.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct Held {
-    pub threads: u32,
-    pub wall_s: f64,
-    pub cpu_s: f64,
-}
-
-/// A target run on `threads` (crate::control::on_grant) took `wall_s` and `cpu_s`: added to the
-/// run's `held` (no run timed: nothing).
-pub fn held(threads: u32, wall_s: f64, cpu_s: f64) {
-    if let Some(r) = run().lock().unwrap().as_mut() {
-        let h = r.held.entry(threads).or_default();
-        h.0 += wall_s;
-        h.1 += cpu_s;
-    }
 }
 
 /// Untimed time between two of a run's top-level phases on its main thread, summed over the times
@@ -568,8 +540,6 @@ struct Run {
     mark: (Instant, String),
     /// Its gaps so far: (after, before) → (ns, spans).
     gaps: Vec<(String, String, u64, u64)>,
-    /// What its targets on their grant held so far (`held`): threads → (wall s, CPU s).
-    held: std::collections::BTreeMap<u32, (f64, f64)>,
     /// Its spans, where `SCENIC_SPANS` asks for them (crate::spans).
     spans: Option<crate::spans::Rec>,
 }
@@ -761,7 +731,6 @@ pub fn start(kind: &str) {
             finished: false,
             mark: (Instant::now(), START.to_string()),
             gaps: Vec::new(),
-            held: std::collections::BTreeMap::new(),
             spans: None,
         });
         if let Some(r) = g.as_mut() {
@@ -1283,7 +1252,6 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
         cpu_s,
         untimed_cpu_s: s_of(r.untimed_cpu),
         threads: std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()),
-        held: r.held.iter().map(|(&threads, &(wall_s, cpu_s))| Held { threads, wall_s, cpu_s }).collect(),
         ok,
         untimed_s: 0.0,
         overhead_s: r.overhead_ns as f64 / 1e9,
@@ -1291,7 +1259,6 @@ fn record_of(r: &mut Run, ok: bool) -> RunRec {
         gaps: Vec::new(),
         safe_points: 0,
         safe_gap_s: None,
-        cost_v: None,
     };
     let sg = crate::control::safe_gaps();
     rec.safe_points = sg.points;

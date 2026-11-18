@@ -137,8 +137,8 @@ impl Paces {
     /// its way (an event before task #926), not counted: the time a job takes besides its targets
     /// (its records and regions read, its hand-off), which a batch of quick targets is mostly made of
     /// (slope-deep's 5 to 12 s a job on the lead's history to 5 Nov, its empty targets a second or
-    /// less each). A job of an older way says nothing of it, as its runs size nothing (crate::needs,
-    /// crate::uses): task #929 changed slope-deep's and terrain-deep's work.
+    /// less each). A job of an older way says nothing of it, as its runs size nothing (crate::needs):
+    /// task #929 changed slope-deep's and terrain-deep's work.
     pub fn with_starts(
         mut self,
         the_plan: &dyn crate::agent::seam::Plan,

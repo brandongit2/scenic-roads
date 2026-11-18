@@ -114,9 +114,6 @@ struct Inner {
     own: Option<Heartbeat>,
     lead_takes: bool,
     released: Vec<u64>,
-    /// The lead's last answer's re-grants (`Answer::threads`: lease, threads), for the agent's loop
-    /// to tell its jobs (`lead_threads`).
-    threads: Vec<(u64, u32)>,
     /// When the lead last answered (unix s), and whether that answer said `PAGE`.
     lead_answered: Option<(u64, bool)>,
     /// The asks (`ASKS`): whether the lead serves them.
@@ -182,7 +179,6 @@ impl Default for Beats {
                 own: None,
                 lead_takes: false,
                 released: Vec::new(),
-                threads: Vec::new(),
                 lead_answered: None,
                 leading: None,
                 reach: None,
@@ -270,7 +266,6 @@ impl Beats {
             }
         }
         g.released.extend(a.released.iter().copied());
-        g.threads = a.threads.clone();
         g.lead_asks = a.speaks.iter().any(|w| w == ASKS);
         g.lead_spans = a.speaks.iter().any(|w| w == SPANS);
         g.lead_notes = a.speaks.iter().any(|w| w == NOTES);
@@ -524,16 +519,9 @@ impl Beats {
         g.lead_answered = None;
         g.leading = None;
         g.lead_asks = false;
-        g.threads.clear();
         g.lead_view = LeadView { at: now, lead: None };
         drop(g);
         self.save_lead_view();
-    }
-
-    /// The re-grants the lead's last answer said (lease, threads: docs/pool.md §7.1, Threads
-    /// re-granted); none from a lead before them.
-    pub fn lead_threads(&self) -> Vec<(u64, u32)> {
-        self.inner.lock().unwrap().threads.clone()
     }
 
     /// The leases the lead said this member doesn't hold, since last taken.

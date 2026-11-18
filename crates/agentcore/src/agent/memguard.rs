@@ -260,8 +260,8 @@ pub fn current(costs: &Path) -> Option<String> {
 /// s), and how many ended (each a `peak_mb` line after the `started` line of its target: the
 /// step's own per-target completion, the one notion of a target done for the batch's percent, its
 /// time left and the flags' count); and the threads the last to begin runs on, where its `started`
-/// line says (a target run on its job's grant as it began, jobrt::control::on_grant: docs/pool.md
-/// §7.1, Threads re-granted).
+/// line says (a target run on its job's threads as it began, jobrt::control::on_grant: docs/pool.md
+/// §7.1, Threads controlled live).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Targets {
     pub on: Option<(String, u64)>,
@@ -401,8 +401,8 @@ pub struct Watch {
     pub cpu_mark: Option<(std::time::Instant, u64)>,
     /// Its CPU time (ns) as sampled: each sample's rise over the last summed, so it never falls
     /// (its processes' sum falls as one ends, its time taken with it: the time it took since the
-    /// sample before is missed). What its threads used, for its re-grant (crate::agent's
-    /// `tend_grant`), and the cores it keeps busy as its lead counts it (crate::agent::jobs::Live::cpu_ms).
+    /// sample before is missed). What its threads used, for its live thread control (crate::agent::
+    /// threads), and the cores it keeps busy as its lead counts it (crate::agent::jobs::Live::cpu_ms).
     pub cpu_ns: Option<u64>,
     /// Its processes' summed CPU time at the last sample (ns): what the next one's rise is from.
     pub cpu_sum: Option<u64>,

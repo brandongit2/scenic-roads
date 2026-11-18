@@ -96,21 +96,17 @@ pub struct Lease {
     /// Its job's progress as its worker's beats said it (`Pace`; in memory alone).
     #[serde(skip)]
     pub pace: Pace,
-    /// The threads its job is counted for (0: not said): granted, then as re-granted (docs/pool.md
-    /// §7.1, Threads re-granted: the most of what it runs on now, what its agent has told it and
-    /// what it is still to be told), the cores the pool's own work takes on its Mac, apart from load
-    /// outside the pool (crate::coord::outside_cores).
+    /// The threads its job is counted for (0: not said): granted, then as its agent controls them
+    /// (docs/pool.md §7.1, Threads controlled live: the more of what it runs on now and what its
+    /// agent has told it, `Leases::running_on`), the cores the pool's own work takes on its Mac,
+    /// apart from load outside the pool (crate::coord::outside_cores).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub threads: u32,
-    /// The threads it was granted as it started (0: not said, a lease from before re-grants): the
-    /// memory its grant was admitted with covers them; a re-grant past them adds its own
-    /// (crate::coord::sched's `grown_mb`).
+    /// The threads it was granted as it started (0: not said, an older lead's lease): the memory its
+    /// grant was admitted with covers them; a grow past them adds its own (crate::coord::sched's
+    /// `grown_mb`).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub start_threads: u32,
-    /// A re-grant its agent hasn't told its job yet (crate::coord::sched's `regrant`): the threads,
-    /// and when they were decided (in memory alone: a lead restarted decides again).
-    #[serde(skip)]
-    pub told: Option<(u32, Instant)>,
     /// The slot of its worker's Mac running its job (0: the first; crate::agent::slot_worker), as
     /// the worker last said (its beats, this Mac's loop: `Leases::at_slot`; task #863): a lease
     /// names its Mac, granted before a slot takes it. None until said (an older app's).
@@ -660,7 +656,6 @@ impl Leases {
                 slot: None,
                 threads: 0,
                 start_threads: 0,
-                told: None,
                 unconfirmed: false,
             },
         );
@@ -674,25 +669,17 @@ impl Leases {
         }
     }
 
-    /// Lease `id`'s job, its threads re-decided (crate::coord::sched's `regrant`), as its Mac says it
-    /// runs on `now_on` threads and its agent has told it `granted` (its threads file: what its next
-    /// target takes; 0, not said: `now_on`): `told` (Some: threads decided at `at` to tell it), else
-    /// the re-grant not told yet kept, until its agent has told it. It counts for the most of the
-    /// three (a grow at once, a shrink once a target takes it up; and a re-grant an earlier lead told
-    /// it, which it takes at its next target, though this lead never decided it). The re-grant still
-    /// to tell, if any.
-    pub fn regranted(&mut self, id: u64, now_on: u32, granted: u32, told: Option<(u32, Instant)>) -> Option<u32> {
-        let l = self.by_id.get_mut(&id)?;
+    /// Lease `id`'s job as its Mac says it runs on `now_on` threads and its agent has told it
+    /// `granted` (its threads file: what its next target takes; 0, not said: `now_on`; docs/pool.md
+    /// §7.1, Threads controlled live): counted for the more of the two (a grow at once, a cut once a
+    /// target takes it up), and its start's threads kept (`start_threads`, what its memory covers).
+    pub fn running_on(&mut self, id: u64, now_on: u32, granted: u32) {
+        let Some(l) = self.by_id.get_mut(&id) else { return };
         let granted = if granted == 0 { now_on } else { granted };
         if l.start_threads == 0 {
             l.start_threads = l.threads.max(1);
         }
-        if told.is_some() {
-            l.told = told;
-        }
-        l.told = l.told.filter(|(t, _)| *t != granted);
-        l.threads = now_on.max(granted).max(l.told.map_or(0, |(t, _)| t));
-        l.told.map(|(t, _)| t)
+        l.threads = now_on.max(granted);
     }
 
     /// Lease `id`, live or not yet expired, whoever holds it.
@@ -1366,7 +1353,7 @@ mod tests {
         // (Its threads: the fewest over its part under way, the most over its run.)
         ls.set_threads(id, 4);
         beat(&mut ls, 720, "14/100 tiles", "6/1/2", 210);
-        ls.regranted(id, 2, 2, None);
+        ls.running_on(id, 2, 2);
         beat(&mut ls, 780, "16/100 tiles", "6/1/2", 220);
         beat(&mut ls, 840, "1/9 packs", "6/1/2", 230);
         ls.set_threads(id, 3);

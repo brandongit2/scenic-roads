@@ -56,9 +56,10 @@ pub struct Beat {
     /// (crate::coord::handoffs): the answer says which are merged and which the lead lacks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub handoffs: Vec<String>,
-    /// Its Mac's capacity now (crate::coord::Capacity, as its asks carry it): with its running jobs'
-    /// threads and use (`Capacity::threads`), whose threads the lead re-decides at each beat
-    /// (docs/pool.md §7.1, Threads re-granted). Left out by apps before it; an older lead reads past it.
+    /// Its Mac's capacity now (crate::coord::Capacity, as its asks carry it): with the threads its
+    /// running jobs run on (`Capacity::threads`, as its agent controls them: docs/pool.md §7.1,
+    /// Threads controlled live), which the lead counts them for. Left out by apps before it; an
+    /// older lead reads past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cap: Option<super::Capacity>,
     /// Its resume progress whole (crate::coord::budgets): the jobs whose progress is on its Mac's
@@ -146,11 +147,6 @@ pub struct Answer {
     /// until its agent first says its line (`Coordinator::set_said`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lead: Option<LeadLine>,
-    /// Its running jobs' threads re-decided (lease, threads: `sched::Sched::regrant`), each until
-    /// its job runs on them: its agent tells each job, which takes them as its next target begins.
-    /// Left out by a lead before it (the jobs keep their grant), and read past by a member before it.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub threads: Vec<(u64, u32)>,
     /// The owner's releases of this member's progress the lead keeps (job, when its progress
     /// began: crate::coord::budgets).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -280,12 +276,12 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.released = released;
     }
     owes(s, b);
-    // (Its capacity, the one its asks carry, fresher; its running jobs' threads re-decided on it.)
+    // (Its capacity, the one its asks carry, fresher; the threads its running jobs run on counted.)
     if let Some(cap) = b.cap.clone() {
+        s.note_threads(&b.member, &cap);
         if let Some(w) = s.workers.get_mut(&b.member) {
-            w.cap = Some(cap.clone());
+            w.cap = Some(cap);
         }
-        a.threads = s.regrant(&b.member, cap);
     }
     a
 }

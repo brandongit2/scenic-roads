@@ -2500,8 +2500,8 @@ fn note_started(key: &str) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
     let mut line = serde_json::json!({ "unit": key, "started": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) });
     // (The threads it runs on, where it takes its job's grant as it begins (jobrt::control::
-    // on_grant): what the agent tells its lead the job runs with now, so a re-grant of fewer is
-    // counted once a target takes it up (agentcore::agent::memguard::targets).)
+    // on_grant): what the agent watches it on and tells its lead it runs with now, so a cut is
+    // counted once a target takes it up (agentcore::agent::memguard::targets, agent::threads).)
     if let Some(n) = jobrt::control::in_force() {
         line["threads"] = n.into();
     }
@@ -6067,7 +6067,7 @@ fn slope_deep_batch(out: &mut Out, ts: &[TileId], made: &[bool]) -> Result<()> {
             eprintln!("{STEP} {}: no deep level or no data there; {n} files dropped", t.slash());
             continue;
         }
-        // (On its job's grant as it begins: a re-grant takes the next target, jobrt::control::on_grant.)
+        // (On its job's threads as it begins: a change takes the next target, jobrt::control::on_grant.)
         jobrt::control::on_grant(|| -> Result<()> {
             let c = cost_start(STEP, &t.slash());
             let r = landing.after(out, |out| {

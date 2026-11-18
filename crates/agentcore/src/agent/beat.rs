@@ -69,8 +69,8 @@ pub struct ToLead {
     /// The lead's leases it holds, as its loop listed them at `listed`.
     pub held: BTreeSet<u64>,
     pub listed: Instant,
-    /// Its Mac's capacity as its loop last measured it: the lead re-decides its running jobs'
-    /// threads on it (`held::Beat::cap`; the answer's re-grants, `Beats::lead_threads`).
+    /// Its Mac's capacity as its loop last measured it: the lead counts its running jobs at the
+    /// threads it says (`held::Beat::cap`).
     pub cap: Option<crate::coord::Capacity>,
     /// Its pool heartbeat (`Beats::own`) and where the answer goes.
     pub beats: Arc<Beats>,

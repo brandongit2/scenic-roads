@@ -17,7 +17,6 @@ pub mod needs;
 pub mod paces;
 pub mod pool;
 pub mod pubtimes;
-pub mod uses;
 
 /// The runtime's unit tests' process is offline from its start (buildstore::fetch::go_offline), and
 /// an `Out`'s waits are a test's (buildstore::out::go_testing), before any test runs: run by the

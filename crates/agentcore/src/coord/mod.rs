@@ -714,18 +714,15 @@ impl Shared {
         any
     }
 
-    /// The threads of `worker`'s running jobs re-decided (docs/pool.md §7.1, Threads re-granted:
-    /// `sched::Sched::regrant`) on its Mac's capacity `cap`, heard now: other work could use its
-    /// cores where its last ask, within `CAP_FRESH_S`, was refused for them. The re-grants it's to be
-    /// told (lease, threads).
-    fn regrant(&mut self, worker: &str, cap: Capacity) -> Vec<(u64, u32)> {
-        let wanted = self
-            .refused
-            .get(worker)
-            .is_some_and(|(at, w)| self.wall_s().saturating_sub(*at) < CAP_FRESH_S && w.rule.short_of_cores());
-        let a = Ask { worker: worker.to_string(), cores: cap.cores, cap: Some(cap), ..Default::default() };
+    /// The threads `worker`'s running jobs run on as its Mac's capacity `cap` says them, heard now
+    /// (docs/pool.md §7.1, Threads controlled live: its agent controls them), counted for each
+    /// one's lease (`Leases::running_on`).
+    fn note_threads(&mut self, worker: &str, cap: &Capacity) {
         let now = self.now();
-        self.sched.regrant(&a, wanted, now)
+        let mine: Vec<u64> = self.sched.job_leases(worker, now).iter().map(|l| l.id).collect();
+        for u in cap.threads.iter().filter(|u| mine.contains(&u.lease)) {
+            self.sched.leases.running_on(u.lease, u.threads, u.granted);
+        }
     }
 
     /// The jobs `a`'s worker is granted: the scheduler's decision (`sched::Sched::pack`, on this
@@ -777,6 +774,8 @@ impl Shared {
                 more: Vec::new(),
                 threads: p.threads,
                 peak_mb: p.mem_mb,
+                thread_mb: p.thread_mb,
+                thread_covers: p.thread_covers,
                 disk_mb: p.disk_mb,
                 job: p.job,
                 plan: self.plan,
@@ -1191,10 +1190,10 @@ pub struct Capacity {
     /// none of their cores, so CPU work goes beside them (task #665).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub idle: Vec<u64>,
-    /// Its running jobs that take a re-grant as their next target begins (docs/pool.md §7.1,
-    /// Threads re-granted; jobrt::control::on_grant), each with the threads it runs on now and what
-    /// it used on them: the lead re-decides only these (`sched::Sched::regrant`). An older agent's
-    /// capacity says none: its jobs keep their grant.
+    /// Its running jobs whose threads its agent controls (docs/pool.md §7.1, Threads controlled
+    /// live; crate::agent::threads), each with the threads it runs on now and what it used on them:
+    /// the lead counts each at the more of those and its file's (`Leases::running_on`). An older
+    /// agent's capacity says none: its jobs keep their grant.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub threads: Vec<JobThreads>,
     /// Its running jobs an agent of an older app started and this one took over
@@ -1249,12 +1248,14 @@ pub struct OldAppJob {
     pub app: String,
 }
 
-/// A running job that takes a re-grant (`Capacity::threads`): its lease, the threads its target
-/// under way runs on, and the CPU time it took (ms) over the time it has run on them (ms, its
-/// stops left out: crate::agent's `tend_grant`); the threads its agent has told it (its threads
-/// file: its next target's), and the most it can run on (its Mac's cores less those its owner
-/// keeps, a paced job's `inputs::inputs::pace::MOST` at most).
+/// A running job whose threads its agent controls (`Capacity::threads`): its lease, the threads its
+/// target under way runs on, and the CPU time it took (ms) over the time it has run on them since
+/// its agent last decided on it (ms, its stops left out: crate::agent's `watch_threads`); the
+/// threads its agent has told it (its threads file: its next target's), and the most it can run on
+/// (its Mac's cores less those its owner keeps). All of them said, as a lead before task #1420
+/// reads every one.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobThreads {
     pub lease: u64,
     pub threads: u32,
@@ -1376,6 +1377,16 @@ pub struct Grant {
     /// (`Capacity::mem_reserved_mb`; docs/pool.md §7.1). 0: an older lead's (what it holds alone). (Not `mem_mb`: the flattened `Granted::Task` has one.)
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
+    /// What each of its job's threads past `thread_covers` adds to its memory (MB:
+    /// `sched::Sched::per_thread_mb` of its measure), and the threads the memory it was packed at
+    /// covers (its threads and those its measure was taken at, the more): its agent reserves that a
+    /// thread for each one it grows the job past them (crate::agent::threads), as the lead counts
+    /// it (`sched::Sched::grown_mb`). 0: not said (an older lead's): its agent takes the job's whole
+    /// memory a thread.
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub thread_mb: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub thread_covers: u32,
     /// The disk its job is measured to take (MB: `Coordinator::measured_batch`'s), which its agent
     /// reserves until it hands the job off or gives it back (docs/pool.md §7.1). 0: a cold start,
     /// a task, or an older lead's.
@@ -1749,7 +1760,7 @@ impl Coordinator {
         }
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let mut shared = Shared {
+        let shared = Shared {
             sched: sched::Sched {
                 the_plan,
                 leases,
@@ -1782,8 +1793,6 @@ impl Coordinator {
                 packing: Default::default(),
                 provisional_at: Default::default(),
                 paces: Default::default(),
-                use_runs: Vec::new(),
-                uses: Default::default(),
                 batch_s: 0,
             },
             pass: String::new(),
@@ -1845,11 +1854,6 @@ impl Coordinator {
         };
         if !viewer {
             shared.save_leases();
-        }
-        if lead {
-            // (Each step's use on each Mac, from the build's timings in the window: what a job is
-            // granted threads by, crate::uses. A broker grants none, and keeps no timings here.)
-            shared.set_use_runs(crate::uses::Run::read_log(the_plan, &dir.join("timings.jsonl"), unix_now()));
         }
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published; kept (`jobs-token`), so
@@ -2303,20 +2307,14 @@ impl Coordinator {
             .collect()
     }
 
-    /// The lead's own Mac's capacity, measured each loop (its jobs ask nothing).
+    /// The lead's own Mac's capacity, measured each loop (its jobs ask nothing): the threads its
+    /// running jobs run on counted, as a member's are at its beat (crate::coord::held::beat).
     pub fn set_capacity(&self, cap: Option<Capacity>) {
-        self.shared.lock().unwrap().own_cap = cap;
-    }
-
-    /// This Mac's own running jobs' threads re-decided on the capacity it was last told
-    /// (`set_capacity`; docs/pool.md §7.1, Threads re-granted), as a member's are at its beat
-    /// (crate::coord::held::beat): the re-grants for its agent to tell its jobs (lease, threads).
-    pub fn regrant_own(&self) -> Vec<(u64, u32)> {
         let mut s = self.shared.lock().unwrap();
-        match s.own_cap.clone() {
-            Some(cap) => s.regrant(&self.me, cap),
-            None => Vec::new(),
+        if let Some(c) = &cap {
+            s.note_threads(&self.me, c);
         }
+        s.own_cap = cap;
     }
 
     /// Whether every member around reports the new app (its asks carry a capacity): packing
@@ -2603,8 +2601,7 @@ impl Coordinator {
         }
     }
 
-    /// A job's timings (jobrt::timings), kept with the build's (`timings.jsonl`), its run among the
-    /// uses' (crate::uses).
+    /// A job's timings (jobrt::timings), kept with the build's (`timings.jsonl`).
     pub fn add_timings(&self, rec: &jobrt::timings::RunRec) {
         keep_timings(&self.shared, rec);
     }
@@ -3750,15 +3747,9 @@ fn phase_sharer(
     }
 }
 
-/// Keeps `rec` in the coordinator's timings log (written outside its lock), and its run among the
-/// uses' (crate::uses: what a job is granted threads by); stamped with its step's cost version
-/// (`cost_version`, as the lead stamps each end and done: `history::Event::v`), so a run of an
-/// older way of the step stops counting once the version is raised.
+/// Keeps `rec` in the coordinator's timings log (written outside its lock), and beside its job's
+/// spans.
 fn keep_timings(shared: &Mutex<Shared>, rec: &jobrt::timings::RunRec) {
-    let rec = &jobrt::timings::RunRec {
-        cost_v: rec.cost_v.or(Some(shared.lock().unwrap().the_plan.cost_version(&rec.kind))),
-        ..rec.clone()
-    };
     let (dir, spans) = {
         let s = shared.lock().unwrap();
         (s.dir.clone(), s.jobspans.clone())
@@ -3770,7 +3761,6 @@ fn keep_timings(shared: &Mutex<Shared>, rec: &jobrt::timings::RunRec) {
     if let Some(j) = spans {
         j.record(rec);
     }
-    shared.lock().unwrap().add_use(rec, unix_now());
 }
 
 /// A worker's name as a folder name.
@@ -4564,13 +4554,15 @@ fn route(
                         ..history::Event::new("lease")
                     });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
-                    let n = s.pack_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>(), &a.worker);
+                    let n = s.pack_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
                     let g = Grant {
                         lease,
                         epoch: s.leases.epoch,
                         ttl_s: TTL.as_secs(),
                         threads: ask_cores(&a),
                         peak_mb: n.m.mem_mb,
+                        thread_mb: 0,
+                        thread_covers: 0,
                         disk_mb: if n.cold { 0 } else { n.m.disk_mb },
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
@@ -4623,6 +4615,8 @@ fn route(
                     more: Vec::new(),
                     threads: 0,
                     peak_mb: t.mem_mb,
+                    thread_mb: 0,
+                    thread_covers: 0,
                     disk_mb: 0,
                     job: None,
                     plan,
@@ -8662,9 +8656,7 @@ mod tests {
                         let offers: Vec<Offer> =
                             s.offers.iter().filter(|o| ask.can.contains(&o.step)).cloned().collect();
                         let (picks, why) = s.sched.pack(&ask, &offers, lead, clock);
-                        // (The re-grant's test of a refusal as it was, its words: `Rule::short_of_cores`.)
                         if let Some(h) = why {
-                            assert_eq!(h.rule.short_of_cores(), h.words.starts_with("cores:"), "round {round}: {h:?}");
                             refusals.insert(h.rule);
                         }
                         picks
@@ -10577,87 +10569,10 @@ mod tests {
         assert_eq!(threads(&w, &a), [1; 6], "its measured 1 each");
     }
 
-    /// Task #947: a job is granted the threads its step kept busy on its Mac over its jobs' whole
-    /// runs (the build's timings, crate::uses), not what its targets' costs say: slope-hi measured
-    /// busy on 3 threads by its costs (4 by them) keeps 0.8 of 4 busy on m1, so m1 gets 1 and the
-    /// rest of its cores for other jobs; m2, with no run of it in the timings, keeps the costs' 4.
-    /// The in-use share still comes off: a step needing every thread climbs within the cores the
-    /// owner leaves.
-    #[test]
-    fn a_job_is_granted_the_threads_its_step_keeps_busy_on_its_mac() {
-        let threads = |w: &client::Client, a: &Ask| -> Vec<u32> {
-            let Some(mut g) = w.ask(a).unwrap() else { return Vec::new() };
-            let more = std::mem::take(&mut g.more);
-            std::iter::once(g).chain(more).map(|g| g.threads).collect()
-        };
-        let costs = |c: &Coordinator| {
-            packable(c, "slope-hi", 6, Some(3));
-            for i in 1..=6 {
-                let busy = [("threads".to_string(), 3), ("cpu_ms".to_string(), 1_740_000)];
-                let cost = Cost {
-                    peak_mb: 2000,
-                    secs: 600,
-                    worker: None,
-                    v: cost_version("slope-hi"),
-                    sizes: busy.into(),
-                    ..Default::default()
-                };
-                c.add_costs_by(&[(cost_key("slope-hi", &format!("6/1/{i}")), cost)], "m1");
-            }
-        };
-        let run = |host: &str, threads: u32, cpu_s: f64| jobrt::timings::RunRec {
-            v: 1,
-            kind: "slope-hi".into(),
-            host: host.into(),
-            start: unix_now() - 200,
-            wall_s: 100.0,
-            cpu_s: Some(cpu_s),
-            threads: Some(threads),
-            ok: true,
-            ..Default::default()
-        };
-        // No runs in the timings: the costs' rule (2.9 busy of 3: 4).
-        let (_d, c, w, _clock) = every((0, 0));
-        costs(&c);
-        assert_eq!(threads(&w, &every_ask("m1", "slope-hi", 64_000, 100_000)), [4]);
-        // m1's run (a slot of it) kept 0.8 of 4 busy: 1 there; m2's ask, none of its own: 4.
-        let (_d, c, w, _clock) = every((0, 0));
-        costs(&c);
-        c.add_timings(&run("m1 #2", 4, 80.0));
-        assert_eq!(threads(&w, &every_ask("m1", "slope-hi", 64_000, 100_000)), [1]);
-        let m2 = client::Client::at(w.urls(), c.contact.token.clone(), "m2");
-        assert_eq!(threads(&m2, &every_ask("m2", "slope-hi", 64_000, 100_000)), [4]);
-        // Kept as the coordinator restarts: read from its timings log.
-        let dir = c.shared.lock().unwrap().dir.clone();
-        let runs = crate::uses::Run::read_log(crate::agent::seam::for_tests(), &dir.join("timings.jsonl"), unix_now());
-        assert_eq!(crate::uses::Uses::of(&runs), c.shared.lock().unwrap().uses);
-        // Busy on all 8 of its threads (7.5): it climbs, within the 8 cores; its owner at it, within
-        // the 6 the in-use share leaves.
-        let (_d, c, w, _clock) = every((0, 0));
-        costs(&c);
-        c.add_timings(&run("m1", 8, 750.0));
-        assert_eq!(threads(&w, &every_ask("m1", "slope-hi", 64_000, 100_000)), [8]);
-        let (_d, c, w, _clock) = every((0, 0));
-        costs(&c);
-        c.add_timings(&run("m1", 8, 750.0));
-        let mut used = every_ask("m1", "slope-hi", 64_000, 100_000);
-        used.cap = Some(Capacity {
-            at: unix_now(),
-            cores: 8,
-            cores_free: 8,
-            in_use: true,
-            kept_cores: 2,
-            ..Default::default()
-        });
-        assert_eq!(threads(&w, &used), [6]);
-        assert_eq!(c.shared.lock().unwrap().lease_cores("m1", "slope-hi", &["6/1/1".into()], 6), (6, 60));
-    }
-
-    /// Task #948: slope-hi measured on 13 threads, 12.4 of them busy, offered; m1's capacity as its
-    /// beat carries it (14 cores, the in-use share keeping 11 while `in_use`), with its job's threads
-    /// now and its use on them (`busy` cores over `ran_s`) when `on` says them; and the lead's
-    /// answer's re-grants for it, as its beat is heard.
-    fn regrantable(c: &Coordinator) {
+    /// slope-hi measured on 13 threads, 12.4 of them busy, offered; m1's capacity as its beat
+    /// carries it (14 cores, the in-use share keeping 11 while `in_use`), with the threads its job
+    /// runs on and those its agent has told it when `on` says them.
+    fn controllable(c: &Coordinator) {
         packable(c, "slope-hi", 2, None);
         for t in ["6/1/1", "6/1/2"] {
             let sizes =
@@ -10674,9 +10589,8 @@ mod tests {
         }
     }
 
-    /// (`on`: its lease, the threads it runs on, those its agent has told it, its busy cores and
-    /// the seconds it has run on them.)
-    fn m1_cap(cores: u32, in_use: bool, on: Option<(u64, u32, u32, f64, u64)>) -> Capacity {
+    /// (`on`: its lease, the threads it runs on, those its agent has told it.)
+    fn m1_cap(cores: u32, in_use: bool, on: Option<(u64, u32, u32)>) -> Capacity {
         Capacity {
             at: unix_now(),
             cores,
@@ -10686,13 +10600,12 @@ mod tests {
             mem_mb: 30_000,
             leases: on.map(|o| o.0).into_iter().collect(),
             threads: on
-                .map(|(lease, threads, granted, busy, ran_s)| JobThreads {
+                .map(|(lease, threads, granted)| JobThreads {
                     lease,
                     threads,
-                    cpu_ms: (busy * ran_s as f64 * 1000.0) as u64,
-                    ran_ms: ran_s * 1000,
                     granted,
                     most: cores,
+                    ..Default::default()
                 })
                 .into_iter()
                 .collect(),
@@ -10700,77 +10613,52 @@ mod tests {
         }
     }
 
-    fn m1_beat(c: &Coordinator, cap: Option<Capacity>) -> Vec<(u64, u32)> {
+    fn m1_beat(c: &Coordinator, cap: Option<Capacity>) {
         let mut s = c.shared.lock().unwrap();
-        held::beat(&mut s, &held::Beat { member: "m1".into(), cap, ..Default::default() }).threads
+        held::beat(&mut s, &held::Beat { member: "m1".into(), cap, ..Default::default() });
     }
 
     fn counted(c: &Coordinator, lease: u64) -> u32 {
         c.shared.lock().unwrap().leases.of(lease).unwrap().threads
     }
 
-    /// Task #948: a running job's threads re-decided at its Mac's beat. Granted 3 of 14 while the
-    /// owner used the M4 (its share keeping 11, as on 4 Nov), it **grows** once the owner has gone
-    /// and it has used its 3 a minute (to 13, its step's measured grant): counted for 13 at once,
-    /// told until its agent has told it. The owner back, its 13 pass the 3 cores its Mac has for
-    /// jobs: it **shrinks** to 3, counted for 13 until a target takes them up.
+    /// Task #1420: a running job's threads are its agent's (crate::agent::threads); the lead counts
+    /// each at what its Mac's beat says: the more of the threads it runs on and those its file says
+    /// (a grow at once; a cut once a target takes it up), its start's kept for its memory.
     #[test]
-    fn a_running_jobs_threads_grow_when_cores_free_and_shrink_when_the_owner_returns() {
+    fn the_lead_counts_a_running_job_at_the_threads_its_agent_says() {
         let (_d, c, w, _clock) = every((0, 0));
-        regrantable(&c);
+        controllable(&c);
         let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
         let g = w.ask(&a).unwrap().unwrap();
         assert_eq!(g.threads, 3, "3 of 14 while the owner uses it");
         let l = g.lease;
-        // Under a minute on its threads: nothing decided yet.
-        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3, 3.0, 30))))).is_empty());
+        m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 6)))));
+        assert_eq!(counted(&c, l), 6, "grown: counted at once");
+        m1_beat(&c, Some(m1_cap(14, false, Some((l, 6, 6)))));
+        assert_eq!(counted(&c, l), 6);
+        m1_beat(&c, Some(m1_cap(14, true, Some((l, 6, 3)))));
+        assert_eq!(counted(&c, l), 6, "cut: its target under way still on 6");
+        m1_beat(&c, Some(m1_cap(14, true, Some((l, 3, 3)))));
         assert_eq!(counted(&c, l), 3);
-        // The owner gone, its 3 threads busy a minute: 13, counted at once.
-        assert_eq!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3, 3.0, 60))))), [(l, 13)]);
-        assert_eq!(counted(&c, l), 13);
-        // Told again until its agent has told it; then nothing to tell, counted for 13 as its next
-        // target takes them, and on them.
-        assert_eq!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 3, 3.0, 80))))), [(l, 13)]);
-        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 13, 3.0, 90))))).is_empty());
-        assert_eq!(counted(&c, l), 13);
-        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 13, 13, 12.4, 5))))).is_empty());
-        assert_eq!(counted(&c, l), 13);
-        // The owner back: 3 cores for jobs, its 13 past them: 3, counted for 13 until taken up.
-        assert_eq!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 13, 13, 12.4, 60))))), [(l, 3)]);
-        assert_eq!(counted(&c, l), 13);
-        assert!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 13, 3, 12.4, 70))))).is_empty());
-        assert_eq!(counted(&c, l), 13, "its target under way still on 13");
-        assert!(m1_beat(&c, Some(m1_cap(14, true, Some((l, 3, 3, 3.0, 1))))).is_empty());
+        assert_eq!(c.shared.lock().unwrap().leases.of(l).unwrap().start_threads, 3);
+        // (A lease not m1's isn't counted by m1's beat.)
+        m1_beat(&c, Some(m1_cap(14, false, Some((l + 100, 9, 9)))));
         assert_eq!(counted(&c, l), 3);
     }
 
-    /// Task #948 review: a lead that takes over decides nothing yet of a job its predecessor
-    /// re-granted, which takes that grant at its next target all the same: it counts the job for the
-    /// threads its agent has told it (its file's 13), not the 3 its target under way runs on.
+    /// Task #1420: a grant says the memory each thread past those its memory covers adds, as the
+    /// lead counts a grow (`Sched::grown_mb`): its peak over the threads it was measured at (13),
+    /// else its whole peak a thread past its own threads. The lead's packing counts what its agent
+    /// grew it by.
     #[test]
-    fn a_new_lead_counts_a_regrant_its_predecessor_told() {
+    fn a_grant_says_its_memory_a_thread_and_a_grow_is_counted_by_it() {
         let (_d, c, w, _clock) = every((0, 0));
-        regrantable(&c);
+        controllable(&c);
         let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
-        let l = w.ask(&a).unwrap().unwrap().lease;
-        assert!(m1_beat(&c, Some(m1_cap(14, false, Some((l, 3, 13, 3.0, 10))))).is_empty());
-        assert_eq!(counted(&c, l), 13);
-    }
-
-    /// Task #948 review: a grow's memory. Each thread past those its measure covers adds its peak
-    /// over the threads it was measured at, never the peak over the threads it runs on now; the room its Mac says less what earlier grows hold (its agent counts
-    /// a job at its measure alone) caps the grow, and the lead's packing counts what it grew by.
-    #[test]
-    fn a_grow_is_covered_by_the_memory_its_extra_threads_take() {
-        let (_d, c, w, _clock) = every((0, 0));
-        regrantable(&c);
-        let a = Ask { cores: 14, cap: Some(m1_cap(14, true, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
-        let l = w.ask(&a).unwrap().unwrap().lease;
-        // Its measure covers 13 threads: room for none past them, it grows to 13 all the same.
-        let tight = Capacity { mem_mb: 0, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 60))) };
-        assert_eq!(m1_beat(&c, Some(tight)), [(l, 13)]);
-        // Measured at 1 thread instead: each extra thread its whole 2,000 MB.
-        c.shared.lock().unwrap().leases.regranted(l, 3, 3, Some((3, Instant::now())));
+        let g = w.ask(&a).unwrap().unwrap();
+        assert_eq!((g.thread_mb, g.thread_covers), (g.peak_mb / 13, 13));
+        // Measured at 1 thread instead: each thread past its 3 its whole peak.
         for t in ["6/1/1", "6/1/2"] {
             let mut book = c.shared.lock().unwrap();
             let cost = book.sched.costs.get_mut(&cost_key("slope-hi", t)).unwrap();
@@ -10778,79 +10666,27 @@ mod tests {
         }
         let ts: Vec<String> = vec!["6/1/1".into(), "6/1/2".into()];
         let peak = c.shared.lock().unwrap().sched.job_need("slope-hi", &ts).unwrap().mem_mb;
-        // (Its 3 threads busy: it climbs to 4 by its use, the book's 1-thread runs granting no more.)
-        let half = Capacity { mem_mb: peak / 2, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 120))) };
-        assert!(m1_beat(&c, Some(half)).is_empty(), "no room for a thread of its whole peak");
-        let one = Capacity { mem_mb: peak + peak / 2, ..m1_cap(14, false, Some((l, 3, 3, 3.0, 120))) };
-        assert_eq!(m1_beat(&c, Some(one)), [(l, 4)], "room for one");
+        m1_beat(&c, Some(m1_cap(14, false, Some((g.lease, 4, 4)))));
         let s = c.shared.lock().unwrap();
-        let lease = s.leases.of(l).unwrap().clone();
+        let lease = s.leases.of(g.lease).unwrap().clone();
         assert_eq!(s.sched.grown_mb(&lease, "slope-hi", ts.iter().map(String::as_str), peak), peak);
     }
 
-    /// Task #948: a job using 1 of its 8 threads keeps them while nothing else wants its Mac's
-    /// cores; once its Mac's last ask was refused for cores (other work could use them), it shrinks
-    /// to its use (1: task #947's rule over its run on its 8), counted for 8 until a target takes
-    /// them up. Decided at most once
-    /// a minute.
+    /// Task #1420, mixed versions: a member before live control beats without a capacity, or its
+    /// capacity says no job's threads (an older agent's ask): its job is counted at its grant. A
+    /// job's threads said without every field parse; a lead before it reads a beat with a capacity
+    /// by the fields it knows.
     #[test]
-    fn a_running_job_shrinks_to_its_use_when_other_work_wants_the_cores() {
-        let (_d, c, w, clock) = every((0, 0));
-        regrantable(&c);
-        let a = Ask { cap: Some(m1_cap(8, false, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
-        let g = w.ask(&a).unwrap().unwrap();
-        assert_eq!(g.threads, 8);
-        let l = g.lease;
-        assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 120))))).is_empty(), "nothing wants its cores");
-        c.shared.lock().unwrap().refused.insert(
-            "m1".into(),
-            (
-                unix_now(),
-                sched::Held {
-                    rule: sched::Rule::Cores,
-                    words: "cores: 0.0 of 8 left, a job of slope-hi takes 8.0".into(),
-                },
-            ),
-        );
-        assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 120))))), [(l, 1)]);
-        assert_eq!(counted(&c, l), 8, "until a target runs on 1");
-        // (Its use busier meanwhile: not decided again within the minute.)
-        assert_eq!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 8.0, 180))))), [(l, 1)]);
-        clock.advance(sched::SETTLE);
-        assert!(m1_beat(&c, Some(m1_cap(8, false, Some((l, 8, 8, 8.0, 240))))).is_empty(), "busy on all 8: kept");
-        assert_eq!(counted(&c, l), 8);
-    }
-
-    /// Task #948, mixed versions: a member before re-grants beats without a capacity, or its
-    /// capacity says no job's threads (an older agent's ask): nothing is re-decided, its job keeps
-    /// its grant. A lead before them answers without re-grants: the member's jobs keep theirs, and a
-    /// lead's 404 (`lead_older`) leaves none. A beat with a capacity reads on a lead that doesn't know
-    /// it (an older one's fields alone).
-    #[test]
-    fn an_older_member_or_lead_leaves_a_jobs_grant_as_it_is() {
+    fn an_older_member_or_lead_leaves_a_jobs_count_as_it_is() {
         let (_d, c, w, _clock) = every((0, 0));
-        regrantable(&c);
+        controllable(&c);
         let a = Ask { cap: Some(m1_cap(8, false, None)), ..every_ask("m1", "slope-hi", 30_000, 100_000) };
         let l = w.ask(&a).unwrap().unwrap().lease;
-        c.shared.lock().unwrap().refused.insert(
-            "m1".into(),
-            (unix_now(), sched::Held { rule: sched::Rule::Cores, words: "cores: 0.0 of 8 left".into() }),
-        );
-        assert!(m1_beat(&c, None).is_empty(), "an older member's beat");
-        assert!(m1_beat(&c, Some(m1_cap(8, false, None))).is_empty(), "no job's threads said");
+        m1_beat(&c, None);
+        m1_beat(&c, Some(m1_cap(8, false, None)));
         assert_eq!(counted(&c, l), 8);
-        // A member's view of an older lead's answer: no re-grants.
-        let old: held::Answer = serde_json::from_value(serde_json::json!({"epoch": 3, "released": []})).unwrap();
-        assert!(old.threads.is_empty());
-        let b = beats::Beats::default();
-        b.answered(&held::Answer { threads: vec![(l, 1)], ..old.clone() }, 10);
-        assert_eq!(b.lead_threads(), [(l, 1)]);
-        b.answered(&old, 20);
-        assert!(b.lead_threads().is_empty(), "the next answer's say");
-        b.answered(&held::Answer { threads: vec![(l, 2)], ..old }, 30);
-        b.lead_older(40);
-        assert!(b.lead_threads().is_empty(), "a lead before the beat");
-        // A lead before them reads a beat with a capacity by the fields it knows.
+        let t: JobThreads = serde_json::from_value(serde_json::json!({"lease": l, "threads": 2})).unwrap();
+        assert_eq!((t.threads, t.granted), (2, 0));
         #[derive(serde::Deserialize)]
         struct OldBeat {
             member: String,
@@ -10860,7 +10696,7 @@ mod tests {
         let new = held::Beat {
             member: "m1".into(),
             held: [l].into(),
-            cap: Some(m1_cap(8, false, Some((l, 8, 8, 1.0, 60)))),
+            cap: Some(m1_cap(8, false, Some((l, 8, 8)))),
             ..Default::default()
         };
         let read: OldBeat = serde_json::from_value(serde_json::to_value(&new).unwrap()).unwrap();
@@ -14168,7 +14004,7 @@ mod tests {
             for l in &mine {
                 let Work::Job { step, targets } = &l.work else { continue };
                 let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
-                let m = s.pack_need(step, &ts, &w.ask.worker).m.mem_mb;
+                let m = s.pack_need(step, &ts).m.mem_mb;
                 eprintln!("{}: {step} ({} targets): its grant's {}", w.ask.worker, ts.len(), gb(m));
                 need += m;
             }
@@ -14272,12 +14108,10 @@ mod tests {
                 l.creates_s /= 2.0;
             }
             ask_all(&mut s, 4, "settings", &st.offers);
-            s.set_use_runs(Vec::new());
-            ask_all(&mut s, 5, "uses", &st.offers);
             // (The plan's offers again, its first step's left out and the rest reversed.)
             let offers: Vec<Offer> = st.offers.iter().skip(1).rev().cloned().collect();
             s.set_offers(offers.clone());
-            ask_all(&mut s, 6, "offers", &offers);
+            ask_all(&mut s, 5, "offers", &offers);
             for l in &lines {
                 eprintln!("{} {}: {l}", i.at, i.term);
             }
@@ -14339,7 +14173,7 @@ mod tests {
                 .filter_map(|l| match &l.work {
                     Work::Job { step, targets } => {
                         let ts: Vec<String> = targets.iter().map(|t| t.0.clone()).collect();
-                        Some(s.pack_need(step, &ts, &w.ask.worker).m.mem_mb)
+                        Some(s.pack_need(step, &ts).m.mem_mb)
                     }
                     Work::Task { .. } => None,
                 })

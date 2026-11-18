@@ -628,7 +628,7 @@ pub fn batches(
             // (At the threads it'd be granted alone, as `pick_every` sizes it.)
             let Some(first) = a.targets.first() else { continue };
             let total = s.workers.get(&a.mac).and_then(|w| w.ask.as_ref()).map_or(0, crate::coord::ask_cores);
-            let threads = s.sizing_threads(&a.worker, &a.step, first, total.max(1));
+            let threads = s.sizing_threads(&a.step, first, total.max(1));
             let Some((sized, _)) = s.batch_secs(&a.step, a.targets.iter().map(String::as_str), &a.worker, threads)
             else {
                 continue;
