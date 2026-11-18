@@ -221,7 +221,7 @@ fn said() -> Vec<resolve::Problem> {
         warning,
         check,
         about: vec![n.into(), "b".into()],
-        found: vec!["overlap-settled".into()],
+        found: vec!["overlap".into()],
         files: vec![format!("{n}.toml")],
         message: format!("{n}: said"),
     };

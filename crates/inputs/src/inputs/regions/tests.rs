@@ -820,7 +820,7 @@ fn the_rules_file_is_not_a_region() {
     };
     let n = read::listed(&a).unwrap().len();
     let mut rules = a.index.files.values().next().unwrap().clone();
-    rules.facts = serde_json::from_str(r#"{"rules": {"cover": "earth", "sliver_km2": 50.0}}"#).unwrap();
+    rules.facts = serde_json::from_str(r#"{"rules": {"cover": "earth"}}"#).unwrap();
     for name in ["_rules.toml", "_pins.toml"] {
         a.index.files.insert(name.into(), rules.clone());
     }

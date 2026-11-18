@@ -575,23 +575,22 @@ pub fn check_folder(
     }))
 }
 
-/// The cover check's measures of how the regions fit (tiles::Fit), for the report: the pairs
-/// overlapping before the check settled them and after, each stretch in no region and where it
-/// went, what is in no region after; areas in km², rounded to 0.001.
+/// The cover check's measures of how the regions fit (tiles::Fit), for the report: each pair's
+/// overlap, each stretch in no region (the rest's marked), each region's water touching none of
+/// its land; areas in km² rounded to 0.000001 (a hair's size measured), points in degrees.
 fn fit_report(f: &super::tiles::Fit) -> serde_json::Value {
-    let r = |v: f64| (v * 1000.0).round() / 1000.0;
+    let r = |v: f64| (v * 1e6).round() / 1e6;
+    let deg = |p: super::geom::Pt| [p[0] as f64 / 1e7, p[1] as f64 / 1e7];
+    let edges =
+        |e: &[(String, f64)]| e.iter().take(6).map(|(id, l)| serde_json::json!([id, r(*l)])).collect::<Vec<_>>();
     let mut gaps: Vec<&super::tiles::GapFit> = f.gaps.iter().collect();
     gaps.sort_by(|a, b| b.km2.total_cmp(&a.km2));
     serde_json::json!({
-        "overlaps": f.overlaps.iter().filter(|(_, v)| v.0 + v.1 >= 0.001).map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "land_km2": r(v.0), "water_km2": r(v.1)})).collect::<Vec<_>>(),
-        "gaps": gaps.iter().filter(|g| g.km2 >= 0.001).map(|g| serde_json::json!({
+        "overlaps": f.overlaps.iter().map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "land_km2": r(v.land_km2), "water_km2": r(v.water_km2), "largest_km2": r(v.largest_km2), "at": deg(v.at)})).collect::<Vec<_>>(),
+        "gaps": gaps.iter().map(|g| serde_json::json!({
             "km2": r(g.km2), "zone_km2": r(g.zone_km2), "land_km2": r(g.land_km2), "touches_land": g.touches,
-            "at": [g.at[0] as f64 / 1e7, g.at[1] as f64 / 1e7], "to": g.to,
-            "shares_km2": g.shares.iter().map(|(id, k)| serde_json::json!([id, r(*k)])).collect::<Vec<_>>(),
-            "edges_km": g.edges.iter().take(4).map(|(id, l)| serde_json::json!([id, r(*l)])).collect::<Vec<_>>()})).collect::<Vec<_>>(),
-        "after_overlaps": f.after_overlaps.iter().map(|((a, b), v)| serde_json::json!({"a": a, "b": b, "km2": r(*v)})).collect::<Vec<_>>(),
-        "rest_in_zones": f.rest_in_zones.iter().map(|(c, v)| serde_json::json!({"cell": [c.0 * 2, c.1 * 2], "km2": r(*v)})).collect::<Vec<_>>(),
-        "after_gaps": f.after_gaps.iter().map(|(c, v)| serde_json::json!({"cell": [c.0 * 2, c.1 * 2], "km2": r(*v)})).collect::<Vec<_>>(),
+            "at": deg(g.at), "rest": g.rest, "edges_km": edges(&g.edges)})).collect::<Vec<_>>(),
+        "strays": f.strays.iter().map(|s| serde_json::json!({"id": s.id, "km2": r(s.km2), "at": deg(s.at), "edges_km": edges(&s.edges)})).collect::<Vec<_>>(),
     })
 }
 

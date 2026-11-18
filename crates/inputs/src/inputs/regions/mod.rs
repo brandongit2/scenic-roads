@@ -184,8 +184,10 @@ impl Got {
 /// past 450 km. 10: #468: the 12-nautical-mile line stored with the pins; the coastline's land the
 /// pass's own, by cell. 11: #862: roadcore::geo's one Earth and even-odd test, `det`'s maths.
 /// 12: #1127: with cover, a stretch in no region over sliver_km2 that is some country's (touching
-/// land, or inside a 200-nmi zone) goes to the regions with water it borders, never the rest.)
-pub const RESOLUTION: u32 = 12;
+/// land, or inside a 200-nmi zone) goes to the regions with water it borders, never the rest.
+/// 13: #1427: the cover check moves nothing: no fills, no slivers, a hand-out's shared stretch
+/// stays the handing region's.)
+pub const RESOLUTION: u32 = 13;
 
 /// What `derive` records a region was resolved from (`resolved_from`): its resolution key
 /// (`resolve::Outcome::keys`) with `RESOLUTION`.

@@ -9,7 +9,7 @@
 use std::sync::Mutex;
 
 /// A resolve's steps, in the order it takes them (crate::inputs::regions::resolve's `resolve_all`,
-/// then crate::inputs::regions::tiles' `resolve_in` and `cells_pass`). A step the folder doesn't
+/// then crate::inputs::regions::tiles' `resolve_in` and `cover_check`). A step the folder doesn't
 /// take (no region with water, no `cover`) is passed over, its share with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Step {
@@ -22,21 +22,18 @@ pub enum Step {
     CoastFills,
     Areas,
     HandOuts,
-    Slivers,
+    Strays,
     Zones,
     ZoneCells,
     Cover,
-    GapLand,
-    GapShares,
-    Fills,
-    RestInZones,
-    Fit,
+    Gaps,
+    Rest,
     Stored,
 }
 
 impl Step {
     /// Every step, in order.
-    pub const ALL: [Step; 19] = [
+    pub const ALL: [Step; 16] = [
         Step::Plain,
         Step::Land,
         Step::Water,
@@ -46,15 +43,12 @@ impl Step {
         Step::CoastFills,
         Step::Areas,
         Step::HandOuts,
-        Step::Slivers,
+        Step::Strays,
         Step::Zones,
         Step::ZoneCells,
         Step::Cover,
-        Step::GapLand,
-        Step::GapShares,
-        Step::Fills,
-        Step::RestInZones,
-        Step::Fit,
+        Step::Gaps,
+        Step::Rest,
         Step::Stored,
     ];
 
@@ -70,15 +64,12 @@ impl Step {
             Step::CoastFills => ("the coast's fills", "cells"),
             Step::Areas => ("each region's area", "cells"),
             Step::HandOuts => ("the hand-outs", "regions"),
-            Step::Slivers => ("the slivers", "regions"),
+            Step::Strays => ("the stray water", "regions"),
             Step::Zones => ("the 200-nmi zones", "zones"),
             Step::ZoneCells => ("the 200-nmi zones by cell", "cells"),
             Step::Cover => ("the cover check", "cells"),
-            Step::GapLand => ("the gaps' land", "cells"),
-            Step::GapShares => ("the gaps' shares", "stretches"),
-            Step::Fills => ("the fills", "cells"),
-            Step::RestInZones => ("the rest inside the zones", "cells"),
-            Step::Fit => ("the fit", "cells"),
+            Step::Gaps => ("the gaps", "stretches"),
+            Step::Rest => ("the rest", "cells"),
             Step::Stored => ("storing", "regions"),
         }
     }

@@ -88,6 +88,8 @@ water = [{ nearest = "eez:5695", to = ["land:w"], than = ["land:crimea"], step =
     assert!(tiles::parse_rules("cover = \"earth\"\n").is_ok());
     assert!(tiles::parse_rules("cover = \"mars\"\n").is_err());
     assert!(tiles::parse_rules("covers = \"earth\"\n").is_err());
+    // (Nothing is settled by size: no sliver_km2.)
+    assert!(tiles::parse_rules("cover = \"earth\"\nsliver_km2 = 50\n").is_err());
 }
 
 #[test]
@@ -256,8 +258,8 @@ fn run_counted(w: &World, files: &[(&str, &str)]) -> (resolve::Outcome, Vec<(Ste
 }
 
 /// Task #1145: a resolve counts every step it takes, in order, each to its total: the regions, the
-/// cells of every pass (the cover check's and the fit's every cell of the Earth), the regions
-/// stored; so its share ends whole, having gone on through each.
+/// cells of every pass (the cover check's every cell of the Earth), the regions stored; so its
+/// share ends whole, having gone on through each.
 #[test]
 fn a_resolve_counts_every_step_to_its_total() {
     let w = world();
@@ -270,7 +272,7 @@ fn a_resolve_counts_every_step_to_its_total() {
     }
     let of = |s: Step| steps.iter().find(|x| x.0 == s).map(|x| x.2);
     let cells = 180 * 90;
-    assert_eq!((of(Step::Cover), of(Step::Fit)), (Some(cells), Some(cells)));
+    assert_eq!(of(Step::Cover), Some(cells));
     // No region without water (the slice has a water key, if empty); the seven with it, their water
     // but the rest's (what's left at the end), and every region stored.
     assert_eq!((of(Step::Plain), of(Step::Land), of(Step::Water)), (Some(0), Some(7), Some(6)));
@@ -479,23 +481,34 @@ fn old_files_resolve_as_before_beside_new_ones() {
     assert!(out.problems.iter().any(|p| p.check == "rg-data"), "{:?}", out.problems);
 }
 
-/// Land in no region over `sliver_km2` isn't filled silently: a finding.
+/// Land in no region is a finding, at a point of its land, naming the regions round it; nothing
+/// is given to them (task #1427).
 #[test]
 fn a_large_piece_of_land_in_no_region_is_an_error() {
     // A's land past its outline by 0.05° (about 700 km²).
     let w = world_with(1.05);
     let out = run(&w, &all());
-    assert!(
-        out.problems
-            .iter()
-            .any(|p| p.check == "rg-cover" && p.found == vec!["gap"] && p.message.contains("sliver_km2")),
-        "{:?}",
-        out.problems
-    );
+    let gaps: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).collect();
+    assert_eq!(gaps.len(), 1, "{:?}", out.problems);
+    assert!(gaps[0].message.contains("of it land") && gaps[0].message.contains("around it a ("), "{}", gaps[0].message);
+    assert!(!area_of(&out.resolved["a"].geometry).contains([e7(0.6), e7(1.03)]), "not filled");
 }
 
-/// Land in no region cut by a 2° cell's edge is sized whole: two halves each under `sliver_km2`
-/// (about 40 km² each side of 2°N) are one piece over it, found at a point of its land.
+/// The place a finding names, in degrees.
+fn at_of(message: &str) -> Vec<f64> {
+    message
+        .split(" by ")
+        .nth(1)
+        .unwrap()
+        .split('°')
+        .take(2)
+        .map(|s| s.trim_start_matches(", ").parse().unwrap())
+        .collect()
+}
+
+/// Land in no region cut by a 2° cell's edge is sized whole: two halves (about 40 km² each side of
+/// 2°N) are one piece, found at a point of its land; a small one too (task #1427: no size is
+/// settled).
 #[test]
 fn land_in_no_region_across_a_cells_edge_is_sized_whole() {
     let w = world_more(1.0, vec![bx(0.46, 1.96, 0.54, 2.04)]);
@@ -503,20 +516,64 @@ fn land_in_no_region_across_a_cells_edge_is_sized_whole() {
     let gaps: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).collect();
     assert_eq!(gaps.len(), 1, "{:?}", out.problems);
     let m = &gaps[0].message;
-    assert!(m.starts_with("79.") && m.contains("sliver_km2"), "{m}");
-    let at: Vec<f64> = m
-        .split(" by ")
-        .nth(1)
-        .unwrap()
-        .split('°')
-        .take(2)
-        .map(|s| s.trim_start_matches(", ").parse().unwrap())
-        .collect();
+    assert!(m.starts_with("79."), "{m}");
+    let at = at_of(m);
     assert!((0.46..0.54).contains(&at[0]) && (1.96..2.04).contains(&at[1]), "{m}");
-    // Under sliver_km2 whole, it's filled: no finding.
     let w = world_more(1.0, vec![bx(0.48, 1.98, 0.52, 2.02)]);
     let out = run(&w, &all());
-    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let gaps: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && p.found == vec!["gap"]).collect();
+    assert_eq!(gaps.len(), 1, "{:?}", out.problems);
+    assert!(gaps[0].message.starts_with("19."), "{}", gaps[0].message);
+}
+
+/// Task #1427: a county missing from a divided place is a gap at a point inside it, naming the
+/// counties round it, and none of them takes it; two counties both having a strip is an overlap
+/// naming them, each keeping it.
+#[test]
+fn a_missing_county_is_a_gap_naming_its_neighbours() {
+    let w = world_more(1.002, vec![bx(30.0, 20.0, 33.0, 21.0)]);
+    let l = "id = \"l\"\nname = \"L\"\noutline = [\"box:29.9,19.9,31.0,21.1\"]\nwater = []\n";
+    let r = "id = \"r\"\nname = \"R\"\noutline = [\"box:32.0,19.9,33.1,21.1\"]\nwater = []\n";
+    let s = "id = \"s\"\nname = \"S\"\nwater = [{ buffer = \"box:30.0,20.0,33.0,21.0\", by = \"10 km\" }]\n";
+    let mut files = all();
+    files.extend([("p/l.toml", l), ("p/r.toml", r), ("s.toml", s)]);
+    let out = run(&w, &files);
+    let gaps: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover").collect();
+    assert_eq!(gaps.len(), 1, "{:?}", out.problems);
+    let m = &gaps[0].message;
+    assert_eq!(gaps[0].found, vec!["gap"]);
+    let at = at_of(m);
+    assert!((31.0..32.0).contains(&at[0]) && (20.0..21.0).contains(&at[1]), "{m}");
+    let mut named: Vec<&str> = out
+        .fit
+        .gaps
+        .iter()
+        .filter(|g| !g.rest && g.km2 > tiles::HAIR_KM2)
+        .flat_map(|g| g.edges.iter().map(|e| e.0.as_str()))
+        .collect();
+    named.sort();
+    assert_eq!(named, ["l", "r", "s"], "{m}");
+    assert!(m.contains("around it ") && m.contains(" r (") && m.contains(" s ("), "{m}");
+    assert!(gaps[0].files.contains(&"p/l.toml".to_string()) && gaps[0].files.contains(&"p/r.toml".to_string()));
+    for id in ["l", "r", "s"] {
+        assert!(!area_of(&out.resolved[id].geometry).contains([e7(31.5), e7(20.5)]), "{id}: nothing moved");
+    }
+    // The middle county's outline overlapping its neighbour by a strip of 0.02° (about 2 km).
+    let m = "id = \"m\"\nname = \"M\"\noutline = [\"box:30.98,19.9,32.0,21.0\"]\nwater = []\n";
+    let mut files = all();
+    files.extend([("p/l.toml", l), ("p/r.toml", r), ("p/m.toml", m), ("s.toml", s)]);
+    let out = run(&w, &files);
+    let said: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover").collect();
+    assert_eq!(said.len(), 1, "{:?}", out.problems);
+    assert_eq!(
+        (said[0].found.clone(), said[0].about.clone()),
+        (vec!["overlap".to_string()], vec!["l".to_string(), "m".to_string()])
+    );
+    let at = at_of(&said[0].message);
+    assert!((30.98..31.0).contains(&at[0]), "{}", said[0].message);
+    for id in ["l", "m"] {
+        assert!(area_of(&out.resolved[id].geometry).contains([e7(30.99), e7(20.5)]), "{id} keeps it");
+    }
 }
 
 /// One coastline (#649): land past a region's outline's coast, along it, is its own, with or
@@ -578,10 +635,11 @@ fn a_cells_edge_is_no_coast() {
     assert!(land.contains([e7(31.9), e7(30.55)]) && !land.contains([e7(31.995), e7(30.55)]));
 }
 
-/// A hole in a zone's water off any coast (the zones' source has a rock OSM hasn't), under
-/// `sliver_km2`, is the zone's, not the rest's (#649 review: Clayoquot Sound's specks of high seas).
+/// A hole in a zone's water off any coast (the zones' source has a rock OSM hasn't) is the open
+/// sea's, and said: a zone's water the rest has, naming the region round it (task #1427: never
+/// given to it).
 #[test]
-fn a_small_hole_in_the_sea_off_any_coast_is_its_neighbours() {
+fn a_small_hole_in_the_sea_off_any_coast_is_an_error() {
     let w = world();
     let holed = "id = \"disputed\"\nname = \"Disputed zone\"\n\
                  water = [{ minus = [\"eez:2\", \"box:5.5,5.5,5.52,5.52\"] }]\n";
@@ -590,9 +648,11 @@ fn a_small_hole_in_the_sea_off_any_coast_is_its_neighbours() {
         f.1 = holed;
     }
     let out = run(&w, &files);
-    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+    let p = &out.problems[0];
+    assert!(p.found == vec!["rest-in-zone"] && p.message.contains("around it disputed ("), "{p:?}");
     let at = |id: &str| area_of(&out.resolved[id].geometry).contains([e7(5.51), e7(5.51)]);
-    assert!(at("disputed") && !at("high-seas"));
+    assert!(!at("disputed") && at("high-seas"));
 }
 
 /// The new rules leave regions without water as they resolve alone: the cover's fills and a
@@ -935,10 +995,11 @@ fn water_naming_no_region_is_held() {
     assert!(!out.resolved.contains_key("a"));
 }
 
-/// With `cover = "earth"`: a region's piece of water under 50 km², touching none of its land and
-/// lying across a 2° cells' edge, joins the region it shares its longest edge with, whole.
+/// With `cover = "earth"`: a region's piece of water touching none of its land, lying across a 2°
+/// cells' edge, is said once, whole, at a point inside it, naming the region beside it; it stays
+/// the region's (task #1427). A region of water alone has no land to touch.
 #[test]
-fn a_sliver_across_a_cells_edge_joins_its_neighbour() {
+fn water_touching_none_of_its_land_is_an_error() {
     let d = tempfile::tempdir().unwrap();
     let p = outlines(d.path(), &[(4, "DD", deg_sq(20.0, 20.0, 21.0, 21.0))]);
     let data = Datasets::from_parts(
@@ -950,14 +1011,18 @@ fn a_sliver_across_a_cells_edge_joins_its_neighbour() {
         "fixture",
     );
     let w = World { o: buildstore::outlines::Outlines::open(&p).unwrap(), data, _d: d };
-    // s: land far away, and a sliver of 4.4 × 5.5 km across the edge at 2°; t: water above it.
-    let s = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\nwater = [\"box:1.98,0.0,2.02,0.05\"]\n";
+    // s: land far away, and a piece of 4.4 × 5.5 km across the edge at 2°; t: water above it.
+    let s = "id = \"s\"\nname = \"S\"\noutline = [\"osm:4\"]\nwater = [\"box:1.98,0.0,2.02,0.05\", { buffer = \"land:s\", by = \"10 km\" }]\n";
     let t = "id = \"t\"\nname = \"T\"\nwater = [\"box:1.9,0.05,2.1,0.2\"]\n";
     let out = run(&w, &[PINS, RULES, ("s.toml", s), ("t.toml", t), ("high-seas.toml", HIGH)]);
-    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+    let p = &out.problems[0];
+    assert!(p.found[0] == "stray" && p.about == vec!["s"] && p.message.starts_with("s: 24."), "{p:?}");
+    assert!(p.message.contains("around it t ("), "{}", p.message);
+    let at = at_of(&p.message);
+    assert!((1.98..2.02).contains(&at[0]) && (0.0..0.05).contains(&at[1]), "{}", p.message);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    assert!(at("t", 1.99, 0.02) && at("t", 2.01, 0.02), "both sides of the edge to t");
-    assert!(!at("s", 1.99, 0.02) && !at("s", 2.01, 0.02) && at("s", 20.5, 20.5));
+    assert!(at("s", 1.99, 0.02) && at("s", 2.01, 0.02) && !at("t", 1.99, 0.02), "nothing moved");
 }
 
 /// Two coasts with the same fingerprint (box, point count, point sums) but different rings: a split
@@ -1041,43 +1106,27 @@ fn disabled_regions_still_cover_the_earth_once() {
     assert!((sum - geom::area_km2(&geom::earth())).abs() < 5.0, "{sum}");
 }
 
-/// Land two regions with water both have is said as land in two regions, at a point inside it,
-/// naming both: not as land "in no region" (it's taken from both before the gaps are read).
+/// Land two regions with water both have is an overlap, at a point inside it, naming both; each
+/// keeps it, however small (task #1427).
 #[test]
 fn land_in_two_regions_with_water_is_an_overlap() {
     let w = world();
-    let dup = "id = \"dup\"\nname = \"Dup\"\noutline = [\"box:0.7,0.7,0.8,0.8\"]\nwater = []\n";
-    let mut files = all();
-    files.push(("w/dup.toml", dup));
-    let out = run(&w, &files);
-    let cover: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover" && !p.warning).collect();
-    assert_eq!(cover.len(), 1, "{:?}", out.problems);
-    // (Said as land two regions both had, a warning, too.)
-    assert!(out.problems.iter().any(|p| p.warning && p.found[0] == "overlap-settled" && p.about == vec!["a", "dup"]));
-    let p = cover[0];
-    assert_eq!(p.found, vec!["overlap"]);
-    assert_eq!(p.about, vec!["a", "dup"]);
-    assert!(p.message.contains("in two regions") && !p.message.contains("no region"), "{}", p.message);
-    let at: Vec<f64> = p
-        .message
-        .split(" by ")
-        .nth(1)
-        .unwrap()
-        .split('°')
-        .take(2)
-        .map(|s| s.trim_start_matches(", ").parse().unwrap())
-        .collect();
-    assert!((0.7..0.8).contains(&at[0]) && (0.7..0.8).contains(&at[1]), "{}", p.message);
-    // A small one (about 5 km², under sliver_km2) is settled, said only as a warning (#1127).
-    let dup = "id = \"dup\"\nname = \"Dup\"\noutline = [\"box:0.7,0.7,0.72,0.72\"]\nwater = []\n";
-    let mut files = all();
-    files.push(("w/dup.toml", dup));
-    let out = run(&w, &files);
-    // (All of it inside A, so it all goes to A, dup left empty.)
-    let cover: Vec<_> = out.problems.iter().filter(|p| p.check == "rg-cover").collect();
-    assert_eq!(cover.len(), 1, "{:?}", out.problems);
-    let p = cover[0];
-    assert!(p.warning && p.found[0] == "overlap-settled" && p.about == vec!["a", "dup"], "{p:?}");
+    for (b, k) in [("0.8", "123."), ("0.72", "4.9")] {
+        let dup = format!("id = \"dup\"\nname = \"Dup\"\noutline = [\"box:0.7,0.7,{b},{b}\"]\nwater = []\n");
+        let mut files = all();
+        files.push(("w/dup.toml", &dup));
+        let out = run(&w, &files);
+        assert_eq!(out.problems.len(), 1, "{:?}", out.problems);
+        let p = &out.problems[0];
+        assert!(!p.warning && p.check == "rg-cover" && p.found == vec!["overlap"], "{p:?}");
+        assert_eq!(p.about, vec!["a", "dup"]);
+        assert!(p.message.contains(&format!("both cover {k}")), "{}", p.message);
+        let at = at_of(&p.message);
+        assert!((0.7..0.8).contains(&at[0]) && (0.7..0.8).contains(&at[1]), "{}", p.message);
+        for id in ["a", "dup"] {
+            assert!(area_of(&out.resolved[id].geometry).contains([e7(0.71), e7(0.71)]), "{id} keeps it");
+        }
+    }
 }
 
 /// A nearest-coast split decides by the nearest coast however far it is: coasts 670 and 780 km off
@@ -1161,45 +1210,48 @@ fn the_land_file_reads_back_by_cell() {
     assert!(s.failed().unwrap_err().to_string().contains("the regions' land"));
 }
 
-/// Land round a hole of sea (a lagoon, a creek the zones stop short of): the hole is the land's
-/// country's, never the rest's; one hole two regions border is split at the median line between
-/// their coasts, a warning that names them (#1127).
+/// Sea no region has by a coast (a lagoon, a creek the zones stop short of) or near one (a hole in
+/// a zone's water 20 km off a coast) is a gap at a point inside it, naming the regions round it,
+/// never the rest's nor a neighbour's (task #1427); the open sea is the rest's.
 #[test]
-fn sea_the_zones_stop_short_of_is_the_countries_it_borders() {
+fn sea_the_zones_stop_short_of_is_an_error() {
     let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
     // One land with a lagoon (about 1,000 km²) inside one region, one with a creek across two.
     let lagoon = vec![ring(30.0, 30.0, 31.0, 31.0), ring(30.3, 30.3, 30.7, 30.6)];
     let creek = vec![ring(40.0, 40.0, 42.0, 41.0), ring(40.8, 40.2, 41.2, 40.8)];
-    // Its zone east of it with a hole (about 1,900 km²) 20 km off its coast, touching no land.
-    let zone = vec![ring(31.0, 30.0, 32.0, 31.0), ring(31.2, 30.2, 31.6, 30.6)];
-    let w = world_zones(1.002, vec![lagoon, creek], HashMap::from([(4, zone)]));
+    // Its zone round it with a hole (about 1,900 km²) 20 km off its coast, touching no land; the
+    // creek's land's zone round it, stopping at its coast.
+    let zone = vec![ring(29.5, 29.5, 32.0, 31.5), ring(30.0, 30.0, 31.0, 31.0), ring(31.2, 30.2, 31.6, 30.6)];
+    let zone7 = vec![ring(39.5, 39.5, 42.5, 41.5), ring(40.0, 40.0, 42.0, 41.0)];
+    let w = world_zones(1.002, vec![lagoon, creek], HashMap::from([(4, zone), (7, zone7)]));
     let lag = "id = \"lag\"\nname = \"Lagoon land\"\noutline = [\"box:29.9,29.9,31.1,31.1\"]\nwater = [\"eez:4\"]\n";
     let west = "id = \"west\"\nname = \"West\"\noutline = [\"box:39.9,39.9,41.0,41.1\"]\nwater = []\n";
     let east = "id = \"east\"\nname = \"East\"\noutline = [\"box:41.0,39.9,42.1,41.1\"]\nwater = []\n";
+    let cw = "id = \"cw\"\nname = \"Creek waters\"\nwater = [\"eez:7\"]\n";
     let mut files = all();
-    files.extend([("lag.toml", lag), ("west.toml", west), ("east.toml", east)]);
+    files.extend([("lag.toml", lag), ("west.toml", west), ("east.toml", east), ("cw.toml", cw)]);
     let out = run(&w, &files);
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
     let owner =
         |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
-    assert_eq!(owner(30.5, 30.45), vec!["lag"], "the lagoon");
-    assert_eq!(owner(31.4, 30.4), vec!["lag"], "the hole in its zone off its coast");
-    assert_eq!(owner(40.9, 40.5), vec!["west"], "the creek's west half");
-    assert_eq!(owner(41.1, 40.5), vec!["east"], "the creek's east half");
+    for (x, y) in [(30.5, 30.45), (31.4, 30.4), (40.9, 40.5), (41.1, 40.5)] {
+        assert!(owner(x, y).is_empty(), "{x}, {y}: {:?}", owner(x, y));
+    }
     assert_eq!(owner(50.0, 50.0), vec!["high-seas"]);
-    // Only the creek is said: split between two regions by nearest edge.
-    let said: Vec<_> = out.problems.iter().collect();
-    assert_eq!(said.len(), 1, "{said:?}");
-    assert!(said[0].warning && said[0].found[0] == "unnamed" && said[0].about == vec!["east", "west"], "{said:?}");
-    // (Its identity the regions and the place, not its size: a new pass's coastline asks nothing again.)
-    assert_eq!(said[0].found.len(), 2, "{said:?}");
-    assert!(out.fit.after_overlaps.values().all(|k| *k <= tiles::HAIR_KM2), "{:?}", out.fit.after_overlaps);
-    assert!(out.fit.after_gaps.is_empty(), "{:?}", out.fit.after_gaps);
-    // Two regions of one country (one top folder): split the same, nothing said.
-    let mut files = all();
-    files.extend([("lag.toml", lag), ("c/west.toml", west), ("c/east.toml", east)]);
-    let out = run(&w, &files);
-    assert!(out.problems.is_empty(), "{:?}", out.problems);
+    let mut said: Vec<(Vec<f64>, &str)> = out
+        .problems
+        .iter()
+        .map(|p| {
+            assert!(!p.warning && p.check == "rg-cover" && p.found == vec!["gap"], "{p:?}");
+            (at_of(&p.message), p.message.as_str())
+        })
+        .collect();
+    said.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+    assert_eq!(said.len(), 3, "{said:?}");
+    assert!((30.3..30.7).contains(&said[0].0[0]) && said[0].1.contains("around it lag ("), "the lagoon: {said:?}");
+    assert!((31.2..31.6).contains(&said[1].0[0]) && said[1].1.contains("around it lag ("), "the hole: {said:?}");
+    assert!((40.8..41.2).contains(&said[2].0[0]), "the creek: {said:?}");
+    assert!(said[2].1.contains("east (") && said[2].1.contains("west ("), "{said:?}");
 }
 
 /// A zone no region names and none borders is the rest's, and an error: the high seas take only
@@ -1213,12 +1265,13 @@ fn a_zone_no_region_has_is_an_error() {
         "{:?}",
         out.problems
     );
-    assert!(out.fit.rest_in_zones.values().sum::<f64>() > 1000.0, "{:?}", out.fit.rest_in_zones);
+    assert!(out.fit.gaps.iter().any(|g| g.rest && g.zone_km2 > 1000.0), "{:?}", out.fit.gaps);
 }
 
-/// The open sea stays the rest's by a coast: past a coast no zone has (Antarctica's), however near
-/// its land, and in a hole in the zones' water 100 km or more from any land (the Gulf of Mexico's,
-/// the Sea of Okhotsk's high seas) though land lies in the cells round it (#1127).
+/// The open sea stays the rest's: past a coast's own water, and in a hole in the zones' water 100
+/// km or more from any land (the Gulf of Mexico's, the Sea of Okhotsk's high seas) though land lies
+/// in the cells round it (#1127). Sea touching a coast is a country's: with no region's water
+/// there, a gap (task #1427).
 #[test]
 fn the_open_sea_by_a_coast_stays_the_high_seas() {
     let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
@@ -1229,8 +1282,9 @@ fn the_open_sea_by_a_coast_stays_the_high_seas() {
     let w = world_zones(1.002, vec![bare, island], HashMap::from([(5, zone)]));
     // (The hole's cells have land round them: not the open sea by that test, by its distance.)
     assert!(!tiles::far_from_land(&w.data, (21, 25)) && !tiles::far_from_land(&w.data, (21, 26)));
-    let bare = "id = \"bare\"\nname = \"Bare\"\noutline = [\"box:59.9,0.1,61.1,0.9\"]\nwater = []\n";
     let isl = "id = \"dough\"\nname = \"Dough\"\noutline = [\"box:45.4,50.1,45.8,50.5\"]\nwater = [\"eez:5\"]\n";
+    let bare = "id = \"bare\"\nname = \"Bare\"\noutline = [\"box:59.9,0.1,61.1,0.9\"]\n\
+                water = [{ buffer = \"land:bare\", by = \"30 km\" }]\n";
     let mut files = all();
     files.extend([("bare.toml", bare), ("dough.toml", isl)]);
     let out = run(&w, &files);
@@ -1238,9 +1292,17 @@ fn the_open_sea_by_a_coast_stays_the_high_seas() {
     let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
     let owner =
         |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
-    assert_eq!(owner(61.5, 0.5), vec!["high-seas"], "55 km off a coast no zone has");
+    assert_eq!(owner(61.5, 0.5), vec!["high-seas"], "55 km off its coast, past its water");
+    assert_eq!(owner(61.1, 0.5), vec!["bare"]);
     assert_eq!(owner(43.0, 52.0), vec!["high-seas"], "the hole in the zone");
     assert_eq!(owner(44.0, 52.0), vec!["dough"], "its zone");
+    // Its coast with no water: the sea touching it is a gap, said by the coast.
+    let bare = "id = \"bare\"\nname = \"Bare\"\noutline = [\"box:59.9,0.1,61.1,0.9\"]\nwater = []\n";
+    let mut files = all();
+    files.extend([("bare.toml", bare), ("dough.toml", isl)]);
+    let out = run(&w, &files);
+    let touching = |g: &&tiles::GapFit| !g.rest && g.touches && g.edges.iter().any(|(id, _)| id == "bare");
+    assert!(out.fit.gaps.iter().any(|g| touching(&g)), "{:?}", out.problems);
 }
 
 /// The open sea's test reaches at least 110 km either side whatever the latitude: a column of cells
@@ -1256,90 +1318,6 @@ fn the_open_sea_is_far_from_land_at_any_latitude() {
     assert!(tiles::far_from_land(&data, (5, 40)), "five columns on at 82°: 150 km");
     assert!(!tiles::far_from_land(&data, (3, 41)), "three columns on at 84°: 70 km");
     assert!(tiles::far_from_land(&data, (0, 42)), "two rows on");
-}
-
-/// Within one country (one top folder), water the zones stop short of is its shore's: an inlet
-/// only one province's land borders is that province's whole, one two provinces border is split
-/// between them alone, never by a median with the country's waters region beside them; the
-/// country's waters take only what's inside the zone (#1127).
-#[test]
-fn a_countrys_inlet_is_its_shores_not_its_waters() {
-    let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
-    // Land 70-72°E, 10-11°N with two inlets open to the north (each about 2,400 km²): one in the
-    // west province, one across the provinces' border at 71°E.
-    let land = vec![
-        vec![ring(70.0, 10.0, 72.0, 10.5)],
-        vec![ring(70.0, 10.5, 70.3, 11.0)],
-        vec![ring(70.7, 10.5, 70.8, 11.0)],
-        vec![ring(71.2, 10.5, 72.0, 11.0)],
-    ];
-    // The country's zone round the land, stopping at its outer coast (the inlets outside it).
-    let zone = vec![ring(69.5, 9.5, 72.5, 11.5), ring(70.0, 10.0, 72.0, 11.0)];
-    let w = world_zones(1.002, land, HashMap::from([(6, zone)]));
-    // The provinces' own water a strip 2 km wide along their coasts, so the inlets border their
-    // water, not their land; the country's waters the zone less theirs.
-    let p1 = "id = \"p1\"\nname = \"West\"\noutline = [\"box:69.9,9.9,71.0,11.1\"]\n\
-              water = [{ nearest = { buffer = \"land:p1\", by = \"2 km\" }, to = [\"land:p1\"], than = [\"land:p2\"] }]\n";
-    let p2 = "id = \"p2\"\nname = \"East\"\noutline = [\"box:71.0,9.9,72.1,11.1\"]\n\
-              water = [{ nearest = { buffer = \"land:p2\", by = \"2 km\" }, to = [\"land:p2\"], than = [\"land:p1\"] }]\n";
-    let cw = "id = \"cw\"\nname = \"Its waters\"\nwater = [{ minus = [\"eez:6\", \"group:c\"] }]\n";
-    let mut files = all();
-    files.extend([("c/p1.toml", p1), ("c/p2.toml", p2), ("c/cw.toml", cw)]);
-    let out = run(&w, &files);
-    assert!(out.problems.is_empty(), "{:?}", out.problems);
-    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    let owner =
-        |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
-    // The west inlet, its mouth too (nearer the waters' edge than any coast), the west province's.
-    assert_eq!(owner(70.5, 10.6), vec!["p1"]);
-    assert_eq!(owner(70.5, 10.99), vec!["p1"], "the inlet's mouth");
-    // The inlet across the border: each side to its province, none to the waters.
-    assert_eq!(owner(70.9, 10.99), vec!["p1"]);
-    assert_eq!(owner(71.1, 10.99), vec!["p2"]);
-    assert_eq!(owner(71.0, 11.2), vec!["cw"], "the zone beyond");
-    let given: Vec<_> =
-        out.fit.gaps.iter().filter(|g| g.shares.iter().any(|(id, _)| id == "p1" || id == "p2")).collect();
-    assert_eq!(given.len(), 2, "{given:?}");
-    assert!(given.iter().all(|g| g.shares.iter().all(|(id, _)| id != "cw")), "{given:?}");
-}
-
-/// Within one country, a stretch partly inside a 200-nmi zone (taken out of the country's waters,
-/// as a province's outline round a fjord takes it; the province's water only a strip by its coast): the part outside the zone
-/// is its shore's, the part inside the country's waters' (#1127).
-#[test]
-fn a_countrys_inlet_half_in_its_zone_is_split_at_the_zone() {
-    let ring = |w: f64, s: f64, e: f64, n: f64| bx(w, s, e, n).remove(0);
-    // Land 70-72°E, 10-11°N with an inlet open to the north (70.3-70.7°E, 10.5-11°N).
-    let land = vec![
-        vec![ring(70.0, 10.0, 72.0, 10.5)],
-        vec![ring(70.0, 10.5, 70.3, 11.0)],
-        vec![ring(70.7, 10.5, 72.0, 11.0)],
-    ];
-    // The zone round the land, reaching into the inlet as far as 10.8°N.
-    let zone = vec![ring(69.5, 9.5, 72.5, 11.5), ring(70.0, 10.0, 72.0, 10.8)];
-    let w = world_zones(1.002, land, HashMap::from([(6, zone)]));
-    let p1 = "id = \"p1\"\nname = \"West\"\noutline = [\"box:69.9,9.9,71.0,11.1\"]\n\
-              water = [{ nearest = { buffer = \"land:p1\", by = \"2 km\" }, to = [\"land:p1\"], than = [\"land:p2\"] }]\n";
-    let p2 = "id = \"p2\"\nname = \"East\"\noutline = [\"box:71.0,9.9,72.1,11.1\"]\n\
-              water = [{ nearest = { buffer = \"land:p2\", by = \"2 km\" }, to = [\"land:p2\"], than = [\"land:p1\"] }]\n";
-    // (The country's waters less the inlet, as a province's outline round a fjord takes it out.)
-    let cw = "id = \"cw\"\nname = \"Its waters\"\nwater = [{ minus = [\"eez:6\", \"group:c\", \"box:70.3,10.5,70.7,11.0\"] }]\n";
-    let mut files = all();
-    files.extend([("c/p1.toml", p1), ("c/p2.toml", p2), ("c/cw.toml", cw)]);
-    let out = run(&w, &files);
-    assert!(out.problems.is_empty(), "{:?}", out.problems);
-    let at = |id: &str, x: f64, y: f64| area_of(&out.resolved[id].geometry).contains([e7(x), e7(y)]);
-    let owner =
-        |x: f64, y: f64| -> Vec<&str> { out.resolved.keys().filter(|id| at(id, x, y)).map(String::as_str).collect() };
-    assert_eq!(owner(70.5, 10.6), vec!["p1"], "outside the zone");
-    assert_eq!(owner(70.5, 10.7), vec!["p1"], "outside the zone");
-    assert_eq!(owner(70.5, 10.9), vec!["cw"], "inside it");
-    let given: Vec<_> = out.fit.gaps.iter().filter(|g| g.shares.iter().any(|(id, _)| id == "p1")).collect();
-    assert_eq!(given.len(), 1, "{given:?}");
-    let share = |id: &str| given[0].shares.iter().find(|(x, _)| x == id).map_or(0.0, |(_, k)| *k);
-    assert!(share("p1") > 500.0 && share("cw") > 500.0 && share("p2") == 0.0, "{given:?}");
-    assert!(out.fit.after_overlaps.values().all(|k| *k <= tiles::HAIR_KM2), "{:?}", out.fit.after_overlaps);
-    assert!(out.fit.after_gaps.is_empty(), "{:?}", out.fit.after_gaps);
 }
 
 /// Task #1426: an area cut down round a box (`tiles::near_part`) meets anything inside the box as
