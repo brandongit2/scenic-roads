@@ -1047,7 +1047,7 @@ fn a_lake_whose_shores_are_anothers_is_no_stray() {
 }
 
 /// The coast: sea between one region's shore and a big lake over the sea that another's outline
-/// holds (Kherson's shore and the Syvash, task #1427) is the shore's region's, never the lake's
+/// holds (task #1427) is the shore's region's, never the lake's
 /// holder's (land dominates the sea: given to the lake's holder, it touched none of its land).
 #[test]
 fn sea_between_a_shore_and_anothers_lake_is_the_shores() {
