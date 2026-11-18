@@ -351,6 +351,14 @@ fn the_pieces_are_cut_to_the_land() {
 }
 
 #[test]
+fn every_theme_has_a_side_of_the_coast() {
+    for t in inputs::inputs::extents::THEMES {
+        cut::side_of(t).unwrap();
+    }
+    assert_eq!(cut::side_of("terrain").unwrap(), Side::Land);
+}
+
+#[test]
 fn a_rows_runs_are_kept_where_the_mask_is() {
     let runs: Runs = vec![(0, 5), (10, 6)];
     assert_eq!(cut::apply(&runs, &vec![(0, 1), (5, 0), (12, 1)]), [(0, 5), (5, 0), (12, 6)]);

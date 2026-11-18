@@ -891,9 +891,10 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   packs) by content (`slope_reads`).
 - **slope-lo:** its z6 tiles' mids and the z3 tile's terrain lo pack; `SLOPE_LO_V` and the codec.
   **slope-root:** the lo packs and the codec.
-- **available (a theme, `available-<theme>`):** `available::KEY_V` and each of the theme's
-  `.geojson` files in the accepted extents by its keyed digest (§14); a theme with none has no
-  target.
+- **available (a theme, `available-<theme>`):** `available::KEY_V`, each of the theme's
+  `.geojson` files in the accepted extents by its keyed digest and the pass's `regions-land` by
+  content (§14); a theme with none has no target. **available-built:** `available::built::KEY_V`,
+  the accepted elevation datasets (`id keyed` and their measures) and the pass's `regions-land`.
 - **polar-terrain (a polar block):** `polar::TERRAIN_V`, the terrain codec's version, the block,
   and the pool's datasets meeting its latitudes (`roadcore::polar::lat_box`) by their lines, as the
   Mercator terrain's keys name them (`agent::build::polar_targets`). **polar-slope:** `polar::SLOPE_V`,
@@ -1017,17 +1018,21 @@ the dataset the build holds (task #1403, below). The map's regions play no part 
 in the built set they enter as the build's own cut of where a dataset is used (its `regions`,
 §6.8). Not drawn yet (planned): the terrain past `NEAR_COVERAGE_KM` of every region is the relief
 (Terrain, the rule: `Fill::Relief`, the datasets published at every zoom), whatever the datasets
-there; the built set draws the order's first with data there, so open sea in a coastal GLO-30 tile
-more than ~20 km from the regions shows GLO-30 where the terrain read Terrarium.
+there; the built set draws the order's first with data there, so land more than ~20 km from the
+regions (a far island) shows GLO-30 where the terrain read Terrarium. Both sets are cut to the
+theme's side of the coastline (the cut, below): the terrain's layers draw nothing at sea.
 
 **The step** `available` (terrain::available; stage `finish`, a target per theme,
 `available-<theme>` for a theme whose accepted extents have pieces, recorded with the worldwide steps' keys; `extents` is taken in the build: the
 base packs' header extents, `codecs::extents`, `state/build/extents.json`). It reads the accepted
 `extents` unit through the accessor (the theme's `.geojson` files: its pieces, those with an
-extent) and nothing else. Its key is its version (`terrain::available::KEY_V`) and each of the
-theme's `.geojson` files by its keyed digest (`idents::extents_pieces`, from the index the planner
-reads, `theplan::key_inputs`' `extents:<theme>`); never `score.toml` nor a declaration: the tiles
-hold which pieces are where, never a score or a metric, so tuning a weight builds nothing again.
+extent) and the pass's coastline's land (`sources/osm/<date>/regions-land`, the pass `--pass`
+names, copied to the job's scratch folder), and nothing else. Its key is its version
+(`terrain::available::KEY_V`), each of the theme's `.geojson` files by its keyed digest
+(`idents::extents_pieces`, from the index the planner reads, `theplan::key_inputs`'
+`extents:<theme>`) and the land by content (`idents::pass_land`: required, so the step waits for
+the pass's `regions-land`); never `score.toml` nor a declaration: the tiles hold which pieces are
+where, never a score or a metric, so tuning a weight builds nothing again.
 - **Pixels hold piece sets, by a palette per tile** (docs/formats.md, Data available): Web
   Mercator tiles of 256 px, z0 to z12 (a pixel 38 m at the equator); a pixel's value is an index
   into its tile's palette, a list of the sets of pieces met in that tile (each set by the pieces'
@@ -1041,9 +1046,11 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
 - **Packs:** the root pack (`layers/available-<theme>/root/0-0-0`, z0–5) and a pack per z6 tile
   holding a stored tile (`layers/available-<theme>/hi/6-x-y`, z6–12 under it), RDPACK, gzip'd;
   the catalogue's layer `available-<theme>`, encoding `avail-sets`, zooms 0–12.
-- **Keys of the tiles:** a z6 tile's tiles depend only on the polygons whose boxes meet it, so its
-  key is those polygons' pieces' ids and each polygon's digest (`tile_keys`); finer than a piece's
-  digest, a source fetched again makes again only the z6 tiles where one of its polygons changed.
+- **Keys of the tiles:** a z6 tile's tiles depend only on the polygons whose boxes meet it and the
+  land there, so its key is those polygons' pieces' ids and each polygon's digest, the side kept
+  and each land cell meeting it by the digest of its bytes (`tile_keys`, `Cut::lines`); finer than a
+  piece's digest, a source fetched again makes again only the z6 tiles where one of its polygons
+  changed, and a new pass's coastline only those whose cells it moved.
   The step keeps each z6 tile's key, and its z6 tile, in its own record
   (`work/available-<theme>/mids`, an RDPACK of the z6 tiles holding a piece, its meta the keys):
   a run makes again the z6 tiles whose key moved or whose pack is missing, drops those no polygon
@@ -1070,6 +1077,18 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   z12) to 180° (column 4095's end). The Web Mercator tiles end at 85.05°: a ring closed along 90°
   lies past the plane's edge. A row of z6 tiles is cut at once, its tiles' quadtrees made in
   parallel (rayon), their sets over the row's.
+- **The cut** (terrain::available::cut): every source's pieces are drawn only on the theme's side
+  of the coastline (`cut::SIDES`: the terrain's the land; bathymetry's, planned, the sea, the same
+  mask inverted), so an index's coastal tiles, a 1° tile or a block drawn over the sea hold nothing
+  there (New Brunswick's GeoNB blocks: 106,396 km² as outlines, 89,135 on the land; the rest is
+  its neighbours' land under the blocks). The land is the pass's coastline's (docs/inputs.md
+  §6.1.7, the `regions-land` step's, by 2° cell): OSM's coastline goes round no lake, so a lake is
+  land (a terrain model's heights there are the water's surface, which the map's terrain uses),
+  and the Caspian, which OSM maps with coastline, is sea. Its cells meeting the z6 tiles being made
+  are rasterized as the pieces are (each cell's rings a polygon, even-odd, cells side by side adding
+  up: their shared edges make no seam), a pixel kept where its centre is on the side kept; a row's
+  runs become the empty set elsewhere (`cut::apply`), before the quadtree. The polar caps are cut
+  alike in the pole's grid.
 - **The polar caps** (docs/polar.md) take the same sets in each pole's grid: a root pack a pole
   (`layers/available-<theme>-<n|s>/root/0-0-0`, z0–3, a pixel 1,024 m of the grid at z3, the
   polar terrain's root's zooms), from the polygons whose boxes reach the pole's square, keyed
@@ -1078,13 +1097,15 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
   South Pole.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
-  On the 13,773 pieces with an extent of 14 Nov (producers/extents/terrain/, every region's 291
-  sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, on the Mac
-  mini): 95 s, a peak resident set of 2.75 GB, 1,101,155 tiles in packs of 810 MB (z12's 661,427,
-  503 MB); 1,254 tiles have more than 256 sets (two bytes a pixel), the most 11,716. A tile is
-  stored only where an outline crosses it, so the cost is the outlines' length at z12, whatever a
-  piece's grain: GEDTM30's mask (a 1.8 km grain) alone makes 169,116 tiles no other outline
-  crosses. Outlines that coincide cost once: TanDEM-X's three pieces, MERIT's and DLR's PolarDEM
+  On the 13,783 pieces with an extent of 18 Nov (producers/extents/terrain/, every region's
+  sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, cut to the
+  2026-09-28 pass's land, on the Mac mini under its build jobs): 99.5 s, a peak resident set of
+  3.34 GB, 800,584 tiles in packs of 729 MB (z12's 491,325, 423 MB); 871 tiles have more than 256
+  sets (two bytes a pixel), the most 11,282. A tile is stored only where an outline or the
+  coastline crosses it on the land, so the cost is the length at z12 of the outlines on the land
+  and of the coastline under them, whatever a piece's grain: the outlines' parts at sea make
+  nothing (GEDTM30's mask, a 1.8 km grain along every coast, makes 772 tiles no other source's
+  does). Outlines that coincide cost once: TanDEM-X's three pieces, MERIT's and DLR's PolarDEM
   are claimed over `cop-dem`'s GLO-90 tiles, so they make no tile of their own; a point cloud read
   as its grid is (LiDAR HD's, the Länder's, Slovakia's, most of Scotland's), or a source's surface
   model read as its ground model is (MRDEM-30's DSM, on its DTM's mask), has the grid's outline and makes no
@@ -1102,7 +1123,11 @@ hold which pieces are where, never a score or a metric, so tuning a weight build
   them, a fresh run making the same files, a run with nothing moved making nothing, and a record
   lost or unreadable making everything again, a pack it doesn't name dropped; and the real pieces round Vancouver, two sources overlapping: every piece
   in some tile, z0 naming every piece a finer tile does, each stored tile holding what its stored
-  children do; every real piece the same, `every_real_piece`, a benchmark run by hand);
+  children do; every real piece the same, `every_real_piece`, a benchmark run by hand; the cut,
+  `the_pieces_are_cut_to_the_land`: a small coast over four cells, a bay closed off in it, an island,
+  two sources' outlines over sea and land: the sea under them empty, the land kept, a z12 tile on the
+  land across the cells' corner not stored, nothing moved making nothing, the coast moved in two
+  cells making again only the z6 tile meeting them, and the sea's side kept instead when inverted);
   codecs::available's (the format, the layers' names and packs); the server's below.
 
 **The step** `available-built` (terrain::available::built; stage `finish`, one world target,
@@ -1114,7 +1139,8 @@ earth over surface, id: `declared::order_key`) whose coverage holds the place (i
 regions' outlines and `exclude`: `declared::Cover`) and that has data there, as the sampler takes
 it. So a place's set is the dataset the map used, not a maximum over every dataset with data, and
 no score or availability enters it. Where a dataset has data is read from what the build holds,
-never its heights:
+never its heights, and only on the land (the cut, as the best set's, at z10's pixels: a z6 tile
+the cut leaves no land in reads nothing of it, a z10 tile all sea is empty):
 - **A GeoTIFF the store keeps** (`[data] store`): its files' footprints, and in them its fill
   masks (a value 3 or more, `declared::MASK_FILLED`, is a void, as the sampler takes it: GLO-30's)
   or, without masks, the files' own valid pixels, read from the store (`sources/fetched/<id>/`) at
@@ -1133,13 +1159,15 @@ never its heights:
   pixel's set is the union of the four under it, as the best set's; the server draws the first in
   order of a union (below).
 - **Its key** is its version (`built::KEY_V`), the elevation unit's datasets each by its keyed
-  digest (`idents::built_datasets`: `id keyed`, the declaration and its measures); it waits for
+  digest (`idents::built_datasets`: `id keyed`, the declaration and its measures), and the pass's
+  land by content (`idents::pass_land`); it waits for
   every `pyramids-fill` (its stores' indexes are read), whose fills its key doesn't name (they
   write no record): a fill alone doesn't run it again (planned). A z6 tile's (and a pole's
   square's) key names the datasets meeting it: each one's line, where its regions cut it there
-  (`declared::cut_note`), its presence tiles there, and a pyramid's store's archives in the z6
-  tile's shard; so a run after a dataset fetched again, a region's outline moved or a pyramid's
-  fill makes again only the z6 tiles they moved. The record (`work/available-built-terrain/mids`), the z6 tiles made
+  (`declared::cut_note`), its presence tiles there, a pyramid's store's archives in the z6
+  tile's shard, and the land's cells meeting it (`Cut::lines`); so a run after a dataset fetched
+  again, a region's outline moved, a pyramid's fill or a new coastline makes again only the z6
+  tiles they moved. The record (`work/available-built-terrain/mids`), the z6 tiles made
   again or dropped, the root and the polar caps (`available-built-terrain-<n|s>`, the pole's grid
   at 1,024 m) are the best set's (`super::drive`, one code for both).
 - **Its datasets' descriptions** beside the tiles (`layers/available-built-terrain/datasets`, a
@@ -1147,7 +1175,8 @@ never its heights:
 - **Any member may run it**, as `available` (no placement of its own): it reads the store's masks
   over the NAS (one open and one window a GLO-30 mask file: 26,450 of them), so a Mac near the NAS
   runs it fastest.
-  Measured on the Mac mini over the NAS (14 Nov, 14 datasets, a run from nothing): 16 min 17 s,
+  Measured on the Mac mini over the NAS (14 Nov, 14 datasets, a run from nothing, before the cut:
+  not measured since; the cut reads nothing of a z6 tile all sea): 16 min 17 s,
   77 % of it waiting on the NAS, a peak resident set of 1.25 GB; 4,096 z6 tiles made, 2,524 packs
   holding 349,608 tiles (228 MB), the record 4.2 MB, the polar caps 108 kB. Its target is one
   only while a dataset is accepted (none: no layer).
@@ -1163,7 +1192,9 @@ never its heights:
   each z6 tile made once and the same files; the first dataset with data used (a fine dataset in its
   presence tile and footprint, the next one past its footprint and outside its presence), nothing
   stored past z10; a fill mask's voids and a coverage cut the next dataset's; a dataset moved
-  making only its z6 tiles again; the polar caps; a pyramid's stored tiles with data its own. The
+  making only its z6 tiles again; the polar caps; a pyramid's stored tiles with data its own; the
+  cut (`the_datasets_are_cut_to_the_land`: a dataset everywhere drawn on the small coast's land
+  alone, the sea and the caps empty, a pack only for the two z6 tiles holding a shore). The
   server's (below): the set described, its tiles and click in the order.
 
 **The score and the layers' values** (crate::available in the server; `Score::of` and
@@ -1198,7 +1229,7 @@ click), an open piece winning a tie on every layer that ranks it, in both views,
 to the better-founded extent (a claimed outline losing it, whatever the ids), each layer's value and scale from the real `score.toml` (the score's at
 the piece's own spacing, no layer of the primary's own, the server's label where score.toml names
 none), one still holding the retired colour fields served the same, the tiles' values (inside a
-piece and transparent outside it) and the click, the built set (described among the sets, its tiles at z0 and at z12 (its ancestor's part) drawing the first dataset in order over a finer one under either switch, its click in the order, a metric it doesn't state not drawn, its version naming its datasets); and `renders_the_real_pieces`, run by hand: with
+piece and transparent outside it) and the click, the built set (described among the sets, its tiles at z0 and at z12 (its ancestor's part) drawing the first dataset in order over a finer one under either switch, its click in the order, a metric it doesn't state not drawn, its version naming its datasets); and `renders_the_real_pieces`, run by hand: with `SCENIC_RENDER_LAND` naming a regions-land file and
 `SCENIC_RENDER_DIR` set it builds every real piece, prints the step's time, peak resident set,
 packs' bytes and tiles' sets (those over 256, the most in one), each zoom's tiles and bytes and the
 15 sources whose outlines cross the most tiles (and those no other source's crosses), and writes

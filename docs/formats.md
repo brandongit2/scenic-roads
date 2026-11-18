@@ -543,8 +543,9 @@ A tile ("RDAV", format 1, little-endian), its palette first:
 
 A best set's pixel at z12 holds the pieces whose polygons hold its centre (docs/steps.md §14:
 even-odd per polygon, a piece the union of its polygons'); a built set's pixel at z10, the one
-dataset the terrain used at its centre (none: the empty set); above those, the union of the four
-under it.
+dataset the terrain used at its centre (none: the empty set); either only where its centre is on
+the theme's side of the pass's coastline (the terrain's: the land, lakes in it), the empty set
+elsewhere; above those, the union of the four under it.
 
 **The built set's datasets** `layers/available-built-<theme>/datasets` (`datasets_logical`), JSON:
 a list in the terrain's order, each `{id, order, name, label, credit, licence, licence_url, source,

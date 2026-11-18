@@ -924,7 +924,9 @@ Antarctica along 85.0511°S) and keeps the land on disk by 2° cell: `sources/os
 as zigzag varint deltas), keyed by the set and `land::LAND_V`. The check reads its head, then each
 cell where it's asked for, by its offset (`Land::cell`; the last 256 cells kept decoded), never the
 whole; a cell it can't read fails the check (an error, not findings, never a panic); its content name is in the check's context (`regions land`), so a new land re-checks the
-regions. Without it a region with water is held (`rg-data`). `scenic-build regions-land --set <pbf>
+regions. Without it a region with water is held (`rg-data`). The data-available layers are cut to
+it too (docs/steps.md §14, the cut: `Land::rings`, each cell's rings as stored, never made an
+area, and `Land::bytes`, a cell's digest in their keys). `scenic-build regions-land --set <pbf>
 --to <file>` makes it from a local coastline set into a local file.
 
 `scenic-build regions-check --dir <folder> --declarations <folder> [--land <file>] [--geometry <dir>]` runs the check on a scratch folder in memory with the datasets those declarations name
@@ -2579,8 +2581,10 @@ terrain model) and Brazil's TOPODATA (the SRTM refined: not declared).
 
 The outlines are the publishers': an index's tiles or a catalogue's blocks reach over the sea
 where they do (GeoNB's blocks: 106,396 km² against the province's 72,908; Nova Scotia's project
-areas, 63,636 against 55,284; GLO-30's 1° tiles round every coast), and the layers draw them as
-they are, not cut to the land.
+areas, 63,636 against 55,284; GLO-30's 1° tiles round every coast), and the declarations keep them
+as they are: the layers cut every source's pieces to the theme's side of the coastline as they
+draw them (docs/steps.md §14, the cut: GeoNB's blocks hold 89,135 km² of land, the rest its
+neighbours' under the blocks).
 
 **Bathymetry and buildings** (planned) take the same folder, declaration, piece properties and
 score, with their own metrics in their own `score.toml`. Nothing in the format is the terrain's
