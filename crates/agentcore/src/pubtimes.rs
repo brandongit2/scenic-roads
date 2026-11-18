@@ -592,7 +592,8 @@ pub fn load_history(root: Option<&store::nasfs::NasRoot>, local: Option<&Path>, 
         out.extend(lines(&t));
     }
     // (Asked of the lead too whenever the pool's root is given: a file here is the lead's only while
-    // this Mac leads, and a Mac that led before keeps its old one. Its lines twice are kept once.)
+    // this Mac leads, and a Mac that led before keeps its old one
+    // for up to a week, `history::KEEP_S`. Its lines twice are kept once.)
     if root.is_some() {
         out.extend(asked_of_the_lead(root).into_iter().filter(|e| e.t >= since));
     }

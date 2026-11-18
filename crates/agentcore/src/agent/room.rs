@@ -330,15 +330,15 @@ pub fn retire(cache: &Path, root: Option<&store::nasfs::NasRoot>) -> BTreeMap<St
 /// a member's starts, a broker's own).
 const LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(86400);
 
-/// The file an older app's member broker appended its history to (since task #1160 a member's
-/// broker keeps its history in memory alone), a leftover once `HISTORY_LEFTOVER_AGE` stale: a week,
-/// the history's own span (coord::history::KEEP_S), as a Mac that led may hand over to a member.
-const MEMBER_HISTORY: &str = "coord/history.jsonl";
-const HISTORY_LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
+/// The coordinator's history file, whichever role wrote it (an older app's member broker, or the
+/// Mac's former lead: since task #1160 a member's broker keeps its history in memory alone). A
+/// leftover once `HISTORY_LEFTOVER_AGE` stale: the history's own span (coord::history::KEEP_S).
+const HISTORY_FILE: &str = "coord/history.jsonl";
+const HISTORY_LEFTOVER_AGE: std::time::Duration = std::time::Duration::from_secs(crate::coord::history::KEEP_S);
 
 /// How long leftover `rel` (`is_member_leftover`) must have gone unwritten.
 fn leftover_age(rel: &str) -> std::time::Duration {
-    if rel == MEMBER_HISTORY {
+    if rel == HISTORY_FILE {
         HISTORY_LEFTOVER_AGE
     } else {
         LEFTOVER_AGE
@@ -363,7 +363,7 @@ const LEAD_COORD_FILES: [&str; 8] = [
 /// removes (`member_leftovers`).
 pub fn is_member_leftover(rel: &str) -> bool {
     if let Some(name) = rel.strip_prefix("coord/") {
-        return rel == MEMBER_HISTORY
+        return rel == HISTORY_FILE
             || LEAD_COORD_FILES.contains(&name)
             || (name.starts_with("job-disks") && name.ends_with(".json"));
     }
@@ -400,11 +400,12 @@ pub fn member_leftovers(home: &Path, now: SystemTime) -> Vec<PathBuf> {
     for (dir, pre) in [(home.to_path_buf(), ""), (home.join("coord"), "coord/")] {
         for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if !is_member_leftover(&format!("{pre}{name}")) {
+            let rel = format!("{pre}{name}");
+            if !is_member_leftover(&rel) {
                 continue;
             }
             let p = e.path();
-            let age = leftover_age(&format!("{pre}{name}"));
+            let age = leftover_age(&rel);
             if newest_write(&p).is_some_and(|t| now.duration_since(t).unwrap_or_default() >= age) {
                 out.push(p);
             }
@@ -1906,7 +1907,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let home = d.path();
         std::fs::create_dir_all(home.join("coord")).unwrap();
-        let f = home.join(MEMBER_HISTORY);
+        let f = home.join(HISTORY_FILE);
         std::fs::write(&f, b"{}\n").unwrap();
         let aged = |days: u64| {
             let t = SystemTime::now() - std::time::Duration::from_secs(days * 86400 + 3600);

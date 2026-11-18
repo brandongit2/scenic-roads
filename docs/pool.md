@@ -1902,7 +1902,7 @@ Every forecast the lead makes is kept, so its times can be held to what happened
 (`agent::fccheck`, reads only) holds the forecasts made in the span (default the last 7 days; T unix
 seconds, `YYYY-MM-DD[THH:MM]` UTC, or back from now: `12h`, `3d`) to the history's jobs that ended
 in it (the history's events once each: a member that led before keeps the same events in its own
-file, `fccheck::dedup`). A job's targets in one forecast are taken together (its forecast start the
+file for up to a week (`history::KEEP_S`), `fccheck::dedup`). A job's targets in one forecast are taken together (its forecast start the
 earliest of theirs, its end the latest), so each (forecast, job) is a sample: its end's error where
 the job ended after the forecast; where it started after it, its start's (the start delay's
 error) and its run's (its start to its end; task #988), so the end's error is the two summed; the

@@ -17749,7 +17749,7 @@ mod membership_tests {
     /// (room::is_member_leftover) or kept: one the member writes too, or §3.5's kept list (the
     /// agent's own `timings.jsonl`, the broker's `coord/` files). Nothing a member writes is a
     /// leftover. A member's agent removes, as it starts, the leftovers last written a day ago or
-    /// more, and keeps a newer one and every kept file.
+    /// more (the history file's, a week), and keeps a newer one and every kept file.
     #[test]
     fn member_leftovers_names_every_lead_file() {
         let d = tempfile::tempdir().unwrap();

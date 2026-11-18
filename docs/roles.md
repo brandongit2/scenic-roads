@@ -162,9 +162,9 @@ Any click on the item, left or right, opens the menu; nothing else opens.
 
 Built (step 6). At a member's start (and when an unknown role is learnt a member's), the agent
 removes what only a lead writes and what no code writes any more (on both laptops, 6 Nov), each
-last written a day ago or more (a week for the history file; a folder by its newest entry), so nothing a process of the Mac
-still writes goes (`room::member_leftovers`, `room::drop_member_leftovers`, by name:
-`room::is_member_leftover`):
+last written a day ago or more (a week for the history file; a folder by its newest entry), so
+nothing a process of the Mac still writes goes (`room::member_leftovers`,
+`room::drop_member_leftovers`, by name: `room::is_member_leftover`):
 - the lead's: `status.json`, `backups/`, `gc-depth-keep.json`, `publishing.json`,
   `pageview-waits.json`, `inputs-listing/` (the plan's, agent/plan.rs), `maplog/` (the map log's
   writer, agent/publish.rs `MAPLOG`), `plan-stall-sample-*.txt`, `costs.jsonl` and
@@ -183,9 +183,8 @@ A whole write cut off (`helper.json.<host>.<pid>.<n>.tmp`, five on each laptop o
 the list: `store::whole::write` sweeps its folder's day-old ones itself, hourly.
 
 Kept: `coord/` itself, the member's broker's folder (§3.2), with `jobs-token`, `page`,
-`workers-token` (the pool's, copied in by
-`membership::seed` at each broker's start: agent/mod.rs `make_broker`) and `journal/` (made by every
-broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
+`workers-token` (the pool's, copied in by `membership::seed` at each broker's start: agent/mod.rs
+`make_broker`) and `journal/` (made by every broker's start, `Coordinator::start_with`); and the agent's own `timings.jsonl`: every Mac appends
 its own jobs' timings there (`take_timings`, crates/agentcore/src/agent/mod.rs), which `scenic`
 reads as "this Mac's jobs"; its memory, `state.json`; and the lead's answers to its owner's asks,
 `asks-answered.json` with its lock `asks-answered.lock` (every Mac's: agent/answered.rs). The test
