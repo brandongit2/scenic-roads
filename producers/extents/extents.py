@@ -1354,6 +1354,9 @@ def tidy(geom, tol_deg):
     g = polygons(shapely.make_valid(g))
     if g.is_empty:
         return None
+    # (No edge steps half a turn of longitude, which reads as one across the antimeridian: an edge
+    # along a pole's parallel the simplification left long, GEBCO's at 90° N, is split.)
+    g = shapely.segmentize(g, 90.0)
     # RFC 7946's winding: exteriors counter-clockwise, holes clockwise.
     g = shapely.orient_polygons(g, exterior_cw=False)
     return g if g.geom_type == "MultiPolygon" else sg.MultiPolygon([g])

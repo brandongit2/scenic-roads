@@ -318,6 +318,13 @@ class Geometry(unittest.TestCase):
         self.assertEqual(g.bounds[3], 90.0)
         self.assertTrue(g.contains(sg.Point(100.0, 89.0)))
 
+    def test_no_edge_steps_half_a_turn(self):
+        # (A cap round the North Pole, closed along 90° from 44° E to 180° and back from -180°.)
+        g = extents.tidy(sg.Polygon([(-180, 80), (180, 80), (180, 90), (44, 90), (-180, 90)]), 0.5)
+        for p in g.geoms:
+            xs = [x for x, _ in p.exterior.coords]
+            self.assertTrue(all(abs(b - a) <= 180 for a, b in zip(xs, xs[1:])), xs)
+
     def test_an_outline_stays_in_the_plane(self):
         g = extents.tidy(sg.box(179.0, -76.0, 180.02, -75.0), 0.01)
         self.assertEqual(g.bounds[2], 180.0)
