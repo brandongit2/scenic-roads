@@ -133,6 +133,8 @@ const P_KILL: f64 = 0.01;
 const P_CRASH: f64 = 0.0003;
 /// Per step: that the turn stays with the Mac that has it.
 const P_KEEP: f64 = 0.85;
+/// Mac 1's nap with `Cfg::nap` (s): GC's cursor TTL (store::map::gc::CURSOR_TTL_S) and an hour.
+const NAP_S: u64 = store::map::gc::CURSOR_TTL_S + 3600;
 /// How long the run's end must have seen no take-up (s).
 const QUIET_S: u64 = 600;
 /// At most how long a run goes on past its end while its lead still merges what the faults left,
@@ -182,9 +184,10 @@ struct Cfg {
     crashes: bool,
     /// How many Macs (0: two to four, by the seed).
     macs: usize,
-    /// Mac 1 asleep for seven hours from five minutes in, after the lead's first take-up: its map
-    /// server unheard past GC's cursor
-    /// TTL (store::map::gc::CURSOR_TTL_S), its member's hand-offs kept past the grace.
+    /// Mac 1 asleep for seven hours (`NAP_S`) from its first step that `World::nap_due` allows (its
+    /// map server holding a map that names a file, no lease of its held; it asks for no work until
+    /// then): its map server unheard past GC's cursor TTL (store::map::gc::CURSOR_TTL_S), GC
+    /// removing a name its map holds before it wakes; its member's hand-offs kept past the grace.
     nap: bool,
 }
 
@@ -761,8 +764,8 @@ impl World {
     }
 
     fn faults(&mut self, me: usize) {
-        if self.cfg.nap && me == 1 && self.t >= 300 && !self.counts.contains_key("Macs asleep seven hours") {
-            self.sleep(1, 7 * 3600);
+        if me == 1 && self.nap_pending() && self.nap_due() {
+            self.sleep(1, NAP_S);
             self.count("Macs asleep seven hours");
         }
         if self.cfg.fails && self.rng.chance(P_AWAY) {
@@ -816,6 +819,36 @@ impl World {
         if self.cfg.crashes && self.rng.chance(P_CRASH) && !self.macs[me].gone {
             self.crash(me, "its process crashes");
         }
+    }
+
+    /// Whether mac1's nap (`Cfg::nap`) is still to come: meanwhile it asks for no work, so that its
+    /// leases end and `nap_due` comes soon.
+    fn nap_pending(&self) -> bool {
+        self.cfg.nap && !self.counts.contains_key("Macs asleep seven hours")
+    }
+
+    /// Whether mac1's nap (`Cfg::nap`) may begin: five minutes in or later, all of it before the
+    /// faults' end (every Mac awake then), its map server holding a map of its lead's disk that
+    /// names a file, and that lead's table holding no lease of mac1's (an away member's lease, kept
+    /// `held::AWAY_RELEASE_S`, 12 h, holds every name freed after its grant). The jobs build every
+    /// target again within the nap's first hours, freeing that file; mac1's cursor then holds it
+    /// from GC until `CURSOR_TTL_S` after its last ask, an hour before it wakes, so GC removes a
+    /// name a map server unheard past the TTL serves: checked in every nap run without
+    /// `Cfg::partitions` (`finish`; a Mac cut off for hours holding a lease or a cursor older than
+    /// the name holds it past the nap).
+    fn nap_due(&self) -> bool {
+        if self.t < 300 || self.t + NAP_S > self.cfg.faults {
+            return false;
+        }
+        let Some((l, g, seq)) = self.macs[1].map_at else { return false };
+        let lead = &self.macs[l];
+        let (Some(held), Some(c)) = (self.maps.get(&(l, g, seq)), &lead.coord) else { return false };
+        if lead.gen != g || held.is_empty() {
+            return false;
+        }
+        let workers = crate::agent::slot_workers(&host(1));
+        let s = c.shared.lock().unwrap();
+        !s.leases.all(s.now()).iter().any(|x| workers.contains(&x.worker))
     }
 
     /// Whose turn is next: this Mac's again, most often, while it can run; else another's that can
@@ -1548,6 +1581,13 @@ impl World {
             }
         }
         self.notes_taken();
+        if self.cfg.nap && !self.cfg.partitions {
+            for what in ["Macs asleep seven hours", "names GC removed from a map server unheard past the cursor TTL"] {
+                if !self.counts.contains_key(what) {
+                    self.wrong(format!("a run with mac1's nap (Cfg::nap, World::nap_due) saw no {what}"));
+                }
+            }
+        }
         let gone = self.made.iter().filter(|(k, m)| self.macs[m.mac].gone && self.macs[m.mac].mine.contains(*k));
         *self.counts.entry("hand-offs a Mac gone for good holds").or_default() += gone.count() as u64;
         let lost = self.made.iter().filter(|(k, m)| self.lost(k, m)).count() as u64;
@@ -2037,22 +2077,25 @@ fn every_fault_at_once_keeps_the_invariants() {
 #[test]
 fn gc_keeps_its_grace_and_cursors_through_hours_away() {
     // GC on the lead (docs/storage.md, GC, tasks #1106, #1134) through hours of faults: three Macs,
-    // mac1 asleep seven hours from five minutes after the first take-up (its map server unheard past CURSOR_TTL_S, 6 h),
-    // Macs cut off for up to six hours, the network's faults. A name is removed only past GRACE_S
+    // mac1 asleep seven hours once its map server holds a map naming a file and it holds no lease
+    // (`World::nap_due`: its map server unheard past CURSOR_TTL_S, 6 h), the network's faults, and
+    // every other seed Macs cut off for up to six hours. A name is removed only past GRACE_S
     // (1 h), the records it saw naming none, nor any map server heard within the TTL; no records
     // name a removed name (but another disk's queue's, counted). A hand-off reusing a name removed
     // under its lease is refused, saying why (counted: rare, since a live lease, an away member's
     // too, holds every name freed after its grant, and a member's map server heard holds its map's).
-    let faults = 7 * 3600 + 1800;
-    // (24 seeds: the case of a map server unheard past the TTL is rare, 1 in 12 seeds on main before
-    // task #1119, 0 in 12 and 3 in 24 after its members found their lead by the declaration.)
-    let counts = check_all(30_000..30_000 + var("POOL_SIM_SEEDS", 24), |_| Cfg {
+    // (The faults two hours longer than the nap: its start waits for the lead's first map, its
+    // lead and mac1 asleep up to 40 minutes each meanwhile. Each run without the cuts sees GC
+    // remove a name a map server unheard past the TTL serves, `World::finish`; with them, a Mac
+    // cut off for hours may hold it past the nap.)
+    let faults = NAP_S + 2 * 3600;
+    let counts = check_all(30_000..30_000 + var("POOL_SIM_SEEDS", 12), |seed| Cfg {
         faults,
         end: faults + 1500,
         macs: 3,
         nap: true,
         net: true,
-        partitions: true,
+        partitions: seed % 2 == 1,
         ..Cfg::pool()
     });
     eprintln!("{counts:#?}");
