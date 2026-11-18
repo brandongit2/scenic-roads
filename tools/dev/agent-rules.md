@@ -25,6 +25,9 @@ rely on the agent.
   - use a scratch folder of your own and delete it afterwards;
   - timings taken there are skewed by its build jobs: when the numbers matter, ask the PM for a
     quiet period rather than pausing anything yourself.
+- **Never run `scenic pause` or `scenic resume`** (or the menu bar's Pause/Resume) on any Mac, `--here`
+  or not. A Mac the owner paused stays paused, and resuming it undoes the owner's own choice; a Mac
+  paused from the pool is still free for your measurements. For a quiet period, ask the PM.
 - **Never mount or unmount the NAS share yourself:** each Mac's agent mounts it (by its LAN name at
   home, through Tailscale away) and remounts it as the network changes.
 - **Memory:** nothing caps an agent's own run (the pool's memory guard covers only pool jobs), and
