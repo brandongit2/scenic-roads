@@ -111,8 +111,9 @@ pub enum ReadFrom<'a> {
 }
 
 impl ReadFrom<'_> {
-    /// The pack (logical name) holding a tile of `layer`: root z0–2, lo z3–8 by z3 tile, hi z9–14
-    /// by z6 tile; the terrain's deep levels, z13–16, by z10 tile (terrain::terrain_deep).
+    /// The pack (logical name) holding a tile of `layer`: its root, lo or hi pack
+    /// (store::catalogue::pack_of); the terrain's deep levels, z13–16, by z10 tile
+    /// (terrain::terrain_deep).
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         match self {
             ReadFrom::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
@@ -120,12 +121,10 @@ impl ReadFrom<'_> {
                 let l = cat.layers.get(layer)?;
                 let d = terrain::terrain_deep::PACK_Z;
                 match z {
-                    0..=2 => l.root.clone(),
-                    3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
                     _ if z >= terrain::terrain_deep::FIRST_Z => {
                         l.deep.get(&format!("{d}/{}/{}", x >> (z - d), y >> (z - d))).cloned()
                     }
-                    _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
+                    _ => l.pack_key(z, x, y).cloned(),
                 }
             }
         }
@@ -404,7 +403,7 @@ pub struct Staged {
 /// neighbour's the box's margin only clips, whose few tiles are read where they are (`read_tiles`),
 /// nor a deep pack (a z10 tile's every deep tile: a z6 tile's roads read a few of them).
 fn copied_whole(z: u8, x: u32, y: u32, b: [f64; 4]) -> bool {
-    if z < 9 {
+    if z < store::catalogue::HI_FIRST_Z {
         return true;
     }
     if z > 12 {

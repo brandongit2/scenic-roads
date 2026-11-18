@@ -179,7 +179,10 @@ pub fn overlays(
 ) -> Result<(usize, usize, usize, usize)> {
     let t0 = std::time::Instant::now();
     let cover = hi_cover(out);
-    let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
+    let want = |z: u8, x: u32, y: u32| match pack_of(z, x, y) {
+        ("hi", _, px, py) => cover.contains(&(px, py)),
+        _ => true,
+    };
     let mut ntiles = 0;
     let (areas, n_ov, parks, mut wrote) = areas_and_parks(out, src, dots, &want, &mut ntiles)?;
     for stem in ["layer-summary", "heritage-sources"] {
@@ -737,7 +740,10 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
         .collect();
     made.sort_by_key(|f| f.id);
     drop(p);
-    let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
+    let want = |z: u8, x: u32, y: u32| match pack_of(z, x, y) {
+        ("hi", _, px, py) => cover.contains(&(px, py)),
+        _ => true,
+    };
     let mut ntiles = 0;
     let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles, false)?;
     drop_stale(out, "stations", &wrote);

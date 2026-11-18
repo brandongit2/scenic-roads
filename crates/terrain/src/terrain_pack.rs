@@ -472,16 +472,17 @@ impl ManifestTiles {
     }
 
     pub fn logical(layer: &str, z: u8, x: u32, y: u32) -> String {
+        use store::catalogue::{pack_of, Scope};
         let deep = crate::terrain_deep::PACK_Z;
-        match z {
-            0..=2 => crate::layers::root_logical(layer),
-            3..=8 => crate::layers::lo_logical(layer, x >> (z - 3), y >> (z - 3)),
+        match pack_of(z, x, y) {
             // (The terrain's deep levels and their shading, by z10 tile: crate::terrain_deep,
             // crate::slope_pack.)
             _ if (layer == "terrain" || layer == "slope") && z >= crate::terrain_deep::FIRST_Z => {
                 crate::layers::deep_logical(layer, x >> (z - deep), y >> (z - deep))
             }
-            _ => crate::layers::hi_logical(layer, x >> (z - 6), y >> (z - 6)),
+            (Scope::Root, ..) => crate::layers::root_logical(layer),
+            (Scope::Lo, _, px, py) => crate::layers::lo_logical(layer, px, py),
+            (Scope::Hi, _, px, py) => crate::layers::hi_logical(layer, px, py),
         }
     }
 

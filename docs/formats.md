@@ -36,7 +36,9 @@ index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
 ```
 
 - Root pack: z0–2 (root "0/0/0"). Lo pack: z3–8 under one z3 tile. Hi pack: z9–14 under one z6
-  tile. **The terrain** (one terrain, z0 to each place's native zoom: steps.md §2) adds deep packs,
+  tile. (The split is written once, `store::catalogue::{LO_Z, HI_Z, HI_FIRST_Z, pack_of}` and
+  `Layer::pack_key`; web/src/packs.ts's copy is checked against it by
+  `crates/pipeline/tests/web_constants.rs`.) **The terrain** (one terrain, z0 to each place's native zoom: steps.md §2) adds deep packs,
   `layers/terrain/deep/10-<x>-<y>` (scope `deep`): z13–16 under one z10 tile, only where a dataset
   reaches past z12 (terrain::terrain_deep; a z6 tile's would be up to 130 GB). Every terrain tile, in
   every scope, is Terrarium RGB as lossless WebP (`RIFF…WEBPVP8L`, the packs' encoding

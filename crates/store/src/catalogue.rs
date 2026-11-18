@@ -109,6 +109,43 @@ pub struct FileRef {
     pub extra: BTreeMap<String, Value>,
 }
 
+/// The packs' zoom split (docs/formats.md "Pack"): every tile of a layer in one pack, the root pack
+/// below `LO_Z` (z0–2), a lo pack per `LO_Z` tile up to `HI_FIRST_Z` (z3–8), a hi pack per `HI_Z`
+/// tile from it (z9–14; the terrain's deep levels aside, in deep packs per z10 tile).
+pub const LO_Z: u8 = 3;
+/// The hi packs' tiles' zoom.
+pub const HI_Z: u8 = 6;
+/// The first zoom in the hi packs.
+pub const HI_FIRST_Z: u8 = 9;
+
+/// Which of a layer's packs a tile is in (`pack_of`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Root,
+    Lo,
+    Hi,
+}
+
+impl Scope {
+    /// Its name in the packs' logical names and metas ("root", "lo", "hi").
+    pub fn name(self) -> &'static str {
+        match self {
+            Scope::Root => "root",
+            Scope::Lo => "lo",
+            Scope::Hi => "hi",
+        }
+    }
+}
+
+/// The pack holding tile z/x/y: its scope and its own tile (0/0/0 for the root pack), by the split.
+pub fn pack_of(z: u8, x: u32, y: u32) -> (Scope, u8, u32, u32) {
+    match z {
+        _ if z < LO_Z => (Scope::Root, 0, 0, 0),
+        _ if z < HI_FIRST_Z => (Scope::Lo, LO_Z, x >> (z - LO_Z), y >> (z - LO_Z)),
+        _ => (Scope::Hi, HI_Z, x >> (z - HI_Z), y >> (z - HI_Z)),
+    }
+}
+
 /// One of our tile layers: its root, lo and hi packs by root tile.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
@@ -141,6 +178,18 @@ pub struct Layer {
     pub polar: BTreeMap<String, String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl Layer {
+    /// The logical name of the root, lo or hi pack holding tile z/x/y (`pack_of`), when the layer
+    /// has one: `lo` and `hi` keyed by the pack's tile, "z/x/y". Not its deep or polar packs.
+    pub fn pack_key(&self, z: u8, x: u32, y: u32) -> Option<&String> {
+        match pack_of(z, x, y) {
+            (Scope::Root, ..) => self.root.as_ref(),
+            (Scope::Lo, pz, px, py) => self.lo.get(&format!("{pz}/{px}/{py}")),
+            (Scope::Hi, pz, px, py) => self.hi.get(&format!("{pz}/{px}/{py}")),
+        }
+    }
 }
 
 impl Catalogue {
@@ -317,5 +366,27 @@ mod tests {
         let mut c = sample(1);
         c.files.get_mut("global/pois").unwrap().file = "global/pois.json".into();
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn the_pack_split() {
+        // (Today's split by value: the stored catalogues key their packs so.)
+        assert_eq!(pack_of(0, 0, 0), (Scope::Root, 0, 0, 0));
+        assert_eq!(pack_of(2, 3, 1), (Scope::Root, 0, 0, 0));
+        assert_eq!(pack_of(3, 5, 2), (Scope::Lo, 3, 5, 2));
+        assert_eq!(pack_of(8, 160, 87), (Scope::Lo, 3, 5, 2));
+        assert_eq!(pack_of(9, 257, 170), (Scope::Hi, 6, 32, 21));
+        assert_eq!(pack_of(14, 8223, 5470), (Scope::Hi, 6, 32, 21));
+        let l = Layer {
+            root: Some("r".into()),
+            lo: [("3/5/2".to_string(), "lo".to_string())].into(),
+            hi: [("6/32/21".to_string(), "hi".to_string())].into(),
+            ..Default::default()
+        };
+        let at = |z, x, y| l.pack_key(z, x, y).map(String::as_str);
+        assert_eq!(
+            (at(1, 0, 1), at(7, 80, 40), at(12, 2056, 1370), at(12, 0, 0)),
+            (Some("r"), Some("lo"), Some("hi"), None)
+        );
     }
 }

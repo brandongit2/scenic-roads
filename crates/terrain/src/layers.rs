@@ -10,13 +10,11 @@ use buildstore::out::Out;
 use roadcore::archive::Archive;
 use std::collections::BTreeMap;
 
-/// Which pack a tile belongs to: (scope, z, x, y of the pack's root tile).
+/// Which pack a tile belongs to (store::catalogue::pack_of): (scope's name, z, x, y of the pack's
+/// root tile).
 pub fn pack_of(z: u8, x: u32, y: u32) -> (&'static str, u8, u32, u32) {
-    match z {
-        0..=2 => ("root", 0, 0, 0),
-        3..=8 => ("lo", 3, x >> (z - 3), y >> (z - 3)),
-        _ => ("hi", 6, x >> (z - 6), y >> (z - 6)),
-    }
+    let (scope, pz, px, py) = store::catalogue::pack_of(z, x, y);
+    (scope.name(), pz, px, py)
 }
 
 /// Layer `layer`'s root pack's logical name (z0–2).

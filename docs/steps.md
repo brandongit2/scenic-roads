@@ -1364,7 +1364,7 @@ renaming or disabling a region builds nothing.
   between neighbours, lines doubled, a box's and the antimeridian's cuts drawn); tiles give the
   finest detail where zoomed in and the same shared line everywhere. No fills: the map drew lines
   only.
-- **Packs:** as every layer's (codecs::regionlayer `pack_of`): the root `layers/regions/root/0-0-0`
+- **Packs:** as every layer's (store::catalogue `pack_of`): the root `layers/regions/root/0-0-0`
   (z0–2), lo packs by z3 tile (z3–8), hi packs by z6 tile (z9–12); RDPACK, each tile gzip'd; the
   catalogue's layer `regions`, encoding `mvt`, zooms 0–12. **Keys of the packs:** the step is
   stateless: it makes every tile and writes again only a pack whose content name differs from the

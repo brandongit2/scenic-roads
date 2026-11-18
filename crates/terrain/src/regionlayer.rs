@@ -5,7 +5,7 @@
 //! with its inside on their left: each shape even–odd; the edges between its own pieces have it on
 //! both sides and the topology drops them; only shapes that overlap are unioned (`orient`). The topology, the simplification and the
 //! tiles are codecs::regionlayer's. The tiles go into packs as every layer's do (the root z0–2, lo
-//! packs by z3 tile, hi packs by z6 tile: `codecs::regionlayer::pack_of`); a pack whose bytes are
+//! packs by z3 tile, hi packs by z6 tile: `crate::layers::pack_of`); a pack whose bytes are
 //! those already recorded is left as it is, so one region's change writes again only the packs its
 //! arcs reach (and the root, which every border reaches), and a pack no tile is in now goes.
 
@@ -84,8 +84,8 @@ type Stored = (u8, u32, u32, Vec<u8>, u32);
 
 /// The pack of tile z/x/y by logical name, and its root tile.
 fn pack_logical(z: u8, x: u32, y: u32) -> (String, &'static str, (u8, u32, u32)) {
-    let (scope, r) = fmt::pack_of(z, x, y);
-    (format!("layers/{}/{scope}/{}-{}-{}", fmt::LAYER, r.0, r.1, r.2), scope, r)
+    let (scope, pz, px, py) = crate::layers::pack_of(z, x, y);
+    (format!("layers/{}/{scope}/{pz}-{px}-{py}", fmt::LAYER), scope, (pz, px, py))
 }
 
 /// The layer's tiles from `regions` (see the module's comment), `report` hearing the stage done of

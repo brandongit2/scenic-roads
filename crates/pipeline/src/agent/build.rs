@@ -524,10 +524,9 @@ pub fn unit_keys(x: &KeyCtx) -> Vec<(TileId, Option<String>)> {
 pub fn unit_terrain_from(area: &roads::staging::Area, m: &BTreeMap<String, String>) -> String {
     let mut packs: BTreeSet<String> = BTreeSet::new();
     for z in 4..=12u8 {
-        let (scope, s) = if z <= 8 { ("lo", z - 3) } else { ("hi", z - 6) };
-        let at: BTreeSet<(u32, u32)> = area.tiles(z).into_iter().map(|(x, y)| (x >> s, y >> s)).collect();
-        for (x, y) in at {
-            let l = format!("layers/terrain/{scope}/{}-{x}-{y}", z - s);
+        let at: BTreeSet<_> = area.tiles(z).into_iter().map(|(x, y)| terrain::layers::pack_of(z, x, y)).collect();
+        for (scope, pz, x, y) in at {
+            let l = format!("layers/terrain/{scope}/{pz}-{x}-{y}");
             packs.insert(format!("{l}={}", m.get(&l).map(String::as_str).unwrap_or("-")));
         }
     }
@@ -1542,7 +1541,7 @@ pub fn root_tile_lines(top: (u8, u32, u32), m: &BTreeMap<String, String>, tiles:
     slope_tile_lines(top, m, tiles)
         .unwrap_or_default()
         .into_iter()
-        .filter(|l| l.split('/').next().and_then(|z| z.parse::<u8>().ok()).is_some_and(|z| z <= 2))
+        .filter(|l| l.split('/').next().and_then(|z| z.parse::<u8>().ok()).is_some_and(|z| z < store::catalogue::LO_Z))
         .collect()
 }
 

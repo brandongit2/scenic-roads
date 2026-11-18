@@ -17,6 +17,11 @@ export interface LayerPacks {
 /** A polar layer's blocks' zoom (terrain::polar::BLOCK_Z). */
 const POLAR_BLOCK_Z = 4;
 
+/** The packs' zoom split (store::catalogue::LO_Z, HI_Z and HI_FIRST_Z): the root below LO_Z, a lo
+ * pack per LO_Z tile up to HI_FIRST_Z, a hi pack per HI_Z tile from it. */
+export const LO_Z = 3;
+export const HI_Z = 6;
+export const HI_FIRST_Z = 9;
 
 /** The version token of tile z/x/y of a layer with packs `l`: its pack's, or '' when no pack holds it. */
 export function packToken(l: LayerPacks, z: number, x: number, y: number): string {
@@ -24,12 +29,13 @@ export function packToken(l: LayerPacks, z: number, x: number, y: number): strin
     const b = POLAR_BLOCK_Z;
     return (z < b ? l.root : l.polar[`${b}/${x >> (z - b)}/${y >> (z - b)}`]) ?? '';
   }
-  if (z <= 2) return l.root ?? '';
+  if (z < LO_Z) return l.root ?? '';
   // ('' past z12 outside the deep packs: the server makes those tiles from their ancestor and
   // serves them uncached for good (no current token), so no stale copy outlives a catalogue.)
   if (z >= DEEP_FIRST_Z && l.deep) return l.deep[`${DEEP_PACK_Z}/${x >> (z - DEEP_PACK_Z)}/${y >> (z - DEEP_PACK_Z)}`] ?? '';
-  const pz = z <= 8 ? 3 : 6;
-  return (z <= 8 ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';
+  const lo = z < HI_FIRST_Z;
+  const pz = lo ? LO_Z : HI_Z;
+  return (lo ? l.lo : l.hi)?.[`${pz}/${x >> (z - pz)}/${y >> (z - pz)}`] ?? '';
 }
 
 /** A raster source's finest zoom by area (meta.terrainAreas; our MapLibre's `scenic:zoom-by-area`):

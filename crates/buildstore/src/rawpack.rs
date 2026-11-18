@@ -55,13 +55,12 @@ pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
 /// (`Packer::for_pyramid`, terrain::pyramids).
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
-/// The shard a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
-/// z3–8, `root` for z0–2.
+/// The shard a tile is packed in, as the terrain is (store::catalogue::pack_of): its z6 tile's for
+/// z9–12, its z3 tile's for z3–8, `root` for z0–2.
 pub fn shard(z: u8, x: u32, y: u32) -> String {
-    match z {
-        9.. => format!("6-{}-{}", x >> (z - 6), y >> (z - 6)),
-        3..=8 => format!("3-{}-{}", x >> (z - 3), y >> (z - 3)),
-        _ => "root".into(),
+    match store::catalogue::pack_of(z, x, y) {
+        (store::catalogue::Scope::Root, ..) => "root".into(),
+        (_, pz, px, py) => format!("{pz}-{px}-{py}"),
     }
 }
 

@@ -509,10 +509,7 @@ fn overlapping_regions_keep_their_own_borders() {
 }
 
 #[test]
-fn pack_layout() {
-    assert_eq!(pack_of(2, 3, 1), ("root", (0, 0, 0)));
-    assert_eq!(pack_of(5, 20, 9), ("lo", (3, 5, 2)));
-    assert_eq!(pack_of(12, 2049, 1400), ("hi", (6, 32, 21)));
+fn coarser_zooms_simplify_more() {
     assert!(tolerance(12) < tolerance(0));
 }
 

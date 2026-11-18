@@ -27,6 +27,8 @@ use std::sync::{Arc, Mutex};
 pub use inputs::dem::zoom::PACK_Z;
 /// The band's first zoom: the hi packs' last (z12) and one.
 pub const FIRST_Z: u8 = 13;
+// (Past the lo packs' zooms: the readers look for a deep pack before the split's, store::catalogue.)
+const _: () = assert!(FIRST_Z > store::catalogue::HI_FIRST_Z);
 /// The band's last: the deepest zoom the map stores.
 pub const MAX_Z: u8 = crate::terrain_zoom::DEEPEST;
 /// What a deep target's key names of its layout: the band, its packs' zoom and the zoom rule's

@@ -69,16 +69,5 @@ pub fn extent(z: u8) -> u32 {
     }
 }
 
-/// The pack holding tile z/x/y, as the catalogue keys a layer's packs (the map's usual layout): the
-/// root (z0–2), a lo pack by z3 tile (z3–8) or a hi pack by z6 tile (z9–`MAXZ`), with the pack's
-/// own tile.
-pub fn pack_of(z: u8, x: u32, y: u32) -> (&'static str, (u8, u32, u32)) {
-    match z {
-        0..=2 => ("root", (0, 0, 0)),
-        3..=8 => ("lo", (3, x >> (z - 3), y >> (z - 3))),
-        _ => ("hi", (6, x >> (z - 6), y >> (z - 6))),
-    }
-}
-
 #[cfg(test)]
 mod tests;
