@@ -3760,19 +3760,22 @@ fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Op
     let pack = format!("layers/{}/hi/", bld::bld::LAYER);
     let fpack = format!("layers/{}/hi/", bld::bld::field::LAYER);
     let flo = format!("layers/{}/lo/", bld::bld::field::LAYER);
-    for (prefix, keep, kind) in [
-        ("work/bld/", &prep, "bldprep"),
+    // (A tile's prepared files, each folder of them: bld::bld::PREPARED.)
+    let prepared = bld::bld::PREPARED.map(|p| (p, &prep, "bldprep"));
+    for (prefix, keep, kind) in prepared.into_iter().chain([
         (pack.as_str(), &tiles, "bldtiles"),
         (fpack.as_str(), &tiles, "bldtiles"),
         ("work/bldfield-mid/", &tiles, "bldtiles"),
         (flo.as_str(), &lo, "bldfield-lo"),
-    ] {
+    ]) {
         if kind == "bldprep" && !sources {
             continue;
         }
         for (l, _) in m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)) {
             let d = &l[prefix.len()..];
-            if TileId::parse(d).is_some() && !keep.contains(d) {
+            // (A side file whose normalized file is gone, too: bldprep drops both or neither.)
+            let lone = prefix == bld::bld::SIDE && !m.contains_key(&format!("{}{d}", bld::bld::WORK));
+            if TileId::parse(d).is_some() && (!keep.contains(d) || lone) {
                 t.insert(format!("{kind} {}", d.replace('-', "/")));
             }
         }
@@ -12163,9 +12166,11 @@ mod tests {
             d
         ))
         .is_empty());
-        // A tile no longer in the coverage (its pack and file left from a bigger one) is pruned;
-        // its records forgotten with it.
+        // A tile no longer in the coverage (its pack, file and side file left from a bigger one) is
+        // pruned, its records forgotten with it; and a side file alone, its normalized file gone.
         m.insert("work/bld/6-40-20".into(), "work/bld/6-40-20.0123456789abcdef.sect".into());
+        m.insert("work/bldsrc/6-40-20".into(), "work/bldsrc/6-40-20.0123456789abcdef.sect".into());
+        m.insert("work/bldsrc/6-41-20".into(), "work/bldsrc/6-41-20.0123456789abcdef.sect".into());
         m.insert("layers/buildings/hi/6-40-20".into(), "layers/buildings/hi/6-40-20.0123456789abcdef.pack".into());
         done.record("bldtiles", &[("6/40/20".to_string(), "k".to_string())]);
         let w = bld_work(
@@ -12184,7 +12189,11 @@ mod tests {
             w,
             [Work {
                 step: "prune".into(),
-                targets: vec![("bldprep 6/40/20".into(), String::new()), ("bldtiles 6/40/20".into(), String::new())]
+                targets: vec![
+                    ("bldprep 6/40/20".into(), String::new()),
+                    ("bldprep 6/41/20".into(), String::new()),
+                    ("bldtiles 6/40/20".into(), String::new())
+                ]
             }]
         );
         done.record("prune", &w[0].targets);

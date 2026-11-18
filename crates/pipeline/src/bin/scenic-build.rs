@@ -60,7 +60,8 @@
 //!                                "z6 tile U" (its base pack, road values, English), "pois U" (its
 //!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
 //!                                "lo Q" (road and rail lo packs), "bldprep T" (its normalized
-//!                                buildings), "bldtiles T" (its 3D buildings' hi pack)
+//!                                buildings and their side file), "bldtiles T" (its 3D buildings'
+//!                                hi pack)
 //!   buildings [--workers n]      the world's roadside buildings (bld::buildtiles):
 //!                                the declared release, in z8 tiles, onto the NAS with their index
 //!   bld-fetch [--pass d]         the 3D buildings' sources onto the NAS (bld::bld::fetch):
@@ -68,7 +69,7 @@
 //!                                of the coverage; what's there already skipped
 //!   bldprep <T …>                the 3D buildings' normalized files of z6 tiles T (bld::bld::prep:
 //!                                the downloaded Overture row groups and the GHSL windows under T),
-//!                                as work/bld/6-x-y
+//!                                as work/bld/6-x-y, and their side files as work/bldsrc/6-x-y
 //!   bldtiles <T …> [--pass d] [--regions dir]  the 3D buildings' tiles of z6 tiles T
 //!                                (bld::bld::job): the buildings touching the coverage, their
 //!                                heights filled, z14, as the hi pack layers/buildings/hi/6-x-y;
@@ -4853,16 +4854,26 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
 /// catalogue leaves them out, and GC frees their files once no catalogue of the last 14 days lists them.
 fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
     let p = phase("dropping the targets' entries");
+    let gone = prune(out, &positional(args))?;
+    drop(p);
+    out.save()?;
+    eprintln!("prune: {gone} entries dropped from the manifest");
+    Ok(())
+}
+
+/// Drops the prune targets' entries from `out`'s manifest; how many there were.
+fn prune(out: &mut Out, targets: &[String]) -> Result<usize> {
     let mut gone = 0;
-    for t in positional(args) {
+    for t in targets {
         let (kind, at) = t.split_once(' ').with_context(|| format!("{t:?}: a prune target is \"<kind> <z/x/y>\""))?;
-        let d = TileId::parse(at).with_context(|| format!("{t:?}: not a tile"))?.dash();
+        let tile = TileId::parse(at).with_context(|| format!("{t:?}: not a tile"))?;
+        let d = tile.dash();
         let logicals = match kind {
             "unit" => buildstore::out::UNIT_OUTPUTS.iter().map(|p| format!("{p}{d}")).collect(),
             "pois" => vec![format!("work/pois/{d}"), format!("work/peaks/{d}")],
             "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
             "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
-            "bldprep" => vec![format!("work/bld/{d}")],
+            "bldprep" => ::bld::bld::prepared_logicals(tile.x, tile.y),
             "bldtiles" => vec![
                 format!("layers/{}/hi/{d}", ::bld::bld::LAYER),
                 format!("layers/{}/hi/{d}", ::bld::bld::field::LAYER),
@@ -4878,10 +4889,7 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
             }
         }
     }
-    drop(p);
-    out.save()?;
-    eprintln!("prune: {gone} entries dropped from the manifest");
-    Ok(())
+    Ok(gone)
 }
 
 /// Every z6 tile's reach (roads::reach) from its extract, as `sources/osm/<date>/reach`: each extract
@@ -6799,6 +6807,23 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A pruned z6 tile's prepared files go, its normalized file and its side file both; another
+    /// tile's stay.
+    #[test]
+    fn a_pruned_tile_loses_its_prepared_files() {
+        let d = tempfile::tempdir().unwrap();
+        let root = store::nasfs::NasRoot::local_for_test(d.path().join("nas"));
+        let mut out = super::Out::unbound(&root, &d.path().join("scratch")).unwrap();
+        for (x, y) in [(40, 20), (41, 20)] {
+            for l in ::bld::bld::prepared_logicals(x, y) {
+                out.put_bytes(&l, "sect", l.as_bytes()).unwrap();
+            }
+        }
+        assert_eq!(super::prune(&mut out, &["bldprep 6/40/20".to_string()]).unwrap(), 2);
+        assert!(out.get("work/bld/6-40-20").is_none() && out.get("work/bldsrc/6-40-20").is_none());
+        assert!(out.get("work/bld/6-41-20").is_some() && out.get("work/bldsrc/6-41-20").is_some());
+    }
+
     /// Task #1087: a deep target with no data past z12 (terrain::terrain_zoom::hollow) is dropped
     /// by terrain-deep's and slope-deep's runs, as one no target any more is: the plan offers one
     /// with outputs named as a drop (pipeline::agent::build::hollow_drops); one beside it with data

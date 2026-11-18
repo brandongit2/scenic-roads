@@ -77,6 +77,15 @@ pub fn side_logical(x: u32, y: u32) -> String {
     format!("{SIDE}6-{x}-{y}")
 }
 
+/// The folders of `bldprep`'s outputs, a z6 tile's file in each: its normalized file and its side
+/// file. What names, saves or prunes a tile's prepared files takes them all from here.
+pub const PREPARED: [&str; 2] = [WORK, SIDE];
+
+/// The logical names of z6 tile T's prepared files (`PREPARED`'s order).
+pub fn prepared_logicals(x: u32, y: u32) -> Vec<String> {
+    PREPARED.iter().map(|p| format!("{p}6-{x}-{y}")).collect()
+}
+
 /// The logical name of z6 tile T's hi pack.
 pub fn pack_logical(x: u32, y: u32) -> String {
     terrain::layers::hi_logical(LAYER, x, y)

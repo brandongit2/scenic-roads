@@ -1117,8 +1117,9 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   projection (the square is far from it: what the polygon holds there doesn't change). ArcticDEM's
   and REMA's pieces close along 90° where they hold a pole, and REMA's keeps its hole round the
   South Pole.
-- **The masks** (the buildings; task #1438): a piece of an `overture` block (docs/inputs.md §6.11)
-  has no outline in its file; the step draws it from the build's own copy of Overture's buildings,
+- **The masks** (the buildings; task #1438): until `bldprep` (`BLDPREP_V` 3) has run, no tile has
+  a side file, so every tile is left out and the masks are empty (below). A piece of an
+  `overture` block (docs/inputs.md §6.11) has no outline in its file; the step draws it from the build's own copy of Overture's buildings,
   the normalized files (`work/bld/6-x-y`, docs/buildings3d.md §3.1; `bld::bld::extents`): its cells
   are the z14 tiles (a block of the file each; 64 z12 pixels a side, 2.4 km at the equator) the
   cells' rule (docs/inputs.md §6.11, the `overture` method) credits to its dataset for what it
@@ -1129,14 +1130,15 @@ where, never a score or a metric, so tuning a weight builds nothing again.
   is its footprint's dataset's (the side file's `fsrc`, docs/formats.md), its height the dataset
   Overture names for its height; parts not counted.
   **A column only the masks read goes in a side file** (`work/bldsrc/6-x-y`, `bld::bld::side`,
-  written by `bldprep` beside the normalized file and naming its content name), never in the
-  normalized file: `bldtiles` is keyed on the normalized files alone (`idents::bld_prepared`), so
+  written by `bldprep` beside the normalized file and naming its content name; pruned with it, and
+  alone where its normalized file is gone: `bld::bld::PREPARED`), never in the normalized file: `bldtiles` is keyed on the normalized files alone (`idents::bld_prepared`), so
   a column for the masks never makes the 3D buildings again. The step takes a tile's side file
   only where it names the tile's normalized file: a tile whose side file is missing, or names
   another (a normalized file `bldprep` made again before writing its side file, or one made before
-  the side files), is left out, its tiles in no mask, until `bldprep` writes its own. The count
-  left out is said on the step's progress line (`buildings' files (N z6 tiles left out: …)`, which
-  the build page shows) and its log, and the record lists those tiles. Each file
+  the side files), is left out, its tiles in no mask, until `bldprep` writes its own. While the
+  step runs, the count left out is on its progress line (`buildings' files (N z6 tiles left out:
+  …)`, which the build page shows); once it's done, in its log (the count and up to 20 tiles) and
+  in the record (every tile left out). Each file
   is read whole, a run of blocks at a time (32 MB at most, `READ_RUN`), its tags alone decoded
   (`work::Tags`: no geometry), the files in parallel; the cells are kept by z6 tile as row runs
   (`terrain::available::mask`: 256 rows of runs a z6 tile). The step's record

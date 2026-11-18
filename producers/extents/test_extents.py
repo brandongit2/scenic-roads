@@ -955,13 +955,14 @@ class IndexFiles(unittest.TestCase):
         def url(off):
             return "https://h/wfs?" + urllib.parse.urlencode({"service": "WFS", "version": "2.0.0", "request": "GetFeature", "typeNames": "t",
                                                               "outputFormat": "application/json", "count": "2", "startIndex": str(off)})
-        def page(ids, matched):
-            return json.dumps({"type": "FeatureCollection", "numberMatched": matched, "features": [
+        def page(ids, matched, stamp="2026-11-18T10:00:00Z"):
+            return json.dumps({"type": "FeatureCollection", "numberMatched": matched, "timeStamp": stamp, "features": [
                 {"type": "Feature", "properties": {"id": i}, "geometry": {"type": "Polygon", "coordinates": [[[i, 0], [i + 1, 0], [i + 1, 1], [i, 0]]]}}
                 for i in ids]}).encode()
         b = {"url": "https://h/wfs", "type": "t", "page": 2}
-        # (The first page again at 2: stopped there, not paged on to the run's limit.)
-        net = FakeNet({url(0): page([0, 1], 9), url(2): page([0, 1], 9)})
+        # (The first page again at 2, its answer's timeStamp another: stopped there by its
+        # features, not paged on to the run's limit.)
+        net = FakeNet({url(0): page([0, 1], 9), url(2): page([0, 1], 9, "2026-11-18T10:00:01Z")})
         with self.assertRaises(SystemExit) as e:
             list(extents.read_wfs(net, b, 0))
         self.assertIn("repeats", str(e.exception))

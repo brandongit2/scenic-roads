@@ -1954,9 +1954,7 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "unit" => roads::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
         // (A z6 tile's normalized buildings and their side file, and its 3D buildings' hi pack.)
-        "bldprep" => tile.is_some_and(|t| {
-            t.z == 6 && (l == bld::bld::work_logical(t.x, t.y) || l == bld::bld::side_logical(t.x, t.y))
-        }),
+        "bldprep" => tile.is_some_and(|t| t.z == 6 && bld::bld::prepared_logicals(t.x, t.y).iter().any(|p| p == l)),
         "bldtiles" => tile.is_some_and(|t| {
             t.z == 6
                 && (l == bld::bld::pack_logical(t.x, t.y)
@@ -2454,9 +2452,9 @@ fn w_bld_fetch(l: &str, _: bool) -> bool {
     l == buildstore::asked::logical("bld-fetch")
 }
 
-/// The normalized buildings and their side files (bld::bld::side).
+/// The normalized buildings and their side files (bld::bld::PREPARED).
 fn w_bldprep(l: &str, _: bool) -> bool {
-    matches!(parts(l).as_slice(), ["work", "bld" | "bldsrc", t] if tile(t, 6))
+    bld::bld::PREPARED.iter().any(|p| l.strip_prefix(p).is_some_and(|t| !t.contains('/') && tile(t, 6)))
 }
 
 /// The 3D buildings' hi packs, their field's and its mids.
@@ -2806,6 +2804,7 @@ mod tests {
                 "work/pois",
                 "work/peaks",
                 "work/bld",
+                "work/bldsrc",
                 "layers/buildings/hi",
                 "work/trees-mid",
                 "work/terrain-mid",

@@ -559,13 +559,14 @@ def read_wfs(net, b, _tol):
         body = net.get(b["url"] + ("&" if "?" in b["url"] else "?") + urllib.parse.urlencode(q))
         if b"ExceptionReport" in body[:1000]:
             sys.exit(f"{b['url']}: {body[:1000].decode('utf-8', 'replace')}")
-        # (A server ignoring `startIndex` answers the first page again: stopped, not paged to the
-        # run's limit.)
-        if off and body == last:
-            sys.exit(f"{b['url']}: the page at {off} repeats the one before it (startIndex ignored?): stopped")
-        last = body
         # (Every feature, those without geometry too, so a page's count is the server's.)
         feats = list(index_features(body, b))
+        # (A server ignoring `startIndex` answers the first page again: stopped, not paged to the
+        # run's limit. By its features, not its bytes: an answer's timeStamp differs every time.)
+        digest = features_digest(feats)
+        if off and feats and digest == last:
+            sys.exit(f"{b['url']}: the page at {off} repeats the one before it (startIndex ignored?): stopped")
+        last = digest
         matched = number_matched(body)
         if not feats and matched is not None and matched > off:
             sys.exit(f"{b['url']}: the page at {off} is empty, the server says {matched} match: stopped")
@@ -573,6 +574,16 @@ def read_wfs(net, b, _tol):
         off += len(feats)
         if len(feats) < page:
             return
+
+
+def features_digest(feats):
+    """A page's features as one digest: each one's properties and geometry, in order."""
+    h = hashlib.sha256()
+    for g, p in feats:
+        h.update(json.dumps(p, sort_keys=True, default=str).encode())
+        geom = g()
+        h.update(b"\0" + (geom.wkb if geom is not None else b"") + b"\1")
+    return h.digest()
 
 
 def number_matched(body):

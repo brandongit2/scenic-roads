@@ -908,9 +908,9 @@ pub fn run(out: &mut buildstore::out::Out, t: TileId) -> Result<Stats> {
     let logical = super::work_logical(t.x, t.y);
     let side = super::side_logical(t.x, t.y);
     if p.is_empty() {
-        for l in [&logical, &side] {
-            if out.get(l).is_some() {
-                out.remove(l);
+        for l in super::prepared_logicals(t.x, t.y) {
+            if out.get(&l).is_some() {
+                out.remove(&l);
             }
         }
         out.save()?;
@@ -1182,6 +1182,52 @@ mod tests {
         assert_eq!(uuid(b"66e3b7c0-0bfc-470b-93b0-9cd94327176c"), Some(0x66e3b7c00bfc470b93b09cd94327176c));
     }
 
+    /// The footprints' datasets come out a record each in the normalized file's order (its blocks
+    /// by key, each block's records by id), the side file's column: two datasets in two z14 tiles.
+    #[test]
+    fn the_footprints_datasets_follow_the_files_order() {
+        let t = TileId { z: 6, x: 32, y: 22 };
+        let mut s = Vec::new();
+        let b = |id: u128, lon: f64, dataset| B {
+            id,
+            rings: vec![square(lon, 48.858, 0.0002)],
+            dataset,
+            ..Default::default()
+        };
+        let ms = "Microsoft ML Buildings";
+        let osm = "OpenStreetMap";
+        // (Ids out of place order, and the far z14 tile's buildings first.)
+        frame(
+            &mut s,
+            false,
+            &[b(9, 2.4500, osm), b(3, 2.3471, osm), b(5, 2.3470, ms), b(1, 2.4501, ms), b(2, 2.3472, ms)],
+        );
+        end(&mut s);
+        let p = Prepped::from_frames(s, t).unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("w.sect");
+        let (_, fsrc) = p.write(t, "2026-09-23.1", &path).unwrap();
+        let w = work::WorkFile::open(&path).unwrap();
+        assert_eq!(w.meta.srcs, [ms, osm]);
+        assert_eq!(w.index.len(), 2);
+        // (Each record's dataset by its place: the lon its centroid is at.)
+        let of = |cen: [i32; 2]| {
+            let lon = f64::from(cen[0]) / 1e7 - 0.0001;
+            [(2.4500, 2), (2.3471, 2), (2.3470, 1), (2.4501, 1), (2.3472, 1)]
+                .iter()
+                .find(|(l, _)| (lon - l).abs() < 0.00002)
+                .unwrap()
+                .1
+        };
+        let mut want = Vec::new();
+        for e in &w.index {
+            let k = w.block(e).unwrap();
+            want.extend(k.cen.iter().map(|&c| of(c)));
+        }
+        assert_eq!(fsrc, want);
+        assert_eq!(fsrc, [1, 2, 1, 1, 2], "by z14 tile (west first), then by id");
+    }
+
     #[test]
     fn a_stream_makes_a_file() {
         // Tile 6/32/22 (Paris); buildings near Châtelet, one in the next tile, one underground, a
@@ -1209,8 +1255,7 @@ mod tests {
         let path = d.path().join("w.sect");
         let (st, fsrc) = p.write(t, "2026-09-23.1", &path).unwrap();
         assert_eq!((st.buildings, st.parts), (4, 1));
-        // (The footprints' datasets, a record each in the file's order: the side file's column.)
-        assert_eq!(fsrc, [1; 5]);
+        assert_eq!(fsrc.len(), 5);
         let w = work::WorkFile::open(&path).unwrap();
         assert_eq!(w.meta.classes, vec!["apartments"]);
         assert_eq!(w.meta.srcs, vec!["OpenStreetMap"]);
@@ -1305,5 +1350,6 @@ mod tests {
             );
         }
         eprintln!("{same} of {n} the same");
+        assert_eq!(same, n, "a normalized file made again differs from the records'");
     }
 }
