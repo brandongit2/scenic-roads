@@ -2554,7 +2554,7 @@ asks passed on are one-shot: the lead's store keeps them (below).
     each job's stillness from its first beat after. A job whose lease is younger than it (taken up
     at a lead's restart, or held again at its agent's take-over: `Lease::taken_up`, by its job's
     start, `Lease::began`) notes none of `still_s`, `rates`, `gap_s` and `threads` on its event: the
-    lead heard only part of its run, its longest stretches cut short (task #992). A stopped job's event (a "fail", or the lead's own "end" not ok) says how far its last part got (`progress`: `Pace::stopped_at`), which the forecast takes the rest of its target from.
+    lead heard only part of its run, its longest stretches cut short (task #992). A stopped job's event (a "fail", a member's "done" or the lead's own "end", not ok) says how far its last part got (`progress`: `Pace::stopped_at`; none of a lease taken up), which the forecast takes the time left of its target from (docs/building.md).
   - *slow*: a leased job whose progress went on, over its window, at less than its step's usual
     rate divided by the overdue factor (task #990, `flags::slow`). Its progress is its progress
     line's numbers alone, by its worker's beats (`coord::lease::Pace`): within its part under way

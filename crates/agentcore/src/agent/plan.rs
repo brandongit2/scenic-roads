@@ -2378,12 +2378,18 @@ impl Planner {
         // The lead's own steps: what a target took here lately (measured), else a first guess.
         // (A PER_WORK step's, its costs' weighed time, as its jobs' times here mix in those that
         // found nothing to do.)
-        let mine = |step: &str, n: usize| -> Cost {
-            let (each, basis) = match sums.get(step).filter(|s| s.1 > 0.0 && is_per_work(step)) {
+        // (Each target's time is what is left of its stopped run, `partial`; the rest at its step's
+        // figure: a step with a stopped target left of its jobs is a job of the others' time and
+        // that, `n` targets counting at least one.)
+        let mine = |step: &str, targets: &[String], n: usize| -> Cost {
+            let (each, fill) = match sums.get(step).filter(|s| s.1 > 0.0 && is_per_work(step)) {
                 Some(s) => (s.0 / s.1, Basis::Sibling),
                 None => self.step_secs_here(step).map_or((first_secs(step), Basis::Guess), |t| (t, Basis::Here)),
             };
-            Cost { secs: each * n.max(1) as f64, basis, peak_mb: 0 }
+            let stopped: Vec<f64> = targets.iter().filter_map(|t| partial(step, t)).collect();
+            let others = n.max(1).saturating_sub(stopped.len());
+            let basis = if others == 0 { Basis::Partial } else { fill };
+            Cost { secs: stopped.iter().sum::<f64>() + each * others as f64, basis, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
         // (Each job before the regions' is a step of its own; one running now is its slot's
@@ -2391,7 +2397,10 @@ impl Planner {
         let before: Vec<forecast::Job> = before
             .iter()
             .map(|j| {
-                (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| left_of(w).len())))
+                let left: Vec<String> =
+                    j.record.as_ref().map_or_else(Vec::new, |w| left_of(w).into_iter().map(|t| t.0).collect());
+                let n = if j.record.is_some() { left.len() } else { 1 };
+                (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), &left, n))
             })
             .collect();
         // (A region's map tiles each at its measured time, `cost`; the whole-map steps by their
@@ -2417,7 +2426,7 @@ impl Planner {
                 vec![(
                     w.step.clone(),
                     w.targets.first().map(|t| t.0.clone()).unwrap_or_default(),
-                    mine(&w.step, w.targets.len()),
+                    mine(&w.step, &w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>(), w.targets.len()),
                 )]
             };
             if w.step == "overlays" {
@@ -2430,7 +2439,7 @@ impl Planner {
         {
             // (The step its grant is named: a held catalogue's is `catalog-held`.)
             let catalog = if self.inp.switches.held { store::catalogue::HELD_NAME } else { store::catalogue::NAME };
-            after.push((catalog.into(), "after the chains".into(), mine(catalog, 1)));
+            after.push((catalog.into(), "after the chains".into(), mine(catalog, &[], 1)));
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
         // they took last time, less what it spent on the one under way, if longer.
@@ -2651,7 +2660,7 @@ impl Planner {
                     self.o.the_plan.input_readers(name).into_iter().map(move |step| forecast::Unknown {
                         step: step.to_string(),
                         targets: u.targets.iter().cloned().collect(),
-                        until: (u.until.0.to_string(), u.until.1.clone(), mine(u.until.0, 1)),
+                        until: (u.until.0.to_string(), u.until.1.clone(), mine(u.until.0, &[], 1)),
                     })
                 })
                 .collect(),

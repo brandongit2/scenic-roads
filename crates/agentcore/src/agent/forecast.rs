@@ -117,8 +117,12 @@ pub fn sustained(points: &[(u64, f64)], step: u64, now: u64) -> Option<f64> {
     best
 }
 
-/// Which figure a target's time is (`Cost::basis`), the best first: the build page says it, a step's
-/// card counting its targets by it.
+/// Which figure a target's time is (`Cost::basis`): the build page counts a step's targets by it.
+/// Declared in the order of how far they are measured: the first three (`measured`) of the target
+/// itself or of the lead's own jobs of its step, the last two estimates. The order they're tried in
+/// is another: a stopped run's, a run of its own, then a step's mean over its other targets', where
+/// that has none the lead's jobs of the step, then the guess (a step only the lead runs is costed
+/// by its jobs here, then the guess, never by a mean over targets).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Basis {
@@ -127,31 +131,21 @@ pub enum Basis {
     Partial,
     /// The target's own finished run, the way its step runs now (crate::needs::Book::own).
     Own,
-    /// The nearest measured figure: its step's mean over its other targets' runs.
-    Sibling,
-    /// What a target of its step took in the lead's own jobs lately (`Memory::step_secs`).
+    /// What a target of its step took in the lead's own jobs lately (`Memory::step_secs`): measured
+    /// of the step itself where the lead alone runs it.
     Here,
+    /// The nearest measured figure, an estimate for a target not run itself: its step's mean over
+    /// its other targets' runs (a drop's, its step's drops').
+    Sibling,
     /// A first guess (`first_secs`): nothing of its step measured.
     #[default]
     Guess,
 }
 
 impl Basis {
-    /// Whether the time is measured of the target itself, or of the lead's own run of its step (a
-    /// run of it, finished or stopped short, or the lead's jobs of a step it alone runs).
+    /// Whether the time is measured of the target itself, or of the lead's own run of its step.
     pub fn measured(self) -> bool {
-        matches!(self, Basis::Partial | Basis::Own | Basis::Here)
-    }
-
-    /// In words, for the page.
-    pub fn words(self) -> &'static str {
-        match self {
-            Basis::Partial => "a stopped run's pace",
-            Basis::Own => "its own run",
-            Basis::Sibling => "its step's mean",
-            Basis::Here => "the lead's recent jobs of its step",
-            Basis::Guess => "a first guess",
-        }
+        self <= Basis::Here
     }
 }
 
@@ -603,20 +597,32 @@ pub fn step_sums(
     sums
 }
 
-/// The time of what is left of each target whose run stopped short (`Event::progress`), at the
-/// lead's pace, by (step, target): the run's own pace (its part's time over what it made) over what
-/// it hadn't made of its total. From the history's events, oldest first: a "start" or "lease" names
-/// its job's targets, a stopped "end" or "fail" of that job (not ok, in its progress's unit; of the
-/// way its step runs now, `Event::v`) sets the time left of its progress's target (its one target,
-/// when its progress names none), and a job that ended well, its targets', clears it. `at` puts a
-/// time of a worker's at the lead's pace (`at_lead`).
+/// The time left of each target whose run stopped short (`Event::progress`), at the lead's pace,
+/// by (step, target): the run's own pace (what its part made past what its first beat said, over
+/// the time that took) over what is left, from the history's events, oldest first. A "start" or
+/// "lease" names its job's targets; a stopped "end", "done" or "fail" of that job (not ok, of the
+/// way its step runs now, `Event::v`) sets it for its progress's target (a cost key, its step the
+/// event's: `CostKey::parse`; its one target when it names none). What is left is the part's
+/// `total` less `done` where the step resumes, the whole `total` where it doesn't: a step resumes
+/// when a later run of a stopped target counted a smaller total or began past where the stop was
+/// (measured from the records, so a step with no run since a stop is taken to redo its target:
+/// the longer time). A job that ended well clears its finished targets (`Event::targets`), or all
+/// its job's when it lists none, a later stop replaces it, and a not-ok "done" that finished some
+/// targets keeps the stop of the rest. `at` puts a time of a worker's at the lead's pace (`at_lead`).
 pub fn partials(
     the_plan: &dyn crate::agent::seam::Plan,
     events: &[crate::coord::history::Event],
     at: &dyn Fn(f64, Option<&str>, &str) -> f64,
 ) -> BTreeMap<(String, String), f64> {
+    struct Stop {
+        done: f64,
+        total: f64,
+        s_per_unit: f64,
+        worker: Option<String>,
+    }
     let mut jobs: BTreeMap<jobrt::jobid::JobId, Vec<String>> = BTreeMap::new();
-    let mut out: BTreeMap<(String, String), f64> = BTreeMap::new();
+    let mut stops: BTreeMap<(String, String), Stop> = BTreeMap::new();
+    let mut resumes: BTreeSet<String> = BTreeSet::new();
     for e in events {
         let (Some(job), Some(step)) = (e.job, e.step.as_deref()) else { continue };
         match e.kind.as_str() {
@@ -626,29 +632,43 @@ pub fn partials(
             "end" | "done" | "fail" => {
                 let named = jobs.get(&job).filter(|t| !t.is_empty()).unwrap_or(&e.targets);
                 if e.ok == Some(true) {
-                    for t in named.iter().chain(&e.targets) {
-                        out.remove(&(step.to_string(), t.clone()));
+                    let cleared = if e.targets.is_empty() { named } else { &e.targets };
+                    for t in cleared {
+                        stops.remove(&(step.to_string(), t.clone()));
                     }
                     continue;
                 }
-                let Some(p) = e.progress.as_ref().filter(|p| p.done > 0.0 && p.done < p.total && p.secs > 0.0) else {
+                let Some(p) = e.progress.as_ref().filter(|p| p.done > p.since && p.done < p.total && p.secs > 0.0)
+                else {
                     continue;
                 };
                 if e.v.is_some_and(|v| v != the_plan.cost_version(step)) {
                     continue;
                 }
-                let target = match (&p.target, named.as_slice()) {
-                    (Some(t), _) => t,
+                let key = p.target.as_deref().map(crate::coord::CostKey::parse).filter(|k| k.step == step);
+                let target = match (key, named.as_slice()) {
+                    (Some(k), _) => k.target,
                     (None, [t]) => t,
                     _ => continue,
                 };
-                let left = (p.total - p.done) * p.secs / p.done;
-                out.insert((step.to_string(), target.clone()), at(left, e.worker.as_deref(), step));
+                let at_key = (step.to_string(), target.to_string());
+                if stops.get(&at_key).is_some_and(|was| p.total < was.total || (p.since > 0.0 && p.since >= was.done)) {
+                    resumes.insert(step.to_string());
+                }
+                let s_per_unit = p.secs / (p.done - p.since);
+                stops.insert(at_key, Stop { done: p.done, total: p.total, s_per_unit, worker: e.worker.clone() });
             }
             _ => {}
         }
     }
-    out
+    stops
+        .into_iter()
+        .map(|((step, t), s)| {
+            let units = if resumes.contains(&step) { s.total - s.done } else { s.total };
+            let secs = at(units * s.s_per_unit, s.worker.as_deref(), &step);
+            ((step, t), secs)
+        })
+        .collect()
 }
 
 /// What a region's target of `step` takes (`cost_table`'s `cost`): what is left of a run that
@@ -1055,7 +1075,7 @@ impl ToCome {
 /// The forecast's code version, archived with each forecast (crate::agent::fcarchive): raised
 /// whenever a change to the run (its order, its costs, its scheduler) would move its times, so the
 /// accuracy work (`scenic forecast-check`) can tell one model's error from another's.
-pub const VERSION: u32 = 7;
+pub const VERSION: u32 = 8;
 
 /// A stretch of a lane's work of one step (a "run" of the schedule: `Runs`, the page's run
 /// numbers): from and until when (unix seconds), and how many targets. A stretch is one or more jobs as the scheduler grants them in the forecast's run, one after
@@ -1084,9 +1104,8 @@ pub struct Stretch {
 pub struct StepFc {
     pub step: String,
     pub left: usize,
-    /// Its time at the lead's pace (seconds), and how many of its targets' times are measured.
+    /// Its time at the lead's pace (seconds).
     pub work_s: u64,
-    pub known: usize,
     /// Its targets by the figure their time comes from (`Basis`): the page says it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub basis: BTreeMap<Basis, usize>,
@@ -2330,7 +2349,6 @@ pub fn forecast_by(the_plan: &'static dyn crate::agent::seam::Plan, inp: &Input,
             shared: mine.iter().any(|i| i.shared),
             left: mine.len(),
             work_s: mine.iter().map(|i| i.cost.secs).sum::<f64>().round() as u64,
-            known: mine.iter().filter(|i| i.cost.known()).count(),
             basis: mine.iter().fold(BTreeMap::new(), |mut m, i| {
                 *m.entry(i.cost.basis).or_default() += 1;
                 m
@@ -2963,65 +2981,82 @@ mod tests {
         }
     }
 
+    /// `e` as production writes a stopped job's end: not ok, its step's cost version, and its
+    /// progress: `(done, total, since, secs)`, on `target` (a cost key) if any.
     fn at_progress(
         e: crate::coord::history::Event,
         target: Option<&str>,
-        (done, total, secs): (f64, f64, f64),
+        (done, total, since, secs): (f64, f64, f64, f64),
     ) -> crate::coord::history::Event {
         let progress = crate::coord::history::Progress {
             target: target.map(str::to_string),
             done,
             total,
+            since,
             unit: "z6 tiles".into(),
             secs,
         };
-        crate::coord::history::Event { ok: Some(false), progress: Some(progress), ..e }
+        let v = e.step.as_deref().map(|s| crate::agent::seam::for_tests().cost_version(s));
+        crate::coord::history::Event { ok: Some(false), v, progress: Some(progress), ..e }
     }
 
     /// Task #1449, the first source of a target's time: a run that stopped short says how far it got
-    /// (available-bathymetry on 18 Nov: 2,169 s paused, its z6 tiles made and to make): what is left
-    /// of its total at the pace it ran, put at the lead's by its worker; its one target when its
-    /// progress names none; none of a job with several, a run of an older way, a stop that said
-    /// nothing, or a target a later job finished.
+    /// (available-bathymetry on 18 Nov: 2,169 s paused, its z6 tiles made and to make): its pace
+    /// (past what its first beat said) over what is left, put at the lead's by its worker. The
+    /// whole total where no later run showed the step resuming (it redoes its target), the rest of
+    /// it where one did. Its progress's target is a cost key of the event's step; its one target
+    /// when it names none.
     #[test]
     fn a_stopped_runs_pace_gives_the_time_left_of_its_target() {
         let plan = crate::agent::seam::for_tests();
         let none = |_: f64, _: Option<&str>, _: &str| unreachable!();
         assert!(partials(plan, &[], &none).is_empty());
         let key = |s: &str, t: &str| (s.to_string(), t.to_string());
+        let bathy = key("available", "available-bathymetry");
         let half = |s: f64, w: Option<&str>, _: &str| if w == Some("m1") { s / 0.5 } else { s };
         let at = |e: &[crate::coord::history::Event]| partials(plan, e, &half);
-        // (800 of 2,000 tiles in 2,169 s: 1,200 more at 2.711 s each.)
+        // (800 of 2,000 tiles in 2,169 s: 2.711 s each; a step not seen to resume redoes all 2,000.)
         let lease = stopped("lease", 1, "available", &["available-bathymetry"]);
-        let fail = at_progress(stopped("fail", 1, "available", &[]), None, (800.0, 2000.0, 2169.0));
-        let got = at(&[lease.clone(), fail.clone()]);
-        let left = 1200.0 * 2169.0 / 800.0;
-        assert_eq!(got.get(&key("available", "available-bathymetry")), Some(&left));
-        // (A lead's own job's "end" after its "start", on its Mac's pace: the lead's.)
+        let fail = at_progress(stopped("fail", 1, "available", &[]), None, (800.0, 2000.0, 0.0, 2169.0));
+        let redo = 2000.0 * 2169.0 / 800.0;
+        assert_eq!(at(&[lease.clone(), fail.clone()]).get(&bathy), Some(&redo));
+        // (The lead's own job's "end" on its own Mac's pace: put at the lead's.)
         let end = crate::coord::history::Event { worker: Some("m1".into()), ..fail.clone() };
         let got = at(&[crate::coord::history::Event { kind: "start".into(), ..lease.clone() }, end]);
-        assert_eq!(got.get(&key("available", "available-bathymetry")), Some(&(left / 0.5)));
-        // (Its progress's own target, of a job with several.)
+        assert_eq!(got.get(&bathy), Some(&(redo / 0.5)));
+        // (A first beat that said 300 already: the pace is of the 500 made since.)
+        let late = at_progress(stopped("fail", 1, "available", &[]), None, (800.0, 2000.0, 300.0, 1000.0));
+        assert_eq!(at(&[lease.clone(), late]).get(&bathy), Some(&(2000.0 * 1000.0 / 500.0)));
+        // (Its progress's own target, a cost key, of a job with several; another step's key ignored.)
         let two = stopped("lease", 2, "available", &["available-terrain", "available-bathymetry"]);
-        let f2 = at_progress(stopped("fail", 2, "available", &[]), Some("available-bathymetry"), (1.0, 4.0, 10.0));
-        assert_eq!(at(&[two.clone(), f2]).keys().collect::<Vec<_>>(), [&key("available", "available-bathymetry")]);
+        let named = |t| at_progress(stopped("fail", 2, "available", &[]), Some(t), (1.0, 4.0, 0.0, 10.0));
+        let got = at(&[two.clone(), named("available available-bathymetry")]);
+        assert_eq!(got.keys().collect::<Vec<_>>(), [&bathy]);
+        assert!(at(&[two.clone(), named("pack available-bathymetry")]).is_empty(), "another step's key");
         // (None of a job with several targets and no target said.)
-        let f3 = at_progress(stopped("fail", 2, "available", &[]), None, (1.0, 4.0, 10.0));
-        assert!(at(&[two, f3]).is_empty());
-        // (None of a run that said nothing, or went through its total, or of an older way of its step.)
+        assert!(at(&[two, at_progress(stopped("fail", 2, "available", &[]), None, (1.0, 4.0, 0.0, 10.0))]).is_empty());
+        // (None of a run that said nothing, one that went through its total, or one of an older way.)
         let nothing = stopped("fail", 1, "available", &[]);
-        let done = at_progress(stopped("fail", 1, "available", &[]), None, (5.0, 5.0, 10.0));
+        let all = at_progress(stopped("fail", 1, "available", &[]), None, (5.0, 5.0, 0.0, 10.0));
         let old = crate::coord::history::Event { v: Some(plan.cost_version("available") + 1), ..fail.clone() };
-        for e in [nothing, done, old] {
+        for e in [nothing, all, old] {
             assert!(at(&[lease.clone(), e]).is_empty());
         }
-        // (A later run that ended well clears it, one that stopped again replaces it.)
-        let again = at_progress(stopped("fail", 3, "available", &[]), Some("available-bathymetry"), (1.0, 2.0, 100.0));
+        // (A later run of it that counted a smaller total shows the step resuming: what is left.)
         let l3 = stopped("lease", 3, "available", &["available-bathymetry"]);
+        let again = at_progress(stopped("fail", 3, "available", &[]), None, (500.0, 1200.0, 0.0, 1000.0));
         let got = at(&[lease.clone(), fail.clone(), l3.clone(), again]);
-        assert_eq!(got.get(&key("available", "available-bathymetry")), Some(&100.0));
-        let ok = crate::coord::history::Event { ok: Some(true), ..stopped("done", 3, "available", &[]) };
-        assert!(at(&[lease, fail, l3, ok]).is_empty());
+        assert_eq!(got.get(&bathy), Some(&(700.0 * 1000.0 / 500.0)));
+        // (A run that ended well clears its finished targets: all its job's when it lists none, only
+        // those it lists otherwise; and a not-ok "done" keeps the stop of what it didn't finish.)
+        let ok = |t: &[&str]| crate::coord::history::Event { ok: Some(true), ..stopped("done", 3, "available", t) };
+        assert!(at(&[lease.clone(), fail.clone(), l3.clone(), ok(&[])]).is_empty());
+        assert!(at(&[lease.clone(), fail.clone(), l3.clone(), ok(&["available-bathymetry"])]).is_empty());
+        let got = at(&[lease.clone(), fail.clone(), l3, ok(&["available-terrain"])]);
+        assert_eq!(got.get(&bathy), Some(&redo), "a done of another target leaves the stop");
+        let not_ok = crate::coord::history::Event { ok: Some(false), ..stopped("done", 1, "available", &[]) };
+        let member_done = at_progress(not_ok, None, (800.0, 2000.0, 0.0, 2169.0));
+        assert_eq!(at(&[lease, member_done]).get(&bathy), Some(&redo), "a member's stopped \"done\" too");
     }
 
     /// Task #1449: a target's time comes from its stopped run, else its own run, else the nearest

@@ -1579,12 +1579,12 @@ function stageCard(m, l, whole = true) {
     ["Note", l.note],
   ]);
 }
+// Where a target's forecast time comes from (the forecast's `Basis`), in the step card's words.
+const BASIS = { partial: ["stopped run", "stopped runs"], own: ["own run", "own runs"], here: ["recent job", "recent jobs"], sibling: ["step mean", "step means"], guess: ["guess", "guesses"] };
 
 // A step's card: its targets done and left (stat tiles, a bar), what it makes, its kind and scope,
 // where it runs, its first guess of memory, its forecast (work left, done ≈, time a target); its
 // time by phase as chips.
-// Where a target's forecast time comes from (the forecast's `Basis`), in the step card's words.
-const BASIS = { partial: "from a stopped run's pace", own: "from its own run", sibling: "from its step's mean", here: "from the lead's recent jobs of its step", guess: "a first guess" };
 function stepCard(m, it) {
   const row = S.row(it.step);
   const f = m.fc?.steps.find((s) => s.step === it.step);
@@ -1602,7 +1602,7 @@ function stepCard(m, it) {
     ["Work left", !done && f?.work_s ? dur(f.work_s) : null],
     ["Done ≈", !done && f?.done_at ? clock(f.done_at) : null],
     ["A target", each ? `≈ ${dur(each)}` : null],
-    ["Times from", !done && f?.basis ? Object.entries(f.basis).map(([b, k]) => `${k} ${BASIS[b] || b}`).join(", ") : null],
+    ["Times from", !done && f?.basis ? Object.entries(f.basis).map(([b, k]) => `${k} ${(BASIS[b] || [b, b])[k === 1 ? 0 : 1]}`).join(" · ") : null],
     ["Safe points", overWords(ps?.over_bound, ps?.runs)],
   ]);
 }

@@ -967,16 +967,22 @@ impl Pace {
         ran.into_iter().filter(|(_, (_, secs))| *secs > 0.0).map(|(u, (n, secs))| (u, n / secs)).collect()
     }
 
-    /// Where its progress stood: the part under way's most done of its total, and how long it ran
-    /// (to its last beat); None when it never said its progress or the part reached its total (a
-    /// job stopped short only if it didn't).
+    /// Where its progress stood: the part under way's most done of its total, what it had said at
+    /// its first beat (`since`: a resumed run's, or a total changed), and the time from there (from
+    /// the beat before it when it said none yet) to its last beat; None when it never said its
+    /// progress or the part reached its total (a job stopped short only if it didn't).
     pub fn stopped_at(&self) -> Option<crate::coord::history::Progress> {
         let p = self.part.as_ref().filter(|p| p.best < p.total)?;
-        let secs = p.beats.back().map_or(p.since, |b| b.0).saturating_duration_since(p.since).as_secs_f64();
+        let (from, since) = match p.beats.front() {
+            Some(&(t, b)) if b > 0.0 => (t, b),
+            _ => (p.since, 0.0),
+        };
+        let secs = p.beats.back().map_or(from, |b| b.0).saturating_duration_since(from).as_secs_f64();
         Some(crate::coord::history::Progress {
             target: p.target.clone(),
             done: p.best,
             total: p.total,
+            since,
             unit: p.unit.clone(),
             secs,
         })
@@ -1403,7 +1409,10 @@ mod tests {
         // (Where it stood: its part under way's most of its total, over the time that part ran; the
         // "fail" of a job stopped says only that.)
         let at_end = l.pace.stopped_at().expect("its part under way hadn't reached its total");
-        assert_eq!((at_end.done, at_end.total, at_end.unit.as_str(), at_end.secs), (12.0, 100.0, "tiles", 240.0));
+        assert_eq!(
+            (at_end.done, at_end.total, at_end.since, at_end.unit.as_str(), at_end.secs),
+            (12.0, 100.0, 10.0, "tiles", 180.0)
+        );
         assert_eq!(e.progress.as_ref(), Some(&at_end));
         let f = l.stopped(crate::coord::history::Event::new("fail"));
         assert_eq!((f.progress.as_ref(), f.rates.is_empty(), f.gap_s), (Some(&at_end), true, None));

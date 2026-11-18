@@ -990,7 +990,7 @@ runs on (its own lapsed, or lost to a lead's restart), carries the run's id (`le
 
 The lead's coordinator's file, on its disk: a line an event (`history::Event` as JSON: `{seq, t,
 kind, worker?, job?, step?, targets?, secs?, ok?, what?, note?, n?, data?, after?, v?, still_s?,
-rates?, gap_s?, threads?, progress?, noted?}`, each absent when empty; `progress: {target?, done, total, unit, secs}` on the "end" or "fail" of a job that stopped short, its last part's progress line as it stood (docs/building.md, The forecast); `noted: {member, process, n}` on an
+rates?, gap_s?, threads?, progress?, noted?}`, each absent when empty; `progress: {target?, done, total, since?, unit, secs}` on the "end", "done" or "fail" of a job that stopped short (not ok, a member's "done" among them), its last part's progress line as it stood: `target` a cost key, `since` what its first beat said already, `secs` the time from there (docs/building.md, The forecast); `v` on "fail" too; `noted: {member, process, n}` on an
 event a member noted, the note it was), appended as it happens (no `fsync`), rewritten
 whole (a temporary name, renamed over it) with its lines of the last 7 days once it holds twice the
 events kept and a thousand more; `seq` rises by one an event, across the coordinator's restarts

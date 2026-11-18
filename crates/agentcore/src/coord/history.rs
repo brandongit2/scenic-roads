@@ -86,8 +86,8 @@ pub struct Event {
     /// task #791 have none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<u64>,
-    /// The way its step ran (crate::coord::cost_version, the lead's code's), on an "end" or "done"
-    /// of a step: two runs of a target compare (crate::paces) only when it's the same. Events
+    /// The way its step ran (crate::coord::cost_version, the lead's code's), on an "end", "done" or "fail"
+    /// of a step (a stopped run's progress is read only of the way its step runs now, `forecast::partials`): two runs of a target compare (crate::paces) only when it's the same. Events
     /// before task #926 have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub v: Option<u32>,
@@ -126,16 +126,22 @@ pub struct Event {
 }
 
 /// Where a job's progress stood as it stopped (`Event::progress`): its last part (the target under
-/// way, as its progress line's view said, if any) had made `done` of `total` of its `unit` in
-/// `secs` of the job's time.
+/// way, as its progress line's view said: a cost key, "<step> <target>", if any) stood at `done` of
+/// `total` of its `unit`, having made `done` less `since` (what its first beat said already) in `secs`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Progress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub done: f64,
     pub total: f64,
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub since: f64,
     pub unit: String,
     pub secs: f64,
+}
+
+fn is_zero_f(x: &f64) -> bool {
+    *x == 0.0
 }
 
 /// The fewest jobs a step's usual pace is taken from (`History::paces`): its 10th and 90th
@@ -668,7 +674,7 @@ impl History {
         if matches!(e.kind.as_str(), "start" | "lease") && e.after.is_empty() {
             e.after = self.after(e.step.as_deref().unwrap_or(""), &e.targets);
         }
-        if matches!(e.kind.as_str(), "end" | "done") && e.v.is_none() {
+        if matches!(e.kind.as_str(), "end" | "done" | "fail") && e.v.is_none() {
             e.v = e.step.as_deref().map(|s| self.the_plan.cost_version(s));
         }
         if finished(&e) {

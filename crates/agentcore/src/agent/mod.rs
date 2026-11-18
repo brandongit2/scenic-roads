@@ -18505,7 +18505,8 @@ mod membership_tests {
             (0..10).map(|i| (key(&format!("10/{i}/0")), run(100))).collect();
         runs.push((key("10/98/0"), run(10)));
         co.add_costs(&runs);
-        // (10/95/0 ran for 600 s and made 100 of 400 z6 tiles before its job was paused.)
+        // (10/95/0 ran for 600 s and made 100 of 400 z6 tiles before its job was paused: 6 s a tile,
+        // all 400 again, no run of the step having shown it resume.)
         let job = jobrt::jobid::JobId { epoch: 1, n: 7 };
         let ev = |kind: &str| crate::coord::history::Event {
             job: Some(job),
@@ -18516,10 +18517,12 @@ mod membership_tests {
         co.note(crate::coord::history::Event {
             ok: Some(false),
             secs: Some(600.0),
+            v: Some(v),
             progress: Some(crate::coord::history::Progress {
-                target: None,
+                target: Some(key("10/95/0")),
                 done: 100.0,
                 total: 400.0,
+                since: 0.0,
                 unit: "z6 tiles".into(),
                 secs: 600.0,
             }),
@@ -18548,7 +18551,7 @@ mod membership_tests {
         };
         let rec = forecast_of(&mut a);
         let c = &rec.input.costs;
-        assert_eq!((c["terrain-deep"]["10/95/0"].basis, c["terrain-deep"]["10/95/0"].secs), (Basis::Partial, 1800.0));
+        assert_eq!((c["terrain-deep"]["10/95/0"].basis, c["terrain-deep"]["10/95/0"].secs), (Basis::Partial, 2400.0));
         let own = c["terrain-deep"]["10/98/0"];
         assert_eq!(own.basis, Basis::Own);
         let step = &c["terrain-deep"]["10/97/0"];
@@ -18570,7 +18573,78 @@ mod membership_tests {
         let f = rec.forecast(plan);
         let s = f.steps.iter().find(|s| s.step == "terrain-deep").expect("its step's work left");
         assert_eq!(s.basis, [(Basis::Partial, 1), (Basis::Own, 1), (Basis::Sibling, 1)].into_iter().collect());
-        assert_eq!(s.known, 2);
+    }
+
+    /// Task #1449: a step the lead's chains run (`available`, not shared: costed as the lead's own
+    /// job, `mine`) takes each target's stopped run too: available-bathymetry's 2,169 s on 18 Nov
+    /// made 800 of 2,000 z6 tiles, and the forecast counted the step's guess of 300 s.
+    #[test]
+    fn a_chain_jobs_stopped_target_is_costed_by_its_stopped_run() {
+        use crate::agent::forecast::Basis;
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = agent_dry(&store::nasfs::NasRoot::local_for_test(&r), &d.path().join("home"));
+        let co = crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0;
+        let plan = crate::agent::seam::for_tests();
+        assert!(!plan.shared().contains(&"available"), "the case: a step the lead's chains run");
+        let job = jobrt::jobid::JobId { epoch: 1, n: 9 };
+        let ev = |kind: &str| crate::coord::history::Event {
+            job: Some(job),
+            step: Some("available".into()),
+            ..crate::coord::history::Event::new(kind)
+        };
+        co.note(crate::coord::history::Event {
+            targets: vec!["available-terrain".into(), "available-bathymetry".into()],
+            ..ev("start")
+        });
+        co.note(crate::coord::history::Event {
+            ok: Some(false),
+            secs: Some(2169.0),
+            v: Some(plan.cost_version("available")),
+            progress: Some(crate::coord::history::Progress {
+                target: Some("available available-bathymetry".into()),
+                done: 800.0,
+                total: 2000.0,
+                since: 0.0,
+                unit: "z6 tiles".into(),
+                secs: 2000.0,
+            }),
+            ..ev("end")
+        });
+        a.coord = Some(std::sync::Arc::new(co));
+        let polar = vec![jobs::Work {
+            step: "available".into(),
+            targets: vec![("available-terrain".into(), "k1".into()), ("available-bathymetry".into(), "k2".into())],
+        }];
+        let chains = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), polar];
+        let mut forecast_of = |a: &mut Agent| {
+            a.planner().forecast_record(&[], &[], &[], &[], chains.clone(), &[], None, &Default::default(), &|_, _| 0)
+        };
+        let rec = forecast_of(&mut a);
+        let job = rec.input.chains.iter().find(|j| j.0 == "available").expect("the chain's job");
+        // (2,000 tiles at 2.5 s, and the other target at the step's guess.)
+        assert_eq!(job.2.secs, 2000.0 * 2.5 + first_secs("available"), "{job:?}");
+        assert_eq!(job.2.basis, Basis::Guess, "one target of two stopped: the rest's figure");
+        // (Both stopped: all of it from their runs.)
+        let rec = {
+            let polar = vec![jobs::Work {
+                step: "available".into(),
+                targets: vec![("available-bathymetry".into(), "k2".into())],
+            }];
+            a.planner().forecast_record(
+                &[],
+                &[],
+                &[],
+                &[],
+                [Vec::new(), Vec::new(), Vec::new(), Vec::new(), polar],
+                &[],
+                None,
+                &Default::default(),
+                &|_, _| 0,
+            )
+        };
+        let job = rec.input.chains.iter().find(|j| j.0 == "available").expect("the chain's job");
+        assert_eq!((job.2.secs, job.2.basis), (5000.0, Basis::Partial));
     }
 
     /// Task #1393: a held catalogue is the forecast's `catalog-held`, as its job is granted, never
