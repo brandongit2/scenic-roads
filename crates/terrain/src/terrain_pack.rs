@@ -1748,6 +1748,7 @@ fn blocks(z: u8, tiles: &[(u32, u32)], up: u8) -> Vec<Vec<(u32, u32)>> {
 /// `sets`): those built (`Fill::Child`).
 pub fn piece_levels(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
     let (tx, ty) = t;
+    let cov = &buildstore::coverage::near_part(cov, 6, tx, ty);
     (9..=12u8)
         .rev()
         .map(|z| {
@@ -1765,17 +1766,20 @@ pub fn piece_levels(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, 
 /// z6 can still have none of its z9 tiles near it (6/21/18), or none whose place reaches z9. Its z9
 /// tiles near the coverage once per coverage version and z6 tile (`Coverage::kept`).
 pub fn makes_hi(cov: &Coverage, sets: &[crate::terrain_zoom::Set], t: (u32, u32)) -> bool {
+    let part = std::cell::OnceCell::new();
+    let part = || part.get_or_init(|| buildstore::coverage::near_part(cov, 6, t.0, t.1));
     let near = {
         let kept = cov.kept();
         let got = kept.makes_hi.lock().unwrap().get(&t).copied();
         got.unwrap_or_else(|| {
-            let v = (t.0 * 8..t.0 * 8 + 8).any(|x| (t.1 * 8..t.1 * 8 + 8).any(|y| near_coverage(cov, 9, x, y)));
+            let v = (t.0 * 8..t.0 * 8 + 8).any(|x| (t.1 * 8..t.1 * 8 + 8).any(|y| near_coverage(part(), 9, x, y)));
             kept.makes_hi.lock().unwrap().insert(t, v);
             v
         })
     };
     near && (t.0 * 8..t.0 * 8 + 8).any(|x| {
-        (t.1 * 8..t.1 * 8 + 8).any(|y| crate::terrain_zoom::finest(sets, 9, x, y) >= 9 && near_coverage(cov, 9, x, y))
+        (t.1 * 8..t.1 * 8 + 8)
+            .any(|y| crate::terrain_zoom::finest(sets, 9, x, y) >= 9 && near_coverage(part(), 9, x, y))
     })
 }
 

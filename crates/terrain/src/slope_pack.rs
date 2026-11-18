@@ -1172,11 +1172,7 @@ pub fn deep_mid_tile(l: &str) -> Option<(u32, u32)> {
 
 /// The deep mids the manifest names under z6 tile `t`, by z10 tile.
 pub fn deep_mids_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
-    let k = PACK_Z - 6;
-    m.range(DEEP_MID_PREFIX.to_string()..)
-        .take_while(|(l, _)| l.starts_with(DEEP_MID_PREFIX))
-        .filter_map(|(l, c)| deep_mid_tile(l).filter(|f| (f.0 >> k, f.1 >> k) == t).map(|f| (f, c.clone())))
-        .collect()
+    crate::terrain_deep::named_z10_under(m, t, deep_mid_logical)
 }
 
 /// The deep mids' format (1: a z10 tile's quadrant and its z10–12 tiles, before task #952).

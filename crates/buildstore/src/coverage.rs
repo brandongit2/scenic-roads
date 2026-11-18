@@ -6,9 +6,11 @@
 //! its bounding box. Every cell knows whether its centre is inside and which edges cross it (or pass
 //! within the buffer), so a point test reads one cell: the centre's state, flipped by each of the
 //! cell's edges crossing the segment from the centre to the point, then the buffer's distance to the
-//! cell's edges. Building a grid costs one pass over the edges plus a scanline per row. A box test (which
-//! edges meet a box: `Shape::meets_rect`, `covers_rect`, `fingerprint`) reads the shape's edge tree
-//! instead (`EdgeTree`: boxes of runs of edges along the rings), only where its boxes meet the box.
+//! cell's edges; a cell listing more than `TREE_PAST` edges (a long coast's) is read through the edge
+//! tree instead, only the edges near the segment or the point. Building a grid costs one pass over the
+//! edges plus a scanline per row. A box test (which edges meet a box: `Shape::meets_rect`,
+//! `covers_rect`, `inside_box`, `contains_box`, `fingerprint`) reads the shape's edge tree (`EdgeTree`:
+//! boxes of runs of edges along the rings), only where its boxes meet the box.
 //! What a whole coverage's tiles are is kept by its version ([`Kept`]). A coverage read from its
 //! kept file ([`from_kept`]) holds its shapes' arrays in place, the file mapped (`Slab`).
 //!
@@ -25,6 +27,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[cfg(any(test, feature = "testkit"))]
 use std::path::Path;
+
+/// A point test reads its cell's edges from the cell's list up to this many, else from the edge tree
+/// (`Shape::inside`, `near_edge`): on a long coast a cell lists thousands, of which the tree reads
+/// the few near the point (task #1457: the coverage's answers to rail's points and rail-feeds'
+/// countries were minutes of the first plan after each start). Either reads the same edges' answers.
+const TREE_PAST: usize = 64;
 
 /// Metres per E7 unit of latitude (and of longitude at the equator).
 const M_PER_E7: f64 = roadcore::geo::M_PER_DEG * 1e-7;
@@ -415,7 +423,10 @@ impl Shape {
         cy * g.nx + cx
     }
 
-    /// Whether `p` (E7) is inside the rings (even–odd), the buffer aside.
+    /// Whether `p` (E7) is inside the rings (even–odd), the buffer aside: its cell's centre's state,
+    /// flipped by each edge crossing the segment from the centre to `p`. Those edges are read from
+    /// the cell's list when it's short, else from the edge tree, only where its boxes meet the
+    /// segment's box (`TREE_PAST`): the same edges cross either way.
     pub fn inside(&self, p: [i32; 2]) -> bool {
         if p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
             return false;
@@ -426,11 +437,30 @@ impl Shape {
         let centre = [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
         let pp = [p[0] as i64, p[1] as i64];
         let mut ins = bit(&g.centre, c);
-        for &e in g.edges(c) {
+        let mut flip = |e: u32| {
             let (a, b) = self.rings.edge(e);
             if segments_cross(centre, pp, [a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64]) {
                 ins = !ins;
             }
+        };
+        let listed = g.edges(c);
+        if listed.len() <= TREE_PAST {
+            listed.iter().for_each(|&e| flip(e));
+        } else {
+            let rg = [centre[0].min(pp[0]), centre[1].min(pp[1]), centre[0].max(pp[0]), centre[1].max(pp[1])];
+            self.tree.runs_meeting(rg, &mut |first, n| {
+                for e in first..first + n {
+                    let (a, b) = self.rings.edge(e);
+                    if (a[0].max(b[0]) as i64) >= rg[0]
+                        && (a[0].min(b[0]) as i64) <= rg[2]
+                        && (a[1].max(b[1]) as i64) >= rg[1]
+                        && (a[1].min(b[1]) as i64) <= rg[3]
+                    {
+                        flip(e);
+                    }
+                }
+                false
+            });
         }
         ins
     }
@@ -478,10 +508,19 @@ impl Shape {
         let (g, c) = (&self.grid, self.cell(p));
         let kx = M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().dcos();
         let lim = self.buffer_m * self.buffer_m;
-        g.edges(c).iter().any(|&e| {
+        let near = |e: u32| {
             let (a, b) = self.rings.edge(e);
             dist2_m(p, a, b, kx) <= lim
-        })
+        };
+        let listed = g.edges(c);
+        if listed.len() <= TREE_PAST {
+            return listed.iter().any(|&e| near(e));
+        }
+        // (An edge within the buffer has a point within the buffer along each axis: in the box of
+        // `p` grown by it, at `p`'s latitude, a unit over for rounding.)
+        let (bx, by) = ((self.buffer_m / kx).ceil() as i64 + 1, (self.buffer_m / M_PER_E7).ceil() as i64 + 1);
+        let rg = [p[0] as i64 - bx, p[1] as i64 - by, p[0] as i64 + bx, p[1] as i64 + by];
+        self.tree.runs_meeting(rg, &mut |first, n| (first..first + n).any(near))
     }
 
     /// Whether the box w, s, e, n (E7, edges included) meets the shape or its buffer (the buffer
@@ -506,6 +545,28 @@ impl Shape {
         }
         self.edges_meeting([r[0] as i64, r[1] as i64, r[2] as i64, r[3] as i64], &mut |_, _, _| true)
             || self.inside([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
+    }
+
+    /// Whether the points of the box w, s, e, n (E7, edges included) are inside the rings (the
+    /// buffer aside, `inside`), when it's one answer for them all: no edge meets the box. None
+    /// when one does.
+    pub fn inside_box(&self, r: [i32; 4]) -> Option<bool> {
+        if r[0] > self.bbox[2] || r[2] < self.bbox[0] || r[1] > self.bbox[3] || r[3] < self.bbox[1] {
+            return Some(false);
+        }
+        let rg = [r[0] as i64, r[1] as i64, r[2] as i64, r[3] as i64];
+        (!self.edges_meeting(rg, &mut |_, _, _| true)).then(|| self.inside([r[0], r[1]]))
+    }
+
+    /// Whether the points of the box w, s, e, n (E7, edges included) are in the shape
+    /// (`contains`), when it's one answer for them all: no edge comes within the buffer of the box
+    /// (the box grown by it, `grown`), so none of its points is near one and all are inside or
+    /// all outside. None when one does.
+    pub fn contains_box(&self, r: [i32; 4]) -> Option<bool> {
+        if r[0] > self.bbox[2] || r[2] < self.bbox[0] || r[1] > self.bbox[3] || r[3] < self.bbox[1] {
+            return Some(false);
+        }
+        (!self.edges_meeting(self.grown(r), &mut |_, _, _| true)).then(|| self.inside([r[0], r[1]]))
     }
 
     /// Whether every point of the box w, s, e, n (E7) is inside the rings (the buffer aside): no
@@ -866,26 +927,46 @@ impl EdgeTree {
     /// `Shape::edges_meeting` of `rings` (the rings it was made from): each edge (not of a
     /// point twice) meeting `rg` once, until `f` returns true; whether it did.
     fn meeting(&self, rings: &Rings, rg: [i64; 4], f: &mut dyn FnMut(u32, [i32; 2], [i32; 2]) -> bool) -> bool {
+        self.runs_meeting(rg, &mut |first, n| {
+            (first..first + n).any(|e| {
+                let (a, b) = rings.edge(e);
+                a != b && segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f(e, a, b)
+            })
+        })
+    }
+
+    /// Calls `f` with each run (its first edge and how many) whose box meets `rg`, in the tree's
+    /// order, until it returns true; whether one did. Its stack on the stack, no allocation (a point
+    /// test reads it: `Shape::inside`, `near_edge`): read depth first, it holds at most `FAN` boxes
+    /// a level.
+    fn runs_meeting(&self, rg: [i64; 4], f: &mut impl FnMut(u32, u32) -> bool) -> bool {
         let meets =
             |b: &[i32; 4]| b[0] as i64 <= rg[2] && b[2] as i64 >= rg[0] && b[1] as i64 <= rg[3] && b[3] as i64 >= rg[1];
         let top = self.levels.len() - 1;
-        let mut stack: Vec<(usize, usize)> = (0..self.levels[top].len()).rev().map(|i| (top, i)).collect();
-        while let Some((k, i)) = stack.pop() {
+        // (A u32 a run: under 4 billion runs, 11 levels; 16 kept room for.)
+        let mut stack = [(0u8, 0u32); Self::FAN * 16];
+        assert!(self.levels.len() <= 16, "an edge tree of {} levels", self.levels.len());
+        let mut n = 0;
+        for i in (0..self.levels[top].len()).rev() {
+            stack[n] = (top as u8, i as u32);
+            n += 1;
+        }
+        while n > 0 {
+            n -= 1;
+            let (k, i) = (stack[n].0 as usize, stack[n].1 as usize);
             if !meets(&self.levels[k][i]) {
                 continue;
             }
             if k > 0 {
                 let below = self.levels[k - 1].len();
-                stack.extend((i * Self::FAN..((i + 1) * Self::FAN).min(below)).rev().map(|j| (k - 1, j)));
+                for j in (i * Self::FAN..((i + 1) * Self::FAN).min(below)).rev() {
+                    stack[n] = ((k - 1) as u8, j as u32);
+                    n += 1;
+                }
                 continue;
             }
-            let first = self.first[i];
-            for e in first..first + self.count[i] as u32 {
-                let (a, b) = rings.edge(e);
-                if a != b && segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f(e, a, b)
-                {
-                    return true;
-                }
+            if f(self.first[i], self.count[i] as u32) {
+                return true;
             }
         }
         false
@@ -1602,6 +1683,25 @@ pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32) -> bool {
     cov.meets_rect(roadcore::geo::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM))
 }
 
+/// The part of `cov` near tile `z`/`x`/`y`: its shapes whose box meets the tile grown by a
+/// kilometre past `roadcore::geo::NEAR_COVERAGE_KM` (the regions with no land left out), which
+/// answers `near_coverage` of the tile and of every tile under it as `cov` does (a shape whose box
+/// misses that answers none of them). Asking it, not the coverage, a z6 tile's thousands of z9–16
+/// tiles each scan the few shapes near it, not all of them (task #1457: thousands of shapes, the
+/// first plan's terrain targets a minute and a half).
+pub fn near_part(cov: &Coverage, z: u8, x: u32, y: u32) -> Coverage {
+    let b = roadcore::geo::grown_e7(z, x, y, roadcore::geo::NEAR_COVERAGE_KM + 1.0);
+    Coverage {
+        shapes: cov
+            .shapes
+            .iter()
+            .filter(|s| s.bbox[0] <= b[2] && s.bbox[2] >= b[0] && s.bbox[1] <= b[3] && s.bbox[3] >= b[1])
+            .cloned()
+            .collect(),
+        depth_only: Vec::new(),
+    }
+}
+
 /// The z6 tiles near the coverage (`roadcore::geo::NEAR_COVERAGE_KM`), by z3 pack; once per coverage version (`Coverage::kept`).
 pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
     cov.kept().tiles.get_or_init(|| coverage_tiles_made(cov)).clone()
@@ -1915,6 +2015,105 @@ mod tests {
         }
         // No rings: nothing meets.
         assert!(edges_by_tree(&Shape::new("e".into(), vec![], 0.0), [0, 0, 10, 10]).is_empty());
+    }
+
+    /// Task #1457: a point test reads a dense cell's edges from the edge tree (`TREE_PAST`) and
+    /// answers as reading the cell's list does: inside, and within the buffer. A jagged ring of many
+    /// points (cells of hundreds of edges along it), a hole, buffered and not; points all over, many
+    /// near the ring.
+    #[test]
+    fn a_dense_cells_point_tests_read_the_tree_as_its_list() {
+        let n = 300_000u64;
+        let mut ring: Vec<[i32; 2]> = (0..n)
+            .map(|i| {
+                let a = i as f64 / n as f64 * std::f64::consts::TAU;
+                let r = 2.0 + 0.02 * ((i * 7919) % 13) as f64 / 13.0;
+                e7(10.0 + r * a.dcos(), 50.0 + r * a.dsin())
+            })
+            .collect();
+        ring.push(ring[0]);
+        let hole = vec![e7(10.0, 50.0), e7(10.5, 50.0), e7(10.5, 50.5), e7(10.0, 50.5), e7(10.0, 50.0)];
+        let mut seed = 99u64;
+        let mut rnd = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as f64 / (1u64 << 31) as f64
+        };
+        let mut points: Vec<[i32; 2]> = (0..20_000).map(|_| e7(7.5 + 5.0 * rnd(), 47.5 + 5.0 * rnd())).collect();
+        // (Near the ring: within a few km of it, either side.)
+        for _ in 0..40_000 {
+            let a = rnd() * std::f64::consts::TAU;
+            let r = 2.0 + 0.06 * (rnd() - 0.5);
+            points.push(e7(10.0 + r * a.dcos(), 50.0 + r * a.dsin()));
+        }
+        for buffer in [0.0, 1000.0] {
+            let s = Shape::new("t".into(), vec![ring.clone(), hole.clone()], buffer);
+            let g = &s.grid;
+            let dense = (0..g.nx * g.ny).filter(|&c| g.edges(c).len() > TREE_PAST).count();
+            assert!(dense > 100, "{dense} cells past TREE_PAST");
+            let kx = |p: [i32; 2]| M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().dcos();
+            let (mut ins, mut near) = (0, 0);
+            for &p in &points {
+                // (As the cell's list answers: its centre's state flipped by its edges crossing.)
+                let (want_in, want_near) =
+                    if p[0] < s.bbox[0] || p[0] > s.bbox[2] || p[1] < s.bbox[1] || p[1] > s.bbox[3] {
+                        (false, false)
+                    } else {
+                        let c = s.cell(p);
+                        let (cx, cy) = (c % g.nx, c / g.nx);
+                        let centre =
+                            [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
+                        let mut i = bit(&g.centre, c);
+                        let mut nr = false;
+                        for &e in g.edges(c) {
+                            let (a, b) = s.rings.edge(e);
+                            if segments_cross(
+                                centre,
+                                [p[0] as i64, p[1] as i64],
+                                [a[0] as i64, a[1] as i64],
+                                [b[0] as i64, b[1] as i64],
+                            ) {
+                                i = !i;
+                            }
+                            nr |= buffer > 0.0 && dist2_m(p, a, b, kx(p)) <= buffer * buffer;
+                        }
+                        (i, nr)
+                    };
+                assert_eq!(s.inside(p), want_in, "inside at {p:?}, buffer {buffer}");
+                assert_eq!(s.near_edge(p), want_near, "near at {p:?}, buffer {buffer}");
+                ins += want_in as usize;
+                near += want_near as usize;
+            }
+            assert!(ins > 10_000 && (buffer == 0.0 || near > 1_000), "{ins} inside, {near} near");
+        }
+    }
+
+    /// `near_part` answers `near_coverage` of a tile and of every tile under it as the whole
+    /// coverage does, with only the shapes near it.
+    #[test]
+    fn a_tiles_near_part_answers_as_the_coverage() {
+        let cov = Coverage {
+            shapes: [(10.0, 50.0, 60.0), (11.5, 50.3, 5.0), (30.0, 10.0, 100.0), (9.0, 48.0, 1.0)]
+                .iter()
+                .enumerate()
+                .map(|(i, &(lon, lat, km))| Shape::new(format!("r{i}: c"), vec![fixture_circle(lon, lat, km)], 1000.0))
+                .collect(),
+            ..Default::default()
+        };
+        let mut asked = 0;
+        for (x, y) in [(33, 21), (33, 22), (34, 21), (32, 22), (37, 30)] {
+            let part = near_part(&cov, 6, x, y);
+            assert!(part.shapes.len() < cov.shapes.len());
+            for z in 6..=12u8 {
+                let k = z - 6;
+                for tx in x << k..(x + 1) << k {
+                    for ty in y << k..(y + 1) << k {
+                        assert_eq!(near_coverage(&part, z, tx, ty), near_coverage(&cov, z, tx, ty), "{z}/{tx}/{ty}");
+                        asked += near_coverage(&cov, z, tx, ty) as usize;
+                    }
+                }
+            }
+        }
+        assert!(asked > 1000, "{asked} near");
     }
 
     #[test]

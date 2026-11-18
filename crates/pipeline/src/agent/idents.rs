@@ -326,13 +326,14 @@ pub fn bld_sources(_t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     }
 }
 
-/// What a terrain z6 tile's run reads of the coverage (task #832, `build::piece_coverage`: the
-/// tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (terrain::terrain_deep::Deep::coverage).
+/// What a terrain z6 tile's run reads of the coverage (task #832, terrain::terrain_deep::Deep::piece:
+/// the tiles of its levels it makes); a terrain-deep z10 tile's, its levels' (`Deep::coverage`);
+/// both kept by the coverage's version and the declared sets (agent::tiles::TerrainTiles::deep).
 /// None while the declared datasets can't be read.
 pub fn coverage_piece(t: &str, x: &KeyCtx) -> Option<Vec<String>> {
     let u = TileId::parse(t)?;
     Some(vec![match u.z {
-        6 => super::build::piece_coverage(x.cov, &x.tiles.zoom_sets(x.m)?, (u.x, u.y)),
+        6 => x.tiles.deep(x.m, x.cov)?.piece((u.x, u.y)).to_string(),
         z if z == terrain::terrain_deep::PACK_Z => x.tiles.deep(x.m, x.cov)?.coverage((u.x, u.y)),
         _ => return None,
     }])

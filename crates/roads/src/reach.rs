@@ -52,6 +52,18 @@ impl LongWay {
     /// as it will there.
     pub fn touches(&self, cov: &Coverage, sp: &dyn Spacing) -> bool {
         let Some(&first) = self.verts.first() else { return false };
+        let mut b = [first[0], first[1], first[0], first[1]];
+        for p in &self.verts {
+            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+        }
+        // (No shape's box meets the way's: no point of it is in, nothing digested. The plan asks
+        // it of every region's coverage, a region far from most ways: task #1457.)
+        let near = |s: &&buildstore::coverage::Shape| {
+            b[0] <= s.bbox[2] && b[2] >= s.bbox[0] && b[1] <= s.bbox[3] && b[3] >= s.bbox[1]
+        };
+        if !cov.shapes.iter().any(|s| near(&s)) {
+            return false;
+        }
         let spacing = sp.at(first);
         // (Each shape's answer kept for these points: buildstore::coverage's `Memo`.)
         let mut d = blake3::Hasher::new();
@@ -59,11 +71,7 @@ impl LongWay {
         d.update(&spacing.to_le_bytes());
         d.update(bytemuck::cast_slice(&self.verts));
         let key: [u8; 32] = d.finalize().into();
-        let mut b = [first[0], first[1], first[0], first[1]];
-        for p in &self.verts {
-            b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
-        }
-        cov.shapes.iter().any(|s| s.touches_way(&key, b, || self.points(spacing)))
+        cov.shapes.iter().filter(near).any(|s| s.touches_way(&key, b, || self.points(spacing)))
     }
 
     /// The points `touches` tests, in the box of its nodes: its nodes, and between them every

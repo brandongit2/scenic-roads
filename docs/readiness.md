@@ -138,7 +138,7 @@ store's read log, #866's `outside` machinery, must be a subset of the declared r
 
 `Input` identities are named by what the run cuts, never by a broader proxy. The coverage is
 `in coverage:<cut> <digest>`, where `<cut>` is how the step reads it: `piece` (#832's
-`piece_coverage`: the z9–12 tiles near the coverage), `inside` (trees: the coverage in the tile),
+`terrain_deep::Deep::piece`: the z9–12 tiles near the coverage), `inside` (trees: the coverage in the tile),
 `ways` (unit: as its ways meet it), `shapes` (bldtiles: `Coverage::shapes_key`), `cover` (the
 heritage jobs and rail: `landmarks::heritage::cover_key`), `asked` (rail-feeds, rail,
 timetables-todo, bld-fetch: the coverage's answers where the run asked, `buildstore::asked`,
@@ -156,7 +156,7 @@ re-keyed, not rebuilt (§6). "Changes" means the set of inputs differs.
 | Step | Today (docs/steps.md §12) | Derived reads | Change, and why |
 |---|---|---|---|
 | terrain-water | water pin + each depth target's reads | `in water-pin`, `in water-wants` | same inputs |
-| pyramids-fill | `pyramids::V`, tile, coverage 20 km fingerprint, pyramids' lines, deep targets | versions; `in coverage:piece`, `in pyramids`, `Targets terrain-deep` (identity: the target list, `in deep-targets`) | changes: #832's `piece_coverage` |
+| pyramids-fill | `pyramids::V`, tile, coverage 20 km fingerprint, pyramids' lines, deep targets | versions; `in coverage:piece`, `in pyramids`, `Targets terrain-deep` (identity: the target list, `in deep-targets`) | changes: #832's `Deep::piece` |
 | terrain-hi | `TERRAIN_V`, codec, its built tiles, datasets, sources' zooms, "no hi tiles", its z10 tiles' deep mids | versions; `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `in makes-hi`, `Targets terrain-deep` (its 16 z10 tiles, `Grain::Read`: their deep mids), `Targets pyramids-fill` (its own, keyed on nothing) | task #929: the one pyramid's rule; its z12 tiles over a deep target are its deep mid's means, so it waits for those targets; task #975: and for its pyramids' fill |
 | terrain-deep | versions, tile, its band's tiles, datasets, sources' zooms | versions (incl. `terrain-hi`: its code's); `in coverage:piece`, `in datasets:terrain`, `in zoom-lines`, `Targets pyramids-fill` (its z6 tile's, keyed on nothing) | task #929: no base made from terrain-hi's inputs; it reads no built tile; task #975: it waits for its pyramids' fill alone |
 | terrain-lo | versions, codec, sources, z6 mids | `Targets terrain-hi` (mids), `in datasets:terrain` | same inputs. The `sources` line is undocumented today; the doc table gains it |
@@ -235,7 +235,7 @@ already re-key on through the manifest's `layers/terrain/root/0-0-0`). The rest 
    - Cut: `build::waits`, `build::wait_note`, the hand-written wait strings, `steps::Reads`,
      `steps::reads_of`, `Step::after`, `TerrainWork::is_left`'s step match, `Plan::terrain_built`,
      `forecast::chain_deps`, `UNITS_NEED`, the `reads_terrain` group, the held-chain guard.
-2. **Merge task-832-keys onto it. Done (task #879).** #832's coverage cut (`build::piece_coverage`:
+2. **Merge task-832-keys onto it. Done (task #879).** #832's coverage cut (`terrain_deep::Deep::piece`:
    the z9–12 tiles a terrain z6 tile makes near the coverage, digested) is the `coverage:piece`
    input, declared by terrain-hi, terrain-deep and pyramids-fill, and the elevation covers read
    their outlines (`dem::declared::cover_read`). It changes every terrain-hi, terrain-deep and

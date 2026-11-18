@@ -56,6 +56,7 @@ pub fn levels(
     }
     // (A tile's finest zoom is never past its parent's: its sources are among its parent's, and its
     // poleward edge no further; so a level's tiles are under the coarser level's.)
+    let cov = &buildstore::coverage::near_part(cov, PACK_Z, t.0, t.1);
     let mut out: Vec<(u8, Vec<(u32, u32)>)> = Vec::new();
     let mut above: Vec<(u32, u32)> = vec![t];
     for z in PACK_Z + 1..=MAX_Z {
@@ -115,7 +116,7 @@ pub fn targets_under(
 
 /// Levels' tiles (z, then each column and row), as a key names them: what a terrain-deep z10
 /// tile's run reads of the coverage, the tiles of its `levels` (`Deep::coverage`); a terrain z6
-/// tile's, its (crate::terrain_pack::piece_levels: agent::build::piece_coverage).
+/// tile's, its (crate::terrain_pack::piece_levels: `Deep::piece`).
 pub fn levels_digest(levels: &[(u8, Vec<(u32, u32)>)]) -> String {
     let lines: Vec<String> = levels
         .iter()
@@ -132,6 +133,8 @@ pub struct Memo {
     tiles: Mutex<HashMap<(u32, u32), (bool, Option<Arc<str>>)>>,
     /// By z6 tile: its targets (`targets_in`).
     targets: Mutex<HashMap<(u32, u32), Arc<[(u32, u32)]>>>,
+    /// By z6 tile: what its terrain run reads of the coverage (`Deep::piece`).
+    pieces: Mutex<HashMap<(u32, u32), Arc<str>>>,
 }
 
 /// The terrain-deep targets and the coverage their keys name, of a coverage and the declared sets:
@@ -173,6 +176,21 @@ impl<'a> Deep<'a> {
         }
         let v: Arc<[(u32, u32)]> = targets_under(&self.sets, t, |u| self.tile(u).0).into();
         self.memo.targets.lock().unwrap_or_else(|e| e.into_inner()).insert(t, v.clone());
+        v
+    }
+
+    /// What terrain z6 tile `t`'s run reads of the coverage (task #832), as its keys name it: the
+    /// tiles of its levels it makes (crate::terrain_pack::piece_levels, each z9–12 tile within 20
+    /// km of it), digested; worked out once (task #1457: every terrain target's again each time
+    /// a terrain or slope job ended). Not the coverage's rings near it (`Coverage::fingerprint`):
+    /// a region's outline moved, an islet dropped or added, that leaves the same tiles near it
+    /// changes nothing the run reads, so it rebuilds nothing.
+    pub fn piece(&self, t: (u32, u32)) -> Arc<str> {
+        if let Some(v) = self.memo.pieces.lock().unwrap_or_else(|e| e.into_inner()).get(&t) {
+            return v.clone();
+        }
+        let v: Arc<str> = levels_digest(&crate::terrain_pack::piece_levels(self.cov, &self.sets, t)).into();
+        self.memo.pieces.lock().unwrap_or_else(|e| e.into_inner()).insert(t, v.clone());
         v
     }
 
@@ -280,11 +298,28 @@ pub fn mid_tile(l: &str) -> Option<(u32, u32)> {
 
 /// The deep mids the manifest names under z6 tile `t`, by z10 tile.
 pub fn mids_under(m: &BTreeMap<String, String>, t: (u32, u32)) -> Vec<((u32, u32), String)> {
+    named_z10_under(m, t, mid_logical)
+}
+
+/// The z10 tiles under z6 tile `t` whose file `logical` names (`logical(x, y)`) the manifest
+/// holds, with its content, in the manifest's order: each of the z6 tile's 256 looked up, never
+/// every such name of the manifest read (task #1457: every z6 tile's key read them all).
+pub fn named_z10_under(
+    m: &BTreeMap<String, String>,
+    t: (u32, u32),
+    logical: impl Fn(u32, u32) -> String,
+) -> Vec<((u32, u32), String)> {
     let k = PACK_Z - 6;
-    m.range(MID_PREFIX.to_string()..)
-        .take_while(|(l, _)| l.starts_with(MID_PREFIX))
-        .filter_map(|(l, c)| mid_tile(l).filter(|f| (f.0 >> k, f.1 >> k) == t).map(|f| (f, c.clone())))
-        .collect()
+    let mut v: Vec<(String, (u32, u32), String)> = (t.0 << k..(t.0 + 1) << k)
+        .flat_map(|x| (t.1 << k..(t.1 + 1) << k).map(move |y| (x, y)))
+        .filter_map(|(x, y)| {
+            let l = logical(x, y);
+            let c = m.get(&l)?.clone();
+            Some((l, (x, y), c))
+        })
+        .collect();
+    v.sort_unstable();
+    v.into_iter().map(|(_, f, c)| (f, c)).collect()
 }
 
 /// What z6 tile `t`'s terrain-hi run takes in of its z10 tiles' targets (their deep mids, each read

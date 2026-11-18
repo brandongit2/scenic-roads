@@ -152,6 +152,37 @@ fn lattice(b: [i32; 4]) -> impl Iterator<Item = [i32; 2]> {
     })
 }
 
+/// The points of the lattice over box `b` (`lattice`, in its order) where `point` holds, read a
+/// block of the lattice at a time: where `block` gives one answer for every point of a block's box
+/// (Some), that answer, else `point`'s for each (task #1457: a lattice over a long coast's outline,
+/// a point test each, was most of rail-feeds' countries).
+fn lattice_where(
+    b: [i32; 4],
+    block: impl Fn([i32; 4]) -> Option<bool>,
+    point: impl Fn([i32; 2]) -> bool,
+) -> Vec<[i32; 2]> {
+    const B: usize = 16;
+    let pts: Vec<[i32; 2]> = lattice(b).collect();
+    if pts.is_empty() {
+        return pts;
+    }
+    let n = LATTICE as usize;
+    let mut keep = vec![false; pts.len()];
+    for bj in (0..n).step_by(B) {
+        for bi in (0..n).step_by(B) {
+            let (j1, i1) = ((bj + B).min(n) - 1, (bi + B).min(n) - 1);
+            let (lo, hi) = (pts[bj * n + bi], pts[j1 * n + i1]);
+            let all = block([lo[0], lo[1], hi[0], hi[1]]);
+            for j in bj..=j1 {
+                for i in bi..=i1 {
+                    keep[j * n + i] = all.unwrap_or_else(|| point(pts[j * n + i]));
+                }
+            }
+        }
+    }
+    pts.into_iter().zip(keep).filter_map(|(p, k)| k.then_some(p)).collect()
+}
+
 /// A territory's ISO 3166-1 code. An outline keeps its ISO 3166-2 code when it has both (Hong
 /// Kong's "CN-HK", Saint-Pierre-et-Miquelon's "FR-PM"), whose second part is then the code.
 fn alpha2(iso: &str) -> Option<String> {
@@ -230,28 +261,55 @@ pub fn countries(cov: &Coverage, outlines: &Outlines, own_code: &OwnCode) -> Res
         .filter(|(_, codes)| !codes.is_empty())
         .collect();
     terr.sort_by(|a, b| a.0.area_km2.total_cmp(&b.0.area_km2).then(a.0.id.cmp(&b.0.id)));
-    // Each outline's lattice points inside its rings, until a territory takes them.
-    let mut left: Vec<Vec<[i32; 2]>> = cov
+    // Each outline's lattice points inside its rings (the buffer aside: `Shape::inside`), over the
+    // rings' own box, until a territory takes them.
+    let meet = |a: [i32; 4], b: [i32; 4]| a[0] <= b[2] && a[2] >= b[0] && a[1] <= b[3] && a[3] >= b[1];
+    let boxes: Vec<[i32; 4]> = cov
         .shapes
         .iter()
         .map(|s| {
-            let bare = Shape::new(s.source.clone(), s.rings.to_vec(), 0.0);
-            lattice(bare.bbox).filter(|p| bare.contains(*p)).collect()
+            s.rings.iter().flatten().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            })
         })
         .collect();
+    let mut left: Vec<Vec<[i32; 2]>> =
+        cov.shapes.iter().zip(&boxes).map(|(s, &b)| lattice_where(b, |r| s.inside_box(r), |p| s.inside(p))).collect();
     let mut held: BTreeMap<(usize, &[String]), usize> = BTreeMap::new();
     let mut found: BTreeSet<String> = BTreeSet::new();
     for (r, codes) in &terr {
         let t = Shape::new(codes[0].clone(), outlines.simple_rings(r)?, 0.0);
         for (i, pts) in left.iter_mut().enumerate() {
+            // (A territory's points all lie in its box.)
+            if !meet(boxes[i], t.bbox) {
+                continue;
+            }
             let before = pts.len();
             pts.retain(|p| !t.contains(*p));
             if pts.len() < before {
                 *held.entry((i, codes.as_slice())).or_default() += before - pts.len();
             }
         }
-        let own: Vec<[i32; 2]> = lattice(t.bbox).filter(|p| t.contains(*p)).collect();
-        if !own.is_empty() && own.iter().filter(|p| cov.contains(**p)).count() as f64 >= OF_COUNTRY * own.len() as f64 {
+        let own = lattice_where(t.bbox, |r| t.contains_box(r), |p| t.contains(p));
+        // (Of the coverage, the shapes whose box meets the territory's: the others hold none of it.)
+        let near: Vec<&Shape> = cov.shapes.iter().filter(|s| meet(s.bbox, t.bbox)).collect();
+        let held_own = lattice_where(
+            t.bbox,
+            |r| {
+                let mut open = false;
+                for s in &near {
+                    match s.contains_box(r) {
+                        Some(true) => return Some(true),
+                        Some(false) => {}
+                        None => open = true,
+                    }
+                }
+                (!open).then_some(false)
+            },
+            |p| near.iter().any(|s| s.contains(p)),
+        );
+        let held_own = held_own.iter().filter(|p| t.contains(**p)).count();
+        if !own.is_empty() && held_own as f64 >= OF_COUNTRY * own.len() as f64 {
             found.extend(codes.iter().cloned());
         }
     }
@@ -602,6 +660,42 @@ mod tests {
         .unwrap();
         buildstore::outlines::assemble_geojsonseq(&geo, &d.join("o.sect")).unwrap();
         Outlines::open(&d.join("o.sect")).unwrap()
+    }
+
+    /// Task #1457: a lattice read a block at a time (`lattice_where`, the blocks a shape answers
+    /// whole by `Shape::inside_box` and `contains_box`) holds the points a point at a time does:
+    /// over a jagged outline, buffered and not, over boxes across it, inside and outside it.
+    #[test]
+    fn a_lattice_read_by_blocks_is_read_point_by_point() {
+        use det::Det;
+        let n = 5000u64;
+        let ring: Vec<[i32; 2]> = (0..=n)
+            .map(|i| {
+                let a = (i % n) as f64 / n as f64 * std::f64::consts::TAU;
+                let r = 1.0 + 0.05 * ((i * 7919) % 13) as f64 / 13.0;
+                [((5.0 + r * a.dcos()) * 1e7) as i32, ((45.0 + r * a.dsin()) * 1e7) as i32]
+            })
+            .collect();
+        let e7 =
+            |w: f64, s: f64, e: f64, n: f64| [(w * 1e7) as i32, (s * 1e7) as i32, (e * 1e7) as i32, (n * 1e7) as i32];
+        let mut blocked = 0;
+        for buffer in [0.0, 1000.0] {
+            let sh = Shape::new("t".into(), vec![ring.clone()], buffer);
+            for b in
+                [e7(3.8, 43.8, 6.2, 46.2), e7(4.5, 44.5, 5.5, 45.5), e7(5.9, 44.0, 7.0, 45.0), e7(8.0, 8.0, 9.0, 9.0)]
+            {
+                assert_eq!(
+                    lattice_where(b, |r| sh.inside_box(r), |p| sh.inside(p)),
+                    lattice(b).filter(|p| sh.inside(*p)).collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    lattice_where(b, |r| sh.contains_box(r), |p| sh.contains(p)),
+                    lattice(b).filter(|p| sh.contains(*p)).collect::<Vec<_>>()
+                );
+                blocked += lattice_where(b, |r| sh.contains_box(r).map(|_| true), |_| false).len();
+            }
+        }
+        assert!(blocked > 10_000, "{blocked} points answered by their block");
     }
 
     #[test]

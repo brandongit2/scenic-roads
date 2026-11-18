@@ -656,11 +656,17 @@ pub fn unit_deep_tiles(
         let mut read = tiles.reader(m);
         let mut out = Vec::new();
         for p in packs {
+            // (What meets a deep tile grown by its pixel meets its pack's tile grown by the pack's:
+            // only that is asked of each of its tiles, task #1457.)
+            let pt = tile_deg(pz, p.0, p.1);
+            let (px, py) = ((pt[2] - pt[0]) / 256.0, (pt[3] - pt[1]) / 256.0);
+            let near: Vec<&Reached> =
+                reached.iter().filter(|s| s.meets([pt[0] - px, pt[1] - py, pt[2] + px, pt[3] + py])).collect();
             for (z, x, y) in read.deep_in(p)? {
                 let t = tile_deg(z, x, y);
                 let (dx, dy) = ((t[2] - t[0]) / 256.0, (t[3] - t[1]) / 256.0);
                 let g = [t[0] - dx, t[1] - dy, t[2] + dx, t[3] + dy];
-                if reached.iter().any(|s| s.meets(g)) {
+                if near.iter().any(|s| s.meets(g)) {
                     if let Some(h) = read.hash(z, x, y)? {
                         out.push(format!("{z}/{x}/{y} {h:016x}"));
                     }
@@ -1427,15 +1433,6 @@ pub fn water_key(
         None => Some("-".into()),
         Some(_) => idx?.get(t, from).map(|d| format!("water {TERRAIN_WATER_V} {d}")),
     }
-}
-
-/// What a terrain z6 tile's run reads of the coverage (task #832), as its keys name it: the tiles
-/// of its levels it makes (terrain::terrain_pack::piece_levels, each z9–12 tile within 20 km of
-/// it), digested. Not the coverage's rings near it (`Coverage::fingerprint`): a region's outline
-/// moved, an islet dropped or added, that leaves the same tiles near it changes nothing the run
-/// reads, so it rebuilds nothing. A terrain-deep target's are its levels' (`Deep::coverage`).
-pub fn piece_coverage(cov: &Coverage, sets: &[terrain::terrain_zoom::Set], t: (u32, u32)) -> String {
-    terrain::terrain_deep::levels_digest(&terrain::terrain_pack::piece_levels(cov, sets, t))
 }
 
 /// The terrain-water job (one, "terrain-water"): the water source's digests of what the depth's
@@ -7527,7 +7524,7 @@ mod tests {
     }
 
     /// Task #832: a terrain z6 tile is keyed on what its run reads of the coverage, the tiles it
-    /// makes (`piece_coverage`), not the rings near it: an islet added or dropped where it changes no
+    /// makes (`Deep::piece`), not the rings near it: an islet added or dropped where it changes no
     /// tile near the coverage leaves every terrain key as it was, though the coverage's fingerprint
     /// there moves; one that brings tiles near the coverage changes the keys of its z6 tile.
     #[test]
@@ -7557,7 +7554,8 @@ mod tests {
             "the rings near it differ"
         );
         let world = terrain::terrain_zoom::test_world(12);
-        assert_eq!(piece_coverage(&plain, &world, t), piece_coverage(&near, &world, t));
+        let piece = |c: &Coverage| terrain::terrain_deep::Deep::new(c, std::sync::Arc::new(world.clone())).piece(t);
+        assert_eq!(piece(&plain), piece(&near));
         assert_eq!(keys(&plain), keys(&near), "no terrain key moves");
         // (Far from the coverage: tiles near it now that weren't.)
         let (a, b) = (keys(&plain), keys(&far));

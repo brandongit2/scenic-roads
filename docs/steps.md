@@ -848,7 +848,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **pyramids-fill (a z6 tile a pyramid read tile by tile meets, making hi tiles or with terrain-deep
   targets; the lead's):** `pyramids::V` (bumped
   with any change to which tiles it wants), the tile, and what `pyramids::want` reads for it: the
-  coverage as its terrain-hi run reads it (`agent::build::piece_coverage`: the tiles of its levels), the declared pyramids meeting it (their lines as
+  coverage as its terrain-hi run reads it (`terrain::terrain_deep::Deep::piece`: the tiles of its levels), the declared pyramids meeting it (their lines as
   the terrain's keys name them) and its terrain-deep targets (every native tile under their
   pixels, at sea as on land; with the ring round them its blends' bands reach); until the declared
   datasets are read its key is unknown and it waits (`agent::build::pyramids_key`). Its z6 tile's
@@ -859,7 +859,7 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   a z6 tile whose tiles were stored already says nothing of the next one's.
 - **terrain-hi (a z6 tile):** `TERRAIN_V` and the codec (`terrain_codec::version`: the encoding,
   libwebp's version and level, the rounding), the coverage as it reads it
-  (`agent::build::piece_coverage`: which of its z9–12 tiles are built by the rule, digested, not the
+  (`terrain::terrain_deep::Deep::piece`: which of its z9–12 tiles are built by the rule, digested, not the
   rings there, task #832), the elevation pool's datasets meeting the tile
   (`TerrainTiles::terrain_datasets`: their lines as the roads' keys name them, each dataset's
   regions' outlines read so `declared::cut_note` names the outlines inside the tile, never their
