@@ -310,7 +310,7 @@ pub const THREADS: usize = 16;
 
 /// A pyramid's build on the threads its target runs on (its job's grant now:
 /// jobrt::control::on_grant), at most `THREADS`: past them, on a pool `THREADS` wide. (Not a pool
-/// made at the job's first target and kept: a re-grant is taken at the next target, task #948.)
+/// made at the job's first target and kept: a change of its threads is taken at the next target, task #948.)
 fn on_pool<R: Send>(f: impl FnOnce() -> R + Send) -> R {
     if rayon::current_num_threads() <= THREADS {
         return f();
@@ -1640,7 +1640,7 @@ mod tests {
     /// (the deep detail reaching z6), else its own terrain's shading; the same bytes as one run of the
     /// whole pyramid. Made again, the same packs; the deep terrain gone, its deep pack dropped.
     /// Made on 8 threads, the same bytes as on 2 (task #948 review: a target's work runs on its
-    /// job's grant as it begins, jobrt::control::on_grant, a pool that wide, which a re-grant
+    /// job's grant as it begins, jobrt::control::on_grant, a pool that wide, which a change of its threads
     /// changes between targets; its own test before #969, a third run of the two).
     #[test]
     fn a_z6_tile_stores_every_level_down_to_its_deep_terrain() {
@@ -1901,7 +1901,7 @@ mod tests {
         assert_eq!(made(true), alone);
     }
 
-    /// Task #929 review: a slope-deep batch re-granted as it goes (its job's threads file rewritten
+    /// Task #929 review: a slope-deep batch whose threads change as it goes (its job's threads file rewritten
     /// mid-target, as the agent's live control does: 2, then 5, then 1) runs each target on the grant
     /// as that target began (jobrt::control::on_grant, scenic-build's slope_deep_batch), while the
     /// copying ahead of the next target's pack and the target before's uploads (put off, landed by
@@ -1910,15 +1910,15 @@ mod tests {
     /// on its own pool, as terrain-hi's did on 1 thread on 5 Nov, fails it). (In a process of its
     /// own: the threads file's variable and the target under way are the process's.)
     #[test]
-    fn a_deep_batch_regranted_as_it_goes_lands_each_target_the_same() {
-        if !crate::grant_tests::alone("slope_pack::tests::a_deep_batch_regranted_as_it_goes_lands_each_target_the_same")
+    fn a_deep_batch_whose_threads_change_as_it_goes_lands_each_target_the_same() {
+        if !crate::grant_tests::alone("slope_pack::tests::a_deep_batch_whose_threads_change_as_it_goes_lands_each_target_the_same")
         {
             return;
         }
-        crate::grant_tests::within("a slope-deep batch on grants of 2, 5 and 1", regranted_batch);
+        crate::grant_tests::within("a slope-deep batch on grants of 2, 5 and 1", changing_batch);
     }
 
-    fn regranted_batch() {
+    fn changing_batch() {
         let deep = |out: Out| -> Vec<(String, String)> {
             out.manifest
                 .into_iter()
@@ -1954,7 +1954,7 @@ mod tests {
         for (k, &t) in ts.iter().enumerate() {
             let ran = jobrt::control::on_grant(|| {
                 let ran = rayon::current_num_threads();
-                // (Re-granted while it's made: the next target takes it.)
+                // (Its threads changed while it's made: the next target takes them.)
                 jobrt::control::grant(&f, grants.get(k + 1).copied().unwrap_or(1)).unwrap();
                 batch.build_deep(&mut out, t, &|_, _, _| {}).unwrap();
                 assert_eq!(rayon::current_num_threads(), ran, "a target stays on its grant to its end");

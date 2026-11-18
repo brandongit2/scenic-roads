@@ -1118,14 +1118,14 @@ mod tests {
     /// file, the job's own pool. (In a process of its own: the file's variable and the timed run
     /// are the process's.)
     #[test]
-    fn a_target_runs_on_its_grant_as_it_began_and_a_regrant_takes_the_next() {
+    fn a_target_runs_on_its_threads_as_it_began_and_a_change_takes_the_next() {
         const ALONE: &str = "SCENIC_TEST_ALONE";
         if std::env::var_os(ALONE).is_none() {
             let out = store::spawn::output(
                 store::spawn::command(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "control::tests::a_target_runs_on_its_grant_as_it_began_and_a_regrant_takes_the_next",
+                        "control::tests::a_target_runs_on_its_threads_as_it_began_and_a_change_takes_the_next",
                     ])
                     .env(ALONE, "1"),
             )

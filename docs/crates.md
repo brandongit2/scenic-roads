@@ -1046,7 +1046,7 @@ commit; re-exports at the old paths as before.
           `history::History`, `membership::Run`, `BuiltView`, `PageView` and the map log's `Writer`; passed to
           the forecast (`forecast`, `forecast_by`, `Record::forecast`, `Noted::note`, `speeds`,
           `step_sums`), fccheck's `replay` and `backtest`, `flags::of`, progress's sayings,
-          `room::Hints`, `redo::said`, `every`'s functions, `uses::Run`, `Paces::with_starts`,
+          `room::Hints`, `redo::said`, `every`'s functions, `Paces::with_starts`,
           `memguard::Watch::floors`. `jobs::note_cost` takes the step's way as a number (`gc::set_way`).
           For the runtime's tests, `seam::for_tests()` (since 6f4 on the plan compiled into
           agentcore's tests) and coord's `cfg(test)` `cost_version` and `saves`.
