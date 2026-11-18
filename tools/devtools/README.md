@@ -22,7 +22,12 @@ Open http://127.0.0.1:8077. Needs Node 22.5+ (`node:sqlite`); no packages.
   `items` (folders and tasks), `events` (history), `meta` (`now`, the now line: what Claude is on,
   shown in the page's header; `counter`, the next item number), `blobs` (photos); its form
   (`PRAGMA user_version`) is 2 (the indexes every frequent read is answered from, `store.mjs`
-  INDEXES); any other form is refused. `public/task-board/index.html` is the page;
+  INDEXES); any other form is refused. `public/task-board/index.html` is the page, its list built
+  again on every change and put in place of the one shown node by node (`public/task-board/patch.mjs`):
+  a row that didn't change stays the same node and a changed one keeps its node, so the list stays
+  where it is unless you move it (the browser's scroll anchoring holds the row in view; a row out of
+  view keeps the size it was laid out at, `content-visibility: auto`), and a row clicked or dropped
+  is never scrolled to;
   `public/task-board/shim.js` gives it its database API (`window.claude.use("db" | "user" |
   "assets")`) over the app's: a subscription reads once the event stream is open and again on each
   change of its collection (the items: whole once, then only what changed since, `?since=`, below),

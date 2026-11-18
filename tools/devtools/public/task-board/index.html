@@ -504,6 +504,7 @@
 // (The rules the server holds the board to, one copy: what a record may hold, and where a priority goes.)
 import * as schema from "./schema.mjs";
 import { isOpen as openTask, placePriority } from "./priority.mjs";
+import { patchChildren } from "./patch.mjs";
 (() => {
   "use strict";
   // ---------------------------------------------------------------------------------------------
@@ -1360,9 +1361,11 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Rendering. The list is rebuilt from the model on every change (some hundreds of rows is quick);
-  // focus and scroll survive it. Not while a row is being dragged or a new title typed: then it
-  // waits for that to end.
+  // Rendering. The list is built again from the model on every change (some hundreds of rows is
+  // quick) and put in place of what it showed node by node (patch.mjs), so a row that didn't change
+  // is the same node: the list stays where it is (the browser's scroll anchoring holds the row in
+  // view, and a row out of view keeps the size it was laid out at); focus survives it. Not while a
+  // row is being dragged or a new title typed: then it waits for that to end.
   let renderQueued = false;
   function soon() {
     if (renderQueued) return;
@@ -1383,13 +1386,11 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (S.sel && !M.byId.has(S.sel) && !holding) { S.sel = null; S.sheet = false; syncUrl(false); }
     if (S.anchor && !S.picked.has(S.anchor)) S.anchor = S.sel;
     const focus = rememberFocus();
-    const scroll = $("list-scroll").scrollTop;
     renderHeader();
     if (S.view === "tree") renderTree();
     else renderSorted();
     renderEditor();
     askHistory();
-    if ($("list-scroll").scrollTop !== scroll) $("list-scroll").scrollTop = scroll;
     restoreFocus(focus);
     $("app").classList.toggle("sheet", !!(S.sel && S.sheet));
   }
@@ -1616,7 +1617,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       archSection(frag, arch);
       if (!tabbed) { const first = frag.querySelector(".row[data-id]"); if (first) first.tabIndex = 0; }
     }
-    host.replaceChildren(frag);
+    patchChildren(host, frag);
   }
 
   // The sorted views: every task, flat, by priority, by its last change or by when it was added (ties
@@ -1676,7 +1677,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
       const first = sel || frag.querySelector(".row[data-id]");
       if (first) first.tabIndex = 0;
     } else frag.append(h("p", { class: "empty" }, "Every task appears here as soon as they load."));
-    host.replaceChildren(frag);
+    patchChildren(host, frag);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -2145,47 +2146,49 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
   // clicked (S.anchor) is where a ⇧-click's range starts. Every change of the selected item is a new
   // entry in the browser's history, so Back goes to the one before.
   // `focus`: the row takes the focus (a click or a key in the list); `open`: the details open over
-  // the list (narrow screens), else they stay as they were.
-  function select(id, { focus = false, open = true, push = true } = {}) {
+  // the list (narrow screens), else they stay as they were; `reveal`: the list scrolls the row into
+  // view if it isn't (not for a row clicked or dropped: it is where the pointer is, and the list
+  // moves only when you move it).
+  function select(id, { focus = false, open = true, push = true, reveal = true } = {}) {
     S.sel = id;
     S.picked = new Set(id ? [id] : []);
     S.anchor = id;
     if (open) S.sheet = !!id;
     if (!id) S.sheet = false;
-    showSelected({ focus, push });
+    showSelected({ focus, push, reveal });
   }
-  function showSelected({ focus = false, push = true } = {}) {
+  function showSelected({ focus = false, push = true, reveal = true } = {}) {
     // (Its folders open in the tree, so it shows there.)
     const it = S.sel && M.byId.get(S.sel);
     if (it) for (const a of it.$crumbs) if (S.collapsed.has(a.id)) setCollapsed(a.id, false);
     render();
     if (push) syncUrl(true);
     const row = rowEl(S.anchor || S.sel);
-    row?.scrollIntoView({ block: "nearest" });
+    if (reveal) row?.scrollIntoView({ block: "nearest" });
     if (focus) row?.focus({ preventScroll: true });
   }
   // ⌘-click: picks it, or leaves it out (the selected item then passes to the one clicked, or the
   // first left); either way the click's row is where the next range starts.
   function pickToggle(id) {
-    if (!S.sel) return select(id, { focus: true, open: false });
+    if (!S.sel) return select(id, { focus: true, open: false, reveal: false });
     if (S.picked.has(id) && S.picked.size > 1) {
       S.picked.delete(id);
       if (S.sel === id) S.sel = shownIds().find((x) => S.picked.has(x)) ?? [...S.picked][0];
       S.anchor = S.picked.has(S.anchor) ? S.anchor : S.sel;
     } else if (!S.picked.has(id)) { S.picked.add(id); S.anchor = id; }
-    showSelected({ focus: true });
+    showSelected({ focus: true, reveal: false });
   }
   // ⇧-click: every row shown from the anchor to this one (⌘⇧-click adds them to what is picked).
   function pickRange(id, keep) {
-    if (!S.anchor) return select(id, { focus: true, open: false });
+    if (!S.anchor) return select(id, { focus: true, open: false, reveal: false });
     const ids = shownIds();
     let a = ids.indexOf(S.anchor), b = ids.indexOf(id);
-    if (a < 0 || b < 0) return select(id, { focus: true, open: false });
+    if (a < 0 || b < 0) return select(id, { focus: true, open: false, reveal: false });
     if (a > b) [a, b] = [b, a];
     const range = ids.slice(a, b + 1);
     S.picked = new Set(keep ? [...S.picked, ...range] : range);
     if (!S.picked.has(S.sel)) S.sel = id;
-    showSelected({ focus: true });
+    showSelected({ focus: true, reveal: false });
   }
   const shownIds = () => [...$("list").querySelectorAll(".row[data-id]")].map((r) => r.dataset.id);
   // ⌘J / ⌘K: the row before or after the selected one (or the first).
@@ -2538,13 +2541,13 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     const t = d.live ? d.target : null;
     const wasLive = d.live;
     endDrag(d);
-    if (!wasLive) { select(d.id, { focus: true }); return; }
+    if (!wasLive) { select(d.id, { focus: true, reveal: false }); return; }
     suppressClick();
     if (!t) { if (S.needRender) render(); return; }
     if (d.tree) moveTree(d.id, t.parent, t.index);
     else movePrio(d.id, t.rest, t.idx, !!t.unset);
     // (The moved item ends up selected, as a dragged file does.)
-    select(d.id, { focus: true, open: false });
+    select(d.id, { focus: true, open: false, reveal: false });
   }
   function dragCancel(e) {
     if (!DR || (e && e.pointerId !== DR.pid)) return;
@@ -2595,7 +2598,7 @@ import { isOpen as openTask, placePriority } from "./priority.mjs";
     if (!it || e.target.closest("[data-grip], .draft")) return;
     if (e.shiftKey) pickRange(it.id, e.metaKey || e.ctrlKey);
     else if (e.metaKey || e.ctrlKey) pickToggle(it.id);
-    else select(it.id, { focus: true });
+    else select(it.id, { focus: true, reveal: false });
   }
   function listKey(e) {
     const row = e.target.closest?.(".row[data-id]");
