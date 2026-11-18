@@ -5,8 +5,9 @@
 //! A job that takes its threads as they change (one of the steps reading its threads file,
 //! jobrt::control::THREADS_ENV: as each target begins, jobrt::control::on_grant, or within the
 //! second, inputs::inputs::pace) is watched on the threads it runs on (`Watch`): its CPU time (its
-//! processes', the memory guard's sampler) and the wall time it waited on the NAS, the network and
-//! the local disk (store::nasio::waited_in, which its processes add to as they go:
+//! processes', the memory guard's sampler) and the wall time it waited on the NAS and the network
+//! (not the local disk: a read its cache serves is computing, and a job's disk reads rise with its
+//! threads; store::nasio::waited_in, which its processes add to as they go:
 //! jobrt::timings). About once a minute (`EVERY`) it's decided again (`decide`), on the cores it
 //! kept busy: its CPU time over its wall time, against its threads. (Not over the time it didn't
 //! wait: a wait is an instant any of its threads was in a call, while the others may compute, so

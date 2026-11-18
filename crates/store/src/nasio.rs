@@ -31,8 +31,8 @@
 //! file stream (docs/pool.md §10, Live). A ring's slot overwritten before the agent read it is
 //! missed: the stream shows the recent files, not every one.
 //!
-//! Last, the wall time this process has waited on the NAS, the network and the local disk so far
-//! (ns, store::waits by the wall clock, its kinds but other work's: `waited`), which jobrt::timings
+//! Last, the wall time this process has waited on the NAS and the network so far (ns, those of
+//! store::waits' kinds, by the wall clock: `waited`), which jobrt::timings
 //! adds to as it samples (`add_waited`, once a second); summed as the counts are, its ended
 //! processes' folded into `BASE` after the counts and its programs' taken in (`waited_in`). The
 //! agent reads it to tell a job's computing from its waiting (crate's caller, agentcore::agent::

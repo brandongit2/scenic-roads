@@ -45,7 +45,7 @@
 //! - Live: the top-level phase open on the main thread, and since when, is said in the
 //!   job's counts file (store::nasio::set_phase, a few stores in mapped memory) as it opens, and
 //!   cleared as it ends; the agent shows it under the job (agentcore::agent::jobs::Live). The wall
-//!   time waited on the NAS, the network and the disk so far is added there too, once a second by
+//!   time waited on the NAS and the network so far is added there too, once a second by
 //!   the memory sampler and as the run ends (store::nasio::add_waited, `say_waited`): its agent's
 //!   live thread control reads its computing from it (agentcore::agent::threads).
 //! - Spans (task #1104): where `SCENIC_SPANS` says, each span as it closes, with its start and end,
@@ -790,17 +790,20 @@ fn sample_memory() {
 /// The memory sampler's ticks between two writes of the spans (a second).
 const SPANS_EVERY: u64 = 4;
 
-/// The wall time waited on the NAS, the network and the local disk so far (ns: store::waits' kinds
-/// before other work's, by the wall clock), as last added to the job's counts file.
+/// The wall time waited on the NAS and the network so far (ns: those two of store::waits' kinds, by
+/// the wall clock), as last added to the job's counts file.
 static WAITED_SAID: AtomicU64 = AtomicU64::new(0);
 
 /// The wall time waited since last said added to the job's counts file (store::nasio::add_waited),
 /// where its agent reads it live to tell its computing from its waiting (agentcore::agent::threads).
-/// Waits on other work (store::waits::On::Other: a join, a condition) aren't counted: the threads
-/// waited for may be computing.
+/// The local disk's waits aren't counted (store::waits::On::Disk): a read its cache serves is
+/// computing on its thread, and a job's disk reads rise with its threads, so a job computing on
+/// every thread would read as waiting and never be grown. Nor other work's (On::Other: a join, a
+/// condition): the threads waited for may be computing. (Each instant is one kind's, so the two
+/// add without overlap.)
 fn say_waited() {
     let t = store::waits::totals();
-    let now: u64 = t[..store::waits::On::Other as usize].iter().sum();
+    let now = t[store::waits::On::Nas as usize] + t[store::waits::On::Net as usize];
     let was = WAITED_SAID.fetch_max(now, Ordering::Relaxed);
     store::nasio::add_waited(now.saturating_sub(was));
 }
@@ -2250,8 +2253,8 @@ pub fn reset() {
 
 #[cfg(test)]
 mod tests {
-    /// The wall time a job waits on the NAS is added to its counts file as said (`say_waited`), the
-    /// time since last said and no more.
+    /// The wall time a job waits on the NAS (or the network) is added to its counts file as said
+    /// (`say_waited`), the time since last said and no more; its waits on the local disk are not.
     #[test]
     fn the_wall_time_waited_is_said_in_the_counts_file() {
         store::waits::enable();
@@ -2266,6 +2269,12 @@ mod tests {
         assert!(after >= before + 35_000_000, "{before} then {after}");
         super::say_waited();
         assert!(store::nasio::own_waited() < after + 20_000_000, "said once");
+        {
+            let _g = store::waits::disk();
+            std::thread::sleep(std::time::Duration::from_millis(60));
+        }
+        super::say_waited();
+        assert!(store::nasio::own_waited() < after + 40_000_000, "the local disk's not counted");
     }
 
     use super::*;

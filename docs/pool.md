@@ -698,10 +698,12 @@ say no threads, so nothing is decided for them).
 - **What the agent measures** (`Agent::watch_threads`): each job that says its threads is watched
   on the threads it runs on, from when those last changed or it was last decided on: its CPU time
   (its process group's, the memory guard's sampler, `memguard::Sampler::cpu_ns`) and the wall time
-  it waited on the NAS, the network and the local disk (its processes add it to their counts files
-  once a second, `store::nasio::add_waited`, from jobrt::timings' sampler: store::waits by the wall
-  clock, an instant waiting when any of its threads is in such a call; waits on other work, a join
-  or a condition, are not counted, as the threads waited for may be computing), read from its
+  it waited on the NAS and the network (its processes add it to their counts files once a second,
+  `store::nasio::add_waited`, from jobrt::timings' sampler: store::waits by the wall clock, an
+  instant waiting when any of its threads is in a NAS or network call). Not its waits on the local
+  disk: a read its cache serves is its thread's computing, and a job's disk reads rise with its
+  threads, so a job computing on every thread would read as waiting and never be grown; nor its
+  waits on other work (a join, a condition), as the threads waited for may be computing. Read from its
   slot's counts folder (`store::nasio::waited_in`). A frozen or stopping job measures nothing.
 - **The decision** (`Agent::tend_threads`, `threads::decide`), once a job has been watched a
   minute (`threads::EVERY`) on the threads its file says (one taking them as a target begins waits
@@ -711,7 +713,7 @@ say no threads, so nothing is decided for them).
   time than they ran (4 threads, 40 % of the minute waiting, 2.4 cores busy, would read as 4 busy,
   and be doubled).
   - **Every thread busy** (0.9 of its threads or more, `threads::BUSY`) and under a quarter of its
-    minute waited (`threads::WAITING`): doubled, within the most
+    minute waited on the NAS or the network (`threads::WAITING`): doubled, within the most
     a job may run on here (its Mac's cores less the in-use share's while the owner uses it,
     `Agent::threads_room`), the cores its Mac has free (its capacity's `cores_free`, the last
     minute's CPU, less the in-use share's, less what jobs grown before it this round took) and its
@@ -727,8 +729,9 @@ say no threads, so nothing is decided for them).
     never takes a Mac past its memory floor by the same count the lead admits work by, and the
     memory guard stands behind it. A grant of an older lead (no `thread_covers`) takes the job's
     whole memory a thread past the threads it was granted.
-    A job waiting a quarter of its minute or more is never grown, its threads all busy or not: more
-    threads would wait on the NAS with it (pacing the NAS is its budget's, §7.7).
+    A job waiting on the NAS or the network a quarter of its minute or more is never grown, its
+    threads all busy or not: more threads would wait there with it (pacing the NAS is its budget's,
+    §7.7).
   - **Threads left idle** (under half of them busy, `threads::IDLE`): cut to the threads that keep
     it busy at 0.9, and one more to overlap its waits, however much it waits: a thread waiting on
     the NAS holds a core it doesn't use and adds to the NAS's load (slope-deep's batches, waiting

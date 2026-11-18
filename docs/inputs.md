@@ -188,7 +188,8 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   crate::control::THREADS_ENV, replaced whole by crate::control::grant, so a read never meets it
   emptied) with the threads its job may use now, which the agent decides each minute on what the
   job keeps busy (docs/pool.md §7.1, Threads controlled live: doubled while every
-  thread is busy and its NAS waits are a small share of its time, as the Mac's free cores allow and its memory covers each extra thread at the
+  thread is busy and its waits on the NAS and the network (not the local disk, whose reads rise
+  with its threads) are under a quarter of its time, as the Mac's free cores allow and its memory covers each extra thread at the
   step's measured peak over the threads it was measured at, the whole peak where those aren't
   recorded; cut while threads sit idle, however much it waits). The file is read again
   within a second (a regions check once took 39 GB and panicked a 16 GB Mac: its memory guard stops
