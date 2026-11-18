@@ -473,16 +473,28 @@ fn mach_ns() -> impl Fn(u64) -> u64 {
     move |t| (t as u128 * numer / denom) as u64
 }
 
-/// This Mac's performance cores' top clock (Hz): the highest of the frequencies its power manager
-/// may set them to (`table_clock`), else, where the table can't be read, measured (`spun_clock`).
-/// What a job's cycles over its CPU time can't pass (crate::timings::implausible). Read once a
-/// process, on the first call (an `ioreg` run, or a thread's spin): a caller that mustn't wait
-/// starts it on a thread of its own (`top_clock_soon`) and reads `top_clock_now`.
-pub fn top_clock() -> Option<f64> {
-    *TOP_CLOCK.get_or_init(|| table_clock().or_else(spun_clock))
+/// This Mac's fastest cores' top clock: the highest of the frequencies its power manager may set
+/// them to (`table_clock`), else, where no table can be read, measured (`spun_clock`). What a job's
+/// cycles over its CPU time can't pass (crate::timings::implausible, the table's alone: a spin
+/// measures the clock as it was then, not its top). Read once a process, on the first call (an
+/// `ioreg` run, or a thread's spin): a caller that mustn't wait starts it on a thread of its own
+/// (`top_clock_soon`) and reads `top_clock_now`.
+pub fn top_clock() -> Option<TopClock> {
+    *TOP_CLOCK.get_or_init(|| {
+        table_clock()
+            .map(|hz| TopClock { hz, from_table: true })
+            .or_else(|| spun_clock().map(|hz| TopClock { hz, from_table: false }))
+    })
 }
 
-static TOP_CLOCK: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+/// A top clock (`top_clock`): Hz, and whether from the power manager's table (else measured).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TopClock {
+    pub hz: f64,
+    pub from_table: bool,
+}
+
+static TOP_CLOCK: std::sync::OnceLock<Option<TopClock>> = std::sync::OnceLock::new();
 
 /// `top_clock` read on a thread of its own, from now (the agent's start).
 pub fn top_clock_soon() {
@@ -490,18 +502,18 @@ pub fn top_clock_soon() {
 }
 
 /// `top_clock` if it has been read; None while it's being read (or never was).
-pub fn top_clock_now() -> Option<f64> {
+pub fn top_clock_now() -> Option<TopClock> {
     TOP_CLOCK.get().copied().flatten()
 }
 
-/// The performance cores' top clock from IOKit's power manager (`ioreg -r -n pmgr`: its
-/// `voltage-states5-sram`, the performance cluster's states; `parse_top_clock`); None where there's
-/// no such table (another platform, a Mac without it).
+/// The top clock from IOKit's power manager: every `AppleARMIODevice` node's states tables
+/// (`ioreg -r -c AppleARMIODevice -d 1`: `pmgr`'s on the M1 and M4 generations, `pmgr-child`'s on
+/// the M6; `parse_top_clock`); None where there's none (another platform, a Mac without them).
 fn table_clock() -> Option<f64> {
     #[cfg(target_os = "macos")]
     {
         let mut c = store::spawn::command("/usr/sbin/ioreg");
-        c.args(["-r", "-n", "pmgr", "-d", "1"]);
+        c.args(["-r", "-c", "AppleARMIODevice", "-d", "1", "-w", "0"]);
         let o = store::spawn::output(&mut c).ok()?;
         parse_top_clock(&String::from_utf8_lossy(&o.stdout))
     }
@@ -509,17 +521,33 @@ fn table_clock() -> Option<f64> {
     None
 }
 
-/// The highest frequency in `ioreg`'s `voltage-states5-sram` (`<hex>`: pairs of little-endian u32s,
-/// each a frequency and its voltage), in Hz. The M1 generation says Hz (the M1 Pro's last, 3228
-/// MHz), later ones kHz (the M4 Pro's last, 4512000; the M6's, 4788000): a value under 10^8, no
-/// core's clock in Hz, is read as kHz.
+/// The highest frequency in any of `ioreg`'s `voltage-states<n>-sram` tables (`<hex>`: pairs of
+/// little-endian u32s, each a frequency and its voltage), in Hz: the clusters' (`1` the efficiency
+/// cores', `5` the fastest cores', `9`, `13`, `14` the GPU's and the others'), so the fastest
+/// cluster's top. Each table says Hz or kHz: the M1 generation's all Hz (the M1 Pro's `5` to 3228
+/// MHz), later ones the cores' in kHz and the GPU's in Hz (the M4 Pro's `5` to 4512000, the M6's to
+/// 4788000, its GPU's 1735000000); a table whose top is under 10^8, no clock in Hz, is read as kHz.
 pub fn parse_top_clock(ioreg: &str) -> Option<f64> {
-    let (_, rest) = ioreg.split_once("\"voltage-states5-sram\" = <")?;
-    let hex = &rest[..rest.find('>')?];
-    let b: Vec<u8> =
-        (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
-    let top = b.chunks_exact(8).map(|e| u32::from_le_bytes([e[0], e[1], e[2], e[3]])).max().filter(|&f| f > 0)?;
-    Some(if top < 100_000_000 { f64::from(top) * 1e3 } else { f64::from(top) })
+    let mut top: Option<f64> = None;
+    for (at, _) in ioreg.match_indices("\"voltage-states") {
+        let rest = &ioreg[at + 15..];
+        let Some(n) = rest.find("-sram\" = <") else { continue };
+        if n == 0 || !rest[..n].bytes().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let rest = &rest[n + 10..];
+        let Some(end) = rest.find('>') else { continue };
+        let hex = &rest[..end];
+        let b: Vec<u8> =
+            (0..hex.len() / 2).filter_map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect();
+        let Some(t) = b.chunks_exact(8).map(|e| u32::from_le_bytes([e[0], e[1], e[2], e[3]])).max().filter(|&f| f > 0)
+        else {
+            continue;
+        };
+        let hz = if t < 100_000_000 { f64::from(t) * 1e3 } else { f64::from(t) };
+        top = Some(top.map_or(hz, |x| x.max(hz)));
+    }
+    top
 }
 
 /// The performance cores' clock measured (`Rusage`'s performance-core cycles over their time while a
@@ -1369,5 +1397,11 @@ mod tests {
         let khz = r#""voltage-states5-sram" = <e0391300160300004017460096030000>"#;
         assert_eq!(parse_top_clock(khz), Some(4_593_472_000.0));
         assert_eq!(parse_top_clock("no table"), None);
+        // (The M6's, read from its pmgr-child node: three performance levels, Super the fastest;
+        // its fastest cores' `5` in kHz to 4788000, past its efficiency cores' `1` and its GPU's
+        // `9` in Hz, and the tables without `-sram` (`8`'s voltages all ones) not read.)
+        let m6 = include_str!("testdata/m6-pmgr-child.txt");
+        assert_eq!(parse_top_clock(m6), Some(4_788_000_000.0));
+        assert_eq!(parse_top_clock(&m6.replace("voltage-states5-sram", "voltage-states5")), Some(2_940_000_000.0));
     }
 }
