@@ -2,7 +2,7 @@
 //! and removes only its step's outputs (pipeline::agent::steps::writes, the function the lead's merge
 //! checks every entry by). So every item outside `#[cfg(test)]` code that makes or writes a
 //! hand-off (`handoff::write(`, a `Handoff { … }` or `Handoff::default()` made), or names the
-//! manifest's file or the old journal's folder by path, is `Out`
+//! manifest's file or the sizes' by path, is `Out`
 //! itself, or is listed in `EXEMPT` by file, item and what the line says, with why (a reader's
 //! too, so each new line naming them is looked at): the merge's own paths (the coordinator journaling a member's
 //! hand-off, the lead writing today's files from its records),
@@ -21,13 +21,12 @@ use common::*;
 /// What writes or makes a hand-off, in a line's code (its strings blanked).
 const MARKERS: &[&str] = &["handoff::write(", "Handoff {", "Handoff::default("];
 
-/// The records' paths, named in a line (its strings too): the manifest's file and the old journal's
-/// folder (no app writes it since task #1125). Their readers are listed too, so a new line naming
-/// them is looked at.
-const PATHS: &[&str] = &["state/build/manifest.json", "state/build/sizes.json", "state/journal"];
+/// The records' paths, named in a line (its strings too): the manifest's file and the sizes'. Their
+/// readers are listed too, so a new line naming them is looked at.
+const PATHS: &[&str] = &["state/build/manifest.json", "state/build/sizes.json"];
 
 /// Whether line `l` (raw, its comment cut) with code `c` makes or writes a hand-off, or names the
-/// manifest's file or the old journal's folder.
+/// manifest's file or the sizes'.
 fn writes_records(l: &str, c: &str) -> bool {
     let made =
         MARKERS.iter().any(|m| c.contains(m)) && !c.contains("struct Handoff {") && !c.contains("impl Handoff {");
@@ -44,7 +43,6 @@ const EXEMPT: &[(&str, &str, &str, &str)] = &[
     ("crates/pipeline/src/bin/scenic-build.rs", "step_main", "\"state/build/manifest.json\"", "regions-fixture: a scratch folder's records for a two-Mac procedure, never the project folder's"),
     ("crates/inputs/src/inputs/served.rs", "RECORDS", "\"state/build/manifest.json\"", "today's manifest file: a test's records before the pool (the map server reads the records' one path, `manifest`)"),
     ("crates/buildstore/src/records/mod.rs", "TODAY", "\"state/build/manifest.json\"", "today's files, the records read before the pool and term 1's first snapshot made from them"),
-    ("crates/agentcore/src/pool/journal.rs", "DIR", "\"state/journal\"", "the old journal's folder, read for an older app's saved keys alone (Mine::read_back)"),
     ("crates/agentcore/src/agent/membership.rs", "entry_of", "Handoff::default()", "a pooled job's entry: the hand-offs its job's Out wrote, gathered for the pool"),
     ("crates/agentcore/src/agent/resume.rs", "unmerged", "-> Handoff {", "its signature: the member's unacknowledged entries laid together for its job's Out to read (never handed off)"),
     ("crates/agentcore/src/agent/resume.rs", "unmerged", "Handoff::default()", "a resumable job's member's unacknowledged entries laid together, for its Out to read over the snapshot (never handed off: its own saves are)"),
@@ -143,11 +141,7 @@ fn the_markers() {
         w("std::fs::write(root.join(\"state/build/manifest.json\"), b)?;")
             && w("nas.write_whole(\"state/build/manifest.json\", &b)?;")
     );
-    assert!(
-        w("let h = Handoff::default();")
-            && w("let m = read_record(&root.join(\"state/build/manifest.json\"))?;")
-            && w("const J: &str = \"state/journal\";")
-    );
+    assert!(w("let h = Handoff::default();") && w("let m = read_record(&root.join(\"state/build/manifest.json\"))?;"));
     assert!(
         !w("pub struct Handoff {")
             && !w("impl Handoff {")

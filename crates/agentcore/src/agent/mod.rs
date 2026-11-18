@@ -465,9 +465,8 @@ struct Slot {
     peak_mb: Option<u64>,
     /// What each of its job's threads past those its grant's memory covers adds to its memory (MB),
     /// and those threads (crate::coord::Grant::thread_mb, `thread_covers`): what its agent reserves
-    /// for a grow (crate::agent::threads; 0 MB: no figure yet, no grow past those). None: an older
-    /// lead's grant (it says no threads covered).
-    thread_mb: Option<(u64, u32)>,
+    /// for a grow (crate::agent::threads; 0 MB: no figure yet, no grow past those).
+    thread_mb: (u64, u32),
     /// The disk its lead measured the job given it to take (MB: crate::coord::Grant::disk_mb),
     /// reserved while it holds the lease (`Agent::reservation`).
     reserve_mb: Option<u64>,
@@ -719,8 +718,8 @@ struct Hand {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     peak_mb: Option<u64>,
     /// Its grant's memory a thread and the threads it covers (`Slot::thread_mb`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    thread_mb: Option<(u64, u32)>,
+    #[serde(default)]
+    thread_mb: (u64, u32),
     #[serde(default)]
     reserve_mb: Option<u64>,
     /// The budgets' proxy's port its job was told (the next agent's proxy listens there again).
@@ -2590,7 +2589,7 @@ impl Agent {
         };
         self.slots[k].granted = Some(grant.threads).filter(|&t| t > 0);
         self.slots[k].peak_mb = Some(grant.peak_mb).filter(|&m| m > 0);
-        self.slots[k].thread_mb = Some((grant.thread_mb, grant.thread_covers)).filter(|t| t.1 > 0);
+        self.slots[k].thread_mb = (grant.thread_mb, grant.thread_covers);
         self.slots[k].reserve_mb = Some(grant.disk_mb).filter(|&d| d > 0);
         self.slots[k].job = Some(jobrt::jobid::JobId { epoch: grant.epoch, n: grant.lease });
         match grant {
@@ -2710,9 +2709,8 @@ impl Agent {
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[k].lease = Some(Held::Leased { lease, dir });
-                // (Its kind as the coordinator sent it; an older lead's grant names none: its
-                // spec's, ::offload::task_kind, until every lead sends it.)
-                let kind = if task_kind.is_empty() { self.o.the_plan.task_kind(&task) } else { task_kind };
+                // (Its kind as the coordinator sent it.)
+                let kind = task_kind;
                 let what = self.o.the_plan.task_what(&kind, &task, &unit);
                 Some((
                     k,
@@ -2917,7 +2915,7 @@ impl Agent {
         }
         self.slots[k].granted = Some(g.threads).filter(|&t| t > 0);
         self.slots[k].peak_mb = Some(g.peak_mb).filter(|&m| m > 0);
-        self.slots[k].thread_mb = Some((g.thread_mb, g.thread_covers)).filter(|t| t.1 > 0);
+        self.slots[k].thread_mb = (g.thread_mb, g.thread_covers);
         self.slots[k].reserve_mb = Some(g.disk_mb).filter(|&d| d > 0);
         Some((k, spec))
     }
@@ -3036,7 +3034,7 @@ impl Agent {
             b.close_tasks(p);
         }
         // (Its reservations released with its lease: handed off or given back.)
-        (self.slots[k].peak_mb, self.slots[k].thread_mb, self.slots[k].reserve_mb) = (None, None, None);
+        (self.slots[k].peak_mb, self.slots[k].thread_mb, self.slots[k].reserve_mb) = (None, (0, 0), None);
         match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
@@ -4860,7 +4858,7 @@ impl Agent {
 
     /// Why a grant of `spec` from plan `plan` is dropped: its job or a target of it was cancelled
     /// since (a cancel taken while that plan, or an older one, was the newest): None otherwise, and
-    /// for a grant of no plan's number (an older lead's).
+    /// for a grant of no plan's number (0: none made yet).
     fn cancelled_since(&self, spec: &JobSpec, plan: u64) -> Option<String> {
         if plan == 0 {
             return None;
@@ -5724,9 +5722,8 @@ impl Agent {
 
     /// The memory slot `k`'s job counts for (MB): what it holds, or the peak its lead packed it at
     /// (`Slot::peak_mb`: crate::coord::Grant::peak_mb, its targets' measure), the larger; the same on
-    /// the lead and a member, the figure the lead's packing counts it at (task #970). A job of no
-    /// such grant (an older lead's, or one taken over from an older agent) counts at what it holds;
-    /// the memory guard and brake hold either way.
+    /// the lead and a member, the figure the lead's packing counts it at (task #970). A job whose
+    /// grant said no peak counts at what it holds; the memory guard and brake hold either way.
     fn need_mb(&self, k: usize) -> u64 {
         self.held_mb(k).unwrap_or(0).max(self.slots[k].peak_mb.unwrap_or(0))
     }
@@ -7606,21 +7603,12 @@ impl Agent {
         };
     }
 
-    /// What each thread of slot `k`'s job past those its grant's memory covers adds to it (MB), and
-    /// those threads: its grant's (`Slot::thread_mb`), else (an older lead's grant, a job taken over
-    /// from an older agent) the whole memory it counts for (`need_mb`) a thread past those it was
-    /// granted. 0 MB: no figure, so no grow past those (crate::agent::threads::decide).
-    fn thread_mb(&self, k: usize) -> (u64, u32) {
-        let s = &self.slots[k];
-        s.thread_mb.unwrap_or_else(|| (self.need_mb(k), s.granted.unwrap_or(1)))
-    }
-
     /// The memory slot `k`'s job's threads past those its grant covers hold (MB, `thread_mb`): what
     /// its live control grew it by, reserved off its Mac's room for a further grow (the lead counts
     /// the same in its packing: crate::coord::sched's `grown_mb`).
     fn grown_mb(&self, k: usize) -> u64 {
         let Some(r) = self.slots[k].running.as_ref() else { return 0 };
-        let (per, covers) = self.thread_mb(k);
+        let (per, covers) = self.slots[k].thread_mb;
         let on = r.watch.map_or(0, |w| w.threads as usize).max(r.threads) as u64;
         per * on.saturating_sub(u64::from(covers))
     }
@@ -7656,7 +7644,7 @@ impl Agent {
         let mut free = f64::from(cap.cores_free.saturating_sub(mac_cores().saturating_sub(room)));
         let mut grown: u64 = (0..self.slots.len()).map(|k| self.grown_mb(k)).sum();
         for k in due {
-            let (per, covers) = self.thread_mb(k);
+            let (per, covers) = self.slots[k].thread_mb;
             let f = self.threads_path(k);
             let cpu = self.sampler.cpu_ns(k).unwrap_or(0);
             let waited = store::nasio::waited_in(&self.nas_counts_path(k)).unwrap_or(0);
@@ -11317,7 +11305,7 @@ mod tests {
     }
 
     /// Task #871 step 6 (§5.4): a grant from a plan no newer than a cancel of its job or a target
-    /// is dropped; one from a later plan, or an older lead's (no number), is not.
+    /// is dropped; one from a later plan, or of no plan's number, is not.
     #[test]
     fn a_grant_from_a_plan_before_a_cancel_is_dropped() {
         let d = tempfile::tempdir().unwrap();
@@ -11341,7 +11329,7 @@ mod tests {
         };
         assert!(a.cancelled_since(&spec, n).is_some_and(|w| w.contains("6/1/2")));
         assert_eq!(a.cancelled_since(&spec, n + 1), None);
-        assert_eq!(a.cancelled_since(&spec, 0), None, "an older lead's grant: no number");
+        assert_eq!(a.cancelled_since(&spec, 0), None, "no plan's number");
         assert_eq!(a.cancelled_since(&waiting_job("unit 6/1/3"), n), None);
         // (Plans are numbered past the time in ms: a lead started again numbers past every plan of
         // the one before, so a member's cancel noted at an old number drops none of its grants.)
@@ -11349,18 +11337,6 @@ mod tests {
         assert_eq!(plan::next_n(0, t), 1_800_000_000_000);
         assert_eq!(plan::next_n(1_800_000_000_500, t), 1_800_000_000_501);
         assert!(n >= plan::next_n(0, std::time::SystemTime::now() - Duration::from_secs(60)));
-    }
-
-    /// Task #871 step 6, a mixed rollout: a grant without the plan's number (an older lead's) reads
-    /// as 0; one with none (0) is written as an older lead writes it, for an older member.
-    #[test]
-    fn a_grants_plan_number_reads_across_app_versions() {
-        let old = serde_json::json!({ "lease": 7, "ttl_s": 600, "kind": "job", "step": "unit", "targets": [["6/1/2", "k"]], "pass": "p" });
-        let g: crate::coord::Grant = serde_json::from_value(old).unwrap();
-        assert_eq!(g.plan, 0);
-        assert!(serde_json::to_value(&g).unwrap().get("plan").is_none());
-        let g = crate::coord::Grant { plan: 4, ..g };
-        assert_eq!(serde_json::to_value(&g).unwrap()["plan"], 4);
     }
 
     /// Task #871 step 3: a pause during a plan (the slow-plan fake, 4 s, asked 1 s in; 30 s, asked
@@ -11910,8 +11886,8 @@ mod tests {
 
     /// Task #970: a member's running job counts at the peak its grant was packed at (`Slot::peak_mb`,
     /// crate::coord::Grant::peak_mb) or what it holds, the larger: its growth to come reserved off
-    /// the room for a new job, kept across an agent's hand-over, gone with its lease; a job of no
-    /// such grant (an older lead's) counts at what it holds.
+    /// the room for a new job, kept across an agent's hand-over, gone with its lease; a job whose
+    /// grant said no peak counts at what it holds.
     #[test]
     fn a_running_job_counts_at_its_grants_peak_not_its_steps_first_guess() {
         let d = tempfile::tempdir().unwrap();
@@ -11948,7 +11924,7 @@ mod tests {
         assert_eq!((cap.mem_reserved_mb, cap.mem_mb), (3400, room - 3400));
         assert_eq!(a.guard_view().reserved_mb, 3400);
         assert_eq!(a.hand_of(0).peak_mb, Some(3400), "handed over with its lease");
-        // (An older lead's grant, no peak said: what it holds alone.)
+        // (No peak said: what it holds alone.)
         a.slots[0].peak_mb = None;
         let cap = a.capacity(&cond);
         assert_eq!((cap.mem_reserved_mb, cap.mem_mb), (0, room));
@@ -11962,8 +11938,8 @@ mod tests {
 
     /// Task #1420: a grant's memory a thread is kept with its slot as its lead said it, 0 MB (no
     /// figure, a cold start's) among them, so its job grows past none of the threads its grant
-    /// covers (crate::agent::threads::decide); an older lead's, saying no threads covered, takes the
-    /// job's whole memory a thread past its granted threads.
+    /// covers (crate::agent::threads::decide); kept across an agent's hand-over, gone with its
+    /// lease.
     #[test]
     fn a_grants_memory_a_thread_is_kept_with_its_slot_none_among_them() {
         let d = tempfile::tempdir().unwrap();
@@ -11987,15 +11963,14 @@ mod tests {
         let mut waiting = Vec::new();
         let (k, _) =
             a.take_grant(grant(1, serde_json::json!({ "thread_covers": 2 })), &root, &mut waiting).expect("taken");
-        assert_eq!(a.slots[k].thread_mb, Some((0, 2)), "no figure: none a thread, its 2 covered");
-        assert_eq!(a.thread_mb(k), (0, 2));
+        assert_eq!(a.slots[k].thread_mb, (0, 2), "no figure: none a thread, its 2 covered");
         let (k, _) = a
             .take_grant(grant(2, serde_json::json!({ "thread_mb": 1500, "thread_covers": 3 })), &root, &mut waiting)
             .expect("taken");
-        assert_eq!(a.thread_mb(k), (1500, 3));
-        let (k, _) = a.take_grant(grant(3, serde_json::json!({})), &root, &mut waiting).expect("taken");
-        assert_eq!(a.slots[k].thread_mb, None, "an older lead's");
-        assert_eq!(a.thread_mb(k), (4000, 2), "its whole memory a thread past its 2");
+        assert_eq!(a.slots[k].thread_mb, (1500, 3));
+        assert_eq!(a.hand_of(k).thread_mb, (1500, 3), "handed over with its lease");
+        a.end_lease(k, Outcome::Interrupted, &[], "the test");
+        assert_eq!(a.slots[k].thread_mb, (0, 0), "gone with its lease");
         assert!(waiting.is_empty(), "{waiting:?}");
     }
 
@@ -12035,7 +12010,7 @@ mod tests {
         let pgid = r.pgid;
         a.slots[0].running = Some(r);
         a.slots[0].lease = Some(Held::Leased { lease: 7, dir: d.path().join("out") });
-        a.slots[0].thread_mb = Some((500, 2));
+        a.slots[0].thread_mb = (500, 2);
         jobrt::control::grant(&a.threads_path(0), 2).unwrap();
         // (Away: no in-use share kept.)
         let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 3600 };
@@ -12080,19 +12055,19 @@ mod tests {
         assert_eq!(file(&a), 2, "waiting and idle: cut");
         a.watch_threads(0);
         // Every thread busy, but each past those its grant covers would take 64 GB: held.
-        a.slots[0].thread_mb = Some((64 << 10, 2));
+        a.slots[0].thread_mb = (64 << 10, 2);
         minute(&mut a);
         cpu(&a, 5 * 61 * s + s / 10);
         a.tend_threads(&cond);
         assert_eq!(file(&a), 2, "no memory for a thread more");
         // No memory figure (a cold start's): held at the threads its grant covers.
-        a.slots[0].thread_mb = Some((0, 2));
+        a.slots[0].thread_mb = (0, 2);
         minute(&mut a);
         cpu(&a, 7 * 61 * s + s / 10);
         a.tend_threads(&cond);
         assert_eq!(file(&a), 2, "no memory figure");
         // With memory for them: doubled, within the most it may run on here.
-        a.slots[0].thread_mb = Some((500, 2));
+        a.slots[0].thread_mb = (500, 2);
         minute(&mut a);
         cpu(&a, 9 * 61 * s + s / 10);
         a.tend_threads(&cond);
@@ -19157,7 +19132,7 @@ mod membership_tests {
     }
 
     /// docs/coordination.md §6.1 (task #878 step 2): a member's beat lists its slots' leases and
-    /// those whose ends it owes; the lead hears it speaking for them, and releases one it leaves out.
+    /// those whose ends it owes; the lead confirms them, and releases one it leaves out.
     #[test]
     fn a_member_s_beat_lists_its_jobs_and_owed_ends() {
         let d = tempfile::tempdir().unwrap();

@@ -1177,7 +1177,7 @@ mod tests {
         assert!(e.still_s.is_none() && e.gap_s.is_none() && e.rates.is_empty() && e.threads.is_none());
     }
 
-    /// docs/coordination.md §6.1: a member speaking for its leases keeps them beat or not; its beat
+    /// docs/coordination.md §6.1: a member heard keeps its jobs' leases renewed or not; its beat
     /// leaving one out ends it (but one granted within the grace, its answer maybe on its way), a
     /// loaded one at once; one it lists that isn't its is said.
     #[test]

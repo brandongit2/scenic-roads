@@ -347,11 +347,12 @@ fn leftover_age(rel: &str) -> std::time::Duration {
 
 /// The coordinator's files in its folder (`coord/`) that only the lead's reads, as a first fill of
 /// its store (crate::coord::kept), and that a member's broker neither reads nor writes.
-const LEAD_COORD_FILES: [&str; 8] = [
+const LEAD_COORD_FILES: [&str; 9] = [
     "costs.json",
     "disks.json",
     "floors.json",
     "cache-fills.json",
+    crate::coord::JOB_DISKS,
     "leases.json",
     "pause.json",
     "timings.jsonl",
@@ -363,9 +364,7 @@ const LEAD_COORD_FILES: [&str; 8] = [
 /// removes (`member_leftovers`).
 pub fn is_member_leftover(rel: &str) -> bool {
     if let Some(name) = rel.strip_prefix("coord/") {
-        return rel == HISTORY_FILE
-            || LEAD_COORD_FILES.contains(&name)
-            || (name.starts_with("job-disks") && name.ends_with(".json"));
+        return rel == HISTORY_FILE || LEAD_COORD_FILES.contains(&name);
     }
     let between =
         |pre: &str, suf: &str| rel.len() > pre.len() + suf.len() && rel.starts_with(pre) && rel.ends_with(suf);

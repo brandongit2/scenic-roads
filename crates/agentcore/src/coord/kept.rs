@@ -283,14 +283,10 @@ impl Kept {
         self.m.lock().unwrap_or_else(|e| e.into_inner()).members.get(member).cloned()
     }
 
-    /// The members that speak `what` and were heard after `since` (unix seconds).
-    pub fn speaking(&self, what: &str, since: u64) -> BTreeSet<String> {
+    /// The members heard after `since` (unix seconds).
+    pub fn heard_since(&self, since: u64) -> BTreeSet<String> {
         let m = self.m.lock().unwrap_or_else(|e| e.into_inner());
-        m.members
-            .iter()
-            .filter(|(_, h)| h.at > since && h.speaks.iter().any(|s| s == what))
-            .map(|(n, _)| n.clone())
-            .collect()
+        m.members.iter().filter(|(_, h)| h.at > since).map(|(n, _)| n.clone()).collect()
     }
 
     /// Every member as last heard.

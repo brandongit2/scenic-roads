@@ -10,10 +10,9 @@
 //!   `members`) read these first.
 //! - **On a member** the lead's answer fills the same registry (`answered`); its leases released
 //!   wait for the agent's loop (`take_released`).
-//! - **The words** a beat and an answer say (`SPEAKS`, `VIEW`, `ASKS`, `HANDOFF`, `BUDGETS`,
-//!   `BY_LEAD`): steps 3 to 7's rollout gates read them, deleted with their NAS paths (task #1036;
-//!   step 6's, the journal, task #1125); each is still said, for the app before, which falls back to
-//!   the NAS without it.
+//! - **The words** a beat and an answer say (`SPEAKS`, `VIEW`, `ASKS`, `BUDGETS`, `BY_LEAD`):
+//!   steps 3 to 7's rollout gates read them, deleted with their NAS paths (task #1036); each is
+//!   still said, for the app before, which falls back to the NAS without it.
 //!
 //! Nothing here touches the NAS: the coordinator's handlers reach it (§2.3).
 
@@ -38,13 +37,6 @@ pub const PAGE: &str = "page";
 /// step 5, crate::coord::asks): this member's hold and the settings' generation in the answer;
 /// its own mail, holds and settings by HTTP alone.
 pub const ASKS: &str = "asks";
-
-/// What a member's beat says it speaks, and a lead's answer that it takes (docs/coordination.md
-/// step 6, crate::coord::handoffs): its jobs' hand-offs posted by HTTP (`POST /pool/handoff`), its
-/// beat listing those it keeps, the answer saying which are merged and which the lead lacks. (A
-/// member on an app before task #1125 writes them to the NAS's journal for a lead whose answer
-/// doesn't say it: a lead says it in every answer, its registry attached or not, so none does.)
-pub const HANDOFF: &str = "handoff";
 
 /// What a member's beat says it speaks, and a lead's answer that it serves (docs/coordination.md
 /// step 7, crate::coord::budgets): the Wikimedia budget and the answers' lease from the lead, its
@@ -574,7 +566,7 @@ mod tests {
     /// `FORGET_S` is dropped.
     #[test]
     fn a_member_s_beat_lists_its_hand_offs_before_any_answer_and_after_an_older_lead_s() {
-        // (Review of task #1125: listed only once a lead's answer said `HANDOFF`, a restarted
+        // (Review of task #1125: listed only once a lead's answer said it took them, a restarted
         // member's first beat listed none, and the lead's GC queue let go of deletions a merge of
         // them must refuse.)
         let e = crate::pool::Entry {

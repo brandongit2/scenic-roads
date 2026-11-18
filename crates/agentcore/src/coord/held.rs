@@ -8,10 +8,8 @@
 //!   its way; one loaded at a restart, never; nor one whose ask its member sent after the beat,
 //!   `Sent`, kept with the lease through the lead's restarts: `lease::Lease::asked`). The answer says the lead's epoch and the leases listed
 //!   that aren't that member's here (ended meanwhile: its jobs stop as their own beats are refused).
-//! - **Gated by what the member speaks** (`SPEAKS`): the lead applies the rule to a member whose
-//!   last beat says it speaks it; an older member's leases lapse after `coord::TTL` unrenewed as
-//!   before, and an older lead answers the beat 404 (the member goes on as before). Each member's
-//!   word is kept in the store (`kept::Heard`), so a lead's restart doesn't drop it.
+//! - **Every member's**: when each member was last heard is kept in the store (`kept::Heard`), so a
+//!   lead's restart doesn't drop it.
 //! - **A member not heard from** keeps its leases (they never lapse): held by an away member after
 //!   `AWAY_S` (`away`; no view says it yet: task #1158), and released after `AWAY_RELEASE_S` (12 h, the PM's
 //!   decision of 30 Oct: a repeat costs doubled work only, the merge refusing the old lease's
@@ -22,8 +20,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-/// What a member's beat says it speaks: its leases end by its word.
-pub const SPEAKS: &str = "held-leases";
 /// A lease granted this recently isn't released by a beat leaving it out (its grant's answer may
 /// be on its way still: a client's deadline is 5 s, its beat 10 s apart).
 pub const OMIT_GRACE: Duration = Duration::from_secs(30);
@@ -233,11 +229,10 @@ pub struct LeadLine {
     pub flags: Vec<crate::agent::flags::Flag>,
 }
 
-/// The members whose leases go by their word now: those speaking it, heard within
-/// `AWAY_RELEASE_S`.
+/// The members whose leases go by their word now: those heard within `AWAY_RELEASE_S`.
 pub fn refresh(s: &mut Shared) {
     let unix = wall(s);
-    s.leases.by_word = s.keep.speaking(SPEAKS, unix.saturating_sub(AWAY_RELEASE_S));
+    s.leases.by_word = s.keep.heard_since(unix.saturating_sub(AWAY_RELEASE_S));
 }
 
 /// The coordinator's wall clock (unix s; a test's virtual one).
@@ -276,11 +271,6 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         a.lead = lead_line(s);
         a.settings_gen = s.asks.settings.gen;
     }
-    // (`HANDOFF` in every answer, its agent's registry attached or not: a member on an app before
-    // task #1125 writes its hand-offs to the NAS's journal, which no lead reads now, for a lead
-    // whose answer doesn't say it. Before the registry is attached the answer says none merged nor
-    // lacking, and the member keeps them.)
-    a.speaks.push(super::beats::HANDOFF.to_string());
     // (Its jobs' spans, once it keeps them: the beat's are taken by the route, off the lock.)
     if s.jobspans.is_some() {
         a.speaks.push(super::beats::SPANS.to_string());
@@ -300,15 +290,13 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         .filter(|(e, m)| !s.broker && *e == s.leases.epoch && s.pool_member.as_deref() == Some(m.id.as_str()))
         .map(|(_, m)| m);
     a.reach = a.leading.as_ref().and(s.reach.clone());
-    if b.speaks.iter().any(|w| w == SPEAKS) {
-        // (As of when its list was made: a lease granted since isn't in it, nor one asked for
-        // after the beat was sent.)
-        let now = s.now();
-        let now = now.checked_sub(Duration::from_secs(b.held_age_s)).unwrap_or(now);
-        let (gone, released) = s.leases.word(&b.member, &b.held, b.sent, now, OMIT_GRACE);
-        ended(s, &gone, "its member's beat didn't list it: it doesn't hold it");
-        a.released = released;
-    }
+    // (As of when its list was made: a lease granted since isn't in it, nor one asked for after the
+    // beat was sent.)
+    let now = s.now();
+    let now = now.checked_sub(Duration::from_secs(b.held_age_s)).unwrap_or(now);
+    let (gone, released) = s.leases.word(&b.member, &b.held, b.sent, now, OMIT_GRACE);
+    ended(s, &gone, "its member's beat didn't list it: it doesn't hold it");
+    a.released = released;
     owes(s, b);
     // (Its capacity, the one its asks carry, fresher; the threads its running jobs run on counted.)
     if let Some(cap) = b.cap.clone() {
@@ -341,17 +329,12 @@ pub fn tell_gc(s: &mut Shared) {
     q.leases(known, oldest);
 }
 
-/// `b`'s member's beat said to GC's queue (`tell_gc`): when it speaks of its leases and its
-/// hand-offs, it owes the leases it holds, those it keeps a hand-off of (`Beat::handoffs`,
-/// `<day>/<lease>`), and those the lead still holds for it (one granted after its list); an older
-/// app's are owed as granted until its owner releases it.
+/// `b`'s member's beat said to GC's queue (`tell_gc`): it owes the leases it holds, those it keeps
+/// a hand-off of (`Beat::handoffs`, `<day>/<lease>`), and those the lead still holds for it (one
+/// granted after its list).
 fn owes(s: &mut Shared, b: &Beat) {
     tell_gc(s);
     let Some(q) = s.gc.clone() else { return };
-    let speaks = |w: &str| b.speaks.iter().any(|x| x == w);
-    if !(speaks(SPEAKS) && speaks(super::beats::HANDOFF)) {
-        return;
-    }
     let epoch = s.leases.epoch;
     let mut leases: BTreeSet<store::map::gc::Lease> = s
         .leases
@@ -417,7 +400,6 @@ pub fn away(s: &Shared) -> Vec<(String, usize, u64)> {
     s.keep
         .members()
         .into_iter()
-        .filter(|(_, h)| h.speaks.iter().any(|w| w == SPEAKS))
         .filter(|(_, h)| unix.saturating_sub(h.at) >= AWAY_S && unix.saturating_sub(h.at) < AWAY_RELEASE_S)
         .filter_map(|(m, h): (String, kept::Heard)| {
             let n = s

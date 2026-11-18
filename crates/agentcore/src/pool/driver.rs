@@ -282,8 +282,7 @@ impl Driver {
     /// The driver of member `me` (its app the process's), holding its lock, from what it saved
     /// last. Another member's state (a copy of the agent's folder, or this Mac's member file lost
     /// and a new id made), or one naming none (lost, or never saved), counts for nothing but its
-    /// jobs' hand-offs: those are posted, the same bytes whoever posts them (an older app's keys of
-    /// the NAS's journal read back first, `Mine::read_back`).
+    /// jobs' hand-offs: those are posted, the same bytes whoever posts them.
     pub fn new(me: Member, saved: Saved, lock: MemberLock) -> Driver {
         Driver { lock: Some(lock), ..Driver::without(me, saved) }
     }
@@ -386,25 +385,13 @@ impl Driver {
             out.stop = Some(why.clone());
             return out;
         }
-        // Its jobs' hand-offs, kept whole; those an app before task #1125 wrote to the NAS's journal
-        // read back whole.
+        // Its jobs' hand-offs, kept whole.
         for e in heard.entries {
             if let Err(err) = self.saved.mine.add(e) {
                 out.events.push(Event::Failed { what: "keep an entry", why: format!("{err:#}") });
             }
         }
         self.saved.mine.acked_all(&heard.merged);
-        let (dropped, failed) = self.saved.mine.read_back(io);
-        for (k, why) in dropped {
-            out.events.push(Event::Failed {
-                what: "read back an older app's journal entry",
-                why: format!("{k}: {why}: dropped, its job's work done again"),
-            });
-        }
-        for (k, err) in failed {
-            out.events
-                .push(Event::Waits { what: "read back an older app's journal entry", why: format!("{k}: {err:#}") });
-        }
         // What it heard.
         let mut acts: Vec<Act> = Vec::new();
         for (_, m) in heard.msgs {
@@ -1276,45 +1263,6 @@ mod tests {
         }
         let calls = io.take();
         assert!(!calls.iter().any(|c| c.contains("journal") || c.starts_with("list ")), "{calls:#?}");
-    }
-
-    #[test]
-    fn an_older_app_s_journal_entries_are_read_back_and_posted() {
-        // (Task #1125) B ran an app before #1125 that wrote a hand-off to the NAS's journal for an
-        // older lead and kept its key, unacknowledged. Its first step reads it back whole: kept, to
-        // post; a key whose file isn't there is dropped, said; a read that fails is tried again.
-        let mem = Mem::default();
-        setup(&mem);
-        declare(&mem, A);
-        let ib = Mac::new(&mem);
-        let (e, gone) = (entry(B, 1, 5, "6-1-5"), entry(B, 1, 6, "6-1-6"));
-        let (key, gone) = (e.key().unwrap(), gone.key().unwrap());
-        mem.write_whole(&format!("state/journal/{key}.json"), &serde_json::to_vec(&e).unwrap()).unwrap();
-        let saved: Saved =
-            serde_json::from_value(serde_json::json!({ "member": B, "mine": { "entries": [key, gone] } })).unwrap();
-        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), saved);
-        *ib.fail.borrow_mut() = Some("state/journal".into());
-        ib.down.set(true);
-        let o = step(&mut b, &ib, able());
-        assert!(o.events.iter().any(|e| matches!(e, Event::Waits { what, .. } if what.contains("journal"))), "{o:?}");
-        assert_eq!((b.mine().keys().count(), b.mine().unacked()), (0, 2), "tried again");
-        ib.down.set(false);
-        ib.pass(20);
-        let o = step(&mut b, &ib, able());
-        assert_eq!(b.mine().keys().collect::<Vec<_>>(), [&key], "read back whole, to post");
-        assert!(
-            o.events.iter().any(|ev| matches!(ev, Event::Failed { why, .. } if why.contains(&gone))),
-            "{:?}",
-            o.events
-        );
-        assert_eq!(b.mine().unacked(), 1);
-        // (Review: another member id's saved state, this Mac's member file lost, had its journal keys
-        // dropped unread: no lead reads the journal now, so they're read back as its own are.)
-        let saved: Saved =
-            serde_json::from_value(serde_json::json!({ "member": C, "mine": { "entries": [key] } })).unwrap();
-        let mut b2 = Driver::unlocked(member(B, "MacBook-Air", V2), saved);
-        step(&mut b2, &ib, able());
-        assert_eq!(b2.mine().keys().collect::<Vec<_>>(), [&key], "read back whole under its new id");
     }
 
     #[test]

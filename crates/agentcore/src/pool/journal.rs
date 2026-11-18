@@ -1,20 +1,13 @@
 //! The jobs' hand-offs as entries (`Entry`, keyed `<day>/<epoch>-<n>`) and what a member keeps of
 //! them until its lead's saved records name them (`Mine`). A member posts them to its lead by HTTP
 //! (crate::coord::handoffs: docs/coordination.md step 6); the lead merges them from memory
-//! (crate::pool::driver). Nothing writes them to the NAS (task #1125: the NAS's journal,
-//! `state/journal/`, written for a lead on an app before step 6, is gone; an app before it kept the
-//! keys of what it wrote there, read back whole once by `Mine::read_back`).
+//! (crate::pool::driver). Nothing writes them to the NAS.
 
-use super::nas::Nas;
 use anyhow::{Context, Result};
 use buildstore::handoff::Handoff;
 use jobrt::jobid::JobId;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-
-/// The NAS's journal's folder, which apps before task #1125 wrote a member's hand-offs to for a lead
-/// on an app before docs/coordination.md step 6: read for `Mine::read_back` alone.
-const DIR: &str = "state/journal";
+use std::collections::BTreeMap;
 
 /// A job's hand-off and what it was for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,14 +57,9 @@ pub fn is_day(name: &str) -> bool {
 /// (crate::pool::driver::Saved::records).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Mine {
-    /// By key. (Under the name apps before task #1125 kept them by: not written to the journal.)
+    /// By key (kept in the agent's folder under the key `unwritten`).
     #[serde(default, rename = "unwritten", skip_serializing_if = "BTreeMap::is_empty")]
     kept: BTreeMap<String, Entry>,
-    /// The keys of those an app before task #1125 wrote to the NAS's journal and no lead had
-    /// acknowledged, as it kept them: read back whole (`read_back`), then kept as any. Kept until
-    /// read, so a rollback finds them as it left them.
-    #[serde(default, rename = "entries", skip_serializing_if = "BTreeSet::is_empty")]
-    written: BTreeSet<String>,
 }
 
 impl Mine {
@@ -95,7 +83,6 @@ impl Mine {
     /// Notes entry `key` acknowledged: a lead's saved records name it. Dropped.
     pub fn acked(&mut self, key: &str) {
         self.kept.remove(key);
-        self.written.remove(key);
     }
 
     /// Notes entries `keys` acknowledged (`acked`).
@@ -105,38 +92,12 @@ impl Mine {
 
     /// How many it keeps that no lead has acknowledged.
     pub fn unacked(&self) -> usize {
-        self.kept.len() + self.written.len()
-    }
-
-    /// The hand-offs an app before task #1125 wrote to the NAS's journal (`written`), read back whole
-    /// and kept as any, to post: what can't be (not there, not whole, or another's) is dropped, with
-    /// why (its job's work done again); a read that fails is tried again at the next call. (Deleted
-    /// once every Mac has run an app with it: none keeps such keys then.)
-    pub fn read_back(&mut self, nas: &dyn Nas) -> (Vec<(String, String)>, Vec<(String, anyhow::Error)>) {
-        let (mut dropped, mut failed) = (Vec::new(), Vec::new());
-        for key in std::mem::take(&mut self.written) {
-            match nas.read(&format!("{DIR}/{key}.json")) {
-                Ok(Some(b)) => match serde_json::from_slice::<Entry>(&b) {
-                    Ok(e) if e.key().as_deref() == Some(key.as_str()) => {
-                        self.kept.entry(key).or_insert(e);
-                    }
-                    Ok(_) => dropped.push((key, "it's another entry".into())),
-                    Err(err) => dropped.push((key, format!("it doesn't read whole: {err}"))),
-                },
-                Ok(None) => dropped.push((key, "it isn't there".into())),
-                Err(err) => {
-                    failed.push((key.clone(), err));
-                    self.written.insert(key);
-                }
-            }
-        }
-        (dropped, failed)
+        self.kept.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::nas::Mem;
     use super::*;
 
     fn entry(epoch: u64, n: u64, at: u64) -> Entry {
@@ -164,9 +125,9 @@ mod tests {
         // Handed again (its folder not removed before a crash): kept once.
         m.add(b).unwrap();
         assert_eq!(m.unacked(), 1);
-        // Kept in the agent's folder under the name apps before #1125 read.
+        // Kept in the agent's folder under `unwritten`.
         let v = serde_json::to_value(&m).unwrap();
-        assert!(v["unwritten"][&kb].is_object() && v.get("entries").is_none(), "{v}");
+        assert!(v["unwritten"][&kb].is_object(), "{v}");
     }
 
     #[test]
@@ -176,24 +137,5 @@ mod tests {
         assert_eq!(bad.key(), None);
         assert_eq!(day(253_402_300_800), None, "the year 10000");
         assert!(Mine::default().add(bad).is_err());
-    }
-
-    #[test]
-    fn an_older_app_s_journal_entries_are_read_back_whole_once() {
-        // An app before #1125 wrote three to the journal (an older lead's) and kept their keys,
-        // unacknowledged; one of them is there whole, one cut short, one gone.
-        let nas = Mem::default();
-        let (a, b) = (entry(4, 1, 1_791_300_000), entry(4, 2, 1_791_300_000));
-        let (ka, kb) = (a.key().unwrap(), b.key().unwrap());
-        nas.write_whole(&format!("{DIR}/{ka}.json"), &serde_json::to_vec(&a).unwrap()).unwrap();
-        nas.write_whole(&format!("{DIR}/{kb}.json"), b"{\"member\":").unwrap();
-        let mut m: Mine = serde_json::from_value(serde_json::json!({ "entries": [ka, kb, "2026-10-06/4-3"] })).unwrap();
-        assert_eq!(m.unacked(), 3);
-        let (dropped, failed) = m.read_back(&nas);
-        assert!(failed.is_empty());
-        assert_eq!(dropped.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(), [kb.as_str(), "2026-10-06/4-3"]);
-        assert_eq!(m.keys().collect::<Vec<_>>(), [&ka], "kept whole, to post");
-        assert_eq!(m.unacked(), 1);
-        assert!(serde_json::to_value(&m).unwrap().get("entries").is_none(), "none left to read");
     }
 }

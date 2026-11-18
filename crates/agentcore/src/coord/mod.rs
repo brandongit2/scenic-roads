@@ -1401,13 +1401,14 @@ pub struct Grant {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub more: Vec<Grant>,
     /// The worker threads its job runs with (RAYON_NUM_THREADS): its measured cores within those
-    /// its Mac has left (`job_threads`). 0: not said (an older lead's), the agent's own rule.
+    /// its Mac has left (`job_threads`). 0: a task's, the agent's own rule.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub threads: u32,
     /// The memory its job's peak was packed at (MB: `sched::Pick::mem_mb`, the lead's measure of its
     /// targets, a cold start's provisional need; a task's, its predicted memory): its agent
     /// counts the job at the larger of this and what it holds, the rest reserved for its growth
-    /// (`Capacity::mem_reserved_mb`; docs/pool.md §7.1). 0: an older lead's (what it holds alone). (Not `mem_mb`: the flattened `Granted::Task` has one.)
+    /// (`Capacity::mem_reserved_mb`; docs/pool.md §7.1). 0: no figure (what it holds alone). (Not
+    /// `mem_mb`: the flattened `Granted::Task` has one.)
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub peak_mb: u64,
     /// What each of its job's threads past `thread_covers` adds to its memory (MB:
@@ -1415,22 +1416,21 @@ pub struct Grant {
     /// past none of them), and the threads the memory it was packed at covers (its threads and
     /// those its measure was taken at, the more): its agent reserves that a thread for each one it
     /// grows the job past them (crate::agent::threads), as the lead counts it
-    /// (`sched::Sched::grown_mb`). No threads covered: an older lead's, whose job its agent takes
-    /// at its whole memory a thread.
+    /// (`sched::Sched::grown_mb`). A task's: none of either, so it grows past none.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub thread_mb: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub thread_covers: u32,
     /// The disk its job is measured to take (MB: `Coordinator::measured_batch`'s), which its agent
     /// reserves until it hands the job off or gives it back (docs/pool.md §7.1). 0: a cold start,
-    /// a task, or an older lead's.
+    /// or a task.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub disk_mb: u64,
     /// The lead's own planned job granted (`Offer::job`: its id), to the lead's own agent alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
     /// The number of the lead's plan its work was offered by (`Shared::plan`): a cancel taken after
-    /// that plan drops it (docs/agent-parts.md §5.4). 0: an older lead's, or no plan.
+    /// that plan drops it (docs/agent-parts.md §5.4). 0: no plan.
     #[serde(default, skip_serializing_if = "is_zero64")]
     pub plan: u64,
 }
@@ -1442,14 +1442,8 @@ pub enum Granted {
     /// worker's own view of the NAS may lag).
     Job { step: String, targets: Vec<(String, String)>, pass: String },
     /// A task: what to run and fetch (task::Task::spec), its kind (task::Task::kind,
-    /// crate::agent::steps::TASKS; an older lead's grant: none) and its predicted memory.
-    Task {
-        id: u64,
-        task: serde_json::Value,
-        #[serde(default)]
-        task_kind: String,
-        mem_mb: u64,
-    },
+    /// crate::agent::steps::TASKS) and its predicted memory.
+    Task { id: u64, task: serde_json::Value, task_kind: String, mem_mb: u64 },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2638,7 +2632,7 @@ impl Coordinator {
         // (None while the build is paused: every lease held, a paused or asleep worker's work not
         // given to another.)
         let now = s.now();
-        // (A member speaking for its leases holds them until its word, or 12 h unheard: `held`.)
+        // (A member heard holds its jobs' leases until its word, or 12 h unheard: `held`.)
         held::refresh(&mut s);
         if s.paused.is_some() {
             s.leases.hold_all(now);
@@ -3924,7 +3918,7 @@ fn check_pooled(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result
 }
 
 /// The file of the disk each step's last jobs took (`Shared::job_disks`), its store's first fill.
-const JOB_DISKS: &str = "job-disks-v6.json";
+pub(crate) const JOB_DISKS: &str = "job-disks-v6.json";
 
 /// The jobs' disks kept per step (`Shared::job_disks`).
 pub const JOB_PEAKS: usize = 20;
@@ -4526,14 +4520,16 @@ fn route(
                     });
                     let pass = pick.first().map(|t| t.0.clone()).unwrap_or_default();
                     let n = s.pack_need(&o.step, &pick.iter().map(|t| t.0.clone()).collect::<Vec<_>>());
+                    let threads = ask_cores(&a);
+                    let (thread_mb, covered) = s.per_thread_mb(&o.step, pick.iter().map(|t| t.0.as_str()), n.m.mem_mb);
                     let g = Grant {
                         lease,
                         epoch: s.leases.epoch,
                         ttl_s: TTL.as_secs(),
-                        threads: ask_cores(&a),
+                        threads,
                         peak_mb: n.m.mem_mb,
-                        thread_mb: 0,
-                        thread_covers: 0,
+                        thread_mb,
+                        thread_covers: threads.max(covered),
                         disk_mb: if n.cold { 0 } else { n.m.disk_mb },
                         work: Granted::Job { step: o.step.clone(), targets: pick, pass },
                         more: Vec::new(),
@@ -6655,14 +6651,9 @@ mod tests {
         assert!(!d.path().join("leases.json").exists() && !d.path().join("costs.json").exists());
     }
 
-    /// A beat of member `m` holding `held`, in a speaking app (`held::SPEAKS`).
+    /// A beat of member `m` holding `held`.
     fn word(m: &str, held: &[u64]) -> held::Beat {
-        held::Beat {
-            member: m.into(),
-            speaks: vec![held::SPEAKS.into()],
-            held: held.iter().copied().collect(),
-            ..Default::default()
-        }
+        held::Beat { member: m.into(), held: held.iter().copied().collect(), ..Default::default() }
     }
 
     fn unit_offer(c: &Coordinator, target: &str) {
@@ -6853,28 +6844,6 @@ mod tests {
         assert!(!w.beat(g.lease, None).unwrap());
     }
 
-    /// Mixed versions (docs/coordination.md §6.1): a member that doesn't say it speaks for its leases
-    /// keeps the old rule (they lapse after `TTL` unrenewed, and its beat releases nothing); a lead
-    /// that doesn't take the beat answers 404, which a member takes as nothing to do.
-    #[test]
-    fn mixed_versions_keep_the_old_rule() {
-        let (_d, c, w) = start();
-        let clock = store::clock::Virtual::new();
-        c.shared.lock().unwrap().clock = clock.clone();
-        measure_units(&c, 1);
-        unit_offer(&c, "6/1/1");
-        let g = w.ask(&ask(8192)).unwrap().expect("granted");
-        clock.advance(held::OMIT_GRACE * 2);
-        let old = held::Beat { member: "m1".into(), ..Default::default() };
-        assert!(c.member_beat(&old).released.is_empty());
-        assert!(c.held("unit").contains("6/1/1"), "not released by an older member's beat");
-        clock.advance(TTL + Duration::from_secs(60));
-        assert_eq!(c.expire().iter().map(|l| l.id).collect::<Vec<_>>(), [g.lease], "lapsed as before");
-        let (url, _) = coordwire::testkit::answering(404);
-        let older_lead = client::Client::at(vec![url], "t".into(), "m1");
-        assert_eq!(older_lead.pool_beat(&word("m1", &[])).unwrap(), None);
-    }
-
     /// Task #1104: a member's beat carrying its jobs' spans: kept by the lead by job id, from where
     /// it has them (a beat posted again adds nothing), its answer saying it takes them and what it
     /// has; the page reads the job whole at `GET /api/job/<id>`, no key; a job of no spans is
@@ -6966,7 +6935,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
         c.set_beats(Some(std::sync::Arc::default()));
-        c.member_beat(&heard_beat("m1", &[held::SPEAKS, beats::SPEAKS, beats::VIEW]));
+        c.member_beat(&heard_beat("m1", &[beats::SPEAKS, beats::VIEW]));
         drop(c);
         let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
         let b = std::sync::Arc::new(beats::Beats::default());
@@ -7186,8 +7155,7 @@ mod tests {
     #[test]
     fn a_leads_answers_say_how_to_reach_it() {
         let (_d, c, _w) = start();
-        let b =
-            held::Beat { member: "m-0000000000000001".into(), speaks: vec![held::SPEAKS.into()], ..Default::default() };
+        let b = held::Beat { member: "m-0000000000000001".into(), ..Default::default() };
         assert_eq!(c.member_beat(&b).reach, None, "not leading: nothing");
         let contact = c.reach();
         let m = crate::pool::Member { id: "m-00000000000000aa".into(), host: "m6".into(), app: "dev".into() };

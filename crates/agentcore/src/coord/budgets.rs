@@ -401,7 +401,7 @@ mod tests {
         let at_lead = Arc::new(beats::Beats::default());
         c.set_beats(Some(at_lead.clone()));
         let a = "m-000000000000000a";
-        let all = [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF, beats::BUDGETS];
+        let all = [beats::SPEAKS, beats::VIEW, beats::ASKS, beats::BUDGETS];
         let beat = |m: &str, speaks: &[&str], progress: Option<Progress>| held::Beat {
             member: format!("{m}-host"),
             speaks: speaks.iter().map(|w| w.to_string()).collect(),

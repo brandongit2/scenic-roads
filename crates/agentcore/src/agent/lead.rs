@@ -772,8 +772,7 @@ mod tests {
             for m in macs.iter_mut() {
                 let b = m.run.side.http_beats();
                 for h in own.iter().filter(|h| h.pool.member != m.id()) {
-                    let speaks =
-                        [crate::coord::held::SPEAKS, crate::coord::beats::SPEAKS, crate::coord::beats::HANDOFF];
+                    let speaks = [crate::coord::beats::SPEAKS];
                     b.heard(h.clone(), speaks.map(str::to_string).to_vec(), None, m.run.side.now());
                 }
             }
@@ -826,11 +825,7 @@ mod tests {
                 out
             };
             let said = || {
-                let w = crate::coord::held::Beat {
-                    member: "b".into(),
-                    speaks: vec![crate::coord::held::SPEAKS.into()],
-                    ..Default::default()
-                };
+                let w = crate::coord::held::Beat { member: "b".into(), ..Default::default() };
                 c.member_beat(&w).leading.map(|m| m.id)
             };
             (c.set_epoch(1), c.set_member(Some(&a.id())));

@@ -483,7 +483,7 @@ fn a_torn_last_line_is_dropped() {
 /// deletion is let go.
 #[test]
 fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
-    use crate::coord::{beats, held, lease::Work};
+    use crate::coord::{held, lease::Work};
     let d = tempfile::tempdir().unwrap();
     let (c, _port) = crate::coord::start_for_test(&d.path().join("lead"), "m1", "");
     let dir = d.path().join("maplog");
@@ -495,7 +495,6 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
     super::records(&q, &records(1, &[]), T0);
     let beat = |m: &str, held: &[u64], handoffs: &[String]| held::Beat {
         member: m.into(),
-        speaks: vec![held::SPEAKS.into(), beats::HANDOFF.into()],
         held: held.iter().copied().collect(),
         handoffs: handoffs.to_vec(),
         ..Default::default()
@@ -555,7 +554,7 @@ fn a_member_away_ten_days_reusing_a_removed_name_is_refused_and_redone() {
 /// again, and the redo merges.
 #[test]
 fn a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused() {
-    use crate::coord::{beats, held, lease::Work};
+    use crate::coord::{held, lease::Work};
     let d = tempfile::tempdir().unwrap();
     let (c, _port) = crate::coord::start_for_test(&d.path().join("lead"), "m1", "");
     let dir = d.path().join("maplog");
@@ -569,7 +568,6 @@ fn a_hand_off_held_past_the_grace_reusing_a_name_gc_freed_is_refused() {
     super::records(&q, &records(1, &[]), T0);
     let beat = |m: &str, held: &[u64], handoffs: &[String]| held::Beat {
         member: m.into(),
-        speaks: vec![held::SPEAKS.into(), beats::HANDOFF.into()],
         held: held.iter().copied().collect(),
         handoffs: handoffs.to_vec(),
         ..Default::default()

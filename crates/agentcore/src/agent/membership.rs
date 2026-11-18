@@ -606,8 +606,7 @@ impl Side {
 
     /// Writes the saved state when it changed; the folders of the hand-offs it now holds removed,
     /// once the state holding them is durable, its rename too (the folder flushed): its job's
-    /// folder is the hand-off's only other copy, and no journal on the NAS holds one since task
-    /// #1125.
+    /// folder is the hand-off's only other copy.
     fn keep(&mut self) -> Result<()> {
         let b = serde_json::to_vec(&self.driver().saved())?;
         if b != self.written {
@@ -2222,15 +2221,6 @@ mod tests {
         let hb = a.http_beats().own().unwrap();
         assert_eq!((hb.pool.leads, hb.members.clone()), (Some(1), vec![id.clone()]));
         assert!(hb.pool.beat > 0 && !r.join("state/pool/members").exists());
-        // A member heard on an app before step 6 (its beat without `handoff`): nothing listed or
-        // read for it (task #1125), caught up all the same.
-        let older = Heartbeat {
-            pool: Beat { member: B.into(), host: "b".into(), beat: a.now(), ..Default::default() },
-            ..Default::default()
-        };
-        a.http_beats().heard(older, vec![crate::coord::held::SPEAKS.into()], None, a.now());
-        let out = a.step(Give::default(), &any);
-        assert!(out.caught_up && !r.join("state/journal").exists(), "{:?}", out.events);
     }
 
     #[test]
@@ -2313,12 +2303,9 @@ mod tests {
         /// B's beat taken by A's coordinator, its answer B's, and the hand-offs it says it lacks
         /// posted (as B's agent's beat does).
         fn beat(&mut self) -> crate::coord::held::Answer {
-            use crate::coord::{beats, held};
-            let b = held::Beat {
+            let b = crate::coord::held::Beat {
                 member: "b-host".into(),
-                speaks: [held::SPEAKS, beats::SPEAKS, beats::VIEW, beats::ASKS, beats::HANDOFF]
-                    .map(str::to_string)
-                    .to_vec(),
+                speaks: crate::agent::beat::speaks(),
                 heartbeat: self.b.http_beats().own(),
                 handoffs: self.b.http_beats().handoff_keys(),
                 ..Default::default()
@@ -2342,11 +2329,11 @@ mod tests {
             assert_eq!((code, v["taken"].as_str()), (200, e.key().as_deref()), "{v}");
         }
 
-        /// A's coordinator takes hand-offs (as its agent's step makes it), and B's beat hears so.
+        /// A's coordinator takes hand-offs (as its agent's step makes it), and B beats.
         fn by_http(&mut self) {
             self.c.set_handoffs(Some(self.a.handoffs()));
             self.b.step(Give::default(), &any);
-            assert!(self.beat().speaks.iter().any(|w| w == crate::coord::beats::HANDOFF));
+            self.beat();
         }
 
         /// B's job's hand-off `n`, handed to its step: kept whole, nothing written nor sent.
@@ -2449,7 +2436,7 @@ mod tests {
         let beat = |b: &Side| {
             let w = crate::coord::held::Beat {
                 member: "b-host".into(),
-                speaks: vec![crate::coord::held::SPEAKS.into(), crate::coord::beats::SPEAKS.into()],
+                speaks: vec![crate::coord::beats::SPEAKS.into()],
                 heartbeat: b.http_beats().own(),
                 ..Default::default()
             };
@@ -2684,45 +2671,6 @@ mod tests {
         assert_eq!(m.a.handoffs().taken().len(), 1, "kept");
         slow.store(false, std::sync::atomic::Ordering::SeqCst);
         m.merged(&key);
-        drop(m.c);
-    }
-
-    /// Mixed versions (task #1125): a member on an app before #1125 writes its hand-offs to the
-    /// NAS's journal, which no lead reads now, for a lead whose answer doesn't say `handoff`. This
-    /// lead says it in every answer, its pool side's registries attached or not (its agent's first
-    /// step after its coordinator starts): such a member keeps them, and posts them once the lead
-    /// lacks them.
-    #[test]
-    fn mixed_versions_an_older_member_never_falls_back_to_the_journal() {
-        use crate::coord::{beats, held};
-        let mut m = mail_pool();
-        let d = tempfile::tempdir().unwrap();
-        let (bare, _) = crate::coord::start_for_test(&d.path().join("coord"), "a", "");
-        let ib = m.b.member().id.clone();
-        m.b.step(Give::default(), &any);
-        m.beat();
-        let e = m.hand_off(5);
-        let key = e.key().unwrap();
-        let old = held::Beat {
-            member: "b-host".into(),
-            speaks: [held::SPEAKS, beats::SPEAKS, beats::ASKS, beats::HANDOFF].map(str::to_string).to_vec(),
-            heartbeat: m.b.http_beats().own(),
-            handoffs: vec![key.clone()],
-            ..Default::default()
-        };
-        // (A coordinator its agent hasn't stepped yet: no registry of any kind.)
-        let a = bare.member_beat(&old);
-        assert!(a.speaks.iter().any(|w| w == beats::HANDOFF) && a.lacks.is_empty() && a.merged.is_empty(), "{a:?}");
-        // (Its beats' registry attached, its hand-offs' not yet.)
-        let a = m.c.member_beat(&old);
-        assert!(a.speaks.iter().any(|w| w == beats::HANDOFF) && a.lacks.is_empty(), "{a:?}");
-        // Attached: lacked, posted, merged.
-        m.c.set_handoffs(Some(m.a.handoffs()));
-        assert_eq!(m.c.member_beat(&old).lacks, [key.clone()]);
-        m.post(&e);
-        m.merged(&key);
-        assert!(!m.r.join("state/journal").exists(), "{ib}: nothing by the journal");
-        bare.stop();
         drop(m.c);
     }
 
