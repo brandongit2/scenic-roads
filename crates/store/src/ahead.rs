@@ -347,20 +347,41 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
+    /// Waits for `done`, failing the test saying `never` if it takes a minute.
+    fn until(never: &str, done: impl Fn() -> bool) {
+        let t0 = std::time::Instant::now();
+        while !done() {
+            assert!(t0.elapsed() < Duration::from_secs(60), "{never}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     #[test]
     fn each_reads_in_order_and_stops_at_a_failure() {
         assert_eq!(each(50, Lane::Nas, |i| Ok(i * 2)).unwrap(), (0..50).map(|i| i * 2).collect::<Vec<_>>());
-        let tried = AtomicUsize::new(0);
+        // (Every other read holds its thread until the failing read's thread has ended, the failure
+        // recorded by then (`Ended`, dropped as that thread ends): so no thread begins a second read
+        // before the failure is in, and once it is, none begins another.)
+        struct Ended(Arc<AtomicBool>);
+        impl Drop for Ended {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        thread_local!(static ENDED: std::cell::RefCell<Option<Ended>> = const { std::cell::RefCell::new(None) });
+        let (tried, ended) = (AtomicUsize::new(0), Arc::new(AtomicBool::new(false)));
         let r = each(500, Lane::Nas, |i| {
             tried.fetch_add(1, Ordering::Relaxed);
             if i == 3 {
+                ENDED.with(|e| *e.borrow_mut() = Some(Ended(ended.clone())));
                 anyhow::bail!("no")
             }
-            std::thread::sleep(Duration::from_millis(1));
+            until("the failing read's thread never ended", || ended.load(Ordering::SeqCst));
             Ok(i)
         });
         assert!(r.is_err());
-        assert!(tried.load(Ordering::Relaxed) < 500, "no more started after the failure");
+        let tried = tried.into_inner();
+        assert!(tried <= Lane::Nas.threads(), "{tried} reads begun: one after the failure was in");
         assert!(each(0, Lane::Net, Ok).unwrap().is_empty());
     }
 
@@ -413,11 +434,7 @@ mod tests {
         };
         let (got, inline) = shelf.beside(&keys, 4, 8, read, || {
             // (Once the first batch is under way: its keys are waited for, not read here.)
-            let t0 = std::time::Instant::now();
-            while reads.lock().unwrap().is_empty() {
-                assert!(t0.elapsed() < Duration::from_secs(60), "the shelf never read");
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            until("the shelf never read", || !reads.lock().unwrap().is_empty());
             let mut got = Vec::new();
             let mut inline = Vec::new();
             for k in (0..40u32).map(|i| (i * 7) % 40) {
@@ -450,40 +467,37 @@ mod tests {
             }
             Ok(vec![b[0]])
         };
-        let wait = || {
-            while !failed.load(Ordering::SeqCst) {
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        };
+        let wait = || until("the batch never failed", || failed.load(Ordering::SeqCst));
         shelf.beside(&[1, 2, 3], 1, 8, read, wait);
         assert_eq!((shelf.take(&1), shelf.take(&2), shelf.take(&3)), (Some(1), None, None));
     }
 
     #[test]
     fn a_failed_read_or_the_computes_end_stops_the_reading_ahead() {
-        // (Reads begun once the failure was in: at most one a thread, taken before it was.)
-        let (failed, after, all) = (AtomicBool::new(false), AtomicUsize::new(0), AtomicUsize::new(0));
+        // (Every other read holds its thread until the reading ahead has stopped (the `stop` it is
+        // given set), and the compute runs until then: so no thread begins a second read before the
+        // failure is in, once it is none begins another, and it was the failure that stopped them.)
+        let (all, given) = (AtomicUsize::new(0), std::sync::OnceLock::<Arc<AtomicBool>>::new());
         ahead(
             1000,
             1000,
             |_| Some(Lane::Nas),
-            |i, _| {
+            |i, stop| {
                 all.fetch_add(1, Ordering::Relaxed);
-                if failed.load(Ordering::SeqCst) {
-                    after.fetch_add(1, Ordering::Relaxed);
-                }
+                given.get_or_init(|| stop.clone());
                 if i == 2 {
-                    failed.store(true, Ordering::SeqCst);
                     anyhow::bail!("gone")
                 }
-                std::thread::sleep(Duration::from_millis(1));
+                until("the failure never stopped the reading ahead", || stop.load(Ordering::SeqCst));
                 Ok(())
             },
-            |_| std::thread::sleep(Duration::from_millis(50)),
+            |_| {
+                let stopped = || given.get().is_some_and(|s| s.load(Ordering::SeqCst));
+                until("the failure never stopped the reading ahead", stopped)
+            },
         );
-        let (after, all) = (after.into_inner(), all.into_inner());
-        assert!(after <= Lane::Nas.threads(), "{after} reads begun after the failure");
-        assert!(all < 1000, "every item read: the failure stopped nothing");
+        let all = all.into_inner();
+        assert!(all <= Lane::Nas.threads(), "{all} reads begun: one after the failure was in");
         // (The compute ending while a read waits on a host that never answers: the read sees `stop`
         // and the threads end, the call with them.)
         let (started, saw) = (AtomicBool::new(false), AtomicBool::new(false));
@@ -493,17 +507,11 @@ mod tests {
             |_| Some(Lane::Net),
             |_, stop| {
                 started.store(true, Ordering::Relaxed);
-                while !stop.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
+                until("the compute's end never stopped the read", || stop.load(Ordering::Relaxed));
                 saw.store(true, Ordering::Relaxed);
                 Ok(())
             },
-            |_| {
-                while !started.load(Ordering::Relaxed) {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            },
+            |_| until("no read began", || started.load(Ordering::Relaxed)),
         );
         assert!(saw.load(Ordering::Relaxed));
     }
