@@ -157,7 +157,8 @@ commit_here() {
 # rollback_ok <current.json> <previous.json>: 0 when the previous version's commit contains the live
 # one's rollback floor (the commit the first line of tools/app/rollback-floor names in the live
 # version's tree; no file there, no floor); else says why and returns 1: a rollback never goes back
-# past a change after which an older app is unsafe. A commit this repository lacks (the versions' and
+# past a change after which an older app is unsafe. A floor that isn't a full commit id is refused
+# (an abbreviation, a branch or a tag would resolve). A commit this repository lacks (the versions' and
 # the floor's, all on origin's main) is fetched once; still missing, refused, saying so. Run in the
 # repository.
 rollback_ok() {
@@ -167,6 +168,7 @@ rollback_ok() {
   for c in ${v##*-} ${pv##*-}; do commit_here $c || return 1; done
   floor=$(git show "${v##*-}:$f" 2>/dev/null | head -1)
   [[ -n $floor ]] || return 0
+  [[ $floor =~ '^[0-9a-f]{40}$' ]] || { print -r -- "the live version $v's rollback floor $floor isn't a full commit id: refused"; return 1; }
   commit_here $floor || return 1
   git merge-base --is-ancestor $floor ${pv##*-} && return 0
   print -r -- "$pv is before the live version $v's rollback floor $floor (its commit doesn't contain $floor): refused. Why, from $f:"
