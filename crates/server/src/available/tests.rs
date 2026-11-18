@@ -642,7 +642,8 @@ fn renders_the_real_pieces() {
     let water: Box<terrain::available::inland::Open> = match std::env::var_os("SCENIC_RENDER_ROOT") {
         Some(r) => {
             let r = std::path::PathBuf::from(r);
-            let brief: Value = serde_json::from_slice(&std::fs::read(r.join("state/build/brief.json")).unwrap()).unwrap();
+            let brief: Value =
+                serde_json::from_slice(&std::fs::read(r.join("state/build/brief.json")).unwrap()).unwrap();
             let manifest: BTreeMap<String, String> = serde_json::from_value(brief["manifest"].clone()).unwrap();
             terrain::available::inland::from_records(&store::nasfs::NasRoot::from_arg(r), &manifest)
         }
