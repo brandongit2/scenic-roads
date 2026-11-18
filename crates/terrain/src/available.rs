@@ -10,8 +10,9 @@
 //!   one set of pieces. The antimeridian needs nothing (pieces arrive cut there; the plane runs from
 //!   −180° to 180°), nor the poles: a ring closed along 90° lies past the Mercator plane's edge.
 //! - **The cut.** Each row's runs are kept only on the theme's side of the coastline, the empty
-//!   set elsewhere (crate::available::cut: the terrain's the land, by the pass's coastline), so an
-//!   outline drawn over the sea holds nothing there.
+//!   set elsewhere (crate::available::cut: the terrain's the land, by the pass's coastline;
+//!   bathymetry's the sea and the water layer's inland water, crate::available::inland), so an
+//!   outline drawn over the sea holds nothing there on the land's side.
 //! - **The tiles.** From a z6 tile down to z12 a quadtree: a tile all of one set at z12 (every
 //!   row's run across it the same) isn't stored, nor anything under it; otherwise its children are
 //!   made and it is their union, a pixel's set the union of the four under it. A z6 tile's pack holds

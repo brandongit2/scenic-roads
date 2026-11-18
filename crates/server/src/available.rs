@@ -261,9 +261,9 @@ impl Theme {
     /// `/api/available/<theme>`'s answer: the score as declared, each layer's scale, the sources.
     /// A layer is its `label`, `unit`, `scale` (`log`, `linear` or `values`: what its tiles carry,
     /// `code`), which end is the better (`best`: `low` or `high`), its `words` (a `values` one's,
-    /// each with its value) and `range`, the least and greatest value present (in its unit; none
-    /// where no piece states it). The score's is the primary's, under the score's `label`; the
-    /// primary has no other.
+    /// each with its value, words of one value one, their labels joined by "or") and `range`, the
+    /// least and greatest value present (in its unit; none where no piece states it). The score's
+    /// is the primary's, under the score's `label`; the primary has no other.
     pub fn described(&self, theme: &str, sets: &[&str]) -> Value {
         let Some(s) = &self.score else { return json!({"theme": theme, "layers": [], "sources": []}) };
         let layer = |id: &str, label: &str, m: &ex::Metric| {
@@ -273,7 +273,16 @@ impl Theme {
                 Scale::Values(w) => {
                     let mut w: Vec<(&String, &f64)> = w.iter().collect();
                     w.sort_by(|a, b| a.1.total_cmp(b.1));
-                    let words: Vec<Value> = w.iter().map(|(k, v)| json!({"value": v, "label": k})).collect();
+                    // (Words of one value are one, their labels joined: bathymetry's multibeam
+                    // and lidar, so a pixel's value names both and the axis has a tick a value.)
+                    let mut joined: Vec<(f64, String)> = Vec::new();
+                    for (k, v) in w {
+                        match joined.last_mut() {
+                            Some((last, l)) if *last == *v => *l = format!("{l} or {k}"),
+                            _ => joined.push((*v, k.clone())),
+                        }
+                    }
+                    let words: Vec<Value> = joined.iter().map(|(v, k)| json!({"value": v, "label": k})).collect();
                     ("values", "high", Some(words))
                 }
             };

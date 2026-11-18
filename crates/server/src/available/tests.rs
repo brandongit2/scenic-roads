@@ -237,6 +237,14 @@ fn each_layer_carries_its_value() {
     assert_eq!(l[0]["range"], json!([0.25, 2.0]), "the spacings present, of pieces with an extent");
     assert_eq!((&l[1]["scale"], &l[1]["best"]), (&json!("values"), &json!("high")));
     assert_eq!(l[1]["words"], json!([{"value": 0.0, "label": "surface"}, {"value": 1.0, "label": "ground"}]));
+    // (Words of one value are one: bathymetry's lidar and multibeam.)
+    let bathymetry = include_bytes!("../../../../producers/extents/bathymetry/score.toml");
+    let b = theme_of(&BTreeMap::from([("bathymetry/score.toml".to_string(), bathymetry.to_vec())]));
+    let d = b.described("bathymetry", &["best"]);
+    let measured = d["layers"].as_array().unwrap().iter().find(|l| l["id"] == "measured").unwrap();
+    let words = measured["words"].as_array().unwrap();
+    assert_eq!(words.last().unwrap(), &json!({"value": 1.0, "label": "lidar or multibeam"}));
+    assert_eq!(words.len(), 12);
     assert!(l[2]["range"].is_null(), "no piece states its accuracy");
     assert_eq!(
         (&l[3]["scale"], &l[3]["best"], &l[3]["range"]),
@@ -592,26 +600,29 @@ async fn the_built_set_draws_the_first_dataset_in_order() {
     assert!(v.ends_with(&past), "{v}");
 }
 
-/// The real pieces (producers/extents/terrain/) built and their score layer's values drawn as PNGs
-/// over the map's land colour, each value in its spacing's class (0.5, 1, 2, 5, 10, 30, 90 m and
-/// coarser, a class's edge a factor of 1.25 over its spacing, finer brighter): the world at z2,
-/// Europe at z4, France at z5, Germany at z6, Vancouver at z8, Asia at z3, Japan at z5, Oceania and
-/// South America at z4, each under both settings of the
-/// switch, written to `$SCENIC_RENDER_DIR`, cut to the land of the regions-land file
-/// `$SCENIC_RENDER_LAND` names; a look by hand at what the app's colour map will show
-/// (the step's whole build, ~1 min); nothing without the variable. It prints what the step made:
-/// its time, its peak resident set, its packs' bytes and its tiles' sets (over 256, the most), each
-/// zoom's tiles and bytes, and the 15 sources whose pieces' outlines cross the most tiles (with
-/// those no other source's outline crosses: what each costs).
+/// The real pieces of a theme (`$SCENIC_RENDER_THEME`, the terrain where it's unset:
+/// producers/extents/<theme>/) built and their score layer's values drawn as PNGs over the map's
+/// land colour, each value in its spacing's class (the terrain's 0.5, 1, 2, 5, 10, 30, 90 m and
+/// coarser; bathymetry's 2, 5, 10, 30, 100, 250, 500 m and coarser; a class's edge a factor of 1.25
+/// over its spacing, finer brighter): the world at z2, Europe at z4, France at z5, Germany at z6,
+/// Vancouver at z8, Asia at z3, Japan at z5, Oceania and South America at z4, each under both
+/// settings of the switch, written to `$SCENIC_RENDER_DIR`, cut to the theme's side of the land of
+/// the regions-land file `$SCENIC_RENDER_LAND` names (the sea's side with the inland water of the
+/// water layer the records of the NAS root `$SCENIC_RENDER_ROOT` name); a look by hand at what the
+/// app's colour map will show (the step's whole build, ~2 min); nothing without the variable. It
+/// prints what the step made: its time, its peak resident set, its packs' bytes and its tiles' sets
+/// (over 256, the most), each zoom's tiles and bytes, and the 15 sources whose pieces' outlines
+/// cross the most tiles (with those no other source's outline crosses: what each costs).
 #[test]
 fn renders_the_real_pieces() {
     let Some(dir) = std::env::var_os("SCENIC_RENDER_DIR").map(std::path::PathBuf::from) else { return };
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../producers/extents/terrain");
+    let theme = std::env::var("SCENIC_RENDER_THEME").unwrap_or_else(|_| "terrain".into());
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../producers/extents").join(&theme);
     let mut files = BTreeMap::new();
     let mut pieces = Vec::new();
     for e in std::fs::read_dir(&src).unwrap() {
         let p = e.unwrap().path();
-        let name = format!("terrain/{}", p.file_name().unwrap().to_string_lossy());
+        let name = format!("{theme}/{}", p.file_name().unwrap().to_string_lossy());
         let b = std::fs::read(&p).unwrap();
         if let ex::Kind::Pieces(_, id) = ex::kind(&name) {
             pieces.extend(terrain::available::pieces(id, &b).unwrap());
@@ -626,14 +637,25 @@ fn renders_the_real_pieces() {
     let land_file = std::env::var_os("SCENIC_RENDER_LAND").expect("SCENIC_RENDER_LAND: the pass's regions-land file");
     let t = std::time::Instant::now();
     let land = inputs::inputs::regions::land::Land::open(std::fs::File::open(land_file).unwrap()).unwrap();
-    let cut = terrain::available::Cut::new(&land, terrain::available::cut::Side::Land).unwrap();
-    terrain::available::build(&mut out, "terrain", &pieces, &cut, &|_, _| {}).unwrap();
+    // (The water layer as the NAS's records name it, read where the sea's side asks: no root, no
+    // inland water.)
+    let water: Box<terrain::available::inland::Open> = match std::env::var_os("SCENIC_RENDER_ROOT") {
+        Some(r) => {
+            let r = std::path::PathBuf::from(r);
+            let brief: Value = serde_json::from_slice(&std::fs::read(r.join("state/build/brief.json")).unwrap()).unwrap();
+            let manifest: BTreeMap<String, String> = serde_json::from_value(brief["manifest"].clone()).unwrap();
+            terrain::available::inland::from_records(&store::nasfs::NasRoot::from_arg(r), &manifest)
+        }
+        None => Box::new(|_: &str| Ok(None)),
+    };
+    let cut = terrain::available::Cut::of_theme(&land, &theme, water).unwrap();
+    terrain::available::build(&mut out, &theme, &pieces, &cut, &|_, _| {}).unwrap();
     let took = t.elapsed();
     // SAFETY: getrusage fills the struct it's given (ru_maxrss: bytes on macOS).
     let mut r: libc::rusage = unsafe { std::mem::zeroed() };
     let peak = if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut r) } == 0 { r.ru_maxrss } else { 0 };
     out.save().unwrap();
-    let layer = fmt::layer("terrain", fmt::BEST);
+    let layer = fmt::layer(&theme, fmt::BEST);
     let (mut bytes, mut tiles, mut over, mut most) = (0, 0, 0, 0);
     // (Each zoom's tiles and bytes; each source's tiles that one of its pieces' outlines crosses, a
     // piece in some of the tile's sets and not in others, and those where it is the only such
@@ -695,7 +717,10 @@ fn renders_the_real_pieces() {
     };
     let land = [0x0b, 0x0e, 0x13];
     // The classes' upper edges (metres) and their colours, finest first.
-    let edges = [0.625, 1.25, 2.5, 6.25, 12.5, 37.5, 112.5];
+    let edges = match theme.as_str() {
+        "bathymetry" => [2.5, 6.25, 12.5, 37.5, 125.0, 312.5, 625.0],
+        _ => [0.625, 1.25, 2.5, 6.25, 12.5, 37.5, 112.5],
+    };
     let ramp: [[u8; 3]; 8] = [
         [0xe7, 0xfd, 0xa7],
         [0x9a, 0xef, 0xba],
@@ -743,7 +768,7 @@ fn renders_the_real_pieces() {
                     }
                 }
             }
-            let name = format!("{place}-score-{}.png", view(all));
+            let name = format!("{theme}-{place}-score-{}.png", view(all));
             let f = std::fs::File::create(dir.join(name)).unwrap();
             let mut e = png::Encoder::new(std::io::BufWriter::new(f), w as u32, w as u32);
             e.set_color(png::ColorType::Rgb);

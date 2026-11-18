@@ -36,7 +36,7 @@ export class AvailableSection {
 
   constructor(private store: Store) {
     const A = (patch: Partial<AvailableState>) => store.set({ available: { ...store.s.available, ...patch } });
-    this.on = h('input', { type: 'checkbox', title: 'Where the best terrain data anyone publishes is, and how good it is' });
+    this.on = h('input', { type: 'checkbox', title: 'Where the best data anyone publishes is, and how good it is: the terrain, and the depths of the sea and the lakes' });
     this.on.addEventListener('change', () => A({ on: this.on.checked }));
     const avail = h('div', { class: 'seg small' });
     for (const [k, label, title] of [
