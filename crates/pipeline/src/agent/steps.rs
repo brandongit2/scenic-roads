@@ -1373,9 +1373,10 @@ pub const TABLE: [Step; 65] = [
     // pieces as tiles of the sets met at each pixel, cut to the theme's side of the pass's
     // coastline, made again only where a piece or the land moved; the buildings' mask pieces drawn
     // from the build's normalized buildings (bld::bld::extents), the files its record doesn't name
-    // read. (Cost version 1: the cut, task #1361: its peak 2.75 → 3.01 GB on the mini.)
+    // read. (Cost version 2: the sea side's inland water kept as bits, task #1439; 1: the cut, task
+    // #1361: its peak 2.75 → 3.01 GB on the mini.)
     Step {
-        cost_v: 1,
+        cost_v: 2,
         versions: &[("available", || terrain::available::KEY_V.to_string())],
         reads: &[
             In { name: "extents", of: idents::extents_pieces },

@@ -67,12 +67,50 @@ enum Src {
     Uniform(bool),
 }
 
-/// The water layer's inland water, read as it's asked for, each pack's index and each ancestor
-/// tile once.
+/// Whether an ancestor tile (z0 to z8) is inland water at each z9 tile under it, one bit a tile,
+/// row by row: `4^(9 - z)` bits (32 KB for z0, one byte for a z8 tile's four), the tile's own pixels
+/// (2.36 MB decoded) let go.
+pub(super) struct Lakes {
+    side: u32,
+    bits: Vec<u8>,
+}
+
+impl Lakes {
+    /// The bits of tile `c` at zoom `z`: at each z9 tile, the pixel in the middle of that tile's part
+    /// of it (inputs::water::uniform_from_ancestor's rule, the ancestor not copied).
+    pub(super) fn of(c: &Cov, z: u8) -> Lakes {
+        let d = Z - z;
+        let side = 1u32 << d;
+        let span = wt::SIZE as f64 / f64::from(side);
+        let px = |v: u32| ((f64::from(v) + 0.5) * span) as usize;
+        let mut bits = vec![0u8; (side * side).div_ceil(8) as usize];
+        for j in 0..side {
+            for i in 0..side {
+                if c.value_at(px(i), px(j)).1 >= LAKE {
+                    let k = (j * side + i) as usize;
+                    bits[k / 8] |= 1 << (k % 8);
+                }
+            }
+        }
+        Lakes { side, bits }
+    }
+
+    /// Whether the z9 tile `i`, `j` tiles from the ancestor's corner is inland water.
+    pub(super) fn at(&self, i: u32, j: u32) -> bool {
+        let k = (j * self.side + i) as usize;
+        self.bits[k / 8] >> (k % 8) & 1 == 1
+    }
+}
+
+/// The water layer's inland water, read as it's asked for: the packs of the root and the z3 tiles
+/// (65 in all) and each ancestor tile's bits kept, a z6 tile's own hi pack (4,096 of them, an index
+/// of its tiles each) only while its tile is made. What stays is bounded by the water layer's z8
+/// tiles' bits and the z3 packs' indexes, never by its decoded tiles (docs/steps.md §14: what
+/// keeping each ancestor's pixels cost).
 pub struct Inland<'a> {
     open: Box<Open<'a>>,
     packs: Mutex<HashMap<String, Option<Arc<Pack>>>>,
-    ancestors: Mutex<HashMap<(u8, u32, u32), Option<Arc<Cov>>>>,
+    ancestors: Mutex<HashMap<(u8, u32, u32), Option<Arc<Lakes>>>>,
 }
 
 impl<'a> Inland<'a> {
@@ -80,42 +118,47 @@ impl<'a> Inland<'a> {
         Inland { open, packs: Mutex::default(), ancestors: Mutex::default() }
     }
 
-    /// The pack `logical`, its index read once.
-    fn pack(&self, logical: &str) -> Result<Option<Arc<Pack>>> {
-        if let Some(p) = self.packs.lock().unwrap().get(logical) {
-            return Ok(p.clone());
-        }
-        let p = match (self.open)(logical)? {
+    /// The pack `logical`, its index read.
+    fn read_pack(&self, logical: &str) -> Result<Option<Arc<Pack>>> {
+        Ok(match (self.open)(logical)? {
             Some((name, src)) => {
                 let idx = PackIndex::read_from(&*src).with_context(|| format!("read {name}'s index"))?;
                 Some(Arc::new(Pack { src, idx }))
             }
             None => None,
-        };
-        self.packs.lock().unwrap().insert(logical.to_string(), p.clone());
-        Ok(p)
+        })
     }
 
     /// The pack holding the water layer's tile z/x/y (layers' packs: the root z0–2, a lo pack a
-    /// z3 tile for z3–8, a hi pack a z6 tile for z9 on).
+    /// z3 tile for z3–8, a hi pack a z6 tile for z9 on): the root and lo packs read once, a hi
+    /// pack each time (the caller holds it for its z6 tile).
     fn pack_of(&self, z: u8, x: u32, y: u32) -> Result<Option<Arc<Pack>>> {
         let (scope, _, px, py) = crate::layers::pack_of(z, x, y);
         let l = match scope {
             "root" => crate::layers::root_logical(wt::LAYER),
             "lo" => crate::layers::lo_logical(wt::LAYER, px, py),
-            _ => crate::layers::hi_logical(wt::LAYER, px, py),
+            _ => return self.read_pack(&crate::layers::hi_logical(wt::LAYER, px, py)),
         };
-        self.pack(&l)
+        if let Some(p) = self.packs.lock().unwrap().get(&l) {
+            return Ok(p.clone());
+        }
+        let p = self.read_pack(&l)?;
+        self.packs.lock().unwrap().insert(l, p.clone());
+        Ok(p)
     }
 
-    /// Tile z/x/y decoded, if the layer stores it (each ancestor once).
-    fn ancestor(&self, z: u8, x: u32, y: u32) -> Result<Option<Arc<Cov>>> {
+    /// Tile z/x/y's inland water at the z9 tiles under it, if the layer stores it (each ancestor
+    /// decoded once, its pixels not kept).
+    fn ancestor(&self, z: u8, x: u32, y: u32) -> Result<Option<Arc<Lakes>>> {
         if let Some(c) = self.ancestors.lock().unwrap().get(&(z, x, y)) {
             return Ok(c.clone());
         }
         let c = match self.pack_of(z, x, y)? {
             Some(p) => match p.idx.get(&*p.src, z, x, y)? {
-                Some((_, b)) => Some(Arc::new(Cov::from_png(&b).with_context(|| format!("water {z}/{x}/{y}"))?)),
+                Some((_, b)) => {
+                    let cov = Cov::from_png(&b).with_context(|| format!("water {z}/{x}/{y}"))?;
+                    Some(Arc::new(Lakes::of(&cov, z)))
+                }
                 None => None,
             },
             None => None,
@@ -124,22 +167,18 @@ impl<'a> Inland<'a> {
         Ok(c)
     }
 
-    /// Z9 tile x/y's source: its stored tile, else its nearest stored ancestor's value there (none
-    /// stored at all: no water).
-    fn source(&self, x: u32, y: u32) -> Result<Src> {
-        if let Some(p) = self.pack_of(Z, x, y)? {
+    /// Z9 tile x/y's source, `hi` the hi pack holding it: its stored tile, else its nearest stored
+    /// ancestor's value there (none stored at all: no water).
+    fn source(&self, hi: &Option<Arc<Pack>>, x: u32, y: u32) -> Result<Src> {
+        if let Some(p) = hi {
             if let Some(e) = p.idx.find(Z, x, y) {
-                return Ok(Src::Tile(p, e));
+                return Ok(Src::Tile(p.clone(), e));
             }
         }
-        // (inputs::water::uniform_from_ancestor's rule, the ancestor not copied: the middle of
-        // this tile's part of it.)
         for a in (0..Z).rev() {
             let d = Z - a;
             if let Some(c) = self.ancestor(a, x >> d, y >> d)? {
-                let span = wt::SIZE as f64 / f64::from(1u32 << d);
-                let px = |v: u32, base: u32| ((f64::from(v - (base << d)) + 0.5) * span) as usize;
-                return Ok(Src::Uniform(c.value_at(px(x, x >> d), px(y, y >> d)).1 >= LAKE));
+                return Ok(Src::Uniform(c.at(x - ((x >> d) << d), y - ((y >> d) << d))));
             }
         }
         Ok(Src::Uniform(false))
@@ -147,10 +186,11 @@ impl<'a> Inland<'a> {
 
     /// The z9 tiles under z6 tile x/y, row by row.
     fn sources(&self, x6: u32, y6: u32) -> Result<Vec<Src>> {
+        let hi = self.pack_of(Z, x6 * PER, y6 * PER)?;
         let mut v = Vec::with_capacity((PER * PER) as usize);
         for j in 0..PER {
             for i in 0..PER {
-                v.push(self.source(x6 * PER + i, y6 * PER + j)?);
+                v.push(self.source(&hi, x6 * PER + i, y6 * PER + j)?);
             }
         }
         Ok(v)
