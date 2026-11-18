@@ -42,6 +42,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "fs", "io-util", 
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(in_agentcore)"] }
 
 [dev-dependencies]
+aho-corasick = "1"
 agentcore = { path = "../agentcore", features = ["testkit"] }
 bld = { path = "../bld", features = ["testkit"] }
 trees = { path = "../trees", features = ["testkit"] }

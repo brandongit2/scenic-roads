@@ -25,6 +25,7 @@
 
 mod common;
 
+use aho_corasick::AhoCorasick;
 use common::*;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -305,11 +306,60 @@ fn without_iris(l: &str) -> String {
     s
 }
 
+/// The markers, with two multi-pattern matchers over them so a line is tested only against the
+/// markers whose text it holds (`names` then judges those): one over a line as written (a host, a
+/// `w:` word, a name), one over its lower case (`ci:`).
+struct Marks {
+    /// Each marker and the declaration it's from.
+    map: BTreeMap<String, String>,
+    /// The markers in order.
+    keys: Vec<String>,
+    /// The matcher over the markers read as written, and each of its patterns' index in `keys`.
+    exact: AhoCorasick,
+    exact_at: Vec<usize>,
+    /// The matcher over the `ci:` markers' text, and each pattern's index in `keys`.
+    folded: AhoCorasick,
+    folded_at: Vec<usize>,
+}
+
+impl Marks {
+    fn new(map: BTreeMap<String, String>) -> Marks {
+        let keys: Vec<String> = map.keys().cloned().collect();
+        let (mut exact, mut exact_at, mut folded, mut folded_at) = (vec![], vec![], vec![], vec![]);
+        for (i, m) in keys.iter().enumerate() {
+            if let Some(x) = m.strip_prefix("ci:") {
+                folded.push(x);
+                folded_at.push(i);
+            } else {
+                exact.push(m.strip_prefix("w:").unwrap_or(m));
+                exact_at.push(i);
+            }
+        }
+        Marks {
+            exact: AhoCorasick::new(exact).unwrap(),
+            folded: AhoCorasick::new(folded).unwrap(),
+            map,
+            keys,
+            exact_at,
+            folded_at,
+        }
+    }
+}
+
 /// What a line names: each hit's marker.
-fn hits(l: &str, marks: &BTreeMap<String, String>) -> Vec<String> {
+fn hits(l: &str, marks: &Marks) -> Vec<String> {
     let l = without_iris(l);
     let lower = l.to_lowercase();
-    let mut out: Vec<String> = marks.keys().filter(|m| names(&l, &lower, m)).cloned().collect();
+    let mut at: Vec<usize> = marks
+        .exact
+        .find_overlapping_iter(&l)
+        .map(|m| marks.exact_at[m.pattern().as_usize()])
+        .chain(marks.folded.find_overlapping_iter(&lower).map(|m| marks.folded_at[m.pattern().as_usize()]))
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    let mut out: Vec<String> =
+        at.into_iter().map(|i| &marks.keys[i]).filter(|m| names(&l, &lower, m)).cloned().collect();
     for u in urls(&l) {
         let h = u.split("://").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("");
         // (A host behind a template, `${x}.host`: the host after it.)
@@ -427,12 +477,13 @@ fn blank_rs(text: &str) -> Vec<String> {
     out.split('\n').map(str::to_string).collect()
 }
 
-/// A file's lines as code (comments blanked; tests' lines blanked in Rust), and each line's item.
-fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
+/// A file's lines as code (comments blanked; tests' lines blanked in Rust), and the item a line of
+/// code lies in (`-` in the languages without items), found when asked: only the few lines naming
+/// a source need it.
+fn code_lines<'a>(rel: &str, text: &'a str) -> (Vec<String>, Box<dyn Fn(usize) -> String + 'a>) {
     let lines: Vec<&str> = text.lines().collect();
     let ext = rel.rsplit('.').next().unwrap_or("");
     let mut code = Vec::with_capacity(lines.len());
-    let mut items = vec!["-".to_string(); lines.len()];
     match ext {
         "rs" => {
             let blanked = blank_rs(text);
@@ -440,10 +491,8 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
             for (i, l) in lines.iter().enumerate() {
                 let t = l.trim_start();
                 code.push(if tests[i] || t.starts_with("//") { String::new() } else { cut_comment(l, false, &['"']) });
-                if !code[i].is_empty() {
-                    items[i] = enclosing_rs(&blanked, i).map_or_else(|| "<top level>".into(), |e| e.0);
-                }
             }
+            return (code, Box::new(move |i| enclosing_rs(&blanked, i).map_or_else(|| "<top level>".into(), |e| e.0)));
         }
         "py" => {
             // (A docstring, a triple-quoted string opening a line, is a comment; one opened after
@@ -472,6 +521,7 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
                 in_str = n % 2 == 1;
             }
             // (A test's function, `test_…`, is the test's.)
+            let mut items = vec!["-".to_string(); lines.len()];
             for i in 0..lines.len() {
                 if !code[i].is_empty() {
                     items[i] = enclosing_py(&lines, i).map_or_else(|| "<top level>".into(), |e| e.0);
@@ -480,6 +530,7 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
                     }
                 }
             }
+            return (code, Box::new(move |i| items[i].clone()));
         }
         "sh" | "zsh" | "toml" | "yaml" | "yml" => code.extend(lines.iter().map(|l| {
             if l.trim_start().starts_with('#') {
@@ -505,7 +556,7 @@ fn code_lines(rel: &str, text: &str) -> (Vec<String>, Vec<String>) {
             }
         }
     }
-    (code, items)
+    (code, Box::new(|_| "-".to_string()))
 }
 
 /// Whether a file is a test's (not the app's code).
@@ -537,6 +588,7 @@ fn scan() -> (Vec<String>, Vec<String>) {
     let root = root();
     let marks = markers(&root);
     assert!(marks.len() >= 10, "the staged declarations give too few markers: {marks:?}");
+    let marks = Marks::new(marks);
     let mut paths = Vec::new();
     for s in SCOPE {
         walk(&root.join(s), &mut paths);
@@ -549,24 +601,25 @@ fn scan() -> (Vec<String>, Vec<String>) {
             continue;
         }
         let Ok(text) = std::fs::read_to_string(&f) else { continue };
-        let (code, items) = code_lines(&rel, &text);
+        let (code, item_of) = code_lines(&rel, &text);
         for (i, c) in code.iter().enumerate() {
             let h = hits(c, &marks);
             if h.is_empty() {
                 continue;
             }
+            let item = item_of(i);
             let line = text.lines().nth(i).unwrap_or("");
             if let Some(k) =
-                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == items[i] && line.contains(anchor))
+                EXEMPT.iter().position(|(ef, en, anchor, _)| *ef == rel && *en == item && line.contains(anchor))
             {
                 used.insert(k);
                 continue;
             }
             let why: Vec<String> = h
                 .iter()
-                .map(|m| marks.get(m).map_or_else(|| format!("{m} (a URL)"), |d| format!("{m} ({d})")))
+                .map(|m| marks.map.get(m).map_or_else(|| format!("{m} (a URL)"), |d| format!("{m} ({d})")))
                 .collect();
-            bad.push(format!("{rel}:{} in {}: {}\n    names {}", i + 1, items[i], line.trim(), why.join(", ")));
+            bad.push(format!("{rel}:{} in {item}: {}\n    names {}", i + 1, line.trim(), why.join(", ")));
         }
     }
     let unused = EXEMPT
@@ -621,9 +674,10 @@ fn the_scanner_finds_sources_by_their_declarations() {
     );
     let marks: BTreeMap<String, String> =
         [("data.example-source.org".to_string(), "a.toml".to_string()), ("Some Source".into(), "a.toml".into())].into();
+    let marks = Marks::new(marks);
     assert_eq!(hits("let h = \"data.example-source.org\";", &marks), ["data.example-source.org"]);
     // (A host inside a longer word isn't named: Geneva's "ge.ch" in `heritage.checked`.)
-    let short: BTreeMap<String, String> = [("ge.ch".to_string(), "a.toml".to_string())].into();
+    let short = Marks::new([("ge.ch".to_string(), "a.toml".to_string())].into());
     assert!(hits("this.heritage.checked = b.heritage;", &short).is_empty());
     assert_eq!(hits("host: 'ge.ch',", &short), ["ge.ch"]);
     assert_eq!(hits("x = 'Some Source v2'", &marks), ["Some Source"]);
@@ -639,12 +693,14 @@ fn the_scanner_finds_sources_by_their_declarations() {
     ] {
         assert!(hits(ok, &marks).is_empty(), "{ok}");
     }
-    let marks: BTreeMap<String, String> = [
-        ("ci:overture maps".to_string(), "o.toml".to_string()),
-        ("w:CanVec".into(), "c.toml".into()),
-        ("s3.amazonaws.com/b".into(), "b.toml".into()),
-    ]
-    .into();
+    let marks = Marks::new(
+        [
+            ("ci:overture maps".to_string(), "o.toml".to_string()),
+            ("w:CanVec".into(), "c.toml".into()),
+            ("s3.amazonaws.com/b".into(), "b.toml".into()),
+        ]
+        .into(),
+    );
     assert_eq!(hits("source: 'OVERTURE Maps (OSM)'", &marks), ["ci:overture maps"]);
     assert_eq!(hits("\"CanVec's zips\"", &marks), ["w:CanVec"]);
     assert!(hits("\"canvec_lakes\", \"MyCanVecX\"", &marks).is_empty());
