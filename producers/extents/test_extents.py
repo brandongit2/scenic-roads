@@ -980,6 +980,50 @@ class RasterFiles(unittest.TestCase):
         self.assertAlmostEqual(geom.symmetric_difference(valid).area / valid.area, 0, places=2)
         self.assertGreater(whole.area, 3 * geom.area)
 
+    def codes(self):
+        """A 64 by 64 grid of codes (GEBCO's Type Identifier's): 11 left, 40 right, one cell of 10,
+        land (0) in the last 16 rows, in degrees from 10° E, 50° N, a cell 0.01°."""
+        import numpy as np
+        from rasterio.io import MemoryFile
+        from rasterio.transform import from_origin
+        data = np.full((64, 64), 40, np.int8)
+        data[:, :32] = 11
+        data[5, 5] = 10
+        data[48:, :] = 0
+        with MemoryFile() as mem:
+            with mem.open(driver="GTiff", width=64, height=64, count=1, dtype="int8", crs="EPSG:4326",
+                          transform=from_origin(10, 50, 0.01, 0.01), nodata=127) as ds:
+                ds.write(data, 1)
+            return mem.read()
+
+    def test_f_a_files_values_by_block(self):
+        # (No overviews: read whole, by blocks of 8 cells, each holding every code any of its cells
+        # holds, land skipped.)
+        b = {"urls": ["https://h/tid.tif"], "block": 8, "values": "tid", "skip": [0]}
+        got = {p["tid"]: g for g, p in extents.read_raster(FakeNet({"https://h/tid.tif": self.codes()}), b, 0)}
+        self.assertEqual(sorted(got), [10, 11, 40])
+        self.assertEqual(b["grain_m"], round(8 * 0.01 * extents.M_PER_DEG, 1))
+        r = lambda g: tuple(round(v, 6) for v in g.bounds)
+        self.assertEqual(r(got[10]), (10.0, 49.92, 10.08, 50.0))
+        self.assertEqual(r(got[11]), (10.0, 49.52, 10.32, 50.0))
+        self.assertEqual(r(got[40]), (10.32, 49.52, 10.64, 50.0))
+        self.assertAlmostEqual(got[11].area, 0.32 * 0.48)
+        # Without `block`, `values` is refused: an overview's cells are resampled codes.
+        with self.assertRaises(SystemExit):
+            list(extents.read_raster(FakeNet({"https://h/tid.tif": self.codes()}), {"urls": ["https://h/tid.tif"], "values": "tid"}, 0))
+
+    def test_g_a_zips_files_read_whole(self):
+        # (The members matching `member`, of a zip fetched whole; its mask by block.)
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("tid_a.tif", self.codes())
+            z.writestr("readme.txt", "not a raster")
+        b = {"url": "https://h/tid.zip", "member": r"\.tif$", "block": 16}
+        [(geom, props)] = list(extents.read_raster(FakeNet({"https://h/tid.zip": buf.getvalue()}), b, 0))
+        self.assertEqual(props, {"res_m": round(0.01 * extents.M_PER_DEG, 4)})
+        self.assertEqual(tuple(round(v, 6) for v in geom.bounds), (10.0, 49.36, 10.64, 50.0))
+
 
 class WholeNet(FakeNet):
     """A server that ignores Range and says no length: the whole answer every time."""
@@ -1144,6 +1188,25 @@ class Cache(unittest.TestCase):
             self.assertEqual(len(os.listdir(cache)), 2)
             self.assertEqual(net.json("https://h/ok"), {"a": 1})
             self.assertEqual(len(asked), 3)
+
+    def test_an_answer_cut_short_is_fetched_again(self):
+        # (A connection closed early: fewer bytes than its Content-Length, which a read in blocks
+        # doesn't raise. Fetched again; four times short, the run stops.)
+        import tempfile
+        import time
+        import unittest.mock
+        answers = [b"PK\x03", b"PK\x03\x04whole"]
+        def urlopen(req, timeout, context):
+            a = Answer(answers.pop(0) if len(answers) > 1 else answers[0])
+            a.headers = {"Content-Length": "9"}
+            return a
+        with tempfile.TemporaryDirectory() as cache, unittest.mock.patch("urllib.request.urlopen", urlopen), \
+                unittest.mock.patch.object(time, "sleep", lambda _: None):
+            net = extents.Fetcher(cache, 1 << 30, 0)
+            self.assertEqual(net.get("https://h/a.zip"), b"PK\x03\x04whole")
+            answers[:] = [b"PK"]
+            with self.assertRaises(SystemExit):
+                net.get("https://h/b.zip")
 
 
 def pem_blocks():

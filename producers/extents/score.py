@@ -75,7 +75,9 @@ def score(decl, piece):
     return (1 - decl["share"]) * lead + decl["share"] * r, vals
 
 
-EXAMPLES = [
+# What each theme's score does on real kinds of pieces (`--examples`; the terrain's are the
+# server's tests' too, score_expected.json).
+EXAMPLES = {"terrain": [
     ("a 2 m surface model against a 5 m bare-earth one, both of 2020, accuracy not stated",
      [{"spacing_m": 2, "surface": "surface", "year": 2020}, {"spacing_m": 5, "surface": "ground", "year": 2020}]),
     ("a 1.2 m surface model against a 1.25 m bare-earth one, both of 2020: within the factor, the kind takes no part",
@@ -97,7 +99,20 @@ EXAMPLES = [
      [{"spacing_m": 0.5, "surface": "ground", "year": 2021}, {"spacing_m": 0.5, "surface": "surface"}]),
     ("the same grid of 2008 against the one stating no year",
      [{"spacing_m": 0.5, "surface": "ground", "year": 2008}, {"spacing_m": 0.5, "surface": "surface"}]),
-]
+], "bathymetry": [
+    ("GEBCO's 15 arc-second cell of multibeam against EMODnet's 115 m composite: the finer grid",
+     [{"spacing_m": 463, "measured": "multibeam"}, {"spacing_m": 115, "measured": "compiled"}]),
+    ("GMRT's 100 m multibeam of 2015 against EMODnet's 115 m survey cell of quality 62: within the factor, how measured decides",
+     [{"spacing_m": 100, "measured": "multibeam", "year": 2015}, {"spacing_m": 115, "measured": "survey", "quality": 61.5}]),
+    ("old fine against new coarse: a 2 m bathymetric lidar of 2005 against a 4 m multibeam grid of 2024",
+     [{"spacing_m": 2, "measured": "lidar", "year": 2005}, {"spacing_m": 4, "measured": "multibeam", "year": 2024}]),
+    ("a lake: GLOBathy's 1 arc-second model against GEBCO's interpolated 15 arc-second cell",
+     [{"spacing_m": 30.9, "measured": "modelled"}, {"spacing_m": 463, "measured": "interpolated"}]),
+    ("a 10 m singlebeam survey of 1990 against a 10 m satellite-derived grid of 2022",
+     [{"spacing_m": 10, "measured": "singlebeam", "year": 1990}, {"spacing_m": 10, "measured": "optical", "year": 2022}]),
+    ("GEBCO's cells: gravity-predicted against digitized contours, at its one spacing",
+     [{"spacing_m": 463, "measured": "predicted"}, {"spacing_m": 463, "measured": "contours"}]),
+]}
 
 
 def tie(decl):
@@ -162,7 +177,7 @@ def expected(decl, pieces_path):
     file's (`scored`), and each of the file's groups in order (`ranked`)."""
     with open(pieces_path) as f:
         given = json.load(f)
-    pieces = [p for _, ps in EXAMPLES for p in ps] + given["pieces"]
+    pieces = [p for _, ps in EXAMPLES.get(decl["theme"], []) for p in ps] + given["pieces"]
     scored = []
     for p in pieces:
         s, vals = score(decl, p)
@@ -181,7 +196,7 @@ def main(argv):
         sys.stdout.write(expected(decl, argv[3]))
         return
     if argv[2] == "--examples":
-        for title, pieces in EXAMPLES:
+        for title, pieces in EXAMPLES.get(decl["theme"], []):
             print(title)
             for p in pieces:
                 print(said(decl, p))

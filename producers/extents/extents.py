@@ -28,8 +28,13 @@ A reader per kind of service, none per source:
            a listing's names as `listing` reads one; or `stac` and `asset`, a STAC collection's
            items' files): its bounds and where it has data, at the coarsest overview, or with
            `mask_m` at the coarsest whose pixels are no wider than that (a file with none stops it);
-           `nodata`, a value that is no data too (a coverage service answering it as 0)
-  none     no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
+           `nodata`, a value that is no data too (a coverage service answering it as 0); or
+           with `block`, its every cell read, `block` rows at a time, a mask cell each `block`
+           by `block` cells, and with `values` a mask per value its cells hold (that property
+           the value; `skip`, values that are no data), so a source-identifier grid is a piece
+           a kind of source; with `member`, the files a zip at `url` holds whose names match it
+           (the zip fetched whole: GDAL reads no zip by range)
+  none    no extent (`why`): the piece is listed, with a null geometry and the class `unknown`
 
 Every request goes through one fetcher: the app's User-Agent, one at a time with a pause, and no
 more than --max-gb (5) read for one source, its answers together (the run stops, naming it):
@@ -270,6 +275,13 @@ class Fetcher:
                     total = (r.headers.get("Content-Range") or "").rpartition("/")[2]
                     if len(body) > self.left():
                         sys.exit(f"{url}: over what --max-gb leaves this source: stopped")
+                    if n and len(body) < int(n):
+                        # (The connection closed early, which a read in blocks doesn't raise:
+                        # the answer cut short is fetched again, never kept.)
+                        if attempt == 3:
+                            sys.exit(f"{url}: {len(body)} of its {n} bytes, four times: stopped")
+                        time.sleep(5 * (attempt + 1))
+                        continue
                 break
             except urllib.error.HTTPError as e:
                 if e.code not in (429, 500, 502, 503, 504) or attempt == 3:
@@ -1054,43 +1066,101 @@ def raster_files(net, b):
 
 
 def read_raster(net, b, _tol):
-    """Each file's bounds and valid-data mask at its coarsest overview. A file's CRS goes with its
-    shape (they may differ): yielded already in WGS 84."""
-    import numpy as np
+    """Each file's bounds and valid-data mask at its coarsest overview, or (`block`) read whole, a
+    mask cell for each `block` by `block` of its cells, and with `values` a mask for each value its
+    cells hold. A file's CRS goes with its shape (they may differ): yielded already in WGS 84."""
     import rasterio
-    import rasterio.features
-    import rasterio.warp
     b["crs"] = "OGC:CRS84"
     with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_PAM_ENABLED="NO"):
+        if "member" in b:
+            # (A zip of files fetched whole, as `file` fetches one, its members matching `member`
+            # opened from a copy of it on disk, removed once they're read.)
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                local = os.path.join(tmp, "files.zip")
+                with open(local, "wb") as f:
+                    f.write(net.get(b["url"]))
+                names = sorted(n for n in zipfile.ZipFile(local).namelist() if re.search(b["member"], n))
+                if not names:
+                    sys.exit(f"{b['url']}: no member matches {b['member']!r}")
+                for n in names:
+                    with rasterio.open(f"/vsizip/{local}/{n}") as ds:
+                        yield from raster_shapes(ds, b)
+            return
         for url in raster_files(net, b):
             with rasterio.open(url, opener=lambda p, mode="rb", net=net: RangeFile(net, p)) as ds:
-                px = max(abs(ds.transform.a), abs(ds.transform.e)) * (M_PER_DEG if ds.crs.is_geographic else 1)
-                # (A file whose own cells are no finer than `mask_m`, a coverage service's answer
-                # asked for at a coarse scale, is its own mask.)
-                levels = ds.overviews(1) or ([1] if px >= float(b.get("mask_m", math.inf)) else [])
-                if not levels:
-                    # Its mask would be the whole file read (every block); a declaration's
-                    # `pattern` leaves such files out.
-                    sys.exit(f"{url}: no overviews, so its mask is a whole download")
-                fine = [f for f in levels if f * px <= float(b.get("mask_m", 0))]
-                # (No overview as fine as `mask_m`: the finest there is, never the full resolution,
-                # which would be a whole download; the grain recorded says how fine it was.)
-                f = fine[-1] if fine else levels[0 if "mask_m" in b else -1]
-                h, w = max(1, math.ceil(ds.height / f)), max(1, math.ceil(ds.width / f))
-                mask = ds.dataset_mask(out_shape=(h, w))
-                if "nodata" in b:
-                    # (A coverage service answering its no-data as a value, 0 for GA's resampled
-                    # 5 m DEM: the declared value is no data too.)
-                    mask = mask * (ds.read(1, out_shape=(h, w)) != float(b["nodata"]))
-                tr = ds.transform @ ds.transform.scale(ds.width / w, ds.height / h)
-                shapes = [sg.shape(s) for s, v in rasterio.features.shapes((mask > 0).astype(np.uint8), mask=mask > 0, transform=tr) if v]
-                geom = shapely.union_all(shapes)
-                res = max(abs(ds.transform.a), abs(ds.transform.e))
-                if ds.crs.is_geographic:
-                    mid = math.radians((ds.bounds.top + ds.bounds.bottom) / 2)
-                    res = max(abs(ds.transform.e) * M_PER_DEG, abs(ds.transform.a) * M_PER_DEG * math.cos(mid))
-                b["grain_m"] = max(b.get("grain_m", 0), round(f * px, 1))
-                yield to_wgs84(geom, ds.crs.to_wkt(), abs(tr.a)), {"res_m": round(res, 4)}
+                yield from raster_shapes(ds, b)
+
+
+def raster_shapes(ds, b):
+    """A raster's mask, or each value's (`values`), as shapes in WGS 84, with its cell (`res_m`)."""
+    import numpy as np
+    import rasterio.features
+    px = max(abs(ds.transform.a), abs(ds.transform.e)) * (M_PER_DEG if ds.crs.is_geographic else 1)
+    if "block" in b:
+        f = int(b["block"])
+        masks = block_masks(ds, f, b)
+    elif "values" in b:
+        # (An overview's cells are resampled: a mean of codes is no code.)
+        sys.exit(f"{ds.name}: `values` reads a file whole, by `block`")
+    else:
+        # (A file whose own cells are no finer than `mask_m`, a coverage service's answer asked for
+        # at a coarse scale, is its own mask.)
+        levels = ds.overviews(1) or ([1] if px >= float(b.get("mask_m", math.inf)) else [])
+        if not levels:
+            # Its mask would be the whole file read (every block); a declaration's `pattern` leaves
+            # such files out, or reads a small one whole by `block`.
+            sys.exit(f"{ds.name}: no overviews, so its mask is a whole download")
+        fine = [f for f in levels if f * px <= float(b.get("mask_m", 0))]
+        # (No overview as fine as `mask_m`: the finest there is, never the full resolution, which
+        # would be a whole download; the grain recorded says how fine it was.)
+        f = fine[-1] if fine else levels[0 if "mask_m" in b else -1]
+        h, w = max(1, math.ceil(ds.height / f)), max(1, math.ceil(ds.width / f))
+        mask = ds.dataset_mask(out_shape=(h, w)) > 0
+        if "nodata" in b:
+            # (A coverage service answering its no-data as a value, 0 for GA's resampled 5 m DEM:
+            # the declared value is no data too.)
+            mask &= ds.read(1, out_shape=(h, w)) != float(b["nodata"])
+        masks = {None: mask}
+    res = max(abs(ds.transform.a), abs(ds.transform.e))
+    if ds.crs.is_geographic:
+        mid = math.radians((ds.bounds.top + ds.bounds.bottom) / 2)
+        res = max(abs(ds.transform.e) * M_PER_DEG, abs(ds.transform.a) * M_PER_DEG * math.cos(mid))
+    b["grain_m"] = max(b.get("grain_m", 0), round(f * px, 1))
+    for v, mask in sorted(masks.items(), key=lambda kv: str(kv[0])):
+        h, w = mask.shape
+        tr = ds.transform @ ds.transform.scale(ds.width / w, ds.height / h)
+        shapes = [sg.shape(s) for s, k in rasterio.features.shapes(mask.astype(np.uint8), mask=mask, transform=tr) if k]
+        geom = to_wgs84(shapely.union_all(shapes), ds.crs.to_wkt(), abs(tr.a))
+        yield geom, ({"res_m": round(res, 4)} if v is None else {"res_m": round(res, 4), b["values"]: v})
+
+
+def block_masks(ds, f, b):
+    """A file read whole, `f` rows at a time: for each `f` by `f` block of its cells, whether it
+    holds data (its mask, by None), or with `values` each value it holds (a block holding two is in
+    both masks); its no data, the declared `nodata` and those of `skip` left out."""
+    import numpy as np
+    from rasterio.windows import Window
+    h, w = math.ceil(ds.height / f), math.ceil(ds.width / f)
+    skip = [float(v) for v in b.get("skip", [])] + ([float(b["nodata"])] if "nodata" in b else [])
+    masks = {}
+    for r in range(h):
+        rows = min(f, ds.height - r * f)
+        a = ds.read(1, window=Window(0, r * f, ds.width, rows), masked=True)
+        valid = ~np.ma.getmaskarray(a)
+        data = np.asarray(a.filled(0))
+        # (Padded to whole blocks: the padding no data.)
+        pad = ((0, f - rows), (0, w * f - ds.width))
+        valid, data = np.pad(valid, pad), np.pad(data, pad)
+        for v in skip:
+            valid &= data != v
+        if "values" not in b:
+            masks.setdefault(None, np.zeros((h, w), bool))[r] = valid.reshape(f, w, f).any(axis=(0, 2))
+            continue
+        for v in np.unique(data[valid]):
+            key = int(v) if float(v).is_integer() else float(v)
+            masks.setdefault(key, np.zeros((h, w), bool))[r] = (valid & (data == v)).reshape(f, w, f).any(axis=(0, 2))
+    return masks
 
 
 READERS = {"arcgis": read_arcgis, "stac": read_stac, "wfs": read_wfs, "file": read_file, "listing": read_listing, "raster": read_raster, "atom": read_atom}
