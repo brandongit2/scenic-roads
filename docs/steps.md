@@ -1101,8 +1101,8 @@ where, never a score or a metric, so tuning a weight builds nothing again.
 - **Its requirements** are measured as every step's (agentcore::needs): nothing is kept by hand.
   On the 13,783 pieces with an extent of 18 Nov (producers/extents/terrain/, every region's
   sources and the worldwide models; `renders_the_real_pieces`, the test profile's build, cut to the
-  2026-09-28 pass's land, on the Mac mini under its build jobs): 99.5 s, a peak resident set of
-  3.34 GB, 800,584 tiles in packs of 729 MB (z12's 491,325, 423 MB); 871 tiles have more than 256
+  2026-09-28 pass's land, on the Mac mini under its build jobs): 105.9 s, a peak resident set of
+  3.01 GB, 800,584 tiles in packs of 729 MB (z12's 491,325, 423 MB); 871 tiles have more than 256
   sets (two bytes a pixel), the most 11,282. A tile is stored only where an outline or the
   coastline crosses it on the land, so the cost is the length at z12 of the outlines on the land
   and of the coastline under them, whatever a piece's grain: the outlines' parts at sea make

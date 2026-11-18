@@ -1372,7 +1372,7 @@ pub const TABLE: [Step; 65] = [
     // The data-available layers (terrain::available; docs/steps.md §14): a target per theme, its
     // pieces as tiles of the sets met at each pixel, cut to the theme's side of the pass's
     // coastline, made again only where a piece or the land moved. (Cost version 1: the cut, task
-    // #1361: its peak 2.75 → 3.34 GB on the mini.)
+    // #1361: its peak 2.75 → 3.01 GB on the mini.)
     Step {
         cost_v: 1,
         versions: &[("available", || terrain::available::KEY_V.to_string())],
