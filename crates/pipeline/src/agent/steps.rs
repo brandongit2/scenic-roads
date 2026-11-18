@@ -36,7 +36,7 @@
 //! isn't what the table gives fails the build).
 //!
 //! The write-sets: one outputs function per step (`writes`, its row's), which both ends use, so
-//! they can't disagree (docs/pool.md §7.3, §12 phase 4's sixth batch): a job's `Out`, bound to its
+//! they can't disagree (docs/pool.md §7.3): a job's `Out`, bound to its
 //! step (buildstore::out::Out::for_step), puts and removes only names it gives, a name outside failing
 //! the job; and the pool's lead refuses every journal entry with a change outside it (`outside`,
 //! in agentcore::agent::membership's check). A shared step's files for its targets (`saves`, which

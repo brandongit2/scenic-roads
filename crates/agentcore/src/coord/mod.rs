@@ -2528,7 +2528,7 @@ impl Coordinator {
 
     /// Placement by how crucial a job is on (`Some`: the forecast's slack; its draws weigh the paces,
     /// `set_paces`) or
-    /// off (docs/pool.md §12, phase 4's eleventh batch; crate::agent::placement). Its draws' windows
+    /// off (docs/pool.md §7.2; crate::agent::placement). Its draws' windows
     /// run from when it was first turned on.
     pub fn set_placement(&self, p: Option<crate::agent::placement::Placement>) {
         let mut s = self.shared.lock().unwrap();
@@ -8690,7 +8690,7 @@ mod tests {
         s.seen("m4", "asked".into(), Some(&a), now);
     }
 
-    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): a coordinator on a
+    /// Every step to every member (docs/pool.md §7.2, §7.7): a coordinator on a
     /// clock of the test's (none moves it but the test), this Mac's own agent asking with room
     /// `own` (none asking with (0, 0)); a step's offer of `ts` (target, its measures: memory, disk,
     /// seconds; None: never run).

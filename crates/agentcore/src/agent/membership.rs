@@ -216,7 +216,7 @@ pub struct Heartbeat {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
     /// Its Mac's conditions, for the controls (§11: whether it's home on power, on battery, away;
-    /// whether it can lead now). Left out by apps before phase 3, and ignored by them.
+    /// whether it can lead now). Left out by apps before the controls, and ignored by them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conds: Option<Conds>,
     /// Its broker (docs/pool.md §8, crate::agent::brokering): where a page reaches it, and how many
@@ -937,8 +937,7 @@ pub fn said(e: &Event) -> String {
 
 /// What a process of the agent is in the pool while it's on: decided as it starts, by the lead's
 /// declaration (`Run::open`), and kept for its life. A process whose member takes the records up,
-/// or stops leading, restarts into its new part once its first job's slot is free (phase 1: the lead's jobs run
-/// in its own process; phase 2 moves them into its slots).
+/// or stops leading, restarts into its new part once its first job's slot is free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -1897,8 +1896,7 @@ pub fn share_token(nas: &dyn Nas, token: &str) -> Result<()> {
     Ok(())
 }
 
-/// The workers' token made the pool's (§12, seeding): this Mac's (the lead's, as the pool is
-/// switched on) copied to the NAS when it has none (create-new: the first lead's stays), else the
+/// The workers' token made the pool's: this Mac's (the lead's) copied to the NAS when it has none (create-new: the first lead's stays), else the
 /// NAS's copied here before its coordinator starts, so the Macs' agents keep working with this
 /// one.
 pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
@@ -2166,7 +2164,7 @@ mod tests {
 
     #[test]
     fn heartbeats_of_apps_before_and_after_the_controls_read_each_other() {
-        // The heartbeat as the apps before phase 3 have it (1fa03d8), and as they write it.
+        // The heartbeat as the apps before the controls have it (1fa03d8), and as they write it.
         #[derive(Debug, PartialEq, Serialize, Deserialize)]
         struct Before {
             #[serde(flatten)]

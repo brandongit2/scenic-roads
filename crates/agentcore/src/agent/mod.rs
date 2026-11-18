@@ -1002,7 +1002,7 @@ pub struct Status {
     /// now, and the last clear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caches: Option<room::Caches>,
-    /// This Mac in the pool, while it's on (docs/pool.md §12).
+    /// This Mac in the pool (docs/pool.md §6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<PoolView>,
     /// The memory guard (crate::agent::memguard::View): this Mac's memory against its floor, what
@@ -4488,7 +4488,7 @@ impl Agent {
         if ended {
             self.floor_short = None;
         }
-        // The pool's step, once the jobs that ended handed their work over (docs/pool.md §12):
+        // The pool's step, once the jobs that ended handed their work over (docs/pool.md §6, §7.3):
         // what this Mac may do now, as its lead or a member.
         nasread::phase("the pool's step");
         let gates = self.pool_step(root.as_ref(), &c, &mut waiting);
@@ -8598,7 +8598,7 @@ impl Agent {
         }
     }
 
-    /// The pool's step while it's on (docs/pool.md §12): the hand-offs from before the pool drained
+    /// The pool's step (docs/pool.md §6, §7.3): the hand-offs from before the pool drained
     /// into its member's, the driver's step; then, leading, its
     /// coordinator told the epoch and whether it grants, and what the lead keeps written (the raw
     /// tiles' archives named, its store's backup, its history). What it may do now; None when the pool isn't on. The pool's own thread
@@ -8925,7 +8925,7 @@ impl Agent {
         }
     }
 
-    /// What the lead keeps written besides its records (docs/pool.md §12): GC's queue told of the
+    /// What the lead keeps written besides its records (docs/pool.md §6.2): GC's queue told of the
     /// records saved (`saved`: this step's are on the NAS), the raw tiles' and pyramids' archives its
     /// records hold named in their stores' indexes, its history's new events.
     fn pool_lead_files(&mut self, root: &store::nasfs::NasRoot, saved: bool) {
@@ -16516,7 +16516,7 @@ mod tests {
 
 #[cfg(test)]
 mod membership_tests {
-    //! The agent with the pool (docs/pool.md §12, phase 1's integration): off, on (leading, and as
+    //! The agent with the pool (docs/pool.md §6): off, on (leading, and as
     //! a member), its gates, its switch changing, and shadowed.
     use super::*;
     use jobrt::jobid::JobId;

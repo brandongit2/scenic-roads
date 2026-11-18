@@ -1,5 +1,4 @@
-//! Resuming, and planning from the records alone (docs/pool.md §7.2 Resuming, §7.4; §12 phase 4's
-//! eighth batch), in the pool (its switch, `state/pool/resume`, deleted with task #878 step 5: on
+//! Resuming, and planning from the records alone (docs/pool.md §7.2 Resuming, §7.4), in the pool (its switch, `state/pool/resume`, deleted with task #878 step 5: on
 //! everywhere; an older app still reads its file).
 //!
 //! - **A job's progress on its Mac's disk, told the lead.** A resumable job (`RESUMABLE`: the OSM

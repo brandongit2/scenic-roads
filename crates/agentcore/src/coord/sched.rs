@@ -193,7 +193,7 @@ pub struct Sched {
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
-    /// Placement by how crucial a job is (docs/pool.md §12, phase 4's eleventh batch:
+    /// Placement by how crucial a job is (docs/pool.md §7.2:
     /// crate::agent::placement), while the lead's switch has it on, and when it was first told (its
     /// draws' windows are reckoned from then): the offers tried by their steps' slack, a member's
     /// targets drawn among those asking by their paces (crate::paces), the tasks by their measured
@@ -2284,7 +2284,7 @@ impl Sched {
         o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect()
     }
 
-    /// Every step to every member (docs/pool.md §12, phase 4's ninth batch): the targets of offer
+    /// Every step to every member (docs/pool.md §7.2, §7.7): the targets of offer
     /// `o` that `a`'s worker may do now, as a run contiguous in plan order (one held, done, kept from
     /// it after it failed, or past its room ends the run), from the front of the plan, or just after
     /// its last target of the step when that one's open; each measured (memory, disk) within what it

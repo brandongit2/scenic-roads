@@ -1,5 +1,4 @@
-//! Nothing writes the build's records but through `Out` (docs/pool.md §7.3, §7.7, §12 phase 4's
-//! sixth batch): a step's job changes the manifest only through `buildstore::out::Out`, which puts
+//! Nothing writes the build's records but through `Out` (docs/pool.md §7.3, §7.7): a step's job changes the manifest only through `buildstore::out::Out`, which puts
 //! and removes only its step's outputs (pipeline::agent::steps::writes, the function the lead's merge
 //! checks every entry by). So every item outside `#[cfg(test)]` code that makes or writes a
 //! hand-off (`handoff::write(`, a `Handoff { … }` or `Handoff::default()` made), or names the

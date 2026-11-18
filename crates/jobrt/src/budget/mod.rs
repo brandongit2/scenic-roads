@@ -1,4 +1,4 @@
-//! The pool's one budget for Wikimedia (docs/pool.md §7.7, §12 phase 4's seventh batch): every
+//! The pool's one budget for Wikimedia (docs/pool.md §7.7): every
 //! request a job makes to Wikimedia's sites, and to the query services that answer Wikidata's
 //! queries, is taken from one budget for the whole pool, whichever Mac and process makes it, so the
 //! pool together is never past the rate one polite client keeps (no Mac can reliably know the

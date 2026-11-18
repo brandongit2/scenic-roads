@@ -1,5 +1,5 @@
-//! Placement by how crucial a job is, and work offered ahead (docs/pool.md §7.2, §12 phase 4's
-//! eleventh batch; docs/coordinator.md §3), behind the pool's setting `placement`
+//! Placement by how crucial a job is, and work offered ahead (docs/pool.md §7.2;
+//! docs/coordinator.md §3), behind the pool's setting `placement`
 //! (crate::coord::asks; off while not set: the agent and its coordinator as they were, exactly). It
 //! acts only in the pool.
 //!

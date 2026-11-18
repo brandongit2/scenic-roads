@@ -1,5 +1,5 @@
 //! The pool (docs/pool.md): the Mac mini leads the build, the other Macs are its members. This is the core of its protocol, the part
-//! that can lose work if it's wrong (§12, phases 1 and 2), kept apart from the agent and the
+//! that can lose work if it's wrong, kept apart from the agent and the
 //! coordinator so the same code runs against the share and against a model of its faults (§13):
 //!
 //! - `nas`: the operations the protocol makes on the NAS, with what the SMB share guarantees and

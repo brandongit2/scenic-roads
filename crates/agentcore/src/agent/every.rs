@@ -1,6 +1,5 @@
-//! Every step to every member (docs/pool.md §7.2, §7.7; §12 phase 4's ninth batch), always on in
-//! the pool (§12 phase 4's thirteenth batch: `state/pool/every-step`, its switch of before, is no
-//! longer read).
+//! Every step to every member (docs/pool.md §7.2, §7.7), always on in
+//! the pool (`state/pool/every-step` is no longer read).
 //!
 //! - **Every step of the plan offered** (`offered`): the lead's coordinator offers its members the
 //!   plan's steps, not only the shared ones (the map tiles' `pack` and `lo` among them; each Mac's
