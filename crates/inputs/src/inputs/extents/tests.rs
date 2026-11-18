@@ -1663,7 +1663,10 @@ const REAL_BATHYMETRY: [(&str, &[u8]); 49] = [
     ("ie-infomar.toml", include_bytes!("../../../../../producers/extents/bathymetry/ie-infomar.toml")),
     ("ncei-dems.geojson", include_bytes!("../../../../../producers/extents/bathymetry/ncei-dems.geojson")),
     ("ncei-dems.toml", include_bytes!("../../../../../producers/extents/bathymetry/ncei-dems.toml")),
-    ("nl-rijkswaterstaat.geojson", include_bytes!("../../../../../producers/extents/bathymetry/nl-rijkswaterstaat.geojson")),
+    (
+        "nl-rijkswaterstaat.geojson",
+        include_bytes!("../../../../../producers/extents/bathymetry/nl-rijkswaterstaat.geojson"),
+    ),
     ("nl-rijkswaterstaat.toml", include_bytes!("../../../../../producers/extents/bathymetry/nl-rijkswaterstaat.toml")),
     ("no-kartverket.geojson", include_bytes!("../../../../../producers/extents/bathymetry/no-kartverket.geojson")),
     ("no-kartverket.toml", include_bytes!("../../../../../producers/extents/bathymetry/no-kartverket.toml")),
@@ -1685,7 +1688,10 @@ fn the_real_bathymetry_files_are_taken() {
     // Each national or local grid by what its extent stands on: the Faroes' and Denmark's source
     // grids, the German model's coverages, AusBathyTopo's type identifier grid and Shom's WMS layers
     // are the data's own (`files`); LINZ's depth models, a layer's bounding box, are claimed.
-    let classes = |f: &str| Extents.file(&format!("bathymetry/{f}.geojson"), &files[&format!("bathymetry/{f}.geojson")]).facts["classes"].clone();
+    let classes = |f: &str| {
+        Extents.file(&format!("bathymetry/{f}.geojson"), &files[&format!("bathymetry/{f}.geojson")]).facts["classes"]
+            .clone()
+    };
     assert_eq!(classes("dk-ddm"), serde_json::json!({"files": 8}));
     assert_eq!(classes("de-bsh"), serde_json::json!({"files": 1}));
     assert_eq!(classes("fr-shom-homonim"), serde_json::json!({"files": 4}));
