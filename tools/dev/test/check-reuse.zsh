@@ -310,6 +310,8 @@ s() { w crates/a/src/lib.rs 'pub const V: Option<&str> = option_env!("SOME_FLAG"
 fresh "a source reading the environment as it compiles" s docs 'cargo test -p a --lib' run run
 s() { w crates/a/src/lib.rs 'pub const V: &str = env!("CARGO_PKG_NAME");' }
 fresh "cargo's own variables" s docs 'cargo test -p a --lib' reuse reuse
+s() { w crates/a/src/lib.rs 'pub const V: &[&str] = include!(concat!(env!("OUT_DIR"), "/v.rs"));' }
+fresh "a build script's output compiled in" s docs 'cargo test -p a --lib' reuse reuse
 
 # -- affected-tests.sh --nextest: check.sh's tests lines as one nextest run (#969), a lib's unit
 # tests built only for the packages asking for them

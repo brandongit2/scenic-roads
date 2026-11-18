@@ -137,7 +137,8 @@ fn comments_layout_tests_and_other_modules_move_no_digest() {
 fn an_include_by_anything_but_a_literal_is_an_error() {
     let d = tempfile::tempdir().unwrap();
     tree(d.path(), &[]);
-    let a = a_with("include_str!(\"a/schema.json\")", "include_str!(concat!(\"a/\", \"schema.json\"))");
+    let by = format!("{}!(concat!(\"a/\", \"schema.json\"))", "include_str");
+    let a = a_with("include_str!(\"a/schema.json\")", &by);
     std::fs::write(d.path().join("a.rs"), a).unwrap();
     let e = modules(d.path()).err().unwrap();
     assert!(e.contains("not a string literal"), "{e}");

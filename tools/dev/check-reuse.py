@@ -44,7 +44,9 @@ in X) is weighed. It holds for a part here only when
         is the whole repo.
 Doubt runs both parts: a symlink in the repo, an include! or #[path] outside the package folders
 (whose own modules aren't followed), a path a manifest or .cargo names outside them, a source
-reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_*).
+reading the environment as it compiles (env!, option_env! other than cargo's own CARGO_* and
+OUT_DIR: a build script's output, `include!(concat!(env!("OUT_DIR"), …))`, is made from the
+package's files, inputs of the build already).
 Anything not shown safe (no such pass, a git lookup failing) runs the part.
 """
 import hashlib, os, posixpath, re, subprocess, sys
@@ -155,6 +157,8 @@ def packages(files):
 
 
 INCLUDE = re.compile(r'\binclude(_str|_bytes)?!\s*\(\s*("([^"\\]*)")?')
+# (What an include names after its parenthesis when it's of a build script's output.)
+OUT_DIR = re.compile(r'concat!\s*\(\s*env!\s*\(\s*"OUT_DIR"\s*\)')
 PATHATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 # A "../" literal an attribute or a macro takes first (#[folder = "../../web"], include_dir!(…)):
 # a file read as it compiles, by a third-party macro, relative to the source's folder or the crate's.
@@ -183,11 +187,13 @@ def build_inputs(files, pkgs):
             continue
         src, d = read(f), posixpath.dirname(f)
         for m in ENVMACRO.finditer(src):
-            if not (m.group(1) or "").startswith('"CARGO_') and blank(src)[m.start()] != " ":
+            if not (m.group(1) or "").startswith(('"CARGO_', '"OUT_DIR"')) and blank(src)[m.start()] != " ":
                 raise Doubt("%s reads the environment as it compiles: %s" % (f, m.group(0)))
         # (include! and #[path] name Rust sources, whose own modules and includes are followed only
         # inside the package folders.)
         for m in INCLUDE.finditer(src):
+            if not m.group(2) and OUT_DIR.match(src, m.end()):
+                continue
             if not m.group(2):
                 raise Doubt("%s includes a path that isn't a literal" % f)
             p = norm(d, m.group(3))
