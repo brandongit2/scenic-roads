@@ -47,10 +47,20 @@ pub mod translations;
 pub mod view;
 pub mod watch;
 
-/// The `inputs` step's version: bumping it checks every unit again.
-/// (2: the held report's `needs` taken from the candidate's check, not overwritten by step 5's.
-/// 3: a region with water's needs kept too: the land-and-water pass dropped them.)
-pub const INPUTS_V: u32 = 3;
+/// What each module here is as code (build.rs, build/checks_code.rs): its name and the digest of its
+/// tokens as the app compiles them, children and compiled-in files with it; comments, layout and
+/// test code left out.
+const CODE: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/checks_code.rs"));
+
+/// The code digest of the module `module_path!()` names, or one inside it: a unit's checks
+/// (`Checks::code`), or the gate's own (`gate`). Every module `mod.rs` declares has one, by build.rs.
+pub fn code_of(module_path: &str) -> &'static str {
+    let name = module_path.strip_prefix(concat!(module_path!(), "::")).and_then(|m| m.split("::").next());
+    CODE.iter()
+        .find(|(n, _)| Some(*n) == name)
+        .map(|(_, d)| *d)
+        .unwrap_or_else(|| panic!("{module_path} isn't a module of {}", module_path!()))
+}
 
 /// The gate units: every inputs folder (the test unit aside).
 pub const UNITS: [&str; 11] = [
@@ -304,8 +314,10 @@ pub struct Version<'a> {
 /// A gate unit's checks (§4.3, §6): its shape, file by file, and its own checks over a version.
 pub trait Checks: Sync {
     fn unit(&self) -> &'static str;
-    /// Bumped with any change to the checks: the unit is checked again.
-    fn version(&self) -> u32;
+    /// What its checks are: its module's code digest (`code_of(module_path!())`), so any change to
+    /// what its module compiles to checks the unit again (in the key, `check_key`) and derives what's
+    /// derived again (`Listed::derived_by`).
+    fn code(&self) -> &'static str;
     /// Whether its inputs folder's subfolders are part of it (translations, descriptions); otherwise a
     /// folder there (but `todo/` and `how/`) isn't its shape.
     fn recursive(&self) -> bool {
@@ -468,8 +480,6 @@ impl FileEntry {
 pub struct Index {
     pub fmt: u32,
     pub unit: String,
-    /// The checks it was taken with (`<unit> <version>`).
-    pub checks: String,
     /// By inputs-folder path.
     pub files: BTreeMap<String, FileEntry>,
     /// The warnings it was taken with, by id, each with the files it's about: kept while those
@@ -503,6 +513,10 @@ pub struct Listed {
     /// was resolved from, so a check finding the same inputs resolves nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memo: Option<serde_json::Value>,
+    /// The code (`Checks::code`) what's derived in the accepted version was derived by: another
+    /// derives it again (§4.3, step 5). None: none named (a state from before, derived again).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_by: Option<String>,
 }
 
 /// A unit's check's state, as the records name it (empty before its first check).
@@ -531,7 +545,6 @@ pub fn flat(unit: &str) -> String {
 pub struct Report {
     pub fmt: u32,
     pub unit: String,
-    pub checks: String,
     /// The changes held (inputs-folder paths: a held new file is absent from the version, a held edit
     /// or removal keeps the file as accepted).
     pub held: Vec<String>,
@@ -844,7 +857,7 @@ pub fn member_of(agent_home: &Path) -> String {
 
 // ---- The check's key ---------------------------------------------------------------------------
 
-/// The key of unit `unit`'s check (§4.3): the step's and the checks' versions, the listing (a
+/// The key of unit `unit`'s check (§4.3): the gate's code and its checks' (`code_of`), the listing (a
 /// trigger: names, sizes, times), the acceptances and whatever else its checks read
 /// (`Checks::context`). When it changes, the unit is checked again. It names only what the check
 /// reads and doesn't write itself: not the unit's accepted index, its held report nor its state
@@ -857,7 +870,8 @@ pub fn check_key(
     accepted: &BTreeSet<String>,
     manifest: &BTreeMap<String, String>,
 ) -> Result<String> {
-    let mut parts = vec![format!("inputs {INPUTS_V}"), format!("{} {}", checks.unit(), checks.version())];
+    let gate = code_of(concat!(module_path!(), "::gate"));
+    let mut parts = vec![format!("inputs {gate}"), format!("{} {}", checks.unit(), checks.code())];
     parts.extend(listing.files.iter().map(|(p, (s, t))| format!("{p} {s} {t}")));
     parts.extend(listing.strays.iter().map(|p| format!("stray {p}")));
     parts.extend(listing.misplaced.iter().map(|p| format!("misplaced {p}")));

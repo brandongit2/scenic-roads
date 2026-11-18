@@ -53,8 +53,7 @@ pub fn put(nas: &store::nasfs::NasRoot, unit: &str, files: &[(&str, &str)]) -> S
         nas.join(name).parent().unwrap().create_dir_all().unwrap();
         nas.join(name).write(bytes).unwrap();
     };
-    let mut index =
-        inputs::inputs::Index { fmt: 1, unit: unit.into(), checks: format!("{unit} 1"), ..Default::default() };
+    let mut index = inputs::inputs::Index { fmt: 1, unit: unit.into(), ..Default::default() };
     for (p, b) in files {
         let file = inputs::inputs::copy_name(unit, p, &store::naming::hash16(b.as_bytes())).unwrap();
         put(&file, b.as_bytes());

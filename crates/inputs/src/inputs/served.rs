@@ -141,8 +141,7 @@ mod tests {
             std::fs::write(nas.join(name), bytes).unwrap();
         };
         let accept = |files: &[(&str, &[u8])]| {
-            let mut index =
-                Index { fmt: 1, unit: "translations".into(), checks: "translations 1".into(), ..Default::default() };
+            let mut index = Index { fmt: 1, unit: "translations".into(), ..Default::default() };
             for (p, b) in files {
                 let file = crate::inputs::copy_name("translations", p, &store::naming::hash16(b)).unwrap();
                 put(&file, b);

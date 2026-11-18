@@ -165,8 +165,9 @@ impl Got {
     }
 }
 
-/// The version of what a region resolves to (its stored geometry and drawing), in each region's
-/// `resolved_from` and the checks' version (`Checks::version`). A region's geometry is pinned to
+/// The version of what a region resolves to (its stored geometry and drawing, and the folder's
+/// outcome with its problems' words), in each region's `resolved_from` and the outcome's key
+/// (`resolve::outcome_key`). A region's geometry is pinned to
 /// what it's resolved from (its file, the shapes and regions it names, the pins, the pass, the
 /// datasets: `resolve::Outcome::keys`) and this: a check that finds those as they were keeps the
 /// accepted geometry, whatever else changed (a group file's name, another region's file), so
@@ -518,8 +519,8 @@ impl Checks for Regions {
         UNIT
     }
 
-    fn version(&self) -> u32 {
-        RESOLUTION
+    fn code(&self) -> &'static str {
+        super::code_of(module_path!())
     }
 
     fn recursive(&self) -> bool {
@@ -708,8 +709,6 @@ impl Checks for Regions {
         *self.accepted.lock().unwrap() = accepted
             .files
             .iter()
-            // (An index of another version of the checks: everything derived again.)
-            .filter(|_| accepted.checks == format!("{UNIT} {RESOLUTION}"))
             .filter_map(|(p, e)| {
                 Some((
                     p.clone(),
@@ -854,7 +853,7 @@ pub fn accept_fixture(
     manifest: &mut BTreeMap<String, String>,
 ) -> String {
     use crate::inputs::{FileEntry, Index};
-    let mut index = Index { fmt: 1, unit: UNIT.into(), checks: format!("{UNIT} 1"), ..Default::default() };
+    let mut index = Index { fmt: 1, unit: UNIT.into(), ..Default::default() };
     let put = |name: &str, b: &[u8]| {
         root.join(name).parent().unwrap().create_dir_all().unwrap();
         root.join(name).write(b).unwrap();

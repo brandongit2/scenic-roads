@@ -249,14 +249,7 @@ fn good_declarations_are_measured_from_their_data() {
             },
         );
     }
-    let ix = super::super::Index {
-        fmt: 1,
-        unit: UNIT.into(),
-        checks: "elevation 2".into(),
-        files,
-        accepted: BTreeMap::new(),
-        derived_from: None,
-    };
+    let ix = super::super::Index { fmt: 1, unit: UNIT.into(), files, accepted: BTreeMap::new(), derived_from: None };
     let name = "sources/inputs/elevation/@index.0000000000000000.json";
     std::fs::write(d2.path().join(name), serde_json::to_vec(&ix).unwrap()).unwrap();
     let a = super::super::open(
@@ -609,6 +602,7 @@ fn an_unchanged_dataset_whose_grids_stop_reaching_it_is_held_as_accepted() {
             read_new: &read_new,
             read_old: &read_old,
             memo: None,
+            derived_by: prev.map(|_| c.code()),
         })
         .unwrap();
         copies.lock().unwrap().extend(d.store.iter().map(|(n, b)| (n.clone(), b.to_vec())));
@@ -653,6 +647,7 @@ fn decide_with(
         read_new: &read_new,
         read_old: &read_old,
         memo: None,
+        derived_by: prev.and_then(|d| d.derived_by.as_deref()),
     })
     .unwrap();
     copies.lock().unwrap().extend(d.store.iter().map(|(n, b)| (n.clone(), b.to_vec())));
@@ -839,7 +834,7 @@ fn a_dataset_accepted_before_its_presence_is_measured_again() {
     assert!(same.report.is_none() && same.read.is_empty(), "{:?}", same.report);
     // (As accepted before task #929, by the checks before: no presence, no bands.)
     let mut before = first;
-    before.index.checks = format!("{UNIT} 4");
+    before.derived_by = Some("older code".into());
     let e = before.index.files.get_mut("whole.toml").unwrap();
     let m = e.facts.get_mut("measured").unwrap().as_object_mut().unwrap();
     m.remove("presence");
@@ -922,9 +917,9 @@ fn an_added_measure_alone_is_read_for_a_dataset_as_accepted() {
     let want = measured(&first);
     let presence = want.presence.clone().unwrap();
     assert!(!presence.is_empty() && want.hollow.is_some(), "{want:?}");
-    // (As accepted by version 5: its presence, no hollow tiles.)
+    // (As accepted by older code: its presence, no hollow tiles.)
     let mut before = first;
-    before.index.checks = format!("{UNIT} 5");
+    before.derived_by = Some("older code".into());
     let e = before.index.files.get_mut("idx.toml").unwrap();
     e.facts.get_mut("measured").unwrap().as_object_mut().unwrap().remove("hollow");
     let added = Noted::default();
@@ -1001,7 +996,7 @@ fn a_step_made_under_an_older_rule_is_measured_from_that_step_on() {
         .unwrap();
     let now = first.index.files["idx.toml"].facts["rules"].clone();
     let mut before = first;
-    before.index.checks = format!("{UNIT} 6");
+    before.derived_by = Some("older code".into());
     let mut with_rules = |rules: Option<serde_json::Value>| {
         let facts = &mut before.index.files.get_mut("idx.toml").unwrap().facts;
         match rules {

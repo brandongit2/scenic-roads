@@ -113,8 +113,7 @@ crate::inputs; `scenic-build inputs`; the agent's `gate_work` and `tend_gate`. U
 ### 4.3 Checking: a job like any other
 
 The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtfs`):
-- **Key** (`inputs::check_key`): the checker versions (`INPUTS_V` and each input's), the listing,
-  the unit's acceptances, and whatever else its checks read (`Checks::context`: the content names of
+- **Key** (`inputs::check_key`): the checks' code (below), the listing, the unit's acceptances, and whatever else its checks read (`Checks::context`: the content names of
   the pass's outlines, the accepted registers for the matches, the accepted regions and the accepted
   geoid sources' declarations for the elevation datasets; check.py for translations; the regions'
   pass, outline set, extract and land, the other passes' outline sets in the records (what a region
@@ -127,6 +126,23 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   The lead's forget job (`inputs <unit> forget`, §4.10) records the key `forget`, so a unit put
   back on the gate is checked; a forget by hand (`scenic-build inputs <unit> --forget`) records no
   key, so a unit put back with its folder as it was waits for a change or its daily full check.
+- **The checks' code** (`inputs::code_of`, task #1467): no version is typed. build.rs digests each
+  module of `crates/inputs/src/inputs/` as the app compiles it (`crates/inputs/build/checks_code.rs`:
+  its tokens, its child modules' and the files it compiles in with it; comments, doc comments,
+  layout, `#[cfg(test)]` and `testkit` code and `#[test]` functions left out), and the key names the
+  gate's (`gate`) and the unit's own (`Checks::code`, its module's). A release that changes what a
+  unit's module compiles to checks that unit again, once; one that changes the gate's checks every
+  unit; any other checks none. What the digest doesn't see: code outside the unit's module that its
+  checks call (`mod.rs`, `credits`, another unit's module, other crates), and files read at run time
+  (those a check reads are in its key by `Checks::context`). A change there that changes a verdict
+  is seen by the unit's next check: its next change of files, or its next full check (daily, or
+  `scenic inputs check --full <unit>`), which checks every held and new file again. A file taken in
+  is never checked again while its bytes are as accepted, whatever the code. Two things a check
+  makes keep a typed version of their own, as each made again costs hours: the regions' resolution
+  (`inputs::regions::RESOLUTION`, step 5 below: a region's geometry and the folder's recorded
+  outcome, its problems' words with it, are taken as they were while it holds) and the elevation
+  datasets' measures (`Step::rule`, §6.8). A regions check under new code otherwise takes the
+  outcome recorded for the same inputs.
 - **Where:** on the lead, either slot, never beside a step that runs alone, another heavy NAS reader
   (`bldprep`) or another check. It holds no region and no map.
 - **What it does:**
@@ -143,16 +159,18 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   5. **Checks that version whole.** If it raises a finding neither accepted nor raised by the
      current version, every changed file of the unit is held and the version stays; the banner says
      they were held together and why.
-     What's derived from the version whole is made again, files unchanged, when the accepted
-     index's `checks` isn't this app's (`unit` and the unit's `Checks::version`), or its
-     `derived_from` isn't what the unit's checks read beyond the files now (`Checks::derived_from`:
-     the elevation datasets' accepted regions and the pass's outlines, §6.8): a bump of a unit's
-     version rolls its derived files out by itself, and so does a change of what they're derived
-     from. While a file is kept as accepted (held), the index keeps the `derived_from` it had, so
-     the check that lets the file go derives it again too.
+     What's derived from the version whole is made again, files unchanged, when the code that
+     derived the accepted version's (`@listed`'s `derived_by`) isn't the unit's now
+     (`Checks::code`), or the index's `derived_from` isn't what the unit's checks read beyond the
+     files now (`Checks::derived_from`: the elevation datasets' accepted regions and the pass's
+     outlines, §6.8): a release changing a unit's module rolls its derived files out by itself, and
+     so does a change of what they're derived from. The index changes only where what's derived
+     does, so build keys naming an index whole (the languages', the sources') move only then. While
+     a file is kept as accepted (held), the index keeps the `derived_from` it had and the state the
+     `derived_by`, so the check that lets the file go derives it again too.
      The regions keep a region's stored geometry while what it's resolved from is as it was
-     (task #832): each region's `facts.resolved_from` is `inputs::regions::RESOLUTION` (their
-     checks' version) and the digest of everything its resolution reads (its file, the pins, the
+     (task #832): each region's `facts.resolved_from` is `inputs::regions::RESOLUTION` (the
+     resolution's version) and the digest of everything its resolution reads (its file, the pins, the
      shapes and regions it names, the pass, the datasets; a region with water: every file of the
      folder but the group files, `resolve::Outcome::keys`). A change that touches none of it (a
      `_group.toml`'s name, another region's file) derives it from nothing: its geometry, and the
@@ -181,8 +199,9 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
   6. Stores each file content-named under `sources/inputs/<unit>/` (uploaded and read back, docs/storage.md).
   7. Hands off the records: `sources/inputs/<unit>/@index` (when it differs; the replaced index is
      touched so GC keeps it, §4.9), `@listed` (with what the check keeps for the next, the regions'
-     outcomes), and `@held` (the held report, or none). `@` starts
-     no inputs-folder path component or unit name, so these never clash with copies or nested units.
+     outcomes, and the code that derived the version, `derived_by`), and `@held` (the held report,
+     or none). `@` starts no inputs-folder path component or unit name, so these never clash with
+     copies or nested units.
 - **Threads and progress.** A check lasts hours, one target, so it takes its job's threads as they
   change rather than as a target begins: its agent keeps a file (`SCENIC_THREADS_FILE`,
   crate::control::THREADS_ENV, replaced whole by crate::control::grant, so a read never meets it
@@ -245,7 +264,7 @@ The step `inputs`, one target per unit (`inputs regions`, `inputs timetables/gtf
 - **Files:** `sources/inputs/<unit>/<path>.<hash16>.<ext>`, the inputs-folder path content-named.
 - **The index:** `sources/inputs/<unit>/@index.<hash16>.json`:
   ```json
-  {"fmt": 1, "unit": "heritage", "checks": "heritage 1",
+  {"fmt": 1, "unit": "heritage",
    "files": {"fr-merimee.geojson": {"file": "sources/inputs/heritage/fr-merimee.4b1e…a0.geojson",
                                    "size": 81234567, "keyed": "9c03…e1",
                                    "facts": {"box": [-5.14, 41.37, 9.56, 51.09], "entries": 46210}},
@@ -1473,16 +1492,16 @@ past z12 is hollow there is never run, or, with an earlier run's outputs named, 
 key moves (docs/steps.md §2, Terrain); a place's sources and every key stay `presence`'s, so the
 hollow tiles alone move no key. A GeoTIFF dataset's measures are made in that order, each from those
 before it (`Step`: its headers, giving its CRS, resolution, bands and coverage; its presence; its
-hollow tiles), and a dataset taken as accepted (below) that a version of the check with fewer
-measures measured is measured from the first step it lacks on, every step after it made again, what's
-before it kept (task #1088): one accepted by checks version 5 has its hollow tiles read, nothing
-else; a projected one accepted by version 4, its presence and hollow tiles; a geographic one, its
-headers too, for its bands (so measured whole). A step lacks its measure too where it was made under
-an older rule than the check's (`Step::rule`, raised with the checks' version when a step's rule
-changes): each GeoTIFF dataset's entry names the rule each of its steps was made under (its `rules`
-fact, `{"headers": 1, "presence": 1, "hollow": 2}`; an entry naming none, each step's first, 1), so
-checks version 7, the hollow tiles' rule 2, reads every dataset's hollow tiles again and nothing
-else (task #1089). What's kept and what's made are what a whole measurement of the same data
+hollow tiles), and a dataset taken as accepted (below) that a check with fewer measures measured is
+measured from the first step it lacks on, every step after it made again, what's before it kept
+(task #1088): one accepted with no hollow tiles has its hollow tiles read, nothing else; a projected
+one with no presence, its presence and hollow tiles; a geographic one with no bands, its headers
+too, for its bands (so measured whole). A step lacks its measure too where it was made under an
+older rule than the check's (`Step::rule`, raised by hand when a step's rule changes, since a step
+made again reads every dataset's data): each GeoTIFF dataset's entry names the rule each of its
+steps was made under (its `rules` fact, `{"headers": 1, "presence": 1, "hollow": 2}`; an entry
+naming none, each step's first, 1), so the hollow tiles' rule 2 reads every dataset's hollow tiles
+again and nothing else (task #1089). What's kept and what's made are what a whole measurement of the same data
 makes, so its keys don't move. A measure is lacking only where it isn't
 none by design: a projected dataset's bands, or the world's presence and hollow tiles. A geographic
 dataset holding the world (glo30) accepted without bands keeps its single `resolution` everywhere
@@ -1509,7 +1528,7 @@ area left out in km², reckoned at 0.05°; a grid's own voids inside its box are
 `unconverted`); a folder or index no declaration names (`el-orphan`); two
 datasets of one rank, resolution and surface meeting (`el-tie`). A declaration is held with the
 index it names. The checks run whole on every check, files changed or not (`holds_unchanged`), so
-a finding on an unchanged dataset (an `el-geoid` the accepted sources or this check's version
+a finding on an unchanged dataset (an `el-geoid` the accepted sources or this check's code
 newly raise) holds it as accepted and shows it held. A dataset whose declaration and data are as
 accepted (its `keyed` with its data's) isn't measured again: its accepted `facts.measured`, before
 the cut, is taken (`Checks::seed`), the measures it lacks made, and cut again; a territory's tile pyramid is, when the pass's

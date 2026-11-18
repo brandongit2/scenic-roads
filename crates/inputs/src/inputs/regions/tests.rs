@@ -249,6 +249,7 @@ fn decide_on(checks: &Regions, files: &[(&str, &[u8])]) -> crate::inputs::gate::
         read_new: &rn,
         read_old: &ro,
         memo: None,
+        derived_by: None,
     })
     .unwrap()
 }
@@ -367,6 +368,7 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
         read_new: &rn,
         read_old: &ro,
         memo: None,
+        derived_by: None,
     })
     .unwrap();
     assert!(d.report.is_none(), "{:?}", d.report);
@@ -394,6 +396,7 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
         read_new: &rn,
         read_old: &ro2,
         memo: None,
+        derived_by: d.derived_by.as_deref(),
     })
     .unwrap();
     assert!(!d2.changed);
@@ -410,10 +413,11 @@ fn the_gate_takes_regions_in_and_holds_them_on_a_new_pass() {
     let _: &Index = &prev;
 }
 
-/// A new version of the checks derives again with the files unchanged: only the drawn files (and the
-/// index's `checks`) change; the stored geometry and the `keyed` digests the builds' keys read stay.
+/// New code derives again with the files unchanged (`derived_by`): under the same `RESOLUTION`
+/// nothing changes (the accepted geometry and drawing kept, task #1467); under another, only the
+/// drawn files change; the stored geometry and the `keyed` digests the builds' keys read stay.
 #[test]
-fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
+fn a_new_resolution_derives_again_and_changes_only_the_drawn_files() {
     let f = fx();
     let checks = Regions::new(Some(Prepared {
         pass: Some(PASS.into()),
@@ -433,7 +437,7 @@ fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
     let rn = |p: &str| Ok(update[p].clone());
     let kept = std::cell::RefCell::new(BTreeMap::<String, Arc<Vec<u8>>>::new());
     let ro = |e: &FileEntry| -> Result<Vec<u8>> { Ok(kept.borrow()[&e.file].to_vec()) };
-    let run = |prev: Option<&Index>, listed: &BTreeMap<String, (u64, u64)>| {
+    let run = |prev: Option<&Index>, listed: &BTreeMap<String, (u64, u64)>, by: Option<&str>| {
         decide(&Given {
             checks: &checks,
             prev,
@@ -445,29 +449,41 @@ fn a_new_checks_version_derives_again_and_changes_only_the_drawn_files() {
             read_new: &rn,
             read_old: &ro,
             memo: None,
+            derived_by: by,
         })
         .unwrap()
     };
-    let d = run(None, &BTreeMap::new());
+    let d = run(None, &BTreeMap::new(), None);
     kept.borrow_mut().extend(d.store.clone());
-    // The accepted version as an older app made it: its checks version lower, its drawing other.
+    assert_eq!(d.derived_by.as_deref(), Some(checks.code()));
+    // The accepted version as an older app made it, its drawing other.
     let mut old = d.index.clone();
-    old.checks = format!("regions {}", checks.version() - 1);
     old.files
         .get_mut("eu/a.toml")
         .unwrap()
         .facts
         .insert("drawn".into(), "sources/inputs/regions/@drawn/a.0.json".into());
-    let d2 = run(Some(&old), &d.listed);
+    // Its code other, the resolution the same: derived again, and as it was.
+    let same = run(Some(&old), &d.listed, Some("older code"));
+    assert!(!same.changed && same.index == old, "{:?}", same.index);
+    assert_eq!(same.derived_by.as_deref(), Some(checks.code()));
+    // Its resolution an older one too: resolved again.
+    let ea = old.files.get_mut("eu/a.toml").unwrap();
+    let from = ea.facts["resolved_from"].as_str().unwrap().replacen(
+        &format!("{RESOLUTION} "),
+        &format!("{} ", RESOLUTION - 1),
+        1,
+    );
+    ea.facts.insert("resolved_from".into(), from.into());
+    let d2 = run(Some(&old), &d.listed, Some("older code"));
     assert!(d2.changed, "not changed");
     assert!(d2.report.as_ref().is_none_or(|r| r.findings.is_empty() && r.held.is_empty()), "{:?}", d2.report);
-    assert_eq!(d2.index.checks, d.index.checks);
     let (e, e0) = (&d2.index.files["eu/a.toml"], &old.files["eu/a.toml"]);
     assert_eq!((&e.file, &e.keyed, &e.facts["geometry"]), (&e0.file, &e0.keyed, &e0.facts["geometry"]));
     assert_eq!(e.facts["drawn"], d.index.files["eu/a.toml"].facts["drawn"]);
     assert_ne!(e.facts["drawn"], e0.facts["drawn"]);
     // Taken: it derives no more.
-    assert!(!run(Some(&d2.index), &d2.listed).changed);
+    assert!(!run(Some(&d2.index), &d2.listed, d2.derived_by.as_deref()).changed);
 }
 
 /// A region's geometry is pinned to what it's resolved from and `RESOLUTION` (#832): a change
@@ -497,7 +513,10 @@ fn a_change_that_a_region_doesnt_read_keeps_its_accepted_geometry() {
     let (accepted, unsettled) = (Default::default(), Default::default());
     let kept = std::cell::RefCell::new(BTreeMap::<String, Arc<Vec<u8>>>::new());
     let ro = |e: &FileEntry| -> Result<Vec<u8>> { Ok(kept.borrow()[&e.file].to_vec()) };
-    let run = |update: &BTreeMap<String, Vec<u8>>, prev: Option<&Index>, listed: &BTreeMap<String, (u64, u64)>| {
+    let run = |update: &BTreeMap<String, Vec<u8>>,
+               prev: Option<&Index>,
+               listed: &BTreeMap<String, (u64, u64)>,
+               by: Option<&str>| {
         let listing = Listing {
             files: update.keys().map(|p| (p.clone(), (update[p].len() as u64, 1))).collect(),
             ..Default::default()
@@ -514,12 +533,14 @@ fn a_change_that_a_region_doesnt_read_keeps_its_accepted_geometry() {
             read_new: &rn,
             read_old: &ro,
             memo: None,
+            derived_by: by,
         })
         .unwrap();
         kept.borrow_mut().extend(d.store.clone());
         d
     };
-    let d = run(&files(&[("eu/b.toml", &b)]), None, &BTreeMap::new());
+    let by = Some(checks.code());
+    let d = run(&files(&[("eu/b.toml", &b)]), None, &BTreeMap::new(), None);
     assert!(d.report.is_none(), "{:?}", d.report);
     let e = d.index.files["eu/a.toml"].clone();
     assert!(e.facts["resolved_from"].as_str().unwrap().starts_with(&format!("{RESOLUTION} ")));
@@ -531,22 +552,21 @@ fn a_change_that_a_region_doesnt_read_keeps_its_accepted_geometry() {
     ea.keyed = fake.into();
     // A group's name added and another region edited: a's geometry stays, b's is made again.
     let next = files(&[("eu/b.toml", &b2), ("eu/_group.toml", "name = \"Europe\"\n")]);
-    let d2 = run(&next, Some(&old), &d.listed);
+    let d2 = run(&next, Some(&old), &d.listed, by);
     assert!(d2.changed && d2.report.is_none(), "{:?}", d2.report);
     assert_eq!(d2.index.files["eu/a.toml"].keyed, fake);
     assert_eq!(d2.index.files["eu/a.toml"].facts["geometry"], fake);
     assert_ne!(d2.index.files["eu/b.toml"].keyed, d.index.files["eu/b.toml"].keyed);
-    // The resolution's version bumped (an index of the version before): a is resolved again.
+    // The resolution's version bumped (an index the code before derived): a is resolved again.
     let mut older = d2.index.clone();
-    older.checks = format!("regions {}", RESOLUTION - 1);
     let ea = older.files.get_mut("eu/a.toml").unwrap();
     ea.facts.insert("resolved_from".into(), format!("{} x", RESOLUTION - 1).into());
-    let d3 = run(&next, Some(&older), &d2.listed);
+    let d3 = run(&next, Some(&older), &d2.listed, Some("older code"));
     assert_eq!(d3.index.files["eu/a.toml"].keyed, e.keyed);
     // Its own file changed: resolved again.
     let mut edited = next.clone();
     edited.insert("eu/a.toml".into(), region("a", "outline = [\"osm:1\", \"osm:4\"]\n").into_bytes());
-    let d4 = run(&edited, Some(&old), &d.listed);
+    let d4 = run(&edited, Some(&old), &d.listed, by);
     assert_ne!(d4.index.files["eu/a.toml"].keyed, fake);
 }
 
@@ -619,6 +639,7 @@ fn folders_make_the_tree_and_moving_a_region_changes_no_key() {
             read_new: &rn,
             read_old: &ro,
             memo: None,
+            derived_by: None,
         })
         .unwrap()
     };

@@ -585,7 +585,7 @@ impl Step {
     /// Whether `m`, measured by the steps before this one, lacks this one's measure. A measure
     /// that's None by design isn't lacking: a projected dataset's bands, the world's presence and
     /// hollow tiles. Nor a geographic dataset's bands holding the world (glo30): one accepted before
-    /// bands were (checks version 5) keeps its `resolution` everywhere, its headers not read again,
+    /// bands were measured keeps its `resolution` everywhere, its headers not read again,
     /// as it was accepted (bands there would move the keys of everything it feeds).
     fn lacks(self, m: &Measured) -> bool {
         match self {
@@ -612,10 +612,9 @@ impl Step {
         }
     }
 
-    /// Its rule's version, raised with the checks' (`Checks::version`) when the rule changes: a
-    /// dataset whose entry names an older one for it (`rules`, none named: 1) is measured from this
-    /// step on. Hollow: 2, data an overview shows only within its reach of a tile's edge confirmed
-    /// at the full resolution (checks version 7, task #1089).
+    /// Its rule's version, raised when the rule changes: a dataset whose entry names an older one
+    /// for it (`rules`, none named: 1) is measured from this step on. Hollow: 2, data an overview
+    /// shows only within its reach of a tile's edge confirmed at the full resolution (task #1089).
     fn rule(self) -> u32 {
         match self {
             Step::Headers | Step::Presence => 1,
@@ -1044,15 +1043,8 @@ impl Checks for Elevation {
         UNIT
     }
 
-    /// 3: heights no geoid chain converts, or converts only in part, found (`el-geoid`). 4: a
-    /// dataset's `regions` cut it to their outlines inside its cells (`Measured::outline`). 5: a
-    /// GeoTIFF dataset's bands and presence (`Measured::bands`, `presence`). 6: its hollow tiles
-    /// (`Measured::hollow`). 7: the hollow tiles' rule (`Step::rule`: data an overview shows only
-    /// near a tile's edge confirmed at the full resolution, task #1089). One accepted without a
-    /// measure, or with one made under an older rule, is measured from the first such step on
-    /// (`Step`).
-    fn version(&self) -> u32 {
-        7
+    fn code(&self) -> &'static str {
+        super::code_of(module_path!())
     }
 
     fn recursive(&self) -> bool {
@@ -1060,7 +1052,7 @@ impl Checks for Elevation {
     }
 
     /// `el-geoid` turns on what the context names, not the files: accepted sources that drop a
-    /// dataset's chain, or this check's version first finding a gap, hold its files unchanged
+    /// dataset's chain, or this check's code first finding a gap, hold its files unchanged
     /// (kept as accepted, shown held) rather than nothing showing until the file is edited.
     fn holds_unchanged(&self) -> bool {
         true
@@ -1615,14 +1607,7 @@ pub fn accept_fixture(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Str
         "glo30.geojson".into(),
         super::FileEntry { file: ifile, size: index.len() as u64, keyed: "i".into(), facts: Default::default() },
     );
-    let index = super::Index {
-        fmt: 1,
-        unit: UNIT.into(),
-        checks: format!("{UNIT} 1"),
-        files,
-        accepted: BTreeMap::new(),
-        derived_from: None,
-    };
+    let index = super::Index { fmt: 1, unit: UNIT.into(), files, accepted: BTreeMap::new(), derived_from: None };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     root.join(super::store_dir(UNIT)).create_dir_all().unwrap();

@@ -1850,7 +1850,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, f)| (format!("f{i}.jsonl"), serde_json::json!({"file": f, "size": 1, "keyed": "-"})))
                 .collect();
-            serde_json::json!({"fmt": 1, "unit": unit, "checks": format!("{unit} 1"), "files": files}).to_string()
+            serde_json::json!({"fmt": 1, "unit": unit, "files": files}).to_string()
         };
         put(&kept, "x", 60);
         put(&format!("{u}/a.2222222222222222.jsonl"), "x", 60); // an old version: goes
@@ -2267,7 +2267,7 @@ mod tests {
         let (index, copy) =
             ("sources/inputs/heritage/@index.3333333333333333.json", "sources/inputs/heritage/a.4444444444444444.txt");
         fs::create_dir_all(root.join("sources/inputs/heritage")).unwrap();
-        let ix = serde_json::json!({"fmt": 1, "unit": "heritage", "checks": "heritage 1",
+        let ix = serde_json::json!({"fmt": 1, "unit": "heritage",
             "files": {"a.txt": {"file": copy, "size": 1, "keyed": "-", "facts": {}}}});
         fs::write(root.join(index), ix.to_string()).unwrap();
         let manifest = serde_json::json!({"base/6-1-1": now, "sources/inputs/heritage/@index": index});

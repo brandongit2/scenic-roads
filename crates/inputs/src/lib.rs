@@ -31,3 +31,11 @@ static TEST_START: extern "C" fn() = {
 
 #[cfg(test)]
 mod test_start;
+
+/// The checks' code digests build.rs makes (task #1467), with their tests.
+#[cfg(test)]
+#[path = "../build/checks_code.rs"]
+mod checks_code;
+#[cfg(test)]
+#[path = "../build/checks_code_tests.rs"]
+mod checks_code_tests;

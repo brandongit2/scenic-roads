@@ -62,8 +62,8 @@ impl Checks for Translations {
         UNIT
     }
 
-    fn version(&self) -> u32 {
-        1
+    fn code(&self) -> &'static str {
+        super::code_of(module_path!())
     }
 
     fn recursive(&self) -> bool {

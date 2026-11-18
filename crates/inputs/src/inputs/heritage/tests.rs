@@ -211,14 +211,7 @@ fn the_accepted_registers() {
     let a = crate::inputs::Accepted {
         root: store::nasfs::NasRoot::local_for_test("/nowhere"),
         version: "v".into(),
-        index: crate::inputs::Index {
-            fmt: 1,
-            unit: UNIT.into(),
-            checks: "heritage 1".into(),
-            files,
-            accepted: BTreeMap::new(),
-            derived_from: None,
-        },
+        index: crate::inputs::Index { fmt: 1, unit: UNIT.into(), files, accepted: BTreeMap::new(), derived_from: None },
     };
     let r = registers(&a);
     assert_eq!(r.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);

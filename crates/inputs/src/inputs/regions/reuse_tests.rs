@@ -29,6 +29,7 @@ struct State {
     index: Option<Index>,
     listed: BTreeMap<String, (u64, u64)>,
     memo: Option<serde_json::Value>,
+    derived_by: Option<String>,
 }
 
 struct Fx {
@@ -79,6 +80,7 @@ impl Fx {
             read_new: &rn,
             read_old: &ro,
             memo: s.memo.as_ref(),
+            derived_by: s.derived_by.as_deref(),
         })
         .unwrap();
         for (name, b) in &d.store {
@@ -86,7 +88,12 @@ impl Fx {
             p.parent().unwrap().create_dir_all().unwrap();
             p.write(b.as_slice()).unwrap();
         }
-        let next = State { index: Some(d.index.clone()), listed: d.listed.clone(), memo: d.memo.clone() };
+        let next = State {
+            index: Some(d.index.clone()),
+            listed: d.listed.clone(),
+            memo: d.memo.clone(),
+            derived_by: d.derived_by.clone(),
+        };
         (d, next)
     }
 }

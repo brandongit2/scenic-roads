@@ -53,6 +53,8 @@ pub struct Given<'a> {
     pub read_old: &'a dyn Fn(&FileEntry) -> Result<Vec<u8>>,
     /// What the last check kept for this one (`super::Listed::memo`).
     pub memo: Option<&'a serde_json::Value>,
+    /// The code what's derived in the accepted version was derived by (`super::Listed::derived_by`).
+    pub derived_by: Option<&'a str>,
 }
 
 /// What a check decides.
@@ -74,6 +76,8 @@ pub struct Decision {
     pub read: Vec<String>,
     /// What this check keeps for the next (`Checks::memo`).
     pub memo: Option<serde_json::Value>,
+    /// The code what's derived in the next version was derived by (`super::Listed::derived_by`).
+    pub derived_by: Option<String>,
 }
 
 /// A change of the candidate's.
@@ -90,14 +94,15 @@ enum Change {
 /// The decision for unit `g.checks`'s candidate (§4.3, steps 1–5).
 pub fn decide(g: &Given) -> Result<Decision> {
     let unit = g.checks.unit();
-    let empty =
-        Index { fmt: 1, unit: unit.into(), checks: format!("{unit} {}", g.checks.version()), ..Default::default() };
+    let empty = Index { fmt: 1, unit: unit.into(), ..Default::default() };
     let prev = g.prev.unwrap_or(&empty);
-    // A version of the checks the accepted one wasn't made by, or what's derived read from beyond
-    // the files changed (the accepted regions, for the elevation datasets' cut): what's derived is
-    // made again.
+    // Code other than what derived the accepted version's, or what's derived read from beyond the
+    // files changed (the accepted regions, for the elevation datasets' cut): what's derived is made
+    // again.
+    let code = g.checks.code();
     let mut derived_from = g.checks.derived_from();
-    let rederive = prev.checks != empty.checks || prev.derived_from != derived_from;
+    let mut derived_by = Some(code.to_string());
+    let rederive = g.derived_by != Some(code) || prev.derived_from != derived_from;
     g.checks.seed(prev);
     if let Some(m) = g.memo {
         g.checks.recall(m);
@@ -330,6 +335,7 @@ pub fn decide(g: &Given) -> Result<Decision> {
         // it too is derived again, so a check once it's let go derives it.)
         if keep.iter().any(|p| files.contains_key(p)) {
             derived_from = prev.derived_from.clone();
+            derived_by = g.derived_by.map(str::to_string);
         }
         let next: BTreeMap<String, Option<Arc<Vec<u8>>>> = files
             .keys()
@@ -370,15 +376,8 @@ pub fn decide(g: &Given) -> Result<Decision> {
             }
         }
     }
-    let changed = files != prev.files
-        || accepted != prev.accepted
-        || prev.checks != empty.checks
-        || prev.derived_from != derived_from;
-    let index = if changed {
-        Index { fmt: 1, unit: unit.into(), checks: empty.checks.clone(), files, accepted, derived_from }
-    } else {
-        prev.clone()
-    };
+    let changed = files != prev.files || accepted != prev.accepted || prev.derived_from != derived_from;
+    let index = if changed { Index { fmt: 1, unit: unit.into(), files, accepted, derived_from } } else { prev.clone() };
     // The sizes and times to compare with next time: a file taken in, or unchanged (touched or
     // not), as listed now; a held change's, or one not held still, as before (read again).
     let mut listed = BTreeMap::new();
@@ -417,7 +416,6 @@ pub fn decide(g: &Given) -> Result<Decision> {
         Report {
             fmt: 1,
             unit: unit.into(),
-            checks: format!("{unit} {}", g.checks.version()),
             held: held.iter().chain(&strays).chain(&stuck).cloned().collect::<BTreeSet<String>>().into_iter().collect(),
             findings: shown,
             together,
@@ -425,7 +423,17 @@ pub fn decide(g: &Given) -> Result<Decision> {
             needs,
         }
     });
-    Ok(Decision { index, changed, listed, listed_changed, report, store: taken, read, memo: g.checks.memo() })
+    Ok(Decision {
+        index,
+        changed,
+        listed,
+        listed_changed,
+        report,
+        store: taken,
+        read,
+        memo: g.checks.memo(),
+        derived_by,
+    })
 }
 
 /// A version's bytes, by path: `files`' own, else (None there) the accepted copy's, each read once.
@@ -473,8 +481,6 @@ pub fn candidate(
     Ok((listing, accepted, unsettled))
 }
 
-/// The job: unit `unit` checked (`full`: every file read; `planned`: the listing and acceptances
-/// the lead's key was made from), its outcome handed off with `out`.
 /// The records of unit `unit`, off the gate, removed (`scenic inputs test off --forget`); GC sweeps
 /// their files once they're old.
 pub fn forget(out: &mut buildstore::out::Out, unit: &str) -> Result<String> {
@@ -490,6 +496,8 @@ pub fn forget(out: &mut buildstore::out::Out, unit: &str) -> Result<String> {
     Ok(format!("{unit}: {} record{} forgotten", gone.len(), if gone.len() == 1 { "" } else { "s" }))
 }
 
+/// The job: unit `unit` checked (`full`: every file read; `planned`: the listing and acceptances
+/// the lead's key was made from), its outcome handed off with `out`.
 pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Option<super::Planned>) -> Result<String> {
     use jobrt::timings::phase;
     let checks = super::checks(unit).with_context(|| format!("{unit} isn't a gate unit this app knows"))?;
@@ -534,6 +542,7 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
         read_new: &read_new,
         read_old: &read_old,
         memo: state.memo.as_ref(),
+        derived_by: state.derived_by.as_deref(),
     })?;
     p.count(d.store.values().map(|b| b.len() as u64).sum(), d.read.len() as u64);
     drop(p);
@@ -566,7 +575,12 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
     }
     // (A full check's time kept with it: the lead's next is a day after, whichever Mac leads.)
     let full_at = if full { Some(jobrt::jobs::now_s()) } else { state.full_at };
-    if d.listed_changed || replaced != state.replaced || full_at != state.full_at || d.memo != state.memo {
+    if d.listed_changed
+        || replaced != state.replaced
+        || full_at != state.full_at
+        || d.memo != state.memo
+        || d.derived_by != state.derived_by
+    {
         let l = super::Listed {
             fmt: 1,
             unit: unit.into(),
@@ -574,6 +588,7 @@ pub fn run(out: &mut buildstore::out::Out, unit: &str, full: bool, planned: Opti
             replaced,
             full_at,
             memo: d.memo.clone(),
+            derived_by: d.derived_by.clone(),
         };
         let name = out.store_bytes(&super::listed_logical(unit), "json", &serde_json::to_vec_pretty(&l)?)?;
         out.set(&super::listed_logical(unit), Some(name));

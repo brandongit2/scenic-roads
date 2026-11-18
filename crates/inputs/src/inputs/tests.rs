@@ -61,6 +61,7 @@ fn check(
         read_new: &read_new,
         read_old: &read_old,
         memo: None,
+        derived_by: Some(checks.code()),
     })
     .unwrap();
     for (n, bytes) in &d.store {
@@ -264,8 +265,8 @@ impl Checks for Pairs {
     fn unit(&self) -> &'static str {
         "_pairs"
     }
-    fn version(&self) -> u32 {
-        1
+    fn code(&self) -> &'static str {
+        "pairs"
     }
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
         let mut c = FileCheck::default();
@@ -421,6 +422,7 @@ fn an_accepted_file_changed_or_gone_since_the_plan_stays_accepted() {
         read_new: &read_new,
         read_old: &read_old,
         memo: None,
+        derived_by: v1.derived_by.as_deref(),
     })
     .unwrap();
     assert!(
@@ -526,13 +528,13 @@ fn the_key_follows_the_listing_and_the_acceptances_not_what_the_check_writes() {
     ]
     .into();
     assert_eq!(check_key(GT, &root, &l, &none, &m2).unwrap(), k);
-    // The checks' version and what else they read (`Checks::context`): each a new key.
-    struct Reads(u32);
+    // The checks' code and what else they read (`Checks::context`): each a new key.
+    struct Reads(&'static str);
     impl Checks for Reads {
         fn unit(&self) -> &'static str {
             TEST_UNIT
         }
-        fn version(&self) -> u32 {
+        fn code(&self) -> &'static str {
             self.0
         }
         fn file(&self, _path: &str, _bytes: &[u8]) -> FileCheck {
@@ -542,10 +544,65 @@ fn the_key_follows_the_listing_and_the_acceptances_not_what_the_check_writes() {
             Ok(vec![format!("read {:?}", manifest.get("sources/osm/2026-09-28/outlines"))])
         }
     }
-    let k = check_key(&Reads(1), &root, &l, &none, &m).unwrap();
-    assert_ne!(check_key(&Reads(2), &root, &l, &none, &m).unwrap(), k, "a version");
+    let k = check_key(&Reads("a"), &root, &l, &none, &m).unwrap();
+    assert_ne!(check_key(&Reads("b"), &root, &l, &none, &m).unwrap(), k, "its code");
     let m3: BTreeMap<String, String> = [("sources/osm/2026-09-28/outlines".to_string(), "o".to_string())].into();
-    assert_ne!(check_key(&Reads(1), &root, &l, &none, &m3).unwrap(), k, "what it reads");
+    assert_ne!(check_key(&Reads("a"), &root, &l, &none, &m3).unwrap(), k, "what it reads");
+}
+
+/// Every unit's code is its module's as build.rs digested it (task #1467): each gate unit, the test
+/// unit and the gate have one, a unit's is its module's, and two modules' differ.
+#[test]
+fn every_unit_has_its_modules_code() {
+    let mut seen = BTreeSet::new();
+    for unit in UNITS.into_iter().chain([TEST_UNIT]) {
+        let c = checks(unit).unwrap().code();
+        assert_eq!(c.len(), 32, "{unit}: {c}");
+        assert!(seen.insert(c), "{unit}: its code is another unit's");
+    }
+    assert_eq!(GT.code(), code_of("inputs::inputs::gatetest"));
+    assert_eq!(code_of("inputs::inputs::regions::resolve"), checks(regions::UNIT).unwrap().code());
+    assert!(!seen.contains(code_of("inputs::inputs::gate")));
+}
+
+/// A verdict made under old checks is checked again under new ones (task #1467): a file held by
+/// the old code's check keeps the key the lead recorded only while the code is as it was; the new
+/// code's key differs, so the check runs, and its verdict takes the file in.
+#[test]
+fn a_verdict_made_under_old_checks_is_checked_again_under_new_ones() {
+    /// The test unit's shape, a file `b.jsonl` refused while the rules are old.
+    struct Rules(&'static str);
+    impl Checks for Rules {
+        fn unit(&self) -> &'static str {
+            TEST_UNIT
+        }
+        fn code(&self) -> &'static str {
+            self.0
+        }
+        fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
+            let mut c = GT.file(path, bytes);
+            if self.0 == "old" && path == "b.jsonl" {
+                c.findings.push(Finding::new("gt-b", Level::Error, &[path], &["b"], vec![path.into()], "no b".into()));
+            }
+            c
+        }
+    }
+    let mut b = Box_ { files: BTreeMap::new() };
+    b.put("a.jsonl", "{\"k\": \"x\", \"v\": 1}\n", 1);
+    b.put("b.jsonl", "{\"k\": \"y\", \"v\": 1}\n", 1);
+    let store = Store::default();
+    let root = store::nasfs::NasRoot::local_for_test(Path::new("/nonexistent"));
+    let (none, m) = (BTreeSet::new(), BTreeMap::new());
+    let (old, new) = (Rules("old"), Rules("new"));
+    let d1 = check(&old, &b, None, &[], &store, false);
+    assert_eq!(d1.report.as_ref().unwrap().held, ["b.jsonl"]);
+    // (What the lead recorded for it: the old code's key. The same code, the same key: done.)
+    let recorded = check_key(&old, &root, &b.listing(), &none, &m).unwrap();
+    assert_eq!(check_key(&old, &root, &b.listing(), &none, &m).unwrap(), recorded);
+    // New code, the listing as it was: another key, so the lead checks it again, and it's taken in.
+    assert_ne!(check_key(&new, &root, &b.listing(), &none, &m).unwrap(), recorded);
+    let d2 = check(&new, &b, Some(&d1.index), &[], &store, false);
+    assert!(d2.report.is_none() && d2.index.files.contains_key("b.jsonl"), "{:?}", d2.report);
 }
 
 #[test]
@@ -1042,6 +1099,7 @@ fn a_file_dropped_into_the_old_folder_is_an_error_saying_where_to_move_it() {
         read_new: &read_new,
         read_old: &read_old,
         memo: None,
+        derived_by: None,
     })
     .unwrap();
     assert!(dec.index.files.contains_key("a.jsonl"));
@@ -1119,8 +1177,8 @@ impl Checks for Waits {
     fn unit(&self) -> &'static str {
         "_waits"
     }
-    fn version(&self) -> u32 {
-        1
+    fn code(&self) -> &'static str {
+        "waits"
     }
     fn file(&self, _path: &str, _bytes: &[u8]) -> FileCheck {
         FileCheck::default()

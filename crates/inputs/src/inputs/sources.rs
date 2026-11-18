@@ -453,8 +453,8 @@ impl Checks for SourcesCheck {
         UNIT
     }
 
-    fn version(&self) -> u32 {
-        1
+    fn code(&self) -> &'static str {
+        super::code_of(module_path!())
     }
 
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {
@@ -948,14 +948,7 @@ pub fn accept_files(root: &store::nasfs::NasRoot, m: &mut BTreeMap<String, Strin
             },
         );
     }
-    let index = super::Index {
-        fmt: 1,
-        unit: UNIT.into(),
-        checks: format!("{UNIT} 1"),
-        files,
-        accepted: BTreeMap::new(),
-        derived_from: None,
-    };
+    let index = super::Index { fmt: 1, unit: UNIT.into(), files, accepted: BTreeMap::new(), derived_from: None };
     let body = serde_json::to_vec(&index).unwrap();
     let name = format!("{}/@index.{}.json", super::store_dir(UNIT), store::naming::hash16(&body));
     root.join(&name).write(body).unwrap();

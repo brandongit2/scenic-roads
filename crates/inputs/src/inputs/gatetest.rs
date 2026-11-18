@@ -20,8 +20,8 @@ impl Checks for GateTest {
         self.0
     }
 
-    fn version(&self) -> u32 {
-        1
+    fn code(&self) -> &'static str {
+        super::code_of(module_path!())
     }
 
     fn file(&self, path: &str, bytes: &[u8]) -> FileCheck {

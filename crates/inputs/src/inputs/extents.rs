@@ -1162,8 +1162,8 @@ impl Checks for Extents {
         UNIT
     }
 
-    fn version(&self) -> u32 {
-        3
+    fn code(&self) -> &'static str {
+        super::code_of(module_path!())
     }
 
     fn recursive(&self) -> bool {

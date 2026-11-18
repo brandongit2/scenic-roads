@@ -38,7 +38,17 @@ tempfile = { version = "3", optional = true }
 # it on. Helpers only, never behaviour.
 testkit = ["dep:tempfile", "store/testkit"]
 
+# (Each unit's checks' code digest, docs/inputs.md §4.3: build.rs reads src/inputs/ as tokens, build/checks_code.rs.)
+[build-dependencies]
+syn = { version = "2", default-features = false, features = ["clone-impls", "full", "parsing", "printing", "visit-mut"] }
+quote = { version = "1", default-features = false }
+proc-macro2 = { version = "1", default-features = false }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
 [dev-dependencies]
+syn = { version = "2", default-features = false, features = ["clone-impls", "full", "parsing", "printing", "visit-mut"] }
+quote = { version = "1", default-features = false }
+proc-macro2 = { version = "1", default-features = false }
 buildstore = { path = "../buildstore", features = ["testkit"] }
 codecs = { path = "../codecs", features = ["testkit"] }
 jobrt = { path = "../jobrt", features = ["testkit"] }
