@@ -823,13 +823,17 @@ mod tests {
         assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0, "mkfifo {}", p.display());
     }
 
-    /// Lets the reads waiting on `hang`'s pipe finish (with nothing), so no pool thread stays stuck.
-    fn release(p: &std::path::Path) {
+    /// Lets the reads waiting on `hang`'s pipe finish (with nothing), until none of `pool`'s is
+    /// stuck.
+    fn release(pool: &IoPool, p: &std::path::Path) {
         use std::os::unix::fs::OpenOptionsExt;
-        // (A watchdog: the reader is a stuck pool thread, already waiting.)
-        // (A writer that doesn't wait opens once a reader waits, and closes at once.)
-        store::testkit::eventually(&format!("a reader of {}", p.display()), || {
-            std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(p).is_ok()
+        // (A watchdog. A writer that doesn't wait opens once a reader waits, and closes at once;
+        // again until the reads have ended: a read reads to its end of file, which Darwin now and
+        // then loses to a close made as the reader's open returns (store's deadline tests, `fifo`),
+        // and the next writer's close brings it.)
+        store::testkit::eventually(&format!("the reads of {} end", p.display()), || {
+            drop(std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(p));
+            pool.status().stuck == 0
         });
     }
 
@@ -910,7 +914,7 @@ mod tests {
             panic!("the listing waited on the hung read: no answer in {:?}", store::testkit::WATCHDOG)
         });
         assert!(IoError::find(&e).is_some(), "{e:#}");
-        release(&stuck);
+        release(&hung, &stuck);
         // The share still answers, so it's busy rather than away: the rest goes on.
         assert!(hung.is_online());
         std::fs::remove_file(&stuck).unwrap();

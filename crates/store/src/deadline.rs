@@ -605,9 +605,11 @@ mod tests {
     /// A FIFO at `name` in `d`, whose open waits in the kernel until its other end is opened. A call
     /// held on one is let go by a byte (`one_byte`, `release`), never by an end of file: Darwin loses
     /// a FIFO's end of file now and then (a writer opening and closing at once while a reader waits
-    /// in its open: on the M4, 2 reads in 19 200 never saw it; a reader opening while a writer
-    /// waits, then reading to the end: 1 in 4800), and a read waiting for it stays in the kernel
-    /// for good. A byte always came (task #1302).
+    /// in its open: the reader's open returns, but its read then waits with no writer left, where
+    /// POSIX has it return 0; on the M4, 2 reads in 19 200, on the M1 about 1 in 70; none with the
+    /// close 5 ms after the open; a reader opening while a writer waits, then reading to the end: 1
+    /// in 4800), and a read waiting for it stays in the kernel until another writer comes. A byte
+    /// always came (task #1302).
     fn fifo(d: &Path, name: &str) -> std::path::PathBuf {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
