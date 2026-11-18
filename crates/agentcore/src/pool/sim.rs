@@ -42,7 +42,9 @@
 //!
 //! The network's (`World::call`, `Cfg::net` and the rest): a request to a Mac asleep, gone, cut
 //! off or running no coordinator reaches nothing; one dropped likewise; one delayed is answered
-//! that much later, or past the client's time arrives late, done then, its answer lost; an answer
+//! that much later, or past the client's time arrives late, done then, its answer lost (by the
+//! coordinator running then, a restarted lead's too, as the client's request tried again on a new
+//! connection, coordwire's, reaches the lead's next process); an answer
 //! lost (the request done); a Mac cut off from the others for minutes to hours (`Cfg::partitions`),
 //! or hearing no answer while heard (`Cfg::one_way`); the lead's process killed while a request's
 //! change is on its way to its store (`Cfg::kills`: the line landed, torn or not, unanswered), any

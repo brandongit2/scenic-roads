@@ -34,8 +34,9 @@ on one disk.
    only; an answer never waits on the share (test `coord_handlers_never_touch_the_nas`).
 4. **Every post is idempotent by its own content:** a lost answer is retried, never doubled, with
    no sequence numbers. A beat says whole state (its leases, heartbeat, status, hand-offs' keys,
-   progress), and one sent before a request the lead took from that member since (a beat or an
-   ask, ordered by `held::Sent`: its process's start and its number there) releases nothing; a
+   progress), and releases no lease whose ask that member sent after it (ordered by
+   `held::Sent`: its process's start and its number there, kept with the lease in the lead's
+   store, `Lease::asked`, so a restarted lead knows it too); a
    hand-off is taken once by its key; a hold or setting by its `at` (the later wins, a repeat
    changes nothing); mail by its numbers; the answers' lease by its holder's token. A budget take
    repeated after a lost answer gives a second token, the first unspent: the budget errs below its
@@ -230,8 +231,8 @@ can tell "holder gone" from "holder unreachable" only by hearing from it, so it 
   released.
 - **Renewals are beats.** Any lease of that member a beat doesn't list is released at once (a
   crashed job, a restarted agent that lost it), but one granted within `held::OMIT_GRACE` (30 s: its
-  answer may still be on its way) and not loaded since, and none by a beat sent before another
-  request the lead took from it (`Sent`). The beat lists the member's slots' leases and those whose
+  answer may still be on its way) and not loaded since, and none by a beat sent before the
+  lease's ask (`Sent`, kept with the lease: `Lease::asked`). The beat lists the member's slots' leases and those whose
   ends it still owes the lead (told again each loop until answered).
 - **A member the lead stops hearing from** keeps its leases: held while away after `held::AWAY_S`
   (2 min without a beat, `Coordinator::away`), released after `held::AWAY_RELEASE_S` (12 h unheard,

@@ -5,8 +5,8 @@
 //!   owes the lead). The lead confirms each listed and releases each of that member's jobs' leases
 //!   left out (`lease::Leases::word`): a crashed job, an agent restarted without it, a grant whose
 //!   answer never reached it (one granted within `OMIT_GRACE` excepted: its answer may still be on
-//!   its way; one loaded at a restart, never; nor any by a beat sent before a beat or ask the lead
-//!   took from that member since, `Sent`). The answer says the lead's epoch and the leases listed
+//!   its way; one loaded at a restart, never; nor one whose ask its member sent after the beat,
+//!   `Sent`, kept with the lease through the lead's restarts: `lease::Lease::asked`). The answer says the lead's epoch and the leases listed
 //!   that aren't that member's here (ended meanwhile: its jobs stop as their own beats are refused).
 //! - **Gated by what the member speaks** (`SPEAKS`): the lead applies the rule to a member whose
 //!   last beat says it speaks it; an older member's leases lapse after `coord::TTL` unrenewed as
@@ -66,8 +66,8 @@ pub struct Beat {
     /// disk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::agent::resume::Progress>,
-    /// When its agent sent it, among its requests (`Sent`): a beat older than an ask or beat the
-    /// lead took from it since releases nothing. Left out by apps before it.
+    /// When its agent sent it, among its requests (`Sent`): it releases no lease whose ask was
+    /// sent after it. Left out by apps before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sent: Option<Sent>,
     /// Its jobs' spans and logs the lead lacks (crate::coord::jobspans), to a lead saying it takes
@@ -85,7 +85,10 @@ pub struct Beat {
 /// delayed past its client's time and taken after the member's next ask (task #1038, the pool's
 /// simulator's seed 37: a beat made before an ask, held 70 s on its way and taken 45 s after the
 /// grant, past `OMIT_GRACE`) lists the leases it held before that grant: the lease would end, its
-/// target granted again while its job ran.
+/// target granted again while its job ran. So each lease keeps its ask's (`lease::Lease::asked`),
+/// in the lead's store with it: a lead restarted between the grant and the beat knows it too (task
+/// #1437, the simulator's seed 662 of every fault: the lead killed after the grant, the beat taken
+/// by its next process, which had loaded the lease unconfirmed, its member then cut off 10 min).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Sent {
     pub process: u64,
@@ -101,15 +104,6 @@ pub fn sent() -> Sent {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
     });
     Sent { process, n: N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 }
-}
-
-/// Request `sent` of member `member` taken: whether it's the newest taken from it (kept so),
-/// rather than one sent before another the lead took already.
-pub fn newest(s: &mut Shared, member: &str, sent: Sent) -> bool {
-    let last = s.sent.entry(member.to_string()).or_default();
-    let newest = sent >= *last;
-    *last = (*last).max(sent);
-    newest
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -261,14 +255,12 @@ pub fn beat(s: &mut Shared, b: &Beat) -> Answer {
         .filter(|(e, m)| !s.broker && *e == s.leases.epoch && s.pool_member.as_deref() == Some(m.id.as_str()))
         .map(|(_, m)| m);
     a.reach = a.leading.as_ref().and(s.reach.clone());
-    // (A beat sent before a request the lead took from it since lists what it held then: it
-    // releases nothing.)
-    let stale = b.sent.is_some_and(|x| !newest(s, &b.member, x));
-    if b.speaks.iter().any(|w| w == SPEAKS) && !stale {
-        // (As of when its list was made: a lease granted since isn't in it.)
+    if b.speaks.iter().any(|w| w == SPEAKS) {
+        // (As of when its list was made: a lease granted since isn't in it, nor one asked for
+        // after the beat was sent.)
         let now = s.now();
         let now = now.checked_sub(Duration::from_secs(b.held_age_s)).unwrap_or(now);
-        let (gone, released) = s.leases.word(&b.member, &b.held, now, OMIT_GRACE);
+        let (gone, released) = s.leases.word(&b.member, &b.held, b.sent, now, OMIT_GRACE);
         ended(s, &gone, "its member's beat didn't list it: it doesn't hold it");
         a.released = released;
     }

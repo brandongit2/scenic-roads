@@ -516,8 +516,6 @@ pub struct Shared {
     /// Each worker's asks answered over the last `ANSWERS_S`, oldest first (`answered`): what the
     /// lead's departure lines name (crate::agent::forecast::departures, `Coordinator::answers`).
     pub answers: BTreeMap<String, std::collections::VecDeque<Answer>>,
-    /// Each member's newest request taken (held::Sent: its beats' and asks'), by its host.
-    pub sent: BTreeMap<String, held::Sent>,
     /// Tasks brokered by every member (docs/pool.md §8; crate::agent::brokering): the members and
     /// their brokers, as the agent last read their heartbeats. None: the switch off, the
     /// coordinator as it was (no page from elsewhere, a take-up's leases in place
@@ -1821,7 +1819,6 @@ impl Coordinator {
             nas_mount: None,
             refused: BTreeMap::new(),
             answers: BTreeMap::new(),
-            sent: BTreeMap::new(),
             brokers: None,
             pageview: None,
             live: None,
@@ -4354,9 +4351,6 @@ fn route(
             let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
             let mut s = shared.lock().unwrap();
-            if let Some(x) = a.sent {
-                held::newest(&mut s, crate::agent::host_of(&a.worker), x);
-            }
             // The pool's lead not fresh: nothing now (docs/pool.md §6.5).
             if let Some(why) = s.moving_now(s.wall_s()) {
                 s.refused_ask(&a.worker, a.want, &format!("the lead is moving ({why})"));
@@ -4415,6 +4409,7 @@ fn route(
                         o.targets.iter().map(|(t, k, _)| (t.clone(), k.clone())).collect();
                     let lease =
                         s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                    s.leases.asked(lease, a.sent);
                     s.leases.set_threads(lease, ask_cores(&a));
                     s.save_leases();
                     eprintln!(
@@ -6613,6 +6608,28 @@ mod tests {
         let before = held::sent();
         let g = w.ask(&ask(8192)).unwrap().expect("granted");
         clock.advance(Duration::from_secs(60));
+        let late = held::Beat { sent: Some(before), ..word("m1", &[]) };
+        assert!(c.member_beat(&late).released.is_empty());
+        assert!(c.held("unit").contains("6/1/1"), "still its lease");
+        let next = held::Beat { sent: Some(held::sent()), ..word("m1", &[]) };
+        c.member_beat(&next);
+        assert!(!c.held("unit").contains("6/1/1"), "its next beat ends lease {}", g.lease);
+    }
+
+    /// Task #1437 (the pool's simulator, seed 662 of every fault): the lead killed after a grant,
+    /// and the member's beat sent before its ask taken by the lead's next process, which loaded
+    /// the lease unconfirmed (released by the first beat leaving it out): it releases nothing, the
+    /// lease's ask kept with it; the member's next beat, sent after, leaving it out, ends it.
+    #[test]
+    fn a_beat_sent_before_an_ask_releases_nothing_after_the_lead_s_restart() {
+        let (d, c, w) = start();
+        measure_units(&c, 1);
+        unit_offer(&c, "6/1/1");
+        let before = held::sent();
+        let g = w.ask(&ask(8192)).unwrap().expect("granted");
+        drop(c);
+        let (c, _) = start_for_test(&d.path().join("coord"), "m4", "");
+        assert!(c.shared.lock().unwrap().leases.of(g.lease).is_some_and(|l| l.unconfirmed), "loaded unconfirmed");
         let late = held::Beat { sent: Some(before), ..word("m1", &[]) };
         assert!(c.member_beat(&late).released.is_empty());
         assert!(c.held("unit").contains("6/1/1"), "still its lease");

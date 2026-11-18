@@ -43,6 +43,13 @@ pub struct Lease {
     /// (`Lease::job`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<jobrt::jobid::JobId>,
+    /// Where the ask it was granted for stands among its member's requests (crate::coord::held::Sent;
+    /// None: an ask that didn't say, or no ask): a beat sent before it lists what its member held
+    /// before the grant and never releases it (`Leases::word`). Kept with the lease, so the lead's
+    /// restart keeps it too (task #1437: a beat sent before the ask, taken by the lead's next
+    /// process, released the lease loaded at its start, the member cut off and its job running on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<crate::coord::held::Sent>,
     /// (Restarted from the load when read back from disk.)
     #[serde(skip, default = "Instant::now")]
     pub granted: Instant,
@@ -451,23 +458,34 @@ impl Leases {
             || (matches!(l.work, Work::Job { .. }) && self.by_word.contains(crate::agent::host_of(&l.worker)))
     }
 
-    /// `member`'s beat listing the leases it holds (docs/coordination.md §6.1; crate::coord::held):
-    /// each listed confirmed; each of its jobs' leases it leaves out ended, but one granted within
-    /// `grace` of `now` and not loaded since (its answer may still be on its way). Those ended, and
-    /// those listed that aren't its leases here (ended meanwhile: its jobs stop). `now` is when the
-    /// list was made: one granted after isn't in it, and stays.
+    /// Lease `id` granted for an ask that said where it stands among its member's requests
+    /// (`Lease::asked`).
+    pub fn asked(&mut self, id: u64, sent: Option<crate::coord::held::Sent>) {
+        if let Some(l) = self.by_id.get_mut(&id) {
+            l.asked = sent;
+        }
+    }
+
+    /// `member`'s beat listing the leases it holds (docs/coordination.md §6.1; crate::coord::held),
+    /// sent at `sent` among its requests: each listed confirmed; each of its jobs' leases it leaves
+    /// out ended, but one granted within `grace` of `now` and not loaded since (its answer may
+    /// still be on its way), and one whose ask came after the beat (`Lease::asked`). Those ended,
+    /// and those listed that aren't its leases here (ended meanwhile: its jobs stop). `now` is when
+    /// the list was made: one granted after isn't in it, and stays.
     pub fn word(
         &mut self,
         member: &str,
         held: &BTreeSet<u64>,
+        sent: Option<crate::coord::held::Sent>,
         now: Instant,
         grace: Duration,
     ) -> (Vec<Lease>, Vec<u64>) {
         let of = |l: &Lease| matches!(l.work, Work::Job { .. }) && crate::agent::host_of(&l.worker) == member;
+        let before = |l: &Lease| l.asked.is_some_and(|a| sent.is_some_and(|b| b < a));
         let gone: Vec<u64> = self
             .by_id
             .values()
-            .filter(|l| of(l) && !held.contains(&l.id) && l.granted <= now)
+            .filter(|l| of(l) && !held.contains(&l.id) && l.granted <= now && !before(l))
             .filter(|l| l.unconfirmed || now.saturating_duration_since(l.granted) >= grace)
             .map(|l| l.id)
             .collect();
@@ -639,6 +657,7 @@ impl Leases {
                 worker: worker.to_string(),
                 work,
                 job: None,
+                asked: None,
                 granted: now,
                 began: None,
                 deadline: now + self.ttl,
@@ -1135,16 +1154,16 @@ mod tests {
         let far = t0 + Duration::from_secs(3600);
         assert_eq!(l.held("unit", far), ["6/1/1", "6/1/2"].map(String::from).into(), "m1's never lapse; m4's do");
         let grace = Duration::from_secs(30);
-        let (gone, unknown) = l.word("m1", &[a, c].into(), t0 + Duration::from_secs(5), grace);
+        let (gone, unknown) = l.word("m1", &[a, c].into(), None, t0 + Duration::from_secs(5), grace);
         assert!(gone.is_empty(), "b granted within the grace");
         assert_eq!(unknown, [c], "not m1's");
         // (A task's lease it lists is its, live: not said ended, nor ended by leaving it out.)
         let t = l.grant("m1 #3", Work::Task { id: 9 }, t0);
-        let (gone, unknown) = l.word("m1", &[a, b, t].into(), t0 + Duration::from_secs(5), grace);
+        let (gone, unknown) = l.word("m1", &[a, b, t].into(), None, t0 + Duration::from_secs(5), grace);
         assert!(gone.is_empty() && unknown.is_empty(), "{unknown:?}");
-        let (gone, _) = l.word("m1", &[a, b].into(), far, grace);
+        let (gone, _) = l.word("m1", &[a, b].into(), None, far, grace);
         assert!(gone.is_empty() && l.of(t).is_some(), "a task's lease isn't the beat's to end");
-        let (gone, _) = l.word("m1", &[a].into(), far, grace);
+        let (gone, _) = l.word("m1", &[a].into(), None, far, grace);
         assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [b]);
         // Loaded: unconfirmed, left out at once.
         let (mut kept, each) = l.kept();
@@ -1152,7 +1171,7 @@ mod tests {
         let mut back = Leases::new(Duration::from_secs(600));
         back.restore(&kept, far).unwrap();
         assert!(back.of(a).unwrap().unconfirmed);
-        let (gone, _) = back.word("m1", &BTreeSet::new(), far, grace);
+        let (gone, _) = back.word("m1", &BTreeSet::new(), None, far, grace);
         assert_eq!(gone.iter().map(|x| x.id).collect::<Vec<_>>(), [a]);
     }
 

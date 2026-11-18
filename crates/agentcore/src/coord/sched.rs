@@ -1974,6 +1974,7 @@ impl Sched {
             clock.now,
             clock.unix,
         );
+        self.leases.asked(lease, a.sent);
         // (The leases changed: what `pack` kept of them made again.)
         if let Some(p) = self.packing.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
             *p = Packing::default();
